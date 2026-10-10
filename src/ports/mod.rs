@@ -28,6 +28,11 @@ macro_rules! port_impl {
             }
 
             unsafe extern $abi fn detour($($p: $pt),*) -> u32 {
+                let before = STATE.before.load(Ordering::Relaxed);
+                if before != 0 {
+                    let args: &[usize] = &[$($crate::shadow::Word::word($p)),*];
+                    $crate::shadow::run_before(before, args);
+                }
                 $crate::shadow::dispatch(
                     &STATE,
                     $cmp,

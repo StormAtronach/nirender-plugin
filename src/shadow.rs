@@ -71,6 +71,9 @@ pub struct PortState {
     pub locked: AtomicBool,
     /// A function to call after each call of the port, in every mode. 0 means none.
     pub after: AtomicUsize,
+    /// A function to call before each call of the port, in every mode, with the arguments
+    /// of the call. 0 means none. See `run_before`.
+    pub before: AtomicUsize,
     /// Calls that ran the Rust function for real.
     pub live_calls: Counter,
     /// The number of runs of the Rust function: live, in a comparison, or as a call from
@@ -94,6 +97,7 @@ impl PortState {
             mode: AtomicU8::new(0),
             locked: AtomicBool::new(false),
             after: AtomicUsize::new(0),
+            before: AtomicUsize::new(0),
             live_calls: Counter::new(),
             rust_runs: Counter::new(),
             shadow_calls: Counter::new(),
@@ -327,6 +331,44 @@ unsafe fn memory_differences(regions: &[(usize, usize)], rust: &[u8]) -> String 
         }
     }
     text
+}
+
+/// An argument of a port as one machine word, for a `before` function.
+pub trait Word: Copy {
+    fn word(self) -> usize;
+}
+impl Word for usize {
+    fn word(self) -> usize {
+        self
+    }
+}
+impl Word for u32 {
+    fn word(self) -> usize {
+        self as usize
+    }
+}
+impl Word for u8 {
+    fn word(self) -> usize {
+        self as usize
+    }
+}
+impl Word for f32 {
+    fn word(self) -> usize {
+        self.to_bits() as usize
+    }
+}
+
+/// The type of a `before` function. `args` has the arguments of the call. The first one of
+/// a `__thiscall` function is `this`.
+pub type BeforeFn = unsafe fn(args: &[usize]);
+
+/// Calls the `before` function of a port. The function does not run in the Rust run of a
+/// comparison and not on other threads: the engine run of the comparison makes the call
+/// that counts.
+pub unsafe fn run_before(before: usize, args: &[usize]) {
+    if on_main_thread() && LEG.load(Ordering::Relaxed) != Leg::Rust as u8 {
+        core::mem::transmute::<usize, BeforeFn>(before)(args);
+    }
 }
 
 /// Runs a call of a port in the mode of the port.

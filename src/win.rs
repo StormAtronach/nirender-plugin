@@ -13,6 +13,9 @@ extern "system" {
     pub fn FlushInstructionCache(process: *mut c_void, addr: *const c_void, size: usize) -> i32;
     pub fn GetCurrentProcess() -> *mut c_void;
     pub fn GetCurrentThreadId() -> u32;
+    pub fn GetModuleFileNameW(module: *mut c_void, name: *mut u16, size: u32) -> u32;
+    pub fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+    pub fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
 }
 
 /// Writes `bytes` over code at `addr`.

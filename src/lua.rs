@@ -194,6 +194,29 @@ unsafe extern "C" fn fpu_control_word(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.link()` returns ok and a message. It connects to the render link of MGE XE.
+/// After that the plugin tells MGE XE the scene and the object of the device calls. Call
+/// `install` first.
+unsafe extern "C" fn link(l: LuaState) -> i32 {
+    let (ok, message) = match crate::link_client::connect() {
+        Ok(message) => (true, message),
+        Err(message) => (false, message),
+    };
+    crate::log!("link: {}", message);
+    lua_pushboolean(l, ok as i32);
+    push_str(l, &message);
+    2
+}
+
+/// `nirender.linkCounters([reset])` returns the counters of MGE XE as text: for each fact,
+/// how many times the packet and the inference of MGE XE were equal or different.
+unsafe extern "C" fn link_counters(l: LuaState) -> i32 {
+    let text = crate::link_client::counters_text(lua_toboolean(l, 1) != 0);
+    crate::log!("link counters:\n{}", text);
+    push_str(l, &text);
+    1
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     lua_createtable(l, 0, 20);
@@ -211,6 +234,8 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "recheck", recheck);
     set_fn(l, "dumpState", dump_state);
     set_fn(l, "dumpFrame", dump_frame);
+    set_fn(l, "link", link);
+    set_fn(l, "linkCounters", link_counters);
     push_str(l, env!("CARGO_PKG_VERSION"));
     lua_setfield(l, -2, b"version\0".as_ptr() as *const c_char);
     lua_pushnumber(l, ports::all().count() as f64);

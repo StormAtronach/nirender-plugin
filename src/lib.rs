@@ -24,6 +24,8 @@ pub mod engine;
 pub mod frame;
 pub mod hook;
 pub mod install;
+pub mod link;
+pub mod link_client;
 pub mod mem;
 pub mod perf;
 pub mod ports;
