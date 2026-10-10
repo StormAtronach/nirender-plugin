@@ -762,6 +762,7 @@ pub unsafe fn draw_state(
     start_index: u32,
     primitive_count: u32,
     skinned: bool,
+    later_pass: bool,
 ) {
     let Some(host) = host() else { return };
     if host.capabilities & CAP_DRAW_STATE == 0 || crate::shadow::leg() == crate::shadow::Leg::Rust {
@@ -828,7 +829,7 @@ pub unsafe fn draw_state(
         ambient: rs(D3DRS_AMBIENT),
         material,
         struct_size: size_of::<DrawStateV1>() as u32,
-        flags: if skinned { STATE_SKINNED } else { 0 },
+        flags: if skinned { STATE_SKINNED } else { 0 } | if later_pass { STATE_LATER_PASS } else { 0 },
         primitive_type,
         base_vertex_index: buffers[4],
         min_index: 0,

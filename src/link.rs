@@ -58,6 +58,7 @@ pub const CLASS_UI: u32 = 16;
 pub const CLASS_WATER_RIPPLE: u32 = 17;
 
 pub const STATE_SKINNED: u32 = 0x1;
+pub const STATE_LATER_PASS: u32 = 0x2;
 
 pub const DRAW_FROM_SORTED_QUEUE: u32 = 0x1;
 pub const DRAW_SKINNED: u32 = 0x2;
