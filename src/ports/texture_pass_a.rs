@@ -2,40 +2,33 @@
 //! sub-passes, and the pixel shader and the vertex shader of the current sub-pass.
 //!
 //! A texture pass owns an array of sub-pass objects (`NiDX8TexturePass::$1`, 0x54 bytes). A
-//! sub-pass holds a maximum of 8 texture stages and the shaders that it draws with. The second half of
-//! the class is in `texture_pass_b`.
+//! sub-pass holds a maximum of 8 texture stages and the shaders that it draws with. The
+//! second half of the class is in `texture_pass_b`.
 
 use core::mem::transmute;
 
-use crate::engine;
+use crate::d3d::{device_add_ref, device_release, device_set_pixel_shader, device_set_vertex_shader, D3DTSS_TCI_CAMERASPACEPOSITION};
+use crate::engine::{
+    self, eh_vector_constructor_iterator, eh_vector_destructor_iterator, ni_object_release, ni_pointer_set, operator_delete,
+    FILTER_REMAP_MAGNIFY, FILTER_REMAP_MINIFY, FILTER_REMAP_MIP, MAX_SIMULTANEOUS_TEXTURES, MAX_TEXTURE_BLEND_STAGES, NI_REF_OBJECT_COUNT,
+    VTBL_NI_DX8_TEXTURE_PASS, VTBL_NI_REF_OBJECT,
+};
 use crate::gen::layouts::{
     NiDX8RenderState as RS, NiDX8Renderer as R, NiDX8TexturePass as TP, NiDX8TexturePass__1 as SP, NiDX8TextureStage as TS, NiPixelData,
     NiPixelFormat,
 };
 use crate::mem::{rd, wr};
+use crate::ports::ni::{self, release_and_clear, REF_COUNT};
 use crate::shadow::Regions;
 
 // ---- engine data at fixed addresses ----------------------------------------------------
 
-const VTBL_NI_REF_OBJECT: u32 = 0x7469B8;
-const VTBL_TEXTURE_PASS: u32 = 0x74F650;
 /// The vtable of the array of sub-passes (`TArray_18`).
 const VTBL_SUBPASS_ARRAY: u32 = 0x74F66C;
-/// `global_count_of_NiRefObject`
-const REF_OBJECT_COUNT: usize = 0x7DECE0;
-/// First entry of the minify, magnify and mip filter tables of the class.
-const FILTER_MINIFY_0: usize = 0x7DDB80;
-const FILTER_MAGNIFY_0: usize = 0x7DDB84;
-const FILTER_MIP_0: usize = 0x7DDB88;
-/// The texture limit and the sampler limit that `getAvailableSlotCounts` reads.
-const SLOT_LIMIT_1: usize = 0x7C3834;
-const SLOT_LIMIT_2: usize = 0x7C3838;
 /// The texture coordinate callbacks, one for each `NiTextureEffect` coordinate mode. They are
 /// in the second half of the class.
 const TEX_GEN_CALLBACKS: [u32; 5] = [0x6B5CE0, 0x6B5EB0, 0x6B6090, 0x6B61B0, 0x6B6300];
 
-/// `NiRefObject::refCount`, the same place in every reference counted object.
-const REF_COUNT: usize = 4;
 /// Member of the shader object of a sub-pass (`$1::field_4C`, `$1::field_50`): the D3D handle.
 const SHADER_HANDLE: usize = 0x20;
 /// The sub-pass members with the pixel and the vertex shader object.
@@ -46,24 +39,10 @@ const SUBPASS_SLOTS_USED_1: usize = SP::field_C;
 const SUBPASS_SLOTS_USED_2: usize = SP::field_10;
 
 const STAGES_PER_BANK: usize = 8;
-const D3DTSS_TCI_CAMERASPACEPOSITION: u32 = 0x20000;
 
 // ---- engine functions at fixed addresses -----------------------------------------------
-
-/// 0x727530 `operator delete` of the game's C runtime.
-unsafe fn operator_delete(block: usize) {
-    transmute::<usize, unsafe extern "C" fn(usize)>(0x727530)(block)
-}
-
-/// 0x7276B0 `eh vector constructor iterator`
-unsafe fn vector_constructor(array: usize, size: usize, count: u32, ctor: usize, dtor: usize) {
-    transmute::<usize, unsafe extern "system" fn(usize, usize, u32, usize, usize)>(0x7276B0)(array, size, count, ctor, dtor)
-}
-
-/// 0x72759E `eh vector destructor iterator`
-unsafe fn vector_destructor(array: usize, size: usize, count: u32, dtor: usize) {
-    transmute::<usize, unsafe extern "system" fn(usize, usize, u32, usize)>(0x72759E)(array, size, count, dtor)
-}
+//
+// `engine` has no function for these addresses.
 
 const TEXTURE_STAGE_CTOR: usize = 0x6C1930;
 const TEXTURE_STAGE_DTOR: usize = 0x6C1A70;
@@ -78,11 +57,6 @@ unsafe fn texture_stage_dtor(stage: usize) {
     transmute::<usize, unsafe extern "thiscall" fn(usize)>(TEXTURE_STAGE_DTOR)(stage)
 }
 
-/// 0x6B76E0 `NiDX8TexturePass::$1::ctor`
-unsafe fn subpass_ctor(subpass: usize) -> usize {
-    transmute::<usize, unsafe extern "thiscall" fn(usize) -> usize>(0x6B76E0)(subpass)
-}
-
 /// 0x6B7990 `NiDX8TexturePass::_1::getAvailableSlotCounts`
 unsafe fn subpass_get_available_slot_counts(subpass: usize) -> (u32, u32) {
     let mut out = [0u32; 2];
@@ -91,91 +65,19 @@ unsafe fn subpass_get_available_slot_counts(subpass: usize) -> (u32, u32) {
     (out[0], out[1])
 }
 
-/// 0x404630 `NiObject::release`
-unsafe fn ni_object_release(object: usize) {
-    transmute::<usize, unsafe extern "thiscall" fn(usize)>(0x404630)(object)
-}
-
-/// 0x471B00 `NiPointer::set`
-unsafe fn ni_pointer_set(pointer: usize, object: usize) {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, usize)>(0x471B00)(pointer, object)
-}
-
-/// 0x6D4FC0 `NiPixelData::ctor_args`
-unsafe fn pixel_data_ctor(pixel_data: usize, width: u32, height: u32, format: usize, mip_map_levels: u32) -> usize {
-    let f: unsafe extern "thiscall" fn(usize, u32, u32, usize, u32) -> usize = transmute(0x6D4FC0usize);
-    f(pixel_data, width, height, format, mip_map_levels)
-}
-
 /// 0x6DE940 `NiSourceTexture_static::CreateFromPixelData`
 unsafe fn source_texture_create_from_pixel_data(pixel_data: usize, prefs: *const u32) -> usize {
     transmute::<usize, unsafe extern "C" fn(usize, *const u32) -> usize>(0x6DE940)(pixel_data, prefs)
 }
 
-// ---- virtual calls ---------------------------------------------------------------------
-
-/// The first virtual function of every `NiRefObject`: the deleting destructor.
-unsafe fn virtual_delete(object: usize) {
-    let vtable: usize = rd(object, 0);
-    let f: unsafe extern "thiscall" fn(usize, u32) -> u32 = transmute(rd::<usize>(vtable, 0));
-    f(object, 1);
-}
-
-/// The code that the compiler put inline for the release of a smart pointer. It subtracts one
-/// reference and deletes the object when the count becomes 0. The pointer stays as it is.
-unsafe fn release_inline(object: usize) {
-    let count = rd::<u32>(object, REF_COUNT).wrapping_sub(1);
-    wr(object, REF_COUNT, count);
-    if count == 0 {
-        virtual_delete(object);
-    }
-}
-
-/// Releases inline the object that a member points to, then sets the member to null.
-unsafe fn release_and_clear(member: usize) {
-    let object: usize = rd(member, 0);
-    if object != 0 {
-        release_inline(object);
-        wr::<u32>(member, 0, 0);
-    }
-}
-
-/// Calls `NiObject::release` for the object that a member points to, then sets the member to
-/// null.
+/// Calls `NiObject::release` (0x404630) for the object that a member points to, then sets the
+/// member to null. `ni::release_and_clear` is the inline form and does not call 0x404630.
 unsafe fn release_call_and_clear(member: usize) {
     let object: usize = rd(member, 0);
     if object != 0 {
         ni_object_release(object);
         wr::<u32>(member, 0, 0);
     }
-}
-
-/// `IUnknown::AddRef` through the vtable of the device.
-unsafe fn device_add_ref(device: usize) -> u32 {
-    let vtable: usize = rd(device, 0);
-    let f: unsafe extern "system" fn(usize) -> u32 = transmute(rd::<usize>(vtable, 0x4));
-    f(device)
-}
-
-/// `IUnknown::Release` through the vtable of the device.
-unsafe fn device_release(device: usize) -> u32 {
-    let vtable: usize = rd(device, 0);
-    let f: unsafe extern "system" fn(usize) -> u32 = transmute(rd::<usize>(vtable, 0x8));
-    f(device)
-}
-
-/// `IDirect3DDevice8::SetVertexShader` through the vtable of the device.
-unsafe fn device_set_vertex_shader(device: usize, handle: u32) -> u32 {
-    let vtable: usize = rd(device, 0);
-    let f: unsafe extern "system" fn(usize, u32) -> u32 = transmute(rd::<usize>(vtable, 0x130));
-    f(device, handle)
-}
-
-/// `IDirect3DDevice8::SetPixelShader` through the vtable of the device.
-unsafe fn device_set_pixel_shader(device: usize, handle: u32) -> u32 {
-    let vtable: usize = rd(device, 0);
-    let f: unsafe extern "system" fn(usize, u32) -> u32 = transmute(rd::<usize>(vtable, 0x160));
-    f(device, handle)
 }
 
 // ---- the array of sub-passes -----------------------------------------------------------
@@ -283,7 +185,7 @@ unsafe fn array_set_at(this: usize, index: u32, value: usize) {
 unsafe fn new_subpass() -> usize {
     let block = engine::operator_new(SP::SIZE);
     if block != 0 {
-        subpass_ctor(block)
+        engine::texture_pass_stage_group_ctor(block)
     } else {
         0
     }
@@ -396,9 +298,9 @@ pub unsafe fn reset_for_new_frame(this: usize) {
     wr::<u32>(base, TS::addressModeV, 1);
     wr::<u32>(base, TS::field_34, 1);
     wr::<u32>(base, TS::textureStageIndex, 0);
-    wr::<u32>(base, TS::filter_3C, rd(FILTER_MAGNIFY_0, 0));
-    wr::<u32>(base, TS::filter_40, rd(FILTER_MINIFY_0, 0));
-    wr::<u32>(base, TS::filter_44, rd(FILTER_MIP_0, 0));
+    wr::<u32>(base, TS::filter_3C, rd(FILTER_REMAP_MAGNIFY, 0));
+    wr::<u32>(base, TS::filter_40, rd(FILTER_REMAP_MINIFY, 0));
+    wr::<u32>(base, TS::filter_44, rd(FILTER_REMAP_MIP, 0));
     wr::<u32>(base, TS::textureTransformFlags, 0);
     core::ptr::write_bytes((base + TS::textureMatrix) as *mut u8, 0, 0x40);
     wr::<u32>(base, TS::extraBlendColorArgument, 0);
@@ -436,9 +338,9 @@ pub unsafe fn reset_for_new_frame(this: usize) {
 /// 0x6B33A0 `NiDX8TexturePass::ctor`
 pub unsafe fn ctor(this: usize, renderer: usize) -> usize {
     crate::shadow::touch(&ctor_port::STATE);
-    wr::<u32>(this, TP::vtbl, VTBL_NI_REF_OBJECT);
+    wr::<usize>(this, TP::vtbl, VTBL_NI_REF_OBJECT);
     wr::<u32>(this, TP::refCount, 0);
-    wr(REF_OBJECT_COUNT, 0, rd::<u32>(REF_OBJECT_COUNT, 0).wrapping_add(1));
+    wr(NI_REF_OBJECT_COUNT, 0, rd::<u32>(NI_REF_OBJECT_COUNT, 0).wrapping_add(1));
     wr::<u32>(this, TP::TArray_18_vtbl, VTBL_SUBPASS_ARRAY);
     wr::<u32>(this, TP::TArray_18_storageCount, 1);
     wr::<u32>(this, TP::TArray_18_growByCount, 1);
@@ -446,7 +348,7 @@ pub unsafe fn ctor(this: usize, renderer: usize) -> usize {
     wr::<u32>(this, TP::TArray_18_filledCount, 0);
     wr(this, TP::TArray_18_storage, engine::operator_new(4));
 
-    let bank = |offset: usize| vector_constructor(this + offset, TS::SIZE, 8, TEXTURE_STAGE_CTOR, TEXTURE_STAGE_DTOR);
+    let bank = |offset: usize| eh_vector_constructor_iterator(this + offset, TS::SIZE, 8, TEXTURE_STAGE_CTOR, TEXTURE_STAGE_DTOR);
     bank(TP::stage);
     texture_stage_ctor(this + TP::field_624);
     bank(TP::field_6F8);
@@ -458,7 +360,7 @@ pub unsafe fn ctor(this: usize, renderer: usize) -> usize {
     bank(TP::field_2468);
     texture_stage_ctor(this + TP::field_2A4C);
     texture_stage_ctor(this + TP::field_2B0C);
-    wr::<u32>(this, TP::vtbl, VTBL_TEXTURE_PASS);
+    wr::<usize>(this, TP::vtbl, VTBL_NI_DX8_TEXTURE_PASS);
 
     reset_for_new_frame(this);
     init_renderer(this, renderer);
@@ -477,7 +379,7 @@ pub unsafe fn ctor(this: usize, renderer: usize) -> usize {
 /// 0x6B3590 `NiDX8TexturePass::dtor`
 pub unsafe fn dtor(this: usize) {
     crate::shadow::touch(&dtor_port::STATE);
-    wr::<u32>(this, TP::vtbl, VTBL_TEXTURE_PASS);
+    wr::<usize>(this, TP::vtbl, VTBL_NI_DX8_TEXTURE_PASS);
     let end: u32 = rd(this, TP::TArray_18_endIndex);
     let mut index = 0u32;
     while index < end {
@@ -485,7 +387,7 @@ pub unsafe fn dtor(this: usize) {
         if subpass != 0 {
             // The array owns the sub-passes. The port deletes them and does not read the
             // reference count.
-            virtual_delete(subpass);
+            ni::delete_object(subpass);
             array_clear_slot(this, index);
         }
         index += 1;
@@ -520,7 +422,7 @@ pub unsafe fn dtor(this: usize) {
         wr::<u32>(this, TP::deviceInterface, 0);
     }
 
-    let bank = |offset: usize| vector_destructor(this + offset, TS::SIZE, 8, TEXTURE_STAGE_DTOR);
+    let bank = |offset: usize| eh_vector_destructor_iterator(this + offset, TS::SIZE, 8, TEXTURE_STAGE_DTOR);
     texture_stage_dtor(this + TP::field_2B0C);
     texture_stage_dtor(this + TP::field_2A4C);
     bank(TP::field_2468);
@@ -540,8 +442,8 @@ pub unsafe fn dtor(this: usize) {
     let storage: usize = rd(this, TP::TArray_18_storage);
     wr::<u32>(this, TP::TArray_18_vtbl, VTBL_SUBPASS_ARRAY);
     operator_delete(storage);
-    wr::<u32>(this, TP::vtbl, VTBL_NI_REF_OBJECT);
-    wr(REF_OBJECT_COUNT, 0, rd::<u32>(REF_OBJECT_COUNT, 0).wrapping_sub(1));
+    wr::<usize>(this, TP::vtbl, VTBL_NI_REF_OBJECT);
+    wr(NI_REF_OBJECT_COUNT, 0, rd::<u32>(NI_REF_OBJECT_COUNT, 0).wrapping_sub(1));
 }
 
 /// 0x6B38A0 `NiDX8TexturePass::initRenderer`. Takes the device and the managers of the
@@ -559,7 +461,7 @@ pub unsafe fn init_renderer(this: usize, renderer: usize) -> u8 {
     }
     let format: usize = rd(rd::<usize>(this, TP::renderer), R::defaultTextureFormats);
     let block = engine::operator_new(NiPixelData::SIZE);
-    let pixel_data = if block != 0 { pixel_data_ctor(block, 2, 1, format, 1) } else { 0 };
+    let pixel_data = if block != 0 { engine::pixel_data_ctor_args(block, 2, 1, format, 1) } else { 0 };
     if pixel_data != 0 {
         wr(pixel_data, REF_COUNT, rd::<u32>(pixel_data, REF_COUNT).wrapping_add(1));
     }
@@ -591,7 +493,7 @@ pub unsafe fn init_renderer(this: usize, renderer: usize) -> u8 {
     let old: usize = rd(this, TP::texture_CDC);
     if old != texture {
         if old != 0 {
-            release_inline(old);
+            ni::release(old);
         }
         wr(this, TP::texture_CDC, texture);
         if texture != 0 {
@@ -609,7 +511,7 @@ pub unsafe fn init_renderer(this: usize, renderer: usize) -> u8 {
         let now: usize = rd(stage, TS::ptrTexture);
         if now != rd::<usize>(this, TP::texture_CDC) {
             if now != 0 {
-                release_inline(now);
+                ni::release(now);
             }
             let texture: usize = rd(this, TP::texture_CDC);
             wr(stage, TS::ptrTexture, texture);
@@ -628,7 +530,7 @@ pub unsafe fn init_renderer(this: usize, renderer: usize) -> u8 {
         core::ptr::write_bytes((stage + TS::textureMatrix) as *mut u8, 0, 0x40);
     }
     wr::<u32>(this, TP::field_18A0, 0);
-    release_inline(pixel_data);
+    ni::release(pixel_data);
     1
 }
 
@@ -759,42 +661,30 @@ pub unsafe fn apply_vertex_shader(this: usize, handle: u32) -> u32 {
 
 /// The objects that a call releases, with the number of references that each one loses.
 struct Drops {
-    list: [(usize, u32); Drops::MAX],
-    len: usize,
-    overflow: bool,
+    list: Vec<(usize, u32)>,
 }
 
 impl Drops {
-    /// `Regions` holds 8 blocks. The pass and its storage take 2.
-    const MAX: usize = 6;
-
     fn new() -> Drops {
-        Drops { list: [(0, 0); Drops::MAX], len: 0, overflow: false }
+        Drops { list: Vec::new() }
     }
 
     fn add(&mut self, object: usize) {
         if object == 0 {
             return;
         }
-        if let Some(entry) = self.list[..self.len].iter_mut().find(|entry| entry.0 == object) {
+        if let Some(entry) = self.list.iter_mut().find(|entry| entry.0 == object) {
             entry.1 += 1;
-        } else if self.len < Drops::MAX {
-            self.list[self.len] = (object, 1);
-            self.len += 1;
         } else {
-            self.overflow = true;
+            self.list.push((object, 1));
         }
     }
 
     /// Adds the reference counts to the regions. The call is a skip when an object loses its
-    /// last reference, because the call deletes the object. It is also a skip when there are
-    /// too many objects.
+    /// last reference, because the call deletes the object.
     unsafe fn into_regions(&self, set: &mut Regions) {
-        if self.overflow {
-            set.skip();
-            return;
-        }
-        for &(object, count) in &self.list[..self.len] {
+        for &(object, count) in &self.list {
+            // The last reference: the call releases the object `count` times.
             if rd::<u32>(object, REF_COUNT) <= count {
                 set.skip();
             }
@@ -803,15 +693,18 @@ impl Drops {
     }
 }
 
+/// The storage of the array of sub-passes.
 unsafe fn add_storage(set: &mut Regions, this: usize) {
     set.add(rd(this, TP::TArray_18_storage), rd::<u32>(this, TP::TArray_18_storageCount) as usize * 4);
 }
 
+/// The call is a skip when the storage of the array does not have 2 slots. The function then
+/// makes the storage again. The call is a skip when the end index is more than 2. The array
+/// is then not in a state that the function leaves it in. The call is a skip when a texture
+/// loses its last reference, because the call deletes the texture.
 unsafe fn reset_for_new_frame_regions(set: &mut Regions, this: usize) {
     set.add(this, TP::SIZE);
     if rd::<u32>(this, TP::TArray_18_storageCount) != 2 || rd::<u32>(this, TP::TArray_18_endIndex) > 2 {
-        // The function makes the storage of the array again. Or the array is not in a state
-        // that the function leaves it in.
         set.skip();
         return;
     }
@@ -827,6 +720,7 @@ unsafe fn reset_for_new_frame_regions(set: &mut Regions, this: usize) {
     drops.into_regions(set);
 }
 
+/// No call is a skip. The function writes the pass and one slot of the array.
 unsafe fn set_stage_object_regions(set: &mut Regions, this: usize, index: u32) {
     set.add(this, TP::SIZE);
     if index < rd::<u32>(this, TP::TArray_18_storageCount) {
@@ -837,9 +731,9 @@ unsafe fn set_stage_object_regions(set: &mut Regions, this: usize, index: u32) {
 /// The values that `getAvailableSlotCounts` returns, without the call.
 unsafe fn free_slots(subpass: usize) -> (u32, u32) {
     let used: u32 = rd(subpass, SUBPASS_SLOTS_USED_1);
-    let limit: u32 = rd(SLOT_LIMIT_1, 0);
+    let limit: u32 = rd(MAX_TEXTURE_BLEND_STAGES, 0);
     let free_1 = if used == u32::MAX { limit } else { limit.wrapping_sub(used) };
-    (free_1, rd::<u32>(SLOT_LIMIT_2, 0).wrapping_sub(rd(subpass, SUBPASS_SLOTS_USED_2)))
+    (free_1, rd::<u32>(MAX_SIMULTANEOUS_TEXTURES, 0).wrapping_sub(rd(subpass, SUBPASS_SLOTS_USED_2)))
 }
 
 /// The current sub-pass as the "acquire" functions find it, or 0 when they must make one.
@@ -851,8 +745,8 @@ unsafe fn current_subpass_without_allocation(this: usize) -> usize {
     rd(slot(this, rd(this, TP::field_C)), 0)
 }
 
-/// The regions of a call that goes to the next sub-pass. The test compares the call only when
-/// the next slot is inside the array and has a sub-pass. Every other path allocates.
+/// The regions of a call that goes to the next sub-pass. The call is a skip when the next
+/// slot is outside the array or has no sub-pass, because the function then allocates.
 unsafe fn advance_regions(set: &mut Regions, this: usize) {
     let next = rd::<u32>(this, TP::field_C).wrapping_add(1);
     if next >= rd::<u32>(this, TP::count_10) || next >= rd::<u32>(this, TP::TArray_18_storageCount) || rd::<u32>(slot(this, next), 0) == 0 {
@@ -860,6 +754,8 @@ unsafe fn advance_regions(set: &mut Regions, this: usize) {
     }
 }
 
+/// The call is a skip when the function must make the current sub-pass. It is also a skip
+/// when `advance_regions` finds that the step to the next sub-pass allocates.
 unsafe fn acquire_subpass_with_capacity_regions(set: &mut Regions, this: usize, need_2: u32, need_1: u32) {
     set.add(this, TP::SIZE);
     add_storage(set, this);
@@ -874,6 +770,7 @@ unsafe fn acquire_subpass_with_capacity_regions(set: &mut Regions, this: usize, 
     }
 }
 
+/// The call is a skip when the function must make the current sub-pass.
 unsafe fn init_or_check_subpass_regions(set: &mut Regions, this: usize) {
     set.add(this, TP::SIZE);
     add_storage(set, this);
@@ -882,6 +779,8 @@ unsafe fn init_or_check_subpass_regions(set: &mut Regions, this: usize) {
     }
 }
 
+/// The call is a skip when the function must make the current sub-pass. It is also a skip
+/// when `advance_regions` finds that the step to the next sub-pass allocates.
 unsafe fn acquire_subpass_for_pixel_shader_regions(set: &mut Regions, this: usize) {
     set.add(this, TP::SIZE);
     add_storage(set, this);
@@ -901,23 +800,23 @@ port_thiscall!(reset_for_new_frame_port, 0x6B2FA0, "NiDX8TexturePass::resetForNe
     regions = |set| reset_for_new_frame_regions(set, this),
     rust = reset_for_new_frame);
 
-// The function allocates the storage of the array and the 2x1 texture. Every call is a skip.
+// The call is a skip always: the function allocates the storage of the array and the 2x1
+// texture.
 port_thiscall!(ctor_port, 0x6B33A0, "NiDX8TexturePass::ctor",
     fn(this, renderer: usize) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
     rust = ctor);
 
-// The function frees the sub-passes and the storage and releases the device. Every call is a
-// skip.
+// The call is a skip always: the function frees the sub-passes and the storage and releases
+// the device.
 port_thiscall!(dtor_port, 0x6B3590, "NiDX8TexturePass::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
     rust = dtor);
 
-// The function makes a `NiPixelData` and a `NiSourceTexture` on every call. Every call is a
-// skip.
+// The call is a skip always: the function makes a `NiPixelData` and a `NiSourceTexture`.
 port_thiscall!(init_renderer_port, 0x6B38A0, "NiDX8TexturePass::initRenderer",
     fn(this, renderer: usize) -> u8,
     compare_eax = true,
@@ -1157,11 +1056,11 @@ mod tests {
         drops.add(a);
         drops.add(b);
         drops.add(a);
-        assert_eq!(&drops.list[..drops.len], &[(a, 2), (b, 1)]);
-        assert!(!drops.overflow);
-        for extra in 1..=Drops::MAX {
+        assert_eq!(drops.list, [(a, 2), (b, 1)]);
+        // The list has no limit.
+        for extra in 1..=16 {
             drops.add(extra * 8);
         }
-        assert!(drops.overflow);
+        assert_eq!(drops.list.len(), 18);
     }
 }
