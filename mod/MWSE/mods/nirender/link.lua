@@ -57,13 +57,33 @@ return function(nirender, spec)
         if facts == 0 then return done() end
         -- The state packets come from the Rust code only.
         if spec.factsNeedRust then nirender.setMode("*", "live") end
-        local menu = tes3ui.createMenu({ id = "nirender:hold", fixedFrame = true })
-        menu:createLabel({ text = "nirender link test" })
-        menu:updateLayout()
-        tes3ui.enterMenuMode("nirender:hold")
+        if spec.holdMenu then
+            -- A menu of the game, for example "MenuInventory": the inventory, the map, the
+            -- character image.
+            say("menu %s: %s", spec.holdMenu, tostring(tes3ui.enterMenuMode(spec.holdMenu)))
+            -- The game shows these four menus together in the inventory mode.
+            if spec.holdMenu == "MenuInventory" then
+                for _, name in ipairs({ "MenuInventory", "MenuMap", "MenuStat", "MenuMagic" }) do
+                    local shown = tes3ui.findMenu(name)
+                    if shown then
+                        shown.visible = true
+                        shown:updateLayout()
+                    end
+                    say("menu %s found: %s", name, tostring(shown ~= nil))
+                end
+            end
+        else
+            local menu = tes3ui.createMenu({ id = "nirender:hold", fixedFrame = true })
+            menu:createLabel({ text = "nirender link test" })
+            menu:updateLayout()
+            tes3ui.enterMenuMode("nirender:hold")
+        end
         -- The frame changes for a moment after the start of menu mode.
         after(3, function()
             pictures(where, { { "off1", 0 }, { "on", facts }, { "off2", 0 } }, 1, function()
+                if spec.holdMenu then
+                    mge.saveScreenshot({ path = string.format("%s/%d-menu.png", spec.shotDir, place), captureWithUI = true })
+                end
                 tes3ui.leaveMenuMode()
                 local held = tes3ui.findMenu("nirender:hold")
                 if held then held:destroy() end
@@ -76,6 +96,18 @@ return function(nirender, spec)
     local function test_here(done)
         local where = tes3.player.cell.editorName
         place = place + 1
+        if spec.travelOn and place > 1 then
+            if spec.callers then
+                for line in tostring(nirender.deviceCallers(false)):gmatch("[^\n]+") do
+                    say("callers|%s|travel|%s", where, line)
+                end
+            end
+            for line in nirender.linkCounters(true):gmatch("[^\n]+") do
+                if line:find("^object_calls") or line:find("^frame_calls") or line:find("^fact texture_create") then
+                    say("counters|%s|travel|%s", where, line)
+                end
+            end
+        end
         nirender.linkUseFacts(0)
         nirender.linkUseKinds(0)
         if spec.hour or spec.moon then
@@ -188,6 +220,13 @@ return function(nirender, spec)
     local function visit(index)
         local cell = spec.cells and spec.cells[index]
         -- The textures of the next cell come through the link. Only the Rust code does that.
+        -- The change of cell, with its load screen, runs with the facts and kinds in use.
+        if spec.travelOn and cell then
+            nirender.setMode("*", "live")
+            say("travel with facts %s kinds %s", tostring(nirender.linkUseFacts(facts)), tostring(nirender.linkUseKinds(spec.kinds or 0)))
+            if spec.callers then nirender.deviceCallers(true) end
+            nirender.linkCounters(true)
+        end
         if spec.cameraCompare then
             say("camera space comparison: %s", tostring(nirender.cameraSpaceCompare(true)))
         end
