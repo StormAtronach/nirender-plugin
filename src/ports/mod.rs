@@ -92,6 +92,7 @@ macro_rules! port_cdecl {
     };
 }
 
+pub mod draw;
 pub mod light_manager;
 pub mod material;
 pub mod render_state;
@@ -103,6 +104,7 @@ pub mod texture_pipeline;
 /// The ports of every module. A new module adds its `PORTS` here.
 static MODULES: &[&[&PortState]] = &[
     render_state::PORTS,
+    draw::PORTS,
     material::PORTS,
     texture_pass_a::PORTS,
     light_manager::PORTS,
@@ -113,7 +115,7 @@ static MODULES: &[&[&PortState]] = &[
 
 /// The call sites the ports serve through `site::call_target`. A module with such sites
 /// adds its `SITES` here.
-static SITE_LISTS: &[&[usize]] = &[];
+static SITE_LISTS: &[&[usize]] = &[draw::SITES];
 
 /// True when a port calls the target that is in memory at the `call` at `site`.
 pub fn serves_site(site: usize) -> bool {
