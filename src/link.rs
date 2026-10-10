@@ -69,11 +69,21 @@ pub const FACT_UI_SCENE: u32 = 4;
 pub const FACT_SCENE_KIND: u32 = 5;
 pub const FACT_SKY_DRAW: u32 = 6;
 pub const FACT_LAND_SPLAT: u32 = 7;
+pub const FACT_LATER_VIEW: u32 = 8;
 pub const FACT_COUNT: u32 = 16;
 
 /// The names of the facts, for reports. The index is `FACT_*`.
-pub const FACT_NAMES: [&str; 8] =
-    ["light radius", "sun light", "moon shadow", "water plane", "ui scene", "scene kind", "sky draw", "land splat"];
+pub const FACT_NAMES: [&str; 9] = [
+    "light radius",
+    "sun light",
+    "moon shadow",
+    "water plane",
+    "ui scene",
+    "scene kind",
+    "sky draw",
+    "land splat",
+    "later view",
+];
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]

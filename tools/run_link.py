@@ -31,7 +31,8 @@ FACT = re.compile(r"fact (\w+): both_yes (\d+) both_no (\d+) host_only (\d+) pac
 COLUMNS = ("both_yes", "both_no", "host_only", "packet_only")
 TOTALS = re.compile(r"scenes (\d+) draws (\d+) draws_without_packet (\d+)")
 # The index of each fact in the contract (MGE_LINK_FACT_*).
-FACTS = ("light_radius", "sun_light", "moon_shadow", "water_plane", "ui_scene", "scene_kind", "sky_draw", "land_splat")
+FACTS = ("light_radius", "sun_light", "moon_shadow", "water_plane", "ui_scene", "scene_kind", "sky_draw", "land_splat",
+         "later_view")
 # The facts that MGE XE can take from a packet.
 USABLE = ("ui_scene", "water_plane", "sun_light", "sky_draw", "land_splat", "scene_kind", "moon_shadow")
 # The classes of the contract (MGE_LINK_CLASS_*), by index.
@@ -141,9 +142,9 @@ def main():
             if any(count.values()):
                 print("  %-14s both yes %8d  both no %8d  only MGE XE %8d  only packet %8d" % (
                     name, count["both_yes"], count["both_no"], count["host_only"], count["packet_only"]))
-            # With the water plane from the packets, the water mark is out of the material.
-            # Then the inference of MGE XE cannot find the water, and only the packet says yes.
-            expected = row["mode"] == "facts" and name == "water_plane" and mask >> FACTS.index(name) & 1
+            # With the water plane or the moons from the packets, the mark is out of the
+            # material. Then the inference of MGE XE finds nothing, and only the packet says yes.
+            expected = row["mode"] == "facts" and name in ("water_plane", "moon_shadow") and mask >> FACTS.index(name) & 1
             different += count["host_only"] + (0 if expected else count["packet_only"])
         if row.get("classes"):
             print("  draw packets by class: " + ", ".join("%s %d" % item for item in row["classes"].items()))

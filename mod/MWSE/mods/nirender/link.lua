@@ -123,7 +123,8 @@ return function(nirender, spec)
     if spec.moon then
         -- The camera looks at a moon. The game does not draw a moon that is not in the view.
         scenario.eachFrame = function(now)
-            if not tes3.player then return end
+            -- In menu mode the moon does not move. The camera stays, for the picture test.
+            if not tes3.player or tes3.menuMode() then return end
             local moon = tes3.worldController.weatherController[spec.moon]
             local face = moon and moon.sceneMoonFace
             if not face then return end
