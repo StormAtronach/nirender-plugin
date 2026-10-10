@@ -78,6 +78,7 @@ def main():
     ap.add_argument("--cells", default="", help="cells to visit after the place of the save, separated by ;")
     ap.add_argument("--timeout", type=int, default=0, help="budget in seconds; 0 = from the scenario")
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--without", default="", help="mods to switch off for the run, separated by ; (for example \"MGE XE G7 Fork\")")
     ap.add_argument("--fault", type=int, default=0,
                     help="put a fault into the Rust code (1: a device call, 2: a memory write); the run passes when the tests find it")
     ap.add_argument("--no-buffers", action="store_true", help="do not record the contents of locked buffers")
@@ -114,6 +115,18 @@ def main():
     started = time.time()
     try:
         deployment.write_spec(SPEC_NAME, spec)
+        off = [m for m in args.without.split(";") if m]
+        if off:
+            modlist = os.path.join(harness.PROFILE, "modlist.txt")
+            with open(modlist, encoding="utf-8", newline="") as fh:
+                lines = fh.read().splitlines(keepends=True)
+            missing = [m for m in off if not any(l.strip() == "+" + m for l in lines)]
+            if missing:
+                raise SystemExit("not an active mod of the profile: %s" % ", ".join(missing))
+            edited = os.path.join(run_dir, "modlist.txt")
+            with open(edited, "w", encoding="utf-8", newline="") as fh:
+                fh.write("".join("-" + l[1:] if l.strip()[1:] in off and l.startswith("+") else l for l in lines))
+            deployment.swap(edited, modlist, "mod list without " + ", ".join(off))
     except BaseException:
         deployment.restore()
         raise
@@ -128,7 +141,8 @@ def main():
     if rows:
         print("\n%-52s %-7s %12s %10s %8s %10s" % ("port", "mode", "compared", "different", "skipped", "live"))
         for row in rows:
-            print("%-52s %-7s %12s %10s %8s %10s" % (row["port"], "ok" if row["installed"] == "true" else "NO HOOK",
+            hook = "LOCKED" if row.get("locked") == "true" else "ok" if row["installed"] == "true" else "NO HOOK"
+            print("%-52s %-7s %12s %10s %8s %10s" % (row["port"], hook,
                                                     row["shadow_calls"], row["mismatches"], row["skipped"], row["live_calls"]))
             if row["installed"] != "true":
                 failures.append("%s: no detour" % row["port"])

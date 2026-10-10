@@ -69,6 +69,8 @@ def main():
         row = report.get(f["ea"])
         if row is None:
             state = "ported, not run yet"
+        elif row.get("locked") == "true":
+            state = "locked (a mod rewrote the function)"
         elif row["installed"] != "true":
             state = "NO DETOUR"
         elif int(row["mismatches"]):

@@ -4,7 +4,7 @@
 //! device, then the engine function for real. The device calls, the return value and the
 //! memory the function may write must be equal. The engine result is the one that stays.
 
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use crate::device;
 use crate::win;
@@ -39,6 +39,9 @@ pub struct PortState {
     /// The address to call for the engine function. 0 until the detour is installed.
     pub orig: AtomicUsize,
     pub mode: AtomicU8,
+    /// Another mod changed this function in a way the port does not serve. It stays game
+    /// code in this install: the mode cannot leave "off".
+    pub locked: AtomicBool,
     /// Calls that ran the Rust function for real.
     pub live_calls: AtomicU64,
     pub shadow_calls: AtomicU64,
@@ -64,6 +67,7 @@ impl PortState {
             detour,
             orig: AtomicUsize::new(0),
             mode: AtomicU8::new(0),
+            locked: AtomicBool::new(false),
             live_calls: AtomicU64::new(0),
             shadow_calls: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
@@ -81,7 +85,12 @@ impl PortState {
     }
 
     pub fn set_mode(&self, mode: Mode) {
+        let mode = if self.locked.load(Ordering::Relaxed) { Mode::Off } else { mode };
         self.mode.store(mode as u8, Ordering::Relaxed);
+    }
+
+    pub fn locked(&self) -> bool {
+        self.locked.load(Ordering::Relaxed)
     }
 
     pub fn installed(&self) -> bool {
@@ -247,7 +256,8 @@ pub unsafe fn dispatch<R: Eax>(
     }
     let mode = state.mode();
     match LEG.load(Ordering::Relaxed) {
-        // Inside the Rust half of a comparison everything that is ported runs as Rust.
+        // Inside the Rust half of a comparison everything that is ported runs as Rust,
+        // except a function that is locked or switched off.
         LEG_RUST => {
             return if mode == Mode::Off { engine() } else { rust().to_eax() };
         }

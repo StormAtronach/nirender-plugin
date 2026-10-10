@@ -111,6 +111,15 @@ static MODULES: &[&[&PortState]] = &[
     texture_pass_b::PORTS,
 ];
 
+/// The call sites the ports serve through `site::call_target`. A module with such sites
+/// adds its `SITES` here.
+static SITE_LISTS: &[&[usize]] = &[];
+
+/// True when a port calls the target that is in memory at the `call` at `site`.
+pub fn serves_site(site: usize) -> bool {
+    SITE_LISTS.iter().any(|list| list.contains(&site))
+}
+
 /// Every port.
 pub fn all() -> impl Iterator<Item = &'static PortState> {
     MODULES.iter().flat_map(|module| module.iter().copied())

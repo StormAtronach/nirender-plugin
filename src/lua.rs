@@ -80,8 +80,19 @@ unsafe fn install_all() -> Result<String, String> {
     changed.dedup();
     crate::log!("census: {} of {} functions differ from the database", changed.len(), crate::gen::funcs::FUNCS.len());
     for change in &changes {
-        let ported = ports::all().any(|p| p.addr == change.func.ea);
-        crate::log!("census: {}{}", census::describe(change), if ported { " (PORTED)" } else { "" });
+        let live = core::slice::from_raw_parts(change.func.ea as *const u8, change.func.size);
+        let kind = crate::site::classify(change.func, live, change.offset, change.len);
+        let served = matches!(kind, crate::site::Kind::RedirectedCall(site) if ports::serves_site(site));
+        let mut note = String::new();
+        if let Some(port) = ports::all().find(|p| p.addr == change.func.ea) {
+            if served {
+                note = " (the port calls the new target)".into();
+            } else {
+                port.locked.store(true, Ordering::Relaxed);
+                note = " (PORT LOCKED: it stays game code here)".into();
+            }
+        }
+        crate::log!("census: {}{}", census::describe(change), note);
     }
 
     match crate::alloc::install() {
@@ -126,10 +137,10 @@ unsafe extern "C" fn set_mode(l: LuaState) -> i32 {
 /// One line per port: name, mode, calls compared, calls that differed, calls not compared,
 /// calls that ran as Rust. Tab separated, for the log and for tools/status.py.
 pub fn report() -> String {
-    let mut text = String::from("port\taddr\tinstalled\tmode\tshadow_calls\tmismatches\tskipped\tlive_calls\n");
+    let mut text = String::from("port\taddr\tinstalled\tmode\tshadow_calls\tmismatches\tskipped\tlive_calls\tlocked\n");
     for port in ports::all() {
         text.push_str(&format!(
-            "{}\t{:#x}\t{}\t{:?}\t{}\t{}\t{}\t{}\n",
+            "{}\t{:#x}\t{}\t{:?}\t{}\t{}\t{}\t{}\t{}\n",
             port.name,
             port.addr,
             port.installed(),
@@ -138,6 +149,7 @@ pub fn report() -> String {
             port.mismatches.load(Ordering::Relaxed),
             port.skipped.load(Ordering::Relaxed),
             port.live_calls.load(Ordering::Relaxed),
+            port.locked(),
         ));
     }
     text

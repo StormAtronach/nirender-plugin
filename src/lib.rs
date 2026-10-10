@@ -24,6 +24,7 @@ pub mod mem;
 pub mod ports;
 pub mod resource;
 pub mod shadow;
+pub mod site;
 pub mod win;
 pub mod x87;
 
