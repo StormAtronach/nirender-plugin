@@ -103,6 +103,7 @@ static MODULES: &[&[&PortState]] = &[
     material::PORTS,
     texture_pass_a::PORTS,
     light_manager::PORTS,
+    texture_pipeline::PORTS,
 ];
 
 /// Every port.
