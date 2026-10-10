@@ -126,6 +126,9 @@ pub const SURFACE_UNLOCK_RECT: usize = 0x28;
 /// It is for each COM object: a device, a buffer, a texture or a surface.
 #[inline(always)]
 pub unsafe fn com_add_ref(object: usize) -> u32 {
+    if let Some(result) = crate::link_client::object_call(0, &[object as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize) -> u32 = transmute(virtual_at(object, COM_ADD_REF));
     f(object)
 }
@@ -134,6 +137,9 @@ pub unsafe fn com_add_ref(object: usize) -> u32 {
 /// It is for each COM object: a device, a buffer, a texture or a surface.
 #[inline(always)]
 pub unsafe fn com_release(object: usize) -> u32 {
+    if let Some(result) = crate::link_client::object_call(1, &[object as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize) -> u32 = transmute(virtual_at(object, COM_RELEASE));
     f(object)
 }
@@ -511,6 +517,9 @@ pub unsafe fn device_set_pixel_shader(device: usize, handle: u32) -> u32 {
 /// `IDirect3DIndexBuffer8::Lock` has the same slot and the same arguments.
 #[inline(always)]
 pub unsafe fn buffer_lock(buffer: usize, offset: u32, size: u32, out: usize, flags: u32) -> u32 {
+    if let Some(result) = crate::link_client::object_call(2, &[buffer as u32, offset, size, out as u32, flags]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, u32, u32, usize, u32) -> u32 = transmute(virtual_at(buffer, BUFFER_LOCK));
     f(buffer, offset, size, out, flags)
 }
@@ -519,6 +528,9 @@ pub unsafe fn buffer_lock(buffer: usize, offset: u32, size: u32, out: usize, fla
 /// `IDirect3DIndexBuffer8::Unlock` has the same slot.
 #[inline(always)]
 pub unsafe fn buffer_unlock(buffer: usize) -> u32 {
+    if let Some(result) = crate::link_client::object_call(3, &[buffer as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize) -> u32 = transmute(virtual_at(buffer, BUFFER_UNLOCK));
     f(buffer)
 }
@@ -527,6 +539,9 @@ pub unsafe fn buffer_unlock(buffer: usize) -> u32 {
 /// `IDirect3DIndexBuffer8::GetDesc` has the same slot.
 #[inline(always)]
 pub unsafe fn buffer_get_desc(buffer: usize, desc: usize) -> u32 {
+    if let Some(result) = crate::link_client::object_call(4, &[buffer as u32, desc as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, usize) -> u32 = transmute(virtual_at(buffer, BUFFER_GET_DESC));
     f(buffer, desc)
 }
@@ -534,6 +549,9 @@ pub unsafe fn buffer_get_desc(buffer: usize, desc: usize) -> u32 {
 /// `IDirect3DTexture8::GetSurfaceLevel` through the vtable of the object, slot 0x3C.
 #[inline(always)]
 pub unsafe fn texture_get_surface_level(texture: usize, level: u32, out: usize) -> u32 {
+    if let Some(result) = crate::link_client::object_call(5, &[texture as u32, level, out as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, u32, usize) -> u32 = transmute(virtual_at(texture, TEXTURE_GET_SURFACE_LEVEL));
     f(texture, level, out)
 }
@@ -542,6 +560,9 @@ pub unsafe fn texture_get_surface_level(texture: usize, level: u32, out: usize) 
 /// The slot is the slot of `IDirect3DTexture8::GetSurfaceLevel`. The arguments are different.
 #[inline(always)]
 pub unsafe fn cube_texture_get_cube_map_surface(texture: usize, face: u32, level: u32, out: usize) -> u32 {
+    if let Some(result) = crate::link_client::object_call(6, &[texture as u32, face, level, out as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, u32, u32, usize) -> u32 = transmute(virtual_at(texture, CUBE_TEXTURE_GET_CUBE_MAP_SURFACE));
     f(texture, face, level, out)
 }
@@ -549,6 +570,9 @@ pub unsafe fn cube_texture_get_cube_map_surface(texture: usize, face: u32, level
 /// `IDirect3DSurface8::GetDesc` through the vtable of the object, slot 0x20.
 #[inline(always)]
 pub unsafe fn surface_get_desc(surface: usize, desc: usize) -> u32 {
+    if let Some(result) = crate::link_client::object_call(7, &[surface as u32, desc as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, usize) -> u32 = transmute(virtual_at(surface, SURFACE_GET_DESC));
     f(surface, desc)
 }
@@ -556,6 +580,9 @@ pub unsafe fn surface_get_desc(surface: usize, desc: usize) -> u32 {
 /// `IDirect3DSurface8::LockRect` through the vtable of the object, slot 0x24.
 #[inline(always)]
 pub unsafe fn surface_lock_rect(surface: usize, locked: usize, rect: usize, flags: u32) -> u32 {
+    if let Some(result) = crate::link_client::object_call(8, &[surface as u32, locked as u32, rect as u32, flags]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, usize, usize, u32) -> u32 = transmute(virtual_at(surface, SURFACE_LOCK_RECT));
     f(surface, locked, rect, flags)
 }
@@ -563,6 +590,9 @@ pub unsafe fn surface_lock_rect(surface: usize, locked: usize, rect: usize, flag
 /// `IDirect3DSurface8::UnlockRect` through the vtable of the object, slot 0x28.
 #[inline(always)]
 pub unsafe fn surface_unlock_rect(surface: usize) -> u32 {
+    if let Some(result) = crate::link_client::object_call(9, &[surface as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize) -> u32 = transmute(virtual_at(surface, SURFACE_UNLOCK_RECT));
     f(surface)
 }

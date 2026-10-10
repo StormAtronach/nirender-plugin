@@ -278,6 +278,34 @@ unsafe fn command(command: u32, a: u32, b: u32, c: u32) -> bool {
     }
 }
 
+/// The calls of the Rust code on D3D8 objects that are not the device: reference counts,
+/// buffers, textures, surfaces. The index is the place in `OBJECT_CALL_NAMES`.
+static mut OBJECT_CALLS: [u32; 10] = [0; 10];
+const OBJECT_CALL_NAMES: [&str; 10] = [
+    "AddRef",
+    "Release",
+    "buffer.Lock",
+    "buffer.Unlock",
+    "buffer.GetDesc",
+    "texture.GetSurfaceLevel",
+    "cube.GetCubeMapSurface",
+    "surface.GetDesc",
+    "surface.LockRect",
+    "surface.UnlockRect",
+];
+
+/// One call on a resource. `index` is the place in `OBJECT_CALL_NAMES`, and the call of the
+/// link is `CALL_ADD_REF + index`. Returns the result when the host made the call, and
+/// `None` when the caller must make the D3D8 call. Only the D3D8 calls are counted.
+#[inline]
+pub unsafe fn object_call(index: usize, args: &[u32]) -> Option<u32> {
+    let result = kind_call(KIND_OBJECTS, CALL_ADD_REF + index as u32, args);
+    if result.is_none() {
+        (*addr_of_mut!(OBJECT_CALLS))[index] += 1;
+    }
+    result
+}
+
 /// The kinds `KIND_*` that the host has: the answer of the last `use_kinds`.
 static KINDS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 /// The frame and scene calls that went to the host and not to the device.
@@ -314,7 +342,9 @@ unsafe fn kind_call(kind: u32, call: u32, args: &[u32]) -> Option<u32> {
         return None;
     }
     let host = host()?;
-    *addr_of_mut!(FRAME_CALLS) += 1;
+    if kind == KIND_FRAME {
+        *addr_of_mut!(FRAME_CALLS) += 1;
+    }
     Some((host.call)(call, args.as_ptr()))
 }
 
@@ -1192,6 +1222,16 @@ pub unsafe fn counters_text(reset: bool) -> String {
     if reset {
         *counts = [0; CLASS_COUNT];
     }
+    text.push_str("object_calls:");
+    for (name, count) in OBJECT_CALL_NAMES.iter().zip((*addr_of_mut!(OBJECT_CALLS)).iter_mut()) {
+        if *count != 0 {
+            text.push_str(&format!(" {name}={count}"));
+        }
+        if reset {
+            *count = 0;
+        }
+    }
+    text.push(0xA as char);
     text.push_str(&format!("frame_calls_to_host: {}", *addr_of!(FRAME_CALLS)));
     text.push(0xA as char);
     if reset {
