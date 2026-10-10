@@ -231,6 +231,20 @@ unsafe extern "C" fn link_use_facts(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.deviceCallers(true)` starts the census of the callers of the device.
+/// `nirender.deviceCallers(false)` stops it and returns the counts as text. See `callers.rs`.
+unsafe extern "C" fn device_callers(l: LuaState) -> i32 {
+    if lua_toboolean(l, 1) != 0 {
+        crate::callers::set(true);
+        return 0;
+    }
+    crate::callers::set(false);
+    let text = crate::callers::report();
+    crate::log!("device callers:\n{}", text);
+    push_str(l, &text);
+    1
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     lua_createtable(l, 0, 20);
@@ -251,6 +265,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "link", link);
     set_fn(l, "linkCounters", link_counters);
     set_fn(l, "linkUseFacts", link_use_facts);
+    set_fn(l, "deviceCallers", device_callers);
     push_str(l, env!("CARGO_PKG_VERSION"));
     lua_setfield(l, -2, b"version\0".as_ptr() as *const c_char);
     lua_pushnumber(l, ports::all().count() as f64);

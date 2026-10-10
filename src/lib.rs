@@ -15,6 +15,7 @@ pub mod gen {
 }
 
 pub mod alloc;
+pub mod callers;
 pub mod log;
 pub mod census;
 pub mod d3d;

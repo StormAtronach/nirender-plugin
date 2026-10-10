@@ -400,6 +400,9 @@ unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
     if DEPTH.load(Ordering::Relaxed) != 0 {
         return call_original(slot, this, args);
     }
+    if CALLER_CENSUS.load(Ordering::Relaxed) {
+        crate::callers::count(slot, CALLER.load(Ordering::Relaxed) as usize);
+    }
     // The Present of a dry run is not a frame of the game.
     if slot == SLOT_PRESENT && !DRY.load(Ordering::Relaxed) {
         crate::perf::on_present();
@@ -460,6 +463,53 @@ wrappers! {
     90 => w90(a); 91 => w91(a, b, c); 92 => w92(a, b, c); 93 => w93(a, b, c); 94 => w94(a, b, c); 95 => w95(a, b, c); 96 => w96(a);
 }
 
+/// The return address of the device call that is in progress. The entry code of each wrapper
+/// writes it. See `entry_code`.
+static CALLER: AtomicU32 = AtomicU32::new(0);
+/// The wrappers count the callers of the device. See `callers.rs`.
+static CALLER_CENSUS: AtomicBool = AtomicBool::new(false);
+
+pub fn set_caller_census(on: bool) {
+    CALLER_CENSUS.store(on, Ordering::Relaxed);
+}
+
+/// The bytes of the entry code of one wrapper, for the address `at`. A Rust function cannot
+/// read its return address, so this code runs first:
+///
+/// ```text
+/// mov eax, [esp]      ; the return address of the device call
+/// mov [CALLER], eax
+/// jmp wrapper
+/// ```
+///
+/// EAX has no argument of a `__stdcall` method.
+fn entry_code(at: usize, wrapper: usize) -> [u8; ENTRY_SIZE] {
+    let mut code = [0x8B, 0x04, 0x24, 0xA3, 0, 0, 0, 0, 0xE9, 0, 0, 0, 0];
+    code[4..8].copy_from_slice(&(core::ptr::addr_of!(CALLER) as u32).to_le_bytes());
+    let relative = (wrapper as u32).wrapping_sub(at as u32 + ENTRY_SIZE as u32);
+    code[9..13].copy_from_slice(&relative.to_le_bytes());
+    code
+}
+
+const ENTRY_SIZE: usize = 13;
+
+/// Makes the entry code of each wrapper. Returns the address of the first one, or 0.
+unsafe fn make_entries() -> usize {
+    let block = crate::win::VirtualAlloc(
+        core::ptr::null_mut(),
+        SLOTS * ENTRY_SIZE,
+        crate::win::MEM_COMMIT_RESERVE,
+        crate::win::PAGE_EXECUTE_READWRITE,
+    ) as usize;
+    if block != 0 {
+        for (slot, wrapper) in wrapper_table().iter().enumerate() {
+            let at = block + slot * ENTRY_SIZE;
+            core::ptr::copy_nonoverlapping(entry_code(at, *wrapper).as_ptr(), at as *mut u8, ENTRY_SIZE);
+        }
+    }
+    block
+}
+
 /// Puts the recorder on the device object at `device`. A second call for the same device is
 /// safe.
 pub unsafe fn attach(device: usize) -> Result<(), String> {
@@ -476,8 +526,14 @@ pub unsafe fn attach(device: usize) -> Result<(), String> {
     // information there.
     core::ptr::copy_nonoverlapping((vtable - 4) as *const usize, orig, TABLE_LEN + 1);
     core::ptr::copy_nonoverlapping(orig, ours, TABLE_LEN + 1);
+    static ENTRIES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    if ENTRIES.load(Ordering::Relaxed) == 0 {
+        ENTRIES.store(make_entries(), Ordering::Relaxed);
+    }
+    let entries = ENTRIES.load(Ordering::Relaxed);
     for (slot, wrapper) in wrapper_table().iter().enumerate() {
-        *ours.add(slot + 1) = *wrapper;
+        // Without the entry code the wrapper works, and the census has no caller.
+        *ours.add(slot + 1) = if entries != 0 { entries + slot * ENTRY_SIZE } else { *wrapper };
     }
     *(device as *mut usize) = ours.add(1) as usize;
     Ok(())
@@ -486,6 +542,15 @@ pub unsafe fn attach(device: usize) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entry_code_jumps_to_the_wrapper() {
+        let code = entry_code(0x1000, 0x5000);
+        assert_eq!(&code[..4], &[0x8B, 0x04, 0x24, 0xA3]);
+        assert_eq!(code[8], 0xE9);
+        let relative = u32::from_le_bytes([code[9], code[10], code[11], code[12]]);
+        assert_eq!(0x1000 + ENTRY_SIZE as u32 + relative, 0x5000);
+    }
 
     #[test]
     fn argument_table_matches_the_wrappers() {
