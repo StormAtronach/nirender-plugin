@@ -95,8 +95,9 @@ macro_rules! port_cdecl {
 pub mod light_manager;
 pub mod material;
 pub mod render_state;
-pub mod system_desc;
+pub mod rendered;
 pub mod renderer_frame;
+pub mod system_desc;
 pub mod texture_pass_a;
 pub mod texture_pass_b;
 pub mod texture_pipeline;
@@ -111,6 +112,7 @@ static MODULES: &[&[&PortState]] = &[
     renderer_frame::PORTS,
     texture_pass_b::PORTS,
     system_desc::PORTS,
+    rendered::PORTS,
 ];
 
 /// The call sites the ports serve through `site::call_target`. A module with such sites
