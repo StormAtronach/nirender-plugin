@@ -92,6 +92,7 @@ macro_rules! port_cdecl {
     };
 }
 
+pub mod base;
 pub mod buffers;
 pub mod device_setup;
 pub mod geometry;
@@ -121,6 +122,7 @@ static MODULES: &[&[&PortState]] = &[
     geometry::PORTS,
     device_setup::PORTS,
     buffers::PORTS,
+    base::PORTS,
 ];
 
 /// The call sites the ports serve through `site::call_target`. A module with such sites
