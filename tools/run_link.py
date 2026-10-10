@@ -28,6 +28,7 @@ def main():
     ap.add_argument("--cells", default="", help="cells to visit, separated by ';'")
     ap.add_argument("--save", default="quiksave.ess")
     ap.add_argument("--seconds", type=int, default=8, help="time in each mode in each place")
+    ap.add_argument("--hour", type=float, help="set the game hour before the test, for example 0 for night")
     ap.add_argument("--label", default="link")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -36,6 +37,8 @@ def main():
     session.prepare(build=not args.no_build)
     run = session.Run(args.label)
     spec = run.spec("link", save=args.save, cells=cells, seconds=args.seconds)
+    if args.hour is not None:
+        spec["hour"] = args.hour
     done = run.launch(spec, 120 + (len(cells) + 1) * (2 * (args.seconds + 2) + 12), TAG)
 
     rows = []

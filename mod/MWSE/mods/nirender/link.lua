@@ -42,6 +42,11 @@ return function(nirender, spec)
     end
 
     scenario.start(function()
+        if spec.hour then
+            -- The moons and their shadow shapes are in view only at night.
+            tes3.worldController.hour.value = spec.hour
+            say("game hour set to %s", tostring(spec.hour))
+        end
         after(spec.settleSeconds or 6, function()
             local ok, message = nirender.link()
             say("link: %s (%s)", tostring(ok), message)
