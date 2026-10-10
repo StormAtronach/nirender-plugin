@@ -94,6 +94,87 @@ pub fn payload(slot: usize, a: &[u32]) -> (usize, usize) {
     }
 }
 
+/// Arguments that are addresses of the caller's own storage: where a result goes, or where
+/// the data of the payload is. Bit n is argument n. The log holds 0 for them, because the Rust
+/// function and the engine function keep such storage in different places.
+pub fn address_args(slot: usize) -> u32 {
+    match slot {
+        0 | 13 | 44 | 45 | 47 | 49 | 51 | 57 | 60 | 65 | 67 | 80 | 87 | 92 => 0b10,
+        6 | 7 | 8 | 9 | 17 | 19 | 32 | 33 | 40 | 41 | 42 | 43 | 53 | 59 | 64 | 69 | 77 | 89 => 0b1,
+        16 | 62 | 72 => 0b100,
+        18 | 36 | 37 | 38 | 39 | 48 | 79 | 91 => 0b10,
+        20 => 1 << 6,
+        21 => 1 << 7,
+        22 | 25 => 1 << 5,
+        23 | 24 | 26 => 1 << 4,
+        27 => 1 << 3,
+        75 => 0b100,
+        81 | 82 | 84 | 93 => 0b110,
+        86 => 0b11,
+        _ => 0,
+    }
+}
+
+/// The methods that make a device resource and return it through their last argument.
+pub fn creates(slot: usize) -> bool {
+    (20..=27).contains(&slot)
+}
+
+/// A resource the Rust run of a comparison made.
+struct Created {
+    slot: usize,
+    args: [u32; 8],
+    result: u32,
+    object: usize,
+}
+
+struct Replay {
+    /// The engine run takes the resources of the Rust run instead of making its own.
+    on: bool,
+    created: Vec<Created>,
+    taken: usize,
+    mismatch: bool,
+}
+
+static mut REPLAY: Replay = Replay { on: false, created: Vec::new(), taken: 0, mismatch: false };
+
+/// Starts the engine run of a comparison: recorded, real, and with the resources the Rust
+/// run made handed out again in the same order.
+pub unsafe fn begin_replay() {
+    (*core::ptr::addr_of_mut!(LOG)).clear();
+    let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
+    replay.on = true;
+    replay.taken = 0;
+    replay.mismatch = false;
+    DRY.store(false, Ordering::Relaxed);
+    RECORDING.store(true, Ordering::Relaxed);
+}
+
+/// Ends a comparison. Returns the differences in the resources made, as text; empty when
+/// the engine run made the same ones as the Rust run.
+pub unsafe fn end_replay() -> String {
+    let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
+    replay.on = false;
+    let mut text = String::new();
+    if replay.mismatch {
+        text.push_str(" the engine made a resource the rust run did not;");
+    }
+    if replay.taken < replay.created.len() {
+        text.push_str(&format!(" rust made {} resources, the engine {};", replay.created.len(), replay.taken));
+        for created in &replay.created[replay.taken..] {
+            if created.object != 0 {
+                // Nobody holds it: release the reference the creation gave.
+                let vtable = *(created.object as *const usize);
+                let release: unsafe extern "system" fn(usize) -> u32 = core::mem::transmute(*((vtable + 8) as *const usize));
+                release(created.object);
+            }
+        }
+    }
+    replay.created.clear();
+    replay.taken = 0;
+    text
+}
+
 pub static mut ORIG: [usize; TABLE_LEN + 1] = [0; TABLE_LEN + 1];
 static mut OURS: [usize; TABLE_LEN + 1] = [0; TABLE_LEN + 1];
 static DEVICE: AtomicUsize = AtomicUsize::new(0);
@@ -112,6 +193,11 @@ pub fn device() -> usize {
 /// Starts a recording. `dry` also stops state and draw calls from reaching the device.
 pub unsafe fn begin(dry: bool) {
     (*core::ptr::addr_of_mut!(LOG)).clear();
+    if dry {
+        let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
+        replay.created.clear();
+        replay.taken = 0;
+    }
     DRY.store(dry, Ordering::Relaxed);
     RECORDING.store(true, Ordering::Relaxed);
 }
@@ -237,9 +323,35 @@ unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
         if RECORDING.load(Ordering::Relaxed) {
             let (ptr, len) = payload(slot, args);
             let bytes: &[u8] = if len == 0 { &[] } else { core::slice::from_raw_parts(ptr as *const u8, len) };
-            append_record(&mut *core::ptr::addr_of_mut!(LOG), slot, args, bytes);
-            if DRY.load(Ordering::Relaxed) && dry_skips(slot) {
+            let mut logged = [0u32; 8];
+            let mask = address_args(slot);
+            for (i, arg) in args.iter().enumerate() {
+                logged[i] = if mask & (1 << i) != 0 { 0 } else { *arg };
+            }
+            append_record(&mut *core::ptr::addr_of_mut!(LOG), slot, &logged[..args.len()], bytes);
+            let dry = DRY.load(Ordering::Relaxed);
+            if dry && dry_skips(slot) {
                 return 0;
+            }
+            if creates(slot) {
+                let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
+                let out = args[args.len() - 1] as *mut usize;
+                if replay.on {
+                    match replay.created.get(replay.taken) {
+                        Some(created) if created.slot == slot && created.args == logged => {
+                            replay.taken += 1;
+                            *out = created.object;
+                            return created.result;
+                        }
+                        _ => replay.mismatch = true,
+                    }
+                } else if dry {
+                    DEPTH.fetch_add(1, Ordering::Relaxed);
+                    let result = call_original(slot, this, args);
+                    DEPTH.fetch_sub(1, Ordering::Relaxed);
+                    replay.created.push(Created { slot, args: logged, result, object: if (result as i32) >= 0 { *out } else { 0 } });
+                    return result;
+                }
             }
         }
     }
@@ -371,5 +483,23 @@ mod tests {
         assert_eq!(payload(36, &[0, 0, 7, 0, 0, 0]), (0, 0));
         assert_eq!(payload(72, &[4, 2, 0x2000, 20]), (0x2000, 120));
         assert_eq!(payload(50, &[7, 1]), (0, 0));
+    }
+
+    #[test]
+    fn address_arguments_are_real_arguments() {
+        for slot in 0..SLOTS {
+            let mask = address_args(slot);
+            assert!(mask >> ARGS[slot] == 0, "slot {slot} {} masks an argument it does not have", NAMES[slot]);
+            if creates(slot) {
+                assert_eq!(mask, 1 << (ARGS[slot] - 1), "slot {slot} {}: the result is the last argument", NAMES[slot]);
+            }
+            // Every argument with a payload is an address of the caller's storage.
+            let mut args = [0x1000u32; 8];
+            args[0] = 4;
+            let (ptr, _) = payload(slot, &args[..ARGS[slot] as usize]);
+            if ptr != 0 {
+                assert!(mask != 0, "slot {slot} {} has a payload but logs its address", NAMES[slot]);
+            }
+        }
     }
 }

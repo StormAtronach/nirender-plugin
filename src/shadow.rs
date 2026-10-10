@@ -289,9 +289,10 @@ pub unsafe fn dispatch<R: Eax>(
             }
 
             LEG.store(LEG_ENGINE, Ordering::Relaxed);
-            device::begin(false);
+            device::begin_replay();
             let eax_engine = engine();
             device::end(&mut scratch.log_engine);
+            let resources = device::end_replay();
             LEG.store(LEG_NONE, Ordering::Relaxed);
             let heap = if track { crate::alloc::end(&scratch.blocks_rust) } else { String::new() };
 
@@ -299,16 +300,17 @@ pub unsafe fn dispatch<R: Eax>(
             let calls = device::first_difference(&scratch.log_rust, &scratch.log_engine);
             let memory = memory_differences(regions, &scratch.after_rust);
             let eax_differs = compare_eax && (eax_rust ^ eax_engine) & R::MASK != 0;
-            if calls.is_some() || !memory.is_empty() || !heap.is_empty() || eax_differs {
+            if calls.is_some() || !memory.is_empty() || !heap.is_empty() || !resources.is_empty() || eax_differs {
                 state.mismatches.fetch_add(1, Ordering::Relaxed);
                 if state.reported.fetch_add(1, Ordering::Relaxed) < 8 {
                     crate::log!(
-                        "MISMATCH {} (call {}): {}{}{}{}",
+                        "MISMATCH {} (call {}): {}{}{}{}{}",
                         state.name,
                         state.shadow_calls.load(Ordering::Relaxed),
                         calls.map(|c| format!("device {c};")).unwrap_or_default(),
                         if memory.is_empty() { String::new() } else { format!(" memory{memory}") },
                         if heap.is_empty() { String::new() } else { format!(" heap{heap}") },
+                        if resources.is_empty() { String::new() } else { format!(" resources{resources}") },
                         if eax_differs { format!(" eax rust {eax_rust:#x} engine {eax_engine:#x}") } else { String::new() },
                     );
                 }
