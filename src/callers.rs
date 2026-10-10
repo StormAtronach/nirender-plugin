@@ -15,8 +15,9 @@ use crate::gen::funcs::FUNCS;
 /// Who a caller is.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum Caller {
-    /// A function of the renderer subsystem: game code that the plugin has a port for.
-    Renderer,
+    /// A function of the renderer subsystem: game code that the plugin has a port for. The
+    /// value is the address of the function.
+    Renderer(usize),
     /// The Rust code of this plugin.
     Plugin,
     /// Other code. The value is the return address of the call.
@@ -25,10 +26,16 @@ enum Caller {
 
 static COUNTS: Mutex<Option<HashMap<(usize, Caller), u64>>> = Mutex::new(None);
 
-/// True when `address` is in a function of the renderer subsystem.
-fn in_renderer(address: usize) -> bool {
+/// The function of the renderer subsystem that `address` is in.
+fn renderer_function(address: usize) -> Option<usize> {
     // The table has the functions in the order of the database, not of the addresses.
-    FUNCS.iter().any(|f| address >= f.ea && address < f.ea + f.size)
+    FUNCS.iter().find(|f| address >= f.ea && address < f.ea + f.size).map(|f| f.ea)
+}
+
+/// True when `address` is in a function of the renderer subsystem.
+#[cfg(test)]
+fn in_renderer(address: usize) -> bool {
+    renderer_function(address).is_some()
 }
 
 fn in_plugin(address: usize) -> bool {
@@ -62,8 +69,8 @@ extern "system" {
 pub fn count(slot: usize, return_address: usize) {
     let caller = if in_plugin(return_address) {
         Caller::Plugin
-    } else if in_renderer(return_address) {
-        Caller::Renderer
+    } else if let Some(function) = renderer_function(return_address) {
+        Caller::Renderer(function)
     } else {
         Caller::Other(return_address)
     };
@@ -93,10 +100,24 @@ pub unsafe fn report() -> String {
     let total = |kind: fn(&Caller) -> bool| counts.iter().filter(|((_, c), _)| kind(c)).map(|(_, n)| n).sum::<u64>();
     let mut text = format!(
         "renderer {} plugin {} other {}\n",
-        total(|c| *c == Caller::Renderer),
+        total(|c| matches!(c, Caller::Renderer(_))),
         total(|c| *c == Caller::Plugin),
         total(|c| matches!(c, Caller::Other(_)))
     );
+    // The game code of the renderer subsystem that made a call: with the Rust code on, this
+    // is code that a port did not replace.
+    let mut renderer: Vec<(usize, usize, u64)> = counts
+        .iter()
+        .filter_map(|((slot, caller), n)| match caller {
+            Caller::Renderer(function) => Some((*function, *slot, *n)),
+            _ => None,
+        })
+        .collect();
+    renderer.sort();
+    for (function, slot, n) in renderer {
+        let name = FUNCS.iter().find(|f| f.ea == function).map_or("?", |f| f.name);
+        text.push_str(&format!("{}\trenderer {}\t{:#x}\t{}\n", crate::device::slot_name(slot), name, function, n));
+    }
     let mut other: Vec<(usize, usize, u64)> = counts
         .iter()
         .filter_map(|((slot, caller), n)| match caller {

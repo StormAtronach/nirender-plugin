@@ -21,7 +21,13 @@ return function(nirender, spec)
         nirender.setMode("*", mode)
         after(1, function()
             nirender.linkCounters(true)
+            if spec.callers then nirender.deviceCallers(true) end
             after(spec.seconds, function()
+                if spec.callers then
+                    for line in tostring(nirender.deviceCallers(false)):gmatch("[^\n]+") do
+                        say("callers|%s|%s|%s", where, label, line)
+                    end
+                end
                 for line in nirender.linkCounters(true):gmatch("[^\n]+") do
                     say("counters|%s|%s|%s", where, label, line)
                 end
