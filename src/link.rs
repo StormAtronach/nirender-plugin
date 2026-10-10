@@ -11,6 +11,7 @@ pub const CAP_COMPARE: u32 = 0x1;
 pub const CAP_USE_FACTS: u32 = 0x2;
 pub const CAP_DRAW_STATE: u32 = 0x4;
 pub const CAP_TEXTURES: u32 = 0x8;
+pub const CAP_WORLD_SPACE: u32 = 0x10;
 
 pub const TEXTURE_DYNAMIC: u32 = 0x1;
 
@@ -217,6 +218,7 @@ pub struct DrawStateV1 {
     pub depth_function: u32,
     pub stencil: [u32; 8],
     pub samplers: [[u32; STATE_SAMPLER_STATES as usize]; STATE_STAGES as usize],
+    pub world_relative_mask: u32,
 }
 
 #[repr(C)]
@@ -280,6 +282,8 @@ pub struct HostV1 {
     pub draw_state: unsafe extern "C" fn(state: *const DrawStateV1),
     /// Only a host with `CAP_TEXTURES` has this member.
     pub texture_create: unsafe extern "C" fn(texture: *const TextureV1) -> u32,
+    /// Only a host with `CAP_WORLD_SPACE` has this member.
+    pub world_space: unsafe extern "C" fn() -> u32,
 }
 
 /// `MGE_RenderLinkConnect`
@@ -295,11 +299,11 @@ const _: () = {
     assert!(size_of::<LightV1>() == 16);
     assert!(size_of::<DrawV1>() == 48);
     assert!(size_of::<StateLightV1>() == 108);
-    assert!(size_of::<DrawStateV1>() == 1724);
+    assert!(size_of::<DrawStateV1>() == 1728);
     assert!(size_of::<FactCountV1>() == 16);
     assert!(size_of::<CountersV1>() == 528);
     assert!(size_of::<TextureV1>() == 52);
-    assert!(size_of::<HostV1>() == 48);
+    assert!(size_of::<HostV1>() == 52);
 };
 
 #[cfg(test)]

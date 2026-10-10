@@ -184,6 +184,11 @@ static mut TEXTURE_TRANSFORMS: [[f32; 16]; STATE_STAGES as usize] = [[0.0; 16]; 
 pub unsafe fn note_transform(state: u32, matrix: usize) {
     let to = if (D3DTS_WORLDMATRIX0..D3DTS_WORLDMATRIX0 + 4).contains(&state) {
         *addr_of_mut!(TRANSFORMS_KNOWN) |= 1 << (state - D3DTS_WORLDMATRIX0);
+        // The host knows the space of this matrix only now, during the call of the game.
+        let bit = 1 << (state - D3DTS_WORLDMATRIX0);
+        let relative = host().is_some_and(|host| host.capabilities & CAP_WORLD_SPACE != 0 && (host.world_space)() != 0);
+        let mask = &mut *addr_of_mut!(WORLD_RELATIVE);
+        *mask = if relative { *mask | bit } else { *mask & !bit };
         addr_of_mut!(WORLDS[(state - D3DTS_WORLDMATRIX0) as usize])
     } else if (D3DTS_TEXTURE0..D3DTS_TEXTURE0 + STATE_STAGES).contains(&state) {
         *addr_of_mut!(TRANSFORMS_KNOWN) |= 0x100 << (state - D3DTS_TEXTURE0);
@@ -193,6 +198,10 @@ pub unsafe fn note_transform(state: u32, matrix: usize) {
     };
     core::ptr::copy_nonoverlapping(matrix as *const f32, to as *mut f32, 16);
 }
+
+/// The space of the world matrices in `WORLDS`: bit n is 1 when matrix n is relative to the
+/// camera.
+static mut WORLD_RELATIVE: u32 = 0;
 
 /// The stages whose texture is in `TEXTURES`: bit n is stage n.
 static mut TEXTURES_KNOWN: u32 = 0;
@@ -247,10 +256,14 @@ pub fn skip_texture(stage: u32) -> bool {
     skip(FACT_DEVICE_TEXTURES, stage < STATE_STAGES)
 }
 
-/// True when the host sets this transform from the packets: a texture transform.
+/// True when the host sets this transform from the packets: a world matrix of the vertex
+/// blend, or a texture transform.
 #[inline]
 pub fn skip_transform(state: u32) -> bool {
-    skip(FACT_DEVICE_TRANSFORMS, (D3DTS_TEXTURE0..D3DTS_TEXTURE0 + STATE_STAGES).contains(&state))
+    skip(
+        FACT_DEVICE_TRANSFORMS,
+        (D3DTS_WORLDMATRIX0..D3DTS_WORLDMATRIX0 + 4).contains(&state) || (D3DTS_TEXTURE0..D3DTS_TEXTURE0 + STATE_STAGES).contains(&state),
+    )
 }
 
 /// True when the host sets the lights from the packets.
@@ -319,6 +332,7 @@ unsafe fn resync(kinds: u32) {
         }
     }
     if kinds >> FACT_DEVICE_TRANSFORMS & 1 != 0 {
+        // Not the world matrices: the game sends them again for each draw.
         let known = *addr_of!(TRANSFORMS_KNOWN);
         for stage in 0..STATE_STAGES {
             if known >> (8 + stage) & 1 != 0 {
@@ -774,6 +788,7 @@ pub unsafe fn draw_state(
         depth_function: rs(23),
         stencil: [rs(52), rs(53), rs(54), rs(55), rs(56), rs(57), rs(58), rs(59)],
         samplers,
+        world_relative_mask: *addr_of!(WORLD_RELATIVE),
         world: *addr_of!(WORLDS[0]),
         blend_worlds: [*addr_of!(WORLDS[1]), *addr_of!(WORLDS[2]), *addr_of!(WORLDS[3])],
         textures: *addr_of!(TEXTURES),
