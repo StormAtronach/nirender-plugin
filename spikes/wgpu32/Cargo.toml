@@ -1,0 +1,26 @@
+[package]
+name = "wgpu32"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Test: does wgpu build and run in a 32-bit Windows process, on Vulkan and on D3D12"
+
+# This crate is not a part of the plugin. It has its own lock file and target folder.
+[workspace]
+
+[dependencies]
+pollster = "0.3"
+wgpu = { version = "22.1", default-features = false, features = ["dx12", "wgsl"] }
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = 2
+debug = 1
