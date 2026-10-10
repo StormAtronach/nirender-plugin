@@ -384,6 +384,7 @@ unsafe fn array_regions(set: &mut Regions, array: usize) {
 
 /// 0x6F4E30 `NiRenderer::ctor`. Puts the renderer at the end of the list of renderers.
 pub unsafe fn renderer_ctor(this: usize) -> usize {
+    crate::shadow::touch(&renderer_ctor_port::STATE);
     eng::ni_object_ctor(this);
     wr::<usize>(this, R::accumulator, 0);
     wr::<usize>(this, R::currentPropertyState, 0);
@@ -471,6 +472,7 @@ unsafe fn renderer_list_find(renderer: usize) -> usize {
 
 /// 0x6F4F80 `NiRenderer::dtor`
 pub unsafe fn renderer_dtor(this: usize) {
+    crate::shadow::touch(&renderer_dtor_port::STATE);
     wr(this, R::vtbl, VTBL_NI_RENDERER);
     let mut node = renderer_list_find(this);
     if node != 0 {
@@ -518,11 +520,13 @@ unsafe fn renderer_dtor_regions(set: &mut Regions, this: usize) {
 
 /// 0x6F4F60 `NiRenderer::deleting_dtor`
 pub unsafe fn renderer_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&renderer_deleting_dtor_port::STATE);
     deleting(this, flags, renderer_dtor)
 }
 
 /// 0x6F5070 `NiRenderer::RegisterObject`: hands the geometry to the accumulator.
 pub unsafe fn renderer_register_object(this: usize, geometry: usize) -> u8 {
+    crate::shadow::touch(&renderer_register_object_port::STATE);
     let accumulator: usize = rd(this, R::accumulator);
     if accumulator == 0 {
         return 0;
@@ -546,21 +550,25 @@ unsafe fn for_each_renderer(slot: usize, object: usize) {
 
 /// 0x6F5090 `NiRenderer_static::RemoveEffect`
 pub unsafe fn renderer_remove_effect(effect: usize) {
+    crate::shadow::touch(&renderer_remove_effect_port::STATE);
     for_each_renderer(SLOT_PURGE_EFFECT, effect);
 }
 
 /// 0x6F50C0 `NiRenderer_static::RemoveGeometryData`
 pub unsafe fn renderer_remove_geometry_data(data: usize) {
+    crate::shadow::touch(&renderer_remove_geometry_data_port::STATE);
     for_each_renderer(SLOT_PURGE_GEOMETRY_DATA, data);
 }
 
 /// 0x6F50F0 `NiRenderer_static::RemoveSkinPartitionRendererData`
 pub unsafe fn renderer_remove_skin_partition(partition: usize) {
+    crate::shadow::touch(&renderer_remove_skin_partition_port::STATE);
     for_each_renderer(SLOT_PURGE_SKIN_PARTITION, partition);
 }
 
 /// 0x6F5120 `NiRenderer_static::RemoveMaterial`
 pub unsafe fn renderer_remove_material(material: usize) {
+    crate::shadow::touch(&renderer_remove_material_port::STATE);
     for_each_renderer(SLOT_PURGE_MATERIAL, material);
 }
 
@@ -598,6 +606,7 @@ fn window_to_buffer(x: u32, width: u32, y: u32, height: u32, one: u32) -> (u32, 
 
 /// 0x6F5150 `NiRenderer::MapWindowPointToBufferPoint`. Returns 0 when the back buffer has no size.
 pub unsafe fn renderer_map_window_point_to_buffer_point(this: usize, x: u32, y: u32, out_x: usize, out_y: usize) -> u8 {
+    crate::shadow::touch(&renderer_map_window_point_to_buffer_point_port::STATE);
     let width = vcall0(this, SLOT_GET_BACKBUFFER_WIDTH);
     let height = vcall0(this, SLOT_GET_BACKBUFFER_HEIGHT);
     if width == 0 || height == 0 {
@@ -625,6 +634,7 @@ unsafe fn map_one() -> u32 {
 /// accumulator, with the states of the object as the current states, and puts the accumulator
 /// and the states back.
 pub unsafe fn renderer_render_from_cluster_accumulator(this: usize, camera: usize, scene_object: usize) {
+    crate::shadow::touch(&renderer_render_from_cluster_accumulator_port::STATE);
     let saved_accumulator: usize = rd(this, R::accumulator);
     if saved_accumulator != 0 {
         wr(saved_accumulator, REF_COUNT, rd::<u32>(saved_accumulator, REF_COUNT).wrapping_add(1));
@@ -685,6 +695,7 @@ pub unsafe fn renderer_render_from_cluster_accumulator(this: usize, camera: usiz
 
 /// 0x6F5380 `NiRenderer::BeginBatch`: the states of the batch become the current states.
 pub unsafe fn renderer_begin_batch(this: usize, property_state: usize, effect_state: usize) {
+    crate::shadow::touch(&renderer_begin_batch_port::STATE);
     pointer_assign(this + R::currentPropertyState, property_state);
     pointer_assign(this + R::currentEffectState, effect_state);
 }
@@ -707,47 +718,56 @@ unsafe fn renderer_begin_batch_regions(set: &mut Regions, this: usize, property_
 
 /// 0x6F5400 `NiRenderer::AddViewerStrings`
 pub unsafe fn renderer_add_viewer_strings(this: usize, strings: usize) {
+    crate::shadow::touch(&renderer_add_viewer_strings_port::STATE);
     eng::ni_object_add_viewer_strings(this, strings);
     array_add(strings, eng::viewer_section_text(rd(RTTI_NI_RENDERER, 0)));
 }
 
 /// 0x6F5630 `NiRenderer::GetRTTI`
 pub unsafe fn renderer_get_rtti(_this: usize) -> usize {
+    crate::shadow::touch(&renderer_get_rtti_port::STATE);
     RTTI_NI_RENDERER
 }
 
 /// 0x6F5640 `NiRenderer::SetUseWBuffer`: 1 for "no W buffer", which is all the base class has.
 pub unsafe fn renderer_set_use_w_buffer(_this: usize, use_w_buffer: u8) -> u32 {
+    crate::shadow::touch(&renderer_set_use_w_buffer_port::STATE);
     (use_w_buffer == 0) as u32
 }
 
 /// 0x6F5660 `NiRenderer::stub_returnsTrue`
 pub unsafe fn renderer_stub_returns_true(_this: usize, _a: u32) -> u8 {
+    crate::shadow::touch(&renderer_stub_returns_true_port::STATE);
     1
 }
 
 /// 0x6F5680 `NiRenderer::PrecacheGeometry`
 pub unsafe fn renderer_precache_geometry(_this: usize, _geometry: usize, _flags: u32, _property: usize, _bones_per_partition: u32, _bones_per_vertex: u32) -> u8 {
+    crate::shadow::touch(&renderer_precache_geometry_port::STATE);
     0
 }
 
 /// 0x6F5690 `NiRenderer::stub_returns800000`
 pub unsafe fn renderer_stub_returns_800000(_this: usize, _a: u32, _b: u32) -> u32 {
+    crate::shadow::touch(&renderer_stub_returns_800000_port::STATE);
     0x80_0000
 }
 
 /// 0x6F56A0 `NiRenderer::GetTextureMemoryStats`
 pub unsafe fn renderer_get_texture_memory_stats(_this: usize, _a: u32, _b: u32) -> u8 {
+    crate::shadow::touch(&renderer_get_texture_memory_stats_port::STATE);
     0
 }
 
 /// 0x6A9C40 `NiRenderer::GetTextureStats`
 pub unsafe fn renderer_get_texture_stats(_this: usize, _a: u32, _b: u32, _c: u32, _d: u32, _e: u32, _f: u32) -> u8 {
+    crate::shadow::touch(&renderer_get_texture_stats_port::STATE);
     0
 }
 
 /// 0x6A9C60 `NiRenderer::constantFalse@8`
 pub unsafe fn renderer_constant_false_8(_this: usize, _a: u32, _b: u32) -> u32 {
+    crate::shadow::touch(&renderer_constant_false_8_port::STATE);
     0
 }
 
@@ -757,12 +777,14 @@ pub unsafe fn renderer_constant_false_8(_this: usize, _a: u32, _b: u32) -> u32 {
 
 /// 0x6DC7F0 `NiRendererSpecificProperty::RenderDataBase::dtor`
 pub unsafe fn render_data_base_dtor(this: usize) {
+    crate::shadow::touch(&render_data_base_dtor_port::STATE);
     wr(this, 0, VTBL_RENDER_DATA_BASE);
 }
 
 /// 0x65F5A0 `NiRendererSpecificProperty::RenderData7::dtor`: lets go of the three objects, then
 /// goes over the three members again as their own destructors.
 pub unsafe fn render_data_7_dtor(this: usize) {
+    crate::shadow::touch(&render_data_7_dtor_port::STATE);
     wr(this, RD7::vtbl, VTBL_RENDER_DATA_7);
     for member in [RD7::texturePass, RD7::field_8, RD7::field_C] {
         let object: usize = rd(this, member);
@@ -792,11 +814,13 @@ unsafe fn render_data_7_dtor_regions(set: &mut Regions, this: usize) {
 
 /// 0x65F560 `NiRendererSpecificProperty::RenderData7::deleting_dtor`
 pub unsafe fn render_data_7_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&render_data_7_deleting_dtor_port::STATE);
     deleting(this, flags, render_data_7_dtor)
 }
 
 /// 0x65F580 `NiRendererSpecificProperty::RenderDataBase::deleting_dtor`
 pub unsafe fn render_data_base_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&render_data_base_deleting_dtor_port::STATE);
     deleting(this, flags, render_data_base_dtor)
 }
 
@@ -809,6 +833,7 @@ unsafe fn property_init(this: usize) {
 
 /// 0x6DC800 `NiRendererSpecificProperty::ctor`
 pub unsafe fn property_ctor(this: usize) -> usize {
+    crate::shadow::touch(&property_ctor_port::STATE);
     eng::ni_object_net_ctor(this);
     property_init(this);
     this
@@ -821,6 +846,7 @@ unsafe fn property_ctor_regions(set: &mut Regions, this: usize) {
 
 /// 0x6DC840 `NiRendererSpecificProperty::dtor`
 pub unsafe fn property_dtor(this: usize) {
+    crate::shadow::touch(&property_dtor_port::STATE);
     wr(this, RSP::vtbl, VTBL_RENDERER_SPECIFIC_PROPERTY);
     let render_data: usize = rd(this, RSP::renderData);
     if render_data != 0 {
@@ -849,6 +875,7 @@ unsafe fn property_dtor_regions(set: &mut Regions, this: usize) {
 
 /// 0x6DC820 `NiRendererSpecificProperty::deleting_dtor`
 pub unsafe fn property_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&property_deleting_dtor_port::STATE);
     deleting(this, flags, property_dtor)
 }
 
@@ -864,6 +891,7 @@ unsafe fn property_new() -> usize {
 
 /// 0x6DC8A0 `NiRendererSpecificProperty::CreateClone`
 pub unsafe fn property_create_clone(this: usize) -> usize {
+    crate::shadow::touch(&property_create_clone_port::STATE);
     let clone = property_new();
     eng::ni_property_copy_members(this, clone);
     clone
@@ -882,6 +910,7 @@ unsafe fn property_create_clone_regions(set: &mut Regions, this: usize) {
 /// 0x6DC920 `NiRendererSpecificProperty_static::CreateFromStream`: a new property and its link
 /// record, then the property reads itself from the stream.
 pub unsafe fn property_create_from_stream(stream: usize, out: usize) {
+    crate::shadow::touch(&property_create_from_stream_port::STATE);
     let property = property_new();
     let link_data = eng::operator_new(12);
     if link_data != 0 {
@@ -895,27 +924,32 @@ pub unsafe fn property_create_from_stream(stream: usize, out: usize) {
 
 /// 0x6DCAE0 `NiRendererSpecificProperty::RegisterStreamables`
 pub unsafe fn property_register_streamables(this: usize, stream: usize) -> u8 {
+    crate::shadow::touch(&property_register_streamables_port::STATE);
     (eng::ni_property_register_streamables(this, stream) as u8 != 0) as u8
 }
 
 /// 0x6DCB00 `NiRendererSpecificProperty::IsEqual`
 pub unsafe fn property_is_equal(this: usize, other: usize) -> u8 {
+    crate::shadow::touch(&property_is_equal_port::STATE);
     (eng::ni_property_is_equal(this, other) as u8 != 0) as u8
 }
 
 /// 0x6DCB20 `NiRendererSpecificProperty::AddViewerStrings`
 pub unsafe fn property_add_viewer_strings(this: usize, strings: usize) {
+    crate::shadow::touch(&property_add_viewer_strings_port::STATE);
     eng::ni_property_add_viewer_strings(this, strings);
     array_add(strings, eng::viewer_section_text(rd(RTTI_RENDERER_SPECIFIC_PROPERTY, 0)));
 }
 
 /// 0x6DCCA0 `NiRendererSpecificProperty::GetRTTI`
 pub unsafe fn property_get_rtti(_this: usize) -> usize {
+    crate::shadow::touch(&property_get_rtti_port::STATE);
     RTTI_RENDERER_SPECIFIC_PROPERTY
 }
 
 /// 0x6DCCD0 `NiRendererSpecificProperty::GetType`
 pub unsafe fn property_get_type(_this: usize) -> u32 {
+    crate::shadow::touch(&property_get_type_port::STATE);
     11
 }
 
@@ -988,6 +1022,7 @@ unsafe fn map_next_bucket(map: usize, key: u32) -> usize {
 
 /// 0x6C22C0 `NiDX8MaterialManager::ctor`: an empty map with 37 buckets.
 pub unsafe fn material_manager_ctor(this: usize) -> usize {
+    crate::shadow::touch(&material_manager_ctor_port::STATE);
     wr(this, MM::vtbl, VTBL_NI_REF_OBJECT);
     wr::<u32>(this, MM::refCount, 0);
     wr(REF_OBJECT_COUNT, 0, rd::<u32>(REF_OBJECT_COUNT, 0).wrapping_add(1));
@@ -1012,6 +1047,7 @@ unsafe fn material_manager_ctor_regions(set: &mut Regions, this: usize) {
 /// 0x6C2370 `NiDX8MaterialManager::Initialize_maybe`: frees the entries of the map, empties
 /// the map and selects the default material.
 pub unsafe fn material_manager_initialize(this: usize) {
+    crate::shadow::touch(&material_manager_initialize_port::STATE);
     let map = this + MM::hashmap_8;
     let mut node = map_first(map);
     while node != 0 {
@@ -1051,6 +1087,7 @@ unsafe fn material_manager_initialize_regions(set: &mut Regions, this: usize) {
 
 /// 0x6C2450 `NiDX8MaterialManager::dtor`
 pub unsafe fn material_manager_dtor(this: usize) {
+    crate::shadow::touch(&material_manager_dtor_port::STATE);
     wr(this, MM::vtbl, VTBL_MATERIAL_MANAGER);
     let map = this + MM::hashmap_8;
     while rd::<u32>(map, HM::count) != 0 {
@@ -1122,12 +1159,14 @@ unsafe fn material_manager_dtor_regions(set: &mut Regions, this: usize) {
 
 /// 0x6C2350 `NiDX8MaterialManager::deleting_dtor`
 pub unsafe fn material_manager_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&material_manager_deleting_dtor_port::STATE);
     deleting(this, flags, material_manager_dtor)
 }
 
 /// 0x6C26A0 `NiDX8MaterialManager::PurgeMaterial`: frees the entry of the material. The
 /// material keeps the pointer.
 pub unsafe fn material_manager_purge_material(_this: usize, material: usize) {
+    crate::shadow::touch(&material_manager_purge_material_port::STATE);
     if material != 0 {
         let entry: usize = rd(material, MP::rendererData);
         if entry != 0 {
@@ -1218,6 +1257,7 @@ unsafe fn ctor_mapping_tables(this: usize) {
 
 /// 0x6B7D70 `NiDX8RenderState::ctor`
 pub unsafe fn render_state_ctor(this: usize, device: usize, caps: usize) -> usize {
+    crate::shadow::touch(&render_state_ctor_port::STATE);
     wr(this, RS::vtbl, VTBL_NI_REF_OBJECT);
     wr::<u32>(this, RS::refCount, 0);
     wr(REF_OBJECT_COUNT, 0, rd::<u32>(REF_OBJECT_COUNT, 0).wrapping_add(1));
@@ -1279,6 +1319,7 @@ unsafe fn render_state_reset(this: usize) {
 
 /// 0x6B80D0 `NiDX8RenderState::dtor`
 pub unsafe fn render_state_dtor(this: usize) {
+    crate::shadow::touch(&render_state_dtor_port::STATE);
     wr(this, RS::vtbl, VTBL_RENDER_STATE);
     render_state_reset(this);
     let device: usize = rd(this, RS::device);
@@ -1312,11 +1353,13 @@ unsafe fn render_state_dtor_regions(set: &mut Regions, this: usize) {
 
 /// 0x6B80B0 `NiDX8RenderState::deleting_dtor`
 pub unsafe fn render_state_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&render_state_deleting_dtor_port::STATE);
     deleting(this, flags, render_state_dtor)
 }
 
 /// 0x6B81E0 `NiDX8RenderState_static::Create`
 pub unsafe fn render_state_create(device: usize, caps: usize, flag_2: u8, flag_8: u8, flag_4: u8) -> usize {
+    crate::shadow::touch(&render_state_create_port::STATE);
     let block = eng::operator_new(RS::SIZE);
     let this = if block != 0 { render_state_ctor(block, device, caps) } else { 0 };
     if flag_2 != 0 {
@@ -1336,6 +1379,7 @@ pub unsafe fn render_state_create(device: usize, caps: usize, flag_2: u8, flag_8
 
 /// 0x6B8600 `NiDX8RenderState::PurgeMaterial`: a jump to the function of the material manager.
 pub unsafe fn render_state_purge_material(this: usize, material: usize) {
+    crate::shadow::touch(&render_state_purge_material_port::STATE);
     material_manager_purge_material(this + RS::materialManager, material);
 }
 
@@ -1351,6 +1395,7 @@ unsafe fn initialize_state(this: usize, state: u32, value: u32) {
 /// 0x6B8680 `NiDX8RenderState::Initialize_maybe`: every state back to its default, then the
 /// states the renderer starts with to the device.
 pub unsafe fn render_state_initialize(this: usize) {
+    crate::shadow::touch(&render_state_initialize_port::STATE);
     render_state_reset(this);
     material_manager_initialize(this + RS::materialManager);
 
@@ -1389,6 +1434,7 @@ unsafe fn render_state_initialize_regions(set: &mut Regions, this: usize) {
 /// 0x6B8930 `NiDX8RenderState::initFromDeviceCaps`: the flags and the blend factors the
 /// device supports, from its capabilities.
 pub unsafe fn render_state_init_from_device_caps(this: usize) {
+    crate::shadow::touch(&render_state_init_from_device_caps_port::STATE);
     let caps = this + RS::deviceCapabilities;
     let raster: u32 = rd(caps, D3DCAPS8::RasterCaps);
     // D3DPRASTERCAPS_FOGTABLE and D3DPRASTERCAPS_WFOG
@@ -1436,38 +1482,45 @@ unsafe fn render_state_init_from_device_caps_regions(set: &mut Regions, this: us
 
 /// 0x6B3380 `NiDX8TexturePass::deleting_dtor`
 pub unsafe fn texture_pass_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&texture_pass_deleting_dtor_port::STATE);
     deleting(this, flags, texture_pass_a::dtor)
 }
 
 /// 0x6B41A0 `NiDX8TexturePass::stub_returns0_2`
 pub unsafe fn texture_pass_stub_returns_0_2(_this: usize, _a: u32, _b: u32, _c: u32, _d: u32, _e: u32, _f: u32, _g: u32, _h: u32, _i: u32) -> u32 {
+    crate::shadow::touch(&texture_pass_stub_returns_0_2_port::STATE);
     0
 }
 
 /// 0x6B56A0 `NiDX8TexturePass::stub_returns0`
 pub unsafe fn texture_pass_stub_returns_0(_this: usize, _a: u32, _b: u32, _c: u32, _d: u32, _e: u32, _f: u32, _g: u32, _h: u32) -> u32 {
+    crate::shadow::touch(&texture_pass_stub_returns_0_port::STATE);
     0
 }
 
 /// 0x6B77C0 `NiDX8TexturePass::$1::deleting_dtor`
 pub unsafe fn subpass_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&subpass_deleting_dtor_port::STATE);
     deleting(this, flags, texture_pass_b::subpass_dtor)
 }
 
 /// 0x6B8D80 `NiDX8ConfigurableTexturePipeline::deleting_dtor`
 pub unsafe fn pipeline_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&pipeline_deleting_dtor_port::STATE);
     deleting(this, flags, texture_pipeline::dtor)
 }
 
 /// 0x6B9E70 `NiDX8ConfigurableTexturePipeline::applyPixelShader`: a jump to the function of
 /// the texture pass.
 pub unsafe fn pipeline_apply_pixel_shader(this: usize) -> u32 {
+    crate::shadow::touch(&pipeline_apply_pixel_shader_port::STATE);
     texture_pass_a::apply_pixel_shader(rd(this, PIPELINE_TEXTURE_PASS))
 }
 
 /// 0x6B9E80 `NiDX8ConfigurableTexturePipeline::applyVertexShader`: a jump to the function of
 /// the texture pass.
 pub unsafe fn pipeline_apply_vertex_shader(this: usize, handle: u32) -> u32 {
+    crate::shadow::touch(&pipeline_apply_vertex_shader_port::STATE);
     texture_pass_a::apply_vertex_shader(rd(this, PIPELINE_TEXTURE_PASS), handle)
 }
 
@@ -1479,11 +1532,13 @@ unsafe fn pipeline_apply_shader_regions(set: &mut Regions, this: usize) {
 
 /// 0x6BAEA0 `NiDX8LightManager::deleting_dtor`
 pub unsafe fn light_manager_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&light_manager_deleting_dtor_port::STATE);
     deleting(this, flags, light_manager::dtor)
 }
 
 /// 0x6C1A50 `NiDX8TextureStage::deleting_dtor`
 pub unsafe fn texture_stage_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&texture_stage_deleting_dtor_port::STATE);
     deleting(this, flags, texture_pipeline::texture_stage_dtor)
 }
 

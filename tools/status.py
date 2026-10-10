@@ -79,8 +79,8 @@ def main():
         elif int(row["shadow_calls"]):
             state = "clean"
             c["clean"] += 1
-        elif int(row["live_calls"]):
-            state = "ran live only"
+        elif int(row["live_calls"]) or int(row.get("rust_runs", 0)):
+            state = "ran as Rust"
         else:
             state = "not called in the run"
         rows.append((f["name"], f["ea"], state, row or {}))
@@ -100,11 +100,11 @@ def main():
     for name, c in sorted(classes.items(), key=lambda kv: -kv[1]["bytes"]):
         out.append("| %s | %d | %d | %d | %d | %d |" % (name, c["functions"], c["ported"], c["clean"], c["different"], c["changed"]))
     out += ["", "## Ports", "",
-            "| function | address | state | calls compared | different | not compared | calls as Rust |",
+            "| function | address | state | calls compared | different | not compared | Rust runs |",
             "| --- | --- | --- | ---: | ---: | ---: | ---: |"]
     for name, ea, state, row in rows:
         out.append("| %s | 0x%x | %s | %s | %s | %s | %s |" % (
-            name, ea, state, row.get("shadow_calls", ""), row.get("mismatches", ""), row.get("skipped", ""), row.get("live_calls", "")))
+            name, ea, state, row.get("shadow_calls", ""), row.get("mismatches", ""), row.get("skipped", ""), row.get("rust_runs", row.get("live_calls", ""))))
     if frame_lines:
         out += ["", "## Frame tests of the last run", ""] + ["- " + line for line in frame_lines]
     if changed:

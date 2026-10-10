@@ -449,6 +449,7 @@ unsafe fn dec_ref(object: usize) {
 
 /// 0x6BC8A0 `NiDX8TextureManager::clearHashMap`: every node of a hash map goes.
 pub unsafe fn clear_hash_map(map: usize) {
+    crate::shadow::touch(&clear_hash_map_port::STATE);
     let mut i = 0u32;
     if rd::<u32>(map, HM::bucketCount) != 0 {
         let mut buckets: usize = rd(map, HM::arrayBuckets);
@@ -472,6 +473,7 @@ pub unsafe fn clear_hash_map(map: usize) {
 
 /// 0x6BC840 `NiDX8TextureManager::HashMap::dtor`
 pub unsafe fn hash_map_dtor(map: usize) {
+    crate::shadow::touch(&hash_map_dtor_port::STATE);
     wr(map, HM::vtbl, VTBL_HASH_MAP);
     clear_hash_map(map);
     eng::delete(rd(map, HM::arrayBuckets));
@@ -479,6 +481,7 @@ pub unsafe fn hash_map_dtor(map: usize) {
 
 /// 0x6BC8F0 `NiDX8TextureManager::deleting_dtor_6BC8F0`: the deleting destructor of the hash map.
 pub unsafe fn hash_map_deleting_dtor(map: usize, flags: u32) -> usize {
+    crate::shadow::touch(&hash_map_deleting_dtor_port::STATE);
     hash_map_dtor(map);
     if flags & 1 != 0 {
         eng::delete(map);
@@ -488,6 +491,7 @@ pub unsafe fn hash_map_deleting_dtor(map: usize, flags: u32) -> usize {
 
 /// 0x6BC100 `NiDX8TextureManager::ctor`. Returns `this`.
 pub unsafe fn manager_ctor(this: usize, renderer: usize) -> usize {
+    crate::shadow::touch(&manager_ctor_port::STATE);
     wr(this, TM::vtbl, VTBL_NI_REF_OBJECT);
     wr::<u32>(this, TM::refCount, 0);
     eng::ref_object_count_add(1);
@@ -514,6 +518,7 @@ pub unsafe fn manager_ctor(this: usize, renderer: usize) -> usize {
 
 /// 0x6BC330 `NiDX8TextureManager::dtor`
 pub unsafe fn manager_dtor(this: usize) {
+    crate::shadow::touch(&manager_dtor_port::STATE);
     wr(this, TM::vtbl, VTBL_TEXTURE_MANAGER);
     let maps = [this + TM::hashMap_10, this + TM::hashMap_20, this + TM::hashmap_30];
     for map in maps {
@@ -535,6 +540,7 @@ pub unsafe fn manager_dtor(this: usize) {
 
 /// 0x6BC310 `NiDX8TextureManager::deleting_dtor`
 pub unsafe fn manager_deleting_dtor(this: usize, flags: u32) -> usize {
+    crate::shadow::touch(&manager_deleting_dtor_port::STATE);
     manager_dtor(this);
     if flags & 1 != 0 {
         eng::delete(this);
@@ -544,12 +550,14 @@ pub unsafe fn manager_deleting_dtor(this: usize, flags: u32) -> usize {
 
 /// 0x6BC590 `NiDX8TextureManager::GetTexture`: not implemented in the game.
 pub unsafe fn manager_get_texture(_this: usize, _a1: u32, _a2: u32, _a3: u32, _a4: u32, _a5: u32, _a6: u32) -> u32 {
+    crate::shadow::touch(&manager_get_texture_port::STATE);
     0
 }
 
 /// 0x6BC5A0 `NiDX8TextureManager::PrepareTextureForRendering`: the device texture of a
 /// texture, made or brought up to date when needed.
 pub unsafe fn manager_prepare_texture_for_rendering(this: usize, texture: usize, out_created: usize, out_mipmapped: usize) -> usize {
+    crate::shadow::touch(&manager_prepare_texture_for_rendering_port::STATE);
     wr::<u8>(out_created, 0, 0);
     wr::<u8>(out_mipmapped, 0, 0);
     if texture == 0 {
@@ -579,6 +587,7 @@ pub unsafe fn manager_prepare_texture_for_rendering(this: usize, texture: usize,
 
 /// 0x6BC670 `NiDX8TextureManager::PrecacheTexture`
 pub unsafe fn manager_precache_texture(this: usize, texture: usize, _a3: u32, _a4: u32) -> u8 {
+    crate::shadow::touch(&manager_precache_texture_port::STATE);
     if texture == 0 {
         return 0;
     }
@@ -599,6 +608,7 @@ pub unsafe fn manager_precache_texture(this: usize, texture: usize, _a3: u32, _a
 /// 0x6BC6F0 `NiDX8TextureManager::GetFormatFromTexture`: the extra data of the pixel format
 /// of the texture, or 14.
 pub unsafe fn manager_get_format_from_texture(this: usize, texture: usize) -> u32 {
+    crate::shadow::touch(&manager_get_format_from_texture_port::STATE);
     let data: usize = rd(texture, T::rendererData);
     if data != 0 {
         return rd(data_get_pixel_format(data), PF::extraData);
@@ -614,6 +624,7 @@ pub unsafe fn manager_get_format_from_texture(this: usize, texture: usize) -> u3
 
 /// 0x6BC770 `NiDX8TextureManager::Recreate`: the first map loses its values and its nodes.
 pub unsafe fn manager_recreate(this: usize) {
+    crate::shadow::touch(&manager_recreate_port::STATE);
     let map = this + TM::hashMap_10;
     map_destroy_values(map, eng::map_value_dtor_6bd490);
     clear_hash_map(map);
@@ -623,6 +634,7 @@ pub unsafe fn manager_recreate(this: usize) {
 
 /// 0x6B6D00 `NiDX8TextureData::ctor_args`. Returns `this`.
 pub unsafe fn texture_data_ctor(this: usize, texture: usize, renderer: usize) -> usize {
+    crate::shadow::touch(&texture_data_ctor_port::STATE);
     wr(this, TD::vtbl_vtbl, VTBL_RENDERER_DATA);
     wr(this, TD::vtbl_sgTexture, texture);
     wr::<u32>(this, TD::vtbl_linkedData, 0);
@@ -647,6 +659,7 @@ pub unsafe fn texture_data_ctor(this: usize, texture: usize, renderer: usize) ->
 
 /// 0x6B6DC0 `NiDX8TextureData::deleting_dtor`
 pub unsafe fn texture_data_deleting_dtor(this: usize, flags: u32) -> usize {
+    crate::shadow::touch(&texture_data_deleting_dtor_port::STATE);
     eng::renderer_data_dtor(this);
     if flags & 1 != 0 {
         eng::delete(this);
@@ -656,22 +669,26 @@ pub unsafe fn texture_data_deleting_dtor(this: usize, flags: u32) -> usize {
 
 /// 0x6B6E10 `NiDX8TextureData::GetHeight`
 pub unsafe fn texture_data_get_height(this: usize) -> u32 {
+    crate::shadow::touch(&texture_data_get_height_port::STATE);
     rd(this, TD::height)
 }
 
 /// 0x6B6E30 `NiDX8TextureData::GetPixelFormat`
 pub unsafe fn texture_data_get_pixel_format(this: usize) -> usize {
+    crate::shadow::touch(&texture_data_get_pixel_format_port::STATE);
     this + TD::format
 }
 
 /// 0x6B6E40 `NiDX8TextureData::GetD3DPalette`
 pub unsafe fn texture_data_get_d3d_palette(this: usize) -> u32 {
+    crate::shadow::touch(&texture_data_get_d3d_palette_port::STATE);
     rd(this, TD::d3dPalette)
 }
 
 /// 0x6B6E50 `NiDX8TextureData_static::FindClosestPixelFormat`: the format of the list that
 /// fits the preferences best, with no pixel data to look at. 0 when none fits.
 pub unsafe fn find_closest_pixel_format(_renderer: usize, prefs: usize, formats: usize) -> usize {
+    crate::shadow::touch(&find_closest_pixel_format_port::STATE);
     let mut layout: u32 = rd(prefs, PREFS_LAYOUT);
     let alpha: i32 = rd(prefs, PREFS_ALPHA);
     let f = |i: usize| rd::<usize>(formats, i * 4);
@@ -720,6 +737,7 @@ pub unsafe fn find_closest_pixel_format(_renderer: usize, prefs: usize, formats:
 /// 0x6B6F70 `NiDX8TextureData::FindMatchingPixelFormat`: the format of the list the image
 /// converter can make from the source format and that fits the preferences best.
 pub unsafe fn find_matching_pixel_format(_this: usize, source: usize, prefs: usize, formats: usize) -> usize {
+    crate::shadow::touch(&find_matching_pixel_format_port::STATE);
     let format: u32 = rd(source, 0);
     let converter = eng::image_converter();
     let layout: u32 = rd(prefs, PREFS_LAYOUT);
@@ -814,6 +832,7 @@ pub unsafe fn find_matching_pixel_format(_this: usize, source: usize, prefs: usi
 
 /// 0x6B74F0 `NiDX8TextureData_static::ClearTextureData`: every texture loses its renderer data.
 pub unsafe fn clear_texture_data(_renderer: usize) {
+    crate::shadow::touch(&clear_texture_data_port::STATE);
     let mut texture = eng::texture_list_head();
     while texture != 0 {
         let data: usize = rd(texture, T::rendererData);
@@ -829,6 +848,7 @@ pub unsafe fn clear_texture_data(_renderer: usize) {
 
 /// 0x6BFDE0 `NiDX8SourceTextureData::ctor`. Returns `this`.
 pub unsafe fn source_data_ctor(this: usize, texture: usize, renderer: usize) -> usize {
+    crate::shadow::touch(&source_data_ctor_port::STATE);
     texture_data_ctor(this, texture, renderer);
     wr::<u32>(this, SD::palette, 0);
     wr(this, SD::vtbl_vtbl, VTBL_SOURCE_TEXTURE_DATA);
@@ -849,6 +869,7 @@ pub unsafe fn source_data_ctor(this: usize, texture: usize, renderer: usize) -> 
 
 /// 0x6BFE90 `NiDX8SourceTextureData::dtor`
 pub unsafe fn source_data_dtor(this: usize) {
+    crate::shadow::touch(&source_data_dtor_port::STATE);
     wr(this, SD::vtbl_vtbl, VTBL_SOURCE_TEXTURE_DATA);
     let texture: usize = rd(this, SD::d3dTexture);
     if texture != 0 {
@@ -866,6 +887,7 @@ pub unsafe fn source_data_dtor(this: usize) {
 
 /// 0x6BFE70 `NiDX8SourceTextureData::deleting_dtor`
 pub unsafe fn source_data_deleting_dtor(this: usize, flags: u32) -> usize {
+    crate::shadow::touch(&source_data_deleting_dtor_port::STATE);
     source_data_dtor(this);
     if flags & 1 != 0 {
         eng::delete(this);
@@ -875,17 +897,20 @@ pub unsafe fn source_data_deleting_dtor(this: usize, flags: u32) -> usize {
 
 /// 0x6BFF20 `NiDX8SourceTextureData::GetD3DTexture`
 pub unsafe fn source_data_get_d3d_texture(this: usize) -> usize {
+    crate::shadow::touch(&source_data_get_d3d_texture_port::STATE);
     rd(this, SD::d3dTexture)
 }
 
 /// 0x6BFF30 `NiDX8SourceTextureData::IsLoaded`
 pub unsafe fn source_data_is_loaded(this: usize) -> u8 {
+    crate::shadow::touch(&source_data_is_loaded_port::STATE);
     (rd::<usize>(this, SD::d3dTexture) != 0) as u8
 }
 
 /// 0x6BFF40 `NiDX8SourceTextureData::CopyDataToSurface`: one mipmap level of the pixel data
 /// goes to a surface.
 pub unsafe fn source_data_copy_data_to_surface(pixel_data: usize, level: u32, surface: usize) {
+    crate::shadow::touch(&source_data_copy_data_to_surface_port::STATE);
     let mut desc = [0u32; 8];
     let result = surface_get_desc(surface, desc.as_mut_ptr() as usize);
     if result != 0 {
@@ -918,6 +943,7 @@ pub unsafe fn source_data_copy_data_to_surface(pixel_data: usize, level: u32, su
 /// 0x6C0050 `NiDX8SourceTextureData::Update`: when the pixel data or its palette changed,
 /// every level goes to the device texture again.
 pub unsafe fn source_data_update(this: usize) {
+    crate::shadow::touch(&source_data_update_port::STATE);
     let pixel_data: usize = rd(rd::<usize>(this, SD::vtbl_sgTexture), ST::pixelData);
     if pixel_data == 0 {
         return;
@@ -983,6 +1009,7 @@ pub unsafe fn source_data_update(this: usize) {
 /// 0x6C0160 `NiDX8SourceTextureData::setPalette`. Returns 1 when the palette or its
 /// revision is new.
 pub unsafe fn source_data_set_palette(this: usize, palette: usize) -> u8 {
+    crate::shadow::touch(&source_data_set_palette_port::STATE);
     let mut changed = 0u8;
     if palette != 0 {
         let revision: u32 = rd(palette, PALETTE_REVISION);
@@ -1008,6 +1035,7 @@ pub unsafe fn source_data_set_palette(this: usize, palette: usize) -> u8 {
 /// 0x6B68F0 `NiDX8BltSourceData::CreateSurface`: an image surface with the first level of
 /// the pixel data. Returns 1 when it was made.
 pub unsafe fn blt_data_create_surface(this: usize, pixel_data: usize, pixel_format: usize) -> u8 {
+    crate::shadow::touch(&blt_data_create_surface_port::STATE);
     let slot = this + BD_SURFACE;
     let d3d_format: u32 = rd(pixel_format, PF::d3dFormat);
     let width: u32 = rd(rd::<usize>(pixel_data, PD::mipmapWidths), 0);
@@ -1046,6 +1074,7 @@ pub unsafe fn blt_data_create_surface(this: usize, pixel_data: usize, pixel_form
 /// 0x6B6690 `NiDX8BltSourceData::Create`: the renderer data of a blit source, at the end of
 /// its list. Returns it, or 0 when there is no pixel data.
 pub unsafe fn blt_data_create(blt_source: usize, renderer: usize) -> usize {
+    crate::shadow::touch(&blt_data_create_port::STATE);
     let filename: usize = rd(blt_source, BLT_FILENAME);
     let source: usize = if filename != 0 {
         let converter = eng::image_converter();
@@ -1103,6 +1132,7 @@ pub unsafe fn blt_data_create(blt_source: usize, renderer: usize) -> usize {
 
 /// 0x6B6810 `NiDX8BltSourceData::dtor`
 pub unsafe fn blt_data_dtor(this: usize) {
+    crate::shadow::touch(&blt_data_dtor_port::STATE);
     wr(this, 0, VTBL_BLT_SOURCE_DATA);
     let surface: usize = rd(this, BD_SURFACE);
     if surface != 0 {
@@ -1118,6 +1148,7 @@ pub unsafe fn blt_data_dtor(this: usize) {
 
 /// 0x6B67F0 `NiDX8BltSourceData::deleting_dtor`
 pub unsafe fn blt_data_deleting_dtor(this: usize, flags: u32) -> usize {
+    crate::shadow::touch(&blt_data_deleting_dtor_port::STATE);
     blt_data_dtor(this);
     if flags & 1 != 0 {
         eng::delete(this);
@@ -1129,6 +1160,7 @@ pub unsafe fn blt_data_deleting_dtor(this: usize, flags: u32) -> usize {
 
 /// 0x6B0380 `NiDX8Renderer::CreateSourceTextureRendererData`
 pub unsafe fn renderer_create_source_texture_renderer_data(this: usize, texture: usize) -> u8 {
+    crate::shadow::touch(&renderer_create_source_texture_renderer_data_port::STATE);
     if rd::<usize>(texture, T::rendererData) == 0 && eng::source_texture_data_create(texture, this) == 0 {
         return 0;
     }
@@ -1137,6 +1169,7 @@ pub unsafe fn renderer_create_source_texture_renderer_data(this: usize, texture:
 
 /// 0x6B0580 `NiDX8Renderer::CreateSourceCubeMapRendererData`
 pub unsafe fn renderer_create_source_cube_map_renderer_data(this: usize, texture: usize) -> u8 {
+    crate::shadow::touch(&renderer_create_source_cube_map_renderer_data_port::STATE);
     if rd::<usize>(texture, T::rendererData) != 0 {
         return 1;
     }
@@ -1145,6 +1178,7 @@ pub unsafe fn renderer_create_source_cube_map_renderer_data(this: usize, texture
 
 /// 0x6B05B0 `NiDX8Renderer::CreateBltSourceRendererData`
 pub unsafe fn renderer_create_blt_source_renderer_data(this: usize, blt_source: usize) -> u8 {
+    crate::shadow::touch(&renderer_create_blt_source_renderer_data_port::STATE);
     if rd::<usize>(blt_source, BLT_RENDERER_DATA) == 0 && blt_data_create(blt_source, this) == 0 {
         return 0;
     }
@@ -1153,12 +1187,14 @@ pub unsafe fn renderer_create_blt_source_renderer_data(this: usize, blt_source: 
 
 /// 0x6AC390 `NiDX8Renderer::PurgeAllTextures`
 pub unsafe fn renderer_purge_all_textures(this: usize, _a2: u32) -> u8 {
+    crate::shadow::touch(&renderer_purge_all_textures_port::STATE);
     clear_texture_data(this);
     1
 }
 
 /// 0x6AC3A0 `NiDX8Renderer::PurgeTexture`: the texture loses the head of its renderer data.
 pub unsafe fn renderer_purge_texture(_this: usize, texture: usize) -> u8 {
+    crate::shadow::touch(&renderer_purge_texture_port::STATE);
     let data: usize = rd(texture, T::rendererData);
     if data != 0 {
         wr::<usize>(texture, T::rendererData, rd(data, TD::vtbl_linkedData));
@@ -1169,16 +1205,19 @@ pub unsafe fn renderer_purge_texture(_this: usize, texture: usize) -> u8 {
 
 /// 0x6AC400 `NiDX8Renderer::GetTextureMemoryStats`: not implemented in the game.
 pub unsafe fn renderer_get_texture_memory_stats(_this: usize, _a1: u32, _a2: u32) -> u8 {
+    crate::shadow::touch(&renderer_get_texture_memory_stats_port::STATE);
     0
 }
 
 /// 0x6AC410 `NiDX8Renderer::GetTextureStats_maybe`: not implemented in the game.
 pub unsafe fn renderer_get_texture_stats(_this: usize, _a1: u32, _a2: u32, _a3: u32, _a4: u32, _a5: u32) -> u8 {
+    crate::shadow::touch(&renderer_get_texture_stats_port::STATE);
     0
 }
 
 /// 0x6ABD00 `NiDX8Renderer::FindClosestPixelFormat`
 pub unsafe fn renderer_find_closest_pixel_format(this: usize, prefs: usize) -> usize {
+    crate::shadow::touch(&renderer_find_closest_pixel_format_port::STATE);
     find_closest_pixel_format(this, prefs, this + R::arrayArrayTextureFormats)
 }
 

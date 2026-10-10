@@ -409,6 +409,7 @@ unsafe fn disable_device_lights(this: usize) {
 
 /// 0x6BAB00 `NiDX8LightManager::LightEntry::Update`. Returns 1 when the entry was rebuilt.
 pub unsafe fn light_entry_update(entry: usize, light: usize) -> u8 {
+    crate::shadow::touch(&light_entry_update_port::STATE);
     eng::lock(ENTRY_CRITICAL_SECTION, NAME_ENTRY_UPDATE);
     let revision: u32 = rd(light, L::revisionID);
     if rd::<u32>(entry, E::revisionId) == revision {
@@ -473,6 +474,7 @@ pub unsafe fn light_entry_update(entry: usize, light: usize) -> u8 {
 
 /// 0x6BAEC0 `NiDX8LightManager::resetRenderStates`
 pub unsafe fn reset_render_states(this: usize) {
+    crate::shadow::touch(&reset_render_states_port::STATE);
     wr::<u32>(this, M::ambientLightingState, 0);
     set_if_changed(rd(this, M::renderState), D3DRS_AMBIENT, 0);
     set_if_changed(rd(this, M::renderState), D3DRS_LIGHTING, 0);
@@ -489,6 +491,7 @@ pub unsafe fn reset_render_states(this: usize) {
 
 /// 0x6BAD10 `NiDX8LightManager::ctor`. Returns `this`.
 pub unsafe fn ctor(this: usize, render_state: usize, device: usize) -> usize {
+    crate::shadow::touch(&ctor_port::STATE);
     wr(this, M::vtbl, VTBL_NI_REF_OBJECT);
     wr::<u32>(this, M::refCount, 0);
     eng::ref_object_count_add(1);
@@ -517,6 +520,7 @@ pub unsafe fn ctor(this: usize, render_state: usize, device: usize) -> usize {
 
 /// 0x6BAF90 `NiDX8LightManager::dtor`
 pub unsafe fn dtor(this: usize) {
+    crate::shadow::touch(&dtor_port::STATE);
     wr(this, M::vtbl, VTBL_LIGHT_MANAGER);
     let map = this + M::lightEntries;
     while rd::<u32>(map, HM::count) != 0 {
@@ -598,6 +602,7 @@ pub unsafe fn dtor(this: usize) {
 
 /// 0x6BB190 `NiDX8LightManager::nextFrame`
 pub unsafe fn next_frame(this: usize) {
+    crate::shadow::touch(&next_frame_port::STATE);
     let cs = this + M::criticalSection;
     eng::lock(cs, NAME_NEXT_FRAME);
     disable_device_lights(this);
@@ -607,6 +612,7 @@ pub unsafe fn next_frame(this: usize) {
 
 /// 0x6BB200 `NiDX8LightManager::setState`
 pub unsafe fn set_state(this: usize, state: usize, texturing: usize, vertex_color: usize) {
+    crate::shadow::touch(&set_state_port::STATE);
     let cs = this + M::criticalSection;
     eng::lock(cs, NAME_SET_STATE);
     let render_state = || rd::<usize>(this, M::renderState);
@@ -694,6 +700,7 @@ pub unsafe fn set_state(this: usize, state: usize, texturing: usize, vertex_colo
 
 /// 0x6BB4E0 `NiDX8LightManager::RemoveLight`
 pub unsafe fn remove_light(this: usize, light: usize) {
+    crate::shadow::touch(&remove_light_port::STATE);
     let cs = this + M::criticalSection;
     eng::lock(cs, NAME_REMOVE_LIGHT);
     let map = this + M::lightEntries;
@@ -785,6 +792,7 @@ pub unsafe fn remove_light(this: usize, light: usize) {
 /// 0x6BB6C0 `NiDX8LightManager::updateLights`: the lights of one effect state go to the
 /// device; the ambient lights add up to the ambient render state.
 pub unsafe fn update_lights(this: usize, state: usize) {
+    crate::shadow::touch(&update_lights_port::STATE);
     let cs = this + M::criticalSection;
     eng::lock(cs, NAME_UPDATE_LIGHTS);
     // Alpha 255, no colour. The game code makes it from four float constants.
@@ -885,6 +893,7 @@ pub unsafe fn update_lights(this: usize, state: usize) {
 /// 0x6BBB40 `NiDX8LightManager::ReleaseLights`: every entry goes; its key stays in the map
 /// with no entry.
 pub unsafe fn release_lights(this: usize) {
+    crate::shadow::touch(&release_lights_port::STATE);
     let cs = this + M::criticalSection;
     eng::lock(cs, NAME_RELEASE_LIGHTS);
     let map = this + M::lightEntries;

@@ -492,6 +492,7 @@ unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize)
 /// 0x6ACEF0 `NiDX8Renderer::RenderShape`, with the skinning check MWSE puts at +0x2F when
 /// that is what the memory has.
 pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
+    crate::shadow::touch(&render_shape_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
     }
@@ -518,6 +519,7 @@ pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform
 
 /// 0x6ACFC0 `NiDX8Renderer::RenderTriStrips`
 pub unsafe fn render_tri_strips(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
+    crate::shadow::touch(&render_tri_strips_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
     }
@@ -566,6 +568,7 @@ pub unsafe fn draw_primitive(
     geom_buffer: usize,
     partition: usize,
 ) {
+    crate::shadow::touch(&draw_primitive_port::STATE);
     // The game code gives the address of its argument to the functions that fill the buffer.
     let mut geom_buffer = geom_buffer;
     let Some((has_normals, texture_sets)) = vertex_format(geom_buffer, geom_data) else {
@@ -757,6 +760,7 @@ unsafe fn draw_primitive_regions(set: &mut Regions, this: usize, geom_data: usiz
 /// 0x6ADE70 `NiDX8Renderer::DrawSkinnedPrimitive`: makes the skin partitions when the skin
 /// data has none, fills the geometry buffer of each partition, then draws them.
 pub unsafe fn draw_skinned_primitive(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
+    crate::shadow::touch(&draw_skinned_primitive_port::STATE);
     let skin_data: usize = rd(skin, NiSkinInstance::skinData);
     let mut skin_partition: usize = if skin_data != 0 { rd(skin_data, SKIN_DATA_SKIN_PARTITION) } else { 0 };
     if skin_partition == 0 {
@@ -841,6 +845,7 @@ pub unsafe fn draw_skinned_primitive_2(
     _unused_1: u32,
     _unused_2: u32,
 ) {
+    crate::shadow::touch(&draw_skinned_primitive_2_port::STATE);
     if skin == 0 {
         return;
     }
@@ -1045,6 +1050,7 @@ unsafe fn end_batch_draw(this: usize, geom_buffer: usize) {
 /// 0x6AE090 `NiDX8Renderer::EndBatch`: draws the batched objects with one set-up of the
 /// pass, then frees the list.
 pub unsafe fn end_batch(this: usize) {
+    crate::shadow::touch(&end_batch_port::STATE);
     let head: usize = rd(this, R::batchedObjectListHead);
     if head == 0 {
         return;

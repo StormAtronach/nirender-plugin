@@ -419,6 +419,7 @@ fn abs_difference(a: u32, b: u32) -> i32 {
 /// 0x6B1600 `NiDX8DeviceDesc::ScreenFormatInfo::ctor`. For each render target format the
 /// device has with this screen format, the list of the depth formats that go with it.
 pub unsafe fn screen_format_info_ctor(this: usize, d3d: usize, adapter: u32, device_type: u32, format: u32, fullscreen: u8, windowed: u8) -> usize {
+    crate::shadow::touch(&screen_format_info_ctor_port::STATE);
     let map = this + SFI::validDepthStencils;
     wr(map, MAP_VTBL, eng::hash_map_vtbl());
     wr(map, MAP_BUCKET_COUNT, HASH_BUCKETS);
@@ -500,6 +501,7 @@ fn depth_stencil_bits(format: u32) -> (u32, u32) {
 /// 0x6B1940 `NiDX8DeviceDesc::ScreenFormatInfo::findClosestDepthStencilFormat`. Returns the
 /// depth format for the render target `format`, or 0.
 pub unsafe fn screen_format_info_find_closest_depth_stencil_format(this: usize, format: u32, depth_bits: u32, stencil_bits: u32) -> u32 {
+    crate::shadow::touch(&screen_format_info_find_closest_depth_stencil_format_port::STATE);
     let map = this + SFI::validDepthStencils;
     let hash = map_hash_key(map, format) as usize;
     let mut node: usize = rd(rd::<usize>(map, MAP_BUCKETS), hash * 4);
@@ -538,6 +540,7 @@ pub unsafe fn screen_format_info_find_closest_depth_stencil_format(this: usize, 
 
 /// 0x6B1AB0 `NiDX8DeviceDesc::ctor`
 pub unsafe fn device_desc_ctor(this: usize, d3d: usize, adapter: u32, device_type: u32, current_display_format: u32) -> usize {
+    crate::shadow::touch(&device_desc_ctor_port::STATE);
     let list = this + DD::screenFormats;
     list_init(list);
     let caps = this + DD::caps;
@@ -629,6 +632,7 @@ unsafe fn device_desc_has_format(this: usize, format: u32) -> bool {
 
 /// 0x6B1D60 `NiDX8DeviceDesc::dtor`
 pub unsafe fn device_desc_dtor(this: usize) {
+    crate::shadow::touch(&device_desc_dtor_port::STATE);
     let mut item: usize = rd(this, DD::screenFormats_head);
     while item != 0 {
         let info: usize = rd(item, ITEM_DATA);
@@ -708,6 +712,7 @@ fn screen_format_enum(format: u32) -> u32 {
 
 /// 0x6B1EC0 `NiDX8DeviceDesc::getScreenFormatEnum`
 pub unsafe fn device_desc_get_screen_format_enum(this: usize, is_windowed: u8, bit_depth: u32) -> u32 {
+    crate::shadow::touch(&device_desc_get_screen_format_enum_port::STATE);
     let mut item: usize = rd(this, DD::screenFormats_head);
     if is_windowed != 0 {
         while item != 0 {
@@ -741,6 +746,7 @@ pub unsafe fn device_desc_find_closest_depth_stencil_for_screen_format(
     depth_bits: u32,
     stencil_bits: u32,
 ) -> u32 {
+    crate::shadow::touch(&device_desc_find_closest_depth_stencil_for_screen_format_port::STATE);
     let mut item: usize = rd(this, DD::screenFormats_head);
     while item != 0 {
         let info: usize = rd(item, ITEM_DATA);
@@ -772,6 +778,7 @@ pub unsafe fn device_desc_find_closest_depth_stencil_for_screen_format(
 
 /// 0x6B2260 `NiDX8AdapterDesc::ctor`
 pub unsafe fn adapter_desc_ctor(this: usize, d3d: usize, adapter_index: u32) -> usize {
+    crate::shadow::touch(&adapter_desc_ctor_port::STATE);
     let modes = this + AD::modeList;
     wr(modes, ARRAY_VTBL, MODE_ARRAY_VTBL);
     wr::<u32>(modes, ARRAY_STORAGE_COUNT, 1);
@@ -885,6 +892,7 @@ pub unsafe fn adapter_desc_ctor(this: usize, d3d: usize, adapter_index: u32) -> 
 /// 0x6B25D0 `NiDX8AdapterDesc::findClosestMode`. Returns the `ModeDesc` or 0. A refresh rate
 /// that is not 0 and not 0x7FFFFFFF is replaced with one the mode has.
 pub unsafe fn adapter_desc_find_closest_mode(this: usize, format: u32, width: u32, height: u32, inout_refresh_rate: usize) -> usize {
+    crate::shadow::touch(&adapter_desc_find_closest_mode_port::STATE);
     let mut result = 0usize;
     if rd::<u32>(this, AD::modeListCount) == 0 {
         return result;
@@ -929,6 +937,7 @@ pub unsafe fn adapter_desc_find_closest_mode(this: usize, format: u32, width: u3
 
 /// 0x6B26A0 `NiDX8SystemDesc::ctor`
 pub unsafe fn system_desc_ctor(this: usize, d3d: usize) -> usize {
+    crate::shadow::touch(&system_desc_ctor_port::STATE);
     let adapters = this + SD::adapterList;
     wr(adapters, ARRAY_VTBL, ADAPTER_ARRAY_VTBL);
     wr::<u32>(adapters, ARRAY_STORAGE_COUNT, 1);
@@ -1003,6 +1012,7 @@ pub unsafe fn system_desc_ctor(this: usize, d3d: usize) -> usize {
 
 /// 0x6B2800 `NiDX8SystemDesc::dtor`
 pub unsafe fn system_desc_dtor(this: usize) {
+    crate::shadow::touch(&system_desc_dtor_port::STATE);
     let adapters = this + SD::adapterList;
     let mut index = 0u32;
     while index < rd::<u32>(adapters, ARRAY_END) {
@@ -1042,6 +1052,7 @@ pub unsafe fn system_desc_dtor(this: usize) {
 /// 0x6B2B80 `NiDX8SystemDesc_static::GetBPPFromFormat`. Bits per pixel of a `D3DFORMAT`:
 /// 0 for a format without a fixed size, 0xFFFFFFFF for one the function does not know.
 pub unsafe fn get_bpp_from_format(format: u32) -> u32 {
+    crate::shadow::touch(&get_bpp_from_format_port::STATE);
     const UNKNOWN: u32 = 0xFFFF_FFFF;
     match format {
         0 => 0,

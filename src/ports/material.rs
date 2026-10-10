@@ -18,6 +18,7 @@ const POWER: usize = 0x40;
 
 /// 0x6C2240 `NiDX8MaterialManager::Entry::Update`. Returns 1 when the entry was rebuilt.
 pub unsafe fn entry_update(entry: usize, material: usize) -> u8 {
+    crate::shadow::touch(&entry_update_port::STATE);
     let revision: u32 = rd(material, MP::revisionID);
     if rd::<u32>(entry, ENTRY_REVISION) == revision {
         return 0;
@@ -37,6 +38,7 @@ pub unsafe fn entry_update(entry: usize, material: usize) -> u8 {
 
 /// 0x6C2620 `NiDX8MaterialManager::SetCurrentMaterial`
 pub unsafe fn set_current_material(this: usize, material: usize) {
+    crate::shadow::touch(&set_current_material_port::STATE);
     let mut entry: usize = rd(material, MP::rendererData);
     if entry == 0 {
         entry = engine::operator_new(ENTRY_SIZE);

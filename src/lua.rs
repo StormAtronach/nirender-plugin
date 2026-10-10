@@ -210,10 +210,10 @@ unsafe extern "C" fn set_mode(l: LuaState) -> i32 {
 /// One line per port: name, mode, calls compared, calls that differed, calls not compared,
 /// calls that ran as Rust. Tab separated, for the log and for tools/status.py.
 pub fn report() -> String {
-    let mut text = String::from("port\taddr\tinstalled\tmode\tshadow_calls\tmismatches\tskipped\tlive_calls\tlocked\n");
+    let mut text = String::from("port\taddr\tinstalled\tmode\tshadow_calls\tmismatches\tskipped\tlive_calls\tlocked\trust_runs\n");
     for port in ports::all() {
         text.push_str(&format!(
-            "{}\t{:#x}\t{}\t{:?}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{:#x}\t{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             port.name,
             port.addr,
             port.installed(),
@@ -223,6 +223,7 @@ pub fn report() -> String {
             port.skipped.load(Ordering::Relaxed),
             port.live_calls.load(Ordering::Relaxed),
             port.locked(),
+            port.rust_runs.load(Ordering::Relaxed),
         ));
     }
     text

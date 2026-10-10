@@ -345,6 +345,7 @@ unsafe fn reset_generated_stage(stage: usize, texcoord_index: u32, transform_fla
 
 /// 0x6B2FA0 `NiDX8TexturePass::resetForNewFrame`
 pub unsafe fn reset_for_new_frame(this: usize) {
+    crate::shadow::touch(&reset_for_new_frame_port::STATE);
     wr::<u32>(this, TP::field_8, 0);
     wr::<u32>(this, TP::field_C, 0);
     wr::<u32>(this, TP::count_10, 2);
@@ -433,6 +434,7 @@ pub unsafe fn reset_for_new_frame(this: usize) {
 
 /// 0x6B33A0 `NiDX8TexturePass::ctor`
 pub unsafe fn ctor(this: usize, renderer: usize) -> usize {
+    crate::shadow::touch(&ctor_port::STATE);
     wr::<u32>(this, TP::vtbl, VTBL_NI_REF_OBJECT);
     wr::<u32>(this, TP::refCount, 0);
     wr(REF_OBJECT_COUNT, 0, rd::<u32>(REF_OBJECT_COUNT, 0).wrapping_add(1));
@@ -473,6 +475,7 @@ pub unsafe fn ctor(this: usize, renderer: usize) -> usize {
 
 /// 0x6B3590 `NiDX8TexturePass::dtor`
 pub unsafe fn dtor(this: usize) {
+    crate::shadow::touch(&dtor_port::STATE);
     wr::<u32>(this, TP::vtbl, VTBL_TEXTURE_PASS);
     let end: u32 = rd(this, TP::TArray_18_endIndex);
     let mut index = 0u32;
@@ -542,6 +545,7 @@ pub unsafe fn dtor(this: usize) {
 /// 0x6B38A0 `NiDX8TexturePass::initRenderer`. Takes the device and the managers of the
 /// renderer and makes the 2x1 texture the stages of `field_12C0` use.
 pub unsafe fn init_renderer(this: usize, renderer: usize) -> u8 {
+    crate::shadow::touch(&init_renderer_port::STATE);
     wr(this, TP::renderer, renderer);
     if renderer != 0 {
         let device: usize = rd(renderer, R::d3dDevice);
@@ -629,6 +633,7 @@ pub unsafe fn init_renderer(this: usize, renderer: usize) -> u8 {
 /// 0x6B3AB0 `NiDX8TexturePass::setStageObject`: puts a sub-pass in a slot of the array, or
 /// null. `field_C` counts the slots that went from empty to used.
 pub unsafe fn set_stage_object(this: usize, index: u32, subpass: usize) {
+    crate::shadow::touch(&set_stage_object_port::STATE);
     // Read before the check against the size of the storage, as the game code does.
     let before: usize = rd(slot(this, index), 0);
     if subpass != 0 {
@@ -656,6 +661,7 @@ pub unsafe fn set_stage_object(this: usize, index: u32, subpass: usize) {
 /// 0x6B3B30 `NiDX8TexturePass::acquireSubpassWithCapacity`: the current sub-pass, or the next
 /// one when the current one has fewer free slots than asked for.
 pub unsafe fn acquire_subpass_with_capacity(this: usize, need_2: u32, need_1: u32) -> usize {
+    crate::shadow::touch(&acquire_subpass_with_capacity_port::STATE);
     ensure_current_subpass(this);
     let (free_1, free_2) = subpass_get_available_slot_counts(rd(this, TP::substruct_14));
     if free_1 < need_1 || free_2 < need_2 {
@@ -667,6 +673,7 @@ pub unsafe fn acquire_subpass_with_capacity(this: usize, need_2: u32, need_1: u3
 /// 0x6B3D70 `NiDX8TexturePass::initOrCheckSubpass`. Returns 1 when the current sub-pass
 /// cannot take what the caller wants to add.
 pub unsafe fn init_or_check_subpass(this: usize, stage_kind: u32, need_1: u32, need_2: u32) -> u8 {
+    crate::shadow::touch(&init_or_check_subpass_port::STATE);
     if ensure_current_subpass(this) {
         return 0;
     }
@@ -687,6 +694,7 @@ pub unsafe fn init_or_check_subpass(this: usize, stage_kind: u32, need_1: u32, n
 /// 0x6B3EE0 `NiDX8TexturePass::acquireSubpassForPixelShader`: goes to the next sub-pass when
 /// the current one has a pixel shader already. No caller reads EAX.
 pub unsafe fn acquire_subpass_for_pixel_shader(this: usize) {
+    crate::shadow::touch(&acquire_subpass_for_pixel_shader_port::STATE);
     ensure_current_subpass(this);
     if rd::<u32>(rd::<usize>(this, TP::substruct_14), SUBPASS_SLOTS_USED_1) != u32::MAX {
         advance_to_next_subpass(this);
@@ -709,6 +717,7 @@ unsafe fn drawn_subpass_shader(this: usize, member: usize) -> usize {
 
 /// 0x6B40F0 `NiDX8TexturePass::applyPixelShader`. Returns the handle it selected.
 pub unsafe fn apply_pixel_shader(this: usize) -> u32 {
+    crate::shadow::touch(&apply_pixel_shader_port::STATE);
     let mut handle = 0u32;
     let shader = drawn_subpass_shader(this, SUBPASS_PIXEL_SHADER);
     if shader != 0 {
@@ -725,6 +734,7 @@ pub unsafe fn apply_pixel_shader(this: usize) -> u32 {
 /// 0x6B4140 `NiDX8TexturePass::applyVertexShader`. `handle` is the shader to use when the
 /// sub-pass has none. Returns the handle it selected.
 pub unsafe fn apply_vertex_shader(this: usize, handle: u32) -> u32 {
+    crate::shadow::touch(&apply_vertex_shader_port::STATE);
     let mut handle = handle;
     let shader = drawn_subpass_shader(this, SUBPASS_VERTEX_SHADER);
     if shader != 0 {

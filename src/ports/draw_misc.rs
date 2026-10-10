@@ -308,6 +308,7 @@ unsafe fn write_point_quads(mut to: usize, count: u32, mut vertices: usize, mut 
 
 /// 0x6AD0A0 `NiDX8Renderer::RenderPoints`: draws the particles as quads that face the camera.
 pub unsafe fn render_points(this: usize, geometry_data: usize, world_transform: usize, world_bound: usize) {
+    crate::shadow::touch(&render_points_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
     }
@@ -441,6 +442,7 @@ unsafe fn write_line_vertices(mut to: usize, count: u32, mut vertices: usize, mu
 
 /// 0x6AD890 `NiDX8Renderer::RenderLines`. No caller reads EAX.
 pub unsafe fn render_lines(this: usize, lines_data: usize, transform: usize, world_bound: usize) {
+    crate::shadow::touch(&render_lines_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
     }
@@ -538,6 +540,7 @@ const HASH_MAP_NEW_SITES: [usize; 4] = [0x6A9B11, 0x6A9B57, 0x6A9B9D, 0x6A9BE3];
 /// bucket count and the four allocation sizes from the instructions in memory, as the code
 /// in memory uses them.
 pub unsafe fn renderer_ctor(this: usize) -> usize {
+    crate::shadow::touch(&renderer_ctor_port::STATE);
     site_thiscall!(0x6A9A90, this);
     wr::<u32>(this, R::propertyStatePtr, 0);
     wr::<u32>(this, R::effectStatePtr, 0);

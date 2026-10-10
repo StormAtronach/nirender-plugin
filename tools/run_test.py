@@ -149,11 +149,11 @@ def main():
         failures.append("the scenario did not finish")
     rows = read_report(report_file)
     if rows:
-        print("\n%-52s %-7s %12s %10s %8s %10s" % ("port", "mode", "compared", "different", "skipped", "live"))
+        print("\n%-52s %-7s %12s %10s %8s %10s %10s" % ("port", "mode", "compared", "different", "skipped", "live", "rust runs"))
         for row in rows:
             hook = "LOCKED" if row.get("locked") == "true" else "ok" if row["installed"] == "true" else "NO HOOK"
-            print("%-52s %-7s %12s %10s %8s %10s" % (row["port"], hook,
-                                                    row["shadow_calls"], row["mismatches"], row["skipped"], row["live_calls"]))
+            print("%-52s %-7s %12s %10s %8s %10s %10s" % (row["port"], hook, row["shadow_calls"], row["mismatches"],
+                                                         row["skipped"], row["live_calls"], row.get("rust_runs", "")))
             if row["installed"] != "true":
                 failures.append("%s: no detour" % row["port"])
             if int(row["mismatches"]):

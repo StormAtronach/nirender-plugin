@@ -432,6 +432,7 @@ unsafe fn destroy_geometry_buffer(buffer: usize) {
 
 /// 0x6AF2D0 `NiDX8Renderer::PurgeSkinPartition`
 pub unsafe fn purge_skin_partition(this: usize, partition: usize) {
+    crate::shadow::touch(&purge_skin_partition_port::STATE);
     let buffer: usize = rd(partition, Partition::bufferData);
     if buffer == 0 {
         return;
@@ -443,6 +444,7 @@ pub unsafe fn purge_skin_partition(this: usize, partition: usize) {
 
 /// 0x6AF3A0 `NiDX8Renderer::PurgeGeometryData`
 pub unsafe fn purge_geometry_data(this: usize, geom_data: usize) {
+    crate::shadow::touch(&purge_geometry_data_port::STATE);
     let key: u32 = rd(geom_data, NiGeometryData::uniqueID);
     let map = this + R::hashGeomBuffers;
     let node = hash_find_node(map, key);
@@ -496,6 +498,7 @@ unsafe fn purge_geometry_data_regions(set: &mut Regions, this: usize, geom_data:
 /// 0x6AF4A0 `NiDX8Renderer::createGeometryBufferData`. Puts the buffer data of the geometry
 /// data into `*out`. Returns 1 when it made a new one.
 pub unsafe fn create_geometry_buffer_data(this: usize, out: usize, geom_data: usize) -> u8 {
+    crate::shadow::touch(&create_geometry_buffer_data_port::STATE);
     if geom_data == 0 {
         return 0;
     }
@@ -528,6 +531,7 @@ unsafe fn create_geometry_buffer_data_regions(set: &mut Regions, this: usize, ou
 /// partition into `*out`. Returns 1 when it made a new one. `*out` is an input too: with
 /// no entry in the map and a value in `*out`, nothing is made.
 pub unsafe fn find_cached_partition_geom_buffer(this: usize, out: usize, geom_data: usize, skin: usize, partition: usize) -> u8 {
+    crate::shadow::touch(&find_cached_partition_geom_buffer_port::STATE);
     if geom_data == 0 || skin == 0 {
         return 0;
     }
@@ -596,6 +600,7 @@ unsafe fn pack_kept(buffer: usize, geom_data: usize, active_vertices: u32, tri_l
 /// 0x6AF610 `NiDX8Renderer::packGeometryBuffers`. `shader` is a `NiD3DShaderInterface` or 0.
 /// Returns 0 without a buffer data or a geometry data, else 1.
 pub unsafe fn pack_geometry_buffers(this: usize, out: usize, geom_data: usize, skin: usize, shader: usize, shader_data: u32) -> u8 {
+    crate::shadow::touch(&pack_geometry_buffers_port::STATE);
     let buffer: usize = rd(out, 0);
     if buffer == 0 || geom_data == 0 {
         return 0;
@@ -724,6 +729,7 @@ unsafe fn pack_geometry_buffers_regions(set: &mut Regions, this: usize, out: usi
 /// 0x6AFAB0 `NiDX8Renderer::createPartitionGeomBuffer`: packs the buffers of a skin
 /// partition. Returns 0 without a buffer data, geometry data or skin instance, else 1.
 pub unsafe fn create_partition_geom_buffer(this: usize, out: usize, geom_data: usize, skin: usize, partition: usize) -> u8 {
+    crate::shadow::touch(&create_partition_geom_buffer_port::STATE);
     let buffer: usize = rd(out, 0);
     if buffer == 0 || geom_data == 0 || skin == 0 {
         return 0;
@@ -832,6 +838,7 @@ unsafe fn create_partition_geom_buffer_regions(set: &mut Regions, this: usize, o
 /// 0x6AFCC0 `NiDX8Renderer::PackScreenPolyGeomBuffer`. `near` and `distance` are floats the
 /// game code moves as integers. Returns the buffer data in the renderer, or 0.
 pub unsafe fn pack_screen_poly_geom_buffer(this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize, near: u32, distance: u32) -> usize {
+    crate::shadow::touch(&pack_screen_poly_geom_buffer_port::STATE);
     // The game code gives the places of its two last arguments for the results.
     let mut fvf = distance;
     let mut stride = near;
@@ -898,6 +905,7 @@ unsafe fn pack_screen_poly_geom_buffer_regions(set: &mut Regions, this: usize, c
 
 /// 0x6ADD20 `NiDX8Renderer::RenderScreenPoly`
 pub unsafe fn render_screen_poly(this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize) {
+    crate::shadow::touch(&render_screen_poly_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 || count == 0 {
         return;
     }
@@ -944,6 +952,7 @@ unsafe fn render_screen_poly_regions(set: &mut Regions, this: usize, count: u32)
 /// a buffer data at the end.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn precache_geometry_data(this: usize, geom_data: usize, indices: u32, index_count: u32, flags: u32, _extra: usize, shader: usize, shader_data: u32) -> u8 {
+    crate::shadow::touch(&precache_geometry_data_port::STATE);
     let key: u32 = rd(geom_data, NiGeometryData::uniqueID);
     let map = this + R::hashGeomBuffers;
     let node = hash_find_node(map, key);
@@ -1039,6 +1048,7 @@ pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
     this: usize, geom_data: usize, skin: usize, flags: u32, _property: usize, shader: usize, shader_data: u32, per_partition: u32,
     per_vertex: u32,
 ) -> u8 {
+    crate::shadow::touch(&maybe_pre_pack_skinned_geometry_buffer_port::STATE);
     if skin == 0 {
         return 0;
     }
@@ -1176,6 +1186,7 @@ unsafe fn shader_of(property: usize) -> (usize, u32) {
 
 /// 0x6AC420 `NiDX8Renderer::PrecacheGeometry`
 pub unsafe fn precache_geometry(this: usize, geometry: usize, flags: u32, property: usize, per_partition: u32, per_vertex: u32) -> u8 {
+    crate::shadow::touch(&precache_geometry_port::STATE);
     if geometry == 0 {
         return 0;
     }
@@ -1293,6 +1304,7 @@ unsafe fn batches_skinned(this: usize, skin: usize) -> bool {
 
 /// 0x6AE600 `NiDX8Renderer::BatchRenderShape`
 pub unsafe fn batch_render_shape(this: usize, geom_data: usize, skin: usize, transform: usize, bound: usize) {
+    crate::shadow::touch(&batch_render_shape_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
     }
@@ -1330,6 +1342,7 @@ pub unsafe fn batch_render_shape(this: usize, geom_data: usize, skin: usize, tra
 
 /// 0x6AE8C0 `NiDX8Renderer::BatchRenderStrips`
 pub unsafe fn batch_render_strips(this: usize, geom_data: usize, skin: usize, transform: usize, bound: usize) {
+    crate::shadow::touch(&batch_render_strips_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
     }

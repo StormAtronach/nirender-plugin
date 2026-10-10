@@ -1095,6 +1095,7 @@ pub unsafe fn set_ct_pipeline_state(
     _world_transform: usize,
     _world_bound: usize,
 ) -> u32 {
+    crate::shadow::touch(&set_ct_pipeline_state_port::STATE);
     build(&mut Live, this, property_state, effect_state, texture_sets)
 }
 

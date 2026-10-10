@@ -629,6 +629,7 @@ unsafe fn new_index_buffer(device: usize, size: u32, usage: u32, pool: u32) -> u
 
 /// 0x6BC970 `NiDX8IndexBufferManager::ctor`. Returns `this`.
 pub unsafe fn index_manager_ctor(this: usize, device: usize) -> usize {
+    crate::shadow::touch(&index_manager_ctor_port::STATE);
     wr(this, IM::vtbl, VTBL_NI_REF_OBJECT);
     wr::<u32>(this, IM::refCount, 0);
     eng::ref_object_count_add(1);
@@ -651,6 +652,7 @@ pub unsafe fn index_manager_ctor(this: usize, device: usize) -> usize {
 
 /// 0x6BCBA0 `NiDX8IndexBufferManager::dtor`
 pub unsafe fn index_manager_dtor(this: usize) {
+    crate::shadow::touch(&index_manager_dtor_port::STATE);
     wr(this, IM::vtbl, VTBL_INDEX_BUFFER_MANAGER);
     for map in [IM::hashmap_1C, IM::hashmap_2C, IM::hashmap_3C] {
         map_release_values(this + map, false);
@@ -682,6 +684,7 @@ pub unsafe fn index_manager_dtor(this: usize) {
 
 /// 0x6BCB80 `NiDX8IndexBufferManager::deleting_dtor`. Returns `this`.
 pub unsafe fn index_manager_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&index_manager_deleting_dtor_port::STATE);
     index_manager_dtor(this);
     if flags & 1 != 0 {
         eng::delete(this);
@@ -692,6 +695,7 @@ pub unsafe fn index_manager_deleting_dtor(this: usize, flags: u8) -> usize {
 /// 0x6BCE80 `NiDX8IndexBufferManager::createIndexBuffer`: the indices of a shape in a 16 bit
 /// index buffer. `index_buffer` is used again when it fits.
 pub unsafe fn create_index_buffer(this: usize, indices: usize, index_count: u32, index_buffer: usize, out_buffer_size: usize, pool: u32, usage: u32) -> usize {
+    crate::shadow::touch(&create_index_buffer_port::STATE);
     if rd::<usize>(this, IM::device) == 0 {
         return 0;
     }
@@ -724,6 +728,7 @@ pub unsafe fn create_index_buffer(this: usize, indices: usize, index_count: u32,
 /// `quads` quads, two triangles each. `fill` writes the indices also when the buffer the
 /// manager has fits.
 pub unsafe fn get_or_build_quad_index_buffer(this: usize, quads: u32, fill: u8, usage: u32, pool: u32) -> usize {
+    crate::shadow::touch(&get_or_build_quad_index_buffer_port::STATE);
     if rd::<usize>(this, IM::device) == 0 {
         return 0;
     }
@@ -780,6 +785,7 @@ pub unsafe fn get_or_build_quad_index_buffer(this: usize, quads: u32, fill: u8, 
 /// 0x6BD190 `NiDX8IndexBufferManager::buildLineSegmentIndexBuffer`: a line from each vertex
 /// with a flag to the next one; the last vertex connects to the first.
 pub unsafe fn build_line_segment_index_buffer(this: usize, vertex_count: u32, flags: usize, out_index_count: usize, usage: u32, pool: u32) -> usize {
+    crate::shadow::touch(&build_line_segment_index_buffer_port::STATE);
     if rd::<usize>(this, IM::device) == 0 {
         return 0;
     }
@@ -842,6 +848,7 @@ pub unsafe fn build_line_segment_index_buffer(this: usize, vertex_count: u32, fl
 
 /// 0x6BD370 `NiDX8IndexBufferManager::Recreate`: empties the first map.
 pub unsafe fn index_manager_recreate(this: usize) {
+    crate::shadow::touch(&index_manager_recreate_port::STATE);
     let map = this + IM::hashmap_1C;
     map_release_values(map, true);
     map_remove_all(map);
@@ -850,6 +857,7 @@ pub unsafe fn index_manager_recreate(this: usize) {
 
 /// 0x6BD560 `NiDX8IndexBufferManager::HashMap::dtor`
 pub unsafe fn index_map_dtor(map: usize) {
+    crate::shadow::touch(&index_map_dtor_port::STATE);
     map_dtor_body(map, eng::vtbl_index_map());
 }
 
@@ -857,6 +865,7 @@ pub unsafe fn index_map_dtor(map: usize) {
 
 /// 0x6BD780 `NiDX8VertexBufferManager::ctor`. Returns `this`.
 pub unsafe fn vertex_manager_ctor(this: usize, device: usize) -> usize {
+    crate::shadow::touch(&vertex_manager_ctor_port::STATE);
     wr(this, VM::vtbl, VTBL_NI_REF_OBJECT);
     wr::<u32>(this, VM::refCount, 0);
     eng::ref_object_count_add(1);
@@ -875,6 +884,7 @@ pub unsafe fn vertex_manager_ctor(this: usize, device: usize) -> usize {
 
 /// 0x6BD9B0 `NiDX8VertexBufferManager::dtor`
 pub unsafe fn vertex_manager_dtor(this: usize) {
+    crate::shadow::touch(&vertex_manager_dtor_port::STATE);
     wr(this, VM::vtbl, VTBL_VERTEX_BUFFER_MANAGER);
     for map in [VM::hashmap_C, VM::hashmap_1C, VM::hashmapFVFUsage] {
         map_release_values(this + map, false);
@@ -895,6 +905,7 @@ pub unsafe fn vertex_manager_dtor(this: usize) {
 
 /// 0x6BD990 `NiDX8VertexBufferManager::deleting_dtor`. Returns `this`.
 pub unsafe fn vertex_manager_deleting_dtor(this: usize, flags: u8) -> usize {
+    crate::shadow::touch(&vertex_manager_deleting_dtor_port::STATE);
     vertex_manager_dtor(this);
     if flags & 1 != 0 {
         eng::delete(this);
@@ -904,6 +915,7 @@ pub unsafe fn vertex_manager_deleting_dtor(this: usize, flags: u8) -> usize {
 
 /// 0x6C28A0 `NiDX8VBResource::ctor`. Returns `this`.
 pub unsafe fn vb_resource_ctor(this: usize) -> usize {
+    crate::shadow::touch(&vb_resource_ctor_port::STATE);
     wr::<u32>(this, VR::resourceId, 0xFFFF_FFFF);
     wr::<u32>(this, VR::type_, 0xFFFF);
     wr::<u32>(this, VR::pool, 0);
@@ -925,6 +937,7 @@ fn pool_map(pool: u32) -> Option<usize> {
 /// 0x6BE690 `NiDX8VertexBufferManager::GetVBInfo`: the `VBInfo` of a usage and a vertex
 /// format in the map of the pool. Makes it when the map has none.
 pub unsafe fn get_vb_info(this: usize, usage: u32, fvf: u32, pool: u32) -> usize {
+    crate::shadow::touch(&get_vb_info_port::STATE);
     let key = usage.wrapping_shl(16) | fvf;
     let map = match pool_map(pool) {
         Some(map) => this + map,
@@ -951,12 +964,14 @@ pub unsafe fn get_vb_info(this: usize, usage: u32, fvf: u32, pool: u32) -> usize
 
 /// 0x6BEA90 `NiDX8VertexBufferManager::FVFUsageHash::insert`
 pub unsafe fn fvf_usage_hash_insert(map: usize, key: u32, value: usize) {
+    crate::shadow::touch(&fvf_usage_hash_insert_port::STATE);
     map_insert(map, key, value);
 }
 
 /// 0x6BDC70 `NiDX8VertexBufferManager::CreateVertexBuffer`: the next of the five buffers of
 /// a usage, format and pool. A buffer that is too small is released and made again.
 pub unsafe fn create_vertex_buffer(this: usize, byte_count: u32, usage: u32, fvf: u32, pool: u32) -> usize {
+    crate::shadow::touch(&create_vertex_buffer_port::STATE);
     if rd::<usize>(this, VM::device) == 0 {
         return 0;
     }
@@ -1030,6 +1045,7 @@ pub unsafe fn pack_untransformed_vb(
     out_stride: usize,
     out_fvf: usize,
 ) -> usize {
+    crate::shadow::touch(&pack_untransformed_vb_port::STATE);
     let active = geometry_active_vertex_count(geometry);
     if active as u16 == 0 {
         return 0;
@@ -1180,6 +1196,7 @@ pub unsafe fn pack_screen_poly_vb(
     out_fvf: usize,
     out_stride: usize,
 ) -> usize {
+    crate::shadow::touch(&pack_screen_poly_vb_port::STATE);
     wr::<u32>(out_fvf, 0, D3DFVF_XYZ);
     let mut stride: u32 = 12;
     let mut color_offset: usize = 0;
@@ -1243,6 +1260,7 @@ pub unsafe fn pack_screen_poly_vb(
 
 /// 0x6BE910 `NiDX8VertexBufferManager::Recreate`: empties the map of the default pool.
 pub unsafe fn vertex_manager_recreate(this: usize) {
+    crate::shadow::touch(&vertex_manager_recreate_port::STATE);
     let map = this + VM::hashmap_C;
     map_release_values(map, true);
     map_remove_all(map);
@@ -1251,11 +1269,13 @@ pub unsafe fn vertex_manager_recreate(this: usize) {
 
 /// 0x6BEA30 `NiDX8VertexBufferManager::HashMap::dtor`
 pub unsafe fn vertex_map_dtor(map: usize) {
+    crate::shadow::touch(&vertex_map_dtor_port::STATE);
     map_dtor_body(map, eng::vtbl_vertex_map());
 }
 
 /// 0x6BEB20 `NiDX8VertexBufferManager::Hash::deleting_dtor`. Returns `this`.
 pub unsafe fn vertex_map_deleting_dtor(map: usize, flags: u8) -> usize {
+    crate::shadow::touch(&vertex_map_deleting_dtor_port::STATE);
     map_dtor_body(map, eng::vtbl_vertex_map());
     if flags & 1 != 0 {
         eng::delete(map);
@@ -1280,6 +1300,7 @@ unsafe fn pointer_release(object: usize) {
 /// 0x6BEE00 `NiD3DShaderInterface::compileVertexShader`: keeps the function and the usage of
 /// shader `index` and makes the shader. Returns the handle, 0 when there is none.
 pub unsafe fn compile_vertex_shader(this: usize, shader_function: u32, shader_usage: u32, index: u32) -> u32 {
+    crate::shadow::touch(&compile_vertex_shader_port::STATE);
     let mut handle: u32 = 0;
     let function = shader_function;
     let usage = shader_usage;
@@ -1379,6 +1400,7 @@ pub unsafe fn build_vertex_buffer(
     out_shader: usize,
     declaration_index: u32,
 ) -> usize {
+    crate::shadow::touch(&build_vertex_buffer_port::STATE);
     // With a partition the game code sets only the low word of the count.
     let active = if partition != 0 { rd::<u16>(partition, SP::numVertices) as u32 } else { geometry_active_vertex_count(geometry) };
     if active as u16 == 0 {

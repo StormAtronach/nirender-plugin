@@ -46,6 +46,8 @@ pub struct PortState {
     pub after: AtomicUsize,
     /// Calls that ran the Rust function for real.
     pub live_calls: AtomicU64,
+    /// Times the Rust function ran at all: live, in a comparison, or called by another port.
+    pub rust_runs: AtomicU64,
     pub shadow_calls: AtomicU64,
     /// Calls in shadow mode that could not be compared.
     pub skipped: AtomicU64,
@@ -72,6 +74,7 @@ impl PortState {
             locked: AtomicBool::new(false),
             after: AtomicUsize::new(0),
             live_calls: AtomicU64::new(0),
+            rust_runs: AtomicU64::new(0),
             shadow_calls: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
             mismatches: AtomicU64::new(0),
@@ -99,6 +102,12 @@ impl PortState {
     pub fn installed(&self) -> bool {
         self.orig.load(Ordering::Relaxed) != 0
     }
+}
+
+/// Counts one run of the Rust function of a port. Each port function calls it first.
+#[inline(always)]
+pub fn touch(state: &PortState) {
+    state.rust_runs.fetch_add(1, Ordering::Relaxed);
 }
 
 /// What a function leaves in EAX.
