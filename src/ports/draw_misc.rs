@@ -10,95 +10,69 @@
 use core::arch::asm;
 use core::mem::transmute;
 
-use crate::engine;
+use crate::d3d::{
+    buffer_lock, buffer_unlock, device_set_indices, device_set_pixel_shader, device_set_stream_source, device_set_vertex_shader,
+    D3DRS_VERTEXBLEND,
+};
+use crate::engine::{self, vcall0, NI_POINTER_CTOR, NI_POINTER_DTOR, VERTEX_BLEND_LOOKUP};
 use crate::gen::layouts::{NiDX8RenderState as RS, NiDX8Renderer as R, NiGeometryData as GD, NiPropertyState as PS, THashMap};
 use crate::mem::{rd, wr};
 use crate::shadow::Regions;
-use crate::site::call_target;
+// The macros of `site` call `target` for the address of the callee.
+use crate::site::{call_target as target, site_cdecl, site_thiscall};
 
 // ---------------------------------------------------------------------------------------
 // The call sites
 // ---------------------------------------------------------------------------------------
 
-/// The address of every `call rel32` of the three functions, with the callee of the database.
-const SITE_TABLE: &[(usize, usize)] = &[
+/// The address of every `call rel32` of the three functions. The ports call the target that is
+/// in memory there. The comment of each line gives the callee of the database.
+#[rustfmt::skip]
+pub static SITES: &[usize] = &[
     // NiDX8Renderer::RenderPoints
-    (0x6AD0ED, 0x6AC9C0), // NiDX8Renderer::SetModelTransform
-    (0x6AD100, 0x6ED100), // NiBound_or_NiQuaternion::Copy
-    (0x6AD160, 0x6B9C40), // NiDX8ConfigurableTexturePipeline::selectAndLinkPass
-    (0x6AD16F, 0x6B82A0), // NiDX8RenderState::updateD3DState
-    (0x6AD198, 0x6B9C20), // NiDX8ConfigurableTexturePipeline::buildPass
-    (0x6AD1C6, 0x65EEB0), // NiRenderStateSetting::SetValue
-    (0x6AD204, 0x6BB200), // NiDX8LightManager::setState
-    (0x6AD221, 0x6B9C30), // NiDX8ConfigurableTexturePipeline::loadBinary
-    (0x6AD236, 0x6BCFE0), // NiDX8IndexBufferManager::getOrBuildQuadIndexBuffer
-    (0x6AD2F0, 0x6BDC70), // NiDX8VertexBufferManager::CreateVertexBuffer
-    (0x6AD7C6, 0x6B9E90), // NiDX8ConfigurableTexturePipeline::buildSkinPartitionPass
-    (0x6AD84B, 0x736400), // patchDrawIndexedPrimitive
-    (0x6AD874, 0x6B9D30), // NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables
+    0x6AD0ED, // NiDX8Renderer::SetModelTransform
+    0x6AD100, // NiBound_or_NiQuaternion::Copy
+    0x6AD160, // NiDX8ConfigurableTexturePipeline::selectAndLinkPass
+    0x6AD16F, // NiDX8RenderState::updateD3DState
+    0x6AD198, // NiDX8ConfigurableTexturePipeline::buildPass
+    0x6AD1C6, // NiRenderStateSetting::SetValue
+    0x6AD204, // NiDX8LightManager::setState
+    0x6AD221, // NiDX8ConfigurableTexturePipeline::loadBinary
+    0x6AD236, // NiDX8IndexBufferManager::getOrBuildQuadIndexBuffer
+    0x6AD2F0, // NiDX8VertexBufferManager::CreateVertexBuffer
+    0x6AD7C6, // NiDX8ConfigurableTexturePipeline::buildSkinPartitionPass
+    0x6AD84B, // patchDrawIndexedPrimitive
+    0x6AD874, // NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables
     // NiDX8Renderer::RenderLines
-    (0x6AD8C2, 0x6AC9C0), // NiDX8Renderer::SetModelTransform
-    (0x6AD8D2, 0x6ED100), // NiBound_or_NiQuaternion::Copy
-    (0x6AD909, 0x6BD190), // NiDX8IndexBufferManager::buildLineSegmentIndexBuffer
-    (0x6AD975, 0x6BDC70), // NiDX8VertexBufferManager::CreateVertexBuffer
-    (0x6ADB2E, 0x6B9C40), // NiDX8ConfigurableTexturePipeline::selectAndLinkPass
-    (0x6ADB3D, 0x6B82A0), // NiDX8RenderState::updateD3DState
-    (0x6ADB68, 0x6B9C20), // NiDX8ConfigurableTexturePipeline::buildPass
-    (0x6ADBE8, 0x6BB200), // NiDX8LightManager::setState
-    (0x6ADBFC, 0x6B9C30), // NiDX8ConfigurableTexturePipeline::loadBinary
-    (0x6ADC92, 0x736400), // patchDrawIndexedPrimitive
-    (0x6ADCBB, 0x6B9D30), // NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables
+    0x6AD8C2, // NiDX8Renderer::SetModelTransform
+    0x6AD8D2, // NiBound_or_NiQuaternion::Copy
+    0x6AD909, // NiDX8IndexBufferManager::buildLineSegmentIndexBuffer
+    0x6AD975, // NiDX8VertexBufferManager::CreateVertexBuffer
+    0x6ADB2E, // NiDX8ConfigurableTexturePipeline::selectAndLinkPass
+    0x6ADB3D, // NiDX8RenderState::updateD3DState
+    0x6ADB68, // NiDX8ConfigurableTexturePipeline::buildPass
+    0x6ADBE8, // NiDX8LightManager::setState
+    0x6ADBFC, // NiDX8ConfigurableTexturePipeline::loadBinary
+    0x6ADC92, // patchDrawIndexedPrimitive
+    0x6ADCBB, // NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables
     // NiDX8Renderer::ctor
-    (0x6A9A90, 0x6F4E30), // NiRenderer::ctor
-    (0x6A9AAC, 0x6F25E0), // NiBound_or_NiPlane::ctor
-    (0x6A9ABC, 0x6F25E0), // NiBound_or_NiPlane::ctor
-    (0x6A9ADB, 0x7276B0), // `eh vector constructor iterator'
-    (0x6A9B11, 0x727692), // operator new
-    (0x6A9B57, 0x727692), // operator new
-    (0x6A9B9D, 0x727692), // operator new
-    (0x6A9BE3, 0x727692), // operator new
-    (0x6A9C19, 0x6A96C0), // NiDX8Renderer::init
+    0x6A9A90, // NiRenderer::ctor
+    0x6A9AAC, // NiBound_or_NiPlane::ctor
+    0x6A9ABC, // NiBound_or_NiPlane::ctor
+    0x6A9ADB, // `eh vector constructor iterator'
+    0x6A9B11, // operator new
+    0x6A9B57, // operator new
+    0x6A9B9D, // operator new
+    0x6A9BE3, // operator new
+    0x6A9C19, // NiDX8Renderer::init
 ];
-
-const fn site_addresses<const N: usize>(table: &[(usize, usize)]) -> [usize; N] {
-    assert!(table.len() == N);
-    let mut out = [0usize; N];
-    let mut i = 0;
-    while i < N {
-        out[i] = table[i].0;
-        i += 1;
-    }
-    out
-}
-
-static SITE_ADDRESSES: [usize; SITE_TABLE.len()] = site_addresses(SITE_TABLE);
-
-/// The call instructions this module serves through `site::call_target`.
-pub static SITES: &[usize] = &SITE_ADDRESSES;
-
-macro_rules! as_u32 {
-    ($a:expr) => {
-        u32
-    };
-}
-
-/// Calls the target of the `call` at `$site` as a `__thiscall` function.
-macro_rules! site_thiscall {
-    ($site:expr, $this:expr $(, $a:expr)*) => {
-        transmute::<usize, unsafe extern "thiscall" fn(usize $(, as_u32!($a))*) -> u32>(call_target($site))($this $(, $a as u32)*)
-    };
-}
-
-/// Calls the target of the `call` at `$site` as a `__cdecl` function.
-macro_rules! site_cdecl {
-    ($site:expr $(, $a:expr)*) => {
-        transmute::<usize, unsafe extern "C" fn($(as_u32!($a)),*) -> u32>(call_target($site))($($a as u32),*)
-    };
-}
 
 /// The call that the Morrowind Code Patch put in the place of `call [edx+11Ch]`
 /// (`IDirect3DDevice8::DrawIndexedPrimitive`). The six arguments of the device method are on
 /// the stack, the device is in EAX and its vtable is in EDX. The callee removes the arguments.
+/// The function passes `min_index` as the caller gives it. At the call, ECX has the address of
+/// a block of this function and not the value that the game code has there. The function of
+/// the same name in `draw` is different: it passes the ECX of the game and a `min_index` of 0.
 unsafe fn site_draw_indexed_primitive(
     site: usize,
     device: usize,
@@ -109,7 +83,7 @@ unsafe fn site_draw_indexed_primitive(
     start_index: u32,
     primitive_count: u32,
 ) -> u32 {
-    let block = [call_target(site) as u32, primitive_type, min_index, vertex_count, start_index, primitive_count];
+    let block = [target(site) as u32, primitive_type, min_index, vertex_count, start_index, primitive_count];
     let result: u32;
     asm!(
         "push dword ptr [ecx + 20]",
@@ -131,15 +105,13 @@ unsafe fn site_draw_indexed_primitive(
 // Engine data at fixed addresses, and members the layouts do not have
 // ---------------------------------------------------------------------------------------
 
-/// `data_NiDX8Renderer_vertexBlendLookup`: the first entry is the value of
-/// `D3DRS_VERTEXBLEND` for no blending.
-const VERTEX_BLEND_LOOKUP: usize = 0x7C3840;
-const VTBL_RENDERER: u32 = 0x74F4D0;
 /// The vtables of the four hash maps of the renderer, in the order of the members.
-const VTBL_HASH_MAPS: [u32; 4] = [0x74F620, 0x74F60C, 0x74F5F8, 0x74F5E4];
-/// `NiPointer::ctor` and `NiPointer::dtor`. The constructor passes them as arguments.
-const NI_POINTER_CTOR: usize = 0x40B080;
-const NI_POINTER_DTOR: usize = 0x40A880;
+const VTBL_HASH_MAPS: [usize; 4] = [
+    engine::VTBL_RENDERER_MAP_GEOM_BUFFERS,
+    engine::VTBL_RENDERER_MAP_SKIN_PARTITIONS,
+    engine::VTBL_RENDERER_MAP_TEXTURES,
+    engine::VTBL_RENDERER_MAP_CUBE_MAPS,
+];
 
 /// `NiParticlesData::particleRadius`
 const PARTICLES_RADIUS: usize = 0x38;
@@ -152,7 +124,6 @@ const LINES_SEGMENT_FLAGS: usize = 0x34;
 /// `NiRenderStateSetting` of `D3DRS_VERTEXBLEND` in the render state.
 const RS_VERTEX_BLEND: usize = RS::renderStateSettings + D3DRS_VERTEXBLEND as usize * 8;
 
-const D3DRS_VERTEXBLEND: u32 = 151;
 /// `D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1`
 const FVF_POINTS: u32 = 0x152;
 /// Bytes of one vertex of a particle quad.
@@ -171,39 +142,11 @@ const _: () = assert!(R::hashGeomBuffers == 0x560 && R::hashmap_maybeRenderedCub
 // Virtual calls: each call reads the slot
 // ---------------------------------------------------------------------------------------
 
-/// A virtual function of `object` at `offset` in its vtable.
-unsafe fn virtual_at(object: usize, offset: usize) -> usize {
-    rd(rd::<usize>(object, 0), offset)
-}
-
-/// `NiGeometryData::GetActiveVertexCount`, slot 0x30. The result is 16 bits.
+/// `NiGeometryData::GetActiveVertexCount`, slot 0x30. The result is 16 bits, and the callers
+/// here test only those bits. The function of the same name in `buffers` returns the full
+/// `u32` of EAX, and its callers take the low word. The two are different on purpose.
 unsafe fn geometry_active_vertex_count(data: usize) -> u16 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize) -> u32>(virtual_at(data, 0x30))(data) as u16
-}
-
-unsafe fn vertex_buffer_lock(buffer: usize, offset: u32, size: u32, data: *mut usize, flags: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, *mut usize, u32) -> u32 = transmute(virtual_at(buffer, 0x2C));
-    f(buffer, offset, size, data, flags)
-}
-
-unsafe fn vertex_buffer_unlock(buffer: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize) -> u32>(virtual_at(buffer, 0x30))(buffer)
-}
-
-unsafe fn device_set_vertex_shader(device: usize, handle: u32) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32) -> u32>(virtual_at(device, 0x130))(device, handle)
-}
-
-unsafe fn device_set_stream_source(device: usize, stream: u32, buffer: usize, stride: u32) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, usize, u32) -> u32>(virtual_at(device, 0x14C))(device, stream, buffer, stride)
-}
-
-unsafe fn device_set_indices(device: usize, buffer: usize, base_vertex: u32) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, usize, u32) -> u32>(virtual_at(device, 0x154))(device, buffer, base_vertex)
-}
-
-unsafe fn device_set_pixel_shader(device: usize, handle: u32) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32) -> u32>(virtual_at(device, 0x160))(device, handle)
+    vcall0(data, 0x30) as u16
 }
 
 /// Sets the vertex shader and the pixel shader of a fixed-function draw, as the two draw
@@ -226,21 +169,16 @@ unsafe fn set_fixed_function_shaders(this: usize, fvf: u32) {
 // NiDX8Renderer::RenderPoints
 // ---------------------------------------------------------------------------------------
 
-#[inline(always)]
-unsafe fn float(base: usize, offset: usize) -> f32 {
-    rd(base, offset)
-}
-
 /// The two diagonals of a particle quad of size 1 (0x6AD247 to 0x6AD2EC):
 /// `(right + up) * radius` and `(up - right) * radius`, with the model-space camera axes.
 unsafe fn point_diagonals(this: usize, radius: f32) -> ([f32; 3], [f32; 3]) {
-    let a = float(this, R::modelCameraUp_x) - float(this, R::modelCameraRight_x);
-    let b = float(this, R::modelCameraUp_y) - float(this, R::modelCameraRight_y);
-    let c = float(this, R::modelCameraUp_z) - float(this, R::modelCameraRight_z);
+    let a = rd::<f32>(this, R::modelCameraUp_x) - rd::<f32>(this, R::modelCameraRight_x);
+    let b = rd::<f32>(this, R::modelCameraUp_y) - rd::<f32>(this, R::modelCameraRight_y);
+    let c = rd::<f32>(this, R::modelCameraUp_z) - rd::<f32>(this, R::modelCameraRight_z);
     let difference = [a * radius, b * radius, c * radius];
-    let d = float(this, R::modelCameraRight_x) + float(this, R::modelCameraUp_x);
-    let e = float(this, R::modelCameraRight_y) + float(this, R::modelCameraUp_y);
-    let f = float(this, R::modelCameraRight_z) + float(this, R::modelCameraUp_z);
+    let d = rd::<f32>(this, R::modelCameraRight_x) + rd::<f32>(this, R::modelCameraUp_x);
+    let e = rd::<f32>(this, R::modelCameraRight_y) + rd::<f32>(this, R::modelCameraUp_y);
+    let f = rd::<f32>(this, R::modelCameraRight_z) + rd::<f32>(this, R::modelCameraUp_z);
     let sum = [d * radius, e * radius, f * radius];
     (sum, difference)
 }
@@ -266,36 +204,36 @@ unsafe fn write_point_vertex(to: usize, position: [f32; 3], color: u32, u: u32, 
 unsafe fn write_point_quads(mut to: usize, count: u32, mut vertices: usize, mut sizes: usize, mut colors: usize, sum: [f32; 3], difference: [f32; 3]) {
     let mut left = count;
     while left != 0 {
-        let size = float(sizes, 0);
+        let size = rd::<f32>(sizes, 0);
         let color: u32 = if colors != 0 { rd(colors, 0) } else { 0xFFFF_FFFF };
         let p_x = sum[0] * size;
         let p_y = sum[1] * size;
         // The game code keeps this value on the x87 stack until the third vertex.
         let p_z = size * sum[2];
-        let size = float(sizes, 0);
+        let size = rd::<f32>(sizes, 0);
         let q = [difference[0] * size, difference[1] * size, difference[2] * size];
 
-        let x = float(vertices, 0) - p_x;
-        let y = float(vertices, 4) - p_y;
-        let z = float(vertices, 8) - p_z;
+        let x = rd::<f32>(vertices, 0) - p_x;
+        let y = rd::<f32>(vertices, 4) - p_y;
+        let z = rd::<f32>(vertices, 8) - p_z;
         write_point_vertex(to, [x, y, z], color, 0, 0);
         to += POINT_STRIDE as usize;
 
-        let x = float(vertices, 0) - q[0];
-        let y = float(vertices, 4) - q[1];
-        let z = float(vertices, 8) - q[2];
+        let x = rd::<f32>(vertices, 0) - q[0];
+        let y = rd::<f32>(vertices, 4) - q[1];
+        let z = rd::<f32>(vertices, 8) - q[2];
         write_point_vertex(to, [x, y, z], color, ONE, 0);
         to += POINT_STRIDE as usize;
 
-        let x = p_x + float(vertices, 0);
-        let y = p_y + float(vertices, 4);
-        let z = p_z + float(vertices, 8);
+        let x = p_x + rd::<f32>(vertices, 0);
+        let y = p_y + rd::<f32>(vertices, 4);
+        let z = p_z + rd::<f32>(vertices, 8);
         write_point_vertex(to, [x, y, z], color, ONE, ONE);
         to += POINT_STRIDE as usize;
 
-        let x = q[0] + float(vertices, 0);
-        let y = q[1] + float(vertices, 4);
-        let z = q[2] + float(vertices, 8);
+        let x = q[0] + rd::<f32>(vertices, 0);
+        let y = q[1] + rd::<f32>(vertices, 4);
+        let z = q[2] + rd::<f32>(vertices, 8);
         write_point_vertex(to, [x, y, z], color, 0, ONE);
         to += POINT_STRIDE as usize;
 
@@ -363,11 +301,11 @@ pub unsafe fn render_points(this: usize, geometry_data: usize, world_transform: 
         return;
     }
     let mut memory: usize = 0;
-    if vertex_buffer_lock(vertex_buffer, 0, size_to_lock, &mut memory, 0) != 0 {
+    if buffer_lock(vertex_buffer, 0, size_to_lock, core::ptr::addr_of_mut!(memory) as usize, 0) != 0 {
         return;
     }
     write_point_quads(memory, count, vertices, sizes, colors, sum, difference);
-    vertex_buffer_unlock(vertex_buffer);
+    buffer_unlock(vertex_buffer);
 
     site_thiscall!(0x6AD7C6, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, 0, world_transform, world_bound);
     device_set_stream_source(rd(this, R::d3dDevice), 0, vertex_buffer, POINT_STRIDE);
@@ -378,11 +316,11 @@ pub unsafe fn render_points(this: usize, geometry_data: usize, world_transform: 
     site_thiscall!(0x6AD874, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, world_transform, world_bound);
 }
 
-/// A draw that passes the first tests gets to `buildPass` and `loadBinary` of the texture
-/// pass, the light manager and the two buffer managers. The texture pass writes stages and
-/// textures, and uploads a texture on first use. These are more blocks than `Regions` holds,
-/// and a texture upload cannot run twice. Thus the shadow test compares only the calls that
-/// return at the first tests. Those calls write nothing. `GetActiveVertexCount` only reads.
+/// The call is a skip when the scene is open and the data has active vertices and active
+/// particles. Such a draw gets to `buildPass` and `loadBinary` of the texture pass. The
+/// texture pass uploads a texture on first use, and a texture upload cannot run twice. Thus
+/// the shadow test compares only the calls that return at the first tests. Those calls write
+/// nothing. `GetActiveVertexCount` only reads.
 unsafe fn render_points_regions(set: &mut Regions, this: usize, geometry_data: usize) {
     set.add(this, R::SIZE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -472,12 +410,12 @@ pub unsafe fn render_lines(this: usize, lines_data: usize, transform: usize, wor
         return;
     }
     let mut memory: usize = 0;
-    if vertex_buffer_lock(vertex_buffer, 0, size, &mut memory, 0) != 0 {
+    if buffer_lock(vertex_buffer, 0, size, core::ptr::addr_of_mut!(memory) as usize, 0) != 0 {
         return;
     }
     // This is EBP of the game code: the pointer after the loop. The tests below read it.
     let texture_coords = write_line_vertices(memory, count, vertices, colors, texture_coords);
-    vertex_buffer_unlock(vertex_buffer);
+    buffer_unlock(vertex_buffer);
     let texture_sets = if texture_coords != 0 { count } else { 0 };
 
     let pipeline = || rd::<usize>(this, R::configurableTexturePipeline);
@@ -512,7 +450,8 @@ pub unsafe fn render_lines(this: usize, lines_data: usize, transform: usize, wor
     site_thiscall!(0x6ADCBB, pipeline(), property_state(), effect_state(), 0, texture_sets, lines_data, 0, transform, world_bound);
 }
 
-/// As in `render_points_regions`, the shadow test skips a draw that passes the first tests.
+/// The call is a skip when the scene is open and the data has active vertices. Such a draw
+/// gets to the texture pass. `render_points_regions` gives the reason.
 unsafe fn render_lines_regions(set: &mut Regions, this: usize, lines_data: usize) {
     set.add(this, R::SIZE);
     if rd::<u8>(this, R::bSceneOpen) == 0 || geometry_active_vertex_count(lines_data) == 0 {
@@ -548,7 +487,7 @@ pub unsafe fn renderer_ctor(this: usize) -> usize {
     wr::<u32>(this, R::effectStatePtr, 0);
     site_thiscall!(0x6A9AAC, this + R::worldBound);
     site_thiscall!(0x6A9ABC, this + R::defaultBound);
-    let construct_array: unsafe extern "system" fn(usize, u32, u32, usize, usize) = transmute(call_target(0x6A9ADB));
+    let construct_array: unsafe extern "system" fn(usize, u32, u32, usize, usize) = transmute(target(0x6A9ADB));
     construct_array(this + R::defaultTexturePixelData, 4, 4, NI_POINTER_CTOR, NI_POINTER_DTOR);
     wr::<u32>(this, R::backbufferRenderTarget_field_C, 0);
     wr::<u32>(this, R::backbufferRenderTarget_field_18, 0);
@@ -565,7 +504,7 @@ pub unsafe fn renderer_ctor(this: usize) -> usize {
         wr(map, THashMap::arrayBuckets, buckets);
         core::ptr::write_bytes(buckets as *mut u8, 0, bytes as usize);
     }
-    wr(this, R::vtbl, VTBL_RENDERER);
+    wr(this, R::vtbl, engine::VTBL_NI_DX8_RENDERER);
     site_thiscall!(0x6A9C19, this);
     this
 }
@@ -586,8 +525,13 @@ port_thiscall!(render_lines_port, 0x6AD890, "NiDX8Renderer::RenderLines",
     regions = |set| render_lines_regions(set, this, lines_data),
     rust = render_lines);
 
-// The shadow test skips this port: the game runs the function one time, before the plugin
-// loads.
+// The game runs the constructor one time. With "early" in the config of the mod, the plugin
+// installs before the game creates its renderer, and the port then runs in the mode of the
+// config. Without "early", the constructor ran as game code before the plugin installed.
+//
+// The call is always a skip. A comparison needs `set.allocates()` for the four bucket arrays
+// of the hash maps. It also needs the blocks that the base constructor `NiRenderer::ctor` and
+// `NiDX8Renderer::init` write, and those blocks are not known.
 port_thiscall!(renderer_ctor_port, 0x6A9A70, "NiDX8Renderer::ctor",
     fn(this) -> usize,
     compare_eax = true,
@@ -608,11 +552,51 @@ mod tests {
 
     const FUNCTIONS: [usize; 3] = [0x6AD0A0, 0x6AD890, 0x6A9A70];
 
+    /// The callee that the database has for each entry of `SITES`, in the same order.
+    #[rustfmt::skip]
+    const CALLEES: &[usize] = &[
+        // NiDX8Renderer::RenderPoints
+        0x6AC9C0, // NiDX8Renderer::SetModelTransform
+        0x6ED100, // NiBound_or_NiQuaternion::Copy
+        0x6B9C40, // NiDX8ConfigurableTexturePipeline::selectAndLinkPass
+        0x6B82A0, // NiDX8RenderState::updateD3DState
+        0x6B9C20, // NiDX8ConfigurableTexturePipeline::buildPass
+        0x65EEB0, // NiRenderStateSetting::SetValue
+        0x6BB200, // NiDX8LightManager::setState
+        0x6B9C30, // NiDX8ConfigurableTexturePipeline::loadBinary
+        0x6BCFE0, // NiDX8IndexBufferManager::getOrBuildQuadIndexBuffer
+        0x6BDC70, // NiDX8VertexBufferManager::CreateVertexBuffer
+        0x6B9E90, // NiDX8ConfigurableTexturePipeline::buildSkinPartitionPass
+        0x736400, // patchDrawIndexedPrimitive
+        0x6B9D30, // NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables
+        // NiDX8Renderer::RenderLines
+        0x6AC9C0, // NiDX8Renderer::SetModelTransform
+        0x6ED100, // NiBound_or_NiQuaternion::Copy
+        0x6BD190, // NiDX8IndexBufferManager::buildLineSegmentIndexBuffer
+        0x6BDC70, // NiDX8VertexBufferManager::CreateVertexBuffer
+        0x6B9C40, // NiDX8ConfigurableTexturePipeline::selectAndLinkPass
+        0x6B82A0, // NiDX8RenderState::updateD3DState
+        0x6B9C20, // NiDX8ConfigurableTexturePipeline::buildPass
+        0x6BB200, // NiDX8LightManager::setState
+        0x6B9C30, // NiDX8ConfigurableTexturePipeline::loadBinary
+        0x736400, // patchDrawIndexedPrimitive
+        0x6B9D30, // NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables
+        // NiDX8Renderer::ctor
+        0x6F4E30, // NiRenderer::ctor
+        0x6F25E0, // NiBound_or_NiPlane::ctor
+        0x6F25E0, // NiBound_or_NiPlane::ctor
+        0x7276B0, // `eh vector constructor iterator'
+        0x727692, // operator new
+        0x727692, // operator new
+        0x727692, // operator new
+        0x727692, // operator new
+        0x6A96C0, // NiDX8Renderer::init
+    ];
+
     #[test]
     fn every_site_is_a_call_inside_one_of_the_functions() {
-        assert_eq!(SITES.len(), SITE_TABLE.len());
-        for (index, &(site, callee)) in SITE_TABLE.iter().enumerate() {
-            assert_eq!(SITES[index], site);
+        assert_eq!(SITES.len(), CALLEES.len());
+        for (&site, &callee) in SITES.iter().zip(CALLEES) {
             let func = FUNCTIONS
                 .iter()
                 .map(|&ea| hook::find(ea).unwrap())

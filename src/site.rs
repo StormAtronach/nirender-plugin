@@ -47,6 +47,40 @@ pub fn classify(func: &Func, live: &[u8], offset: usize, len: usize) -> Kind {
     Kind::Rewrite
 }
 
+// ---- macros that call the target of a call site
+//
+// A module that uses these macros has a function `target(site: usize) -> usize` in scope. The
+// macros call it for the address of the callee. It is `call_target`, or a function of the
+// unit tests of the module that gives a stand-in.
+
+/// The type `u32`, one time for each argument of a macro. The other macros use it.
+macro_rules! u32_of {
+    ($x:expr) => {
+        u32
+    };
+}
+pub(crate) use u32_of;
+
+/// Calls the target of the `call` at `$site` as a `__thiscall` function. `$this` is a `usize`
+/// and goes in ECX. Each other argument goes on the stack as a `u32`. The macro returns EAX.
+macro_rules! site_thiscall {
+    ($site:expr, $this:expr $(, $a:expr)* $(,)?) => {{
+        let f: unsafe extern "thiscall" fn(usize $(, $crate::site::u32_of!($a))*) -> u32 = core::mem::transmute(target($site));
+        f($this $(, $a as u32)*)
+    }};
+}
+pub(crate) use site_thiscall;
+
+/// Calls the target of the `call` at `$site` as a `__cdecl` function. Each argument goes on
+/// the stack as a `u32`. The macro returns EAX.
+macro_rules! site_cdecl {
+    ($site:expr $(, $a:expr)* $(,)?) => {{
+        let f: unsafe extern "C" fn($($crate::site::u32_of!($a)),*) -> u32 = core::mem::transmute(target($site));
+        f($($a as u32),*)
+    }};
+}
+pub(crate) use site_cdecl;
+
 #[cfg(test)]
 mod tests {
     use super::*;

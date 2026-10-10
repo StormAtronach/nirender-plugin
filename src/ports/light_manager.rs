@@ -3,21 +3,20 @@
 
 use core::arch::asm;
 
-use crate::engine::device_set_render_state;
+use crate::d3d::{
+    device_add_ref, device_light_enable, device_release, device_set_light, D3DRS_AMBIENT, D3DRS_AMBIENTMATERIALSOURCE,
+    D3DRS_DIFFUSEMATERIALSOURCE, D3DRS_EMISSIVEMATERIALSOURCE, D3DRS_LIGHTING,
+};
+use crate::engine::{device_set_render_state, vcall0, VTBL_NI_REF_OBJECT};
 use crate::gen::layouts::{
     NiDX8LightManager as M, NiDX8LightManager_LightEntry as E, NiDX8RenderState as RS, NiDynamicEffectState as DES,
     NiDynamicEffectState_InternalList as DL, NiLight as L, NiTexturingProperty as TP, NiTexturingProperty_Map as TM,
     NiVertexColorProperty as VC, THashMap as HM, THashMap_Node as HN,
 };
 use crate::mem::{rd, wr, x87_pass};
-use crate::ports::render_state::{set_render_state, setting_set_value};
+use crate::ports::hash_map;
+use crate::ports::render_state::{set_if_changed, set_render_state, setting_set_value};
 use crate::shadow::Regions;
-
-const D3DRS_LIGHTING: u32 = 137;
-const D3DRS_AMBIENT: u32 = 139;
-const D3DRS_DIFFUSEMATERIALSOURCE: u32 = 145;
-const D3DRS_AMBIENTMATERIALSOURCE: u32 = 147;
-const D3DRS_EMISSIVEMATERIALSOURCE: u32 = 148;
 
 // The members the subclasses of `NiLight` add. They are not in `gen::layouts`.
 /// `NiDirectionalLight`: world direction, 3 floats (0x6BACCE).
@@ -43,26 +42,14 @@ const ITEM_SIZE: usize = 0xC;
 const BLOCK_NEXT: usize = 0x0;
 const BLOCK_ITEMS: usize = 0x4;
 
-// `InterfaceTHashMap`
-const MAP_VTBL_HASH_KEY: usize = 0x4;
-const MAP_VTBL_CMP_KEY: usize = 0x8;
-const MAP_VTBL_MAKE_KEY_VALUE_PAIR: usize = 0xC;
-const MAP_VTBL_DTOR_KEY_VALUE_PAIR: usize = 0x10;
-
-// `IDirect3DDevice8` vtable slots.
-const DEVICE_ADD_REF: usize = 0x04;
-const DEVICE_RELEASE: usize = 0x08;
-const DEVICE_SET_LIGHT: usize = 0xB0;
-const DEVICE_LIGHT_ENABLE: usize = 0xB8;
-
 /// 0x74F2EC: the game does not use a light with a dimmer below this value.
 const MIN_DIMMER: u32 = 0x3C23_D70A; // 0.01
 /// 0x74C08C: 1/255.
 const INV_255: u32 = 0x3B80_8081;
-/// 0x74F6E0: 1/90. With pi, this changes the cone angle in degrees into half of it in radians.
+/// 0x74F6E0: 1/90. The game code multiplies the cone angle in degrees by pi and by this value.
+/// The result is two times the angle in radians: 90 degrees give pi.
 const INV_90: u32 = 0x3C36_0B61;
 
-const VTBL_NI_REF_OBJECT: u32 = 0x7469B8;
 const VTBL_LIGHT_MANAGER: u32 = 0x74F6E4;
 const VTBL_HASH_MAP_LIGHT: u32 = 0x74F6E8;
 
@@ -84,64 +71,34 @@ const _: () = assert!(E::SIZE == 0x70 && E::revisionId == 0x68 && E::lightIndex 
 
 #[cfg(not(test))]
 mod eng {
-    use core::mem::transmute;
+    use crate::engine::thiscall1;
+    use crate::mem::rd;
 
-    use crate::mem::{rd, wr};
+    pub use crate::engine::{
+        critical_section_ctor, critical_section_dtor, critical_section_lock, critical_section_unlock, list_allocator_block_ctor,
+        operator_delete, operator_new, texture_manager_clear_hash_map,
+    };
+    pub use crate::ports::ni::ref_object_count_add;
 
-    type This0 = unsafe extern "thiscall" fn(usize) -> u32;
-    type This1 = unsafe extern "thiscall" fn(usize, u32) -> u32;
-
-    /// 0x693ED0 `NiCriticalSection::ctor`
-    pub unsafe fn critical_section_ctor(cs: usize) {
-        transmute::<usize, This0>(0x693ED0)(cs);
-    }
-    /// 0x693EF0 `NiCriticalSection::dtor`
-    pub unsafe fn critical_section_dtor(cs: usize) {
-        transmute::<usize, This0>(0x693EF0)(cs);
-    }
-    /// 0x693F00 `NiCriticalSection::Lock`
-    pub unsafe fn lock(cs: usize, name: usize) {
-        transmute::<usize, This1>(0x693F00)(cs, name as u32);
-    }
-    /// 0x693F10 `NiCriticalSection::Unlock`
-    pub unsafe fn unlock(cs: usize) {
-        transmute::<usize, This0>(0x693F10)(cs);
-    }
-    /// 0x727692 `operator new`
-    pub unsafe fn operator_new(size: usize) -> usize {
-        crate::engine::operator_new(size)
-    }
-    /// 0x727530 `_delete`
-    pub unsafe fn delete(block: usize) {
-        transmute::<usize, unsafe extern "C" fn(usize)>(0x727530)(block)
-    }
     /// 0x6ECED0 `NiPackedColor::setRed`. `value` is the bits of the float argument.
     pub unsafe fn packed_color_set_red(color: usize, value: u32) {
-        transmute::<usize, This1>(0x6ECED0)(color, value);
+        thiscall1(0x6ECED0, color, value);
     }
     /// 0x6ECF20 `NiPackedColor::setGreen`
     pub unsafe fn packed_color_set_green(color: usize, value: u32) {
-        transmute::<usize, This1>(0x6ECF20)(color, value);
+        thiscall1(0x6ECF20, color, value);
     }
     /// 0x6ECF60 `NiPackedColor::setBlue`
     pub unsafe fn packed_color_set_blue(color: usize, value: u32) {
-        transmute::<usize, This1>(0x6ECF60)(color, value);
+        thiscall1(0x6ECF60, color, value);
     }
     /// 0x6BBEA0 `NiTListBase::deallocItem`
     pub unsafe fn list_dealloc_item(list: usize, item: usize) {
-        transmute::<usize, This1>(0x6BBEA0)(list, item as u32);
-    }
-    /// 0x6BBEF0 `NiTListAllocator::Data::ctor`
-    pub unsafe fn allocator_block_ctor(block: usize, count: u32) -> usize {
-        transmute::<usize, This1>(0x6BBEF0)(block, count) as usize
+        thiscall1(0x6BBEA0, list, item as u32);
     }
     /// 0x6BBEC0 `sub_6BBEC0`: the deleting destructor of `NiTListAllocator::Data`.
     pub unsafe fn allocator_block_deleting_dtor(block: usize, flags: u32) {
-        transmute::<usize, This1>(0x6BBEC0)(block, flags);
-    }
-    /// 0x6BC8A0 `NiDX8TextureManager::clearHashMap`
-    pub unsafe fn clear_hash_map(map: usize) {
-        transmute::<usize, This0>(0x6BC8A0)(map);
+        thiscall1(0x6BBEC0, block, flags);
     }
     /// `f_pi_static` (0x7DEDA4). The game sets it when the game starts.
     pub unsafe fn pi() -> u32 {
@@ -151,25 +108,22 @@ mod eng {
     pub unsafe fn light_range() -> u32 {
         rd(0x7DDA0C, 0)
     }
-    /// `global_count_of_NiRefObject` (0x7DECE0)
-    pub unsafe fn ref_object_count_add(delta: i32) {
-        wr(0x7DECE0, 0, rd::<i32>(0x7DECE0, 0).wrapping_add(delta));
-    }
 }
 
-/// Replacements for the unit tests. The unit tests run without the game.
+/// Replacements for the unit tests. The unit tests run without the game. The functions that
+/// `engine` and `ports::ni` have in the other `eng` have the same names here.
 #[cfg(test)]
 mod eng {
     use crate::mem::{rd, wr};
 
     pub unsafe fn critical_section_ctor(_cs: usize) {}
     pub unsafe fn critical_section_dtor(_cs: usize) {}
-    pub unsafe fn lock(_cs: usize, _name: usize) {}
-    pub unsafe fn unlock(_cs: usize) {}
+    pub unsafe fn critical_section_lock(_cs: usize, _name: usize) {}
+    pub unsafe fn critical_section_unlock(_cs: usize) {}
     pub unsafe fn operator_new(size: usize) -> usize {
         Box::leak(vec![0xCDu8; size].into_boxed_slice()).as_mut_ptr() as usize
     }
-    pub unsafe fn delete(_block: usize) {}
+    pub unsafe fn operator_delete(_block: usize) {}
     fn channel(value: u32) -> u32 {
         (f32::from_bits(value) * 255.0).round_ties_even() as i32 as u32
     }
@@ -190,7 +144,7 @@ mod eng {
         wr::<usize>(item, 4, rd(list, 0xC));
         wr(list, 0xC, item);
     }
-    pub unsafe fn allocator_block_ctor(block: usize, count: u32) -> usize {
+    pub unsafe fn list_allocator_block_ctor(block: usize, count: u32) -> usize {
         let items = operator_new(count as usize * 12);
         wr::<u32>(block, 0, 0);
         wr(block, 4, items);
@@ -200,7 +154,7 @@ mod eng {
         block
     }
     pub unsafe fn allocator_block_deleting_dtor(_block: usize, _flags: u32) {}
-    pub unsafe fn clear_hash_map(_map: usize) {}
+    pub unsafe fn texture_manager_clear_hash_map(_map: usize) {}
     pub unsafe fn pi() -> u32 {
         core::f32::consts::PI.to_bits()
     }
@@ -213,55 +167,10 @@ mod eng {
 
 // ---- calls through a vtable
 
-#[inline(always)]
-unsafe fn vcall<F: Copy>(object: usize, slot: usize) -> F {
-    rd::<F>(rd::<usize>(object, 0), slot)
-}
-
 /// `NiLight::GetType`: 0 ambient, 1 directional, 2 point, 3 spot.
 #[inline(always)]
 unsafe fn light_get_type(light: usize) -> u32 {
-    vcall::<unsafe extern "thiscall" fn(usize) -> u32>(light, LIGHT_VTBL_GET_TYPE)(light)
-}
-
-#[inline(always)]
-unsafe fn map_hash_key(map: usize, key: u32) -> u32 {
-    vcall::<unsafe extern "thiscall" fn(usize, u32) -> u32>(map, MAP_VTBL_HASH_KEY)(map, key)
-}
-
-#[inline(always)]
-unsafe fn map_cmp_key(map: usize, a: u32, b: u32) -> bool {
-    vcall::<unsafe extern "thiscall" fn(usize, u32, u32) -> u32>(map, MAP_VTBL_CMP_KEY)(map, a, b) & 0xFF != 0
-}
-
-#[inline(always)]
-unsafe fn map_make_key_value_pair(map: usize, node: usize, key: u32, value: usize) {
-    vcall::<unsafe extern "thiscall" fn(usize, usize, u32, usize) -> u32>(map, MAP_VTBL_MAKE_KEY_VALUE_PAIR)(map, node, key, value);
-}
-
-#[inline(always)]
-unsafe fn map_dtor_key_value_pair(map: usize, node: usize) {
-    vcall::<unsafe extern "thiscall" fn(usize, usize) -> u32>(map, MAP_VTBL_DTOR_KEY_VALUE_PAIR)(map, node);
-}
-
-#[inline(always)]
-unsafe fn device_add_ref(device: usize) {
-    vcall::<unsafe extern "system" fn(usize) -> u32>(device, DEVICE_ADD_REF)(device);
-}
-
-#[inline(always)]
-unsafe fn device_release(device: usize) {
-    vcall::<unsafe extern "system" fn(usize) -> u32>(device, DEVICE_RELEASE)(device);
-}
-
-#[inline(always)]
-unsafe fn device_set_light(device: usize, index: u32, light: usize) {
-    vcall::<unsafe extern "system" fn(usize, u32, usize) -> u32>(device, DEVICE_SET_LIGHT)(device, index, light);
-}
-
-#[inline(always)]
-unsafe fn device_light_enable(device: usize, index: u32, enable: u32) {
-    vcall::<unsafe extern "system" fn(usize, u32, u32) -> u32>(device, DEVICE_LIGHT_ENABLE)(device, index, enable);
+    vcall0(light, LIGHT_VTBL_GET_TYPE)
 }
 
 // ---- x87 sequences
@@ -326,64 +235,6 @@ fn x87_ambient_channel(channel: u32, dimmer: u32, colour: u32) -> u32 {
 
 // ---- shared pieces the game code has inline
 
-/// Writes the cache and the device when the value is different.
-#[inline(always)]
-unsafe fn set_if_changed(render_state: usize, state: u32, value: u32) {
-    let setting = RS::renderStateSettings + state as usize * 8;
-    if rd::<u32>(render_state, setting) != value {
-        wr(render_state, setting, value);
-        device_set_render_state(rd(render_state, RS::device), state, value);
-    }
-}
-
-/// The node of a key, and the bucket the key belongs to.
-#[inline(always)]
-unsafe fn map_find(map: usize, key: u32) -> (usize, usize) {
-    let bucket = map_hash_key(map, key) as usize;
-    let mut node: usize = rd(rd::<usize>(map, HM::arrayBuckets), bucket * 4);
-    while node != 0 {
-        if map_cmp_key(map, key, rd(node, HN::key)) {
-            break;
-        }
-        node = rd(node, HN::nextNode);
-    }
-    (bucket, node)
-}
-
-/// The first node of the first bucket that has one.
-#[inline(always)]
-unsafe fn map_first(map: usize) -> usize {
-    let count: u32 = rd(map, HM::bucketCount);
-    if count != 0 {
-        let buckets: usize = rd(map, HM::arrayBuckets);
-        for i in 0..count as usize {
-            let node: usize = rd(buckets, i * 4);
-            if node != 0 {
-                return node;
-            }
-        }
-    }
-    0
-}
-
-/// The first node in the buckets after the bucket of `key`.
-#[inline(always)]
-unsafe fn map_next_bucket(map: usize, key: u32) -> usize {
-    let mut i = map_hash_key(map, key).wrapping_add(1);
-    let count: u32 = rd(map, HM::bucketCount);
-    if i < count {
-        let buckets: usize = rd(map, HM::arrayBuckets);
-        while i < count {
-            let node: usize = rd(buckets, i as usize * 4);
-            if node != 0 {
-                return node;
-            }
-            i += 1;
-        }
-    }
-    0
-}
-
 /// Disables each light of the list in the device and puts its list item on the free list.
 #[inline(always)]
 unsafe fn disable_device_lights(this: usize) {
@@ -410,10 +261,10 @@ unsafe fn disable_device_lights(this: usize) {
 /// 0x6BAB00 `NiDX8LightManager::LightEntry::Update`. Returns 1 when the port built the entry again.
 pub unsafe fn light_entry_update(entry: usize, light: usize) -> u8 {
     crate::shadow::touch(&light_entry_update_port::STATE);
-    eng::lock(ENTRY_CRITICAL_SECTION, NAME_ENTRY_UPDATE);
+    eng::critical_section_lock(ENTRY_CRITICAL_SECTION, NAME_ENTRY_UPDATE);
     let revision: u32 = rd(light, L::revisionID);
     if rd::<u32>(entry, E::revisionId) == revision {
-        eng::unlock(ENTRY_CRITICAL_SECTION);
+        eng::critical_section_unlock(ENTRY_CRITICAL_SECTION);
         return 0;
     }
     wr(entry, E::revisionId, revision);
@@ -468,7 +319,7 @@ pub unsafe fn light_entry_update(entry: usize, light: usize) -> u8 {
     wr::<u32>(entry, E::d3dLight_Ambient, ambient_r);
     wr::<u32>(entry, E::d3dLight_Specular + 8, specular_b);
     wr::<u32>(entry, E::d3dLight_Ambient + 4, ambient_g);
-    eng::unlock(ENTRY_CRITICAL_SECTION);
+    eng::critical_section_unlock(ENTRY_CRITICAL_SECTION);
     1
 }
 
@@ -524,40 +375,15 @@ pub unsafe fn dtor(this: usize) {
     wr(this, M::vtbl, VTBL_LIGHT_MANAGER);
     let map = this + M::lightEntries;
     while rd::<u32>(map, HM::count) != 0 {
-        let first = map_first(map);
+        let first = hash_map::first(map);
         let entry: usize = rd(first, HN::data);
         let key: u32 = rd(first, HN::key);
         if rd::<usize>(first, HN::nextNode) == 0 {
             // The iterator moves to the next bucket. No code reads the result.
-            map_next_bucket(map, key);
+            hash_map::next_bucket(map, key);
         }
-        let bucket = map_hash_key(map, key) as usize;
-        let mut node: usize = rd(rd::<usize>(map, HM::arrayBuckets), bucket * 4);
-        if node != 0 {
-            let mut found = false;
-            if map_cmp_key(map, key, rd(node, HN::key)) {
-                wr::<usize>(rd::<usize>(map, HM::arrayBuckets), bucket * 4, rd(node, HN::nextNode));
-                found = true;
-            } else {
-                let mut previous = node;
-                node = rd(node, HN::nextNode);
-                while node != 0 {
-                    if map_cmp_key(map, key, rd(node, HN::key)) {
-                        wr::<usize>(previous, HN::nextNode, rd(node, HN::nextNode));
-                        found = true;
-                        break;
-                    }
-                    previous = node;
-                    node = rd(node, HN::nextNode);
-                }
-            }
-            if found {
-                map_dtor_key_value_pair(map, node);
-                eng::delete(node);
-                wr(map, HM::count, rd::<u32>(map, HM::count).wrapping_sub(1));
-            }
-        }
-        eng::delete(entry);
+        hash_map::remove_with(map, key, |node| eng::operator_delete(node));
+        eng::operator_delete(entry);
     }
 
     while rd::<u32>(this, M::deviceLights_count) != 0 {
@@ -594,8 +420,8 @@ pub unsafe fn dtor(this: usize) {
     wr::<u32>(this, M::deviceLights_allocator_freeList, 0);
     wr::<u32>(this, M::deviceLights_allocator_allocator, 0);
     wr(map, HM::vtbl, VTBL_HASH_MAP_LIGHT);
-    eng::clear_hash_map(map);
-    eng::delete(rd(map, HM::arrayBuckets));
+    eng::texture_manager_clear_hash_map(map);
+    eng::operator_delete(rd(map, HM::arrayBuckets));
     wr(this, M::vtbl, VTBL_NI_REF_OBJECT);
     eng::ref_object_count_add(-1);
 }
@@ -604,17 +430,17 @@ pub unsafe fn dtor(this: usize) {
 pub unsafe fn next_frame(this: usize) {
     crate::shadow::touch(&next_frame_port::STATE);
     let cs = this + M::criticalSection;
-    eng::lock(cs, NAME_NEXT_FRAME);
+    eng::critical_section_lock(cs, NAME_NEXT_FRAME);
     disable_device_lights(this);
     wr::<u32>(this, M::lastState, 0);
-    eng::unlock(cs);
+    eng::critical_section_unlock(cs);
 }
 
 /// 0x6BB200 `NiDX8LightManager::setState`
 pub unsafe fn set_state(this: usize, state: usize, texturing: usize, vertex_color: usize) {
     crate::shadow::touch(&set_state_port::STATE);
     let cs = this + M::criticalSection;
-    eng::lock(cs, NAME_SET_STATE);
+    eng::critical_section_lock(cs, NAME_SET_STATE);
     let render_state = || rd::<usize>(this, M::renderState);
     let setting = |state: u32| RS::renderStateSettings + state as usize * 8;
 
@@ -627,7 +453,7 @@ pub unsafe fn set_state(this: usize, state: usize, texturing: usize, vertex_colo
             set_if_changed(render_state(), D3DRS_LIGHTING, 0);
             wr::<u8>(this, M::d3dLightingState, 0);
         }
-        eng::unlock(cs);
+        eng::critical_section_unlock(cs);
         return;
     }
 
@@ -639,7 +465,7 @@ pub unsafe fn set_state(this: usize, state: usize, texturing: usize, vertex_colo
                 set_render_state(render_state(), D3DRS_LIGHTING, 0, 0);
                 wr::<u8>(this, M::d3dLightingState, 0);
             }
-            eng::unlock(cs);
+            eng::critical_section_unlock(cs);
             return;
         }
         let current: u32 = rd(this, M::sourceVertexMode);
@@ -695,47 +521,21 @@ pub unsafe fn set_state(this: usize, state: usize, texturing: usize, vertex_colo
         wr(this, M::lastState, state);
         wr(this, M::lastUseAmbientDiffuse, use_ambient_diffuse);
     }
-    eng::unlock(cs);
+    eng::critical_section_unlock(cs);
 }
 
 /// 0x6BB4E0 `NiDX8LightManager::RemoveLight`
 pub unsafe fn remove_light(this: usize, light: usize) {
     crate::shadow::touch(&remove_light_port::STATE);
     let cs = this + M::criticalSection;
-    eng::lock(cs, NAME_REMOVE_LIGHT);
+    eng::critical_section_lock(cs, NAME_REMOVE_LIGHT);
     let map = this + M::lightEntries;
 
-    let (_, node) = map_find(map, rd(light, L::index));
-    let entry: usize = if node != 0 { rd(node, HN::data) } else { 0 };
+    let entry = hash_map::find_value(map, rd(light, L::index));
 
     let key: u32 = rd(light, L::index);
-    let bucket = map_hash_key(map, key) as usize;
-    let mut node: usize = rd(rd::<usize>(map, HM::arrayBuckets), bucket * 4);
-    if node != 0 {
-        let mut found = false;
-        if map_cmp_key(map, key, rd(node, HN::key)) {
-            wr::<usize>(rd::<usize>(map, HM::arrayBuckets), bucket * 4, rd(node, HN::nextNode));
-            found = true;
-        } else {
-            let mut previous = node;
-            node = rd(node, HN::nextNode);
-            while node != 0 {
-                if map_cmp_key(map, key, rd(node, HN::key)) {
-                    wr::<usize>(previous, HN::nextNode, rd(node, HN::nextNode));
-                    found = true;
-                    break;
-                }
-                previous = node;
-                node = rd(node, HN::nextNode);
-            }
-        }
-        if found {
-            map_dtor_key_value_pair(map, node);
-            eng::delete(node);
-            wr(map, HM::count, rd::<u32>(map, HM::count).wrapping_sub(1));
-        }
-    }
-    eng::delete(entry);
+    hash_map::remove_with(map, key, |node| eng::operator_delete(node));
+    eng::operator_delete(entry);
 
     device_light_enable(rd(this, M::device), rd(light, L::index), 0);
 
@@ -786,7 +586,7 @@ pub unsafe fn remove_light(this: usize, light: usize) {
         wr(this, M::deviceLights_count, rd::<u32>(this, M::deviceLights_count).wrapping_sub(1));
         break;
     }
-    eng::unlock(cs);
+    eng::critical_section_unlock(cs);
 }
 
 /// 0x6BB6C0 `NiDX8LightManager::updateLights`. The port sends the lights of one effect state
@@ -794,7 +594,7 @@ pub unsafe fn remove_light(this: usize, light: usize) {
 pub unsafe fn update_lights(this: usize, state: usize) {
     crate::shadow::touch(&update_lights_port::STATE);
     let cs = this + M::criticalSection;
-    eng::lock(cs, NAME_UPDATE_LIGHTS);
+    eng::critical_section_lock(cs, NAME_UPDATE_LIGHTS);
     // Alpha is 255 and there is no colour. The game code makes the value from four float
     // constants.
     let mut ambient: u32 = 0xFF00_0000;
@@ -824,8 +624,7 @@ pub unsafe fn update_lights(this: usize, state: usize) {
                 continue;
             }
 
-            let (_, node) = map_find(map, rd(light, L::index));
-            let mut entry: usize = if node != 0 { rd(node, HN::data) } else { 0 };
+            let mut entry = hash_map::find_value(map, rd(light, L::index));
             let changed;
             if entry != 0 {
                 changed = light_entry_update(entry, light) != 0;
@@ -833,24 +632,14 @@ pub unsafe fn update_lights(this: usize, state: usize) {
                 entry = eng::operator_new(E::SIZE);
                 if entry != 0 {
                     // The constructor of the entry. The game code has it inline.
-                    eng::lock(ENTRY_CRITICAL_SECTION, NAME_ENTRY_CTOR);
+                    eng::critical_section_lock(ENTRY_CRITICAL_SECTION, NAME_ENTRY_CTOR);
                     wr::<u32>(entry, E::revisionId, 0);
                     wr::<u32>(entry, E::lightIndex, rd(light, L::index));
                     light_entry_update(entry, light);
-                    eng::unlock(ENTRY_CRITICAL_SECTION);
+                    eng::critical_section_unlock(ENTRY_CRITICAL_SECTION);
                 }
                 let key: u32 = rd(light, L::index);
-                let (bucket, node) = map_find(map, key);
-                if node != 0 {
-                    map_dtor_key_value_pair(map, node);
-                    map_make_key_value_pair(map, node, key, entry);
-                } else {
-                    let node = eng::operator_new(HN::SIZE);
-                    map_make_key_value_pair(map, node, key, entry);
-                    wr::<usize>(node, HN::nextNode, rd(rd::<usize>(map, HM::arrayBuckets), bucket * 4));
-                    wr(rd::<usize>(map, HM::arrayBuckets), bucket * 4, node);
-                    wr(map, HM::count, rd::<u32>(map, HM::count).wrapping_add(1));
-                }
+                hash_map::set_with(map, key, entry, |size| eng::operator_new(size));
                 changed = true;
             }
             if changed {
@@ -861,7 +650,7 @@ pub unsafe fn update_lights(this: usize, state: usize) {
             if rd::<usize>(this, M::deviceLights_allocator_freeList) == 0 {
                 let mut block = eng::operator_new(8);
                 if block != 0 {
-                    block = eng::allocator_block_ctor(block, rd(this, M::deviceLights_allocator_count));
+                    block = eng::list_allocator_block_ctor(block, rd(this, M::deviceLights_allocator_count));
                 }
                 wr::<usize>(block, BLOCK_NEXT, rd(this, M::deviceLights_allocator_allocator));
                 wr(this, M::deviceLights_allocator_allocator, block);
@@ -888,7 +677,7 @@ pub unsafe fn update_lights(this: usize, state: usize) {
         set_if_changed(rd(this, M::renderState), D3DRS_AMBIENT, ambient);
         wr(this, M::ambientLightingState, ambient);
     }
-    eng::unlock(cs);
+    eng::critical_section_unlock(cs);
 }
 
 /// 0x6BBB40 `NiDX8LightManager::ReleaseLights`. The port deletes each entry. The key of the
@@ -896,113 +685,55 @@ pub unsafe fn update_lights(this: usize, state: usize) {
 pub unsafe fn release_lights(this: usize) {
     crate::shadow::touch(&release_lights_port::STATE);
     let cs = this + M::criticalSection;
-    eng::lock(cs, NAME_RELEASE_LIGHTS);
+    eng::critical_section_lock(cs, NAME_RELEASE_LIGHTS);
     let map = this + M::lightEntries;
-    let mut node = map_first(map);
+    let mut node = hash_map::first(map);
     while node != 0 {
         let key: u32 = rd(node, HN::key);
         let entry: usize = rd(node, HN::data);
         let mut next: usize = rd(node, HN::nextNode);
         if next == 0 {
-            next = map_next_bucket(map, key);
+            next = hash_map::next_bucket(map, key);
         }
         if entry != 0 {
             device_light_enable(rd(this, M::device), rd(entry, E::lightIndex), 0);
-            eng::delete(entry);
-            let (bucket, found) = map_find(map, key);
-            if found != 0 {
-                map_dtor_key_value_pair(map, found);
-                map_make_key_value_pair(map, found, key, 0);
-            } else {
-                let new_node = eng::operator_new(HN::SIZE);
-                map_make_key_value_pair(map, new_node, key, 0);
-                wr::<usize>(new_node, HN::nextNode, rd(rd::<usize>(map, HM::arrayBuckets), bucket * 4));
-                wr(rd::<usize>(map, HM::arrayBuckets), bucket * 4, new_node);
-                wr(map, HM::count, rd::<u32>(map, HM::count).wrapping_add(1));
-            }
+            eng::operator_delete(entry);
+            hash_map::set_with(map, key, 0, |size| eng::operator_new(size));
         }
         node = next;
     }
-    eng::unlock(cs);
+    eng::critical_section_unlock(cs);
 }
 
 // ---- the memory a call may write
 
-/// Blocks of memory. The code joins the blocks that touch, so that the items of one
-/// allocator block count as one block.
-struct Blocks {
-    list: [(usize, usize); 48],
-    len: usize,
-    skip: bool,
-}
-
-impl Blocks {
-    fn new() -> Blocks {
-        Blocks { list: [(0, 0); 48], len: 0, skip: false }
-    }
-
-    fn add(&mut self, addr: usize, size: usize) {
-        if addr == 0 || size == 0 {
-            return;
-        }
-        if self.len == self.list.len() {
-            self.skip = true;
-            return;
-        }
-        self.list[self.len] = (addr, size);
-        self.len += 1;
-    }
-
-    /// Sorts and joins the blocks. Returns the number of blocks that remain.
-    fn join(&mut self) -> usize {
-        let list = &mut self.list[..self.len];
-        list.sort_unstable();
-        let mut out = 0;
-        for i in 0..list.len() {
-            let (addr, size) = list[i];
-            if out != 0 && addr <= list[out - 1].0 + list[out - 1].1 {
-                let end = (addr + size).max(list[out - 1].0 + list[out - 1].1);
-                list[out - 1].1 = end - list[out - 1].0;
-            } else {
-                list[out] = (addr, size);
-                out += 1;
-            }
-        }
-        self.len = out;
-        out
-    }
-
-    /// Gives the blocks to the shadow test, or skips the call when there are too many blocks.
-    fn finish(mut self, set: &mut Regions) {
-        if self.skip || self.join() > 8 {
-            set.skip();
-            return;
-        }
-        for &(addr, size) in &self.list[..self.len] {
-            set.add(addr, size);
-        }
-    }
-}
-
 /// Adds the items in the list of device lights. Returns the number of items.
-unsafe fn add_device_light_items(blocks: &mut Blocks, this: usize) -> usize {
+unsafe fn add_device_light_items(set: &mut Regions, this: usize) -> usize {
     let mut item: usize = rd(this, M::deviceLights_head);
     let mut count = 0;
     while item != 0 {
-        blocks.add(item, ITEM_SIZE);
+        set.add(item, ITEM_SIZE);
         count += 1;
         item = rd(item, ITEM_NEXT);
     }
     count
 }
 
-/// The memory `updateLights` writes: the manager, the render state, the list items it frees
-/// and takes, and the entries of the lights that changed. A call that makes a new entry, map
-/// node or allocator block cannot run twice.
-unsafe fn add_update_lights(blocks: &mut Blocks, this: usize, state: usize, use_ambient_diffuse: u8) {
-    blocks.add(this, M::SIZE);
-    blocks.add(rd(this, M::renderState), RS::SIZE);
-    let in_list = add_device_light_items(blocks, this);
+/// Adds the memory that `updateLights` writes: the manager, the render state, the list items
+/// that it frees and takes, and the entries of the lights that changed.
+///
+/// The call is a skip when it allocates and the allocator hooks are not in place. A call
+/// allocates when it makes a new entry, a new map node or a new allocator block. The entry
+/// and the node come from `operator new` (0x727692). The allocator block also comes from
+/// `operator new`, and `NiTListAllocator::Data::ctor` (0x6BBEF0) gets the items of the block
+/// from `operator new`. `updateLights` frees nothing. Thus such a call calls
+/// `set.allocates()`, and the new blocks need no region. A new node becomes the head of its
+/// bucket, thus the head of the bucket is a region. A node that has no entry gets the new
+/// entry, thus that node is a region.
+unsafe fn add_update_lights(set: &mut Regions, this: usize, state: usize, use_ambient_diffuse: u8) {
+    set.add(this, M::SIZE);
+    set.add(rd(this, M::renderState), RS::SIZE);
+    let in_list = add_device_light_items(set, this);
     if use_ambient_diffuse == 0 || state == 0 {
         return;
     }
@@ -1016,38 +747,44 @@ unsafe fn add_update_lights(blocks: &mut Blocks, this: usize, state: usize, use_
             continue;
         }
         needed += 1;
-        let (_, node) = map_find(map, rd(light, L::index));
+        let (bucket, node) = hash_map::find_in_bucket(map, rd(light, L::index));
         let entry: usize = if node != 0 { rd(node, HN::data) } else { 0 };
         if entry == 0 {
-            blocks.skip = true;
-            return;
+            set.allocates();
+            if node != 0 {
+                set.add(node, HN::SIZE);
+            } else {
+                set.add(rd::<usize>(map, HM::arrayBuckets) + bucket * 4, 4);
+            }
+            continue;
         }
         if rd::<u32>(entry, E::revisionId) != rd::<u32>(light, L::revisionID) {
-            blocks.add(entry, E::SIZE);
+            set.add(entry, E::SIZE);
         }
     }
-    // The function uses the freed items first. Then it takes items from the free list.
+    // The function uses the freed items first. Then it takes items from the free list. When
+    // the free list is empty, it makes a new allocator block.
     let mut free: usize = rd(this, M::deviceLights_allocator_freeList);
     for _ in in_list..needed {
         if free == 0 {
-            blocks.skip = true;
-            return;
+            set.allocates();
+            break;
         }
-        blocks.add(free, ITEM_SIZE);
+        set.add(free, ITEM_SIZE);
         free = rd(free, ITEM_NEXT);
     }
 }
 
+/// The call is a skip when it allocates and the allocator hooks are not in place.
+/// `add_update_lights` gives the cases.
 unsafe fn update_lights_regions(set: &mut Regions, this: usize, state: usize) {
-    let mut blocks = Blocks::new();
-    add_update_lights(&mut blocks, this, state, rd(this, M::useAmbientDiffuse));
-    blocks.finish(set);
+    add_update_lights(set, this, state, rd(this, M::useAmbientDiffuse));
 }
 
+/// The call is a skip when it gets to `updateLights`, that call allocates and the allocator
+/// hooks are not in place. `add_update_lights` gives the cases. A call that does not get to
+/// `updateLights` writes only the manager and the render state.
 unsafe fn set_state_regions(set: &mut Regions, this: usize, state: usize, texturing: usize, vertex_color: usize) {
-    let mut blocks = Blocks::new();
-    blocks.add(this, M::SIZE);
-    blocks.add(rd(this, M::renderState), RS::SIZE);
     // The code makes the same decisions as the function, to find if the function gets to
     // `updateLights`.
     let base_map: usize = rd(rd::<usize>(texturing, TP::maps_storage), 0);
@@ -1062,48 +799,53 @@ unsafe fn set_state_regions(set: &mut Regions, this: usize, state: usize, textur
     };
     if let (false, Some(use_ambient_diffuse)) = (replace, use_ambient_diffuse) {
         if state != rd::<usize>(this, M::lastState) || use_ambient_diffuse != rd::<u8>(this, M::lastUseAmbientDiffuse) {
-            add_update_lights(&mut blocks, this, state, use_ambient_diffuse);
+            // This adds the manager and the render state also.
+            add_update_lights(set, this, state, use_ambient_diffuse);
+            return;
         }
     }
-    blocks.finish(set);
+    set.add(this, M::SIZE);
+    set.add(rd(this, M::renderState), RS::SIZE);
 }
 
+/// The call is not a skip. `nextFrame` writes the manager and the items of the list of device
+/// lights. It allocates nothing and frees nothing.
 unsafe fn next_frame_regions(set: &mut Regions, this: usize) {
-    let mut blocks = Blocks::new();
-    blocks.add(this, M::SIZE);
-    add_device_light_items(&mut blocks, this);
-    blocks.finish(set);
+    set.add(this, M::SIZE);
+    add_device_light_items(set, this);
 }
 
+/// The call is a skip when the map has a node for the light. `RemoveLight` then frees the
+/// node and the entry with `operator delete`, and takes the node out of its bucket. A
+/// comparison of such a call needs `set.allocates()`, and the head of the bucket or the node
+/// before as a region. This function does not give them.
 unsafe fn remove_light_regions(set: &mut Regions, this: usize, light: usize) {
-    let (_, node) = map_find(this + M::lightEntries, rd(light, L::index));
-    if node != 0 {
-        // The function frees the node and the entry.
+    if hash_map::find(this + M::lightEntries, rd(light, L::index)) != 0 {
         set.skip();
         return;
     }
-    let mut blocks = Blocks::new();
-    blocks.add(this, M::SIZE);
+    set.add(this, M::SIZE);
     let mut item: usize = rd(this, M::deviceLights_head);
     while item != 0 {
         if rd::<usize>(item, ITEM_DATA) == light {
-            blocks.add(item, ITEM_SIZE);
-            blocks.add(rd(item, ITEM_PREVIOUS), ITEM_SIZE);
-            blocks.add(rd(item, ITEM_NEXT), ITEM_SIZE);
+            set.add(item, ITEM_SIZE);
+            set.add(rd(item, ITEM_PREVIOUS), ITEM_SIZE);
+            set.add(rd(item, ITEM_NEXT), ITEM_SIZE);
             break;
         }
         item = rd(item, ITEM_NEXT);
     }
-    blocks.finish(set);
 }
 
+/// The call is a skip when a node of the map has an entry. `ReleaseLights` then frees the
+/// entry with `operator delete` and writes the node. A comparison of such a call needs
+/// `set.allocates()` and each such node as a region. This function does not give them.
 unsafe fn release_lights_regions(set: &mut Regions, this: usize) {
     let buckets: usize = rd(this, M::lightEntries_arrayBuckets);
     for i in 0..rd::<u32>(this, M::lightEntries_bucketCount) as usize {
         let mut node: usize = rd(buckets, i * 4);
         while node != 0 {
             if rd::<usize>(node, HN::data) != 0 {
-                // The function frees an entry.
                 set.skip();
                 return;
             }
@@ -1113,6 +855,7 @@ unsafe fn release_lights_regions(set: &mut Regions, this: usize) {
     set.add(this, M::SIZE);
 }
 
+/// The call is not a skip. `resetRenderStates` writes the manager and the render state.
 unsafe fn reset_render_states_regions(set: &mut Regions, this: usize) {
     set.add(this, M::SIZE);
     set.add(rd(this, M::renderState), RS::SIZE);
@@ -1124,6 +867,8 @@ port_thiscall!(light_entry_update_port, 0x6BAB00, "NiDX8LightManager::LightEntry
     regions = |set| set.add(this, E::SIZE),
     rust = light_entry_update);
 
+// The call is always a skip. The constructor makes a critical section and adds a reference to
+// the device. The dry device passes `AddRef` on, thus two runs add two references.
 port_thiscall!(ctor_port, 0x6BAD10, "NiDX8LightManager::ctor",
     fn(this, render_state: usize, device: usize) -> usize,
     compare_eax = true,
@@ -1136,6 +881,8 @@ port_thiscall!(reset_render_states_port, 0x6BAEC0, "NiDX8LightManager::resetRend
     regions = |set| reset_render_states_regions(set, this),
     rust = reset_render_states);
 
+// The call is always a skip. The destructor releases the reference to the device and deletes
+// the critical section. These cannot run twice.
 port_thiscall!(dtor_port, 0x6BAF90, "NiDX8LightManager::dtor",
     fn(this) -> (),
     compare_eax = false,
@@ -1189,6 +936,11 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+    use crate::d3d::{DEVICE_ADD_REF, DEVICE_LIGHT_ENABLE, DEVICE_SET_LIGHT};
+    use crate::ports::hash_map::{
+        SLOT_CMP_KEY as MAP_VTBL_CMP_KEY, SLOT_DTOR_KEY_VALUE_PAIR as MAP_VTBL_DTOR_KEY_VALUE_PAIR, SLOT_HASH_KEY as MAP_VTBL_HASH_KEY,
+        SLOT_MAKE_KEY_VALUE_PAIR as MAP_VTBL_MAKE_KEY_VALUE_PAIR,
+    };
 
     thread_local! {
         /// The calls the fake device got: (vtable slot, first argument, second argument).
@@ -1476,25 +1228,27 @@ mod tests {
             assert_eq!(setting(&w, D3DRS_AMBIENT), ambient_total);
             assert_eq!(rd::<u32>(m, M::lightEntries_count), 2);
             assert_eq!(device_light_list(m), [directional, point]);
-            let (_, node) = map_find(m + M::lightEntries, 12);
+            let node = hash_map::find(m + M::lightEntries, 12);
             assert_eq!(rd::<u32>(rd(node, HN::data), E::lightIndex), 12);
 
             // In the second call the entries exist and did not change. There is no SetLight
-            // call, and the list items come from the free list. There is no allocation, thus
-            // the shadow test can compare the call.
-            let mut blocks = Blocks::new();
-            add_update_lights(&mut blocks, m, state, 1);
-            assert!(!blocks.skip);
-            assert_eq!(blocks.join(), 3); // manager, render state, one allocator block of two items
+            // call, and the list items come from the free list. The regions are the manager,
+            // the render state and the two list items.
+            let mut set = Regions::new();
+            add_update_lights(&mut set, m, state, 1);
+            assert_eq!(set.as_slice().len(), 4);
+            assert_eq!(set.as_slice()[..2], [(m, M::SIZE), (w.render_state, RS::SIZE)]);
+            assert!(set.as_slice()[2..].iter().all(|&(_, size)| size == ITEM_SIZE));
             update_lights(m, state);
             assert_eq!(calls(), [(46, 17, 0), (46, 12, 0), (46, 12, 1), (46, 17, 1)]);
             assert_eq!(device_light_list(m), [directional, point]);
 
             // The port sends the entry of a changed light again.
             wr::<u32>(point, L::revisionID, 2);
-            let mut blocks = Blocks::new();
-            add_update_lights(&mut blocks, m, state, 1);
-            assert_eq!(blocks.join(), 4);
+            let mut set = Regions::new();
+            add_update_lights(&mut set, m, state, 1);
+            assert_eq!(set.as_slice().len(), 5);
+            assert!(set.as_slice().contains(&(hash_map::find_value(m + M::lightEntries, 12), E::SIZE)));
             update_lights(m, state);
             assert_eq!(calls(), [(46, 17, 0), (46, 12, 0), (44, 12, 1), (46, 12, 1), (46, 17, 1)]);
 
@@ -1505,11 +1259,26 @@ mod tests {
             assert_eq!(calls(), [(46, 17, 0), (46, 12, 0), (50, D3DRS_AMBIENT, 0xFF00_0000)]);
             assert_eq!(device_light_list(m), []);
 
-            // A new light needs an entry: the call cannot run twice.
+            // A new light needs an entry and a map node. The head of its bucket is a region.
+            // The list is empty, thus the one list item comes from the free list.
             let new_light = light(type_point, 30);
-            let mut blocks = Blocks::new();
-            add_update_lights(&mut blocks, m, effect_state(&[new_light]), 1);
-            assert!(blocks.skip);
+            let mut set = Regions::new();
+            add_update_lights(&mut set, m, effect_state(&[new_light]), 1);
+            let buckets: usize = rd(m, M::lightEntries_arrayBuckets);
+            let free: usize = rd(m, M::deviceLights_allocator_freeList);
+            assert_eq!(
+                set.as_slice(),
+                [(m, M::SIZE), (w.render_state, RS::SIZE), (buckets + (30 % BUCKETS) * 4, 4), (free, ITEM_SIZE)]
+            );
+
+            // A light whose node has no entry, as after ReleaseLights: the node is a region.
+            let node = hash_map::find(m + M::lightEntries, 12);
+            let entry: usize = rd(node, HN::data);
+            wr::<usize>(node, HN::data, 0);
+            let mut set = Regions::new();
+            add_update_lights(&mut set, m, effect_state(&[point]), 1);
+            assert_eq!(set.as_slice()[2], (node, HN::SIZE));
+            wr(node, HN::data, entry);
         }
     }
 
@@ -1560,7 +1329,7 @@ mod tests {
             release_lights(m);
             assert_eq!(calls(), [(46, 2, 0)]);
             assert_eq!(rd::<u32>(m, M::lightEntries_count), 1);
-            let (_, node) = map_find(m + M::lightEntries, 2);
+            let node = hash_map::find(m + M::lightEntries, 2);
             assert_ne!(node, 0);
             assert_eq!(rd::<usize>(node, HN::data), 0);
             release_lights(m);
@@ -1652,30 +1421,7 @@ mod tests {
             // The regions of such a call are the manager and the render state.
             let mut set = Regions::new();
             set_state_regions(&mut set, m, 0, texturing, vertex_color);
-            let mut expected = [(m, M::SIZE), (w.render_state, RS::SIZE)];
-            expected.sort_unstable();
-            assert_eq!(set.as_slice(), expected);
+            assert_eq!(set.as_slice(), [(m, M::SIZE), (w.render_state, RS::SIZE)]);
         }
-    }
-
-    #[test]
-    fn blocks_join_what_touches() {
-        let mut blocks = Blocks::new();
-        blocks.add(0x100C, 12);
-        blocks.add(0x2000, 0x70);
-        blocks.add(0x1000, 12);
-        blocks.add(0x1000, 12);
-        blocks.add(0, 12);
-        blocks.add(0x1020, 12);
-        assert_eq!(blocks.join(), 3);
-        assert_eq!(blocks.list[..3], [(0x1000, 24), (0x1020, 12), (0x2000, 0x70)]);
-
-        let mut blocks = Blocks::new();
-        for i in 0..9 {
-            blocks.add(0x1000 + i * 0x100, 12);
-        }
-        let mut set = Regions::new();
-        blocks.finish(&mut set);
-        assert!(set.as_slice().is_empty()); // skipped
     }
 }

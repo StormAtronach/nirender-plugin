@@ -62,7 +62,7 @@ unsafe fn to_device(this: usize, state: u32, value: u32) {
 /// The game code has this pattern inline in most places. It writes the cache and the device
 /// when the value is new. It does not keep the previous value.
 #[inline(always)]
-unsafe fn set_if_changed(this: usize, state: u32, value: u32) {
+pub(crate) unsafe fn set_if_changed(this: usize, state: u32, value: u32) {
     if current(this, state) != value {
         set_current(this, state, value);
         to_device(this, state, value);
