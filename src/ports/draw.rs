@@ -8,14 +8,20 @@
 use core::arch::asm;
 use core::mem::transmute;
 
-use crate::engine::device_set_render_state;
+use crate::d3d::{
+    device_draw_indexed_primitive, device_draw_primitive, device_set_indices, device_set_stream_source, D3DFVF_NORMAL,
+    D3DPT_TRIANGLELIST, D3DPT_TRIANGLESTRIP, D3DRS_VERTEXBLEND,
+};
+use crate::engine::{device_set_render_state, vcall0};
 use crate::gen::layouts::{
     NiDX8ConfigurableTexturePipeline as CTP, NiDX8RenderState as RS, NiDX8Renderer as R, NiDX8Renderer_BatchedObject as B,
     NiGeometryBufferData as GB, NiGeometryData as GD, NiPropertyState as PS, NiRefObject, NiRendererSpecificProperty,
     NiSkinInstance, NiSkinPartition, NiSkinPartition_Partition as P, NiTriStripsData,
 };
 use crate::mem::{rd, wr};
+use crate::ports::ni;
 use crate::shadow::Regions;
+use crate::site::{site_cdecl, site_thiscall};
 
 // ---------------------------------------------------------------------------------------
 // Call sites: the address of each `call rel32` and the callee the database has there
@@ -153,7 +159,8 @@ pub static SITES: &[usize] = &[
     S2_ENSURE_AND_REGISTER_STREAMABLES,
 ];
 
-/// The target that the call at `site` has in memory now.
+/// The target that the call at `site` has in memory now. The macros of `site` call this
+/// function.
 #[cfg(not(test))]
 #[inline(always)]
 unsafe fn target(site: usize) -> usize {
@@ -166,28 +173,11 @@ unsafe fn target(site: usize) -> usize {
     tests::fake_target(site)
 }
 
-macro_rules! u32_of {
-    ($x:expr) => {
-        u32
-    };
-}
-
-/// Calls the target of the call at a site as a `__thiscall` function. The macro returns EAX.
-macro_rules! site_thiscall {
-    ($site:expr, $this:expr $(, $a:expr)* $(,)?) => {{
-        let f: unsafe extern "thiscall" fn(usize $(, u32_of!($a))*) -> u32 = transmute(target($site));
-        f($this $(, $a as u32)*)
-    }};
-}
-
-/// Calls the target of the call at a site as a `__cdecl` function with one argument.
-unsafe fn site_cdecl1(site: usize, a: usize) -> usize {
-    transmute::<usize, unsafe extern "C" fn(usize) -> usize>(target(site))(a)
-}
-
-/// Calls `patchDrawIndexedPrimitive` as the game code does. The device is in EAX and its
-/// vtable is in EDX. The arguments of `IDirect3DDevice8::DrawIndexedPrimitive` are on the
-/// stack, and the callee removes them. `ecx` is the value the game code has in ECX at the call.
+/// Calls `patchDrawIndexedPrimitive` as the game code does in this file. The device is in EAX
+/// and its vtable is in EDX. `ecx` is the value that the game code has in ECX at the call. The
+/// arguments of `IDirect3DDevice8::DrawIndexedPrimitive` are on the stack, and the callee
+/// removes them. `min_index` is always 0. The function of the same name in `draw_misc` is
+/// different: it takes `min_index` as an argument and does not pass the ECX of the game.
 unsafe fn site_draw_indexed_primitive(
     site: usize,
     device: usize,
@@ -246,12 +236,9 @@ unsafe fn site_draw_primitive(site: usize, device: usize, vtable: usize, primiti
 
 /// `data_NiDX8Renderer_vertexBlendLookup`: the `D3DRS_VERTEXBLEND` value for a count of bones.
 #[cfg(not(test))]
-const VERTEX_BLEND_LOOKUP: usize = 0x7C3840;
-
-#[cfg(not(test))]
 #[inline(always)]
 fn vertex_blend_lookup() -> usize {
-    VERTEX_BLEND_LOOKUP
+    crate::engine::VERTEX_BLEND_LOOKUP
 }
 
 #[cfg(test)]
@@ -261,10 +248,7 @@ fn vertex_blend_lookup() -> usize {
 
 /// `NiDX8RenderState::renderStateSettings[D3DRS_VERTEXBLEND].currentValue`
 const RS_VERTEX_BLEND_CURRENT: usize = 0x6B0;
-const D3DRS_VERTEXBLEND: u32 = 151;
-const D3DPT_TRIANGLELIST: u32 = 4;
-const D3DPT_TRIANGLESTRIP: u32 = 5;
-const D3DFVF_NORMAL: u32 = 0x10;
+const _: () = assert!(NiSkinPartition::refCount == ni::REF_COUNT && NiRefObject::refCount == ni::REF_COUNT);
 
 /// `NiSkinData::skinPartition`
 const SKIN_DATA_SKIN_PARTITION: usize = 8;
@@ -294,44 +278,6 @@ const PASS_NO_DRAW: u32 = 0x4000_0000;
 const VT_GET_ACTIVE_VERTEX_COUNT: usize = 0x30;
 const VT_GET_ACTIVE_TRIANGLE_COUNT: usize = 0x3C;
 const VT_GET_TRI_LIST: usize = 0x44;
-
-// ---------------------------------------------------------------------------------------
-// Calls through vtables
-// ---------------------------------------------------------------------------------------
-
-/// A virtual function of `object` at `offset` in its vtable.
-unsafe fn virtual_at(object: usize, offset: usize) -> usize {
-    rd(rd::<usize>(object, 0), offset)
-}
-
-unsafe fn virtual0(object: usize, offset: usize) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize) -> u32>(virtual_at(object, offset))(object)
-}
-
-/// Calls the deleting destructor with the flag that frees the memory.
-unsafe fn virtual_delete(object: usize) {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32) -> u32>(virtual_at(object, 0))(object, 1);
-}
-
-unsafe fn device_draw_primitive(device: usize, primitive_type: u32, start_vertex: u32, primitives: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32) -> u32 = transmute(virtual_at(device, 0x118));
-    f(device, primitive_type, start_vertex, primitives)
-}
-
-unsafe fn device_draw_indexed_primitive(device: usize, primitive_type: u32, min_index: u32, vertices: u32, start_index: u32, primitives: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(device, 0x11C));
-    f(device, primitive_type, min_index, vertices, start_index, primitives)
-}
-
-unsafe fn device_set_stream_source(device: usize, stream: u32, buffer: u32, stride: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32) -> u32 = transmute(virtual_at(device, 0x14C));
-    f(device, stream, buffer, stride)
-}
-
-unsafe fn device_set_indices(device: usize, buffer: u32, base_vertex: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32) -> u32 = transmute(virtual_at(device, 0x154));
-    f(device, buffer, base_vertex)
-}
 
 // ---------------------------------------------------------------------------------------
 // Parts the functions share. The game code has them inline in each function.
@@ -371,7 +317,7 @@ unsafe fn renderer_specific_objects(site: usize, property_state: usize) -> (usiz
     let property = site_thiscall!(site, property_state) as usize;
     if property != 0 {
         let data: usize = rd(property, NiRendererSpecificProperty::renderData);
-        if data != 0 && virtual0(data, 4) == RENDERER_TYPE_DX8 {
+        if data != 0 && vcall0(data, 4) == RENDERER_TYPE_DX8 {
             let data: usize = rd(property, NiRendererSpecificProperty::renderData);
             if data != 0 {
                 return (rd(data, RENDER_DATA_FIELD_C), rd(data, RENDER_DATA_FIELD_8));
@@ -461,8 +407,9 @@ enum SkinningCheck {
 }
 
 /// Returns the check that the bytes at `RS_SKINNING_CHECK` are. Bytes that are not the
-/// database bytes and not the MWSE bytes count as the database. The installer keeps the port
-/// off then.
+/// database bytes and not the MWSE bytes count as the database. The port does not run with
+/// such bytes: `ports::FOLLOWED` lists exactly the MWSE bytes for this place, and
+/// `install::census` locks the port when the memory has other bytes.
 fn skinning_check(bytes: &[u8; 8]) -> SkinningCheck {
     if *bytes == SKINNING_CHECK_MWSE {
         SkinningCheck::GeometryFlag
@@ -499,7 +446,7 @@ pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
     }
-    if virtual0(geom_data, VT_GET_ACTIVE_VERTEX_COUNT) as u16 == 0 {
+    if vcall0(geom_data, VT_GET_ACTIVE_VERTEX_COUNT) as u16 == 0 {
         return;
     }
     if skin != 0 && !software_skinning(skinning_check(&skinning_check_bytes()), this, geom_data) {
@@ -510,11 +457,11 @@ pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform
     let out = core::ptr::addr_of_mut!(geom_buffer) as usize;
     if site_thiscall!(RS_CREATE_GEOMETRY_BUFFER_DATA, this, out, geom_data) as u8 != 0 {
         wr(geom_buffer, GB::primitiveType, D3DPT_TRIANGLELIST);
-        let triangles = virtual0(geom_data, VT_GET_ACTIVE_TRIANGLE_COUNT) & 0xFFFF;
+        let triangles = vcall0(geom_data, VT_GET_ACTIVE_TRIANGLE_COUNT) & 0xFFFF;
         wr(geom_buffer, GB::trianglesCount, triangles);
         wr::<u32>(geom_buffer, GB::stripCount, 1);
         wr::<u32>(geom_buffer, GB::stripVertexCounts, 0);
-        let list = virtual0(geom_data, VT_GET_TRI_LIST);
+        let list = vcall0(geom_data, VT_GET_TRI_LIST);
         wr(geom_buffer, GB::triList, list);
     }
     site_thiscall!(RS_DRAW_PRIMITIVE, this, geom_data, skin, transform, world_bound, geom_buffer, 0);
@@ -526,7 +473,7 @@ pub unsafe fn render_tri_strips(this: usize, geom_data: usize, skin: usize, tran
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
     }
-    if virtual0(geom_data, VT_GET_ACTIVE_VERTEX_COUNT) as u16 == 0 {
+    if vcall0(geom_data, VT_GET_ACTIVE_VERTEX_COUNT) as u16 == 0 {
         return;
     }
     if skin != 0 && rd::<u32>(this, R::countHWBones) >= 4 {
@@ -547,12 +494,12 @@ pub unsafe fn render_tri_strips(this: usize, geom_data: usize, skin: usize, tran
     site_thiscall!(RT_DRAW_PRIMITIVE, this, geom_data, skin, transform, world_bound, geom_buffer, 0);
 }
 
-/// `RenderShape` and `RenderTriStrips` write nothing before they call `DrawSkinnedPrimitive`
-/// or `DrawPrimitive`. The shadow test skips a call that gets there. `draw_regions` gives the
-/// reasons.
+/// The call is a skip when the scene is open and the geometry data has active vertices.
+/// `RenderShape` and `RenderTriStrips` then call `DrawSkinnedPrimitive` or `DrawPrimitive`.
+/// `draw_regions` gives the reason. The two functions write nothing before that call.
 unsafe fn render_regions(set: &mut Regions, this: usize, geom_data: usize) {
     set.add(this, R::SIZE);
-    if rd::<u8>(this, R::bSceneOpen) != 0 && virtual0(geom_data, VT_GET_ACTIVE_VERTEX_COUNT) as u16 != 0 {
+    if rd::<u8>(this, R::bSceneOpen) != 0 && vcall0(geom_data, VT_GET_ACTIVE_VERTEX_COUNT) as u16 != 0 {
         set.skip();
     }
 }
@@ -656,7 +603,7 @@ pub unsafe fn draw_primitive(
                 if binary & PASS_KEEP_STREAMS == 0 {
                     let device: usize = rd(this, R::d3dDevice);
                     device_set_stream_source(device, 0, rd(geom_buffer, GB::d3dVertexBuffer), rd(geom_buffer, GB::vertexStride));
-                    let index_buffer: u32 = rd(geom_buffer, GB::indexBuffer);
+                    let index_buffer: usize = rd(geom_buffer, GB::indexBuffer);
                     if index_buffer != 0 {
                         device_set_indices(rd(this, R::d3dDevice), index_buffer, 0);
                     }
@@ -734,12 +681,9 @@ pub unsafe fn draw_primitive(
     );
 }
 
-/// The regions of a call that draws: none, because the shadow test skips the call.
+/// The call is a skip when the function gets to `buildPass` and `loadBinary`. Each call that
+/// draws does.
 ///
-/// `DrawPrimitive`, `DrawSkinnedPrimitive2` and `EndBatch` write only the vertex blend value
-/// in the render state. Their callees write the renderer, the render state, the material and
-/// its entry, the light manager and its list items, the texture pipeline, the pass and its
-/// stages, and the geometry buffer data. That is more than the 8 blocks of `Regions`.
 /// `buildPass` and `loadBinary` call a virtual function of the pass, and its writes are not
 /// known. The shadow test also skips the ports of these two functions. The pass can make
 /// textures, and the buffer functions can release device buffers. The shadow test compares
@@ -748,7 +692,9 @@ unsafe fn draw_regions(set: &mut Regions) {
     set.skip();
 }
 
-/// `DrawPrimitive` returns immediately when there is no filled buffer and no geometry data.
+/// The call is a skip when there is a filled buffer or geometry data. `DrawPrimitive` then
+/// draws, and `draw_regions` gives the reason. If there is neither, `DrawPrimitive` returns
+/// immediately.
 unsafe fn draw_primitive_regions(set: &mut Regions, this: usize, geom_data: usize, geom_buffer: usize) {
     set.add(this, R::SIZE);
     if vertex_format(geom_buffer, geom_data).is_some() {
@@ -769,7 +715,7 @@ pub unsafe fn draw_skinned_primitive(this: usize, geom_data: usize, skin: usize,
     let mut skin_partition: usize = if skin_data != 0 { rd(skin_data, SKIN_DATA_SKIN_PARTITION) } else { 0 };
     if skin_partition == 0 {
         let mut new_partition: usize = 0;
-        let mut eax = site_cdecl1(SP_OPERATOR_NEW, NiSkinPartition::SIZE);
+        let mut eax = site_cdecl!(SP_OPERATOR_NEW, NiSkinPartition::SIZE) as usize;
         if eax != 0 {
             eax = site_thiscall!(SP_SKIN_PARTITION_CTOR, eax) as usize;
             new_partition = eax;
@@ -779,20 +725,7 @@ pub unsafe fn draw_skinned_primitive(this: usize, geom_data: usize, skin: usize,
         skin_partition = new_partition;
         if site_thiscall!(SP_MAKE_PARTITIONS, new_partition, geom_data, skin_data, bones, bones) as u8 != 0 {
             let slot = rd::<usize>(skin, NiSkinInstance::skinData) + SKIN_DATA_SKIN_PARTITION;
-            let old: usize = rd(slot, 0);
-            if old != new_partition {
-                if old != 0 {
-                    let count = rd::<u32>(old, NiRefObject::refCount).wrapping_sub(1);
-                    wr(old, NiRefObject::refCount, count);
-                    if count == 0 {
-                        virtual_delete(old);
-                    }
-                }
-                wr(slot, 0, new_partition);
-                if new_partition != 0 {
-                    wr(new_partition, NiSkinPartition::refCount, rd::<u32>(new_partition, NiSkinPartition::refCount).wrapping_add(1));
-                }
-            }
+            ni::pointer_assign(slot, new_partition);
         }
     }
 
@@ -994,6 +927,8 @@ pub unsafe fn draw_skinned_primitive_2(
     );
 }
 
+/// The call is a skip when `skin` is not 0. `DrawSkinnedPrimitive2` then draws, and
+/// `draw_regions` gives the reason. With no skin, `DrawSkinnedPrimitive2` returns immediately.
 unsafe fn draw_skinned_primitive_2_regions(set: &mut Regions, this: usize, skin: usize) {
     set.add(this, R::SIZE);
     if skin != 0 {
@@ -1009,20 +944,7 @@ unsafe fn draw_skinned_primitive_2_regions(set: &mut Regions, this: usize, skin:
 unsafe fn adopt_current_state(slot: usize, current: usize) {
     if rd::<usize>(slot, 0) == 0 && current != 0 {
         wr(slot, 0, current);
-        wr(current, NiRefObject::refCount, rd::<u32>(current, NiRefObject::refCount).wrapping_add(1));
-    }
-}
-
-/// The end of `EndBatch`: releases the reference of a state pointer and sets the pointer to 0.
-unsafe fn release_state(slot: usize) {
-    let object: usize = rd(slot, 0);
-    if object != 0 {
-        let count = rd::<u32>(object, NiRefObject::refCount).wrapping_sub(1);
-        wr(object, NiRefObject::refCount, count);
-        if count == 0 {
-            virtual_delete(object);
-        }
-        wr::<usize>(slot, 0, 0);
+        ni::add_reference(current);
     }
 }
 
@@ -1157,10 +1079,10 @@ pub unsafe fn end_batch(this: usize) {
                         }
                     }
                     if binary & PASS_KEEP_STREAMS == 0 {
-                        let vertex_buffer: u32 = rd(geom_buffer, GB::d3dVertexBuffer);
+                        let vertex_buffer: usize = rd(geom_buffer, GB::d3dVertexBuffer);
                         let stride: u32 = rd(geom_buffer, GB::vertexStride);
                         device_set_stream_source(rd(this, R::d3dDevice), 0, vertex_buffer, stride);
-                        let index_buffer: u32 = rd(geom_buffer, GB::indexBuffer);
+                        let index_buffer: usize = rd(geom_buffer, GB::indexBuffer);
                         if index_buffer != 0 {
                             device_set_indices(rd(this, R::d3dDevice), index_buffer, 0);
                         }
@@ -1208,26 +1130,28 @@ pub unsafe fn end_batch(this: usize) {
         transform,
         world_bound,
     );
-    release_state(this + R::propertyStatePtr);
-    release_state(this + R::effectStatePtr);
+    ni::release_and_clear(this + R::propertyStatePtr);
+    ni::release_and_clear(this + R::effectStatePtr);
 
     let mut batch: usize = rd(this, R::batchedObjectListHead);
     while batch != 0 {
         let next: usize = rd(batch, B::nextBatch);
-        site_cdecl1(EB_DELETE, batch);
+        site_cdecl!(EB_DELETE, batch);
         batch = next;
     }
     wr::<usize>(this, R::batchedObjectListHead, 0);
     wr::<usize>(this, R::batchedObjectListTail, 0);
 }
 
-/// `EndBatch` returns immediately when the list is empty, or when its first object has no
-/// filled buffer and no geometry data.
+/// The call is a skip when the list has an object with a filled buffer or geometry data.
+/// `EndBatch` then draws, and `draw_regions` gives the reason. `EndBatch` returns immediately
+/// when the list is empty, or when its first object has no filled buffer and no geometry data.
 unsafe fn end_batch_regions(set: &mut Regions, this: usize) {
     set.add(this, R::SIZE);
     let head: usize = rd(this, R::batchedObjectListHead);
     if head != 0 && vertex_format(rd(head, B::geomBuffer), rd(head, B::geomData)).is_some() {
-        // This call also needs `set.allocates()` for the list when `Regions` becomes larger.
+        // `EndBatch` also frees the list with `operator delete`. A call without the skip
+        // needs `set.allocates()` for that.
         draw_regions(set);
     }
 }
@@ -1251,8 +1175,8 @@ port_thiscall!(render_tri_strips_port, 0x6ACFC0, "NiDX8Renderer::RenderTriStrips
 port_thiscall!(draw_skinned_primitive_port, 0x6ADE70, "NiDX8Renderer::DrawSkinnedPrimitive",
     fn(this, geom_data: usize, skin: usize, transform: usize, world_bound: usize) -> (),
     compare_eax = false,
-    // The function always gets to DrawSkinnedPrimitive2. It can also make skin partitions
-    // (MakePartitions).
+    // The call is always a skip. The function always gets to `DrawSkinnedPrimitive2`, which
+    // draws. It can also make skin partitions (`MakePartitions`).
     regions = |set| draw_regions(set),
     rust = draw_skinned_primitive);
 
