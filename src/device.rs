@@ -1,0 +1,375 @@
+//! The recorder on the `IDirect3DDevice8` the engine draws with.
+//!
+//! `attach` replaces the vtable pointer of the device object with a table of wrappers. A
+//! wrapper can record the call and can skip it ("dry"), which is how a Rust function runs
+//! for comparison without drawing anything.
+//!
+//! A record in the log is: slot, argument count, the arguments, payload length in words, the
+//! payload (the bytes behind a pointer argument). Two logs are equal when the words are equal.
+
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+
+pub const SLOTS: usize = 97;
+/// Copied past the interface, in case the device class has more virtual functions.
+const TABLE_LEN: usize = 160;
+
+pub const SLOT_PRESENT: usize = 15;
+
+/// Stack arguments of each method, without `this`.
+pub const ARGS: [u8; SLOTS] = [
+    2, 0, 0, 0, 0, 1, 1, 1, 1, 1, // 0 QueryInterface .. 9 GetCreationParameters
+    3, 3, 1, 2, 1, 4, 3, 1, 2, 1, // 10 SetCursorProperties .. 19 GetGammaRamp
+    7, 8, 6, 5, 5, 6, 5, 4, 5, 2, // 20 CreateTexture .. 29 UpdateTexture
+    1, 2, 1, 1, 0, 0, 6, 2, 2, 2, // 30 GetFrontBuffer .. 39 MultiplyTransform
+    1, 1, 1, 1, 2, 2, 2, 2, 2, 2, // 40 SetViewport .. 49 GetClipPlane
+    2, 2, 0, 1, 1, 1, 1, 2, 1, 1, // 50 SetRenderState .. 59 GetClipStatus
+    2, 2, 3, 3, 1, 3, 2, 2, 1, 1, // 60 GetTexture .. 69 GetCurrentTexturePalette
+    3, 5, 4, 8, 5, 4, 1, 1, 1, 3, // 70 DrawPrimitive .. 79 SetVertexShaderConstant
+    3, 3, 3, 3, 3, 2, 2, 2, 1, 1, // 80 GetVertexShaderConstant .. 89 GetPixelShader
+    1, 3, 3, 3, 3, 3, 1, // 90 DeletePixelShader .. 96 DeletePatch
+];
+
+pub const NAMES: [&str; SLOTS] = [
+    "QueryInterface", "AddRef", "Release", "TestCooperativeLevel", "GetAvailableTextureMem",
+    "ResourceManagerDiscardBytes", "GetDirect3D", "GetDeviceCaps", "GetDisplayMode", "GetCreationParameters",
+    "SetCursorProperties", "SetCursorPosition", "ShowCursor", "CreateAdditionalSwapChain", "Reset",
+    "Present", "GetBackBuffer", "GetRasterStatus", "SetGammaRamp", "GetGammaRamp",
+    "CreateTexture", "CreateVolumeTexture", "CreateCubeTexture", "CreateVertexBuffer", "CreateIndexBuffer",
+    "CreateRenderTarget", "CreateDepthStencilSurface", "CreateImageSurface", "CopyRects", "UpdateTexture",
+    "GetFrontBuffer", "SetRenderTarget", "GetRenderTarget", "GetDepthStencilSurface", "BeginScene",
+    "EndScene", "Clear", "SetTransform", "GetTransform", "MultiplyTransform",
+    "SetViewport", "GetViewport", "SetMaterial", "GetMaterial", "SetLight",
+    "GetLight", "LightEnable", "GetLightEnable", "SetClipPlane", "GetClipPlane",
+    "SetRenderState", "GetRenderState", "BeginStateBlock", "EndStateBlock", "ApplyStateBlock",
+    "CaptureStateBlock", "DeleteStateBlock", "CreateStateBlock", "SetClipStatus", "GetClipStatus",
+    "GetTexture", "SetTexture", "GetTextureStageState", "SetTextureStageState", "ValidateDevice",
+    "GetInfo", "SetPaletteEntries", "GetPaletteEntries", "SetCurrentTexturePalette", "GetCurrentTexturePalette",
+    "DrawPrimitive", "DrawIndexedPrimitive", "DrawPrimitiveUP", "DrawIndexedPrimitiveUP", "ProcessVertices",
+    "CreateVertexShader", "SetVertexShader", "GetVertexShader", "DeleteVertexShader", "SetVertexShaderConstant",
+    "GetVertexShaderConstant", "GetVertexShaderDeclaration", "GetVertexShaderFunction", "SetStreamSource", "GetStreamSource",
+    "SetIndices", "GetIndices", "CreatePixelShader", "SetPixelShader", "GetPixelShader",
+    "DeletePixelShader", "SetPixelShaderConstant", "GetPixelShaderConstant", "GetPixelShaderFunction", "DrawRectPatch",
+    "DrawTriPatch", "DeletePatch",
+];
+
+/// A dry run does not pass these on: they change device state or draw, and return no data.
+pub fn dry_skips(slot: usize) -> bool {
+    matches!(
+        slot,
+        15 | 18 | 31 | 34 | 35 | 36 | 37 | 39 | 40 | 42 | 44 | 46 | 48 | 50 | 54 | 58 | 61 | 63 | 66 | 68 | 70 | 71 | 72 | 73 | 76
+            | 79 | 83 | 85 | 88 | 91 | 94 | 95
+    )
+}
+
+/// Vertices a primitive count stands for.
+pub fn vertex_count(primitive_type: u32, primitives: u32) -> u32 {
+    match primitive_type {
+        1 => primitives,         // point list
+        2 => primitives * 2,     // line list
+        3 => primitives + 1,     // line strip
+        4 => primitives * 3,     // triangle list
+        5 | 6 => primitives + 2, // triangle strip, fan
+        _ => 0,
+    }
+}
+
+/// The bytes behind the pointer argument of a call, as (address, length). (0, 0) for none.
+pub fn payload(slot: usize, a: &[u32]) -> (usize, usize) {
+    let (ptr, len) = match slot {
+        18 => (a[1], 0x600),                                // SetGammaRamp: D3DGAMMARAMP
+        36 => (a[1], a[0] * 16),                            // Clear: D3DRECT[count]
+        37 | 39 => (a[1], 64),                              // SetTransform, MultiplyTransform: D3DMATRIX
+        40 => (a[0], 24),                                   // SetViewport: D3DVIEWPORT8
+        42 => (a[0], 68),                                   // SetMaterial: D3DMATERIAL8
+        44 => (a[1], 104),                                  // SetLight: D3DLIGHT8
+        48 => (a[1], 16),                                   // SetClipPlane: float[4]
+        72 => (a[2], vertex_count(a[0], a[1]) * a[3]),      // DrawPrimitiveUP: vertices
+        79 | 91 => (a[1], a[2] * 16),                       // Set*ShaderConstant: float[4][count]
+        _ => (0, 0),
+    };
+    if ptr == 0 || len == 0 {
+        (0, 0)
+    } else {
+        (ptr as usize, len as usize)
+    }
+}
+
+pub static mut ORIG: [usize; TABLE_LEN + 1] = [0; TABLE_LEN + 1];
+static mut OURS: [usize; TABLE_LEN + 1] = [0; TABLE_LEN + 1];
+static DEVICE: AtomicUsize = AtomicUsize::new(0);
+
+static RECORDING: AtomicBool = AtomicBool::new(false);
+static DRY: AtomicBool = AtomicBool::new(false);
+/// Calls the device makes on itself while it serves a call are not the engine's calls.
+static DEPTH: AtomicU32 = AtomicU32::new(0);
+static mut LOG: Vec<u32> = Vec::new();
+static mut FRAME_HOOK: Option<unsafe fn()> = None;
+
+pub fn device() -> usize {
+    DEVICE.load(Ordering::Relaxed)
+}
+
+/// Starts a recording. `dry` also stops state and draw calls from reaching the device.
+pub unsafe fn begin(dry: bool) {
+    (*core::ptr::addr_of_mut!(LOG)).clear();
+    DRY.store(dry, Ordering::Relaxed);
+    RECORDING.store(true, Ordering::Relaxed);
+}
+
+/// Ends the recording and moves the log into `into`.
+pub unsafe fn end(into: &mut Vec<u32>) {
+    RECORDING.store(false, Ordering::Relaxed);
+    DRY.store(false, Ordering::Relaxed);
+    into.clear();
+    core::mem::swap(into, &mut *core::ptr::addr_of_mut!(LOG));
+}
+
+pub fn recording() -> bool {
+    RECORDING.load(Ordering::Relaxed)
+}
+
+/// Called at each Present the engine makes, before the call goes on.
+pub unsafe fn set_frame_hook(hook: unsafe fn()) {
+    FRAME_HOOK = Some(hook);
+}
+
+pub fn append_record(log: &mut Vec<u32>, slot: usize, args: &[u32], payload_bytes: &[u8]) {
+    log.push(slot as u32);
+    log.push(args.len() as u32);
+    log.extend_from_slice(args);
+    let words = (payload_bytes.len() + 3) / 4;
+    log.push(words as u32);
+    let start = log.len();
+    log.resize(start + words, 0);
+    // Safe: `words` u32 cover the bytes, and the tail of the last word stays zero.
+    unsafe {
+        core::ptr::copy_nonoverlapping(payload_bytes.as_ptr(), log.as_mut_ptr().add(start) as *mut u8, payload_bytes.len());
+    }
+}
+
+/// One record of a log. `None` at the end or when the log is cut short.
+pub struct Record<'a> {
+    pub slot: usize,
+    pub args: &'a [u32],
+    pub payload: &'a [u32],
+}
+
+pub fn read_record(log: &[u32], at: usize) -> Option<(Record<'_>, usize)> {
+    let slot = *log.get(at)? as usize;
+    let argc = *log.get(at + 1)? as usize;
+    let args = log.get(at + 2..at + 2 + argc)?;
+    let words = *log.get(at + 2 + argc)? as usize;
+    let payload = log.get(at + 3 + argc..at + 3 + argc + words)?;
+    Some((Record { slot, args, payload }, at + 3 + argc + words))
+}
+
+pub fn count_records(log: &[u32]) -> usize {
+    let (mut at, mut n) = (0, 0);
+    while let Some((_, next)) = read_record(log, at) {
+        at = next;
+        n += 1;
+    }
+    n
+}
+
+pub fn describe(record: &Record<'_>) -> String {
+    let name = NAMES.get(record.slot).copied().unwrap_or("?");
+    let args: Vec<String> = record.args.iter().map(|a| format!("{a:#x}")).collect();
+    let mut text = format!("{}({})", name, args.join(", "));
+    if !record.payload.is_empty() {
+        let words: Vec<String> = record.payload.iter().take(24).map(|w| format!("{w:08x}")).collect();
+        text.push_str(&format!(" data[{}]: {}", record.payload.len(), words.join(" ")));
+    }
+    text
+}
+
+/// The first place two logs differ, as text, or `None` when they are equal.
+pub fn first_difference(a: &[u32], b: &[u32]) -> Option<String> {
+    if a == b {
+        return None;
+    }
+    let (mut at_a, mut at_b, mut index) = (0, 0, 0);
+    loop {
+        match (read_record(a, at_a), read_record(b, at_b)) {
+            (Some((ra, next_a)), Some((rb, next_b))) => {
+                if a[at_a..next_a] != b[at_b..next_b] {
+                    return Some(format!("call {index}: rust {} | engine {}", describe(&ra), describe(&rb)));
+                }
+                at_a = next_a;
+                at_b = next_b;
+                index += 1;
+            }
+            (Some((ra, _)), None) => return Some(format!("call {index}: rust {} | engine has no more calls", describe(&ra))),
+            (None, Some((rb, _))) => return Some(format!("call {index}: rust has no more calls | engine {}", describe(&rb))),
+            (None, None) => return Some("logs differ outside any record".into()),
+        }
+    }
+}
+
+unsafe fn call_original(slot: usize, this: usize, a: &[u32]) -> u32 {
+    use core::mem::transmute as t;
+    let f = ORIG[slot + 1];
+    match a.len() {
+        0 => t::<usize, unsafe extern "system" fn(usize) -> u32>(f)(this),
+        1 => t::<usize, unsafe extern "system" fn(usize, u32) -> u32>(f)(this, a[0]),
+        2 => t::<usize, unsafe extern "system" fn(usize, u32, u32) -> u32>(f)(this, a[0], a[1]),
+        3 => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32) -> u32>(f)(this, a[0], a[1], a[2]),
+        4 => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32, u32) -> u32>(f)(this, a[0], a[1], a[2], a[3]),
+        5 => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32>(f)(this, a[0], a[1], a[2], a[3], a[4]),
+        6 => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32) -> u32>(f)(this, a[0], a[1], a[2], a[3], a[4], a[5]),
+        7 => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32, u32) -> u32>(f)(
+            this, a[0], a[1], a[2], a[3], a[4], a[5], a[6],
+        ),
+        _ => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32, u32, u32) -> u32>(f)(
+            this, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7],
+        ),
+    }
+}
+
+unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
+    let outer = DEPTH.load(Ordering::Relaxed) == 0;
+    if outer {
+        if slot == SLOT_PRESENT {
+            if let Some(hook) = FRAME_HOOK {
+                hook();
+            }
+        }
+        if RECORDING.load(Ordering::Relaxed) {
+            let (ptr, len) = payload(slot, args);
+            let bytes: &[u8] = if len == 0 { &[] } else { core::slice::from_raw_parts(ptr as *const u8, len) };
+            append_record(&mut *core::ptr::addr_of_mut!(LOG), slot, args, bytes);
+            if DRY.load(Ordering::Relaxed) && dry_skips(slot) {
+                return 0;
+            }
+        }
+    }
+    DEPTH.fetch_add(1, Ordering::Relaxed);
+    let result = call_original(slot, this, args);
+    DEPTH.fetch_sub(1, Ordering::Relaxed);
+    result
+}
+
+macro_rules! wrappers {
+    ($( $slot:literal => $name:ident ( $($a:ident),* ); )*) => {
+        $(
+            unsafe extern "system" fn $name(this: usize $(, $a: u32)*) -> u32 {
+                device_call($slot, this, &[$($a),*])
+            }
+        )*
+        fn wrapper_table() -> [usize; SLOTS] {
+            [$( $name as *const () as usize ),*]
+        }
+    };
+}
+
+wrappers! {
+    0 => w0(a, b); 1 => w1(); 2 => w2(); 3 => w3(); 4 => w4(); 5 => w5(a); 6 => w6(a); 7 => w7(a); 8 => w8(a); 9 => w9(a);
+    10 => w10(a, b, c); 11 => w11(a, b, c); 12 => w12(a); 13 => w13(a, b); 14 => w14(a); 15 => w15(a, b, c, d);
+    16 => w16(a, b, c); 17 => w17(a); 18 => w18(a, b); 19 => w19(a);
+    20 => w20(a, b, c, d, e, f, g); 21 => w21(a, b, c, d, e, f, g, h); 22 => w22(a, b, c, d, e, f); 23 => w23(a, b, c, d, e);
+    24 => w24(a, b, c, d, e); 25 => w25(a, b, c, d, e, f); 26 => w26(a, b, c, d, e); 27 => w27(a, b, c, d);
+    28 => w28(a, b, c, d, e); 29 => w29(a, b);
+    30 => w30(a); 31 => w31(a, b); 32 => w32(a); 33 => w33(a); 34 => w34(); 35 => w35(); 36 => w36(a, b, c, d, e, f);
+    37 => w37(a, b); 38 => w38(a, b); 39 => w39(a, b);
+    40 => w40(a); 41 => w41(a); 42 => w42(a); 43 => w43(a); 44 => w44(a, b); 45 => w45(a, b); 46 => w46(a, b); 47 => w47(a, b);
+    48 => w48(a, b); 49 => w49(a, b);
+    50 => w50(a, b); 51 => w51(a, b); 52 => w52(); 53 => w53(a); 54 => w54(a); 55 => w55(a); 56 => w56(a); 57 => w57(a, b);
+    58 => w58(a); 59 => w59(a);
+    60 => w60(a, b); 61 => w61(a, b); 62 => w62(a, b, c); 63 => w63(a, b, c); 64 => w64(a); 65 => w65(a, b, c); 66 => w66(a, b);
+    67 => w67(a, b); 68 => w68(a); 69 => w69(a);
+    70 => w70(a, b, c); 71 => w71(a, b, c, d, e); 72 => w72(a, b, c, d); 73 => w73(a, b, c, d, e, f, g, h); 74 => w74(a, b, c, d, e);
+    75 => w75(a, b, c, d); 76 => w76(a); 77 => w77(a); 78 => w78(a); 79 => w79(a, b, c);
+    80 => w80(a, b, c); 81 => w81(a, b, c); 82 => w82(a, b, c); 83 => w83(a, b, c); 84 => w84(a, b, c); 85 => w85(a, b);
+    86 => w86(a, b); 87 => w87(a, b); 88 => w88(a); 89 => w89(a);
+    90 => w90(a); 91 => w91(a, b, c); 92 => w92(a, b, c); 93 => w93(a, b, c); 94 => w94(a, b, c); 95 => w95(a, b, c); 96 => w96(a);
+}
+
+/// Puts the recorder on the device object at `device`. Safe to call again for the same device.
+pub unsafe fn attach(device: usize) -> Result<(), String> {
+    if device == 0 {
+        return Err("no device".into());
+    }
+    let ours = core::ptr::addr_of_mut!(OURS) as *mut usize;
+    let orig = core::ptr::addr_of_mut!(ORIG) as *mut usize;
+    let vtable = *(device as *const usize);
+    if vtable == ours.add(1) as usize {
+        return Ok(());
+    }
+    // One word before the table too: the compiler keeps a pointer to the type information there.
+    core::ptr::copy_nonoverlapping((vtable - 4) as *const usize, orig, TABLE_LEN + 1);
+    core::ptr::copy_nonoverlapping(orig, ours, TABLE_LEN + 1);
+    for (slot, wrapper) in wrapper_table().iter().enumerate() {
+        *ours.add(slot + 1) = *wrapper;
+    }
+    *(device as *mut usize) = ours.add(1) as usize;
+    DEVICE.store(device, Ordering::Relaxed);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn argument_table_matches_the_wrappers() {
+        // A wrapper with the wrong argument count would unbalance the stack of every caller.
+        let text = include_str!("device.rs");
+        let block = text.split("wrappers! {").nth(1).unwrap().split("\n}").next().unwrap();
+        let mut seen = 0;
+        for entry in block.split(';') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            let slot: usize = entry.split("=>").next().unwrap().trim().parse().unwrap();
+            let inside = entry.split('(').nth(1).unwrap().trim_end_matches(')');
+            let argc = inside.split(',').filter(|s| !s.trim().is_empty()).count();
+            assert_eq!(argc, ARGS[slot] as usize, "slot {slot} {}", NAMES[slot]);
+            assert_eq!(slot, seen);
+            seen += 1;
+        }
+        assert_eq!(seen, SLOTS);
+    }
+
+    #[test]
+    fn known_vtable_offsets() {
+        // The offsets the game code uses: SetRenderState at 0xC8, DrawIndexedPrimitive at 0x11C.
+        assert_eq!(NAMES[0xC8 / 4], "SetRenderState");
+        assert_eq!(NAMES[0x11C / 4], "DrawIndexedPrimitive");
+        assert_eq!(NAMES[SLOT_PRESENT], "Present");
+        assert_eq!(NAMES[0xFC / 4], "SetTextureStageState");
+        assert_eq!(NAMES[0x94 / 4], "SetTransform");
+        assert_eq!(NAMES[96], "DeletePatch");
+    }
+
+    #[test]
+    fn records_round_trip_and_compare() {
+        let mut a = Vec::new();
+        append_record(&mut a, 50, &[7, 1], &[]);
+        append_record(&mut a, 37, &[256, 0x1234], &[1, 2, 3, 4, 5]);
+        assert_eq!(count_records(&a), 2);
+        let (first, next) = read_record(&a, 0).unwrap();
+        assert_eq!((first.slot, first.args), (50, &[7u32, 1][..]));
+        let (second, end) = read_record(&a, next).unwrap();
+        assert_eq!(second.payload, &[0x04030201, 5][..]);
+        assert_eq!(end, a.len());
+
+        let mut b = Vec::new();
+        append_record(&mut b, 50, &[7, 1], &[]);
+        append_record(&mut b, 37, &[256, 0x1234], &[1, 2, 3, 4, 6]);
+        assert!(first_difference(&a, &a.clone()).is_none());
+        let text = first_difference(&a, &b).unwrap();
+        assert!(text.starts_with("call 1: rust SetTransform"), "{text}");
+        b.truncate(4);
+        assert!(first_difference(&a, &b).unwrap().contains("engine has no more calls"));
+    }
+
+    #[test]
+    fn payload_sizes() {
+        assert_eq!(payload(37, &[256, 0x1000]), (0x1000, 64));
+        assert_eq!(payload(37, &[256, 0]), (0, 0));
+        assert_eq!(payload(36, &[0, 0, 7, 0, 0, 0]), (0, 0));
+        assert_eq!(payload(72, &[4, 2, 0x2000, 20]), (0x2000, 120));
+        assert_eq!(payload(50, &[7, 1]), (0, 0));
+    }
+}

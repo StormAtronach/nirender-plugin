@@ -1,0 +1,294 @@
+//! Modes of a ported function and the shadow comparison.
+//!
+//! In shadow mode a call runs twice from the same start state: the Rust function on a dry
+//! device, then the engine function for real. The device calls, the return value and the
+//! memory the function may write must be equal. The engine result is the one that stays.
+
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+
+use crate::device;
+use crate::win;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Mode {
+    Off = 0,
+    Shadow = 1,
+    Live = 2,
+}
+
+impl Mode {
+    pub fn parse(text: &str) -> Option<Mode> {
+        match text {
+            "off" => Some(Mode::Off),
+            "shadow" => Some(Mode::Shadow),
+            "live" => Some(Mode::Live),
+            _ => None,
+        }
+    }
+}
+
+/// One ported function.
+pub struct PortState {
+    pub name: &'static str,
+    pub addr: usize,
+    pub stack_args: usize,
+    pub detour: fn() -> usize,
+    /// The address to call for the engine function. 0 until the detour is installed.
+    pub orig: AtomicUsize,
+    pub mode: AtomicU8,
+    /// Calls that ran the Rust function for real.
+    pub live_calls: AtomicU64,
+    pub shadow_calls: AtomicU64,
+    /// Calls in shadow mode that could not be compared.
+    pub skipped: AtomicU64,
+    pub mismatches: AtomicU64,
+    pub reported: AtomicU32,
+}
+
+impl PortState {
+    pub const fn new(name: &'static str, addr: usize, stack_args: usize, detour: fn() -> usize) -> PortState {
+        PortState {
+            name,
+            addr,
+            stack_args,
+            detour,
+            orig: AtomicUsize::new(0),
+            mode: AtomicU8::new(0),
+            live_calls: AtomicU64::new(0),
+            shadow_calls: AtomicU64::new(0),
+            skipped: AtomicU64::new(0),
+            mismatches: AtomicU64::new(0),
+            reported: AtomicU32::new(0),
+        }
+    }
+
+    pub fn mode(&self) -> Mode {
+        match self.mode.load(Ordering::Relaxed) {
+            1 => Mode::Shadow,
+            2 => Mode::Live,
+            _ => Mode::Off,
+        }
+    }
+
+    pub fn set_mode(&self, mode: Mode) {
+        self.mode.store(mode as u8, Ordering::Relaxed);
+    }
+
+    pub fn installed(&self) -> bool {
+        self.orig.load(Ordering::Relaxed) != 0
+    }
+}
+
+/// What a function leaves in EAX.
+pub trait Eax: Copy {
+    fn to_eax(self) -> u32;
+    /// The bits of EAX that carry the value.
+    const MASK: u32;
+}
+impl Eax for () {
+    fn to_eax(self) -> u32 {
+        0
+    }
+    const MASK: u32 = 0;
+}
+impl Eax for u32 {
+    fn to_eax(self) -> u32 {
+        self
+    }
+    const MASK: u32 = !0;
+}
+impl Eax for usize {
+    fn to_eax(self) -> u32 {
+        self as u32
+    }
+    const MASK: u32 = !0;
+}
+impl Eax for u8 {
+    fn to_eax(self) -> u32 {
+        self as u32
+    }
+    const MASK: u32 = 0xFF;
+}
+impl Eax for bool {
+    fn to_eax(self) -> u32 {
+        self as u32
+    }
+    const MASK: u32 = 0xFF;
+}
+
+const LEG_NONE: u8 = 0;
+const LEG_RUST: u8 = 1;
+const LEG_ENGINE: u8 = 2;
+
+static LEG: AtomicU8 = AtomicU8::new(LEG_NONE);
+static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
+/// A frame comparison runs: shadow mode stays out of the way.
+static SUSPENDED: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_main_thread() {
+    MAIN_THREAD.store(unsafe { win::GetCurrentThreadId() }, Ordering::Relaxed);
+}
+
+pub fn suspend_shadow(on: bool) {
+    SUSPENDED.store(on as u8, Ordering::Relaxed);
+}
+
+/// The memory regions a function may write, given by the port for each call.
+pub struct Regions {
+    list: [(usize, usize); 8],
+    len: usize,
+    skip: bool,
+}
+
+impl Regions {
+    pub const fn new() -> Regions {
+        Regions { list: [(0, 0); 8], len: 0, skip: false }
+    }
+    pub fn add(&mut self, addr: usize, size: usize) {
+        if addr != 0 && size != 0 && self.len < self.list.len() {
+            self.list[self.len] = (addr, size);
+            self.len += 1;
+        }
+    }
+    /// This call cannot be compared (it allocates, for one). The engine function runs alone.
+    pub fn skip(&mut self) {
+        self.skip = true;
+    }
+    pub fn as_slice(&self) -> &[(usize, usize)] {
+        &self.list[..self.len]
+    }
+}
+
+struct Scratch {
+    before: Vec<u8>,
+    after_rust: Vec<u8>,
+    log_rust: Vec<u32>,
+    log_engine: Vec<u32>,
+}
+
+static mut SCRATCH: Scratch = Scratch { before: Vec::new(), after_rust: Vec::new(), log_rust: Vec::new(), log_engine: Vec::new() };
+
+unsafe fn save(regions: &[(usize, usize)], into: &mut Vec<u8>) {
+    into.clear();
+    for &(addr, size) in regions {
+        into.extend_from_slice(core::slice::from_raw_parts(addr as *const u8, size));
+    }
+}
+
+unsafe fn restore(regions: &[(usize, usize)], from: &[u8]) {
+    let mut at = 0;
+    for &(addr, size) in regions {
+        core::ptr::copy_nonoverlapping(from.as_ptr().add(at), addr as *mut u8, size);
+        at += size;
+    }
+}
+
+/// The differences between the saved bytes and the memory now, as text. Empty when equal.
+unsafe fn memory_differences(regions: &[(usize, usize)], rust: &[u8]) -> String {
+    let mut text = String::new();
+    let mut at = 0;
+    let mut shown = 0;
+    for (index, &(addr, size)) in regions.iter().enumerate() {
+        let engine = core::slice::from_raw_parts(addr as *const u8, size);
+        let rust_part = &rust[at..at + size];
+        at += size;
+        if engine == rust_part {
+            continue;
+        }
+        let mut offset = 0;
+        while offset < size && shown < 12 {
+            let end = (offset + 4).min(size);
+            if engine[offset..end] != rust_part[offset..end] {
+                text.push_str(&format!(
+                    " region{}+{:#x}: rust {:02x?} engine {:02x?};",
+                    index,
+                    offset & !3,
+                    &rust_part[offset..end],
+                    &engine[offset..end]
+                ));
+                shown += 1;
+            }
+            offset = end;
+        }
+    }
+    text
+}
+
+/// Runs a call of a ported function in the mode the port is in.
+///
+/// `rust` and `engine` return what the function leaves in EAX. `compare_eax` says whether
+/// that value means something.
+pub unsafe fn dispatch<R: Eax>(
+    state: &PortState,
+    compare_eax: bool,
+    regions: impl FnOnce(&mut Regions),
+    rust: impl FnOnce() -> R,
+    engine: impl FnOnce() -> u32,
+) -> u32 {
+    if win::GetCurrentThreadId() != MAIN_THREAD.load(Ordering::Relaxed) {
+        return engine();
+    }
+    let mode = state.mode();
+    match LEG.load(Ordering::Relaxed) {
+        // Inside the Rust half of a comparison everything that is ported runs as Rust.
+        LEG_RUST => {
+            return if mode == Mode::Off { engine() } else { rust().to_eax() };
+        }
+        LEG_ENGINE => return engine(),
+        _ => {}
+    }
+    match mode {
+        Mode::Off => engine(),
+        Mode::Live => {
+            state.live_calls.fetch_add(1, Ordering::Relaxed);
+            rust().to_eax()
+        }
+        Mode::Shadow => {
+            if SUSPENDED.load(Ordering::Relaxed) != 0 || device::recording() {
+                return engine();
+            }
+            let mut set = Regions::new();
+            regions(&mut set);
+            if set.skip {
+                state.skipped.fetch_add(1, Ordering::Relaxed);
+                return engine();
+            }
+            let regions = set.as_slice();
+            let scratch = &mut *core::ptr::addr_of_mut!(SCRATCH);
+
+            save(regions, &mut scratch.before);
+            LEG.store(LEG_RUST, Ordering::Relaxed);
+            device::begin(true);
+            let eax_rust = rust().to_eax();
+            device::end(&mut scratch.log_rust);
+            save(regions, &mut scratch.after_rust);
+            restore(regions, &scratch.before);
+
+            LEG.store(LEG_ENGINE, Ordering::Relaxed);
+            device::begin(false);
+            let eax_engine = engine();
+            device::end(&mut scratch.log_engine);
+            LEG.store(LEG_NONE, Ordering::Relaxed);
+
+            state.shadow_calls.fetch_add(1, Ordering::Relaxed);
+            let calls = device::first_difference(&scratch.log_rust, &scratch.log_engine);
+            let memory = memory_differences(regions, &scratch.after_rust);
+            let eax_differs = compare_eax && (eax_rust ^ eax_engine) & R::MASK != 0;
+            if calls.is_some() || !memory.is_empty() || eax_differs {
+                state.mismatches.fetch_add(1, Ordering::Relaxed);
+                if state.reported.fetch_add(1, Ordering::Relaxed) < 8 {
+                    crate::log!(
+                        "MISMATCH {} (call {}): {}{}{}",
+                        state.name,
+                        state.shadow_calls.load(Ordering::Relaxed),
+                        calls.map(|c| format!("device {c};")).unwrap_or_default(),
+                        if memory.is_empty() { String::new() } else { format!(" memory{memory}") },
+                        if eax_differs { format!(" eax rust {eax_rust:#x} engine {eax_engine:#x}") } else { String::new() },
+                    );
+                }
+            }
+            eax_engine
+        }
+    }
+}
