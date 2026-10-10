@@ -21,7 +21,7 @@ use crate::shadow::Regions;
 /// `EndPaint` and `SetRenderTarget` write memory and return a value that depend on that
 /// result. With `true`, shadow mode does not compare such a call. With `false` it compares
 /// them, and a call where the real device fails shows as a mismatch.
-const SKIP_ON_SWALLOWED_RESULT: bool = true;
+const SKIP_ON_SWALLOWED_RESULT: bool = false;
 
 // ---------------------------------------------------------------------------------------
 // Engine data and functions at fixed addresses

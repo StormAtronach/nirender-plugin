@@ -326,7 +326,8 @@ unsafe fn call_original(slot: usize, this: usize, a: &[u32]) -> u32 {
 unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
     let outer = DEPTH.load(Ordering::Relaxed) == 0;
     if outer {
-        if slot == SLOT_PRESENT {
+        // Not for the Present of a dry run: that one is not a frame of the game.
+        if slot == SLOT_PRESENT && !DRY.load(Ordering::Relaxed) {
             if let Some(hook) = FRAME_HOOK {
                 hook();
             }
