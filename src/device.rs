@@ -8,13 +8,17 @@
 //! words and the payload. The payload is the bytes behind a pointer argument. Two logs are
 //! equal when the words are equal.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 pub const SLOTS: usize = 97;
 /// The copy goes past the interface, because the device class can have more virtual functions.
 const TABLE_LEN: usize = 160;
 
 pub const SLOT_PRESENT: usize = 15;
+const SLOT_CREATE_VERTEX_BUFFER: usize = 23;
+const SLOT_CREATE_INDEX_BUFFER: usize = 24;
+const SLOT_SET_STREAM_SOURCE: usize = 83;
+const SLOT_SET_INDICES: usize = 85;
 
 /// The number of stack arguments of each method, without `this`.
 pub const ARGS: [u8; SLOTS] = [
@@ -118,6 +122,10 @@ pub fn address_args(slot: usize) -> u32 {
     }
 }
 
+fn makes_buffer(slot: usize) -> bool {
+    slot == SLOT_CREATE_VERTEX_BUFFER || slot == SLOT_CREATE_INDEX_BUFFER
+}
+
 /// The methods that make a device resource and return it through their last argument.
 pub fn creates(slot: usize) -> bool {
     (20..=27).contains(&slot)
@@ -143,7 +151,7 @@ static mut REPLAY: Replay = Replay { on: false, created: Vec::new(), taken: 0, m
 
 /// Starts the engine run of a comparison. The run is recorded and real. It gets the
 /// resources that the Rust run made, in the same order.
-pub unsafe fn begin_replay() {
+pub unsafe fn begin_engine_run() {
     (*core::ptr::addr_of_mut!(LOG)).clear();
     let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
     replay.on = true;
@@ -155,7 +163,7 @@ pub unsafe fn begin_replay() {
 
 /// Ends a comparison. Returns the differences in the resources made, as text. The text is
 /// empty when the engine run made the same resources as the Rust run.
-pub unsafe fn end_replay() -> String {
+pub unsafe fn end_engine_run() -> String {
     let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
     replay.on = false;
     let mut text = String::new();
@@ -178,9 +186,8 @@ pub unsafe fn end_replay() -> String {
     text
 }
 
-pub static mut ORIG: [usize; TABLE_LEN + 1] = [0; TABLE_LEN + 1];
+static mut ORIG: [usize; TABLE_LEN + 1] = [0; TABLE_LEN + 1];
 static mut OURS: [usize; TABLE_LEN + 1] = [0; TABLE_LEN + 1];
-static DEVICE: AtomicUsize = AtomicUsize::new(0);
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
 static DRY: AtomicBool = AtomicBool::new(false);
@@ -189,19 +196,21 @@ static DEPTH: AtomicU32 = AtomicU32::new(0);
 static mut LOG: Vec<u32> = Vec::new();
 static mut FRAME_HOOK: Option<unsafe fn()> = None;
 
-pub fn device() -> usize {
-    DEVICE.load(Ordering::Relaxed)
+/// Starts the recording of a frame. Every call goes to the device.
+pub unsafe fn begin_frame() {
+    (*core::ptr::addr_of_mut!(LOG)).clear();
+    DRY.store(false, Ordering::Relaxed);
+    RECORDING.store(true, Ordering::Relaxed);
 }
 
-/// Starts a recording. With `dry`, the calls that set state or draw do not reach the device.
-pub unsafe fn begin(dry: bool) {
+/// Starts the Rust run of a comparison. The run is dry: the calls that set state or draw do
+/// not reach the device.
+pub unsafe fn begin_rust_run() {
     (*core::ptr::addr_of_mut!(LOG)).clear();
-    if dry {
-        let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
-        replay.created.clear();
-        replay.taken = 0;
-    }
-    DRY.store(dry, Ordering::Relaxed);
+    let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
+    replay.created.clear();
+    replay.taken = 0;
+    DRY.store(true, Ordering::Relaxed);
     RECORDING.store(true, Ordering::Relaxed);
 }
 
@@ -270,11 +279,16 @@ pub fn count_records(log: &[u32]) -> usize {
     n
 }
 
-pub fn describe(record: &Record<'_>) -> String {
-    let name = match record.slot {
+/// The name of a log slot: a device method, or the record of a buffer at Unlock.
+pub fn slot_name(slot: usize) -> &'static str {
+    match slot {
         crate::resource::SLOT_BUFFER_UNLOCK => "Buffer::Unlock",
         slot => NAMES.get(slot).copied().unwrap_or("?"),
-    };
+    }
+}
+
+pub fn describe(record: &Record<'_>) -> String {
+    let name = slot_name(record.slot);
     let args: Vec<String> = record.args.iter().map(|a| format!("{a:#x}")).collect();
     let mut text = format!("{}({})", name, args.join(", "));
     if !record.payload.is_empty() {
@@ -327,68 +341,86 @@ unsafe fn call_original(slot: usize, this: usize, a: &[u32]) -> u32 {
     }
 }
 
-unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
-    let outer = DEPTH.load(Ordering::Relaxed) == 0;
-    if outer {
-        // This does not apply to the Present of a dry run. That Present is not a frame of the game.
-        if slot == SLOT_PRESENT && !DRY.load(Ordering::Relaxed) {
-            crate::perf::on_present();
-            if let Some(hook) = FRAME_HOOK {
-                hook();
-            }
-        }
-        if RECORDING.load(Ordering::Relaxed) {
-            let (ptr, len) = payload(slot, args);
-            let bytes: &[u8] = if len == 0 { &[] } else { core::slice::from_raw_parts(ptr as *const u8, len) };
-            let mut logged = [0u32; 8];
-            let mask = address_args(slot);
-            for (i, arg) in args.iter().enumerate() {
-                logged[i] = if mask & (1 << i) != 0 { 0 } else { *arg };
-            }
-            append_record(&mut *core::ptr::addr_of_mut!(LOG), slot, &logged[..args.len()], bytes);
-            let dry = DRY.load(Ordering::Relaxed);
-            if dry && dry_skips(slot) {
-                return 0;
-            }
-            if creates(slot) {
-                let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
-                let out = args[args.len() - 1] as *mut usize;
-                if replay.on {
-                    match replay.created.get(replay.taken) {
-                        Some(created) if created.slot == slot && created.args == logged => {
-                            replay.taken += 1;
-                            *out = created.object;
-                            return created.result;
-                        }
-                        _ => replay.mismatch = true,
-                    }
-                } else if dry {
-                    DEPTH.fetch_add(1, Ordering::Relaxed);
-                    let result = call_original(slot, this, args);
-                    DEPTH.fetch_sub(1, Ordering::Relaxed);
-                    let object = if (result as i32) >= 0 { *out } else { 0 };
-                    if slot == 23 || slot == 24 {
-                        crate::resource::wrap(object);
-                    }
-                    replay.created.push(Created { slot, args: logged, result, object });
-                    return result;
-                }
-            }
-        }
-    }
-    if outer {
-        // A buffer that the game binds gets the recorder. The time of its creation is not important.
-        match slot {
-            83 => crate::resource::wrap(args[1] as usize),
-            85 => crate::resource::wrap(args[0] as usize),
-            _ => {}
-        }
-    }
-    DEPTH.fetch_add(1, Ordering::Relaxed);
+/// Calls the method of the device. The calls that the device makes on itself during this call
+/// are not calls of the game, so the depth is not 0 for them.
+unsafe fn forward(slot: usize, this: usize, args: &[u32]) -> u32 {
+    DEPTH.store(DEPTH.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
     let result = call_original(slot, this, args);
-    DEPTH.fetch_sub(1, Ordering::Relaxed);
-    if outer && (slot == 23 || slot == 24) && (result as i32) >= 0 {
-        crate::resource::wrap(*(args[4] as *const usize));
+    DEPTH.store(DEPTH.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
+    result
+}
+
+/// Puts a call of the game into the log. Returns the result when the call does not go to the
+/// device from here: a dry run skips it, or the call makes a resource of a comparison.
+unsafe fn record(slot: usize, this: usize, args: &[u32]) -> Option<u32> {
+    let (ptr, len) = payload(slot, args);
+    let bytes: &[u8] = if len == 0 { &[] } else { core::slice::from_raw_parts(ptr as *const u8, len) };
+    let mut logged = [0u32; 8];
+    let mask = address_args(slot);
+    for (i, arg) in args.iter().enumerate() {
+        logged[i] = if mask & (1 << i) != 0 { 0 } else { *arg };
+    }
+    append_record(&mut *core::ptr::addr_of_mut!(LOG), slot, &logged[..args.len()], bytes);
+
+    let dry = DRY.load(Ordering::Relaxed);
+    if dry && dry_skips(slot) {
+        return Some(0);
+    }
+    if !creates(slot) {
+        return None;
+    }
+    let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
+    let out = args[args.len() - 1] as *mut usize;
+    if replay.on {
+        // The engine run gets the resource that the Rust run made.
+        match replay.created.get(replay.taken) {
+            Some(created) if created.slot == slot && created.args == logged => {
+                replay.taken += 1;
+                *out = created.object;
+                return Some(created.result);
+            }
+            _ => replay.mismatch = true,
+        }
+        None
+    } else if dry {
+        // The Rust run makes the resource for real.
+        let result = forward(slot, this, args);
+        let object = if (result as i32) >= 0 { *out } else { 0 };
+        if makes_buffer(slot) {
+            crate::resource::wrap(object);
+        }
+        replay.created.push(Created { slot, args: logged, result, object });
+        Some(result)
+    } else {
+        None
+    }
+}
+
+unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
+    if DEPTH.load(Ordering::Relaxed) != 0 {
+        return call_original(slot, this, args);
+    }
+    // The Present of a dry run is not a frame of the game.
+    if slot == SLOT_PRESENT && !DRY.load(Ordering::Relaxed) {
+        crate::perf::on_present();
+        if let Some(hook) = FRAME_HOOK {
+            hook();
+        }
+    }
+    if RECORDING.load(Ordering::Relaxed) {
+        if let Some(result) = record(slot, this, args) {
+            return result;
+        }
+    }
+    // A buffer that the game binds gets the recorder. The time of its creation is not important.
+    match slot {
+        SLOT_SET_STREAM_SOURCE => crate::resource::wrap(args[1] as usize),
+        SLOT_SET_INDICES => crate::resource::wrap(args[0] as usize),
+        _ => {}
+    }
+    let result = forward(slot, this, args);
+    if makes_buffer(slot) && (result as i32) >= 0 {
+        crate::resource::wrap(*(args[args.len() - 1] as *const usize));
     }
     result
 }
@@ -484,7 +516,6 @@ pub unsafe fn attach(device: usize) -> Result<(), String> {
         *ours.add(slot + 1) = *wrapper;
     }
     *(device as *mut usize) = ours.add(1) as usize;
-    DEVICE.store(device, Ordering::Relaxed);
     Ok(())
 }
 

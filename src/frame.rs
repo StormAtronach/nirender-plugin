@@ -53,8 +53,10 @@ struct Work {
     third: Vec<u32>,
     modes: Vec<Mode>,
     live_calls_before: u64,
+    /// The number of calls that ran as Rust in the second frame.
+    live_calls_ran: u64,
 }
-static mut WORK: Work = Work { first: Vec::new(), second: Vec::new(), third: Vec::new(), modes: Vec::new(), live_calls_before: 0 };
+static mut WORK: Work = Work { first: Vec::new(), second: Vec::new(), third: Vec::new(), modes: Vec::new(), live_calls_before: 0, live_calls_ran: 0 };
 
 /// Starts a comparison at the next Present. Returns false when a comparison is in progress.
 pub fn request(kind: Kind) -> bool {
@@ -72,7 +74,7 @@ pub fn take_result() -> Option<String> {
 }
 
 fn total_live_calls() -> u64 {
-    ports::all().map(|p| p.live_calls.load(Ordering::Relaxed)).sum()
+    ports::all().map(|p| p.live_calls.get()).sum()
 }
 
 fn set_all(mode: Mode) {
@@ -105,7 +107,7 @@ pub unsafe fn on_present() {
     match PHASE.load(Ordering::Relaxed) {
         ARMED if DUMP_PATH.lock().unwrap().is_some() => {
             shadow::suspend_shadow(true);
-            device::begin(false);
+            device::begin_frame();
             PHASE.store(DUMPING, Ordering::Relaxed);
         }
         DUMPING => {
@@ -124,7 +126,7 @@ pub unsafe fn on_present() {
             work.modes = ports::all().map(|p| p.mode()).collect();
             shadow::suspend_shadow(true);
             set_all(Mode::Off);
-            device::begin(false);
+            device::begin_frame();
             PHASE.store(FIRST, Ordering::Relaxed);
         }
         FIRST => {
@@ -133,16 +135,16 @@ pub unsafe fn on_present() {
                 set_all(Mode::Live);
             }
             work.live_calls_before = total_live_calls();
-            device::begin(false);
+            device::begin_frame();
             PHASE.store(SECOND, Ordering::Relaxed);
         }
         SECOND => {
             device::end(&mut work.second);
             if KIND_LIVE.load(Ordering::Relaxed) != 0 {
                 // The next frame is a third frame, with the engine functions again.
-                work.live_calls_before = total_live_calls() - work.live_calls_before;
+                work.live_calls_ran = total_live_calls() - work.live_calls_before;
                 set_all(Mode::Off);
-                device::begin(false);
+                device::begin_frame();
                 PHASE.store(THIRD, Ordering::Relaxed);
                 return;
             }
@@ -156,7 +158,7 @@ pub unsafe fn on_present() {
         }
         THIRD => {
             device::end(&mut work.third);
-            let ran = work.live_calls_before;
+            let ran = work.live_calls_ran;
             let mut text = if work.first != work.third {
                 format!("RETRY the scene changed between the two engine frames; {}", compare(&work.first, &work.third, "engine", "engine"))
             } else {

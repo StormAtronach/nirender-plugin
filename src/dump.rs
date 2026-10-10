@@ -113,17 +113,14 @@ pub unsafe fn frame(path: &str, log: &[u32]) -> std::io::Result<()> {
     let mut at = 0;
     while let Some((record, next)) = device::read_record(log, at) {
         at = next;
-        let method = match record.slot {
-            crate::resource::SLOT_BUFFER_UNLOCK => "Buffer::Unlock",
-            slot => device::NAMES.get(slot).copied().unwrap_or("?"),
-        };
+        let method = device::slot_name(record.slot);
         let args: Vec<String> = record.args.iter().map(|&a| name(a, &mut seen)).collect();
         // The data of a call is numbers, such as matrices and vertices, and not addresses. So
         // the dump uses the data unchanged.
         let data = if record.payload.is_empty() {
             String::new()
         } else {
-            format!(" data {} {:08x}", record.payload.len(), crate::census::fnv1a(core::slice::from_raw_parts(record.payload.as_ptr() as *const u8, record.payload.len() * 4)))
+            format!(" data {} {:08x}", record.payload.len(), crate::mem::fnv1a(core::slice::from_raw_parts(record.payload.as_ptr() as *const u8, record.payload.len() * 4)))
         };
         writeln!(out, "{}({}){}", method, args.join(", "), data)?;
     }

@@ -97,8 +97,7 @@ unsafe fn census_pass(hooked: bool) -> usize {
                 } else {
                     note = " (PORT LOCKED: it stays game code here)".into();
                 }
-                port.locked.store(true, Ordering::Relaxed);
-                port.set_mode(Mode::Off);
+                port.lock();
             }
         }
         crate::log!("census: {}{}", census::describe(change), note);
@@ -126,7 +125,7 @@ unsafe fn install_all() -> Result<String, String> {
 
     let mut failed = 0;
     for port in ports::all() {
-        match hook::install(port.addr, (port.detour)(), port.stack_args, if port.cdecl { hook::Cleanup::Caller } else { hook::Cleanup::Callee }) {
+        match hook::install(port.addr, (port.detour)(), port.stack_args, port.cleanup) {
             Ok(trampoline) => port.orig.store(trampoline, Ordering::Relaxed),
             Err(error) => {
                 failed += 1;
@@ -223,12 +222,12 @@ pub fn report() -> String {
             port.addr,
             port.installed(),
             port.mode(),
-            port.shadow_calls.load(Ordering::Relaxed),
-            port.mismatches.load(Ordering::Relaxed),
-            port.skipped.load(Ordering::Relaxed),
-            port.live_calls.load(Ordering::Relaxed),
+            port.shadow_calls.get(),
+            port.mismatches.get(),
+            port.skipped.get(),
+            port.live_calls.get(),
             port.locked(),
-            port.rust_runs.load(Ordering::Relaxed),
+            port.rust_runs.get(),
         ));
     }
     text
@@ -312,7 +311,7 @@ unsafe extern "C" fn fpu_control_word(l: LuaState) -> i32 {
 
 #[no_mangle]
 pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
-    lua_createtable(l, 0, 8);
+    lua_createtable(l, 0, 16);
     set_fn(l, "install", install);
     set_fn(l, "setMode", set_mode);
     set_fn(l, "report", report_lua);

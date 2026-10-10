@@ -117,7 +117,7 @@ unsafe extern "system" fn unlock_wrapper(this: usize) -> u32 {
             if bytes.len() <= MAX_PAYLOAD {
                 device::log_extra(SLOT_BUFFER_UNLOCK, &args, bytes);
             } else {
-                device::log_extra(SLOT_BUFFER_UNLOCK, &args, &crate::census::fnv1a(bytes).to_le_bytes());
+                device::log_extra(SLOT_BUFFER_UNLOCK, &args, &crate::mem::fnv1a(bytes).to_le_bytes());
             }
         }
     }

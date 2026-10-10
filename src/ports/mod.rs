@@ -2,9 +2,48 @@
 
 use crate::shadow::PortState;
 
-/// Declares the port of a `__thiscall` engine function.
+/// The body of `port_thiscall!` and `port_cdecl!`. It makes a module with `STATE`, the detour,
+/// and `engine(...)` to call the game code.
+macro_rules! port_impl {
+    (
+        $modname:ident, $addr:literal, $ename:literal, $abi:literal, $cleanup:ident, $stack_args:expr,
+        ($($p:ident : $pt:ty),*) -> $r:ty, $cmp:literal, |$set:ident| $regbody:expr, $rust:path
+    ) => {
+        pub mod $modname {
+            #[allow(unused_imports)]
+            use super::*;
+            use core::sync::atomic::Ordering;
+
+            fn detour_addr() -> usize {
+                detour as *const () as usize
+            }
+
+            pub static STATE: $crate::shadow::PortState = $crate::shadow::PortState::new(
+                $ename, $addr, $stack_args, $crate::hook::Cleanup::$cleanup, detour_addr);
+
+            /// The engine function.
+            pub unsafe fn engine($($p: $pt),*) -> u32 {
+                let f: unsafe extern $abi fn($($pt),*) -> u32 = core::mem::transmute(STATE.orig.load(Ordering::Relaxed));
+                f($($p),*)
+            }
+
+            unsafe extern $abi fn detour($($p: $pt),*) -> u32 {
+                $crate::shadow::dispatch(
+                    &STATE,
+                    $cmp,
+                    #[allow(unused_variables)]
+                    |$set: &mut $crate::shadow::Regions| $regbody,
+                    || -> $r { $rust($($p),*) },
+                    || engine($($p),*),
+                )
+            }
+        }
+    };
+}
+
+/// Declares the port of a `__thiscall` engine function. The function removes its stack
+/// arguments.
 ///
-/// It makes a module with `STATE`, the detour, and `engine(...)` to call the game code.
 /// `regions` adds the memory that the function can write for a call. `compare_eax` tells if
 /// the value in EAX is a result.
 macro_rules! port_thiscall {
@@ -15,42 +54,14 @@ macro_rules! port_thiscall {
         regions = |$set:ident| $regbody:expr,
         rust = $rust:path
     ) => {
-        pub mod $modname {
-            #[allow(unused_imports)]
-            use super::*;
-            use core::sync::atomic::Ordering;
-
-            fn detour_addr() -> usize {
-                detour as *const () as usize
-            }
-
-            pub static STATE: $crate::shadow::PortState =
-                $crate::shadow::PortState::new($ename, $addr, 0 $(+ { let _ = stringify!($a); 1 })*, detour_addr);
-
-            /// The engine function.
-            #[allow(dead_code)]
-            pub unsafe fn engine($this: usize $(, $a: $t)*) -> u32 {
-                let f: unsafe extern "thiscall" fn(usize $(, $t)*) -> u32 =
-                    core::mem::transmute(STATE.orig.load(Ordering::Relaxed));
-                f($this $(, $a)*)
-            }
-
-            unsafe extern "thiscall" fn detour($this: usize $(, $a: $t)*) -> u32 {
-                $crate::shadow::dispatch(
-                    &STATE,
-                    $cmp,
-                    #[allow(unused_variables)]
-                    |$set: &mut $crate::shadow::Regions| $regbody,
-                    || -> $r { $rust($this $(, $a)*) },
-                    || engine($this $(, $a)*),
-                )
-            }
-        }
+        port_impl!(
+            $modname, $addr, $ename, "thiscall", Callee, 0 $(+ { let _ = stringify!($a); 1 })*,
+            ($this: usize $(, $a: $t)*) -> $r, $cmp, |$set| $regbody, $rust
+        );
     };
 }
 
 /// Declares the port of a `__cdecl` engine function. The caller removes the arguments.
-#[allow(unused_macros)]
 macro_rules! port_cdecl {
     (
         $modname:ident, $addr:literal, $ename:literal,
@@ -59,36 +70,10 @@ macro_rules! port_cdecl {
         regions = |$set:ident| $regbody:expr,
         rust = $rust:path
     ) => {
-        pub mod $modname {
-            #[allow(unused_imports)]
-            use super::*;
-            use core::sync::atomic::Ordering;
-
-            fn detour_addr() -> usize {
-                detour as *const () as usize
-            }
-
-            pub static STATE: $crate::shadow::PortState = $crate::shadow::PortState::new_cdecl(
-                $ename, $addr, 0 $(+ { let _ = stringify!($a); 1 })*, detour_addr);
-
-            /// The engine function.
-            #[allow(dead_code)]
-            pub unsafe fn engine($($a: $t),*) -> u32 {
-                let f: unsafe extern "C" fn($($t),*) -> u32 = core::mem::transmute(STATE.orig.load(Ordering::Relaxed));
-                f($($a),*)
-            }
-
-            unsafe extern "C" fn detour($($a: $t),*) -> u32 {
-                $crate::shadow::dispatch(
-                    &STATE,
-                    $cmp,
-                    #[allow(unused_variables)]
-                    |$set: &mut $crate::shadow::Regions| $regbody,
-                    || -> $r { $rust($($a),*) },
-                    || engine($($a),*),
-                )
-            }
-        }
+        port_impl!(
+            $modname, $addr, $ename, "C", Caller, 0 $(+ { let _ = stringify!($a); 1 })*,
+            ($($a: $t),*) -> $r, $cmp, |$set| $regbody, $rust
+        );
     };
 }
 
@@ -178,7 +163,7 @@ mod tests {
             let func = hook::find(port.addr).unwrap_or_else(|| panic!("{} is not in the function table", port.name));
             assert_eq!(func.name, port.name);
             assert!(func.pic && (func.steal >= 5 || func.steal == func.size), "{} cannot take a detour", port.name);
-            if port.cdecl {
+            if port.cleanup == crate::hook::Cleanup::Caller {
                 assert_eq!(func.argsize, 0, "{}: a cdecl function removes no arguments", port.name);
             } else {
                 assert_eq!(func.argsize, port.stack_args * 4, "{}: stack arguments", port.name);

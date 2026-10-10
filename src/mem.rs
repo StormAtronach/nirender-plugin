@@ -24,9 +24,25 @@ pub fn x87_pass(bits: u32) -> u32 {
     }
 }
 
+/// The FNV-1a hash of `bytes`.
+pub fn fnv1a(bytes: &[u8]) -> u32 {
+    let mut hash = 0x811C_9DC5u32;
+    for &b in bytes {
+        hash = (hash ^ b as u32).wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fnv1a_known_values() {
+        assert_eq!(fnv1a(b""), 0x811C_9DC5);
+        assert_eq!(fnv1a(b"a"), 0xE40C_292C);
+        assert_eq!(fnv1a(b"foobar"), 0xBF9C_F968);
+    }
 
     #[test]
     fn x87_pass_changes_only_signalling_nans() {

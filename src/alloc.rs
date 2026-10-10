@@ -13,6 +13,7 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::hook::{self, Cleanup};
+use crate::shadow::{self, Leg};
 
 /// `operator new(size_t)` is a jump through the import table.
 const OPERATOR_NEW: usize = 0x727692;
@@ -23,30 +24,10 @@ const OPERATOR_DELETE_HEAD: [u8; 9] = [0xFF, 0x74, 0x24, 0x04, 0xE8, 0xF9, 0x01,
 
 const FILL: u8 = 0xCD;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Leg {
-    None,
-    Rust,
-    Engine,
-}
-
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static ORIG_NEW: AtomicUsize = AtomicUsize::new(0);
 static ORIG_DELETE: AtomicUsize = AtomicUsize::new(0);
-/// The thread that the comparisons run on. Other threads allocate during a comparison. Their
-/// allocations are not part of it.
-static THREAD: AtomicUsize = AtomicUsize::new(0);
-
-unsafe fn leg() -> Leg {
-    let s = state();
-    if s.leg != Leg::None && crate::win::GetCurrentThreadId() as usize != THREAD.load(Ordering::Relaxed) {
-        return Leg::None;
-    }
-    s.leg
-}
-
 struct State {
-    leg: Leg,
     /// The address and the size of each block that the Rust run allocated.
     blocks: Vec<(usize, usize)>,
     /// The number of these blocks that the engine run took.
@@ -59,7 +40,7 @@ struct State {
 }
 
 static mut STATE: State =
-    State { leg: Leg::None, blocks: Vec::new(), taken: 0, freed_rust: Vec::new(), freed_engine: Vec::new(), mismatch: false };
+    State { blocks: Vec::new(), taken: 0, freed_rust: Vec::new(), freed_engine: Vec::new(), mismatch: false };
 
 unsafe fn state() -> &'static mut State {
     &mut *core::ptr::addr_of_mut!(STATE)
@@ -81,7 +62,7 @@ unsafe fn real_delete(ptr: usize) {
 
 unsafe extern "C" fn new_detour(size: usize) -> usize {
     let s = state();
-    match leg() {
+    match shadow::leg() {
         Leg::None => real_new(size),
         Leg::Rust => {
             let ptr = real_new(size);
@@ -106,7 +87,7 @@ unsafe extern "C" fn new_detour(size: usize) -> usize {
 
 unsafe extern "C" fn delete_detour(ptr: usize) {
     let s = state();
-    match leg() {
+    match shadow::leg() {
         Leg::None => real_delete(ptr),
         Leg::Rust => s.freed_rust.push(ptr),
         Leg::Engine => {
@@ -127,7 +108,6 @@ pub unsafe fn install() -> Result<(), String> {
     let delete = hook::install_raw(OPERATOR_DELETE, &OPERATOR_DELETE_HEAD, &[5], delete_detour as *const () as usize, 1, Cleanup::Caller)
         .map_err(|e| format!("operator delete: {e}"))?;
     ORIG_DELETE.store(delete, Ordering::Relaxed);
-    THREAD.store(crate::win::GetCurrentThreadId() as usize, Ordering::Relaxed);
     ACTIVE.store(true, Ordering::Relaxed);
     Ok(())
 }
@@ -140,7 +120,6 @@ pub unsafe fn begin_rust() {
     s.freed_engine.clear();
     s.taken = 0;
     s.mismatch = false;
-    s.leg = Leg::Rust;
 }
 
 /// The code calls this between the runs. It copies the content that the Rust run left in
@@ -152,14 +131,12 @@ pub unsafe fn begin_engine(saved: &mut Vec<u8>) {
         saved.extend_from_slice(core::slice::from_raw_parts(ptr as *const u8, size));
         core::ptr::write_bytes(ptr as *mut u8, FILL, size);
     }
-    s.leg = Leg::Engine;
 }
 
 /// End of the engine run. Returns the differences as text. The text is empty when the two
 /// runs allocated, wrote and freed the same.
 pub unsafe fn end(saved: &[u8]) -> String {
     let s = state();
-    s.leg = Leg::None;
     let mut text = String::new();
     if s.mismatch {
         text.push_str(" the engine allocated a block the rust run did not;");
