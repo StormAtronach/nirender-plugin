@@ -4,42 +4,26 @@
 use core::arch::asm;
 use core::mem::transmute;
 
+use crate::d3d::{self, D3DERR_DEVICELOST, D3DERR_DEVICENOTRESET, D3DTS_PROJECTION, D3DTS_VIEW, D3DTS_WORLDMATRIX0};
+use crate::engine::{self, thiscall0, thiscall1, thiscall2};
 use crate::gen::layouts::{
     NiAVObject, NiDX8ConfigurableTexturePipeline as CTP, NiDX8LightManager as LM, NiDX8RenderState as RS,
     NiDX8RenderTarget as RT, NiDX8Renderer as R, NiDX8TexturePass, NiFrustum, NiMaterialProperty, NiRefObject,
-    NiSkinInstance, NiSkinPartition_Partition as Partition, NiTransform as T, THashMap, THashMap_Node, D3DVIEWPORT8,
+    NiSkinInstance, NiSkinPartition_Partition as Partition, NiTransform as T, D3DVIEWPORT8,
 };
 use crate::mem::{rd, wr, x87_pass};
-use crate::ports::render_state;
+use crate::ports::{hash_map, ni, render_state};
 use crate::shadow::Regions;
-
-// ---------------------------------------------------------------------------------------
-// Shadow mode policy
-// ---------------------------------------------------------------------------------------
-
-/// The dry device returns 0 for `BeginScene`, `EndScene` and `SetRenderTarget`. `BeginPaint`,
-/// `EndPaint` and `SetRenderTarget` write memory that depends on that result. Their return
-/// value also depends on that result. With `true`, shadow mode does not compare such a call.
-/// With `false`, shadow mode compares such a call. Then a call where the real device fails
-/// shows as a mismatch.
-const SKIP_ON_SWALLOWED_RESULT: bool = false;
+use crate::x87::{ftol_asm, ftol_count_times, ftol_difference_times_int, ftol_product};
 
 // ---------------------------------------------------------------------------------------
 // Engine data and functions at fixed addresses
 // ---------------------------------------------------------------------------------------
 
-/// The empty C string that `init` copies into the two description buffers.
-const EMPTY_STRING: usize = 0x7C6180;
-/// `vec3` (1, 0, 0). A static constructor of the game fills it.
-const VEC_X_AXIS: usize = 0x7DE690;
-/// `vec3` (0, 1, 0). A static constructor of the game fills it.
-const VEC_Y_AXIS: usize = 0x7DE6A4;
 /// `NiRTTI` of `NiRenderedCubeMap`.
 const RTTI_NI_RENDERED_CUBE_MAP: usize = 0x7DEE14;
 /// `NiRTTI` of `NiLight`.
 const RTTI_NI_LIGHT: usize = 0x7DECF8;
-/// `NiRTTI::baseRTTI`
-const RTTI_BASE: usize = 4;
 
 // Single-precision constants of the game code, as bits.
 /// `f_one_` at 0x74BFDC.
@@ -53,12 +37,6 @@ const INVERSE_255: u32 = 0x3B80_8081;
 /// `flt_74C078`: the smallest max fog value, about 1e-5.
 const MIN_MAX_FOG: u32 = 0x3727_C5AC;
 
-const D3DERR_DEVICELOST: u32 = 0x8876_0868;
-const D3DERR_DEVICENOTRESET: u32 = 0x8876_0869;
-const D3DTS_VIEW: u32 = 2;
-const D3DTS_PROJECTION: u32 = 3;
-const D3DTS_WORLDMATRIX0: u32 = 256;
-
 /// `NiDX8Renderer` + 0x28C: the second description buffer that `init` empties. It has no name
 /// in the database (`field_28C`).
 const DESCRIPTION_2: usize = R::field_28C;
@@ -71,23 +49,6 @@ const BONE_DATA_SIZE: usize = 76;
 /// `TListItem`: data, next, previous.
 const LIST_ITEM_SIZE: usize = 12;
 const LIST_ITEM_NEXT: usize = 4;
-
-unsafe fn thiscall0(addr: usize, this: usize) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize) -> u32>(addr)(this)
-}
-
-unsafe fn thiscall1(addr: usize, this: usize, a: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32) -> u32>(addr)(this, a)
-}
-
-unsafe fn thiscall2(addr: usize, this: usize, a: u32, b: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32) -> u32>(addr)(this, a, b)
-}
-
-/// A virtual function of `object` at `offset` in its vtable.
-unsafe fn virtual_at(object: usize, offset: usize) -> usize {
-    rd(rd::<usize>(object, 0), offset)
-}
 
 /// 0x6AAE80 `NiDX8Renderer::Recreate`. It resets the device.
 unsafe fn renderer_recreate(this: usize) -> u32 {
@@ -131,14 +92,9 @@ unsafe fn matrix33_multiply_value(matrix: usize, out: usize, factor: u32) {
     thiscall2(0x6E81B0, matrix, out as u32, factor);
 }
 
-/// 0x6E8290 `matrix33_static::transpose_mul_vec3`. It is cdecl. It returns `out`.
+/// 0x6E8290 `matrix33_static::transpose_mul_vec3`. It is `__cdecl`. It returns `out`.
 unsafe fn matrix33_transpose_mul_vec3(out: usize, vector: usize, matrix: usize) -> usize {
-    transmute::<usize, unsafe extern "C" fn(usize, usize, usize) -> usize>(0x6E8290)(out, vector, matrix)
-}
-
-/// 0x6E7CD0 `matrix33::copy`
-unsafe fn matrix33_copy(to: usize, from: usize) {
-    thiscall1(0x6E7CD0, to, from as u32);
+    engine::cdecl3(0x6E8290, out as u32, vector as u32, matrix as u32) as usize
 }
 
 /// 0x40A7E0 `vec3::copy`
@@ -162,120 +118,8 @@ unsafe fn transform_copy2(to: usize, from: usize) {
 }
 
 // ---------------------------------------------------------------------------------------
-// The device, through its vtable on each call
-// ---------------------------------------------------------------------------------------
-
-unsafe fn device_test_cooperative_level(device: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize) -> u32>(virtual_at(device, 0x0C))(device)
-}
-
-unsafe fn device_present(device: usize, source: u32, dest: u32, window: u32, dirty: u32) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, u32, u32, u32) -> u32>(virtual_at(device, 0x3C))(device, source, dest, window, dirty)
-}
-
-unsafe fn device_set_render_target(device: usize, target: u32, depth_stencil: u32) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, u32) -> u32>(virtual_at(device, 0x7C))(device, target, depth_stencil)
-}
-
-unsafe fn device_begin_scene(device: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize) -> u32>(virtual_at(device, 0x88))(device)
-}
-
-unsafe fn device_end_scene(device: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize) -> u32>(virtual_at(device, 0x8C))(device)
-}
-
-unsafe fn device_clear(device: usize, count: u32, rects: usize, flags: u32, color: u32, z: u32, stencil: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, usize, u32, u32, u32, u32) -> u32 = transmute(virtual_at(device, 0x90));
-    f(device, count, rects, flags, color, z, stencil)
-}
-
-unsafe fn device_set_transform(device: usize, state: u32, matrix: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, usize) -> u32>(virtual_at(device, 0x94))(device, state, matrix)
-}
-
-unsafe fn device_set_viewport(device: usize, viewport: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, usize) -> u32>(virtual_at(device, 0xA0))(device, viewport)
-}
-
-// ---------------------------------------------------------------------------------------
 // x87 sequences
 // ---------------------------------------------------------------------------------------
-
-/// The operation of `_ftol` on ST(0). It stores ST(0) as an integer with the rounding mode set
-/// to truncate. It gives the low 32 bits in EAX. `{s}` is a scratch block. It has the two
-/// control words at +0 and +4 and the 64-bit integer at +8.
-///
-/// `_ftol` of the game (0x72769E) is a jump to the import from MSVCRT.DLL.
-macro_rules! ftol_asm {
-    () => {
-        concat!(
-            "fnstcw word ptr [{s}]\n",
-            "movzx eax, word ptr [{s}]\n",
-            "or eax, 0x0C00\n",
-            "mov word ptr [{s} + 4], ax\n",
-            "fldcw word ptr [{s} + 4]\n",
-            "fistp qword ptr [{s} + 8]\n",
-            "fldcw word ptr [{s}]\n",
-            "mov eax, dword ptr [{s} + 8]\n",
-        )
-    };
-}
-
-/// `fild qword n; fmul dword x; call _ftol`. It multiplies an unsigned 32-bit count by a float.
-fn ftol_count_times(n: u32, x: u32) -> u32 {
-    let mut s = [0u32, 0, 0, 0, n, 0, x];
-    let result: u32;
-    unsafe {
-        asm!(
-            "fild qword ptr [{s} + 16]",
-            "fmul dword ptr [{s} + 24]",
-            ftol_asm!(),
-            s = in(reg) s.as_mut_ptr(),
-            out("eax") result,
-            clobber_abi("C"),
-            options(nostack),
-        );
-    }
-    result
-}
-
-/// `fld a; fsub b; fimul dword n; call _ftol`. `fimul` reads `n` as a signed integer.
-fn ftol_difference_times_int(a: u32, b: u32, n: u32) -> u32 {
-    let mut s = [0u32, 0, 0, 0, a, b, n];
-    let result: u32;
-    unsafe {
-        asm!(
-            "fld dword ptr [{s} + 16]",
-            "fsub dword ptr [{s} + 20]",
-            "fimul dword ptr [{s} + 24]",
-            ftol_asm!(),
-            s = in(reg) s.as_mut_ptr(),
-            out("eax") result,
-            clobber_abi("C"),
-            options(nostack),
-        );
-    }
-    result
-}
-
-/// `fld a; fmul b; call _ftol`
-fn ftol_product(a: u32, b: u32) -> u32 {
-    let mut s = [0u32, 0, 0, 0, a, b];
-    let result: u32;
-    unsafe {
-        asm!(
-            "fld dword ptr [{s} + 16]",
-            "fmul dword ptr [{s} + 20]",
-            ftol_asm!(),
-            s = in(reg) s.as_mut_ptr(),
-            out("eax") result,
-            clobber_abi("C"),
-            options(nostack),
-        );
-    }
-    result
-}
 
 /// The `D3DRECT` of `ClearBuffer` (0x6ABEA2 to 0x6ABF00) from the size of the render target
 /// and a `NiRectFloat` (left, right, top, bottom). The width stays on the x87 stack as an
@@ -419,7 +263,7 @@ unsafe fn camera_viewport(target: usize, port: usize) -> [u32; 6] {
 pub unsafe fn set_camera_data(this: usize, location: usize, direction: usize, up: usize, right: usize, frustum: usize, port: usize) {
     crate::shadow::touch(&set_camera_data_port::STATE);
     write_view_matrix(this, location, direction, up, right);
-    device_set_transform(rd(this, R::d3dDevice), D3DTS_VIEW, this + R::d3dViewMat);
+    d3d::device_set_transform(rd(this, R::d3dDevice), D3DTS_VIEW, this + R::d3dViewMat);
 
     wr::<[u32; 3]>(this, R::modelCameraRight, rd(right, 0));
     wr::<[u32; 3]>(this, R::cameraRight, rd(right, 0));
@@ -432,10 +276,10 @@ pub unsafe fn set_camera_data(this: usize, location: usize, direction: usize, up
 
     let render_state: usize = rd(this, R::renderState);
     write_projection(this, frustum, rd(render_state, RS::bLeftRightSwap));
-    device_set_transform(rd(this, R::d3dDevice), D3DTS_PROJECTION, this + R::d3dProjMat);
+    d3d::device_set_transform(rd(this, R::d3dDevice), D3DTS_PROJECTION, this + R::d3dProjMat);
 
     let viewport = camera_viewport(rd(this, R::currentRenderTarget), port);
-    device_set_viewport(rd(this, R::d3dDevice), viewport.as_ptr() as usize);
+    d3d::device_set_viewport(rd(this, R::d3dDevice), viewport.as_ptr() as usize);
 
     let render_state: usize = rd(this, R::renderState);
     if render_state != 0 {
@@ -447,6 +291,7 @@ pub unsafe fn set_camera_data(this: usize, location: usize, direction: usize, up
     }
 }
 
+/// The call is never a skip.
 unsafe fn set_camera_data_regions(set: &mut Regions, this: usize) {
     set.add(this, R::SIZE);
     set.add(rd(this, R::renderState), RS::SIZE);
@@ -498,7 +343,7 @@ unsafe fn update_model_camera(this: usize, transform: usize) {
 pub unsafe fn set_model_transform(this: usize, transform: usize) {
     crate::shadow::touch(&set_model_transform_port::STATE);
     write_world_matrix(this, transform);
-    device_set_transform(rd(this, R::d3dDevice), D3DTS_WORLDMATRIX0, this + R::currentWorldMatrix);
+    d3d::device_set_transform(rd(this, R::d3dDevice), D3DTS_WORLDMATRIX0, this + R::currentWorldMatrix);
     update_model_camera(this, transform);
 }
 
@@ -506,12 +351,12 @@ pub unsafe fn set_model_transform(this: usize, transform: usize) {
 pub unsafe fn set_bone_transform(this: usize, transform: usize, bone_index: u32) {
     crate::shadow::touch(&set_bone_transform_port::STATE);
     write_world_matrix(this, transform);
-    device_set_transform(rd(this, R::d3dDevice), bone_index.wrapping_add(D3DTS_WORLDMATRIX0), this + R::currentWorldMatrix);
+    d3d::device_set_transform(rd(this, R::d3dDevice), bone_index.wrapping_add(D3DTS_WORLDMATRIX0), this + R::currentWorldMatrix);
 }
 
 /// This function copies a `NiTransform` as the game code does at 0x6ACC29 and 0x6ACD1E.
 unsafe fn copy_transform(to: usize, from: usize) {
-    matrix33_copy(to + T::rotation, from + T::rotation);
+    engine::matrix33_copy(to + T::rotation, from + T::rotation);
     vec3_copy(to + T::translation, from + T::translation);
     wr::<u32>(to, T::scale, rd(from, T::scale));
 }
@@ -541,7 +386,7 @@ pub unsafe fn set_skinned_model_transforms(this: usize, skin: usize, partition: 
             let bone_id = rd::<u16>(rd(partition, Partition::bones), index as usize * 2) as usize;
             let bone_object: usize = rd(rd(skin, NiSkinInstance::bones), bone_id * 4);
             let result = transform_combine(combined, scratch, bone_object + NiAVObject::worldTransform);
-            matrix33_copy(bone_world + T::rotation, result + T::rotation);
+            engine::matrix33_copy(bone_world + T::rotation, result + T::rotation);
             wr::<[u32; 3]>(bone_world, T::translation, rd(result, T::translation));
             wr::<u32>(bone_world, T::scale, rd(result, T::scale));
             let skin_data: usize = rd(skin, NiSkinInstance::skinData);
@@ -566,7 +411,7 @@ pub unsafe fn set_skinned_model_transforms(this: usize, skin: usize, partition: 
 /// 0x6AC520 `NiDX8Renderer::BeginPaint`. The game code does not read `camera`.
 pub unsafe fn begin_paint(this: usize, _camera: usize) {
     crate::shadow::touch(&begin_paint_port::STATE);
-    let status = device_test_cooperative_level(rd(this, R::d3dDevice));
+    let status = d3d::device_test_cooperative_level(rd(this, R::d3dDevice));
     if status == D3DERR_DEVICENOTRESET {
         renderer_recreate(this);
     } else if status == D3DERR_DEVICELOST {
@@ -578,54 +423,32 @@ pub unsafe fn begin_paint(this: usize, _camera: usize) {
     if pipeline != 0 {
         texture_pipeline_next_frame(pipeline);
     }
-    if device_begin_scene(rd(this, R::d3dDevice)) == 0 {
+    if d3d::device_begin_scene(rd(this, R::d3dDevice)) == 0 {
         wr::<u8>(this, R::bSceneOpen, 1);
     }
 }
 
-/// This function adds the items of the device light list. `NiDX8LightManager::nextFrame` moves
-/// these items to the free list. Items on one memory page go into one block. The function
-/// returns false when `free` blocks are not sufficient.
-unsafe fn add_light_list_items(set: &mut Regions, manager: usize, free: usize) -> bool {
-    const MOST: usize = 64;
-    let mut items = [0usize; MOST];
+/// Adds each item of the device light list. `NiDX8LightManager::nextFrame` moves these items
+/// to the free list.
+unsafe fn add_light_list_items(set: &mut Regions, manager: usize) {
     let count: u32 = rd(manager, LM::deviceLights_count);
-    if count as usize > MOST {
-        return false;
-    }
-    let mut len = 0;
     let mut item: usize = rd(manager, LM::deviceLights_head);
-    while item != 0 && len < count as usize {
-        items[len] = item;
-        len += 1;
+    let mut done = 0;
+    while item != 0 && done < count {
+        set.add(item, LIST_ITEM_SIZE);
+        done += 1;
         item = rd(item, LIST_ITEM_NEXT);
     }
-    let items = &mut items[..len];
-    items.sort_unstable();
-    let mut blocks = 0;
-    let mut at = 0;
-    while at < items.len() {
-        let start = items[at];
-        let mut end = start + LIST_ITEM_SIZE;
-        at += 1;
-        // It is sure that the bytes between two items are readable only when they are in one page.
-        while at < items.len() && items[at] >> 12 == (end - 1) >> 12 {
-            end = items[at] + LIST_ITEM_SIZE;
-            at += 1;
-        }
-        blocks += 1;
-        if blocks > free {
-            return false;
-        }
-        set.add(start, end - start);
-    }
-    true
 }
 
+/// The call is a skip when `TestCooperativeLevel` gives `D3DERR_DEVICENOTRESET`. `Recreate`
+/// resets the device then.
+///
+/// The dry device returns 0 for `BeginScene`. `bSceneOpen` depends on that result. Thus a call
+/// where the real device fails shows as a mismatch.
 unsafe fn begin_paint_regions(set: &mut Regions, this: usize) {
-    let status = device_test_cooperative_level(rd(this, R::d3dDevice));
+    let status = d3d::device_test_cooperative_level(rd(this, R::d3dDevice));
     if status == D3DERR_DEVICENOTRESET {
-        // Recreate resets the device.
         set.skip();
         return;
     }
@@ -633,41 +456,30 @@ unsafe fn begin_paint_regions(set: &mut Regions, this: usize) {
     if status == D3DERR_DEVICELOST {
         return;
     }
-    if SKIP_ON_SWALLOWED_RESULT {
-        // `bSceneOpen` depends on the result of BeginScene.
-        set.skip();
-        return;
-    }
     set.add(rd(this, R::renderState), RS::SIZE);
     let manager: usize = rd(this, R::lightManager);
     set.add(manager, LM::SIZE);
-    let mut used = 3;
     let pipeline: usize = rd(this, R::configurableTexturePipeline);
     if pipeline != 0 {
         set.add(pipeline, CTP::SIZE);
-        // nextFrame of the pipeline calls a virtual function of its active texture pass.
+        // `nextFrame` of the pipeline calls a virtual function of its active texture pass.
         set.add(rd(pipeline, CTP::field_8), NiDX8TexturePass::SIZE);
-        used += 2;
     }
-    if !add_light_list_items(set, manager, 8 - used) {
-        set.skip();
-    }
+    add_light_list_items(set, manager);
 }
 
 /// 0x6AC590 `NiDX8Renderer::EndPaint`
 pub unsafe fn end_paint(this: usize) {
     crate::shadow::touch(&end_paint_port::STATE);
-    if rd::<u8>(this, R::bSceneOpen) != 0 && device_end_scene(rd(this, R::d3dDevice)) == 0 {
+    if rd::<u8>(this, R::bSceneOpen) != 0 && d3d::device_end_scene(rd(this, R::d3dDevice)) == 0 {
         wr::<u8>(this, R::bSceneOpen, 0);
     }
 }
 
+/// The call is never a skip. The dry device returns 0 for `EndScene`. `bSceneOpen` depends on
+/// that result. Thus a call where the real device fails shows as a mismatch.
 unsafe fn end_paint_regions(set: &mut Regions, this: usize) {
     set.add(this, R::SIZE);
-    if SKIP_ON_SWALLOWED_RESULT && rd::<u8>(this, R::bSceneOpen) != 0 {
-        // `bSceneOpen` depends on the result of EndScene.
-        set.skip();
-    }
 }
 
 /// 0x6ABE40 `NiDX8Renderer::SwapBuffers`. The port presents nothing when the target is a texture.
@@ -675,16 +487,17 @@ pub unsafe fn swap_buffers(this: usize) {
     crate::shadow::touch(&swap_buffers_port::STATE);
     let target: usize = rd(this, R::currentRenderTarget);
     if rd::<usize>(target, RT::d3dTexture) == 0 {
-        device_present(rd(this, R::d3dDevice), 0, 0, 0, 0);
+        d3d::device_present(rd(this, R::d3dDevice), 0, 0, 0, 0);
     }
 }
 
+/// The call is a skip when the target is not a texture. The port does a `Present` then. The
+/// recorder runs the frame hook at each `Present`, also at a `Present` that it does not pass on.
+/// Two `Present` calls in one frame break the frame comparison.
 unsafe fn swap_buffers_regions(set: &mut Regions, this: usize) {
     set.add(this, R::SIZE);
     let target: usize = rd(this, R::currentRenderTarget);
     if rd::<usize>(target, RT::d3dTexture) == 0 {
-        // The recorder runs the frame hook at each Present, also at a Present that it does not
-        // pass on. Two Presents in one frame break the frame comparison.
         set.skip();
     }
 }
@@ -693,7 +506,7 @@ unsafe fn swap_buffers_regions(set: &mut Regions, this: usize) {
 /// target. `flags` has bit 0 for the colour buffer, bit 1 for stencil and bit 2 for depth.
 pub unsafe fn clear_buffer(this: usize, rect: usize, flags: u8) {
     crate::shadow::touch(&clear_buffer_port::STATE);
-    let status = device_test_cooperative_level(rd(this, R::d3dDevice));
+    let status = d3d::device_test_cooperative_level(rd(this, R::d3dDevice));
     if status == D3DERR_DEVICENOTRESET {
         renderer_recreate(this);
     } else if status == D3DERR_DEVICELOST {
@@ -715,8 +528,8 @@ pub unsafe fn clear_buffer(this: usize, rect: usize, flags: u8) {
     }
     wr::<u32>(this, R::d3dViewport_Width, rd(target, RT::width));
     wr::<u32>(this, R::d3dViewport_Height, rd(target, RT::height));
-    device_set_viewport(rd(this, R::d3dDevice), this + R::d3dViewport);
-    device_clear(
+    d3d::device_set_viewport(rd(this, R::d3dDevice), this + R::d3dViewport);
+    d3d::device_clear(
         rd(this, R::d3dDevice),
         1,
         rects.as_ptr() as usize,
@@ -727,40 +540,13 @@ pub unsafe fn clear_buffer(this: usize, rect: usize, flags: u8) {
     );
 }
 
+/// The call is a skip when `TestCooperativeLevel` gives `D3DERR_DEVICENOTRESET`. `Recreate`
+/// resets the device then.
 unsafe fn clear_buffer_regions(set: &mut Regions, this: usize) {
-    if device_test_cooperative_level(rd(this, R::d3dDevice)) == D3DERR_DEVICENOTRESET {
-        // Recreate resets the device.
+    if d3d::device_test_cooperative_level(rd(this, R::d3dDevice)) == D3DERR_DEVICENOTRESET {
         set.skip();
     }
     set.add(this, R::SIZE);
-}
-
-/// The result is true when the run-time type of `object` is `rtti` or comes from `rtti`.
-unsafe fn is_kind_of(object: usize, rtti: usize) -> bool {
-    // The second virtual function of a NiObject gives its NiRTTI.
-    let mut at = thiscall0(virtual_at(object, 4), object) as usize;
-    while at != 0 {
-        if at == rtti {
-            return true;
-        }
-        at = rd(at, RTTI_BASE);
-    }
-    false
-}
-
-/// The value that a `THashMap` has for `key`, or 0.
-unsafe fn hash_map_find(map: usize, key: usize) -> usize {
-    let vtable: usize = rd(map, THashMap::vtbl);
-    let bucket = thiscall1(rd(vtable, 4), map, key as u32) as usize;
-    let mut node: usize = rd(rd(map, THashMap::arrayBuckets), bucket * 4);
-    while node != 0 {
-        let vtable: usize = rd(map, THashMap::vtbl);
-        if thiscall2(rd(vtable, 8), map, key as u32, rd(node, THashMap_Node::key)) as u8 != 0 {
-            return rd(node, THashMap_Node::data);
-        }
-        node = rd(node, THashMap_Node::nextNode);
-    }
-    0
 }
 
 /// 0x6ABD20 `NiDX8Renderer::SetRenderTarget`. `texture` is a `NiRenderedTexture`, or 0 for
@@ -773,19 +559,19 @@ pub unsafe fn set_render_target(this: usize, texture: usize) -> u8 {
     let target = if texture == 0 {
         this + R::backbufferRenderTarget
     } else {
-        let map = if is_kind_of(texture, RTTI_NI_RENDERED_CUBE_MAP) {
+        let map = if ni::is_kind_of(texture, RTTI_NI_RENDERED_CUBE_MAP) {
             this + R::hashmap_maybeRenderedCubemaps
         } else {
             this + R::hashmap_maybeRenderedTextures
         };
-        let data = hash_map_find(map, texture);
+        let data = hash_map::find_value(map, texture as u32);
         if data == 0 {
             return 0;
         }
         // The virtual function at +0x28 of the renderer data of the texture gives its render target.
-        thiscall0(virtual_at(data, 0x28), data) as usize
+        engine::vcall0(data, 0x28) as usize
     };
-    let result = device_set_render_target(rd(this, R::d3dDevice), rd(target, RT::d3dSurfaceBackBuffer), rd(target, RT::d3dSurfaceDepthStencil));
+    let result = d3d::device_set_render_target(rd(this, R::d3dDevice), rd(target, RT::d3dSurfaceBackBuffer), rd(target, RT::d3dSurfaceDepthStencil));
     if result != 0 {
         return 0;
     }
@@ -793,48 +579,26 @@ pub unsafe fn set_render_target(this: usize, texture: usize) -> u8 {
     1
 }
 
+/// The call is never a skip. The dry device returns 0 for `SetRenderTarget`.
+/// `currentRenderTarget` and the return value depend on that result. Thus a call where the
+/// real device fails shows as a mismatch.
 unsafe fn set_render_target_regions(set: &mut Regions, this: usize) {
     set.add(this, R::SIZE);
-    if SKIP_ON_SWALLOWED_RESULT && rd::<u8>(this, R::bSceneOpen) == 0 {
-        // `currentRenderTarget` and the return value depend on the result of
-        // SetRenderTarget of the device.
-        set.skip();
-    }
 }
 
 // ---------------------------------------------------------------------------------------
 // Batch state, purges
 // ---------------------------------------------------------------------------------------
 
-/// The assignment to a `NiPointer` member as the game code has it inline.
-unsafe fn assign_pointer(slot: usize, object: usize) {
-    let old: usize = rd(slot, 0);
-    if old == object {
-        return;
-    }
-    if old != 0 {
-        let count = rd::<u32>(old, NiRefObject::refCount).wrapping_sub(1);
-        wr(old, NiRefObject::refCount, count);
-        if count == 0 {
-            // The deleting destructor, with "free the memory".
-            thiscall1(virtual_at(old, 0), old, 1);
-        }
-    }
-    wr(slot, 0, object);
-    if object != 0 {
-        wr(object, NiRefObject::refCount, rd::<u32>(object, NiRefObject::refCount).wrapping_add(1));
-    }
-}
-
-/// This function adds the memory that `assign_pointer` writes outside the object that has the
-/// slot.
+/// Adds the memory that `ni::pointer_assign` writes outside the object that has the slot. The
+/// call is a skip when the assignment deletes the old object. A virtual deleting destructor
+/// cannot run two times.
 unsafe fn assign_pointer_regions(set: &mut Regions, slot: usize, object: usize) {
     let old: usize = rd(slot, 0);
     if old == object {
         return;
     }
     if old != 0 && rd::<u32>(old, NiRefObject::refCount) == 1 {
-        // The call deletes the old object.
         set.skip();
     }
     set.add(old, NiRefObject::SIZE);
@@ -844,10 +608,11 @@ unsafe fn assign_pointer_regions(set: &mut Regions, slot: usize, object: usize) 
 /// 0x6AE030 `NiDX8Renderer::BeginBatch`
 pub unsafe fn begin_batch(this: usize, property_state: usize, effect_state: usize) {
     crate::shadow::touch(&begin_batch_port::STATE);
-    assign_pointer(this + R::propertyStatePtr, property_state);
-    assign_pointer(this + R::effectStatePtr, effect_state);
+    ni::pointer_assign(this + R::propertyStatePtr, property_state);
+    ni::pointer_assign(this + R::effectStatePtr, effect_state);
 }
 
+/// The call is a skip when it deletes a state that it replaces. See `assign_pointer_regions`.
 unsafe fn begin_batch_regions(set: &mut Regions, this: usize, property_state: usize, effect_state: usize) {
     set.add(this, R::SIZE);
     assign_pointer_regions(set, this + R::propertyStatePtr, property_state);
@@ -860,10 +625,10 @@ pub unsafe fn purge_material(this: usize, material: usize) {
     render_state_purge_material(rd(this, R::renderState), material);
 }
 
+/// The call is a skip when the material has an entry. The material manager frees the entry.
 unsafe fn purge_material_regions(set: &mut Regions, this: usize, material: usize) {
     set.add(this, R::SIZE);
     if material != 0 && rd::<usize>(material, NiMaterialProperty::rendererData) != 0 {
-        // The material manager frees the entry of the material.
         set.skip();
     }
 }
@@ -871,15 +636,16 @@ unsafe fn purge_material_regions(set: &mut Regions, this: usize, material: usize
 /// 0x6AC5D0 `NiDX8Renderer::PurgeEffect`. Only a light has data in the renderer.
 pub unsafe fn purge_effect(this: usize, effect: usize) {
     crate::shadow::touch(&purge_effect_port::STATE);
-    if effect != 0 && is_kind_of(effect, RTTI_NI_LIGHT) {
+    if effect != 0 && ni::is_kind_of(effect, RTTI_NI_LIGHT) {
         light_manager_remove_light(rd(this, R::lightManager), effect);
     }
 }
 
+/// The call is a skip when the effect is a light. `RemoveLight` frees the entry of the light and
+/// its hash map node.
 unsafe fn purge_effect_regions(set: &mut Regions, this: usize, effect: usize) {
     set.add(this, R::SIZE);
-    if effect != 0 && is_kind_of(effect, RTTI_NI_LIGHT) {
-        // RemoveLight frees the entry of the light and its hash map node.
+    if effect != 0 && ni::is_kind_of(effect, RTTI_NI_LIGHT) {
         set.skip();
     }
 }
@@ -1074,15 +840,7 @@ unsafe fn init_from(this: usize, empty_string: usize, x_axis: usize, y_axis: usi
         zero_words(this, R::arrayArrayTextureFormats + group * 0x38, 14);
         wr::<u32>(this, R::defaultTextureFormats + group * 4, 0);
         let slot = this + R::defaultTexturePixelData + group * 4;
-        let object: usize = rd(slot, 0);
-        if object != 0 {
-            let count = rd::<u32>(object, NiRefObject::refCount).wrapping_sub(1);
-            wr(object, NiRefObject::refCount, count);
-            if count == 0 {
-                thiscall1(virtual_at(object, 0), object, 1);
-            }
-            wr::<u32>(slot, 0, 0);
-        }
+        ni::release_and_clear(slot);
     }
     zero_words(this, R::depthStencilFormats, 14);
     zero_words(this, R::backbufferRenderTarget, RT::SIZE / 4);
@@ -1100,16 +858,17 @@ unsafe fn init_from(this: usize, empty_string: usize, x_axis: usize, y_axis: usi
 /// constructor.
 pub unsafe fn init(this: usize) {
     crate::shadow::touch(&init_port::STATE);
-    init_from(this, EMPTY_STRING, VEC_X_AXIS, VEC_Y_AXIS);
+    init_from(this, engine::EMPTY_STRING, engine::VEC3_X_AXIS, engine::VEC3_Y_AXIS);
 }
 
+/// The call is a skip when it deletes the pixel data of a format group. A virtual deleting
+/// destructor cannot run two times.
 unsafe fn init_regions(set: &mut Regions, this: usize) {
     set.add(this, R::SIZE);
     for group in 0..4 {
         let object: usize = rd(this, R::defaultTexturePixelData + group * 4);
         if object != 0 {
             if rd::<u32>(object, NiRefObject::refCount) == 1 {
-                // The call deletes the pixel data.
                 set.skip();
             }
             set.add(object, NiRefObject::SIZE);
@@ -1455,20 +1214,6 @@ mod tests {
     }
 
     #[test]
-    fn ftol_truncates() {
-        let control_word = crate::x87::control_word();
-        assert_eq!(ftol_product(2.75f32.to_bits(), 1.0f32.to_bits()), 2);
-        assert_eq!(ftol_product((-2.75f32).to_bits(), 1.0f32.to_bits()) as i32, -2);
-        assert_eq!(ftol_product(0.999f32.to_bits(), F255), 254);
-        assert_eq!(ftol_count_times(800, 0.25f32.to_bits()), 200);
-        assert_eq!(ftol_count_times(3, 0.5f32.to_bits()), 1);
-        assert_eq!(ftol_difference_times_int(1.0f32.to_bits(), 0.75f32.to_bits(), 600), 150);
-        assert_eq!(ftol_difference_times_int(0.0f32.to_bits(), 0.5f32.to_bits(), 3) as i32, -1);
-        // The control word did not change.
-        assert_eq!(crate::x87::control_word(), control_word);
-    }
-
-    #[test]
     fn camera_viewport_in_pixels() {
         let target = [800u32, 600];
         // left 0.25, right 0.75, top 1, bottom 0.5
@@ -1680,12 +1425,10 @@ mod tests {
     }
 
     #[test]
-    fn light_list_items_on_one_page_are_one_block() {
-        // Three list items in one aligned block. Their links are not in the order of their addresses.
-        #[repr(align(64))]
-        struct Items([u32; 9]);
-        let mut items = Items([0; 9]);
-        let base = items.0.as_mut_ptr() as usize;
+    fn each_light_list_item_is_one_block() {
+        // Three list items in one block. Their links are not in the order of their addresses.
+        let mut items = [0u32; 9];
+        let base = items.as_mut_ptr() as usize;
         let mut manager = [0u8; LM::SIZE];
         let m = manager.as_mut_ptr() as usize;
         unsafe {
@@ -1694,9 +1437,13 @@ mod tests {
             wr::<u32>(m, LM::deviceLights_count, 3);
             wr(m, LM::deviceLights_head, base + 24);
             let mut set = Regions::new();
-            assert!(add_light_list_items(&mut set, m, 1));
-            assert_eq!(set.as_slice(), &[(base, 36)]);
-            assert!(!add_light_list_items(&mut Regions::new(), m, 0));
+            add_light_list_items(&mut set, m);
+            assert_eq!(set.as_slice(), &[(base + 24, 12), (base, 12), (base + 12, 12)]);
+            // The count of the list is the limit.
+            wr::<u32>(m, LM::deviceLights_count, 2);
+            let mut set = Regions::new();
+            add_light_list_items(&mut set, m);
+            assert_eq!(set.as_slice(), &[(base + 24, 12), (base, 12)]);
         }
     }
 }

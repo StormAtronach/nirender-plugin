@@ -1,45 +1,19 @@
 //! `NiDX8RenderState` translates a `NiPropertyState` into D3D render states. A cache drops a
 //! state that the device already has.
 
+use crate::d3d::{
+    self, D3DCMP_ALWAYS, D3DFOG_LINEAR, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHAFUNC, D3DRS_ALPHAREF, D3DRS_ALPHATESTENABLE,
+    D3DRS_CULLMODE, D3DRS_DESTBLEND, D3DRS_DITHERENABLE, D3DRS_FILLMODE, D3DRS_FOGCOLOR, D3DRS_FOGENABLE, D3DRS_FOGEND,
+    D3DRS_FOGSTART, D3DRS_FOGTABLEMODE, D3DRS_FOGVERTEXMODE, D3DRS_MULTISAMPLEANTIALIAS, D3DRS_RANGEFOGENABLE,
+    D3DRS_SHADEMODE, D3DRS_SPECULARENABLE, D3DRS_SRCBLEND, D3DRS_STENCILENABLE, D3DRS_STENCILFAIL, D3DRS_STENCILFUNC,
+    D3DRS_STENCILMASK, D3DRS_STENCILPASS, D3DRS_STENCILREF, D3DRS_STENCILZFAIL, D3DRS_ZENABLE, D3DRS_ZFUNC,
+    D3DRS_ZWRITEENABLE,
+};
 use crate::engine;
 use crate::gen::layouts::{NiAlphaProperty, NiDX8RenderState as RS, NiFogProperty, NiMaterialProperty, NiPropertyState, NiStencilProperty, NiZBufferProperty};
 use crate::mem::{rd, wr};
 use crate::ports::material;
 use crate::x87;
-
-// The `D3DRENDERSTATETYPE` values that the functions use.
-const D3DRS_ZENABLE: u32 = 7;
-const D3DRS_FILLMODE: u32 = 8;
-const D3DRS_SHADEMODE: u32 = 9;
-const D3DRS_ZWRITEENABLE: u32 = 14;
-const D3DRS_ALPHATESTENABLE: u32 = 15;
-const D3DRS_SRCBLEND: u32 = 19;
-const D3DRS_DESTBLEND: u32 = 20;
-const D3DRS_CULLMODE: u32 = 22;
-const D3DRS_ZFUNC: u32 = 23;
-const D3DRS_ALPHAREF: u32 = 24;
-const D3DRS_ALPHAFUNC: u32 = 25;
-const D3DRS_DITHERENABLE: u32 = 26;
-const D3DRS_ALPHABLENDENABLE: u32 = 27;
-const D3DRS_FOGENABLE: u32 = 28;
-const D3DRS_SPECULARENABLE: u32 = 29;
-const D3DRS_FOGCOLOR: u32 = 34;
-const D3DRS_FOGTABLEMODE: u32 = 35;
-const D3DRS_FOGSTART: u32 = 36;
-const D3DRS_FOGEND: u32 = 37;
-const D3DRS_RANGEFOGENABLE: u32 = 48;
-const D3DRS_STENCILENABLE: u32 = 52;
-const D3DRS_STENCILFAIL: u32 = 53;
-const D3DRS_STENCILZFAIL: u32 = 54;
-const D3DRS_STENCILPASS: u32 = 55;
-const D3DRS_STENCILFUNC: u32 = 56;
-const D3DRS_STENCILREF: u32 = 57;
-const D3DRS_STENCILMASK: u32 = 58;
-const D3DRS_FOGVERTEXMODE: u32 = 140;
-const D3DRS_MULTISAMPLEANTIALIAS: u32 = 161;
-
-const D3DCMP_ALWAYS: u32 = 8;
-const D3DFOG_LINEAR: u32 = 3;
 
 /// `NiProperty::flags`. It is at the same place in every property class.
 const PROPERTY_FLAGS: usize = NiAlphaProperty::flags;
@@ -56,13 +30,13 @@ unsafe fn set_current(this: usize, state: u32, value: u32) {
 
 #[inline(always)]
 unsafe fn to_device(this: usize, state: u32, value: u32) {
-    engine::device_set_render_state(rd(this, RS::device), state, value);
+    d3d::device_set_render_state(rd(this, RS::device), state, value);
 }
 
 /// The game code has this pattern inline in most places. It writes the cache and the device
 /// when the value is new. It does not keep the previous value.
 #[inline(always)]
-unsafe fn set_if_changed(this: usize, state: u32, value: u32) {
+pub(crate) unsafe fn set_if_changed(this: usize, state: u32, value: u32) {
     if current(this, state) != value {
         set_current(this, state, value);
         to_device(this, state, value);
@@ -101,7 +75,7 @@ pub unsafe fn set_texture_stage_state_with_save(this: usize, stage: u32, state: 
             wr(setting, 4, now);
         }
         wr(setting, 0, value);
-        engine::device_set_texture_stage_state(rd(this, RS::device), stage, state, value);
+        d3d::device_set_texture_stage_state(rd(this, RS::device), stage, state, value);
     }
 }
 
@@ -284,7 +258,8 @@ pub unsafe fn update_d3d_state(this: usize, property_state: usize) {
 
 /// `updateD3DState` can write memory that is not the render state. It writes the material,
 /// because it changes the revision of the material. It writes the entry that the material
-/// manager keeps for the material.
+/// manager keeps for the material. The call is a skip when the material has no entry and the
+/// allocator hooks are not active. The call allocates the entry then.
 unsafe fn update_d3d_state_regions(set: &mut crate::shadow::Regions, this: usize, property_state: usize) {
     set.add(this, RS::SIZE);
     let material_property: usize = rd(property_state, NiPropertyState::propMaterial);
