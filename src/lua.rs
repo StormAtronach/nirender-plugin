@@ -82,11 +82,12 @@ unsafe fn install_all() -> Result<String, String> {
     for change in &changes {
         let live = core::slice::from_raw_parts(change.func.ea as *const u8, change.func.size);
         let kind = crate::site::classify(change.func, live, change.offset, change.len);
-        let served = matches!(kind, crate::site::Kind::RedirectedCall(site) if ports::serves_site(site));
+        let served = matches!(kind, crate::site::Kind::RedirectedCall(site) if ports::serves_site(site))
+            || ports::follows(change.func.ea + change.offset, change.len);
         let mut note = String::new();
         if let Some(port) = ports::all().find(|p| p.addr == change.func.ea) {
             if served {
-                note = " (the port calls the new target)".into();
+                note = " (the port follows the change)".into();
             } else {
                 port.locked.store(true, Ordering::Relaxed);
                 note = " (PORT LOCKED: it stays game code here)".into();

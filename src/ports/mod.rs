@@ -130,6 +130,22 @@ pub fn serves_site(site: usize) -> bool {
     SITE_LISTS.iter().any(|list| list.contains(&site))
 }
 
+/// Bytes of the game code that another mod changes and that a port follows by reading
+/// them from memory: (address, length). A change inside such a range does not lock the port.
+///
+/// - `NiDX8Renderer::RenderShape` +0x2F: MWSE's software skinning flag
+///   (PatchNIDX8Renderer_RenderShape).
+/// - `NiDX8TexturePass::setCTPipelineState` +0xFC: MWSE's base map texture coordinate fix
+///   (PatchNiDX8TexturePass_BaseMapTexcoord).
+/// - `NiDX8Renderer::ctor`: MWSE's hash map sizes ("Optimize renderer hash map lookups").
+static FOLLOWED: &[(usize, usize)] =
+    &[(0x6ACF1F, 8), (0x6B42AC, 6), (0x6A9AED, 9), (0x6A9B38, 4), (0x6A9B7E, 4), (0x6A9BC4, 4)];
+
+/// True when a port reads the `len` bytes at `addr` from memory and acts on what they are.
+pub fn follows(addr: usize, len: usize) -> bool {
+    FOLLOWED.iter().any(|&(start, size)| addr >= start && addr + len <= start + size)
+}
+
 /// Every port.
 pub fn all() -> impl Iterator<Item = &'static PortState> {
     MODULES.iter().flat_map(|module| module.iter().copied())
