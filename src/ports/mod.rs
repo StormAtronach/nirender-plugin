@@ -94,9 +94,10 @@ macro_rules! port_cdecl {
 
 pub mod material;
 pub mod render_state;
+pub mod texture_pipeline;
 
 /// The ports of every module. A new module adds its `PORTS` here.
-static MODULES: &[&[&PortState]] = &[render_state::PORTS, material::PORTS];
+static MODULES: &[&[&PortState]] = &[render_state::PORTS, material::PORTS, texture_pipeline::PORTS];
 
 /// Every port.
 pub fn all() -> impl Iterator<Item = &'static PortState> {
