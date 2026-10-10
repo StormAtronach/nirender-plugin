@@ -71,7 +71,9 @@ return function(nirender, spec, name)
         event.register("loaded", function()
             if started then return end
             started = true
-            scenario.say("save loaded, cell '%s'", tes3.player.cell.editorName)
+            -- The player can arrive in water or near an enemy. A dead player ends the game.
+            tes3.worldController.menuController.godModeEnabled = true
+            scenario.say("save loaded, cell '%s', god mode on", tes3.player.cell.editorName)
             onLoaded()
         end)
         scenario.after(spec.menuSeconds or 6, function()

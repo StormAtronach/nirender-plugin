@@ -142,6 +142,8 @@ pub struct HostV1 {
     pub frame_event: unsafe extern "C" fn(kind: u32, a: u32, b: u32),
     pub draw: unsafe extern "C" fn(draw: *const DrawV1),
     pub read_counters: unsafe extern "C" fn(out: *mut CountersV1, reset: u32),
+    /// Only a host with `CAP_USE_FACTS` has this member.
+    pub use_facts: unsafe extern "C" fn(fact_mask: u32) -> u32,
 }
 
 /// `MGE_RenderLinkConnect`
@@ -158,7 +160,7 @@ const _: () = {
     assert!(size_of::<DrawV1>() == 48);
     assert!(size_of::<FactCountV1>() == 16);
     assert!(size_of::<CountersV1>() == 272);
-    assert!(size_of::<HostV1>() == 36);
+    assert!(size_of::<HostV1>() == 40);
 };
 
 #[cfg(test)]

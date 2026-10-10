@@ -24,6 +24,7 @@ use crate::{ports, win};
 
 // ---- addresses of the renderer functions
 
+const SET_CAMERA_DATA: usize = 0x6AC620;
 const BEGIN_PAINT: usize = 0x6AC520;
 const END_PAINT: usize = 0x6AC590;
 const CLEAR_BUFFER: usize = 0x6ABE60;
@@ -87,6 +88,9 @@ const W_STORM: usize = 0x6C;
 const MOON_ROOT: usize = 0x0;
 const MOON_SHADOW_SHAPE: usize = 0x10;
 
+/// The offset of the translation of `worldTransform` in a `NiAVObject`. `NiCamera::Click`
+/// passes the address of this member of the camera to `SetCameraData`.
+const AV_WORLD_TRANSLATION: usize = 0x64;
 /// The offset of `worldTransform` in a `NiAVObject`. `NiTriShape::Display` passes the address
 /// of this member to `RenderShape`.
 const AV_WORLD_TRANSFORM: usize = 0x40;
@@ -146,6 +150,8 @@ const NO_ROOTS: Roots = Roots {
 
 /// The table of the host. 0 until `connect` has a host.
 static HOST: AtomicUsize = AtomicUsize::new(0);
+/// The camera of the scene packet that `set_camera_data` sent, until `begin_paint` sees it.
+static SCENE_SENT_FOR: AtomicUsize = AtomicUsize::new(0);
 // Only the render thread reads and writes these two.
 static mut ROOTS: Roots = NO_ROOTS;
 static mut LIGHTS: [LightV1; MAX_LIGHTS] = [LightV1 { light: 0, device_index: 0, light_type: 0, radius: 0.0 }; MAX_LIGHTS];
@@ -216,10 +222,25 @@ unsafe fn scene_kind(camera: usize, world_controller: usize, water_controller: u
     }
 }
 
+/// `SetCameraData(this, location, direction, up, right, frustum, port)`. `NiCamera::Click`
+/// calls it immediately before `BeginPaint`. The scene packet goes out here, because this
+/// function sends the view transform and MGE XE decides on the scene at that call.
+unsafe fn set_camera_data(args: &[usize]) {
+    let camera = args[1] - AV_WORLD_TRANSLATION;
+    send_scene(camera);
+    SCENE_SENT_FOR.store(camera, Ordering::Relaxed);
+}
+
 /// `BeginPaint(this, camera)`
 unsafe fn begin_paint(args: &[usize]) {
+    // A caller other than `NiCamera::Click` did not go through `SetCameraData`.
+    if SCENE_SENT_FOR.swap(0, Ordering::Relaxed) != args[1] {
+        send_scene(args[1]);
+    }
+}
+
+unsafe fn send_scene(camera: usize) {
     let Some(host) = host() else { return };
-    let camera = args[1];
     let world_controller: usize = rd(WORLD_CONTROLLER, 0);
     let data_handler: usize = rd(DATA_HANDLER, 0);
     let water_controller = ptr_at(data_handler, DH_WATER_CONTROLLER);
@@ -462,11 +483,13 @@ pub unsafe fn connect() -> Result<String, String> {
     let Some(host) = table.as_ref() else {
         return Err(format!("the host refused version {VERSION}"));
     };
-    if (host.struct_size as usize) < size_of::<HostV1>() {
+    // The members up to `read_counters` are in each version of the table.
+    if (host.struct_size as usize) < core::mem::offset_of!(HostV1, use_facts) {
         return Err(format!("the table of the host has {} bytes", host.struct_size));
     }
 
-    let before: [(usize, BeforeFn); 9] = [
+    let before: [(usize, BeforeFn); 10] = [
+        (SET_CAMERA_DATA, set_camera_data),
         (BEGIN_PAINT, begin_paint),
         (CLEAR_BUFFER, clear_buffer),
         (SET_RENDER_TARGET, set_render_target),
@@ -495,6 +518,16 @@ pub unsafe fn connect() -> Result<String, String> {
         host.capabilities,
         if missing.is_empty() { "none".to_string() } else { missing.join(" ") }
     ))
+}
+
+/// Tells the host which facts to take from the packets. Bit n of `mask` is the fact `FACT_`
+/// n. Returns the mask that the host uses, or `None` when the host cannot use facts.
+pub unsafe fn use_facts(mask: u32) -> Option<u32> {
+    let host = host()?;
+    if host.capabilities & CAP_USE_FACTS == 0 || (host.struct_size as usize) < size_of::<HostV1>() {
+        return None;
+    }
+    Some((host.use_facts)(mask))
 }
 
 /// The counters of the host, or `None` without a host.

@@ -16,7 +16,7 @@ from common import REPO
 
 HEADER = os.path.join(REPO, "contract", "mge_render_link.h")
 RUST = os.path.join(REPO, "src", "link.rs")
-MGE_DEFAULT = os.path.join(os.path.dirname(REPO), "MGE-XE-G7")
+MGE_DEFAULT = os.path.join(os.path.dirname(REPO), "MGE-XE-G7-render-link")
 MGE_COPY = os.path.join("d3d8", "cpp", "mge", "mge_render_link.h")
 
 # Header prefixes, longest first. The Rust name is the header name without its prefix.

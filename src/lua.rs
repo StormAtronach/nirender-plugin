@@ -217,6 +217,20 @@ unsafe extern "C" fn link_counters(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.linkUseFacts(mask)` returns the mask that MGE XE uses, or nil when MGE XE cannot
+/// use facts. Bit n of `mask` is fact n of the contract. MGE XE takes these facts from the
+/// packets and not from its inference.
+unsafe extern "C" fn link_use_facts(l: LuaState) -> i32 {
+    match crate::link_client::use_facts(lua_tonumber(l, 1) as u32) {
+        Some(used) => {
+            crate::log!("link: MGE XE uses the facts of mask {used:#x}");
+            lua_pushnumber(l, used as f64);
+        }
+        None => lua_pushnil(l),
+    }
+    1
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     lua_createtable(l, 0, 20);
@@ -236,6 +250,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "dumpFrame", dump_frame);
     set_fn(l, "link", link);
     set_fn(l, "linkCounters", link_counters);
+    set_fn(l, "linkUseFacts", link_use_facts);
     push_str(l, env!("CARGO_PKG_VERSION"));
     lua_setfield(l, -2, b"version\0".as_ptr() as *const c_char);
     lua_pushnumber(l, ports::all().count() as f64);
