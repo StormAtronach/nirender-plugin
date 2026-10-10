@@ -11,10 +11,25 @@ use core::mem::transmute;
 use crate::gen::layouts::{
     NiDX8AdapterDesc as Adapter, NiDX8DeviceDesc as DeviceDesc, NiDX8PixelFormat as PF, NiDX8RenderState as RS,
     NiDX8RenderTarget as RT, NiDX8Renderer as R, NiDX8Renderer_BatchedObject as Batched, NiDX8SystemDesc as SystemDesc,
-    NiPixelData, NiRefObject, THashMap as Map, THashMap_Node as Node, D3DCAPS8 as Caps,
+    NiPixelData, THashMap as Map, THashMap_Node as Node, D3DCAPS8 as Caps,
+};
+use crate::d3d::{
+    com_release, d3d_check_device_format, d3d_check_device_multi_sample_type, d3d_create_device, d3d_get_adapter_identifier,
+    device_get_depth_stencil_surface, device_get_render_target, device_reset, device_set_indices, device_set_stream_source,
+    device_set_texture, surface_get_desc, D3DCREATE_MULTITHREADED, D3DDEVTYPE_HAL, D3DDEVTYPE_REF, D3DFMT_D15S1, D3DFMT_D24S8,
+    D3DFMT_D24X4S4, D3DFMT_DXT1, D3DFMT_DXT2, D3DFMT_DXT3, D3DFMT_DXT4, D3DFMT_DXT5, D3DFMT_P8, D3DFMT_UYVY, D3DFMT_YUY2,
+};
+use crate::engine::{
+    cdecl1, debug_print0, debug_print1, eh_vector_destructor_iterator, ni_bound_dtor, ni_object_release, operator_delete,
+    operator_new, pixel_data_ctor_args, pixel_format_copy, pixel_format_ctor_bump_luma, pixel_format_ctor_format,
+    pixel_format_ctor_palette, pixel_format_ctor_rgba, texture_manager_clear_hash_map, thiscall0, thiscall1, thiscall2, thiscall3,
+    thiscall4, thiscall5, vcall1, virtual_at, EMPTY_STRING, MAX_STREAMS, MAX_TEXTURE_BLEND_STAGES, NI_POINTER_DTOR,
+    PIXEL_FORMAT_MASK_A, PIXEL_FORMAT_MASK_B, PIXEL_FORMAT_SHIFT_A, PIXEL_FORMAT_SHIFT_B, VEC3_X_AXIS, VEC3_Y_AXIS, VEC3_ZERO,
+    VTBL_NI_DX8_RENDERER, VTBL_RENDERER_MAP_CUBE_MAPS, VTBL_RENDERER_MAP_GEOM_BUFFERS, VTBL_RENDERER_MAP_SKIN_PARTITIONS,
+    VTBL_RENDERER_MAP_TEXTURES,
 };
 use crate::mem::{rd, wr};
-use crate::ports::{light_manager, render_state, texture_pipeline};
+use crate::ports::{hash_map, light_manager, ni, render_state, texture_pipeline};
 use crate::shadow::Regions;
 
 // ---------------------------------------------------------------------------------------
@@ -30,28 +45,7 @@ const RTTI_NI_DX8_RENDERER: usize = 0x7DD89C;
 /// `global_NiDX8Renderer_errorString`: 256 bytes.
 const ERROR_STRING: usize = 0x7DEAA8;
 const ERROR_STRING_SIZE: usize = 0x100;
-/// `vtbl_sg_NiDX8Renderer`
-const VTABLE_RENDERER: usize = 0x74F4D0;
-/// The vtables the destructor gives the four hash maps before it empties them.
-const VTABLE_MAP_CUBE_MAPS: usize = 0x74F5E4;
-const VTABLE_MAP_TEXTURES: usize = 0x74F5F8;
-const VTABLE_MAP_SKIN_PARTITIONS: usize = 0x74F60C;
-const VTABLE_MAP_GEOM_BUFFERS: usize = 0x74F620;
-/// `dword_7C3834`: the number of texture stages the destructor clears.
-const TEXTURE_STAGE_COUNT: usize = 0x7C3834;
-/// `dword_7DD958`: the number of vertex streams the destructor clears.
-const STREAM_COUNT: usize = 0x7DD958;
-/// The values the inline constructor of `NiPixelFormat` in `Create` reads for `compareBits`.
-const PIXEL_FORMAT_SHIFT_A: usize = 0x7DE8FC;
-const PIXEL_FORMAT_MASK_A: usize = 0x7C55B0;
-const PIXEL_FORMAT_MASK_B: usize = 0x7C55B4;
-const PIXEL_FORMAT_SHIFT_B: usize = 0x7C55B8;
-/// The empty C string.
-const EMPTY_STRING: usize = 0x7C6180;
-/// `data_zeroVec3`, `data_vecXAxis`, `data_vecYAxis`, `data_vecZAxis`
-const VEC_ZERO: usize = 0x7DE6CC;
-const VEC_X_AXIS: usize = 0x7DE690;
-const VEC_Y_AXIS: usize = 0x7DE6A4;
+/// `data_vecZAxis`
 const VEC_Z_AXIS: usize = 0x7DE6C0;
 
 /// "D3D8.DLL" and "Direct3DCreate8".
@@ -92,7 +86,8 @@ const STR_DRIVER_FORMAT: usize = 0x7C34BC;
 const TEXTURE_RENDERER_DATA: usize = 0x20;
 /// `NiTexture::RendererData::linkedData`: the next renderer data of the same texture.
 const RENDERER_DATA_NEXT: usize = 0x04;
-/// The two vertex buffers of a geometry buffer of the renderer (`+0x14`, `+0x24`).
+/// The vertex buffer (`+0x14`) and the index buffer (`+0x24`) of a geometry buffer of the
+/// renderer. Each is a device buffer.
 const GEOM_BUFFER_VERTEX_BUFFER: usize = 0x14;
 const GEOM_BUFFER_INDEX_BUFFER: usize = 0x24;
 /// `NiSkinPartition::Partition`: its geometry buffer.
@@ -101,28 +96,13 @@ const PARTITION_GEOM_BUFFER: usize = 0x28;
 const STD_MAP_NODE_VALUE: usize = 0x1C;
 /// `TES3Game::map_74`
 const GAME_ADAPTER_MAP: usize = 0x74;
-/// `D3DADAPTER_IDENTIFIER8`: 0x42C bytes; `Description` at 0x200.
+/// `D3DADAPTER_IDENTIFIER8` has 0x42C bytes. `Description` is at 0x200.
 const ADAPTER_IDENTIFIER_WORDS: usize = 0x10B;
 const ADAPTER_IDENTIFIER_DESCRIPTION: usize = 0x200;
 /// `D3DSURFACE_DESC`: Format, Type, Usage, Pool, Size, MultiSampleType, Width, Height.
 const SURFACE_DESC_FORMAT: usize = 0;
 const SURFACE_DESC_WIDTH: usize = 6;
 const SURFACE_DESC_HEIGHT: usize = 7;
-
-const D3DDEVTYPE_HAL: u32 = 1;
-const D3DDEVTYPE_REF: u32 = 2;
-const D3DFMT_P8: i32 = 41;
-const D3DFMT_D15S1: u32 = 73;
-const D3DFMT_D24S8: u32 = 75;
-const D3DFMT_D24X4S4: u32 = 79;
-const FOURCC_DXT1: u32 = 0x3154_5844;
-const FOURCC_DXT2: u32 = 0x3254_5844;
-const FOURCC_DXT3: u32 = 0x3354_5844;
-const FOURCC_DXT4: u32 = 0x3454_5844;
-const FOURCC_DXT5: u32 = 0x3554_5844;
-const FOURCC_YUY2: u32 = 0x3259_5559;
-const FOURCC_UYVY: u32 = 0x5956_5955;
-const D3DCREATE_MULTITHREADED: u32 = 4;
 
 /// The sizes `Create` gives `operator new`.
 const SIZE_VERTEX_BUFFER_MANAGER: usize = 0x3C;
@@ -139,71 +119,8 @@ const FORMAT_GROUPS: usize = 4;
 // Calls
 // ---------------------------------------------------------------------------------------
 
-unsafe fn thiscall0(addr: usize, this: usize) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize) -> u32>(addr)(this)
-}
-
-unsafe fn thiscall1(addr: usize, this: usize, a: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32) -> u32>(addr)(this, a)
-}
-
-unsafe fn thiscall2(addr: usize, this: usize, a: u32, b: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32) -> u32>(addr)(this, a, b)
-}
-
-unsafe fn thiscall3(addr: usize, this: usize, a: u32, b: u32, c: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32, u32) -> u32>(addr)(this, a, b, c)
-}
-
-unsafe fn thiscall4(addr: usize, this: usize, a: u32, b: u32, c: u32, d: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32, u32, u32) -> u32>(addr)(this, a, b, c, d)
-}
-
-unsafe fn thiscall5(addr: usize, this: usize, a: u32, b: u32, c: u32, d: u32, e: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32, u32, u32, u32) -> u32>(addr)(this, a, b, c, d, e)
-}
-
-/// A virtual function of `object` at `offset` in its vtable.
-unsafe fn virtual_at(object: usize, offset: usize) -> usize {
-    rd(rd::<usize>(object, 0), offset)
-}
-
-/// Calls the virtual deleting destructor of an engine object with the flag "free the memory".
-unsafe fn delete_object(object: usize) {
-    thiscall1(virtual_at(object, 0), object, 1);
-}
-
-/// `Release` of a COM object.
-unsafe fn com_release(object: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize) -> u32>(virtual_at(object, 0x08))(object)
-}
-
-/// 0x727692 `operator new`
-unsafe fn operator_new(size: usize) -> usize {
-    crate::engine::operator_new(size)
-}
-
-/// 0x727530 `operator delete`
-unsafe fn operator_delete(block: usize) {
-    transmute::<usize, unsafe extern "C" fn(usize)>(0x727530)(block)
-}
-
-/// 0x6E9A00 `nullsub_36`: the debug print, a single `retn`. The game code gives it a text
-/// and at most one value.
-unsafe fn debug_print(text: usize) {
-    transmute::<usize, unsafe extern "C" fn(usize)>(0x6E9A00)(text)
-}
-
-unsafe fn debug_print1(text: usize, value: usize) {
-    transmute::<usize, unsafe extern "C" fn(usize, usize)>(0x6E9A00)(text, value)
-}
-
-/// 0x6E9A00 is also the destructor of `NiBound`. The bound is in ECX.
-unsafe fn bound_dtor(bound: usize) {
-    thiscall0(0x6E9A00, bound);
-}
-
-// The C runtime and Win32, through the import table of the game.
+// The C runtime and Win32, through the import table of the game. These calls stay private to
+// this file.
 
 /// `strncpy` (import slot 0x746284)
 unsafe fn strncpy(to: usize, from: usize, count: usize) -> usize {
@@ -250,7 +167,8 @@ unsafe fn std_string_tidy(string: usize, built: u32) {
     thiscall1(rd::<usize>(0x7461C0, 0), string, built);
 }
 
-// Engine functions.
+// Engine functions that have no wrapper in a shared module. The port calls each of them at
+// its fixed address. A function that has a port gets the call through its detour.
 
 /// 0x6A9A70 `NiDX8Renderer::ctor`. Another mod changes it in memory, so it has no port.
 unsafe fn renderer_ctor(this: usize) -> usize {
@@ -287,26 +205,6 @@ unsafe fn adapter_desc_find_closest_mode(adapter: usize, format: u32, width: u32
     thiscall4(0x6B25D0, adapter, format, width, height, refresh_rate as u32) as usize
 }
 
-/// 0x6ED7C0 `NiPixelFormat::ctor_RGBA`
-unsafe fn pixel_format_ctor_rgba(this: usize, red: u32, green: u32, blue: u32, alpha: u32, bits: u32) -> usize {
-    thiscall5(0x6ED7C0, this, red, green, blue, alpha, bits) as usize
-}
-
-/// 0x6ED9D0 `NiPixelFormat::ctor_Palette`
-unsafe fn pixel_format_ctor_palette(this: usize, has_alpha: u32) -> usize {
-    thiscall1(0x6ED9D0, this, has_alpha) as usize
-}
-
-/// 0x6EDD30 `NiPixelFormat::ctor_BumpLuma`
-unsafe fn pixel_format_ctor_bump_luma(this: usize, red: u32, green: u32, blue: u32, bits: u32) -> usize {
-    thiscall4(0x6EDD30, this, red, green, blue, bits) as usize
-}
-
-/// 0x6EDA40 `NiPixelFormat::ctor_Format`
-unsafe fn pixel_format_ctor_format(this: usize, format: u32) -> usize {
-    thiscall1(0x6EDA40, this, format) as usize
-}
-
 /// 0x6EDEE0 `NiPixelFormat::ctor_RGBA_copy`. Returns `this`.
 unsafe fn pixel_format_ctor_rgba_copy(this: usize, red: u32, green: u32, blue: u32, alpha: u32, bits: u32) -> usize {
     thiscall5(0x6EDEE0, this, red, green, blue, alpha, bits) as usize
@@ -317,14 +215,9 @@ unsafe fn pixel_format_ctor_bump_luma_copy(this: usize, red: u32, green: u32, bl
     thiscall4(0x6EDF10, this, red, green, blue, bits) as usize
 }
 
-/// 0x6BFDA0 `NiPixelFormat::copy`
-unsafe fn pixel_format_copy(this: usize, from: usize) {
-    thiscall1(0x6BFDA0, this, from as u32);
-}
-
 /// 0x6B0E20 `NiGetD3DFormatForNiPixelFormat` (cdecl)
 unsafe fn d3d_format_for_pixel_format(format: usize) -> u32 {
-    transmute::<usize, unsafe extern "C" fn(usize) -> u32>(0x6B0E20)(format)
+    cdecl1(0x6B0E20, format as u32)
 }
 
 /// 0x6AB410 `NiDX8PixelFormat::ctor`
@@ -335,11 +228,6 @@ unsafe fn dx8_pixel_format_ctor(this: usize) {
 /// 0x4B52D0 `NiDX8PixelFormat::setPixelFormat`
 unsafe fn dx8_pixel_format_set(this: usize, format: u32) {
     thiscall1(0x4B52D0, this, format);
-}
-
-/// 0x6D4FC0 `NiPixelData::ctor_args`
-unsafe fn pixel_data_ctor(this: usize, width: u32, height: u32, format: usize, mip_map_levels: u32) -> usize {
-    thiscall4(0x6D4FC0, this, width, height, format as u32, mip_map_levels) as usize
 }
 
 /// 0x6BD780 `NiDX8VertexBufferManager::ctor`
@@ -357,7 +245,8 @@ unsafe fn texture_manager_ctor(this: usize, renderer: usize) -> usize {
     thiscall1(0x6BC100, this, renderer as u32) as usize
 }
 
-/// 0x6B81E0 `NiDX8RenderState_static::Create` (cdecl)
+/// 0x6B81E0 `NiDX8RenderState_static::Create` (cdecl). It has 5 arguments, and `engine` has
+/// no call primitive for 5 `__cdecl` arguments.
 unsafe fn render_state_create(device: usize, caps: usize, a: u32, b: u32, stencil: u32) -> usize {
     transmute::<usize, unsafe extern "C" fn(usize, usize, u32, u32, u32) -> usize>(0x6B81E0)(device, caps, a, b, stencil)
 }
@@ -382,20 +271,15 @@ unsafe fn texture_manager_recreate(manager: usize) {
     thiscall0(0x6BC770, manager);
 }
 
-/// 0x6BC8A0 `NiDX8TextureManager::clearHashMap`: frees every node of a hash map.
-unsafe fn clear_hash_map(map: usize) {
-    thiscall0(0x6BC8A0, map);
-}
-
 /// 0x6B74F0 `NiDX8TextureData_static::ClearTextureData` (cdecl)
 unsafe fn clear_texture_data(renderer: usize) {
-    transmute::<usize, unsafe extern "C" fn(usize)>(0x6B74F0)(renderer)
+    cdecl1(0x6B74F0, renderer as u32);
 }
 
 /// 0x6B68A0 `sub_6B68A0` (cdecl): deletes the first renderer data of every texture in the
 /// list at 0x7DE11C.
 unsafe fn clear_listed_renderer_data(renderer: usize) {
-    transmute::<usize, unsafe extern "C" fn(usize)>(0x6B68A0)(renderer)
+    cdecl1(0x6B68A0, renderer as u32);
 }
 
 /// 0x6B1140 `sub_6B1140`: takes the node with `key` out of a hash map and frees it.
@@ -408,19 +292,6 @@ unsafe fn hash_map_remove(map: usize, key: usize) {
 unsafe fn hash_map_get_next(map: usize, position: usize, key: usize, value: usize) {
     thiscall3(0x6B12B0, map, position as u32, key as u32, value as u32);
 }
-
-/// 0x404630 `NiObject::release`
-unsafe fn ni_object_release(object: usize) {
-    thiscall0(0x404630, object);
-}
-
-/// 0x72759E `eh vector destructor iterator`
-unsafe fn vector_destructor(array: usize, size: usize, count: u32, dtor: usize) {
-    transmute::<usize, unsafe extern "system" fn(usize, usize, u32, usize)>(0x72759E)(array, size, count, dtor)
-}
-
-/// 0x40A880 `NiPointer::dtor`, for the vector iterator.
-const NI_POINTER_DTOR: usize = 0x40A880;
 
 /// 0x42A770 `sub_42A770`: `erase(first, last)` of the adapter map of `TES3Game`.
 unsafe fn adapter_map_erase(map: usize, out: usize, first: usize, last: usize) {
@@ -438,66 +309,13 @@ unsafe fn insert_result_copy(to: usize, node: usize, valid: usize) {
 }
 
 // ---------------------------------------------------------------------------------------
-// Direct3D, through the vtable on each call
-// ---------------------------------------------------------------------------------------
-
-unsafe fn d3d_get_adapter_identifier(d3d: usize, adapter: u32, flags: u32, identifier: usize) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, usize) -> u32 = transmute(virtual_at(d3d, 0x14));
-    f(d3d, adapter, flags, identifier)
-}
-
-unsafe fn d3d_check_device_format(d3d: usize, adapter: u32, device_type: u32, adapter_format: u32, usage: u32, resource_type: u32, format: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(d3d, 0x28));
-    f(d3d, adapter, device_type, adapter_format, usage, resource_type, format)
-}
-
-unsafe fn d3d_check_device_multi_sample_type(d3d: usize, adapter: u32, device_type: u32, format: u32, windowed: u32, samples: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(d3d, 0x2C));
-    f(d3d, adapter, device_type, format, windowed, samples)
-}
-
-unsafe fn d3d_create_device(d3d: usize, adapter: u32, device_type: u32, focus: u32, behavior: u32, parameters: usize, device: usize) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize, usize) -> u32 = transmute(virtual_at(d3d, 0x3C));
-    f(d3d, adapter, device_type, focus, behavior, parameters, device)
-}
-
-unsafe fn device_reset(device: usize, parameters: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, usize) -> u32>(virtual_at(device, 0x38))(device, parameters)
-}
-
-unsafe fn device_get_render_target(device: usize, surface: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, usize) -> u32>(virtual_at(device, 0x80))(device, surface)
-}
-
-unsafe fn device_get_depth_stencil_surface(device: usize, surface: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, usize) -> u32>(virtual_at(device, 0x84))(device, surface)
-}
-
-unsafe fn device_set_texture(device: usize, stage: u32, texture: u32) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, u32) -> u32>(virtual_at(device, 0xF4))(device, stage, texture)
-}
-
-unsafe fn device_set_stream_source(device: usize, stream: u32, buffer: u32, stride: u32) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, u32, u32) -> u32>(virtual_at(device, 0x14C))(device, stream, buffer, stride)
-}
-
-unsafe fn device_set_indices(device: usize, buffer: u32, base: u32) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, u32) -> u32>(virtual_at(device, 0x154))(device, buffer, base)
-}
-
-/// `IDirect3DSurface8::GetDesc`
-unsafe fn surface_get_desc(surface: usize, desc: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, usize) -> u32>(virtual_at(surface, 0x20))(surface, desc)
-}
-
-// ---------------------------------------------------------------------------------------
 // Small pieces the functions share
 // ---------------------------------------------------------------------------------------
 
 /// Puts a text into the error string of the renderer and gives the debug print its text.
 unsafe fn creation_failed(error: usize, log: usize) {
     strncpy(ERROR_STRING, error, 0xFF);
-    debug_print(log);
+    debug_print0(log);
 }
 
 /// `CreateD3D`, `GetAdapters` and `Create` have this sequence inline. It gets
@@ -534,68 +352,6 @@ unsafe fn selected_device_desc(this: usize) -> usize {
     }
 }
 
-/// The first node of a hash map, or 0.
-unsafe fn hash_map_first(map: usize) -> usize {
-    let bucket_count: u32 = rd(map, Map::bucketCount);
-    if bucket_count > 0 {
-        let buckets: usize = rd(map, Map::arrayBuckets);
-        let mut index = 0u32;
-        loop {
-            if rd::<usize>(buckets, index as usize * 4) != 0 {
-                return rd(buckets, index as usize * 4);
-            }
-            index += 1;
-            if index >= bucket_count {
-                break;
-            }
-        }
-    }
-    0
-}
-
-/// The first node in the buckets after the bucket of `key`, or 0.
-unsafe fn hash_map_first_after(map: usize, key: usize) -> usize {
-    let mut index = thiscall1(virtual_at(map, 4), map, key as u32).wrapping_add(1);
-    let bucket_count: u32 = rd(map, Map::bucketCount);
-    if index < bucket_count {
-        let buckets: usize = rd(map, Map::arrayBuckets);
-        loop {
-            let node: usize = rd(buckets, index as usize * 4);
-            if node != 0 {
-                return node;
-            }
-            index += 1;
-            if index >= bucket_count {
-                break;
-            }
-        }
-    }
-    0
-}
-
-/// Frees every node of a hash map and sets its count to 0, as `dtor` has it inline.
-unsafe fn hash_map_drain(map: usize) {
-    let mut index = 0u32;
-    if rd::<u32>(map, Map::bucketCount) > 0 {
-        loop {
-            let mut buckets: usize = rd(map, Map::arrayBuckets);
-            let mut node: usize = rd(buckets, index as usize * 4);
-            while node != 0 {
-                wr::<u32>(buckets, index as usize * 4, rd(node, Node::nextNode));
-                thiscall1(virtual_at(map, 0x10), map, node as u32);
-                operator_delete(node);
-                buckets = rd(map, Map::arrayBuckets);
-                node = rd(buckets, index as usize * 4);
-            }
-            index += 1;
-            if index >= rd::<u32>(map, Map::bucketCount) {
-                break;
-            }
-        }
-    }
-    wr::<u32>(map, Map::count, 0);
-}
-
 /// Releases the two device buffers of a geometry buffer and frees it.
 unsafe fn free_geom_buffer(buffer: usize) {
     let vertex_buffer: usize = rd(buffer, GEOM_BUFFER_VERTEX_BUFFER);
@@ -607,15 +363,6 @@ unsafe fn free_geom_buffer(buffer: usize) {
         com_release(index_buffer);
     }
     operator_delete(buffer);
-}
-
-/// Takes one reference from an object. It deletes the object when the count becomes 0.
-unsafe fn release_reference(object: usize) {
-    let count = rd::<u32>(object, NiRefObject::refCount).wrapping_sub(1);
-    wr(object, NiRefObject::refCount, count);
-    if count == 0 {
-        delete_object(object);
-    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -630,9 +377,9 @@ pub unsafe fn create_d3d() -> usize {
         return direct3d;
     }
     if load_direct3d() {
-        debug_print(LOG_D3D_OK);
+        debug_print0(LOG_D3D_OK);
     } else {
-        debug_print(LOG_D3D_FAILED);
+        debug_print0(LOG_D3D_FAILED);
     }
     rd(DIRECT3D, 0)
 }
@@ -671,9 +418,9 @@ pub unsafe fn get_adapters() -> usize {
     system_desc_ctor(block, direct3d)
 }
 
-/// When the game has no `IDirect3D8`, the call loads D3D8.DLL, and that call is a skip. In
-/// the other case the system description is new memory from `operator new`, and its
-/// constructor only reads from `IDirect3D8`.
+/// The call is a skip when the game has no `IDirect3D8`, because the call then loads
+/// D3D8.DLL. In the other case the system description is new memory from `operator new`, and
+/// its constructor only reads from `IDirect3D8`.
 unsafe fn get_adapters_regions(set: &mut Regions) {
     if rd::<usize>(DIRECT3D, 0) == 0 {
         set.skip();
@@ -726,13 +473,13 @@ pub unsafe fn d3dformat_to_string(format: u32) -> usize {
         100 => 0x7C35B0,         // VERTEXDATA
         101 => 0x7C3590,         // INDEX16
         102 => 0x7C35A0,         // INDEX32
-        FOURCC_DXT1 => 0x7C3584, // DXT1
-        FOURCC_DXT2 => 0x7C3578, // DXT2
-        FOURCC_YUY2 => 0x7C356C, // YUY2
-        FOURCC_DXT3 => 0x7C3554, // DXT3
-        FOURCC_DXT4 => 0x7C3560, // DXT4
-        FOURCC_DXT5 => 0x7C3548, // DXT5
-        FOURCC_UYVY => 0x7C353C, // UYVY
+        D3DFMT_DXT1 => 0x7C3584, // DXT1
+        D3DFMT_DXT2 => 0x7C3578, // DXT2
+        D3DFMT_YUY2 => 0x7C356C, // YUY2
+        D3DFMT_DXT3 => 0x7C3554, // DXT3
+        D3DFMT_DXT4 => 0x7C3560, // DXT4
+        D3DFMT_DXT5 => 0x7C3548, // DXT5
+        D3DFMT_UYVY => 0x7C353C, // UYVY
         _ => 0x7941B8,           // "UNKNOWN"
     }
 }
@@ -864,7 +611,7 @@ unsafe fn initialize_present_params_on(
 
     let d3d: usize = rd(direct3d, 0);
     if d3d_check_device_multi_sample_type(d3d, adapter, rd(this, R::d3dDeviceType), d3d_format, windowed, sample_type) != 0 {
-        debug_print(0x7C32C0);
+        debug_print0(0x7C32C0);
         wr::<u32>(this, R::d3dPresentParameters_MultiSampleType, 0);
     }
     let count: u32 = rd(this, R::d3dPresentParameters_BackBufferCount);
@@ -890,7 +637,7 @@ unsafe fn initialize_present_params_on(
             return 0;
         }
         if asked_rate != rd::<u32>(rate_slot, 0) {
-            debug_print(0x7C31D8);
+            debug_print0(0x7C31D8);
         }
     }
 
@@ -940,7 +687,7 @@ pub unsafe fn initialize_present_params(
 }
 
 /// The renderer and the error string. The calls to `IDirect3D8` and to the descriptions
-/// only read.
+/// only read. The call is never a skip.
 unsafe fn initialize_present_params_regions(set: &mut Regions, this: usize) {
     set.add(this, R::SIZE);
     set.add(ERROR_STRING, ERROR_STRING_SIZE);
@@ -986,6 +733,7 @@ pub unsafe fn validate_device_caps(this: usize) -> u8 {
     1
 }
 
+/// The renderer and the error string. The call is never a skip.
 unsafe fn validate_device_caps_regions(set: &mut Regions, this: usize) {
     set.add(this, R::SIZE);
     set.add(ERROR_STRING, ERROR_STRING_SIZE);
@@ -1169,7 +917,8 @@ pub unsafe fn probe_texture_formats(this: usize, formats: usize, _unused: u32, r
 }
 
 /// The formats are in the renderer. The other memory comes from `operator new` and
-/// `operator delete`. `CheckDeviceFormat` only reads.
+/// `operator delete`. `CheckDeviceFormat` only reads. The call is a skip when the allocator
+/// hooks are not in place.
 unsafe fn probe_texture_formats_regions(set: &mut Regions, this: usize, formats: usize) {
     set.allocates();
     set.add(this, R::SIZE);
@@ -1207,17 +956,8 @@ pub unsafe fn create_default_textures(this: usize) -> u8 {
         }
         if rd::<usize>(format_slot, 0) != 0 {
             let block = operator_new(NiPixelData::SIZE);
-            let pixel_data = if block != 0 { pixel_data_ctor(block, 4, 4, rd(format_slot, 0), 1) } else { 0 };
-            let old: usize = rd(slot, 0);
-            if old != pixel_data {
-                if old != 0 {
-                    release_reference(old);
-                }
-                wr(slot, 0, pixel_data);
-                if pixel_data != 0 {
-                    wr(pixel_data, NiRefObject::refCount, rd::<u32>(pixel_data, NiRefObject::refCount).wrapping_add(1));
-                }
-            }
+            let pixel_data = if block != 0 { pixel_data_ctor_args(block, 4, 4, rd(format_slot, 0), 1) } else { 0 };
+            ni::pointer_assign(slot, pixel_data);
             // Sets all bits of the pixels of the first mip map level.
             let pixel_data: usize = rd(slot, 0);
             let offset: usize = rd(rd(pixel_data, NiPixelData::mipmapOffsets), 0);
@@ -1292,7 +1032,7 @@ unsafe fn init_backbuffer_pixel_format(format: usize, d3d_format: u32) {
 
     // The comparisons with 41 and with "DXT1" are signed.
     let signed = d3d_format as i32;
-    if signed <= D3DFMT_P8 {
+    if signed <= D3DFMT_P8 as i32 {
         match d3d_format {
             41 => pixel_format_ctor_palette(format, 0),
             20 | 22 => pixel_format_ctor_rgba(format, 0xFF_0000, 0xFF00, 0xFF, 0, 32),
@@ -1302,9 +1042,9 @@ unsafe fn init_backbuffer_pixel_format(format: usize, d3d_format: u32) {
             26 => pixel_format_ctor_rgba(format, 0xF00, 0xF0, 0xF, 0xF000, 16),
             _ => pixel_format_ctor_rgba(format, 0xFF_0000, 0xFF00, 0xFF, 0xFF00_0000, 32),
         };
-    } else if signed <= FOURCC_DXT1 as i32 {
+    } else if signed <= D3DFMT_DXT1 as i32 {
         match d3d_format {
-            FOURCC_DXT1 => pixel_format_ctor_format(format, 6),
+            D3DFMT_DXT1 => pixel_format_ctor_format(format, 6),
             60 => pixel_format_ctor_bump_luma(format, 0xFF, 0xFF00, 0, 16),
             61 => pixel_format_ctor_bump_luma(format, 0x1F, 0x3E0, 0xFC00, 16),
             62 => pixel_format_ctor_bump_luma(format, 0xFF, 0xFF00, 0xFF_0000, 32),
@@ -1312,8 +1052,8 @@ unsafe fn init_backbuffer_pixel_format(format: usize, d3d_format: u32) {
         };
     } else {
         match d3d_format {
-            FOURCC_DXT3 => pixel_format_ctor_format(format, 7),
-            FOURCC_DXT5 => pixel_format_ctor_format(format, 8),
+            D3DFMT_DXT3 => pixel_format_ctor_format(format, 7),
+            D3DFMT_DXT5 => pixel_format_ctor_format(format, 8),
             _ => pixel_format_ctor_rgba(format, 0xFF_0000, 0xFF00, 0xFF, 0xFF00_0000, 32),
         };
     }
@@ -1321,7 +1061,7 @@ unsafe fn init_backbuffer_pixel_format(format: usize, d3d_format: u32) {
 
 /// The paths of `Create` that fail end here. It deletes the renderer and returns 0.
 unsafe fn abandon(this: usize) -> usize {
-    delete_object(this);
+    ni::delete_object(this);
     0
 }
 
@@ -1385,7 +1125,7 @@ unsafe fn try_create_device(
     }
     // The device changed the number of back buffers. The port calls `CreateDevice` again with
     // that number.
-    debug_print(0x7C2F18);
+    debug_print0(0x7C2F18);
     let behavior = rd::<u32>(this, R::d3dBehaviorFlags) | D3DCREATE_MULTITHREADED;
     wr(this, R::d3dBehaviorFlags, behavior);
     let d3d: usize = rd(DIRECT3D, 0);
@@ -1462,11 +1202,11 @@ pub unsafe fn create(
     crate::shadow::touch(&create_port::STATE);
     if rd::<usize>(DIRECT3D, 0) == 0 {
         if !load_direct3d() {
-            debug_print(LOG_D3D_FAILED);
+            debug_print0(LOG_D3D_FAILED);
             creation_failed(ERR_NO_DIRECT3D, LOG_INVALID_DEVICE_ID);
             return 0;
         }
-        debug_print(LOG_D3D_OK);
+        debug_print0(LOG_D3D_OK);
     }
     let block = operator_new(R::SIZE);
     let this = if block != 0 { renderer_ctor(block) } else { 0 };
@@ -1504,7 +1244,7 @@ pub unsafe fn create(
 
     let mut count = backbuffer_count;
     loop {
-        debug_print(0x7C2FDC);
+        debug_print0(0x7C2FDC);
         let created = try_create_device(
             this,
             width,
@@ -1528,10 +1268,10 @@ pub unsafe fn create(
         choice += 1;
         if choice == 4 {
             // The reference device is never the next choice after a failure.
-            debug_print(0x7C2DE0);
+            debug_print0(0x7C2DE0);
             return abandon(this);
         }
-        debug_print(0x7C2EB8);
+        debug_print0(0x7C2EB8);
         if choice > 4 {
             creation_failed(ERR_INVALID_DEVICE_TYPE, LOG_INVALID_DEVICE_ID);
             return abandon(this);
@@ -1577,14 +1317,14 @@ pub unsafe fn create(
     // left, right, top, bottom
     let port: [u32; 4] = [0, 0x3F80_0000, 0x3F80_0000, 0];
     let set_camera_data: unsafe extern "thiscall" fn(usize, usize, usize, usize, usize, usize, usize) -> u32 = transmute(virtual_at(this, 0xB8));
-    set_camera_data(this, VEC_ZERO, VEC_X_AXIS, VEC_Y_AXIS, VEC_Z_AXIS, frustum.as_ptr() as usize, port.as_ptr() as usize);
+    set_camera_data(this, VEC3_ZERO, VEC3_X_AXIS, VEC3_Y_AXIS, VEC_Z_AXIS, frustum.as_ptr() as usize, port.as_ptr() as usize);
 
     let block = operator_new(SIZE_LIGHT_MANAGER);
     let manager = if block != 0 { light_manager::ctor(block, rd(this, R::renderState), rd(this, R::d3dDevice)) } else { 0 };
     wr(this, R::lightManager, manager);
 
     if initialize_texture_defaults(this) == 0 {
-        debug_print(0x7C2C38);
+        debug_print0(0x7C2C38);
         return abandon(this);
     }
     let pipeline = texture_pipeline::create(this, caps, rd(this, R::renderState), rd(this, R::textureManager), 1);
@@ -1627,35 +1367,29 @@ unsafe fn unlink_renderer_data(texture: usize, data: usize) {
 /// the position of the next node as the key, not the texture. `key_is_next_position`
 /// selects that behaviour.
 unsafe fn release_rendered_textures(map: usize, key_is_next_position: bool) {
-    let mut position = hash_map_first(map);
+    let mut position = hash_map::first(map);
     while position != 0 {
         let texture: usize = rd(position, Node::key);
         let data: usize = rd(position, Node::data);
         let next: usize = rd(position, Node::nextNode);
-        position = if next != 0 { next } else { hash_map_first_after(map, texture) };
+        position = if next != 0 { next } else { hash_map::next_bucket(map, texture as u32) };
 
         unlink_renderer_data(texture, data);
         if data != 0 {
-            delete_object(data);
+            ni::delete_object(data);
         }
 
-        let bucket = thiscall1(virtual_at(map, 4), map, texture as u32) as usize;
-        let mut node: usize = rd(rd(map, Map::arrayBuckets), bucket * 4);
-        let mut found = false;
-        while node != 0 {
-            if thiscall2(virtual_at(map, 8), map, texture as u32, rd(node, Node::key)) as u8 != 0 {
-                thiscall1(virtual_at(map, 0x10), map, node as u32);
-                let key = if key_is_next_position { position } else { texture };
-                thiscall3(virtual_at(map, 0x0C), map, node as u32, key as u32, 0);
-                found = true;
-                break;
-            }
-            node = rd(node, Node::nextNode);
-        }
-        if !found {
+        // The inline `THashMap::SetAt` with the value 0. `hash_map::set` does not fit, because
+        // the key for a node that exists can be the next position.
+        let (bucket, node) = hash_map::find_in_bucket(map, texture as u32);
+        if node != 0 {
+            hash_map::dtor_key_value_pair(map, node);
+            let key = if key_is_next_position { position } else { texture };
+            hash_map::make_key_value_pair(map, node, key as u32, 0);
+        } else {
             let node = operator_new(Node::SIZE);
-            thiscall3(virtual_at(map, 0x0C), map, node as u32, texture as u32, 0);
-            wr::<u32>(node, Node::nextNode, rd(rd(map, Map::arrayBuckets), bucket * 4));
+            hash_map::make_key_value_pair(map, node, texture as u32, 0);
+            wr::<usize>(node, Node::nextNode, hash_map::bucket_head(map, bucket));
             wr(rd::<usize>(map, Map::arrayBuckets), bucket * 4, node);
             wr(map, Map::count, rd::<u32>(map, Map::count).wrapping_add(1));
         }
@@ -1695,25 +1429,25 @@ pub unsafe fn recreate(this: usize) -> u8 {
     }
     read_back_buffer(this, make_format_with_setter, [0x7C319C, 0x7C3164]);
     if initialize_texture_defaults(this) == 0 {
-        debug_print(0x7C3118);
+        debug_print0(0x7C3118);
         return 0;
     }
 
     // Makes new renderer data for every rendered texture. The virtual functions at +0xF8 and
     // +0xFC of the renderer do this.
-    let mut position = hash_map_first(textures);
+    let mut position = hash_map::first(textures);
     while position != 0 {
         let texture: usize = rd(position, Node::key);
         let next: usize = rd(position, Node::nextNode);
-        position = if next != 0 { next } else { hash_map_first_after(textures, texture) };
-        thiscall1(virtual_at(this, 0xF8), this, texture as u32);
+        position = if next != 0 { next } else { hash_map::next_bucket(textures, texture as u32) };
+        vcall1(this, 0xF8, texture as u32);
     }
-    let mut position = [hash_map_first(cube_maps)];
+    let mut position = [hash_map::first(cube_maps)];
     while position[0] != 0 {
         let mut texture = [0usize];
         let mut value = [0usize];
         hash_map_get_next(cube_maps, position.as_mut_ptr() as usize, texture.as_mut_ptr() as usize, value.as_mut_ptr() as usize);
-        thiscall1(virtual_at(this, 0xFC), this, texture[0] as u32);
+        vcall1(this, 0xFC, texture[0] as u32);
     }
     render_state_initialize(rd(this, R::renderState));
     texture_pipeline::init_pipeline_state(rd(this, R::configurableTexturePipeline));
@@ -1729,7 +1463,7 @@ pub unsafe fn recreate(this: usize) -> u8 {
 unsafe fn delete_member(this: usize, offset: usize) {
     let object: usize = rd(this, offset);
     if object != 0 {
-        delete_object(object);
+        ni::delete_object(object);
         wr::<u32>(this, offset, 0);
     }
 }
@@ -1737,11 +1471,11 @@ unsafe fn delete_member(this: usize, offset: usize) {
 /// 0x6A9E10 `NiDX8Renderer::dtor`
 pub unsafe fn dtor(this: usize) {
     crate::shadow::touch(&dtor_port::STATE);
-    wr(this, R::vtbl, VTABLE_RENDERER);
+    wr(this, R::vtbl, VTBL_NI_DX8_RENDERER);
     if rd::<usize>(this, R::d3dDevice) != 0 {
         // Nothing stays bound to the device.
         let mut stage = 0u32;
-        if rd::<u32>(TEXTURE_STAGE_COUNT, 0) > 0 {
+        if rd::<u32>(MAX_TEXTURE_BLEND_STAGES, 0) > 0 {
             loop {
                 let state: usize = rd(this, R::renderState);
                 let slot = RS::texturePerStage + stage as usize * 4;
@@ -1750,17 +1484,17 @@ pub unsafe fn dtor(this: usize) {
                     device_set_texture(rd(state, RS::device), stage, 0);
                 }
                 stage += 1;
-                if stage >= rd::<u32>(TEXTURE_STAGE_COUNT, 0) {
+                if stage >= rd::<u32>(MAX_TEXTURE_BLEND_STAGES, 0) {
                     break;
                 }
             }
         }
         let mut stream = 0u32;
-        if rd::<u32>(STREAM_COUNT, 0) > 0 {
+        if rd::<u32>(MAX_STREAMS, 0) > 0 {
             loop {
                 device_set_stream_source(rd(this, R::d3dDevice), stream, 0, 0);
                 stream += 1;
-                if stream >= rd::<u32>(STREAM_COUNT, 0) {
+                if stream >= rd::<u32>(MAX_STREAMS, 0) {
                     break;
                 }
             }
@@ -1777,7 +1511,7 @@ pub unsafe fn dtor(this: usize) {
 
     let property_state: usize = rd(this, R::currentPropertyState);
     if property_state != 0 {
-        release_reference(property_state);
+        ni::release(property_state);
         wr::<u32>(this, R::currentPropertyState, 0);
     }
 
@@ -1792,11 +1526,11 @@ pub unsafe fn dtor(this: usize) {
 
     // The geometry buffers of the shapes.
     let geom_buffers = this + R::hashGeomBuffers;
-    let mut node = hash_map_first(geom_buffers);
+    let mut node = hash_map::first(geom_buffers);
     while node != 0 {
         let next: usize = rd(node, Node::nextNode);
         let buffer: usize = rd(node, Node::data);
-        node = if next != 0 { next } else { hash_map_first_after(geom_buffers, rd(node, Node::key)) };
+        node = if next != 0 { next } else { hash_map::next_bucket(geom_buffers, rd(node, Node::key)) };
         if buffer != 0 {
             free_geom_buffer(buffer);
         }
@@ -1805,12 +1539,12 @@ pub unsafe fn dtor(this: usize) {
     // The geometry buffers of the skin partitions. The port removes a partition that has a
     // buffer from the map.
     let skin_partitions = this + R::hashmap_skinPartitionsToGeomBuffers;
-    let mut node = hash_map_first(skin_partitions);
+    let mut node = hash_map::first(skin_partitions);
     while node != 0 {
         let partition: usize = rd(node, Node::key);
         node = rd(node, Node::nextNode);
         if node == 0 {
-            node = hash_map_first_after(skin_partitions, partition);
+            node = hash_map::next_bucket(skin_partitions, partition as u32);
         }
         let buffer: usize = rd(partition, PARTITION_GEOM_BUFFER);
         if buffer != 0 {
@@ -1824,8 +1558,8 @@ pub unsafe fn dtor(this: usize) {
 
     let textures = this + R::hashmap_maybeRenderedTextures;
     let cube_maps = this + R::hashmap_maybeRenderedCubemaps;
-    hash_map_drain(textures);
-    hash_map_drain(cube_maps);
+    hash_map::drain_and_zero_count(textures);
+    hash_map::drain_and_zero_count(cube_maps);
 
     let surface: usize = rd(this, R::backbufferRenderTarget_d3dSurfaceBackBuffer);
     if surface != 0 {
@@ -1867,20 +1601,20 @@ pub unsafe fn dtor(this: usize) {
     wr::<u32>(DIRECT3D_CREATE8, 0, 0);
 
     // The destructors of the members, last member first.
-    wr(cube_maps, Map::vtbl, VTABLE_MAP_CUBE_MAPS);
-    clear_hash_map(cube_maps);
+    wr(cube_maps, Map::vtbl, VTBL_RENDERER_MAP_CUBE_MAPS);
+    texture_manager_clear_hash_map(cube_maps);
     operator_delete(rd(cube_maps, Map::arrayBuckets));
 
-    wr(textures, Map::vtbl, VTABLE_MAP_TEXTURES);
-    hash_map_drain(textures);
+    wr(textures, Map::vtbl, VTBL_RENDERER_MAP_TEXTURES);
+    hash_map::drain_and_zero_count(textures);
     operator_delete(rd(textures, Map::arrayBuckets));
 
-    wr(skin_partitions, Map::vtbl, VTABLE_MAP_SKIN_PARTITIONS);
-    clear_hash_map(skin_partitions);
+    wr(skin_partitions, Map::vtbl, VTBL_RENDERER_MAP_SKIN_PARTITIONS);
+    texture_manager_clear_hash_map(skin_partitions);
     operator_delete(rd(skin_partitions, Map::arrayBuckets));
 
-    wr(geom_buffers, Map::vtbl, VTABLE_MAP_GEOM_BUFFERS);
-    hash_map_drain(geom_buffers);
+    wr(geom_buffers, Map::vtbl, VTBL_RENDERER_MAP_GEOM_BUFFERS);
+    hash_map::drain_and_zero_count(geom_buffers);
     operator_delete(rd(geom_buffers, Map::arrayBuckets));
 
     let object: usize = rd(this, R::backbufferRenderTarget_field_18);
@@ -1891,16 +1625,16 @@ pub unsafe fn dtor(this: usize) {
     if object != 0 {
         ni_object_release(object);
     }
-    vector_destructor(this + R::defaultTexturePixelData, 4, FORMAT_GROUPS as u32, NI_POINTER_DTOR);
-    bound_dtor(this + R::defaultBound);
-    bound_dtor(this + R::worldBound);
+    eh_vector_destructor_iterator(this + R::defaultTexturePixelData, 4, FORMAT_GROUPS as u32, NI_POINTER_DTOR);
+    ni_bound_dtor(this + R::defaultBound);
+    ni_bound_dtor(this + R::worldBound);
     let object: usize = rd(this, R::effectStatePtr);
     if object != 0 {
-        release_reference(object);
+        ni::release(object);
     }
     let object: usize = rd(this, R::propertyStatePtr);
     if object != 0 {
-        release_reference(object);
+        ni::release(object);
     }
     ni_renderer_dtor(this);
 }
@@ -1986,14 +1720,14 @@ pub unsafe fn video_adapter_enum(game: usize) {
 // Ports
 // ---------------------------------------------------------------------------------------
 
-// Loads D3D8.DLL and makes the IDirect3D8.
+// The call is always a skip. It loads D3D8.DLL and makes the `IDirect3D8`.
 port_cdecl!(create_d3d_port, 0x6A99E0, "NiDX8Renderer::CreateD3D",
     fn() -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
     rust = create_d3d);
 
-// Releases the IDirect3D8.
+// The call is always a skip. It releases the `IDirect3D8`.
 port_cdecl!(release_d3d_port, 0x6A9A50, "NiDX8Renderer::ReleaseD3D",
     fn() -> u32,
     compare_eax = true,
@@ -2006,21 +1740,21 @@ port_thiscall!(get_rtti_port, 0x6A9C50, "NiDX8Renderer::GetRTTI",
     regions = |set| (),
     rust = get_rtti);
 
-// Destroys the device and the renderer.
+// The call is always a skip. It destroys the device and the renderer.
 port_thiscall!(deleting_dtor_port, 0x6A9D80, "NiDX8Renderer::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
     rust = deleting_dtor);
 
-// Destroys the device and frees D3D8.DLL.
+// The call is always a skip. It destroys the device and frees D3D8.DLL.
 port_thiscall!(dtor_port, 0x6A9E10, "NiDX8Renderer::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
     rust = dtor);
 
-// Creates the device.
+// The call is always a skip. It creates the device.
 port_cdecl!(create_port, 0x6AA3F0, "NiDX8Renderer::Create",
     fn(width: u32, height: u32, flags: u32, window_device: u32, window_focus: u32, adapter: u32, device_caps: u32,
        backbuffer_format: u32, depth_stencil_format: u32, presentation_interval: u32, swap_effect: u32, samples: u32,
@@ -2029,7 +1763,7 @@ port_cdecl!(create_port, 0x6AA3F0, "NiDX8Renderer::Create",
     regions = |set| set.skip(),
     rust = create);
 
-// Resets the device.
+// The call is always a skip. It resets the device.
 port_thiscall!(recreate_port, 0x6AAE80, "NiDX8Renderer::Recreate",
     fn(this) -> u8,
     compare_eax = true,
@@ -2043,8 +1777,8 @@ port_thiscall!(initialize_present_params_port, 0x6AB470, "NiDX8Renderer::Initial
     regions = |set| initialize_present_params_regions(set, this),
     rust = initialize_present_params);
 
-// The default textures are engine objects with a constructor that cannot run twice. The
-// call can also delete an old texture through its virtual destructor.
+// The call is always a skip. The default textures are engine objects with a constructor that
+// cannot run twice. The call can also delete an old texture through its virtual destructor.
 port_thiscall!(initialize_texture_defaults_port, 0x6AB8C0, "NiDX8Renderer::initializeTextureDefaults",
     fn(this) -> u8,
     compare_eax = true,
@@ -2057,7 +1791,7 @@ port_thiscall!(validate_device_caps_port, 0x6AB960, "NiDX8Renderer::validateDevi
     regions = |set| validate_device_caps_regions(set, this),
     rust = validate_device_caps);
 
-// See initializeTextureDefaults.
+// The call is always a skip. See `initializeTextureDefaults`.
 port_thiscall!(create_default_textures_port, 0x6ABA70, "NiDX8Renderer::createDefaultTextures",
     fn(this) -> u8,
     compare_eax = true,
@@ -2088,8 +1822,8 @@ port_cdecl!(d3dformat_to_string_port, 0x6B2920, "NiDX8Renderer_static::D3DFORMAT
     regions = |set| (),
     rust = d3dformat_to_string);
 
-// The map and the strings use the allocator of MSVCP60, and the heap tracking does not see
-// that allocator. The function can also load D3D8.DLL.
+// The call is always a skip. The map and the strings use the allocator of MSVCP60, and the
+// heap tracking does not see that allocator. The function can also load D3D8.DLL.
 port_cdecl!(video_adapter_enum_port, 0x429E20, "NiDX8Renderer_static::videoAdapterEnum",
     fn(game: usize) -> (),
     compare_eax = false,
@@ -2372,35 +2106,6 @@ mod tests {
             wr::<u32>(r, slot(3, 2), 0x22);
             assert_eq!(default_texture_format(r, 2), 0);
             assert_eq!(default_texture_format(r, 3), 0x22);
-        }
-    }
-
-    // A hash map with the hash "key modulo bucket count".
-    unsafe extern "thiscall" fn fake_hash(map: usize, key: u32) -> u32 {
-        key % rd::<u32>(map, Map::bucketCount)
-    }
-
-    #[test]
-    fn hash_map_walk() {
-        let vtable = [0usize, fake_hash as *const () as usize];
-        let mut buckets = [0usize; 4];
-        // key, data, next
-        let (mut a, mut b, mut c) = ([1usize, 0, 0], [5usize, 0, 0], [3usize, 0, 0]);
-        let (pa, pb, pc) = (a.as_mut_ptr() as usize, b.as_mut_ptr() as usize, c.as_mut_ptr() as usize);
-        unsafe { wr(pa, Node::nextNode, pb) };
-        buckets[1] = pa;
-        buckets[3] = pc;
-        let map = [vtable.as_ptr() as usize, 3, 4, buckets.as_ptr() as usize];
-        let m = map.as_ptr() as usize;
-        unsafe {
-            assert_eq!(hash_map_first(m), pa);
-            assert_eq!(hash_map_first_after(m, 5), pc);
-            assert_eq!(hash_map_first_after(m, 3), 0);
-            let empty = [vtable.as_ptr() as usize, 0, 0, 0];
-            assert_eq!(hash_map_first(empty.as_ptr() as usize), 0);
-            let no_nodes = [0usize; 4];
-            let empty = [vtable.as_ptr() as usize, 0, 4, no_nodes.as_ptr() as usize];
-            assert_eq!(hash_map_first(empty.as_ptr() as usize), 0);
         }
     }
 

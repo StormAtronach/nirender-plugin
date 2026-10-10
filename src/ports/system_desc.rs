@@ -5,13 +5,16 @@
 //! The constructors only read from `IDirect3D8`, so both runs of a comparison make the same
 //! calls. They use the heap through `operator new` and `operator delete`.
 
-use core::mem::transmute;
-
+use crate::d3d::{
+    d3d_check_depth_stencil_match, d3d_check_device_format, d3d_check_device_type, d3d_enum_adapter_modes, d3d_get_adapter_count,
+    d3d_get_adapter_display_mode, d3d_get_adapter_identifier, d3d_get_adapter_mode_count, d3d_get_device_caps,
+};
 use crate::gen::layouts::{
     NiDX8AdapterDesc as AD, NiDX8AdapterDesc_ModeDesc as MD, NiDX8DeviceDesc as DD, NiDX8DeviceDesc_ScreenFormatInfo as SFI,
-    NiDX8SystemDesc as SD,
+    NiDX8SystemDesc as SD, THashMap as HM, THashMap_Node as HN,
 };
 use crate::mem::{rd, wr};
+use crate::ports::hash_map;
 
 // NiTListBase
 const LIST_SIZE: usize = 0x18;
@@ -30,21 +33,6 @@ const ITEM_PREVIOUS: usize = 0x08;
 const BLOCK_SIZE: usize = 0x08;
 const BLOCK_NEXT: usize = 0x00;
 const BLOCK_ITEMS: usize = 0x04;
-// THashMap
-const MAP_VTBL: usize = 0x00;
-const MAP_COUNT: usize = 0x04;
-const MAP_BUCKET_COUNT: usize = 0x08;
-const MAP_BUCKETS: usize = 0x0C;
-// THashMap::Node
-const NODE_SIZE: usize = 0x0C;
-const NODE_KEY: usize = 0x00;
-const NODE_VALUE: usize = 0x04;
-const NODE_NEXT: usize = 0x08;
-// The virtual functions of THashMap
-const MAP_HASH_KEY: usize = 0x04;
-const MAP_CMP_KEY: usize = 0x08;
-const MAP_MAKE_PAIR: usize = 0x0C;
-const MAP_DTOR_PAIR: usize = 0x10;
 // TArray of pointers
 const ARRAY_VTBL: usize = 0x00;
 const ARRAY_STORAGE: usize = 0x04;
@@ -72,48 +60,29 @@ const CAPS2_CAN_RENDER_WINDOWED: u32 = 0x80000;
 
 #[cfg(not(test))]
 mod eng {
-    use core::mem::transmute;
+    use crate::engine::{thiscall0, thiscall1};
 
-    type This0 = unsafe extern "thiscall" fn(usize) -> u32;
-    type This1 = unsafe extern "thiscall" fn(usize, u32) -> u32;
-    type This2 = unsafe extern "thiscall" fn(usize, u32, u32) -> u32;
+    // The shared wrappers of `engine`, with the names that the test module has. They are
+    // 0x727692 `operator new`, 0x727530 `operator delete`, 0x6BBEF0
+    // `NiTListAllocator::Data::ctor`, 0x6CEE40 `TArray_of_pointer::SetSize`, 0x6CB260
+    // `TArray_of_pointer::SetAt` and 0x6BC8A0 `NiDX8TextureManager::clearHashMap`.
+    pub use crate::engine::{
+        array_set_at, array_set_size, list_allocator_block_ctor as list_block_ctor, operator_delete as delete, operator_new,
+        texture_manager_clear_hash_map as hash_map_clear,
+    };
 
-    /// 0x727692 `operator new`
-    pub unsafe fn operator_new(size: usize) -> usize {
-        transmute::<usize, unsafe extern "C" fn(usize) -> usize>(0x727692)(size)
-    }
-    /// 0x727530 `operator delete`
-    pub unsafe fn delete(block: usize) {
-        transmute::<usize, unsafe extern "C" fn(usize)>(0x727530)(block)
-    }
-    /// 0x6BBEF0 `NiTListAllocator::Data::ctor`: allocates `count` items and chains them.
-    pub unsafe fn list_block_ctor(block: usize, count: u32) -> usize {
-        transmute::<usize, This1>(0x6BBEF0)(block, count) as usize
-    }
     /// 0x6B2D00 `sub_6B2D00`: frees the item blocks of a list and clears it.
     pub unsafe fn list_clear(list: usize) {
-        transmute::<usize, This0>(0x6B2D00)(list);
+        thiscall0(0x6B2D00, list);
     }
     /// 0x6B2D40 `sub_6B2D40`: puts a value at the head of a list.
     pub unsafe fn list_add_head(list: usize, value: u32) {
-        transmute::<usize, This1>(0x6B2D40)(list, value);
+        thiscall1(0x6B2D40, list, value);
     }
     /// 0x6B2DA0 `NiTListBase::advanceIterator`: returns the value at the iterator and moves the
     /// iterator to the next item.
     pub unsafe fn list_advance_iterator(list: usize, iterator: usize) -> u32 {
-        transmute::<usize, This1>(0x6B2DA0)(list, iterator as u32)
-    }
-    /// 0x6CEE40 `TArray_of_pointer::SetSize`
-    pub unsafe fn array_set_size(array: usize, size: u32) {
-        transmute::<usize, This1>(0x6CEE40)(array, size);
-    }
-    /// 0x6CB260 `TArray_of_pointer::SetAt`
-    pub unsafe fn array_set_at(array: usize, index: u32, element: usize) {
-        transmute::<usize, This2>(0x6CB260)(array, index, element as u32);
-    }
-    /// 0x6BC8A0 `NiDX8TextureManager::clearHashMap`: frees every node of a hash map.
-    pub unsafe fn hash_map_clear(map: usize) {
-        transmute::<usize, This0>(0x6BC8A0)(map);
+        thiscall1(0x6B2DA0, list, iterator as u32)
     }
     /// 0x74F634 `vtbl_hashmap_74F634`: the vtable of the depth-stencil map of a screen format.
     pub fn hash_map_vtbl() -> usize {
@@ -239,30 +208,30 @@ mod eng {
         wr(storage, index as usize * 4, value);
     }
     pub unsafe fn hash_map_clear(map: usize) {
-        for i in 0..rd::<u32>(map, MAP_BUCKET_COUNT) as usize {
-            let buckets: usize = rd(map, MAP_BUCKETS);
+        for i in 0..rd::<u32>(map, HM::bucketCount) as usize {
+            let buckets: usize = rd(map, HM::arrayBuckets);
             loop {
                 let node: usize = rd(buckets, i * 4);
                 if node == 0 {
                     break;
                 }
-                wr::<usize>(buckets, i * 4, rd(node, NODE_NEXT));
+                wr::<usize>(buckets, i * 4, rd(node, HN::nextNode));
                 delete(node);
             }
         }
-        wr::<u32>(map, MAP_COUNT, 0);
+        wr::<u32>(map, HM::count, 0);
     }
 
     // The virtual functions of the hash map: 0x51A440, 0x482120, 0x482140, 0x4F1C50.
     unsafe extern "thiscall" fn hash_key(map: usize, key: u32) -> u32 {
-        key % rd::<u32>(map, MAP_BUCKET_COUNT)
+        key % rd::<u32>(map, HM::bucketCount)
     }
     unsafe extern "thiscall" fn cmp_key(_map: usize, a: u32, b: u32) -> u32 {
         (a == b) as u32
     }
     unsafe extern "thiscall" fn make_pair(_map: usize, node: usize, key: u32, value: u32) -> u32 {
-        wr(node, NODE_KEY, key);
-        wr(node, NODE_VALUE, value);
+        wr(node, HN::key, key);
+        wr(node, HN::data, value);
         0
     }
     unsafe extern "thiscall" fn dtor_pair(_map: usize, _node: usize) -> u32 {
@@ -276,84 +245,6 @@ mod eng {
         static FORMATS: [u32; DEPTH_FORMAT_COUNT] = [70, 71, 73, 75, 80, 77, 79];
         FORMATS.as_ptr() as usize
     }
-}
-
-// ---- virtual functions of the hash map, called through the vtable of the map
-
-unsafe fn map_virtual(map: usize, offset: usize) -> usize {
-    rd(rd::<usize>(map, MAP_VTBL), offset)
-}
-
-unsafe fn map_hash_key(map: usize, key: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32) -> u32>(map_virtual(map, MAP_HASH_KEY))(map, key)
-}
-
-/// The result is in AL.
-unsafe fn map_cmp_key(map: usize, a: u32, b: u32) -> u8 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32) -> u32>(map_virtual(map, MAP_CMP_KEY))(map, a, b) as u8
-}
-
-unsafe fn map_make_pair(map: usize, node: usize, key: u32, value: usize) {
-    let f: unsafe extern "thiscall" fn(usize, usize, u32, usize) -> u32 = transmute(map_virtual(map, MAP_MAKE_PAIR));
-    f(map, node, key, value);
-}
-
-unsafe fn map_dtor_pair(map: usize, node: usize) {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, usize) -> u32>(map_virtual(map, MAP_DTOR_PAIR))(map, node);
-}
-
-// ---- IDirect3D8, called through the vtable of the object
-
-unsafe fn d3d_virtual(d3d: usize, offset: usize) -> usize {
-    rd(rd::<usize>(d3d, 0), offset)
-}
-
-/// `IDirect3D8::GetAdapterCount`
-unsafe fn d3d_get_adapter_count(d3d: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize) -> u32>(d3d_virtual(d3d, 0x10))(d3d)
-}
-
-/// `IDirect3D8::GetAdapterIdentifier`
-unsafe fn d3d_get_adapter_identifier(d3d: usize, adapter: u32, flags: u32, identifier: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, u32, usize) -> u32>(d3d_virtual(d3d, 0x14))(d3d, adapter, flags, identifier)
-}
-
-/// `IDirect3D8::GetAdapterModeCount`
-unsafe fn d3d_get_adapter_mode_count(d3d: usize, adapter: u32) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32) -> u32>(d3d_virtual(d3d, 0x18))(d3d, adapter)
-}
-
-/// `IDirect3D8::EnumAdapterModes`
-unsafe fn d3d_enum_adapter_modes(d3d: usize, adapter: u32, mode: u32, out: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, u32, usize) -> u32>(d3d_virtual(d3d, 0x1C))(d3d, adapter, mode, out)
-}
-
-/// `IDirect3D8::GetAdapterDisplayMode`
-unsafe fn d3d_get_adapter_display_mode(d3d: usize, adapter: u32, out: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, usize) -> u32>(d3d_virtual(d3d, 0x20))(d3d, adapter, out)
-}
-
-/// `IDirect3D8::CheckDeviceType`
-unsafe fn d3d_check_device_type(d3d: usize, adapter: u32, device_type: u32, display: u32, back_buffer: u32, windowed: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(d3d_virtual(d3d, 0x24));
-    f(d3d, adapter, device_type, display, back_buffer, windowed)
-}
-
-/// `IDirect3D8::CheckDeviceFormat`
-unsafe fn d3d_check_device_format(d3d: usize, adapter: u32, device_type: u32, adapter_format: u32, usage: u32, resource: u32, format: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32) -> u32 = transmute(d3d_virtual(d3d, 0x28));
-    f(d3d, adapter, device_type, adapter_format, usage, resource, format)
-}
-
-/// `IDirect3D8::CheckDepthStencilMatch`
-unsafe fn d3d_check_depth_stencil_match(d3d: usize, adapter: u32, device_type: u32, adapter_format: u32, target: u32, depth: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(d3d_virtual(d3d, 0x30));
-    f(d3d, adapter, device_type, adapter_format, target, depth)
-}
-
-/// `IDirect3D8::GetDeviceCaps`
-unsafe fn d3d_get_device_caps(d3d: usize, adapter: u32, device_type: u32, caps: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, u32, usize) -> u32>(d3d_virtual(d3d, 0x34))(d3d, adapter, device_type, caps)
 }
 
 // ---- list code that is inline in the engine functions
@@ -425,12 +316,12 @@ fn abs_difference(a: u32, b: u32) -> i32 {
 pub unsafe fn screen_format_info_ctor(this: usize, d3d: usize, adapter: u32, device_type: u32, format: u32, fullscreen: u8, windowed: u8) -> usize {
     crate::shadow::touch(&screen_format_info_ctor_port::STATE);
     let map = this + SFI::validDepthStencils;
-    wr(map, MAP_VTBL, eng::hash_map_vtbl());
-    wr(map, MAP_BUCKET_COUNT, HASH_BUCKETS);
-    wr::<u32>(map, MAP_COUNT, 0);
+    wr(map, HM::vtbl, eng::hash_map_vtbl());
+    wr(map, HM::bucketCount, HASH_BUCKETS);
+    wr::<u32>(map, HM::count, 0);
     let buckets = eng::operator_new(0x94);
-    let bytes = rd::<u32>(map, MAP_BUCKET_COUNT) << 2;
-    wr(map, MAP_BUCKETS, buckets);
+    let bytes = rd::<u32>(map, HM::bucketCount) << 2;
+    wr(map, HM::arrayBuckets, buckets);
     core::ptr::write_bytes(buckets as *mut u8, 0, bytes as usize);
     wr(this, SFI::format, format);
     wr(this, SFI::bFullscreen, fullscreen);
@@ -462,24 +353,7 @@ pub unsafe fn screen_format_info_ctor(this: usize, d3d: usize, adapter: u32, dev
             list_link_tail(list, depth);
         }
         if rd::<u32>(list, LIST_COUNT) != 0 {
-            let hash = map_hash_key(map, target) as usize;
-            let mut node: usize = rd(rd::<usize>(map, MAP_BUCKETS), hash * 4);
-            while node != 0 {
-                if map_cmp_key(map, target, rd(node, NODE_KEY)) != 0 {
-                    break;
-                }
-                node = rd(node, NODE_NEXT);
-            }
-            if node != 0 {
-                map_dtor_pair(map, node);
-                map_make_pair(map, node, target, list);
-            } else {
-                let node = eng::operator_new(NODE_SIZE);
-                map_make_pair(map, node, target, list);
-                wr::<usize>(node, NODE_NEXT, rd(rd::<usize>(map, MAP_BUCKETS), hash * 4));
-                wr(rd::<usize>(map, MAP_BUCKETS), hash * 4, node);
-                wr::<u32>(map, MAP_COUNT, rd::<u32>(map, MAP_COUNT).wrapping_add(1));
-            }
+            hash_map::set_with(map, target, list, |size| eng::operator_new(size));
         } else {
             list_free_blocks(list);
             list_zero(list);
@@ -507,18 +381,11 @@ fn depth_stencil_bits(format: u32) -> (u32, u32) {
 pub unsafe fn screen_format_info_find_closest_depth_stencil_format(this: usize, format: u32, depth_bits: u32, stencil_bits: u32) -> u32 {
     crate::shadow::touch(&screen_format_info_find_closest_depth_stencil_format_port::STATE);
     let map = this + SFI::validDepthStencils;
-    let hash = map_hash_key(map, format) as usize;
-    let mut node: usize = rd(rd::<usize>(map, MAP_BUCKETS), hash * 4);
+    let node = hash_map::find(map, format);
     if node == 0 {
         return 0;
     }
-    while map_cmp_key(map, format, rd(node, NODE_KEY)) == 0 {
-        node = rd(node, NODE_NEXT);
-        if node == 0 {
-            return 0;
-        }
-    }
-    let list: usize = rd(node, NODE_VALUE);
+    let list: usize = rd(node, HN::data);
     let mut best_format = 0u32;
     let mut best_depth = 0u32;
     let mut best_stencil = 0u32;
@@ -645,58 +512,20 @@ pub unsafe fn device_desc_dtor(this: usize) {
             continue;
         }
         let map = info + SFI::validDepthStencils;
-        let bucket_count: u32 = rd(map, MAP_BUCKET_COUNT);
-        // The first node of the map.
-        let mut node = 0usize;
-        if bucket_count != 0 {
-            let buckets: usize = rd(map, MAP_BUCKETS);
-            let mut index = 0u32;
-            loop {
-                if rd::<usize>(buckets, index as usize * 4) != 0 {
-                    node = rd(buckets, index as usize * 4);
-                    break;
-                }
-                index += 1;
-                if index >= bucket_count {
-                    break;
-                }
-            }
-        }
+        let mut node = hash_map::first(map);
         while node != 0 {
-            let chained: usize = rd(node, NODE_NEXT);
-            let depth_list: usize = rd(node, NODE_VALUE);
-            let next;
-            if chained != 0 {
-                next = chained;
-            } else {
-                // The first node of the buckets after this one.
-                let mut index = map_hash_key(map, rd(node, NODE_KEY)).wrapping_add(1);
-                let count: u32 = rd(map, MAP_BUCKET_COUNT);
-                let mut found = 0usize;
-                if index < count {
-                    let buckets: usize = rd(map, MAP_BUCKETS);
-                    loop {
-                        found = rd(buckets, index as usize * 4);
-                        if found != 0 {
-                            break;
-                        }
-                        index += 1;
-                        if index >= count {
-                            break;
-                        }
-                    }
-                }
-                next = found;
-            }
+            let depth_list: usize = rd(node, HN::data);
+            // The game code makes the step to the next node before it clears the depth list.
+            let next = hash_map::next(map, node);
             if depth_list != 0 {
                 eng::list_clear(depth_list);
                 eng::delete(depth_list);
             }
             node = next;
         }
-        wr(map, MAP_VTBL, eng::hash_map_vtbl());
+        wr(map, HM::vtbl, eng::hash_map_vtbl());
         eng::hash_map_clear(map);
-        eng::delete(rd(map, MAP_BUCKETS));
+        eng::delete(rd(map, HM::arrayBuckets));
         eng::delete(info);
     }
     let list = this + DD::screenFormats;
@@ -1076,11 +905,12 @@ pub unsafe fn get_bpp_from_format(format: u32) -> u32 {
 
 // ---- regions
 
-/// The destructor clears the screen formats, their maps and their depth lists, and then it
-/// frees them. A call with screen formats needs a region for each of these blocks, so that
-/// the engine run finds them with their initial contents. That is more than the 8 regions
-/// that are available, so such a call is a skip. The shadow test compares a description
-/// that has no screen formats. That is the description of a device that has no caps.
+/// The call is a skip when the description has a screen format. The destructor clears the
+/// screen formats, their maps and their depth lists, and then it frees them. Thus the Rust
+/// run clears blocks that the engine run then reads. A region cannot put these blocks back.
+/// The engine run frees them, and the shadow test reads each region after that run. The
+/// shadow test compares a description that has no screen formats. That is the description
+/// of a device that has no caps.
 unsafe fn device_desc_dtor_regions(set: &mut crate::shadow::Regions, this: usize) {
     set.add(this, DD::SIZE);
     if rd::<usize>(this, DD::screenFormats_head) != 0 {
@@ -1089,9 +919,10 @@ unsafe fn device_desc_dtor_regions(set: &mut crate::shadow::Regions, this: usize
     set.allocates();
 }
 
-/// The same applies as for the device description. The destructor clears the refresh rate
-/// list of every mode and the screen formats of both devices before it frees them. A call
-/// with an adapter is a skip. The shadow test compares a call with an empty adapter list.
+/// The call is a skip when the adapter list has an adapter. The destructor clears the
+/// refresh rate list of every mode and the screen formats of both devices before it frees
+/// them. Thus the Rust run clears blocks that the engine run then reads, as for the device
+/// description. The shadow test compares a call with an empty adapter list.
 unsafe fn system_desc_dtor_regions(set: &mut crate::shadow::Regions, this: usize) {
     set.add(this, SD::SIZE);
     let storage: usize = rd(this, SD::adapterList_storage);
@@ -1103,8 +934,9 @@ unsafe fn system_desc_dtor_regions(set: &mut crate::shadow::Regions, this: usize
     set.allocates();
 }
 
+/// The regions of a constructor. The object belongs to the caller. All other memory that the
+/// constructor writes is new. The call is a skip when the allocator hooks are not in place.
 unsafe fn ctor_regions(set: &mut crate::shadow::Regions, this: usize, size: usize) {
-    // The object belongs to the caller. All other memory that the constructor writes is new.
     set.add(this, size);
     set.allocates();
 }
@@ -1388,11 +1220,11 @@ mod tests {
             assert_eq!(rd::<u32>(this, SFI::validDepthStencils_count), 2);
             let buckets: usize = rd(this, SFI::validDepthStencils_arrayBuckets);
             let node: usize = rd(buckets, 22 * 4);
-            assert_eq!(rd::<u32>(node, NODE_KEY), 22);
+            assert_eq!(rd::<u32>(node, HN::key), 22);
             // The order is that of the table of depth formats of the game: 70 71 73 75 80 77 79.
-            assert_eq!(list_values(rd(node, NODE_VALUE)), [75, 80, 77]);
+            assert_eq!(list_values(rd(node, HN::data)), [75, 80, 77]);
             let node: usize = rd(buckets, 23 * 4);
-            assert_eq!(list_values(rd(node, NODE_VALUE)), [75, 77]);
+            assert_eq!(list_values(rd(node, HN::data)), [75, 77]);
             assert_eq!(rd::<usize>(buckets, 25 * 4), 0);
 
             // 11 target formats, then 7 depth formats for each of the 3 the device has.
