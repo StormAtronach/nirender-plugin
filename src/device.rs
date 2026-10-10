@@ -210,6 +210,14 @@ pub unsafe fn end(into: &mut Vec<u32>) {
     core::mem::swap(into, &mut *core::ptr::addr_of_mut!(LOG));
 }
 
+/// A record that is not a device call (the data of a buffer at Unlock). Only calls the
+/// engine makes are logged, not what the device does inside one of its own calls.
+pub unsafe fn log_extra(slot: usize, args: &[u32], payload_bytes: &[u8]) {
+    if RECORDING.load(Ordering::Relaxed) && DEPTH.load(Ordering::Relaxed) == 0 {
+        append_record(&mut *core::ptr::addr_of_mut!(LOG), slot, args, payload_bytes);
+    }
+}
+
 pub fn recording() -> bool {
     RECORDING.load(Ordering::Relaxed)
 }
@@ -259,7 +267,10 @@ pub fn count_records(log: &[u32]) -> usize {
 }
 
 pub fn describe(record: &Record<'_>) -> String {
-    let name = NAMES.get(record.slot).copied().unwrap_or("?");
+    let name = match record.slot {
+        crate::resource::SLOT_BUFFER_UNLOCK => "Buffer::Unlock",
+        slot => NAMES.get(slot).copied().unwrap_or("?"),
+    };
     let args: Vec<String> = record.args.iter().map(|a| format!("{a:#x}")).collect();
     let mut text = format!("{}({})", name, args.join(", "));
     if !record.payload.is_empty() {
@@ -349,15 +360,30 @@ unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
                     DEPTH.fetch_add(1, Ordering::Relaxed);
                     let result = call_original(slot, this, args);
                     DEPTH.fetch_sub(1, Ordering::Relaxed);
-                    replay.created.push(Created { slot, args: logged, result, object: if (result as i32) >= 0 { *out } else { 0 } });
+                    let object = if (result as i32) >= 0 { *out } else { 0 };
+                    if slot == 23 || slot == 24 {
+                        crate::resource::wrap(object);
+                    }
+                    replay.created.push(Created { slot, args: logged, result, object });
                     return result;
                 }
             }
         }
     }
+    if outer {
+        // A buffer the engine binds gets the recorder, whenever it was made.
+        match slot {
+            83 => crate::resource::wrap(args[1] as usize),
+            85 => crate::resource::wrap(args[0] as usize),
+            _ => {}
+        }
+    }
     DEPTH.fetch_add(1, Ordering::Relaxed);
     let result = call_original(slot, this, args);
     DEPTH.fetch_sub(1, Ordering::Relaxed);
+    if outer && (slot == 23 || slot == 24) && (result as i32) >= 0 {
+        crate::resource::wrap(*(args[4] as *const usize));
+    }
     result
 }
 

@@ -78,6 +78,7 @@ def main():
     ap.add_argument("--cells", default="", help="cells to visit after the place of the save, separated by ;")
     ap.add_argument("--timeout", type=int, default=0, help="budget in seconds; 0 = from the scenario")
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--no-buffers", action="store_true", help="do not record the contents of locked buffers")
     args = ap.parse_args()
 
     if not args.no_build:
@@ -99,6 +100,7 @@ def main():
         "shadowSeconds": args.shadow,
         "liveSeconds": args.live,
         "ports": args.ports,
+        "recordBuffers": not args.no_buffers,
         "cells": [c for c in args.cells.split(";") if c],
     }
     places = 1 + len(spec["cells"])

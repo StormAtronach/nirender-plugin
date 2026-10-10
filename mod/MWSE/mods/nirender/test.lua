@@ -37,6 +37,7 @@ return function(nirender, spec)
     end)
 
     local ports = spec.ports or "*"
+    nirender.recordBuffers(spec.recordBuffers ~= false)
 
     local function finish()
         local report = nirender.report()
