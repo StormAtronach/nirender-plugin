@@ -452,6 +452,46 @@ pub unsafe fn draw_vtable(vtable: usize) -> usize {
     copy.as_ptr() as usize
 }
 
+/// A device call of code that is not a port of this plugin: game code outside the renderer,
+/// a game function that another mod changed, a patch. The hook of the device gives each
+/// call here first. `slot` is the number of the method and `args` are its arguments without
+/// the device. Returns the result when the call went to the host, and `None` when it must
+/// go to the device. A state call goes to the host at once, as a command: such code has no
+/// state packet.
+pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
+    use crate::d3d::*;
+    if KINDS.load(Ordering::Relaxed) == 0 && SUPPRESS.load(Ordering::Relaxed) == 0 {
+        return None;
+    }
+    /// `IDirect3DDevice8::CreateDepthStencilSurface`
+    const DEVICE_CREATE_DEPTH_STENCIL_SURFACE: usize = 0x68;
+    let sent = |done: bool| if done { Some(0) } else { None };
+    match slot * 4 {
+        DEVICE_TEST_COOPERATIVE_LEVEL => frame_call(CALL_TEST_DEVICE, args),
+        DEVICE_PRESENT => frame_call(CALL_PRESENT, args),
+        DEVICE_BEGIN_SCENE => frame_call(CALL_BEGIN_SCENE, args),
+        DEVICE_END_SCENE => frame_call(CALL_END_SCENE, args),
+        DEVICE_CLEAR => frame_call(CALL_CLEAR, args),
+        DEVICE_SET_VIEWPORT => frame_call(CALL_VIEWPORT, args),
+        DEVICE_SET_RENDER_TARGET => frame_call(CALL_RENDER_TARGET, args),
+        DEVICE_CREATE_VERTEX_BUFFER => buffer_call(CALL_CREATE_VERTEX_BUFFER, args),
+        DEVICE_CREATE_INDEX_BUFFER => buffer_call(CALL_CREATE_INDEX_BUFFER, args),
+        DEVICE_CREATE_TEXTURE => target_call(CALL_CREATE_TEXTURE, args),
+        DEVICE_CREATE_DEPTH_STENCIL_SURFACE => target_call(CALL_CREATE_DEPTH_BUFFER, args),
+        DEVICE_CREATE_IMAGE_SURFACE => target_call(CALL_CREATE_IMAGE_SURFACE, args),
+        DEVICE_COPY_RECTS => target_call(CALL_COPY_PIXELS, args),
+        DEVICE_GET_RENDER_TARGET => target_call(CALL_GET_RENDER_TARGET, args),
+        DEVICE_GET_DEPTH_STENCIL_SURFACE => target_call(CALL_GET_DEPTH_BUFFER, args),
+        DEVICE_RESOURCE_MANAGER_DISCARD_BYTES => target_call(CALL_DISCARD_BYTES, args),
+        DEVICE_SET_RENDER_STATE if commands_for(FACT_DEVICE_RENDER_STATES) => sent(command(COMMAND_RENDER_STATE, args[0], args[1], 0)),
+        DEVICE_SET_TEXTURE_STAGE_STATE if commands_for(FACT_DEVICE_STAGE_STATES) => sent(command(COMMAND_STAGE_STATE, args[0], args[1], args[2])),
+        DEVICE_SET_TRANSFORM if commands_for(FACT_DEVICE_TRANSFORMS) => sent(command(COMMAND_TRANSFORM, args[0], args[1], 0)),
+        DEVICE_DRAW_INDEXED_PRIMITIVE if commands_for(FACT_DEVICE_BUFFERS) => sent(command(COMMAND_DRAW_INDEXED, args.as_ptr() as u32, 0, 0)),
+        DEVICE_DRAW_PRIMITIVE if commands_for(FACT_DEVICE_BUFFERS) => sent(command(COMMAND_DRAW, args.as_ptr() as u32, 0, 0)),
+        _ => None,
+    }
+}
+
 /// True when the caller must not make the D3D8 call for this render state: the host sets it
 /// from the packets, or the host got it as a command here.
 #[inline]

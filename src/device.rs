@@ -400,6 +400,12 @@ unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
     if DEPTH.load(Ordering::Relaxed) != 0 {
         return call_original(slot, this, args);
     }
+    // A call that the host of the render link takes does not go to the device.
+    if !DRY.load(Ordering::Relaxed) {
+        if let Some(result) = crate::link_client::intercept(slot, args) {
+            return result;
+        }
+    }
     if CALLER_CENSUS.load(Ordering::Relaxed) {
         crate::callers::count(slot, CALLER.load(Ordering::Relaxed) as usize);
     }
