@@ -48,6 +48,8 @@ return function(nirender, spec)
 
     local function picture_test(where, done)
         if facts == 0 then return done() end
+        -- The state packets come from the Rust code only.
+        if spec.factsNeedRust then nirender.setMode("*", "live") end
         local menu = tes3ui.createMenu({ id = "nirender:hold", fixedFrame = true })
         menu:createLabel({ text = "nirender link test" })
         menu:updateLayout()
@@ -58,6 +60,7 @@ return function(nirender, spec)
                 tes3ui.leaveMenuMode()
                 local held = tes3ui.findMenu("nirender:hold")
                 if held then held:destroy() end
+                nirender.setMode("*", "off")
                 done()
             end)
         end)
@@ -82,13 +85,13 @@ return function(nirender, spec)
         step("off", function()
             step("live", function()
                 nirender.setMode("*", "off")
-                if spec.modes then return done() end
+                if spec.modes and facts == 0 then return done() end
                 picture_test(where, function()
                     if facts == 0 then return done() end
                     -- The game runs with the facts in use. It must continue to run, and the
                     -- counters must stay equal.
                     say("facts in use: mask %s", tostring(nirender.linkUseFacts(facts)))
-                    measure(where, "off", "facts", function()
+                    measure(where, spec.factsNeedRust and "live" or "off", "facts", function()
                         nirender.linkUseFacts(0)
                         done()
                     end)

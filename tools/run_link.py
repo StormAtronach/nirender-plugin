@@ -35,7 +35,7 @@ FACTS = ("light_radius", "sun_light", "moon_shadow", "water_plane", "ui_scene", 
          "later_view", "state_draw", "state_buffers", "state_transform", "state_blend", "state_depth", "state_lighting",
          "state_material", "state_stages", "state_lights")
 # The facts that MGE XE can take from a packet.
-USABLE = ("ui_scene", "water_plane", "sun_light", "sky_draw", "land_splat", "scene_kind", "moon_shadow")
+USABLE = ("ui_scene", "water_plane", "sun_light", "sky_draw", "land_splat", "scene_kind", "moon_shadow", "state_draw")
 # The classes of the contract (MGE_LINK_CLASS_*), by index.
 CLASSES = ("unknown", "sky_dome", "sky_night", "sky_clouds", "sky_sun", "sky_moon", "sky_moon_shadow", "sky_other",
            "sun_glare", "weather_particles", "water_plane", "landscape", "object", "shadow_volume", "shadow_overlay",
@@ -92,6 +92,9 @@ def main():
     ap.add_argument("--moon", choices=("masser", "secunda"), help="keep the camera on this moon during the test")
     ap.add_argument("--quick", action="store_true", help="only the Rust code, 2 seconds in each place, short waits: "
                     "for the state packets, which only the Rust code sends")
+    ap.add_argument("--rust-only", action="store_true", help="skip the measurement with the game code; the waits "
+                    "stay long, as the picture test needs: the eye adaptation shader changes the frame for some "
+                    "seconds after a change of cell")
     ap.add_argument("--label", default="link")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -104,6 +107,10 @@ def main():
                     shotDir=run.dir.replace("\\", "/"))
     if args.quick:
         spec.update(modes=["live"], seconds=2, settleSeconds=3, menuSeconds=3)
+    if args.rust_only:
+        spec.update(modes=["live"])
+    # MGE XE takes the state of a draw from a packet that only the Rust code sends.
+    spec["factsNeedRust"] = bool(mask >> FACTS.index("state_draw") & 1)
     if args.hour is not None:
         spec["hour"] = args.hour
     if args.moon:
