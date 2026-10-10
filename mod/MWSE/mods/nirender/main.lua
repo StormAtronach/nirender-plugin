@@ -54,7 +54,9 @@ event.register("initialized", function()
         if not installed then return end
         if not spec then nirender.setMode("*", startMode) end
     end
-    if spec then
+    if spec and spec.perf then
+        require("nirender.perf")(nirender, spec)
+    elseif spec then
         require("nirender.test")(nirender, spec)
     end
 end)

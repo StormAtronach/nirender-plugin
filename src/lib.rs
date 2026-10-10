@@ -22,6 +22,7 @@ pub mod engine;
 pub mod frame;
 pub mod hook;
 pub mod mem;
+pub mod perf;
 pub mod ports;
 pub mod resource;
 pub mod shadow;

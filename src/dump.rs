@@ -6,8 +6,8 @@
 //! runs the plugin writes the state of the renderer objects and the device calls of one
 //! frame to files, and `tools/compare_runs.py` compares the files.
 //!
-//! Addresses differ from run to run, so a word that is an address is not written as it is.
-//! In the state dump it becomes a marker. In the frame dump it becomes the number of the
+//! Addresses differ from run to run, so a word that is an address is not compared as it is.
+//! In the state dump it gets a mark. In the frame dump it becomes the number of the
 //! order in which the addresses first appear, so "the same texture as in call 5" stays
 //! comparable.
 
@@ -19,8 +19,6 @@ use crate::device;
 use crate::engine;
 use crate::gen::layouts::{NiDX8ConfigurableTexturePipeline, NiDX8LightManager, NiDX8RenderState, NiDX8Renderer};
 use crate::mem::rd;
-
-const POINTER_MARK: u32 = 0xAAAA_AAAA;
 
 #[repr(C)]
 struct MemoryBasicInformation {
@@ -64,8 +62,10 @@ unsafe fn write_object(out: &mut impl Write, name: &str, address: usize, size: u
         let mut line = format!("  {:04x}:", row * 4);
         for index in row..(row + 8).min(words) {
             let value: u32 = rd(address, index * 4);
-            let shown = if is_run_address(value) { POINTER_MARK } else { value };
-            line.push_str(&format!(" {shown:08x}"));
+            // An address keeps its value, with a mark: the reader takes two marked words as
+            // equal, and a small number that only looks like an address still compares.
+            let mark = if is_run_address(value) { '*' } else { ' ' };
+            line.push_str(&format!(" {mark}{value:08x}"));
         }
         writeln!(out, "{line}")?;
     }

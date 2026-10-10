@@ -40,6 +40,14 @@ def read_state(path):
     return objects
 
 
+def same_word(a, b):
+    """Two words of a state dump are the same when the values are, or when both are addresses
+    (marked with *): an address is a different number in each run."""
+    if a is None or b is None:
+        return a == b
+    return a.lstrip("*") == b.lstrip("*") or (a.startswith("*") and b.startswith("*"))
+
+
 def compare_state(a, b, ignore):
     differences = []
     for name in sorted(set(a) | set(b)):
@@ -47,7 +55,7 @@ def compare_state(a, b, ignore):
         for offset in sorted(set(words_a) | set(words_b)):
             if (name, offset) in ignore:
                 continue
-            if words_a.get(offset) != words_b.get(offset):
+            if not same_word(words_a.get(offset), words_b.get(offset)):
                 differences.append((name, offset, words_a.get(offset), words_b.get(offset)))
     return differences
 
@@ -81,14 +89,13 @@ def main():
     for name, offset, word_a, word_b in state[:40]:
         print("  %s+0x%x: A %s  B %s" % (name, offset, word_a, word_b))
 
+    # The scene after a load is not the same in two runs of the game (actors move with the
+    # clock), so the frame is information only. The verdict is the state.
     count_a, count_b, frame = compare_frame(os.path.join(run_a, "frame.txt"), os.path.join(run_b, "frame.txt"))
-    print("\nframe: A %d calls, B %d calls, %d lines differ" % (count_a, count_b, len(frame)))
-    for index, line_a, line_b in frame[:12]:
-        print("  call %d:\n    A %s\n    B %s" % (index, line_a[:150], line_b[:150]))
+    print("\nframe (information): A %d calls, B %d calls, %d lines differ" % (count_a, count_b, len(frame)))
 
-    same = not state and not frame and count_a == count_b
-    print("\n" + ("IDENTICAL" if same else "DIFFERENT"))
-    return 0 if same else 1
+    print("\n" + ("STATE IDENTICAL" if not state else "STATE DIFFERENT"))
+    return 0 if not state else 1
 
 
 if __name__ == "__main__":

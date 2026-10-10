@@ -328,6 +328,7 @@ unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
     if outer {
         // Not for the Present of a dry run: that one is not a frame of the game.
         if slot == SLOT_PRESENT && !DRY.load(Ordering::Relaxed) {
+            crate::perf::on_present();
             if let Some(hook) = FRAME_HOOK {
                 hook();
             }

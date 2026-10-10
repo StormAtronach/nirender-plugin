@@ -278,6 +278,25 @@ unsafe extern "C" fn renderer(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.timing(true)` starts a measurement of frame times. `nirender.timing(false)`
+/// ends it and returns the frame times in microseconds as one string, separated by commas.
+unsafe extern "C" fn timing(l: LuaState) -> i32 {
+    if lua_toboolean(l, 1) != 0 {
+        crate::perf::start();
+        return 0;
+    }
+    let times = crate::perf::stop();
+    let mut text = String::with_capacity(times.len() * 8);
+    for (index, time) in times.iter().enumerate() {
+        if index > 0 {
+            text.push(',');
+        }
+        text.push_str(&format!("{time:.1}"));
+    }
+    push_str(l, &text);
+    1
+}
+
 /// `nirender.fpuControlWord()` -> the x87 control word of the calling thread.
 unsafe extern "C" fn fpu_control_word(l: LuaState) -> i32 {
     lua_pushnumber(l, x87::control_word() as f64);
@@ -296,6 +315,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "recordBuffers", record_buffers);
     set_fn(l, "fault", fault);
     set_fn(l, "renderer", renderer);
+    set_fn(l, "timing", timing);
     set_fn(l, "recheck", recheck);
     set_fn(l, "dumpState", dump_state);
     set_fn(l, "dumpFrame", dump_frame);
