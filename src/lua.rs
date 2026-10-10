@@ -73,11 +73,13 @@ unsafe fn install_all() -> Result<String, String> {
     crate::log!("renderer {renderer:#x}, device {device_ptr:#x}, x87 control word {:#06x}", x87::control_word());
 
     // Before the detours: they change the entry bytes themselves.
-    let changed = census::changed();
+    let changes = census::changes();
+    let mut changed: Vec<usize> = changes.iter().map(|c| c.func.ea).collect();
+    changed.dedup();
     crate::log!("census: {} of {} functions differ from the database", changed.len(), crate::gen::funcs::FUNCS.len());
-    for func in &changed {
-        let ported = PORTS.iter().any(|p| p.addr == func.ea);
-        crate::log!("census: {:#x} {}{}", func.ea, func.name, if ported { " (PORTED)" } else { "" });
+    for change in &changes {
+        let ported = PORTS.iter().any(|p| p.addr == change.func.ea);
+        crate::log!("census: {}{}", census::describe(change), if ported { " (PORTED)" } else { "" });
     }
 
     device::attach(device_ptr)?;

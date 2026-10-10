@@ -55,6 +55,7 @@ for ea in idautils.Functions():
     for b in ida_bytes.get_bytes(ea, size):
         h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
     funcs.append({
+        "bytes": ida_bytes.get_bytes(ea, size).hex(),
         "hash": h,
         "steal": steal,
         "steal_pic": pic,
