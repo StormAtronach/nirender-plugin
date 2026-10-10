@@ -423,6 +423,42 @@ wrappers! {
     90 => w90(a); 91 => w91(a, b, c); 92 => w92(a, b, c); 93 => w93(a, b, c); 94 => w94(a, b, c); 95 => w95(a, b, c); 96 => w96(a);
 }
 
+/// `IDirect3D8::CreateDevice` is slot 15 and has 6 arguments.
+const FACTORY_CREATE_DEVICE: usize = 15;
+static mut FACTORY_ORIG: [usize; 17] = [0; 17];
+static mut FACTORY_OURS: [usize; 17] = [0; 17];
+
+unsafe extern "system" fn create_device_wrapper(this: usize, adapter: u32, kind: u32, window: u32, flags: u32, params: u32, out: *mut usize) -> u32 {
+    let original: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, *mut usize) -> u32 =
+        core::mem::transmute(FACTORY_ORIG[1 + FACTORY_CREATE_DEVICE]);
+    let result = original(this, adapter, kind, window, flags, params, out);
+    if (result as i32) >= 0 {
+        match attach(*out) {
+            Ok(()) => crate::log!("device {:#x} created: the recorder is on it", *out),
+            Err(error) => crate::log!("device created, but no recorder: {error}"),
+        }
+    }
+    result
+}
+
+/// Puts a wrapper on `CreateDevice` of the game's `IDirect3D8`, so the recorder is on a
+/// device before the game makes its first call on it. Safe to call again.
+pub unsafe fn attach_factory(direct3d: usize) {
+    if direct3d == 0 {
+        return;
+    }
+    let ours = core::ptr::addr_of_mut!(FACTORY_OURS) as *mut usize;
+    let orig = core::ptr::addr_of_mut!(FACTORY_ORIG) as *mut usize;
+    let vtable = *(direct3d as *const usize);
+    if vtable == ours.add(1) as usize {
+        return;
+    }
+    core::ptr::copy_nonoverlapping((vtable - 4) as *const usize, orig, 17);
+    core::ptr::copy_nonoverlapping(orig, ours, 17);
+    *ours.add(1 + FACTORY_CREATE_DEVICE) = create_device_wrapper as *const () as usize;
+    *(direct3d as *mut usize) = ours.add(1) as usize;
+}
+
 /// Puts the recorder on the device object at `device`. Safe to call again for the same device.
 pub unsafe fn attach(device: usize) -> Result<(), String> {
     if device == 0 {

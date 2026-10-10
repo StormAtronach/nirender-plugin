@@ -17,6 +17,7 @@ pub mod alloc;
 pub mod log;
 pub mod census;
 pub mod device;
+pub mod dump;
 pub mod engine;
 pub mod frame;
 pub mod hook;

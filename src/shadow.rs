@@ -42,6 +42,8 @@ pub struct PortState {
     /// Another mod changed this function in a way the port does not serve. It stays game
     /// code in this install: the mode cannot leave "off".
     pub locked: AtomicBool,
+    /// A function to call after each call of the port, whatever the mode. 0 = none.
+    pub after: AtomicUsize,
     /// Calls that ran the Rust function for real.
     pub live_calls: AtomicU64,
     pub shadow_calls: AtomicU64,
@@ -68,6 +70,7 @@ impl PortState {
             orig: AtomicUsize::new(0),
             mode: AtomicU8::new(0),
             locked: AtomicBool::new(false),
+            after: AtomicUsize::new(0),
             live_calls: AtomicU64::new(0),
             shadow_calls: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
@@ -245,6 +248,21 @@ unsafe fn memory_differences(regions: &[(usize, usize)], rust: &[u8]) -> String 
 /// `rust` and `engine` return what the function leaves in EAX. `compare_eax` says whether
 /// that value means something.
 pub unsafe fn dispatch<R: Eax>(
+    state: &PortState,
+    compare_eax: bool,
+    regions: impl FnOnce(&mut Regions),
+    rust: impl FnOnce() -> R,
+    engine: impl FnOnce() -> u32,
+) -> u32 {
+    let eax = dispatch_inner(state, compare_eax, regions, rust, engine);
+    let after = state.after.load(Ordering::Relaxed);
+    if after != 0 {
+        core::mem::transmute::<usize, unsafe fn()>(after)();
+    }
+    eax
+}
+
+unsafe fn dispatch_inner<R: Eax>(
     state: &PortState,
     compare_eax: bool,
     regions: impl FnOnce(&mut Regions),

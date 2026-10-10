@@ -62,45 +62,64 @@ unsafe extern "C" fn install(l: LuaState) -> i32 {
     2
 }
 
-unsafe fn install_all() -> Result<String, String> {
-    if ports::all().any(|p| p.installed()) {
-        return Ok("already installed".into());
-    }
-    let renderer = engine::renderer();
-    if renderer == 0 {
-        return Err("the game has no renderer yet".into());
-    }
-    let device_ptr: usize = crate::mem::rd(renderer, NiDX8Renderer::d3dDevice);
-    shadow::set_main_thread();
-    crate::log!("renderer {renderer:#x}, device {device_ptr:#x}, x87 control word {:#06x}", x87::control_word());
+/// `data_IDirect3D8`: the `IDirect3D8` of the game, 0 until `NiDX8Renderer::CreateD3D` ran.
+const DIRECT3D: usize = 0x7DD8C0;
+const CREATE_D3D: usize = 0x6A99E0;
 
-    // Before the detours: they change the entry bytes themselves.
+unsafe fn after_create_d3d() {
+    device::attach_factory(crate::mem::rd(DIRECT3D, 0));
+}
+
+/// The census: marks the ports of functions another mod changed in a way the port does not
+/// follow. With `hooked` the entries hold our own jumps, which are not a change.
+unsafe fn census_pass(hooked: bool) -> usize {
     let changes = census::changes();
-    let mut changed: Vec<usize> = changes.iter().map(|c| c.func.ea).collect();
-    changed.dedup();
-    crate::log!("census: {} of {} functions differ from the database", changed.len(), crate::gen::funcs::FUNCS.len());
+    let mut changed: Vec<usize> = Vec::new();
     for change in &changes {
+        let port = ports::all().find(|p| p.addr == change.func.ea);
+        if hooked && change.offset < 16 && port.map_or(false, |p| p.installed()) {
+            continue;
+        }
+        changed.push(change.func.ea);
         let live = core::slice::from_raw_parts(change.func.ea as *const u8, change.func.size);
         let kind = crate::site::classify(change.func, live, change.offset, change.len);
         let served = matches!(kind, crate::site::Kind::RedirectedCall(site) if ports::serves_site(site))
             || ports::follows(change.func.ea + change.offset, change.len);
         let mut note = String::new();
-        if let Some(port) = ports::all().find(|p| p.addr == change.func.ea) {
+        if let Some(port) = port {
             if served {
                 note = " (the port follows the change)".into();
             } else {
+                if !port.locked() && port.mode() != Mode::Off {
+                    note = " (PORT LOCKED NOW; it ran as Rust before)".into();
+                } else {
+                    note = " (PORT LOCKED: it stays game code here)".into();
+                }
                 port.locked.store(true, Ordering::Relaxed);
-                note = " (PORT LOCKED: it stays game code here)".into();
+                port.set_mode(Mode::Off);
             }
         }
         crate::log!("census: {}{}", census::describe(change), note);
     }
+    changed.dedup();
+    crate::log!("census: {} of {} functions differ from the database", changed.len(), crate::gen::funcs::FUNCS.len());
+    changed.len()
+}
+
+unsafe fn install_all() -> Result<String, String> {
+    if ports::all().any(|p| p.installed()) {
+        return attach_now();
+    }
+    shadow::set_main_thread();
+    crate::log!("x87 control word {:#06x}", x87::control_word());
+
+    // Before the detours: they change the entry bytes themselves.
+    let changed = census_pass(false);
 
     match crate::alloc::install() {
         Ok(()) => crate::log!("allocator hooks on: calls that allocate are compared"),
         Err(error) => crate::log!("no allocator hooks ({error}): calls that allocate are not compared"),
     }
-    device::attach(device_ptr)?;
     device::set_frame_hook(frame::on_present);
 
     let mut failed = 0;
@@ -112,8 +131,61 @@ unsafe fn install_all() -> Result<String, String> {
                 crate::log!("no detour on {}: {}", port.name, error);
             }
         }
+        if port.addr == CREATE_D3D {
+            port.after.store(after_create_d3d as *const () as usize, Ordering::Relaxed);
+        }
     }
-    Ok(format!("{} ports installed, {} failed, {} functions differ from the database", ports::all().count() - failed, failed, changed.len()))
+    // The game may have its IDirect3D8, or even its device, already.
+    after_create_d3d();
+    let attached = attach_now()?;
+    Ok(format!(
+        "{} ports installed, {} failed, {} functions differ from the database; {}",
+        ports::all().count() - failed,
+        failed,
+        changed,
+        attached
+    ))
+}
+
+/// Puts the recorder on the device of the renderer, when the game has one.
+unsafe fn attach_now() -> Result<String, String> {
+    let renderer = engine::renderer();
+    if renderer == 0 {
+        return Ok("the game has no renderer yet".into());
+    }
+    let device_ptr: usize = crate::mem::rd(renderer, NiDX8Renderer::d3dDevice);
+    device::attach(device_ptr)?;
+    Ok(format!("renderer {renderer:#x}, device {device_ptr:#x} with the recorder"))
+}
+
+/// `nirender.recheck()` -> number of changed functions. The census again, for mods that
+/// change the game code after this plugin loaded. Ports of such functions get locked.
+unsafe extern "C" fn recheck(l: LuaState) -> i32 {
+    let attached = attach_now();
+    crate::log!("recheck: {:?}", attached);
+    lua_pushnumber(l, census_pass(true) as f64);
+    1
+}
+
+/// `nirender.dumpState(path)` -> ok. The renderer objects, for the comparison of two runs.
+unsafe extern "C" fn dump_state(l: LuaState) -> i32 {
+    let ok = match arg_str(l, 1) {
+        Some(path) => crate::dump::state(&path).is_ok(),
+        None => false,
+    };
+    lua_pushboolean(l, ok as i32);
+    1
+}
+
+/// `nirender.dumpFrame(path)` -> started. The device calls of the next frame go to the file;
+/// `frameTestResult()` tells when it is written.
+unsafe extern "C" fn dump_frame(l: LuaState) -> i32 {
+    let started = match arg_str(l, 1) {
+        Some(path) => frame::request_dump(path),
+        None => false,
+    };
+    lua_pushboolean(l, started as i32);
+    1
 }
 
 /// `nirender.setMode(pattern, mode)` -> number of ports set. `pattern` is "*" or a part of
@@ -223,6 +295,9 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "recordBuffers", record_buffers);
     set_fn(l, "fault", fault);
     set_fn(l, "renderer", renderer);
+    set_fn(l, "recheck", recheck);
+    set_fn(l, "dumpState", dump_state);
+    set_fn(l, "dumpFrame", dump_frame);
     push_str(l, env!("CARGO_PKG_VERSION"));
     lua_setfield(l, -2, b"version\0".as_ptr() as *const c_char);
     lua_pushnumber(l, ports::all().count() as f64);

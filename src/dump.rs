@@ -100,7 +100,7 @@ pub unsafe fn state(path: &str) -> std::io::Result<()> {
 pub unsafe fn frame(path: &str, log: &[u32]) -> std::io::Result<()> {
     let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
     let mut seen: HashMap<u32, u32> = HashMap::new();
-    let mut name = |value: u32, seen: &mut HashMap<u32, u32>| -> String {
+    let name = |value: u32, seen: &mut HashMap<u32, u32>| -> String {
         if is_run_address(value) {
             let next = seen.len() as u32;
             format!("@{}", *seen.entry(value).or_insert(next))

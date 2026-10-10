@@ -30,6 +30,21 @@ const THIRD: u8 = 4;
 static PHASE: AtomicU8 = AtomicU8::new(IDLE);
 static KIND_LIVE: AtomicU8 = AtomicU8::new(0);
 static RESULT: Mutex<Option<String>> = Mutex::new(None);
+/// Where the next frame goes, for the comparison of two runs. The modes of the ports stay
+/// as they are for that frame.
+static DUMP_PATH: Mutex<Option<String>> = Mutex::new(None);
+const DUMPING: u8 = 5;
+
+/// Writes the device calls of the next frame to `path` (see `dump::frame`).
+pub fn request_dump(path: String) -> bool {
+    if PHASE.load(Ordering::Relaxed) != IDLE {
+        return false;
+    }
+    *RESULT.lock().unwrap() = None;
+    *DUMP_PATH.lock().unwrap() = Some(path);
+    PHASE.store(ARMED, Ordering::Relaxed);
+    true
+}
 
 struct Work {
     first: Vec<u32>,
@@ -87,6 +102,23 @@ pub fn compare(first: &[u32], second: &[u32], first_name: &str, second_name: &st
 pub unsafe fn on_present() {
     let work = &mut *core::ptr::addr_of_mut!(WORK);
     match PHASE.load(Ordering::Relaxed) {
+        ARMED if DUMP_PATH.lock().unwrap().is_some() => {
+            shadow::suspend_shadow(true);
+            device::begin(false);
+            PHASE.store(DUMPING, Ordering::Relaxed);
+        }
+        DUMPING => {
+            device::end(&mut work.first);
+            shadow::suspend_shadow(false);
+            let path = DUMP_PATH.lock().unwrap().take().unwrap_or_default();
+            let text = match crate::dump::frame(&path, &work.first) {
+                Ok(()) => format!("frame written: {} calls", device::count_records(&work.first)),
+                Err(error) => format!("FAIL could not write the frame: {error}"),
+            };
+            crate::log!("frame dump: {text}");
+            *RESULT.lock().unwrap() = Some(text);
+            PHASE.store(IDLE, Ordering::Relaxed);
+        }
         ARMED => {
             work.modes = ports::all().map(|p| p.mode()).collect();
             shadow::suspend_shadow(true);
