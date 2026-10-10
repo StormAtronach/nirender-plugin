@@ -82,12 +82,16 @@ pub const FACT_STATE_LIGHTING: u32 = 14;
 pub const FACT_STATE_MATERIAL: u32 = 15;
 pub const FACT_STATE_STAGES: u32 = 16;
 pub const FACT_STATE_LIGHTS: u32 = 17;
+pub const FACT_STATE_TEXTURES: u32 = 18;
+pub const FACT_STATE_TEXTURE_TRANSFORMS: u32 = 19;
+pub const FACT_STATE_BONES: u32 = 20;
+pub const FACT_STATE_AMBIENT: u32 = 21;
 pub const STATE_STAGES: u32 = 8;
 pub const STATE_STAGE_STATES: u32 = 17;
 pub const FACT_COUNT: u32 = 32;
 
 /// The names of the facts, for reports. The index is `FACT_*`.
-pub const FACT_NAMES: [&str; 18] = [
+pub const FACT_NAMES: [&str; 22] = [
     "light radius",
     "sun light",
     "moon shadow",
@@ -106,6 +110,10 @@ pub const FACT_NAMES: [&str; 18] = [
     "state material",
     "state stages",
     "state lights",
+    "state textures",
+    "state texture transforms",
+    "state bones",
+    "state ambient",
 ];
 
 #[repr(C)]
@@ -179,6 +187,9 @@ pub struct DrawStateV1 {
     pub light_count: u32,
     pub lights: *const StateLightV1,
     pub stages: [[u32; STATE_STAGE_STATES as usize]; STATE_STAGES as usize],
+    pub blend_worlds: [[f32; 16]; 3],
+    pub textures: [u32; STATE_STAGES as usize],
+    pub texture_transforms: [[f32; 16]; STATE_STAGES as usize],
 }
 
 #[repr(C)]
@@ -237,7 +248,7 @@ const _: () = {
     assert!(size_of::<LightV1>() == 16);
     assert!(size_of::<DrawV1>() == 48);
     assert!(size_of::<StateLightV1>() == 108);
-    assert!(size_of::<DrawStateV1>() == 788);
+    assert!(size_of::<DrawStateV1>() == 1524);
     assert!(size_of::<FactCountV1>() == 16);
     assert!(size_of::<CountersV1>() == 528);
     assert!(size_of::<HostV1>() == 44);

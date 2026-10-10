@@ -24,6 +24,7 @@ use crate::gen::layouts::{
     NiAVObject as AV, NiCamera as CAM, NiDX8Renderer as R, NiDynamicEffectState as DES,
     NiDynamicEffectState_InternalList as DL, NiLight as L, NiMaterialProperty as MP, NiPropertyState as PS,
 };
+use crate::d3d::{D3DTS_TEXTURE0, D3DTS_WORLDMATRIX0};
 use crate::link::*;
 use crate::mem::rd;
 use crate::shadow::BeforeFn;
@@ -169,6 +170,33 @@ const CLASS_COUNT: usize = 18;
 /// The lights of the state packet in progress. Only the render thread uses it.
 static mut STATE_LIGHTS: [StateLightV1; MAX_STATE_LIGHTS] = [StateLightV1 { device_index: 0, d3d_light: [0; 26] }; MAX_STATE_LIGHTS];
 const MAX_STATE_LIGHTS: usize = 64;
+/// The world matrices, the stage textures and the texture transforms that the Rust code sent
+/// to the device last. The renderer of the game keeps no record of them. Only the render
+/// thread uses them.
+static mut WORLDS: [[f32; 16]; 4] = [[0.0; 16]; 4];
+static mut TEXTURES: [u32; STATE_STAGES as usize] = [0; STATE_STAGES as usize];
+static mut TEXTURE_TRANSFORMS: [[f32; 16]; STATE_STAGES as usize] = [[0.0; 16]; STATE_STAGES as usize];
+
+/// Keeps a world matrix or a texture transform that goes to the device.
+#[inline]
+pub unsafe fn note_transform(state: u32, matrix: usize) {
+    let to = if (D3DTS_WORLDMATRIX0..D3DTS_WORLDMATRIX0 + 4).contains(&state) {
+        addr_of_mut!(WORLDS[(state - D3DTS_WORLDMATRIX0) as usize])
+    } else if (D3DTS_TEXTURE0..D3DTS_TEXTURE0 + STATE_STAGES).contains(&state) {
+        addr_of_mut!(TEXTURE_TRANSFORMS[(state - D3DTS_TEXTURE0) as usize])
+    } else {
+        return;
+    };
+    core::ptr::copy_nonoverlapping(matrix as *const f32, to as *mut f32, 16);
+}
+
+/// Keeps the texture of a stage that goes to the device.
+#[inline]
+pub unsafe fn note_texture(stage: u32, texture: usize) {
+    if stage < STATE_STAGES {
+        *addr_of_mut!(TEXTURES[stage as usize]) = texture as u32;
+    }
+}
 /// The texture stage states of a state packet, in the order of the contract: `D3DTSS_*`.
 const STAGE_STATES: [u32; STATE_STAGE_STATES as usize] = [1, 2, 3, 4, 5, 6, 26, 27, 28, 11, 24, 7, 8, 9, 10, 22, 23];
 /// A list item of the game: data, next, previous.
@@ -544,9 +572,14 @@ pub unsafe fn draw_state(
         vertex_stride: rd(geom_buffer, GB::vertexStride),
         vertex_format: rd(geom_buffer, GB::fvf),
         index_buffer: rd(geom_buffer, GB::indexBuffer),
-        world: [0.0; 16],
+        world: *addr_of!(WORLDS[0]),
+        blend_worlds: [*addr_of!(WORLDS[1]), *addr_of!(WORLDS[2]), *addr_of!(WORLDS[3])],
+        textures: *addr_of!(TEXTURES),
+        texture_transforms: *addr_of!(TEXTURE_TRANSFORMS),
     };
-    core::ptr::copy_nonoverlapping((renderer + R::currentWorldMatrix) as *const f32, state.world.as_mut_ptr(), 16);
+    if !skinned {
+        core::ptr::copy_nonoverlapping((renderer + R::currentWorldMatrix) as *const f32, state.world.as_mut_ptr(), 16);
+    }
     (host.draw_state)(&state);
 }
 

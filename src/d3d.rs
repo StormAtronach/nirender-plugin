@@ -345,6 +345,7 @@ pub unsafe fn device_clear(device: usize, count: u32, rects: usize, flags: u32, 
 /// `IDirect3DDevice8::SetTransform` through the vtable of the object, slot 0x94.
 #[inline(always)]
 pub unsafe fn device_set_transform(device: usize, state: u32, matrix: usize) -> u32 {
+    crate::link_client::note_transform(state, matrix);
     let f: unsafe extern "system" fn(usize, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_SET_TRANSFORM));
     f(device, state, matrix)
 }
@@ -383,6 +384,7 @@ pub unsafe fn device_set_render_state(device: usize, state: u32, value: u32) -> 
 /// `IDirect3DDevice8::SetTexture` through the vtable of the object, slot 0xF4.
 #[inline(always)]
 pub unsafe fn device_set_texture(device: usize, stage: u32, texture: usize) -> u32 {
+    crate::link_client::note_texture(stage, texture);
     let f: unsafe extern "system" fn(usize, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_SET_TEXTURE));
     f(device, stage, texture)
 }
