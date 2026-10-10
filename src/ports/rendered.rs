@@ -4,10 +4,24 @@
 
 use core::mem::transmute;
 
-use crate::engine;
+use super::{hash_map, ni};
+use crate::d3d::{
+    com_add_ref, com_release, cube_texture_get_cube_map_surface, device_copy_rects, device_create_cube_texture, device_create_texture,
+    device_get_depth_stencil_surface, device_resource_manager_discard_bytes, surface_get_desc, surface_lock_rect, surface_unlock_rect,
+    texture_get_surface_level, D3DFMT_A1R5G5B5, D3DFMT_A4R4G4B4, D3DFMT_A8R8G8B8, D3DFMT_DXT1, D3DFMT_DXT3, D3DFMT_DXT5, D3DFMT_L6V5U5,
+    D3DFMT_P8, D3DFMT_R5G6B5, D3DFMT_R8G8B8, D3DFMT_V8U8, D3DFMT_X1R5G5B5, D3DFMT_X8L8V8U8, D3DFMT_X8R8G8B8, D3DLOCK_READONLY,
+    D3DPOOL_DEFAULT, D3DPOOL_MANAGED, D3DUSAGE_RENDERTARGET,
+};
+use crate::engine::{
+    self, cdecl1, cdecl3, critical_section_lock, critical_section_unlock, debug_print1, debug_print2, directx_error_name,
+    get_image_converter, ni_object_release, ni_pointer_dtor, operator_delete, pixel_data_ctor_args, pixel_format_copy,
+    pixel_format_ctor_bump_luma, pixel_format_ctor_format, pixel_format_ctor_palette, pixel_format_ctor_rgba, texture_renderer_data_dtor,
+    thiscall0, thiscall1, thiscall2, thiscall3, thiscall4, virtual_at, CREATE_CRITICAL_SECTION, PIXEL_FORMAT_MASK_A, PIXEL_FORMAT_MASK_B,
+    PIXEL_FORMAT_SHIFT_A, PIXEL_FORMAT_SHIFT_B,
+};
 use crate::gen::layouts::{
     NiDX8PixelFormat as PF, NiDX8RenderTarget as RT, NiDX8RenderedTextureData as RTD, NiDX8Renderer as R,
-    NiDX8SourceTextureData as STD, NiPixelData as PD, NiPixelFormat, NiRefObject, NiTexture, THashMap, THashMap_Node,
+    NiDX8SourceTextureData as STD, NiPixelData as PD, NiPixelFormat, NiRefObject, NiTexture, THashMap_Node,
 };
 use crate::mem::{rd, wr};
 use crate::shadow::Regions;
@@ -23,19 +37,11 @@ const VTBL_RENDERED_CUBE_MAP_DATA: usize = 0x74F7CC;
 /// Vtable of `NiDX8SourceCubeMapData`.
 const VTBL_SOURCE_CUBE_MAP_DATA: usize = 0x74F7F8;
 
-/// `dword_7DE8FC`, `dword_7C55B0`, `dword_7C55B8`, `dword_7C55B4`: the shift and the mask of
-/// two bit fields of `NiPixelFormat::compareBits`. The constructor of a pixel format uses them.
-const COMPARE_SHIFT_A: usize = 0x7DE8FC;
-const COMPARE_MASK_A: usize = 0x7C55B0;
-const COMPARE_SHIFT_B: usize = 0x7C55B8;
-const COMPARE_MASK_B: usize = 0x7C55B4;
 /// `dword_7C55C0`, `dword_7C55D0`: the mask and the shift of the bit field of `compareBits`
 /// that identifies the 16-bit layout.
 const COMPARE_MASK_C: usize = 0x7C55C0;
 const COMPARE_SHIFT_C: usize = 0x7C55D0;
 
-/// The `NiCriticalSection` around `CreateTexture` in `CreateSurf`.
-const CRITICAL_SECTION: usize = 0x7DEA78;
 /// `global_NiTexture_bMipMapByDefault`
 const MIPMAP_BY_DEFAULT: usize = 0x7DE7F8;
 /// Import slot of `OutputDebugStringA`.
@@ -54,8 +60,9 @@ const STR_24_BIT: usize = 0x7C34FC;
 // Offsets the layouts do not have
 // ---------------------------------------------------------------------------------------
 
-/// The second, third and fourth group of `NiDX8Renderer::arrayArrayTextureFormats`: rendered
-/// textures and source cube maps. Each group has 14 formats.
+/// The second and the third group of `NiDX8Renderer::arrayArrayTextureFormats`. Each group has
+/// 14 formats. `CreateSurf` of a rendered texture reads the second group, at +0x38.
+/// `Create` of a source cube map gives the third group, at +0x70, to `FindMatchingPixelFormat`.
 const RENDERED_TEXTURE_FORMATS: usize = R::arrayArrayTextureFormats + 0x38;
 const CUBE_MAP_FORMATS: usize = R::arrayArrayTextureFormats + 0x70;
 
@@ -88,7 +95,6 @@ const RECT_TOP: usize = 8;
 const RECT_BOTTOM: usize = 12;
 
 // Virtual functions, as offsets in the vtable.
-const V_DELETING_DTOR: usize = 0x00;
 const V_TEXTURE_GET_WIDTH: usize = 0x2C;
 const V_TEXTURE_GET_HEIGHT: usize = 0x30;
 const V_DATA_GET_D3D_TEXTURE: usize = 0x18;
@@ -96,70 +102,13 @@ const V_RENDERER_SET_RENDER_TARGET: usize = 0x3C;
 const V_RENDERER_CREATE_BLT_SOURCE_DATA: usize = 0x108;
 const V_CONVERTER_READ_IMAGE_FILE: usize = 0x08;
 const V_CONVERTER_CONVERT_PIXEL_DATA: usize = 0x10;
-const V_MAP_HASH: usize = 0x04;
-const V_MAP_IS_EQUAL: usize = 0x08;
-const V_MAP_SET_VALUE: usize = 0x0C;
-const V_MAP_CLEAR_VALUE: usize = 0x10;
 
-const D3DUSAGE_RENDERTARGET: u32 = 1;
-const D3DPOOL_DEFAULT: u32 = 0;
-const D3DPOOL_MANAGED: u32 = 1;
-const D3DLOCK_READONLY: u32 = 0x10;
 const DISCARD_BYTES: u32 = 0x80000;
 const CREATE_TRIES: u32 = 60;
 
-const D3DFMT_R8G8B8: u32 = 20;
-const D3DFMT_A8R8G8B8: u32 = 21;
-const D3DFMT_X8R8G8B8: u32 = 22;
-const D3DFMT_R5G6B5: u32 = 23;
-const D3DFMT_X1R5G5B5: u32 = 24;
-const D3DFMT_A1R5G5B5: u32 = 25;
-const D3DFMT_A4R4G4B4: u32 = 26;
-const D3DFMT_P8: u32 = 41;
-const D3DFMT_V8U8: u32 = 60;
-const D3DFMT_L6V5U5: u32 = 61;
-const D3DFMT_X8L8V8U8: u32 = 62;
-const D3DFMT_DXT1: u32 = 0x3154_5844;
-const D3DFMT_DXT3: u32 = 0x3354_5844;
-const D3DFMT_DXT5: u32 = 0x3554_5844;
-
 // ---------------------------------------------------------------------------------------
-// Calls
+// Calls of game functions that only this file calls
 // ---------------------------------------------------------------------------------------
-
-unsafe fn thiscall0(addr: usize, this: usize) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize) -> u32>(addr)(this)
-}
-
-unsafe fn thiscall1(addr: usize, this: usize, a: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32) -> u32>(addr)(this, a)
-}
-
-unsafe fn thiscall2(addr: usize, this: usize, a: u32, b: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32) -> u32>(addr)(this, a, b)
-}
-
-unsafe fn thiscall3(addr: usize, this: usize, a: u32, b: u32, c: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32, u32) -> u32>(addr)(this, a, b, c)
-}
-
-unsafe fn thiscall4(addr: usize, this: usize, a: u32, b: u32, c: u32, d: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32, u32, u32) -> u32>(addr)(this, a, b, c, d)
-}
-
-unsafe fn thiscall5(addr: usize, this: usize, a: u32, b: u32, c: u32, d: u32, e: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32, u32, u32, u32) -> u32>(addr)(this, a, b, c, d, e)
-}
-
-/// A virtual function of `object` at `offset` in its vtable.
-unsafe fn virtual_at(object: usize, offset: usize) -> usize {
-    rd(rd::<usize>(object, 0), offset)
-}
-
-/// Calls the virtual deleting destructor with the flag that frees the memory.
-unsafe fn delete_object(object: usize) {
-    thiscall1(virtual_at(object, V_DELETING_DTOR), object, 1);
-}
 
 unsafe fn texture_get_width(texture: usize) -> u32 {
     thiscall0(virtual_at(texture, V_TEXTURE_GET_WIDTH), texture)
@@ -169,19 +118,9 @@ unsafe fn texture_get_height(texture: usize) -> u32 {
     thiscall0(virtual_at(texture, V_TEXTURE_GET_HEIGHT), texture)
 }
 
-/// 0x727530 `operator delete` of the C runtime of the game.
-unsafe fn operator_delete(block: usize) {
-    transmute::<usize, unsafe extern "C" fn(usize)>(0x727530)(block)
-}
-
 /// 0x6B6D00 `NiDX8TextureData::ctor_args`
 unsafe fn texture_data_ctor_args(this: usize, texture: usize, renderer: usize) {
     thiscall2(0x6B6D00, this, texture as u32, renderer as u32);
-}
-
-/// 0x6B6DE0 `NiTexture::RendererData::dtor`
-unsafe fn renderer_data_dtor(this: usize) {
-    thiscall0(0x6B6DE0, this);
 }
 
 /// 0x6B6F70 `NiDX8TextureData::FindMatchingPixelFormat`
@@ -199,9 +138,9 @@ unsafe fn source_texture_data_dtor(this: usize) {
     thiscall0(0x6BFE90, this);
 }
 
-/// 0x6BFF40 `NiDX8SourceTextureData::CopyDataToSurface` (cdecl)
+/// 0x6BFF40 `NiDX8SourceTextureData::CopyDataToSurface`. It is `__cdecl`.
 unsafe fn copy_data_to_surface(pixel_data: usize, level: u32, surface: usize) {
-    transmute::<usize, unsafe extern "C" fn(usize, u32, usize) -> u32>(0x6BFF40)(pixel_data, level, surface);
+    cdecl3(0x6BFF40, pixel_data as u32, level, surface as u32);
 }
 
 /// 0x6C0160 `NiDX8SourceTextureData::setPalette`. Returns 1 when the palette changed.
@@ -209,89 +148,19 @@ unsafe fn source_texture_data_set_palette(this: usize, palette: usize) -> u8 {
     thiscall1(0x6C0160, this, palette as u32) as u8
 }
 
-/// 0x6BFDA0 `NiPixelFormat::copy`
-unsafe fn pixel_format_copy(to: usize, from: usize) {
-    thiscall1(0x6BFDA0, to, from as u32);
-}
-
-/// 0x6ED7C0 `NiPixelFormat::ctor_RGBA`
-unsafe fn pixel_format_ctor_rgba(this: usize, red: u32, green: u32, blue: u32, alpha: u32, bits: u32) -> usize {
-    thiscall5(0x6ED7C0, this, red, green, blue, alpha, bits) as usize
-}
-
-/// 0x6ED9D0 `NiPixelFormat::ctor_Palette`
-unsafe fn pixel_format_ctor_palette(this: usize, has_alpha: u32) -> usize {
-    thiscall1(0x6ED9D0, this, has_alpha) as usize
-}
-
-/// 0x6EDA40 `NiPixelFormat::ctor_Format`
-unsafe fn pixel_format_ctor_format(this: usize, format: u32) -> usize {
-    thiscall1(0x6EDA40, this, format) as usize
-}
-
-/// 0x6EDD30 `NiPixelFormat::ctor_BumpLuma`
-unsafe fn pixel_format_ctor_bump_luma(this: usize, red: u32, green: u32, blue: u32, bits: u32) -> usize {
-    thiscall4(0x6EDD30, this, red, green, blue, bits) as usize
-}
-
-/// 0x6D4FC0 `NiPixelData::ctor_args`
-unsafe fn pixel_data_ctor_args(this: usize, width: u32, height: u32, format: usize, levels: u32) -> usize {
-    thiscall4(0x6D4FC0, this, width, height, format as u32, levels) as usize
-}
-
-/// 0x6F57A0 `NiImageConverter::GetImageConverter` (static)
-unsafe fn get_image_converter() -> usize {
-    transmute::<usize, unsafe extern "C" fn() -> usize>(0x6F57A0)()
-}
-
-/// 0x404630 `NiObject::release`: takes one reference from the object. At zero it deletes the
-/// object.
-unsafe fn object_release(object: usize) {
-    thiscall0(0x404630, object);
-}
-
-/// 0x40A880 `NiPointer::dtor`
-unsafe fn pointer_dtor(slot: usize) {
-    thiscall0(0x40A880, slot);
-}
-
 /// Does what `eh vector destructor iterator` (0x72759E) does with an array of six `NiPointer`.
-/// It calls the destructor for each, from the last to the first.
+/// It calls `NiPointer::dtor` (0x40A880) for each, from the last to the first. It does not
+/// call `engine::eh_vector_destructor_iterator`: the port stays as the shadow test verified it.
 unsafe fn destroy_pointers(pointers: &mut [usize; 6]) {
     for index in (0..6).rev() {
-        pointer_dtor(pointers.as_mut_ptr().add(index) as usize);
+        ni_pointer_dtor(pointers.as_mut_ptr().add(index) as usize);
     }
 }
 
-/// 0x693F00 `NiCriticalSection::Lock`
-unsafe fn critical_section_lock(section: usize, name: usize) {
-    thiscall1(0x693F00, section, name as u32);
-}
-
-/// 0x693F10 `NiCriticalSection::Unlock`
-unsafe fn critical_section_unlock(section: usize) {
-    thiscall0(0x693F10, section);
-}
-
-/// 0x6C20A0 `GetNameForDirectXErrorCode` (cdecl). Returns a string.
-unsafe fn name_for_directx_error(result: u32) -> usize {
-    transmute::<usize, unsafe extern "C" fn(u32) -> usize>(0x6C20A0)(result)
-}
-
-/// 0x6E9A00 `nullsub_36`: the log function of the game, an empty function in this build.
-unsafe fn log_message(format: usize, a: usize) {
-    transmute::<usize, unsafe extern "C" fn(usize, usize)>(0x6E9A00)(format, a)
-}
-
-/// `nullsub_36` with two values after the format.
-unsafe fn log_message2(format: usize, a: usize, b: usize) {
-    transmute::<usize, unsafe extern "C" fn(usize, usize, usize)>(0x6E9A00)(format, a, b)
-}
-
-/// 0x6ECA10 `sub_6ECA10` (cdecl): adds the size at +0x104 of its argument to two byte
-/// counters of the textures (0x7DE7FC and 0x7DE800).
+/// 0x6ECA10 `sub_6ECA10`. It is `__cdecl`. It adds the size at +0x104 of its argument to two
+/// byte counters of the textures (0x7DE7FC and 0x7DE800).
 unsafe fn count_texture_bytes(info: usize) {
-    transmute::<usize, unsafe extern "C" fn(usize) -> u32>(0x6ECA10)(info);
+    cdecl1(0x6ECA10, info as u32);
 }
 
 /// 0x6C0BE0 `sub_6C0BE0`: `CreateSurf` of a rendered cube map. Returns the pixel format.
@@ -305,65 +174,6 @@ unsafe fn rendered_cube_create_face_target(this: usize, face: u32, pixel_format:
 }
 
 // ---------------------------------------------------------------------------------------
-// Device, texture and surface, through the vtable on each call
-// ---------------------------------------------------------------------------------------
-
-unsafe fn com_add_ref(object: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize) -> u32>(virtual_at(object, 0x04))(object)
-}
-
-unsafe fn com_release(object: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize) -> u32>(virtual_at(object, 0x08))(object)
-}
-
-unsafe fn device_discard_bytes(device: usize, bytes: u32) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32) -> u32>(virtual_at(device, 0x14))(device, bytes)
-}
-
-unsafe fn device_create_texture(device: usize, width: u32, height: u32, levels: u32, usage: u32, format: u32, pool: u32, out: usize) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32, usize) -> u32 = transmute(virtual_at(device, 0x50));
-    f(device, width, height, levels, usage, format, pool, out)
-}
-
-unsafe fn device_create_cube_texture(device: usize, edge: u32, levels: u32, usage: u32, format: u32, pool: u32, out: usize) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, usize) -> u32 = transmute(virtual_at(device, 0x58));
-    f(device, edge, levels, usage, format, pool, out)
-}
-
-unsafe fn device_copy_rects(device: usize, source: usize, rects: usize, count: u32, dest: usize, points: usize) -> u32 {
-    let f: unsafe extern "system" fn(usize, usize, usize, u32, usize, usize) -> u32 = transmute(virtual_at(device, 0x70));
-    f(device, source, rects, count, dest, points)
-}
-
-unsafe fn device_get_depth_stencil_surface(device: usize, out: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, usize) -> u32>(virtual_at(device, 0x84))(device, out)
-}
-
-/// `IDirect3DTexture8::GetSurfaceLevel`
-unsafe fn texture_get_surface_level(texture: usize, level: u32, out: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, usize) -> u32>(virtual_at(texture, 0x3C))(texture, level, out)
-}
-
-/// `IDirect3DCubeTexture8::GetCubeMapSurface`
-unsafe fn cube_get_surface(texture: usize, face: u32, level: u32, out: usize) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, usize) -> u32 = transmute(virtual_at(texture, 0x3C));
-    f(texture, face, level, out)
-}
-
-unsafe fn surface_get_desc(surface: usize, desc: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, usize) -> u32>(virtual_at(surface, 0x20))(surface, desc)
-}
-
-unsafe fn surface_lock_rect(surface: usize, locked: usize, rect: usize, flags: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, usize, usize, u32) -> u32 = transmute(virtual_at(surface, 0x24));
-    f(surface, locked, rect, flags)
-}
-
-unsafe fn surface_unlock_rect(surface: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize) -> u32>(virtual_at(surface, 0x28))(surface)
-}
-
-// ---------------------------------------------------------------------------------------
 // Shared pieces of the game code
 // ---------------------------------------------------------------------------------------
 
@@ -373,8 +183,10 @@ fn compare_bits(shift_a: u32, mask_a: u32, shift_b: u32, mask_b: u32) -> u32 {
     (2u32.wrapping_shl(shift_a) & mask_a) | (1u32.wrapping_shl(shift_b) & mask_b)
 }
 
+/// `compare_bits` with `dword_7DE8FC`, `dword_7C55B0`, `dword_7C55B8` and `dword_7C55B4`: the
+/// shift and the mask of two bit fields of `NiPixelFormat::compareBits`.
 unsafe fn default_compare_bits() -> u32 {
-    compare_bits(rd(COMPARE_SHIFT_A, 0), rd(COMPARE_MASK_A, 0), rd(COMPARE_SHIFT_B, 0), rd(COMPARE_MASK_B, 0))
+    compare_bits(rd(PIXEL_FORMAT_SHIFT_A, 0), rd(PIXEL_FORMAT_MASK_A, 0), rd(PIXEL_FORMAT_SHIFT_B, 0), rd(PIXEL_FORMAT_MASK_B, 0))
 }
 
 /// Writes the `NiDX8PixelFormat` member of a new `NiDX8RenderedTextureData`. The writes are in
@@ -401,47 +213,6 @@ unsafe fn append_renderer_data(data: usize) {
         next = rd(next, RTD::vtbl_linkedData);
     }
     wr(slot, 0, data);
-}
-
-/// Takes one reference from a `NiRefObject`. At zero it deletes the object.
-unsafe fn decrement_reference(object: usize) {
-    let count = rd::<u32>(object, NiRefObject::refCount).wrapping_sub(1);
-    wr(object, NiRefObject::refCount, count);
-    if count == 0 {
-        delete_object(object);
-    }
-}
-
-/// The node of a `THashMap` for `key`, or 0.
-unsafe fn hash_map_find_node(map: usize, key: usize) -> usize {
-    let bucket = thiscall1(virtual_at(map, V_MAP_HASH), map, key as u32) as usize;
-    let mut node: usize = rd(rd(map, THashMap::arrayBuckets), bucket * 4);
-    while node != 0 {
-        if thiscall2(virtual_at(map, V_MAP_IS_EQUAL), map, key as u32, rd(node, THashMap_Node::key)) as u8 != 0 {
-            return node;
-        }
-        node = rd(node, THashMap_Node::nextNode);
-    }
-    0
-}
-
-/// `THashMap::SetAt` as the game code has it inline (0x6B03DE and 0x6B04EA).
-unsafe fn hash_map_set(map: usize, key: usize, value: usize) {
-    let bucket = thiscall1(virtual_at(map, V_MAP_HASH), map, key as u32) as usize;
-    let mut node: usize = rd(rd(map, THashMap::arrayBuckets), bucket * 4);
-    while node != 0 {
-        if thiscall2(virtual_at(map, V_MAP_IS_EQUAL), map, key as u32, rd(node, THashMap_Node::key)) as u8 != 0 {
-            thiscall1(virtual_at(map, V_MAP_CLEAR_VALUE), map, node as u32);
-            thiscall3(virtual_at(map, V_MAP_SET_VALUE), map, node as u32, key as u32, value as u32);
-            return;
-        }
-        node = rd(node, THashMap_Node::nextNode);
-    }
-    let node = engine::operator_new(THashMap_Node::SIZE);
-    thiscall3(virtual_at(map, V_MAP_SET_VALUE), map, node as u32, key as u32, value as u32);
-    wr::<usize>(node, THashMap_Node::nextNode, rd(rd(map, THashMap::arrayBuckets), bucket * 4));
-    wr(rd::<usize>(map, THashMap::arrayBuckets), bucket * 4, node);
-    wr(map, THashMap::count, rd::<u32>(map, THashMap::count).wrapping_add(1));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -562,15 +333,16 @@ pub unsafe fn render_target_dtor(this: usize) {
     crate::shadow::touch(&render_target_dtor_port::STATE);
     let object: usize = rd(this, RT::field_18);
     if object != 0 {
-        decrement_reference(object);
+        ni::release(object);
     }
     let object: usize = rd(this, RT::field_C);
     if object != 0 {
-        decrement_reference(object);
+        ni::release(object);
     }
 }
 
-/// Skips when the call deletes an object: a virtual deleting destructor cannot run twice.
+/// The call is a skip when the call deletes an object: a virtual deleting destructor cannot
+/// run twice.
 unsafe fn render_target_dtor_regions(set: &mut Regions, this: usize) {
     let first: usize = rd(this, RT::field_18);
     let second: usize = rd(this, RT::field_C);
@@ -594,7 +366,7 @@ pub unsafe fn texture_render_target_dtor(target: usize) {
     }
     let object: usize = rd(target, RT::field_C);
     if object != 0 {
-        decrement_reference(object);
+        ni::release(object);
         wr::<u32>(target, RT::field_C, 0);
     }
     let texture: usize = rd(target, RT::d3dTexture);
@@ -607,7 +379,7 @@ pub unsafe fn texture_render_target_dtor(target: usize) {
     }
     let object: usize = rd(target, RT::field_18);
     if object != 0 {
-        decrement_reference(object);
+        ni::release(object);
         wr::<u32>(target, RT::field_18, 0);
     }
     let surface: usize = rd(target, RT::d3dSurfaceDepthStencil);
@@ -622,7 +394,7 @@ pub unsafe fn texture_render_target_dtor(target: usize) {
     operator_delete(target);
 }
 
-/// Skips for every target: its surfaces get their last `Release`.
+/// The call is a skip when the target is not 0: its surfaces get their last `Release`.
 unsafe fn texture_render_target_dtor_regions(set: &mut Regions, target: usize) {
     if target != 0 {
         set.skip();
@@ -675,23 +447,23 @@ pub unsafe fn rendered_texture_data_create_surf(this: usize, texture: usize, out
     let device: usize = rd(rd(this, RTD::renderer), R::d3dDevice);
     let out = this + RTD::d3dTexture;
 
-    critical_section_lock(CRITICAL_SECTION, STR_CREATE_SURF);
+    critical_section_lock(CREATE_CRITICAL_SECTION, STR_CREATE_SURF);
     let mut result =
         device_create_texture(device, rd(this, RTD::width), rd(this, RTD::height), 1, D3DUSAGE_RENDERTARGET, d3d_format, D3DPOOL_DEFAULT, out);
-    critical_section_unlock(CRITICAL_SECTION);
+    critical_section_unlock(CREATE_CRITICAL_SECTION);
     let mut tries = 0;
     while result != 0 {
-        critical_section_lock(CRITICAL_SECTION, STR_CREATE_SURF);
-        device_discard_bytes(device, DISCARD_BYTES);
+        critical_section_lock(CREATE_CRITICAL_SECTION, STR_CREATE_SURF);
+        device_resource_manager_discard_bytes(device, DISCARD_BYTES);
         result =
             device_create_texture(device, rd(this, RTD::width), rd(this, RTD::height), 1, D3DUSAGE_RENDERTARGET, d3d_format, D3DPOOL_DEFAULT, out);
-        critical_section_unlock(CRITICAL_SECTION);
+        critical_section_unlock(CREATE_CRITICAL_SECTION);
         tries += 1;
         if tries >= CREATE_TRIES {
             if result == 0 {
                 break;
             }
-            log_message(STR_CREATE_SURF_FAILED, name_for_directx_error(result));
+            debug_print1(STR_CREATE_SURF_FAILED, directx_error_name(result));
             wr::<u32>(out, 0, 0);
             return 0;
         }
@@ -699,6 +471,8 @@ pub unsafe fn rendered_texture_data_create_surf(this: usize, texture: usize, out
     pixel_format
 }
 
+/// The call is not a skip. The texture that the Rust run makes goes to the engine run. With
+/// a texture, the call writes the object and `out_format`.
 unsafe fn rendered_texture_data_create_surf_regions(set: &mut Regions, this: usize, texture: usize, out_format: usize) {
     if texture != 0 {
         set.add(this, RTD::SIZE);
@@ -723,7 +497,7 @@ pub unsafe fn rendered_texture_data_create(texture: usize, renderer: usize) -> u
     let pixel_format = rendered_texture_data_create_surf(data, texture, &mut format_index as *mut u32 as usize);
     if pixel_format == 0 {
         if data != 0 {
-            delete_object(data);
+            ni::delete_object(data);
         }
         return 0;
     }
@@ -749,7 +523,7 @@ pub unsafe fn rendered_texture_data_create(texture: usize, renderer: usize) -> u
     let mut tries = 0;
     while tries < CREATE_TRIES {
         let device: usize = rd(renderer, R::d3dDevice);
-        device_discard_bytes(device, DISCARD_BYTES);
+        device_resource_manager_discard_bytes(device, DISCARD_BYTES);
         let out = rd::<usize>(data, RTD::target) + RT::d3dSurfaceDepthStencil;
         // The game code reads the vtable of the device before the two calls on the texture.
         let device_vtable: usize = rd(rd(renderer, R::d3dDevice), 0);
@@ -761,7 +535,7 @@ pub unsafe fn rendered_texture_data_create(texture: usize, renderer: usize) -> u
         tries += 1;
         if tries >= CREATE_TRIES {
             if result != 0 {
-                log_message(STR_DEPTH_STENCIL_FAILED, name_for_directx_error(result));
+                debug_print1(STR_DEPTH_STENCIL_FAILED, directx_error_name(result));
                 return 0;
             }
             break;
@@ -783,15 +557,15 @@ pub unsafe fn rendered_texture_data_create(texture: usize, renderer: usize) -> u
     let target: usize = rd(data, RTD::target);
     let result = texture_get_surface_level(rd(target, RT::d3dTexture), 0, target + RT::d3dSurfaceBackBuffer);
     if result != 0 {
-        log_message(STR_GET_SURFACE_LEVEL_FAILED, name_for_directx_error(result));
+        debug_print1(STR_GET_SURFACE_LEVEL_FAILED, directx_error_name(result));
         wr::<u32>(rd::<usize>(data, RTD::target), RT::d3dSurfaceBackBuffer, 0);
-        delete_object(data);
+        ni::delete_object(data);
         return 0;
     }
     let slot = rd::<usize>(data, RTD::target) + RT::field_18;
     let object: usize = rd(slot, 0);
     if object != 0 {
-        decrement_reference(object);
+        ni::release(object);
         wr::<u32>(slot, 0, 0);
     }
     wr::<u32>(rd::<usize>(data, RTD::target), RT::field_1C, 0);
@@ -814,12 +588,12 @@ pub unsafe fn rendered_texture_data_dtor(this: usize) {
         com_release(texture);
         wr::<u32>(this, RTD::d3dTexture, 0);
     }
-    renderer_data_dtor(this);
+    texture_renderer_data_dtor(this);
 }
 
-/// Skips when the object has a render target or a texture. They get their last `Release`, and
-/// the render target of the device changes. Also skips when the object has linked data: a
-/// virtual deleting destructor runs.
+/// The call is a skip when the object has a render target or a texture. They get their last
+/// `Release`, and the render target of the device changes. The call is also a skip when the
+/// object has linked data: the virtual deleting destructor of the linked data runs.
 unsafe fn rendered_texture_data_dtor_regions(set: &mut Regions, this: usize, size: usize) {
     if rd::<usize>(this, RTD::target) != 0 || rd::<usize>(this, RTD::d3dTexture) != 0 || rd::<usize>(this, RTD::vtbl_linkedData) != 0 {
         set.skip();
@@ -876,14 +650,14 @@ pub unsafe fn rendered_cube_map_data_create(texture: usize, renderer: usize) -> 
     let pixel_format = rendered_cube_create_surf(data, texture);
     if pixel_format == 0 {
         if data != 0 {
-            delete_object(data);
+            ni::delete_object(data);
         }
         return 0;
     }
     let target = rendered_cube_create_face_target(data, 0, pixel_format, 0);
     wr(data, RENDERED_CUBE_TARGETS, target);
     if target == 0 {
-        delete_object(data);
+        ni::delete_object(data);
         return 0;
     }
     // The other faces share the depth buffer of the first.
@@ -893,7 +667,7 @@ pub unsafe fn rendered_cube_map_data_create(texture: usize, renderer: usize) -> 
         let target = rendered_cube_create_face_target(data, face, pixel_format, depth_stencil);
         wr(data, RENDERED_CUBE_TARGETS + face as usize * 4, target);
         if target == 0 {
-            delete_object(data);
+            ni::delete_object(data);
             return 0;
         }
         face += 1;
@@ -921,8 +695,8 @@ pub unsafe fn rendered_cube_map_data_dtor(this: usize) {
     rendered_texture_data_dtor(this);
 }
 
-/// Skips when the object has the cube texture or a face target: they get their last `Release`.
-/// Also skips when the destructor of the base class skips.
+/// The call is a skip when the object has the cube texture or a face target: they get their
+/// last `Release`. The call is also a skip when the destructor of the base class is a skip.
 unsafe fn rendered_cube_map_data_dtor_regions(set: &mut Regions, this: usize) {
     if rd::<usize>(this, RENDERED_CUBE_TEXTURE) != 0 {
         set.skip();
@@ -969,23 +743,11 @@ pub unsafe fn rendered_cube_map_data_get_target(this: usize) -> usize {
 // NiDX8SourceCubeMapData
 // ---------------------------------------------------------------------------------------
 
-/// The assignment to a `NiPointer` in a local array (0x6C136E).
-unsafe fn assign_local_pointer(slot: &mut usize, object: usize) {
-    let old = *slot;
-    if old != object {
-        if old != 0 {
-            decrement_reference(old);
-        }
-        *slot = object;
-        if object != 0 {
-            wr(object, NiRefObject::refCount, rd::<u32>(object, NiRefObject::refCount).wrapping_add(1));
-        }
-    }
-}
-
 /// Copies the levels of `pixel_data` to the surfaces of one face of a cube texture
 /// (0x6C14A7 and 0x6C16E3). `texture_slot` is the address of the pointer to the texture.
-/// When there is no surface, the game code releases the cube texture and continues.
+/// When `GetCubeMapSurface` fails, the function calls `Release` of the cube texture and
+/// returns. It does not copy the other levels of the face. It does not write 0 to
+/// `texture_slot`.
 unsafe fn copy_face(this: usize, texture_slot: usize, face: u32, pixel_data: usize) {
     let mut level: u32 = 0;
     if rd::<u32>(this, STD::levels) == 0 {
@@ -994,9 +756,9 @@ unsafe fn copy_face(this: usize, texture_slot: usize, face: u32, pixel_data: usi
     loop {
         let mut surface: usize = 0;
         let texture: usize = rd(texture_slot, 0);
-        let result = cube_get_surface(texture, face, level, &mut surface as *mut usize as usize);
+        let result = cube_texture_get_cube_map_surface(texture, face, level, &mut surface as *mut usize as usize);
         if result != 0 {
-            log_message2(STR_CUBE_COPY_FAILED, level as usize, name_for_directx_error(result));
+            debug_print2(STR_CUBE_COPY_FAILED, level as usize, directx_error_name(result));
             com_release(rd(texture_slot, 0));
             return;
         }
@@ -1032,7 +794,7 @@ pub unsafe fn source_cube_map_data_create(texture: usize, renderer: usize) -> us
 
     for face in 0..6 {
         if sources[face] != 0 {
-            object_release(sources[face]);
+            ni_object_release(sources[face]);
             sources[face] = 0;
         }
         let file_name: usize = rd(texture, SOURCE_CUBE_MAP_FILE_NAMES + face * 4);
@@ -1045,7 +807,7 @@ pub unsafe fn source_cube_map_data_create(texture: usize, renderer: usize) -> us
         let old = sources[face];
         if old != pixel_data {
             if old != 0 {
-                object_release(old);
+                ni_object_release(old);
             }
             sources[face] = pixel_data;
             if pixel_data != 0 {
@@ -1093,7 +855,7 @@ pub unsafe fn source_cube_map_data_create(texture: usize, renderer: usize) -> us
     }
     if dest_format == 0 {
         if data != 0 {
-            delete_object(data);
+            ni::delete_object(data);
         }
         destroy_pointers(&mut sources);
         return 0;
@@ -1116,10 +878,11 @@ pub unsafe fn source_cube_map_data_create(texture: usize, renderer: usize) -> us
         let result =
             thiscall4(virtual_at(converter, V_CONVERTER_CONVERT_PIXEL_DATA), converter, source as u32, dest_format as u32, source as u32, mipmap)
                 as usize;
-        assign_local_pointer(&mut converted[face], result);
+        // The assignment to a `NiPointer` in a local array (0x6C136E).
+        ni::pointer_assign(&mut converted[face] as *mut usize as usize, result);
         let pixel_data = converted[face];
         if pixel_data == 0 {
-            delete_object(data);
+            ni::delete_object(data);
             destroy_pointers(&mut converted);
             destroy_pointers(&mut sources);
             return 0;
@@ -1136,11 +899,11 @@ pub unsafe fn source_cube_map_data_create(texture: usize, renderer: usize) -> us
     wr(data, STD::levels, level_count);
     let result = device_create_cube_texture(device, rd(data, STD::width), level_count, 0, d3d_format, D3DPOOL_MANAGED, texture_slot);
     if result != 0 {
-        log_message(STR_CUBE_CREATE_SURF_FAILED, name_for_directx_error(result));
+        debug_print1(STR_CUBE_CREATE_SURF_FAILED, directx_error_name(result));
         wr::<u32>(texture_slot, 0, 0);
     }
     if rd::<usize>(texture_slot, 0) == 0 {
-        delete_object(data);
+        ni::delete_object(data);
         destroy_pointers(&mut converted);
         destroy_pointers(&mut sources);
         return 0;
@@ -1172,9 +935,10 @@ pub unsafe fn source_cube_map_data_dtor(this: usize) {
     source_texture_data_dtor(this);
 }
 
-/// Skips when the object has a texture: the texture gets its last `Release`. Skips when the
-/// object has a palette: the call can delete the palette. Skips when the object has linked
-/// data: a virtual deleting destructor runs.
+/// The call is a skip when the object has a texture: the texture gets its last `Release`.
+/// The call is a skip when the object has a palette: the call can delete the palette. The
+/// call is a skip when the object has linked data: the virtual deleting destructor of the
+/// linked data runs.
 unsafe fn source_cube_map_data_dtor_regions(set: &mut Regions, this: usize) {
     if rd::<usize>(this, SOURCE_CUBE_TEXTURE) != 0
         || rd::<usize>(this, STD::d3dTexture) != 0
@@ -1260,13 +1024,14 @@ pub unsafe fn source_cube_map_data_update(this: usize) {
             let count = count.wrapping_sub(1);
             wr(converted, NiRefObject::refCount, count);
             if count == 0 {
-                delete_object(converted);
+                ni::delete_object(converted);
             }
         }
     }
 }
 
-/// Skips when the call copies a face: that needs `LockRect` of its surfaces and new pixel data.
+/// The call is a skip when the call copies a face: that needs `LockRect` of its surfaces and
+/// new pixel data.
 /// The call copies a face when a face has a new revision or `setPalette` reports a change.
 unsafe fn source_cube_map_data_update_regions(set: &mut Regions, this: usize) {
     let texture: usize = rd(this, STD::vtbl_sgTexture);
@@ -1302,12 +1067,12 @@ pub unsafe fn create_rendered_texture_renderer_data(this: usize, texture: usize)
     if data == 0 {
         return 0;
     }
-    hash_map_set(this + R::hashmap_maybeRenderedTextures, texture, data);
+    hash_map::set(this + R::hashmap_maybeRenderedTextures, texture as u32, data);
     1
 }
 
-/// Skips when the call makes the data: `Create` reads the depth buffer of the device, and
-/// that adds a reference.
+/// The call is a skip when the call makes the data: `Create` reads the depth buffer of the
+/// device, and that adds a reference.
 unsafe fn create_rendered_texture_renderer_data_regions(set: &mut Regions, texture: usize) {
     if rd::<usize>(texture, NiTexture::rendererData) == 0 {
         set.skip();
@@ -1319,7 +1084,7 @@ unsafe fn create_rendered_texture_renderer_data_regions(set: &mut Regions, textu
 pub unsafe fn create_rendered_cube_map_renderer_data(this: usize, texture: usize) -> u8 {
     crate::shadow::touch(&create_rendered_cube_map_renderer_data_port::STATE);
     let map = this + R::hashmap_maybeRenderedCubemaps;
-    let node = hash_map_find_node(map, texture);
+    let node = hash_map::find(map, texture as u32);
     if node != 0 && rd::<usize>(node, THashMap_Node::data) != 0 {
         return 1;
     }
@@ -1327,14 +1092,14 @@ pub unsafe fn create_rendered_cube_map_renderer_data(this: usize, texture: usize
     if data == 0 {
         return 0;
     }
-    hash_map_set(map, texture, data);
+    hash_map::set(map, texture as u32, data);
     1
 }
 
-/// Skips when the call makes the data: the face targets take surfaces of the cube texture and
-/// a reference on the depth buffer.
+/// The call is a skip when the call makes the data: the face targets take surfaces of the
+/// cube texture and a reference on the depth buffer.
 unsafe fn create_rendered_cube_map_renderer_data_regions(set: &mut Regions, this: usize, texture: usize) {
-    let node = hash_map_find_node(this + R::hashmap_maybeRenderedCubemaps, texture);
+    let node = hash_map::find(this + R::hashmap_maybeRenderedCubemaps, texture as u32);
     if node == 0 || rd::<usize>(node, THashMap_Node::data) == 0 {
         set.skip();
     }
@@ -1409,7 +1174,7 @@ pub unsafe fn take_screenshot(this: usize, rect: usize) -> usize {
     pixel_data
 }
 
-/// Skips when the call reads the back buffer: `LockRect` of a surface.
+/// The call is a skip when the call reads the back buffer: `LockRect` of a surface.
 unsafe fn take_screenshot_regions(set: &mut Regions, this: usize, rect: usize) {
     if screenshot_area_of(this, rect).is_some() {
         set.skip();
@@ -1460,8 +1225,8 @@ pub unsafe fn image_blt(this: usize, source: usize, rect: usize, dest_x: u32, de
     device_copy_rects(rd(this, R::d3dDevice), surface, source_rect.as_ptr() as usize, 1, back_buffer, point.as_ptr() as usize);
 }
 
-/// Skips when the source has no renderer data: the call makes the data. Skips when the source
-/// has a surface: the call does `CopyRects`.
+/// The call is a skip when the source has no renderer data: the call makes the data. The call
+/// is a skip when the source has a surface: the call does `CopyRects`.
 unsafe fn image_blt_regions(set: &mut Regions, source: usize) {
     if source != 0 {
         let data: usize = rd(source, BLT_SOURCE_RENDERER_DATA);
@@ -1523,8 +1288,8 @@ port_cdecl!(get_d3d_format_for_pixel_format_port, 0x6B0E20, "NiGetD3DFormatForNi
     regions = |set| {},
     rust = get_d3d_format_for_pixel_format);
 
-// Always a skip: `Create` reads the depth buffer of the device, and that adds a reference. Or
-// it deletes the new object through its virtual destructor.
+// The call is always a skip: `Create` reads the depth buffer of the device, and that adds a
+// reference. Or it deletes the new object through its virtual destructor.
 port_cdecl!(rendered_texture_data_create_port, 0x6C01B0, "NiDX8RenderedTextureData_static::Create",
     fn(texture: usize, renderer: usize) -> usize,
     compare_eax = true,
@@ -1584,8 +1349,9 @@ port_thiscall!(rendered_texture_data_get_target_port, 0x6C09A0, "NiDX8RenderedTe
     regions = |set| {},
     rust = rendered_texture_data_get_target);
 
-// Always a skip: each face target takes a surface of the cube texture and a reference on
-// the depth buffer. Or the call deletes the new object through its virtual destructor.
+// The call is always a skip: each face target takes a surface of the cube texture and a
+// reference on the depth buffer. Or the call deletes the new object through its virtual
+// destructor.
 port_cdecl!(rendered_cube_map_data_create_port, 0x6C09D0, "NiDX8RenderedCubeMapData::ctor",
     fn(texture: usize, renderer: usize) -> usize,
     compare_eax = true,
@@ -1627,8 +1393,9 @@ port_thiscall!(rendered_cube_map_data_get_target_port, 0x6C0BD0, "NiDX8RenderedC
     regions = |set| {},
     rust = rendered_cube_map_data_get_target);
 
-// Always a skip: the call copies the faces with `LockRect` of their surfaces, and a face can
-// come from a file. The failure paths delete the new object through its virtual destructor.
+// The call is always a skip: the call copies the faces with `LockRect` of their surfaces, and
+// a face can come from a file. The failure paths delete the new object through its virtual
+// destructor.
 port_cdecl!(source_cube_map_data_create_port, 0x6C10A0, "NiDX8SourceCubeMapData_static::Create",
     fn(texture: usize, renderer: usize) -> usize,
     compare_eax = true,
