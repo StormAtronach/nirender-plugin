@@ -113,7 +113,12 @@ pub unsafe fn on_present() {
                 PHASE.store(THIRD, Ordering::Relaxed);
                 return;
             }
-            finish(work, compare(&work.first, &work.second, "engine", "engine"), "control");
+            // Two engine frames that differ are a change of the scene, never a fault of the port.
+            let mut text = compare(&work.first, &work.second, "engine", "engine");
+            if text.starts_with("FAIL") {
+                text = format!("RETRY the scene changed between the two engine frames; {text}");
+            }
+            finish(work, text, "control");
         }
         THIRD => {
             device::end(&mut work.third);

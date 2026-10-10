@@ -28,6 +28,25 @@ DIST = os.path.join(REPO, "target", "dist", MOD_NAME)
 RESULTS = os.path.join(REPO, "results")
 SPEC_NAME = "nirender_test"
 TAG = "[nirender.test] "
+MGE_MOD = "MGE XE G7 Fork"
+
+
+def remove_stale_root_files(mod):
+    """Removes from the game folder the copies Root Builder made of the Root files of `mod`.
+
+    Root Builder copies the Root files of the active mods into the game folder at launch and
+    removes them when Mod Organizer exits. The harness ends Mod Organizer after the game, so
+    the copies stay. A run without the mod has to start without them. Only a file with the
+    same content as the one in the mod is removed; Root Builder copies it again when the mod
+    is active."""
+    root = os.path.join(harness.MO2_ROOT, "mods", mod, "Root")
+    for folder, _, files in os.walk(root):
+        for name in files:
+            src = os.path.join(folder, name)
+            copy = os.path.join(harness.GAME_DIR, os.path.relpath(src, root))
+            if os.path.isfile(copy) and harness.same_file_content(src, copy):
+                os.remove(copy)
+                print("  stale copy removed from the game folder: %s" % os.path.relpath(copy, harness.GAME_DIR))
 
 
 def build():
@@ -78,6 +97,8 @@ def main():
     ap.add_argument("--cells", default="", help="cells to visit after the place of the save, separated by ;")
     ap.add_argument("--timeout", type=int, default=0, help="budget in seconds; 0 = from the scenario")
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--no-mge", action="store_true",
+                    help="run without MGE XE: its mod is switched off and the copies of its files leave the game folder")
     ap.add_argument("--without", default="", help="mods to switch off for the run, separated by ; (for example \"MGE XE G7 Fork\")")
     ap.add_argument("--fault", type=int, default=0,
                     help="put a fault into the Rust code (1: a device call, 2: a memory write); the run passes when the tests find it")
@@ -116,6 +137,8 @@ def main():
     try:
         deployment.write_spec(SPEC_NAME, spec)
         off = [m for m in args.without.split(";") if m]
+        if args.no_mge:
+            off.append(MGE_MOD)
         if off:
             modlist = os.path.join(harness.PROFILE, "modlist.txt")
             with open(modlist, encoding="utf-8", newline="") as fh:
@@ -127,11 +150,17 @@ def main():
             with open(edited, "w", encoding="utf-8", newline="") as fh:
                 fh.write("".join("-" + l[1:] if l.strip()[1:] in off and l.startswith("+") else l for l in lines))
             deployment.swap(edited, modlist, "mod list without " + ", ".join(off))
+            for mod in off:
+                remove_stale_root_files(mod)
     except BaseException:
         deployment.restore()
         raise
     print("launching (budget %ds, results in %s)" % (timeout, run_dir), flush=True)
-    done = harness.run_game(progress_file, timeout, TAG, deployment, started)
+    try:
+        done = harness.run_game(progress_file, timeout, TAG, deployment, started)
+    finally:
+        # run_game restores too; this is for a failure before it gets that far.
+        deployment.restore()
     harness.copy_logs(run_dir, started)
 
     failures = []
