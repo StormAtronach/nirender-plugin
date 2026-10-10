@@ -43,6 +43,8 @@ def main():
     ap.add_argument("--save", default="quiksave.ess")
     ap.add_argument("--rounds", type=int, default=6, help="rounds for each mode")
     ap.add_argument("--seconds", type=int, default=10, help="length of a round")
+    ap.add_argument("--link", action="store_true", help="connect to MGE XE, and measure a third mode: the Rust code "
+                    "with all facts and kinds of the render link in use")
     ap.add_argument("--label", default="perf")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -50,9 +52,10 @@ def main():
     session.prepare(build=not args.no_build)
     run = session.Run(args.label)
     result_file = run.path("frames.json")
+    modes = (("off", "game"), ("live", "rust"), ("link", "link")) if args.link else (("off", "game"), ("live", "rust"))
     spec = run.spec("perf", save=args.save, cell=args.cell, rounds=args.rounds, roundSeconds=args.seconds,
-                    resultFile=result_file.replace("\\", "/"))
-    done = run.launch(spec, 90 + args.rounds * 2 * (args.seconds + 2), TAG)
+                    resultFile=result_file.replace("\\", "/"), link=args.link, facts=4261413630, kinds=7)
+    done = run.launch(spec, 90 + args.rounds * len(modes) * (args.seconds + 2), TAG)
     if not done or not os.path.isfile(result_file):
         print("FAIL: the measurement did not finish")
         return 1
@@ -60,7 +63,7 @@ def main():
         print("WARNING: " + problem)
 
     data = json.load(open(result_file, encoding="utf-8"))
-    by_mode = {"off": [], "live": []}
+    by_mode = {mode: [] for mode, _ in modes}
     rounds = []
     for entry in data["rounds"]:
         times = [float(t) for t in entry["microseconds"].split(",") if t]
@@ -70,17 +73,21 @@ def main():
     print("\ncell: %s, %d rounds of %d s for each mode" % (data["cell"], args.rounds, args.seconds))
     print("\n%-6s %8s %9s %8s %10s %8s %8s %8s" % ("mode", "frames", "mean ms", "fps", "median ms", "p95 ms", "p99 ms", "max ms"))
     summary = {}
-    for mode, label in (("off", "game"), ("live", "rust")):
+    for mode, label in modes:
         d = describe(by_mode[mode])
         summary[label] = d
         print("%-6s %8d %9.3f %8.1f %10.3f %8.3f %8.3f %8.1f" % (
             label, d["frames"], d["mean_ms"], d["fps"], d["median_ms"], d["p95_ms"], d["p99_ms"], d["max_ms"]))
     change = (summary["rust"]["mean_ms"] / summary["game"]["mean_ms"] - 1) * 100
     print("\nmean frame time, rust against game: %+.2f %%" % change)
-    print("\nrounds (mean ms): " + "  ".join("%s %.3f" % ("game" if m == "off" else "rust", d["mean_ms"]) for m, d in rounds))
+    names = dict(modes)
+    if args.link:
+        change_link = (summary["link"]["mean_ms"] / summary["game"]["mean_ms"] - 1) * 100
+        print("mean frame time, link against game: %+.2f %%" % change_link)
+    print("\nrounds (mean ms): " + "  ".join("%s %.3f" % (names[m], d["mean_ms"]) for m, d in rounds))
     # The spread between rounds of the same mode shows how much a difference between the
     # modes means.
-    for mode, label in (("off", "game"), ("live", "rust")):
+    for mode, label in modes:
         means = [d["mean_ms"] for m, d in rounds if m == mode]
         print("%s rounds: min %.3f max %.3f ms" % (label, min(means), max(means)))
     json.dump({"cell": data["cell"], "summary": summary, "rounds": rounds, "change_percent": change},
