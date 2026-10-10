@@ -50,12 +50,42 @@ Clean-room rule: the code comes from the binary. Do not copy from the Gamebryo s
 9. `regions` lists every block of memory the function can write, for the call at hand: the
    object, and what it reaches through pointers. The shadow test saves and restores exactly
    these. A write outside them is not restored and breaks the game state in shadow mode.
-10. A call that cannot run twice (it allocates, it creates a device resource, it locks a
-    buffer) calls `set.skip()` in `regions`. Skip only that case, not the whole function.
+10. What the shadow test can run twice, and what it cannot:
+    - The Rust function runs first on a "dry" device: calls that set state or draw are
+      recorded and return 0 without reaching the device (`device::dry_skips` has the list);
+      calls that read are passed on. Then the regions are put back and the engine function
+      runs for real.
+    - Heap: `operator new` (0x727692) and `operator delete` (0x727530) are tracked. The engine
+      run gets the blocks of the Rust run at the same addresses, and a free in the Rust run
+      is put off. A call that allocates or frees through these two calls
+      `set.allocates()` in `regions`, not `set.skip()`. The new blocks need no region; a
+      block that is freed does not either. Memory that is written and already exists (a
+      hash bucket array, a list neighbour) still needs a region.
+    - Device resources: a `Create*` call of the Rust run is real, and the engine run gets
+      the same object back. So a function that creates a vertex buffer, an index buffer or
+      a texture can be compared. `Lock`/`Unlock` of vertex and index buffers are real in
+      both runs, and the bytes written go into the log at `Unlock`.
+    - A call still calls `set.skip()` when it does something that cannot happen twice and
+      is not in the list above: `Present`, `Reset`, a `Release` that destroys a device
+      object, a virtual deleting destructor of an engine object, `LockRect` of a texture
+      or surface (not recorded yet), a critical section left locked, file access.
+    - `Regions` holds 8 blocks. A call that needs more calls `set.skip()`.
+    Skip only the calls that need it, decided from the arguments and the state before the
+    call. Say in the doc comment of the regions function why.
 11. Declare the port with `port_thiscall!` or `port_cdecl!` and add it to the `PORTS` list of
     the module. A new module also goes into `MODULES` in `src/ports/mod.rs`.
 12. Add a unit test for logic that needs no game: build the structs in byte arrays, as
     `ports/material.rs` does.
+
+## Calling conventions the macros cover
+
+`port_thiscall!` and `port_cdecl!`. Every function of the table can take a detour, also the
+short stubs and the deleting destructors. Not covered yet: `__stdcall` functions and
+functions that return a float on the x87 stack. Leave those and report them.
+
+Arguments of the device calls that are addresses of the caller's own storage (a matrix on
+the stack, the place for a result) are not compared, only the data behind them. So a port
+may keep such data in a Rust local.
 
 ## What not to port without a decision
 
