@@ -346,7 +346,7 @@ pub unsafe fn device_clear(device: usize, count: u32, rects: usize, flags: u32, 
 #[inline(always)]
 pub unsafe fn device_set_transform(device: usize, state: u32, matrix: usize) -> u32 {
     crate::link_client::note_transform(state, matrix);
-    if crate::link_client::skip_transform(state) {
+    if crate::link_client::skip_transform(state, matrix) {
         return 0;
     }
     let f: unsafe extern "system" fn(usize, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_SET_TRANSFORM));
@@ -386,7 +386,7 @@ pub unsafe fn device_set_render_state(device: usize, state: u32, value: u32) -> 
     // For D3DRS_ZFUNC, D3DCMP_LESSEQUAL (4) becomes D3DCMP_LESS (2).
     let value = if state == 23 && value == 4 && fault() == 1 { 2 } else { value };
     crate::link_client::note_render_state(state);
-    if crate::link_client::skip_render_state(state) {
+    if crate::link_client::skip_render_state(state, value) {
         return 0;
     }
     let vtable: usize = rd(device, 0);
@@ -409,7 +409,7 @@ pub unsafe fn device_set_texture(device: usize, stage: u32, texture: usize) -> u
 #[inline(always)]
 pub unsafe fn device_set_texture_stage_state(device: usize, stage: u32, state: u32, value: u32) -> u32 {
     crate::link_client::note_stage_state(state);
-    if crate::link_client::skip_stage_state(state) {
+    if crate::link_client::skip_stage_state(stage, state, value) {
         return 0;
     }
     let vtable: usize = rd(device, 0);

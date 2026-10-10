@@ -13,6 +13,11 @@ pub const CAP_DRAW_STATE: u32 = 0x4;
 pub const CAP_TEXTURES: u32 = 0x8;
 pub const CAP_WORLD_SPACE: u32 = 0x10;
 pub const CAP_CAMERA_SPACE: u32 = 0x20;
+pub const CAP_COMMANDS: u32 = 0x40;
+
+pub const COMMAND_RENDER_STATE: u32 = 1;
+pub const COMMAND_STAGE_STATE: u32 = 2;
+pub const COMMAND_TRANSFORM: u32 = 3;
 
 pub const SCENE_HAS_CAMERA_ORIGIN: u32 = 0x1;
 
@@ -293,6 +298,8 @@ pub struct HostV1 {
     pub world_space: unsafe extern "C" fn() -> u32,
     /// Only a host with `CAP_CAMERA_SPACE` has this member.
     pub camera_space: unsafe extern "C" fn(origin: *mut f64) -> u32,
+    /// Only a host with `CAP_COMMANDS` has this member.
+    pub command: unsafe extern "C" fn(command: u32, a: u32, b: u32, c: u32),
 }
 
 /// `MGE_RenderLinkConnect`
@@ -312,7 +319,7 @@ const _: () = {
     assert!(size_of::<FactCountV1>() == 16);
     assert!(size_of::<CountersV1>() == 528);
     assert!(size_of::<TextureV1>() == 52);
-    assert!(size_of::<HostV1>() == 56);
+    assert!(size_of::<HostV1>() == 60);
 };
 
 #[cfg(test)]

@@ -266,10 +266,24 @@ fn skip(fact: u32, in_packet: bool) -> bool {
     skipped
 }
 
-/// True when the host sets this render state from the packets.
+/// Sends a state command to the host. Returns false when the host takes no commands.
 #[inline]
-pub fn skip_render_state(state: u32) -> bool {
+unsafe fn command(command: u32, a: u32, b: u32, c: u32) -> bool {
+    match host() {
+        Some(host) if host.capabilities & CAP_COMMANDS != 0 => {
+            (host.command)(command, a, b, c);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// True when the caller must not make the D3D8 call for this render state: the host sets it
+/// from the packets, or the host got it as a command here.
+#[inline]
+pub unsafe fn skip_render_state(state: u32, value: u32) -> bool {
     skip(FACT_DEVICE_RENDER_STATES, PACKET_RENDER_STATES.contains(&state))
+        || (skip(FACT_DEVICE_RENDER_STATES, true) && command(COMMAND_RENDER_STATE, state, value, 0))
 }
 
 /// A device object for `NiDX8MaterialManager::UpdateToDevice` when the host sets the
@@ -298,10 +312,12 @@ pub unsafe fn material_device(device: usize) -> usize {
     addr_of!(NO_MATERIAL_DEVICE) as usize
 }
 
-/// True when the host sets this texture stage state from the packets.
+/// True when the caller must not make the D3D8 call for this texture stage state: the host
+/// sets it from the packets, or the host got it as a command here.
 #[inline]
-pub fn skip_stage_state(state: u32) -> bool {
+pub unsafe fn skip_stage_state(stage: u32, state: u32, value: u32) -> bool {
     skip(FACT_DEVICE_STAGE_STATES, STAGE_STATES.contains(&state) || SAMPLER_STATES.contains(&state))
+        || (skip(FACT_DEVICE_STAGE_STATES, true) && command(COMMAND_STAGE_STATE, stage, state, value))
 }
 
 /// True when the host sets the texture of this stage from the packets.
@@ -310,14 +326,19 @@ pub fn skip_texture(stage: u32) -> bool {
     skip(FACT_DEVICE_TEXTURES, stage < STATE_STAGES)
 }
 
-/// True when the host sets this transform from the packets: a world matrix of the vertex
-/// blend, or a texture transform.
+/// True when the caller must not make the D3D8 call for this transform. The host sets a
+/// world matrix of the vertex blend and a texture transform from the packets. It gets the
+/// view and the projection as a command here.
 #[inline]
-pub fn skip_transform(state: u32) -> bool {
+pub unsafe fn skip_transform(state: u32, matrix: usize) -> bool {
+    const D3DTS_VIEW: u32 = 2;
+    const D3DTS_PROJECTION: u32 = 3;
     skip(
         FACT_DEVICE_TRANSFORMS,
         (D3DTS_WORLDMATRIX0..D3DTS_WORLDMATRIX0 + 4).contains(&state) || (D3DTS_TEXTURE0..D3DTS_TEXTURE0 + STATE_STAGES).contains(&state),
-    )
+    ) || ((state == D3DTS_VIEW || state == D3DTS_PROJECTION)
+        && skip(FACT_DEVICE_TRANSFORMS, true)
+        && command(COMMAND_TRANSFORM, state, matrix as u32, 0))
 }
 
 /// True when the host sets the lights from the packets.

@@ -118,6 +118,18 @@ pub unsafe fn report() -> String {
         let name = FUNCS.iter().find(|f| f.ea == function).map_or("?", |f| f.name);
         text.push_str(&format!("{}\trenderer {}\t{:#x}\t{}\n", crate::device::slot_name(slot), name, function, n));
     }
+    // The calls of the Rust code, for each method: the D3D8 calls that the plugin still makes.
+    let mut plugin: Vec<(usize, u64)> = counts
+        .iter()
+        .filter_map(|((slot, caller), n)| match caller {
+            Caller::Plugin => Some((*slot, *n)),
+            _ => None,
+        })
+        .collect();
+    plugin.sort();
+    for (slot, n) in plugin {
+        text.push_str(&format!("{}\tplugin\t-\t{}\n", crate::device::slot_name(slot), n));
+    }
     let mut other: Vec<(usize, usize, u64)> = counts
         .iter()
         .filter_map(|((slot, caller), n)| match caller {
