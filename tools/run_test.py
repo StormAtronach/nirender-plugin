@@ -78,6 +78,8 @@ def main():
     ap.add_argument("--cells", default="", help="cells to visit after the place of the save, separated by ;")
     ap.add_argument("--timeout", type=int, default=0, help="budget in seconds; 0 = from the scenario")
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--fault", type=int, default=0,
+                    help="put a fault into the Rust code (1: a device call, 2: a memory write); the run passes when the tests find it")
     ap.add_argument("--no-buffers", action="store_true", help="do not record the contents of locked buffers")
     args = ap.parse_args()
 
@@ -100,6 +102,7 @@ def main():
         "shadowSeconds": args.shadow,
         "liveSeconds": args.live,
         "ports": args.ports,
+        "fault": args.fault,
         "recordBuffers": not args.no_buffers,
         "cells": [c for c in args.cells.split(";") if c],
     }
@@ -143,6 +146,14 @@ def main():
         mismatches = [l for l in open(log_file, encoding="utf-8", errors="replace").read().splitlines() if l.startswith("MISMATCH")]
         for line in mismatches[:20]:
             print("  " + line[:400])
+    if args.fault:
+        shadow_found = any("calls differ" in f for f in failures)
+        frame_found = any("frame test menu live: FAIL" in f for f in failures)
+        print("\nfault %d: shadow test %s, frame test %s" % (
+            args.fault, "FOUND it" if shadow_found else "did NOT find it", "FOUND it" if frame_found else "did NOT find it"))
+        for failure in failures:
+            print("  " + failure)
+        return 0 if shadow_found else 1
     print("\n" + ("PASS" if not failures else "FAIL"))
     for failure in failures:
         print("  " + failure)

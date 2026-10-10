@@ -38,6 +38,10 @@ return function(nirender, spec)
 
     local ports = spec.ports or "*"
     nirender.recordBuffers(spec.recordBuffers ~= false)
+    if (spec.fault or 0) ~= 0 then
+        nirender.fault(spec.fault)
+        say("FAULT %d is in the Rust code on purpose: this run has to fail", spec.fault)
+    end
 
     local function finish()
         local report = nirender.report()

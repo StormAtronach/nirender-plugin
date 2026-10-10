@@ -177,7 +177,7 @@ pub unsafe fn update_fog_states(this: usize, fog_property: usize) {
     if fog_property == rd::<usize>(this, RS::currentFogProperty) && rd::<u8>(this, RS::changed) == 0 {
         return;
     }
-    wr(this, RS::currentFogProperty, fog_property);
+    wr(this, RS::currentFogProperty, if engine::fault() == 2 { fog_property + 4 } else { fog_property });
     if (rd::<u8>(fog_property, PROPERTY_FLAGS) >> 1) & 1 == 0 {
         set_render_state(this, D3DRS_FOGENABLE, 0, 0);
         return;

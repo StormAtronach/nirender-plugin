@@ -21,6 +21,7 @@ extern "C" {
     fn lua_pushboolean(l: LuaState, b: i32);
     fn lua_pushnumber(l: LuaState, n: f64);
     fn lua_pushnil(l: LuaState);
+    fn lua_tonumber(l: LuaState, index: i32) -> f64;
     fn lua_toboolean(l: LuaState, index: i32) -> i32;
     fn lua_tolstring(l: LuaState, index: i32, len: *mut usize) -> *const c_char;
 }
@@ -177,6 +178,14 @@ unsafe extern "C" fn record_buffers(l: LuaState) -> i32 {
     0
 }
 
+/// `nirender.fault(n)`: puts fault `n` into the Rust code (see `engine::FAULT`). 0 removes it.
+unsafe extern "C" fn fault(l: LuaState) -> i32 {
+    let n = lua_tonumber(l, 1) as u32;
+    engine::FAULT.store(n, Ordering::Relaxed);
+    crate::log!("fault {n} put into the Rust code on purpose");
+    0
+}
+
 /// `nirender.fpuControlWord()` -> the x87 control word of the calling thread.
 unsafe extern "C" fn fpu_control_word(l: LuaState) -> i32 {
     lua_pushnumber(l, x87::control_word() as f64);
@@ -193,6 +202,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "frameTestResult", frame_test_result);
     set_fn(l, "fpuControlWord", fpu_control_word);
     set_fn(l, "recordBuffers", record_buffers);
+    set_fn(l, "fault", fault);
     push_str(l, env!("CARGO_PKG_VERSION"));
     lua_setfield(l, -2, b"version\0".as_ptr() as *const c_char);
     lua_pushnumber(l, ports::all().count() as f64);
