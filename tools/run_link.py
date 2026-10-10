@@ -32,7 +32,8 @@ COLUMNS = ("both_yes", "both_no", "host_only", "packet_only")
 TOTALS = re.compile(r"scenes (\d+) draws (\d+) draws_without_packet (\d+)")
 # The index of each fact in the contract (MGE_LINK_FACT_*).
 FACTS = ("light_radius", "sun_light", "moon_shadow", "water_plane", "ui_scene", "scene_kind", "sky_draw", "land_splat",
-         "later_view", "state_draw", "state_buffers", "state_transform")
+         "later_view", "state_draw", "state_buffers", "state_transform", "state_blend", "state_depth", "state_lighting",
+         "state_material", "state_stages", "state_lights")
 # The facts that MGE XE can take from a packet.
 USABLE = ("ui_scene", "water_plane", "sun_light", "sky_draw", "land_splat", "scene_kind", "moon_shadow")
 # The classes of the contract (MGE_LINK_CLASS_*), by index.
@@ -89,6 +90,8 @@ def main():
     ap.add_argument("--sweep", type=float, help="turn the camera and look up during the test; the value is the sign "
                     "and size of the pitch, for example -1")
     ap.add_argument("--moon", choices=("masser", "secunda"), help="keep the camera on this moon during the test")
+    ap.add_argument("--quick", action="store_true", help="only the Rust code, 2 seconds in each place, short waits: "
+                    "for the state packets, which only the Rust code sends")
     ap.add_argument("--label", default="link")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -99,6 +102,8 @@ def main():
     run = session.Run(args.label)
     spec = run.spec("link", save=args.save, cells=cells, seconds=args.seconds, facts=mask,
                     shotDir=run.dir.replace("\\", "/"))
+    if args.quick:
+        spec.update(modes=["live"], seconds=2, settleSeconds=3, menuSeconds=3)
     if args.hour is not None:
         spec["hour"] = args.hour
     if args.moon:

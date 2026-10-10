@@ -13,7 +13,13 @@ use core::ptr::{addr_of, addr_of_mut};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::engine::{vcall0, WORLD_CONTROLLER};
+use crate::d3d::{
+    D3DRS_ALPHABLENDENABLE, D3DRS_ALPHAFUNC, D3DRS_ALPHAREF, D3DRS_ALPHATESTENABLE, D3DRS_AMBIENT, D3DRS_CULLMODE,
+    D3DRS_DESTBLEND, D3DRS_DIFFUSEMATERIALSOURCE, D3DRS_EMISSIVEMATERIALSOURCE, D3DRS_FOGENABLE, D3DRS_LIGHTING,
+    D3DRS_SRCBLEND, D3DRS_VERTEXBLEND, D3DRS_ZWRITEENABLE,
+};
 use crate::gen::layouts::{
+    NiDX8LightManager as LM, NiDX8LightManager_LightEntry as LE, NiDX8MaterialManager_Entry as ME, NiDX8RenderState as RS,
     NiGeometryBufferData as GB,
     NiAVObject as AV, NiCamera as CAM, NiDX8Renderer as R, NiDynamicEffectState as DES,
     NiDynamicEffectState_InternalList as DL, NiLight as L, NiMaterialProperty as MP, NiPropertyState as PS,
@@ -160,6 +166,14 @@ static mut ROOTS: Roots = NO_ROOTS;
 /// The number of draw packets of each class since the last read of the counters.
 static mut CLASS_COUNTS: [u32; CLASS_COUNT] = [0; CLASS_COUNT];
 const CLASS_COUNT: usize = 18;
+/// The lights of the state packet in progress. Only the render thread uses it.
+static mut STATE_LIGHTS: [StateLightV1; MAX_STATE_LIGHTS] = [StateLightV1 { device_index: 0, d3d_light: [0; 26] }; MAX_STATE_LIGHTS];
+const MAX_STATE_LIGHTS: usize = 64;
+/// The texture stage states of a state packet, in the order of the contract: `D3DTSS_*`.
+const STAGE_STATES: [u32; STATE_STAGE_STATES as usize] = [1, 2, 3, 4, 5, 6, 26, 27, 28, 11, 24, 7, 8, 9, 10, 22, 23];
+/// A list item of the game: data, next, previous.
+const ITEM_DATA: usize = 0x0;
+const ITEM_NEXT: usize = 0x4;
 static mut LIGHTS: [LightV1; MAX_LIGHTS] = [LightV1 { light: 0, device_index: 0, light_type: 0, radius: 0.0 }; MAX_LIGHTS];
 
 unsafe fn host() -> Option<&'static HostV1> {
@@ -466,7 +480,58 @@ pub unsafe fn draw_state(
     if host.capabilities & CAP_DRAW_STATE == 0 || crate::shadow::leg() == crate::shadow::Leg::Rust {
         return;
     }
+    // The render state object of the game keeps the value of each state that it sent to the
+    // device. The Rust ports write this record, so it is the state of this draw.
+    let render_state: usize = rd(renderer, R::renderState);
+    let rs = |state: u32| -> u32 { rd(render_state, RS::renderStateSettings + state as usize * 8) };
+    let mut material = [0.0f32; 17];
+    let entry: usize = rd(render_state, RS::materialManager_currentMaterialEntry);
+    if entry != 0 {
+        core::ptr::copy_nonoverlapping((entry + ME::d3dMaterial) as *const f32, material.as_mut_ptr(), 17);
+    }
+    // The record of the texture stage states is in the same object: 32 states for a stage.
+    let mut stages = [[0u32; STATE_STAGE_STATES as usize]; STATE_STAGES as usize];
+    for (stage, values) in stages.iter_mut().enumerate() {
+        for (value, state) in values.iter_mut().zip(STAGE_STATES) {
+            *value = rd(render_state, RS::maybe_textureStageStateSettings + (state as usize + stage * 32) * 8);
+        }
+    }
+    // The light manager has a list of the lights that are on, and an entry with the
+    // D3DLIGHT8 for each light that it sent.
+    let lights = &mut *addr_of_mut!(STATE_LIGHTS);
+    let mut light_count = 0;
+    let manager: usize = rd(renderer, R::lightManager);
+    let mut item: usize = rd(manager, LM::deviceLights_head);
+    while item != 0 && light_count < MAX_STATE_LIGHTS {
+        let light: usize = rd(item, ITEM_DATA);
+        item = rd(item, ITEM_NEXT);
+        let entry = if light != 0 { crate::ports::hash_map::find_value(manager + LM::lightEntries, rd(light, L::index)) } else { 0 };
+        if entry == 0 {
+            continue;
+        }
+        lights[light_count].device_index = rd(entry, LE::lightIndex);
+        core::ptr::copy_nonoverlapping((entry + LE::d3dLight) as *const u32, lights[light_count].d3d_light.as_mut_ptr(), 26);
+        light_count += 1;
+    }
     let mut state = DrawStateV1 {
+        light_count: light_count as u32,
+        lights: addr_of!(STATE_LIGHTS) as *const StateLightV1,
+        stages,
+        depth_write: rs(D3DRS_ZWRITEENABLE),
+        cull_mode: rs(D3DRS_CULLMODE),
+        vertex_blend: rs(D3DRS_VERTEXBLEND),
+        blend_enable: rs(D3DRS_ALPHABLENDENABLE),
+        source_blend: rs(D3DRS_SRCBLEND),
+        destination_blend: rs(D3DRS_DESTBLEND),
+        alpha_test_enable: rs(D3DRS_ALPHATESTENABLE),
+        alpha_function: rs(D3DRS_ALPHAFUNC),
+        alpha_reference: rs(D3DRS_ALPHAREF),
+        lighting: rs(D3DRS_LIGHTING),
+        fog_enable: rs(D3DRS_FOGENABLE),
+        diffuse_material_source: rs(D3DRS_DIFFUSEMATERIALSOURCE),
+        emissive_material_source: rs(D3DRS_EMISSIVEMATERIALSOURCE),
+        ambient: rs(D3DRS_AMBIENT),
+        material,
         struct_size: size_of::<DrawStateV1>() as u32,
         flags: if skinned { STATE_SKINNED } else { 0 },
         primitive_type,

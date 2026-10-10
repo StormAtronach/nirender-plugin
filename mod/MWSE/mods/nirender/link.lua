@@ -72,9 +72,17 @@ return function(nirender, spec)
             local weather = tes3.worldController.weatherController
             pcall(function() weather:switchImmediate(0) weather:updateVisuals() end)
         end
-        measure(where, "off", "off", function()
-            measure(where, "live", "live", function()
+        -- spec.modes limits the test to some of the modes: a quick run.
+        local wanted = {}
+        for _, mode in ipairs(spec.modes or { "off", "live" }) do wanted[mode] = true end
+        local function step(mode, next_step)
+            if not wanted[mode] then return next_step() end
+            measure(where, mode, mode, next_step)
+        end
+        step("off", function()
+            step("live", function()
                 nirender.setMode("*", "off")
+                if spec.modes then return done() end
                 picture_test(where, function()
                     if facts == 0 then return done() end
                     -- The game runs with the facts in use. It must continue to run, and the

@@ -76,10 +76,18 @@ pub const FACT_LATER_VIEW: u32 = 8;
 pub const FACT_STATE_DRAW: u32 = 9;
 pub const FACT_STATE_BUFFERS: u32 = 10;
 pub const FACT_STATE_TRANSFORM: u32 = 11;
-pub const FACT_COUNT: u32 = 16;
+pub const FACT_STATE_BLEND: u32 = 12;
+pub const FACT_STATE_DEPTH: u32 = 13;
+pub const FACT_STATE_LIGHTING: u32 = 14;
+pub const FACT_STATE_MATERIAL: u32 = 15;
+pub const FACT_STATE_STAGES: u32 = 16;
+pub const FACT_STATE_LIGHTS: u32 = 17;
+pub const STATE_STAGES: u32 = 8;
+pub const STATE_STAGE_STATES: u32 = 17;
+pub const FACT_COUNT: u32 = 32;
 
 /// The names of the facts, for reports. The index is `FACT_*`.
-pub const FACT_NAMES: [&str; 12] = [
+pub const FACT_NAMES: [&str; 18] = [
     "light radius",
     "sun light",
     "moon shadow",
@@ -92,6 +100,12 @@ pub const FACT_NAMES: [&str; 12] = [
     "state draw",
     "state buffers",
     "state transform",
+    "state blend",
+    "state depth",
+    "state lighting",
+    "state material",
+    "state stages",
+    "state lights",
 ];
 
 #[repr(C)]
@@ -132,7 +146,7 @@ pub struct DrawV1 {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct DrawStateV1 {
     pub struct_size: u32,
     pub flags: u32,
@@ -147,6 +161,31 @@ pub struct DrawStateV1 {
     pub vertex_format: u32,
     pub index_buffer: u32,
     pub world: [f32; 16],
+    pub depth_write: u32,
+    pub cull_mode: u32,
+    pub vertex_blend: u32,
+    pub blend_enable: u32,
+    pub source_blend: u32,
+    pub destination_blend: u32,
+    pub alpha_test_enable: u32,
+    pub alpha_function: u32,
+    pub alpha_reference: u32,
+    pub lighting: u32,
+    pub fog_enable: u32,
+    pub diffuse_material_source: u32,
+    pub emissive_material_source: u32,
+    pub ambient: u32,
+    pub material: [f32; 17],
+    pub light_count: u32,
+    pub lights: *const StateLightV1,
+    pub stages: [[u32; STATE_STAGE_STATES as usize]; STATE_STAGES as usize],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct StateLightV1 {
+    pub device_index: u32,
+    pub d3d_light: [u32; 26],
 }
 
 #[repr(C)]
@@ -197,9 +236,10 @@ const _: () = {
     assert!(size_of::<SceneV1>() == 24);
     assert!(size_of::<LightV1>() == 16);
     assert!(size_of::<DrawV1>() == 48);
-    assert!(size_of::<DrawStateV1>() == 112);
+    assert!(size_of::<StateLightV1>() == 108);
+    assert!(size_of::<DrawStateV1>() == 788);
     assert!(size_of::<FactCountV1>() == 16);
-    assert!(size_of::<CountersV1>() == 272);
+    assert!(size_of::<CountersV1>() == 528);
     assert!(size_of::<HostV1>() == 44);
 };
 
