@@ -272,6 +272,32 @@ pub fn skip_render_state(state: u32) -> bool {
     skip(FACT_DEVICE_RENDER_STATES, PACKET_RENDER_STATES.contains(&state))
 }
 
+/// A device object for `NiDX8MaterialManager::UpdateToDevice` when the host sets the
+/// material. The game function does its other work, and its `SetMaterial` call does nothing.
+/// The Morrowind Code Patch changes that function, so the plugin has no port of it.
+static mut NO_MATERIAL_VTABLE: [usize; 128] = [0; 128];
+static mut NO_MATERIAL_DEVICE: usize = 0;
+
+/// `IDirect3DDevice8::SetMaterial` that does nothing.
+unsafe extern "system" fn set_material_nothing(_device: usize, _material: usize) -> u32 {
+    0
+}
+
+/// The device to give to `NiDX8MaterialManager::UpdateToDevice`: `device`, or an object that
+/// takes no material when the host sets the material from the packets.
+pub unsafe fn material_device(device: usize) -> usize {
+    if !skip(FACT_DEVICE_RENDER_STATES, true) {
+        return device;
+    }
+    let vtable = &mut *addr_of_mut!(NO_MATERIAL_VTABLE);
+    if vtable[0] == 0 {
+        // Only the SetMaterial slot gets a call.
+        *vtable = [set_material_nothing as *const () as usize; 128];
+        *addr_of_mut!(NO_MATERIAL_DEVICE) = vtable.as_ptr() as usize;
+    }
+    addr_of!(NO_MATERIAL_DEVICE) as usize
+}
+
 /// True when the host sets this texture stage state from the packets.
 #[inline]
 pub fn skip_stage_state(state: u32) -> bool {
