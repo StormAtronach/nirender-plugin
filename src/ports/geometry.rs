@@ -4,15 +4,22 @@
 
 use core::mem::transmute;
 
-use crate::engine::operator_new;
+use crate::d3d::{
+    com_release, device_set_transform, D3DFVF_DIFFUSE, D3DFVF_TEX1, D3DFVF_XYZ, D3DPOOL_MANAGED, D3DPT_TRIANGLEFAN,
+    D3DPT_TRIANGLELIST, D3DPT_TRIANGLESTRIP, D3DTS_PROJECTION, D3DTS_VIEW,
+};
+use crate::engine::{
+    matrix33_copy, ni_bound_copy, ni_bound_ctor, ni_bound_dtor, operator_delete, operator_new, thiscall0, vcall0, VEC3_ZERO,
+};
 use crate::gen::layouts::{
     NiDX8IndexBufferManager as IBM, NiDX8Renderer as R, NiDX8Renderer_BatchedObject as Batched,
     NiDX8VBResource as VBResource, NiDX8VertexBufferManager as VBM, NiDX8VertexBufferManager_VBInfo as VBInfo,
-    NiGeometry, NiGeometryBufferData as GB, NiGeometryData, NiRefObject, NiRendererSpecificProperty,
+    NiGeometry, NiGeometryBufferData as GB, NiGeometryData, NiRendererSpecificProperty,
     NiRendererSpecificProperty_RenderData7 as RenderData7, NiSkinInstance, NiSkinPartition,
     NiSkinPartition_Partition as Partition, NiTransform, NiTriShapeData, NiTriStripsData, THashMap, THashMap_Node,
 };
 use crate::mem::{rd, wr};
+use crate::ports::{hash_map, ni};
 use crate::shadow::Regions;
 
 // ---------------------------------------------------------------------------------------
@@ -27,28 +34,12 @@ const RTTI_NI_TRI_STRIPS: usize = 0x7DE5A8;
 const RTTI_NI_TRI_SHAPE_DATA: usize = 0x7DE490;
 /// `NiRTTI` of `NiTriStripsData`.
 const RTTI_NI_TRI_STRIPS_DATA: usize = 0x7DE588;
-/// `NiRTTI::baseRTTI`
-const RTTI_BASE: usize = 4;
 /// The identity `matrix33`. A static constructor of the game fills it.
 const IDENTITY_MATRIX33: usize = 0x7DE664;
-/// `vec3` (0, 0, 0). A static constructor of the game fills it.
-const ZERO_VEC3: usize = 0x7DE6CC;
 /// 1.0 as bits.
 const ONE: u32 = 0x3F80_0000;
 
-const D3DTS_VIEW: u32 = 2;
-const D3DTS_PROJECTION: u32 = 3;
-const D3DPT_TRIANGLELIST: u32 = 4;
-const D3DPT_TRIANGLESTRIP: u32 = 5;
-const D3DPT_TRIANGLEFAN: u32 = 6;
-const D3DPOOL_MANAGED: u32 = 1;
-const D3DFVF_XYZ: u32 = 0x002;
-const D3DFVF_DIFFUSE: u32 = 0x040;
-const D3DFVF_TEX1: u32 = 0x100;
-
 // Virtual functions.
-/// `NiObject::GetRTTI`
-const V_GET_RTTI: usize = 0x04;
 /// `NiGeometryData::GetActiveVertexCount`
 const V_GET_ACTIVE_VERTEX_COUNT: usize = 0x30;
 /// `NiTriBasedGeomData::GetActiveTriangleCount`
@@ -57,47 +48,9 @@ const V_GET_ACTIVE_TRIANGLE_COUNT: usize = 0x3C;
 const V_GET_TRI_LIST: usize = 0x44;
 /// `NiRendererSpecificProperty::RenderDataBase::getRendererTypeId`
 const V_GET_RENDERER_TYPE_ID: usize = 0x04;
-/// `InterfaceTHashMap`
-const V_HASH_KEY: usize = 0x04;
-const V_CMP_KEY: usize = 0x08;
-const V_MAKE_KEY_VALUE_PAIR: usize = 0x0C;
-const V_DTOR_KEY_VALUE_PAIR: usize = 0x10;
-/// `IUnknown::Release`
-const V_RELEASE: usize = 0x08;
 
 /// `NiSkinData::skinPartition`
 const SKIN_DATA_SKIN_PARTITION: usize = 0x08;
-
-unsafe fn thiscall0(addr: usize, this: usize) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize) -> u32>(addr)(this)
-}
-
-unsafe fn thiscall1(addr: usize, this: usize, a: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32) -> u32>(addr)(this, a)
-}
-
-unsafe fn thiscall2(addr: usize, this: usize, a: u32, b: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32) -> u32>(addr)(this, a, b)
-}
-
-unsafe fn thiscall3(addr: usize, this: usize, a: u32, b: u32, c: u32) -> u32 {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32, u32) -> u32>(addr)(this, a, b, c)
-}
-
-/// A virtual function of `object` at `offset` in its vtable.
-unsafe fn virtual_at(object: usize, offset: usize) -> usize {
-    rd(rd::<usize>(object, 0), offset)
-}
-
-/// A virtual function without arguments.
-unsafe fn vcall0(object: usize, offset: usize) -> u32 {
-    thiscall0(virtual_at(object, offset), object)
-}
-
-/// 0x727530 `operator delete` of the C runtime of the game.
-unsafe fn operator_delete(block: usize) {
-    transmute::<usize, unsafe extern "C" fn(usize)>(0x727530)(block)
-}
 
 /// 0x6BDE50 `NiDX8VertexBufferManager::PackUntransformedVB`. Returns the vertex buffer.
 #[allow(clippy::too_many_arguments)]
@@ -167,26 +120,6 @@ unsafe fn tri_strips_data_strip_length_sum(data: usize) -> u32 {
     thiscall0(0x741E30, data)
 }
 
-/// 0x6ED100 `NiBound_or_NiQuaternion::Copy`
-unsafe fn bound_copy(to: usize, from: usize) {
-    thiscall1(0x6ED100, to, from as u32);
-}
-
-/// 0x6F25E0 `NiBound_or_NiPlane::ctor`
-unsafe fn bound_ctor(bound: usize) {
-    thiscall0(0x6F25E0, bound);
-}
-
-/// 0x6E9A00 `nullsub_36`: `retn`. The game code calls it as the destructor of the bound.
-unsafe fn nullsub_36(bound: usize) {
-    thiscall0(0x6E9A00, bound);
-}
-
-/// 0x6E7CD0 `matrix33::copy`
-unsafe fn matrix33_copy(to: usize, from: usize) {
-    thiscall1(0x6E7CD0, to, from as u32);
-}
-
 /// 0x6AEB80 `NiDX8Renderer::DrawPrimitive`. Another mod changes it in memory, so it stays
 /// game code.
 unsafe fn renderer_draw_primitive(this: usize, geom_data: usize, skin: usize, transform: usize, bound: usize, buffer: usize, last: u32) {
@@ -195,115 +128,8 @@ unsafe fn renderer_draw_primitive(this: usize, geom_data: usize, skin: usize, tr
 }
 
 // ---------------------------------------------------------------------------------------
-// The device and the buffers, through their vtables on each call
-// ---------------------------------------------------------------------------------------
-
-unsafe fn device_set_transform(device: usize, state: u32, matrix: usize) -> u32 {
-    transmute::<usize, unsafe extern "system" fn(usize, u32, usize) -> u32>(virtual_at(device, 0x94))(device, state, matrix)
-}
-
-/// `IUnknown::Release` of a vertex or index buffer.
-unsafe fn com_release(object: u32) -> u32 {
-    let object = object as usize;
-    transmute::<usize, unsafe extern "system" fn(usize) -> u32>(virtual_at(object, V_RELEASE))(object)
-}
-
-// ---------------------------------------------------------------------------------------
 // Shared pieces
 // ---------------------------------------------------------------------------------------
-
-/// True when the run-time type of `object` is `rtti` or comes from it.
-unsafe fn is_kind_of(object: usize, rtti: usize) -> bool {
-    let mut at = vcall0(object, V_GET_RTTI) as usize;
-    while at != 0 {
-        if at == rtti {
-            return true;
-        }
-        at = rd(at, RTTI_BASE);
-    }
-    false
-}
-
-unsafe fn hash_key(map: usize, key: u32) -> usize {
-    thiscall1(virtual_at(map, V_HASH_KEY), map, key) as usize
-}
-
-unsafe fn hash_cmp_key(map: usize, key: u32, node: usize) -> bool {
-    thiscall2(virtual_at(map, V_CMP_KEY), map, key, rd(node, THashMap_Node::key)) as u8 != 0
-}
-
-unsafe fn hash_bucket_head(map: usize, bucket: usize) -> usize {
-    rd(rd::<usize>(map, THashMap::arrayBuckets), bucket * 4)
-}
-
-/// The node a `THashMap` has for `key`, or 0.
-unsafe fn hash_find_node(map: usize, key: u32) -> usize {
-    let bucket = hash_key(map, key);
-    let mut node = hash_bucket_head(map, bucket);
-    while node != 0 {
-        if hash_cmp_key(map, key, node) {
-            return node;
-        }
-        node = rd(node, THashMap_Node::nextNode);
-    }
-    0
-}
-
-/// `THashMap::SetAt`, which the game code has inline. The node of the key gets the new pair.
-/// Without such a node, a new node goes to the head of its bucket.
-unsafe fn hash_set(map: usize, key: u32, value: u32) {
-    let bucket = hash_key(map, key);
-    let mut node = hash_bucket_head(map, bucket);
-    while node != 0 {
-        if hash_cmp_key(map, key, node) {
-            thiscall1(virtual_at(map, V_DTOR_KEY_VALUE_PAIR), map, node as u32);
-            thiscall3(virtual_at(map, V_MAKE_KEY_VALUE_PAIR), map, node as u32, key, value);
-            return;
-        }
-        node = rd(node, THashMap_Node::nextNode);
-    }
-    let node = operator_new(THashMap_Node::SIZE);
-    thiscall3(virtual_at(map, V_MAKE_KEY_VALUE_PAIR), map, node as u32, key, value);
-    wr(node, THashMap_Node::nextNode, hash_bucket_head(map, bucket));
-    wr(rd::<usize>(map, THashMap::arrayBuckets), bucket * 4, node);
-    wr(map, THashMap::count, rd::<u32>(map, THashMap::count).wrapping_add(1));
-}
-
-/// Takes the node of `key` out of its bucket. Returns the node, or 0 when there is none.
-unsafe fn hash_unlink(map: usize, key: u32) -> usize {
-    let bucket = hash_key(map, key);
-    let mut node = hash_bucket_head(map, bucket);
-    if node == 0 {
-        return 0;
-    }
-    if hash_cmp_key(map, key, node) {
-        let next: usize = rd(node, THashMap_Node::nextNode);
-        wr(rd::<usize>(map, THashMap::arrayBuckets), bucket * 4, next);
-        return node;
-    }
-    loop {
-        let previous = node;
-        node = rd(node, THashMap_Node::nextNode);
-        if node == 0 {
-            return 0;
-        }
-        if hash_cmp_key(map, key, node) {
-            wr(previous, THashMap_Node::nextNode, rd::<usize>(node, THashMap_Node::nextNode));
-            return node;
-        }
-    }
-}
-
-/// `THashMap::RemoveAt`, which the game code has inline.
-unsafe fn hash_remove(map: usize, key: u32) {
-    let node = hash_unlink(map, key);
-    if node == 0 {
-        return;
-    }
-    thiscall1(virtual_at(map, V_DTOR_KEY_VALUE_PAIR), map, node as u32);
-    operator_delete(node);
-    wr(map, THashMap::count, rd::<u32>(map, THashMap::count).wrapping_sub(1));
-}
 
 /// The members that a new `NiGeometryBufferData` gets as zero, in the order of the game code.
 /// `primitiveType` (+0x2C) is not one of them.
@@ -335,27 +161,8 @@ unsafe fn new_geometry_buffer(out: usize) {
     }
 }
 
-/// The assignment to a `NiPointer` member, which the game code has inline.
-unsafe fn assign_pointer(slot: usize, object: usize) {
-    let old: usize = rd(slot, 0);
-    if old == object {
-        return;
-    }
-    if old != 0 {
-        let count = rd::<u32>(old, NiRefObject::refCount).wrapping_sub(1);
-        wr(old, NiRefObject::refCount, count);
-        if count == 0 {
-            // This call is the deleting destructor, with the flag to free the memory.
-            thiscall1(virtual_at(old, 0), old, 1);
-        }
-    }
-    wr(slot, 0, object);
-    if object != 0 {
-        wr(object, NiRefObject::refCount, rd::<u32>(object, NiRefObject::refCount).wrapping_add(1));
-    }
-}
-
-/// `new NiSkinPartition`. Returns the object and what the constructor left in EAX.
+/// `new NiSkinPartition`. Returns what the constructor left in EAX: the object. Returns 0 when
+/// `operator new` gave no block. Then it does not call the constructor.
 unsafe fn new_skin_partition() -> usize {
     let block = operator_new(NiSkinPartition::SIZE);
     if block == 0 {
@@ -376,41 +183,15 @@ unsafe fn index_entries_of(buffer: usize) -> u32 {
     }
 }
 
-/// Adds regions and counts them. `Regions` holds 8 and drops the others with no message.
-struct Tally<'a> {
-    set: &'a mut Regions,
-    used: usize,
+/// Adds the bucket array of a hash map.
+unsafe fn add_buckets(set: &mut Regions, map: usize) {
+    set.add(rd(map, THashMap::arrayBuckets), rd::<usize>(map, THashMap::bucketCount) * 4);
 }
 
-impl<'a> Tally<'a> {
-    const MAX: usize = 8;
-
-    fn new(set: &'a mut Regions) -> Tally<'a> {
-        Tally { set, used: 0 }
-    }
-
-    fn add(&mut self, addr: usize, size: usize) {
-        if addr == 0 || size == 0 {
-            return;
-        }
-        self.used += 1;
-        if self.used > Self::MAX {
-            self.set.skip();
-        } else {
-            self.set.add(addr, size);
-        }
-    }
-
-    /// The bucket array of a hash map.
-    unsafe fn buckets(&mut self, map: usize) {
-        self.add(rd(map, THashMap::arrayBuckets), rd::<usize>(map, THashMap::bucketCount) * 4);
-    }
-
-    /// The two buffer managers. Their functions run as game code inside the ports here.
-    unsafe fn managers(&mut self, this: usize) {
-        self.add(rd(this, R::vertexBufferManager), VBM::SIZE);
-        self.add(rd(this, R::indexBufferManager), IBM::SIZE);
-    }
+/// Adds the two buffer managers. Their functions run as game code inside the ports here.
+unsafe fn add_managers(set: &mut Regions, this: usize) {
+    set.add(rd(this, R::vertexBufferManager), VBM::SIZE);
+    set.add(rd(this, R::indexBufferManager), IBM::SIZE);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -421,11 +202,11 @@ impl<'a> Tally<'a> {
 unsafe fn destroy_geometry_buffer(buffer: usize) {
     let vertex_buffer: u32 = rd(buffer, GB::d3dVertexBuffer);
     if vertex_buffer != 0 {
-        com_release(vertex_buffer);
+        com_release(vertex_buffer as usize);
     }
     let index_buffer: u32 = rd(buffer, GB::indexBuffer);
     if index_buffer != 0 {
-        com_release(index_buffer);
+        com_release(index_buffer as usize);
     }
     operator_delete(buffer);
 }
@@ -439,7 +220,7 @@ pub unsafe fn purge_skin_partition(this: usize, partition: usize) {
     }
     destroy_geometry_buffer(buffer);
     wr::<u32>(partition, Partition::bufferData, 0);
-    hash_remove(this + R::hashmap_skinPartitionsToGeomBuffers, partition as u32);
+    hash_map::remove(this + R::hashmap_skinPartitionsToGeomBuffers, partition as u32);
 }
 
 /// 0x6AF3A0 `NiDX8Renderer::PurgeGeometryData`
@@ -447,47 +228,50 @@ pub unsafe fn purge_geometry_data(this: usize, geom_data: usize) {
     crate::shadow::touch(&purge_geometry_data_port::STATE);
     let key: u32 = rd(geom_data, NiGeometryData::uniqueID);
     let map = this + R::hashGeomBuffers;
-    let node = hash_find_node(map, key);
+    let node = hash_map::find(map, key);
     if node == 0 {
         return;
     }
     destroy_geometry_buffer(rd(node, THashMap_Node::data));
-    hash_remove(map, key);
+    hash_map::remove(map, key);
 }
 
 /// A purge writes the map, the bucket array and the node before the node that it removes. The map
 /// is in the renderer. The purge frees the buffer data and the node, and the shadow test tracks
-/// these blocks. A purge of a buffer data with a device buffer is a skip, because `Release` is real
-/// in the two runs.
+/// these blocks. The regions have each node of the bucket that is before the node of the key. The
+/// call is a skip when the buffer data has a device buffer, because `Release` is real in the two
+/// runs.
 unsafe fn purge_regions(set: &mut Regions, this: usize, map: usize, key: u32, buffer: usize, partition: usize) {
-    let mut tally = Tally::new(set);
-    tally.add(this, R::SIZE);
-    tally.add(partition, Partition::SIZE);
+    set.add(this, R::SIZE);
+    set.add(partition, Partition::SIZE);
     if buffer == 0 {
         return;
     }
     if rd::<u32>(buffer, GB::d3dVertexBuffer) != 0 || rd::<u32>(buffer, GB::indexBuffer) != 0 {
-        tally.set.skip();
+        set.skip();
         return;
     }
-    tally.set.allocates();
-    tally.buckets(map);
-    let mut node = hash_bucket_head(map, hash_key(map, key));
-    while node != 0 && !hash_cmp_key(map, key, node) {
-        tally.add(node, THashMap_Node::SIZE);
+    set.allocates();
+    add_buckets(set, map);
+    let mut node = hash_map::bucket_head(map, hash_map::hash_key(map, key) as usize);
+    while node != 0 && !hash_map::cmp_key(map, key, rd(node, THashMap_Node::key)) {
+        set.add(node, THashMap_Node::SIZE);
         node = rd(node, THashMap_Node::nextNode);
     }
 }
 
+/// The call is a skip when `purge_regions` makes it a skip for the buffer data of the partition.
 unsafe fn purge_skin_partition_regions(set: &mut Regions, this: usize, partition: usize) {
     let map = this + R::hashmap_skinPartitionsToGeomBuffers;
     purge_regions(set, this, map, partition as u32, rd(partition, Partition::bufferData), partition);
 }
 
+/// The call is a skip when `purge_regions` makes it a skip for the buffer data that the map has
+/// for the geometry data.
 unsafe fn purge_geometry_data_regions(set: &mut Regions, this: usize, geom_data: usize) {
     let map = this + R::hashGeomBuffers;
     let key: u32 = rd(geom_data, NiGeometryData::uniqueID);
-    let node = hash_find_node(map, key);
+    let node = hash_map::find(map, key);
     let buffer = if node == 0 { 0 } else { rd(node, THashMap_Node::data) };
     purge_regions(set, this, map, key, buffer, 0);
 }
@@ -504,7 +288,7 @@ pub unsafe fn create_geometry_buffer_data(this: usize, out: usize, geom_data: us
         return 0;
     }
     let map = this + R::hashGeomBuffers;
-    let node = hash_find_node(map, rd(geom_data, NiGeometryData::uniqueID));
+    let node = hash_map::find(map, rd(geom_data, NiGeometryData::uniqueID));
     if node != 0 {
         wr::<u32>(out, 0, rd(node, THashMap_Node::data));
         return 0;
@@ -512,20 +296,20 @@ pub unsafe fn create_geometry_buffer_data(this: usize, out: usize, geom_data: us
     new_geometry_buffer(out);
     let key: u32 = rd(geom_data, NiGeometryData::uniqueID);
     let value: u32 = rd(out, 0);
-    hash_set(map, key, value);
+    hash_map::set(map, key, value as usize);
     1
 }
 
 /// A new buffer data and a new node are new blocks. The bucket array and the count exist already.
+/// No call is a skip.
 unsafe fn create_geometry_buffer_data_regions(set: &mut Regions, this: usize, out: usize, geom_data: usize) {
-    let mut tally = Tally::new(set);
-    tally.add(this, R::SIZE);
-    tally.add(out, 4);
+    set.add(this, R::SIZE);
+    set.add(out, 4);
     if geom_data == 0 {
         return;
     }
-    tally.set.allocates();
-    tally.buckets(this + R::hashGeomBuffers);
+    set.allocates();
+    add_buckets(set, this + R::hashGeomBuffers);
 }
 
 /// 0x6AF930 `NiDX8Renderer::findCachedPartitionGeomBuffer`. Puts the buffer data of the
@@ -537,7 +321,7 @@ pub unsafe fn find_cached_partition_geom_buffer(this: usize, out: usize, geom_da
         return 0;
     }
     let map = this + R::hashmap_skinPartitionsToGeomBuffers;
-    let node = hash_find_node(map, partition as u32);
+    let node = hash_map::find(map, partition as u32);
     if node != 0 {
         wr::<u32>(out, 0, rd(node, THashMap_Node::data));
     }
@@ -547,20 +331,21 @@ pub unsafe fn find_cached_partition_geom_buffer(this: usize, out: usize, geom_da
     new_geometry_buffer(out);
     wr::<u32>(partition, Partition::bufferData, rd(out, 0));
     let value: u32 = rd(out, 0);
-    hash_set(map, partition as u32, value);
+    hash_map::set(map, partition as u32, value as usize);
     1
 }
 
+/// The regions are the renderer, `*out`, the partition and the bucket array of the map. A new buffer
+/// data and a new node are new blocks. No call is a skip.
 unsafe fn find_cached_partition_geom_buffer_regions(set: &mut Regions, this: usize, out: usize, geom_data: usize, skin: usize, partition: usize) {
-    let mut tally = Tally::new(set);
-    tally.add(this, R::SIZE);
-    tally.add(out, 4);
+    set.add(this, R::SIZE);
+    set.add(out, 4);
     if geom_data == 0 || skin == 0 {
         return;
     }
-    tally.set.allocates();
-    tally.add(partition, Partition::SIZE);
-    tally.buckets(this + R::hashmap_skinPartitionsToGeomBuffers);
+    set.allocates();
+    set.add(partition, Partition::SIZE);
+    add_buckets(set, this + R::hashmap_skinPartitionsToGeomBuffers);
 }
 
 /// The values that `packGeometryBuffers` reads before it decides: the active vertex count, the
@@ -569,7 +354,7 @@ unsafe fn find_cached_partition_geom_buffer_regions(set: &mut Regions, this: usi
 unsafe fn pack_inputs(out: usize, geom_data: usize) -> (u32, u32, u32) {
     let active_vertices = vcall0(geom_data, V_GET_ACTIVE_VERTEX_COUNT) & 0xFFFF;
     let mut tri_list: u32 = rd(rd::<usize>(out, 0), GB::triList);
-    if is_kind_of(geom_data, RTTI_NI_TRI_SHAPE_DATA) {
+    if ni::is_kind_of(geom_data, RTTI_NI_TRI_SHAPE_DATA) {
         tri_list = vcall0(geom_data, V_GET_TRI_LIST);
     }
     let buffer: usize = rd(out, 0);
@@ -642,7 +427,7 @@ pub unsafe fn pack_geometry_buffers(this: usize, out: usize, geom_data: usize, s
         let current: u32 = rd(rd::<usize>(out, 0), GB::d3dVertexBuffer);
         if current != vertex_buffer {
             if current != 0 {
-                com_release(current);
+                com_release(current as usize);
             }
             wr(rd::<usize>(out, 0), GB::d3dVertexBuffer, vertex_buffer);
             wr(rd::<usize>(out, 0), GB::verticesCount, active_vertices);
@@ -651,7 +436,7 @@ pub unsafe fn pack_geometry_buffers(this: usize, out: usize, geom_data: usize, s
             let current: u32 = rd(rd::<usize>(out, 0), GB::indexBuffer);
             if current != index_buffer {
                 if current != 0 {
-                    com_release(current);
+                    com_release(current as usize);
                 }
                 wr(rd::<usize>(out, 0), GB::indexBuffer, index_buffer);
                 wr(rd::<usize>(out, 0), GB::indexBufferEntries, entries);
@@ -696,35 +481,35 @@ pub unsafe fn pack_geometry_buffers(this: usize, out: usize, geom_data: usize, s
     1
 }
 
-/// The call is a skip in these two cases:
-/// - With a shader interface, because `buildVertexBuffer` can make a vertex shader on the device.
-/// - When the function packs the vertex buffer again or makes the index buffer again, and that
-///   buffer exists. The manager gives the same buffer or a new one. With a new buffer the function
+/// The call is a skip when one of these two conditions is true:
+/// - The buffer data has no vertex buffer and the call has a shader interface. `buildVertexBuffer`
+///   can make a vertex shader on the device.
+/// - The function packs the vertex buffer again or makes the index buffer again, and that buffer
+///   exists. The manager gives the same buffer or a new one. With a new buffer the function
 ///   releases the old buffer, and `Release` is real in the two runs.
 unsafe fn pack_geometry_buffers_regions(set: &mut Regions, this: usize, out: usize, geom_data: usize, skin: usize, shader: usize) {
-    let mut tally = Tally::new(set);
     let buffer: usize = rd(out, 0);
     if buffer == 0 || geom_data == 0 {
         return;
     }
-    tally.add(buffer, GB::SIZE);
+    set.add(buffer, GB::SIZE);
     if rd::<u32>(buffer, GB::d3dVertexBuffer) == 0 {
         if shader != 0 {
-            tally.set.skip();
+            set.skip();
         }
-        tally.managers(this);
+        add_managers(set, this);
         return;
     }
     if rd::<u8>(buffer, GB::flags) & 1 != 0 {
         return;
     }
-    tally.managers(this);
+    add_managers(set, this);
     let (active_vertices, tri_list, entries) = pack_inputs(out, geom_data);
     let (vertex_buffer, index_buffer) = pack_kept(buffer, geom_data, active_vertices, tri_list, entries);
     let packs_again = vertex_buffer == 0 || skin != 0;
     let indexes_again = index_buffer == 0 && tri_list != 0 && rd::<u32>(buffer, GB::indexBuffer) != 0;
     if packs_again || indexes_again {
-        tally.set.skip();
+        set.skip();
     }
 }
 
@@ -770,7 +555,7 @@ pub unsafe fn create_partition_geom_buffer(this: usize, out: usize, geom_data: u
         let current: u32 = rd(rd::<usize>(out, 0), GB::d3dVertexBuffer);
         if current != vertex_buffer {
             if current != 0 {
-                com_release(current);
+                com_release(current as usize);
             }
             wr(rd::<usize>(out, 0), GB::d3dVertexBuffer, vertex_buffer);
             wr(rd::<usize>(out, 0), GB::verticesCount, vertices);
@@ -778,7 +563,7 @@ pub unsafe fn create_partition_geom_buffer(this: usize, out: usize, geom_data: u
         let current: u32 = rd(rd::<usize>(out, 0), GB::indexBuffer);
         if current != index_buffer {
             if current != 0 {
-                com_release(current);
+                com_release(current as usize);
             }
             wr(rd::<usize>(out, 0), GB::indexBuffer, index_buffer);
             wr(rd::<usize>(out, 0), GB::indexBufferEntries, entries);
@@ -809,27 +594,26 @@ pub unsafe fn create_partition_geom_buffer(this: usize, out: usize, geom_data: u
 /// a new vertex buffer, and the function releases the old one. The index buffer manager gives the
 /// same index buffer or a new one. `Release` is real in the two runs.
 unsafe fn create_partition_geom_buffer_regions(set: &mut Regions, this: usize, out: usize, geom_data: usize, skin: usize, partition: usize) {
-    let mut tally = Tally::new(set);
     let buffer: usize = rd(out, 0);
     if buffer == 0 || geom_data == 0 || skin == 0 {
         return;
     }
-    tally.add(buffer, GB::SIZE);
+    set.add(buffer, GB::SIZE);
     let old_vertex_buffer: u32 = rd(buffer, GB::d3dVertexBuffer);
     if old_vertex_buffer == 0 {
-        tally.managers(this);
+        add_managers(set, this);
         return;
     }
     if rd::<u8>(buffer, GB::flags) & 1 != 0 {
         return;
     }
-    tally.managers(this);
+    add_managers(set, this);
     let same_revision = rd::<u32>(buffer, GB::geomDataRevisionID) == rd::<u16>(geom_data, NiGeometryData::revisionID) as u32;
     let keeps_vertices = same_revision && rd::<u32>(buffer, GB::verticesCount) >= rd::<u16>(partition, Partition::numVertices) as u32;
     let index_buffer: u32 = rd(buffer, GB::indexBuffer);
     let keeps_indices = same_revision && index_buffer != 0 && rd::<u32>(buffer, GB::indexBufferEntries) >= index_entries_of(buffer);
     if !keeps_vertices || (!keeps_indices && index_buffer != 0) {
-        tally.set.skip();
+        set.skip();
     }
 }
 
@@ -876,10 +660,9 @@ pub unsafe fn pack_screen_poly_geom_buffer(this: usize, count: u32, vertices: us
 /// makes one and puts it into its map. The call is also a skip when the buffer of the entry is too
 /// small, because the manager releases it.
 unsafe fn pack_screen_poly_geom_buffer_regions(set: &mut Regions, this: usize, count: u32, tex_coords: usize, colour: usize) {
-    let mut tally = Tally::new(set);
-    tally.add(this, R::SIZE);
+    set.add(this, R::SIZE);
     let manager: usize = rd(this, R::vertexBufferManager);
-    tally.add(manager, VBM::SIZE);
+    set.add(manager, VBM::SIZE);
     let (mut fvf, mut stride) = (D3DFVF_XYZ, 12u32);
     if colour != 0 {
         fvf |= D3DFVF_DIFFUSE;
@@ -889,20 +672,20 @@ unsafe fn pack_screen_poly_geom_buffer_regions(set: &mut Regions, this: usize, c
         fvf |= D3DFVF_TEX1;
         stride += 8;
     }
-    let node = hash_find_node(manager + VBM::hashmap_C, fvf);
+    let node = hash_map::find(manager + VBM::hashmap_C, fvf);
     if node == 0 {
-        tally.set.skip();
+        set.skip();
         return;
     }
-    tally.set.allocates();
+    set.allocates();
     let info: usize = rd(node, THashMap_Node::data);
-    tally.add(info, VBInfo::SIZE);
+    set.add(info, VBInfo::SIZE);
     let resource: usize = rd(info, VBInfo::resources + rd::<u8>(info, VBInfo::nextFreeResourceIndex) as usize * 4);
     if resource != 0 {
         if rd::<u32>(resource, VBResource::length) < stride.wrapping_mul(count) {
-            tally.set.skip();
+            set.skip();
         }
-        tally.add(resource, VBResource::SIZE);
+        set.add(resource, VBResource::SIZE);
     }
 }
 
@@ -912,7 +695,7 @@ pub unsafe fn render_screen_poly(this: usize, count: u32, vertices: usize, tex_c
     if rd::<u8>(this, R::bSceneOpen) == 0 || count == 0 {
         return;
     }
-    bound_copy(this + R::worldBound, this + R::defaultBound);
+    ni_bound_copy(this + R::worldBound, this + R::defaultBound);
     device_set_transform(rd(this, R::d3dDevice), D3DTS_VIEW, this + R::screenPolyView);
     device_set_transform(rd(this, R::d3dDevice), D3DTS_PROJECTION, this + R::screenPolyProj);
     let buffer = pack_screen_poly_geom_buffer(this, count, vertices, tex_coords, colour, rd(this, R::frustumNear), rd(this, R::frustumDistance));
@@ -920,17 +703,17 @@ pub unsafe fn render_screen_poly(this: usize, count: u32, vertices: usize, tex_c
         let mut transform = [0u32; NiTransform::SIZE / 4];
         let at = transform.as_mut_ptr() as usize;
         matrix33_copy(at + NiTransform::rotation, IDENTITY_MATRIX33);
-        let z: u32 = rd(ZERO_VEC3, 8);
-        let x: u32 = rd(ZERO_VEC3, 0);
-        let y: u32 = rd(ZERO_VEC3, 4);
+        let z: u32 = rd(VEC3_ZERO, 8);
+        let x: u32 = rd(VEC3_ZERO, 0);
+        let y: u32 = rd(VEC3_ZERO, 4);
         wr(at, NiTransform::translation_z, z);
         wr(at, NiTransform::translation_x, x);
         wr(at, NiTransform::translation_y, y);
         wr(at, NiTransform::scale, ONE);
         let mut bound = [0u32; 4];
-        bound_ctor(bound.as_mut_ptr() as usize);
+        ni_bound_ctor(bound.as_mut_ptr() as usize);
         renderer_draw_primitive(this, 0, 0, at, bound.as_mut_ptr() as usize, buffer, 0);
-        nullsub_36(bound.as_mut_ptr() as usize);
+        ni_bound_dtor(bound.as_mut_ptr() as usize);
     }
     device_set_transform(rd(this, R::d3dDevice), D3DTS_VIEW, this + R::d3dViewMat);
     device_set_transform(rd(this, R::d3dDevice), D3DTS_PROJECTION, this + R::d3dProjMat);
@@ -958,7 +741,7 @@ pub unsafe fn precache_geometry_data(this: usize, geom_data: usize, indices: u32
     crate::shadow::touch(&precache_geometry_data_port::STATE);
     let key: u32 = rd(geom_data, NiGeometryData::uniqueID);
     let map = this + R::hashGeomBuffers;
-    let node = hash_find_node(map, key);
+    let node = hash_map::find(map, key);
     if node != 0 && rd::<u32>(node, THashMap_Node::data) != 0 {
         return 1;
     }
@@ -1003,13 +786,13 @@ pub unsafe fn precache_geometry_data(this: usize, geom_data: usize, indices: u32
     wr(buffer, GB::indexBufferSize, index_buffer_size);
     wr(buffer, GB::indexBufferEntries, index_count);
     wr(buffer, GB::geomDataRevisionID, rd::<u16>(geom_data, NiGeometryData::revisionID) as u32);
-    if is_kind_of(geom_data, RTTI_NI_TRI_SHAPE_DATA) {
+    if ni::is_kind_of(geom_data, RTTI_NI_TRI_SHAPE_DATA) {
         wr(buffer, GB::primitiveType, D3DPT_TRIANGLELIST);
         let triangles = vcall0(geom_data, V_GET_ACTIVE_TRIANGLE_COUNT) & 0xFFFF;
         wr::<u32>(buffer, GB::stripCount, 1);
         wr(buffer, GB::trianglesCount, triangles);
         wr::<u32>(buffer, GB::stripVertexCounts, 0);
-    } else if is_kind_of(geom_data, RTTI_NI_TRI_STRIPS_DATA) {
+    } else if ni::is_kind_of(geom_data, RTTI_NI_TRI_STRIPS_DATA) {
         let entries: u32 = rd(buffer, GB::indexBufferEntries);
         wr(buffer, GB::primitiveType, D3DPT_TRIANGLESTRIP);
         let strips = rd::<u16>(geom_data, NiTriStripsData::numStrips) as u32;
@@ -1018,30 +801,29 @@ pub unsafe fn precache_geometry_data(this: usize, geom_data: usize, indices: u32
         wr::<u32>(buffer, GB::stripVertexCounts, rd(geom_data, NiTriStripsData::stripLengths));
     }
     wr(buffer, GB::triList, indices);
-    hash_set(map, key, buffer as u32);
+    hash_map::set(map, key, buffer);
     1
 }
 
 /// The device makes the vertex and index buffers, and the engine run gets the same objects. The call
-/// is a skip with a shader interface, because `buildVertexBuffer` can make a vertex shader on the
-/// device.
+/// is a skip when it has a shader interface and the map has no buffer data for the geometry data,
+/// because `buildVertexBuffer` can make a vertex shader on the device.
 unsafe fn precache_geometry_data_regions(set: &mut Regions, this: usize, geom_data: usize, shader: usize) {
-    let mut tally = Tally::new(set);
-    tally.add(this, R::SIZE);
+    set.add(this, R::SIZE);
     let map = this + R::hashGeomBuffers;
-    let node = hash_find_node(map, rd(geom_data, NiGeometryData::uniqueID));
+    let node = hash_map::find(map, rd(geom_data, NiGeometryData::uniqueID));
     if node != 0 && rd::<u32>(node, THashMap_Node::data) != 0 {
         return;
     }
     if shader != 0 {
-        tally.set.skip();
+        set.skip();
         return;
     }
-    tally.set.allocates();
-    tally.buckets(map);
+    set.allocates();
+    add_buckets(set, map);
     // A node with no data gets the new pair.
-    tally.add(node, THashMap_Node::SIZE);
-    tally.managers(this);
+    set.add(node, THashMap_Node::SIZE);
+    add_managers(set, this);
 }
 
 /// 0x6B0030 `NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer`. It makes the skin partitions
@@ -1065,7 +847,7 @@ pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
         if skin_partition_make_partitions(object, geom_data, skin_data, per_partition, per_vertex) == 0 {
             return 0;
         }
-        assign_pointer(rd::<usize>(skin, NiSkinInstance::skinData) + SKIN_DATA_SKIN_PARTITION, object);
+        ni::pointer_assign(rd::<usize>(skin, NiSkinInstance::skinData) + SKIN_DATA_SKIN_PARTITION, object);
     }
     let partitions: usize = rd(object, NiSkinPartition::partitions);
     let partition_count: u32 = rd(object, NiSkinPartition::partitionCount);
@@ -1134,7 +916,7 @@ pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
         wr(buffer, GB::geomDataRevisionID, rd::<u16>(geom_data, NiGeometryData::revisionID) as u32);
         wr(buffer, GB::trianglesCount, rd::<u16>(partition, Partition::numTriangles) as u32);
         wr(partition, Partition::bufferData, buffer);
-        hash_set(map, partition as u32, buffer as u32);
+        hash_map::set(map, partition as u32, buffer);
         done += 1;
         partition += Partition::SIZE;
     }
@@ -1144,34 +926,33 @@ pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
 /// The regions of a function that works on the partitions of a skin instance: the map, the
 /// partitions and the skin data. The skin data gets new partitions when it has none.
 /// `MakePartitions` writes only blocks that it allocates.
-unsafe fn skin_regions(tally: &mut Tally, this: usize, skin: usize) {
-    tally.set.allocates();
-    tally.buckets(this + R::hashmap_skinPartitionsToGeomBuffers);
-    tally.managers(this);
+unsafe fn skin_regions(set: &mut Regions, this: usize, skin: usize) {
+    set.allocates();
+    add_buckets(set, this + R::hashmap_skinPartitionsToGeomBuffers);
+    add_managers(set, this);
     let skin_data: usize = rd(skin, NiSkinInstance::skinData);
     if skin_data == 0 {
         return;
     }
-    tally.add(skin_data, SKIN_DATA_SKIN_PARTITION + 4);
+    set.add(skin_data, SKIN_DATA_SKIN_PARTITION + 4);
     let object: usize = rd(skin_data, SKIN_DATA_SKIN_PARTITION);
     if object != 0 {
-        tally.add(rd(object, NiSkinPartition::partitions), rd::<usize>(object, NiSkinPartition::partitionCount) * Partition::SIZE);
+        set.add(rd(object, NiSkinPartition::partitions), rd::<usize>(object, NiSkinPartition::partitionCount) * Partition::SIZE);
     }
 }
 
-/// The call is a skip with a shader interface, because `buildVertexBuffer` can make a vertex shader
-/// on the device.
+/// The call is a skip when it has a skin instance and a shader interface, because
+/// `buildVertexBuffer` can make a vertex shader on the device.
 unsafe fn maybe_pre_pack_skinned_geometry_buffer_regions(set: &mut Regions, this: usize, skin: usize, shader: usize) {
-    let mut tally = Tally::new(set);
-    tally.add(this, R::SIZE);
+    set.add(this, R::SIZE);
     if skin == 0 {
         return;
     }
     if shader != 0 {
-        tally.set.skip();
+        set.skip();
         return;
     }
-    skin_regions(&mut tally, this, skin);
+    skin_regions(set, this, skin);
 }
 
 /// The shader interface and its data in a renderer specific property, or (0, 0).
@@ -1199,11 +980,11 @@ pub unsafe fn precache_geometry(this: usize, geometry: usize, flags: u32, proper
     let (shader, shader_data) = shader_of(property);
     let result = if skin != 0 {
         maybe_pre_pack_skinned_geometry_buffer(this, geom_data, skin, flags, property, shader, shader_data, per_partition, per_vertex)
-    } else if vcall0(geometry, V_GET_RTTI) as usize == RTTI_NI_TRI_SHAPE {
+    } else if ni::get_rtti(geometry) == RTTI_NI_TRI_SHAPE {
         let length: u32 = rd(geom_data, NiTriShapeData::uiTriListLength);
         let tri_list = vcall0(geom_data, V_GET_TRI_LIST);
         precache_geometry_data(this, geom_data, tri_list, length, flags, property, shader, shader_data)
-    } else if vcall0(geometry, V_GET_RTTI) as usize == RTTI_NI_TRI_STRIPS {
+    } else if ni::get_rtti(geometry) == RTTI_NI_TRI_STRIPS {
         let strip_lists: u32 = rd(geom_data, NiTriStripsData::stripLists);
         let length = tri_strips_data_strip_length_sum(geom_data) & 0xFFFF;
         precache_geometry_data(this, geom_data, strip_lists, length, flags, property, shader, shader_data)
@@ -1213,6 +994,8 @@ pub unsafe fn precache_geometry(this: usize, geometry: usize, flags: u32, proper
     (result != 0) as u8
 }
 
+/// The regions are the regions of the function that `PrecacheGeometry` calls for the geometry. The
+/// call is a skip when that function makes it a skip.
 unsafe fn precache_geometry_regions(set: &mut Regions, this: usize, geometry: usize, property: usize) {
     if geometry == 0 {
         return;
@@ -1222,7 +1005,7 @@ unsafe fn precache_geometry_regions(set: &mut Regions, this: usize, geometry: us
     if skin != 0 {
         maybe_pre_pack_skinned_geometry_buffer_regions(set, this, skin, shader);
     } else {
-        let rtti = vcall0(geometry, V_GET_RTTI) as usize;
+        let rtti = ni::get_rtti(geometry);
         if rtti == RTTI_NI_TRI_SHAPE || rtti == RTTI_NI_TRI_STRIPS {
             precache_geometry_data_regions(set, this, rd(geometry, NiGeometry::spModelData), shader);
         }
@@ -1259,7 +1042,7 @@ unsafe fn batch_skinned(this: usize, geom_data: usize, skin: usize, transform: u
         // `mov al, [countHWBones]; push eax; push eax` with the new object in EAX.
         let bones = (object as u32 & !0xFF) | rd::<u8>(this, R::countHWBones) as u32;
         if skin_partition_make_partitions(object, geom_data, skin_data, bones, bones) != 0 {
-            assign_pointer(rd::<usize>(skin, NiSkinInstance::skinData) + SKIN_DATA_SKIN_PARTITION, object);
+            ni::pointer_assign(rd::<usize>(skin, NiSkinInstance::skinData) + SKIN_DATA_SKIN_PARTITION, object);
         }
     }
     let partitions: usize = rd(object, NiSkinPartition::partitions);
@@ -1385,18 +1168,18 @@ pub unsafe fn batch_render_strips(this: usize, geom_data: usize, skin: usize, tr
 /// The regions are the renderer, the last object of the list and the bucket array of the map. The
 /// renderer has the list head, the list tail and the two maps. For a skin, `skin_regions` gives the
 /// other regions. Every buffer data that the call packs is new, so the call releases no device buffer.
+/// No call is a skip.
 unsafe fn batch_regions(set: &mut Regions, this: usize, geom_data: usize, skin: usize) {
-    let mut tally = Tally::new(set);
-    tally.add(this, R::SIZE);
+    set.add(this, R::SIZE);
     if rd::<u8>(this, R::bSceneOpen) == 0 || vcall0(geom_data, V_GET_ACTIVE_VERTEX_COUNT) as u16 == 0 {
         return;
     }
-    tally.add(rd(this, R::batchedObjectListTail), Batched::SIZE);
+    set.add(rd(this, R::batchedObjectListTail), Batched::SIZE);
     if batches_skinned(this, skin) {
-        skin_regions(&mut tally, this, skin);
+        skin_regions(set, this, skin);
     } else {
-        tally.set.allocates();
-        tally.buckets(this + R::hashGeomBuffers);
+        set.allocates();
+        add_buckets(set, this + R::hashGeomBuffers);
     }
 }
 
@@ -1546,41 +1329,6 @@ mod tests {
     }
 
     #[test]
-    fn hash_find_walks_the_bucket() {
-        let mut block = [0u8; THashMap::SIZE];
-        let at = block.as_mut_ptr() as usize;
-        let mut map = Map::new();
-        unsafe {
-            map.install(at, &[(1, 100), (5, 500), (9, 900), (2, 200)]);
-            assert_eq!(rd::<u32>(hash_find_node(at, 5), THashMap_Node::data), 500);
-            assert_eq!(rd::<u32>(hash_find_node(at, 1), THashMap_Node::data), 100);
-            assert_eq!(rd::<u32>(hash_find_node(at, 2), THashMap_Node::data), 200);
-            assert_eq!(hash_find_node(at, 13), 0);
-            assert_eq!(hash_find_node(at, 3), 0);
-        }
-    }
-
-    #[test]
-    fn hash_unlink_takes_the_head_or_a_later_node() {
-        let mut block = [0u8; THashMap::SIZE];
-        let at = block.as_mut_ptr() as usize;
-        let mut map = Map::new();
-        unsafe {
-            // Bucket 1 has 9, then 5, then 1.
-            map.install(at, &[(1, 100), (5, 500), (9, 900)]);
-            let node5 = hash_find_node(at, 5);
-            assert_eq!(hash_unlink(at, 5), node5);
-            assert_eq!(hash_find_node(at, 5), 0);
-            assert_ne!(hash_find_node(at, 1), 0);
-            let node9 = hash_find_node(at, 9);
-            assert_eq!(hash_unlink(at, 9), node9);
-            assert_eq!(map.buckets[1] as usize, hash_find_node(at, 1));
-            assert_eq!(hash_unlink(at, 13), 0);
-            assert_eq!(hash_unlink(at, 2), 0);
-        }
-    }
-
-    #[test]
     fn create_geometry_buffer_data_gives_the_cached_one() {
         let mut this = renderer();
         let base = this.as_mut_ptr() as usize;
@@ -1722,17 +1470,33 @@ mod tests {
     }
 
     #[test]
-    fn tally_skips_past_eight_regions() {
+    fn purge_regions_have_each_node_before_the_node_of_the_key() {
+        let mut this = renderer();
+        let base = this.as_mut_ptr() as usize;
+        let at = base + R::hashmap_skinPartitionsToGeomBuffers;
+        let mut map = Map::new();
+        let mut partition = [0u8; Partition::SIZE];
+        let key = partition.as_mut_ptr() as usize;
+        // A buffer data with no device buffer.
+        let buffer = [0u8; GB::SIZE];
         let mut set = Regions::new();
-        let mut tally = Tally::new(&mut set);
-        for index in 0..8 {
-            tally.add(0x1000 + index * 0x10, 4);
+        unsafe {
+            wr(key, Partition::bufferData, buffer.as_ptr() as usize);
+            // Each key is in the bucket of `key`. The node of `key` is the last node of the bucket,
+            // after 9 other nodes.
+            let mut pairs = vec![(key as u32, buffer.as_ptr() as u32)];
+            for index in 1..=9u32 {
+                pairs.push(((key as u32).wrapping_add(index * 4), 0));
+            }
+            map.install(at, &pairs);
+            purge_skin_partition_regions(&mut set, base, key);
         }
-        tally.add(0, 4);
-        tally.add(0x2000, 0);
-        assert_eq!(tally.used, 8);
-        tally.add(0x3000, 4);
-        assert_eq!(tally.used, 9);
-        assert_eq!(set.as_slice().len(), 8);
+        // The renderer, the partition, the bucket array, then the 9 nodes from the head of the bucket.
+        let mut expected = vec![(base, R::SIZE), (key, Partition::SIZE), (map.buckets.as_ptr() as usize, 16)];
+        for node in map.nodes[1..].iter().rev() {
+            expected.push((node.as_ptr() as usize, THashMap_Node::SIZE));
+        }
+        assert_eq!(expected.len(), 12);
+        assert_eq!(set.as_slice(), expected);
     }
 }
