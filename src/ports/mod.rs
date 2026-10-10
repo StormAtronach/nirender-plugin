@@ -99,6 +99,7 @@ pub mod renderer_frame;
 pub mod texture_pass_a;
 pub mod texture_pass_b;
 pub mod texture_pipeline;
+pub mod textures;
 
 /// The ports of every module. A new module adds its `PORTS` here.
 static MODULES: &[&[&PortState]] = &[
@@ -109,6 +110,7 @@ static MODULES: &[&[&PortState]] = &[
     texture_pipeline::PORTS,
     renderer_frame::PORTS,
     texture_pass_b::PORTS,
+    textures::PORTS,
 ];
 
 /// Every port.
@@ -127,7 +129,8 @@ mod tests {
         for port in all() {
             let func = hook::find(port.addr).unwrap_or_else(|| panic!("{} is not in the function table", port.name));
             assert_eq!(func.name, port.name);
-            assert!(func.pic && func.steal >= 5, "{} cannot take a detour", port.name);
+            // A function shorter than the jump is displaced whole (`hook::install_raw`).
+            assert!(func.pic && (func.steal >= 5 || func.steal == func.size), "{} cannot take a detour", port.name);
             if port.cdecl {
                 assert_eq!(func.argsize, 0, "{}: a cdecl function removes no arguments", port.name);
             } else {
