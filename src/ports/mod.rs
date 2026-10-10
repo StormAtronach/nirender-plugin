@@ -101,6 +101,7 @@ pub mod system_desc;
 pub mod texture_pass_a;
 pub mod texture_pass_b;
 pub mod texture_pipeline;
+pub mod textures;
 
 /// The ports of every module. A new module adds its `PORTS` here.
 static MODULES: &[&[&PortState]] = &[
@@ -113,6 +114,7 @@ static MODULES: &[&[&PortState]] = &[
     texture_pass_b::PORTS,
     system_desc::PORTS,
     rendered::PORTS,
+    textures::PORTS,
 ];
 
 /// The call sites the ports serve through `site::call_target`. A module with such sites
