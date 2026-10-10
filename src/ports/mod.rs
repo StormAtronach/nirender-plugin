@@ -92,6 +92,7 @@ macro_rules! port_cdecl {
     };
 }
 
+pub mod ct_pipeline_state;
 pub mod light_manager;
 pub mod material;
 pub mod render_state;
@@ -109,11 +110,12 @@ static MODULES: &[&[&PortState]] = &[
     texture_pipeline::PORTS,
     renderer_frame::PORTS,
     texture_pass_b::PORTS,
+    ct_pipeline_state::PORTS,
 ];
 
 /// The call sites the ports serve through `site::call_target`. A module with such sites
 /// adds its `SITES` here.
-static SITE_LISTS: &[&[usize]] = &[];
+static SITE_LISTS: &[&[usize]] = &[ct_pipeline_state::SITES];
 
 /// True when a port calls the target that is in memory at the `call` at `site`.
 pub fn serves_site(site: usize) -> bool {
