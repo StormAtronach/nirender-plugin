@@ -17,6 +17,7 @@ pub mod gen {
 pub mod alloc;
 pub mod log;
 pub mod census;
+pub mod d3d;
 pub mod device;
 pub mod dump;
 pub mod engine;
