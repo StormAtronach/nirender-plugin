@@ -14,6 +14,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::engine::{vcall0, WORLD_CONTROLLER};
 use crate::gen::layouts::{
+    NiGeometryBufferData as GB,
     NiAVObject as AV, NiCamera as CAM, NiDX8Renderer as R, NiDynamicEffectState as DES,
     NiDynamicEffectState_InternalList as DL, NiLight as L, NiMaterialProperty as MP, NiPropertyState as PS,
 };
@@ -445,6 +446,43 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
         *count += 1;
     }
     (host.draw)(&draw);
+}
+
+/// Sends the state of the D3D8 draw call that follows. The draw ports call it. `renderer` is
+/// the `NiDX8Renderer` and `geom_buffer` the `NiGeometryBufferData` of the draw.
+///
+/// The packet goes out only when the Rust code draws for real: not in the Rust run of a
+/// comparison, where the device is dry and the game code makes the draw after it.
+pub unsafe fn draw_state(
+    renderer: usize,
+    geom_buffer: usize,
+    primitive_type: u32,
+    vertex_count: u32,
+    start_index: u32,
+    primitive_count: u32,
+    skinned: bool,
+) {
+    let Some(host) = host() else { return };
+    if host.capabilities & CAP_DRAW_STATE == 0 || crate::shadow::leg() == crate::shadow::Leg::Rust {
+        return;
+    }
+    let mut state = DrawStateV1 {
+        struct_size: size_of::<DrawStateV1>() as u32,
+        flags: if skinned { STATE_SKINNED } else { 0 },
+        primitive_type,
+        base_vertex_index: 0,
+        min_index: 0,
+        vertex_count,
+        start_index,
+        primitive_count,
+        vertex_buffer: rd(geom_buffer, GB::d3dVertexBuffer),
+        vertex_stride: rd(geom_buffer, GB::vertexStride),
+        vertex_format: rd(geom_buffer, GB::fvf),
+        index_buffer: rd(geom_buffer, GB::indexBuffer),
+        world: [0.0; 16],
+    };
+    core::ptr::copy_nonoverlapping((renderer + R::currentWorldMatrix) as *const f32, state.world.as_mut_ptr(), 16);
+    (host.draw_state)(&state);
 }
 
 /// `RenderShape(this, geometryData, skinInstance, transform, bound)`

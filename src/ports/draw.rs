@@ -638,6 +638,7 @@ pub unsafe fn draw_primitive(
                             let primitive_type: u32 = rd(geom_buffer, GB::primitiveType);
                             let device: usize = rd(this, R::d3dDevice);
                             let vtable: usize = rd(device, 0);
+                            crate::link_client::draw_state(this, geom_buffer, primitive_type, vertices, start_index, primitives, false);
                             // ECX has the primitive type at this call.
                             site_draw_indexed_primitive(
                                 DP_DRAW_INDEXED_PRIMITIVE,
@@ -896,6 +897,7 @@ pub unsafe fn draw_skinned_primitive_2(
                     let vtable: usize = rd(device, 0);
                     if index_buffer != 0 {
                         let vertices = rd::<u16>(partition, P::numVertices) as u32;
+                        crate::link_client::draw_state(this, buffer, primitive_type, vertices, 0, primitives, true);
                         // ECX has the vtable at this call, as EDX does.
                         site_draw_indexed_primitive(S2_DRAW_INDEXED_PRIMITIVE, device, vtable, vtable as u32, primitive_type, vertices, 0, primitives);
                     } else {

@@ -9,6 +9,7 @@ pub const VERSION: u32 = 1;
 
 pub const CAP_COMPARE: u32 = 0x1;
 pub const CAP_USE_FACTS: u32 = 0x2;
+pub const CAP_DRAW_STATE: u32 = 0x4;
 
 pub const SCENE_OTHER: u32 = 0;
 pub const SCENE_WORLD: u32 = 1;
@@ -49,6 +50,8 @@ pub const CLASS_FIRST_PERSON: u32 = 15;
 pub const CLASS_UI: u32 = 16;
 pub const CLASS_WATER_RIPPLE: u32 = 17;
 
+pub const STATE_SKINNED: u32 = 0x1;
+
 pub const DRAW_FROM_SORTED_QUEUE: u32 = 0x1;
 pub const DRAW_SKINNED: u32 = 0x2;
 
@@ -70,10 +73,13 @@ pub const FACT_SCENE_KIND: u32 = 5;
 pub const FACT_SKY_DRAW: u32 = 6;
 pub const FACT_LAND_SPLAT: u32 = 7;
 pub const FACT_LATER_VIEW: u32 = 8;
+pub const FACT_STATE_DRAW: u32 = 9;
+pub const FACT_STATE_BUFFERS: u32 = 10;
+pub const FACT_STATE_TRANSFORM: u32 = 11;
 pub const FACT_COUNT: u32 = 16;
 
 /// The names of the facts, for reports. The index is `FACT_*`.
-pub const FACT_NAMES: [&str; 9] = [
+pub const FACT_NAMES: [&str; 12] = [
     "light radius",
     "sun light",
     "moon shadow",
@@ -83,6 +89,9 @@ pub const FACT_NAMES: [&str; 9] = [
     "sky draw",
     "land splat",
     "later view",
+    "state draw",
+    "state buffers",
+    "state transform",
 ];
 
 #[repr(C)]
@@ -124,6 +133,24 @@ pub struct DrawV1 {
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+pub struct DrawStateV1 {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub primitive_type: u32,
+    pub base_vertex_index: u32,
+    pub min_index: u32,
+    pub vertex_count: u32,
+    pub start_index: u32,
+    pub primitive_count: u32,
+    pub vertex_buffer: u32,
+    pub vertex_stride: u32,
+    pub vertex_format: u32,
+    pub index_buffer: u32,
+    pub world: [f32; 16],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
 pub struct FactCountV1 {
     pub both_yes: u32,
     pub both_no: u32,
@@ -154,6 +181,8 @@ pub struct HostV1 {
     pub read_counters: unsafe extern "C" fn(out: *mut CountersV1, reset: u32),
     /// Only a host with `CAP_USE_FACTS` has this member.
     pub use_facts: unsafe extern "C" fn(fact_mask: u32) -> u32,
+    /// Only a host with `CAP_DRAW_STATE` has this member.
+    pub draw_state: unsafe extern "C" fn(state: *const DrawStateV1),
 }
 
 /// `MGE_RenderLinkConnect`
@@ -168,9 +197,10 @@ const _: () = {
     assert!(size_of::<SceneV1>() == 24);
     assert!(size_of::<LightV1>() == 16);
     assert!(size_of::<DrawV1>() == 48);
+    assert!(size_of::<DrawStateV1>() == 112);
     assert!(size_of::<FactCountV1>() == 16);
     assert!(size_of::<CountersV1>() == 272);
-    assert!(size_of::<HostV1>() == 40);
+    assert!(size_of::<HostV1>() == 44);
 };
 
 #[cfg(test)]

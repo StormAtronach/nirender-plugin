@@ -32,7 +32,7 @@ COLUMNS = ("both_yes", "both_no", "host_only", "packet_only")
 TOTALS = re.compile(r"scenes (\d+) draws (\d+) draws_without_packet (\d+)")
 # The index of each fact in the contract (MGE_LINK_FACT_*).
 FACTS = ("light_radius", "sun_light", "moon_shadow", "water_plane", "ui_scene", "scene_kind", "sky_draw", "land_splat",
-         "later_view")
+         "later_view", "state_draw", "state_buffers", "state_transform")
 # The facts that MGE XE can take from a packet.
 USABLE = ("ui_scene", "water_plane", "sun_light", "sky_draw", "land_splat", "scene_kind", "moon_shadow")
 # The classes of the contract (MGE_LINK_CLASS_*), by index.
