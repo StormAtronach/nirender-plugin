@@ -178,6 +178,9 @@ return function(nirender, spec)
     local function visit(index)
         local cell = spec.cells and spec.cells[index]
         -- The textures of the next cell come through the link. Only the Rust code does that.
+        if spec.cameraCompare then
+            say("camera space comparison: %s", tostring(nirender.cameraSpaceCompare(true)))
+        end
         if spec.linkTextures then
             nirender.setMode("*", "live")
             say("textures through the link: %s", tostring(nirender.linkTextures(true)))

@@ -304,7 +304,7 @@ unsafe fn set_camera_data_regions(set: &mut Regions, this: usize) {
 
 /// This function makes `currentWorldMatrix` from a `NiTransform`. The matrix has the transpose
 /// of the rotation times the scale. The translation is in the last row.
-unsafe fn write_world_matrix(this: usize, transform: usize) {
+pub(crate) unsafe fn write_world_matrix(this: usize, transform: usize) {
     let world = R::currentWorldMatrix;
     let scaled = |offset: usize| float(transform, offset) * float(transform, T::scale);
     wr(this, element(world, 1, 1), scaled(T::rotation_m0_x));
@@ -327,7 +327,7 @@ unsafe fn write_world_matrix(this: usize, transform: usize) {
 
 /// The end of `SetModelTransform` and of `SetSkinnedModelTransforms`. It calculates the camera
 /// right and up vectors in model space.
-unsafe fn update_model_camera(this: usize, transform: usize) {
+pub(crate) unsafe fn update_model_camera(this: usize, transform: usize) {
     nullsub_29(rd(this, R::renderState), transform);
     let mut matrix = [0u32; 9];
     let mut vector = [0u32; 3];

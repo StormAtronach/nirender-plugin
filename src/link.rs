@@ -12,6 +12,9 @@ pub const CAP_USE_FACTS: u32 = 0x2;
 pub const CAP_DRAW_STATE: u32 = 0x4;
 pub const CAP_TEXTURES: u32 = 0x8;
 pub const CAP_WORLD_SPACE: u32 = 0x10;
+pub const CAP_CAMERA_SPACE: u32 = 0x20;
+
+pub const SCENE_HAS_CAMERA_ORIGIN: u32 = 0x1;
 
 pub const TEXTURE_DYNAMIC: u32 = 0x1;
 
@@ -99,6 +102,7 @@ pub const FACT_DEVICE_TEXTURES: u32 = 27;
 pub const FACT_DEVICE_BUFFERS: u32 = 28;
 pub const FACT_DEVICE_TRANSFORMS: u32 = 29;
 pub const FACT_DEVICE_LIGHTS: u32 = 30;
+pub const FACT_CLIENT_CAMERA_SPACE: u32 = 31;
 pub const STATE_SAMPLER_STATES: u32 = 5;
 pub const STATE_UNKNOWN: u32 = 0x7FFF_FFFF;
 pub const STATE_STAGES: u32 = 8;
@@ -106,7 +110,7 @@ pub const STATE_STAGE_STATES: u32 = 17;
 pub const FACT_COUNT: u32 = 32;
 
 /// The names of the facts, for reports. The index is `FACT_*`.
-pub const FACT_NAMES: [&str; 31] = [
+pub const FACT_NAMES: [&str; 32] = [
     "light radius",
     "sun light",
     "moon shadow",
@@ -138,6 +142,7 @@ pub const FACT_NAMES: [&str; 31] = [
     "device buffers",
     "device transforms",
     "device lights",
+    "client camera space",
 ];
 
 #[repr(C)]
@@ -148,7 +153,8 @@ pub struct SceneV1 {
     pub camera: u32,
     pub scene_root: u32,
     pub render_target: u32,
-    pub reserved: u32,
+    pub flags: u32,
+    pub camera_origin: [f64; 3],
 }
 
 #[repr(C)]
@@ -284,6 +290,8 @@ pub struct HostV1 {
     pub texture_create: unsafe extern "C" fn(texture: *const TextureV1) -> u32,
     /// Only a host with `CAP_WORLD_SPACE` has this member.
     pub world_space: unsafe extern "C" fn() -> u32,
+    /// Only a host with `CAP_CAMERA_SPACE` has this member.
+    pub camera_space: unsafe extern "C" fn(origin: *mut f64) -> u32,
 }
 
 /// `MGE_RenderLinkConnect`
@@ -295,7 +303,7 @@ pub const CONNECT_EXPORT: &[u8] = b"MGE_RenderLinkConnect\0";
 // The sizes of the header. They are for the 32-bit target only.
 #[cfg(target_pointer_width = "32")]
 const _: () = {
-    assert!(size_of::<SceneV1>() == 24);
+    assert!(size_of::<SceneV1>() == 48);
     assert!(size_of::<LightV1>() == 16);
     assert!(size_of::<DrawV1>() == 48);
     assert!(size_of::<StateLightV1>() == 108);
@@ -303,7 +311,7 @@ const _: () = {
     assert!(size_of::<FactCountV1>() == 16);
     assert!(size_of::<CountersV1>() == 528);
     assert!(size_of::<TextureV1>() == 52);
-    assert!(size_of::<HostV1>() == 52);
+    assert!(size_of::<HostV1>() == 56);
 };
 
 #[cfg(test)]

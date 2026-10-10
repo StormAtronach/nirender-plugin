@@ -560,14 +560,20 @@ pub unsafe fn draw_primitive(
         if flags & BUILD_KEEP_TRANSFORM != 0 {
             set_bound = false;
         } else {
-            site_thiscall!(DP_SET_SKINNED_MODEL_TRANSFORMS, this, skin, partition, transform, world_bound);
+            if !crate::camera_space::take_skinned_transforms(this, skin, partition, transform, true) {
+                site_thiscall!(DP_SET_SKINNED_MODEL_TRANSFORMS, this, skin, partition, transform, world_bound);
+                crate::camera_space::check_skinned_transforms(skin, partition, transform, true);
+            }
         }
     } else {
         set_vertex_blend(this, 0);
         if flags & BUILD_KEEP_TRANSFORM != 0 {
             set_bound = false;
         } else {
-            site_thiscall!(DP_SET_MODEL_TRANSFORM, this, transform);
+            if !crate::camera_space::take_model_transform(this, transform, true) {
+                site_thiscall!(DP_SET_MODEL_TRANSFORM, this, transform);
+                crate::camera_space::check_model_transform(this, transform, true);
+            }
         }
     }
     if set_bound {
@@ -859,7 +865,10 @@ pub unsafe fn draw_skinned_primitive_2(
                         set_vertex_blend(this, rd(partition, P::numBonesPerVertex));
                     }
                     if flags & BUILD_KEEP_TRANSFORM == 0 {
-                        site_thiscall!(S2_SET_SKINNED_MODEL_TRANSFORMS, this, skin, partition, transform, world_bound);
+                        if !crate::camera_space::take_skinned_transforms(this, skin, partition, transform, true) {
+                            site_thiscall!(S2_SET_SKINNED_MODEL_TRANSFORMS, this, skin, partition, transform, world_bound);
+                            crate::camera_space::check_skinned_transforms(skin, partition, transform, true);
+                        }
                     }
                     let buffer: usize = rd(partition, P::bufferData);
                     if buffer == 0 {
@@ -1074,13 +1083,17 @@ pub unsafe fn end_batch(this: usize) {
                         }
                         if flags & BUILD_KEEP_TRANSFORM == 0 {
                             let partition: usize = rd(batch, B::partition);
-                            site_thiscall!(EB_SET_SKINNED_MODEL_TRANSFORMS, this, skin, partition, transform, world_bound);
+                            if !crate::camera_space::take_skinned_transforms(this, skin, partition, transform, false) {
+                                site_thiscall!(EB_SET_SKINNED_MODEL_TRANSFORMS, this, skin, partition, transform, world_bound);
+                                crate::camera_space::check_skinned_transforms(skin, partition, transform, false);
+                            }
                             site_thiscall!(EB_BOUND_COPY, this + R::worldBound, world_bound);
                         }
                     } else {
                         set_vertex_blend(this, 0);
                         if flags & BUILD_KEEP_TRANSFORM == 0 {
                             site_thiscall!(EB_SET_MODEL_TRANSFORM, this, transform);
+                            crate::camera_space::check_model_transform(this, transform, false);
                             site_thiscall!(EB_BOUND_COPY, this + R::worldBound, world_bound);
                         }
                     }

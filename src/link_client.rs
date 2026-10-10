@@ -186,7 +186,8 @@ pub unsafe fn note_transform(state: u32, matrix: usize) {
         *addr_of_mut!(TRANSFORMS_KNOWN) |= 1 << (state - D3DTS_WORLDMATRIX0);
         // The host knows the space of this matrix only now, during the call of the game.
         let bit = 1 << (state - D3DTS_WORLDMATRIX0);
-        let relative = host().is_some_and(|host| host.capabilities & CAP_WORLD_SPACE != 0 && (host.world_space)() != 0);
+        let relative = crate::camera_space::pending()
+            || host().is_some_and(|host| host.capabilities & CAP_WORLD_SPACE != 0 && (host.world_space)() != 0);
         let mask = &mut *addr_of_mut!(WORLD_RELATIVE);
         *mask = if relative { *mask | bit } else { *mask & !bit };
         addr_of_mut!(WORLDS[(state - D3DTS_WORLDMATRIX0) as usize])
@@ -202,6 +203,33 @@ pub unsafe fn note_transform(state: u32, matrix: usize) {
 /// The space of the world matrices in `WORLDS`: bit n is 1 when matrix n is relative to the
 /// camera.
 static mut WORLD_RELATIVE: u32 = 0;
+
+/// True when the copy of world matrix `index` is relative to the camera.
+pub unsafe fn world_relative(index: u32) -> bool {
+    *addr_of!(WORLD_RELATIVE) >> index & 1 != 0
+}
+
+/// The copy of world matrix `index`, as bit patterns.
+pub unsafe fn world_matrix(index: u32) -> [u32; 16] {
+    (*addr_of!(WORLDS))[index as usize].map(f32::to_bits)
+}
+
+/// The facts that the host takes from the packets: the answer of the last `use_facts`.
+static USED_FACTS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// True when the host leaves the camera-relative world matrices to this plugin.
+pub fn client_camera_space() -> bool {
+    USED_FACTS.load(Ordering::Relaxed) >> FACT_CLIENT_CAMERA_SPACE & 1 != 0
+}
+
+/// Asks the host if the scene in progress is in camera space. On true, `origin` has the
+/// origin that the host uses.
+pub unsafe fn host_camera_space(origin: &mut [f64; 3]) -> bool {
+    match host() {
+        Some(host) if host.capabilities & CAP_CAMERA_SPACE != 0 => (host.camera_space)(origin.as_mut_ptr()) != 0,
+        _ => false,
+    }
+}
 
 /// The stages whose texture is in `TEXTURES`: bit n is stage n.
 static mut TEXTURES_KNOWN: u32 = 0;
@@ -479,7 +507,7 @@ unsafe fn scene_kind(camera: usize, world_controller: usize, water_controller: u
 /// function sends the view transform and MGE XE decides on the scene at that call.
 unsafe fn set_camera_data(args: &[usize]) {
     let camera = args[1] - AV_WORLD_TRANSLATION;
-    send_scene(camera);
+    send_scene(camera, crate::camera_space::scene_begin(args[1]));
     SCENE_SENT_FOR.store(camera, Ordering::Relaxed);
 }
 
@@ -487,11 +515,11 @@ unsafe fn set_camera_data(args: &[usize]) {
 unsafe fn begin_paint(args: &[usize]) {
     // A caller other than `NiCamera::Click` did not go through `SetCameraData`.
     if SCENE_SENT_FOR.swap(0, Ordering::Relaxed) != args[1] {
-        send_scene(args[1]);
+        send_scene(args[1], crate::camera_space::scene_begin(0));
     }
 }
 
-unsafe fn send_scene(camera: usize) {
+unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     let Some(host) = host() else { return };
     let world_controller: usize = rd(WORLD_CONTROLLER, 0);
     let data_handler: usize = rd(DATA_HANDLER, 0);
@@ -539,7 +567,8 @@ unsafe fn send_scene(camera: usize) {
         camera: camera as u32,
         scene_root: ptr_at(camera, CAM::spScene) as u32,
         render_target: roots.render_target,
-        reserved: 0,
+        flags: if origin.is_some() { SCENE_HAS_CAMERA_ORIGIN } else { 0 },
+        camera_origin: origin.unwrap_or_default(),
     };
     (host.scene_begin)(&scene);
 }
@@ -568,6 +597,7 @@ unsafe fn set_render_target(args: &[usize]) {
 
 /// `SwapBuffers(this)`
 unsafe fn swap_buffers(_args: &[usize]) {
+    crate::camera_space::frame_end();
     if let Some(host) = host() {
         (host.frame_event)(EVENT_SWAP, 0, 0);
     }
@@ -802,11 +832,13 @@ pub unsafe fn draw_state(
 
 /// `RenderShape(this, geometryData, skinInstance, transform, bound)`
 unsafe fn render_shape(args: &[usize]) {
+    crate::camera_space::geometry_begin(args[3]);
     send_draw(DRAW_SHAPE, args[0], args[3] - AV_WORLD_TRANSFORM, args[1], args[2]);
 }
 
 /// `RenderTriStrips(this, geometryData, skinInstance, transform, bound)`
 unsafe fn render_tri_strips(args: &[usize]) {
+    crate::camera_space::geometry_begin(args[3]);
     send_draw(DRAW_STRIPS, args[0], args[3] - AV_WORLD_TRANSFORM, args[1], args[2]);
 }
 
@@ -815,16 +847,19 @@ unsafe fn render_tri_strips(args: &[usize]) {
 
 /// `RenderPoints(this, geometryData, transform, bound)`
 unsafe fn render_points(args: &[usize]) {
+    crate::camera_space::geometry_begin(0);
     send_draw(DRAW_POINTS, args[0], 0, args[1], 0);
 }
 
 /// `RenderLines(this, linesData, transform, bound)`
 unsafe fn render_lines(args: &[usize]) {
+    crate::camera_space::geometry_begin(0);
     send_draw(DRAW_LINES, args[0], 0, args[1], 0);
 }
 
 /// `RenderScreenPoly(this, ...)`
 unsafe fn render_screen_poly(args: &[usize]) {
+    crate::camera_space::geometry_begin(0);
     send_draw(DRAW_SCREEN_POLYGON, args[0], 0, 0, 0);
 }
 
@@ -903,6 +938,12 @@ pub unsafe fn use_facts(mask: u32) -> Option<u32> {
         return None;
     }
     let used = (host.use_facts)(mask);
+    USED_FACTS.store(used, Ordering::Relaxed);
+    if used >> FACT_CLIENT_CAMERA_SPACE & 1 != 0 {
+        if let Err(error) = crate::camera_space::install() {
+            crate::log!("camera space: {error}");
+        }
+    }
     let before = SUPPRESS.swap(used & DEVICE_FACTS, Ordering::Relaxed);
     if before & !used != 0 {
         resync(before & !used);
@@ -980,6 +1021,8 @@ pub unsafe fn counters_text(reset: bool) -> String {
         *skipped = [0; 6];
     }
     // The states that the Rust code asked for, as `state=calls`.
+    text.push_str(&crate::camera_space::report(reset));
+    text.push(0xA as char);
     let render: &mut [u32] = &mut *addr_of_mut!(RENDER_STATE_SETS);
     let stage: &mut [u32] = &mut *addr_of_mut!(STAGE_STATE_SETS);
     let sets = [("render_states:", render), ("stage_states:", stage)];

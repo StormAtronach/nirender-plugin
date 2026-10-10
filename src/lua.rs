@@ -239,6 +239,17 @@ unsafe extern "C" fn link_textures(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.cameraSpaceCompare(on)` turns the comparison of the camera-relative world
+/// matrices on or off. Returns false when the hook for it did not go in.
+unsafe extern "C" fn camera_space_compare(l: LuaState) -> i32 {
+    let result = crate::camera_space::set_compare(lua_toboolean(l, 1) != 0);
+    if let Err(error) = &result {
+        crate::log!("camera space: {error}");
+    }
+    lua_pushboolean(l, result.is_ok() as i32);
+    1
+}
+
 /// `nirender.deviceCallers(true)` starts the census of the callers of the device.
 /// `nirender.deviceCallers(false)` stops it and returns the counts as text. See `callers.rs`.
 unsafe extern "C" fn device_callers(l: LuaState) -> i32 {
@@ -274,6 +285,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "linkCounters", link_counters);
     set_fn(l, "linkUseFacts", link_use_facts);
     set_fn(l, "linkTextures", link_textures);
+    set_fn(l, "cameraSpaceCompare", camera_space_compare);
     set_fn(l, "deviceCallers", device_callers);
     push_str(l, env!("CARGO_PKG_VERSION"));
     lua_setfield(l, -2, b"version\0".as_ptr() as *const c_char);
