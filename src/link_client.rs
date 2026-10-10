@@ -278,6 +278,46 @@ unsafe fn command(command: u32, a: u32, b: u32, c: u32) -> bool {
     }
 }
 
+/// The kinds `KIND_*` that the host has: the answer of the last `use_kinds`.
+static KINDS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// The frame and scene calls that went to the host and not to the device.
+static mut FRAME_CALLS: u32 = 0;
+
+/// Tells the host which kinds `KIND_*` it has. Returns the mask that it uses, or `None`
+/// when the host has no such kinds.
+pub unsafe fn use_kinds(mask: u32) -> Option<u32> {
+    let host = host()?;
+    if host.capabilities & CAP_CALLS == 0 {
+        return None;
+    }
+    let used = (host.use_kinds)(mask);
+    KINDS.store(used, Ordering::Relaxed);
+    Some(used)
+}
+
+/// Makes a frame or scene call on the host. Returns `None` when the caller must make the
+/// D3D8 call.
+#[inline]
+pub unsafe fn frame_call(call: u32, args: &[u32]) -> Option<u32> {
+    kind_call(KIND_FRAME, call, args)
+}
+
+/// Makes a buffer on the host. Returns `None` when the caller must make the D3D8 call.
+#[inline]
+pub unsafe fn buffer_call(call: u32, args: &[u32]) -> Option<u32> {
+    kind_call(KIND_BUFFERS, call, args)
+}
+
+#[inline]
+unsafe fn kind_call(kind: u32, call: u32, args: &[u32]) -> Option<u32> {
+    if KINDS.load(Ordering::Relaxed) & kind == 0 || crate::shadow::leg() == crate::shadow::Leg::Rust {
+        return None;
+    }
+    let host = host()?;
+    *addr_of_mut!(FRAME_CALLS) += 1;
+    Some((host.call)(call, args.as_ptr()))
+}
+
 /// True when the host has this device kind and takes commands.
 #[inline]
 unsafe fn commands_for(fact: u32) -> bool {
@@ -1151,6 +1191,11 @@ pub unsafe fn counters_text(reset: bool) -> String {
     text.push('\n');
     if reset {
         *counts = [0; CLASS_COUNT];
+    }
+    text.push_str(&format!("frame_calls_to_host: {}", *addr_of!(FRAME_CALLS)));
+    text.push(0xA as char);
+    if reset {
+        *addr_of_mut!(FRAME_CALLS) = 0;
     }
     let skipped = &mut *addr_of_mut!(SKIPPED);
     text.push_str(&format!(

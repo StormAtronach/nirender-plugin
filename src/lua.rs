@@ -250,6 +250,16 @@ unsafe extern "C" fn camera_space_compare(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.linkUseKinds(mask)` tells MGE XE which more device kinds it has. Bit 0 is the
+/// frame and scene calls. Returns the mask that MGE XE uses, or nil.
+unsafe extern "C" fn link_use_kinds(l: LuaState) -> i32 {
+    match crate::link_client::use_kinds(lua_tonumber(l, 1) as u32) {
+        Some(used) => lua_pushnumber(l, used as f64),
+        None => lua_pushnil(l),
+    }
+    1
+}
+
 /// `nirender.deviceCallers(true)` starts the census of the callers of the device.
 /// `nirender.deviceCallers(false)` stops it and returns the counts as text. See `callers.rs`.
 unsafe extern "C" fn device_callers(l: LuaState) -> i32 {
@@ -285,6 +295,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "linkCounters", link_counters);
     set_fn(l, "linkUseFacts", link_use_facts);
     set_fn(l, "linkTextures", link_textures);
+    set_fn(l, "linkUseKinds", link_use_kinds);
     set_fn(l, "cameraSpaceCompare", camera_space_compare);
     set_fn(l, "deviceCallers", device_callers);
     push_str(l, env!("CARGO_PKG_VERSION"));

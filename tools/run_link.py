@@ -105,6 +105,8 @@ def main():
     ap.add_argument("--camera-compare", action="store_true", help="the plugin makes the camera-relative world "
                     "matrices too and counts the differences from the matrices of MGE XE")
     ap.add_argument("--callers", action="store_true", help="count the callers of the D3D8 device in each measurement")
+    ap.add_argument("--kinds", type=int, default=0, help="more device kinds that MGE XE has while the facts are in "
+                    "use: 1 is the frame and scene calls")
     ap.add_argument("--label", default="link")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -122,6 +124,7 @@ def main():
     # MGE XE takes the state of a draw from a packet that only the Rust code sends.
     spec["factsNeedRust"] = any(mask >> FACTS.index(n) & 1 for n in FACTS if n.startswith(("state_", "device_", "client_")))
     spec["linkTextures"] = args.link_textures
+    spec["kinds"] = args.kinds
     spec["callers"] = args.callers
     spec["cameraCompare"] = args.camera_compare
     if args.hour is not None:

@@ -41,6 +41,7 @@ return function(nirender, spec)
         local entry = list[index]
         if not entry then return done() end
         nirender.linkUseFacts(entry[2])
+        nirender.linkUseKinds(entry[2] ~= 0 and (spec.kinds or 0) or 0)
         -- The frame with the new mask must be on the screen before the capture.
         after(0.6, function()
             local path = string.format("%s/%d-%s.bmp", spec.shotDir, place, entry[1])
@@ -76,6 +77,7 @@ return function(nirender, spec)
         local where = tes3.player.cell.editorName
         place = place + 1
         nirender.linkUseFacts(0)
+        nirender.linkUseKinds(0)
         if spec.hour or spec.moon then
             -- A clear sky, so that the moons are in view at night.
             local weather = tes3.worldController.weatherController
@@ -97,8 +99,10 @@ return function(nirender, spec)
                     -- The game runs with the facts in use. It must continue to run, and the
                     -- counters must stay equal.
                     say("facts in use: mask %s", tostring(nirender.linkUseFacts(facts)))
+                    say("kinds in use: %s", tostring(nirender.linkUseKinds(spec.kinds or 0)))
                     measure(where, spec.factsNeedRust and "live" or "off", "facts", function()
                         nirender.linkUseFacts(0)
+                        nirender.linkUseKinds(0)
                         done()
                     end)
                 end)

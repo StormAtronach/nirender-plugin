@@ -14,6 +14,20 @@ pub const CAP_TEXTURES: u32 = 0x8;
 pub const CAP_WORLD_SPACE: u32 = 0x10;
 pub const CAP_CAMERA_SPACE: u32 = 0x20;
 pub const CAP_COMMANDS: u32 = 0x40;
+pub const CAP_CALLS: u32 = 0x80;
+
+pub const KIND_FRAME: u32 = 0x1;
+pub const KIND_BUFFERS: u32 = 0x2;
+
+pub const CALL_TEST_DEVICE: u32 = 1;
+pub const CALL_BEGIN_SCENE: u32 = 2;
+pub const CALL_END_SCENE: u32 = 3;
+pub const CALL_CLEAR: u32 = 4;
+pub const CALL_VIEWPORT: u32 = 5;
+pub const CALL_PRESENT: u32 = 6;
+pub const CALL_RENDER_TARGET: u32 = 7;
+pub const CALL_CREATE_VERTEX_BUFFER: u32 = 8;
+pub const CALL_CREATE_INDEX_BUFFER: u32 = 9;
 
 pub const COMMAND_RENDER_STATE: u32 = 1;
 pub const COMMAND_STAGE_STATE: u32 = 2;
@@ -302,6 +316,9 @@ pub struct HostV1 {
     pub camera_space: unsafe extern "C" fn(origin: *mut f64) -> u32,
     /// Only a host with `CAP_COMMANDS` has this member.
     pub command: unsafe extern "C" fn(command: u32, a: u32, b: u32, c: u32),
+    /// Only a host with `CAP_CALLS` has this member and the next one.
+    pub call: unsafe extern "C" fn(call: u32, args: *const u32) -> u32,
+    pub use_kinds: unsafe extern "C" fn(kind_mask: u32) -> u32,
 }
 
 /// `MGE_RenderLinkConnect`
@@ -321,7 +338,7 @@ const _: () = {
     assert!(size_of::<FactCountV1>() == 16);
     assert!(size_of::<CountersV1>() == 528);
     assert!(size_of::<TextureV1>() == 52);
-    assert!(size_of::<HostV1>() == 60);
+    assert!(size_of::<HostV1>() == 68);
 };
 
 #[cfg(test)]

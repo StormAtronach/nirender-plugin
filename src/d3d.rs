@@ -232,6 +232,9 @@ pub unsafe fn device_release(device: usize) -> u32 {
 /// `IDirect3DDevice8::TestCooperativeLevel` through the vtable of the object, slot 0x0C.
 #[inline(always)]
 pub unsafe fn device_test_cooperative_level(device: usize) -> u32 {
+    if let Some(result) = crate::link_client::frame_call(crate::link::CALL_TEST_DEVICE, &[]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize) -> u32 = transmute(virtual_at(device, DEVICE_TEST_COOPERATIVE_LEVEL));
     f(device)
 }
@@ -253,6 +256,10 @@ pub unsafe fn device_reset(device: usize, parameters: usize) -> u32 {
 /// `IDirect3DDevice8::Present` through the vtable of the object, slot 0x3C.
 #[inline(always)]
 pub unsafe fn device_present(device: usize, source_rect: usize, dest_rect: usize, window: u32, dirty_region: usize) -> u32 {
+    let args = [source_rect as u32, dest_rect as u32, window, dirty_region as u32];
+    if let Some(result) = crate::link_client::frame_call(crate::link::CALL_PRESENT, &args) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, usize, usize, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_PRESENT));
     f(device, source_rect, dest_rect, window, dirty_region)
 }
@@ -274,6 +281,9 @@ pub unsafe fn device_create_cube_texture(device: usize, edge: u32, levels: u32, 
 /// `IDirect3DDevice8::CreateVertexBuffer` through the vtable of the object, slot 0x5C.
 #[inline(always)]
 pub unsafe fn device_create_vertex_buffer(device: usize, length: u32, usage: u32, fvf: u32, pool: u32, out: usize) -> u32 {
+    if let Some(result) = crate::link_client::buffer_call(crate::link::CALL_CREATE_VERTEX_BUFFER, &[length, usage, fvf, pool, out as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_CREATE_VERTEX_BUFFER));
     f(device, length, usage, fvf, pool, out)
 }
@@ -281,6 +291,9 @@ pub unsafe fn device_create_vertex_buffer(device: usize, length: u32, usage: u32
 /// `IDirect3DDevice8::CreateIndexBuffer` through the vtable of the object, slot 0x60.
 #[inline(always)]
 pub unsafe fn device_create_index_buffer(device: usize, length: u32, usage: u32, format: u32, pool: u32, out: usize) -> u32 {
+    if let Some(result) = crate::link_client::buffer_call(crate::link::CALL_CREATE_INDEX_BUFFER, &[length, usage, format, pool, out as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_CREATE_INDEX_BUFFER));
     f(device, length, usage, format, pool, out)
 }
@@ -302,6 +315,9 @@ pub unsafe fn device_copy_rects(device: usize, source: usize, rects: usize, coun
 /// `IDirect3DDevice8::SetRenderTarget` through the vtable of the object, slot 0x7C.
 #[inline(always)]
 pub unsafe fn device_set_render_target(device: usize, target: usize, depth_stencil: usize) -> u32 {
+    if let Some(result) = crate::link_client::frame_call(crate::link::CALL_RENDER_TARGET, &[target as u32, depth_stencil as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, usize, usize) -> u32 = transmute(virtual_at(device, DEVICE_SET_RENDER_TARGET));
     f(device, target, depth_stencil)
 }
@@ -323,6 +339,9 @@ pub unsafe fn device_get_depth_stencil_surface(device: usize, out: usize) -> u32
 /// `IDirect3DDevice8::BeginScene` through the vtable of the object, slot 0x88.
 #[inline(always)]
 pub unsafe fn device_begin_scene(device: usize) -> u32 {
+    if let Some(result) = crate::link_client::frame_call(crate::link::CALL_BEGIN_SCENE, &[]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize) -> u32 = transmute(virtual_at(device, DEVICE_BEGIN_SCENE));
     f(device)
 }
@@ -330,6 +349,9 @@ pub unsafe fn device_begin_scene(device: usize) -> u32 {
 /// `IDirect3DDevice8::EndScene` through the vtable of the object, slot 0x8C.
 #[inline(always)]
 pub unsafe fn device_end_scene(device: usize) -> u32 {
+    if let Some(result) = crate::link_client::frame_call(crate::link::CALL_END_SCENE, &[]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize) -> u32 = transmute(virtual_at(device, DEVICE_END_SCENE));
     f(device)
 }
@@ -338,6 +360,9 @@ pub unsafe fn device_end_scene(device: usize) -> u32 {
 /// `z` is the bits of the float.
 #[inline(always)]
 pub unsafe fn device_clear(device: usize, count: u32, rects: usize, flags: u32, color: u32, z: u32, stencil: u32) -> u32 {
+    if let Some(result) = crate::link_client::frame_call(crate::link::CALL_CLEAR, &[count, rects as u32, flags, color, z, stencil]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, u32, usize, u32, u32, u32, u32) -> u32 = transmute(virtual_at(device, DEVICE_CLEAR));
     f(device, count, rects, flags, color, z, stencil)
 }
@@ -356,6 +381,9 @@ pub unsafe fn device_set_transform(device: usize, state: u32, matrix: usize) -> 
 /// `IDirect3DDevice8::SetViewport` through the vtable of the object, slot 0xA0.
 #[inline(always)]
 pub unsafe fn device_set_viewport(device: usize, viewport: usize) -> u32 {
+    if let Some(result) = crate::link_client::frame_call(crate::link::CALL_VIEWPORT, &[viewport as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, usize) -> u32 = transmute(virtual_at(device, DEVICE_SET_VIEWPORT));
     f(device, viewport)
 }
