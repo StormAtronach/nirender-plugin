@@ -78,6 +78,8 @@ port_thiscall!(set_current_material_port, 0x6C2620, "NiDX8MaterialManager::SetCu
     regions = |set| set_current_material_regions(set, this, material),
     rust = set_current_material);
 
+pub static PORTS: &[&crate::shadow::PortState] = &[&entry_update_port::STATE, &set_current_material_port::STATE];
+
 #[cfg(test)]
 mod tests {
     use super::*;

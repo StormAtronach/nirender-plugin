@@ -5,7 +5,7 @@ use core::sync::atomic::Ordering;
 use std::ffi::CString;
 
 use crate::gen::layouts::NiDX8Renderer;
-use crate::ports::PORTS;
+use crate::ports;
 use crate::shadow::{self, Mode};
 use crate::{census, device, engine, frame, hook, x87};
 
@@ -61,7 +61,7 @@ unsafe extern "C" fn install(l: LuaState) -> i32 {
 }
 
 unsafe fn install_all() -> Result<String, String> {
-    if PORTS.iter().any(|p| p.installed()) {
+    if ports::all().any(|p| p.installed()) {
         return Ok("already installed".into());
     }
     let renderer = engine::renderer();
@@ -78,7 +78,7 @@ unsafe fn install_all() -> Result<String, String> {
     changed.dedup();
     crate::log!("census: {} of {} functions differ from the database", changed.len(), crate::gen::funcs::FUNCS.len());
     for change in &changes {
-        let ported = PORTS.iter().any(|p| p.addr == change.func.ea);
+        let ported = ports::all().any(|p| p.addr == change.func.ea);
         crate::log!("census: {}{}", census::describe(change), if ported { " (PORTED)" } else { "" });
     }
 
@@ -86,8 +86,8 @@ unsafe fn install_all() -> Result<String, String> {
     device::set_frame_hook(frame::on_present);
 
     let mut failed = 0;
-    for port in PORTS {
-        match hook::install(port.addr, (port.detour)(), port.stack_args, hook::Cleanup::Callee) {
+    for port in ports::all() {
+        match hook::install(port.addr, (port.detour)(), port.stack_args, if port.cdecl { hook::Cleanup::Caller } else { hook::Cleanup::Callee }) {
             Ok(trampoline) => port.orig.store(trampoline, Ordering::Relaxed),
             Err(error) => {
                 failed += 1;
@@ -95,7 +95,7 @@ unsafe fn install_all() -> Result<String, String> {
             }
         }
     }
-    Ok(format!("{} ports installed, {} failed, {} functions differ from the database", PORTS.len() - failed, failed, changed.len()))
+    Ok(format!("{} ports installed, {} failed, {} functions differ from the database", ports::all().count() - failed, failed, changed.len()))
 }
 
 /// `nirender.setMode(pattern, mode)` -> number of ports set. `pattern` is "*" or a part of
@@ -105,7 +105,7 @@ unsafe extern "C" fn set_mode(l: LuaState) -> i32 {
     let mode = arg_str(l, 2).and_then(|m| Mode::parse(&m));
     let mut count = 0;
     if let Some(mode) = mode {
-        for port in PORTS {
+        for port in ports::all() {
             if port.installed() && (pattern == "*" || port.name.contains(pattern.as_str())) {
                 port.set_mode(mode);
                 count += 1;
@@ -121,7 +121,7 @@ unsafe extern "C" fn set_mode(l: LuaState) -> i32 {
 /// calls that ran as Rust. Tab separated, for the log and for tools/status.py.
 pub fn report() -> String {
     let mut text = String::from("port\taddr\tinstalled\tmode\tshadow_calls\tmismatches\tskipped\tlive_calls\n");
-    for port in PORTS {
+    for port in ports::all() {
         text.push_str(&format!(
             "{}\t{:#x}\t{}\t{:?}\t{}\t{}\t{}\t{}\n",
             port.name,
@@ -181,7 +181,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "fpuControlWord", fpu_control_word);
     push_str(l, env!("CARGO_PKG_VERSION"));
     lua_setfield(l, -2, b"version\0".as_ptr() as *const c_char);
-    lua_pushnumber(l, PORTS.len() as f64);
+    lua_pushnumber(l, ports::all().count() as f64);
     lua_setfield(l, -2, b"ports\0".as_ptr() as *const c_char);
     1
 }

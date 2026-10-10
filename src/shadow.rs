@@ -33,6 +33,8 @@ pub struct PortState {
     pub name: &'static str,
     pub addr: usize,
     pub stack_args: usize,
+    /// The caller removes the stack arguments.
+    pub cdecl: bool,
     pub detour: fn() -> usize,
     /// The address to call for the engine function. 0 until the detour is installed.
     pub orig: AtomicUsize,
@@ -47,11 +49,18 @@ pub struct PortState {
 }
 
 impl PortState {
+    pub const fn new_cdecl(name: &'static str, addr: usize, stack_args: usize, detour: fn() -> usize) -> PortState {
+        let mut state = PortState::new(name, addr, stack_args, detour);
+        state.cdecl = true;
+        state
+    }
+
     pub const fn new(name: &'static str, addr: usize, stack_args: usize, detour: fn() -> usize) -> PortState {
         PortState {
             name,
             addr,
             stack_args,
+            cdecl: false,
             detour,
             orig: AtomicUsize::new(0),
             mode: AtomicU8::new(0),

@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use crate::device;
-use crate::ports::PORTS;
+use crate::ports;
 use crate::shadow::{self, Mode};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -53,11 +53,11 @@ pub fn take_result() -> Option<String> {
 }
 
 fn total_live_calls() -> u64 {
-    PORTS.iter().map(|p| p.live_calls.load(Ordering::Relaxed)).sum()
+    ports::all().map(|p| p.live_calls.load(Ordering::Relaxed)).sum()
 }
 
 fn set_all(mode: Mode) {
-    for port in PORTS {
+    for port in ports::all() {
         if port.installed() {
             port.set_mode(mode);
         }
@@ -85,7 +85,7 @@ pub unsafe fn on_present() {
     let work = &mut *core::ptr::addr_of_mut!(WORK);
     match PHASE.load(Ordering::Relaxed) {
         ARMED => {
-            work.modes = PORTS.iter().map(|p| p.mode()).collect();
+            work.modes = ports::all().map(|p| p.mode()).collect();
             shadow::suspend_shadow(true);
             set_all(Mode::Off);
             device::begin(false);
@@ -102,7 +102,7 @@ pub unsafe fn on_present() {
         }
         SECOND => {
             device::end(&mut work.second);
-            for (port, mode) in PORTS.iter().zip(work.modes.iter()) {
+            for (port, mode) in ports::all().zip(work.modes.iter()) {
                 port.set_mode(*mode);
             }
             shadow::suspend_shadow(false);

@@ -49,24 +49,59 @@ macro_rules! port_thiscall {
     };
 }
 
+/// Declares the port of a `__cdecl` engine function: the caller removes the arguments.
+#[allow(unused_macros)]
+macro_rules! port_cdecl {
+    (
+        $modname:ident, $addr:literal, $ename:literal,
+        fn($($a:ident : $t:ty),*) -> $r:ty,
+        compare_eax = $cmp:literal,
+        regions = |$set:ident| $regbody:expr,
+        rust = $rust:path
+    ) => {
+        pub mod $modname {
+            #[allow(unused_imports)]
+            use super::*;
+            use core::sync::atomic::Ordering;
+
+            fn detour_addr() -> usize {
+                detour as *const () as usize
+            }
+
+            pub static STATE: $crate::shadow::PortState = $crate::shadow::PortState::new_cdecl(
+                $ename, $addr, 0 $(+ { let _ = stringify!($a); 1 })*, detour_addr);
+
+            /// The engine function.
+            #[allow(dead_code)]
+            pub unsafe fn engine($($a: $t),*) -> u32 {
+                let f: unsafe extern "C" fn($($t),*) -> u32 = core::mem::transmute(STATE.orig.load(Ordering::Relaxed));
+                f($($a),*)
+            }
+
+            unsafe extern "C" fn detour($($a: $t),*) -> u32 {
+                $crate::shadow::dispatch(
+                    &STATE,
+                    $cmp,
+                    #[allow(unused_variables)]
+                    |$set: &mut $crate::shadow::Regions| $regbody,
+                    || -> $r { $rust($($a),*) },
+                    || engine($($a),*),
+                )
+            }
+        }
+    };
+}
+
 pub mod material;
 pub mod render_state;
 
-pub static PORTS: &[&PortState] = &[
-    &render_state::set_render_state_port::STATE,
-    &render_state::set_texture_stage_state_with_save_port::STATE,
-    &render_state::setting_set_value_port::STATE,
-    &render_state::update_d3d_state_port::STATE,
-    &render_state::set_multisampling_port::STATE,
-    &render_state::set_z_buffer_enable_port::STATE,
-    &render_state::update_alpha_states_port::STATE,
-    &render_state::next_frame_port::STATE,
-    &render_state::reset_texture_stage_states_port::STATE,
-    &render_state::update_fog_states_port::STATE,
-    &render_state::set_stencil_states_port::STATE,
-    &material::entry_update_port::STATE,
-    &material::set_current_material_port::STATE,
-];
+/// The ports of every module. A new module adds its `PORTS` here.
+static MODULES: &[&[&PortState]] = &[render_state::PORTS, material::PORTS];
+
+/// Every port.
+pub fn all() -> impl Iterator<Item = &'static PortState> {
+    MODULES.iter().flat_map(|module| module.iter().copied())
+}
 
 #[cfg(test)]
 mod tests {
@@ -76,16 +111,20 @@ mod tests {
     #[test]
     fn every_port_is_a_known_function_with_the_right_stack_size() {
         let inventory = include_str!("../gen/funcs.rs");
-        for port in PORTS {
+        for port in all() {
             let func = hook::find(port.addr).unwrap_or_else(|| panic!("{} is not in the function table", port.name));
             assert_eq!(func.name, port.name);
             assert!(func.pic && func.steal >= 5, "{} cannot take a detour", port.name);
-            assert_eq!(func.argsize, port.stack_args * 4, "{}: stack arguments", port.name);
+            if port.cdecl {
+                assert_eq!(func.argsize, 0, "{}: a cdecl function removes no arguments", port.name);
+            } else {
+                assert_eq!(func.argsize, port.stack_args * 4, "{}: stack arguments", port.name);
+            }
             assert!(inventory.contains(port.name));
         }
-        let mut addrs: Vec<usize> = PORTS.iter().map(|p| p.addr).collect();
+        let mut addrs: Vec<usize> = all().map(|p| p.addr).collect();
         addrs.sort();
         addrs.dedup();
-        assert_eq!(addrs.len(), PORTS.len(), "a function is listed twice");
+        assert_eq!(addrs.len(), all().count(), "a function is listed twice");
     }
 }

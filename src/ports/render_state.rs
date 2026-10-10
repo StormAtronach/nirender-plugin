@@ -350,3 +350,17 @@ port_thiscall!(set_stencil_states_port, 0x6B8C10, "NiDX8RenderState::setStencilS
     compare_eax = false,
     regions = |set| set.add(this, RS::SIZE),
     rust = set_stencil_states);
+
+pub static PORTS: &[&crate::shadow::PortState] = &[
+    &set_render_state_port::STATE,
+    &set_texture_stage_state_with_save_port::STATE,
+    &setting_set_value_port::STATE,
+    &update_d3d_state_port::STATE,
+    &set_multisampling_port::STATE,
+    &set_z_buffer_enable_port::STATE,
+    &update_alpha_states_port::STATE,
+    &next_frame_port::STATE,
+    &reset_texture_stage_states_port::STATE,
+    &update_fog_states_port::STATE,
+    &set_stencil_states_port::STATE,
+];
