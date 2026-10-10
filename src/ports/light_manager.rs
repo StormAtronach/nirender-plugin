@@ -1,4 +1,4 @@
-//! `NiDX8LightManager`: one `D3DLIGHT8` per `NiLight`, the list of the lights that are on in
+//! `NiDX8LightManager`: one `D3DLIGHT8` for each `NiLight`, the list of the lights that are on in
 //! the device, and the lighting render states of a draw.
 
 use core::arch::asm;
@@ -55,11 +55,11 @@ const DEVICE_RELEASE: usize = 0x08;
 const DEVICE_SET_LIGHT: usize = 0xB0;
 const DEVICE_LIGHT_ENABLE: usize = 0xB8;
 
-/// 0x74F2EC: a light with a dimmer below this is left out.
+/// 0x74F2EC: the game does not use a light with a dimmer below this value.
 const MIN_DIMMER: u32 = 0x3C23_D70A; // 0.01
 /// 0x74C08C: 1/255.
 const INV_255: u32 = 0x3B80_8081;
-/// 0x74F6E0: 1/90. With pi this turns the cone angle from degrees into half of it in radians.
+/// 0x74F6E0: 1/90. With pi, this changes the cone angle in degrees into half of it in radians.
 const INV_90: u32 = 0x3C36_0B61;
 
 const VTBL_NI_REF_OBJECT: u32 = 0x7469B8;
@@ -143,11 +143,11 @@ mod eng {
     pub unsafe fn clear_hash_map(map: usize) {
         transmute::<usize, This0>(0x6BC8A0)(map);
     }
-    /// `f_pi_static` (0x7DEDA4): set when the game starts.
+    /// `f_pi_static` (0x7DEDA4). The game sets it when the game starts.
     pub unsafe fn pi() -> u32 {
         rd(0x7DEDA4, 0)
     }
-    /// `dword_7DDA0C`: the range every point and spot light gets.
+    /// `dword_7DDA0C`: the range that each point light and each spot light gets.
     pub unsafe fn light_range() -> u32 {
         rd(0x7DDA0C, 0)
     }
@@ -157,7 +157,7 @@ mod eng {
     }
 }
 
-/// Stand-ins for the unit tests, which run without the game.
+/// Replacements for the unit tests. The unit tests run without the game.
 #[cfg(test)]
 mod eng {
     use crate::mem::{rd, wr};
@@ -326,7 +326,7 @@ fn x87_ambient_channel(channel: u32, dimmer: u32, colour: u32) -> u32 {
 
 // ---- shared pieces the game code has inline
 
-/// Write the cache and the device when the value is new.
+/// Writes the cache and the device when the value is different.
 #[inline(always)]
 unsafe fn set_if_changed(render_state: usize, state: u32, value: u32) {
     let setting = RS::renderStateSettings + state as usize * 8;
@@ -366,7 +366,7 @@ unsafe fn map_first(map: usize) -> usize {
     0
 }
 
-/// The first node of the buckets after the one of `key`.
+/// The first node in the buckets after the bucket of `key`.
 #[inline(always)]
 unsafe fn map_next_bucket(map: usize, key: u32) -> usize {
     let mut i = map_hash_key(map, key).wrapping_add(1);
@@ -384,7 +384,7 @@ unsafe fn map_next_bucket(map: usize, key: u32) -> usize {
     0
 }
 
-/// Takes every light off the device and puts its list item on the free list.
+/// Disables each light of the list in the device and puts its list item on the free list.
 #[inline(always)]
 unsafe fn disable_device_lights(this: usize) {
     while rd::<u32>(this, M::deviceLights_count) != 0 {
@@ -407,7 +407,7 @@ unsafe fn disable_device_lights(this: usize) {
 
 // ---- the ports
 
-/// 0x6BAB00 `NiDX8LightManager::LightEntry::Update`. Returns 1 when the entry was rebuilt.
+/// 0x6BAB00 `NiDX8LightManager::LightEntry::Update`. Returns 1 when the port built the entry again.
 pub unsafe fn light_entry_update(entry: usize, light: usize) -> u8 {
     crate::shadow::touch(&light_entry_update_port::STATE);
     eng::lock(ENTRY_CRITICAL_SECTION, NAME_ENTRY_UPDATE);
@@ -453,7 +453,7 @@ pub unsafe fn light_entry_update(entry: usize, light: usize) -> u8 {
         _ => {}
     }
 
-    // Every colour times the dimmer. Alpha stays 0.
+    // The port multiplies each colour by the dimmer. Alpha stays 0.
     let dimmer: u32 = rd(light, L::dimmer);
     let scaled = |from: usize| x87_mul(rd(light, from), dimmer);
     let ambient_r = scaled(L::ambientColor_r);
@@ -513,7 +513,7 @@ pub unsafe fn ctor(this: usize, render_state: usize, device: usize) -> usize {
     wr(this, M::renderState, render_state);
     wr(this, M::device, device);
     device_add_ref(device);
-    // The rest is the body of `resetRenderStates`, inline in the game code.
+    // The remaining code is the body of `resetRenderStates`. The game code has it inline.
     reset_render_states(this);
     this
 }
@@ -528,7 +528,7 @@ pub unsafe fn dtor(this: usize) {
         let entry: usize = rd(first, HN::data);
         let key: u32 = rd(first, HN::key);
         if rd::<usize>(first, HN::nextNode) == 0 {
-            // The iterator moves on. Nothing reads the result.
+            // The iterator moves to the next bucket. No code reads the result.
             map_next_bucket(map, key);
         }
         let bucket = map_hash_key(map, key) as usize;
@@ -622,7 +622,7 @@ pub unsafe fn set_state(this: usize, state: usize, texturing: usize, vertex_colo
     wr(this, M::applyMode, apply_mode);
     let base_map: usize = rd(rd::<usize>(texturing, TP::maps_storage), 0);
     if base_map != 0 && rd::<usize>(base_map, TM::texture) != 0 && apply_mode == 0 {
-        // A base texture in replace mode: the lights do not show.
+        // A base texture in replace mode: the lights are not visible.
         if rd::<u8>(this, M::d3dLightingState) != 0 {
             set_if_changed(render_state(), D3DRS_LIGHTING, 0);
             wr::<u8>(this, M::d3dLightingState, 0);
@@ -789,13 +789,14 @@ pub unsafe fn remove_light(this: usize, light: usize) {
     eng::unlock(cs);
 }
 
-/// 0x6BB6C0 `NiDX8LightManager::updateLights`: the lights of one effect state go to the
-/// device; the ambient lights add up to the ambient render state.
+/// 0x6BB6C0 `NiDX8LightManager::updateLights`. The port sends the lights of one effect state
+/// to the device. The sum of the ambient lights becomes the ambient render state.
 pub unsafe fn update_lights(this: usize, state: usize) {
     crate::shadow::touch(&update_lights_port::STATE);
     let cs = this + M::criticalSection;
     eng::lock(cs, NAME_UPDATE_LIGHTS);
-    // Alpha 255, no colour. The game code makes it from four float constants.
+    // Alpha is 255 and there is no colour. The game code makes the value from four float
+    // constants.
     let mut ambient: u32 = 0xFF00_0000;
     let ambient_ptr = core::ptr::addr_of_mut!(ambient) as usize;
     disable_device_lights(this);
@@ -831,7 +832,7 @@ pub unsafe fn update_lights(this: usize, state: usize) {
             } else {
                 entry = eng::operator_new(E::SIZE);
                 if entry != 0 {
-                    // The constructor of the entry, inline.
+                    // The constructor of the entry. The game code has it inline.
                     eng::lock(ENTRY_CRITICAL_SECTION, NAME_ENTRY_CTOR);
                     wr::<u32>(entry, E::revisionId, 0);
                     wr::<u32>(entry, E::lightIndex, rd(light, L::index));
@@ -890,8 +891,8 @@ pub unsafe fn update_lights(this: usize, state: usize) {
     eng::unlock(cs);
 }
 
-/// 0x6BBB40 `NiDX8LightManager::ReleaseLights`: every entry goes; its key stays in the map
-/// with no entry.
+/// 0x6BBB40 `NiDX8LightManager::ReleaseLights`. The port deletes each entry. The key of the
+/// entry stays in the map with no entry.
 pub unsafe fn release_lights(this: usize) {
     crate::shadow::touch(&release_lights_port::STATE);
     let cs = this + M::criticalSection;
@@ -927,8 +928,8 @@ pub unsafe fn release_lights(this: usize) {
 
 // ---- the memory a call may write
 
-/// Blocks of memory, joined where they touch, so that the items of one allocator block
-/// count once.
+/// Blocks of memory. The code joins the blocks that touch, so that the items of one
+/// allocator block count as one block.
 struct Blocks {
     list: [(usize, usize); 48],
     len: usize,
@@ -952,7 +953,7 @@ impl Blocks {
         self.len += 1;
     }
 
-    /// Sorts and joins. Returns the number of blocks left.
+    /// Sorts and joins the blocks. Returns the number of blocks that remain.
     fn join(&mut self) -> usize {
         let list = &mut self.list[..self.len];
         list.sort_unstable();
@@ -971,7 +972,7 @@ impl Blocks {
         out
     }
 
-    /// Gives the blocks to the shadow test, or skips the call when they are too many.
+    /// Gives the blocks to the shadow test, or skips the call when there are too many blocks.
     fn finish(mut self, set: &mut Regions) {
         if self.skip || self.join() > 8 {
             set.skip();
@@ -983,7 +984,7 @@ impl Blocks {
     }
 }
 
-/// The items in the list of device lights. Returns their number.
+/// Adds the items in the list of device lights. Returns the number of items.
 unsafe fn add_device_light_items(blocks: &mut Blocks, this: usize) -> usize {
     let mut item: usize = rd(this, M::deviceLights_head);
     let mut count = 0;
@@ -995,9 +996,9 @@ unsafe fn add_device_light_items(blocks: &mut Blocks, this: usize) -> usize {
     count
 }
 
-/// What `updateLights` writes: the manager, the render state, the list items it frees and
-/// takes, and the entries of lights that changed. A new entry, map node or allocator block
-/// makes the call one that cannot run twice.
+/// The memory `updateLights` writes: the manager, the render state, the list items it frees
+/// and takes, and the entries of the lights that changed. A call that makes a new entry, map
+/// node or allocator block cannot run twice.
 unsafe fn add_update_lights(blocks: &mut Blocks, this: usize, state: usize, use_ambient_diffuse: u8) {
     blocks.add(this, M::SIZE);
     blocks.add(rd(this, M::renderState), RS::SIZE);
@@ -1025,7 +1026,7 @@ unsafe fn add_update_lights(blocks: &mut Blocks, this: usize, state: usize, use_
             blocks.add(entry, E::SIZE);
         }
     }
-    // The freed items come back first; past them the function takes from the free list.
+    // The function uses the freed items first. Then it takes items from the free list.
     let mut free: usize = rd(this, M::deviceLights_allocator_freeList);
     for _ in in_list..needed {
         if free == 0 {
@@ -1047,7 +1048,8 @@ unsafe fn set_state_regions(set: &mut Regions, this: usize, state: usize, textur
     let mut blocks = Blocks::new();
     blocks.add(this, M::SIZE);
     blocks.add(rd(this, M::renderState), RS::SIZE);
-    // The same decisions as the function, to know whether it gets to `updateLights`.
+    // The code makes the same decisions as the function, to find if the function gets to
+    // `updateLights`.
     let base_map: usize = rd(rd::<usize>(texturing, TP::maps_storage), 0);
     let replace = base_map != 0 && rd::<usize>(base_map, TM::texture) != 0 && rd::<u32>(texturing, TP::applyMode) == 0;
     let source_mode: u32 = rd(vertex_color, VC::sourceMode);
@@ -1076,7 +1078,7 @@ unsafe fn next_frame_regions(set: &mut Regions, this: usize) {
 unsafe fn remove_light_regions(set: &mut Regions, this: usize, light: usize) {
     let (_, node) = map_find(this + M::lightEntries, rd(light, L::index));
     if node != 0 {
-        // The node and the entry are freed.
+        // The function frees the node and the entry.
         set.skip();
         return;
     }
@@ -1101,7 +1103,7 @@ unsafe fn release_lights_regions(set: &mut Regions, this: usize) {
         let mut node: usize = rd(buckets, i * 4);
         while node != 0 {
             if rd::<usize>(node, HN::data) != 0 {
-                // An entry is freed.
+                // The function frees an entry.
                 set.skip();
                 return;
             }
@@ -1373,7 +1375,7 @@ mod tests {
             assert_eq!(rd::<u32>(e, E::revisionId), 1);
             assert_eq!(rd::<u32>(e, E::lightIndex), 7);
 
-            // Same revision: nothing happens.
+            // The revision is the same: the port changes nothing.
             wr::<f32>(l, L::dimmer, 1.0);
             assert_eq!(light_entry_update(e, l), 0);
             assert_eq!(rd::<f32>(e, E::d3dLight_Diffuse_r), 2.5);
@@ -1407,7 +1409,7 @@ mod tests {
             assert_eq!(rd::<[f32; 3]>(e, E::d3dLight_Attenuation0), [1.0, 0.0, 0.5]);
             assert_eq!(rd::<u32>(e, E::d3dLight_Range), eng::TEST_RANGE);
 
-            // An ambient light gets no type; only the colours.
+            // An ambient light gets no type. It gets only the colours.
             let l = light(type_ambient, 1);
             wr::<u32>(l, L::revisionID, 3);
             assert_eq!(light_entry_update(e, l), 1);
@@ -1464,7 +1466,7 @@ mod tests {
             let state = effect_state(&[ambient, point, off, dim, directional]);
 
             update_lights(m, state);
-            // 0.5 * (1, 0.5, 0) -> 128 (127.5 to even), 64 (63.75), 0
+            // 0.5 * (1, 0.5, 0) gives 128 (127.5 rounded to even), 64 (63.75) and 0.
             let ambient_total = 0xFF80_4000;
             assert_eq!(
                 calls(),
@@ -1477,8 +1479,9 @@ mod tests {
             let (_, node) = map_find(m + M::lightEntries, 12);
             assert_eq!(rd::<u32>(rd(node, HN::data), E::lightIndex), 12);
 
-            // The second time the entries are there and did not change: no SetLight, and the
-            // list items come from the free list. No allocation, so the call can be compared.
+            // In the second call the entries exist and did not change. There is no SetLight
+            // call, and the list items come from the free list. There is no allocation, thus
+            // the shadow test can compare the call.
             let mut blocks = Blocks::new();
             add_update_lights(&mut blocks, m, state, 1);
             assert!(!blocks.skip);
@@ -1487,7 +1490,7 @@ mod tests {
             assert_eq!(calls(), [(46, 17, 0), (46, 12, 0), (46, 12, 1), (46, 17, 1)]);
             assert_eq!(device_light_list(m), [directional, point]);
 
-            // A changed light sends its entry again.
+            // The port sends the entry of a changed light again.
             wr::<u32>(point, L::revisionID, 2);
             let mut blocks = Blocks::new();
             add_update_lights(&mut blocks, m, state, 1);
@@ -1495,7 +1498,8 @@ mod tests {
             update_lights(m, state);
             assert_eq!(calls(), [(46, 17, 0), (46, 12, 0), (44, 12, 1), (46, 12, 1), (46, 17, 1)]);
 
-            // Without ambient and diffuse lighting only the ambient state is left, at black.
+            // Without ambient and diffuse lighting, only the ambient state remains, and it is
+            // black.
             wr::<u8>(m, M::useAmbientDiffuse, 0);
             update_lights(m, state);
             assert_eq!(calls(), [(46, 17, 0), (46, 12, 0), (50, D3DRS_AMBIENT, 0xFF00_0000)]);
@@ -1521,7 +1525,8 @@ mod tests {
             calls();
             assert_eq!(device_light_list(m), [lights[3], lights[2], lights[1], lights[0]]);
 
-            // RemoveLight frees the entry: not comparable while the light has a node.
+            // RemoveLight frees the entry. The shadow test skips the call while the light has
+            // a node.
             let mut set = Regions::new();
             remove_light_regions(&mut set, m, lights[1]);
             assert!(set.as_slice().is_empty());
@@ -1537,7 +1542,7 @@ mod tests {
             assert_eq!(rd::<u32>(m, M::lightEntries_count), 1);
             calls();
 
-            // A light the manager does not know: only the device call.
+            // A light the manager does not know: the port makes only the device call.
             remove_light(m, lights[3]);
             assert_eq!(calls(), [(46, 4, 0)]);
             assert_eq!(device_light_list(m), [lights[1]]);
@@ -1551,7 +1556,7 @@ mod tests {
             assert_eq!(device_light_list(m), []);
             assert_eq!(rd::<usize>(m, M::lastState), 0);
 
-            // ReleaseLights drops the entry and keeps the key.
+            // ReleaseLights deletes the entry and keeps the key.
             release_lights(m);
             assert_eq!(calls(), [(46, 2, 0)]);
             assert_eq!(rd::<u32>(m, M::lightEntries_count), 1);
@@ -1579,7 +1584,7 @@ mod tests {
             let point = light(type_point, 3);
             let state = effect_state(&[point]);
 
-            // Lit, material colours.
+            // Lighting is on, with material colours.
             wr::<u32>(vertex_color, VC::lightingMode, 1);
             set_state(m, state, texturing, vertex_color);
             assert_eq!(
@@ -1592,7 +1597,7 @@ mod tests {
             assert_eq!(rd::<usize>(m, M::lastState), state);
             assert_eq!(rd::<u8>(m, M::lastUseAmbientDiffuse), 1);
 
-            // The same again: nothing to do.
+            // The same call again: the port makes no device call.
             set_state(m, state, texturing, vertex_color);
             assert_eq!(calls(), []);
 
@@ -1611,8 +1616,8 @@ mod tests {
             );
             assert_eq!(rd::<u32>(m, M::sourceVertexMode), 1);
 
-            // Emissive lighting mode with ignored vertex colours: the lights go off the
-            // device, and the emissive source goes back.
+            // Emissive lighting mode with ignored vertex colours: the port disables the lights
+            // in the device and resets the emissive source.
             wr::<u32>(vertex_color, VC::lightingMode, 0);
             wr::<u32>(vertex_color, VC::sourceMode, 0);
             set_state(m, state, texturing, vertex_color);
@@ -1621,7 +1626,7 @@ mod tests {
             assert_eq!(rd::<u8>(m, M::lastUseAmbientDiffuse), 0);
             assert_eq!(rd::<u32>(m, M::sourceVertexMode), 0);
 
-            // Emissive lighting mode with emissive vertex colours: lighting off.
+            // Emissive lighting mode with emissive vertex colours: the port sets lighting off.
             wr::<u32>(vertex_color, VC::sourceMode, 1);
             set_state(m, state, texturing, vertex_color);
             assert_eq!(calls(), [(50, D3DRS_LIGHTING, 0)]);
@@ -1629,7 +1634,8 @@ mod tests {
             set_state(m, state, texturing, vertex_color);
             assert_eq!(calls(), []);
 
-            // A base texture in replace mode: lighting off, whatever the vertex colours say.
+            // A base texture in replace mode: the port sets lighting off for all vertex colour
+            // settings.
             wr::<u32>(vertex_color, VC::lightingMode, 1);
             set_state(m, state, texturing, vertex_color);
             assert_eq!(rd::<u8>(m, M::d3dLightingState), 1);

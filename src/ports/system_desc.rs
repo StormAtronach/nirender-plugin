@@ -1,8 +1,9 @@
-//! `NiDX8SystemDesc`, `NiDX8AdapterDesc` and `NiDX8DeviceDesc`: what the adapters of the
-//! machine can do, asked from the `IDirect3D8` object when the renderer is made.
+//! `NiDX8SystemDesc`, `NiDX8AdapterDesc` and `NiDX8DeviceDesc`: the capabilities of the
+//! adapters of the machine. The game reads them from the `IDirect3D8` object when it makes
+//! the renderer.
 //!
 //! The constructors only read from `IDirect3D8`, so both runs of a comparison make the same
-//! calls. Their heap use goes through `operator new` and `operator delete`.
+//! calls. They use the heap through `operator new` and `operator delete`.
 
 use core::mem::transmute;
 
@@ -61,7 +62,7 @@ const MODE_FORMAT: usize = 3;
 const MODE_ARRAY_VTBL: usize = 0x74F648;
 /// The vtable of the adapter array (`vtbl_sg_TArray_of_NiDX8AdapterDesc`).
 const ADAPTER_ARRAY_VTBL: usize = 0x74F64C;
-/// The depth formats a screen format is tried with.
+/// The depth formats that the game tries with a screen format.
 const DEPTH_FORMAT_COUNT: usize = 7;
 const HASH_BUCKETS: u32 = 37;
 /// `D3DCAPS2_CANRENDERWINDOWED`
@@ -97,7 +98,8 @@ mod eng {
     pub unsafe fn list_add_head(list: usize, value: u32) {
         transmute::<usize, This1>(0x6B2D40)(list, value);
     }
-    /// 0x6B2DA0 `NiTListBase::advanceIterator`: returns the value at the iterator and moves it on.
+    /// 0x6B2DA0 `NiTListBase::advanceIterator`: returns the value at the iterator and moves the
+    /// iterator to the next item.
     pub unsafe fn list_advance_iterator(list: usize, iterator: usize) -> u32 {
         transmute::<usize, This1>(0x6B2DA0)(list, iterator as u32)
     }
@@ -123,7 +125,7 @@ mod eng {
     }
 }
 
-/// Stand-ins for the engine functions, so the tests need no game. They do what the game
+/// Replacements for the engine functions, so the tests need no game. They do what the game
 /// code does and keep a log of the heap calls.
 #[cfg(test)]
 mod eng {
@@ -148,7 +150,7 @@ mod eng {
         HEAP_LOG.with(|log| log.borrow_mut().push(Heap::New(block, size)));
         block
     }
-    /// The block stays allocated, so a test can still look at it.
+    /// The block stays allocated, so a test can still read it.
     pub unsafe fn delete(block: usize) {
         HEAP_LOG.with(|log| log.borrow_mut().push(Heap::Delete(block)));
     }
@@ -365,7 +367,8 @@ unsafe fn list_init(list: usize) {
     wr::<u32>(list, LIST_BLOCK_ITEMS, 2);
 }
 
-/// A new block of items for a list with none free, made with `NiTListAllocator::Data::ctor`.
+/// Makes a new block of items for a list that has no free item. It uses
+/// `NiTListAllocator::Data::ctor`.
 unsafe fn list_grow(list: usize) {
     let mut block = eng::operator_new(BLOCK_SIZE);
     block = if block != 0 { eng::list_block_ctor(block, rd(list, LIST_BLOCK_ITEMS)) } else { 0 };
@@ -416,8 +419,9 @@ fn abs_difference(a: u32, b: u32) -> i32 {
 
 // ---- NiDX8DeviceDesc::ScreenFormatInfo
 
-/// 0x6B1600 `NiDX8DeviceDesc::ScreenFormatInfo::ctor`. For each render target format the
-/// device has with this screen format, the list of the depth formats that go with it.
+/// 0x6B1600 `NiDX8DeviceDesc::ScreenFormatInfo::ctor`. It finds each render target format
+/// that the device has with this screen format. For each one it makes the list of the depth
+/// formats that are compatible with it.
 pub unsafe fn screen_format_info_ctor(this: usize, d3d: usize, adapter: u32, device_type: u32, format: u32, fullscreen: u8, windowed: u8) -> usize {
     crate::shadow::touch(&screen_format_info_ctor_port::STATE);
     let map = this + SFI::validDepthStencils;
@@ -432,7 +436,7 @@ pub unsafe fn screen_format_info_ctor(this: usize, d3d: usize, adapter: u32, dev
     wr(this, SFI::bFullscreen, fullscreen);
     wr(this, SFI::bWindowed, windowed);
 
-    // Index 0 does nothing; 1 to 11 are D3DFMT_R8G8B8 (20) to D3DFMT_X4R4G4B4 (30).
+    // Index 0 does nothing. Indexes 1 to 11 are D3DFMT_R8G8B8 (20) to D3DFMT_X4R4G4B4 (30).
     for index in 1u32..12 {
         let target = index + 19;
         if d3d_check_device_format(d3d, adapter, device_type, format, 1, 1, target) != 0 {
@@ -700,8 +704,8 @@ pub unsafe fn device_desc_dtor(this: usize) {
     list_zero(list);
 }
 
-/// The index of a screen format in the renderer's own list: 1 for D3DFMT_R8G8B8 (20) to
-/// 11 for D3DFMT_X4R4G4B4 (30), 0 for the rest.
+/// The index of a screen format in the list of the renderer. It is 1 for D3DFMT_R8G8B8 (20)
+/// to 11 for D3DFMT_X4R4G4B4 (30), and 0 for the other formats.
 fn screen_format_enum(format: u32) -> u32 {
     if (20..=30).contains(&format) {
         format - 19
@@ -889,8 +893,8 @@ pub unsafe fn adapter_desc_ctor(this: usize, d3d: usize, adapter_index: u32) -> 
     this
 }
 
-/// 0x6B25D0 `NiDX8AdapterDesc::findClosestMode`. Returns the `ModeDesc` or 0. A refresh rate
-/// that is not 0 and not 0x7FFFFFFF is replaced with one the mode has.
+/// 0x6B25D0 `NiDX8AdapterDesc::findClosestMode`. Returns the `ModeDesc` or 0. The function
+/// replaces a refresh rate that is not 0 and not 0x7FFFFFFF with a rate that the mode has.
 pub unsafe fn adapter_desc_find_closest_mode(this: usize, format: u32, width: u32, height: u32, inout_refresh_rate: usize) -> usize {
     crate::shadow::touch(&adapter_desc_find_closest_mode_port::STATE);
     let mut result = 0usize;
@@ -1049,8 +1053,9 @@ pub unsafe fn system_desc_dtor(this: usize) {
     eng::delete(storage);
 }
 
-/// 0x6B2B80 `NiDX8SystemDesc_static::GetBPPFromFormat`. Bits per pixel of a `D3DFORMAT`:
-/// 0 for a format without a fixed size, 0xFFFFFFFF for one the function does not know.
+/// 0x6B2B80 `NiDX8SystemDesc_static::GetBPPFromFormat`. It returns the bits per pixel of a
+/// `D3DFORMAT`. It returns 0 for a format without a fixed size and 0xFFFFFFFF for a format
+/// that it does not know.
 pub unsafe fn get_bpp_from_format(format: u32) -> u32 {
     crate::shadow::touch(&get_bpp_from_format_port::STATE);
     const UNKNOWN: u32 = 0xFFFF_FFFF;
@@ -1071,10 +1076,11 @@ pub unsafe fn get_bpp_from_format(format: u32) -> u32 {
 
 // ---- regions
 
-/// The destructor frees the screen formats, their maps and their depth lists, and it clears
-/// them first. A call with screen formats needs a region for each of these blocks, so that
-/// the engine run finds them as they were: more than the 8 there are. Such a call is not
-/// compared. A description without screen formats (the device has no caps) is compared.
+/// The destructor clears the screen formats, their maps and their depth lists, and then it
+/// frees them. A call with screen formats needs a region for each of these blocks, so that
+/// the engine run finds them with their initial contents. That is more than the 8 regions
+/// that are available, so such a call is a skip. The shadow test compares a description
+/// that has no screen formats. That is the description of a device that has no caps.
 unsafe fn device_desc_dtor_regions(set: &mut crate::shadow::Regions, this: usize) {
     set.add(this, DD::SIZE);
     if rd::<usize>(this, DD::screenFormats_head) != 0 {
@@ -1083,9 +1089,9 @@ unsafe fn device_desc_dtor_regions(set: &mut crate::shadow::Regions, this: usize
     set.allocates();
 }
 
-/// As for the device description: the destructor clears the refresh rate list of every mode
-/// and the screen formats of both devices before it frees them. A call with an adapter is
-/// not compared; an empty adapter list is.
+/// The same applies as for the device description. The destructor clears the refresh rate
+/// list of every mode and the screen formats of both devices before it frees them. A call
+/// with an adapter is a skip. The shadow test compares a call with an empty adapter list.
 unsafe fn system_desc_dtor_regions(set: &mut crate::shadow::Regions, this: usize) {
     set.add(this, SD::SIZE);
     let storage: usize = rd(this, SD::adapterList_storage);
@@ -1098,7 +1104,7 @@ unsafe fn system_desc_dtor_regions(set: &mut crate::shadow::Regions, this: usize
 }
 
 unsafe fn ctor_regions(set: &mut crate::shadow::Regions, this: usize, size: usize) {
-    // The object is the caller's; everything else the constructor writes is new.
+    // The object belongs to the caller. All other memory that the constructor writes is new.
     set.add(this, size);
     set.allocates();
 }
@@ -1204,7 +1210,7 @@ mod tests {
         targets: Vec<u32>,
         /// Depth formats the device has.
         depths: Vec<u32>,
-        /// (target, depth) pairs that do not go together.
+        /// The (target, depth) pairs that are not compatible.
         no_match: Vec<(u32, u32)>,
         caps2: u32,
         calls: RefCell<Vec<String>>,
@@ -1317,7 +1323,7 @@ mod tests {
     fn heap_reset() {
         HEAP_LOG.with(|log| log.borrow_mut().clear());
     }
-    /// The blocks that were allocated and not freed.
+    /// The blocks that the code allocated and did not free.
     fn live_blocks() -> Vec<usize> {
         let mut live = Vec::new();
         for call in heap_log() {
@@ -1378,12 +1384,12 @@ mod tests {
             assert_eq!(rd::<u32>(this, SFI::format), 22);
             assert_eq!(rd::<u8>(this, SFI::bFullscreen), 1);
             assert_eq!(rd::<u8>(this, SFI::bWindowed), 0);
-            // Target 25 has no depth format: its list is freed again and it gets no node.
+            // Target 25 has no depth format. The constructor frees its list and gives it no node.
             assert_eq!(rd::<u32>(this, SFI::validDepthStencils_count), 2);
             let buckets: usize = rd(this, SFI::validDepthStencils_arrayBuckets);
             let node: usize = rd(buckets, 22 * 4);
             assert_eq!(rd::<u32>(node, NODE_KEY), 22);
-            // In the order of the engine's table of depth formats: 70 71 73 75 80 77 79.
+            // The order is that of the table of depth formats of the game: 70 71 73 75 80 77 79.
             assert_eq!(list_values(rd(node, NODE_VALUE)), [75, 80, 77]);
             let node: usize = rd(buckets, 23 * 4);
             assert_eq!(list_values(rd(node, NODE_VALUE)), [75, 77]);
@@ -1400,7 +1406,7 @@ mod tests {
             // second item block for the third depth format.
             let sizes: Vec<usize> = heap_log().iter().filter_map(|c| if let Heap::New(_, size) = c { Some(*size) } else { None }).collect();
             assert_eq!(&sizes[..8], [0x94, 0x18, 8, 24, 8, 24, 0xC, 0x18]);
-            // Target 25: only its list, freed with no item block.
+            // Target 25 has only its list, and the constructor frees it with no item block.
             assert_eq!(sizes.len(), 12);
             assert_eq!(heap_log().iter().filter(|c| matches!(c, Heap::Delete(_))).count(), 1);
 
@@ -1430,7 +1436,8 @@ mod tests {
             assert_eq!(rd::<u32>(this, SD::adapterList_storageCount), 2);
             assert_eq!(rd::<u32>(this, SD::adapterList_endIndex), 2);
             assert_eq!(rd::<u32>(this, SD::adapterList_filledCount), 2);
-            // The array of one adapter is replaced with one of two before the adapters are made.
+            // The constructor replaces the array of one adapter with an array of two before it
+            // makes the adapters.
             let log = heap_log();
             assert!(matches!(log[0], Heap::New(_, 4)));
             assert!(matches!(log[1], Heap::New(_, 8)));
@@ -1443,8 +1450,9 @@ mod tests {
             assert_eq!(rd::<u32>(adapter, AD::d3dAdapterIdentifier + 0x408), 0x1235);
             assert_eq!(d3d.count("GetAdapterIdentifier 1 2"), 1);
 
-            // Three modes; a mode that comes again adds the first refresh rate of the list
-            // again, not its own (the search starts with a best difference of 0).
+            // There are three modes. A mode that occurs again adds the first refresh rate of
+            // the list again, not its own rate. The cause is that the search starts with a best
+            // difference of 0.
             assert_eq!(rd::<u32>(adapter, AD::modeListCount), 3);
             assert_eq!(rd::<u32>(adapter, AD::modeList_endIndex), 3);
             assert_eq!(rd::<u32>(adapter, AD::modeList_filledCount), 3);
@@ -1469,7 +1477,7 @@ mod tests {
             assert_eq!(adapter_desc_find_closest_mode(adapter, 22, 800, 600, &mut refresh as *mut u32 as usize), 0);
             assert_eq!(refresh, 85);
 
-            // The HAL device: one screen format for each display format of the modes.
+            // The HAL device has one screen format for each display format of the modes.
             let hal: usize = rd(adapter, AD::HALDeviceDesc);
             assert_eq!(rd::<u32>(hal, DD::deviceType), 1);
             assert_eq!(rd::<u32>(hal, DD::caps_Caps2), CAPS2_CAN_RENDER_WINDOWED);
@@ -1490,13 +1498,14 @@ mod tests {
             assert_eq!(device_desc_get_screen_format_enum(hal, 0, 24), 0);
             assert_eq!(device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 22, 32, 0), 77);
             assert_eq!(device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 22, 16, 0), 80);
-            // With stencil the request becomes 24/8, or 15/1 for one bit with 16 bit depth.
+            // With stencil the request becomes 24 depth bits and 8 stencil bits. For one stencil
+            // bit with 16 bit depth it becomes 15 depth bits and 1 stencil bit.
             assert_eq!(device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 23, 16, 4), 75);
             assert_eq!(device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 23, 32, 1), 77);
             assert_eq!(device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 23, 16, 1), 80);
             assert_eq!(device_desc_find_closest_depth_stencil_for_screen_format(hal, 21, 22, 32, 0), 0);
 
-            // The reference device has no caps: no screen formats.
+            // The reference device has no caps, so it has no screen formats.
             let reference: usize = rd(adapter, AD::REFDeviceDesc);
             assert_eq!(rd::<u32>(reference, DD::deviceType), 2);
             assert_eq!(rd::<u32>(reference, DD::caps_DeviceType), 0);

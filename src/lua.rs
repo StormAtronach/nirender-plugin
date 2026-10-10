@@ -1,4 +1,4 @@
-//! The Lua side: `include("nirender")` returns the table built in `luaopen_nirender`.
+//! The Lua interface. `include("nirender")` returns the table that `luaopen_nirender` builds.
 
 use core::ffi::{c_char, c_void};
 use core::sync::atomic::Ordering;
@@ -46,8 +46,8 @@ unsafe fn set_fn(l: LuaState, name: &str, f: LuaFn) {
     lua_setfield(l, -2, key.as_ptr());
 }
 
-/// `nirender.install([logPath])` -> ok, message. Puts the recorder on the device and the
-/// detours on the engine functions. Every port starts in mode "off".
+/// `nirender.install([logPath])` returns ok and a message. It puts the recorder on the device
+/// and the detours on the engine functions. Every port starts in mode "off".
 unsafe extern "C" fn install(l: LuaState) -> i32 {
     if let Some(path) = arg_str(l, 1) {
         crate::log::open(&path);
@@ -62,7 +62,8 @@ unsafe extern "C" fn install(l: LuaState) -> i32 {
     2
 }
 
-/// `data_IDirect3D8`: the `IDirect3D8` of the game, 0 until `NiDX8Renderer::CreateD3D` ran.
+/// `data_IDirect3D8` holds the `IDirect3D8` of the game. It is 0 until
+/// `NiDX8Renderer::CreateD3D` ran.
 const DIRECT3D: usize = 0x7DD8C0;
 const CREATE_D3D: usize = 0x6A99E0;
 
@@ -70,8 +71,9 @@ unsafe fn after_create_d3d() {
     device::attach_factory(crate::mem::rd(DIRECT3D, 0));
 }
 
-/// The census: marks the ports of functions another mod changed in a way the port does not
-/// follow. With `hooked` the entries hold our own jumps, which are not a change.
+/// Does the census. It marks the ports of functions that another mod changed in a way that
+/// the port does not follow. With `hooked`, the entries hold the jumps of this plugin. These
+/// jumps are not a change.
 unsafe fn census_pass(hooked: bool) -> usize {
     let changes = census::changes();
     let mut changed: Vec<usize> = Vec::new();
@@ -113,7 +115,7 @@ unsafe fn install_all() -> Result<String, String> {
     shadow::set_main_thread();
     crate::log!("x87 control word {:#06x}", x87::control_word());
 
-    // Before the detours: they change the entry bytes themselves.
+    // The census runs before the detours, because the detours change the entry bytes.
     let changed = census_pass(false);
 
     match crate::alloc::install() {
@@ -135,7 +137,7 @@ unsafe fn install_all() -> Result<String, String> {
             port.after.store(after_create_d3d as *const () as usize, Ordering::Relaxed);
         }
     }
-    // The game may have its IDirect3D8, or even its device, already.
+    // It is possible that the game already has its IDirect3D8, or its device.
     after_create_d3d();
     let attached = attach_now()?;
     Ok(format!(
@@ -158,8 +160,9 @@ unsafe fn attach_now() -> Result<String, String> {
     Ok(format!("renderer {renderer:#x}, device {device_ptr:#x} with the recorder"))
 }
 
-/// `nirender.recheck()` -> number of changed functions. The census again, for mods that
-/// change the game code after this plugin loaded. Ports of such functions get locked.
+/// `nirender.recheck()` returns the number of changed functions. It does the census again,
+/// for mods that change the game code after this plugin loaded. It locks the ports of such
+/// functions.
 unsafe extern "C" fn recheck(l: LuaState) -> i32 {
     let attached = attach_now();
     crate::log!("recheck: {:?}", attached);
@@ -167,7 +170,8 @@ unsafe extern "C" fn recheck(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.dumpState(path)` -> ok. The renderer objects, for the comparison of two runs.
+/// `nirender.dumpState(path)` returns ok. It writes the renderer objects, for the comparison
+/// of two runs.
 unsafe extern "C" fn dump_state(l: LuaState) -> i32 {
     let ok = match arg_str(l, 1) {
         Some(path) => crate::dump::state(&path).is_ok(),
@@ -177,8 +181,8 @@ unsafe extern "C" fn dump_state(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.dumpFrame(path)` -> started. The device calls of the next frame go to the file;
-/// `frameTestResult()` tells when it is written.
+/// `nirender.dumpFrame(path)` returns started. The device calls of the next frame go to the
+/// file. `frameTestResult()` tells when the file is complete.
 unsafe extern "C" fn dump_frame(l: LuaState) -> i32 {
     let started = match arg_str(l, 1) {
         Some(path) => frame::request_dump(path),
@@ -188,8 +192,8 @@ unsafe extern "C" fn dump_frame(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.setMode(pattern, mode)` -> number of ports set. `pattern` is "*" or a part of
-/// the engine name; `mode` is "off", "shadow" or "live".
+/// `nirender.setMode(pattern, mode)` returns the number of ports set. `pattern` is "*" or a
+/// part of the engine name. `mode` is "off", "shadow" or "live".
 unsafe extern "C" fn set_mode(l: LuaState) -> i32 {
     let pattern = arg_str(l, 1).unwrap_or_default();
     let mode = arg_str(l, 2).and_then(|m| Mode::parse(&m));
@@ -207,8 +211,9 @@ unsafe extern "C" fn set_mode(l: LuaState) -> i32 {
     1
 }
 
-/// One line per port: name, mode, calls compared, calls that differed, calls not compared,
-/// calls that ran as Rust. Tab separated, for the log and for tools/status.py.
+/// One line for each port. A line has the name, the mode, the calls compared, the calls that
+/// differed, the skipped calls and the calls that ran as Rust. Tabs separate the columns. The
+/// log and tools/status.py use this text.
 pub fn report() -> String {
     let mut text = String::from("port\taddr\tinstalled\tmode\tshadow_calls\tmismatches\tskipped\tlive_calls\tlocked\trust_runs\n");
     for port in ports::all() {
@@ -229,7 +234,7 @@ pub fn report() -> String {
     text
 }
 
-/// `nirender.report()` -> the table as text. Also written to the log.
+/// `nirender.report()` returns the table as text. It also writes the text to the log.
 unsafe extern "C" fn report_lua(l: LuaState) -> i32 {
     let text = report();
     crate::log!("report:\n{}", text);
@@ -237,7 +242,7 @@ unsafe extern "C" fn report_lua(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.frameTest(kind)` -> started. `kind` is "control" or "live".
+/// `nirender.frameTest(kind)` returns started. `kind` is "control" or "live".
 unsafe extern "C" fn frame_test(l: LuaState) -> i32 {
     let kind = match arg_str(l, 1).as_deref() {
         Some("live") => frame::Kind::Live,
@@ -247,7 +252,7 @@ unsafe extern "C" fn frame_test(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.frameTestResult()` -> the result line, or nil while the test runs.
+/// `nirender.frameTestResult()` returns the result line, or nil while the test runs.
 unsafe extern "C" fn frame_test_result(l: LuaState) -> i32 {
     match frame::take_result() {
         Some(text) => push_str(l, &text),
@@ -256,7 +261,8 @@ unsafe extern "C" fn frame_test_result(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.recordBuffers(on)`: also record what the engine writes into vertex and index buffers.
+/// `nirender.recordBuffers(on)` also records the data that the game writes into vertex and
+/// index buffers.
 unsafe extern "C" fn record_buffers(l: LuaState) -> i32 {
     let on = lua_toboolean(l, 1) != 0;
     crate::resource::enable(on);
@@ -264,7 +270,7 @@ unsafe extern "C" fn record_buffers(l: LuaState) -> i32 {
     0
 }
 
-/// `nirender.fault(n)`: puts fault `n` into the Rust code (see `engine::FAULT`). 0 removes it.
+/// `nirender.fault(n)` puts fault `n` into the Rust code. See `engine::FAULT`. 0 removes it.
 unsafe extern "C" fn fault(l: LuaState) -> i32 {
     let n = lua_tonumber(l, 1) as u32;
     engine::FAULT.store(n, Ordering::Relaxed);
@@ -272,7 +278,8 @@ unsafe extern "C" fn fault(l: LuaState) -> i32 {
     0
 }
 
-/// `nirender.renderer()` -> the address of the game's renderer, or 0 before it exists.
+/// `nirender.renderer()` returns the address of the renderer of the game, or 0 before it
+/// exists.
 unsafe extern "C" fn renderer(l: LuaState) -> i32 {
     lua_pushnumber(l, engine::renderer() as f64);
     1
@@ -297,7 +304,7 @@ unsafe extern "C" fn timing(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.fpuControlWord()` -> the x87 control word of the calling thread.
+/// `nirender.fpuControlWord()` returns the x87 control word of the calling thread.
 unsafe extern "C" fn fpu_control_word(l: LuaState) -> i32 {
     lua_pushnumber(l, x87::control_word() as f64);
     1

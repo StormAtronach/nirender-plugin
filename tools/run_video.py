@@ -2,8 +2,8 @@
 
     python tools/run_video.py [--cell "Old Ebonheart"] [--seconds 15] [--folder <OneDrive folder>]
 
-OBS has to run, with the scene "Harness" that captures the game window (see the recorder in
-moreFPS/docs/scripts/obs-record). The game starts once for each clip.
+OBS must run, with the scene "Harness" that captures the game window. See the recorder in
+moreFPS/docs/scripts/obs-record. The game starts one time for each clip.
 """
 import argparse
 import os
@@ -23,7 +23,7 @@ FOLDER = r"C:\Users\ivan_\OneDrive\Morrowind modding\nirender videos"
 
 
 def record_when_ready(progress_file, seconds, name, result):
-    """Waits for the view, then records. Runs beside the harness loop."""
+    """Waits for the view, then records. Runs in parallel with the harness loop."""
     deadline = time.time() + 240
     while time.time() < deadline:
         if os.path.isfile(progress_file) and "view ready" in open(progress_file, encoding="utf-8", errors="replace").read():
@@ -36,7 +36,7 @@ def record_when_ready(progress_file, seconds, name, result):
     obs = obs_record.Obs()
     try:
         result["path"] = obs_record.record(obs, seconds, name)
-    except BaseException as error:  # the harness loop must still end the game
+    except BaseException as error:  # The harness loop must still end the game.
         result["error"] = str(error)
     finally:
         obs.close()
@@ -54,7 +54,7 @@ def clip(mode, label, args):
         "save": args.save,
         "cell": args.cell,
         "mode": mode,
-        # The recorder waits 3 s for the capture to take hold, and a margin after the clip.
+        # The recorder waits 3 s for the capture to become stable, and a margin after the clip.
         "holdSeconds": args.seconds + 10,
     }
     deployment = harness.Deployment()
@@ -70,7 +70,7 @@ def clip(mode, label, args):
         deployment.restore()
     recorder.join(timeout=30)
     harness.copy_logs(run_dir, started)
-    # How many calls ran as Rust during the clip: 0 for the game code clip.
+    # The number of calls that ran as Rust during the clip. It is 0 for the game code clip.
     rows = run_test.read_report(os.path.join(run_dir, "report.tsv"))
     live = sum(int(row["live_calls"]) for row in rows)
     print("%s: %s, %d calls ran as Rust" % (label, result.get("path") or "NO CLIP: " + result.get("error", "?"), live))

@@ -1,5 +1,5 @@
-# Runs inside IDA (py_exec_file). Exports the renderer function inventory and the
-# struct layouts the Rust port needs. Output: tools/out/inventory.json, tools/out/structs.json
+# Runs inside IDA (py_exec_file). Exports the renderer function inventory and the struct
+# layouts that the port needs. Output: tools/out/inventory.json, tools/out/structs.json
 import json
 import os
 import re
@@ -13,7 +13,8 @@ import idc
 OUT = r"c:\Users\ivan_\source\repos\nirender-plugin\tools\out"
 os.makedirs(OUT, exist_ok=True)
 
-# The renderer subsystem by name. The address window catches unnamed helpers between them.
+# The renderer subsystem by name. The address window also finds the helpers without a name
+# between them.
 NAME_RE = re.compile(r"NiDX8|NiD3D|NiRenderState|NiRenderer|NiGeometryBufferData|NiDX8", re.I)
 WINDOWS = [(0x6A9000, 0x6C6000), (0x65ED00, 0x65EF00)]
 
@@ -33,10 +34,12 @@ for ea in idautils.Functions():
     callers = sorted({ida_funcs.get_func(x.frm).start_ea for x in idautils.XrefsTo(ea, 0)
                       if x.iscode and ida_funcs.get_func(x.frm)})
     data_refs = sorted({x.frm for x in idautils.XrefsTo(ea, 0) if not x.iscode})
-    # Bytes a 5-byte detour takes from the entry: whole instructions, and whether they can be
-    # copied elsewhere unchanged (no relative branch, and no branch from the function into them).
-    # `relocs` are the offsets of 32-bit relative targets (call or jmp rel32) in those bytes: the
-    # detour moves them with the code. A function shorter than 5 bytes is taken whole.
+    # The bytes that a 5-byte detour takes from the entry, as whole instructions. `pic` tells if
+    # the detour can copy them to another address unchanged. That is true when they have no
+    # relative branch and no branch from the function goes into them.
+    # `relocs` are the offsets of 32-bit relative targets (call or jmp rel32) in those bytes.
+    # The detour moves them with the code. The detour takes all of a function shorter than 5
+    # bytes.
     steal, pic, relocs = 0, True, []
     while steal < 5 and ea + steal < f.end_ea:
         insn = idautils.DecodeInstruction(ea + steal)
@@ -48,7 +51,7 @@ for ea in idautils.Functions():
         if first in (0xE8, 0xE9) and insn.size == 5:
             relocs.append(steal + 1)
         elif mnem.startswith("ret") or (mnem in ("jmp", "call") and first == 0xFF):
-            pass  # a return or an indirect branch runs the same anywhere
+            pass  # A return or an indirect branch runs the same at any address.
         elif mnem.startswith("j") or mnem.startswith("call") or mnem.startswith("loop"):
             pic = False
         steal += insn.size

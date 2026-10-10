@@ -1,8 +1,10 @@
-//! The recorder on vertex and index buffers: what the engine writes into a locked buffer.
+//! The recorder on vertex and index buffers. It records the data that the game writes into a
+//! locked buffer.
 //!
-//! The device recorder sees a buffer when it is created or bound and replaces its vtable
-//! pointer, as `device::attach` does for the device. `Unlock` then puts the locked bytes into
-//! the device log as a record of its own, so two runs must fill a buffer with the same data.
+//! The device recorder finds a buffer when the game creates or binds it. It replaces the
+//! vtable pointer of the buffer, as `device::attach` does for the device. Then `Unlock` puts
+//! the locked bytes into the device log as a separate record. Thus two runs must fill a
+//! buffer with the same data.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -23,7 +25,8 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 
 struct Class {
     original: usize,
-    /// One word before the table for the type information pointer, as in `device`.
+    /// The array has one word before the table for the type information pointer, as in
+    /// `device`.
     table: Box<[usize; TABLE_LEN + 1]>,
 }
 
@@ -55,7 +58,8 @@ unsafe fn class_of(object: usize) -> Option<&'static Class> {
     state().classes.iter().find(|c| c.table.as_ptr().add(1) as usize == vtable)
 }
 
-/// Puts the recorder on a vertex or index buffer. Does nothing for one that has it.
+/// Puts the recorder on a vertex or index buffer. It does nothing for a buffer that has the
+/// recorder.
 pub unsafe fn wrap(object: usize) {
     if object == 0 || !ENABLED.load(Ordering::Relaxed) || class_of(object).is_some() {
         return;

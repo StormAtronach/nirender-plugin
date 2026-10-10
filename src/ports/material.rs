@@ -1,11 +1,11 @@
-//! `NiDX8MaterialManager`: one `D3DMATERIAL8` per `NiMaterialProperty`, rebuilt when the
-//! revision of the property changes.
+//! `NiDX8MaterialManager` keeps one `D3DMATERIAL8` for each `NiMaterialProperty`. It builds the
+//! `D3DMATERIAL8` again when the revision of the property changes.
 
 use crate::engine;
 use crate::gen::layouts::{NiDX8MaterialManager as MM, NiMaterialProperty as MP};
 use crate::mem::{rd, wr, x87_pass};
 
-/// `NiDX8MaterialManager::Entry`: a `D3DMATERIAL8` and the revision it was built from.
+/// `NiDX8MaterialManager::Entry` holds a `D3DMATERIAL8` and the revision that the game built it from.
 pub const ENTRY_SIZE: usize = 0x48;
 const ENTRY_REVISION: usize = 0x44;
 
@@ -16,7 +16,7 @@ const SPECULAR: usize = 0x20;
 const EMISSIVE: usize = 0x30;
 const POWER: usize = 0x40;
 
-/// 0x6C2240 `NiDX8MaterialManager::Entry::Update`. Returns 1 when the entry was rebuilt.
+/// 0x6C2240 `NiDX8MaterialManager::Entry::Update`. The port returns 1 when it built the entry again.
 pub unsafe fn entry_update(entry: usize, material: usize) -> u8 {
     crate::shadow::touch(&entry_update_port::STATE);
     let revision: u32 = rd(material, MP::revisionID);
@@ -24,7 +24,7 @@ pub unsafe fn entry_update(entry: usize, material: usize) -> u8 {
         return 0;
     }
     wr(entry, ENTRY_REVISION, revision);
-    // Alpha and shininess go through the FPU in the game code; the colours are plain copies.
+    // The game code moves alpha and shininess through the FPU. It copies the colours without the FPU.
     let alpha = x87_pass(rd(material, MP::alpha));
     for (to, from) in [(EMISSIVE, MP::emissive), (AMBIENT, MP::ambient), (DIFFUSE, MP::diffuse), (SPECULAR, MP::specular)] {
         wr::<u32>(entry, to, rd(material, from));
@@ -62,7 +62,7 @@ unsafe fn set_current_material_regions(set: &mut crate::shadow::Regions, this: u
     set.add(material, MP::SIZE);
     let entry: usize = rd(material, MP::rendererData);
     if entry == 0 {
-        // The entry is made in this call.
+        // This call makes the entry.
         set.allocates();
     }
     set.add(entry, ENTRY_SIZE);
@@ -108,7 +108,7 @@ mod tests {
             assert_eq!(rd::<[f32; 4]>(e, EMISSIVE), [30.0, 31.0, 32.0, 0.5]);
             assert_eq!(rd::<f32>(e, POWER), 25.0);
             assert_eq!(rd::<u32>(e, ENTRY_REVISION), 7);
-            // Same revision: nothing to do, even when the colours changed.
+            // The revision is the same, so the port does nothing, also when the colours changed.
             wr::<f32>(m, MP::alpha, 1.0);
             assert_eq!(entry_update(e, m), 0);
             assert_eq!(rd::<f32>(e, DIFFUSE + 12), 0.5);
@@ -123,7 +123,7 @@ mod tests {
         let (m, e, mm) = (material.as_mut_ptr() as usize, entry.as_mut_ptr() as usize, manager.as_mut_ptr() as usize);
         unsafe {
             wr(m, MP::rendererData, e);
-            wr::<u32>(m, MP::revisionID, 0); // same as the entry: no rebuild
+            wr::<u32>(m, MP::revisionID, 0); // The entry has this revision, so the port does not build it.
             set_current_material(mm, m);
             assert_eq!(rd::<usize>(mm, MM::currentMaterialEntry), e);
             assert_eq!(rd::<u8>(mm, MM::changed), 1);

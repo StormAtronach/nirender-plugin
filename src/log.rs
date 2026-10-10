@@ -1,4 +1,4 @@
-//! The plugin log, `nirender.log` in the game folder unless Lua names another path.
+//! The plugin log. It is `nirender.log` in the game folder unless Lua gives another path.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;

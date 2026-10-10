@@ -1,4 +1,4 @@
-//! The few Win32 calls the plugin needs.
+//! The Win32 calls that the plugin needs.
 #![allow(non_snake_case)]
 
 use core::ffi::c_void;

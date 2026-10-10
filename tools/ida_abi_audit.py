@@ -1,8 +1,9 @@
-# Runs inside IDA (py_exec_file). For each function of the inventory: which of EAX, ECX, EDX a
-# caller reads after the call returns, and whether the function itself can change ECX or EDX.
+# Runs inside IDA (py_exec_file). For each function of the inventory it finds two things. The
+# first is which of EAX, ECX and EDX a caller reads after the call returns. The second is
+# whether the function itself can change ECX or EDX.
 #
-# Morrowind.exe was linked with whole-program optimisation: a caller may know that a callee
-# keeps ECX, and use it after the call. A detour must then leave the same value there.
+# Morrowind.exe was linked with whole-program optimisation. A caller can know that a callee
+# keeps ECX, and use it after the call. Then a detour must leave the same value there.
 # Output: tools/out/abi.json
 import json
 import os
@@ -20,7 +21,7 @@ FAMILY = {
 }
 WRITE_ONLY = {"mov", "lea", "pop", "movzx", "movsx", "setz", "setnz", "setb", "setnb", "setbe", "setnbe", "setl",
               "setnl", "setle", "setnle", "sets", "setns", "seto", "setno", "fnstsw", "fstsw"}
-# Whole words only: "22Ch" is a number, not CH.
+# The pattern finds whole words only. "22Ch" is a number, not CH.
 TOKEN = re.compile(r"(?<![0-9a-z_])[a-z]{2,3}(?![0-9a-z_])")
 
 
@@ -67,7 +68,9 @@ def effect(ea):
 
 
 def live_after(ret_ea, limit=24):
-    """Registers read before written after a call returns. 'unknown' when a branch ends the scan."""
+    """The registers that the code reads before it writes them, after a call returns.
+
+    The result is 'unknown' when a branch ends the scan."""
     live, unknown = set(), set()
     pending = {"eax", "ecx", "edx"}
     ea = ret_ea
@@ -76,15 +79,16 @@ def live_after(ret_ea, limit=24):
             break
         mnem = idc.print_insn_mnem(ea)
         if mnem == "call":
-            reads, _ = effect(ea)  # an indirect call through a register reads it
+            reads, _ = effect(ea)  # An indirect call through a register reads the register.
             live |= reads & pending
             pending -= reads
-            # ECX may be the this pointer set before the call by the caller: then it was written.
+            # ECX can be the this pointer that the caller set before the call. Then the caller
+            # wrote it.
             pending.clear()
             break
         if mnem.startswith("ret"):
             if "eax" in pending:
-                unknown.add("eax")  # the caller may return the callee's value
+                unknown.add("eax")  # The caller can return the value of the callee.
             pending.clear()
             break
         if mnem.startswith("j") or mnem.startswith("loop"):

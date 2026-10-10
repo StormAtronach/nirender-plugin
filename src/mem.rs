@@ -1,6 +1,6 @@
 //! Reads and writes of engine memory at an offset from a base address.
 //!
-//! The ports work on the engine's own objects. The offsets come from `gen::layouts`.
+//! The ports work on the engine objects themselves. The offsets come from `gen::layouts`.
 
 #[inline(always)]
 pub unsafe fn rd<T: Copy>(base: usize, off: usize) -> T {
@@ -13,7 +13,7 @@ pub unsafe fn wr<T>(base: usize, off: usize, value: T) {
 }
 
 /// A float that went through `fld` and `fstp` in the game code. The x87 load makes a
-/// signalling NaN quiet; every other value comes back with the same bits.
+/// signalling NaN quiet. Every other value comes back with the same bits.
 #[inline(always)]
 pub fn x87_pass(bits: u32) -> u32 {
     let is_nan = bits & 0x7F80_0000 == 0x7F80_0000 && bits & 0x007F_FFFF != 0;

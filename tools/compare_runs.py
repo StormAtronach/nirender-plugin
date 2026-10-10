@@ -1,14 +1,16 @@
-"""Compares the dumps of two game runs (tools/run_test.py --dump).
+"""Compares the dumps of two game runs. `tools/run_test.py --dump` makes the dumps.
 
     python tools/compare_runs.py <run A> <run B>
 
-A run is a folder under results/ (the name or a unique part of it). The dumps are state.txt
-(the renderer and the objects it owns, addresses replaced by a marker) and frame.txt (the
-device calls of one frame after the save loaded, addresses as numbers of first appearance).
+A run is a folder under results/. Give the name or a unique part of it. The dumps are
+state.txt and frame.txt. state.txt has the renderer and the objects that it owns, with a
+marker in place of each address. frame.txt has the device calls of one frame after the save
+loaded, with addresses as numbers of first appearance.
 
-Use it to test the code that runs once at the start of the game: a run that started with the
-game functions (--start off) against a run that started with the Rust functions (--start
-live). Compare two "off" runs first: what differs between those is not caused by the port.
+Use it to test the code that runs one time at the start of the game. Compare a run that
+started with the game functions (--start off) with a run that started with the Rust functions
+(--start live). Compare two "off" runs first. The port does not cause the differences between
+those runs.
 """
 import glob
 import os
@@ -41,8 +43,8 @@ def read_state(path):
 
 
 def same_word(a, b):
-    """Two words of a state dump are the same when the values are, or when both are addresses
-    (marked with *): an address is a different number in each run."""
+    """Two words of a state dump are the same when the values are the same, or when the two
+    words are addresses. An address has the mark * and is a different number in each run."""
     if a is None or b is None:
         return a == b
     return a.lstrip("*") == b.lstrip("*") or (a.startswith("*") and b.startswith("*"))
@@ -72,7 +74,8 @@ def main():
     if len(args) < 2:
         raise SystemExit(__doc__)
     run_a, run_b = find_run(args[0]), find_run(args[1])
-    # A third run of the same kind as A: what differs between A and it is noise of the game.
+    # This is a third run of the same kind as A. The differences between A and it are noise
+    # of the game.
     baseline = find_run(args[2]) if len(args) > 2 else None
     print("A: %s\nB: %s" % (os.path.basename(run_a), os.path.basename(run_b)))
 
@@ -89,8 +92,8 @@ def main():
     for name, offset, word_a, word_b in state[:40]:
         print("  %s+0x%x: A %s  B %s" % (name, offset, word_a, word_b))
 
-    # The scene after a load is not the same in two runs of the game (actors move with the
-    # clock), so the frame is information only. The verdict is the state.
+    # The scene after a load is not the same in two runs of the game, because actors move with
+    # the clock. So the frame is information only. The state gives the verdict.
     count_a, count_b, frame = compare_frame(os.path.join(run_a, "frame.txt"), os.path.join(run_b, "frame.txt"))
     print("\nframe (information): A %d calls, B %d calls, %d lines differ" % (count_a, count_b, len(frame)))
 

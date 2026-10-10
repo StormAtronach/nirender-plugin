@@ -1,10 +1,11 @@
-//! nirender: a Rust replica of the `NiDX8Renderer` subsystem of Morrowind.exe.
+//! nirender is a Rust replica of the `NiDX8Renderer` subsystem of Morrowind.exe.
 //!
-//! Each ported function sits behind a detour on the engine function and can run in three
-//! modes: off (the engine function), shadow (both, compared) and live (the Rust function).
+//! Each port has a detour on its engine function and runs in one of three modes. The mode
+//! off runs the engine function. The mode shadow runs the two functions and compares them.
+//! The mode live runs the Rust function.
 //! See `shadow` for the per-call comparison and `frame` for the whole-frame comparison.
 
-// The plugin is 32-bit only: it lives inside Morrowind.exe.
+// The plugin is 32-bit only, because it runs inside Morrowind.exe.
 #[cfg(not(target_pointer_width = "32"))]
 compile_error!("nirender builds for i686-pc-windows-msvc only");
 

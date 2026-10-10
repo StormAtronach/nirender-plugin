@@ -1,7 +1,8 @@
-//! `NiDX8TexturePass`, second half: the stages of the dynamic texture effects (projected
-//! lights and shadows, environment map, fog map) with their texture-coordinate generation,
-//! the sub-pass object `NiDX8TexturePass::$1` that holds the stages of one device pass, and
-//! the stage helpers that write addressing and filtering to the device.
+//! `NiDX8TexturePass`, second half. It has the stages of the dynamic texture effects
+//! (projected lights and shadows, environment map, fog map) and the functions that generate
+//! their texture coordinates. It has the sub-pass object `NiDX8TexturePass::$1`, which holds
+//! the stages of one device pass. It has the stage helpers that write the addressing modes
+//! and the filters to the device.
 
 use core::mem::transmute;
 
@@ -20,18 +21,20 @@ use crate::shadow::Regions;
 
 /// `vtbl_sg_NiRefObject`
 const VTBL_NI_REF_OBJECT: usize = 0x7469B8;
-/// `vtbl_sg_NiDX8TexturePass::$1`: slot 0 is the deleting destructor (0x6B77C0), slot 1 `method_4`.
+/// `vtbl_sg_NiDX8TexturePass::$1`. Slot 0 is the deleting destructor (0x6B77C0). Slot 1 is
+/// `method_4`.
 const VTBL_SUBPASS: usize = 0x74F6C4;
 /// `global_count_of_NiRefObject`
 const NI_REF_OBJECT_COUNT: usize = 0x7DECE0;
 /// `emptyString`, the source of the string copy in the constructor of `$1`.
 const EMPTY_STRING: usize = 0x7C6180;
-/// `dword_7C3834`: the texture stages of one device pass.
+/// `dword_7C3834`: the number of texture stages of one device pass.
 const MAX_STAGES: usize = 0x7C3834;
-/// `dword_7C3838`: the textures of one device pass.
+/// `dword_7C3838`: the number of textures of one device pass.
 const MAX_TEXTURES: usize = 0x7C3838;
-/// The filter table: 12 bytes per filter mode, { minify, magnify, mip }. The database names
-/// the three interleaved columns `data_NiDX8TexturePass_{minify,magnify,mip}FilteringRemapper`.
+/// The filter table. It has 12 bytes for each filter mode: { minify, magnify, mip }. The
+/// database names the three interleaved columns
+/// `data_NiDX8TexturePass_{minify,magnify,mip}FilteringRemapper`.
 const FILTER_TABLE: usize = 0x7DDB80;
 const FILTER_MIN: usize = 0;
 const FILTER_MAG: usize = 4;
@@ -41,13 +44,13 @@ const ADDR_METHOD_4: usize = 0x6B7900;
 const ADDR_RESET_PASS_FLAGS: usize = 0x6B59E0;
 
 // ---------------------------------------------------------------------------------------
-// Offsets the layouts do not name
+// Offsets that the layouts do not name
 // ---------------------------------------------------------------------------------------
 
 /// `NiRefObject::refCount`
 const REF_COUNT: usize = 0x4;
 
-// `NiTextureEffect` (no layout in the database export).
+// `NiTextureEffect`. The export of the database has no layout for it.
 /// `NiDynamicEffect::enabled`
 const EFFECT_ENABLED: usize = 0x90;
 /// The 3x3 matrix of the world projection.
@@ -70,7 +73,8 @@ const SOURCE_TEXTURE_IS_STATIC: usize = 0x38;
 const TEXTURE_DATA_GET_D3D_TEXTURE: usize = 0x18;
 const TEXTURE_DATA_GET_AS_RENDERED: usize = 0x20;
 
-/// `NiDX8RenderState::maybe_textureStageStateSettings`: 0x100 bytes per stage, 8 per state.
+/// `NiDX8RenderState::maybe_textureStageStateSettings`: 0x100 bytes for each stage, 8 bytes
+/// for each state.
 const STAGE_SETTINGS: usize = 0x100;
 
 const D3DTSS_COLOROP: u32 = 1;
@@ -87,7 +91,7 @@ const D3DTSS_MIPFILTER: u32 = 18;
 // ---------------------------------------------------------------------------------------
 
 /// 0x7364E0 `patchSetEffectState` (Morrowind Code Patch). The code takes the property from
-/// EDX and drops the stack argument, so the call gives it both, as the call site does.
+/// EDX and drops the stack argument. Thus the call gives it both, as the call site does.
 unsafe fn patch_set_effect_state(render_state: usize, alpha_property: usize) {
     let f: unsafe extern "fastcall" fn(usize, usize, usize) -> u32 = transmute(0x7364E0usize);
     f(render_state, alpha_property, alpha_property);
@@ -139,8 +143,8 @@ unsafe fn texture_manager_get_format(texture_manager: usize, texture: usize) -> 
     virtual1(texture_manager, 0x10, texture as u32)
 }
 
-/// The release half of a `NiPointer`: one reference less, and the deleting destructor
-/// (slot 0, argument 1) when it was the last.
+/// The release half of a `NiPointer`. It subtracts one reference. When the count becomes 0,
+/// it calls the deleting destructor (slot 0, argument 1).
 unsafe fn release(object: usize) {
     let count = rd::<u32>(object, REF_COUNT).wrapping_sub(1);
     wr(object, REF_COUNT, count);
@@ -169,8 +173,8 @@ fn stage_setting(render_state: usize, stage: u32, state: u32) -> usize {
         .wrapping_add(RS::maybe_textureStageStateSettings + state as usize * 8)
 }
 
-/// The pattern the stage functions have inline: write the cache and the device when the
-/// value is new. The previous value is not kept.
+/// The pattern that the stage functions have inline. It writes the cache and the device when
+/// the value is new. It does not keep the previous value.
 #[inline(always)]
 unsafe fn set_stage_state_if_changed(render_state: usize, stage: u32, state: u32, value: u32) {
     let setting = stage_setting(render_state, stage, state);
@@ -191,7 +195,7 @@ fn stage_at(pass: usize, array: usize, index: u32) -> usize {
 // ---------------------------------------------------------------------------------------
 
 /// `fld a / fmul b / fld c / fmul d / faddp / fld e / fmul f / faddp`: the sum of three
-/// products as every matrix element here is computed.
+/// products. The game code calculates every matrix element of this module in this order.
 #[inline(always)]
 fn dot3(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> f32 {
     let first = a * b;
@@ -205,8 +209,8 @@ fn dot3(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> f32 {
 // NiDX8TexturePass
 // ---------------------------------------------------------------------------------------
 
-/// 0x6B5640 `NiDX8TexturePass::setBlendingState`: applies the next sub-pass to the device.
-/// The second argument is not used.
+/// 0x6B5640 `NiDX8TexturePass::setBlendingState`. Applies the next sub-pass to the device.
+/// The function does not use the second argument.
 pub unsafe fn set_blending_state(this: usize, a2: u32, _a3: u32, a4: u32, a5: u32) -> u32 {
     crate::shadow::touch(&set_blending_state_port::STATE);
     let mut result = 0u32;
@@ -232,8 +236,8 @@ pub unsafe fn set_blending_state(this: usize, a2: u32, _a3: u32, a4: u32, a5: u3
     result
 }
 
-/// 0x6B56B0 `NiDX8TexturePass::applyStageBlendOps`: copies the colour and alpha operations
-/// of blend slot `stage.field_94` from the pipeline into the stage.
+/// 0x6B56B0 `NiDX8TexturePass::applyStageBlendOps`. Copies the colour operations and the
+/// alpha operations of blend slot `stage.field_94` from the pipeline into the stage.
 pub unsafe fn apply_stage_blend_ops(this: usize, stage: usize, flag: u8) {
     crate::shadow::touch(&apply_stage_blend_ops_port::STATE);
     if stage == 0 {
@@ -277,8 +281,8 @@ pub unsafe fn apply_stage_blend_ops(this: usize, stage: usize, flag: u8) {
     }
 }
 
-/// 0x6B57B0 `NiDX8TexturePass::bindStageTexture`: appends the stage to the sub-pass that has
-/// room for it. In a later pass the sub-pass also takes the object of the blend slot of its
+/// 0x6B57B0 `NiDX8TexturePass::bindStageTexture`. Appends the stage to the sub-pass that has
+/// space for it. In a later pass the sub-pass also takes the object of the blend slot of its
 /// first stage.
 pub unsafe fn bind_stage_texture(this: usize, stage: usize, textures: u32, stages: u32) -> u8 {
     crate::shadow::touch(&bind_stage_texture_port::STATE);
@@ -300,12 +304,12 @@ pub unsafe fn bind_stage_texture(this: usize, stage: usize, textures: u32, stage
     let pipeline: usize = rd(this, TP::configurableTexturePipeline);
     let slot: u32 = rd(first_stage, ST::field_94);
     let object: usize = rd(pipeline.wrapping_add((slot as usize).wrapping_mul(4)), CTP::field_2E8);
-    // The same code as `_1::setNiObjectField48`, inline in the game.
+    // The game has the same code as `_1::setNiObjectField48` inline here.
     subpass_set_ni_object_field_48(subpass, object);
     result
 }
 
-/// 0x6B5870 `NiDX8TexturePass::setTexturePipeline`: builds the stages of the texture effects
+/// 0x6B5870 `NiDX8TexturePass::setTexturePipeline`. Builds the stages of the texture effects
 /// of a `NiDynamicEffectState` when it is not the one of the previous call.
 pub unsafe fn set_texture_pipeline(this: usize, effect_state: usize) {
     crate::shadow::touch(&set_texture_pipeline_port::STATE);
@@ -345,7 +349,7 @@ pub unsafe fn set_texture_pipeline(this: usize, effect_state: usize) {
         let effect: usize = rd(node, LIST::effect);
         node = rd(node, LIST::next);
         if rd::<u8>(effect, EFFECT_HAS_PLANE) != 0 {
-            // The game code takes the stage from `field_CE0` here too, not from `field_18A4`.
+            // The game code takes the stage from `field_CE0` here also, not from `field_18A4`.
             let stage = stage_at(this, TP::field_CE0, rd(this, TP::field_2464));
             if configure_stage_from_texture_prop(this, effect, stage) != 0 {
                 setup_projected_texture_matrix_neg(this, effect);
@@ -385,7 +389,7 @@ pub unsafe fn reset_pass_flags(this: usize) {
     wr::<u32>(this, TP::field_6E0, 0);
 }
 
-/// 0x6B5A20 `NiDX8TexturePass::configureStageFromTextureProp`: makes a stage from a
+/// 0x6B5A20 `NiDX8TexturePass::configureStageFromTextureProp`. Makes a stage from a
 /// `NiTextureEffect`. Returns 0 when the effect gives no stage.
 pub unsafe fn configure_stage_from_texture_prop(this: usize, effect: usize, stage: usize) -> u8 {
     crate::shadow::touch(&configure_stage_from_texture_prop_port::STATE);
@@ -426,8 +430,8 @@ pub unsafe fn configure_stage_from_texture_prop(this: usize, effect: usize, stag
     1
 }
 
-/// The body the two plane functions share. `negate` is the `fchs` of the second function on
-/// each of the four plane values.
+/// The body that the two plane functions share. `negate` is the `fchs` of the second function
+/// on each of the four plane values.
 #[inline(always)]
 unsafe fn projected_texture_matrix(this: usize, effect: usize, stage: usize, negate: bool) -> u8 {
     let load = |offset: usize| {
@@ -441,7 +445,8 @@ unsafe fn projected_texture_matrix(this: usize, effect: usize, stage: usize, neg
     let x = load(0x0);
     let y = load(0x4);
     let z = load(0x8);
-    // The constant is loaded as it is; the second function changes its sign at the end.
+    // The game code loads the constant with no change. The second function changes its sign
+    // at the end.
     let constant: f32 = rd(effect, EFFECT_PLANE + 0xC);
     let pipeline: usize = rd(this, TP::configurableTexturePipeline);
     let p = |offset: usize| rd::<f32>(pipeline, offset);
@@ -461,25 +466,25 @@ unsafe fn projected_texture_matrix(this: usize, effect: usize, stage: usize, neg
     1
 }
 
-/// 0x6B5B20 `NiDX8TexturePass::setupProjectedTextureMatrix`: the clip stage of a projected
-/// light, from the plane of the effect in camera space.
+/// 0x6B5B20 `NiDX8TexturePass::setupProjectedTextureMatrix`. Makes the clip stage of a
+/// projected light from the plane of the effect in camera space.
 pub unsafe fn setup_projected_texture_matrix(this: usize, effect: usize) -> u8 {
     crate::shadow::touch(&setup_projected_texture_matrix_port::STATE);
     let stage = stage_at(this, TP::field_12C0, rd(this, TP::field_18A0));
     projected_texture_matrix(this, effect, stage, false)
 }
 
-/// 0x6B5C00 `NiDX8TexturePass::setupProjectedTextureMatrixNeg`: the same for a projected
-/// shadow, with the plane turned round.
+/// 0x6B5C00 `NiDX8TexturePass::setupProjectedTextureMatrixNeg`. Does the same for a projected
+/// shadow, with the opposite sign on the plane.
 pub unsafe fn setup_projected_texture_matrix_neg(this: usize, effect: usize) -> u8 {
     crate::shadow::touch(&setup_projected_texture_matrix_neg_port::STATE);
     let stage = stage_at(this, TP::field_1E84, rd(this, TP::field_2464));
     projected_texture_matrix(this, effect, stage, true)
 }
 
-// The texture-coordinate generation callbacks (`callbacks_6E4`). In the comments `w` is the
-// 3x4 camera matrix of the pipeline (`worldRightX` on, 0x30 bytes) and `m` the 3x3 matrix of
-// the effect; the operand order is the order of the instructions.
+// The callbacks that generate texture coordinates (`callbacks_6E4`). `w` is the 3x4 camera
+// matrix of the pipeline: 0x30 bytes that start at `worldRightX`. `m` is the 3x3 matrix of
+// the effect. The order of the operands is the order of the instructions.
 
 /// Offsets into the camera matrix of the pipeline, from `worldRightX`.
 #[inline(always)]
@@ -539,8 +544,9 @@ pub unsafe fn tex_gen_world_perspective(this: usize, matrix: usize, translation:
     pipeline
 }
 
-/// The body of the three callbacks that work on a direction: the rotation only, and the
-/// translation of the effect copied as it is. Leaves the last word of the translation in EAX.
+/// The body of the three callbacks that work on a direction. It applies the rotation only and
+/// copies the translation of the effect with no change. It leaves the last word of the
+/// translation in EAX.
 #[inline(always)]
 unsafe fn tex_gen_direction(this: usize, matrix: usize, translation: usize, stage: usize, source: u32, flags: u32) -> u32 {
     wr::<u32>(stage, ST::sourceTexcoordIndex, source);
@@ -587,8 +593,8 @@ pub unsafe fn tex_gen_diffuse_cube_map(this: usize, matrix: usize, translation: 
 // NiDX8TexturePass::$1, the sub-pass
 // ---------------------------------------------------------------------------------------
 
-/// 0x6B6540 `NiDX8TexturePass::_1::setNiObjectField48`: the assignment of a `NiPointer`, as
-/// the compiler made it (a reset to null, then the assignment).
+/// 0x6B6540 `NiDX8TexturePass::_1::setNiObjectField48`. The assignment of a `NiPointer`, as
+/// the compiler made it: a reset to null, then the assignment.
 pub unsafe fn subpass_set_ni_object_field_48(this: usize, object: usize) {
     crate::shadow::touch(&subpass_set_ni_object_field_48_port::STATE);
     let current: usize = rd(this, SUB::field_48);
@@ -630,7 +636,7 @@ pub unsafe fn subpass_ctor(this: usize) -> usize {
     }
     wr::<u32>(this, SUB::field_34, 0);
     wr::<u32>(this, SUB::field_38, 0);
-    // A string copy, terminator included, into the bytes at 0x3C.
+    // A string copy into the bytes at 0x3C. The copy includes the terminator.
     let mut at = 0;
     loop {
         let byte: u8 = rd(EMPTY_STRING, at);
@@ -673,8 +679,8 @@ pub unsafe fn subpass_dtor(this: usize) {
     wr(NI_REF_OBJECT_COUNT, 0, rd::<u32>(NI_REF_OBJECT_COUNT, 0).wrapping_sub(1));
 }
 
-/// 0x6B78D0 `NiDX8TexturePass::_1::setStageAtIndex`. EAX is the index, or the new stage
-/// count when the count changed.
+/// 0x6B78D0 `NiDX8TexturePass::_1::setStageAtIndex`. EAX is the index. When the stage count
+/// changed, EAX is the new stage count.
 pub unsafe fn subpass_set_stage_at_index(this: usize, index: u32, stage: usize) -> u32 {
     crate::shadow::touch(&subpass_set_stage_at_index_port::STATE);
     let slot = this.wrapping_add((index as usize).wrapping_mul(4));
@@ -690,9 +696,9 @@ pub unsafe fn subpass_set_stage_at_index(this: usize, index: u32, stage: usize) 
     count
 }
 
-/// 0x6B7900 `NiDX8TexturePass::method_4`, slot 1 of `$1`: sends the stages of the sub-pass
-/// to the device and closes the stages behind them. Only the renderer is used of the five
-/// arguments.
+/// 0x6B7900 `NiDX8TexturePass::method_4`, slot 1 of `$1`. Sends the stages of the sub-pass
+/// to the device and disables the stages after them. The function uses only the renderer of
+/// the five arguments.
 pub unsafe fn subpass_apply(this: usize, renderer: usize, _a2: u32, _a3: u32, _a4: u32, _a5: u32) -> u32 {
     crate::shadow::touch(&subpass_apply_port::STATE);
     let count: u32 = rd(this, SUB::field_C);
@@ -751,8 +757,8 @@ pub unsafe fn subpass_get_available_slot_counts(this: usize, out_stages: usize, 
     available_slot_counts(this, out_stages, out_textures, || rd(MAX_STAGES, 0), || rd(MAX_TEXTURES, 0));
 }
 
-/// The end of every branch of the two append functions: the stage count follows the next
-/// index, and a stage with a texture counts as a texture.
+/// The end of every branch of the two append functions. The stage count becomes the next
+/// index when it is less. A stage with a texture adds 1 to the texture count.
 #[inline(always)]
 unsafe fn count_appended(this: usize, stage: usize, count: u32, next: u32) {
     if count < next || count == u32::MAX {
@@ -763,7 +769,7 @@ unsafe fn count_appended(this: usize, stage: usize, count: u32, next: u32) {
     }
 }
 
-/// The start of every branch: the stage gets the next index and goes into the list. Returns
+/// The start of every branch. The stage gets the next index and goes into the list. Returns
 /// the stage count before the call and the next index after it.
 #[inline(always)]
 unsafe fn store_appended(this: usize, stage: usize) -> (u32, u32) {
@@ -851,7 +857,8 @@ pub unsafe fn subpass_append_stage_pair(this: usize, stage: usize, other_stage: 
 // Stage state on the device
 // ---------------------------------------------------------------------------------------
 
-/// 0x6C1E50 `NiDX8TexturePass_static::resetStage`: no texture and both operations disabled.
+/// 0x6C1E50 `NiDX8TexturePass_static::resetStage`. Sets no texture and disables the two
+/// operations.
 pub unsafe fn reset_stage(stage_index: u32, renderer: usize) {
     crate::shadow::touch(&reset_stage_port::STATE);
     let render_state: usize = rd(renderer, REN::renderState);
@@ -932,8 +939,8 @@ fn has_region(set: &Regions, addr: usize) -> bool {
     set.as_slice().iter().any(|&(start, _)| start == addr)
 }
 
-/// True when `NiDX8TextureManager::PrepareTextureForRendering` would make or fill the device
-/// texture of this texture, which cannot run twice.
+/// True when `NiDX8TextureManager::PrepareTextureForRendering` makes or fills the device
+/// texture of this texture. That work cannot run two times.
 unsafe fn texture_needs_device_work(texture: usize) -> bool {
     let data: usize = rd(texture, NiTexture::rendererData);
     if data == 0 {
@@ -948,9 +955,9 @@ unsafe fn texture_needs_device_work(texture: usize) -> bool {
     rd::<u8>(texture, SOURCE_TEXTURE_IS_STATIC) == 0
 }
 
-/// What `method_4` writes: the render state, and the stages (the Code Patch changes the
-/// operations of an environment-map stage in `updateRenderer`). `inside` is a block that is
-/// in the set already.
+/// The memory that `method_4` writes: the render state and the stages. The Code Patch changes
+/// the operations of an environment-map stage in `updateRenderer`. `inside` is a block that
+/// the set has before the call.
 unsafe fn subpass_apply_regions(set: &mut Regions, this: usize, renderer: usize, inside: (usize, usize)) {
     let count: u32 = rd(this, SUB::field_C);
     if count == u32::MAX {
@@ -982,7 +989,7 @@ unsafe fn subpass_apply_regions(set: &mut Regions, this: usize, renderer: usize,
             continue;
         }
         if set.as_slice().len() == 8 {
-            // More blocks than the set holds.
+            // The call needs more blocks than the set holds.
             set.skip();
             return;
         }
@@ -998,18 +1005,18 @@ unsafe fn set_blending_state_regions(set: &mut Regions, this: usize) {
     if subpass == 0 {
         return;
     }
-    // `patchSetEffectState` writes the alpha and fog states.
+    // `patchSetEffectState` writes the alpha states and the fog states.
     set.add(rd(this, TP::renderState), RS::SIZE);
     if vtable_slot(subpass, 4) != ADDR_METHOD_4 {
-        // Not the class this file knows.
+        // The object is not of the class that this file has.
         set.skip();
         return;
     }
     subpass_apply_regions(set, subpass, rd(this, TP::renderer), (this, TP::SIZE));
 }
 
-/// The two objects an assignment to `field_48` touches. A call that deletes the old object
-/// cannot run twice.
+/// The two objects that an assignment to `field_48` changes. A call that deletes the old
+/// object cannot run two times.
 unsafe fn field_48_regions(set: &mut Regions, subpass: usize, object: usize) {
     let current: usize = rd(subpass, SUB::field_48);
     if current == object {
@@ -1031,14 +1038,14 @@ unsafe fn bind_stage_texture_regions(set: &mut Regions, this: usize, stage: usiz
     if stage == 0 {
         return;
     }
-    // What `acquireSubpassWithCapacity` will do.
+    // The code below finds what `acquireSubpassWithCapacity` does in this call.
     let mut pass_index: u32 = rd(this, TP::field_C);
     let storage: usize = rd(this, TP::TArray_18_storage);
     let mut subpass: usize = rd(this, TP::substruct_14);
     if subpass == 0 {
         subpass = rd(storage, pass_index as usize * 4);
         if subpass == 0 {
-            // It makes the sub-pass.
+            // The function makes the sub-pass.
             set.skip();
             return;
         }
@@ -1049,7 +1056,7 @@ unsafe fn bind_stage_texture_regions(set: &mut Regions, this: usize, stage: usiz
     if free_stages < stages || free_textures < textures {
         pass_index = pass_index.wrapping_add(1);
         if pass_index >= rd::<u32>(this, TP::count_10) {
-            // It makes the list of sub-passes longer.
+            // The function makes the list of sub-passes longer.
             set.skip();
             return;
         }
@@ -1071,15 +1078,15 @@ unsafe fn bind_stage_texture_regions(set: &mut Regions, this: usize, stage: usiz
     field_48_regions(set, subpass, object);
 }
 
-/// The reference counts `setTexturePipeline` changes, found by a walk over the effects the
-/// way the function walks them.
+/// The reference counts that `setTexturePipeline` changes. A walk over the effects finds
+/// them, in the order in which the function walks the effects.
 struct EffectWalk {
-    /// `NiDX8TexturePass::field_6E0` as the function will have it.
+    /// `NiDX8TexturePass::field_6E0` as the function has it at this point of the walk.
     used: u32,
-    /// Texture and the change of its reference count.
+    /// A texture and the change of its reference count.
     counts: [(usize, i32); 6],
     count_len: usize,
-    /// Stage and the texture the walk gave it.
+    /// A stage and the texture that the walk gave it.
     stages: [(usize, usize); 40],
     stage_len: usize,
     skip: bool,
@@ -1094,7 +1101,7 @@ impl EffectWalk {
             }
         }
         if self.count_len == self.counts.len() {
-            // More blocks than the set holds.
+            // The call needs more blocks than the set holds.
             self.skip = true;
             return;
         }
@@ -1141,7 +1148,7 @@ impl EffectWalk {
             self.stages[self.stage_len] = (stage, texture);
             self.stage_len += 1;
         }
-        // A count that reaches zero on the way deletes the texture.
+        // A count that becomes 0 during the walk deletes the texture.
         for &(object, by) in &self.counts[..self.count_len] {
             if rd::<u32>(object, REF_COUNT) as i64 + by as i64 <= 0 {
                 self.skip = true;
@@ -1160,7 +1167,7 @@ unsafe fn set_texture_pipeline_regions(set: &mut Regions, this: usize, effect_st
     }
     set.add(pipeline + CTP::field_B04, 4);
     if vtable_slot(this, 0x18) != ADDR_RESET_PASS_FLAGS {
-        // Not the class this file knows.
+        // The object is not of the class that this file has.
         set.skip();
         return;
     }
@@ -1168,7 +1175,7 @@ unsafe fn set_texture_pipeline_regions(set: &mut Regions, this: usize, effect_st
         return;
     }
     let mut walk = EffectWalk { used: 0, counts: [(0, 0); 6], count_len: 0, stages: [(0, 0); 40], stage_len: 0, skip: false };
-    // The four counters are zero after `resetPassFlags`.
+    // The four counters are 0 after `resetPassFlags`.
     let (mut lights, mut clipped_lights, mut shadows, mut clipped_shadows) = (0u32, 0u32, 0u32, 0u32);
 
     let mut node: usize = rd(effect_state, DES::projLights);
@@ -1341,14 +1348,14 @@ port_thiscall!(subpass_set_ni_object_field_48_port, 0x6B6540, "NiDX8TexturePass:
 port_thiscall!(subpass_ctor_port, 0x6B76E0, "NiDX8TexturePass::$1::ctor",
     fn(this) -> usize,
     compare_eax = true,
-    // The object is new memory, and the count of all objects is outside it.
+    // The object is new memory. The count of all objects is outside the object.
     regions = |set| set.skip(),
     rust = subpass_ctor);
 
 port_thiscall!(subpass_dtor_port, 0x6B77E0, "NiDX8TexturePass::$1::dtor",
     fn(this) -> (),
     compare_eax = false,
-    // It can delete the three objects it holds.
+    // The function can delete the three objects that the sub-pass holds.
     regions = |set| set.skip(),
     rust = subpass_dtor);
 
@@ -1435,7 +1442,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    // A device that only records `SetTexture` and `SetTextureStageState`.
+    // A device that records only `SetTexture` and `SetTextureStageState`.
     thread_local! {
         static CALLS: RefCell<Vec<[u32; 4]>> = const { RefCell::new(Vec::new()) };
     }
@@ -1454,7 +1461,7 @@ mod tests {
         CALLS.with(|calls| core::mem::take(&mut *calls.borrow_mut()))
     }
 
-    /// A renderer with a render state, a pipeline and the recording device.
+    /// A renderer with a render state, a pipeline and the device that records.
     struct World {
         vtable: Box<[usize; 64]>,
         device: Box<usize>,
@@ -1495,7 +1502,8 @@ mod tests {
         vec![0u8; ST::SIZE]
     }
 
-    /// A pass with a pipeline whose camera matrix holds `camera` (12 values from `worldRightX`).
+    /// A pass with a pipeline. The camera matrix of the pipeline holds `camera`: 12 values that
+    /// start at `worldRightX`.
     fn pass_with_camera(camera: [f32; 12]) -> (Vec<u8>, Vec<u8>) {
         let mut pass = vec![0u8; TP::SIZE];
         let mut pipeline = vec![0u8; CTP::SIZE];
@@ -1512,9 +1520,9 @@ mod tests {
     const MATRIX: [f32; 9] = [1.0, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0, 9.0];
     const TRANSLATION: [f32; 3] = [0.5, 0.25, -0.75];
 
-    /// Element (row, column) of the texture matrix the callbacks build: the sum over `j` of
-    /// camera[j][row] * matrix[column][j]. All values are small integers, so the order of the
-    /// operations does not change the result.
+    /// Element (row, column) of the texture matrix that the callbacks build: the sum over `j`
+    /// of camera[j][row] * matrix[column][j]. All values are small integers. Thus the order of
+    /// the operations does not change the result.
     fn rotation_element(row: usize, column: usize) -> f32 {
         (0..3).map(|j| CAMERA[j * 3 + row] * MATRIX[column * 3 + j]).sum()
     }
@@ -1544,9 +1552,9 @@ mod tests {
                 assert_eq!(rd::<u32>(s, ST::sourceTexcoordIndex), source);
                 assert_eq!(rd::<u32>(s, ST::textureTransformFlags), flags);
                 check_rotation(s);
-                // Integer copies: a signalling NaN stays as it is.
+                // The copies are integer copies. A signalling NaN does not change.
                 assert_eq!(rd::<[u32; 3]>(s, ST::textureMatrix__41), translation);
-                // The fourth column is not written.
+                // The callbacks do not write the fourth column.
                 assert_eq!(rd::<u32>(s, ST::textureMatrix__14), 0);
                 assert_eq!(rd::<u32>(s, ST::textureMatrix__44), 0);
             }
@@ -1626,27 +1634,27 @@ mod tests {
         let s = stage.as_mut_ptr() as usize;
         let ops = |s: usize| unsafe { rd::<[u32; 6]>(s, ST::colorOp) };
         unsafe {
-            // Slot 2 of both tables.
+            // Slot 2 of the two tables.
             for index in 0..6u32 {
                 wr(p, CTP::field_108 + 2 * 24 + index as usize * 4, 0x100 + index);
                 wr(p, CTP::field_1F8 + 2 * 24 + index as usize * 4, 0x200 + index);
             }
             wr::<u32>(s, ST::field_94, 2);
 
-            // First stage with a texture: the first table as it is.
+            // The first stage with a texture gets the first table with no change.
             wr::<u8>(s, ST::field_90, 1);
             wr::<usize>(s, ST::ptrTexture, 0x1234);
             apply_stage_blend_ops(this, s, 0);
             assert_eq!(ops(s), [0x100, 0x101, 0x102, 0x103, 0x104, 0x105]);
-            // No texture: both operations become SELECTARG2.
+            // With no texture, the two operations become SELECTARG2.
             wr::<usize>(s, ST::ptrTexture, 0);
             apply_stage_blend_ops(this, s, 0);
             assert_eq!(ops(s), [3, 0x101, 0x102, 3, 0x104, 0x105]);
-            // `field_90` clear: SELECTARG1 of the texture.
+            // With `field_90` clear, the operations become SELECTARG1 of the texture.
             wr::<u8>(s, ST::field_90, 0);
             apply_stage_blend_ops(this, s, 0);
             assert_eq!(ops(s), [2, 2, 0x102, 2, 2, 0x105]);
-            // The flag, or a later stage, selects the second table.
+            // The flag selects the second table. A later stage also selects it.
             apply_stage_blend_ops(this, s, 1);
             assert_eq!(ops(s), [0x200, 0x201, 0x202, 0x203, 0x204, 0x205]);
             wr::<[u32; 6]>(s, ST::colorOp, [0; 6]);
@@ -1667,7 +1675,7 @@ mod tests {
             for field in [TP::field_CD8, TP::field_18A0, TP::field_2A48, TP::field_2464, TP::field_2BD0, TP::field_6E0] {
                 assert_eq!(rd::<u32>(this, field), 0);
             }
-            // The three flags are one byte each.
+            // Each of the three flags is 1 byte.
             for field in [TP::field_2B08, TP::field_2A4C_bumpEnvMapEnabled, TP::field_2BC8] {
                 assert_eq!(rd::<u32>(this, field), 0xFFFF_FF00);
             }
@@ -1684,7 +1692,7 @@ mod tests {
         let mut stage = stage_block();
         let s = stage.as_mut_ptr() as usize;
         unsafe {
-            // Disabled, then enabled with no texture, then no room.
+            // The effect is disabled, then enabled with no texture. Then the pass has no space.
             assert_eq!(configure_stage_from_texture_prop(this, e, s), 0);
             wr::<u8>(e, EFFECT_ENABLED, 1);
             assert_eq!(configure_stage_from_texture_prop(this, e, s), 0);
@@ -1699,7 +1707,8 @@ mod tests {
     fn field_48_assignment_counts_references() {
         let mut subpass = vec![0u8; SUB::SIZE];
         let this = subpass.as_mut_ptr() as usize;
-        // Two objects: a null vtable (never used, the counts stay above zero) and a count.
+        // Two objects. Each has a null vtable and a count. The test does not use the vtable,
+        // because the counts stay above 0.
         let mut first = [0u32, 5];
         let mut second = [0u32, 1];
         let (a, b) = (first.as_mut_ptr() as usize, second.as_mut_ptr() as usize);
@@ -1707,7 +1716,7 @@ mod tests {
             subpass_set_ni_object_field_48(this, a);
             assert_eq!(rd::<usize>(this, SUB::field_48), a);
             assert_eq!(first[1], 6);
-            // The same object again: nothing.
+            // The same object again. Nothing changes.
             subpass_set_ni_object_field_48(this, a);
             assert_eq!(first[1], 6);
             subpass_set_ni_object_field_48(this, b);
@@ -1729,12 +1738,12 @@ mod tests {
             assert_eq!(rd::<u32>(this, SUB::field_C), 1);
             assert_eq!(subpass_set_stage_at_index(this, 3, 0x300), 4);
             assert_eq!(rd::<u32>(this, SUB::field_C), 4);
-            // Inside the count: the index comes back and the count stays.
+            // The index is inside the count. The port returns the index and the count stays.
             assert_eq!(subpass_set_stage_at_index(this, 1, 0x200), 1);
             assert_eq!(rd::<u32>(this, SUB::field_C), 4);
             assert_eq!(rd::<[usize; 4]>(this, SUB::field_14), [0x100, 0x200, 0, 0x300]);
-            // A count of zero: the game code compares with count - 1 unsigned, so every
-            // index is "inside" and the count stays zero.
+            // A count of 0. The game code does an unsigned comparison with count - 1. Thus
+            // every index is "inside" and the count stays 0.
             wr::<u32>(this, SUB::field_C, 0);
             assert_eq!(subpass_set_stage_at_index(this, 5, 0x500), 5);
             assert_eq!(rd::<u32>(this, SUB::field_C), 0);
@@ -1783,7 +1792,8 @@ mod tests {
             // The first stage keeps its arguments.
             assert_eq!((rd::<u32>(a, ST::stage), rd::<u32>(a, ST::colorArg1), rd::<u32>(a, ST::colorArg2)), (0, 77, 0));
             assert_eq!(rd::<[u32; 3]>(this, SUB::field_8), [1, 1, 1]);
-            // A later stage blends with the stage before it: texture or diffuse, and current.
+            // A later stage blends with the stage before it. Argument 1 is the texture or the
+            // diffuse colour. Argument 2 is the current colour.
             wr::<u32>(b, ST::colorArg1, 77);
             assert_eq!(subpass_append_stage(this, b), 1);
             assert_eq!((rd::<u32>(b, ST::stage), rd::<u32>(b, ST::colorArg1), rd::<u32>(b, ST::colorArg2)), (1, 0, 1));
@@ -1793,7 +1803,7 @@ mod tests {
             assert_eq!((rd::<u32>(c, ST::stage), rd::<u32>(c, ST::colorArg1), rd::<u32>(c, ST::colorArg2)), (2, 2, 1));
             assert_eq!(rd::<[u32; 3]>(this, SUB::field_8), [3, 3, 2]);
             assert_eq!(rd::<[usize; 3]>(this, SUB::field_14), [a, b, c]);
-            // A count that is ahead of the index stays.
+            // A count that is more than the index stays.
             wr::<u32>(this, SUB::field_8, 0);
             assert_eq!(subpass_append_stage(this, b), 1);
             assert_eq!(rd::<[u32; 3]>(this, SUB::field_8), [1, 3, 2]);
@@ -1814,7 +1824,7 @@ mod tests {
             wr::<usize>(a, ST::ptrTexture, 0x1000);
             wr::<usize>(b, ST::ptrTexture, 0x2000);
 
-            // No room for a texture.
+            // No space for a texture.
             let mut subpass = fresh();
             let this = subpass.as_mut_ptr() as usize;
             wr::<u32>(this, SUB::field_10, 2);
@@ -1831,7 +1841,7 @@ mod tests {
             assert_eq!(state(&subpass), [1, 1, 1]);
             assert_eq!(rd::<u32>(a, ST::stage), 0);
 
-            // The second alone, unless the flag forbids it.
+            // The second stage alone, when the flag is clear.
             assert_eq!(append_stage_pair(this, 0, b, 1, 2), 0);
             assert_eq!(state(&subpass), [1, 1, 1]);
             assert_eq!(append_stage_pair(this, 0, b, 0, 2), 2);
@@ -1839,7 +1849,7 @@ mod tests {
             assert_eq!(rd::<u32>(b, ST::stage), 1);
             assert_eq!(rd::<[usize; 2]>(this, SUB::field_14), [a, b]);
 
-            // Both, when two textures fit.
+            // The two stages, when there is space for two textures.
             let mut subpass = fresh();
             let this = subpass.as_mut_ptr() as usize;
             assert_eq!(append_stage_pair(this, a, b, 0, 2), 3);
@@ -1847,7 +1857,7 @@ mod tests {
             assert_eq!((rd::<u32>(a, ST::stage), rd::<u32>(b, ST::stage)), (0, 1));
             assert_eq!(rd::<[usize; 2]>(this, SUB::field_14), [a, b]);
 
-            // Only the first, when one texture fits.
+            // Only the first stage, when there is space for one texture.
             let mut subpass = fresh();
             let this = subpass.as_mut_ptr() as usize;
             wr::<u32>(this, SUB::field_10, 1);
@@ -1869,7 +1879,7 @@ mod tests {
             assert_eq!(rd::<usize>(rs, RS::texturePerStage + 2 * 4), 0);
             assert_eq!(rd::<u32>(stage_setting(rs, 2, D3DTSS_COLOROP), 0), 1);
             assert_eq!(rd::<u32>(stage_setting(rs, 2, D3DTSS_ALPHAOP), 0), 1);
-            // The saved values are not touched.
+            // The port does not change the saved values.
             assert_eq!(rd::<u32>(stage_setting(rs, 2, D3DTSS_COLOROP), 4), 0);
             reset_stage(2, renderer);
             assert!(take_calls().is_empty());
@@ -1913,7 +1923,7 @@ mod tests {
         let filtered = |mode: u32, mipmapped: u8, flag: u8| unsafe {
             wr::<u32>(s, ST::textureStageIndex, mode);
             wr::<u32>(s, ST::stage, 3);
-            // A cache that holds nothing the table has.
+            // A cache that holds no value of the table.
             for state in [D3DTSS_MAGFILTER, D3DTSS_MINFILTER, D3DTSS_MIPFILTER] {
                 wr::<u32>(stage_setting(rd(renderer, REN::renderState), 3, state), 0, 0);
             }
@@ -1922,16 +1932,16 @@ mod tests {
             assert_eq!(calls.len(), 3);
             assert_eq!([calls[0][2], calls[1][2], calls[2][2]], [D3DTSS_MAGFILTER, D3DTSS_MINFILTER, D3DTSS_MIPFILTER]);
             assert!(calls.iter().all(|call| call[0] == 0xFC && call[1] == 3));
-            // The mode the three values came from.
+            // The mode that the three values came from.
             assert_eq!(calls[0][3] - 0x20, calls[1][3] - 0x10);
             assert_eq!(calls[0][3] - 0x20, calls[2][3] - 0x30);
             calls[0][3] - 0x20
         };
-        // Mipmapped and the flag set: the mode as it is.
+        // Mipmaps and the flag set: the mode does not change.
         assert_eq!([0, 1, 2, 3, 4, 5].map(|mode| filtered(mode, 1, 1)), [0, 1, 2, 3, 4, 5]);
-        // Mipmapped, flag clear: 2 and 4 change.
+        // Mipmaps and the flag clear: modes 2 and 4 change.
         assert_eq!([0, 1, 2, 3, 4, 5].map(|mode| filtered(mode, 1, 0)), [0, 1, 5, 3, 3, 5]);
-        // No mipmaps: the modes that need none; the flag does not count.
+        // No mipmaps: the modes that need none. The flag has no effect.
         assert_eq!([0, 1, 2, 3, 4, 5].map(|mode| filtered(mode, 0, 0)), [0, 1, 1, 0, 0, 1]);
         assert_eq!([0, 1, 2, 3, 4, 5].map(|mode| filtered(mode, 0, 1)), [0, 1, 1, 0, 0, 1]);
         unsafe {
@@ -1946,7 +1956,7 @@ mod tests {
         let (mut pass, mut pipeline) = pass_with_camera([0.0; 12]);
         let (this, p) = (pass.as_mut_ptr() as usize, pipeline.as_mut_ptr() as usize);
         unsafe {
-            // No vtable in the pass: the call would fault if it went past the comparison.
+            // The pass has no vtable. A call that continues after the comparison causes a fault.
             wr::<usize>(p, CTP::field_B04, 0x5555);
             set_texture_pipeline(this, 0x5555);
             assert_eq!(rd::<usize>(this, TP::field_2BD0), 0);

@@ -1,10 +1,11 @@
-//! The frame comparison: the device calls of one frame with the engine functions against the
-//! calls of the next frame with the Rust functions.
+//! The frame comparison compares the device calls of two frames. The first frame uses the
+//! engine functions and the next frame uses the Rust functions.
 //!
 //! It needs a scene that does not change between the frames. The control run records two
-//! frames with the engine functions. The live run records three: engine, Rust, engine. When
-//! the two engine frames differ the scene changed (an animated texture moved on, for one) and
-//! the run says RETRY; a FAIL means the Rust frame differs from two equal engine frames.
+//! frames with the engine functions. The live run records three frames: engine, Rust, engine.
+//! When the two engine frames differ, the scene changed, and the run says RETRY. An animated
+//! texture that moved on is one cause. A FAIL means that the Rust frame differs from two
+//! equal engine frames.
 
 use core::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
@@ -30,12 +31,12 @@ const THIRD: u8 = 4;
 static PHASE: AtomicU8 = AtomicU8::new(IDLE);
 static KIND_LIVE: AtomicU8 = AtomicU8::new(0);
 static RESULT: Mutex<Option<String>> = Mutex::new(None);
-/// Where the next frame goes, for the comparison of two runs. The modes of the ports stay
-/// as they are for that frame.
+/// The path for the dump of the next frame, for the comparison of two runs. The modes of the
+/// ports do not change for that frame.
 static DUMP_PATH: Mutex<Option<String>> = Mutex::new(None);
 const DUMPING: u8 = 5;
 
-/// Writes the device calls of the next frame to `path` (see `dump::frame`).
+/// Writes the device calls of the next frame to `path`. See `dump::frame`.
 pub fn request_dump(path: String) -> bool {
     if PHASE.load(Ordering::Relaxed) != IDLE {
         return false;
@@ -55,7 +56,7 @@ struct Work {
 }
 static mut WORK: Work = Work { first: Vec::new(), second: Vec::new(), third: Vec::new(), modes: Vec::new(), live_calls_before: 0 };
 
-/// Starts a comparison at the next Present. False when one is running.
+/// Starts a comparison at the next Present. Returns false when a comparison is in progress.
 pub fn request(kind: Kind) -> bool {
     if PHASE.load(Ordering::Relaxed) != IDLE {
         return false;
@@ -82,7 +83,7 @@ fn set_all(mode: Mode) {
     }
 }
 
-/// The comparison of two frame logs as one line of text. Starts with PASS or FAIL.
+/// The comparison of two frame logs as one line of text. The text starts with PASS or FAIL.
 pub fn compare(first: &[u32], second: &[u32], first_name: &str, second_name: &str) -> String {
     let counts = format!(
         "{} {} calls, {} {} calls",
@@ -91,14 +92,14 @@ pub fn compare(first: &[u32], second: &[u32], first_name: &str, second_name: &st
         second_name,
         device::count_records(second)
     );
-    // `first_difference` names its sides for the shadow test: its first log is the Rust one.
+    // `first_difference` names its sides for the shadow test. Its first log is the Rust log.
     match device::first_difference(second, first) {
         None => format!("PASS {counts}, identical"),
         Some(difference) => format!("FAIL {counts}; {difference}"),
     }
 }
 
-/// Runs at each Present of the engine, before the call goes to the device.
+/// Runs at each Present of the game, before the call goes to the device.
 pub unsafe fn on_present() {
     let work = &mut *core::ptr::addr_of_mut!(WORK);
     match PHASE.load(Ordering::Relaxed) {
@@ -138,14 +139,15 @@ pub unsafe fn on_present() {
         SECOND => {
             device::end(&mut work.second);
             if KIND_LIVE.load(Ordering::Relaxed) != 0 {
-                // A third frame with the engine functions again.
+                // The next frame is a third frame, with the engine functions again.
                 work.live_calls_before = total_live_calls() - work.live_calls_before;
                 set_all(Mode::Off);
                 device::begin(false);
                 PHASE.store(THIRD, Ordering::Relaxed);
                 return;
             }
-            // Two engine frames that differ are a change of the scene, never a fault of the port.
+            // Two engine frames that differ show a change of the scene. They do not show a fault
+            // of the port.
             let mut text = compare(&work.first, &work.second, "engine", "engine");
             if text.starts_with("FAIL") {
                 text = format!("RETRY the scene changed between the two engine frames; {text}");

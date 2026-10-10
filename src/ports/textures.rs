@@ -20,7 +20,8 @@ const PREFS_LAYOUT: usize = 0x0;
 const PREFS_ALPHA: usize = 0x8;
 /// `NiRTTI::baseRTTI` (0x6BC5DE)
 const RTTI_BASE: usize = 0x4;
-/// `NiRenderTargetGroup`-like object of the renderer: its `NiDX8PixelFormat *` (0x6B66D7).
+/// An object of the renderer that is similar to `NiRenderTargetGroup`: its `NiDX8PixelFormat *`
+/// (0x6B66D7).
 const RENDER_TARGET_PIXEL_FORMAT: usize = 0x8;
 
 // `NiBltSource` (0x6B66AC, 0x6B66C8, 0x6B67AC)
@@ -38,7 +39,7 @@ const BD_FIELD_18: usize = 0x18;
 const BD_WIDTH: usize = 0x1C;
 const BD_HEIGHT: usize = 0x20;
 
-/// A value in a hash map of the texture manager: a device object it holds (0x6BC3E2).
+/// A value in a hash map of the texture manager: a device object that the value holds (0x6BC3E2).
 const MAP_VALUE_DEVICE_OBJECT: usize = 0x2C;
 
 // `D3DLOCKED_RECT` and `D3DSURFACE_DESC`, as arrays of 32-bit words.
@@ -90,7 +91,7 @@ const SURFACE_GET_DESC: usize = 0x20;
 const SURFACE_LOCK_RECT: usize = 0x24;
 const SURFACE_UNLOCK_RECT: usize = 0x28;
 
-// The texts the game code gives to its debug output, which does nothing.
+// The game code gives these texts to its debug output. The debug output does nothing.
 const TEXT_UPDATE_LEVEL: usize = 0x7C40B8;
 const TEXT_COPY_LOCK: usize = 0x7C4170;
 const TEXT_COPY_DESC: usize = 0x7C41B8;
@@ -142,7 +143,7 @@ mod eng {
     pub unsafe fn source_cube_map_data_create(texture: usize, renderer: usize) -> usize {
         transmute::<usize, Cdecl2>(0x6C10A0)(texture, renderer)
     }
-    /// 0x6B6DE0 `NiTexture::RendererData::dtor`: sets the base vtable and deletes the linked data.
+    /// 0x6B6DE0 `NiTexture::RendererData::dtor`. It sets the base vtable and deletes the linked data.
     pub unsafe fn renderer_data_dtor(data: usize) {
         transmute::<usize, This0>(0x6B6DE0)(data);
     }
@@ -162,33 +163,33 @@ mod eng {
     pub unsafe fn debug_output_2(text: usize, a: usize, b: usize) {
         transmute::<usize, unsafe extern "C" fn(usize, usize, usize) -> usize>(0x6E9A00)(text, a, b);
     }
-    /// 0x6ECA50 `sub_6ECA50`: told when the last reference to a texture went.
+    /// 0x6ECA50 `sub_6ECA50`. The game calls it when a texture loses its last reference.
     pub unsafe fn texture_freed(texture: usize, size: u32) {
         transmute::<usize, Cdecl2>(0x6ECA50)(texture, size as usize);
     }
-    /// 0x6C28C0 `sub_6C28C0`: the destructor of a map value, as the manager destructor calls it.
+    /// 0x6C28C0 `sub_6C28C0`: the destructor of a map value. The destructor of the manager calls it.
     pub unsafe fn map_value_dtor_6c28c0(value: usize) {
         transmute::<usize, This0>(0x6C28C0)(value);
     }
-    /// 0x6BD490 `sub_6BD490`: the destructor of a map value, as `Recreate` calls it.
+    /// 0x6BD490 `sub_6BD490`: the destructor of a map value. `Recreate` calls it.
     pub unsafe fn map_value_dtor_6bd490(value: usize) {
         transmute::<usize, This0>(0x6BD490)(value);
     }
-    /// `dword_7DE8FC`, `dword_7C55B0`, `dword_7C55B8`, `dword_7C55B4`: what the compare bits
-    /// of a new pixel format are made from (0x6B6D2F).
+    /// `dword_7DE8FC`, `dword_7C55B0`, `dword_7C55B8`, `dword_7C55B4`. The game makes the compare
+    /// bits of a new pixel format from them (0x6B6D2F).
     pub unsafe fn format_bit_globals() -> [u32; 4] {
         [rd(0x7DE8FC, 0), rd(0x7C55B0, 0), rd(0x7C55B8, 0), rd(0x7C55B4, 0)]
     }
-    /// The four 8-bit displacements in `FindMatchingPixelFormat` that the Morrowind Code Patch
-    /// (MCP-039) changes: 0x6B70A8, 0x6B70DF, 0x6B7357, 0x6B737A. Each is the offset of a
-    /// format in the list. They are read from the game code, so the port follows the patch
-    /// state of the game it runs in. The database has 8, 4, 0x14, 8.
+    /// The Morrowind Code Patch (MCP-039) changes four 8-bit displacements in
+    /// `FindMatchingPixelFormat`. They are at 0x6B70A8, 0x6B70DF, 0x6B7357 and 0x6B737A. Each is
+    /// the offset of a format in the list. This function reads them from the game code. Thus the
+    /// port follows the patch state of the game it runs in. The database has 8, 4, 0x14, 8.
     pub unsafe fn mcp039_offsets() -> [usize; 4] {
         [rd::<u8>(0x6B70A8, 0) as usize, rd::<u8>(0x6B70DF, 0) as usize, rd::<u8>(0x6B7357, 0) as usize, rd::<u8>(0x6B737A, 0) as usize]
     }
 }
 
-/// Stand-ins for the unit tests, which run without the game.
+/// Replacements for the unit tests. The unit tests run without the game.
 #[cfg(test)]
 mod eng {
     use crate::mem::{rd, wr};
@@ -294,13 +295,14 @@ unsafe fn converter_read_file(converter: usize, filename: usize, arg: u32) -> us
     vcall::<This2>(converter, VT_CONVERTER_READ_FILE)(converter, filename as u32, arg) as usize
 }
 
-/// `NiImageConverter` slot 0xC: whether it can turn the source format into the other.
+/// `NiImageConverter` slot 0xC. Returns true when it can convert the source format to the other.
 #[inline(always)]
 unsafe fn converter_can_convert(converter: usize, source: usize, dest: usize) -> bool {
     vcall::<This2>(converter, VT_CONVERTER_CAN_CONVERT)(converter, source as u32, dest as u32) & 0xFF != 0
 }
 
-/// `NiImageConverter` slot 0x10: pixel data in the wanted format (the source itself when it fits).
+/// `NiImageConverter` slot 0x10: pixel data in the wanted format. This is the source when the
+/// source fits.
 #[inline(always)]
 unsafe fn converter_convert(converter: usize, source: usize, format: usize, scratch: usize, mipmap: u8) -> usize {
     vcall::<This4>(converter, VT_CONVERTER_CONVERT)(converter, source as u32, format as u32, scratch as u32, mipmap as u32) as usize
@@ -353,7 +355,7 @@ unsafe fn surface_unlock_rect(surface: usize) -> u32 {
 
 // ---- shared pieces the game code has inline
 
-/// Whether the object is a `NiSourceTexture` or of a class made from it.
+/// Returns true when the object is a `NiSourceTexture` or of a class made from it.
 #[inline(always)]
 unsafe fn is_source_texture(texture: usize) -> bool {
     let mut rtti = object_get_rtti(texture);
@@ -382,7 +384,7 @@ unsafe fn map_first(map: usize) -> usize {
     0
 }
 
-/// The first node of the buckets after the one of `key`.
+/// The first node of the buckets after the bucket of `key`.
 #[inline(always)]
 unsafe fn map_next_bucket(map: usize, key: u32) -> usize {
     let mut i = map_hash_key(map, key).wrapping_add(1);
@@ -400,7 +402,7 @@ unsafe fn map_next_bucket(map: usize, key: u32) -> usize {
     0
 }
 
-/// Every value of a map: its device object is released, the value destroyed and freed.
+/// For every value of a map: releases its device object, then destroys and frees the value.
 /// The nodes stay.
 #[inline(always)]
 unsafe fn map_destroy_values(map: usize, value_dtor: unsafe fn(usize)) {
@@ -423,7 +425,7 @@ unsafe fn map_destroy_values(map: usize, value_dtor: unsafe fn(usize)) {
     }
 }
 
-/// Rows of `row_bytes` bytes go to a locked surface, `pitch` bytes apart.
+/// Copies rows of `row_bytes` bytes to a locked surface. The rows are `pitch` bytes apart.
 #[inline(always)]
 unsafe fn copy_rows(mut source: usize, bits: usize, pitch: u32, row_bytes: u32, height: u32) {
     let mut row = 0u32;
@@ -435,7 +437,7 @@ unsafe fn copy_rows(mut source: usize, bits: usize, pitch: u32, row_bytes: u32, 
     }
 }
 
-/// Takes one reference from an engine object; at zero the object deletes itself.
+/// Takes one reference from an engine object. At zero the object deletes itself.
 #[inline(always)]
 unsafe fn dec_ref(object: usize) {
     let count = rd::<u32>(object, REF_COUNT).wrapping_sub(1);
@@ -447,7 +449,7 @@ unsafe fn dec_ref(object: usize) {
 
 // ---- NiDX8TextureManager
 
-/// 0x6BC8A0 `NiDX8TextureManager::clearHashMap`: every node of a hash map goes.
+/// 0x6BC8A0 `NiDX8TextureManager::clearHashMap`: removes every node of a hash map.
 pub unsafe fn clear_hash_map(map: usize) {
     crate::shadow::touch(&clear_hash_map_port::STATE);
     let mut i = 0u32;
@@ -509,7 +511,7 @@ pub unsafe fn manager_ctor(this: usize, renderer: usize) -> usize {
     let device: usize = rd(renderer, R::d3dDevice);
     wr(this, TM::deviceInterface, device);
     com_add_ref(device);
-    // Three times the body of `clearHashMap`, inline in the game code.
+    // The game code has the body of `clearHashMap` inline three times.
     clear_hash_map(this + TM::hashMap_10);
     clear_hash_map(this + TM::hashMap_20);
     clear_hash_map(this + TM::hashmap_30);
@@ -548,14 +550,14 @@ pub unsafe fn manager_deleting_dtor(this: usize, flags: u32) -> usize {
     this
 }
 
-/// 0x6BC590 `NiDX8TextureManager::GetTexture`: not implemented in the game.
+/// 0x6BC590 `NiDX8TextureManager::GetTexture`. The game does not implement it.
 pub unsafe fn manager_get_texture(_this: usize, _a1: u32, _a2: u32, _a3: u32, _a4: u32, _a5: u32, _a6: u32) -> u32 {
     crate::shadow::touch(&manager_get_texture_port::STATE);
     0
 }
 
-/// 0x6BC5A0 `NiDX8TextureManager::PrepareTextureForRendering`: the device texture of a
-/// texture, made or brought up to date when needed.
+/// 0x6BC5A0 `NiDX8TextureManager::PrepareTextureForRendering`: returns the device texture of a
+/// texture. It makes or updates the device texture when necessary.
 pub unsafe fn manager_prepare_texture_for_rendering(this: usize, texture: usize, out_created: usize, out_mipmapped: usize) -> usize {
     crate::shadow::touch(&manager_prepare_texture_for_rendering_port::STATE);
     wr::<u8>(out_created, 0, 0);
@@ -686,7 +688,7 @@ pub unsafe fn texture_data_get_d3d_palette(this: usize) -> u32 {
 }
 
 /// 0x6B6E50 `NiDX8TextureData_static::FindClosestPixelFormat`: the format of the list that
-/// fits the preferences best, with no pixel data to look at. 0 when none fits.
+/// best fits the preferences. It has no pixel data to examine. Returns 0 when no format fits.
 pub unsafe fn find_closest_pixel_format(_renderer: usize, prefs: usize, formats: usize) -> usize {
     crate::shadow::touch(&find_closest_pixel_format_port::STATE);
     let mut layout: u32 = rd(prefs, PREFS_LAYOUT);
@@ -725,7 +727,7 @@ pub unsafe fn find_closest_pixel_format(_renderer: usize, prefs: usize, formats:
             _ => 0,
         };
     }
-    // Layouts 0 and 3 come here when nothing above fitted; layout 1 starts here.
+    // Layouts 0 and 3 come here when no format above fitted. Layout 1 starts here.
     match alpha {
         0 => first(&[1, 0, 2, 5, 3, 4]),
         1 => first(&[3, 4, 5]),
@@ -734,8 +736,8 @@ pub unsafe fn find_closest_pixel_format(_renderer: usize, prefs: usize, formats:
     }
 }
 
-/// 0x6B6F70 `NiDX8TextureData::FindMatchingPixelFormat`: the format of the list the image
-/// converter can make from the source format and that fits the preferences best.
+/// 0x6B6F70 `NiDX8TextureData::FindMatchingPixelFormat`: the format of the list that best fits
+/// the preferences. The image converter must be able to make it from the source format.
 pub unsafe fn find_matching_pixel_format(_this: usize, source: usize, prefs: usize, formats: usize) -> usize {
     crate::shadow::touch(&find_matching_pixel_format_port::STATE);
     let format: u32 = rd(source, 0);
@@ -907,8 +909,8 @@ pub unsafe fn source_data_is_loaded(this: usize) -> u8 {
     (rd::<usize>(this, SD::d3dTexture) != 0) as u8
 }
 
-/// 0x6BFF40 `NiDX8SourceTextureData::CopyDataToSurface`: one mipmap level of the pixel data
-/// goes to a surface.
+/// 0x6BFF40 `NiDX8SourceTextureData::CopyDataToSurface`: copies one mipmap level of the pixel
+/// data to a surface.
 pub unsafe fn source_data_copy_data_to_surface(pixel_data: usize, level: u32, surface: usize) {
     crate::shadow::touch(&source_data_copy_data_to_surface_port::STATE);
     let mut desc = [0u32; 8];
@@ -929,7 +931,8 @@ pub unsafe fn source_data_copy_data_to_surface(pixel_data: usize, level: u32, su
     let offsets: usize = rd(pixel_data, PD::mipmapOffsets);
     let pixels: usize = rd(pixel_data, PD::pixelsAllMips);
     if locked[LOCK_PITCH] == row_bytes || (6..=8).contains(&format) {
-        // The rows lie as the surface wants them, or the data is compressed: one block.
+        // The rows have the pitch of the surface, or the data is compressed. The port copies one
+        // block.
         let start: u32 = rd(offsets, level * 4);
         let size = rd::<u32>(offsets, level * 4 + 4).wrapping_sub(start);
         core::ptr::copy_nonoverlapping(pixels.wrapping_add(start as usize) as *const u8, locked[LOCK_BITS] as *mut u8, size as usize);
@@ -940,8 +943,8 @@ pub unsafe fn source_data_copy_data_to_surface(pixel_data: usize, level: u32, su
     surface_unlock_rect(surface);
 }
 
-/// 0x6C0050 `NiDX8SourceTextureData::Update`: when the pixel data or its palette changed,
-/// every level goes to the device texture again.
+/// 0x6C0050 `NiDX8SourceTextureData::Update`: when the pixel data or its palette changed, it
+/// copies every level to the device texture again.
 pub unsafe fn source_data_update(this: usize) {
     crate::shadow::touch(&source_data_update_port::STATE);
     let pixel_data: usize = rd(rd::<usize>(this, SD::vtbl_sgTexture), ST::pixelData);
@@ -996,7 +999,7 @@ pub unsafe fn source_data_update(this: usize) {
         }
     }
     if converted != 0 {
-        // A smart pointer takes the data and lets it go.
+        // A smart pointer takes the data and then releases it.
         let count = rd::<u32>(converted, REF_COUNT).wrapping_add(1);
         wr(converted, REF_COUNT, count);
         wr(converted, REF_COUNT, count.wrapping_sub(1));
@@ -1032,8 +1035,8 @@ pub unsafe fn source_data_set_palette(this: usize, palette: usize) -> u8 {
 
 // ---- NiDX8BltSourceData
 
-/// 0x6B68F0 `NiDX8BltSourceData::CreateSurface`: an image surface with the first level of
-/// the pixel data. Returns 1 when it was made.
+/// 0x6B68F0 `NiDX8BltSourceData::CreateSurface`: makes an image surface with the first level of
+/// the pixel data. Returns 1 when it made the surface.
 pub unsafe fn blt_data_create_surface(this: usize, pixel_data: usize, pixel_format: usize) -> u8 {
     crate::shadow::touch(&blt_data_create_surface_port::STATE);
     let slot = this + BD_SURFACE;
@@ -1071,8 +1074,8 @@ pub unsafe fn blt_data_create_surface(this: usize, pixel_data: usize, pixel_form
     1
 }
 
-/// 0x6B6690 `NiDX8BltSourceData::Create`: the renderer data of a blit source, at the end of
-/// its list. Returns it, or 0 when there is no pixel data.
+/// 0x6B6690 `NiDX8BltSourceData::Create`: makes the renderer data of a blit source and puts it
+/// at the end of its list. Returns the data, or 0 when there is no pixel data.
 pub unsafe fn blt_data_create(blt_source: usize, renderer: usize) -> usize {
     crate::shadow::touch(&blt_data_create_port::STATE);
     let filename: usize = rd(blt_source, BLT_FILENAME);
@@ -1203,13 +1206,13 @@ pub unsafe fn renderer_purge_texture(_this: usize, texture: usize) -> u8 {
     1
 }
 
-/// 0x6AC400 `NiDX8Renderer::GetTextureMemoryStats`: not implemented in the game.
+/// 0x6AC400 `NiDX8Renderer::GetTextureMemoryStats`. The game does not implement it.
 pub unsafe fn renderer_get_texture_memory_stats(_this: usize, _a1: u32, _a2: u32) -> u8 {
     crate::shadow::touch(&renderer_get_texture_memory_stats_port::STATE);
     0
 }
 
-/// 0x6AC410 `NiDX8Renderer::GetTextureStats_maybe`: not implemented in the game.
+/// 0x6AC410 `NiDX8Renderer::GetTextureStats_maybe`. The game does not implement it.
 pub unsafe fn renderer_get_texture_stats(_this: usize, _a1: u32, _a2: u32, _a3: u32, _a4: u32, _a5: u32) -> u8 {
     crate::shadow::touch(&renderer_get_texture_stats_port::STATE);
     0
@@ -1221,14 +1224,14 @@ pub unsafe fn renderer_find_closest_pixel_format(this: usize, prefs: usize) -> u
     find_closest_pixel_format(this, prefs, this + R::arrayArrayTextureFormats)
 }
 
-// ---- the memory a call may write
+// ---- the memory a call can write
 
-/// Whether a hash map has a node.
+/// Returns true when a hash map has a node.
 unsafe fn map_has_nodes(map: usize) -> bool {
     map_first(map) != 0
 }
 
-/// `clearHashMap`: the map and its bucket array. The nodes are freed.
+/// `clearHashMap`: the map and its bucket array. The call frees the nodes.
 unsafe fn clear_hash_map_regions(set: &mut Regions, map: usize) {
     if map_has_nodes(map) {
         set.allocates();
@@ -1237,9 +1240,10 @@ unsafe fn clear_hash_map_regions(set: &mut Regions, map: usize) {
     set.add(rd(map, HM::arrayBuckets), rd::<u32>(map, HM::bucketCount) as usize * 4);
 }
 
-/// The destructor of a hash map frees the bucket array. With nodes in it the Rust run would
-/// leave an empty array to the engine run and the array cannot be put back as a region after
-/// it is freed, so that call is skipped. A map that is freed itself gets no region.
+/// The destructor of a hash map frees the bucket array. When the map has nodes, the Rust run
+/// leaves an empty array to the engine run. The shadow test cannot put the array back as a
+/// region after the free. Thus this function skips that call. A map that the call frees gets
+/// no region.
 unsafe fn hash_map_dtor_regions(set: &mut Regions, map: usize, freed: bool) {
     if map_has_nodes(map) {
         set.skip();
@@ -1251,8 +1255,8 @@ unsafe fn hash_map_dtor_regions(set: &mut Regions, map: usize, freed: bool) {
     }
 }
 
-/// `Recreate`: skipped when a value is destroyed (a device object is released and an engine
-/// destructor runs). Otherwise the nodes are freed.
+/// `Recreate`: skips the call when the call destroys a value. Then the call releases a device
+/// object and an engine destructor runs. If not, the call frees the nodes.
 unsafe fn manager_recreate_regions(set: &mut Regions, this: usize) {
     let map = this + TM::hashMap_10;
     let buckets: usize = rd(map, HM::arrayBuckets);
@@ -1269,7 +1273,7 @@ unsafe fn manager_recreate_regions(set: &mut Regions, this: usize) {
     clear_hash_map_regions(set, map);
 }
 
-/// Whether `Update` gets past its checks to the conversion and the upload.
+/// Returns true when `Update` passes its checks and does the conversion and the upload.
 unsafe fn update_uploads(data: usize) -> bool {
     let texture: usize = rd(data, SD::vtbl_sgTexture);
     let pixel_data: usize = rd(texture, ST::pixelData);
@@ -1283,8 +1287,9 @@ unsafe fn update_uploads(data: usize) -> bool {
     rd::<u32>(pixel_data, PD::revisionID) != rd::<u32>(data, SD::sourceRevisionID)
 }
 
-/// `Update`: skipped when it uploads (the image converter runs, surfaces are locked, the
-/// converted data may be deleted). Otherwise it writes at most its palette revision.
+/// `Update`: skips the call when the call uploads. Then the image converter runs, and the call
+/// locks surfaces and can delete the converted data. If not, the call writes its palette
+/// revision at most.
 unsafe fn source_data_update_regions(set: &mut Regions, this: usize) {
     if update_uploads(this) {
         set.skip();
@@ -1293,9 +1298,9 @@ unsafe fn source_data_update_regions(set: &mut Regions, this: usize) {
     set.add(this, SD::SIZE);
 }
 
-/// `PrepareTextureForRendering`: skipped when the renderer data is made (file access, a
-/// device texture, `LockRect`), when the data is of a class whose `Update` is not the one
-/// of this module, and when `Update` uploads.
+/// `PrepareTextureForRendering`: skips the call when the call makes the renderer data. That
+/// needs file access, a device texture and `LockRect`. Also skips the call when the data is of
+/// a class whose `Update` is not the one of this module, and when `Update` uploads.
 unsafe fn manager_prepare_regions(set: &mut Regions, texture: usize, out_created: usize, out_mipmapped: usize) {
     set.add(out_created, 1);
     set.add(out_mipmapped, 1);
@@ -1321,14 +1326,14 @@ unsafe fn manager_prepare_regions(set: &mut Regions, texture: usize, out_created
     set.add(data, SD::SIZE);
 }
 
-/// Skipped when the texture has no renderer data: it would be made in the call.
+/// Skips the call when the texture has no renderer data: the call makes the data.
 unsafe fn skip_without_renderer_data(set: &mut Regions, texture: usize) {
     if texture != 0 && rd::<usize>(texture, T::rendererData) == 0 {
         set.skip();
     }
 }
 
-/// `ClearTextureData`: skipped when a texture has renderer data, because its virtual
+/// `ClearTextureData`: skips the call when a texture has renderer data, because its virtual
 /// deleting destructor runs.
 unsafe fn clear_texture_data_regions(set: &mut Regions) {
     let mut texture = eng::texture_list_head();
@@ -1341,8 +1346,8 @@ unsafe fn clear_texture_data_regions(set: &mut Regions) {
     }
 }
 
-/// The deleting destructor of the base class: skipped when linked data is deleted through
-/// its vtable. The object itself is freed with flag 1 and gets no region then.
+/// The deleting destructor of the base class: skips the call when the call deletes linked data
+/// through its vtable. With flag 1 the call frees the object, and the object gets no region.
 unsafe fn texture_data_deleting_dtor_regions(set: &mut Regions, this: usize, flags: u32) {
     if rd::<usize>(this, TD::vtbl_linkedData) != 0 {
         set.skip();
@@ -1355,8 +1360,8 @@ unsafe fn texture_data_deleting_dtor_regions(set: &mut Regions, this: usize, fla
     }
 }
 
-/// The destructor of source texture data: skipped when it releases the device texture, when
-/// the palette loses its last reference, and when linked data is deleted.
+/// The destructor of source texture data: skips the call when the call releases the device
+/// texture or deletes linked data. Also skips the call when the palette loses its last reference.
 unsafe fn source_data_dtor_regions(set: &mut Regions, this: usize, freed: bool) {
     let palette: usize = rd(this, SD::palette);
     if rd::<usize>(this, SD::d3dTexture) != 0
@@ -1374,7 +1379,7 @@ unsafe fn source_data_dtor_regions(set: &mut Regions, this: usize, freed: bool) 
     set.add(palette, 8);
 }
 
-/// `setPalette`: skipped when the old palette loses its last reference.
+/// `setPalette`: skips the call when the old palette loses its last reference.
 unsafe fn source_data_set_palette_regions(set: &mut Regions, this: usize, palette: usize) {
     set.add(this, SD::SIZE);
     if palette == 0 {
@@ -1392,14 +1397,15 @@ unsafe fn source_data_set_palette_regions(set: &mut Regions, this: usize, palett
 }
 
 /// `NiDX8BltSourceData::Create` reads a file or converts pixel data, makes an image surface
-/// and locks it. Only the call that finds no pixel data can run twice; it writes nothing.
+/// and locks it. Only the call that finds no pixel data can run twice. That call writes nothing.
 unsafe fn blt_data_create_regions(set: &mut Regions, blt_source: usize) {
     if rd::<usize>(blt_source, BLT_FILENAME) != 0 || rd::<usize>(blt_source, BLT_PIXEL_DATA) != 0 {
         set.skip();
     }
 }
 
-/// The destructor of blit data: skipped when it releases the surface or deletes linked data.
+/// The destructor of blit data: skips the call when the call releases the surface or deletes
+/// linked data.
 unsafe fn blt_data_dtor_regions(set: &mut Regions, this: usize, freed: bool) {
     if rd::<usize>(this, BD_SURFACE) != 0 || rd::<usize>(this, BD_LINKED) != 0 {
         set.skip();
@@ -1414,21 +1420,21 @@ unsafe fn blt_data_dtor_regions(set: &mut Regions, this: usize, freed: bool) {
 
 // ---- the ports
 
-// Skipped: three bucket arrays are made and the device gets a reference.
+// A skip: the call makes three bucket arrays and the device gets a reference.
 port_thiscall!(manager_ctor_port, 0x6BC100, "NiDX8TextureManager::ctor",
     fn(this, renderer: usize) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
     rust = manager_ctor);
 
-// Skipped: the device is released and the object goes.
+// A skip: the call releases the device and destroys the object.
 port_thiscall!(manager_deleting_dtor_port, 0x6BC310, "NiDX8TextureManager::deleting_dtor",
     fn(this, flags: u32) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
     rust = manager_deleting_dtor);
 
-// Skipped: the device is released and the bucket arrays are freed.
+// A skip: the call releases the device and frees the bucket arrays.
 port_thiscall!(manager_dtor_port, 0x6BC330, "NiDX8TextureManager::dtor",
     fn(this) -> (),
     compare_eax = false,
@@ -1561,7 +1567,7 @@ port_thiscall!(source_data_is_loaded_port, 0x6BFF30, "NiDX8SourceTextureData::Is
     regions = |set| (),
     rust = source_data_is_loaded);
 
-// Skipped: the surface is locked.
+// A skip: the call locks the surface.
 port_cdecl!(source_data_copy_data_to_surface_port, 0x6BFF40, "NiDX8SourceTextureData::CopyDataToSurface",
     fn(pixel_data: usize, level: u32, surface: usize) -> (),
     compare_eax = false,
@@ -1598,7 +1604,7 @@ port_thiscall!(blt_data_dtor_port, 0x6B6810, "NiDX8BltSourceData::dtor",
     regions = |set| blt_data_dtor_regions(set, this, false),
     rust = blt_data_dtor);
 
-// Skipped: an image surface is made and locked.
+// A skip: the call makes an image surface and locks it.
 port_thiscall!(blt_data_create_surface_port, 0x6B68F0, "NiDX8BltSourceData::CreateSurface",
     fn(this, pixel_data: usize, pixel_format: usize) -> u8,
     compare_eax = true,
@@ -1629,7 +1635,7 @@ port_thiscall!(renderer_purge_all_textures_port, 0x6AC390, "NiDX8Renderer::Purge
     regions = |set| clear_texture_data_regions(set),
     rust = renderer_purge_all_textures);
 
-// Skipped when the texture has renderer data: its virtual deleting destructor runs.
+// A skip when the texture has renderer data: its virtual deleting destructor runs.
 port_thiscall!(renderer_purge_texture_port, 0x6AC3A0, "NiDX8Renderer::PurgeTexture",
     fn(this, texture: usize) -> u8,
     compare_eax = true,
@@ -1704,7 +1710,7 @@ pub(crate) mod tests {
     use super::*;
 
     thread_local! {
-        /// What the fakes saw: (kind, value).
+        /// What the fake functions received: (kind, value).
         static NOTES: RefCell<Vec<(u32, u32)>> = const { RefCell::new(Vec::new()) };
     }
 
@@ -1716,7 +1722,7 @@ pub(crate) mod tests {
         NOTES.with(|n| core::mem::take(&mut *n.borrow_mut()))
     }
 
-    /// A leaked block of zeroed words; returns its address.
+    /// A leaked block of zeroed words. Returns its address.
     fn block(words: usize) -> usize {
         Box::leak(vec![0u32; words].into_boxed_slice()).as_mut_ptr() as usize
     }
@@ -1734,10 +1740,10 @@ pub(crate) mod tests {
         object
     }
 
-    /// The fake image converter says yes when the first word of the wanted format is not 0.
+    /// The fake image converter returns true when the first word of the wanted format is not 0.
     extern "thiscall" fn can_convert(_this: usize, _source: usize, dest: usize) -> u32 {
         note(0xCA, dest as u32);
-        // Only the low byte is the answer.
+        // Only the low byte is the result.
         0xAB00 | (unsafe { rd::<u32>(dest, 0) } != 0) as u32
     }
 
@@ -1746,7 +1752,8 @@ pub(crate) mod tests {
         *CONVERTER.get_or_init(|| object(1, &[(VT_CONVERTER_CAN_CONVERT, can_convert as *const () as usize)]))
     }
 
-    /// A list of 14 formats; `usable` are the ones the converter can make, `present` exist.
+    /// A list of 14 formats. The converter can make the formats in `usable`. The formats in
+    /// `present` exist.
     fn format_list(present: &[usize], usable: &[usize]) -> (usize, [usize; 14]) {
         let list = block(14);
         let mut formats = [0usize; 14];
@@ -1778,7 +1785,7 @@ pub(crate) mod tests {
         assert_eq!(closest(0, 3, &all), Some(6));
         assert_eq!(closest(0, 1, &all), Some(7));
         assert_eq!(closest(0, 2, &all), Some(7));
-        // Without them, the compressed ones, then the 16-bit order.
+        // Without them: the compressed formats, then the 16-bit order.
         assert_eq!(closest(0, 0, &[0, 1, 2, 3, 4, 5, 8, 9]), Some(8));
         assert_eq!(closest(0, 2, &[0, 1, 2, 3, 4, 5, 8, 9]), Some(9));
         assert_eq!(closest(0, 2, &[0, 1, 2, 3, 4, 5, 8]), Some(4));
@@ -1794,7 +1801,7 @@ pub(crate) mod tests {
         assert_eq!(closest(1, 2, &all), Some(4));
         assert_eq!(closest(1, 2, &[3, 5]), Some(5));
         assert_eq!(closest(1, 3, &all), None);
-        // Layout 2, and 5 which stands for it.
+        // Layout 2, and layout 5 that becomes layout 2.
         assert_eq!(closest(2, 0, &all), Some(2));
         assert_eq!(closest(5, 0, &[0, 1, 3, 4, 5]), Some(5));
         assert_eq!(closest(2, 0, &[0, 1, 3, 4]), Some(1));
@@ -1827,7 +1834,7 @@ pub(crate) mod tests {
         assert_eq!(matching(2, 1, 0, &all, &[3]), (Some(3), vec![2, 0, 1, 5, 3]));
         assert_eq!(matching(4, 0, 0, &all, &[4]), (Some(4), vec![2, 5, 1, 0, 3, 4]));
         assert_eq!(matching(4, 0, 0, &all, &[]), (None, vec![2, 5, 1, 0, 3, 4]));
-        // Compressed sources keep their format unless a layout is forced.
+        // Compressed sources keep their format unless the preferences force a layout.
         assert_eq!(matching(6, 0, 0, &all, &[8]), (Some(8), vec![8]));
         assert_eq!(matching(7, 0, 0, &all, &[9]), (Some(9), vec![9]));
         assert_eq!(matching(8, 0, 0, &all, &[10]), (Some(10), vec![10]));
@@ -1865,7 +1872,7 @@ pub(crate) mod tests {
             assert_eq!(rd::<[u32; 7]>(d, SD::format_extraData), [0; 7]);
             assert_eq!(rd::<u8>(d, SD::bMipMap), 0);
             assert_eq!(rd::<[u32; 5]>(d, SD::formattedSize), [0; 5]);
-            // The constructor leaves the padding and the unnamed member alone.
+            // The constructor does not write the padding and the unnamed member.
             assert_eq!(rd::<u32>(d, SD::field_C), 0xEEEE_EEEE);
             assert_eq!(rd::<u8>(d, SD::pad_51), 0xEE);
 
@@ -1910,7 +1917,7 @@ pub(crate) mod tests {
             wr::<u32>(new, PALETTE_REVISION, 10);
             assert_eq!(source_data_set_palette(d, new), 1);
             assert_eq!(rd::<u32>(new, REF_COUNT), 2);
-            // The last reference to the old palette deletes it.
+            // When the old palette loses its last reference, the port deletes the palette.
             assert_eq!(source_data_set_palette(d, old), 1);
             assert_eq!((rd::<u32>(old, REF_COUNT), rd::<u32>(new, REF_COUNT)), (2, 1));
             wr::<u32>(old, REF_COUNT, 1);
@@ -2049,23 +2056,23 @@ pub(crate) mod tests {
             assert_eq!(notes(), vec![(0x10C, 0), (0x0101, 0)]);
             target
         };
-        // The pitch is wider than a row: row by row, the gap stays.
+        // The pitch is larger than a row: the port copies each row and does not write the gap.
         let target = run(0, 0, 16, 2);
         assert_eq!(&target[..9], &pixels[..9]);
         assert_eq!(&target[9..16], &[0; 7]);
         assert_eq!(&target[16..25], &pixels[9..18]);
         assert_eq!(&target[25..], &[0; 15]);
-        // The pitch is a row: the whole level at once, whatever the height says.
+        // The pitch is equal to a row: the port copies the full level as one block, for any height.
         let target = run(0, 0, 9, 0);
         assert_eq!(&target[..18], &pixels[..18]);
         assert_eq!(&target[18..], &[0; 22]);
-        // Compressed data: the whole level at once, whatever the pitch.
+        // Compressed data: the port copies the full level as one block, for any pitch.
         for format in [6, 7, 8] {
             let target = run(format, 1, 16, 1);
             assert_eq!(&target[..3], &pixels[18..21]);
             assert_eq!(&target[3..], &[0; 37]);
         }
-        // The second level row by row.
+        // The second level, one row at a time.
         let target = run(5, 1, 4, 1);
         assert_eq!(&target[..4], &[19, 20, 21, 0]);
     }
@@ -2161,7 +2168,7 @@ pub(crate) mod tests {
             assert_eq!(flags, [0, 0]);
             assert!(notes().is_empty());
 
-            // No device texture yet: the update makes it, static or not.
+            // No device texture: the update makes it, also for a static texture.
             wr::<u32>(data, SD::d3dTexture, 0);
             assert_eq!(manager_prepare_texture_for_rendering(manager, texture, created, mipmapped), 0);
             assert_eq!(flags, [1, 0]);

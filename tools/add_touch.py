@@ -1,12 +1,12 @@
 """Puts the execution counter at the top of each port function.
 
-A port function is called through its detour, or directly from another port. Only the first
-kind is counted by the detour, so each port function counts itself:
+A call of a port function comes through its detour, or directly from another port. The detour
+counts only the first kind, so each port function counts itself:
 
     crate::shadow::touch(&some_port::STATE);
 
-This script adds that line to every function named by `rust = ...` in a port macro that does
-not have it yet. Run it after adding ports.
+This script adds that line to every function that a port macro names with `rust = ...`, when
+the function does not have the line. Run it after you add ports.
 
     python tools/add_touch.py
 """
@@ -37,7 +37,7 @@ def main():
             line = "\n    crate::shadow::touch(&%s::STATE);" % port
             if text[brace + 1:brace + 1 + len(line)] == line:
                 continue
-            # A generic function has `<` before its `(`; its body still starts at the first "{\n".
+            # A generic function has `<` before its `(`. Its body still starts at the first "{\n".
             text = text[:brace + 1] + line + text[brace + 1:]
             added += 1
         open(path, "w", encoding="utf-8", newline="\n").write(text)

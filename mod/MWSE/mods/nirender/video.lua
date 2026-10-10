@@ -1,6 +1,7 @@
 ---@diagnostic disable
--- The in-game half of tools/run_video.py: holds one view in one mode for a recording.
--- The camera turns slowly, the same way in every run, so two clips can be put side by side.
+-- The in-game part of tools/run_video.py. It holds one view in one mode for a recording.
+-- The camera turns slowly, the same way in every run. Thus a person can put two clips next
+-- to each other.
 
 return function(nirender, spec)
     local function say(fmt, ...)
@@ -22,7 +23,8 @@ return function(nirender, spec)
     event.register("enterFrame", function()
         local now = os.clock()
         if turning then
-            -- A function of the clock, not of the frame count: the same turn at any frame rate.
+            -- The angle is a function of the clock, not of the frame count. Thus the turn is
+            -- the same at any frame rate.
             local orientation = tes3.player.orientation:copy()
             orientation.z = turning.start + (now - turning.at) * (spec.turnRate or 0.12)
             tes3.player.orientation = orientation
@@ -48,7 +50,7 @@ return function(nirender, spec)
             tes3.runLegacyScript({ command = string.format('CenterOnCell "%s"', spec.cell) })
             after(spec.settleSeconds or 8, function()
                 nirender.setMode("*", spec.mode)
-                -- No HUD in the clip.
+                -- This removes the HUD from the clip.
                 tes3.runLegacyScript({ command = "ToggleMenus" })
                 turning = { start = tes3.player.orientation.z, at = os.clock() }
                 say("view ready in '%s', mode %s", tes3.player.cell.editorName, spec.mode)

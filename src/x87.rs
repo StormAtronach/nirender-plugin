@@ -1,11 +1,12 @@
 //! Float sequences of the game code that keep intermediate results on the x87 stack.
 //!
-//! The result of such a sequence depends on the precision the FPU control word selects, so
-//! the port runs the same instructions instead of doing the arithmetic in SSE.
+//! The result of such a sequence depends on the precision that the FPU control word selects.
+//! So the port runs the same instructions and does not do the arithmetic in SSE.
 
 use core::arch::asm;
 
-/// The x87 control word. Bits 8-9 are the precision: 0 = 24 bits, 2 = 53 bits, 3 = 64 bits.
+/// The x87 control word. Bits 8 and 9 give the precision: 0 is 24 bits, 2 is 53 bits and 3
+/// is 64 bits.
 pub fn control_word() -> u16 {
     let mut word: u16 = 0;
     unsafe {

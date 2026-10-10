@@ -1,6 +1,6 @@
-//! The `NiRenderer` base class, `NiRendererSpecificProperty`, the construction and destruction
-//! of `NiDX8RenderState` and `NiDX8MaterialManager`, and the deleting destructors and jump
-//! stubs of the classes the other modules port.
+//! This module ports the `NiRenderer` base class and `NiRendererSpecificProperty`. It ports the
+//! construction and destruction of `NiDX8RenderState` and `NiDX8MaterialManager`. It also ports
+//! the deleting destructors and jump stubs of the classes that the other modules port.
 
 use core::arch::asm;
 
@@ -23,7 +23,7 @@ const VTBL_NI_REF_OBJECT: usize = 0x7469B8;
 const VTBL_NI_ALPHA_PROPERTY: usize = 0x7465A8;
 const VTBL_NI_RENDERER: usize = 0x750F58;
 const VTBL_RENDERER_SPECIFIC_PROPERTY: usize = 0x750410;
-/// The vtable `CreateFromStream` gives the 12-byte link record it makes.
+/// The vtable that `CreateFromStream` gives to the 12-byte link record that it makes.
 const VTBL_STREAM_LINK_DATA: usize = 0x750444;
 const VTBL_RENDER_DATA_7: usize = 0x74B6E0;
 const VTBL_RENDER_DATA_BASE: usize = 0x74B6E8;
@@ -32,7 +32,7 @@ const VTBL_MATERIAL_MANAGER: usize = 0x74F82C;
 /// The vtable of the hash map inside the material manager.
 const VTBL_MATERIAL_MAP: usize = 0x74F830;
 
-/// `data_NiRTTI_NiRenderer`; the first member is the name.
+/// `data_NiRTTI_NiRenderer`. The first member is the name.
 const RTTI_NI_RENDERER: usize = 0x7DEA9C;
 /// `data_NiRTTI_NiRendererSpecificProperty`
 const RTTI_RENDERER_SPECIFIC_PROPERTY: usize = 0x7DE2F0;
@@ -48,7 +48,7 @@ const RENDERER_LIST_TAIL: usize = 0x7DEA5C;
 const RENDERER_LIST_FREE: usize = 0x7DEA60;
 const RENDERER_LIST_BLOCKS: usize = 0x7DEA64;
 const RENDERER_LIST_BLOCK_NODES: usize = 0x7DEA68;
-/// Count, head, tail, free nodes and node blocks: what the constructor and destructor write.
+/// The constructor and the destructor write the count, head, tail, free nodes and node blocks.
 const RENDERER_LIST_SIZE: usize = 0x14;
 /// A node of the list: renderer, next, previous.
 const NODE_SIZE: usize = 12;
@@ -62,9 +62,10 @@ const RENDER_STATE_DEFAULTS: usize = 0x7C3858;
 const DEFAULT_ZENABLE: usize = 0x7C3874;
 /// The default of D3DRS_SOFTWAREVERTEXPROCESSING (153) in that table.
 const DEFAULT_SOFTWARE_VERTEX_PROCESSING: usize = 0x7C3ABC;
-/// The text the render state hands to the (empty) debug output when the device has W fog.
+/// The text that the render state gives to the debug output when the device has W fog. The
+/// debug output is an empty function.
 const W_FOG_NOTE: usize = 0x7C3CD8;
-/// The material the material manager selects when it starts.
+/// The material that the material manager selects when it starts.
 const DEFAULT_MATERIAL: usize = 0x7DE29C;
 /// 1.0f
 const F_ONE: usize = 0x74BFDC;
@@ -113,7 +114,7 @@ const ALPHA_PROPERTY_SIZE: usize = 0x1C;
 const ALPHA_PROPERTY_FLAGS: usize = 0x14;
 const ALPHA_PROPERTY_TEST_REF: usize = 0x18;
 
-/// `NiDX8ConfigurableTexturePipeline`: the texture pass the shader functions go to.
+/// `NiDX8ConfigurableTexturePipeline`: the texture pass that the shader functions go to.
 const PIPELINE_TEXTURE_PASS: usize = CTP::field_8;
 
 // ---------------------------------------------------------------------------------------------
@@ -163,7 +164,7 @@ mod eng {
     pub unsafe fn ni_pointer_assign(slot: usize, object: usize) {
         transmute::<usize, This1>(0x6EA9C0)(slot, object as u32);
     }
-    /// 0x6F5580: takes the node at `*node` out of the renderer list and puts it with the free nodes.
+    /// 0x6F5580. It removes the node at `*node` from the renderer list and puts it with the free nodes.
     pub unsafe fn renderer_list_remove(list: usize, node: *mut usize) {
         transmute::<usize, This1>(0x6F5580)(list, node as u32);
     }
@@ -175,7 +176,7 @@ mod eng {
     pub unsafe fn ni_property_add_viewer_strings(this: usize, strings: usize) {
         transmute::<usize, This1>(0x6E96A0)(this, strings as u32);
     }
-    /// 0x6FCFD0 `NiViewer::createSectionText`: a new string "--- name ---".
+    /// 0x6FCFD0 `NiViewer::createSectionText`. It makes a new string "--- name ---".
     pub unsafe fn viewer_section_text(name: usize) -> usize {
         transmute::<usize, unsafe extern "C" fn(usize) -> usize>(0x6FCFD0)(name)
     }
@@ -191,13 +192,13 @@ mod eng {
     pub unsafe fn ni_property_is_equal(this: usize, other: usize) -> u32 {
         transmute::<usize, This1>(0x6E9690)(this, other as u32)
     }
-    /// 0x6E9A00: the debug output of a release build, an empty function.
+    /// 0x6E9A00. The debug output of a release build. It is an empty function.
     pub unsafe fn debug_output(text: usize) {
         transmute::<usize, unsafe extern "C" fn(usize)>(0x6E9A00)(text)
     }
 }
 
-/// Stand-ins for the unit tests, which run without the game.
+/// Replacements for the unit tests. The unit tests run without the game.
 #[cfg(test)]
 mod eng {
     pub unsafe fn operator_new(size: usize) -> usize {
@@ -252,14 +253,14 @@ unsafe fn vcall2(object: usize, slot: usize, a: u32, b: u32) -> u32 {
     core::mem::transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32) -> u32>(rd(vtable, slot))(object, a, b)
 }
 
-/// A COM method without arguments, through the vtable of the object.
+/// This function calls a COM method that has no arguments, through the vtable of the object.
 unsafe fn com_call0(object: usize, slot: usize) -> u32 {
     let vtable: usize = rd(object, 0);
     core::mem::transmute::<usize, unsafe extern "system" fn(usize) -> u32>(rd(vtable, slot))(object)
 }
 
-/// The release the game code has inline: one reference less, and the virtual deleting
-/// destructor when it was the last.
+/// The release that the game code has inline. It decreases the reference count by 1. It calls
+/// the virtual deleting destructor when the reference was the last.
 unsafe fn release(object: usize) {
     let count = rd::<u32>(object, REF_COUNT).wrapping_sub(1);
     wr(object, REF_COUNT, count);
@@ -268,7 +269,7 @@ unsafe fn release(object: usize) {
     }
 }
 
-/// The assignment to a smart pointer the game code has inline.
+/// The assignment to a smart pointer that the game code has inline.
 unsafe fn pointer_assign(slot: usize, object: usize) {
     let now: usize = rd(slot, 0);
     if now != object {
@@ -282,8 +283,8 @@ unsafe fn pointer_assign(slot: usize, object: usize) {
     }
 }
 
-/// A destructor and then `operator delete` when bit 0 of `flags` is set: the body of every
-/// deleting destructor. Returns `this`, as the game code does.
+/// The body of every deleting destructor. It calls a destructor. Then it calls `operator delete`
+/// when bit 0 of `flags` is set. It returns `this`, as the game code does.
 unsafe fn deleting(this: usize, flags: u8, dtor: unsafe fn(usize)) -> usize {
     dtor(this);
     if flags & 1 != 0 {
@@ -292,8 +293,8 @@ unsafe fn deleting(this: usize, flags: u8, dtor: unsafe fn(usize)) -> usize {
     this
 }
 
-/// The regions of a release of `object` by the inline code. False when the release deletes
-/// the object.
+/// The regions of a release of `object` by the inline code. The function returns false when
+/// the release deletes the object.
 unsafe fn release_regions(set: &mut Regions, object: usize) -> bool {
     if object == 0 {
         return true;
@@ -305,7 +306,7 @@ unsafe fn release_regions(set: &mut Regions, object: usize) -> bool {
     true
 }
 
-/// `TArray<void*>::Add` as the game code has it inline: the element goes to `endIndex`, and the
+/// `TArray<void*>::Add` as the game code has it inline. The element goes to `endIndex`. The
 /// storage grows by `growByCount` when it is full.
 unsafe fn array_add(array: usize, element: usize) {
     let index: u32 = rd(array, ARRAY_END_INDEX);
@@ -370,8 +371,8 @@ unsafe fn array_add(array: usize, element: usize) {
     wr(rd::<usize>(array, ARRAY_STORAGE), index as usize * 4, element);
 }
 
-/// The regions of `array_add` and of the engine functions that add to the same array: the
-/// array and its storage. A new storage block needs none.
+/// The regions of `array_add` and of the engine functions that add to the same array. They are
+/// the array and its storage. A new storage block needs no region.
 unsafe fn array_regions(set: &mut Regions, array: usize) {
     set.add(array, ARRAY_SIZE);
     set.add(rd(array, ARRAY_STORAGE), rd::<u32>(array, ARRAY_STORAGE_COUNT) as usize * 4);
@@ -382,7 +383,7 @@ unsafe fn array_regions(set: &mut Regions, array: usize) {
 // NiRenderer
 // ---------------------------------------------------------------------------------------------
 
-/// 0x6F4E30 `NiRenderer::ctor`. Puts the renderer at the end of the list of renderers.
+/// 0x6F4E30 `NiRenderer::ctor`. The port puts the renderer at the end of the list of renderers.
 pub unsafe fn renderer_ctor(this: usize) -> usize {
     crate::shadow::touch(&renderer_ctor_port::STATE);
     eng::ni_object_ctor(this);
@@ -398,7 +399,7 @@ pub unsafe fn renderer_ctor(this: usize) -> usize {
 
     let mut node: usize = rd(RENDERER_LIST_FREE, 0);
     if node == 0 {
-        // No free node: a new block of them, chained through `next`.
+        // There is no free node. The port makes a new block of nodes and links them through `next`.
         let block = eng::operator_new(8);
         if block != 0 {
             let count: u32 = rd(RENDERER_LIST_BLOCK_NODES, 0);
@@ -422,7 +423,7 @@ pub unsafe fn renderer_ctor(this: usize) -> usize {
             let nodes: usize = rd(block, 4);
             wr::<usize>(nodes.wrapping_add(bytes as usize).wrapping_sub(8), 0, 0);
         }
-        // The game code does not test the block again: a failed allocation faults here.
+        // The game code does not test the block again. A failed allocation causes a fault here.
         wr(block, 0, rd::<usize>(RENDERER_LIST_BLOCKS, 0));
         wr(RENDERER_LIST_BLOCKS, 0, block);
         node = rd(block, 4);
@@ -449,7 +450,7 @@ unsafe fn renderer_ctor_regions(set: &mut Regions, this: usize) {
     set.add(RENDERER_LIST, RENDERER_LIST_SIZE);
     let free: usize = rd(RENDERER_LIST_FREE, 0);
     if free == 0 {
-        // A block of nodes is made in this call.
+        // This call makes a block of nodes.
         set.allocates();
     }
     set.add(free, NODE_SIZE);
@@ -487,9 +488,10 @@ pub unsafe fn renderer_dtor(this: usize) {
     eng::ni_object_dtor(this);
 }
 
-/// The destructor writes the renderer, the list and the nodes next to the one it takes out,
-/// and the reference counts of the three objects the renderer holds. The call is not compared
-/// when one of them is deleted, or when that is more memory than a comparison can hold.
+/// The destructor writes the renderer, the list and the nodes adjacent to the node that it
+/// removes. It also writes the reference counts of the three objects that the renderer holds.
+/// The shadow test does not compare the call when the destructor deletes one of them. It also
+/// does not compare the call when that is more memory than a comparison can hold.
 unsafe fn renderer_dtor_regions(set: &mut Regions, this: usize) {
     let mut blocks = 3;
     set.add(this, R::SIZE);
@@ -524,7 +526,7 @@ pub unsafe fn renderer_deleting_dtor(this: usize, flags: u8) -> usize {
     deleting(this, flags, renderer_dtor)
 }
 
-/// 0x6F5070 `NiRenderer::RegisterObject`: hands the geometry to the accumulator.
+/// 0x6F5070 `NiRenderer::RegisterObject`. The port gives the geometry to the accumulator.
 pub unsafe fn renderer_register_object(this: usize, geometry: usize) -> u8 {
     crate::shadow::touch(&renderer_register_object_port::STATE);
     let accumulator: usize = rd(this, R::accumulator);
@@ -534,8 +536,8 @@ pub unsafe fn renderer_register_object(this: usize, geometry: usize) -> u8 {
     (vcall1(accumulator, SLOT_ACCUMULATOR_REGISTER_OBJECT, geometry as u32) as u8 != 0) as u8
 }
 
-/// Calls the virtual function at `slot` of every renderer in the list with `object`. The
-/// list ends at the first node without a renderer.
+/// This function calls the virtual function at `slot` of every renderer in the list with
+/// `object`. The list ends at the first node that has no renderer.
 unsafe fn for_each_renderer(slot: usize, object: usize) {
     let mut node: usize = rd(RENDERER_LIST_HEAD, 0);
     while node != 0 {
@@ -572,8 +574,8 @@ pub unsafe fn renderer_remove_material(material: usize) {
     for_each_renderer(SLOT_PURGE_MATERIAL, material);
 }
 
-/// The purge functions of a renderer free device objects and renderer data: with a renderer
-/// in the list the call is not compared.
+/// The purge functions of a renderer free device objects and renderer data. The shadow test
+/// does not compare the call when the list has a renderer.
 unsafe fn for_each_renderer_regions(set: &mut Regions) {
     if rd::<usize>(RENDERER_LIST_HEAD, 0) != 0 {
         set.skip();
@@ -581,8 +583,9 @@ unsafe fn for_each_renderer_regions(set: &mut Regions) {
 }
 
 /// The two divisions of `MapWindowPointToBufferPoint` (0x6F517F to 0x6F51B9), with the
-/// instructions of the game code: the unsigned point goes in as a 64-bit integer, the size of
-/// the buffer as a signed 32-bit one. Returns the bits of x / width and of one - y / height.
+/// instructions of the game code. The code loads the unsigned point as a 64-bit integer. It
+/// loads the size of the buffer as a signed 32-bit integer. The function returns the bits of
+/// `x / width` and of `one - y / height`.
 fn window_to_buffer(x: u32, width: u32, y: u32, height: u32, one: u32) -> (u32, u32) {
     let input: [u32; 7] = [x, 0, width, y, 0, height, one];
     let mut output = [0u32; 2];
@@ -604,7 +607,8 @@ fn window_to_buffer(x: u32, width: u32, y: u32, height: u32, one: u32) -> (u32, 
     (output[0], output[1])
 }
 
-/// 0x6F5150 `NiRenderer::MapWindowPointToBufferPoint`. Returns 0 when the back buffer has no size.
+/// 0x6F5150 `NiRenderer::MapWindowPointToBufferPoint`. The port returns 0 when the back buffer
+/// has no size.
 pub unsafe fn renderer_map_window_point_to_buffer_point(this: usize, x: u32, y: u32, out_x: usize, out_y: usize) -> u8 {
     crate::shadow::touch(&renderer_map_window_point_to_buffer_point_port::STATE);
     let width = vcall0(this, SLOT_GET_BACKBUFFER_WIDTH);
@@ -618,7 +622,7 @@ pub unsafe fn renderer_map_window_point_to_buffer_point(this: usize, x: u32, y: 
     1
 }
 
-/// The 1.0 the game code subtracts from.
+/// The 1.0 that the game code subtracts from.
 #[cfg(not(test))]
 unsafe fn map_one() -> u32 {
     rd(F_ONE, 0)
@@ -630,9 +634,9 @@ unsafe fn map_one() -> u32 {
     1.0f32.to_bits()
 }
 
-/// 0x6F51D0 `NiRenderer::renderFromClusterAccumulator`: displays a scene object without the
-/// accumulator, with the states of the object as the current states, and puts the accumulator
-/// and the states back.
+/// 0x6F51D0 `NiRenderer::renderFromClusterAccumulator`. The port displays a scene object
+/// without the accumulator. The states of the object are the current states for the display.
+/// Then the port puts the accumulator and the states back.
 pub unsafe fn renderer_render_from_cluster_accumulator(this: usize, camera: usize, scene_object: usize) {
     crate::shadow::touch(&renderer_render_from_cluster_accumulator_port::STATE);
     let saved_accumulator: usize = rd(this, R::accumulator);
@@ -650,7 +654,7 @@ pub unsafe fn renderer_render_from_cluster_accumulator(this: usize, camera: usiz
     if saved_effect != 0 {
         wr(saved_effect, REF_COUNT, rd::<u32>(saved_effect, REF_COUNT).wrapping_add(1));
     }
-    // The game code uses the stack slot of the argument for the smart pointer the object returns.
+    // The game code uses the stack slot of the argument for the smart pointer that the object returns.
     let mut result: usize = scene_object;
     let result_at = core::ptr::addr_of_mut!(result) as u32;
     let returned = vcall1(scene_object, SLOT_GET_EFFECT_STATE, result_at) as usize;
@@ -693,14 +697,14 @@ pub unsafe fn renderer_render_from_cluster_accumulator(this: usize, camera: usiz
     }
 }
 
-/// 0x6F5380 `NiRenderer::BeginBatch`: the states of the batch become the current states.
+/// 0x6F5380 `NiRenderer::BeginBatch`. The states of the batch become the current states.
 pub unsafe fn renderer_begin_batch(this: usize, property_state: usize, effect_state: usize) {
     crate::shadow::touch(&renderer_begin_batch_port::STATE);
     pointer_assign(this + R::currentPropertyState, property_state);
     pointer_assign(this + R::currentEffectState, effect_state);
 }
 
-/// The call is not compared when it deletes a state it replaces.
+/// The shadow test does not compare the call when the call deletes a state that it replaces.
 unsafe fn renderer_begin_batch_regions(set: &mut Regions, this: usize, property_state: usize, effect_state: usize) {
     set.add(this, R::SIZE);
     for (member, new) in [(R::currentPropertyState, property_state), (R::currentEffectState, effect_state)] {
@@ -729,7 +733,8 @@ pub unsafe fn renderer_get_rtti(_this: usize) -> usize {
     RTTI_NI_RENDERER
 }
 
-/// 0x6F5640 `NiRenderer::SetUseWBuffer`: 1 for "no W buffer", which is all the base class has.
+/// 0x6F5640 `NiRenderer::SetUseWBuffer`. The port returns 1 for "no W buffer". The base class
+/// has only "no W buffer".
 pub unsafe fn renderer_set_use_w_buffer(_this: usize, use_w_buffer: u8) -> u32 {
     crate::shadow::touch(&renderer_set_use_w_buffer_port::STATE);
     (use_w_buffer == 0) as u32
@@ -781,8 +786,8 @@ pub unsafe fn render_data_base_dtor(this: usize) {
     wr(this, 0, VTBL_RENDER_DATA_BASE);
 }
 
-/// 0x65F5A0 `NiRendererSpecificProperty::RenderData7::dtor`: lets go of the three objects, then
-/// goes over the three members again as their own destructors.
+/// 0x65F5A0 `NiRendererSpecificProperty::RenderData7::dtor`. The port releases the three
+/// objects. Then it does the three members again, as their own destructors.
 pub unsafe fn render_data_7_dtor(this: usize) {
     crate::shadow::touch(&render_data_7_dtor_port::STATE);
     wr(this, RD7::vtbl, VTBL_RENDER_DATA_7);
@@ -802,7 +807,7 @@ pub unsafe fn render_data_7_dtor(this: usize) {
     render_data_base_dtor(this);
 }
 
-/// The call is not compared when it deletes one of the three objects.
+/// The shadow test does not compare the call when the call deletes one of the three objects.
 unsafe fn render_data_7_dtor_regions(set: &mut Regions, this: usize) {
     set.add(this, RD7::SIZE);
     for member in [RD7::texturePass, RD7::field_8, RD7::field_C] {
@@ -824,7 +829,7 @@ pub unsafe fn render_data_base_deleting_dtor(this: usize, flags: u8) -> usize {
     deleting(this, flags, render_data_base_dtor)
 }
 
-/// What the constructor adds to a `NiObjectNET`.
+/// The writes that the constructor adds to a `NiObjectNET`.
 unsafe fn property_init(this: usize) {
     wr(this, RSP::vtbl, VTBL_RENDERER_SPECIFIC_PROPERTY);
     wr::<u16>(this, RSP::flags, 0);
@@ -855,8 +860,8 @@ pub unsafe fn property_dtor(this: usize) {
     eng::ni_object_net_dtor(this);
 }
 
-/// The call is not compared when it deletes the render data, the extra data or the
-/// controllers. The destructor of `NiObjectNET` frees the name.
+/// The shadow test does not compare the call when the call deletes the render data, the extra
+/// data or the controllers. The destructor of `NiObjectNET` frees the name.
 unsafe fn property_dtor_regions(set: &mut Regions, this: usize) {
     set.add(this, RSP::SIZE);
     set.add(REF_OBJECT_COUNT, 4);
@@ -898,7 +903,8 @@ pub unsafe fn property_create_clone(this: usize) -> usize {
 }
 
 /// `NiObjectNET::CopyMembers` clones the extra data and the controllers through their own
-/// virtual functions: the call is not compared when the property has one of them.
+/// virtual functions. The shadow test does not compare the call when the property has one of
+/// them.
 unsafe fn property_create_clone_regions(set: &mut Regions, this: usize) {
     set.add(REF_OBJECT_COUNT, 4);
     set.allocates();
@@ -907,8 +913,8 @@ unsafe fn property_create_clone_regions(set: &mut Regions, this: usize) {
     }
 }
 
-/// 0x6DC920 `NiRendererSpecificProperty_static::CreateFromStream`: a new property and its link
-/// record, then the property reads itself from the stream.
+/// 0x6DC920 `NiRendererSpecificProperty_static::CreateFromStream`. The port makes a new property
+/// and its link record. Then the property reads itself from the stream.
 pub unsafe fn property_create_from_stream(stream: usize, out: usize) {
     crate::shadow::touch(&property_create_from_stream_port::STATE);
     let property = property_new();
@@ -957,7 +963,7 @@ pub unsafe fn property_get_type(_this: usize) -> u32 {
 // NiDX8MaterialManager
 // ---------------------------------------------------------------------------------------------
 
-/// Takes every node out of the map and frees it.
+/// This function removes every node from the map and frees it.
 unsafe fn map_remove_all(map: usize) {
     if rd::<u32>(map, HM::bucketCount) == 0 {
         return;
@@ -980,7 +986,8 @@ unsafe fn map_remove_all(map: usize) {
     }
 }
 
-/// The first node of the map: the head of the first bucket that has one. 0 for an empty map.
+/// The first node of the map. It is the head of the first bucket that has a node. The result is
+/// 0 for an empty map.
 unsafe fn map_first(map: usize) -> usize {
     let count: u32 = rd(map, HM::bucketCount);
     if count != 0 {
@@ -999,7 +1006,8 @@ unsafe fn map_first(map: usize) -> usize {
     0
 }
 
-/// The head of the first bucket with a node after the bucket of `key`. 0 for none.
+/// The head of the first bucket with a node after the bucket of `key`. The result is 0 when
+/// there is none.
 unsafe fn map_next_bucket(map: usize, key: u32) -> usize {
     let mut index = vcall1(map, SLOT_MAP_HASH_KEY, key);
     let count: u32 = rd(map, HM::bucketCount);
@@ -1020,7 +1028,7 @@ unsafe fn map_next_bucket(map: usize, key: u32) -> usize {
     0
 }
 
-/// 0x6C22C0 `NiDX8MaterialManager::ctor`: an empty map with 37 buckets.
+/// 0x6C22C0 `NiDX8MaterialManager::ctor`. The port makes an empty map with 37 buckets.
 pub unsafe fn material_manager_ctor(this: usize) -> usize {
     crate::shadow::touch(&material_manager_ctor_port::STATE);
     wr(this, MM::vtbl, VTBL_NI_REF_OBJECT);
@@ -1044,8 +1052,8 @@ unsafe fn material_manager_ctor_regions(set: &mut Regions, this: usize) {
     set.allocates();
 }
 
-/// 0x6C2370 `NiDX8MaterialManager::Initialize_maybe`: frees the entries of the map, empties
-/// the map and selects the default material.
+/// 0x6C2370 `NiDX8MaterialManager::Initialize_maybe`. The port frees the entries of the map,
+/// empties the map and selects the default material.
 pub unsafe fn material_manager_initialize(this: usize) {
     crate::shadow::touch(&material_manager_initialize_port::STATE);
     let map = this + MM::hashmap_8;
@@ -1067,8 +1075,8 @@ unsafe fn default_material() -> usize {
     rd(DEFAULT_MATERIAL, 0)
 }
 
-/// What the manager writes outside itself when it starts or ends: the buckets of the map, the
-/// default material and the entry of that material.
+/// The memory that the manager writes outside itself when it starts or ends. It is the buckets
+/// of the map, the default material and the entry of that material.
 unsafe fn material_manager_shared_regions(set: &mut Regions, this: usize) {
     let map = this + MM::hashmap_8;
     set.add(rd(map, HM::arrayBuckets), rd::<u32>(map, HM::bucketCount) as usize * 4);
@@ -1091,15 +1099,15 @@ pub unsafe fn material_manager_dtor(this: usize) {
     wr(this, MM::vtbl, VTBL_MATERIAL_MANAGER);
     let map = this + MM::hashmap_8;
     while rd::<u32>(map, HM::count) != 0 {
-        // The first node, and the step to the one after it, which the game code makes and
-        // does not use.
+        // The port gets the first node. It also does the step to the node after it. The game
+        // code does this step and does not use the result.
         let first = map_first(map);
         let entry: usize = rd(first, HN::data);
         let key: u32 = rd(first, HN::key);
         if rd::<usize>(first, HN::nextNode) == 0 {
             map_next_bucket(map, key);
         }
-        // Take the node with this key out of its bucket.
+        // Remove the node with this key from its bucket.
         let bucket = vcall1(map, SLOT_MAP_HASH_KEY, key) as usize;
         let mut node: usize = rd(rd::<usize>(map, HM::arrayBuckets), bucket * 4);
         let mut found = false;
@@ -1149,8 +1157,8 @@ pub unsafe fn material_manager_dtor(this: usize) {
     wr(REF_OBJECT_COUNT, 0, rd::<u32>(REF_OBJECT_COUNT, 0).wrapping_sub(1));
 }
 
-/// A node is taken out at the head of its bucket, so no other node is written, as long as
-/// the hash function of the map gives the bucket the node is in.
+/// The destructor removes a node at the head of its bucket, so it writes no other node. This
+/// is true only when the hash function of the map gives the bucket that the node is in.
 unsafe fn material_manager_dtor_regions(set: &mut Regions, this: usize) {
     set.add(this, MM::SIZE);
     set.add(REF_OBJECT_COUNT, 4);
@@ -1163,8 +1171,8 @@ pub unsafe fn material_manager_deleting_dtor(this: usize, flags: u8) -> usize {
     deleting(this, flags, material_manager_dtor)
 }
 
-/// 0x6C26A0 `NiDX8MaterialManager::PurgeMaterial`: frees the entry of the material. The
-/// material keeps the pointer.
+/// 0x6C26A0 `NiDX8MaterialManager::PurgeMaterial`. The port frees the entry of the material.
+/// The material keeps the pointer.
 pub unsafe fn material_manager_purge_material(_this: usize, material: usize) {
     crate::shadow::touch(&material_manager_purge_material_port::STATE);
     if material != 0 {
@@ -1185,11 +1193,12 @@ unsafe fn material_manager_purge_material_regions(set: &mut Regions, material: u
 // NiDX8RenderState
 // ---------------------------------------------------------------------------------------------
 
-/// `NiAlphaProperty` blend factor to D3DBLEND, in the order the constructor writes it.
+/// The table from a `NiAlphaProperty` blend factor to a D3DBLEND value, in the order that the
+/// constructor writes it.
 const ALPHA_MAPPING: [u32; 11] = [2, 1, 3, 4, 9, 10, 5, 6, 7, 8, 11];
 
-/// The compare, stencil and cull tables, as (offset, value) in the order the constructor
-/// writes them.
+/// The compare, stencil and cull tables, as (offset, value) pairs in the order that the
+/// constructor writes them.
 const MAPPING_WRITES: [(usize, u32); 45] = [
     (RS::alphaTestMapping + 0x04, 2),
     (RS::alphaTestMapping + 0x14, 6),
@@ -1281,7 +1290,8 @@ pub unsafe fn render_state_ctor(this: usize, device: usize, caps: usize) -> usiz
 
     ctor_alpha_mapping(this);
 
-    // The alpha property the render state falls back to: test function "greater", no blending.
+    // The default alpha property of the render state. It has the test function "greater" and
+    // no blending.
     let alpha_property = eng::operator_new(ALPHA_PROPERTY_SIZE);
     if alpha_property != 0 {
         eng::ni_object_net_ctor(alpha_property);
@@ -1299,8 +1309,8 @@ pub unsafe fn render_state_ctor(this: usize, device: usize, caps: usize) -> usiz
     this
 }
 
-/// The render states and the texture stage states go back to their defaults: the start of
-/// `Initialize_maybe` and of the destructor.
+/// The render states and the texture stage states get their defaults again. This is the start
+/// of `Initialize_maybe` and of the destructor.
 unsafe fn render_state_reset(this: usize) {
     for index in 0..256 {
         let value: u32 = rd(RENDER_STATE_DEFAULTS, index * 4);
@@ -1336,9 +1346,9 @@ pub unsafe fn render_state_dtor(this: usize) {
     wr(REF_OBJECT_COUNT, 0, rd::<u32>(REF_OBJECT_COUNT, 0).wrapping_sub(1));
 }
 
-/// The destructor gives back the reference to the device, which cannot happen twice, and can
-/// delete the alpha property: with a device or with the last reference to the property the
-/// call is not compared.
+/// The destructor releases the reference to the device, and that cannot occur two times. The
+/// destructor can also delete the alpha property. The shadow test does not compare the call
+/// when there is a device or when the reference to the property is the last.
 unsafe fn render_state_dtor_regions(set: &mut Regions, this: usize) {
     if rd::<usize>(this, RS::device) != 0 {
         return set.skip();
@@ -1377,7 +1387,7 @@ pub unsafe fn render_state_create(device: usize, caps: usize, flag_2: u8, flag_8
     this
 }
 
-/// 0x6B8600 `NiDX8RenderState::PurgeMaterial`: a jump to the function of the material manager.
+/// 0x6B8600 `NiDX8RenderState::PurgeMaterial`. It is a jump to the function of the material manager.
 pub unsafe fn render_state_purge_material(this: usize, material: usize) {
     crate::shadow::touch(&render_state_purge_material_port::STATE);
     material_manager_purge_material(this + RS::materialManager, material);
@@ -1392,8 +1402,8 @@ unsafe fn initialize_state(this: usize, state: u32, value: u32) {
     }
 }
 
-/// 0x6B8680 `NiDX8RenderState::Initialize_maybe`: every state back to its default, then the
-/// states the renderer starts with to the device.
+/// 0x6B8680 `NiDX8RenderState::Initialize_maybe`. The port sets every state to its default.
+/// Then it sends to the device the states that the renderer starts with.
 pub unsafe fn render_state_initialize(this: usize) {
     crate::shadow::touch(&render_state_initialize_port::STATE);
     render_state_reset(this);
@@ -1431,8 +1441,8 @@ unsafe fn render_state_initialize_regions(set: &mut Regions, this: usize) {
     material_manager_shared_regions(set, this + RS::materialManager);
 }
 
-/// 0x6B8930 `NiDX8RenderState::initFromDeviceCaps`: the flags and the blend factors the
-/// device supports, from its capabilities.
+/// 0x6B8930 `NiDX8RenderState::initFromDeviceCaps`. The port sets the flags and the blend
+/// factors that the device supports, from the capabilities of the device.
 pub unsafe fn render_state_init_from_device_caps(this: usize) {
     crate::shadow::touch(&render_state_init_from_device_caps_port::STATE);
     let caps = this + RS::deviceCapabilities;
@@ -1510,21 +1520,21 @@ pub unsafe fn pipeline_deleting_dtor(this: usize, flags: u8) -> usize {
     deleting(this, flags, texture_pipeline::dtor)
 }
 
-/// 0x6B9E70 `NiDX8ConfigurableTexturePipeline::applyPixelShader`: a jump to the function of
-/// the texture pass.
+/// 0x6B9E70 `NiDX8ConfigurableTexturePipeline::applyPixelShader`. It is a jump to the function
+/// of the texture pass.
 pub unsafe fn pipeline_apply_pixel_shader(this: usize) -> u32 {
     crate::shadow::touch(&pipeline_apply_pixel_shader_port::STATE);
     texture_pass_a::apply_pixel_shader(rd(this, PIPELINE_TEXTURE_PASS))
 }
 
-/// 0x6B9E80 `NiDX8ConfigurableTexturePipeline::applyVertexShader`: a jump to the function of
-/// the texture pass.
+/// 0x6B9E80 `NiDX8ConfigurableTexturePipeline::applyVertexShader`. It is a jump to the function
+/// of the texture pass.
 pub unsafe fn pipeline_apply_vertex_shader(this: usize, handle: u32) -> u32 {
     crate::shadow::touch(&pipeline_apply_vertex_shader_port::STATE);
     texture_pass_a::apply_vertex_shader(rd(this, PIPELINE_TEXTURE_PASS), handle)
 }
 
-/// As the two functions of the texture pass: they write the render state.
+/// The same as the two functions of the texture pass. They write the render state.
 unsafe fn pipeline_apply_shader_regions(set: &mut Regions, this: usize) {
     let texture_pass: usize = rd(this, PIPELINE_TEXTURE_PASS);
     set.add(rd(texture_pass, TP::renderState), RS::SIZE);
@@ -1542,7 +1552,8 @@ pub unsafe fn texture_stage_deleting_dtor(this: usize, flags: u8) -> usize {
     deleting(this, flags, texture_pipeline::texture_stage_dtor)
 }
 
-/// As the destructor of the stage: not compared when the release deletes the texture.
+/// The same as the destructor of the stage. The shadow test does not compare the call when the
+/// release deletes the texture.
 unsafe fn texture_stage_deleting_dtor_regions(set: &mut Regions, this: usize, flags: u8) {
     set.add(this, TS::SIZE);
     set.add(REF_OBJECT_COUNT, 4);
@@ -1588,8 +1599,8 @@ port_thiscall!(renderer_dtor_port, 0x6F4F80, "NiRenderer::dtor",
     regions = |set| renderer_dtor_regions(set, this),
     rust = renderer_dtor);
 
-// The accumulator keeps the geometry in memory of its own class: with an accumulator the
-// call is not compared.
+// The accumulator keeps the geometry in memory of its own class. The shadow test does not
+// compare the call when there is an accumulator.
 port_thiscall!(renderer_register_object_port, 0x6F5070, "NiRenderer::RegisterObject",
     fn(this, geometry: usize) -> u8,
     compare_eax = true,
@@ -1629,8 +1640,8 @@ port_thiscall!(renderer_map_window_point_to_buffer_point_port, 0x6F5150, "NiRend
     },
     rust = renderer_map_window_point_to_buffer_point);
 
-// It displays a scene object: the objects under it write memory that no list of regions can
-// name, so the call is never compared.
+// The function displays a scene object. The objects below the scene object write memory that
+// no list of regions can name. Thus the shadow test never compares the call.
 port_thiscall!(renderer_render_from_cluster_accumulator_port, 0x6F51D0, "NiRenderer::renderFromClusterAccumulator",
     fn(this, camera: usize, scene_object: usize) -> (),
     compare_eax = false,
@@ -1754,15 +1765,16 @@ port_thiscall!(property_create_clone_port, 0x6DC8A0, "NiRendererSpecificProperty
     regions = |set| property_create_clone_regions(set, this),
     rust = property_create_clone);
 
-// It reads the property from the stream, which cannot be read twice: never compared.
+// The function reads the property from the stream, and a second read of the stream is not
+// possible. The shadow test never compares the call.
 port_cdecl!(property_create_from_stream_port, 0x6DC920, "NiRendererSpecificProperty_static::CreateFromStream",
     fn(stream: usize, out: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
     rust = property_create_from_stream);
 
-// `NiObjectNET::RegisterStreamables` puts the object and what it holds into tables of the
-// stream: never compared.
+// `NiObjectNET::RegisterStreamables` puts the object and the things that it holds into tables
+// of the stream. The shadow test never compares the call.
 port_thiscall!(property_register_streamables_port, 0x6DCAE0, "NiRendererSpecificProperty::RegisterStreamables",
     fn(this, stream: usize) -> u8,
     compare_eax = true,
@@ -1793,7 +1805,8 @@ port_thiscall!(property_get_type_port, 0x6DCCD0, "NiRendererSpecificProperty::Ge
     regions = |set| (),
     rust = property_get_type);
 
-// The constructor takes a reference to the device, which cannot happen twice: never compared.
+// The constructor takes a reference to the device, and that cannot occur two times. The shadow
+// test never compares the call.
 port_thiscall!(render_state_ctor_port, 0x6B7D70, "NiDX8RenderState::ctor",
     fn(this, device: usize, caps: usize) -> usize,
     compare_eax = true,
@@ -1815,7 +1828,8 @@ port_thiscall!(render_state_dtor_port, 0x6B80D0, "NiDX8RenderState::dtor",
     regions = |set| render_state_dtor_regions(set, this),
     rust = render_state_dtor);
 
-// It runs the constructor, which takes a reference to the device: never compared.
+// The function runs the constructor, and the constructor takes a reference to the device. The
+// shadow test never compares the call.
 port_cdecl!(render_state_create_port, 0x6B81E0, "NiDX8RenderState_static::Create",
     fn(device: usize, caps: usize, flag_2: u8, flag_8: u8, flag_4: u8) -> usize,
     compare_eax = true,
@@ -1871,8 +1885,8 @@ port_thiscall!(material_manager_purge_material_port, 0x6C26A0, "NiDX8MaterialMan
     rust = material_manager_purge_material);
 
 // The destructors of the texture pass, of its subpass, of the pipeline and of the light
-// manager release device objects and delete other objects, and their ports are never compared.
-// The same holds for their deleting destructors.
+// manager release device objects. They also delete other objects. The shadow test never
+// compares their ports. It also never compares the ports of their deleting destructors.
 port_thiscall!(texture_pass_deleting_dtor_port, 0x6B3380, "NiDX8TexturePass::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
@@ -1990,7 +2004,7 @@ mod tests {
     use super::*;
     use core::sync::atomic::{AtomicU32, Ordering};
 
-    /// A vtable of `slots` entries with `function` at every one.
+    /// A vtable of `slots` entries with `function` in each entry.
     fn vtable_of(function: usize, slots: usize) -> Vec<usize> {
         vec![function; slots]
     }
@@ -2075,18 +2089,18 @@ mod tests {
         assert_eq!(table(RS::stencilFuncMapping, 8), [1, 2, 3, 4, 5, 6, 7, 8]);
         // D3DSTENCILOP: KEEP, ZERO, REPLACE, INCRSAT, DECRSAT, INVERT
         assert_eq!(table(RS::stencilActionMapping, 6), [1, 2, 3, 4, 5, 6]);
-        // D3DCULL per draw mode, without and with the left-right swap: CW, CCW; CW, CCW;
+        // D3DCULL for each draw mode, without and with the left-right swap: CW, CCW; CW, CCW;
         // CCW, CW; NONE, NONE
         assert_eq!(table(RS::cullModeMapping, 8), [2, 3, 2, 3, 3, 2, 1, 1]);
         assert_eq!(table(RS::sourceBlendCaps, 3), [0, 0, 0]); // the caps and the current alpha property
         assert_eq!(table(RS::frustumNear, 6), [0, 0, 0, 0, 0x3F80_0000, 0]);
         assert_eq!(table(RS::bLeftRightSwap, 1), [0]);
-        // Every entry of the tables is written, and once.
+        // The constructor writes every entry of the tables, and one time only.
         let mut offsets: Vec<usize> = MAPPING_WRITES.iter().map(|w| w.0).collect();
         offsets.sort();
         offsets.dedup();
         assert_eq!(offsets.len(), MAPPING_WRITES.len());
-        // The members between and after the tables stay as they were.
+        // The members between the tables and after the tables do not change.
         assert_eq!(unsafe { rd::<u32>(this, RS::alphaProperty) }, 0xAAAA_AAAA);
         assert_eq!(unsafe { rd::<u32>(this, RS::materialManager) }, 0xAAAA_AAAA);
         assert_eq!(unsafe { rd::<u8>(this, RS::field_1F4) }, 0xAA);
@@ -2099,7 +2113,7 @@ mod tests {
         unsafe {
             ctor_alpha_mapping(this);
             let caps = this + RS::deviceCapabilities;
-            // Table fog and W fog, a W buffer; no hardware transform (that writes a global).
+            // Table fog, W fog and a W buffer. No hardware transform, because that writes a global.
             wr::<u32>(caps, D3DCAPS8::RasterCaps, 0x100 | 0x10_0000 | 0x4_0000);
             // D3DPBLENDCAPS_ZERO | ONE | SRCALPHA | INVSRCALPHA
             wr::<u32>(caps, D3DCAPS8::SrcBlendCaps, 1 | 2 | 0x10 | 0x20);
@@ -2107,8 +2121,9 @@ mod tests {
             wr::<u32>(this, RS::flags, 0x8);
             render_state_init_from_device_caps(this);
             assert_eq!(rd::<u32>(this, RS::flags), 0x8 | 1 | 0x10);
-            // The game code tests the D3DBLEND value against the caps as bits: ONE (2) finds
-            // the bit of ONE, ZERO (1) the bit of ZERO, SRCCOLOR (3) both, and so on.
+            // The game code tests the D3DBLEND value against the caps as bits. ONE (2) finds the
+            // bit of ONE. ZERO (1) finds the bit of ZERO. SRCCOLOR (3) finds the two bits. The
+            // other values follow the same rule.
             let expected = |caps: u32| (0..11).filter(|&i| ALPHA_MAPPING[i] & caps != 0).fold(0u32, |bits, i| bits | 1 << i);
             assert_eq!(rd::<u32>(this, RS::sourceBlendCaps), expected(0x33));
             assert_eq!(rd::<u32>(this, RS::destBlendCaps), expected(1));
@@ -2147,7 +2162,7 @@ mod tests {
     }
 
     unsafe extern "thiscall" fn register_low_byte(_this: usize, geometry: u32) -> u32 {
-        // Only AL is the result: the rest of EAX is what the function left there.
+        // Only AL is the result. The other bytes of EAX are the values that the function left there.
         0xFFFF_FF00 | geometry
     }
 
@@ -2183,7 +2198,7 @@ mod tests {
             assert_eq!(renderer_map_window_point_to_buffer_point(this, 1, 1, out_x, out_y), 0);
             assert_eq!((x, y), (0.25, 0.25));
         }
-        // The point is unsigned, the size signed.
+        // The point is unsigned and the size is signed.
         let (bx, by) = window_to_buffer(0x8000_0000, 0x4000_0000, 3, 0xFFFF_FFFE, 1.0f32.to_bits());
         assert_eq!((f32::from_bits(bx), f32::from_bits(by)), (2.0, 2.5));
     }
@@ -2201,7 +2216,7 @@ mod tests {
             array_add(a, 0x1234);
             assert_eq!(storage, [0, 0x1234, 0, 0]);
             assert_eq!((rd::<u32>(a, ARRAY_END_INDEX), rd::<u32>(a, ARRAY_FILLED_COUNT)), (2, 2));
-            // A null element moves the end and counts nothing.
+            // A null element moves the end and does not change the count.
             array_add(a, 0);
             assert_eq!((rd::<u32>(a, ARRAY_END_INDEX), rd::<u32>(a, ARRAY_FILLED_COUNT)), (3, 2));
         }
@@ -2220,7 +2235,7 @@ mod tests {
             assert_eq!(rd::<[usize; 3]>(new, 0), [0x11, 0x22, 0x33]);
             assert_eq!((rd::<u32>(a, ARRAY_END_INDEX), rd::<u32>(a, ARRAY_FILLED_COUNT)), (3, 3));
         }
-        // No room and no growth: nothing is added.
+        // There is no free space and no growth, so the function adds nothing.
         let mut storage = [0x11usize];
         let mut strings = array(&mut storage, 1, 1, 0);
         let a = strings.as_mut_ptr() as usize;
@@ -2255,7 +2270,7 @@ mod tests {
     #[test]
     fn map_walk_goes_bucket_by_bucket() {
         let vtable = vtable_of(hash_low_bits as *const () as usize, 2);
-        // Keys 1 and 5 in bucket 1, key 3 in bucket 3.
+        // Keys 1 and 5 are in bucket 1. Key 3 is in bucket 3.
         let mut third = [3usize, 0, 0];
         let mut second = [5usize, 0, 0];
         let mut first = [1usize, 0, second.as_mut_ptr() as usize];
@@ -2284,7 +2299,7 @@ mod tests {
     #[test]
     fn is_equal_and_register_streamables_make_a_bool_of_al() {
         unsafe {
-            // The stand-ins return the argument: only the low byte counts.
+            // The replacements return the argument. Only the low byte is the result.
             assert_eq!(property_is_equal(0, 0x200), 0);
             assert_eq!(property_is_equal(0, 0x203), 1);
             assert_eq!(property_register_streamables(0, 0x100), 0);

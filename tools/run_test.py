@@ -1,13 +1,13 @@
 """Builds nirender, installs it into the testing instance and runs the in-game test.
 
-The game starts through the Mod Organizer of D:\\Modlists\\Morrowind75testing, loads a save, runs
-every port in shadow mode, then runs the frame comparisons. The result is the port table and the
-frame test lines; the exit code is 0 only when nothing differed.
+The game starts through the Mod Organizer of D:\\Modlists\\Morrowind75testing and loads a save.
+Then it runs every port in shadow mode, and then it runs the frame comparisons. The result is
+the port table and the frame test lines. The exit code is 0 only when nothing differed.
 
     python tools/run_test.py --label first [--save quiksave.ess] [--shadow 20] [--live 5]
 
-The testing instance is put back as it was, except that the mod "nirender" stays installed (it
-does nothing without a run spec and with mode "off").
+The script puts the testing instance back to its initial state, but the mod "nirender" stays
+installed. The mod does nothing without a run spec and with mode "off".
 """
 import argparse
 import os
@@ -40,7 +40,7 @@ def build():
 
 
 def stage():
-    """The mod as it is installed: the Lua files and the DLL. Never the pdb."""
+    """The files of the installed mod: the Lua files and the DLL. It never has the pdb."""
     if os.path.isdir(DIST):
         shutil.rmtree(DIST)
     shutil.copytree(os.path.join(REPO, "mod"), DIST)
@@ -49,7 +49,7 @@ def stage():
 
 
 def use_our_mod():
-    """Points the harness at this mod, so its install and spec code serve it."""
+    """Sets the harness to this mod, so the install and spec code of the harness serve it."""
     harness.MOD_SRC = DIST
     harness.MOD_NAME = MOD_NAME
     harness.MOD_DIR = os.path.join(harness.MO2_ROOT, "mods", MOD_NAME)
@@ -140,7 +140,8 @@ def main():
     try:
         done = harness.run_game(progress_file, timeout, TAG, deployment, started)
     finally:
-        # run_game restores too; this is for a failure before it gets that far.
+        # run_game also restores. This restore is for a failure before run_game gets to that
+        # point.
         deployment.restore()
     harness.copy_logs(run_dir, started)
 
@@ -163,8 +164,9 @@ def main():
     if os.path.isfile(progress_file):
         for line in open(progress_file, encoding="utf-8", errors="replace").read().splitlines():
             if "frame test menu" in line and "RETRY" in line:
-                # Eight tries and the scene still moved between two engine frames (particles, for
-                # one): the frame test says nothing here. The shadow test still does.
+                # After eight tries the scene still changed between two engine frames. Particles
+                # are one cause. The frame test gives no result here. The shadow test still
+                # gives a result.
                 notes.append("frame test without a result, the scene moves: " + line.replace(TAG, "").strip()[:60])
             elif "frame test menu" in line and "FAIL" in line:
                 failures.append(line.replace(TAG, "").strip()[:300])

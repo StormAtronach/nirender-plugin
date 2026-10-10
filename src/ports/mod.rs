@@ -1,11 +1,11 @@
-//! The ported functions. One module per engine class; `PORTS` lists every port.
+//! The ports. Each engine class has one module. `PORTS` lists every port.
 
 use crate::shadow::PortState;
 
 /// Declares the port of a `__thiscall` engine function.
 ///
 /// It makes a module with `STATE`, the detour, and `engine(...)` to call the game code.
-/// `regions` adds the memory the function may write for a call; `compare_eax` says whether
+/// `regions` adds the memory that the function can write for a call. `compare_eax` tells if
 /// the value in EAX is a result.
 macro_rules! port_thiscall {
     (
@@ -49,7 +49,7 @@ macro_rules! port_thiscall {
     };
 }
 
-/// Declares the port of a `__cdecl` engine function: the caller removes the arguments.
+/// Declares the port of a `__cdecl` engine function. The caller removes the arguments.
 #[allow(unused_macros)]
 macro_rules! port_cdecl {
     (
@@ -131,7 +131,7 @@ static MODULES: &[&[&PortState]] = &[
     ct_pipeline_state::PORTS,
 ];
 
-/// The call sites the ports serve through `site::call_target`. A module with such sites
+/// The call sites that the ports serve through `site::call_target`. A module with such sites
 /// adds its `SITES` here.
 static SITE_LISTS: &[&[usize]] = &[
     draw_misc::SITES,
@@ -144,8 +144,9 @@ pub fn serves_site(site: usize) -> bool {
     SITE_LISTS.iter().any(|list| list.contains(&site))
 }
 
-/// Bytes of the game code that another mod changes and that a port follows by reading
-/// them from memory: (address, length). A change inside such a range does not lock the port.
+/// Bytes of the game code that another mod changes. A port follows them, because it reads
+/// them from memory. Each entry is (address, length). A change inside such a range does not
+/// lock the port.
 ///
 /// - `NiDX8Renderer::RenderShape` +0x2F: MWSE's software skinning flag
 ///   (PatchNIDX8Renderer_RenderShape).
@@ -155,7 +156,7 @@ pub fn serves_site(site: usize) -> bool {
 static FOLLOWED: &[(usize, usize)] =
     &[(0x6ACF1F, 8), (0x6B42AC, 6), (0x6A9AED, 9), (0x6A9B38, 4), (0x6A9B7E, 4), (0x6A9BC4, 4)];
 
-/// True when a port reads the `len` bytes at `addr` from memory and acts on what they are.
+/// True when a port reads the `len` bytes at `addr` from memory and uses their value.
 pub fn follows(addr: usize, len: usize) -> bool {
     FOLLOWED.iter().any(|&(start, size)| addr >= start && addr + len <= start + size)
 }

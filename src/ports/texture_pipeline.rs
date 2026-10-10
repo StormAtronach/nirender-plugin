@@ -1,5 +1,6 @@
-//! `NiDX8TextureStage` and `NiDX8ConfigurableTexturePipeline`: the texture stage that sends its
-//! states to the device, and the object that owns the fixed-function texture pass.
+//! `NiDX8TextureStage` and `NiDX8ConfigurableTexturePipeline`. The first is the texture stage
+//! that sends its states to the device. The second is the object that owns the fixed-function
+//! texture pass.
 
 use core::arch::asm;
 use core::mem::transmute;
@@ -27,17 +28,17 @@ const VTBL_TEXTURE_PASS: usize = 0x74F650;
 /// `global_count_of_NiRefObject`
 const REF_OBJECT_COUNT: usize = 0x7DECE0;
 
-/// The filter remapper: 6 entries of 12 bytes (minify, magnify, mip), one per filter mode.
+/// The filter remapper: 6 entries of 12 bytes (minify, magnify, mip), one for each filter mode.
 const FILTER_REMAP: usize = 0x7DDB80;
 const FILTER_REMAP_SIZE: usize = 0x48;
 const FILTER_MINIFY: usize = 0x7DDB80;
 const FILTER_MAGNIFY: usize = 0x7DDB84;
 const FILTER_MIP: usize = 0x7DDB88;
-/// The address mode remapper: 4 entries of 8 bytes (U, V), one per clamp mode.
+/// The address mode remapper: 4 entries of 8 bytes (U, V), one for each clamp mode.
 const ADDRESS_REMAP_U: usize = 0x7DDBC8;
 const ADDRESS_REMAP_V: usize = 0x7DDBCC;
 
-// Capabilities of the device that `initPipelineState` copies to globals.
+// The capabilities of the device that `initPipelineState` copies to globals.
 const G_VERTEX_SHADER_VERSION: usize = 0x7DD950;
 const G_MAX_VERTEX_SHADER_CONST: usize = 0x7DD954;
 const G_MAX_STREAMS: usize = 0x7DD958;
@@ -47,7 +48,7 @@ const G_PIXEL_SHADER_VERSION: usize = 0x7DDBF8;
 const G_MAX_TEXTURE_BLEND_STAGES: usize = 0x7C3834;
 const G_MAX_SIMULTANEOUS_TEXTURES: usize = 0x7C3838;
 
-/// The strings `create` gives to the log function, which is empty in the game.
+/// The strings that `create` gives to the log function. The log function is empty in the game.
 const STR_CREATION_ATTEMPT: usize = 0x7C3D58;
 const STR_CREATION_DONE: usize = 0x7C3D10;
 
@@ -69,23 +70,23 @@ fn g(addr: usize) -> usize {
 
 /// `NiDX8ConfigurableTexturePipeline`: 10 `NiPointer<NiAlphaProperty>`, the alpha templates.
 const CTP_ALPHA_TEMPLATES: usize = CTP::field_2E8;
-/// Capability flags: 1 = independent V address mode, 0x40 = the flag of `create`, 0x80 and
-/// 0x100 from the texture caps.
+/// The capability flags. 1 is an independent V address mode. 0x40 is the flag of `create`.
+/// 0x80 and 0x100 come from the texture caps.
 const CTP_FLAGS: usize = CTP::field_FC;
 /// The blend operation for the "add signed" template, from `TextureOpCaps`.
 const CTP_SIGNED_OP: usize = CTP::field_104;
-/// Zeroed block of 0x7E8 bytes, and one byte after it.
+/// A block of 0x7E8 bytes that the game sets to 0, and one byte after it.
 const CTP_BLOCK_314: usize = CTP::field_314;
 const CTP_BLOCK_314_DWORDS: usize = 0x1FA;
 const CTP_BYTE_AFC: usize = CTP::field_AFC;
 /// The three stages of the default pass.
 const CTP_STAGES: [usize; 3] = [CTP::field_10, CTP::field_14, CTP::pipelineState_18];
-/// The pass in use (`field_8`); `combiners` is the fixed-function pass.
+/// The pass in use (`field_8`). `combiners` is the fixed-function pass.
 const CTP_CURRENT_PASS: usize = CTP::field_8;
 
 /// `NiRendererSpecificProperty::RenderData7::texturePass`
 const RENDER_DATA_TEXTURE_PASS: usize = 0x4;
-/// The renderer type id `selectAndLinkPass` accepts.
+/// The renderer type id that `selectAndLinkPass` accepts.
 const RENDERER_TYPE_DX8: u32 = 7;
 
 /// `sizeof(NiDX8TexturePass::$1)`, the stage group of a pass.
@@ -124,7 +125,7 @@ const ONE: u32 = 0x3F80_0000;
 // Engine functions at fixed addresses
 // ---------------------------------------------------------------------------------------------
 
-/// 0x6E9A00 `nullsub_36`: the log function of the renderer, empty in the game.
+/// 0x6E9A00 `nullsub_36`: the log function of the renderer. It is empty in the game.
 unsafe fn renderer_log(text: usize) {
     transmute::<usize, unsafe extern "C" fn(usize)>(0x6E9A00)(text)
 }
@@ -174,7 +175,8 @@ unsafe fn property_state_renderer_specific(property_state: usize) -> usize {
     transmute::<usize, unsafe extern "thiscall" fn(usize) -> usize>(0x6FE4F0)(property_state)
 }
 
-/// The unit tests have no engine code: the same read as the function at 0x6FE4F0.
+/// The unit tests have no game code. This function does the same read as the function at
+/// 0x6FE4F0.
 #[cfg(test)]
 unsafe fn property_state_renderer_specific(property_state: usize) -> usize {
     rd(property_state, NiPropertyState::propRendererSpecific)
@@ -275,7 +277,7 @@ unsafe fn tss_setting(rs: usize, stage: u32, state: u32) -> usize {
     rs.wrapping_add(stage.wrapping_shl(8) as usize) + RS::maybe_textureStageStateSettings + state as usize * 8
 }
 
-/// The inline pattern with a plain write to the cache.
+/// The inline pattern that writes the value directly to the cache.
 unsafe fn tss_write(rs: usize, stage: u32, state: u32, value: u32) {
     let setting = tss_setting(rs, stage, state);
     if rd::<u32>(setting, 0) != value {
@@ -303,8 +305,8 @@ unsafe fn texture_slot(rs: usize, stage: u32) -> usize {
 // ---------------------------------------------------------------------------------------------
 
 /// The target of the call at 0x6C1BA4 in `updateRenderer`. The game code calls
-/// `setTextureStageStateWithSave` there; the Morrowind Code Patch points it at
-/// `patchEnvmapCombiner` (0x736F80), which reads ESI, EDI, EBP and EDX of the caller.
+/// `setTextureStageStateWithSave` there. The Morrowind Code Patch changes the target to
+/// `patchEnvmapCombiner` (0x736F80). That function reads ESI, EDI, EBP and EDX of the caller.
 #[cfg(not(test))]
 unsafe fn texcoord_index_call_target() -> usize {
     let displacement: i32 = rd(0x6C1BA5, 0);
@@ -316,9 +318,9 @@ unsafe fn texcoord_index_call_target() -> usize {
     0x65EDE0
 }
 
-/// Makes the call at 0x6C1BA4 with the registers the game code has there: ECX = EBP = the
-/// render state of the renderer, EDI = the render state read at entry, ESI = the stage,
-/// EBX = the renderer, EDX = the value, EAX = the stage number.
+/// Makes the call at 0x6C1BA4 with the registers that the game code has there. ECX and EBP
+/// are the render state of the renderer. EDI is the render state that the function read at
+/// entry. ESI is the stage. EBX is the renderer. EDX is the value. EAX is the stage number.
 unsafe fn texcoord_index_call(target: usize, rs: usize, rs_at_entry: usize, this: usize, renderer: usize, stage: u32, value: u32) {
     if target == 0x65EDE0 {
         render_state::set_texture_stage_state_with_save(rs, stage, D3DTSS_TEXCOORDINDEX, value, 0);
@@ -367,7 +369,7 @@ pub unsafe fn texture_stage_ctor(this: usize) -> usize {
     wr::<usize>(this, TS::ptrTexture, 0);
     wr(this, TS::vtbl, VTBL_TEXTURE_STAGE);
     wr::<u32>(this, TS::stage, 0);
-    // The game code clears the texture pointer a second time, with a release.
+    // The game code sets the texture pointer to 0 a second time, with a release.
     let texture: usize = rd(this, TS::ptrTexture);
     if texture != 0 {
         release(texture);
@@ -415,7 +417,7 @@ pub unsafe fn texture_stage_dtor(this: usize) {
         release(texture);
         wr::<usize>(this, TS::ptrTexture, 0);
     }
-    // The destructor of the pointer member; the pointer is 0 by now.
+    // The destructor of the pointer member. The pointer is 0 at this point.
     let texture: usize = rd(this, TS::ptrTexture);
     if texture != 0 {
         release(texture);
@@ -432,8 +434,8 @@ pub unsafe fn texture_stage_update_renderer(this: usize, renderer: usize) -> u8 
     let texture: usize = rd(this, TS::ptrTexture);
     if texture != 0 {
         let manager: usize = rd(renderer, R::textureManager);
-        // The texture manager writes one byte to each. The game code gives the stack slot of
-        // its `renderer` argument for the first.
+        // The texture manager writes 1 byte to each of the two. For the first, the game code
+        // gives the stack slot of its `renderer` argument.
         let mut created: u32 = 0;
         let mut mipmapped: u32 = 0;
         let prepare: unsafe extern "thiscall" fn(usize, usize, *mut u32, *mut u32) -> usize = transmute(vslot(manager, 8));
@@ -502,7 +504,7 @@ pub unsafe fn texture_stage_update_renderer(this: usize, renderer: usize) -> u8 
     render_state::set_render_state(rs, D3DRS_TEXTUREFACTOR, rd(this, TS::extraBlendColorArgument), 0);
 
     if rd::<u8>(this, TS::bumpEnvMapEnabled) != 0 {
-        // The floats are copied with integer moves.
+        // The game code copies the floats with integer moves.
         for (state, member) in [
             (D3DTSS_BUMPENVMAT00, TS::bumpEnvMap00),
             (D3DTSS_BUMPENVMAT01, TS::bumpEnvMap01),
@@ -518,8 +520,8 @@ pub unsafe fn texture_stage_update_renderer(this: usize, renderer: usize) -> u8 
     1
 }
 
-/// True when `PrepareTextureForRendering` would make or fill a device texture for `texture`.
-/// It makes the same read-only virtual calls as that function.
+/// True when `PrepareTextureForRendering` makes or fills a device texture for `texture`. This
+/// function makes the same virtual calls as that function. Those calls only read.
 unsafe fn texture_needs_device_work(texture: usize) -> bool {
     let data: usize = rd(texture, NiTexture::rendererData);
     if data == 0 {
@@ -527,13 +529,13 @@ unsafe fn texture_needs_device_work(texture: usize) -> bool {
     }
     let getter = |slot: usize| transmute::<usize, unsafe extern "thiscall" fn(usize) -> usize>(vslot(data, slot))(data);
     if getter(0x20) != 0 {
-        // A rendered texture: only its D3D texture is read.
+        // A rendered texture. The function reads only its D3D texture.
         return false;
     }
     getter(0x18) == 0 || rd::<u8>(texture, NiSourceTexture::isStatic) == 0
 }
 
-/// The constructor allocates nothing: it can run twice on the same memory.
+/// The constructor allocates nothing. It can run two times on the same memory.
 unsafe fn texture_stage_ctor_regions(set: &mut Regions, this: usize) {
     set.add(this, TS::SIZE);
     set.add(REF_OBJECT_COUNT, 4);
@@ -553,7 +555,7 @@ unsafe fn texture_stage_dtor_regions(set: &mut Regions, this: usize) {
 }
 
 unsafe fn texture_stage_update_renderer_regions(set: &mut Regions, this: usize, renderer: usize) {
-    // The stage itself changes only when the Code Patch hook rewrites its combiner.
+    // The stage changes only when the hook of the Code Patch writes its combiner again.
     set.add(this, TS::SIZE);
     set.add(rd(renderer, R::renderState), RS::SIZE);
     let texture: usize = rd(this, TS::ptrTexture);
@@ -654,7 +656,7 @@ pub unsafe fn create(renderer: usize, caps: usize, rs: usize, texture_manager: u
     this
 }
 
-/// A new `NiAlphaProperty` as the game code builds it inline for the templates 0 to 8.
+/// A new `NiAlphaProperty`, as the game code builds it inline for the templates 0 to 8.
 unsafe fn new_alpha_template() -> usize {
     let property = engine::operator_new(AP::SIZE);
     if property != 0 {
@@ -671,7 +673,7 @@ unsafe fn new_alpha_template() -> usize {
     property
 }
 
-/// The last template is built with other inline code.
+/// The game code builds the last template with other inline code.
 unsafe fn new_last_alpha_template() -> usize {
     let property = engine::operator_new(AP::SIZE);
     if property != 0 {
@@ -689,7 +691,8 @@ unsafe fn new_last_alpha_template() -> usize {
     property
 }
 
-/// The changes `initAlphaStateTemplates` makes to template `index` after it stored it.
+/// The changes that `initAlphaStateTemplates` makes to template `index` after it stored the
+/// template.
 unsafe fn adjust_alpha_template(index: usize, property: usize) {
     let word = |f: fn(u16) -> u16| wr::<u16>(property, AP::flags, f(rd::<u16>(property, AP::flags)));
     let low = |f: fn(u8) -> u8| wr::<u8>(property, AP::flags, f(rd::<u8>(property, AP::flags)));
@@ -721,8 +724,8 @@ unsafe fn adjust_alpha_template(index: usize, property: usize) {
 /// Marks the places in `BLEND_TEMPLATES` that take the value of `field_104`.
 const SIGNED_OP: u32 = 0xFFFF_FFFF;
 
-/// The writes at the end of `initAlphaStateTemplates` (0x6B99AD to 0x6B9C02), in order:
-/// offset in the pipeline and value.
+/// The writes at the end of `initAlphaStateTemplates` (0x6B99AD to 0x6B9C02), in the order of
+/// the game code. Each entry is an offset in the pipeline and a value.
 #[rustfmt::skip]
 const BLEND_TEMPLATES: [(u16, u32); 96] = [
     (0x108, 2), (0x10C, 2), (0x110, 0), (0x114, 2), (0x118, 2), (0x11C, 0),
@@ -751,7 +754,8 @@ unsafe fn write_blend_templates(this: usize) {
 }
 
 /// 0x6B90E0 `NiDX8ConfigurableTexturePipeline::initAlphaStateTemplates`. Also fills the
-/// filter and address remappers with defaults. The game code leaves 4 in EAX.
+/// filter remapper and the address remapper with default values. The game code leaves 4 in
+/// EAX.
 pub unsafe fn init_alpha_state_templates(this: usize) {
     crate::shadow::touch(&init_alpha_state_templates_port::STATE);
     for i in 0..CTP_BLOCK_314_DWORDS {
@@ -816,8 +820,9 @@ pub unsafe fn load_binary(this: usize, a: u32, b: u32, c: u32, d: u32) -> u32 {
     f(pass, a, b, c, d)
 }
 
-/// 0x6B9C40 `NiDX8ConfigurableTexturePipeline::selectAndLinkPass`: takes the pass of the
-/// renderer-specific property, or the fixed-function pass, then calls slot 0x10 of it.
+/// 0x6B9C40 `NiDX8ConfigurableTexturePipeline::selectAndLinkPass`. Takes the pass of the
+/// renderer-specific property, or the fixed-function pass. Then it calls slot 0x10 of that
+/// pass.
 pub unsafe fn select_and_link_pass(
     this: usize,
     property_state: usize,
@@ -880,8 +885,8 @@ pub unsafe fn select_and_link_pass(
     f(pass, property_state, effect_state, has_normals as u32, texture_sets, geometry_data, skin_instance, transform, world_bound)
 }
 
-/// 0x6B9D30 `NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables`: takes the
-/// fixed-function pass when there is no pass, then jumps to slot 0x14 of the pass.
+/// 0x6B9D30 `NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables`. Takes the
+/// fixed-function pass when there is no pass. Then it jumps to slot 0x14 of the pass.
 pub unsafe fn ensure_and_register_streamables(
     this: usize,
     property_state: usize,
@@ -907,7 +912,7 @@ pub unsafe fn ensure_and_register_streamables(
 }
 
 /// 0x6B9D80 `NiDX8ConfigurableTexturePipeline::setCameraData`. The location is a `vec3` by
-/// value, copied with integer moves; the axes go through the FPU.
+/// value. The game code copies it with integer moves. The axes go through the FPU.
 pub unsafe fn set_camera_data(this: usize, direction: usize, up: usize, right: usize, x: u32, y: u32, z: u32) {
     crate::shadow::touch(&set_camera_data_port::STATE);
     for (column, axis) in [(CTP::worldRightX, right), (CTP::worldUpX, up), (CTP::worldDirectionX, direction)] {
@@ -920,7 +925,8 @@ pub unsafe fn set_camera_data(this: usize, direction: usize, up: usize, right: u
     wr(this, CTP::worldLocation_z, z);
 }
 
-/// 0x6B9E00 `NiDX8ConfigurableTexturePipeline::nextFrame`. EAX is what the pass leaves.
+/// 0x6B9E00 `NiDX8ConfigurableTexturePipeline::nextFrame`. EAX is the value that the pass
+/// leaves.
 pub unsafe fn next_frame(this: usize) {
     crate::shadow::touch(&next_frame_port::STATE);
     texture_pass_next_frame(rd(this, CTP_CURRENT_PASS));
@@ -965,7 +971,8 @@ pub unsafe fn build_skin_partition_pass(
     f(pass, property_state, effect_state, has_normals as u32, texture_sets, geometry_data, skin_instance, partition, transform, world_bound)
 }
 
-/// Color and alpha operation and arguments of the three stages of the default pass.
+/// The colour operation, the alpha operation and their arguments, for the three stages of the
+/// default pass.
 const DEFAULT_STAGES: [[u32; 6]; 3] = [[2, 2, 0, 2, 2, 0], [1, 2, 1, 1, 2, 1], [1, 1, 0, 1, 1, 0]];
 
 /// 0x6B9EA0 `NiDX8ConfigurableTexturePipeline::initPipelineState`
@@ -1003,7 +1010,7 @@ pub unsafe fn init_pipeline_state(this: usize) {
             (D3DTSS_BUMPENVLSCALE, ONE),
             (D3DTSS_BUMPENVLOFFSET, 0),
             (D3DTSS_TEXCOORDINDEX, 0),
-            // The game code sets ADDRESSU twice and never ADDRESSV.
+            // The game code sets ADDRESSU two times and does not set ADDRESSV.
             (D3DTSS_ADDRESSU, 1),
             (D3DTSS_ADDRESSU, 1),
             (D3DTSS_MAGFILTER, 1),
@@ -1104,8 +1111,8 @@ pub unsafe fn init_filtering_and_address_caps(this: usize) {
 // Regions
 // ---------------------------------------------------------------------------------------------
 
-/// True when `pass` is the fixed-function pass class, whose slots 4, 0x10 and 0x14 return 0
-/// and whose slot 0x18 writes only the pass.
+/// True when `pass` is of the fixed-function pass class. Slots 4, 0x10 and 0x14 of that class
+/// return 0. Slot 0x18 of that class writes only the pass.
 unsafe fn is_fixed_function_pass(pass: usize) -> bool {
     pass != 0 && rd::<usize>(pass, 0) == VTBL_TEXTURE_PASS
 }
@@ -1113,7 +1120,7 @@ unsafe fn is_fixed_function_pass(pass: usize) -> bool {
 unsafe fn select_and_link_pass_regions(set: &mut Regions, this: usize, property_state: usize) {
     let specific: usize = rd(property_state, NiPropertyState::propRendererSpecific);
     if specific != 0 && rd::<usize>(specific, NiRendererSpecificProperty::renderData) != 0 {
-        // A pass of another class: what it writes is not known here.
+        // A pass of another class. This file does not know the memory that it writes.
         return set.skip();
     }
     let now: usize = rd(this, CTP_CURRENT_PASS);
@@ -1154,7 +1161,7 @@ unsafe fn pass_call_regions(set: &mut Regions, this: usize) {
 unsafe fn init_pipeline_state_regions(set: &mut Regions, this: usize) {
     let combiners: usize = rd(this, CTP::combiners);
     if rd::<usize>(rd::<usize>(combiners, TP::TArray_18_storage), 0) == 0 {
-        // The stage group and the three stages are made in this call.
+        // This call makes the stage group and the three stages.
         return set.skip();
     }
     let now: usize = rd(this, CTP_CURRENT_PASS);
@@ -1164,7 +1171,8 @@ unsafe fn init_pipeline_state_regions(set: &mut Regions, this: usize) {
     }
     for member in CTP_STAGES {
         if rd::<usize>(rd::<usize>(this, member), TS::ptrTexture) != 0 {
-            // More blocks than fit: the stage, and the texture manager may make a texture.
+            // The call needs more blocks than the set holds, because of the stage. The
+            // texture manager can also make a texture.
             return set.skip();
         }
     }
@@ -1326,7 +1334,7 @@ mod tests {
     const ARENA: usize = 0x300;
 
     thread_local! {
-        /// The globals of the game, one copy per test thread.
+        /// The globals of the game, one copy for each test thread.
         static GLOBALS: UnsafeCell<[u8; ARENA]> = const { UnsafeCell::new([0; ARENA]) };
         static DEVICE_LOG: RefCell<Vec<[u32; 4]>> = const { RefCell::new(Vec::new()) };
         static PASS_LOG: RefCell<Vec<(usize, u32)>> = const { RefCell::new(Vec::new()) };
@@ -1403,7 +1411,8 @@ mod tests {
         Box::new([0, pass_skin as *const () as usize, pass_build as *const () as usize, pass_blend as *const () as usize, pass_link as *const () as usize, pass_register as *const () as usize, pass_reset as *const () as usize, 0])
     }
 
-    // A stand-in for the Code Patch hook: it stores the registers and the stack arguments.
+    // A replacement for the hook of the Code Patch. It stores the registers and the stack
+    // arguments.
     #[no_mangle]
     static mut NIRENDER_TP_PROBE: [u32; 11] = [0; 11];
 
@@ -1437,8 +1446,9 @@ mod tests {
         unsafe {
             texcoord_index_call(nirender_tp_probe as *const () as usize, 0x1111, 0x2222, 0x3333, 0x4444, 5, 0x30000);
             let probe = core::ptr::addr_of!(NIRENDER_TP_PROBE).read();
-            // EAX stage, ECX and EBP render state, EDX value, EBX renderer, ESI stage object,
-            // EDI render state at entry; then stage, TEXCOORDINDEX, value, no save.
+            // The registers: EAX stage, ECX and EBP render state, EDX value, EBX renderer, ESI
+            // stage object, EDI render state at entry. Then the stack arguments: stage,
+            // TEXCOORDINDEX, value, no save.
             assert_eq!(probe, [5, 0x1111, 0x30000, 0x4444, 0x3333, 0x2222, 0x1111, 5, 11, 0x30000, 0]);
         }
     }
@@ -1463,7 +1473,7 @@ mod tests {
             assert_eq!(rd::<[u32; 16]>(s, TS::textureMatrix), [0; 16]);
             assert_eq!(rd::<[u32; 3]>(s, TS::extraBlendColorArgument), [0xFFFF_FFFF, 1, 9]);
             assert_eq!(rd::<u8>(s, TS::bumpEnvMapEnabled), 0);
-            // The padding after the bool is not written.
+            // The constructor does not write the padding after the bool.
             assert_eq!(rd::<u8>(s, TS::bumpEnvMapEnabled + 1), 0xAA);
             assert_eq!(rd::<[f32; 6]>(s, TS::bumpEnvMap00), [0.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
             assert_eq!(rd::<[u32; 2]>(s, TS::texturePropMap), [0, 0]);
@@ -1489,7 +1499,7 @@ mod tests {
             wr::<u32>(s, TS::colorOp, 4);
             wr::<u32>(s, TS::extraBlendColorArgument, 0x1234);
             wr::<usize>(rs, RS::texturePerStage + 8, 0xBEEF);
-            // Stage 2 has COLORARG1 = 2 already.
+            // The cache of stage 2 has COLORARG1 = 2 before the call.
             wr::<u32>(rs, RS::maybe_textureStageStateSettings + (2 * 32 + 2) * 8, 2);
 
             assert_eq!(texture_stage_update_renderer(s, r), 1);
@@ -1501,7 +1511,8 @@ mod tests {
             assert_eq!(rd::<u32>(rs, RS::maybe_textureStageStateSettings + (2 * 32 + 1) * 8), 4);
             assert_eq!(rd::<u32>(rs, RS::renderStateSettings + 60 * 8), 0x1234);
 
-            // The second call finds everything in the cache; bump mapping adds its six states.
+            // The second call finds all the values in the cache. Bump mapping adds its 6
+            // states.
             DEVICE_LOG.with(|log| log.borrow_mut().clear());
             wr::<u8>(s, TS::bumpEnvMapEnabled, 1);
             wr::<f32>(s, TS::bumpEnvMap00, 0.5);
@@ -1567,7 +1578,8 @@ mod tests {
 
     #[test]
     fn alpha_templates_get_their_flags() {
-        // 0x00EC is what the inline constructor leaves: source alpha, inverse source alpha.
+        // 0x00EC is the value that the inline constructor leaves: source alpha, inverse source
+        // alpha.
         let expected = [0x0001u16, 0x00ED, 0x0043, 0x00EC, 0x1243, 0x00EC, 0x00ED, 0x00EC, 0x0001, 0x00EC];
         for (index, flags) in expected.into_iter().enumerate() {
             let mut property = [0u8; AP::SIZE];
@@ -1592,7 +1604,7 @@ mod tests {
             assert_eq!(rd::<u32>(p, 0x2B8), 0x17);
             assert_eq!(rd::<[u32; 3]>(p, 0x210), [0xD, 2, 1]);
             assert_eq!(rd::<[u32; 3]>(p, 0x2DC), [4, 2, 1]);
-            // The blocks the game code leaves alone.
+            // The blocks that the game code does not write.
             for untouched in [0x150, 0x164, 0x180, 0x194, 0x1B0, 0x1C4, 0x1E0, 0x1F4] {
                 assert_eq!(rd::<u32>(p, untouched), 0xEEEE_EEEE, "{untouched:#x}");
             }
@@ -1626,7 +1638,7 @@ mod tests {
             assert_eq!(rd::<u32>(p, CTP::field_B04), 0);
             assert_eq!(PASS_LOG.with(|log| log.borrow().clone()), [(c, 0x18), (c, 0x10)]);
 
-            // No change of pass: no reset.
+            // The pass does not change. Thus there is no reset.
             wr::<u32>(p, CTP::field_B04, 9);
             select_and_link_pass(p, ps, 0, 0, 0, 0, 0, 0, 0);
             assert_eq!(rd::<u32>(p, CTP::field_B04), 9);

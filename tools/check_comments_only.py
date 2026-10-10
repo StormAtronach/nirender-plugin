@@ -1,7 +1,7 @@
 """Checks that an edit changed comments only.
 
-Compares each given file with its version in git (HEAD by default) after the comments and
-the white space are taken out. Works for Rust, Lua and Python sources.
+Compares each given file with its version in git, without the comments and the white space.
+The default version is HEAD. Works for Rust, Lua and Python sources.
 
     python tools/check_comments_only.py [--ref <commit>] <file> [<file> ...]
 
@@ -44,7 +44,7 @@ def strip_rust(text):
             out.append(text[i:end + 1 + hashes])
             i = end + 1 + hashes
         elif c == "'":
-            # A character literal, not a lifetime: 'x' or '\n' or '\u{..}'.
+            # This is a character literal and not a lifetime: 'x' or '\n' or '\u{..}'.
             m = re.match(r"'(\\.[^']*|[^\\'])'", text[i:i + 12])
             if m:
                 out.append(m.group(0))
@@ -90,7 +90,7 @@ def code_of(path, text):
     elif path.endswith(".lua"):
         text = strip_hash_or_dash(text, "--")
     elif path.endswith(".py"):
-        # Docstrings count as code here: change them with care and check by eye.
+        # Docstrings count as code here. Change them with care and read the diff.
         text = strip_hash_or_dash(text, "#")
     return re.sub(r"\s+", "", text)
 

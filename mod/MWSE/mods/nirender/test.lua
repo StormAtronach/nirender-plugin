@@ -1,8 +1,8 @@
 ---@diagnostic disable
--- The in-game half of tools/run_test.py. Loads a save, runs the ports in shadow mode at the
--- place of the save and in each cell of spec.cells, then holds the game in menu mode and
--- runs the frame comparisons.
--- Progress goes to spec.progressFile; the runner stops the game at the line "DONE".
+-- The in-game part of tools/run_test.py. It loads a save. It runs the ports in shadow mode
+-- at the place of the save and in each cell of spec.cells. Then it holds the game in menu
+-- mode and runs the frame comparisons.
+-- Progress goes to spec.progressFile. The runner stops the game at the line "DONE".
 
 return function(nirender, spec)
     local function say(fmt, ...)
@@ -15,8 +15,8 @@ return function(nirender, spec)
         end
     end
 
-    -- Steps run from enterFrame on the real clock: game timers stop in menu mode and do not
-    -- exist before a save is loaded.
+    -- The steps run from enterFrame on the real clock. Game timers stop in menu mode and do
+    -- not exist before the game loads a save.
     local queue = {}
     local function after(seconds, fn)
         table.insert(queue, { at = os.clock() + seconds, fn = fn })
@@ -54,8 +54,8 @@ return function(nirender, spec)
         say("DONE")
     end
 
-    -- Runs the frame comparisons one after the other, then `done`. A comparison that reports
-    -- a change of the scene runs again, up to 8 times.
+    -- Runs the frame comparisons in sequence, then `done`. A comparison that reports a change
+    -- of the scene runs again, 8 times at most.
     local function frame_tests(where, list, done)
         local index = 0
         local tries = 0
@@ -104,7 +104,7 @@ return function(nirender, spec)
         if menu then menu:destroy() end
     end
 
-    -- Shadow mode for spec.shadowSeconds, then the frame tests in menu mode, then `done`.
+    -- Runs shadow mode for spec.shadowSeconds, then the frame tests in menu mode, then `done`.
     local function test_here(done)
         local where = tes3.player.cell.editorName
         say("shadow mode on for %d s in '%s' (%s)", spec.shadowSeconds, where, ports)
@@ -124,7 +124,7 @@ return function(nirender, spec)
     local function visit(index)
         local cell = spec.cells and spec.cells[index]
         if not cell then
-            -- Back in the game with the Rust code for a moment: it has to keep running.
+            -- The game runs with the Rust code for a short time. The game must continue to run.
             nirender.setMode(ports, (spec.liveSeconds or 0) > 0 and "live" or "off")
             say("live mode for %d s", spec.liveSeconds or 0)
             return after(spec.liveSeconds or 0, function()
@@ -139,8 +139,9 @@ return function(nirender, spec)
         end)
     end
 
-    -- For the comparison of two runs: the renderer objects and one frame, written at the
-    -- same point of each run (the save just loaded, menu mode, every port off).
+    -- Writes the renderer objects and one frame, for the comparison of two runs. Each run
+    -- writes them at the same point. At that point the save is loaded, the game is in menu
+    -- mode and every port is off.
     local function dumps(done)
         if not spec.dumpDir then return done() end
         nirender.setMode("*", "off")
@@ -168,7 +169,7 @@ return function(nirender, spec)
         started = true
         say("save loaded, cell '%s', x87 control word 0x%04x", tes3.player.cell.editorName, nirender.fpuControlWord())
         if spec.startMode then
-            -- What the start of the game ran in. The report has the counts.
+            -- The mode that the start of the game ran in. The report has the counts.
             say("the game started in mode '%s'", spec.startMode)
         end
         after(spec.settleSeconds or 4, function()

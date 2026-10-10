@@ -1,8 +1,9 @@
-//! Modes of a ported function and the shadow comparison.
+//! Modes of a port and the shadow comparison.
 //!
-//! In shadow mode a call runs twice from the same start state: the Rust function on a dry
-//! device, then the engine function for real. The device calls, the return value and the
-//! memory the function may write must be equal. The engine result is the one that stays.
+//! In shadow mode a call runs two times from the same start state. The Rust function runs
+//! first on a dry device. Then the engine function runs for real. The device calls, the
+//! return value and the memory that the function can write must be equal. The result of the
+//! engine function stays.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
@@ -28,7 +29,7 @@ impl Mode {
     }
 }
 
-/// One ported function.
+/// One port.
 pub struct PortState {
     pub name: &'static str,
     pub addr: usize,
@@ -36,20 +37,21 @@ pub struct PortState {
     /// The caller removes the stack arguments.
     pub cdecl: bool,
     pub detour: fn() -> usize,
-    /// The address to call for the engine function. 0 until the detour is installed.
+    /// The address to call for the engine function. 0 until the detour is in place.
     pub orig: AtomicUsize,
     pub mode: AtomicU8,
-    /// Another mod changed this function in a way the port does not serve. It stays game
-    /// code in this install: the mode cannot leave "off".
+    /// Another mod changed this function in a way that the port does not serve. The function
+    /// stays game code in this install. The mode cannot leave "off".
     pub locked: AtomicBool,
-    /// A function to call after each call of the port, whatever the mode. 0 = none.
+    /// A function to call after each call of the port, in every mode. 0 means none.
     pub after: AtomicUsize,
     /// Calls that ran the Rust function for real.
     pub live_calls: AtomicU64,
-    /// Times the Rust function ran at all: live, in a comparison, or called by another port.
+    /// The number of runs of the Rust function: live, in a comparison, or as a call from
+    /// another port.
     pub rust_runs: AtomicU64,
     pub shadow_calls: AtomicU64,
-    /// Calls in shadow mode that could not be compared.
+    /// Calls in shadow mode that the shadow test skipped.
     pub skipped: AtomicU64,
     pub mismatches: AtomicU64,
     pub reported: AtomicU32,
@@ -153,7 +155,7 @@ const LEG_ENGINE: u8 = 2;
 
 static LEG: AtomicU8 = AtomicU8::new(LEG_NONE);
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
-/// A frame comparison runs: shadow mode stays out of the way.
+/// Not 0 while a frame comparison runs. Shadow mode does not compare calls then.
 static SUSPENDED: AtomicU8 = AtomicU8::new(0);
 
 pub fn set_main_thread() {
@@ -164,7 +166,7 @@ pub fn suspend_shadow(on: bool) {
     SUSPENDED.store(on as u8, Ordering::Relaxed);
 }
 
-/// The memory regions a function may write, given by the port for each call.
+/// The memory regions that a function can write. The port gives them for each call.
 pub struct Regions {
     list: [(usize, usize); 8],
     len: usize,
@@ -181,13 +183,15 @@ impl Regions {
             self.len += 1;
         }
     }
-    /// This call allocates or frees memory. It can be compared only with the allocator hooks.
+    /// This call allocates or frees memory. The shadow test can compare it only with the
+    /// allocator hooks.
     pub fn allocates(&mut self) {
         if !crate::alloc::active() {
             self.skip = true;
         }
     }
-    /// This call cannot be compared (it creates a device resource, for one). The engine function runs alone.
+    /// The shadow test cannot compare this call. A call that creates a device resource is one
+    /// example. The engine function runs alone.
     pub fn skip(&mut self) {
         self.skip = true;
     }
@@ -221,7 +225,8 @@ unsafe fn restore(regions: &[(usize, usize)], from: &[u8]) {
     }
 }
 
-/// The differences between the saved bytes and the memory now, as text. Empty when equal.
+/// The differences between the saved bytes and the memory now, as text. The text is empty
+/// when they are equal.
 unsafe fn memory_differences(regions: &[(usize, usize)], rust: &[u8]) -> String {
     let mut text = String::new();
     let mut at = 0;
@@ -252,10 +257,10 @@ unsafe fn memory_differences(regions: &[(usize, usize)], rust: &[u8]) -> String 
     text
 }
 
-/// Runs a call of a ported function in the mode the port is in.
+/// Runs a call of a port in the mode of the port.
 ///
-/// `rust` and `engine` return what the function leaves in EAX. `compare_eax` says whether
-/// that value means something.
+/// `rust` and `engine` return what the function leaves in EAX. `compare_eax` tells if that
+/// value has a meaning.
 pub unsafe fn dispatch<R: Eax>(
     state: &PortState,
     compare_eax: bool,
@@ -283,8 +288,8 @@ unsafe fn dispatch_inner<R: Eax>(
     }
     let mode = state.mode();
     match LEG.load(Ordering::Relaxed) {
-        // Inside the Rust half of a comparison everything that is ported runs as Rust,
-        // except a function that is locked or switched off.
+        // Inside the Rust run of a comparison every function that has a port runs as Rust. A
+        // port that is locked or in mode off is the exception.
         LEG_RUST => {
             return if mode == Mode::Off { engine() } else { rust().to_eax() };
         }

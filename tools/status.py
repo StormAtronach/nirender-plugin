@@ -1,4 +1,4 @@
-"""Writes STATUS.md: what is ported and what the last game run measured.
+"""Writes STATUS.md. It tells which functions have a port and what the last game run measured.
 
 Inputs: tools/out/inventory.json (the functions), src/ports/*.rs (the ports), and the newest
 results/*/report.tsv and nirender.log.
@@ -25,10 +25,10 @@ def class_of(name):
 
 
 def newest_run():
-    """The newest run that got as far as a report."""
+    """The newest run that has a report."""
     runs = sorted(d for d in glob.glob(os.path.join(REPO, "results", "*")) if os.path.isfile(os.path.join(d, "report.tsv"))
                   and "video" not in os.path.basename(d) and os.path.getsize(os.path.join(d, "report.tsv")) > 0)
-    # The run to report can be named: python tools/status.py <part of the run name>
+    # A person can name the run for the report: python tools/status.py <part of the run name>
     if len(sys.argv) > 1:
         runs = [d for d in runs if sys.argv[1] in os.path.basename(d)]
     return runs[-1] if runs else None

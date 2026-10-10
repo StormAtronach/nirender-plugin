@@ -1,7 +1,8 @@
 """Merges a port branch into the current branch and registers its module.
 
 Every port branch adds a line to the same two lists in src/ports/mod.rs, so the merges
-conflict there. This takes our side of that file and adds the lines of the new module.
+conflict there. This script takes the version of that file from the current branch. Then it
+adds the lines of the new module.
 
     python tools/merge_port.py <branch> <module> [--sites]
 """

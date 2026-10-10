@@ -1,21 +1,23 @@
 //! Heap allocations inside a shadow comparison.
 //!
-//! A function that allocates gives a new address in each of its two runs, and every pointer
-//! it stores would differ. So the engine run gets the blocks the Rust run allocated, in the
-//! same order: `operator new` in the engine run returns the recorded block instead of a new
-//! one. A block is filled with a pattern before each run, so bytes that neither run writes
-//! are equal, and bytes that only one run writes are not.
+//! A function that allocates gets a new address in each of its two runs. Thus every pointer
+//! that it stores is different. So the engine run gets the blocks that the Rust run
+//! allocated, in the same order. `operator new` in the engine run returns the recorded block
+//! and does not allocate a new one. The code fills a block with a pattern before each run.
+//! Thus the bytes that neither run writes are equal. The bytes that only one run writes are
+//! not equal.
 //!
-//! A free in the Rust run is recorded and not done; the engine run does the real free.
+//! The code records a free in the Rust run and does not do it. The engine run does the real
+//! free.
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::hook::{self, Cleanup};
 
-/// `operator new(size_t)`: a jump through the import table.
+/// `operator new(size_t)` is a jump through the import table.
 const OPERATOR_NEW: usize = 0x727692;
 const OPERATOR_NEW_HEAD: [u8; 6] = [0xFF, 0x25, 0x58, 0x62, 0x74, 0x00];
-/// `operator delete(void*)`: `push [esp+4]; call free; pop ecx; ret`.
+/// `operator delete(void*)` is `push [esp+4]; call free; pop ecx; ret`.
 const OPERATOR_DELETE: usize = 0x727530;
 const OPERATOR_DELETE_HEAD: [u8; 9] = [0xFF, 0x74, 0x24, 0x04, 0xE8, 0xF9, 0x01, 0x00, 0x00];
 
@@ -31,7 +33,8 @@ pub enum Leg {
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static ORIG_NEW: AtomicUsize = AtomicUsize::new(0);
 static ORIG_DELETE: AtomicUsize = AtomicUsize::new(0);
-/// The thread the comparisons run on. Other threads allocate while one runs; they are not part of it.
+/// The thread that the comparisons run on. Other threads allocate during a comparison. Their
+/// allocations are not part of it.
 static THREAD: AtomicUsize = AtomicUsize::new(0);
 
 unsafe fn leg() -> Leg {
@@ -44,13 +47,14 @@ unsafe fn leg() -> Leg {
 
 struct State {
     leg: Leg,
-    /// Blocks the Rust run allocated: address, size.
+    /// The address and the size of each block that the Rust run allocated.
     blocks: Vec<(usize, usize)>,
-    /// How many of them the engine run has taken.
+    /// The number of these blocks that the engine run took.
     taken: usize,
     freed_rust: Vec<usize>,
     freed_engine: Vec<usize>,
-    /// The engine run asked for a block the Rust run did not allocate, or of another size.
+    /// The engine run asked for a block that the Rust run did not allocate, or for another
+    /// size.
     mismatch: bool,
 }
 
@@ -61,7 +65,8 @@ unsafe fn state() -> &'static mut State {
     &mut *core::ptr::addr_of_mut!(STATE)
 }
 
-/// True when the allocator hooks are in place, so a call that allocates can be compared.
+/// True when the allocator hooks are in place. Then the shadow test can compare a call that
+/// allocates.
 pub fn active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
@@ -138,8 +143,8 @@ pub unsafe fn begin_rust() {
     s.leg = Leg::Rust;
 }
 
-/// Between the runs: keeps what the Rust run left in its blocks in `saved` and fills the
-/// blocks again for the engine run.
+/// The code calls this between the runs. It copies the content that the Rust run left in
+/// its blocks into `saved`. Then it fills the blocks again for the engine run.
 pub unsafe fn begin_engine(saved: &mut Vec<u8>) {
     let s = state();
     saved.clear();
@@ -150,8 +155,8 @@ pub unsafe fn begin_engine(saved: &mut Vec<u8>) {
     s.leg = Leg::Engine;
 }
 
-/// End of the engine run. Returns the differences as text; empty when the two runs
-/// allocated, wrote and freed the same.
+/// End of the engine run. Returns the differences as text. The text is empty when the two
+/// runs allocated, wrote and freed the same.
 pub unsafe fn end(saved: &[u8]) -> String {
     let s = state();
     s.leg = Leg::None;
@@ -167,12 +172,12 @@ pub unsafe fn end(saved: &[u8]) -> String {
         let rust = &saved[at..at + size];
         at += size;
         if index >= s.taken {
-            // The engine run never took it. Its own frees did not touch it either.
+            // The engine run did not take the block. The engine run did not free it.
             real_delete(ptr);
             continue;
         }
         if s.freed_engine.contains(&ptr) {
-            continue; // freed again in the same call: the content is gone
+            continue; // The same call freed the block again, so the content is gone.
         }
         let engine = core::slice::from_raw_parts(ptr as *const u8, size);
         if let Some(offset) = (0..size).find(|&i| rust[i] != engine[i]) {

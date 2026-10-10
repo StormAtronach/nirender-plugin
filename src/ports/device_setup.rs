@@ -1,9 +1,10 @@
 //! `NiDX8Renderer`: creation, loss and destruction of the device.
 //!
 //! The game code has C++ exception frames in `Create`, `Recreate`, `dtor`, `GetAdapters`,
-//! `createDefaultTextures`, `probeTextureFormats` and `videoAdapterEnum`. They are not here:
-//! each one only frees a block from `operator new` when the constructor that runs on it
-//! throws, or runs the member destructors of `dtor` when one of them throws.
+//! `createDefaultTextures`, `probeTextureFormats` and `videoAdapterEnum`. The port does not
+//! have them. Each frame only frees a block from `operator new` when the constructor that
+//! runs on the block throws. A frame of `dtor` only runs the member destructors when one of
+//! them throws.
 
 use core::mem::transmute;
 
@@ -121,7 +122,6 @@ const FOURCC_DXT4: u32 = 0x3454_5844;
 const FOURCC_DXT5: u32 = 0x3554_5844;
 const FOURCC_YUY2: u32 = 0x3259_5559;
 const FOURCC_UYVY: u32 = 0x5956_5955;
-/// `D3DCREATE_MULTITHREADED`
 const D3DCREATE_MULTITHREADED: u32 = 4;
 
 /// The sizes `Create` gives `operator new`.
@@ -168,7 +168,7 @@ unsafe fn virtual_at(object: usize, offset: usize) -> usize {
     rd(rd::<usize>(object, 0), offset)
 }
 
-/// The virtual deleting destructor of an engine object, with "free the memory".
+/// Calls the virtual deleting destructor of an engine object with the flag "free the memory".
 unsafe fn delete_object(object: usize) {
     thiscall1(virtual_at(object, 0), object, 1);
 }
@@ -198,7 +198,7 @@ unsafe fn debug_print1(text: usize, value: usize) {
     transmute::<usize, unsafe extern "C" fn(usize, usize)>(0x6E9A00)(text, value)
 }
 
-/// 0x6E9A00 again: the destructor of `NiBound`, with the bound in ECX.
+/// 0x6E9A00 is also the destructor of `NiBound`. The bound is in ECX.
 unsafe fn bound_dtor(bound: usize) {
     thiscall0(0x6E9A00, bound);
 }
@@ -252,7 +252,7 @@ unsafe fn std_string_tidy(string: usize, built: u32) {
 
 // Engine functions.
 
-/// 0x6A9A70 `NiDX8Renderer::ctor`. Another mod changes it in memory, so it is not ported.
+/// 0x6A9A70 `NiDX8Renderer::ctor`. Another mod changes it in memory, so it has no port.
 unsafe fn renderer_ctor(this: usize) -> usize {
     thiscall0(0x6A9A70, this) as usize
 }
@@ -282,7 +282,7 @@ unsafe fn device_desc_find_depth_stencil(desc: usize, format: u32, target_format
     thiscall4(0x6B21D0, desc, format, target_format, depth_bits, stencil_bits)
 }
 
-/// 0x6B25D0 `NiDX8AdapterDesc::findClosestMode`. Returns the mode or 0; changes the rate.
+/// 0x6B25D0 `NiDX8AdapterDesc::findClosestMode`. Returns the mode or 0. It changes the rate.
 unsafe fn adapter_desc_find_closest_mode(adapter: usize, format: u32, width: u32, height: u32, refresh_rate: usize) -> usize {
     thiscall4(0x6B25D0, adapter, format, width, height, refresh_rate as u32) as usize
 }
@@ -404,7 +404,7 @@ unsafe fn hash_map_remove(map: usize, key: usize) {
 }
 
 /// 0x6B12B0 `sub_6B12B0`: gives the key and the value at the position `*position` of a
-/// hash map and moves the position to the next node.
+/// hash map. Then it moves the position to the next node.
 unsafe fn hash_map_get_next(map: usize, position: usize, key: usize, value: usize) {
     thiscall3(0x6B12B0, map, position as u32, key as u32, value as u32);
 }
@@ -500,9 +500,9 @@ unsafe fn creation_failed(error: usize, log: usize) {
     debug_print(log);
 }
 
-/// The sequence that `CreateD3D`, `GetAdapters` and `Create` have inline: gets
-/// `Direct3DCreate8` from D3D8.DLL when the game does not have it, and makes the
-/// `IDirect3D8` (SDK version 120). False when a step gave 0.
+/// `CreateD3D`, `GetAdapters` and `Create` have this sequence inline. It gets
+/// `Direct3DCreate8` from D3D8.DLL when the game does not have it. Then it makes the
+/// `IDirect3D8` with SDK version 120. It returns false when a step gave 0.
 unsafe fn load_direct3d() -> bool {
     let mut create: usize = rd(DIRECT3D_CREATE8, 0);
     if create == 0 {
@@ -521,8 +521,8 @@ unsafe fn load_direct3d() -> bool {
     direct3d != 0
 }
 
-/// The device description of the adapter and device type the renderer has. The game code
-/// reads `caps.DeviceType` of the result before it tests the result for 0.
+/// Returns the device description for the adapter and the device type that the renderer has.
+/// The game code reads `caps.DeviceType` of the result before it tests the result for 0.
 unsafe fn selected_device_desc(this: usize) -> usize {
     let system: usize = rd(this, R::systemDesc);
     let index: usize = rd(this, R::currentAdapterIndex);
@@ -609,7 +609,7 @@ unsafe fn free_geom_buffer(buffer: usize) {
     operator_delete(buffer);
 }
 
-/// Takes one reference from an object and deletes it at 0.
+/// Takes one reference from an object. It deletes the object when the count becomes 0.
 unsafe fn release_reference(object: usize) {
     let count = rd::<u32>(object, NiRefObject::refCount).wrapping_sub(1);
     wr(object, NiRefObject::refCount, count);
@@ -671,8 +671,9 @@ pub unsafe fn get_adapters() -> usize {
     system_desc_ctor(block, direct3d)
 }
 
-/// The game has no `IDirect3D8`: the call loads D3D8.DLL. Else the system description is
-/// new memory from `operator new`, and its constructor only asks `IDirect3D8`.
+/// When the game has no `IDirect3D8`, the call loads D3D8.DLL, and that call is a skip. In
+/// the other case the system description is new memory from `operator new`, and its
+/// constructor only reads from `IDirect3D8`.
 unsafe fn get_adapters_regions(set: &mut Regions) {
     if rd::<usize>(DIRECT3D, 0) == 0 {
         set.skip();
@@ -686,8 +687,9 @@ unsafe fn get_adapters_regions(set: &mut Regions) {
 // ---------------------------------------------------------------------------------------
 
 /// 0x6B2920 `NiDX8Renderer_static::D3DFORMAT_toString`. Returns the address of the name in
-/// the game. The game code compares the format as a signed number, then as unsigned in the
-/// two tables; both orders give "UNKNOWN" for a value that is not in the list.
+/// the game. The game code compares the format as a signed number. Then it compares the
+/// format as an unsigned number in the two tables. Both orders give "UNKNOWN" for a value
+/// that is not in the list.
 pub unsafe fn d3dformat_to_string(format: u32) -> usize {
     crate::shadow::touch(&d3dformat_to_string_port::STATE);
     match format {
@@ -739,7 +741,8 @@ pub unsafe fn d3dformat_to_string(format: u32) -> usize {
 // InitializePresentParams
 // ---------------------------------------------------------------------------------------
 
-/// The `D3DFORMAT` of a frame buffer format of NetImmerse (1 to 11), else `D3DFMT_UNKNOWN`.
+/// Returns the `D3DFORMAT` for a frame buffer format of NetImmerse, 1 to 11. For other values
+/// it returns `D3DFMT_UNKNOWN`.
 fn frame_buffer_d3d_format(format: u32) -> u32 {
     if (1..=11).contains(&format) {
         format + 19
@@ -748,7 +751,8 @@ fn frame_buffer_d3d_format(format: u32) -> u32 {
     }
 }
 
-/// `D3DMULTISAMPLE_TYPE` of a sample count: 2 to 16 stay, the rest is "none".
+/// Returns the `D3DMULTISAMPLE_TYPE` for a sample count. The counts 2 to 16 stay. Each other
+/// count becomes "none".
 fn multi_sample_type(samples: u32) -> u32 {
     if (2..=16).contains(&samples) {
         samples
@@ -757,7 +761,7 @@ fn multi_sample_type(samples: u32) -> u32 {
     }
 }
 
-/// `D3DSWAPEFFECT`: with more than one sample always "discard" (1).
+/// Returns the `D3DSWAPEFFECT`. With more than one sample it is always "discard" (1).
 fn swap_effect_value(samples: u32, swap_effect: u32) -> u32 {
     if samples == 0 || samples == 1 {
         match swap_effect {
@@ -780,7 +784,7 @@ fn refresh_rate_value(refresh_rate: u32) -> u32 {
     }
 }
 
-/// `D3DPRESENT_INTERVAL_*` of the interval enum of NetImmerse.
+/// Returns the `D3DPRESENT_INTERVAL_*` value for the interval enum of NetImmerse.
 fn presentation_interval_value(interval: u32) -> u32 {
     match interval {
         0 => 0x8000_0000, // immediate
@@ -792,7 +796,8 @@ fn presentation_interval_value(interval: u32) -> u32 {
     }
 }
 
-/// `InitializePresentParams` with the address of the `IDirect3D8` it asks.
+/// Does the work of `InitializePresentParams`. An argument gives the address of the
+/// `IDirect3D8` that it calls.
 #[allow(clippy::too_many_arguments)]
 unsafe fn initialize_present_params_on(
     this: usize,
@@ -811,7 +816,8 @@ unsafe fn initialize_present_params_on(
     let device_desc: usize = rd(this, R::maybe_currentDeviceDesc);
     // Bit 2 of the flags is "full screen".
     let windowed = !(flags >> 2) & 1;
-    // The game code puts the byte back into the argument and gives the whole word on.
+    // The game code puts the byte back into the argument. Then it passes the full word to the
+    // next call.
     let windowed_word = (flags & 0xFFFF_FF00) | windowed;
     let depth: u32 = if flags & 0x10 != 0 { 16 } else { 32 };
 
@@ -848,7 +854,7 @@ unsafe fn initialize_present_params_on(
     wr(this, R::d3dPresentParameters_BackBufferCount, backbuffer_count);
     wr(this, R::d3dPresentParameters_Windowed, windowed);
     wr(this, R::d3dPresentParameters_SwapEffect, swap_effect_value(samples, swap_effect));
-    // D3DPRESENTFLAG_LOCKABLE_BACKBUFFER when the sample count is exactly 1.
+    // The flag is D3DPRESENTFLAG_LOCKABLE_BACKBUFFER when the sample count is exactly 1.
     wr(this, R::d3dPresentParameters_Flags, (samples == 1) as u32);
     wr::<u32>(this, R::d3dPresentParameters_hDeviceWindow, rd(this, R::windowDevice));
     let rate_slot = this + R::d3dPresentParameters_FullScreen_RefreshRateInHz;
@@ -944,8 +950,8 @@ unsafe fn initialize_present_params_regions(set: &mut Regions, this: usize) {
 // validateDeviceCaps
 // ---------------------------------------------------------------------------------------
 
-/// 0x6AB960 `NiDX8Renderer::validateDeviceCaps`: the capability flags (`GetFlags`), the
-/// number of hardware bones and whether cube maps can have mip maps.
+/// 0x6AB960 `NiDX8Renderer::validateDeviceCaps`. It sets the capability flags (`GetFlags`),
+/// the number of hardware bones and the flag that tells if cube maps can have mip maps.
 pub unsafe fn validate_device_caps(this: usize) -> u8 {
     crate::shadow::touch(&validate_device_caps_port::STATE);
     let device_desc = selected_device_desc(this);
@@ -998,8 +1004,8 @@ unsafe fn c_string_length(text: usize) -> usize {
     length
 }
 
-/// Copies `count` bytes from `from` to the end of the C string at `to`, as the inline
-/// `strcat` of the game code does with a dword, a word and a byte.
+/// Copies `count` bytes from `from` to the end of the C string at `to`. The inline `strcat`
+/// of the game code does this with a dword, a word and a byte.
 unsafe fn append_bytes(to: usize, from: usize, count: usize) {
     let end = to + c_string_length(to);
     for at in 0..count {
@@ -1007,7 +1013,7 @@ unsafe fn append_bytes(to: usize, from: usize, count: usize) {
     }
 }
 
-/// The text of the behaviour flags of the device in `field_28C` (32 bytes).
+/// Writes the text of the behaviour flags of the device into `field_28C` (32 bytes).
 unsafe fn write_behavior_text(this: usize, empty: usize, texts: [usize; 5]) {
     let text = this + R::field_28C;
     let mut at = 0;
@@ -1037,8 +1043,8 @@ unsafe fn write_behavior_text(this: usize, empty: usize, texts: [usize; 5]) {
     }
 }
 
-/// 0x6ABBA0 `NiDX8Renderer::GetDriverInfo`: "description (HAL-PURE MT HWVP)" in
-/// `driverDesc`. Returns `driverDesc`.
+/// 0x6ABBA0 `NiDX8Renderer::GetDriverInfo`. It writes a text of the form
+/// "description (HAL-PURE MT HWVP)" into `driverDesc`. It returns `driverDesc`.
 pub unsafe fn get_driver_info(this: usize) -> usize {
     crate::shadow::touch(&get_driver_info_port::STATE);
     let description = this + R::driverDesc;
@@ -1065,8 +1071,9 @@ pub unsafe fn get_driver_info(this: usize) -> usize {
 // Texture formats and default textures
 // ---------------------------------------------------------------------------------------
 
-/// The `NiPixelFormat` of the slot `index` of a texture format group: a new block from
-/// `operator new`, or 0 when the block is 0. `None` for the two slots with no format.
+/// Makes the `NiPixelFormat` for the slot `index` of a texture format group in a new block
+/// from `operator new`. It returns 0 when the block is 0. It returns `None` for the two slots
+/// that have no format.
 unsafe fn probe_pixel_format(index: u32) -> Option<usize> {
     if index == 6 || index == 7 {
         return None;
@@ -1102,10 +1109,10 @@ unsafe fn probe_pixel_format(index: u32) -> Option<usize> {
     })
 }
 
-/// 0x6B05E0 `NiDX8Renderer::probeTextureFormats`: one `NiDX8PixelFormat` in `formats` for
-/// each of the 14 texture formats the device has for `resource_type` (3 = texture, 5 = cube
-/// texture) with the format of the back buffer; 0 for the others. The game code does not
-/// read the second argument.
+/// 0x6B05E0 `NiDX8Renderer::probeTextureFormats`. It tests the 14 texture formats for
+/// `resource_type` with the format of the back buffer. The value 3 is a texture and 5 is a
+/// cube texture. It puts one `NiDX8PixelFormat` into `formats` for each format the device
+/// has, and 0 for the others. The game code does not read the second argument.
 pub unsafe fn probe_texture_formats(this: usize, formats: usize, _unused: u32, resource_type: u32) {
     crate::shadow::touch(&probe_texture_formats_port::STATE);
     let backbuffer_format: usize = rd(this, R::backbufferRenderTarget_DX8PixelFormat);
@@ -1115,7 +1122,7 @@ pub unsafe fn probe_texture_formats(this: usize, formats: usize, _unused: u32, r
         if let Some(pixel_format) = probe_pixel_format(index) {
             let mut dx8_format = operator_new(PF::SIZE);
             if dx8_format != 0 {
-                // Slots 0, 1, 3, 4, 5 and 8 call the copy function; the others have the
+                // Slots 0, 1, 3, 4, 5 and 8 call the copy function. The other slots have the
                 // eight words inline.
                 if matches!(index, 0 | 1 | 3 | 4 | 5 | 8) {
                     pixel_format_copy(dx8_format, pixel_format);
@@ -1128,7 +1135,7 @@ pub unsafe fn probe_texture_formats(this: usize, formats: usize, _unused: u32, r
                 let d3d_format = d3d_format_for_pixel_format(pixel_format);
                 wr(dx8_format, PF::d3dFormat, d3d_format);
             }
-            // With no block the game code writes to address 0x20, as this does.
+            // With no block the game code writes to address 0x20. The port does the same.
             wr(dx8_format, PF::extraData, index);
 
             if pixel_format != 0 && dx8_format != 0 {
@@ -1161,8 +1168,8 @@ pub unsafe fn probe_texture_formats(this: usize, formats: usize, _unused: u32, r
     }
 }
 
-/// The formats are in the renderer; the rest is memory from `operator new` and
-/// `operator delete`, and `CheckDeviceFormat` only asks.
+/// The formats are in the renderer. The other memory comes from `operator new` and
+/// `operator delete`. `CheckDeviceFormat` only reads.
 unsafe fn probe_texture_formats_regions(set: &mut Regions, this: usize, formats: usize) {
     set.allocates();
     set.add(this, R::SIZE);
@@ -1185,9 +1192,9 @@ unsafe fn default_texture_format(this: usize, group: usize) -> usize {
     0
 }
 
-/// 0x6ABA70 `NiDX8Renderer::createDefaultTextures`: for each of the four groups the
-/// default format and a white 4 x 4 `NiPixelData` in it. Returns whether the first group
-/// has a format.
+/// 0x6ABA70 `NiDX8Renderer::createDefaultTextures`. For each of the four groups it sets the
+/// default format and makes a white 4 x 4 `NiPixelData` in that format. The return value
+/// tells if the first group has a format.
 pub unsafe fn create_default_textures(this: usize) -> u8 {
     crate::shadow::touch(&create_default_textures_port::STATE);
     for group in 0..FORMAT_GROUPS {
@@ -1211,7 +1218,7 @@ pub unsafe fn create_default_textures(this: usize) -> u8 {
                     wr(pixel_data, NiRefObject::refCount, rd::<u32>(pixel_data, NiRefObject::refCount).wrapping_add(1));
                 }
             }
-            // The pixels of the first mip map level: all bits set.
+            // Sets all bits of the pixels of the first mip map level.
             let pixel_data: usize = rd(slot, 0);
             let offset: usize = rd(rd(pixel_data, NiPixelData::mipmapOffsets), 0);
             let pixels = offset.wrapping_add(rd(pixel_data, NiPixelData::pixelsAllMips));
@@ -1222,8 +1229,8 @@ pub unsafe fn create_default_textures(this: usize) -> u8 {
     (rd::<u32>(this, R::defaultTextureFormats) != 0) as u8
 }
 
-/// 0x6AB8C0 `NiDX8Renderer::initializeTextureDefaults`: the texture formats of the device,
-/// the default textures and the depth format for each format of the second group.
+/// 0x6AB8C0 `NiDX8Renderer::initializeTextureDefaults`. It makes the texture formats of the
+/// device, the default textures and the depth format for each format of the second group.
 pub unsafe fn initialize_texture_defaults(this: usize) -> u8 {
     crate::shadow::touch(&initialize_texture_defaults_port::STATE);
     let formats = this + R::arrayArrayTextureFormats;
@@ -1233,7 +1240,7 @@ pub unsafe fn initialize_texture_defaults(this: usize) -> u8 {
     probe_texture_formats(this, formats + FORMATS_PER_GROUP * 12, 1, 5);
     create_default_textures(this);
     for index in 0..FORMATS_PER_GROUP {
-        // `depthStencilFormats - 0xC8`: the second group of texture formats.
+        // `depthStencilFormats - 0xC8` is the second group of texture formats.
         let format: usize = rd(this, R::depthStencilFormats - 0xC8 + index * 4);
         let depth_stencil = if format != 0 {
             device_desc_find_depth_stencil(
@@ -1255,7 +1262,7 @@ pub unsafe fn initialize_texture_defaults(this: usize) -> u8 {
 // Create
 // ---------------------------------------------------------------------------------------
 
-/// The device type and the vertex processing of a device choice of `Create` (0 to 4).
+/// Sets the device type and the vertex processing for a device choice of `Create` (0 to 4).
 unsafe fn select_device(this: usize, choice: u32) {
     let (device_type, behavior) = match choice {
         0 => (D3DDEVTYPE_HAL, 0x50), // pure, hardware vertex processing
@@ -1268,7 +1275,7 @@ unsafe fn select_device(this: usize, choice: u32) {
     wr::<u32>(this, R::d3dBehaviorFlags, behavior);
 }
 
-/// The members of the `NiDX8PixelFormat` that `Create` makes for the back buffer.
+/// Sets the members of the `NiDX8PixelFormat` that `Create` makes for the back buffer.
 unsafe fn init_backbuffer_pixel_format(format: usize, d3d_format: u32) {
     wr::<u32>(format, PF::bitsPerPixel, 8);
     wr::<u32>(format, PF::channelMasks + 12, 0);
@@ -1312,15 +1319,16 @@ unsafe fn init_backbuffer_pixel_format(format: usize, d3d_format: u32) {
     }
 }
 
-/// The end of the paths of `Create` that fail: deletes the renderer and returns 0.
+/// The paths of `Create` that fail end here. It deletes the renderer and returns 0.
 unsafe fn abandon(this: usize) -> usize {
     delete_object(this);
     0
 }
 
 /// One try of `Create` with the device choice the renderer has. `backbuffer_count` is the
-/// register the game code keeps the count in: after a `CreateDevice` it has the count of
-/// the present parameters from before the call. True when the device exists.
+/// register in which the game code keeps the count. After a `CreateDevice` call it has the
+/// count that the present parameters had before the call. It returns true when the device
+/// exists.
 #[allow(clippy::too_many_arguments)]
 unsafe fn try_create_device(
     this: usize,
@@ -1375,7 +1383,8 @@ unsafe fn try_create_device(
     if *backbuffer_count == rd::<u32>(this, R::d3dPresentParameters_BackBufferCount) {
         return false;
     }
-    // The device changed the number of back buffers: once more with that number.
+    // The device changed the number of back buffers. The port calls `CreateDevice` again with
+    // that number.
     debug_print(0x7C2F18);
     let behavior = rd::<u32>(this, R::d3dBehaviorFlags) | D3DCREATE_MULTITHREADED;
     wr(this, R::d3dBehaviorFlags, behavior);
@@ -1392,12 +1401,12 @@ unsafe fn try_create_device(
     result == 0
 }
 
-/// The back buffer and the depth buffer of the device into `backbufferRenderTarget`, as
-/// `Create` and `Recreate` do after the device exists. `make_format` makes the
+/// Puts the back buffer and the depth buffer of the device into `backbufferRenderTarget`.
+/// `Create` and `Recreate` do this after the device exists. `make_format` makes the
 /// `NiDX8PixelFormat` in a new block. `log` has the two debug texts.
 ///
-/// When `GetDesc` fails the game code takes the width and the height from stack memory it
-/// did not fill; here they are 0.
+/// When `GetDesc` fails, the game code takes the width and the height from stack memory that
+/// it did not fill. In the port they are 0.
 unsafe fn read_back_buffer(this: usize, make_format: unsafe fn(usize, u32), log: [usize; 2]) {
     let target = this + R::backbufferRenderTarget;
     for word in 0..RT::SIZE / 4 {
@@ -1422,7 +1431,7 @@ unsafe fn read_back_buffer(this: usize, make_format: unsafe fn(usize, u32), log:
     wr(this, R::currentRenderTarget, target);
 }
 
-/// The pixel format of the back buffer as `Recreate` makes it.
+/// Makes the pixel format of the back buffer as `Recreate` does.
 unsafe fn make_format_with_setter(format: usize, d3d_format: u32) {
     dx8_pixel_format_ctor(format);
     dx8_pixel_format_set(format, d3d_format);
@@ -1430,9 +1439,9 @@ unsafe fn make_format_with_setter(format: usize, d3d_format: u32) {
 
 /// 0x6AA3F0 `NiDX8Renderer::Create` (cdecl). Returns the renderer or 0.
 ///
-/// `device_caps` is the first device choice (0 = pure hardware, 1 = hardware, 2 = mixed,
-/// 3 = software vertex processing, 4 = reference device). A choice that fails goes to the
-/// next one up to 3.
+/// `device_caps` is the first device choice: 0 is pure hardware, 1 is hardware, 2 is mixed,
+/// 3 is software vertex processing and 4 is the reference device. When a choice fails, the
+/// port tries the next choice, up to 3.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn create(
     width: u32,
@@ -1518,7 +1527,7 @@ pub unsafe fn create(
         }
         choice += 1;
         if choice == 4 {
-            // The reference device is never a fallback.
+            // The reference device is never the next choice after a failure.
             debug_print(0x7C2DE0);
             return abandon(this);
         }
@@ -1556,8 +1565,8 @@ pub unsafe fn create(
     let manager = if block != 0 { texture_manager_ctor(block, this) } else { 0 };
     wr(this, R::textureManager, manager);
 
-    // Bit 7 of the capability flags: the depth buffer has stencil. The game code pushes
-    // the whole shifted word with its low byte cut to that bit.
+    // Bit 7 of the capability flags means that the depth buffer has stencil. The game code
+    // pushes the full shifted word, with its low byte reduced to that bit.
     let shifted = rd::<u32>(this, R::capabilityFlags) >> 7;
     let stencil = (shifted & 0xFFFF_FF00) | (shifted & 1);
     let state = render_state_create(rd(this, R::d3dDevice), caps, 1, 1, stencil);
@@ -1611,12 +1620,12 @@ unsafe fn unlink_renderer_data(texture: usize, data: usize) {
     }
 }
 
-/// The first half of `Recreate` for one map of rendered textures: deletes the renderer
+/// The first half of `Recreate` for one map of rendered textures. It deletes the renderer
 /// data of every texture and leaves the texture in the map with the value 0.
 ///
-/// In the map of cube maps the game code gives the position of the next node as the key
-/// when it fills the node again (0x6AB1CD), not the texture. `key_is_next_position` has
-/// that.
+/// In the map of cube maps the game code fills the node again at 0x6AB1CD. There it gives
+/// the position of the next node as the key, not the texture. `key_is_next_position`
+/// selects that behaviour.
 unsafe fn release_rendered_textures(map: usize, key_is_next_position: bool) {
     let mut position = hash_map_first(map);
     while position != 0 {
@@ -1653,9 +1662,9 @@ unsafe fn release_rendered_textures(map: usize, key_is_next_position: bool) {
     }
 }
 
-/// 0x6AAE80 `NiDX8Renderer::Recreate`: resets a lost device. Everything that lives in the
-/// default pool goes first and comes back after `Reset`. Returns 0 when `Reset` fails or
-/// the texture formats cannot be made.
+/// 0x6AAE80 `NiDX8Renderer::Recreate`. It resets a lost device. It releases each object of
+/// the default pool first and makes it again after `Reset`. It returns 0 when `Reset` fails
+/// or when it cannot make the texture formats.
 pub unsafe fn recreate(this: usize) -> u8 {
     crate::shadow::touch(&recreate_port::STATE);
     light_manager::release_lights(rd(this, R::lightManager));
@@ -1690,8 +1699,8 @@ pub unsafe fn recreate(this: usize) -> u8 {
         return 0;
     }
 
-    // New renderer data for every rendered texture: virtual functions at +0xF8 and +0xFC
-    // of the renderer.
+    // Makes new renderer data for every rendered texture. The virtual functions at +0xF8 and
+    // +0xFC of the renderer do this.
     let mut position = hash_map_first(textures);
     while position != 0 {
         let texture: usize = rd(position, Node::key);
@@ -1793,7 +1802,8 @@ pub unsafe fn dtor(this: usize) {
         }
     }
 
-    // The geometry buffers of the skin partitions; a partition with one leaves the map.
+    // The geometry buffers of the skin partitions. The port removes a partition that has a
+    // buffer from the map.
     let skin_partitions = this + R::hashmap_skinPartitionsToGeomBuffers;
     let mut node = hash_map_first(skin_partitions);
     while node != 0 {
@@ -1895,7 +1905,7 @@ pub unsafe fn dtor(this: usize) {
     ni_renderer_dtor(this);
 }
 
-/// 0x6A9D80 `NiDX8Renderer::deleting_dtor`. Bit 0 of `flags`: free the memory.
+/// 0x6A9D80 `NiDX8Renderer::deleting_dtor`. Bit 0 of `flags` means "free the memory".
 pub unsafe fn deleting_dtor(this: usize, flags: u8) -> usize {
     crate::shadow::touch(&deleting_dtor_port::STATE);
     dtor(this);
@@ -1909,11 +1919,11 @@ pub unsafe fn deleting_dtor(this: usize, flags: u8) -> usize {
 // videoAdapterEnum
 // ---------------------------------------------------------------------------------------
 
-/// 0x429E20 `NiDX8Renderer_static::videoAdapterEnum` (cdecl): fills the map of `TES3Game`
+/// 0x429E20 `NiDX8Renderer_static::videoAdapterEnum` (cdecl). It fills the map of `TES3Game`
 /// from the description of an adapter to its `NiDX8AdapterDesc`.
 ///
-/// The system description is deleted at the end, so the map has pointers into freed
-/// memory, as in the game.
+/// The port deletes the system description at the end, so the map has pointers into freed
+/// memory. The game does the same.
 pub unsafe fn video_adapter_enum(game: usize) {
     crate::shadow::touch(&video_adapter_enum_port::STATE);
     let map = game + GAME_ADAPTER_MAP;
@@ -1951,7 +1961,7 @@ pub unsafe fn video_adapter_enum(game: usize) {
                 let node = copy[0];
                 std_string_tidy(pair, 1);
                 wr(node, STD_MAP_NODE_VALUE, adapter);
-                // The destructor of the name: the byte before the text counts the users.
+                // The destructor of the name. The byte before the text counts the users.
                 let text: usize = rd(name, 4);
                 if text != 0 {
                     let users: u8 = rd(text - 1, 0);
@@ -2003,7 +2013,7 @@ port_thiscall!(deleting_dtor_port, 0x6A9D80, "NiDX8Renderer::deleting_dtor",
     regions = |set| set.skip(),
     rust = deleting_dtor);
 
-// Destroys the device, frees D3D8.DLL.
+// Destroys the device and frees D3D8.DLL.
 port_thiscall!(dtor_port, 0x6A9E10, "NiDX8Renderer::dtor",
     fn(this) -> (),
     compare_eax = false,
@@ -2033,8 +2043,8 @@ port_thiscall!(initialize_present_params_port, 0x6AB470, "NiDX8Renderer::Initial
     regions = |set| initialize_present_params_regions(set, this),
     rust = initialize_present_params);
 
-// The default textures are engine objects with a constructor that cannot run twice, and
-// an old one can be deleted through its virtual destructor.
+// The default textures are engine objects with a constructor that cannot run twice. The
+// call can also delete an old texture through its virtual destructor.
 port_thiscall!(initialize_texture_defaults_port, 0x6AB8C0, "NiDX8Renderer::initializeTextureDefaults",
     fn(this) -> u8,
     compare_eax = true,
@@ -2078,8 +2088,8 @@ port_cdecl!(d3dformat_to_string_port, 0x6B2920, "NiDX8Renderer_static::D3DFORMAT
     regions = |set| (),
     rust = d3dformat_to_string);
 
-// The map and the strings use the allocator of MSVCP60, which the heap tracking does not
-// see, and the function can load D3D8.DLL.
+// The map and the strings use the allocator of MSVCP60, and the heap tracking does not see
+// that allocator. The function can also load D3D8.DLL.
 port_cdecl!(video_adapter_enum_port, 0x429E20, "NiDX8Renderer_static::videoAdapterEnum",
     fn(game: usize) -> (),
     compare_eax = false,
@@ -2159,7 +2169,8 @@ mod tests {
             assert_eq!(d3dformat_to_string(u32::from_le_bytes(*b"DXT5")), 0x7C3548);
             assert_eq!(d3dformat_to_string(u32::from_le_bytes(*b"YUY2")), 0x7C356C);
             assert_eq!(d3dformat_to_string(u32::from_le_bytes(*b"UYVY")), 0x7C353C);
-            // Not in the list: in a gap of a table, between the tables, negative.
+            // Values that are not in the list: in a gap of a table, between the tables, and
+            // negative.
             for format in [1, 19, 31, 42, 53, 66, 72, 81, 99, 103, 0x3154_5845, 0x7FFF_FFFF, 0x8000_0000, 0xFFFF_FFFF] {
                 assert_eq!(d3dformat_to_string(format), 0x7941B8, "{format:#x}");
             }
@@ -2197,7 +2208,7 @@ mod tests {
     fn present_parameters_of_a_window() {
         let mut vtable = [0usize; 16];
         vtable[0x2C / 4] = fake_check_multi_sample as *const () as usize;
-        // The object is one pointer to the vtable; the slot has the address of the object.
+        // The object is one pointer to the vtable. The slot has the address of the object.
         let object = vtable.as_ptr() as usize;
         let object_address = &object as *const usize as usize;
         let slot = &object_address as *const usize as usize;
@@ -2219,9 +2230,9 @@ mod tests {
             assert_eq!(rd::<[u32; 13]>(r, R::d3dPresentParameters), [800, 600, 22, 1, 4, 1, 0x1234, 1, 1, 75, 0, 0, 0]);
             assert_eq!(MULTI_SAMPLE_CALLS.with(|calls| calls.borrow_mut().drain(..).collect::<Vec<_>>()), vec![[2, 1, 22, 1, 4]]);
 
-            // One sample: a lockable back buffer and the swap effect that was asked. Five
-            // back buffers become three. Bit 0 of the flags: no depth buffer. A rate
-            // means nothing in a window.
+            // One sample gives a lockable back buffer and the swap effect that the caller
+            // asked for. Five back buffers become three. Bit 0 of the flags means no depth
+            // buffer. A rate has no effect in a window.
             let ok = initialize_present_params_on(r, slot, 640, 480, 0x101, 1, 4, 80, 5, 3, 0xFFFF_FFFF, 0);
             assert_eq!(ok, 1);
             assert_eq!(rd::<[u32; 13]>(r, R::d3dPresentParameters), [640, 480, 23, 3, 0, 3, 0x1234, 1, 0, 80, 1, 0, 0]);
@@ -2269,7 +2280,7 @@ mod tests {
             wr::<u32>(caps, Caps::MaxVertexBlendMatrices, 4);
 
             assert_eq!(selected_device_desc(r), d.device.as_ptr() as usize);
-            // No depth buffer of the device: no stencil bit.
+            // The device has no depth buffer, so there is no stencil bit.
             wr::<u32>(r, R::d3dPresentParameters_AutoDepthStencilFormat, D3DFMT_D24S8);
             assert_eq!(validate_device_caps(r), 1);
             assert_eq!(rd::<u32>(r, R::capabilityFlags), 0x6D);
@@ -2307,7 +2318,7 @@ mod tests {
             wr::<u32>(r, R::d3dBehaviorFlags, 0x54);
             write_behavior_text(r, empty.as_ptr() as usize, texts);
             assert_eq!(text(r), "PURE MT HWVP");
-            // One byte after the end of the text and no more.
+            // The function writes one byte after the end of the text and no more.
             assert_eq!(rd::<[u8; 2]>(r, R::field_28C + 12), [0, 0xEE]);
             wr::<u32>(r, R::d3dBehaviorFlags, 0x84);
             write_behavior_text(r, empty.as_ptr() as usize, texts);
@@ -2356,7 +2367,7 @@ mod tests {
             assert_eq!(default_texture_format(r, 0), 0x10);
             wr::<u32>(r, slot(0, 1), 0x11);
             assert_eq!(default_texture_format(r, 0), 0x11);
-            // Slots after 5 are not looked at, and a group does not see the next one.
+            // The function does not read the slots after 5, and it does not read the next group.
             wr::<u32>(r, slot(2, 8), 0x88);
             wr::<u32>(r, slot(3, 2), 0x22);
             assert_eq!(default_texture_format(r, 2), 0);
@@ -2416,7 +2427,7 @@ mod tests {
             link(t);
             unlink_renderer_data(t, pc);
             assert_eq!(rd::<usize>(pb, RENDERER_DATA_NEXT), 0);
-            // Not in the list: nothing changes.
+            // Data that is not in the list changes nothing.
             link(t);
             unlink_renderer_data(t, 0x1234);
             assert_eq!((rd::<usize>(pa, RENDERER_DATA_NEXT), rd::<usize>(pb, RENDERER_DATA_NEXT)), (pb, pc));

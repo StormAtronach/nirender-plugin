@@ -1,11 +1,11 @@
 //! Three functions of `NiDX8Renderer` that other mods change in memory: `RenderPoints`,
 //! `RenderLines` and the constructor.
 //!
-//! Every direct call (`call rel32`) of these functions goes through `site::call_target`: the
-//! port calls what the instruction in memory calls now, with the convention and the
-//! arguments of the game code. `SITES` lists those instructions. No port of another module
-//! is called directly from here. The constructor also takes the sizes of its hash maps from
-//! the instructions in memory, because MWSE changes them there.
+//! Each direct call (`call rel32`) of these functions goes through `site::call_target`. The
+//! port calls the target that the instruction in memory has now, with the calling convention
+//! and the arguments of the game code. `SITES` lists those instructions. This module does
+//! not call a port of another module directly. The constructor also reads the sizes of its
+//! hash maps from the instructions in memory, because MWSE changes them there.
 
 use core::arch::asm;
 use core::mem::transmute;
@@ -96,9 +96,9 @@ macro_rules! site_cdecl {
     };
 }
 
-/// The call the Morrowind Code Patch put in place of `call [edx+11Ch]`
-/// (`IDirect3DDevice8::DrawIndexedPrimitive`): the six arguments of the device method on the
-/// stack, the device in EAX and its vtable in EDX. The callee removes the arguments.
+/// The call that the Morrowind Code Patch put in the place of `call [edx+11Ch]`
+/// (`IDirect3DDevice8::DrawIndexedPrimitive`). The six arguments of the device method are on
+/// the stack, the device is in EAX and its vtable is in EDX. The callee removes the arguments.
 unsafe fn site_draw_indexed_primitive(
     site: usize,
     device: usize,
@@ -137,7 +137,7 @@ const VERTEX_BLEND_LOOKUP: usize = 0x7C3840;
 const VTBL_RENDERER: u32 = 0x74F4D0;
 /// The vtables of the four hash maps of the renderer, in the order of the members.
 const VTBL_HASH_MAPS: [u32; 4] = [0x74F620, 0x74F60C, 0x74F5F8, 0x74F5E4];
-/// `NiPointer::ctor` and `NiPointer::dtor`, as the constructor passes them on.
+/// `NiPointer::ctor` and `NiPointer::dtor`. The constructor passes them as arguments.
 const NI_POINTER_CTOR: usize = 0x40B080;
 const NI_POINTER_DTOR: usize = 0x40A880;
 
@@ -162,13 +162,13 @@ const PASS_NO_LIGHTS: u32 = 0x1000_0000;
 
 /// 1.0
 const ONE: u32 = 0x3F80_0000;
-/// The normal the quads of the particles get in all three components: 0.3.
+/// The value of all three components of the normal of the particle quads: 0.3.
 const POINT_NORMAL: u32 = 0x3E99_999A;
 const _: () = assert!(RS_VERTEX_BLEND == 0x6B0 && RS::currentVertexShader == 0xA00 && RS::currentPixelShader == 0x9F8);
 const _: () = assert!(R::hashGeomBuffers == 0x560 && R::hashmap_maybeRenderedCubemaps == 0x590 && THashMap::SIZE == 0x10);
 
 // ---------------------------------------------------------------------------------------
-// Virtual calls: the slot is read on each call
+// Virtual calls: each call reads the slot
 // ---------------------------------------------------------------------------------------
 
 /// A virtual function of `object` at `offset` in its vtable.
@@ -206,8 +206,9 @@ unsafe fn device_set_pixel_shader(device: usize, handle: u32) -> u32 {
     transmute::<usize, unsafe extern "system" fn(usize, u32) -> u32>(virtual_at(device, 0x160))(device, handle)
 }
 
-/// The vertex shader and pixel shader of a fixed-function draw, as both draw functions set
-/// them: the device call only when the render state remembers another value.
+/// Sets the vertex shader and the pixel shader of a fixed-function draw, as the two draw
+/// functions do. The port makes the device call only when the render state holds a different
+/// value.
 unsafe fn set_fixed_function_shaders(this: usize, fvf: u32) {
     let render_state: usize = rd(this, R::renderState);
     if rd::<u32>(render_state, RS::currentVertexShader) != fvf {
@@ -244,8 +245,8 @@ unsafe fn point_diagonals(this: usize, radius: f32) -> ([f32; 3], [f32; 3]) {
     (sum, difference)
 }
 
-/// One vertex of a particle quad: position, the fixed normal, the color, the texture
-/// coordinates. The order of the writes is the order of the game code.
+/// Writes one vertex of a particle quad: the position, the fixed normal, the color and the
+/// texture coordinates. The order of the writes is the order of the game code.
 unsafe fn write_point_vertex(to: usize, position: [f32; 3], color: u32, u: u32, v: u32) {
     wr(to, 0, position[0]);
     wr(to, 4, position[1]);
@@ -258,9 +259,10 @@ unsafe fn write_point_vertex(to: usize, position: [f32; 3], color: u32, u: u32, 
     wr(to, 0x20, v);
 }
 
-/// The vertex loops of `RenderPoints` (0x6AD340 with colors, 0x6AD584 without): four
-/// vertices for each particle. `colors` is 0 for no colors; the color is then white.
-/// One `f32` operation for each x87 operation, in the order of the instructions.
+/// The vertex loops of `RenderPoints` (0x6AD340 with colors, 0x6AD584 without colors). They
+/// write four vertices for each particle. `colors` is 0 when there are no colors, and the
+/// color is then white. The port does one `f32` operation for each x87 operation, in the
+/// order of the instructions.
 unsafe fn write_point_quads(mut to: usize, count: u32, mut vertices: usize, mut sizes: usize, mut colors: usize, sum: [f32; 3], difference: [f32; 3]) {
     let mut left = count;
     while left != 0 {
@@ -268,7 +270,7 @@ unsafe fn write_point_quads(mut to: usize, count: u32, mut vertices: usize, mut 
         let color: u32 = if colors != 0 { rd(colors, 0) } else { 0xFFFF_FFFF };
         let p_x = sum[0] * size;
         let p_y = sum[1] * size;
-        // Stays on the x87 stack until the third vertex.
+        // The game code keeps this value on the x87 stack until the third vertex.
         let p_z = size * sum[2];
         let size = float(sizes, 0);
         let q = [difference[0] * size, difference[1] * size, difference[2] * size];
@@ -376,11 +378,11 @@ pub unsafe fn render_points(this: usize, geometry_data: usize, world_transform: 
     site_thiscall!(0x6AD874, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, world_transform, world_bound);
 }
 
-/// A draw that goes past the first tests reaches `buildPass` and `loadBinary` of the texture
-/// pass (stages, textures, a texture upload on first use), the light manager and the two
-/// buffer managers: more blocks than `Regions` holds, and a texture upload cannot run twice.
-/// So only the calls that return at the first tests are compared; they write nothing.
-/// `GetActiveVertexCount` only reads.
+/// A draw that passes the first tests gets to `buildPass` and `loadBinary` of the texture
+/// pass, the light manager and the two buffer managers. The texture pass writes stages and
+/// textures, and uploads a texture on first use. These are more blocks than `Regions` holds,
+/// and a texture upload cannot run twice. Thus the shadow test compares only the calls that
+/// return at the first tests. Those calls write nothing. `GetActiveVertexCount` only reads.
 unsafe fn render_points_regions(set: &mut Regions, this: usize, geometry_data: usize) {
     set.add(this, R::SIZE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -396,7 +398,7 @@ unsafe fn render_points_regions(set: &mut Regions, this: usize, geometry_data: u
 // NiDX8Renderer::RenderLines
 // ---------------------------------------------------------------------------------------
 
-/// Vertex format and bytes of a vertex of `RenderLines` (0x6AD91A to 0x6AD954).
+/// The vertex format and the size in bytes of a vertex of `RenderLines` (0x6AD91A to 0x6AD954).
 fn lines_format(has_texture_coords: bool, has_colors: bool) -> (u32, u32) {
     let mut fvf = 2;
     let mut stride = 0x0C;
@@ -411,9 +413,9 @@ fn lines_format(has_texture_coords: bool, has_colors: bool) -> (u32, u32) {
     (fvf, stride)
 }
 
-/// The four vertex loops of `RenderLines`: integer copies. Returns the texture coordinate
-/// pointer as the game code leaves it in EBP. The loop for positions alone (0x6ADCE5) does
-/// not advance the source: it writes the first vertex `count` times.
+/// The four vertex loops of `RenderLines`. They copy integers. The port returns the texture
+/// coordinate pointer as the game code leaves it in EBP. The loop for positions only
+/// (0x6ADCE5) does not move the source pointer: it writes the first vertex `count` times.
 unsafe fn write_line_vertices(mut to: usize, count: u32, mut vertices: usize, mut colors: usize, mut texture_coords: usize) -> usize {
     let with_colors = colors != 0;
     let with_texture_coords = texture_coords != 0;
@@ -473,7 +475,7 @@ pub unsafe fn render_lines(this: usize, lines_data: usize, transform: usize, wor
     if vertex_buffer_lock(vertex_buffer, 0, size, &mut memory, 0) != 0 {
         return;
     }
-    // EBP of the game code: the pointer after the loop. The tests below read it.
+    // This is EBP of the game code: the pointer after the loop. The tests below read it.
     let texture_coords = write_line_vertices(memory, count, vertices, colors, texture_coords);
     vertex_buffer_unlock(vertex_buffer);
     let texture_sets = if texture_coords != 0 { count } else { 0 };
@@ -510,7 +512,7 @@ pub unsafe fn render_lines(this: usize, lines_data: usize, transform: usize, wor
     site_thiscall!(0x6ADCBB, pipeline(), property_state(), effect_state(), 0, texture_sets, lines_data, 0, transform, world_bound);
 }
 
-/// As `render_points_regions`: a draw that goes past the first tests is not compared.
+/// As in `render_points_regions`, the shadow test skips a draw that passes the first tests.
 unsafe fn render_lines_regions(set: &mut Regions, this: usize, lines_data: usize) {
     set.add(this, R::SIZE);
     if rd::<u8>(this, R::bSceneOpen) == 0 || geometry_active_vertex_count(lines_data) == 0 {
@@ -524,19 +526,19 @@ unsafe fn render_lines_regions(set: &mut Regions, this: usize, lines_data: usize
 // ---------------------------------------------------------------------------------------
 
 /// The operand of `mov ebp, imm32` at 0x6A9AEC: the bucket count of the four hash maps.
-/// 37 in the database.
+/// It is 37 in the database.
 const HASH_MAP_BUCKETS_OPERAND: usize = 0x6A9AED;
-/// The operands of the four `push imm32` before `operator new`: the bytes of the bucket
-/// array of the maps for geometry buffers, skin partitions, rendered textures and rendered
-/// cube maps. 0x94 in the database.
+/// The operands of the four `push imm32` before `operator new`: the size in bytes of the
+/// bucket array of the maps for geometry buffers, skin partitions, rendered textures and
+/// rendered cube maps. Each is 0x94 in the database.
 const HASH_MAP_BYTES_OPERANDS: [usize; 4] = [0x6A9AF2, 0x6A9B38, 0x6A9B7E, 0x6A9BC4];
 /// The calls to `operator new` for the four bucket arrays.
 const HASH_MAP_NEW_SITES: [usize; 4] = [0x6A9B11, 0x6A9B57, 0x6A9B9D, 0x6A9BE3];
 
 /// 0x6A9A70 `NiDX8Renderer::ctor`
 ///
-/// MWSE changes the sizes of the hash maps in this code (the patch "Optimize renderer hash
-/// map lookups" in MWSE's PatchUtil.cpp: 37 buckets become 4093). So the port reads the
+/// MWSE changes the sizes of the hash maps in this code: 37 buckets become 4093. The patch is
+/// "Optimize renderer hash map lookups" in PatchUtil.cpp of MWSE. Thus the port reads the
 /// bucket count and the four allocation sizes from the instructions in memory, as the code
 /// in memory uses them.
 pub unsafe fn renderer_ctor(this: usize) -> usize {
@@ -584,7 +586,8 @@ port_thiscall!(render_lines_port, 0x6AD890, "NiDX8Renderer::RenderLines",
     regions = |set| render_lines_regions(set, this, lines_data),
     rust = render_lines);
 
-// Not compared: the game runs it once, before the plugin loads.
+// The shadow test skips this port: the game runs the function one time, before the plugin
+// loads.
 port_thiscall!(renderer_ctor_port, 0x6A9A70, "NiDX8Renderer::ctor",
     fn(this) -> usize,
     compare_eax = true,
@@ -748,7 +751,7 @@ mod tests {
             assert_eq!(write_line_vertices(out.as_mut_ptr() as usize, 2, v, c, 0), 0);
             assert_eq!(words(&out), vec![f(1.0), f(2.0), f(3.0), 0xAA, f(4.0), f(5.0), f(6.0), 0xBB]);
 
-            // Positions alone: the game code repeats the first vertex.
+            // Positions only: the game code repeats the first vertex.
             let mut out = vec![0u8; 24];
             assert_eq!(write_line_vertices(out.as_mut_ptr() as usize, 2, v, 0, 0), 0);
             assert_eq!(words(&out), vec![f(1.0), f(2.0), f(3.0), f(1.0), f(2.0), f(3.0)]);

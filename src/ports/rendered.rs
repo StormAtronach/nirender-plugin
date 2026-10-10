@@ -30,7 +30,7 @@ const COMPARE_MASK_A: usize = 0x7C55B0;
 const COMPARE_SHIFT_B: usize = 0x7C55B8;
 const COMPARE_MASK_B: usize = 0x7C55B4;
 /// `dword_7C55C0`, `dword_7C55D0`: the mask and the shift of the bit field of `compareBits`
-/// that tells the 16-bit layouts apart.
+/// that identifies the 16-bit layout.
 const COMPARE_MASK_C: usize = 0x7C55C0;
 const COMPARE_SHIFT_C: usize = 0x7C55D0;
 
@@ -54,8 +54,8 @@ const STR_24_BIT: usize = 0x7C34FC;
 // Offsets the layouts do not have
 // ---------------------------------------------------------------------------------------
 
-/// Second, third and fourth group of `NiDX8Renderer::arrayArrayTextureFormats` (14 formats
-/// each): rendered textures and source cube maps.
+/// The second, third and fourth group of `NiDX8Renderer::arrayArrayTextureFormats`: rendered
+/// textures and source cube maps. Each group has 14 formats.
 const RENDERED_TEXTURE_FORMATS: usize = R::arrayArrayTextureFormats + 0x38;
 const CUBE_MAP_FORMATS: usize = R::arrayArrayTextureFormats + 0x70;
 
@@ -156,7 +156,7 @@ unsafe fn virtual_at(object: usize, offset: usize) -> usize {
     rd(rd::<usize>(object, 0), offset)
 }
 
-/// The virtual deleting destructor with "free the memory".
+/// Calls the virtual deleting destructor with the flag that frees the memory.
 unsafe fn delete_object(object: usize) {
     thiscall1(virtual_at(object, V_DELETING_DTOR), object, 1);
 }
@@ -169,7 +169,7 @@ unsafe fn texture_get_height(texture: usize) -> u32 {
     thiscall0(virtual_at(texture, V_TEXTURE_GET_HEIGHT), texture)
 }
 
-/// 0x727530 `operator delete` of the game's C runtime.
+/// 0x727530 `operator delete` of the C runtime of the game.
 unsafe fn operator_delete(block: usize) {
     transmute::<usize, unsafe extern "C" fn(usize)>(0x727530)(block)
 }
@@ -244,7 +244,8 @@ unsafe fn get_image_converter() -> usize {
     transmute::<usize, unsafe extern "C" fn() -> usize>(0x6F57A0)()
 }
 
-/// 0x404630 `NiObject::release`: one reference less, and the object is deleted at zero.
+/// 0x404630 `NiObject::release`: takes one reference from the object. At zero it deletes the
+/// object.
 unsafe fn object_release(object: usize) {
     thiscall0(0x404630, object);
 }
@@ -254,8 +255,8 @@ unsafe fn pointer_dtor(slot: usize) {
     thiscall0(0x40A880, slot);
 }
 
-/// What `eh vector destructor iterator` (0x72759E) does with an array of six `NiPointer`:
-/// the destructor for each, from the last to the first.
+/// Does what `eh vector destructor iterator` (0x72759E) does with an array of six `NiPointer`.
+/// It calls the destructor for each, from the last to the first.
 unsafe fn destroy_pointers(pointers: &mut [usize; 6]) {
     for index in (0..6).rev() {
         pointer_dtor(pointers.as_mut_ptr().add(index) as usize);
@@ -376,8 +377,8 @@ unsafe fn default_compare_bits() -> u32 {
     compare_bits(rd(COMPARE_SHIFT_A, 0), rd(COMPARE_MASK_A, 0), rd(COMPARE_SHIFT_B, 0), rd(COMPARE_MASK_B, 0))
 }
 
-/// The `NiDX8PixelFormat` member of a new `NiDX8RenderedTextureData`, in the order of the
-/// writes of the game code (0x6C0497 and 0x6C01FA).
+/// Writes the `NiDX8PixelFormat` member of a new `NiDX8RenderedTextureData`. The writes are in
+/// the order of the writes of the game code (0x6C0497 and 0x6C01FA).
 unsafe fn init_rendered_pixel_format(this: usize, compare: u32) {
     wr::<u32>(this, RTD::pixelFormat_bitsPerPixel, 8);
     wr::<u32>(this, RTD::pixelFormat_channelMasks + 12, 0);
@@ -402,7 +403,7 @@ unsafe fn append_renderer_data(data: usize) {
     wr(slot, 0, data);
 }
 
-/// One reference less on a `NiRefObject`; the object is deleted at zero.
+/// Takes one reference from a `NiRefObject`. At zero it deletes the object.
 unsafe fn decrement_reference(object: usize) {
     let count = rd::<u32>(object, NiRefObject::refCount).wrapping_sub(1);
     wr(object, NiRefObject::refCount, count);
@@ -504,9 +505,9 @@ pub unsafe fn set_pixel_format(this: usize, d3d_format: u32) -> usize {
     }
 }
 
-/// The result of `NiGetD3DFormatForNiPixelFormat` and whether it writes the debug string.
-/// `layout` is the bit field of `compareBits` (its low byte is compared); it is read only
-/// for 16 bits per pixel.
+/// The result of `NiGetD3DFormatForNiPixelFormat`, and true when it writes the debug string.
+/// `layout` is the bit field of `compareBits`. The function compares its low byte. The function
+/// reads it only for 16 bits per pixel.
 fn d3d_format_for(format: u32, bits_per_pixel: u8, layout: impl FnOnce() -> u32) -> (u32, bool) {
     match format {
         0 => match bits_per_pixel {
@@ -556,7 +557,7 @@ pub unsafe fn get_d3d_format_for_pixel_format(format: usize) -> u32 {
 // NiDX8RenderTarget, NiDX8TextureRenderTarget
 // ---------------------------------------------------------------------------------------
 
-/// 0x6A9DA0 `NiDX8RenderTarget::dtor`: the destructors of its two `NiPointer` members.
+/// 0x6A9DA0 `NiDX8RenderTarget::dtor`: runs the destructors of its two `NiPointer` members.
 pub unsafe fn render_target_dtor(this: usize) {
     crate::shadow::touch(&render_target_dtor_port::STATE);
     let object: usize = rd(this, RT::field_18);
@@ -569,7 +570,7 @@ pub unsafe fn render_target_dtor(this: usize) {
     }
 }
 
-/// Skips when an object is deleted: a virtual deleting destructor cannot run twice.
+/// Skips when the call deletes an object: a virtual deleting destructor cannot run twice.
 unsafe fn render_target_dtor_regions(set: &mut Regions, this: usize) {
     let first: usize = rd(this, RT::field_18);
     let second: usize = rd(this, RT::field_C);
@@ -584,8 +585,8 @@ unsafe fn render_target_dtor_regions(set: &mut Regions, this: usize) {
     }
 }
 
-/// 0x6C07D0 `NiDX8TextureRenderTarget::dtor` (cdecl): releases what a render target of a
-/// texture has and frees it.
+/// 0x6C07D0 `NiDX8TextureRenderTarget::dtor` (cdecl): releases the objects of a render target
+/// of a texture and frees the render target.
 pub unsafe fn texture_render_target_dtor(target: usize) {
     crate::shadow::touch(&texture_render_target_dtor_port::STATE);
     if target == 0 {
@@ -705,9 +706,9 @@ unsafe fn rendered_texture_data_create_surf_regions(set: &mut Regions, this: usi
     }
 }
 
-/// 0x6C01B0 `NiDX8RenderedTextureData::Create` (cdecl, static): the renderer data of a
+/// 0x6C01B0 `NiDX8RenderedTextureData::Create` (cdecl, static): makes the renderer data of a
 /// `NiRenderedTexture`, with its texture, its depth buffer and its render target. Returns 0
-/// when a device object could not be made.
+/// when it cannot make a device object.
 pub unsafe fn rendered_texture_data_create(texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&rendered_texture_data_create_port::STATE);
     let data = engine::operator_new(RTD::SIZE);
@@ -816,8 +817,9 @@ pub unsafe fn rendered_texture_data_dtor(this: usize) {
     renderer_data_dtor(this);
 }
 
-/// Skips when the object has a render target or a texture (their last `Release`, and the
-/// render target of the device changes) or linked data (a virtual deleting destructor).
+/// Skips when the object has a render target or a texture. They get their last `Release`, and
+/// the render target of the device changes. Also skips when the object has linked data: a
+/// virtual deleting destructor runs.
 unsafe fn rendered_texture_data_dtor_regions(set: &mut Regions, this: usize, size: usize) {
     if rd::<usize>(this, RTD::target) != 0 || rd::<usize>(this, RTD::d3dTexture) != 0 || rd::<usize>(this, RTD::vtbl_linkedData) != 0 {
         set.skip();
@@ -857,8 +859,9 @@ pub unsafe fn rendered_texture_data_get_target(this: usize) -> usize {
 // NiDX8RenderedCubeMapData
 // ---------------------------------------------------------------------------------------
 
-/// 0x6C09D0 `NiDX8RenderedCubeMapData::ctor` in the database; it is the static `Create`
-/// (cdecl): the renderer data of a `NiRenderedCubeMap` with a render target for each face.
+/// 0x6C09D0 `NiDX8RenderedCubeMapData::ctor` in the database. It is the static `Create`
+/// (cdecl). It makes the renderer data of a `NiRenderedCubeMap` with a render target for each
+/// face.
 pub unsafe fn rendered_cube_map_data_create(texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&rendered_cube_map_data_create_port::STATE);
     let data = engine::operator_new(RENDERED_CUBE_SIZE);
@@ -918,8 +921,8 @@ pub unsafe fn rendered_cube_map_data_dtor(this: usize) {
     rendered_texture_data_dtor(this);
 }
 
-/// Skips when the object has the cube texture or a face target (their last `Release`), and
-/// for what the destructor of the base class skips.
+/// Skips when the object has the cube texture or a face target: they get their last `Release`.
+/// Also skips when the destructor of the base class skips.
 unsafe fn rendered_cube_map_data_dtor_regions(set: &mut Regions, this: usize) {
     if rd::<usize>(this, RENDERED_CUBE_TEXTURE) != 0 {
         set.skip();
@@ -982,7 +985,7 @@ unsafe fn assign_local_pointer(slot: &mut usize, object: usize) {
 
 /// Copies the levels of `pixel_data` to the surfaces of one face of a cube texture
 /// (0x6C14A7 and 0x6C16E3). `texture_slot` is the address of the pointer to the texture.
-/// When a surface is not there, the game code releases the cube texture and goes on.
+/// When there is no surface, the game code releases the cube texture and continues.
 unsafe fn copy_face(this: usize, texture_slot: usize, face: u32, pixel_data: usize) {
     let mut level: u32 = 0;
     if rd::<u32>(this, STD::levels) == 0 {
@@ -1006,9 +1009,9 @@ unsafe fn copy_face(this: usize, texture_slot: usize, face: u32, pixel_data: usi
     }
 }
 
-/// 0x6C10A0 `NiDX8SourceCubeMapData::Create` (cdecl, static): the renderer data of a
-/// `NiSourceCubeMap`. The six faces must be square, of one size that is a power of two, with
-/// the same number of levels and the same format.
+/// 0x6C10A0 `NiDX8SourceCubeMapData::Create` (cdecl, static): makes the renderer data of a
+/// `NiSourceCubeMap`. The six faces must be square and of one size that is a power of two.
+/// They must have the same number of levels and the same format.
 pub unsafe fn source_cube_map_data_create(texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&source_cube_map_data_create_port::STATE);
     let data = engine::operator_new(SOURCE_CUBE_SIZE);
@@ -1146,7 +1149,7 @@ pub unsafe fn source_cube_map_data_create(texture: usize, renderer: usize) -> us
         copy_face(data, texture_slot, face as u32, converted[face]);
     }
 
-    // The game code gives a block of its stack; only the size at +0x104 has a value.
+    // The game code gives a block of its stack. Only the size at +0x104 has a value.
     let mut info = [0u32; 0x42];
     info[0x41] = rd(data, STD::formattedSize);
     count_texture_bytes(info.as_mut_ptr() as usize);
@@ -1169,8 +1172,9 @@ pub unsafe fn source_cube_map_data_dtor(this: usize) {
     source_texture_data_dtor(this);
 }
 
-/// Skips when the object has a texture (its last `Release`), a palette (it can be deleted)
-/// or linked data (a virtual deleting destructor).
+/// Skips when the object has a texture: the texture gets its last `Release`. Skips when the
+/// object has a palette: the call can delete the palette. Skips when the object has linked
+/// data: a virtual deleting destructor runs.
 unsafe fn source_cube_map_data_dtor_regions(set: &mut Regions, this: usize) {
     if rd::<usize>(this, SOURCE_CUBE_TEXTURE) != 0
         || rd::<usize>(this, STD::d3dTexture) != 0
@@ -1262,8 +1266,8 @@ pub unsafe fn source_cube_map_data_update(this: usize) {
     }
 }
 
-/// Skips when a face is copied (`LockRect` of its surfaces, and new pixel data): a face has
-/// a new revision, or `setPalette` will report a change.
+/// Skips when the call copies a face: that needs `LockRect` of its surfaces and new pixel data.
+/// The call copies a face when a face has a new revision or `setPalette` reports a change.
 unsafe fn source_cube_map_data_update_regions(set: &mut Regions, this: usize) {
     let texture: usize = rd(this, STD::vtbl_sgTexture);
     let first = first_face_pixel_data(texture);
@@ -1302,8 +1306,8 @@ pub unsafe fn create_rendered_texture_renderer_data(this: usize, texture: usize)
     1
 }
 
-/// Skips when the data is made: `Create` reads the depth buffer of the device, which adds a
-/// reference.
+/// Skips when the call makes the data: `Create` reads the depth buffer of the device, and
+/// that adds a reference.
 unsafe fn create_rendered_texture_renderer_data_regions(set: &mut Regions, texture: usize) {
     if rd::<usize>(texture, NiTexture::rendererData) == 0 {
         set.skip();
@@ -1327,8 +1331,8 @@ pub unsafe fn create_rendered_cube_map_renderer_data(this: usize, texture: usize
     1
 }
 
-/// Skips when the data is made: the face targets take surfaces of the cube texture and a
-/// reference on the depth buffer.
+/// Skips when the call makes the data: the face targets take surfaces of the cube texture and
+/// a reference on the depth buffer.
 unsafe fn create_rendered_cube_map_renderer_data_regions(set: &mut Regions, this: usize, texture: usize) {
     let node = hash_map_find_node(this + R::hashmap_maybeRenderedCubemaps, texture);
     if node == 0 || rd::<usize>(node, THashMap_Node::data) == 0 {
@@ -1336,8 +1340,9 @@ unsafe fn create_rendered_cube_map_renderer_data_regions(set: &mut Regions, this
     }
 }
 
-/// The part of the back buffer `TakeScreenshot` reads: left, top, width and height. `None`
-/// when the rectangle starts outside the buffer. `rect` is left, right, top, bottom.
+/// The part of the back buffer that `TakeScreenshot` reads: left, top, width and height.
+/// Returns `None` when the rectangle starts outside the buffer. `rect` is left, right, top,
+/// bottom.
 fn screenshot_area(rect: Option<[u32; 4]>, buffer_width: u32, buffer_height: u32) -> Option<[u32; 4]> {
     let Some([left, right, top, bottom]) = rect else {
         return Some([0, 0, buffer_width, buffer_height]);
@@ -1372,9 +1377,9 @@ unsafe fn copy_row(to: usize, from: usize, bytes: u32) {
     }
 }
 
-/// 0x6AC050 `NiDX8Renderer::TakeScreenshot`: a new `NiPixelData` with a part of the back
-/// buffer, or 0. `rect` is a `NiRect<unsigned int>` or 0 for all of it. The game code gives
-/// the width and the height as the right and bottom of the rectangle it locks.
+/// 0x6AC050 `NiDX8Renderer::TakeScreenshot`: returns a new `NiPixelData` with a part of the
+/// back buffer, or 0. `rect` is a `NiRect<unsigned int>`, or 0 for the full back buffer. The
+/// game code gives the width and the height as the right and bottom of the rectangle it locks.
 pub unsafe fn take_screenshot(this: usize, rect: usize) -> usize {
     crate::shadow::touch(&take_screenshot_port::STATE);
     let Some([left, top, width, height]) = screenshot_area_of(this, rect) else {
@@ -1404,7 +1409,7 @@ pub unsafe fn take_screenshot(this: usize, rect: usize) -> usize {
     pixel_data
 }
 
-/// Skips when the back buffer is read: `LockRect` of a surface.
+/// Skips when the call reads the back buffer: `LockRect` of a surface.
 unsafe fn take_screenshot_regions(set: &mut Regions, this: usize, rect: usize) {
     if screenshot_area_of(this, rect).is_some() {
         set.skip();
@@ -1412,7 +1417,7 @@ unsafe fn take_screenshot_regions(set: &mut Regions, this: usize, rect: usize) {
 }
 
 /// The source rectangle (left, top, right, bottom) of `ImageBlt`. `rect` is left, right,
-/// top, bottom, or `None` for the whole source.
+/// top, bottom, or `None` for the full source.
 fn blt_source_rect(rect: Option<[u32; 4]>, source: [u32; 2], buffer: [u32; 2], dest: [u32; 2]) -> [u32; 4] {
     let [source_width, source_height] = source;
     let (left, top, mut right, mut bottom) = match rect {
@@ -1455,7 +1460,8 @@ pub unsafe fn image_blt(this: usize, source: usize, rect: usize, dest_x: u32, de
     device_copy_rects(rd(this, R::d3dDevice), surface, source_rect.as_ptr() as usize, 1, back_buffer, point.as_ptr() as usize);
 }
 
-/// Skips when the source has no renderer data (it is made) or has a surface (`CopyRects`).
+/// Skips when the source has no renderer data: the call makes the data. Skips when the source
+/// has a surface: the call does `CopyRects`.
 unsafe fn image_blt_regions(set: &mut Regions, source: usize) {
     if source != 0 {
         let data: usize = rd(source, BLT_SOURCE_RENDERER_DATA);
@@ -1517,8 +1523,8 @@ port_cdecl!(get_d3d_format_for_pixel_format_port, 0x6B0E20, "NiGetD3DFormatForNi
     regions = |set| {},
     rust = get_d3d_format_for_pixel_format);
 
-// Always skipped: `Create` reads the depth buffer of the device (a reference more), or it
-// deletes the new object through its virtual destructor.
+// Always a skip: `Create` reads the depth buffer of the device, and that adds a reference. Or
+// it deletes the new object through its virtual destructor.
 port_cdecl!(rendered_texture_data_create_port, 0x6C01B0, "NiDX8RenderedTextureData_static::Create",
     fn(texture: usize, renderer: usize) -> usize,
     compare_eax = true,
@@ -1578,8 +1584,8 @@ port_thiscall!(rendered_texture_data_get_target_port, 0x6C09A0, "NiDX8RenderedTe
     regions = |set| {},
     rust = rendered_texture_data_get_target);
 
-// Always skipped: each face target takes a surface of the cube texture and a reference on
-// the depth buffer, or the new object is deleted through its virtual destructor.
+// Always a skip: each face target takes a surface of the cube texture and a reference on
+// the depth buffer. Or the call deletes the new object through its virtual destructor.
 port_cdecl!(rendered_cube_map_data_create_port, 0x6C09D0, "NiDX8RenderedCubeMapData::ctor",
     fn(texture: usize, renderer: usize) -> usize,
     compare_eax = true,
@@ -1621,8 +1627,8 @@ port_thiscall!(rendered_cube_map_data_get_target_port, 0x6C0BD0, "NiDX8RenderedC
     regions = |set| {},
     rust = rendered_cube_map_data_get_target);
 
-// Always skipped: the faces are copied with `LockRect` of their surfaces, a face can come
-// from a file, and the failure paths delete the new object through its virtual destructor.
+// Always a skip: the call copies the faces with `LockRect` of their surfaces, and a face can
+// come from a file. The failure paths delete the new object through its virtual destructor.
 port_cdecl!(source_cube_map_data_create_port, 0x6C10A0, "NiDX8SourceCubeMapData_static::Create",
     fn(texture: usize, renderer: usize) -> usize,
     compare_eax = true,
@@ -1704,7 +1710,7 @@ mod tests {
     fn compare_bits_of_a_new_pixel_format() {
         assert_eq!(compare_bits(0, 0xF, 4, 0xF0), 0x12);
         assert_eq!(compare_bits(0, 0x1, 4, 0xF0), 0x10);
-        // The count of a shift is taken modulo 32.
+        // A shift uses its count modulo 32.
         assert_eq!(compare_bits(33, !0, 32, !0), 4 | 1);
     }
 
@@ -1789,9 +1795,9 @@ mod tests {
 
     #[test]
     fn blt_rectangle_is_cut_to_the_source_and_the_back_buffer() {
-        // The whole source, inside the buffer.
+        // The full source, inside the buffer.
         assert_eq!(blt_source_rect(None, [64, 32], [800, 600], [10, 20]), [0, 0, 64, 32]);
-        // The whole source, over the right and bottom edges.
+        // The full source, across the right and bottom edges.
         assert_eq!(blt_source_rect(None, [64, 32], [800, 600], [780, 590]), [0, 0, 20, 10]);
         // A rectangle larger than the source.
         assert_eq!(blt_source_rect(Some([8, 100, 4, 100]), [64, 32], [800, 600], [0, 0]), [8, 4, 64, 32]);

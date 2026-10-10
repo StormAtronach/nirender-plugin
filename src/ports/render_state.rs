@@ -1,5 +1,5 @@
-//! `NiDX8RenderState`: the translation of a `NiPropertyState` into D3D render states, behind
-//! a cache that drops a state the device already has.
+//! `NiDX8RenderState` translates a `NiPropertyState` into D3D render states. A cache drops a
+//! state that the device already has.
 
 use crate::engine;
 use crate::gen::layouts::{NiAlphaProperty, NiDX8RenderState as RS, NiFogProperty, NiMaterialProperty, NiPropertyState, NiStencilProperty, NiZBufferProperty};
@@ -7,7 +7,7 @@ use crate::mem::{rd, wr};
 use crate::ports::material;
 use crate::x87;
 
-// D3DRENDERSTATETYPE values the functions use.
+// The `D3DRENDERSTATETYPE` values that the functions use.
 const D3DRS_ZENABLE: u32 = 7;
 const D3DRS_FILLMODE: u32 = 8;
 const D3DRS_SHADEMODE: u32 = 9;
@@ -41,7 +41,7 @@ const D3DRS_MULTISAMPLEANTIALIAS: u32 = 161;
 const D3DCMP_ALWAYS: u32 = 8;
 const D3DFOG_LINEAR: u32 = 3;
 
-/// `NiProperty::flags`, the same place in every property class.
+/// `NiProperty::flags`. It is at the same place in every property class.
 const PROPERTY_FLAGS: usize = NiAlphaProperty::flags;
 
 #[inline(always)]
@@ -59,8 +59,8 @@ unsafe fn to_device(this: usize, state: u32, value: u32) {
     engine::device_set_render_state(rd(this, RS::device), state, value);
 }
 
-/// The pattern the game code has inline in most places: write the cache and the device when
-/// the value is new. The previous value is not kept.
+/// The game code has this pattern inline in most places. It writes the cache and the device
+/// when the value is new. It does not keep the previous value.
 #[inline(always)]
 unsafe fn set_if_changed(this: usize, state: u32, value: u32) {
     if current(this, state) != value {
@@ -136,10 +136,10 @@ pub unsafe fn reset_texture_stage_states(this: usize) {
         for state in 0u32..32 {
             let setting = this + RS::maybe_textureStageStateSettings + (stage * 32 + state) as usize * 8;
             let value = if state == 11 {
-                // D3DTSS_TEXCOORDINDEX: each stage reads its own coordinate set.
+                // `D3DTSS_TEXCOORDINDEX`. Each stage reads its own coordinate set.
                 stage
             } else if (state == 1 || state == 4) && stage != 0 {
-                // D3DTSS_COLOROP and ALPHAOP: D3DTOP_DISABLE past the first stage.
+                // `D3DTSS_COLOROP` and `D3DTSS_ALPHAOP` are `D3DTOP_DISABLE` for each stage after the first.
                 1
             } else {
                 rd::<u32>(engine::TEXTURE_STAGE_STATE_INITIAL, state as usize * 4)
@@ -207,7 +207,7 @@ pub unsafe fn update_fog_states(this: usize, fog_property: usize) {
         0 => (D3DFOG_LINEAR, 0, 0),
         1 => (0, D3DFOG_LINEAR, 1),
         _ => {
-            // The game code switches fog off again here, after the states above.
+            // The game code sets the fog to off again here, after the states above.
             set_render_state(this, D3DRS_FOGENABLE, 0, 0);
             return;
         }
@@ -219,8 +219,8 @@ pub unsafe fn update_fog_states(this: usize, fog_property: usize) {
     set_if_changed(this, D3DRS_RANGEFOGENABLE, range);
 }
 
-/// 0x6B8C10 `NiDX8RenderState::setStencilStates`. Also sets the cull mode, which comes from
-/// the draw mode of the stencil property.
+/// 0x6B8C10 `NiDX8RenderState::setStencilStates`. The port also sets the cull mode. The cull
+/// mode comes from the draw mode of the stencil property.
 pub unsafe fn set_stencil_states(this: usize, stencil: usize) {
     crate::shadow::touch(&set_stencil_states_port::STATE);
     let enabled = rd::<u8>(stencil, NiStencilProperty::enabled);
@@ -243,7 +243,7 @@ pub unsafe fn set_stencil_states(this: usize, stencil: usize) {
     set_if_changed(this, D3DRS_CULLMODE, cull);
 }
 
-/// 0x6B82A0 `NiDX8RenderState::updateD3DState`: every render state of one property state.
+/// 0x6B82A0 `NiDX8RenderState::updateD3DState`. The port sets every render state of one property state.
 pub unsafe fn update_d3d_state(this: usize, property_state: usize) {
     crate::shadow::touch(&update_d3d_state_port::STATE);
     let flags_of = |property: usize| rd::<u8>(property, PROPERTY_FLAGS) as u32;
@@ -282,15 +282,16 @@ pub unsafe fn update_d3d_state(this: usize, property_state: usize) {
     wr::<u8>(this, RS::changed, 0);
 }
 
-/// The memory `updateD3DState` may write besides the render state: the material, which gets
-/// its revision moved on, and the entry the material manager keeps for it.
+/// `updateD3DState` can write memory that is not the render state. It writes the material,
+/// because it changes the revision of the material. It writes the entry that the material
+/// manager keeps for the material.
 unsafe fn update_d3d_state_regions(set: &mut crate::shadow::Regions, this: usize, property_state: usize) {
     set.add(this, RS::SIZE);
     let material_property: usize = rd(property_state, NiPropertyState::propMaterial);
     set.add(material_property, NiMaterialProperty::SIZE);
     let entry: usize = rd(material_property, NiMaterialProperty::rendererData);
     if entry == 0 {
-        // The entry is made in this call.
+        // This call makes the entry.
         set.allocates();
     }
     set.add(entry, material::ENTRY_SIZE);

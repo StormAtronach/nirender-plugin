@@ -1,9 +1,9 @@
 //! `NiDX8Renderer`: the draw functions.
 //!
-//! Other mods (MGE XE) change the target of `call` instructions inside these functions in
-//! memory. So every direct call here goes to the target that is in memory at the call
-//! instruction now (`site::call_target`), also when the callee has a Rust port: the port is
-//! reached through its detour. `SITES` lists the call instructions.
+//! Other mods, for example MGE XE, change the target of `call` instructions in these
+//! functions in memory. Thus each direct call here reads its target from the call instruction
+//! in memory (`site::call_target`). This is also true when the callee has a port: the call
+//! goes through the detour of the port. `SITES` lists the call instructions.
 
 use core::arch::asm;
 use core::mem::transmute;
@@ -153,14 +153,14 @@ pub static SITES: &[usize] = &[
     S2_ENSURE_AND_REGISTER_STREAMABLES,
 ];
 
-/// Where the call at `site` goes now.
+/// The target that the call at `site` has in memory now.
 #[cfg(not(test))]
 #[inline(always)]
 unsafe fn target(site: usize) -> usize {
     crate::site::call_target(site)
 }
 
-/// In the unit tests there is no game code: each site has a function that writes the call down.
+/// The unit tests have no game code. Each site has a function that records the call.
 #[cfg(test)]
 unsafe fn target(site: usize) -> usize {
     tests::fake_target(site)
@@ -172,7 +172,7 @@ macro_rules! u32_of {
     };
 }
 
-/// Calls the target of the call at a site as a `__thiscall` function. EAX comes back.
+/// Calls the target of the call at a site as a `__thiscall` function. The macro returns EAX.
 macro_rules! site_thiscall {
     ($site:expr, $this:expr $(, $a:expr)* $(,)?) => {{
         let f: unsafe extern "thiscall" fn(usize $(, u32_of!($a))*) -> u32 = transmute(target($site));
@@ -185,9 +185,9 @@ unsafe fn site_cdecl1(site: usize, a: usize) -> usize {
     transmute::<usize, unsafe extern "C" fn(usize) -> usize>(target(site))(a)
 }
 
-/// The call to `patchDrawIndexedPrimitive` as the game code makes it: the device in EAX, its
-/// vtable in EDX, and the arguments of `IDirect3DDevice8::DrawIndexedPrimitive` on the stack,
-/// which the callee removes. `ecx` is what the game code has in ECX at the call.
+/// Calls `patchDrawIndexedPrimitive` as the game code does. The device is in EAX and its
+/// vtable is in EDX. The arguments of `IDirect3DDevice8::DrawIndexedPrimitive` are on the
+/// stack, and the callee removes them. `ecx` is the value the game code has in ECX at the call.
 unsafe fn site_draw_indexed_primitive(
     site: usize,
     device: usize,
@@ -218,9 +218,9 @@ unsafe fn site_draw_indexed_primitive(
     result
 }
 
-/// The call to `patchDrawPrimitive` as the game code makes it: the vtable of the device in
-/// ECX, the device in EAX, the primitive type in EDX, and the arguments of
-/// `IDirect3DDevice8::DrawPrimitive` on the stack, which the callee removes.
+/// Calls `patchDrawPrimitive` as the game code does. The vtable of the device is in ECX, the
+/// device is in EAX and the primitive type is in EDX. The arguments of
+/// `IDirect3DDevice8::DrawPrimitive` are on the stack, and the callee removes them.
 unsafe fn site_draw_primitive(site: usize, device: usize, vtable: usize, primitive_type: u32, primitives: u32) -> u32 {
     let args = [device as u32, primitive_type, 0, primitives];
     let result: u32;
@@ -244,7 +244,7 @@ unsafe fn site_draw_primitive(site: usize, device: usize, vtable: usize, primiti
 // Engine data
 // ---------------------------------------------------------------------------------------
 
-/// `data_NiDX8Renderer_vertexBlendLookup`: `D3DRS_VERTEXBLEND` for a count of bones.
+/// `data_NiDX8Renderer_vertexBlendLookup`: the `D3DRS_VERTEXBLEND` value for a count of bones.
 #[cfg(not(test))]
 const VERTEX_BLEND_LOOKUP: usize = 0x7C3840;
 
@@ -272,7 +272,7 @@ const SKIN_DATA_SKIN_PARTITION: usize = 8;
 const RENDER_DATA_FIELD_8: usize = 8;
 /// `NiRendererSpecificProperty::RenderData7`: the object the game code passes as `prop1`.
 const RENDER_DATA_FIELD_C: usize = 0xC;
-/// In `prop1`: a `__stdcall` function that takes the place of `buildSkinPartitionPass`.
+/// In `prop1`: a `__stdcall` function that replaces `buildSkinPartitionPass`.
 const PROP_1_PASS_CALLBACK: usize = 0x2C;
 /// The renderer type the render data must have.
 const RENDERER_TYPE_DX8: u32 = 7;
@@ -282,7 +282,7 @@ const BUILD_KEEP_VERTEX_BLEND: u32 = 0x40_0000;
 const BUILD_KEEP_TRANSFORM: u32 = 0x80_0000;
 const BUILD_KEEP_LIGHTS: u32 = 0x1000_0000;
 const BUILD_NO_DRAW: u32 = 0x4000_0000;
-// Bits of the value `loadBinary` returns. The low 16 bits: more passes follow.
+// Bits of the value `loadBinary` returns. The low 16 bits tell that more passes follow.
 const PASS_KEEP_PARTITION_PASS: u32 = 0x100_0000;
 const PASS_KEEP_BUFFERS: u32 = 0x200_0000;
 const PASS_KEEP_VERTEX_SHADER: u32 = 0x400_0000;
@@ -308,7 +308,7 @@ unsafe fn virtual0(object: usize, offset: usize) -> u32 {
     transmute::<usize, unsafe extern "thiscall" fn(usize) -> u32>(virtual_at(object, offset))(object)
 }
 
-/// The deleting destructor, with "free the memory".
+/// Calls the deleting destructor with the flag that frees the memory.
 unsafe fn virtual_delete(object: usize) {
     transmute::<usize, unsafe extern "thiscall" fn(usize, u32) -> u32>(virtual_at(object, 0))(object, 1);
 }
@@ -334,12 +334,13 @@ unsafe fn device_set_indices(device: usize, buffer: u32, base_vertex: u32) -> u3
 }
 
 // ---------------------------------------------------------------------------------------
-// Parts the functions share (the game code has them inline in each function)
+// Parts the functions share. The game code has them inline in each function.
 // ---------------------------------------------------------------------------------------
 
-/// "Has normals" and the count of texture sets, as `DrawPrimitive` and `EndBatch` find them:
-/// from the vertex format of a buffer that is filled, else from the geometry data. `None`
-/// when there is neither; the function returns then. At most 8 texture sets.
+/// Returns the "has normals" flag and the count of texture sets, as `DrawPrimitive` and
+/// `EndBatch` find them. A filled buffer gives them from its vertex format. If there is no
+/// filled buffer, the geometry data gives them. The result is `None` when there is neither,
+/// and the function returns then. The count of texture sets is 8 at most.
 unsafe fn vertex_format(geom_buffer: usize, geom_data: usize) -> Option<(u32, u32)> {
     let mut has_normals = 0;
     let mut texture_sets: u32;
@@ -390,8 +391,8 @@ unsafe fn set_vertex_blend(this: usize, bones: u16) {
     }
 }
 
-/// The primitives of strip `strip` of a buffer: its length less 2, or the triangle count of
-/// the buffer when it has no strip lengths.
+/// The count of primitives of strip `strip` of a buffer: the length of the strip minus 2.
+/// When the buffer has no strip lengths, it is the triangle count of the buffer.
 unsafe fn strip_primitives(geom_buffer: usize, strip: u32) -> u32 {
     let lengths: usize = rd(geom_buffer, GB::stripVertexCounts);
     if lengths != 0 {
@@ -401,8 +402,8 @@ unsafe fn strip_primitives(geom_buffer: usize, strip: u32) -> u32 {
     }
 }
 
-/// The pass set-up of one object: the function of `prop1` when it has one, else
-/// `buildSkinPartitionPass` through `site`.
+/// Sets up the pass of one object. The port calls the function of `prop1` when `prop1` has
+/// one. If it has none, the port calls `buildSkinPartitionPass` through `site`.
 #[allow(clippy::too_many_arguments)]
 unsafe fn build_partition_pass(
     site: usize,
@@ -433,23 +434,24 @@ unsafe fn build_partition_pass(
 // RenderShape, RenderTriStrips
 // ---------------------------------------------------------------------------------------
 
-/// The 8 bytes at 0x6ACF1F in `RenderShape`, after the test for a skin: the instruction that
-/// decides between hardware and software skinning, and the opcode of the jump that follows.
+/// The 8 bytes at 0x6ACF1F in `RenderShape`, after the test for a skin. They are the
+/// instruction that selects hardware or software skinning, and the opcode of the jump after it.
 const RS_SKINNING_CHECK: usize = 0x6ACF1F;
-/// The database: `cmp dword ptr [edi+3E0h], 4` and `jb`: software skinning when the device
-/// has fewer than 4 hardware bones.
+/// The bytes in the database: `cmp dword ptr [edi+3E0h], 4` and `jb`. The game uses software
+/// skinning when the device has fewer than 4 hardware bones.
 #[cfg(test)]
 const SKINNING_CHECK_DATABASE: [u8; 8] = [0x83, 0xBF, 0xE0, 0x03, 0x00, 0x00, 0x04, 0x72];
-/// MWSE (`PatchNIDX8Renderer_RenderShape` in PatchUtil.cpp, "Allow control of whether
-/// software or hardware skinning is used through TriShape flags"): `nop`,
-/// `test word ptr [esi+36h], 200h` and `jnz`: software skinning when the geometry data
-/// (ESI) has bit 0x200 in its flags. The jump goes to the same place as in the database.
+/// The bytes MWSE writes: `nop`, `test word ptr [esi+36h], 200h` and `jnz`. The patch is
+/// `PatchNIDX8Renderer_RenderShape` in PatchUtil.cpp, "Allow control of whether software or
+/// hardware skinning is used through TriShape flags". The game uses software skinning when
+/// the geometry data (ESI) has bit 0x200 in its flags. The jump has the same target as in the
+/// database.
 const SKINNING_CHECK_MWSE: [u8; 8] = [0x90, 0x66, 0xF7, 0x46, 0x36, 0x00, 0x02, 0x75];
 /// `NiTriBasedGeomData` + 0x36: the flags the MWSE patch reads (`patchRenderFlags`).
 const GEOM_DATA_PATCH_RENDER_FLAGS: usize = 0x36;
 const PATCH_RENDER_FLAG_SOFTWARE_SKINNING: u16 = 0x200;
 
-/// What decides in `RenderShape` that a skinned shape is not drawn with hardware skinning.
+/// The condition in `RenderShape` that stops hardware skinning for a skinned shape.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum SkinningCheck {
     /// The game: the count of hardware bones of the device.
@@ -458,8 +460,9 @@ enum SkinningCheck {
     GeometryFlag,
 }
 
-/// Which check the bytes at `RS_SKINNING_CHECK` are. Bytes that are neither the database
-/// nor MWSE count as the database; the installer keeps the port off then.
+/// Returns the check that the bytes at `RS_SKINNING_CHECK` are. Bytes that are not the
+/// database bytes and not the MWSE bytes count as the database. The installer keeps the port
+/// off then.
 fn skinning_check(bytes: &[u8; 8]) -> SkinningCheck {
     if *bytes == SKINNING_CHECK_MWSE {
         SkinningCheck::GeometryFlag
@@ -480,8 +483,8 @@ unsafe fn skinning_check_bytes() -> [u8; 8] {
     tests::SKINNING_CHECK_BYTES.with(|bytes| bytes.get())
 }
 
-/// True when the jump at 0x6ACF26 is taken: the shape has a skin and is drawn without
-/// hardware skinning all the same.
+/// True when the game takes the jump at 0x6ACF26. Then the game draws a shape that has a
+/// skin without hardware skinning.
 unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize) -> bool {
     match check {
         SkinningCheck::HardwareBones => rd::<u32>(this, R::countHWBones) < 4,
@@ -489,8 +492,8 @@ unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize)
     }
 }
 
-/// 0x6ACEF0 `NiDX8Renderer::RenderShape`, with the skinning check MWSE puts at +0x2F when
-/// that is what the memory has.
+/// 0x6ACEF0 `NiDX8Renderer::RenderShape`. The port uses the skinning check that MWSE puts at
+/// +0x2F when the memory has that check.
 pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_shape_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -544,9 +547,9 @@ pub unsafe fn render_tri_strips(this: usize, geom_data: usize, skin: usize, tran
     site_thiscall!(RT_DRAW_PRIMITIVE, this, geom_data, skin, transform, world_bound, geom_buffer, 0);
 }
 
-/// `RenderShape` and `RenderTriStrips` write nothing themselves before they get to
-/// `DrawSkinnedPrimitive` or `DrawPrimitive`. A call that gets there is not compared, for
-/// the reasons at `draw_regions`.
+/// `RenderShape` and `RenderTriStrips` write nothing before they call `DrawSkinnedPrimitive`
+/// or `DrawPrimitive`. The shadow test skips a call that gets there. `draw_regions` gives the
+/// reasons.
 unsafe fn render_regions(set: &mut Regions, this: usize, geom_data: usize) {
     set.add(this, R::SIZE);
     if rd::<u8>(this, R::bSceneOpen) != 0 && virtual0(geom_data, VT_GET_ACTIVE_VERTEX_COUNT) as u16 != 0 {
@@ -731,21 +734,21 @@ pub unsafe fn draw_primitive(
     );
 }
 
-/// The regions of a call that draws: none, the call is not compared.
+/// The regions of a call that draws: none, because the shadow test skips the call.
 ///
-/// `DrawPrimitive`, `DrawSkinnedPrimitive2` and `EndBatch` write almost nothing themselves
-/// (the vertex blend value in the render state). Their callees write the renderer, the
-/// render state, the material and its entry, the light manager and its list items, the
-/// texture pipeline, the pass and its stages, and the geometry buffer data: more than the 8
-/// blocks of `Regions`. `buildPass` and `loadBinary` call a virtual function of the pass
-/// whose writes are not known (their own ports are never compared either), the pass can
-/// make textures, and the buffer functions can release device buffers. Each callee with a
-/// port has its own comparison when the function here runs as game code.
+/// `DrawPrimitive`, `DrawSkinnedPrimitive2` and `EndBatch` write only the vertex blend value
+/// in the render state. Their callees write the renderer, the render state, the material and
+/// its entry, the light manager and its list items, the texture pipeline, the pass and its
+/// stages, and the geometry buffer data. That is more than the 8 blocks of `Regions`.
+/// `buildPass` and `loadBinary` call a virtual function of the pass, and its writes are not
+/// known. The shadow test also skips the ports of these two functions. The pass can make
+/// textures, and the buffer functions can release device buffers. The shadow test compares
+/// each callee that has a port when the function here runs as game code.
 unsafe fn draw_regions(set: &mut Regions) {
     set.skip();
 }
 
-/// `DrawPrimitive` returns at once when there is no filled buffer and no geometry data.
+/// `DrawPrimitive` returns immediately when there is no filled buffer and no geometry data.
 unsafe fn draw_primitive_regions(set: &mut Regions, this: usize, geom_data: usize, geom_buffer: usize) {
     set.add(this, R::SIZE);
     if vertex_format(geom_buffer, geom_data).is_some() {
@@ -757,8 +760,9 @@ unsafe fn draw_primitive_regions(set: &mut Regions, this: usize, geom_data: usiz
 // DrawSkinnedPrimitive
 // ---------------------------------------------------------------------------------------
 
-/// 0x6ADE70 `NiDX8Renderer::DrawSkinnedPrimitive`: makes the skin partitions when the skin
-/// data has none, fills the geometry buffer of each partition, then draws them.
+/// 0x6ADE70 `NiDX8Renderer::DrawSkinnedPrimitive`. The port makes the skin partitions when
+/// the skin data has none. Then it fills the geometry buffer of each partition and draws the
+/// partitions.
 pub unsafe fn draw_skinned_primitive(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&draw_skinned_primitive_port::STATE);
     let skin_data: usize = rd(skin, NiSkinInstance::skinData);
@@ -770,7 +774,7 @@ pub unsafe fn draw_skinned_primitive(this: usize, geom_data: usize, skin: usize,
             eax = site_thiscall!(SP_SKIN_PARTITION_CTOR, eax) as usize;
             new_partition = eax;
         }
-        // `mov al, countHWBones; push eax; push eax`: the high bytes are what EAX had.
+        // `mov al, countHWBones; push eax; push eax`: the high bytes keep the value EAX had.
         let bones = (eax as u32 & 0xFFFF_FF00) | rd::<u8>(this, R::countHWBones) as u32;
         skin_partition = new_partition;
         if site_thiscall!(SP_MAKE_PARTITIONS, new_partition, geom_data, skin_data, bones, bones) as u8 != 0 {
@@ -854,7 +858,8 @@ pub unsafe fn draw_skinned_primitive_2(
     let partitions: usize = rd(skin_partition, NiSkinPartition::partitions);
     let first_buffer: usize = rd(partitions, P::bufferData);
 
-    // Not as in DrawPrimitive: no test of the geometry data, no limit of 8 texture sets.
+    // This is different from DrawPrimitive. The game code does not test the geometry data
+    // here and has no limit of 8 texture sets.
     let mut has_normals: u32 = 0;
     let texture_sets: u32;
     if rd::<usize>(first_buffer, GB::d3dVertexBuffer) != 0 && rd::<u8>(first_buffer, GB::flags) & 1 != 0 {
@@ -923,7 +928,8 @@ pub unsafe fn draw_skinned_primitive_2(
                     }
                     let buffer: usize = rd(partition, P::bufferData);
                     if buffer == 0 {
-                        // The game code returns here, without `ensureAndRegisterStreamables`.
+                        // The game code returns here and does not call
+                        // `ensureAndRegisterStreamables`.
                         return;
                     }
                     let primitives: u32 = rd(buffer, GB::trianglesCount);
@@ -999,7 +1005,7 @@ unsafe fn draw_skinned_primitive_2_regions(set: &mut Regions, this: usize, skin:
 // EndBatch
 // ---------------------------------------------------------------------------------------
 
-/// The start of `EndBatch`: a state pointer of the batch that is empty takes the current state.
+/// The start of `EndBatch`: an empty state pointer of the batch gets the current state.
 unsafe fn adopt_current_state(slot: usize, current: usize) {
     if rd::<usize>(slot, 0) == 0 && current != 0 {
         wr(slot, 0, current);
@@ -1007,7 +1013,7 @@ unsafe fn adopt_current_state(slot: usize, current: usize) {
     }
 }
 
-/// The end of `EndBatch`: gives up the reference of a state pointer and empties it.
+/// The end of `EndBatch`: releases the reference of a state pointer and sets the pointer to 0.
 unsafe fn release_state(slot: usize) {
     let object: usize = rd(slot, 0);
     if object != 0 {
@@ -1021,7 +1027,7 @@ unsafe fn release_state(slot: usize) {
 }
 
 /// The draw calls of one batched object in `EndBatch` (0x6AE4D3 to 0x6AE55D). Here the game
-/// code calls the device itself; the Code Patch did not change these two calls.
+/// code calls the device directly. The Code Patch did not change these two calls.
 unsafe fn end_batch_draw(this: usize, geom_buffer: usize) {
     if rd::<usize>(geom_buffer, GB::indexBuffer) != 0 {
         let mut strip: u32 = 0;
@@ -1188,7 +1194,8 @@ pub unsafe fn end_batch(this: usize) {
             }
         }
     }
-    // The geometry data, skin, transform and bound of the object the loop read last.
+    // The arguments are the geometry data, skin, transform and bound of the object the loop
+    // read last.
     site_thiscall!(
         EB_ENSURE_AND_REGISTER_STREAMABLES,
         rd::<usize>(this, R::configurableTexturePipeline),
@@ -1214,13 +1221,13 @@ pub unsafe fn end_batch(this: usize) {
     wr::<usize>(this, R::batchedObjectListTail, 0);
 }
 
-/// `EndBatch` returns at once when the list is empty, or when its first object has no
+/// `EndBatch` returns immediately when the list is empty, or when its first object has no
 /// filled buffer and no geometry data.
 unsafe fn end_batch_regions(set: &mut Regions, this: usize) {
     set.add(this, R::SIZE);
     let head: usize = rd(this, R::batchedObjectListHead);
     if head != 0 && vertex_format(rd(head, B::geomBuffer), rd(head, B::geomData)).is_some() {
-        // With a larger `Regions` this call would also need `set.allocates()` for the list.
+        // This call also needs `set.allocates()` for the list when `Regions` becomes larger.
         draw_regions(set);
     }
 }
@@ -1244,7 +1251,8 @@ port_thiscall!(render_tri_strips_port, 0x6ACFC0, "NiDX8Renderer::RenderTriStrips
 port_thiscall!(draw_skinned_primitive_port, 0x6ADE70, "NiDX8Renderer::DrawSkinnedPrimitive",
     fn(this, geom_data: usize, skin: usize, transform: usize, world_bound: usize) -> (),
     compare_eax = false,
-    // Always gets to DrawSkinnedPrimitive2, and can make skin partitions (MakePartitions).
+    // The function always gets to DrawSkinnedPrimitive2. It can also make skin partitions
+    // (MakePartitions).
     regions = |set| draw_regions(set),
     rust = draw_skinned_primitive);
 
@@ -1432,13 +1440,13 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------------------
-    // Functions that stand for the callees and write the calls down
+    // Functions that replace the callees and record the calls
     // -----------------------------------------------------------------------------------
 
     pub static VERTEX_BLEND_TABLE: [u32; 5] = [0, 0, 1, 2, 3];
 
     thread_local! {
-        /// What the tests have at 0x6ACF1F.
+        /// The bytes the tests have at 0x6ACF1F.
         pub static SKINNING_CHECK_BYTES: std::cell::Cell<[u8; 8]> = const { std::cell::Cell::new(SKINNING_CHECK_DATABASE) };
     }
 
@@ -1451,7 +1459,8 @@ mod tests {
         assert_eq!(&census::expected(func)[at..at + 8], &SKINNING_CHECK_DATABASE);
         assert_eq!(skinning_check(&SKINNING_CHECK_DATABASE), SkinningCheck::HardwareBones);
         assert_eq!(skinning_check(&SKINNING_CHECK_MWSE), SkinningCheck::GeometryFlag);
-        // Anything else is taken as the database: one byte off, or the MGE XE form unknown here.
+        // All other bytes count as the database. Examples are bytes with one byte different,
+        // and the form of MGE XE, which this code does not know.
         let mut other = SKINNING_CHECK_MWSE;
         other[7] = 0x72;
         assert_eq!(skinning_check(&other), SkinningCheck::HardwareBones);
@@ -1491,7 +1500,7 @@ mod tests {
     thread_local! {
         static CALLS: RefCell<Vec<(usize, Vec<u32>)>> = const { RefCell::new(Vec::new()) };
         static RETURNS: RefCell<HashMap<usize, VecDeque<u32>>> = RefCell::new(HashMap::new());
-        /// For a call id: write the value to where argument `index` points.
+        /// For a call id: the value to write to the address in argument `index`.
         static POKES: RefCell<HashMap<usize, (usize, u32)>> = RefCell::new(HashMap::new());
     }
 
@@ -1575,8 +1584,8 @@ mod tests {
         };
     }
 
-    /// The function a call site has in the tests: one with the convention and the count of
-    /// arguments of the callee in the database.
+    /// The function a call site has in the tests. It has the calling convention and the count
+    /// of arguments of the callee in the database.
     pub fn fake_target(site: usize) -> usize {
         fakes!(site;
             t0: RT_GET_STRIP_LENGTH_SUM, SP_SKIN_PARTITION_CTOR, EB_GET_RENDERER_SPECIFIC, DP_GET_RENDERER_SPECIFIC,
@@ -1727,15 +1736,15 @@ mod tests {
         let mut geom = geometry();
         let (b, g) = (buffer.as_mut_ptr() as usize, geom.data.as_mut_ptr() as usize);
         unsafe {
-            // No vertex buffer, no geometry data.
+            // There is no vertex buffer and no geometry data.
             assert_eq!(vertex_format(b, 0), None);
-            // From the geometry data: 3 texture sets, no normals.
+            // The geometry data gives 3 texture sets and no normals.
             wr::<u16>(g, GD::textureSets, 3);
             assert_eq!(vertex_format(b, g), Some((0, 3)));
             wr::<u32>(g, GD::normals, 0x100);
             wr::<u16>(g, GD::textureSets, 9);
             assert_eq!(vertex_format(b, g), Some((1, 8)));
-            // A vertex buffer that is not marked as filled does not count.
+            // The port does not use a vertex buffer that has no "filled" flag.
             wr::<u32>(b, GB::d3dVertexBuffer, 0x200);
             wr::<u32>(b, GB::fvf, 0x212);
             assert_eq!(vertex_format(b, g), Some((1, 8)));
@@ -1773,14 +1782,14 @@ mod tests {
             wr::<u32>(gb, GB::primitiveType, 5);
             wr::<u32>(gb, GB::trianglesCount, 11);
             wr::<u32>(gb, GB::verticesCount, 40);
-            // No index buffer: one DrawPrimitive.
+            // No index buffer: the port makes one DrawPrimitive call.
             end_batch_draw(r, gb);
             assert_eq!(calls(), vec![(DEV_DRAW_PRIMITIVE, vec![w.dev(), 5, 0, 11])]);
-            // An index buffer and no strips: nothing.
+            // An index buffer and no strips: the port makes no call.
             wr::<u32>(gb, GB::indexBuffer, 0x300);
             end_batch_draw(r, gb);
             assert_eq!(calls(), vec![]);
-            // One "strip" without lengths: the triangle count.
+            // One "strip" without lengths: the port draws the triangle count.
             wr::<u32>(gb, GB::stripCount, 1);
             end_batch_draw(r, gb);
             assert_eq!(calls(), vec![(DEV_DRAW_INDEXED_PRIMITIVE, vec![w.dev(), 5, 0, 40, 0, 11])]);
@@ -1812,7 +1821,7 @@ mod tests {
         let mut b = buffer();
         let gb = b.as_mut_ptr() as usize;
         unsafe {
-            // The scene is not open: nothing.
+            // The scene is not open: the port makes no call.
             wr::<u8>(r, R::bSceneOpen, 0);
             render_shape(r, g, 0, 0x10, 0x20);
             assert_eq!(calls(), vec![]);
@@ -1821,19 +1830,20 @@ mod tests {
             assert_eq!(set.as_slice(), &[(r, R::SIZE)]);
             assert_eq!(calls(), vec![]);
 
-            // No vertices: nothing after the question.
+            // No vertices: the port makes no call after it gets the vertex count.
             wr::<u8>(r, R::bSceneOpen, 1);
             returns(GEOM_VERTEX_COUNT, &[0x1_0000]);
             render_shape(r, g, 0, 0x10, 0x20);
             assert_eq!(calls(), vec![(GEOM_VERTEX_COUNT, vec![g as u32])]);
 
-            // A new buffer: a triangle list.
+            // A new buffer: the port fills it as a triangle list.
             returns(GEOM_VERTEX_COUNT, &[9]);
             returns(RS_CREATE_GEOMETRY_BUFFER_DATA, &[0x7701]);
             poke(RS_CREATE_GEOMETRY_BUFFER_DATA, 1, gb as u32);
             returns(GEOM_TRIANGLE_COUNT, &[0xABCD_0007]);
             returns(GEOM_TRI_LIST, &[0x4444]);
-            // A skin, and a device without hardware bones: not the skinned path.
+            // A skin, and a device without hardware bones: the port does not use the skinned
+            // path.
             wr::<u32>(r, R::countHWBones, 3);
             render_shape(r, g, 0x30, 0x10, 0x20);
             let log = calls();
@@ -1850,7 +1860,8 @@ mod tests {
             assert_eq!(rd::<u32>(gb, GB::stripVertexCounts), 0);
             assert_eq!(rd::<u32>(gb, GB::triList), 0x4444);
 
-            // A buffer that exists: the callee says 0 and the buffer is drawn as it is.
+            // A buffer that exists: the callee returns 0 and the port draws the buffer with no
+            // change.
             poke(RS_CREATE_GEOMETRY_BUFFER_DATA, 1, 0x8888);
             returns(GEOM_VERTEX_COUNT, &[9]);
             render_shape(r, g, 0, 0x10, 0x20);
@@ -1864,8 +1875,9 @@ mod tests {
             render_shape(r, g, 0x30, 0x10, 0x20);
             assert_eq!(calls()[1], (RS_DRAW_SKINNED_PRIMITIVE, vec![r as u32, g as u32, 0x30, 0x10, 0x20]));
 
-            // With the check of MWSE in memory the flag of the geometry data decides, not
-            // the device: hardware skinning without the flag, also with 3 hardware bones.
+            // With the check of MWSE in memory, the port reads the flag of the geometry data
+            // and not the device. Without the flag, the port uses hardware skinning, also with
+            // 3 hardware bones.
             SKINNING_CHECK_BYTES.with(|bytes| bytes.set(SKINNING_CHECK_MWSE));
             wr::<u32>(r, R::countHWBones, 3);
             returns(GEOM_VERTEX_COUNT, &[9]);
@@ -1904,7 +1916,7 @@ mod tests {
             assert_eq!(log[3], (RT_DRAW_PRIMITIVE, vec![r as u32, g as u32, 0, 0x10, 0x20, gb as u32, 0]));
             assert_eq!(rd::<u32>(gb, GB::primitiveType), 5);
             assert_eq!(rd::<u32>(gb, GB::stripCount), 3);
-            // 20 indices in 3 strips: 14 triangles.
+            // 20 indices in 3 strips make 14 triangles.
             assert_eq!(rd::<u32>(gb, GB::trianglesCount), 14);
             assert_eq!(rd::<u32>(gb, GB::stripVertexCounts), 0x5550);
             assert_eq!(rd::<u32>(gb, GB::triList), 0x6660);
@@ -1959,7 +1971,7 @@ mod tests {
             wr::<u32>(gb, GB::stripCount, 2);
             wr(gb, GB::stripVertexCounts, lengths.as_ptr() as usize);
             wr::<u32>(rs as usize, RS_VERTEX_BLEND_CURRENT, 7);
-            // Two passes: the first says "more".
+            // Two passes: the first pass returns "more passes follow".
             returns(DP_LOAD_BINARY, &[1, 0]);
 
             draw_primitive(r, g, 0, t as usize, wb as usize, gb, 0);
@@ -1995,7 +2007,7 @@ mod tests {
             expected.extend(one_pass(false));
             expected.push((DP_ENSURE_AND_REGISTER_STREAMABLES, pass(1)));
             let mut log = calls();
-            // The address of the buffer pointer is the function's own.
+            // The buffer pointer is a local of the function, and its address is not fixed.
             assert_eq!(log[9].0, DP_PACK_GEOMETRY_BUFFERS);
             log[9].1[1] = 0;
             assert_eq!(log, expected);
@@ -2021,8 +2033,9 @@ mod tests {
             wr::<u32>(gb2, GB::trianglesCount, 12);
             wr::<u16>(p, P::numBones, 4);
 
-            // A partition; the pass keeps the transform and the lights. The first pass is
-            // not drawn, the second is: it is the first that counts for the buffers.
+            // There is a partition, and the pass keeps the transform and the lights. The port
+            // does not draw the first pass and draws the second pass. The second pass is the
+            // first pass in the count for the buffers.
             returns(DP_BUILD_PASS, &[BUILD_KEEP_TRANSFORM | BUILD_KEEP_LIGHTS]);
             let keep_all = PASS_KEEP_PIXEL_SHADER | PASS_KEEP_STREAMS | PASS_KEEP_VERTEX_SHADER | PASS_KEEP_PARTITION_PASS;
             returns(DP_LOAD_BINARY, &[PASS_NO_DRAW | 1, keep_all]);
@@ -2045,14 +2058,14 @@ mod tests {
                     DP_ENSURE_AND_REGISTER_STREAMABLES,
                 ]
             );
-            // No normals in the vertex format, 2 texture sets.
+            // The vertex format has no normals and 2 texture sets.
             assert_eq!(&log[3].1[3..5], &[0, 2]);
             assert_eq!(log[4].1, vec![dev, 151, 3]);
             assert_eq!(&log[7].1[2..], &[0, 0x30, p as u32]);
-            // The buffer the callee gave is the one drawn.
+            // The port draws the buffer that the callee gave.
             assert_eq!(log[8].1, vec![dev, 4, 0, 12]);
 
-            // The pass does not draw at all.
+            // The pass does not draw.
             returns(DP_BUILD_PASS, &[BUILD_NO_DRAW | BUILD_KEEP_VERTEX_BLEND]);
             draw_primitive(r, 0, 0x30, 0x10, 0x20, gb, p);
             let ids: Vec<usize> = calls().iter().map(|call| call.0).collect();
@@ -2080,7 +2093,7 @@ mod tests {
         let ps = w.ps();
         let mut b = buffer();
         let gb = b.as_mut_ptr() as usize;
-        // prop1 with the function at +0x2C; the render data; the property.
+        // prop1 with the function at +0x2C, the render data and the property.
         let mut prop1 = [0usize; 12];
         prop1[PROP_1_PASS_CALLBACK / 4] = s11::<PROP_CALLBACK> as *const () as usize;
         let data = Object::new(&[(1, t0::<RENDER_DATA_TYPE> as *const () as usize)]);
@@ -2102,7 +2115,7 @@ mod tests {
             assert_eq!(callback.1, vec![ps, EFFECT_STATE as u32, 0, 1, 0x40, 0, 0, 0x10, 0x20, 0x777, PASS]);
             assert!(log.iter().all(|call| call.0 != DP_BUILD_SKIN_PARTITION_PASS));
 
-            // Render data of another renderer: not used.
+            // The port does not use render data of another renderer.
             returns(DP_GET_RENDERER_SPECIFIC, &[property.as_ptr() as u32]);
             returns(RENDER_DATA_TYPE, &[6]);
             draw_primitive(r, 0x40, 0, 0x10, 0x20, gb, 0);
@@ -2154,13 +2167,13 @@ mod tests {
         let mut b = buffer();
         let gb = b.as_mut_ptr() as usize;
         unsafe {
-            // Strips: the first partition says so for all.
+            // Strips: the first partition sets the primitive type for all partitions.
             wr::<u16>(p0, P::numStripLengths, 3);
             wr::<u32>(p0, P::stripLengths, 0xA00);
             wr::<u32>(p0, P::triangles, 0xB00);
             wr::<u16>(p0, P::numTriangles, 17);
             wr::<u16>(p1, P::numStripLengths, 2);
-            // The buffer of the first partition is new, that of the second is not.
+            // The buffer of the first partition is new. The buffer of the second is not new.
             returns(SP_FIND_CACHED_PARTITION_GEOM_BUFFER, &[0x5501, 0x5500]);
             poke(SP_FIND_CACHED_PARTITION_GEOM_BUFFER, 1, gb as u32);
             draw_skinned_primitive(r, 0x40, si, 0x10, 0x20);
@@ -2185,7 +2198,7 @@ mod tests {
             assert_eq!(rd::<u32>(gb, GB::stripVertexCounts), 0xA00);
             assert_eq!(rd::<u32>(gb, GB::triList), 0xB00);
 
-            // Triangle lists: one "strip", no lengths.
+            // Triangle lists: the buffer gets one "strip" and no lengths.
             wr::<u16>(p0, P::numStripLengths, 0);
             returns(SP_FIND_CACHED_PARTITION_GEOM_BUFFER, &[1, 0]);
             draw_skinned_primitive(r, 0x40, si, 0x10, 0x20);
@@ -2207,7 +2220,7 @@ mod tests {
         unsafe {
             wr::<u32>(data, SKIN_DATA_SKIN_PARTITION, 0);
             wr::<u32>(r, R::countHWBones, 4);
-            // The allocator gives a block, the constructor gives the object back.
+            // The allocator returns a block and the constructor returns the object.
             let block = 0x00AB_CD00u32;
             returns(SP_OPERATOR_NEW, &[block]);
             returns(SP_SKIN_PARTITION_CTOR, &[made as u32]);
@@ -2219,10 +2232,11 @@ mod tests {
             let bones = (made as u32 & 0xFFFF_FF00) | 4;
             assert_eq!(log[2], (SP_MAKE_PARTITIONS, vec![made as u32, 0x40, data as u32, bones, bones]));
             assert_eq!(log[3].0, SP_DRAW_SKINNED_PRIMITIVE_2);
-            // MakePartitions said no (AL is 0): the skin data does not get the object.
+            // MakePartitions returned false (AL is 0): the skin data does not get the object.
             assert_eq!(rd::<u32>(data, SKIN_DATA_SKIN_PARTITION), 0);
 
-            // It says yes: the object goes into the skin data and gets a reference.
+            // MakePartitions returns true: the skin data gets the object, and the object gets
+            // a reference.
             returns(SP_OPERATOR_NEW, &[block]);
             returns(SP_SKIN_PARTITION_CTOR, &[made as u32]);
             returns(SP_MAKE_PARTITIONS, &[1]);
@@ -2245,7 +2259,7 @@ mod tests {
         let (mut b0, mut b1) = (buffer(), buffer());
         let (gb0, gb1) = (b0.as_mut_ptr() as usize, b1.as_mut_ptr() as usize);
         unsafe {
-            // No skin: nothing.
+            // No skin: the port makes no call.
             draw_skinned_primitive_2(r, 5, g, 0, 0x10, 0x20, 0, 0);
             assert_eq!(calls(), vec![]);
 
@@ -2266,7 +2280,8 @@ mod tests {
             draw_skinned_primitive_2(r, 5, g, si, 0x10, 0x20, 0, 0);
             let state = [ps, EFFECT_STATE as u32];
             let (gu, su) = (g as u32, si as u32);
-            // The buffer is not marked as filled: 11 texture sets from the geometry data, no limit.
+            // The buffer has no "filled" flag. The geometry data gives 11 texture sets, and
+            // there is no limit.
             let pass = |textures: u32| vec![pl, state[0], state[1], 0, textures, gu, su, 0x10, 0x20];
             let expected = vec![
                 (S2_SELECT_AND_LINK_PASS, pass(1)),
@@ -2284,7 +2299,8 @@ mod tests {
                 (DEV_SET_STREAM_SOURCE, vec![dev, 0, 0x800, 40]),
                 (DEV_SET_INDICES, vec![dev, 0x900, 0]),
                 (S2_DRAW_INDEXED_PRIMITIVE, vec![dev, 5, 0, 100, 0, 30]),
-                // The second, without: the indices are set all the same.
+                // The second partition, without an index buffer. The port sets the indices also
+                // for this partition.
                 (S2_SET_SKINNED_MODEL_TRANSFORMS, vec![r as u32, su, p1 as u32, 0x10, 0x20]),
                 (S2_APPLY_VERTEX_SHADER, vec![pl, 0x1116]),
                 (S2_BUILD_SKIN_PARTITION_PASS, vec![pl, state[0], state[1], 0, 1, gu, su, p1 as u32, 0x10, 0x20]),
@@ -2295,7 +2311,7 @@ mod tests {
             ];
             assert_eq!(calls(), expected);
 
-            // A partition without buffer ends the function at once.
+            // A partition without a buffer makes the function return immediately.
             wr::<usize>(p1, P::bufferData, 0);
             returns(S2_BUILD_PASS, &[BUILD_KEEP_VERTEX_BLEND | BUILD_KEEP_TRANSFORM | BUILD_KEEP_LIGHTS]);
             returns(S2_LOAD_BINARY, &[keep_everything()]);
@@ -2347,8 +2363,8 @@ mod tests {
         // geometry data, skin, transform, bound, partition, buffer, next
         let mut second = [0x41u32, 0x31, 0x11, 0x21, p as u32, gb1 as u32, 0];
         let mut first = [g as u32, 0, 0x10, 0x20, 0, gb0 as u32, second.as_mut_ptr() as u32];
-        // The states of the batch: the property state has one reference, which the list
-        // gives up; the effect state comes from the renderer.
+        // The states of the batch. The property state has one reference, and the list
+        // releases it. The effect state comes from the renderer.
         let mut batch_properties = vec![0u32; PS::SIZE / 4];
         let property_deleter = Object::new(&[(0, t1::<OBJECT_DELETE> as *const () as usize)]);
         batch_properties[0] = unsafe { rd(property_deleter.address(), 0) };
@@ -2372,7 +2388,7 @@ mod tests {
                 wr::<u32>(gb, GB::primitiveType, 4);
                 wr::<u32>(gb, GB::fvf, 0x112);
             }
-            // Two passes; the buffers are filled in the first.
+            // Two passes. The port fills the buffers in the first pass.
             returns(EB_LOAD_BINARY, &[1, 0]);
 
             end_batch(r);
@@ -2426,7 +2442,7 @@ mod tests {
                 (EB_DELETE, vec![second.as_mut_ptr() as u32]),
             ]);
             let mut log = calls();
-            // The address of the buffer pointer is the function's own.
+            // The buffer pointer is a local of the function, and its address is not fixed.
             for call in log.iter_mut() {
                 if call.0 == EB_PACK_GEOMETRY_BUFFERS || call.0 == EB_CREATE_PARTITION_GEOM_BUFFER {
                     call.1[1] = 0;
@@ -2438,7 +2454,8 @@ mod tests {
             assert_eq!(rd::<u32>(r, R::batchedObjectListTail), 0);
             assert_eq!(rd::<u32>(r, R::propertyStatePtr), 0);
             assert_eq!(rd::<u32>(r, R::effectStatePtr), 0);
-            // The effect state got a reference at the start and lost it at the end.
+            // The effect state got a reference at the start, and the port released it at the
+            // end.
             assert_eq!(effects[1], 5);
             assert_eq!(batch_properties[1], 0);
         }
@@ -2475,13 +2492,14 @@ mod tests {
                     EB_DELETE
                 ]
             );
-            // Normals and 3 texture sets from the vertex format; no effect state.
+            // The vertex format gives normals and 3 texture sets. There is no effect state.
             assert_eq!(&log[3].1[1..5], &[ps, 0, 1, 3]);
             assert_eq!(rd::<u32>(ps as usize, NiRefObject::refCount), 3);
             assert_eq!(rd::<u32>(r, R::propertyStatePtr), 0);
             assert_eq!(rd::<u32>(r, R::batchedObjectListHead), 0);
 
-            // No filled buffer and no geometry data in the first object: the list stays.
+            // The first object has no filled buffer and no geometry data: the port keeps the
+            // list.
             wr::<u32>(gb, GB::flags, 0);
             wr(r, R::batchedObjectListHead, only.as_mut_ptr() as usize);
             end_batch(r);

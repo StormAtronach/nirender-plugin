@@ -1,21 +1,22 @@
 //! The recorder on the `IDirect3DDevice8` the engine draws with.
 //!
 //! `attach` replaces the vtable pointer of the device object with a table of wrappers. A
-//! wrapper can record the call and can skip it ("dry"), which is how a Rust function runs
-//! for comparison without drawing anything.
+//! wrapper can record the call and can skip it. A recording that skips calls is "dry". The
+//! Rust function runs dry for a comparison, so it draws nothing.
 //!
-//! A record in the log is: slot, argument count, the arguments, payload length in words, the
-//! payload (the bytes behind a pointer argument). Two logs are equal when the words are equal.
+//! A record in the log has the slot, the argument count, the arguments, the payload length in
+//! words and the payload. The payload is the bytes behind a pointer argument. Two logs are
+//! equal when the words are equal.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 pub const SLOTS: usize = 97;
-/// Copied past the interface, in case the device class has more virtual functions.
+/// The copy goes past the interface, because the device class can have more virtual functions.
 const TABLE_LEN: usize = 160;
 
 pub const SLOT_PRESENT: usize = 15;
 
-/// Stack arguments of each method, without `this`.
+/// The number of stack arguments of each method, without `this`.
 pub const ARGS: [u8; SLOTS] = [
     2, 0, 0, 0, 0, 1, 1, 1, 1, 1, // 0 QueryInterface .. 9 GetCreationParameters
     3, 3, 1, 2, 1, 4, 3, 1, 2, 1, // 10 SetCursorProperties .. 19 GetGammaRamp
@@ -52,7 +53,8 @@ pub const NAMES: [&str; SLOTS] = [
     "DrawTriPatch", "DeletePatch",
 ];
 
-/// A dry run does not pass these on: they change device state or draw, and return no data.
+/// A dry run does not pass these calls on. They change device state or draw, and they return
+/// no data.
 pub fn dry_skips(slot: usize) -> bool {
     matches!(
         slot,
@@ -61,7 +63,7 @@ pub fn dry_skips(slot: usize) -> bool {
     )
 }
 
-/// Vertices a primitive count stands for.
+/// The number of vertices that a primitive count gives.
 pub fn vertex_count(primitive_type: u32, primitives: u32) -> u32 {
     match primitive_type {
         1 => primitives,         // point list
@@ -73,7 +75,8 @@ pub fn vertex_count(primitive_type: u32, primitives: u32) -> u32 {
     }
 }
 
-/// The bytes behind the pointer argument of a call, as (address, length). (0, 0) for none.
+/// The bytes behind the pointer argument of a call, as (address, length). The result is
+/// (0, 0) when the call has none.
 pub fn payload(slot: usize, a: &[u32]) -> (usize, usize) {
     let (ptr, len) = match slot {
         18 => (a[1], 0x600),                                // SetGammaRamp: D3DGAMMARAMP
@@ -94,9 +97,9 @@ pub fn payload(slot: usize, a: &[u32]) -> (usize, usize) {
     }
 }
 
-/// Arguments that are addresses of the caller's own storage: where a result goes, or where
-/// the data of the payload is. Bit n is argument n. The log holds 0 for them, because the Rust
-/// function and the engine function keep such storage in different places.
+/// The arguments that are addresses of the storage of the caller. Such an address is the
+/// place for a result or the place of the payload data. Bit n is argument n. The log holds 0
+/// for them. The Rust function and the engine function keep such storage in different places.
 pub fn address_args(slot: usize) -> u32 {
     match slot {
         0 | 13 | 44 | 45 | 47 | 49 | 51 | 57 | 60 | 65 | 67 | 80 | 87 | 92 => 0b10,
@@ -120,7 +123,7 @@ pub fn creates(slot: usize) -> bool {
     (20..=27).contains(&slot)
 }
 
-/// A resource the Rust run of a comparison made.
+/// A resource that the Rust run of a comparison made.
 struct Created {
     slot: usize,
     args: [u32; 8],
@@ -129,7 +132,7 @@ struct Created {
 }
 
 struct Replay {
-    /// The engine run takes the resources of the Rust run instead of making its own.
+    /// The engine run takes the resources of the Rust run and does not make its own.
     on: bool,
     created: Vec<Created>,
     taken: usize,
@@ -138,8 +141,8 @@ struct Replay {
 
 static mut REPLAY: Replay = Replay { on: false, created: Vec::new(), taken: 0, mismatch: false };
 
-/// Starts the engine run of a comparison: recorded, real, and with the resources the Rust
-/// run made handed out again in the same order.
+/// Starts the engine run of a comparison. The run is recorded and real. It gets the
+/// resources that the Rust run made, in the same order.
 pub unsafe fn begin_replay() {
     (*core::ptr::addr_of_mut!(LOG)).clear();
     let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
@@ -150,8 +153,8 @@ pub unsafe fn begin_replay() {
     RECORDING.store(true, Ordering::Relaxed);
 }
 
-/// Ends a comparison. Returns the differences in the resources made, as text; empty when
-/// the engine run made the same ones as the Rust run.
+/// Ends a comparison. Returns the differences in the resources made, as text. The text is
+/// empty when the engine run made the same resources as the Rust run.
 pub unsafe fn end_replay() -> String {
     let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
     replay.on = false;
@@ -163,7 +166,7 @@ pub unsafe fn end_replay() -> String {
         text.push_str(&format!(" rust made {} resources, the engine {};", replay.created.len(), replay.taken));
         for created in &replay.created[replay.taken..] {
             if created.object != 0 {
-                // Nobody holds it: release the reference the creation gave.
+                // No object holds the resource. This releases the reference that the creation gave.
                 let vtable = *(created.object as *const usize);
                 let release: unsafe extern "system" fn(usize) -> u32 = core::mem::transmute(*((vtable + 8) as *const usize));
                 release(created.object);
@@ -181,7 +184,7 @@ static DEVICE: AtomicUsize = AtomicUsize::new(0);
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
 static DRY: AtomicBool = AtomicBool::new(false);
-/// Calls the device makes on itself while it serves a call are not the engine's calls.
+/// The calls that the device makes on itself during a call are not calls of the game.
 static DEPTH: AtomicU32 = AtomicU32::new(0);
 static mut LOG: Vec<u32> = Vec::new();
 static mut FRAME_HOOK: Option<unsafe fn()> = None;
@@ -190,7 +193,7 @@ pub fn device() -> usize {
     DEVICE.load(Ordering::Relaxed)
 }
 
-/// Starts a recording. `dry` also stops state and draw calls from reaching the device.
+/// Starts a recording. With `dry`, the calls that set state or draw do not reach the device.
 pub unsafe fn begin(dry: bool) {
     (*core::ptr::addr_of_mut!(LOG)).clear();
     if dry {
@@ -210,8 +213,9 @@ pub unsafe fn end(into: &mut Vec<u32>) {
     core::mem::swap(into, &mut *core::ptr::addr_of_mut!(LOG));
 }
 
-/// A record that is not a device call (the data of a buffer at Unlock). Only calls the
-/// engine makes are logged, not what the device does inside one of its own calls.
+/// A record that is not a device call. It holds the data of a buffer at Unlock. The log gets
+/// only the calls that the game makes. It does not get what the device does inside one of
+/// its own calls.
 pub unsafe fn log_extra(slot: usize, args: &[u32], payload_bytes: &[u8]) {
     if RECORDING.load(Ordering::Relaxed) && DEPTH.load(Ordering::Relaxed) == 0 {
         append_record(&mut *core::ptr::addr_of_mut!(LOG), slot, args, payload_bytes);
@@ -222,7 +226,7 @@ pub fn recording() -> bool {
     RECORDING.load(Ordering::Relaxed)
 }
 
-/// Called at each Present the engine makes, before the call goes on.
+/// The recorder calls `hook` at each Present that the game makes, before the call goes on.
 pub unsafe fn set_frame_hook(hook: unsafe fn()) {
     FRAME_HOOK = Some(hook);
 }
@@ -235,13 +239,13 @@ pub fn append_record(log: &mut Vec<u32>, slot: usize, args: &[u32], payload_byte
     log.push(words as u32);
     let start = log.len();
     log.resize(start + words, 0);
-    // Safe: `words` u32 cover the bytes, and the tail of the last word stays zero.
+    // This is safe. `words` u32 values cover the bytes, and the tail of the last word stays zero.
     unsafe {
         core::ptr::copy_nonoverlapping(payload_bytes.as_ptr(), log.as_mut_ptr().add(start) as *mut u8, payload_bytes.len());
     }
 }
 
-/// One record of a log. `None` at the end or when the log is cut short.
+/// One record of a log. The result is `None` at the end or when the log is not complete.
 pub struct Record<'a> {
     pub slot: usize,
     pub args: &'a [u32],
@@ -326,7 +330,7 @@ unsafe fn call_original(slot: usize, this: usize, a: &[u32]) -> u32 {
 unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
     let outer = DEPTH.load(Ordering::Relaxed) == 0;
     if outer {
-        // Not for the Present of a dry run: that one is not a frame of the game.
+        // This does not apply to the Present of a dry run. That Present is not a frame of the game.
         if slot == SLOT_PRESENT && !DRY.load(Ordering::Relaxed) {
             crate::perf::on_present();
             if let Some(hook) = FRAME_HOOK {
@@ -373,7 +377,7 @@ unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
         }
     }
     if outer {
-        // A buffer the engine binds gets the recorder, whenever it was made.
+        // A buffer that the game binds gets the recorder. The time of its creation is not important.
         match slot {
             83 => crate::resource::wrap(args[1] as usize),
             85 => crate::resource::wrap(args[0] as usize),
@@ -442,8 +446,8 @@ unsafe extern "system" fn create_device_wrapper(this: usize, adapter: u32, kind:
     result
 }
 
-/// Puts a wrapper on `CreateDevice` of the game's `IDirect3D8`, so the recorder is on a
-/// device before the game makes its first call on it. Safe to call again.
+/// Puts a wrapper on `CreateDevice` of the `IDirect3D8` of the game. Thus the recorder is on
+/// a device before the game makes its first call on it. A second call is safe.
 pub unsafe fn attach_factory(direct3d: usize) {
     if direct3d == 0 {
         return;
@@ -460,7 +464,8 @@ pub unsafe fn attach_factory(direct3d: usize) {
     *(direct3d as *mut usize) = ours.add(1) as usize;
 }
 
-/// Puts the recorder on the device object at `device`. Safe to call again for the same device.
+/// Puts the recorder on the device object at `device`. A second call for the same device is
+/// safe.
 pub unsafe fn attach(device: usize) -> Result<(), String> {
     if device == 0 {
         return Err("no device".into());
@@ -471,7 +476,8 @@ pub unsafe fn attach(device: usize) -> Result<(), String> {
     if vtable == ours.add(1) as usize {
         return Ok(());
     }
-    // One word before the table too: the compiler keeps a pointer to the type information there.
+    // The copy starts one word before the table. The compiler keeps a pointer to the type
+    // information there.
     core::ptr::copy_nonoverlapping((vtable - 4) as *const usize, orig, TABLE_LEN + 1);
     core::ptr::copy_nonoverlapping(orig, ours, TABLE_LEN + 1);
     for (slot, wrapper) in wrapper_table().iter().enumerate() {
@@ -488,7 +494,7 @@ mod tests {
 
     #[test]
     fn argument_table_matches_the_wrappers() {
-        // A wrapper with the wrong argument count would unbalance the stack of every caller.
+        // A wrapper with the wrong argument count unbalances the stack of every caller.
         let text = include_str!("device.rs");
         let block = text.split("wrappers! {").nth(1).unwrap().split("\n}").next().unwrap();
         let mut seen = 0;
@@ -509,7 +515,7 @@ mod tests {
 
     #[test]
     fn known_vtable_offsets() {
-        // The offsets the game code uses: SetRenderState at 0xC8, DrawIndexedPrimitive at 0x11C.
+        // The game code uses SetRenderState at offset 0xC8 and DrawIndexedPrimitive at offset 0x11C.
         assert_eq!(NAMES[0xC8 / 4], "SetRenderState");
         assert_eq!(NAMES[0x11C / 4], "DrawIndexedPrimitive");
         assert_eq!(NAMES[SLOT_PRESENT], "Present");

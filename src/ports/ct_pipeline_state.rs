@@ -1,15 +1,15 @@
-//! `NiDX8TexturePass::setCTPipelineState` (0x6B41B0): builds the multitexture pass of one draw
-//! from the texturing property and the dynamic effect state. It decides which texture stages
-//! the draw has, which sub-pass (device pass) each one goes to and which blend operations
-//! each one gets.
+//! `NiDX8TexturePass::setCTPipelineState` (0x6B41B0). Builds the multitexture pass of one draw
+//! from the texturing property and the dynamic effect state. It selects the texture stages
+//! of the draw. For each stage it selects the sub-pass (device pass) and the blend operations.
 //!
-//! Other mods change the targets of calls in this function, so every direct call of the game
-//! code is made through `site::call_target` with the address of its `call` instruction.
+//! Other mods change the targets of calls in this function. Thus the port makes every direct
+//! call of the game code through `site::call_target` with the address of its `call`
+//! instruction.
 //!
-//! The body is written once, over the trait `Env`. `Live` is the game: plain writes and the
-//! calls in memory. `Model` is a dry run for the shadow comparison: it keeps a journal of
-//! every write, runs its own copy of the callees, and is rolled back; the journal gives the
-//! memory blocks the call will write.
+//! The body is in the file one time, over the trait `Env`. `Live` is the game: direct writes
+//! and the calls in memory. `Model` is a dry run for the shadow comparison. It keeps a
+//! journal of every write and runs its own copy of the callees. Then it puts the old values
+//! back. The journal gives the memory blocks that the call writes.
 
 use core::mem::{size_of, transmute};
 
@@ -25,9 +25,9 @@ use crate::shadow::Regions;
 // Addresses and offsets
 // ---------------------------------------------------------------------------------------
 
-/// `dword_7C3834`: the texture stages of one device pass.
+/// `dword_7C3834`: the number of texture stages of one device pass.
 const MAX_STAGES: usize = 0x7C3834;
-/// `dword_7C3838`: the textures of one device pass.
+/// `dword_7C3838`: the number of textures of one device pass.
 const MAX_TEXTURES: usize = 0x7C3838;
 /// `NiDX8TexturePass::resetPassFlags`, slot 0x18 of the pass.
 #[cfg(not(test))]
@@ -38,18 +38,18 @@ const BASE_TEXCOORD_PATCH: usize = 0x6B42AC;
 
 /// `NiRefObject::refCount`
 const REF_COUNT: usize = 0x4;
-/// The size of a texture stage as the game code multiplies it out.
+/// The size of a texture stage. The game code multiplies an index by this size.
 const STAGE: usize = ST::SIZE;
 
-// `NiTextureEffect` (no layout in the database export); the model of `setTexturePipeline`
-// reads these.
+// `NiTextureEffect`. The export of the database has no layout for it. The model of
+// `setTexturePipeline` reads these members.
 const EFFECT_ENABLED: usize = 0x90;
 const EFFECT_TEXTURE: usize = 0x108;
 const EFFECT_FILTER_MODE: usize = 0x10C;
 const EFFECT_CLAMP_MODE: usize = 0x110;
 
 /// The address of every `call rel32` of the function, in the order of the code. The port
-/// calls the target that is in memory at each of them.
+/// calls the target that is in memory at each address.
 #[rustfmt::skip]
 pub static SITES: &[usize] = &[
     0x6B41F4, // NiDX8TexturePass::setTexturePipeline
@@ -200,14 +200,15 @@ pub static SITES: &[usize] = &[
 // The environment of the body
 // ---------------------------------------------------------------------------------------
 
-/// What the body does to the world: its writes, the two limits of the device, and the
-/// fourteen functions the game code calls. `site` is the address of the `call` instruction.
+/// The effects of the body on memory and on the game: its writes, the two limits of the
+/// device, and the 14 functions that the game code calls. `site` is the address of the `call`
+/// instruction.
 trait Env {
     unsafe fn wr<T: Copy>(&mut self, base: usize, off: usize, value: T);
     unsafe fn max_stages(&mut self) -> u32;
     unsafe fn max_textures(&mut self) -> u32;
-    /// True when the instruction at 0x6B42AC is a call: MWSE put its fix of the texture
-    /// coordinate set of the base map there.
+    /// True when the instruction at 0x6B42AC is a call. MWSE put its correction of the
+    /// texture coordinate set of the base map there.
     unsafe fn base_texcoord_patch(&mut self) -> bool;
 
     /// `NiDX8TexturePass::setTexturePipeline(effectState)`
@@ -220,28 +221,28 @@ trait Env {
     unsafe fn set_addressing(&mut self, site: usize, pipeline: usize, clamp_mode: u32, stage: usize);
     /// `NiDX8ConfigurableTexturePipeline::setStageFilterMode(filterMode, stage)`
     unsafe fn set_filter(&mut self, site: usize, pipeline: usize, filter_mode: u32, stage: usize);
-    /// `NiTexturingProperty::IsMultiTexture()`; the result is AL.
+    /// `NiTexturingProperty::IsMultiTexture()`. The result is AL.
     unsafe fn is_multi_texture(&mut self, site: usize, property: usize) -> u8;
-    /// `NiDX8TexturePass::bindStageTexture(stage, textures, stages)`; the result is AL.
+    /// `NiDX8TexturePass::bindStageTexture(stage, textures, stages)`. The result is AL.
     unsafe fn bind_stage_texture(&mut self, site: usize, pass: usize, stage: usize, textures: u32, stages: u32) -> u8;
     /// `NiDX8TexturePass::applyStageBlendOps(stage, flag)`
     unsafe fn apply_blend_ops(&mut self, site: usize, pass: usize, stage: usize, flag: u32);
-    /// `NiDX8TexturePass::acquireSubpassWithCapacity(a2, a3)`; the result is the sub-pass.
+    /// `NiDX8TexturePass::acquireSubpassWithCapacity(a2, a3)`. The result is the sub-pass.
     unsafe fn acquire(&mut self, site: usize, pass: usize, a2: u32, a3: u32) -> usize;
     /// `NiDX8TexturePass::acquireSubpassForPixelShader()`
     unsafe fn acquire_for_ps(&mut self, site: usize, pass: usize);
-    /// `NiDX8TexturePass::initOrCheckSubpass(a2, a3, a4)`; the result is AL.
+    /// `NiDX8TexturePass::initOrCheckSubpass(a2, a3, a4)`. The result is AL.
     unsafe fn init_or_check(&mut self, site: usize, pass: usize, a2: u32, a3: u32, a4: u32) -> u8;
-    /// `NiDX8TexturePass::$1::appendStage(stage)`; the result is AL.
+    /// `NiDX8TexturePass::$1::appendStage(stage)`. The result is AL.
     unsafe fn append_stage(&mut self, site: usize, subpass: usize, stage: usize) -> u8;
-    /// `NiDX8TexturePass::$1::appendStagePair(stage, otherStage, flag)`; the result is EAX.
+    /// `NiDX8TexturePass::$1::appendStagePair(stage, otherStage, flag)`. The result is EAX.
     unsafe fn append_pair(&mut self, site: usize, subpass: usize, stage: usize, other_stage: usize, flag: u32) -> u32;
     /// `NiDX8TexturePass::$1::setNiObjectField48(object)`
     unsafe fn set_field_48(&mut self, site: usize, subpass: usize, object: usize);
 }
 
-/// The game: every call goes to the target that is in memory at its site, with the
-/// convention of the game code (`__thiscall`, the callee removes the arguments).
+/// The game. Every call goes to the target that is in memory at its site. It uses the
+/// convention of the game code: `__thiscall`, where the callee removes the arguments.
 #[cfg_attr(test, allow(dead_code))]
 struct Live;
 
@@ -332,7 +333,7 @@ impl Env for Live {
 }
 
 // ---------------------------------------------------------------------------------------
-// Pieces the compiler put inline many times
+// Pieces that the compiler put inline many times
 // ---------------------------------------------------------------------------------------
 
 #[inline(always)]
@@ -340,7 +341,8 @@ unsafe fn pipeline_of(this: usize) -> usize {
     rd(this, TP::configurableTexturePipeline)
 }
 
-/// The texture coordinate set of a map: its own when the geometry has it, else the last one.
+/// The texture coordinate set of a map. It is the set of the map when the geometry has that
+/// set. If not, it is the last set.
 #[inline(always)]
 fn coordinate_set(set: u32, count: u32, last: u32) -> u32 {
     if set < count {
@@ -350,8 +352,9 @@ fn coordinate_set(set: u32, count: u32, last: u32) -> u32 {
     }
 }
 
-/// The texture coordinate set MWSE's patch at 0x6B42AC gives the base stage: the set of the
-/// base map, or the last set of the geometry when the map asks for one it does not have.
+/// The texture coordinate set that the MWSE patch at 0x6B42AC gives the base stage. It is the
+/// set of the base map. When the geometry does not have that set, it is the last set of the
+/// geometry.
 unsafe fn base_map_coordinate_set(property: usize, texture_sets: u32) -> u32 {
     let base_map: usize = rd(rd::<usize>(property, NTP::maps_storage), 0);
     if base_map == 0 {
@@ -367,7 +370,7 @@ unsafe fn base_map_coordinate_set(property: usize, texture_sets: u32) -> u32 {
     }
 }
 
-/// The next free stage of the first bank (`stage`, 0x40) and the count moved on.
+/// Returns the next free stage of the first bank (`stage`, 0x40) and adds 1 to the count.
 #[inline(always)]
 unsafe fn next_stage<E: Env>(e: &mut E, this: usize) -> usize {
     let count: u32 = rd(this, TP::activeStageCount);
@@ -375,8 +378,8 @@ unsafe fn next_stage<E: Env>(e: &mut E, this: usize) -> usize {
     this.wrapping_add((count as usize).wrapping_mul(STAGE)).wrapping_add(TP::stage)
 }
 
-/// A new stage for a map: the texture, the addressing and the filtering. `sites` are the
-/// calls of `NiPointer::set`, `setStageAddressingMode` and `setStageFilterMode`.
+/// A new stage for a map: the texture, the addressing mode and the filter mode. `sites` are
+/// the calls of `NiPointer::set`, `setStageAddressingMode` and `setStageFilterMode`.
 #[inline(always)]
 unsafe fn map_stage<E: Env>(e: &mut E, this: usize, texture: usize, clamp_mode: u32, filter_mode: u32, sites: [usize; 3]) -> usize {
     let stage = next_stage(e, this);
@@ -386,7 +389,7 @@ unsafe fn map_stage<E: Env>(e: &mut E, this: usize, texture: usize, clamp_mode: 
     stage
 }
 
-/// The six members every map stage gets after the calls.
+/// The 6 members that every map stage gets after the calls.
 #[inline(always)]
 unsafe fn fill_stage<E: Env>(e: &mut E, stage: usize, blend_slot: u32, coordinate_set: u32, map: usize) {
     e.wr::<u32>(stage, ST::field_94, blend_slot);
@@ -397,8 +400,8 @@ unsafe fn fill_stage<E: Env>(e: &mut E, stage: usize, blend_slot: u32, coordinat
     e.wr::<usize>(stage, ST::texturePropMap, map);
 }
 
-/// The alpha template of the blend slot of the first stage of a sub-pass, when the sub-pass
-/// is of a later pass and has stages.
+/// The alpha template of the blend slot of the first stage of a sub-pass. It is `None` when
+/// the sub-pass is of the first pass or has no stages.
 #[inline(always)]
 unsafe fn template_for(this: usize, subpass: usize) -> Option<usize> {
     if rd::<u32>(this, TP::field_C) == 0 {
@@ -413,7 +416,7 @@ unsafe fn template_for(this: usize, subpass: usize) -> Option<usize> {
 }
 
 /// Gives the sub-pass its alpha template with the inline copy of `setNiObjectField48`: two
-/// calls of `NiPointer::set`, with null and with the template.
+/// calls of `NiPointer::set`, the first with null and the second with the template.
 #[inline(always)]
 unsafe fn link_template<E: Env>(e: &mut E, this: usize, subpass: usize, sites: [usize; 2]) {
     if let Some(template) = template_for(this, subpass) {
@@ -425,7 +428,7 @@ unsafe fn link_template<E: Env>(e: &mut E, this: usize, subpass: usize, sites: [
     }
 }
 
-/// The same with a call of `setNiObjectField48`.
+/// Does the same with a call of `setNiObjectField48`.
 #[inline(always)]
 unsafe fn link_template_call<E: Env>(e: &mut E, this: usize, subpass: usize, site: usize) {
     if let Some(template) = template_for(this, subpass) {
@@ -433,9 +436,9 @@ unsafe fn link_template_call<E: Env>(e: &mut E, this: usize, subpass: usize, sit
     }
 }
 
-/// One stage into the sub-pass that has room for it. `sites` are the calls of
-/// `acquireSubpassWithCapacity`, `appendStage` and the two of `NiPointer::set`. Returns what
-/// `appendStage` returned, or `None` when there was no sub-pass.
+/// Puts one stage into the sub-pass that has space for it. `sites` are the calls of
+/// `acquireSubpassWithCapacity` and `appendStage` and the two calls of `NiPointer::set`.
+/// Returns the value that `appendStage` returned, or `None` when there was no sub-pass.
 #[inline(always)]
 unsafe fn append_single<E: Env>(e: &mut E, this: usize, stage: usize, sites: [usize; 4]) -> Option<u8> {
     let subpass = e.acquire(sites[0], this, 1, 1);
@@ -447,7 +450,7 @@ unsafe fn append_single<E: Env>(e: &mut E, this: usize, stage: usize, sites: [us
     Some(appended)
 }
 
-/// 6B5608-6B5637: the pass count, and the result.
+/// 6B5608-6B5637: the pass count and the result.
 #[inline(always)]
 unsafe fn finish<E: Env>(e: &mut E, this: usize, one_draw: u8) -> u32 {
     let passes: u32 = rd(this, TP::field_C);
@@ -465,10 +468,10 @@ unsafe fn finish<E: Env>(e: &mut E, this: usize, one_draw: u8) -> u32 {
 // The function
 // ---------------------------------------------------------------------------------------
 
-/// The body of 0x6B41B0. The names of the stack slots of the game code are in the comments
-/// where one slot holds several things.
+/// The body of 0x6B41B0. Where one stack slot holds different values, the comments give the
+/// name of the stack slot in the game code.
 unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_state: usize, texture_sets: u32) -> u32 {
-    // 6B41B0-6B41E0: every sub-pass of the array is emptied.
+    // 6B41B0-6B41E0: the game code makes every sub-pass of the array empty.
     if rd::<u32>(this, TP::count_10) > 0 {
         let mut index = 0u32;
         loop {
@@ -486,8 +489,8 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
         }
     }
 
-    // 6B41E2-6B41F4: the stages of the texture effects. `var_35` is 1 until a projected
-    // light or shadow with a clip plane is built.
+    // 6B41E2-6B41F4: the stages of the texture effects. `var_35` is 1 until the function
+    // builds a projected light or a projected shadow with a clip plane.
     e.wr::<usize>(this, TP::substruct_14, 0);
     e.wr::<u32>(this, TP::field_C, 0);
     let mut one_draw = 1u8;
@@ -501,7 +504,7 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
     let base_map: usize = rd(rd::<usize>(property, NTP::maps_storage), 0);
     let base_texture: usize = if base_map != 0 { rd(base_map, MAP::texture) } else { 0 };
     e.wr::<u32>(this, TP::currentTextureApplyMode, rd(property, NTP::applyMode));
-    // The byte in `arg_4`: the apply mode is not "replace".
+    // The byte in `arg_4`. It is 1 when the apply mode is not "replace".
     let apply: u8 = (rd::<u32>(property, NTP::applyMode) != 0) as u8;
     let base_map: usize = rd(rd::<usize>(property, NTP::maps_storage), 0);
     let base_filter: u32 = if base_map != 0 { rd(base_map, MAP::filterMode) } else { 1 };
@@ -518,10 +521,11 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
         e.set_filter(0x6B429D, pipeline_of(this), base_filter, stage);
         e.wr::<u32>(stage, ST::field_94, 2);
         // 6B42AC: `mov [edi+28h], ebp; mov [edi+48h], ebp` in the database. MWSE replaces
-        // the two instructions with a call (PatchNiDX8TexturePass_BaseMapTexcoord in MWSE's
-        // PatchUtil.cpp) that gives the base stage the texture coordinate set of the base
-        // map. The hook reads the stack frame of the game code, so it is not called: when
-        // the call is there, this is what it does.
+        // the two instructions with a call. The call is
+        // `PatchNiDX8TexturePass_BaseMapTexcoord` in `PatchUtil.cpp` of MWSE. It gives the
+        // base stage the texture coordinate set of the base map. The hook reads the stack
+        // frame of the game code, thus the port does not call it. When the call is there,
+        // the port does the same work as the hook.
         let base_set = if e.base_texcoord_patch() { base_map_coordinate_set(property, texture_sets) } else { 0 };
         e.wr::<u32>(stage, ST::sourceTexcoordIndex, base_set);
         e.wr::<u32>(stage, ST::textureTransformFlags, 0);
@@ -531,7 +535,7 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
         base_stage = stage;
     }
 
-    // 6B42C6-6B431B: no texture effect and one map only: the short way out.
+    // 6B42C6-6B431B: the short path, for no texture effect and only one map.
     let effect_stages: u32 = rd(this, TP::field_6E0);
     e.wr::<u32>(this, TP::field_38, 0);
     if effect_stages == 0 && e.is_multi_texture(0x6B42DB, property) == 0 {
@@ -557,7 +561,7 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
     let mut detail_stage = 0usize; // otherStage
     let mut glow_stage = 0usize; // baseMapClampMode
     if texture_sets != 0 {
-        // 6B4351-6B438F: the decal count, and the dark, detail, gloss and glow maps.
+        // 6B4351-6B438F: the decal count and the dark, detail, gloss and glow maps.
         decal_count = rd::<u32>(property, NTP::maps_endIndex).wrapping_sub(6);
         if decal_count == 1 && rd::<usize>(rd::<usize>(property, NTP::maps_storage), 0x18) == 0 {
             decal_count = 0;
@@ -594,8 +598,8 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
             }
         }
 
-        // 6B44DD-6B4594: the dark map, blend slot 2. The pointer assignment is inline here,
-        // with a call of `NiObject::release`.
+        // 6B44DD-6B4594: the dark map, blend slot 2. The game code has the pointer assignment
+        // inline here, with a call of `NiObject::release`.
         if dark_map != 0 {
             let set = coordinate_set(rd(dark_map, MAP::texCoordSet), texture_sets, last_set);
             let texture: usize = rd(dark_map, MAP::texture);
@@ -622,7 +626,8 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
     // 6B4598-6B45AE
     let lights: u32 = rd(this, TP::field_CD8);
     if lights == 0 && rd::<u32>(this, TP::field_18A0) == 0 {
-        // 6B45B4-6B4642: no projected light. The base and the detail stage as a pair.
+        // 6B45B4-6B4642: no projected light. The base stage and the detail stage go in as a
+        // pair.
         let subpass = e.acquire(0x6B45BA, this, 2, 2);
         let mut bound = 0u32;
         if subpass != 0 {
@@ -634,10 +639,11 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
             e.apply_blend_ops(0x6B4634, this, base_stage, 0);
             e.apply_blend_ops(0x6B4642, this, detail_stage, 0);
         } else if dark_stage != 0 {
-            // 6B46A0-6B46B2: the dark stage takes the place of the base stage.
+            // 6B46A0-6B46B2: the dark stage replaces the base stage.
             e.wr::<u8>(dark_stage, ST::field_90, apply);
         } else {
-            // 6B46B4-6B4722: nothing to draw with: the stage with no texture (0x624).
+            // 6B46B4-6B4722: there is no stage to draw with. The function uses the stage
+            // with no texture (0x624).
             let fallback = this + TP::field_624;
             if fallback != 0 {
                 append_single(e, this, fallback, [0x6B46C4, 0x6B46D2, 0x6B4707, 0x6B470F]);
@@ -651,7 +657,7 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
         e.apply_blend_ops(0x6B4B3E, this, dark_stage, 0);
     } else {
         // 6B4727-6B475F: projected lights. `detailMapFilterMode` counts the lights with no
-        // clip plane that are left, `var_36` says the dark stage is not placed yet.
+        // clip plane that remain. `var_36` is 1 while the dark stage is not in a pass.
         e.wr::<u32>(this, TP::field_30, 7);
         let mut limit = e.max_textures();
         let stages = e.max_stages();
@@ -667,7 +673,7 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
             one_draw = 0;
             let mut clip_stage = this + TP::field_12C0; // var_14
             loop {
-                // 6B477B-6B4802: a pass of its own for the light with a clip plane (bank
+                // 6B477B-6B4802: a separate pass for the light with a clip plane (bank
                 // 0xCE0) and its clip stage (bank 0x12C0).
                 e.acquire_for_ps(0x6B477D, this);
                 let subpass = e.acquire(0x6B4788, this, 2, 2);
@@ -688,7 +694,8 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
                         }
                         e.apply_blend_ops(0x6B487F, this, dark_stage, 0);
                     }
-                    // 6B4884-6B4917: the lights with no clip plane (bank 0x6F8), last first.
+                    // 6B4884-6B4917: the lights with no clip plane (bank 0x6F8), from the
+                    // last to the first.
                     let mut stage = this.wrapping_add((lights_left as usize).wrapping_mul(STAGE)).wrapping_add(TP::field_6F8);
                     loop {
                         if lights_left == 0 {
@@ -721,7 +728,7 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
             }
             e.apply_blend_ops(0x6B49A9, this, dark_stage, 0);
         }
-        // 6B49AE-6B4A3E: the lights with no clip plane that are left.
+        // 6B49AE-6B4A3E: the lights with no clip plane that remain.
         if lights_left != 0 {
             let mut count = lights_left; // temp
             let mut stage = this.wrapping_add((lights_left as usize).wrapping_mul(STAGE)).wrapping_add(TP::field_6F8);
@@ -737,7 +744,7 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
                 }
             }
         }
-        // 6B4A40-6B4B3E: the base and the detail stage in a pass after the lights.
+        // 6B4A40-6B4B3E: the base stage and the detail stage in a pass after the lights.
         e.wr::<u32>(this, TP::field_30, 8);
         e.acquire_for_ps(0x6B4A49, this);
         let subpass = e.acquire(0x6B4A54, this, 2, 2);
@@ -760,7 +767,8 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
         }
     }
 
-    // 6B4B43-6B4C91: the decal maps (maps 6 and up), blend slot 1, each in a pass of its own.
+    // 6B4B43-6B4C91: the decal maps (maps 6 and higher), blend slot 1. Each one goes in a
+    // separate pass.
     if decal_count != 0 {
         let mut offset = 0x18usize; // var_14
         loop {
@@ -789,12 +797,13 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
 
     // 6B4C97-6B5148: projected shadows.
     if rd::<u32>(this, TP::field_2A48) != 0 || rd::<u32>(this, TP::field_2464) != 0 {
-        // 6B4CAF-6B4D1C: the blend slots follow the alpha property: alpha test (the
-        // reference value goes into alpha template 4), blending, or neither.
+        // 6B4CAF-6B4D1C: the alpha property selects the blend slots. There are three cases:
+        // alpha test, blending, or neither of the two. For alpha test, the reference value
+        // goes into alpha template 4.
         let alpha: usize = rd(property_state, PS::propAlpha);
         let flags: u16 = rd(alpha, AP::flags);
         let mut template = 0usize; // var_14
-        let mut base_slot = 0u32; // temp; the game code leaves it as it was in the last case
+        let mut base_slot = 0u32; // temp. In the last case the game code does not change it.
         let shadow_slot: u32; // detailMapFilterMode
         if (flags >> 9) & 1 != 0 {
             let reference: u8 = rd(alpha, AP::alphaTestRef);
@@ -824,7 +833,7 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
             let mut clip_stage = this + TP::field_18A4; // decalMapCount
             one_draw = 0;
             loop {
-                // 6B4D70-6B4E1C: with an alpha template, the base stage first.
+                // 6B4D70-6B4E1C: with an alpha template, the base stage goes in first.
                 e.acquire_for_ps(0x6B4D76, this);
                 let mut room = limit; // detailMapClampMode
                 if template != 0 && base_stage != 0 {
@@ -852,14 +861,15 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
                 if bound & 2 != 0 {
                     e.apply_blend_ops(0x6B4EA8, this, clip_stage.wrapping_add(0x5E0), 0);
                 }
-                // 6B4EAD-6B4F5B: the shadows with no clip plane (bank 0x2468), last first.
+                // 6B4EAD-6B4F5B: the shadows with no clip plane (bank 0x2468), from the last
+                // to the first.
                 if limit != 0 {
                     let mut stage = this.wrapping_add((shadows_left as usize).wrapping_mul(STAGE)).wrapping_add(TP::field_2468);
                     loop {
                         if shadows_left == 0 {
                             break;
                         }
-                        // `[ebx-28h]`: the blend slot of the stage below.
+                        // `[ebx-28h]`: the blend slot of the stage before this one.
                         e.wr::<u32>(stage.wrapping_sub(0x28), 0, 2);
                         shadows_left -= 1;
                         stage = stage.wrapping_sub(STAGE);
@@ -882,11 +892,12 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
                 }
             }
         }
-        // 6B4F86-6B4F9F: the call is made when the check says the sub-pass can stay.
+        // 6B4F86-6B4F9F: the game code makes the call when the check tells it that the
+        // sub-pass can stay.
         if clip_count == 0 && e.init_or_check(0x6B4F94, this, 2, 1, 1) == 0 {
             e.acquire_for_ps(0x6B4F9F, this);
         }
-        // 6B4FA4-6B5148: the shadows with no clip plane that are left.
+        // 6B4FA4-6B5148: the shadows with no clip plane that remain.
         if shadows_left != 0 {
             loop {
                 // 6B4FB0-6B4FC0
@@ -948,10 +959,11 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
     }
 
     // 6B514E-6B5555: the environment map of the effect state, with the bump map (map 5) and
-    // the gloss map (map 3) of the property. Without the environment map both are dropped.
+    // the gloss map (map 3) of the property. Without the environment map, the function does
+    // not use the two maps.
     if rd::<u8>(this, TP::field_2B08) != 0 {
-        // 6B515C-6B524A: the bump map, blend slot 8. `propertyState` counts the stages the
-        // pass must have room for.
+        // 6B515C-6B524A: the bump map, blend slot 8. `propertyState` counts the stages that
+        // the pass must have space for.
         let bump_map: usize = rd(rd::<usize>(property, NTP::maps_storage), 0x14);
         let mut needed: u32 = (gloss_map != 0) as u32 + 1;
         let mut bump_stage = 0usize;
@@ -964,7 +976,8 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
                 let stage = map_stage(e, this, texture, clamp, filter, [0x6B51D2, 0x6B51E3, 0x6B51F4]);
                 fill_stage(e, stage, 8, set, bump_map);
                 bump_stage = stage;
-                // 6B5227-6B524A: bump, environment and gloss need three stages and textures.
+                // 6B5227-6B524A: bump, environment and gloss together need 3 stages and 3
+                // textures.
                 if gloss_map != 0 && (e.max_stages() < 3 || e.max_textures() < 3) {
                     gloss_map = 0;
                 } else {
@@ -972,14 +985,15 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
                 }
             }
         }
-        // 6B524E-6B526B: with a gloss map always a new pass, else when the check asks for it.
+        // 6B524E-6B526B: with a gloss map there is always a new pass. With no gloss map there
+        // is a new pass when the check returns 1.
         let new_pass = if gloss_map != 0 { true } else { e.init_or_check(0x6B525C, this, 0, needed, needed) != 0 };
         if new_pass {
             e.acquire_for_ps(0x6B526B, this);
         }
 
         // 6B5270-6B5363: the bump stage and the environment stage as a pair. The byte in
-        // `propertyState` says the environment stage is placed.
+        // `propertyState` is 1 when the environment stage is in a pass.
         let env_stage = this + TP::field_2A4C;
         let mut env_placed = 0u8;
         if bump_stage != 0 && rd::<u32>(pipeline_of(this), CTP::field_104) != 0 {
@@ -1082,7 +1096,8 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
 
 /// 0x6B41B0 `NiDX8TexturePass::setCTPipelineState`, slot 8 of the pass. Returns 0x80000000
 /// when the draw has more than two sub-passes and none of them is of a projected light or
-/// shadow with a clip plane, else 0. The last five arguments are not used.
+/// a projected shadow with a clip plane. If not, it returns 0. The function does not use the
+/// last five arguments.
 #[cfg_attr(test, allow(dead_code))]
 pub unsafe fn set_ct_pipeline_state(
     this: usize,
@@ -1103,7 +1118,7 @@ pub unsafe fn set_ct_pipeline_state(
 // The dry run
 // ---------------------------------------------------------------------------------------
 
-/// One write of the dry run: where, how many bytes, and what was there.
+/// One write of the dry run: the address, the number of bytes, and the old bytes.
 #[derive(Clone, Copy)]
 struct Entry {
     addr: usize,
@@ -1111,17 +1126,18 @@ struct Entry {
     old: [u8; 8],
 }
 
-/// The dry run of the body. Every write goes to memory and into the journal; the callees
-/// are copies of the game functions (from the ports of `texture_pass_a` and `texture_pass_b`)
-/// that write through the journal too. They call nothing that cannot be undone: an object
-/// that would be deleted, or a device texture that would be made, sets `skip`. Sub-passes and
-/// array storage the game would allocate are blocks of the model.
+/// The dry run of the body. Every write goes to memory and into the journal. The
+/// callees are copies of the game functions, from the ports of `texture_pass_a` and
+/// `texture_pass_b`. They also write through the journal. They call nothing that the model
+/// cannot put back. Where the game deletes an object or makes a device texture, the model
+/// sets `skip`. The sub-passes and the array storage that the game allocates are blocks of
+/// the model.
 struct Model {
     max_stages: u32,
     max_textures: u32,
     base_texcoord_patch: bool,
     journal: Vec<Entry>,
-    /// Blocks that stand for memory the game would allocate.
+    /// Blocks that represent the memory that the game allocates.
     scratch: Vec<Box<[u32]>>,
     allocates: bool,
     skip: bool,
@@ -1132,7 +1148,7 @@ impl Model {
         Model { max_stages, max_textures, base_texcoord_patch, journal: Vec::with_capacity(256), scratch: Vec::new(), allocates: false, skip: false }
     }
 
-    /// Puts back every byte the run wrote, last write first.
+    /// Puts back every byte that the run wrote, from the last write to the first.
     unsafe fn roll_back(&self) {
         for entry in self.journal.iter().rev() {
             core::ptr::copy_nonoverlapping(entry.old.as_ptr(), entry.addr as *mut u8, entry.len);
@@ -1165,8 +1181,8 @@ impl Model {
         rd::<usize>(this, TP::TArray_18_storage) + index as usize * 4
     }
 
-    /// The game code would read outside the array: the call is not compared, and the run
-    /// goes on with a sub-pass of the model.
+    /// The game code reads outside the array in this case. The call is a skip, and the run
+    /// continues with a sub-pass of the model.
     unsafe fn lost(&mut self, this: usize) {
         self.skip = true;
         let subpass = self.new_subpass();
@@ -1177,7 +1193,7 @@ impl Model {
         self.wr(object, REF_COUNT, rd::<u32>(object, REF_COUNT).wrapping_add(1));
     }
 
-    /// One reference less. The game would delete the object with the last one.
+    /// Subtracts one reference. The game deletes the object when the count becomes 0.
     unsafe fn drop_reference(&mut self, object: usize) {
         let count = rd::<u32>(object, REF_COUNT).wrapping_sub(1);
         if count == 0 {
@@ -1232,14 +1248,14 @@ impl Model {
         }
     }
 
-    /// A larger storage. The old one is freed in the game, so it needs no block.
+    /// A larger storage. The game frees the old storage, thus the old storage needs no block.
     unsafe fn array_set_size(&mut self, this: usize, size: u32) {
         if size == rd::<u32>(this, TP::TArray_18_storageCount) {
             return;
         }
         let end: u32 = rd(this, TP::TArray_18_endIndex);
         if size < end || size > 0x1000 {
-            // The path that makes the array smaller is not in the model.
+            // The model does not have the path that makes the array smaller.
             self.skip = true;
             return;
         }
@@ -1299,7 +1315,7 @@ impl Model {
         }
     }
 
-    /// `getAvailableSlotCounts`: free stages and free textures.
+    /// `getAvailableSlotCounts`: the free stages and the free textures.
     unsafe fn free_slots(&self, subpass: usize) -> (u32, u32) {
         let used: u32 = rd(subpass, SUB::field_C);
         let stages = if used == u32::MAX { self.max_stages } else { self.max_stages.wrapping_sub(used) };
@@ -1308,8 +1324,9 @@ impl Model {
 
     // The sub-pass, as in `texture_pass_b`.
 
-    /// The stage goes into the list with the next index. Returns the stage count before and
-    /// the next index, or `None` when the list is full (the game code has no such check).
+    /// The stage goes into the list with the next index. Returns the stage count before the
+    /// call and the next index, or `None` when the list is full. The game code does not have
+    /// this check.
     unsafe fn store_appended(&mut self, subpass: usize, stage: usize) -> Option<(u32, u32)> {
         let index: u32 = rd(subpass, SUB::field_8);
         if index >= 8 {
@@ -1342,9 +1359,9 @@ impl Model {
         }
     }
 
-    /// `NiDX8TexturePass::setTexturePipeline` for an effect state with no projected light or
-    /// shadow. The texture matrix the coordinate callback computes is not written: it is
-    /// inside the pass, and nothing in the body reads it.
+    /// `NiDX8TexturePass::setTexturePipeline` for an effect state with no projected light and
+    /// no projected shadow. The model does not write the texture matrix that the coordinate
+    /// callback calculates. The matrix is inside the pass, and nothing in the body reads it.
     unsafe fn configure_effect_stage(&mut self, this: usize, effect: usize, stage: usize) -> u8 {
         if rd::<u32>(this, TP::field_6E0) >= 8 || rd::<u8>(effect, EFFECT_ENABLED) == 0 {
             return 0;
@@ -1374,8 +1391,8 @@ impl Model {
     }
 }
 
-/// `NiDX8TextureManager::GetFormatFromTexture`, slot 0x10 of the texture manager. It only
-/// reads when the texture has its device data.
+/// `NiDX8TextureManager::GetFormatFromTexture`, slot 0x10 of the texture manager. When the
+/// texture has its device data, the function only reads.
 #[cfg(not(test))]
 unsafe fn texture_format(texture_manager: usize, texture: usize) -> u32 {
     let vtable: usize = rd(texture_manager, 0);
@@ -1387,7 +1404,7 @@ unsafe fn texture_format(_texture_manager: usize, _texture: usize) -> u32 {
     0
 }
 
-/// True when slot 0x18 of the pass is the `resetPassFlags` the model knows.
+/// True when slot 0x18 of the pass is the `resetPassFlags` that the model has.
 #[cfg(not(test))]
 unsafe fn knows_reset_pass_flags(this: usize) -> bool {
     rd::<usize>(rd::<usize>(this, 0), 0x18) == ADDR_RESET_PASS_FLAGS
@@ -1446,7 +1463,7 @@ impl Env for Model {
             return;
         }
         if rd::<usize>(effect_state, DES::projLights) != 0 || rd::<usize>(effect_state, DES::projShadows) != 0 {
-            // Projected lights and shadows are not in the model.
+            // The model does not have projected lights and projected shadows.
             self.skip = true;
             return;
         }
@@ -1470,8 +1487,8 @@ impl Env for Model {
         self.drop_reference(object);
     }
 
-    /// The values come from tables of the game; here the stage gets the mode itself. The
-    /// body does not read them back, and the run is rolled back.
+    /// In the game the values come from tables. In the model the stage gets the mode value.
+    /// The body does not read the values, and the model puts the old values back.
     unsafe fn set_addressing(&mut self, _site: usize, _pipeline: usize, clamp_mode: u32, stage: usize) {
         self.wr(stage, ST::addressModeU, clamp_mode);
         self.wr(stage, ST::addressModeV, clamp_mode);
@@ -1484,7 +1501,7 @@ impl Env for Model {
         self.wr(stage, ST::filter_44, filter_mode);
     }
 
-    /// 0x6E1D40: a map after the base map.
+    /// 0x6E1D40: returns 1 when the property has a map after the base map.
     unsafe fn is_multi_texture(&mut self, _site: usize, property: usize) -> u8 {
         let end: u32 = rd(property, NTP::maps_endIndex);
         let maps: usize = rd(property, NTP::maps_storage);
@@ -1565,7 +1582,7 @@ impl Env for Model {
         if rd::<u32>(this, TP::field_C) != 0 {
             let first_stage: usize = rd(subpass, SUB::field_14);
             if first_stage == 0 {
-                // The game code would read through a null pointer.
+                // The game code reads through a null pointer in this case.
                 self.skip = true;
                 return 1;
             }
@@ -1633,9 +1650,9 @@ fn inside(addr: usize, start: usize, size: usize) -> bool {
     addr >= start && addr < start + size
 }
 
-/// The blocks the call writes outside the pass and the pipeline, from the journal of a dry
-/// run. A write into a sub-pass of the array counts as the whole sub-pass. Returns `None`
-/// when there are more than `out` holds.
+/// The blocks that the call writes outside the pass and the pipeline, from the journal of a
+/// dry run. A write into a sub-pass of the array gives the full sub-pass as a block. Returns
+/// `None` when there are more blocks than `out` holds.
 fn blocks_of(model: &Model, this: usize, pipeline: usize, subpasses: &[usize], out: &mut [(usize, usize); 6]) -> Option<usize> {
     let mut len = 0;
     for entry in &model.journal {
@@ -1658,7 +1675,8 @@ fn blocks_of(model: &Model, this: usize, pipeline: usize, subpasses: &[usize], o
     Some(len)
 }
 
-/// Runs the body on the model, puts the memory back, and gives the blocks the call writes.
+/// Runs the body on the model, puts the memory back, and gives the blocks that the call
+/// writes.
 #[allow(clippy::too_many_arguments)]
 unsafe fn plan(
     set: &mut Regions,
@@ -1677,7 +1695,7 @@ unsafe fn plan(
 
     let count: u32 = rd(this, TP::count_10);
     if count > 64 || count > rd::<u32>(this, TP::TArray_18_storageCount) {
-        // Not a state the game leaves the array in.
+        // The array is not in a state that the game leaves it in.
         set.skip();
         return;
     }
@@ -1710,28 +1728,37 @@ unsafe fn plan(
             }
         }
         None => {
-            // More blocks than `Regions` holds.
+            // The call needs more blocks than `Regions` holds.
             set.skip();
             return;
         }
     }
-    // Nothing the function calls writes the render state. It is compared when a block is
-    // free for it.
+    // No callee of the function writes the render state. The test compares the render state
+    // when a block is free for it.
     set.add(render_state, RS::SIZE);
 }
 
-/// The memory a call writes: the pass, the pipeline (`field_B04`), every sub-pass of the
-/// array (all are emptied at the start), the slot of the array a new sub-pass goes into,
-/// the reference counts of the textures that enter or leave a stage and of the alpha
-/// templates that enter or leave a sub-pass, and the alpha test value of alpha template 4.
-/// Which of these, a dry run of the body tells (see `Model`).
+/// The memory that a call writes:
+/// - the pass;
+/// - the pipeline (`field_B04`);
+/// - every sub-pass of the array, because the function makes all of them empty at the start;
+/// - the slot of the array that a new sub-pass goes into;
+/// - the reference counts of the textures that go into a stage or come out of a stage;
+/// - the reference counts of the alpha templates that go into a sub-pass or come out of one;
+/// - the alpha test value of alpha template 4.
 ///
-/// The call is not compared when the dry run finds that an object would be deleted (a
-/// texture or an alpha property that loses its last reference), that a device texture would
-/// be made (an effect texture with no device data), an effect state with projected lights
-/// or shadows that is not the one of the previous call, a sub-pass array that is not as the
-/// game leaves it, or more than 8 blocks. A new sub-pass or a longer array is
-/// `set.allocates()`.
+/// A dry run of the body finds which of these blocks the call writes. Refer to `Model`.
+///
+/// The call is a skip when the dry run finds one of these conditions:
+/// - the call deletes an object: a texture or an alpha property that loses its last
+///   reference;
+/// - the call makes a device texture: an effect texture with no device data;
+/// - the effect state has projected lights or projected shadows and is not the effect state
+///   of the previous call;
+/// - the sub-pass array is not in a state that the game leaves it in;
+/// - the call needs more than 8 blocks.
+///
+/// A new sub-pass or a longer array calls `set.allocates()`.
 #[cfg_attr(test, allow(dead_code))]
 unsafe fn regions(set: &mut Regions, this: usize, property_state: usize, effect_state: usize, texture_sets: u32) {
     let patch = rd::<u8>(BASE_TEXCOORD_PATCH, 0) == 0xE8;
@@ -1780,8 +1807,8 @@ mod tests {
         }
     }
 
-    /// A pass with its pipeline, the ten alpha templates, a texturing property with seven
-    /// map slots and an array of sub-passes.
+    /// A pass with its pipeline, the 10 alpha templates, a texturing property with 7 map
+    /// slots and an array of sub-passes.
     struct World {
         pass: Vec<u32>,
         pipeline: Vec<u32>,
@@ -1880,7 +1907,7 @@ mod tests {
             let (this, state) = (self.this(), self.state.as_mut_ptr() as usize);
             unsafe { build(model, this, state, 0, texture_sets) }
         }
-        /// Every byte of the world the game would know.
+        /// Every byte of the test data that is game memory in the game.
         fn snapshot(&self) -> Vec<u32> {
             let mut all = self.pass.clone();
             all.extend_from_slice(&self.pipeline);
@@ -1900,7 +1927,7 @@ mod tests {
         unsafe {
             // The colour operation of blend slot 2 for a first stage.
             wr::<u32>(pipeline, (2 * 3 + 0x21) * 8, 4);
-            // The sub-pass is as an earlier draw left it.
+            // The sub-pass is in the state that an earlier draw left it in.
             wr::<u32>(subpass, SUB::field_8, 3);
             wr::<u32>(subpass, SUB::field_C, 3);
             wr::<u32>(subpass, SUB::field_10, 3);
@@ -1915,7 +1942,7 @@ mod tests {
             assert_eq!(rd::<u32>(stage, ST::field_94), 2);
             assert_eq!(rd::<u8>(stage, ST::field_90), 1);
             assert_eq!(rd::<usize>(stage, ST::texturePropMap), texture);
-            // The database stores: set 0, whatever the map asks for.
+            // The stores of the database give set 0. The set of the map has no effect.
             assert_eq!(rd::<u32>(stage, ST::sourceTexcoordIndex), 0);
             assert_eq!(rd::<u32>(stage, ST::colorOp), 4);
             assert_eq!(rd::<u32>(subpass, SUB::field_8), 1);
@@ -1950,7 +1977,7 @@ mod tests {
             assert_eq!(base_map_coordinate_set(property, 4), 3);
             assert_eq!(base_map_coordinate_set(property, 9), 3);
         }
-        // Through the body, with the call of MWSE at 0x6B42AC and without it.
+        // The same through the body, with the call of MWSE at 0x6B42AC and without it.
         let stage = world.stage(0);
         for (patch, expected) in [(true, 1), (false, 0)] {
             let mut model = Model::new(8, 8, patch);
@@ -1982,7 +2009,7 @@ mod tests {
             assert_eq!(rd::<usize>(base_stage, ST::ptrTexture), base);
             assert_eq!(rd::<usize>(glow_stage, ST::ptrTexture), glow);
             assert_eq!(rd::<u32>(glow_stage, ST::field_94), 0);
-            // The map asks for set 5 of 2: the last one.
+            // The map has set 5 and the geometry has 2 sets. The result is the last set.
             assert_eq!(rd::<u32>(glow_stage, ST::sourceTexcoordIndex), 1);
             assert_eq!(rd::<[usize; 2]>(subpass, SUB::field_14), [base_stage, glow_stage]);
             assert_eq!(rd::<u32>(subpass, SUB::field_8), 2);
@@ -2063,7 +2090,7 @@ mod tests {
             model.roll_back();
             assert_eq!(rd::<usize>(dark_stage, ST::ptrTexture), old);
 
-            // The last reference: the game would delete the texture, so the call is not compared.
+            // The last reference. The game deletes the texture, thus the call is a skip.
             wr::<u32>(old, REF_COUNT, 1);
             let mut model = Model::new(8, 8, false);
             world.run(&mut model, 1);
@@ -2079,7 +2106,7 @@ mod tests {
         world.map(0, 0);
         let (this, subpass, base_stage) = (world.this(), world.subpass(0), world.stage(0));
         unsafe {
-            // As `setTexturePipeline` leaves a pass with an environment map.
+            // The state in which `setTexturePipeline` leaves a pass with an environment map.
             wr::<u32>(this, TP::field_6E0, 1);
             wr::<u8>(this, TP::field_2B08, 1);
             let mut model = Model::new(8, 8, false);

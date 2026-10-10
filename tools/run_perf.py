@@ -1,8 +1,9 @@
 """Frame times with the game code against frame times with the Rust code.
 
-Starts the game through the testing instance, loads a save, goes to a cell and measures
-rounds that take turns: off, live, off, live, ... Every port is installed in both modes; in
-"off" a call goes through the detour to the game function, in "live" to the Rust function.
+Starts the game through the testing instance, loads a save and goes to a cell. Then it
+measures rounds that alternate: off, live, off, live. Every port has its detour in the two
+modes. In "off" a call goes through the detour to the game function. In "live" a call goes
+through the detour to the Rust function.
 
     python tools/run_perf.py --cell "Old Ebonheart" [--rounds 6] [--seconds 10]
 
@@ -106,7 +107,8 @@ def main():
     change = (summary["rust"]["mean_ms"] / summary["game"]["mean_ms"] - 1) * 100
     print("\nmean frame time, rust against game: %+.2f %%" % change)
     print("\nrounds (mean ms): " + "  ".join("%s %.3f" % ("game" if m == "off" else "rust", d["mean_ms"]) for m, d in rounds))
-    # The spread between rounds of the same mode says how much a difference between the modes means.
+    # The spread between rounds of the same mode tells how much a difference between the modes
+    # means.
     for mode, label in (("off", "game"), ("live", "rust")):
         means = [d["mean_ms"] for m, d in rounds if m == mode]
         print("%s rounds: min %.3f max %.3f ms" % (label, min(means), max(means)))

@@ -1,5 +1,5 @@
-# Runs inside IDA (py_exec_file). Writes the pseudocode and the disassembly of the functions
-# listed in tools/out/dump_request.txt (one address per line) to tools/out/dump/<ea>.txt
+# Runs inside IDA (py_exec_file). Writes the pseudocode and the disassembly of functions to
+# tools/out/dump/<ea>.txt. tools/out/dump_request.txt lists the functions, one address per line.
 import os
 
 import ida_funcs

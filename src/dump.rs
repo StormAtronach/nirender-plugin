@@ -1,15 +1,16 @@
 //! Dumps for the comparison of two runs of the game.
 //!
-//! The shadow test cannot compare what runs once at the start of the game (device creation,
-//! the constructors). For that code two whole runs are compared: one that started with the
-//! game functions and one that started with the Rust functions. At the same point of both
-//! runs the plugin writes the state of the renderer objects and the device calls of one
-//! frame to files, and `tools/compare_runs.py` compares the files.
+//! The shadow test cannot compare the code that runs one time at the start of the game. That
+//! code is the device creation and the constructors. For that code the tool compares two
+//! whole runs. One run started with the game functions and the other started with the Rust
+//! functions. At the same point of the two runs the plugin writes files. The files hold the
+//! state of the renderer objects and the device calls of one frame.
+//! `tools/compare_runs.py` compares the files.
 //!
-//! Addresses differ from run to run, so a word that is an address is not compared as it is.
-//! In the state dump it gets a mark. In the frame dump it becomes the number of the
-//! order in which the addresses first appear, so "the same texture as in call 5" stays
-//! comparable.
+//! Addresses differ from run to run. So the tool does not compare the value of a word that
+//! is an address. In the state dump the word gets a mark. In the frame dump the word becomes
+//! a number. The number is the order in which the addresses first appear. Thus "the same
+//! texture as in call 5" stays comparable.
 
 use core::ffi::c_void;
 use std::collections::HashMap;
@@ -36,8 +37,9 @@ extern "system" {
     fn VirtualQuery(address: *const c_void, buffer: *mut MemoryBasicInformation, length: usize) -> usize;
 }
 
-/// True when `value` is the address of committed memory outside the game's own image. The
-/// image is at the same place in every run, so its addresses compare as plain numbers.
+/// True when `value` is the address of committed memory outside the image of the game. The
+/// image is at the same place in every run. Thus the tool compares its addresses as plain
+/// numbers.
 pub unsafe fn is_run_address(value: u32) -> bool {
     let value = value as usize;
     if value < 0x10000 || (0x400000..0x800000).contains(&value) {
@@ -62,8 +64,8 @@ unsafe fn write_object(out: &mut impl Write, name: &str, address: usize, size: u
         let mut line = format!("  {:04x}:", row * 4);
         for index in row..(row + 8).min(words) {
             let value: u32 = rd(address, index * 4);
-            // An address keeps its value, with a mark: the reader takes two marked words as
-            // equal, and a small number that only looks like an address still compares.
+            // An address keeps its value and gets a mark. The reader takes two marked words as
+            // equal. The reader still compares a small number that only looks like an address.
             let mark = if is_run_address(value) { '*' } else { ' ' };
             line.push_str(&format!(" {mark}{value:08x}"));
         }
@@ -116,7 +118,8 @@ pub unsafe fn frame(path: &str, log: &[u32]) -> std::io::Result<()> {
             slot => device::NAMES.get(slot).copied().unwrap_or("?"),
         };
         let args: Vec<String> = record.args.iter().map(|&a| name(a, &mut seen)).collect();
-        // The data of a call is numbers (matrices, vertices), not addresses: as it is.
+        // The data of a call is numbers, such as matrices and vertices, and not addresses. So
+        // the dump uses the data unchanged.
         let data = if record.payload.is_empty() {
             String::new()
         } else {

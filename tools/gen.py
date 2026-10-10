@@ -1,6 +1,6 @@
 """Generates src/gen/layouts.rs and src/gen/funcs.rs from the IDA export (tools/out/*.json).
 
-Run after tools/ida_export_inventory.py. The output is checked in, so a build needs no IDA.
+Run it after tools/ida_export_inventory.py. The output is in git, so a build needs no IDA.
 """
 import json
 import os
@@ -19,7 +19,7 @@ LAYOUT_RE = re.compile(
     r"NiDynamicEffect$|NiAVObject$|NiGeometry$|NiCamera$|NiColor$|NiColorA$|D3DMATERIAL|D3DLIGHT8$|"
     r"D3DVIEWPORT8$|D3DCAPS8$|D3DPRESENT_PARAMETERS)")
 
-# Functions of the renderer subsystem: the census and the detours look them up here.
+# Functions of the renderer subsystem. The census and the detours find them here.
 FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiPropertyState)")
 FUNC_SKIP = re.compile(r"_SEH$|NiDX8Application|NiDX8SelectResolution|StdMap")
 
@@ -44,7 +44,7 @@ def flatten(structs, name, base=0, prefix="", depth=0):
         yield mname, base + m["offset"], m["size"], m["type"]
         inner = structs.get(m["type"])
         if inner and not inner["union"] and depth < 4:
-            # A base class adds no prefix: NiAlphaProperty::flags, not super_flags.
+            # A base class adds no prefix. The name is NiAlphaProperty::flags, not super_flags.
             inner_prefix = prefix if m["name"] == "super" else mname + "_"
             yield from flatten(structs, m["type"], base + m["offset"], inner_prefix, depth + 1)
 

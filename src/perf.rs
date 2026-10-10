@@ -1,6 +1,6 @@
 //! Frame times, for the comparison of the game code with the Rust code.
 //!
-//! A frame time is the time between two `Present` calls of the engine, from the high
+//! A frame time is the time between two `Present` calls of the game. It comes from the high
 //! resolution counter of Windows.
 
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -30,7 +30,7 @@ pub unsafe fn start() {
     COLLECTING.store(true, Ordering::Relaxed);
 }
 
-/// Called at each `Present` of the engine.
+/// The device recorder calls this at each `Present` of the game.
 #[inline]
 pub unsafe fn on_present() {
     if !COLLECTING.load(Ordering::Relaxed) {
@@ -45,7 +45,7 @@ pub unsafe fn on_present() {
     state.last = now;
 }
 
-/// Ends the measurement. Returns the frame times in microseconds, in the order they came.
+/// Ends the measurement. Returns the frame times in microseconds, in the order of the frames.
 pub unsafe fn stop() -> Vec<f64> {
     COLLECTING.store(false, Ordering::Relaxed);
     let state = &mut *core::ptr::addr_of_mut!(STATE);

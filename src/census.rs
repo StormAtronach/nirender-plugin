@@ -1,8 +1,10 @@
-//! The byte census: the functions of the renderer subsystem in memory against the IDA database.
+//! The byte census compares the functions of the renderer subsystem in memory with the
+//! database.
 //!
-//! A function whose bytes differ was changed by another mod (MWSE, MGE, the Code Patch with
-//! other options than the database has). The Rust port replicates the database; replacing a
-//! changed function would drop the change, so each one needs a decision.
+//! When the bytes of a function are different, another mod changed the function. That mod is
+//! MWSE, MGE, or the Code Patch with other options than the database has. The port replicates
+//! the database. If the port replaces a changed function, the change is lost. So each changed
+//! function needs a decision.
 
 use core::ffi::c_void;
 
@@ -23,8 +25,8 @@ pub struct Change {
     pub len: usize,
 }
 
-/// The runs where `live` differs from `expected`. Runs closer than 4 bytes are one run: a
-/// patched address often shares a byte or two with the old one.
+/// The runs where `live` differs from `expected`. Runs closer than 4 bytes are one run. A
+/// patched address frequently has one or two bytes that are the same as in the old address.
 pub fn runs(live: &[u8], expected: &[u8]) -> Vec<(usize, usize)> {
     let mut out: Vec<(usize, usize)> = Vec::new();
     for i in 0..live.len().min(expected.len()) {
@@ -74,14 +76,16 @@ pub unsafe fn module_of(address: usize) -> String {
     path.rsplit(['\\', '/']).next().unwrap_or("?").to_string()
 }
 
-/// One line for a change: where, the bytes, and where a new call or jump goes.
+/// One line for a change. It gives the address, the bytes, and the target of a new call or
+/// jump.
 pub unsafe fn describe(change: &Change) -> String {
     let at = change.func.ea + change.offset;
     let shown = change.len.min(12);
     let live = core::slice::from_raw_parts(at as *const u8, shown);
     let old = &expected(change.func)[change.offset..change.offset + shown];
     let mut text = format!("{:#x} {}+{:#x} [{}]: {:02x?} was {:02x?}", at, change.func.name, change.offset, change.len, live, old);
-    // A call or jump whose 4-byte target changed: the opcode is at the run or one byte before it.
+    // This finds a call or a jump with a changed 4-byte target. The opcode is at the run or
+    // one byte before it.
     for back in 0..2 {
         if change.offset < back {
             continue;
@@ -115,7 +119,7 @@ mod tests {
         let mut live = [0u8; 16];
         assert!(runs(&live, &expected).is_empty());
         live[2] = 1;
-        live[5] = 1; // 3 bytes after the first: same run
+        live[5] = 1; // This is 3 bytes after the first byte, so it is in the same run.
         live[12] = 1;
         assert_eq!(runs(&live, &expected), vec![(2, 4), (12, 1)]);
     }

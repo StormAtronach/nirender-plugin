@@ -1,13 +1,15 @@
--- nirender: loads nirender.dll and installs it.
+-- nirender loads nirender.dll and installs it.
 --
 -- MWSE/config/nirender.json:
---   "mode":  "off" | "shadow" | "live" for every ported function once the game is up.
---            "off" keeps the game code, "shadow" runs both and compares, "live" runs the Rust code.
---   "early": true installs when this file loads, before the game creates its renderer, and
---            applies "mode" at once, so the start of the game runs in that mode too.
---            false (the default) installs at the "initialized" event.
--- A run spec (MWSE/config/nirender_test.json, written by tools/run_test.py) starts the test
--- scenario in nirender/test.lua; without one this file only installs.
+--   "mode":  "off", "shadow" or "live", for every port after the game started.
+--            "off" keeps the game code. "shadow" runs the two functions and compares them.
+--            "live" runs the Rust code.
+--   "early": true installs when this file loads, before the game creates its renderer.
+--            It applies "mode" immediately, so the start of the game also runs in that mode.
+--            false is the default. It installs at the "initialized" event.
+-- A run spec starts the test scenario in nirender/test.lua. The run spec is
+-- MWSE/config/nirender_test.json, and tools/run_test.py writes it. Without a run spec this
+-- file only installs.
 
 local nirender = include("nirender")
 if not nirender then
@@ -47,7 +49,7 @@ end
 
 event.register("initialized", function()
     if installed then
-        -- Other mods may have changed the game code since this file loaded.
+        -- It is possible that other mods changed the game code after this file loaded.
         nirender.recheck()
     else
         installed = install()

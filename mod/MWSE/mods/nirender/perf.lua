@@ -1,10 +1,10 @@
 ---@diagnostic disable
--- The in-game half of tools/run_perf.py: frame times with the game code against frame times
--- with the Rust code, in one cell, from one camera position.
+-- The in-game part of tools/run_perf.py. It compares frame times with the game code and
+-- frame times with the Rust code, in one cell, from one camera position.
 --
--- The two modes take turns in short rounds (off, live, off, live, ...), so that a change of
--- the scene, of the weather or of the machine load falls on both in the same measure.
--- A frame time is the time between two Present calls, measured in the plugin.
+-- The two modes alternate in short rounds: off, live, off, live. Thus a change of the scene,
+-- of the weather or of the machine load has the same effect on the two modes.
+-- A frame time is the time between two Present calls. The plugin measures it.
 
 return function(nirender, spec)
     local function say(fmt, ...)
@@ -56,7 +56,8 @@ return function(nirender, spec)
         end
         local mode = (index % 2 == 1) and "off" or "live"
         nirender.setMode("*", mode)
-        -- A moment for caches to settle after the switch, outside the measurement.
+        -- This time lets the caches become stable after the switch. It is not in the
+        -- measurement.
         after(spec.warmSeconds or 1, function()
             nirender.timing(true)
             after(spec.roundSeconds, function()

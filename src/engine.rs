@@ -1,6 +1,7 @@
-//! Engine functions and data the ports use at their fixed addresses in Morrowind.exe.
+//! Engine functions and data that the ports use at their fixed addresses in Morrowind.exe.
 //!
-//! A function here is outside the port (the scene graph, the allocator) or not ported yet.
+//! A function here is outside the port or has no port yet. The scene graph and the allocator
+//! are outside the port.
 
 use core::mem::transmute;
 
@@ -21,7 +22,7 @@ unsafe fn thiscall1(addr: usize, this: usize, a: u32) -> u32 {
     transmute::<usize, unsafe extern "thiscall" fn(usize, u32) -> u32>(addr)(this, a)
 }
 
-/// The renderer the game draws with, or 0 before it exists.
+/// The renderer that the game draws with, or 0 before it exists.
 pub unsafe fn renderer() -> usize {
     let world_controller: usize = rd(WORLD_CONTROLLER, 0);
     if world_controller == 0 {
@@ -31,7 +32,7 @@ pub unsafe fn renderer() -> usize {
     }
 }
 
-/// `operator new` of the game's C runtime.
+/// `operator new` of the C runtime of the game.
 pub unsafe fn operator_new(size: usize) -> usize {
     transmute::<usize, unsafe extern "C" fn(usize) -> usize>(0x727692)(size)
 }
@@ -60,9 +61,9 @@ pub unsafe fn material_manager_update_to_device(manager: usize, device: usize) -
     thiscall1(0x6C2680, manager, device as u32)
 }
 
-/// A fault put into the Rust code on purpose, to show that the tests find one.
-/// 0 = none. 1 = a wrong value in a device call (the Z compare function).
-/// 2 = a wrong value in memory (the fog property the render state remembers).
+/// A deliberate fault in the Rust code. It shows that the tests find a fault.
+/// 0 is no fault. 1 is a wrong value in a device call, the Z compare function.
+/// 2 is a wrong value in memory, the fog property that the render state remembers.
 pub static FAULT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 pub fn fault() -> u32 {
@@ -72,7 +73,7 @@ pub fn fault() -> u32 {
 /// `IDirect3DDevice8::SetRenderState` through the vtable of the device, as the game code calls it.
 #[inline(always)]
 pub unsafe fn device_set_render_state(device: usize, state: u32, value: u32) -> u32 {
-    // D3DRS_ZFUNC: D3DCMP_LESSEQUAL (4) becomes D3DCMP_LESS (2).
+    // For D3DRS_ZFUNC, D3DCMP_LESSEQUAL (4) becomes D3DCMP_LESS (2).
     let value = if state == 23 && value == 4 && fault() == 1 { 2 } else { value };
     let vtable: usize = rd(device, 0);
     let f: unsafe extern "system" fn(usize, u32, u32) -> u32 = transmute(rd::<usize>(vtable, 0xC8));

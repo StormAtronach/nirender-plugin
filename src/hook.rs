@@ -1,9 +1,9 @@
 //! Detours on engine functions.
 //!
 //! The entry of the engine function gets a jump to an entry thunk. The thunk calls the Rust
-//! detour and puts ECX and EDX back, because callers in Morrowind.exe were compiled with
-//! knowledge of what each callee leaves in the registers. A trampoline holds the displaced
-//! entry instructions and jumps back, so the Rust side can still call the engine function.
+//! detour and puts ECX and EDX back. The compiler of Morrowind.exe knew what each callee
+//! leaves in the registers, and the callers use this. A trampoline holds the displaced entry
+//! instructions and jumps back. Thus the Rust code can still call the engine function.
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -43,20 +43,21 @@ fn rel32(from_next: usize, to: usize) -> [u8; 4] {
     (to.wrapping_sub(from_next) as u32).to_le_bytes()
 }
 
-/// How the function gets its stack arguments off the stack.
+/// Tells which code removes the stack arguments of the function from the stack.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Cleanup {
-    /// thiscall and stdcall: the function removes its arguments.
+    /// For thiscall and stdcall, the function removes its arguments.
     Callee,
-    /// cdecl: the caller removes them.
+    /// For cdecl, the caller removes them.
     Caller,
 }
 
 /// The code of an entry thunk for a detour with `stack_args` 4-byte stack arguments.
-/// `at` is the address the thunk will have.
+/// `at` is the address of the thunk.
 pub fn entry_thunk_code(at: usize, detour: usize, stack_args: usize, cleanup: Cleanup) -> Vec<u8> {
     let mut code = vec![0x52, 0x51]; // push edx; push ecx
-    // The arguments again, last first. After each push the next one is at the same offset.
+    // This pushes the arguments again, the last one first. After each push the next argument
+    // is at the same offset.
     let offset = 8 + 4 * stack_args;
     assert!(offset < 0x80);
     for _ in 0..stack_args {
@@ -66,7 +67,7 @@ pub fn entry_thunk_code(at: usize, detour: usize, stack_args: usize, cleanup: Cl
     let next = at + code.len() + 4;
     code.extend_from_slice(&rel32(next, detour));
     if cleanup == Cleanup::Caller && stack_args > 0 {
-        // The detour is cdecl too and left the copies on the stack.
+        // The detour is also cdecl, and it left the copies on the stack.
         code.extend_from_slice(&[0x83, 0xC4, (4 * stack_args) as u8]); // add esp, n
     }
     code.extend_from_slice(&[0x59, 0x5A]); // pop ecx; pop edx
@@ -90,9 +91,10 @@ pub unsafe fn install(ea: usize, detour: usize, stack_args: usize, cleanup: Clea
     install_raw(ea, &func.head[..func.steal], &relocs, detour, stack_args, cleanup)
 }
 
-/// As `install`, for a function outside the table. `head` holds the whole instructions the
-/// jump displaces (all of the function when it is shorter than the jump); `relocs` are the
-/// offsets in `head` of 32-bit relative call or jump targets.
+/// Does the same as `install`, for a function outside the table. `head` holds the whole
+/// instructions that the jump displaces. When the function is shorter than the jump, `head`
+/// holds all of the function. `relocs` are the offsets in `head` of the 32-bit relative
+/// targets of calls and jumps.
 pub unsafe fn install_raw(
     ea: usize,
     head: &[u8],
@@ -103,7 +105,7 @@ pub unsafe fn install_raw(
 ) -> Result<usize, String> {
     let live = core::slice::from_raw_parts(ea as *const u8, 16);
     if live[0] == 0xE9 && head[0] != 0xE9 {
-        // Another mod has a jump here already. Keep its target.
+        // Another mod already has a jump here. The trampoline keeps its target.
         let rel = u32::from_le_bytes([live[1], live[2], live[3], live[4]]) as usize;
         let target = (ea + 5).wrapping_add(rel);
         let at = arena_alloc(&[0xE9, 0, 0, 0, 0]).ok_or("no memory for a trampoline")?;
@@ -117,8 +119,8 @@ pub unsafe fn install_raw(
     let mut code = head.to_vec();
     let whole = steal < 5;
     if whole {
-        // The function is shorter than the jump. It ends in a return, and the jump may take
-        // the padding after it, never the start of the next function.
+        // The function is shorter than the jump. It ends in a return. The jump can use the
+        // padding after it. The jump must not use the start of the next function.
         if live[steal..5].iter().any(|&b| b != 0x90 && b != 0xCC) {
             return Err("no padding after a function shorter than 5 bytes".into());
         }
@@ -138,7 +140,7 @@ pub unsafe fn install_raw(
 }
 
 unsafe fn finish(ea: usize, trampoline: usize, steal: usize, detour: usize, stack_args: usize, cleanup: Cleanup) -> Result<usize, String> {
-    // Reserve the thunk's place first: its code depends on its own address.
+    // Reserve the place of the thunk first, because its code depends on its address.
     let size = entry_thunk_code(0, detour, stack_args, cleanup).len();
     let thunk = arena_alloc(&vec![0xCC; size]).ok_or("no memory for a thunk")?;
     let code = entry_thunk_code(thunk, detour, stack_args, cleanup);
