@@ -312,6 +312,7 @@ pub unsafe fn render_points(this: usize, geometry_data: usize, world_transform: 
     device_set_indices(rd(this, R::d3dDevice), index_buffer, 0);
     set_fixed_function_shaders(this, FVF_POINTS);
     let device: usize = rd(this, R::d3dDevice);
+    crate::link_client::draw_state(this, 4, vertex_count, 0, count + count, false);
     site_draw_indexed_primitive(0x6AD84B, device, rd(device, 0), 4, 0, vertex_count, 0, count + count);
     site_thiscall!(0x6AD874, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, world_transform, world_bound);
 }
@@ -446,6 +447,7 @@ pub unsafe fn render_lines(this: usize, lines_data: usize, transform: usize, wor
     device_set_stream_source(rd(this, R::d3dDevice), 0, vertex_buffer, stride);
     set_fixed_function_shaders(this, fvf);
     let device: usize = rd(this, R::d3dDevice);
+    crate::link_client::draw_state(this, 2, count, 0, index_count >> 1, false);
     site_draw_indexed_primitive(0x6ADC92, device, rd(device, 0), 2, 0, count, 0, index_count >> 1);
     site_thiscall!(0x6ADCBB, pipeline(), property_state(), effect_state(), 0, texture_sets, lines_data, 0, transform, world_bound);
 }

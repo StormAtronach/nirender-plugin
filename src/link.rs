@@ -90,12 +90,20 @@ pub const FACT_STATE_TEXTURE_TRANSFORMS: u32 = 19;
 pub const FACT_STATE_BONES: u32 = 20;
 pub const FACT_STATE_AMBIENT: u32 = 21;
 pub const FACT_TEXTURE_CREATE: u32 = 22;
+pub const FACT_STATE_DEPTH_STENCIL: u32 = 23;
+pub const FACT_STATE_SAMPLERS: u32 = 24;
+pub const FACT_DEVICE_RENDER_STATES: u32 = 25;
+pub const FACT_DEVICE_STAGE_STATES: u32 = 26;
+pub const FACT_DEVICE_TEXTURES: u32 = 27;
+pub const FACT_DEVICE_BUFFERS: u32 = 28;
+pub const STATE_SAMPLER_STATES: u32 = 5;
+pub const STATE_UNKNOWN: u32 = 0x7FFF_FFFF;
 pub const STATE_STAGES: u32 = 8;
 pub const STATE_STAGE_STATES: u32 = 17;
 pub const FACT_COUNT: u32 = 32;
 
 /// The names of the facts, for reports. The index is `FACT_*`.
-pub const FACT_NAMES: [&str; 23] = [
+pub const FACT_NAMES: [&str; 29] = [
     "light radius",
     "sun light",
     "moon shadow",
@@ -119,6 +127,12 @@ pub const FACT_NAMES: [&str; 23] = [
     "state bones",
     "state ambient",
     "texture create",
+    "state depth stencil",
+    "state samplers",
+    "device render states",
+    "device stage states",
+    "device textures",
+    "device buffers",
 ];
 
 #[repr(C)]
@@ -195,6 +209,10 @@ pub struct DrawStateV1 {
     pub blend_worlds: [[f32; 16]; 3],
     pub textures: [u32; STATE_STAGES as usize],
     pub texture_transforms: [[f32; 16]; STATE_STAGES as usize],
+    pub depth_enable: u32,
+    pub depth_function: u32,
+    pub stencil: [u32; 8],
+    pub samplers: [[u32; STATE_SAMPLER_STATES as usize]; STATE_STAGES as usize],
 }
 
 #[repr(C)]
@@ -273,7 +291,7 @@ const _: () = {
     assert!(size_of::<LightV1>() == 16);
     assert!(size_of::<DrawV1>() == 48);
     assert!(size_of::<StateLightV1>() == 108);
-    assert!(size_of::<DrawStateV1>() == 1524);
+    assert!(size_of::<DrawStateV1>() == 1724);
     assert!(size_of::<FactCountV1>() == 16);
     assert!(size_of::<CountersV1>() == 528);
     assert!(size_of::<TextureV1>() == 52);

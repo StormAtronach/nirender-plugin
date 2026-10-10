@@ -638,7 +638,7 @@ pub unsafe fn draw_primitive(
                             let primitive_type: u32 = rd(geom_buffer, GB::primitiveType);
                             let device: usize = rd(this, R::d3dDevice);
                             let vtable: usize = rd(device, 0);
-                            crate::link_client::draw_state(this, geom_buffer, primitive_type, vertices, start_index, primitives, false);
+                            crate::link_client::draw_state(this, primitive_type, vertices, start_index, primitives, false);
                             // ECX has the primitive type at this call.
                             site_draw_indexed_primitive(
                                 DP_DRAW_INDEXED_PRIMITIVE,
@@ -660,6 +660,7 @@ pub unsafe fn draw_primitive(
                 } else {
                     let primitives: u32 = rd(geom_buffer, GB::trianglesCount);
                     let device: usize = rd(this, R::d3dDevice);
+                    crate::link_client::draw_state(this, rd(geom_buffer, GB::primitiveType), 0, 0, primitives, false);
                     device_draw_primitive(device, rd(geom_buffer, GB::primitiveType), 0, primitives);
                 }
             }
@@ -897,10 +898,11 @@ pub unsafe fn draw_skinned_primitive_2(
                     let vtable: usize = rd(device, 0);
                     if index_buffer != 0 {
                         let vertices = rd::<u16>(partition, P::numVertices) as u32;
-                        crate::link_client::draw_state(this, buffer, primitive_type, vertices, 0, primitives, true);
+                        crate::link_client::draw_state(this, primitive_type, vertices, 0, primitives, true);
                         // ECX has the vtable at this call, as EDX does.
                         site_draw_indexed_primitive(S2_DRAW_INDEXED_PRIMITIVE, device, vtable, vtable as u32, primitive_type, vertices, 0, primitives);
                     } else {
+                        crate::link_client::draw_state(this, primitive_type, 0, 0, primitives, true);
                         site_draw_primitive(S2_DRAW_PRIMITIVE, device, vtable, primitive_type, primitives);
                     }
                     index = index.wrapping_add(1);
@@ -962,6 +964,7 @@ unsafe fn end_batch_draw(this: usize, geom_buffer: usize) {
                 let device: usize = rd(this, R::d3dDevice);
                 let vertices: u32 = rd(geom_buffer, GB::verticesCount);
                 let primitive_type: u32 = rd(geom_buffer, GB::primitiveType);
+                crate::link_client::draw_state(this, primitive_type, vertices, start_index, primitives, false);
                 device_draw_indexed_primitive(device, primitive_type, 0, vertices, start_index, primitives);
                 start_index = start_index.wrapping_add(primitives).wrapping_add(2);
                 strip = strip.wrapping_add(1);
@@ -973,6 +976,7 @@ unsafe fn end_batch_draw(this: usize, geom_buffer: usize) {
     } else {
         let primitives: u32 = rd(geom_buffer, GB::trianglesCount);
         let primitive_type: u32 = rd(geom_buffer, GB::primitiveType);
+        crate::link_client::draw_state(this, primitive_type, 0, 0, primitives, false);
         device_draw_primitive(rd(this, R::d3dDevice), primitive_type, 0, primitives);
     }
 }

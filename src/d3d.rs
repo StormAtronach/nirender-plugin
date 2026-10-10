@@ -377,6 +377,9 @@ pub unsafe fn device_set_render_state(device: usize, state: u32, value: u32) -> 
     // For D3DRS_ZFUNC, D3DCMP_LESSEQUAL (4) becomes D3DCMP_LESS (2).
     let value = if state == 23 && value == 4 && fault() == 1 { 2 } else { value };
     crate::link_client::note_render_state(state);
+    if crate::link_client::skip_render_state(state) {
+        return 0;
+    }
     let vtable: usize = rd(device, 0);
     let f: unsafe extern "system" fn(usize, u32, u32) -> u32 = transmute(rd::<usize>(vtable, DEVICE_SET_RENDER_STATE));
     f(device, state, value)
@@ -386,6 +389,9 @@ pub unsafe fn device_set_render_state(device: usize, state: u32, value: u32) -> 
 #[inline(always)]
 pub unsafe fn device_set_texture(device: usize, stage: u32, texture: usize) -> u32 {
     crate::link_client::note_texture(stage, texture);
+    if crate::link_client::skip_texture(stage) {
+        return 0;
+    }
     let f: unsafe extern "system" fn(usize, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_SET_TEXTURE));
     f(device, stage, texture)
 }
@@ -394,6 +400,9 @@ pub unsafe fn device_set_texture(device: usize, stage: u32, texture: usize) -> u
 #[inline(always)]
 pub unsafe fn device_set_texture_stage_state(device: usize, stage: u32, state: u32, value: u32) -> u32 {
     crate::link_client::note_stage_state(state);
+    if crate::link_client::skip_stage_state(state) {
+        return 0;
+    }
     let vtable: usize = rd(device, 0);
     let f: unsafe extern "system" fn(usize, u32, u32, u32) -> u32 = transmute(rd::<usize>(vtable, DEVICE_SET_TEXTURE_STAGE_STATE));
     f(device, stage, state, value)
@@ -416,6 +425,10 @@ pub unsafe fn device_draw_indexed_primitive(device: usize, primitive_type: u32, 
 /// `IDirect3DDevice8::SetVertexShader` through the vtable of the object, slot 0x130.
 #[inline(always)]
 pub unsafe fn device_set_vertex_shader(device: usize, handle: u32) -> u32 {
+    crate::link_client::note_vertex_shader(handle);
+    if crate::link_client::skip_buffers() {
+        return 0;
+    }
     let f: unsafe extern "system" fn(usize, u32) -> u32 = transmute(virtual_at(device, DEVICE_SET_VERTEX_SHADER));
     f(device, handle)
 }
@@ -423,6 +436,12 @@ pub unsafe fn device_set_vertex_shader(device: usize, handle: u32) -> u32 {
 /// `IDirect3DDevice8::SetStreamSource` through the vtable of the object, slot 0x14C.
 #[inline(always)]
 pub unsafe fn device_set_stream_source(device: usize, stream: u32, buffer: usize, stride: u32) -> u32 {
+    if stream == 0 {
+        crate::link_client::note_stream_source(buffer, stride);
+        if crate::link_client::skip_buffers() {
+            return 0;
+        }
+    }
     let f: unsafe extern "system" fn(usize, u32, usize, u32) -> u32 = transmute(virtual_at(device, DEVICE_SET_STREAM_SOURCE));
     f(device, stream, buffer, stride)
 }
@@ -430,6 +449,10 @@ pub unsafe fn device_set_stream_source(device: usize, stream: u32, buffer: usize
 /// `IDirect3DDevice8::SetIndices` through the vtable of the object, slot 0x154.
 #[inline(always)]
 pub unsafe fn device_set_indices(device: usize, buffer: usize, base_vertex: u32) -> u32 {
+    crate::link_client::note_indices(buffer, base_vertex);
+    if crate::link_client::skip_buffers() {
+        return 0;
+    }
     let f: unsafe extern "system" fn(usize, usize, u32) -> u32 = transmute(virtual_at(device, DEVICE_SET_INDICES));
     f(device, buffer, base_vertex)
 }

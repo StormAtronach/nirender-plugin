@@ -20,7 +20,6 @@ use crate::d3d::{
 };
 use crate::gen::layouts::{
     NiDX8LightManager as LM, NiDX8LightManager_LightEntry as LE, NiDX8MaterialManager_Entry as ME, NiDX8RenderState as RS,
-    NiGeometryBufferData as GB,
     NiAVObject as AV, NiCamera as CAM, NiDX8Renderer as R, NiDynamicEffectState as DES,
     NiDynamicEffectState_InternalList as DL, NiLight as L, NiMaterialProperty as MP, NiPropertyState as PS,
 };
@@ -190,6 +189,129 @@ pub unsafe fn note_transform(state: u32, matrix: usize) {
     core::ptr::copy_nonoverlapping(matrix as *const f32, to as *mut f32, 16);
 }
 
+/// The stages whose texture is in `TEXTURES`: bit n is stage n.
+static mut TEXTURES_KNOWN: u32 = 0;
+/// The buffers that the Rust code sent to the device last: vertex buffer, stride, vertex
+/// format, index buffer, base vertex index.
+static mut BUFFERS: [u32; 5] = [0; 5];
+/// The renderer of the last state packet.
+static RENDERER: AtomicUsize = AtomicUsize::new(0);
+/// The device kinds that the host takes from the packets: bits of `FACT_DEVICE_*`. The Rust
+/// code makes no D3D8 call for them.
+static SUPPRESS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+const DEVICE_FACTS: u32 =
+    1 << FACT_DEVICE_RENDER_STATES | 1 << FACT_DEVICE_STAGE_STATES | 1 << FACT_DEVICE_TEXTURES | 1 << FACT_DEVICE_BUFFERS;
+/// The render states that a state packet has, as `D3DRS_*`: ZENABLE, ZWRITEENABLE,
+/// ALPHATESTENABLE, SRCBLEND, DESTBLEND, CULLMODE, ZFUNC, ALPHAREF, ALPHAFUNC,
+/// ALPHABLENDENABLE, FOGENABLE, the eight stencil states, LIGHTING, AMBIENT,
+/// DIFFUSEMATERIALSOURCE, EMISSIVEMATERIALSOURCE, VERTEXBLEND.
+const PACKET_RENDER_STATES: [u32; 24] = [7, 14, 15, 19, 20, 22, 23, 24, 25, 27, 28, 52, 53, 54, 55, 56, 57, 58, 59, 137, 139, 145, 148, 151];
+/// The sampler states of a state packet, in the order of the contract: `D3DTSS_*`.
+const SAMPLER_STATES: [u32; STATE_SAMPLER_STATES as usize] = [13, 14, 16, 17, 18];
+
+/// The D3D8 calls that the Rust code did not make, for each device kind: render states,
+/// stage states, textures, buffers.
+static mut SKIPPED: [u32; 4] = [0; 4];
+
+/// True when the host has this device kind. It counts the call that the caller then skips.
+#[inline]
+fn skip(fact: u32, in_packet: bool) -> bool {
+    let skipped = in_packet && SUPPRESS.load(Ordering::Relaxed) >> fact & 1 != 0;
+    if skipped {
+        unsafe { (*addr_of_mut!(SKIPPED))[(fact - FACT_DEVICE_RENDER_STATES) as usize] += 1 };
+    }
+    skipped
+}
+
+/// True when the host sets this render state from the packets.
+#[inline]
+pub fn skip_render_state(state: u32) -> bool {
+    skip(FACT_DEVICE_RENDER_STATES, PACKET_RENDER_STATES.contains(&state))
+}
+
+/// True when the host sets this texture stage state from the packets.
+#[inline]
+pub fn skip_stage_state(state: u32) -> bool {
+    skip(FACT_DEVICE_STAGE_STATES, STAGE_STATES.contains(&state) || SAMPLER_STATES.contains(&state))
+}
+
+/// True when the host sets the texture of this stage from the packets.
+#[inline]
+pub fn skip_texture(stage: u32) -> bool {
+    skip(FACT_DEVICE_TEXTURES, stage < STATE_STAGES)
+}
+
+/// True when the host sets the buffers and the vertex format from the packets.
+#[inline]
+pub fn skip_buffers() -> bool {
+    skip(FACT_DEVICE_BUFFERS, true)
+}
+
+#[inline]
+pub unsafe fn note_stream_source(buffer: usize, stride: u32) {
+    let buffers = &mut *addr_of_mut!(BUFFERS);
+    buffers[0] = buffer as u32;
+    buffers[1] = stride;
+}
+
+#[inline]
+pub unsafe fn note_vertex_shader(handle: u32) {
+    (*addr_of_mut!(BUFFERS))[2] = handle;
+}
+
+#[inline]
+pub unsafe fn note_indices(buffer: usize, base_vertex: u32) {
+    let buffers = &mut *addr_of_mut!(BUFFERS);
+    buffers[3] = buffer as u32;
+    buffers[4] = base_vertex;
+}
+
+/// Sends to the device the state that the game believes the device has, for the kinds in
+/// `kinds`. The Rust code made no call for them while the host had them.
+unsafe fn resync(kinds: u32) {
+    let renderer = RENDERER.load(Ordering::Relaxed);
+    if renderer == 0 {
+        return;
+    }
+    let device: usize = rd(renderer, R::d3dDevice);
+    let render_state: usize = rd(renderer, R::renderState);
+    if kinds >> FACT_DEVICE_RENDER_STATES & 1 != 0 {
+        for state in PACKET_RENDER_STATES {
+            let value: u32 = rd(render_state, RS::renderStateSettings + state as usize * 8);
+            if value != STATE_UNKNOWN {
+                crate::d3d::device_set_render_state(device, state, value);
+            }
+        }
+    }
+    if kinds >> FACT_DEVICE_STAGE_STATES & 1 != 0 {
+        for stage in 0..STATE_STAGES {
+            for state in STAGE_STATES.into_iter().chain(SAMPLER_STATES) {
+                let value: u32 = rd(render_state, RS::maybe_textureStageStateSettings + (state + stage * 32) as usize * 8);
+                if value != STATE_UNKNOWN {
+                    crate::d3d::device_set_texture_stage_state(device, stage, state, value);
+                }
+            }
+        }
+    }
+    if kinds >> FACT_DEVICE_TEXTURES & 1 != 0 {
+        for stage in 0..STATE_STAGES {
+            if *addr_of!(TEXTURES_KNOWN) >> stage & 1 != 0 {
+                crate::d3d::device_set_texture(device, stage, (*addr_of!(TEXTURES))[stage as usize] as usize);
+            }
+        }
+    }
+    if kinds >> FACT_DEVICE_BUFFERS & 1 != 0 {
+        let buffers = *addr_of!(BUFFERS);
+        if buffers[0] != 0 {
+            crate::d3d::device_set_stream_source(device, 0, buffers[0] as usize, buffers[1]);
+            crate::d3d::device_set_vertex_shader(device, rd(render_state, RS::currentVertexShader));
+        }
+        if buffers[3] != 0 {
+            crate::d3d::device_set_indices(device, buffers[3] as usize, buffers[4]);
+        }
+    }
+}
+
 /// The number of `SetRenderState` and `SetTextureStageState` calls of the Rust code, for
 /// each state. It shows which states the game changes during a frame.
 static mut RENDER_STATE_SETS: [u32; 256] = [0; 256];
@@ -214,6 +336,7 @@ pub unsafe fn note_stage_state(state: u32) {
 pub unsafe fn note_texture(stage: u32, texture: usize) {
     if stage < STATE_STAGES {
         *addr_of_mut!(TEXTURES[stage as usize]) = texture as u32;
+        *addr_of_mut!(TEXTURES_KNOWN) |= 1 << stage;
     }
 }
 /// The texture stage states of a state packet, in the order of the contract: `D3DTSS_*`.
@@ -516,7 +639,6 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
 /// comparison, where the device is dry and the game code makes the draw after it.
 pub unsafe fn draw_state(
     renderer: usize,
-    geom_buffer: usize,
     primitive_type: u32,
     vertex_count: u32,
     start_index: u32,
@@ -529,8 +651,16 @@ pub unsafe fn draw_state(
     }
     // The render state object of the game keeps the value of each state that it sent to the
     // device. The Rust ports write this record, so it is the state of this draw.
+    RENDERER.store(renderer, Ordering::Relaxed);
     let render_state: usize = rd(renderer, R::renderState);
     let rs = |state: u32| -> u32 { rd(render_state, RS::renderStateSettings + state as usize * 8) };
+    let buffers = *addr_of!(BUFFERS);
+    let mut samplers = [[0u32; STATE_SAMPLER_STATES as usize]; STATE_STAGES as usize];
+    for (stage, values) in samplers.iter_mut().enumerate() {
+        for (value, state) in values.iter_mut().zip(SAMPLER_STATES) {
+            *value = rd(render_state, RS::maybe_textureStageStateSettings + (state as usize + stage * 32) * 8);
+        }
+    }
     let mut material = [0.0f32; 17];
     let entry: usize = rd(render_state, RS::materialManager_currentMaterialEntry);
     if entry != 0 {
@@ -582,15 +712,20 @@ pub unsafe fn draw_state(
         struct_size: size_of::<DrawStateV1>() as u32,
         flags: if skinned { STATE_SKINNED } else { 0 },
         primitive_type,
-        base_vertex_index: 0,
+        base_vertex_index: buffers[4],
         min_index: 0,
         vertex_count,
         start_index,
         primitive_count,
-        vertex_buffer: rd(geom_buffer, GB::d3dVertexBuffer),
-        vertex_stride: rd(geom_buffer, GB::vertexStride),
-        vertex_format: rd(geom_buffer, GB::fvf),
-        index_buffer: rd(geom_buffer, GB::indexBuffer),
+        vertex_buffer: buffers[0],
+        vertex_stride: buffers[1],
+        // The game keeps the vertex format that it sent and sends no equal value again.
+        vertex_format: rd(render_state, RS::currentVertexShader),
+        index_buffer: buffers[3],
+        depth_enable: rs(7),
+        depth_function: rs(23),
+        stencil: [rs(52), rs(53), rs(54), rs(55), rs(56), rs(57), rs(58), rs(59)],
+        samplers,
         world: *addr_of!(WORLDS[0]),
         blend_worlds: [*addr_of!(WORLDS[1]), *addr_of!(WORLDS[2]), *addr_of!(WORLDS[3])],
         textures: *addr_of!(TEXTURES),
@@ -704,7 +839,12 @@ pub unsafe fn use_facts(mask: u32) -> Option<u32> {
     if host.capabilities & CAP_USE_FACTS == 0 || (host.struct_size as usize) < size_of::<HostV1>() {
         return None;
     }
-    Some((host.use_facts)(mask))
+    let used = (host.use_facts)(mask);
+    let before = SUPPRESS.swap(used & DEVICE_FACTS, Ordering::Relaxed);
+    if before & !used != 0 {
+        resync(before & !used);
+    }
+    Some(used)
 }
 
 /// The plugin makes the source textures through the link. See `ports/texture_link.rs`.
@@ -767,7 +907,16 @@ pub unsafe fn counters_text(reset: bool) -> String {
     if reset {
         *counts = [0; CLASS_COUNT];
     }
-    // The states that the Rust code set on the device, as `state=calls`.
+    let skipped = &mut *addr_of_mut!(SKIPPED);
+    text.push_str(&format!(
+        "calls_not_made: render_states {} stage_states {} textures {} buffers {}",
+        skipped[0], skipped[1], skipped[2], skipped[3]
+    ));
+    text.push(0xA as char);
+    if reset {
+        *skipped = [0; 4];
+    }
+    // The states that the Rust code asked for, as `state=calls`.
     let render: &mut [u32] = &mut *addr_of_mut!(RENDER_STATE_SETS);
     let stage: &mut [u32] = &mut *addr_of_mut!(STAGE_STATE_SETS);
     let sets = [("render_states:", render), ("stage_states:", stage)];

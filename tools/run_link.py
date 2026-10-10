@@ -34,9 +34,11 @@ TOTALS = re.compile(r"scenes (\d+) draws (\d+) draws_without_packet (\d+)")
 FACTS = ("light_radius", "sun_light", "moon_shadow", "water_plane", "ui_scene", "scene_kind", "sky_draw", "land_splat",
          "later_view", "state_draw", "state_buffers", "state_transform", "state_blend", "state_depth", "state_lighting",
          "state_material", "state_stages", "state_lights", "state_textures", "state_texture_transforms", "state_bones",
-         "state_ambient", "texture_create")
+         "state_ambient", "texture_create", "state_depth_stencil", "state_samplers", "device_render_states",
+         "device_stage_states", "device_textures", "device_buffers")
 # The facts that MGE XE can take from a packet.
-USABLE = ("ui_scene", "water_plane", "sun_light", "sky_draw", "land_splat", "scene_kind", "moon_shadow", "state_draw")
+USABLE = ("ui_scene", "water_plane", "sun_light", "sky_draw", "land_splat", "scene_kind", "moon_shadow", "state_draw",
+          "device_render_states", "device_stage_states", "device_textures", "device_buffers")
 # The classes of the contract (MGE_LINK_CLASS_*), by index.
 CLASSES = ("unknown", "sky_dome", "sky_night", "sky_clouds", "sky_sun", "sky_moon", "sky_moon_shadow", "sky_other",
            "sun_glare", "weather_particles", "water_plane", "landscape", "object", "shadow_volume", "shadow_overlay",
@@ -113,7 +115,7 @@ def main():
     if args.rust_only:
         spec.update(modes=["live"])
     # MGE XE takes the state of a draw from a packet that only the Rust code sends.
-    spec["factsNeedRust"] = bool(mask >> FACTS.index("state_draw") & 1)
+    spec["factsNeedRust"] = any(mask >> FACTS.index(n) & 1 for n in FACTS if n.startswith(("state_", "device_")))
     spec["linkTextures"] = args.link_textures
     if args.hour is not None:
         spec["hour"] = args.hour
