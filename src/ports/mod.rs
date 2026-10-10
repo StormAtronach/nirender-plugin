@@ -92,6 +92,7 @@ macro_rules! port_cdecl {
     };
 }
 
+pub mod geometry;
 pub mod light_manager;
 pub mod material;
 pub mod render_state;
@@ -115,6 +116,7 @@ static MODULES: &[&[&PortState]] = &[
     system_desc::PORTS,
     rendered::PORTS,
     textures::PORTS,
+    geometry::PORTS,
 ];
 
 /// The call sites the ports serve through `site::call_target`. A module with such sites
