@@ -1,27 +1,14 @@
 ---@diagnostic disable
--- The in-game part of tools/run_video.py. It holds one view in one mode for a recording.
--- The camera turns slowly, the same way in every run. Thus a person can put two clips next
--- to each other.
+-- The in-game part of tools/run_video.py. It holds one view for a recording, one time for
+-- each mode of spec.modes. The camera turns slowly, the same way for each mode. Thus a
+-- person can put the clips next to each other.
 
 return function(nirender, spec)
-    local function say(fmt, ...)
-        local line = "[nirender.video] " .. string.format(fmt, ...)
-        mwse.log("%s", line)
-        local f = io.open(spec.progressFile, "ab")
-        if f then
-            f:write(line, "\n")
-            f:close()
-        end
-    end
-
-    local queue = {}
-    local function after(seconds, fn)
-        table.insert(queue, { at = os.clock() + seconds, fn = fn })
-    end
+    local scenario = require("nirender.scenario")(nirender, spec, "video")
+    local say, after = scenario.say, scenario.after
 
     local turning = nil
-    event.register("enterFrame", function()
-        local now = os.clock()
+    scenario.eachFrame = function(now)
         if turning then
             -- The angle is a function of the clock, not of the frame count. Thus the turn is
             -- the same at any frame rate.
@@ -29,47 +16,33 @@ return function(nirender, spec)
             orientation.z = turning.start + (now - turning.at) * (spec.turnRate or 0.12)
             tes3.player.orientation = orientation
         end
-        for i = #queue, 1, -1 do
-            local step = queue[i]
-            if now >= step.at then
-                table.remove(queue, i)
-                local ok, problem = pcall(step.fn)
-                if not ok then
-                    say("ERROR %s", tostring(problem))
-                    say("DONE")
-                end
-            end
-        end
-    end)
+    end
 
-    local started = false
-    event.register("loaded", function()
-        if started then return end
-        started = true
+    local function hold(index, startAngle)
+        local mode = spec.modes[index]
+        if not mode then
+            nirender.setMode("*", "off")
+            return scenario.finish()
+        end
+        nirender.setMode("*", mode)
+        turning = { start = startAngle, at = os.clock() }
+        -- The runner starts a recording at each of these lines.
+        say("view ready in '%s', mode %s", tes3.player.cell.editorName, mode)
+        after(spec.holdSeconds, function()
+            turning = nil
+            say("view done, mode %s, %d calls ran as Rust", mode, nirender.liveCalls())
+            hold(index + 1, startAngle)
+        end)
+    end
+
+    scenario.start(function()
         after(3, function()
-            tes3.runLegacyScript({ command = string.format('CenterOnCell "%s"', spec.cell) })
+            scenario.goTo(spec.cell)
             after(spec.settleSeconds or 8, function()
-                nirender.setMode("*", spec.mode)
-                -- This removes the HUD from the clip.
+                -- This removes the HUD from the clips.
                 tes3.runLegacyScript({ command = "ToggleMenus" })
-                turning = { start = tes3.player.orientation.z, at = os.clock() }
-                say("view ready in '%s', mode %s", tes3.player.cell.editorName, spec.mode)
-                after(spec.holdSeconds, function()
-                    turning = nil
-                    nirender.setMode("*", "off")
-                    local f = io.open(spec.reportFile, "wb")
-                    if f then
-                        f:write(nirender.report())
-                        f:close()
-                    end
-                    say("DONE")
-                end)
+                hold(1, tes3.player.orientation.z)
             end)
         end)
     end)
-
-    after(6, function()
-        tes3.loadGame(spec.save)
-    end)
-    say("scenario armed")
 end

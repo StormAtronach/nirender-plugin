@@ -1,40 +1,11 @@
 ---@diagnostic disable
--- The in-game part of tools/run_test.py. It loads a save. It runs the ports in shadow mode
--- at the place of the save and in each cell of spec.cells. Then it holds the game in menu
--- mode and runs the frame comparisons.
--- Progress goes to spec.progressFile. The runner stops the game at the line "DONE".
+-- The in-game part of tools/run_test.py. It loads a save. It runs the ports in shadow mode at
+-- the place of the save and in each cell of spec.cells. After each place it holds the game in
+-- menu mode and runs the frame comparisons.
 
 return function(nirender, spec)
-    local function say(fmt, ...)
-        local line = "[nirender.test] " .. string.format(fmt, ...)
-        mwse.log("%s", line)
-        local f = io.open(spec.progressFile, "ab")
-        if f then
-            f:write(line, "\n")
-            f:close()
-        end
-    end
-
-    -- The steps run from enterFrame on the real clock. Game timers stop in menu mode and do
-    -- not exist before the game loads a save.
-    local queue = {}
-    local function after(seconds, fn)
-        table.insert(queue, { at = os.clock() + seconds, fn = fn })
-    end
-    event.register("enterFrame", function()
-        local now = os.clock()
-        for i = #queue, 1, -1 do
-            local step = queue[i]
-            if now >= step.at then
-                table.remove(queue, i)
-                local ok, problem = pcall(step.fn)
-                if not ok then
-                    say("ERROR %s", tostring(problem))
-                    say("DONE")
-                end
-            end
-        end
-    end)
+    local scenario = require("nirender.scenario")(nirender, spec, "test")
+    local say, after = scenario.say, scenario.after
 
     local ports = spec.ports or "*"
     nirender.recordBuffers(spec.recordBuffers ~= false)
@@ -43,15 +14,17 @@ return function(nirender, spec)
         say("FAULT %d is in the Rust code on purpose: this run has to fail", spec.fault)
     end
 
-    local function finish()
-        local report = nirender.report()
-        local f = io.open(spec.reportFile, "wb")
-        if f then
-            f:write(report)
-            f:close()
+    -- Calls `done` with the result of the frame test or frame dump that is in progress.
+    local function when_frame_result(done)
+        local function poll()
+            local result = nirender.frameTestResult()
+            if result then
+                done(result)
+            else
+                after(0.05, poll)
+            end
         end
-        say("report written")
-        say("DONE")
+        after(0.05, poll)
     end
 
     -- Runs the frame comparisons in sequence, then `done`. A comparison that reports a change
@@ -72,21 +45,15 @@ return function(nirender, spec)
                 say("frame test %s %s: could not start", where, kind)
                 return next_test()
             end
-            local function poll()
-                local result = nirender.frameTestResult()
-                if result then
-                    local retry = result:sub(1, 5) == "RETRY" and tries < 8
-                    if retry then
-                        mwse.log("[nirender.test] frame test %s %s try %d: %s", where, kind, tries + 1, result:sub(1, 200))
-                    else
-                        say("frame test %s %s: %s", where, kind, result)
-                    end
-                    after(0.2, function() next_test(retry) end)
+            when_frame_result(function(result)
+                local retry = result:sub(1, 5) == "RETRY" and tries < 8
+                if retry then
+                    mwse.log("[nirender.test] frame test %s %s try %d: %s", where, kind, tries + 1, result:sub(1, 200))
                 else
-                    after(0.05, poll)
+                    say("frame test %s %s: %s", where, kind, result)
                 end
-            end
-            after(0.05, poll)
+                after(0.2, function() next_test(retry) end)
+            end)
         end
         next_test()
     end
@@ -129,11 +96,10 @@ return function(nirender, spec)
             say("live mode for %d s", spec.liveSeconds or 0)
             return after(spec.liveSeconds or 0, function()
                 nirender.setMode("*", "off")
-                finish()
+                scenario.finish()
             end)
         end
-        say("going to '%s'", cell)
-        tes3.runLegacyScript({ command = string.format('CenterOnCell "%s"', cell) })
+        scenario.goTo(cell)
         after(spec.settleSeconds or 4, function()
             test_here(function() visit(index + 1) end)
         end)
@@ -149,25 +115,16 @@ return function(nirender, spec)
         after(1, function()
             say("state dump: %s", tostring(nirender.dumpState(spec.dumpDir .. "/state.txt")))
             nirender.dumpFrame(spec.dumpDir .. "/frame.txt")
-            local function poll()
-                local result = nirender.frameTestResult()
-                if result then
-                    say("frame dump: %s", result)
-                    release_menu_mode()
-                    done()
-                else
-                    after(0.05, poll)
-                end
-            end
-            after(0.05, poll)
+            when_frame_result(function(result)
+                say("frame dump: %s", result)
+                release_menu_mode()
+                done()
+            end)
         end)
     end
 
-    local started = false
-    event.register("loaded", function()
-        if started then return end
-        started = true
-        say("save loaded, cell '%s', x87 control word 0x%04x", tes3.player.cell.editorName, nirender.fpuControlWord())
+    scenario.start(function()
+        say("x87 control word 0x%04x", nirender.fpuControlWord())
         if spec.startMode then
             -- The mode that the start of the game ran in. The report has the counts.
             say("the game started in mode '%s'", spec.startMode)
@@ -177,20 +134,14 @@ return function(nirender, spec)
                 if (spec.shadowSeconds or 0) > 0 then
                     test_here(function() visit(1) end)
                 else
-                    finish()
+                    scenario.finish()
                 end
             end)
         end)
-    end)
-
-    after(spec.menuSeconds or 6, function()
-        if spec.save then
-            say("loading save '%s'", spec.save)
-            tes3.loadGame(spec.save)
-        else
-            say("starting a new game")
-            tes3.newGame()
+    end, function()
+        if spec.dumpDir then
+            -- The renderer as the start of the game left it, at the main menu.
+            say("state dump at the main menu: %s", tostring(nirender.dumpState(spec.dumpDir .. "/state_start.txt")))
         end
     end)
-    say("scenario armed")
 end

@@ -14,8 +14,9 @@ import glob
 import os
 import re
 
+from common import PORT_RE
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PORT = re.compile(r"port_(?:thiscall|cdecl)!\(\s*(\w+),\s*0x[0-9A-Fa-f]+,.*?rust\s*=\s*([\w:]+)\s*\)", re.S)
 
 
 def main():
@@ -24,7 +25,7 @@ def main():
         if path.endswith("mod.rs"):
             continue
         text = open(path, encoding="utf-8").read()
-        for port, function in PORT.findall(text):
+        for port, _, function in PORT_RE.findall(text):
             name = function.split("::")[-1]
             if "::" in function and not function.startswith("self::"):
                 print("%s: %s is not a function of this file, skipped" % (os.path.basename(path), function))

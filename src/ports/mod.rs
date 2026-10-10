@@ -122,6 +122,8 @@ static SITE_LISTS: &[&[usize]] = &[
     draw_misc::SITES,
     draw::SITES,
     ct_pipeline_state::SITES,
+    // `NiDX8TextureStage::updateRenderer`: `texture_pipeline` reads the target of this call.
+    &[0x6C1BA4],
 ];
 
 /// True when a port calls the target that is in memory at the `call` at `site`.
@@ -129,21 +131,51 @@ pub fn serves_site(site: usize) -> bool {
     SITE_LISTS.iter().any(|list| list.contains(&site))
 }
 
-/// Bytes of the game code that another mod changes. A port follows them, because it reads
-/// them from memory. Each entry is (address, length). A change inside such a range does not
-/// lock the port.
-///
-/// - `NiDX8Renderer::RenderShape` +0x2F: MWSE's software skinning flag
-///   (PatchNIDX8Renderer_RenderShape).
-/// - `NiDX8TexturePass::setCTPipelineState` +0xFC: MWSE's base map texture coordinate fix
-///   (PatchNiDX8TexturePass_BaseMapTexcoord).
-/// - `NiDX8Renderer::ctor`: MWSE's hash map sizes ("Optimize renderer hash map lookups").
-static FOLLOWED: &[(usize, usize)] =
-    &[(0x6ACF1F, 8), (0x6B42AC, 6), (0x6A9AED, 9), (0x6A9B38, 4), (0x6A9B7E, 4), (0x6A9BC4, 4)];
+/// A place in the game code that another mod can change and that a port follows. The port
+/// reads the bytes from memory and does what they say.
+enum Followed {
+    /// An operand of an instruction. The port uses the value that is in memory.
+    Operand { at: usize, len: usize },
+    /// Bytes that a known patch writes. The port knows these bytes and the bytes of the
+    /// database. It does not follow other bytes.
+    Patch { at: usize, bytes: &'static [u8] },
+    /// A `call` and a `nop` that a known patch puts in place of 6 bytes of code. The port does
+    /// in Rust what the function of the patch does.
+    InsertedCall { at: usize },
+}
 
-/// True when a port reads the `len` bytes at `addr` from memory and uses their value.
-pub fn follows(addr: usize, len: usize) -> bool {
-    FOLLOWED.iter().any(|&(start, size)| addr >= start && addr + len <= start + size)
+static FOLLOWED: &[Followed] = &[
+    // `NiDX8Renderer::RenderShape`: the software skinning flag of MWSE
+    // (PatchNIDX8Renderer_RenderShape). `draw::render_shape` reads the bytes.
+    Followed::Patch { at: 0x6ACF1F, bytes: &[0x90, 0x66, 0xF7, 0x46, 0x36, 0x00, 0x02, 0x75] },
+    // `NiDX8TexturePass::setCTPipelineState`: the base map texture coordinate fix of MWSE
+    // (PatchNiDX8TexturePass_BaseMapTexcoord).
+    Followed::InsertedCall { at: 0x6B42AC },
+    // `NiDX8Renderer::ctor`: the hash map sizes that MWSE changes ("Optimize renderer hash map
+    // lookups"). The first operand is the bucket count. The others are sizes in bytes.
+    Followed::Operand { at: 0x6A9AED, len: 4 },
+    Followed::Operand { at: 0x6A9AF2, len: 4 },
+    Followed::Operand { at: 0x6A9B38, len: 4 },
+    Followed::Operand { at: 0x6A9B7E, len: 4 },
+    Followed::Operand { at: 0x6A9BC4, len: 4 },
+    // `NiDX8TextureData::FindMatchingPixelFormat`: four displacements that the Morrowind Code
+    // Patch changes (MCP-039). `textures` reads them.
+    Followed::Operand { at: 0x6B70A8, len: 1 },
+    Followed::Operand { at: 0x6B70DF, len: 1 },
+    Followed::Operand { at: 0x6B7357, len: 1 },
+    Followed::Operand { at: 0x6B737A, len: 1 },
+];
+
+/// True when a port follows a change of the byte at `addr`. `read` gives the byte that is in
+/// memory at an address.
+pub fn follows(addr: usize, read: impl Fn(usize) -> u8) -> bool {
+    FOLLOWED.iter().any(|followed| match *followed {
+        Followed::Operand { at, len } => (at..at + len).contains(&addr),
+        Followed::Patch { at, bytes } => {
+            (at..at + bytes.len()).contains(&addr) && bytes.iter().enumerate().all(|(i, &b)| read(at + i) == b)
+        }
+        Followed::InsertedCall { at } => (at..at + 6).contains(&addr) && read(at) == 0xE8 && read(at + 5) == 0x90,
+    })
 }
 
 /// Every port.
@@ -155,6 +187,24 @@ pub fn all() -> impl Iterator<Item = &'static PortState> {
 mod tests {
     use super::*;
     use crate::hook;
+
+    #[test]
+    fn a_port_follows_known_patches_only() {
+        let database = |_addr: usize| 0u8;
+        // An operand: any value.
+        assert!(follows(0x6A9AED, database));
+        assert!(follows(0x6A9AF5, database));
+        assert!(!follows(0x6A9AF1, database), "the opcode between two operands is not an operand");
+        // The skinning check: only the bytes of MWSE.
+        let mwse = [0x90u8, 0x66, 0xF7, 0x46, 0x36, 0x00, 0x02, 0x75];
+        assert!(follows(0x6ACF20, |addr| mwse[addr - 0x6ACF1F]));
+        assert!(!follows(0x6ACF20, |addr| if addr == 0x6ACF20 { 0x67 } else { mwse[addr - 0x6ACF1F] }));
+        // The inserted call: a call and a nop.
+        let call = [0xE8u8, 1, 2, 3, 4, 0x90];
+        assert!(follows(0x6B42AD, |addr| call[addr - 0x6B42AC]));
+        assert!(!follows(0x6B42AD, database));
+        assert!(!follows(0x400000, database));
+    }
 
     #[test]
     fn every_port_is_a_known_function_with_the_right_stack_size() {

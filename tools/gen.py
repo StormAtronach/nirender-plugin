@@ -6,6 +6,8 @@ import json
 import os
 import re
 
+from common import is_renderer_function
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "out")
 GEN = os.path.join(HERE, "..", "src", "gen")
@@ -19,9 +21,6 @@ LAYOUT_RE = re.compile(
     r"NiDynamicEffect$|NiAVObject$|NiGeometry$|NiCamera$|NiColor$|NiColorA$|D3DMATERIAL|D3DLIGHT8$|"
     r"D3DVIEWPORT8$|D3DCAPS8$|D3DPRESENT_PARAMETERS)")
 
-# Functions of the renderer subsystem. The census and the detours find them here.
-FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiPropertyState)")
-FUNC_SKIP = re.compile(r"_SEH$|NiDX8Application|NiDX8SelectResolution|StdMap")
 
 KEYWORDS = {"type", "super", "self", "ref", "match", "loop", "move", "fn", "mod", "use", "in", "final", "box", "priv", "enum",
             "struct", "union", "static", "const", "where", "impl", "trait", "true", "false", "as", "if", "else", "for",
@@ -75,13 +74,13 @@ def gen_funcs(funcs):
     rows = []
     code = bytearray()
     for f in sorted(funcs, key=lambda f: f["ea"]):
-        if not FUNC_RE.search(f["name"]) or FUNC_SKIP.search(f["name"]):
+        if not is_renderer_function(f["name"]):
             continue
-        f["hash"] = len(code)
+        offset = len(code)
         code += bytes.fromhex(f["bytes"])
         head = bytes.fromhex(f["head"]).ljust(16, b"\0")
         rows.append("    Func { ea: 0x%x, size: %d, name: \"%s\", argsize: %d, code: 0x%x, steal: %d, pic: %s, relocs: [%d, %d], head: [%s] }," % (
-            f["ea"], f["size"], f["name"].replace('"', "'"), f["argsize"], f["hash"], f["steal"], "true" if f["steal_pic"] else "false", *(f["relocs"] + [0, 0])[:2],
+            f["ea"], f["size"], f["name"].replace('"', "'"), f["argsize"], offset, f["steal"], "true" if f["steal_pic"] else "false", *(f["relocs"] + [0, 0])[:2],
             ", ".join("0x%02x" % b for b in head)))
     open(os.path.join(GEN, "code.bin"), "wb").write(code)
     return "\n".join([

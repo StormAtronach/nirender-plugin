@@ -56,11 +56,8 @@ event.register("initialized", function()
         if not installed then return end
         if not spec then nirender.setMode("*", startMode) end
     end
-    if spec and spec.video then
-        require("nirender.video")(nirender, spec)
-    elseif spec and spec.perf then
-        require("nirender.perf")(nirender, spec)
-    elseif spec then
-        require("nirender.test")(nirender, spec)
+    if spec then
+        -- The scenario is "test", "perf" or "video".
+        require("nirender." .. spec.scenario)(nirender, spec)
     end
 end)

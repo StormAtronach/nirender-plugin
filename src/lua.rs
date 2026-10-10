@@ -4,10 +4,9 @@ use core::ffi::{c_char, c_void};
 use core::sync::atomic::Ordering;
 use std::ffi::CString;
 
-use crate::gen::layouts::NiDX8Renderer;
 use crate::ports;
-use crate::shadow::{self, Mode};
-use crate::{census, device, engine, frame, hook, x87};
+use crate::shadow::Mode;
+use crate::{engine, frame, install, x87};
 
 type LuaState = *mut c_void;
 type LuaFn = unsafe extern "C" fn(LuaState) -> i32;
@@ -52,7 +51,7 @@ unsafe extern "C" fn install(l: LuaState) -> i32 {
     if let Some(path) = arg_str(l, 1) {
         crate::log::open(&path);
     }
-    let (ok, message) = match install_all() {
+    let (ok, message) = match install::install() {
         Ok(message) => (true, message),
         Err(message) => (false, message),
     };
@@ -62,110 +61,13 @@ unsafe extern "C" fn install(l: LuaState) -> i32 {
     2
 }
 
-/// `data_IDirect3D8` holds the `IDirect3D8` of the game. It is 0 until
-/// `NiDX8Renderer::CreateD3D` ran.
-const DIRECT3D: usize = 0x7DD8C0;
-const CREATE_D3D: usize = 0x6A99E0;
-
-unsafe fn after_create_d3d() {
-    device::attach_factory(crate::mem::rd(DIRECT3D, 0));
-}
-
-/// Does the census. It marks the ports of functions that another mod changed in a way that
-/// the port does not follow. With `hooked`, the entries hold the jumps of this plugin. These
-/// jumps are not a change.
-unsafe fn census_pass(hooked: bool) -> usize {
-    let changes = census::changes();
-    let mut changed: Vec<usize> = Vec::new();
-    for change in &changes {
-        let port = ports::all().find(|p| p.addr == change.func.ea);
-        if hooked && change.offset < 16 && port.map_or(false, |p| p.installed()) {
-            continue;
-        }
-        changed.push(change.func.ea);
-        let live = core::slice::from_raw_parts(change.func.ea as *const u8, change.func.size);
-        let kind = crate::site::classify(change.func, live, change.offset, change.len);
-        let served = matches!(kind, crate::site::Kind::RedirectedCall(site) if ports::serves_site(site))
-            || ports::follows(change.func.ea + change.offset, change.len);
-        let mut note = String::new();
-        if let Some(port) = port {
-            if served {
-                note = " (the port follows the change)".into();
-            } else {
-                if !port.locked() && port.mode() != Mode::Off {
-                    note = " (PORT LOCKED NOW; it ran as Rust before)".into();
-                } else {
-                    note = " (PORT LOCKED: it stays game code here)".into();
-                }
-                port.lock();
-            }
-        }
-        crate::log!("census: {}{}", census::describe(change), note);
-    }
-    changed.dedup();
-    crate::log!("census: {} of {} functions differ from the database", changed.len(), crate::gen::funcs::FUNCS.len());
-    changed.len()
-}
-
-unsafe fn install_all() -> Result<String, String> {
-    if ports::all().any(|p| p.installed()) {
-        return attach_now();
-    }
-    shadow::set_main_thread();
-    crate::log!("x87 control word {:#06x}", x87::control_word());
-
-    // The census runs before the detours, because the detours change the entry bytes.
-    let changed = census_pass(false);
-
-    match crate::alloc::install() {
-        Ok(()) => crate::log!("allocator hooks on: calls that allocate are compared"),
-        Err(error) => crate::log!("no allocator hooks ({error}): calls that allocate are not compared"),
-    }
-    device::set_frame_hook(frame::on_present);
-
-    let mut failed = 0;
-    for port in ports::all() {
-        match hook::install(port.addr, (port.detour)(), port.stack_args, port.cleanup) {
-            Ok(trampoline) => port.orig.store(trampoline, Ordering::Relaxed),
-            Err(error) => {
-                failed += 1;
-                crate::log!("no detour on {}: {}", port.name, error);
-            }
-        }
-        if port.addr == CREATE_D3D {
-            port.after.store(after_create_d3d as *const () as usize, Ordering::Relaxed);
-        }
-    }
-    // It is possible that the game already has its IDirect3D8, or its device.
-    after_create_d3d();
-    let attached = attach_now()?;
-    Ok(format!(
-        "{} ports installed, {} failed, {} functions differ from the database; {}",
-        ports::all().count() - failed,
-        failed,
-        changed,
-        attached
-    ))
-}
-
-/// Puts the recorder on the device of the renderer, when the game has one.
-unsafe fn attach_now() -> Result<String, String> {
-    let renderer = engine::renderer();
-    if renderer == 0 {
-        return Ok("the game has no renderer yet".into());
-    }
-    let device_ptr: usize = crate::mem::rd(renderer, NiDX8Renderer::d3dDevice);
-    device::attach(device_ptr)?;
-    Ok(format!("renderer {renderer:#x}, device {device_ptr:#x} with the recorder"))
-}
-
 /// `nirender.recheck()` returns the number of changed functions. It does the census again,
 /// for mods that change the game code after this plugin loaded. It locks the ports of such
 /// functions.
 unsafe extern "C" fn recheck(l: LuaState) -> i32 {
-    let attached = attach_now();
+    let attached = install::attach_device();
     crate::log!("recheck: {:?}", attached);
-    lua_pushnumber(l, census_pass(true) as f64);
+    lua_pushnumber(l, install::census(true) as f64);
     1
 }
 
@@ -210,32 +112,9 @@ unsafe extern "C" fn set_mode(l: LuaState) -> i32 {
     1
 }
 
-/// One line for each port. A line has the name, the mode, the calls compared, the calls that
-/// differed, the skipped calls and the calls that ran as Rust. Tabs separate the columns. The
-/// log and tools/status.py use this text.
-pub fn report() -> String {
-    let mut text = String::from("port\taddr\tinstalled\tmode\tshadow_calls\tmismatches\tskipped\tlive_calls\tlocked\trust_runs\n");
-    for port in ports::all() {
-        text.push_str(&format!(
-            "{}\t{:#x}\t{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            port.name,
-            port.addr,
-            port.installed(),
-            port.mode(),
-            port.shadow_calls.get(),
-            port.mismatches.get(),
-            port.skipped.get(),
-            port.live_calls.get(),
-            port.locked(),
-            port.rust_runs.get(),
-        ));
-    }
-    text
-}
-
 /// `nirender.report()` returns the table as text. It also writes the text to the log.
 unsafe extern "C" fn report_lua(l: LuaState) -> i32 {
-    let text = report();
+    let text = install::report();
     crate::log!("report:\n{}", text);
     push_str(l, &text);
     1
@@ -303,6 +182,12 @@ unsafe extern "C" fn timing(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.liveCalls()` returns the number of calls that ran as Rust in mode "live".
+unsafe extern "C" fn live_calls(l: LuaState) -> i32 {
+    lua_pushnumber(l, ports::all().map(|p| p.live_calls.get()).sum::<u64>() as f64);
+    1
+}
+
 /// `nirender.fpuControlWord()` returns the x87 control word of the calling thread.
 unsafe extern "C" fn fpu_control_word(l: LuaState) -> i32 {
     lua_pushnumber(l, x87::control_word() as f64);
@@ -311,7 +196,7 @@ unsafe extern "C" fn fpu_control_word(l: LuaState) -> i32 {
 
 #[no_mangle]
 pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
-    lua_createtable(l, 0, 16);
+    lua_createtable(l, 0, 20);
     set_fn(l, "install", install);
     set_fn(l, "setMode", set_mode);
     set_fn(l, "report", report_lua);
@@ -321,6 +206,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "recordBuffers", record_buffers);
     set_fn(l, "fault", fault);
     set_fn(l, "renderer", renderer);
+    set_fn(l, "liveCalls", live_calls);
     set_fn(l, "timing", timing);
     set_fn(l, "recheck", recheck);
     set_fn(l, "dumpState", dump_state);

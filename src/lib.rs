@@ -22,6 +22,7 @@ pub mod dump;
 pub mod engine;
 pub mod frame;
 pub mod hook;
+pub mod install;
 pub mod mem;
 pub mod perf;
 pub mod ports;

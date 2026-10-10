@@ -3,41 +3,14 @@
 -- frame times with the Rust code, in one cell, from one camera position.
 --
 -- The two modes alternate in short rounds: off, live, off, live. Thus a change of the scene,
--- of the weather or of the machine load has the same effect on the two modes.
+-- of the weather or of the machine load affects both modes equally.
 -- A frame time is the time between two Present calls. The plugin measures it.
 
 return function(nirender, spec)
-    local function say(fmt, ...)
-        local line = "[nirender.perf] " .. string.format(fmt, ...)
-        mwse.log("%s", line)
-        local f = io.open(spec.progressFile, "ab")
-        if f then
-            f:write(line, "\n")
-            f:close()
-        end
-    end
-
-    local queue = {}
-    local function after(seconds, fn)
-        table.insert(queue, { at = os.clock() + seconds, fn = fn })
-    end
+    local scenario = require("nirender.scenario")(nirender, spec, "perf")
+    local say, after = scenario.say, scenario.after
 
     local rounds = {}
-
-    event.register("enterFrame", function()
-        local now = os.clock()
-        for i = #queue, 1, -1 do
-            local step = queue[i]
-            if now >= step.at then
-                table.remove(queue, i)
-                local ok, problem = pcall(step.fn)
-                if not ok then
-                    say("ERROR %s", tostring(problem))
-                    say("DONE")
-                end
-            end
-        end
-    end)
 
     local function finish()
         local f = io.open(spec.resultFile, "wb")
@@ -46,7 +19,7 @@ return function(nirender, spec)
             f:close()
         end
         say("result written")
-        say("DONE")
+        scenario.finish()
     end
 
     local function round(index)
@@ -56,8 +29,7 @@ return function(nirender, spec)
         end
         local mode = (index % 2 == 1) and "off" or "live"
         nirender.setMode("*", mode)
-        -- This time lets the caches become stable after the switch. It is not in the
-        -- measurement.
+        -- The caches settle for a moment after the change of mode. This time is not measured.
         after(spec.warmSeconds or 1, function()
             nirender.timing(true)
             after(spec.roundSeconds, function()
@@ -70,24 +42,14 @@ return function(nirender, spec)
         end)
     end
 
-    local started = false
-    event.register("loaded", function()
-        if started then return end
-        started = true
-        say("save loaded")
+    scenario.start(function()
         after(3, function()
-            say("going to '%s'", spec.cell)
-            tes3.runLegacyScript({ command = string.format('CenterOnCell "%s"', spec.cell) })
+            scenario.goTo(spec.cell)
             after(spec.settleSeconds or 8, function()
-                say("measuring in '%s': %d rounds of %d s for each mode", tes3.player.cell.editorName, spec.rounds, spec.roundSeconds)
+                say("measuring in '%s': %d rounds of %d s for each mode", tes3.player.cell.editorName, spec.rounds,
+                    spec.roundSeconds)
                 round(1)
             end)
         end)
     end)
-
-    after(6, function()
-        say("loading save '%s'", spec.save)
-        tes3.loadGame(spec.save)
-    end)
-    say("scenario armed")
 end

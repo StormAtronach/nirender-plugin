@@ -3,78 +3,44 @@
     python tools/run_video.py [--cell "Old Ebonheart"] [--seconds 15] [--folder <OneDrive folder>]
 
 OBS must run, with the scene "Harness" that captures the game window. See the recorder in
-moreFPS/docs/scripts/obs-record. The game starts one time for each clip.
+moreFPS/docs/scripts/obs-record. The game starts one time and holds the view for each clip.
 """
 import argparse
 import os
+import re
 import sys
 import threading
 import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+import session
+
 sys.path.insert(0, r"C:\Users\ivan_\source\repos\moreFPS\docs\scripts\obs-record")
 import obs_record  # noqa: E402
-import run_test  # noqa: E402
-from run_test import harness  # noqa: E402
 
 TAG = "[nirender.video] "
 FOLDER = r"C:\Users\ivan_\OneDrive\Morrowind modding\nirender videos"
+# The mode of the game for each clip, and the name of the clip.
+CLIPS = (("off", "game code"), ("live", "rust plugin"))
 
 
-def record_when_ready(progress_file, seconds, name, result):
-    """Waits for the view, then records. Runs in parallel with the harness loop."""
-    deadline = time.time() + 240
-    while time.time() < deadline:
-        if os.path.isfile(progress_file) and "view ready" in open(progress_file, encoding="utf-8", errors="replace").read():
-            break
-        time.sleep(0.5)
-    else:
-        result["error"] = "the view never came"
-        return
-    time.sleep(1)
-    obs = obs_record.Obs()
-    try:
-        result["path"] = obs_record.record(obs, seconds, name)
-    except BaseException as error:  # The harness loop must still end the game.
-        result["error"] = str(error)
-    finally:
-        obs.close()
-
-
-def clip(mode, label, args):
-    run_dir = os.path.join(run_test.RESULTS, time.strftime("%Y%m%d-%H%M%S") + "-video-" + label)
-    os.makedirs(run_dir)
-    progress_file = os.path.join(run_dir, "progress.log")
-    spec = {
-        "video": True,
-        "progressFile": progress_file.replace("\\", "/"),
-        "reportFile": os.path.join(run_dir, "report.tsv").replace("\\", "/"),
-        "logFile": os.path.join(run_dir, "nirender.log").replace("\\", "/"),
-        "save": args.save,
-        "cell": args.cell,
-        "mode": mode,
-        # The recorder waits 3 s for the capture to become stable, and a margin after the clip.
-        "holdSeconds": args.seconds + 10,
-    }
-    deployment = harness.Deployment()
-    started = time.time()
-    result = {}
-    name = "nirender %s - %s" % (args.cell.lower(), label)
-    recorder = threading.Thread(target=record_when_ready, args=(progress_file, args.seconds, name, result))
-    try:
-        deployment.write_spec(run_test.SPEC_NAME, spec)
-        recorder.start()
-        harness.run_game(progress_file, 120 + args.seconds, TAG, deployment, started)
-    finally:
-        deployment.restore()
-    recorder.join(timeout=30)
-    harness.copy_logs(run_dir, started)
-    # The number of calls that ran as Rust during the clip. It is 0 for the game code clip.
-    rows = run_test.read_report(os.path.join(run_dir, "report.tsv"))
-    live = sum(int(row["live_calls"]) for row in rows)
-    print("%s: %s, %d calls ran as Rust" % (label, result.get("path") or "NO CLIP: " + result.get("error", "?"), live))
-    return result.get("path"), live
+def record_clips(run, seconds, cell, results):
+    """Records one clip at each "view ready" line of the scenario. Runs in parallel with the
+    harness loop."""
+    for index, (mode, label) in enumerate(CLIPS):
+        deadline = time.time() + 240
+        while time.time() < deadline and sum("view ready" in line for line in run.progress_lines(TAG)) <= index:
+            time.sleep(0.5)
+        if time.time() >= deadline:
+            results[label] = "NO CLIP: the view never came"
+            return
+        time.sleep(1)
+        obs = obs_record.Obs()
+        try:
+            results[label] = obs_record.record(obs, seconds, "nirender %s - %s" % (cell.lower(), label))
+        except BaseException as error:  # The harness loop must still end the game.
+            results[label] = "NO CLIP: %s" % error
+        finally:
+            obs.close()
 
 
 def main():
@@ -88,16 +54,26 @@ def main():
 
     obs_record.LONGEST = args.seconds
     obs_record.DRIVE = args.folder
-    if not args.no_build:
-        run_test.build()
-    run_test.stage()
-    run_test.use_our_mod()
-    harness.refuse_if_busy()
-    for change in harness.install_mod():
-        print("  nirender mod: %s" % change)
+    session.prepare(build=not args.no_build)
+    run = session.Run("video")
+    # The recorder waits 3 s for the capture to become stable, and needs a margin after the clip.
+    spec = run.spec("video", save=args.save, cell=args.cell, modes=[mode for mode, _ in CLIPS],
+                    holdSeconds=args.seconds + 10)
+    results = {}
+    recorder = threading.Thread(target=record_clips, args=(run, args.seconds, args.cell, results))
+    recorder.start()
+    run.launch(spec, 90 + len(CLIPS) * (args.seconds + 20), TAG)
+    recorder.join(timeout=30)
 
-    clips = [clip("off", "game code", args), clip("live", "rust plugin", args)]
-    ok = all(path for path, _ in clips) and clips[0][1] == 0 and clips[1][1] > 0
+    # The scenario reports the calls that ran as Rust up to the end of each clip. The count
+    # must be 0 after the game code clip and more than 0 after the Rust clip.
+    counts = [int(m.group(1)) for line in run.progress_lines(TAG) for m in [re.search(r"(\d+) calls ran as Rust", line)] if m]
+    ok = len(counts) == len(CLIPS) and counts[0] == 0 and counts[1] > 0
+    for (_, label), count in zip(CLIPS, counts):
+        print("%s: %s, %d calls ran as Rust at its end" % (label, results.get(label, "NO CLIP"), count))
+    ok = ok and all(os.path.isfile(str(results.get(label, ""))) for _, label in CLIPS)
+    for problem in run.mge_problems():
+        print("WARNING: " + problem)
     print("OK" if ok else "FAIL")
     return 0 if ok else 1
 

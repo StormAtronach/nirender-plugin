@@ -13,11 +13,10 @@ import sys
 import time
 from collections import defaultdict
 
+from common import PORT_RE, is_renderer_function, read_report
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiPropertyState)")
-FUNC_SKIP = re.compile(r"_SEH$|NiDX8Application|NiDX8SelectResolution|StdMap")
-PORT_RE = re.compile(r"port_(?:thiscall|cdecl)!\(\s*\w+,\s*0x([0-9A-Fa-f]+)")
 
 
 def class_of(name):
@@ -36,20 +35,16 @@ def newest_run():
 
 def main():
     inventory = json.load(open(os.path.join(HERE, "out", "inventory.json")))
-    funcs = [f for f in inventory if FUNC_RE.search(f["name"]) and not FUNC_SKIP.search(f["name"])]
+    funcs = [f for f in inventory if is_renderer_function(f["name"])]
 
     ported = set()
     for path in glob.glob(os.path.join(REPO, "src", "ports", "*.rs")):
-        ported |= {int(m, 16) for m in PORT_RE.findall(open(path, encoding="utf-8").read())}
+        ported |= {int(address, 16) for _, address, _ in PORT_RE.findall(open(path, encoding="utf-8").read())}
 
     report, changed, frame_lines, run = {}, set(), [], newest_run()
     if run:
-        lines = open(os.path.join(run, "report.tsv"), encoding="utf-8").read().splitlines()
-        header = lines[0].split("\t")
-        for line in lines[1:]:
-            if line.strip():
-                row = dict(zip(header, line.split("\t")))
-                report[int(row["addr"], 16)] = row
+        for row in read_report(os.path.join(run, "report.tsv")):
+            report[int(row["addr"], 16)] = row
         log = os.path.join(run, "nirender.log")
         if os.path.isfile(log):
             for line in open(log, encoding="utf-8", errors="replace"):
@@ -74,7 +69,7 @@ def main():
         row = report.get(f["ea"])
         if row is None:
             state = "ported, not run yet"
-        elif row.get("locked") == "true":
+        elif row["locked"] == "true":
             state = "locked (a mod rewrote the function)"
         elif row["installed"] != "true":
             state = "NO DETOUR"
@@ -84,7 +79,7 @@ def main():
         elif int(row["shadow_calls"]):
             state = "clean"
             c["clean"] += 1
-        elif int(row["live_calls"]) or int(row.get("rust_runs", 0)):
+        elif int(row["rust_runs"]):
             state = "ran as Rust"
         else:
             state = "not called in the run"
@@ -110,7 +105,7 @@ def main():
             "| --- | --- | --- | ---: | ---: | ---: | ---: |"]
     for name, ea, state, row in rows:
         out.append("| %s | 0x%x | %s | %s | %s | %s | %s |" % (
-            name, ea, state, row.get("shadow_calls", ""), row.get("mismatches", ""), row.get("skipped", ""), row.get("rust_runs", row.get("live_calls", ""))))
+            name, ea, state, row.get("shadow_calls", ""), row.get("mismatches", ""), row.get("skipped", ""), row.get("rust_runs", "")))
     if frame_lines:
         out += ["", "## Frame tests of the last run", ""] + ["- " + line for line in frame_lines]
     if changed:

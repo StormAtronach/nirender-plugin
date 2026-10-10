@@ -79,26 +79,30 @@ def main():
     baseline = find_run(args[2]) if len(args) > 2 else None
     print("A: %s\nB: %s" % (os.path.basename(run_a), os.path.basename(run_b)))
 
-    state_a = read_state(os.path.join(run_a, "state.txt"))
-    state_b = read_state(os.path.join(run_b, "state.txt"))
-    ignore = set()
-    if baseline:
-        noise = compare_state(state_a, read_state(os.path.join(baseline, "state.txt")), set())
-        ignore = {(name, offset) for name, offset, _, _ in noise}
-        print("baseline: %s (%d words differ between it and A; they are left out)" % (os.path.basename(baseline), len(ignore)))
-    state = compare_state(state_a, state_b, ignore)
-    total = sum(len(words) for words in state_a.values())
-    print("\nstate: %d words in %d objects, %d differ" % (total, len(state_a), len(state)))
-    for name, offset, word_a, word_b in state[:40]:
-        print("  %s+0x%x: A %s  B %s" % (name, offset, word_a, word_b))
+    different = False
+    for dump in ("state_start.txt", "state.txt"):
+        if not all(os.path.isfile(os.path.join(run, dump)) for run in (run_a, run_b)):
+            continue
+        state_a = read_state(os.path.join(run_a, dump))
+        ignore = set()
+        if baseline and os.path.isfile(os.path.join(baseline, dump)):
+            noise = compare_state(state_a, read_state(os.path.join(baseline, dump)), set())
+            ignore = {(name, offset) for name, offset, _, _ in noise}
+        state = compare_state(state_a, read_state(os.path.join(run_b, dump)), ignore)
+        total = sum(len(words) for words in state_a.values())
+        print("\n%s: %d words in %d objects, %d differ (%d words left out as noise of the game)" % (
+            dump, total, len(state_a), len(state), len(ignore)))
+        for name, offset, word_a, word_b in state[:40]:
+            print("  %s+0x%x: A %s  B %s" % (name, offset, word_a, word_b))
+        different = different or bool(state)
 
     # The scene after a load is not the same in two runs of the game, because actors move with
-    # the clock. So the frame is information only. The state gives the verdict.
+    # the clock. So the frame is information only. The verdict is the state.
     count_a, count_b, frame = compare_frame(os.path.join(run_a, "frame.txt"), os.path.join(run_b, "frame.txt"))
     print("\nframe (information): A %d calls, B %d calls, %d lines differ" % (count_a, count_b, len(frame)))
 
-    print("\n" + ("STATE IDENTICAL" if not state else "STATE DIFFERENT"))
-    return 0 if not state else 1
+    print("\n" + ("STATE DIFFERENT" if different else "STATE IDENTICAL"))
+    return 1 if different else 0
 
 
 if __name__ == "__main__":

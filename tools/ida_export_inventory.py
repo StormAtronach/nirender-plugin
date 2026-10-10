@@ -61,12 +61,8 @@ for ea in idautils.Functions():
         for x in idautils.XrefsFrom(head, 0):
             if x.iscode and ea < x.to < ea + steal and head != idc.prev_head(x.to):
                 pic = False
-    h = 0x811C9DC5
-    for b in ida_bytes.get_bytes(ea, size):
-        h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
     funcs.append({
         "bytes": ida_bytes.get_bytes(ea, size).hex(),
-        "hash": h,
         "steal": steal,
         "steal_pic": pic,
         "relocs": relocs,
