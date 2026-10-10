@@ -45,7 +45,7 @@ pub fn fog_range(density: f32, frustum_distance: f32, frustum_far: f32, inverse_
 ///
 /// `_ftol` of the game (0x72769E) is a jump to the import from MSVCRT.DLL.
 ///
-/// This is a copy of `ftol_asm!` of `ports::renderer_frame`. Use it inside `asm!` with a
+/// This replicates the `_ftol` of the C runtime of the game. Use it inside `asm!` with a
 /// register operand `s`, and give EAX as an output.
 macro_rules! ftol_asm {
     () => {
@@ -74,7 +74,6 @@ pub(crate) use ftol_asm;
 
 /// `fild qword n; fmul dword x; call _ftol`. It multiplies an unsigned 32-bit count by a float.
 /// `x` is the bits of the float.
-#[allow(dead_code)]
 pub fn ftol_count_times(n: u32, x: u32) -> u32 {
     let mut s = [0u32, 0, 0, 0, n, 0, x];
     let result: u32;
@@ -94,7 +93,6 @@ pub fn ftol_count_times(n: u32, x: u32) -> u32 {
 
 /// `fld a; fsub b; fimul dword n; call _ftol`. `fimul` reads `n` as a signed integer. `a` and
 /// `b` are the bits of the floats.
-#[allow(dead_code)]
 pub fn ftol_difference_times_int(a: u32, b: u32, n: u32) -> u32 {
     let mut s = [0u32, 0, 0, 0, a, b, n];
     let result: u32;
@@ -114,7 +112,6 @@ pub fn ftol_difference_times_int(a: u32, b: u32, n: u32) -> u32 {
 }
 
 /// `fld a; fmul b; call _ftol`. `a` and `b` are the bits of the floats.
-#[allow(dead_code)]
 pub fn ftol_product(a: u32, b: u32) -> u32 {
     let mut s = [0u32, 0, 0, 0, a, b];
     let result: u32;

@@ -9,7 +9,6 @@
 //! `operator new` (0x727692) or `operator delete` (0x727530) of the game. The `_with` form
 //! takes the allocator as an argument, for a port whose unit tests have their own allocator.
 
-#![allow(dead_code)]
 
 use crate::engine::{self, vcall1, vcall2, vcall3};
 use crate::gen::layouts::{THashMap as HM, THashMap_Node as HN};

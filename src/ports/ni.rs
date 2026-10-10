@@ -6,7 +6,6 @@
 //! 0x471B00 and the others) are in `engine`. Do not use one form in place of the other: a
 //! port does what the game code does at that place.
 
-#![allow(dead_code)]
 
 use crate::engine::{vcall0, vcall1, NI_REF_OBJECT_COUNT};
 use crate::gen::layouts::NiRefObject;

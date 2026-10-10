@@ -7,7 +7,6 @@
 //!
 //! An argument that is an address is `usize`. Each other argument is `u32`.
 
-#![allow(dead_code)]
 
 use core::mem::transmute;
 
@@ -377,7 +376,7 @@ pub unsafe fn device_set_render_state(device: usize, state: u32, value: u32) -> 
     // For D3DRS_ZFUNC, D3DCMP_LESSEQUAL (4) becomes D3DCMP_LESS (2).
     let value = if state == 23 && value == 4 && fault() == 1 { 2 } else { value };
     let vtable: usize = rd(device, 0);
-    let f: unsafe extern "system" fn(usize, u32, u32) -> u32 = transmute(rd::<usize>(vtable, 0xC8));
+    let f: unsafe extern "system" fn(usize, u32, u32) -> u32 = transmute(rd::<usize>(vtable, DEVICE_SET_RENDER_STATE));
     f(device, state, value)
 }
 
@@ -392,7 +391,7 @@ pub unsafe fn device_set_texture(device: usize, stage: u32, texture: usize) -> u
 #[inline(always)]
 pub unsafe fn device_set_texture_stage_state(device: usize, stage: u32, state: u32, value: u32) -> u32 {
     let vtable: usize = rd(device, 0);
-    let f: unsafe extern "system" fn(usize, u32, u32, u32) -> u32 = transmute(rd::<usize>(vtable, 0xFC));
+    let f: unsafe extern "system" fn(usize, u32, u32, u32) -> u32 = transmute(rd::<usize>(vtable, DEVICE_SET_TEXTURE_STAGE_STATE));
     f(device, stage, state, value)
 }
 
