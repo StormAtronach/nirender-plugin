@@ -190,6 +190,25 @@ pub unsafe fn note_transform(state: u32, matrix: usize) {
     core::ptr::copy_nonoverlapping(matrix as *const f32, to as *mut f32, 16);
 }
 
+/// The number of `SetRenderState` and `SetTextureStageState` calls of the Rust code, for
+/// each state. It shows which states the game changes during a frame.
+static mut RENDER_STATE_SETS: [u32; 256] = [0; 256];
+static mut STAGE_STATE_SETS: [u32; 32] = [0; 32];
+
+#[inline]
+pub unsafe fn note_render_state(state: u32) {
+    if state < 256 {
+        *addr_of_mut!(RENDER_STATE_SETS[state as usize]) += 1;
+    }
+}
+
+#[inline]
+pub unsafe fn note_stage_state(state: u32) {
+    if state < 32 {
+        *addr_of_mut!(STAGE_STATE_SETS[state as usize]) += 1;
+    }
+}
+
 /// Keeps the texture of a stage that goes to the device.
 #[inline]
 pub unsafe fn note_texture(stage: u32, texture: usize) {
@@ -747,6 +766,22 @@ pub unsafe fn counters_text(reset: bool) -> String {
     text.push('\n');
     if reset {
         *counts = [0; CLASS_COUNT];
+    }
+    // The states that the Rust code set on the device, as `state=calls`.
+    let render: &mut [u32] = &mut *addr_of_mut!(RENDER_STATE_SETS);
+    let stage: &mut [u32] = &mut *addr_of_mut!(STAGE_STATE_SETS);
+    let sets = [("render_states:", render), ("stage_states:", stage)];
+    for (label, sets) in sets {
+        text.push_str(label);
+        for (state, count) in sets.iter_mut().enumerate() {
+            if *count != 0 {
+                text.push_str(&format!(" {state}={count}"));
+            }
+            if reset {
+                *count = 0;
+            }
+        }
+        text.push(0xA as char);
     }
     text
 }
