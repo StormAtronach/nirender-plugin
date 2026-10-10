@@ -34,7 +34,7 @@ TOTALS = re.compile(r"scenes (\d+) draws (\d+) draws_without_packet (\d+)")
 FACTS = ("light_radius", "sun_light", "moon_shadow", "water_plane", "ui_scene", "scene_kind", "sky_draw", "land_splat",
          "later_view", "state_draw", "state_buffers", "state_transform", "state_blend", "state_depth", "state_lighting",
          "state_material", "state_stages", "state_lights", "state_textures", "state_texture_transforms", "state_bones",
-         "state_ambient")
+         "state_ambient", "texture_create")
 # The facts that MGE XE can take from a packet.
 USABLE = ("ui_scene", "water_plane", "sun_light", "sky_draw", "land_splat", "scene_kind", "moon_shadow", "state_draw")
 # The classes of the contract (MGE_LINK_CLASS_*), by index.
@@ -96,6 +96,8 @@ def main():
     ap.add_argument("--rust-only", action="store_true", help="skip the measurement with the game code; the waits "
                     "stay long, as the picture test needs: the eye adaptation shader changes the frame for some "
                     "seconds after a change of cell")
+    ap.add_argument("--link-textures", action="store_true", help="the Rust code runs during the changes of cell and "
+                    "makes the textures through the link")
     ap.add_argument("--label", default="link")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -112,6 +114,7 @@ def main():
         spec.update(modes=["live"])
     # MGE XE takes the state of a draw from a packet that only the Rust code sends.
     spec["factsNeedRust"] = bool(mask >> FACTS.index("state_draw") & 1)
+    spec["linkTextures"] = args.link_textures
     if args.hour is not None:
         spec["hour"] = args.hour
     if args.moon:
@@ -158,7 +161,10 @@ def main():
             # With the water plane or the moons from the packets, the mark is out of the
             # material. Then the inference of MGE XE finds nothing, and only the packet says yes.
             expected = row["mode"] == "facts" and name in ("water_plane", "moon_shadow") and mask >> FACTS.index(name) & 1
-            different += count["host_only"] + (0 if expected else count["packet_only"])
+            # The texture counts are not a comparison: "only MGE XE" is a texture that the
+            # device did not take.
+            if name != "texture_create":
+                different += count["host_only"] + (0 if expected else count["packet_only"])
         if row.get("classes"):
             print("  draw packets by class: " + ", ".join("%s %d" % item for item in row["classes"].items()))
 

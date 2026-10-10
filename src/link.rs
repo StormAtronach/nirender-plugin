@@ -10,6 +10,9 @@ pub const VERSION: u32 = 1;
 pub const CAP_COMPARE: u32 = 0x1;
 pub const CAP_USE_FACTS: u32 = 0x2;
 pub const CAP_DRAW_STATE: u32 = 0x4;
+pub const CAP_TEXTURES: u32 = 0x8;
+
+pub const TEXTURE_DYNAMIC: u32 = 0x1;
 
 pub const SCENE_OTHER: u32 = 0;
 pub const SCENE_WORLD: u32 = 1;
@@ -86,12 +89,13 @@ pub const FACT_STATE_TEXTURES: u32 = 18;
 pub const FACT_STATE_TEXTURE_TRANSFORMS: u32 = 19;
 pub const FACT_STATE_BONES: u32 = 20;
 pub const FACT_STATE_AMBIENT: u32 = 21;
+pub const FACT_TEXTURE_CREATE: u32 = 22;
 pub const STATE_STAGES: u32 = 8;
 pub const STATE_STAGE_STATES: u32 = 17;
 pub const FACT_COUNT: u32 = 32;
 
 /// The names of the facts, for reports. The index is `FACT_*`.
-pub const FACT_NAMES: [&str; 22] = [
+pub const FACT_NAMES: [&str; 23] = [
     "light radius",
     "sun light",
     "moon shadow",
@@ -114,6 +118,7 @@ pub const FACT_NAMES: [&str; 22] = [
     "state texture transforms",
     "state bones",
     "state ambient",
+    "texture create",
 ];
 
 #[repr(C)]
@@ -200,6 +205,24 @@ pub struct StateLightV1 {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TextureV1 {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub width: u32,
+    pub height: u32,
+    pub levels: u32,
+    pub d3d_format: u32,
+    pub pixel_format: u32,
+    pub pixel_format_tag: u32,
+    pub bytes_per_pixel: u32,
+    pub pixels: *const u8,
+    pub level_offsets: *const u32,
+    pub level_widths: *const u32,
+    pub level_heights: *const u32,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct FactCountV1 {
     pub both_yes: u32,
@@ -233,6 +256,8 @@ pub struct HostV1 {
     pub use_facts: unsafe extern "C" fn(fact_mask: u32) -> u32,
     /// Only a host with `CAP_DRAW_STATE` has this member.
     pub draw_state: unsafe extern "C" fn(state: *const DrawStateV1),
+    /// Only a host with `CAP_TEXTURES` has this member.
+    pub texture_create: unsafe extern "C" fn(texture: *const TextureV1) -> u32,
 }
 
 /// `MGE_RenderLinkConnect`
@@ -251,7 +276,8 @@ const _: () = {
     assert!(size_of::<DrawStateV1>() == 1524);
     assert!(size_of::<FactCountV1>() == 16);
     assert!(size_of::<CountersV1>() == 528);
-    assert!(size_of::<HostV1>() == 44);
+    assert!(size_of::<TextureV1>() == 52);
+    assert!(size_of::<HostV1>() == 48);
 };
 
 #[cfg(test)]

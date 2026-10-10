@@ -688,6 +688,31 @@ pub unsafe fn use_facts(mask: u32) -> Option<u32> {
     Some((host.use_facts)(mask))
 }
 
+/// The plugin makes the source textures through the link. See `ports/texture_link.rs`.
+static LINK_TEXTURES: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Sets the use of the link for new source textures. Returns false when the host cannot
+/// make textures.
+pub unsafe fn set_link_textures(on: bool) -> bool {
+    let able = host().is_some_and(|host| host.capabilities & CAP_TEXTURES != 0 && host.struct_size as usize >= size_of::<HostV1>());
+    LINK_TEXTURES.store(on && able, Ordering::Relaxed);
+    able
+}
+
+/// True when a new source texture must come from the link. Not in the Rust half of a shadow
+/// test: that half must not make a device object.
+pub fn link_textures() -> bool {
+    LINK_TEXTURES.load(Ordering::Relaxed) && crate::shadow::leg() != crate::shadow::Leg::Rust
+}
+
+/// Asks the host for a texture with these pixels. Returns the handle, or 0.
+pub unsafe fn texture_create(texture: &TextureV1) -> usize {
+    match host() {
+        Some(host) => (host.texture_create)(texture) as usize,
+        None => 0,
+    }
+}
+
 /// The counters of the host, or `None` without a host.
 pub unsafe fn counters(reset: bool) -> Option<CountersV1> {
     let host = host()?;

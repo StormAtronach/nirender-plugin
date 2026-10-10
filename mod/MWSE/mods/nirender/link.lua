@@ -177,6 +177,11 @@ return function(nirender, spec)
 
     local function visit(index)
         local cell = spec.cells and spec.cells[index]
+        -- The textures of the next cell come through the link. Only the Rust code does that.
+        if spec.linkTextures then
+            nirender.setMode("*", "live")
+            say("textures through the link: %s", tostring(nirender.linkTextures(true)))
+        end
         if not cell then return scenario.finish() end
         scenario.goTo(cell)
         after(spec.settleSeconds or 6, function()

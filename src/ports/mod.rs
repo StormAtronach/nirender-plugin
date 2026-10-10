@@ -97,6 +97,8 @@ pub mod render_state;
 pub mod rendered;
 pub mod renderer_frame;
 pub mod system_desc;
+#[cfg(not(test))]
+pub mod texture_link;
 pub mod texture_pass_a;
 pub mod texture_pass_b;
 pub mod texture_pipeline;
