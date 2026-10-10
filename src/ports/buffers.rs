@@ -6,25 +6,25 @@
 //! in memory.
 
 use core::arch::asm;
+use core::mem::transmute;
 
+use crate::d3d::{
+    buffer_get_desc, buffer_lock, buffer_unlock, com_release, device_add_ref, device_create_index_buffer,
+    device_create_vertex_buffer, device_release, device_set_indices, D3DFMT_INDEX16, D3DFMT_VERTEXDATA, D3DFVF_DIFFUSE,
+    D3DFVF_NORMAL, D3DFVF_TEX1, D3DFVF_XYZ, D3DRTYPE_INDEXBUFFER,
+};
+use crate::engine::{vcall0, virtual_at, CREATE_CRITICAL_SECTION, VTBL_NI_REF_OBJECT};
 use crate::gen::layouts::{
     NiD3DShaderInterface as SI, NiDX8IndexBufferManager as IM, NiDX8VBResource as VR, NiDX8VertexBufferManager as VM,
     NiDX8VertexBufferManager_VBInfo as VI, NiGeometryData as GD, NiSkinPartition_Partition as SP, THashMap as HM,
     THashMap_Node as HN,
 };
 use crate::mem::{rd, wr};
+use crate::ports::{hash_map, ni};
 use crate::shadow::Regions;
 
-const D3DFMT_VERTEXDATA: u32 = 100;
-const D3DFMT_INDEX16: u32 = 101;
-const D3DRTYPE_INDEXBUFFER: u32 = 7;
-
-const D3DFVF_XYZ: u32 = 0x002;
-const D3DFVF_NORMAL: u32 = 0x010;
-const D3DFVF_DIFFUSE: u32 = 0x040;
-const D3DFVF_TEX1: u32 = 0x100;
-
-// The dwords of D3DVERTEXBUFFER_DESC and D3DINDEXBUFFER_DESC: Format, Type, Usage, Pool, Size, (FVF).
+// The dwords of D3DVERTEXBUFFER_DESC and D3DINDEXBUFFER_DESC: Format, Type, Usage, Pool, Size, FVF.
+// Only D3DVERTEXBUFFER_DESC has the FVF.
 const DESC_FORMAT: usize = 0;
 const DESC_TYPE: usize = 1;
 const DESC_USAGE: usize = 2;
@@ -37,25 +37,9 @@ const BUCKETS: u32 = 37;
 /// The number of resources of one `VBInfo`.
 const RING: usize = 5;
 
-// `InterfaceTHashMap`
-const MAP_VTBL_HASH_KEY: usize = 0x4;
-const MAP_VTBL_CMP_KEY: usize = 0x8;
-const MAP_VTBL_MAKE_KEY_VALUE_PAIR: usize = 0xC;
-const MAP_VTBL_DTOR_KEY_VALUE_PAIR: usize = 0x10;
-
-// `IDirect3DDevice8` vtable slots.
-const DEVICE_ADD_REF: usize = 0x04;
-const DEVICE_RELEASE: usize = 0x08;
-const DEVICE_CREATE_VERTEX_BUFFER: usize = 0x5C;
-const DEVICE_CREATE_INDEX_BUFFER: usize = 0x60;
-const DEVICE_CREATE_VERTEX_SHADER: usize = 0x130;
-const DEVICE_SET_INDICES: usize = 0x154;
-
-// `IDirect3DVertexBuffer8` and `IDirect3DIndexBuffer8` vtable slots.
-const BUFFER_RELEASE: usize = 0x08;
-const BUFFER_LOCK: usize = 0x2C;
-const BUFFER_UNLOCK: usize = 0x30;
-const BUFFER_GET_DESC: usize = 0x34;
+/// The slot of `IDirect3DDevice8::CreateVertexShader`: slot 75. The call at 0x6BEE96 uses it.
+/// `d3d` does not have this slot.
+const DEVICE_CREATE_VERTEX_SHADER: usize = 0x12C;
 
 /// The slot of `GetActiveVertexCount` in the vtable of a `NiGeometryData` (0x6BDE63, 0x6BF0D2).
 const GEOMETRY_VTBL_ACTIVE_VERTEX_COUNT: usize = 0x30;
@@ -82,7 +66,6 @@ const DECLARATION_STRIDE: usize = 0xC;
 const ELEMENT_SIZE: usize = 0x10;
 const ELEMENT_OFFSET: usize = 0xC;
 
-const VTBL_NI_REF_OBJECT: u32 = 0x7469B8;
 const VTBL_INDEX_BUFFER_MANAGER: u32 = 0x74F724;
 const VTBL_VERTEX_BUFFER_MANAGER: u32 = 0x74F73C;
 const VTBL_SHADER_ENTRY: u32 = 0x74F768;
@@ -96,8 +79,6 @@ const TEXT_RESIZE_TEMP_LINE: usize = 0x7C3FB8;
 const TEXT_CREATE_VERTEX_BUFFER_FAILED: usize = 0x7C400C;
 /// The name that `CreateVertexBuffer` gives to `NiCriticalSection::Lock`.
 const NAME_CREATE_VERTEX_BUFFER: usize = 0x7C4048;
-/// The critical section around `IDirect3DDevice8::CreateVertexBuffer` (0x7DEA78).
-const CREATE_CRITICAL_SECTION: usize = 0x7DEA78;
 
 const _: () = assert!(IM::SIZE == 0x4C && IM::hashmap_1C == 0x1C && IM::hashmap_2C == 0x2C && IM::hashmap_3C == 0x3C);
 const _: () = assert!(VM::SIZE == 0x3C && VM::hashmap_C == 0xC && VM::hashmap_1C == 0x1C && VM::hashmapFVFUsage == 0x2C);
@@ -113,52 +94,16 @@ mod eng {
     use core::arch::asm;
     use core::mem::transmute;
 
-    use crate::mem::{rd, wr};
+    use crate::engine::{thiscall1, thiscall2};
 
-    type This0 = unsafe extern "thiscall" fn(usize) -> u32;
-    type This1 = unsafe extern "thiscall" fn(usize, u32) -> u32;
-    type This2 = unsafe extern "thiscall" fn(usize, u32, u32) -> u32;
+    pub use crate::engine::{
+        array_set_at, array_set_size, critical_section_lock as lock, critical_section_unlock as unlock, debug_print0 as log,
+        debug_print1 as log_value, directx_error_name as direct_x_error_name, dx8_resource_release as resource_release,
+        dx8_resource_release_thunk as resource_release_thunk, operator_delete as delete, operator_new,
+        texture_manager_clear_hash_map as clear_hash_map,
+    };
+    pub use crate::ports::ni::ref_object_count_add;
 
-    /// 0x727692 `operator new`
-    pub unsafe fn operator_new(size: usize) -> usize {
-        crate::engine::operator_new(size)
-    }
-    /// 0x727530 `_delete`
-    pub unsafe fn delete(block: usize) {
-        transmute::<usize, unsafe extern "C" fn(usize)>(0x727530)(block)
-    }
-    /// 0x693F00 `NiCriticalSection::Lock`
-    pub unsafe fn lock(cs: usize, name: usize) {
-        transmute::<usize, This1>(0x693F00)(cs, name as u32);
-    }
-    /// 0x693F10 `NiCriticalSection::Unlock`
-    pub unsafe fn unlock(cs: usize) {
-        transmute::<usize, This0>(0x693F10)(cs);
-    }
-    /// 0x6E9A00 `nullsub_36`: the log function of the renderer. It is empty in the game.
-    pub unsafe fn log(text: usize) {
-        transmute::<usize, unsafe extern "C" fn(usize)>(0x6E9A00)(text)
-    }
-    /// 0x6E9A00 `nullsub_36` with one value for the text.
-    pub unsafe fn log_value(text: usize, value: usize) {
-        transmute::<usize, unsafe extern "C" fn(usize, usize)>(0x6E9A00)(text, value)
-    }
-    /// 0x6C20A0 `GetNameForDirectXErrorCode`
-    pub unsafe fn direct_x_error_name(code: u32) -> usize {
-        transmute::<usize, unsafe extern "C" fn(u32) -> usize>(0x6C20A0)(code)
-    }
-    /// 0x6BC8A0 `NiDX8TextureManager::clearHashMap`
-    pub unsafe fn clear_hash_map(map: usize) {
-        transmute::<usize, This0>(0x6BC8A0)(map);
-    }
-    /// 0x6C28C0 `sub_6C28C0`. It releases `pD3DResource` of a `NiDX8Resource`.
-    pub unsafe fn resource_release(resource: usize) {
-        transmute::<usize, This0>(0x6C28C0)(resource);
-    }
-    /// 0x6BD490 `sub_6BD490`: a jump to 0x6C28C0. The two `Recreate` functions call this one.
-    pub unsafe fn resource_release_thunk(resource: usize) {
-        transmute::<usize, This0>(0x6BD490)(resource);
-    }
     /// 0x6FA000 `NiSkinInstance::Deform`
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn skin_deform(skin: usize, vertices: usize, unused: u32, normals: usize, count: u32, out_vertices: usize, out_normals: usize, stride: u32) {
@@ -167,23 +112,15 @@ mod eng {
     }
     /// 0x6EF500 `NiGeometryData::getTextureSet`
     pub unsafe fn texture_set(geometry: usize, set: u32) -> usize {
-        transmute::<usize, This1>(0x6EF500)(geometry, set) as usize
-    }
-    /// 0x6CEE40 `TArray_of_pointer::SetSize`
-    pub unsafe fn array_set_size(array: usize, size: u32) {
-        transmute::<usize, This1>(0x6CEE40)(array, size);
-    }
-    /// 0x6CB260 `TArray_of_pointer::SetAt`. `element` is the address of the value.
-    pub unsafe fn array_set_at(array: usize, index: u32, element: usize) {
-        transmute::<usize, This2>(0x6CB260)(array, index, element as u32);
+        thiscall1(0x6EF500, geometry, set) as usize
     }
     /// 0x6BF720 `TArray::resize`, of the array of `NiPointer`.
     pub unsafe fn pointer_array_resize(array: usize, size: u32) {
-        transmute::<usize, This1>(0x6BF720)(array, size);
+        thiscall1(0x6BF720, array, size);
     }
     /// 0x6BF880 `TArray_of_NiPointer_to_NiAVObject::SetAt`. `pointer` is the address of the `NiPointer`.
     pub unsafe fn pointer_array_set_at(array: usize, index: u32, pointer: usize) {
-        transmute::<usize, This2>(0x6BF880)(array, index, pointer as u32);
+        thiscall2(0x6BF880, array, index, pointer as u32);
     }
     /// 0x6BF3A0 `sub_6BF3A0`. It packs one element of a vertex declaration. It takes eight stack
     /// arguments, the shader interface in ECX and the declaration in EDI.
@@ -207,7 +144,7 @@ mod eng {
     }
     /// `emptyString` (0x7C6180)
     pub fn empty_string() -> usize {
-        0x7C6180
+        crate::engine::EMPTY_STRING
     }
     /// `vtbl_sg_74F728`: the hash map of `NiDX8IndexBufferManager`.
     pub fn vtbl_index_map() -> usize {
@@ -216,10 +153,6 @@ mod eng {
     /// `vtbl_sg_74F740`: the hash map of `NiDX8VertexBufferManager`.
     pub fn vtbl_vertex_map() -> usize {
         0x74F740
-    }
-    /// `global_count_of_NiRefObject` (0x7DECE0)
-    pub unsafe fn ref_object_count_add(delta: i32) {
-        wr(0x7DECE0, 0, rd::<i32>(0x7DECE0, 0).wrapping_add(delta));
     }
 }
 
@@ -332,90 +265,20 @@ mod eng {
 
 // ---- calls through a vtable
 
+/// `IDirect3DDevice8::CreateVertexShader` through the vtable of the device, slot 0x12C. `d3d` has
+/// no function for this slot. `out` is the address of the handle.
 #[inline(always)]
-unsafe fn vcall<F: Copy>(object: usize, slot: usize) -> F {
-    rd::<F>(rd::<usize>(object, 0), slot)
+unsafe fn device_create_vertex_shader(device: usize, declaration: usize, function: u32, out: usize, usage: u32) -> u32 {
+    let f: unsafe extern "system" fn(usize, usize, u32, usize, u32) -> u32 = transmute(virtual_at(device, DEVICE_CREATE_VERTEX_SHADER));
+    f(device, declaration, function, out, usage)
 }
 
-#[inline(always)]
-unsafe fn map_hash_key(map: usize, key: u32) -> u32 {
-    vcall::<unsafe extern "thiscall" fn(usize, u32) -> u32>(map, MAP_VTBL_HASH_KEY)(map, key)
-}
-
-#[inline(always)]
-unsafe fn map_cmp_key(map: usize, a: u32, b: u32) -> bool {
-    vcall::<unsafe extern "thiscall" fn(usize, u32, u32) -> u32>(map, MAP_VTBL_CMP_KEY)(map, a, b) & 0xFF != 0
-}
-
-#[inline(always)]
-unsafe fn map_make_key_value_pair(map: usize, node: usize, key: u32, value: usize) {
-    vcall::<unsafe extern "thiscall" fn(usize, usize, u32, usize) -> u32>(map, MAP_VTBL_MAKE_KEY_VALUE_PAIR)(map, node, key, value);
-}
-
-#[inline(always)]
-unsafe fn map_dtor_key_value_pair(map: usize, node: usize) {
-    vcall::<unsafe extern "thiscall" fn(usize, usize) -> u32>(map, MAP_VTBL_DTOR_KEY_VALUE_PAIR)(map, node);
-}
-
-#[inline(always)]
-unsafe fn device_add_ref(device: usize) {
-    vcall::<unsafe extern "system" fn(usize) -> u32>(device, DEVICE_ADD_REF)(device);
-}
-
-#[inline(always)]
-unsafe fn device_release(device: usize) {
-    vcall::<unsafe extern "system" fn(usize) -> u32>(device, DEVICE_RELEASE)(device);
-}
-
-#[inline(always)]
-unsafe fn device_create_vertex_buffer(device: usize, length: u32, usage: u32, fvf: u32, pool: u32, out: *mut usize) -> u32 {
-    type F = unsafe extern "system" fn(usize, u32, u32, u32, u32, *mut usize) -> u32;
-    vcall::<F>(device, DEVICE_CREATE_VERTEX_BUFFER)(device, length, usage, fvf, pool, out)
-}
-
-#[inline(always)]
-unsafe fn device_create_index_buffer(device: usize, length: u32, usage: u32, format: u32, pool: u32, out: *mut usize) -> u32 {
-    type F = unsafe extern "system" fn(usize, u32, u32, u32, u32, *mut usize) -> u32;
-    vcall::<F>(device, DEVICE_CREATE_INDEX_BUFFER)(device, length, usage, format, pool, out)
-}
-
-#[inline(always)]
-unsafe fn device_create_vertex_shader(device: usize, declaration: usize, function: u32, out: *mut u32, usage: u32) -> u32 {
-    type F = unsafe extern "system" fn(usize, usize, u32, *mut u32, u32) -> u32;
-    vcall::<F>(device, DEVICE_CREATE_VERTEX_SHADER)(device, declaration, function, out, usage)
-}
-
-#[inline(always)]
-unsafe fn device_set_indices(device: usize, index_buffer: usize, base_vertex: u32) {
-    vcall::<unsafe extern "system" fn(usize, usize, u32) -> u32>(device, DEVICE_SET_INDICES)(device, index_buffer, base_vertex);
-}
-
-/// `Release` of a buffer or of any COM object.
-#[inline(always)]
-unsafe fn buffer_release(buffer: usize) {
-    vcall::<unsafe extern "system" fn(usize) -> u32>(buffer, BUFFER_RELEASE)(buffer);
-}
-
-#[inline(always)]
-unsafe fn buffer_lock(buffer: usize, offset: u32, size: u32, out: *mut usize, flags: u32) -> u32 {
-    type F = unsafe extern "system" fn(usize, u32, u32, *mut usize, u32) -> u32;
-    vcall::<F>(buffer, BUFFER_LOCK)(buffer, offset, size, out, flags)
-}
-
-#[inline(always)]
-unsafe fn buffer_unlock(buffer: usize) -> u32 {
-    vcall::<unsafe extern "system" fn(usize) -> u32>(buffer, BUFFER_UNLOCK)(buffer)
-}
-
-#[inline(always)]
-unsafe fn buffer_get_desc(buffer: usize, desc: usize) -> u32 {
-    vcall::<unsafe extern "system" fn(usize, usize) -> u32>(buffer, BUFFER_GET_DESC)(buffer, desc)
-}
-
-/// `NiGeometryData::GetActiveVertexCount`. The count is the low word of the result.
+/// `NiGeometryData::GetActiveVertexCount`. The count is the low word of the result. The function
+/// of the same name in `draw_misc` gives the low word only. This one gives the full register,
+/// because `buildVertexBuffer` passes the full register on.
 #[inline(always)]
 unsafe fn geometry_active_vertex_count(geometry: usize) -> u32 {
-    vcall::<unsafe extern "thiscall" fn(usize) -> u32>(geometry, GEOMETRY_VTBL_ACTIVE_VERTEX_COUNT)(geometry)
+    vcall0(geometry, GEOMETRY_VTBL_ACTIVE_VERTEX_COUNT)
 }
 
 // ---- x87 sequences
@@ -448,113 +311,21 @@ fn x87_screen_vertex(input: &[u32; 5]) -> [u32; 3] {
 
 // ---- shared pieces that the game code has inline
 
-/// Gives the bucket of a key and the node of the key.
-#[inline(always)]
-unsafe fn map_find(map: usize, key: u32) -> (usize, usize) {
-    let bucket = map_hash_key(map, key) as usize;
-    let mut node: usize = rd(rd::<usize>(map, HM::arrayBuckets), bucket * 4);
-    while node != 0 {
-        if map_cmp_key(map, key, rd(node, HN::key)) {
-            break;
-        }
-        node = rd(node, HN::nextNode);
-    }
-    (bucket, node)
-}
-
-/// Puts a value into the map. The node of the key gets the value. Without such a node, a new node at
-/// the head of the bucket gets it.
-#[inline(always)]
-unsafe fn map_insert(map: usize, key: u32, value: usize) {
-    let (bucket, node) = map_find(map, key);
-    if node != 0 {
-        map_dtor_key_value_pair(map, node);
-        map_make_key_value_pair(map, node, key, value);
-    } else {
-        let node = eng::operator_new(HN::SIZE);
-        map_make_key_value_pair(map, node, key, value);
-        wr::<usize>(node, HN::nextNode, rd(rd::<usize>(map, HM::arrayBuckets), bucket * 4));
-        wr(rd::<usize>(map, HM::arrayBuckets), bucket * 4, node);
-        wr(map, HM::count, rd::<u32>(map, HM::count).wrapping_add(1));
-    }
-}
-
-/// The first node of the first bucket that has one.
-#[inline(always)]
-unsafe fn map_first(map: usize) -> usize {
-    let count: u32 = rd(map, HM::bucketCount);
-    if count != 0 {
-        let buckets: usize = rd(map, HM::arrayBuckets);
-        for i in 0..count as usize {
-            let node: usize = rd(buckets, i * 4);
-            if node != 0 {
-                return node;
-            }
-        }
-    }
-    0
-}
-
-/// The first node of the buckets after the one of `key`.
-#[inline(always)]
-unsafe fn map_next_bucket(map: usize, key: u32) -> usize {
-    let mut i = map_hash_key(map, key).wrapping_add(1);
-    let count: u32 = rd(map, HM::bucketCount);
-    if i < count {
-        let buckets: usize = rd(map, HM::arrayBuckets);
-        while i < count {
-            let node: usize = rd(buckets, i as usize * 4);
-            if node != 0 {
-                return node;
-            }
-            i += 1;
-        }
-    }
-    0
-}
-
-/// Takes every node out of the map and frees it. The caller sets the count.
-#[inline(always)]
-unsafe fn map_remove_all(map: usize) {
-    if rd::<u32>(map, HM::bucketCount) != 0 {
-        let mut buckets: usize = rd(map, HM::arrayBuckets);
-        let mut i: u32 = 0;
-        loop {
-            let mut node: usize = rd(buckets, i as usize * 4);
-            while node != 0 {
-                wr::<usize>(buckets, i as usize * 4, rd(node, HN::nextNode));
-                map_dtor_key_value_pair(map, node);
-                eng::delete(node);
-                buckets = rd(map, HM::arrayBuckets);
-                node = rd(buckets, i as usize * 4);
-            }
-            i += 1;
-            if i >= rd::<u32>(map, HM::bucketCount) {
-                break;
-            }
-        }
-    }
-}
-
 /// Releases the buffers of every `VBInfo` of the map and frees the `VBInfo`. The nodes stay.
 /// `thunk` selects which of the two entry points of the resource release the game code calls.
 #[inline(always)]
 unsafe fn map_release_values(map: usize, thunk: bool) {
-    let mut node = map_first(map);
+    let mut node = hash_map::first(map);
     while node != 0 {
         let info: usize = rd(node, HN::data);
-        let mut next: usize = rd(node, HN::nextNode);
-        if next == 0 {
-            next = map_next_bucket(map, rd(node, HN::key));
-        }
-        node = next;
+        node = hash_map::next(map, node);
         if info != 0 {
             for slot in 0..RING {
                 let resource: usize = rd(info, VI::resources + slot * 4);
                 if resource != 0 {
                     let buffer: usize = rd(resource, VR::pVB);
                     if buffer != 0 {
-                        buffer_release(buffer);
+                        com_release(buffer);
                     }
                     if thunk {
                         eng::resource_release_thunk(resource);
@@ -567,6 +338,13 @@ unsafe fn map_release_values(map: usize, thunk: bool) {
             eng::delete(info);
         }
     }
+}
+
+/// Takes every node out of the map and frees it. Then the count becomes 0. The allocator is the
+/// one of the `eng` module, thus the unit tests see each block.
+#[inline(always)]
+unsafe fn map_clear(map: usize) {
+    hash_map::drain_and_zero_count_with(map, |node| eng::delete(node));
 }
 
 /// The constructor of a hash map with 37 buckets. The two manager constructors have it inline.
@@ -593,7 +371,7 @@ unsafe fn map_destruct(map: usize, vtbl: usize) {
 #[inline(always)]
 unsafe fn map_dtor_body(map: usize, vtbl: usize) {
     wr(map, HM::vtbl, vtbl);
-    map_remove_all(map);
+    hash_map::drain_with(map, |node| eng::delete(node));
     let buckets: usize = rd(map, HM::arrayBuckets);
     wr::<u32>(map, HM::count, 0);
     eng::delete(buckets);
@@ -620,7 +398,7 @@ unsafe fn index_buffer_fits(buffer: usize, usage: u32, pool: u32, size: u32) -> 
 #[inline(always)]
 unsafe fn new_index_buffer(device: usize, size: u32, usage: u32, pool: u32) -> usize {
     let mut buffer: usize = 0;
-    if device_create_index_buffer(device, size, usage, D3DFMT_INDEX16, pool, &mut buffer) != 0 {
+    if device_create_index_buffer(device, size, usage, D3DFMT_INDEX16, pool, core::ptr::addr_of_mut!(buffer) as usize) != 0 {
         eng::log(TEXT_CREATE_INDEX_BUFFER);
         buffer = 0;
     }
@@ -646,8 +424,7 @@ pub unsafe fn index_manager_ctor(this: usize, device: usize) -> usize {
     wr::<u32>(this, IM::field_14, 0);
     wr::<u32>(this, IM::field_18, 0);
     for map in [IM::hashmap_1C, IM::hashmap_2C, IM::hashmap_3C] {
-        map_remove_all(this + map);
-        wr::<u32>(this + map, HM::count, 0);
+        map_clear(this + map);
     }
     this
 }
@@ -660,17 +437,16 @@ pub unsafe fn index_manager_dtor(this: usize) {
         map_release_values(this + map, false);
     }
     for map in [IM::hashmap_1C, IM::hashmap_2C, IM::hashmap_3C] {
-        map_remove_all(this + map);
-        wr::<u32>(this + map, HM::count, 0);
+        map_clear(this + map);
     }
     device_set_indices(rd(this, IM::device), 0, 0);
     let quads: usize = rd(this, IM::indexBuffer);
     if quads != 0 {
-        buffer_release(quads);
+        com_release(quads);
     }
     let lines: usize = rd(this, IM::field_14);
     if lines != 0 {
-        buffer_release(lines);
+        com_release(lines);
     }
     let device: usize = rd(this, IM::device);
     if device != 0 {
@@ -715,10 +491,10 @@ pub unsafe fn create_index_buffer(this: usize, indices: usize, index_count: u32,
         wr(out_buffer_size, 0, size);
     }
     let mut data: usize = 0;
-    if buffer_lock(buffer, 0, size, &mut data, 0) != 0 {
+    if buffer_lock(buffer, 0, size, core::ptr::addr_of_mut!(data) as usize, 0) != 0 {
         eng::log(TEXT_PACK_BUFFER_LOCK);
         buffer_unlock(buffer);
-        buffer_release(buffer);
+        com_release(buffer);
         return buffer;
     }
     core::ptr::copy_nonoverlapping(indices as *const u8, data as *mut u8, size as usize);
@@ -743,7 +519,9 @@ pub unsafe fn get_or_build_quad_index_buffer(this: usize, quads: u32, fill: u8, 
     if buffer != 0 {
         match index_buffer_fits(buffer, usage, pool, size) {
             Some(true) => fits = true,
-            Some(false) => buffer_release(buffer),
+            Some(false) => {
+                com_release(buffer);
+            }
             None => {}
         }
     }
@@ -759,10 +537,10 @@ pub unsafe fn get_or_build_quad_index_buffer(this: usize, quads: u32, fill: u8, 
         }
     }
     let mut data: usize = 0;
-    if buffer_lock(buffer, 0, size, &mut data, 0) != 0 {
+    if buffer_lock(buffer, 0, size, core::ptr::addr_of_mut!(data) as usize, 0) != 0 {
         eng::log(TEXT_PACK_BUFFER_LOCK);
         buffer_unlock(buffer);
-        buffer_release(buffer);
+        com_release(buffer);
         buffer = 0;
     } else {
         let mut at = data;
@@ -803,7 +581,9 @@ pub unsafe fn build_line_segment_index_buffer(this: usize, vertex_count: u32, fl
     if buffer != 0 {
         match index_buffer_fits(buffer, usage, pool, size) {
             Some(true) => fits = true,
-            Some(false) => buffer_release(buffer),
+            Some(false) => {
+                com_release(buffer);
+            }
             None => {}
         }
     }
@@ -816,10 +596,10 @@ pub unsafe fn build_line_segment_index_buffer(this: usize, vertex_count: u32, fl
     }
     wr::<u32>(out_index_count, 0, 0);
     let mut data: usize = 0;
-    if buffer_lock(buffer, 0, size, &mut data, 0) != 0 {
+    if buffer_lock(buffer, 0, size, core::ptr::addr_of_mut!(data) as usize, 0) != 0 {
         eng::log(TEXT_PACK_BUFFER_LOCK);
         buffer_unlock(buffer);
-        buffer_release(buffer);
+        com_release(buffer);
         buffer = 0;
     } else {
         let mut at = data;
@@ -853,8 +633,7 @@ pub unsafe fn index_manager_recreate(this: usize) {
     crate::shadow::touch(&index_manager_recreate_port::STATE);
     let map = this + IM::hashmap_1C;
     map_release_values(map, true);
-    map_remove_all(map);
-    wr::<u32>(map, HM::count, 0);
+    map_clear(map);
 }
 
 /// 0x6BD560 `NiDX8IndexBufferManager::HashMap::dtor`
@@ -878,8 +657,7 @@ pub unsafe fn vertex_manager_ctor(this: usize, device: usize) -> usize {
     wr(this, VM::device, device);
     device_add_ref(device);
     for map in [VM::hashmap_C, VM::hashmap_1C, VM::hashmapFVFUsage] {
-        map_remove_all(this + map);
-        wr::<u32>(this + map, HM::count, 0);
+        map_clear(this + map);
     }
     this
 }
@@ -892,8 +670,7 @@ pub unsafe fn vertex_manager_dtor(this: usize) {
         map_release_values(this + map, false);
     }
     for map in [VM::hashmap_C, VM::hashmap_1C, VM::hashmapFVFUsage] {
-        map_remove_all(this + map);
-        wr::<u32>(this + map, HM::count, 0);
+        map_clear(this + map);
     }
     // The game code does not test for a device here. The index buffer manager does.
     device_release(rd(this, VM::device));
@@ -945,7 +722,7 @@ pub unsafe fn get_vb_info(this: usize, usage: u32, fvf: u32, pool: u32) -> usize
         Some(map) => this + map,
         None => return 0,
     };
-    let (_, node) = map_find(map, key);
+    let node = hash_map::find(map, key);
     if node != 0 {
         return rd(node, HN::data);
     }
@@ -959,7 +736,7 @@ pub unsafe fn get_vb_info(this: usize, usage: u32, fvf: u32, pool: u32) -> usize
         fvf_usage_hash_insert(map, key, info);
     } else {
         // The game code has the same insert inline.
-        map_insert(map, key, info);
+        hash_map::set_with(map, key, info, |size| eng::operator_new(size));
     }
     info
 }
@@ -967,7 +744,7 @@ pub unsafe fn get_vb_info(this: usize, usage: u32, fvf: u32, pool: u32) -> usize
 /// 0x6BEA90 `NiDX8VertexBufferManager::FVFUsageHash::insert`
 pub unsafe fn fvf_usage_hash_insert(map: usize, key: u32, value: usize) {
     crate::shadow::touch(&fvf_usage_hash_insert_port::STATE);
-    map_insert(map, key, value);
+    hash_map::set_with(map, key, value, |size| eng::operator_new(size));
 }
 
 /// 0x6BDC70 `NiDX8VertexBufferManager::CreateVertexBuffer`. It gives the next of the five buffers of
@@ -989,7 +766,7 @@ pub unsafe fn create_vertex_buffer(this: usize, byte_count: u32, usage: u32, fvf
             result = rd(resource, VR::pVB);
             wr::<u8>(info, VI::nextFreeResourceIndex, index.wrapping_add(1));
         } else {
-            buffer_release(rd(resource, VR::pVB));
+            com_release(rd(resource, VR::pVB));
             wr::<u32>(resource, VR::pVB, 0);
         }
     } else {
@@ -1008,7 +785,7 @@ pub unsafe fn create_vertex_buffer(this: usize, byte_count: u32, usage: u32, fvf
     if rd::<usize>(resource, VR::pVB) == 0 {
         let mut created: usize = 0;
         eng::lock(CREATE_CRITICAL_SECTION, NAME_CREATE_VERTEX_BUFFER);
-        let error = device_create_vertex_buffer(rd(this, VM::device), byte_count, usage, fvf, pool, &mut created);
+        let error = device_create_vertex_buffer(rd(this, VM::device), byte_count, usage, fvf, pool, core::ptr::addr_of_mut!(created) as usize);
         eng::unlock(CREATE_CRITICAL_SECTION);
         let buffer = if error != 0 {
             eng::log_value(TEXT_CREATE_VERTEX_BUFFER_FAILED, eng::direct_x_error_name(error));
@@ -1100,7 +877,7 @@ pub unsafe fn pack_untransformed_vb(
         let mut created: usize = 0;
         eng::lock(CREATE_CRITICAL_SECTION, NAME_CREATE_VERTEX_BUFFER);
         let length = count.wrapping_mul(stride);
-        let error = device_create_vertex_buffer(rd(this, VM::device), length, usage, fvf, pool, &mut created);
+        let error = device_create_vertex_buffer(rd(this, VM::device), length, usage, fvf, pool, core::ptr::addr_of_mut!(created) as usize);
         eng::unlock(CREATE_CRITICAL_SECTION);
         if error != 0 {
             eng::log_value(TEXT_CREATE_VERTEX_BUFFER_FAILED, eng::direct_x_error_name(error));
@@ -1114,7 +891,7 @@ pub unsafe fn pack_untransformed_vb(
     if buffer == 0 {
         return 0;
     }
-    if buffer_lock(buffer, 0, 0, &mut data, 0) != 0 {
+    if buffer_lock(buffer, 0, 0, core::ptr::addr_of_mut!(data) as usize, 0) != 0 {
         return 0;
     }
     if skin != 0 {
@@ -1222,7 +999,7 @@ pub unsafe fn pack_screen_poly_vb(
         return 0;
     }
     let mut data: usize = 0;
-    if buffer_lock(buffer, 0, 0, &mut data, 0) != 0 {
+    if buffer_lock(buffer, 0, 0, core::ptr::addr_of_mut!(data) as usize, 0) != 0 {
         return 0;
     }
     let mut to = data;
@@ -1267,8 +1044,7 @@ pub unsafe fn vertex_manager_recreate(this: usize) {
     crate::shadow::touch(&vertex_manager_recreate_port::STATE);
     let map = this + VM::hashmap_C;
     map_release_values(map, true);
-    map_remove_all(map);
-    wr::<u32>(map, HM::count, 0);
+    map_clear(map);
 }
 
 /// 0x6BEA30 `NiDX8VertexBufferManager::HashMap::dtor`
@@ -1289,18 +1065,6 @@ pub unsafe fn vertex_map_deleting_dtor(map: usize, flags: u8) -> usize {
 
 // ---- NiD3DShaderInterface
 
-/// Removes one reference from an object. It destroys the object when that was the last reference.
-#[inline(always)]
-unsafe fn pointer_release(object: usize) {
-    if object != 0 {
-        let count = rd::<u32>(object, 4).wrapping_sub(1);
-        wr(object, 4, count);
-        if count == 0 {
-            vcall::<unsafe extern "thiscall" fn(usize, u32) -> u32>(object, 0)(object, 1);
-        }
-    }
-}
-
 /// 0x6BEE00 `NiD3DShaderInterface::compileVertexShader`. It keeps the function and the usage of
 /// shader `index` and makes the shader. Returns the handle, or 0 when there is none.
 pub unsafe fn compile_vertex_shader(this: usize, shader_function: u32, shader_usage: u32, index: u32) -> u32 {
@@ -1318,20 +1082,20 @@ pub unsafe fn compile_vertex_shader(this: usize, shader_function: u32, shader_us
         eng::array_set_size(usages, rd::<u32>(usages, ARRAY_GROW_BY).wrapping_add(index));
     }
     eng::array_set_at(usages, index, core::ptr::addr_of!(usage) as usize);
-    let declaration = vcall::<unsafe extern "thiscall" fn(usize) -> usize>(this, SHADER_VTBL_DECLARATION)(this);
+    let declaration = vcall0(this, SHADER_VTBL_DECLARATION) as usize;
     if declaration == 0 {
         return handle;
     }
     let entries = this + SI::field_90;
     let handles = this + SI::vertexShaderHandles;
-    let result = device_create_vertex_shader(rd(this, SI::d3dDevice), declaration, function, &mut handle, usage);
+    let result = device_create_vertex_shader(rd(this, SI::d3dDevice), declaration, function, core::ptr::addr_of_mut!(handle) as usize, usage);
     if (result as i32) < 0 {
         let entry: usize = 0;
         if index >= rd::<u32>(entries, ARRAY_STORAGE_COUNT) {
             eng::pointer_array_resize(entries, rd::<u32>(entries, ARRAY_GROW_BY).wrapping_add(index));
         }
         eng::pointer_array_set_at(entries, index, core::ptr::addr_of!(entry) as usize);
-        pointer_release(core::ptr::addr_of!(entry).read_volatile());
+        ni::release_if_set(core::ptr::addr_of!(entry).read_volatile());
         let none: u32 = 0;
         if index >= rd::<u32>(handles, ARRAY_STORAGE_COUNT) {
             eng::array_set_size(handles, rd::<u32>(handles, ARRAY_GROW_BY).wrapping_add(index));
@@ -1367,7 +1131,7 @@ pub unsafe fn compile_vertex_shader(this: usize, shader_function: u32, shader_us
             wr::<u32>(block, SHADER_ENTRY_HANDLE, 0);
         }
         if entry != block {
-            pointer_release(entry);
+            ni::release_if_set(entry);
             entry = block;
             if block != 0 {
                 wr(block, 4, rd::<u32>(block, 4).wrapping_add(1));
@@ -1383,7 +1147,7 @@ pub unsafe fn compile_vertex_shader(this: usize, shader_function: u32, shader_us
         eng::array_set_size(handles, rd::<u32>(handles, ARRAY_GROW_BY).wrapping_add(index));
     }
     eng::array_set_at(handles, index, core::ptr::addr_of!(handle) as usize);
-    pointer_release(entry);
+    ni::release_if_set(entry);
     handle
 }
 
@@ -1444,7 +1208,7 @@ pub unsafe fn build_vertex_buffer(
     if buffer == 0 {
         let length = count.wrapping_mul(stride);
         wr(out_buffer_size, 0, length);
-        if device_create_vertex_buffer(rd(this, SI::d3dDevice), length, usage, 0, pool, &mut buffer) != 0 {
+        if device_create_vertex_buffer(rd(this, SI::d3dDevice), length, usage, 0, pool, core::ptr::addr_of_mut!(buffer) as usize) != 0 {
             return 0;
         }
         if buffer == 0 {
@@ -1452,7 +1216,7 @@ pub unsafe fn build_vertex_buffer(
         }
     }
     let mut data: usize = 0;
-    if buffer_lock(buffer, 0, 0, &mut data, 0) != 0 {
+    if buffer_lock(buffer, 0, 0, core::ptr::addr_of_mut!(data) as usize, 0) != 0 {
         return 0;
     }
     let declaration = rd::<usize>(this, SI::field_24).wrapping_add(declaration_offset);
@@ -1550,13 +1314,14 @@ unsafe fn set_first_shader_handle(handles: usize, shader: u32) {
 // ---- the memory that a call can write
 
 /// `createIndexBuffer` writes the size that it gives back. The buffer is a device resource. A new
-/// buffer is the same object in the two runs, and its bytes are in the log.
+/// buffer is the same object in the two runs, and its bytes are in the log. No call is a skip.
 unsafe fn create_index_buffer_regions(set: &mut Regions, out_buffer_size: usize) {
     set.add(out_buffer_size, 4);
 }
 
-/// The regions are the manager and, for the line buffer, the index count. The function releases a
-/// buffer of the manager that does not fit. A release cannot occur two times, so that call is a skip.
+/// The regions are the manager and, for the line buffer, the index count. The call is a skip when
+/// the buffer of the manager does not fit, because the function releases that buffer. A release
+/// cannot occur two times.
 unsafe fn shared_index_buffer_regions(set: &mut Regions, this: usize, buffer: usize, usage: u32, pool: u32, size: u32, out: usize) {
     if rd::<usize>(this, IM::device) != 0 && buffer != 0 && index_buffer_fits(buffer, usage, pool, size) == Some(false) {
         set.skip();
@@ -1566,8 +1331,8 @@ unsafe fn shared_index_buffer_regions(set: &mut Regions, this: usize, buffer: us
     set.add(out, 4);
 }
 
-/// A `Recreate` that finds a `VBInfo` releases device buffers, so that call is a skip. With only
-/// nodes, it frees the nodes and writes the buckets.
+/// The call is a skip when the map has a node with a `VBInfo`, because `Recreate` releases the
+/// device buffers of a `VBInfo`. With only nodes, it frees the nodes and writes the buckets.
 unsafe fn recreate_regions(set: &mut Regions, this: usize, size: usize, map: usize) {
     let buckets: usize = rd(map, HM::arrayBuckets);
     let count = rd::<u32>(map, HM::bucketCount) as usize;
@@ -1586,7 +1351,8 @@ unsafe fn recreate_regions(set: &mut Regions, this: usize, size: usize, map: usi
     set.add(buckets, count * 4);
 }
 
-/// The region is the map. The function frees the bucket array and the nodes of the map.
+/// The region is the map. The function frees the bucket array and the nodes of the map. No call is
+/// a skip. A deleting destructor with flag 1 frees the map, thus the map is not a region then.
 unsafe fn map_dtor_regions(set: &mut Regions, map: usize, flags: u8) {
     set.allocates();
     if flags & 1 == 0 {
@@ -1594,9 +1360,10 @@ unsafe fn map_dtor_regions(set: &mut Regions, map: usize, flags: u8) {
     }
 }
 
-/// An insert writes the node of the key, or makes a node and writes the count and the bucket.
+/// An insert writes the node of the key, or makes a node and writes the count and the bucket. No
+/// call is a skip.
 unsafe fn map_insert_regions(set: &mut Regions, map: usize, key: u32) {
-    let (bucket, node) = map_find(map, key);
+    let (bucket, node) = hash_map::find_in_bucket(map, key);
     set.add(map, HM::SIZE);
     if node != 0 {
         set.add(node, HN::SIZE);
@@ -1606,10 +1373,12 @@ unsafe fn map_insert_regions(set: &mut Regions, map: usize, key: u32) {
     }
 }
 
+/// With no node for the key, the function makes a `VBInfo` and a node. Then the regions are the
+/// manager and the head of the bucket. With a node, the function writes nothing. No call is a skip.
 unsafe fn get_vb_info_regions(set: &mut Regions, this: usize, usage: u32, fvf: u32, pool: u32) {
     let Some(map) = pool_map(pool) else { return };
     let key = usage.wrapping_shl(16) | fvf;
-    let (bucket, node) = map_find(this + map, key);
+    let (bucket, node) = hash_map::find_in_bucket(this + map, key);
     if node == 0 {
         set.allocates();
         set.add(this, VM::SIZE);
@@ -1618,14 +1387,15 @@ unsafe fn get_vb_info_regions(set: &mut Regions, this: usize, usage: u32, fvf: u
 }
 
 /// The regions are the `VBInfo` and the resource that the call takes. A new `VBInfo` or a new resource
-/// is an allocation. The function releases a buffer that is too small, so that call is a skip.
+/// is an allocation. The call is a skip when the buffer of the resource is too small, because the
+/// function releases that buffer.
 unsafe fn create_vertex_buffer_regions(set: &mut Regions, this: usize, byte_count: u32, usage: u32, fvf: u32, pool: u32) {
     if rd::<usize>(this, VM::device) == 0 {
         return;
     }
     let Some(map) = pool_map(pool) else { return };
     let key = usage.wrapping_shl(16) | fvf;
-    let (bucket, node) = map_find(this + map, key);
+    let (bucket, node) = hash_map::find_in_bucket(this + map, key);
     if node == 0 {
         set.allocates();
         set.add(this, VM::SIZE);
@@ -1647,12 +1417,15 @@ unsafe fn create_vertex_buffer_regions(set: &mut Regions, this: usize, byte_coun
     }
 }
 
+/// The regions are the three results. The vertex buffer is a device resource. No call is a skip.
 unsafe fn pack_untransformed_vb_regions(set: &mut Regions, out_buffer_size: usize, out_stride: usize, out_fvf: usize) {
     set.add(out_buffer_size, 4);
     set.add(out_stride, 4);
     set.add(out_fvf, 4);
 }
 
+/// The regions are the two results and the regions of `CreateVertexBuffer` for the format and the
+/// length of the polygon. The call is a skip when that `CreateVertexBuffer` call is a skip.
 unsafe fn pack_screen_poly_vb_regions(set: &mut Regions, this: usize, vertex_count: u32, tex_coords: usize, colors: usize, out_fvf: usize, out_stride: usize) {
     let mut fvf = D3DFVF_XYZ;
     let mut stride: u32 = 12;
@@ -1669,8 +1442,9 @@ unsafe fn pack_screen_poly_vb_regions(set: &mut Regions, this: usize, vertex_cou
     create_vertex_buffer_regions(set, this, (vertex_count & 0xFFFF).wrapping_mul(stride), 0, fvf, 0);
 }
 
-/// A call that compiles the shaders makes vertex shaders. The dry device does not make them, so that
-/// call is a skip. A call that must set the first shader handle is a skip too.
+/// The call is a skip when it compiles the shaders: with `flag_28` set or with no first shader
+/// handle. That call makes vertex shaders, and the dry device does not make them. A call that must
+/// set the first shader handle is in this condition too. If not, the regions are the three results.
 unsafe fn build_vertex_buffer_regions(set: &mut Regions, this: usize, out_buffer_size: usize, out_stride: usize, out_shader: usize) {
     if rd::<u8>(this, SI::flag_28) != 0 || rd::<u32>(rd::<usize>(this + SI::vertexShaderHandles, ARRAY_STORAGE), 0) == 0 {
         set.skip();
@@ -1681,14 +1455,15 @@ unsafe fn build_vertex_buffer_regions(set: &mut Regions, this: usize, out_buffer
     set.add(out_shader, 4);
 }
 
-// The constructors run one time, when the renderer starts. They take a reference on the device.
+// The call of a constructor is a skip. A constructor runs one time, when the renderer starts, and
+// it takes a reference on the device.
 port_thiscall!(index_manager_ctor_port, 0x6BC970, "NiDX8IndexBufferManager::ctor",
     fn(this, device: usize) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
     rust = index_manager_ctor);
 
-// The destructors release the buffers and the device.
+// The call of a destructor is a skip, because a destructor releases the buffers and the device.
 port_thiscall!(index_manager_deleting_dtor_port, 0x6BCB80, "NiDX8IndexBufferManager::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
@@ -1806,7 +1581,8 @@ port_thiscall!(vb_resource_ctor_port, 0x6C28A0, "NiDX8VBResource::ctor",
     regions = |set| set.add(this, VR::length),
     rust = vb_resource_ctor);
 
-// `CreateVertexShader` returns nothing on the dry device, so the two runs cannot be equal.
+// The call is a skip. `CreateVertexShader` returns nothing on the dry device, so the two runs cannot
+// be equal.
 port_thiscall!(compile_vertex_shader_port, 0x6BEE00, "NiD3DShaderInterface::compileVertexShader",
     fn(this, shader_function: u32, shader_usage: u32, index: u32) -> u32,
     compare_eax = true,
@@ -1850,6 +1626,10 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+    use crate::d3d::{
+        BUFFER_GET_DESC, BUFFER_LOCK, BUFFER_UNLOCK, COM_RELEASE, DEVICE_ADD_REF, DEVICE_CREATE_INDEX_BUFFER,
+        DEVICE_CREATE_VERTEX_BUFFER,
+    };
 
     thread_local! {
         /// The calls that the fake device and the fake buffers got: (name, first value, second value).
@@ -1899,7 +1679,7 @@ mod tests {
 
     unsafe fn fake_buffer(format: u32, kind: u32, usage: u32, pool: u32, size: u32, fvf: u32) -> usize {
         let vtable = leak(0x40);
-        wr(vtable, BUFFER_RELEASE, buf_release as *const () as usize);
+        wr(vtable, COM_RELEASE, buf_release as *const () as usize);
         wr(vtable, BUFFER_LOCK, buf_lock as *const () as usize);
         wr(vtable, BUFFER_UNLOCK, buf_unlock as *const () as usize);
         wr(vtable, BUFFER_GET_DESC, buf_get_desc as *const () as usize);
@@ -2115,7 +1895,7 @@ mod tests {
             fvf_usage_hash_insert(map, 5, 0x1000);
             fvf_usage_hash_insert(map, 5, 0x2000);
             assert_eq!(rd::<u32>(map, HM::count), 1);
-            let (bucket, node) = map_find(map, 5);
+            let (bucket, node) = hash_map::find_in_bucket(map, 5);
             assert_eq!(bucket, 5);
             assert_eq!(rd::<usize>(node, HN::data), 0x2000);
             assert_eq!(rd::<usize>(node, HN::nextNode), 0);
