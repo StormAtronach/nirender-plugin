@@ -9,7 +9,7 @@ were equal or different.
 
 With --facts, MGE XE also takes facts from the packets. In each place the game holds in menu
 mode and saves three pictures of the frame: facts off, facts on, facts off. The picture with
-the facts must be equal to the two without. Then the game runs with the facts in use.
+the facts must be equal to a picture without. Then the game runs with the facts in use.
 
     python tools/run_link.py --facts all --cells "Balmora"
     python tools/run_link.py --facts "ui_scene,water_plane"
@@ -62,15 +62,16 @@ def picture_result(shots):
     if not all(name in shots for name in ("off1", "on", "off2")):
         return "FAIL: pictures are missing", False
     still = different_bytes(shots["off1"], shots["off2"])
-    with_facts = different_bytes(shots["off1"], shots["on"])
-    if still < 0 or with_facts < 0:
+    before = different_bytes(shots["off1"], shots["on"])
+    after = different_bytes(shots["on"], shots["off2"])
+    if min(still, before, after) < 0:
         return "FAIL: a picture file is missing", False
-    if with_facts == 0:
-        return "EQUAL: the frame with the facts is the same as the frame without", True
+    if before == 0 or after == 0:
+        return "EQUAL: the frame with the facts is the same as a frame without", True
     if still == 0:
-        return "DIFFERENT: %d bytes differ with the facts; the two frames without are equal" % with_facts, False
-    return ("NO RESULT: the scene moves in menu mode (%d bytes differ between the two frames without the facts, "
-            "%d with the facts)" % (still, with_facts)), True
+        return "DIFFERENT: %d bytes differ with the facts; the two frames without are equal" % before, False
+    return ("NO RESULT: the scene moves in menu mode (bytes that differ: %d between the two frames without the "
+            "facts, %d and %d between the frame with the facts and each of them)" % (still, before, after)), True
 
 
 def main():
