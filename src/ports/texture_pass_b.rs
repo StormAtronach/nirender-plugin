@@ -6,36 +6,31 @@
 
 use core::mem::transmute;
 
-use crate::engine;
+use crate::d3d::{
+    device_set_texture, D3DTSS_ADDRESSU, D3DTSS_ADDRESSV, D3DTSS_ALPHAOP, D3DTSS_COLOROP, D3DTSS_MAGFILTER, D3DTSS_MINFILTER,
+    D3DTSS_MIPFILTER, D3DTSS_TEXCOORDINDEX,
+};
+use crate::engine::{self, EMPTY_STRING, MAX_SIMULTANEOUS_TEXTURES, MAX_TEXTURE_BLEND_STAGES, NI_REF_OBJECT_COUNT, VTBL_NI_REF_OBJECT};
 use crate::gen::layouts::{
     NiDX8ConfigurableTexturePipeline as CTP, NiDX8RenderState as RS, NiDX8Renderer as REN, NiDX8TexturePass as TP,
     NiDX8TexturePass__1 as SUB, NiDX8TextureStage as ST, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as LIST,
     NiTexture,
 };
 use crate::mem::{rd, wr};
+use crate::ports::ni::{add_reference, release, REF_COUNT};
 use crate::shadow::Regions;
 
 // ---------------------------------------------------------------------------------------
 // Addresses in Morrowind.exe
 // ---------------------------------------------------------------------------------------
 
-/// `vtbl_sg_NiRefObject`
-const VTBL_NI_REF_OBJECT: usize = 0x7469B8;
 /// `vtbl_sg_NiDX8TexturePass::$1`. Slot 0 is the deleting destructor (0x6B77C0). Slot 1 is
 /// `method_4`.
 const VTBL_SUBPASS: usize = 0x74F6C4;
-/// `global_count_of_NiRefObject`
-const NI_REF_OBJECT_COUNT: usize = 0x7DECE0;
-/// `emptyString`, the source of the string copy in the constructor of `$1`.
-const EMPTY_STRING: usize = 0x7C6180;
-/// `dword_7C3834`: the number of texture stages of one device pass.
-const MAX_STAGES: usize = 0x7C3834;
-/// `dword_7C3838`: the number of textures of one device pass.
-const MAX_TEXTURES: usize = 0x7C3838;
 /// The filter table. It has 12 bytes for each filter mode: { minify, magnify, mip }. The
 /// database names the three interleaved columns
 /// `data_NiDX8TexturePass_{minify,magnify,mip}FilteringRemapper`.
-const FILTER_TABLE: usize = 0x7DDB80;
+const FILTER_TABLE: usize = engine::FILTER_REMAP_MINIFY;
 const FILTER_MIN: usize = 0;
 const FILTER_MAG: usize = 4;
 const FILTER_MIP: usize = 8;
@@ -46,9 +41,6 @@ const ADDR_RESET_PASS_FLAGS: usize = 0x6B59E0;
 // ---------------------------------------------------------------------------------------
 // Offsets that the layouts do not name
 // ---------------------------------------------------------------------------------------
-
-/// `NiRefObject::refCount`
-const REF_COUNT: usize = 0x4;
 
 // `NiTextureEffect`. The export of the database has no layout for it.
 /// `NiDynamicEffect::enabled`
@@ -76,15 +68,6 @@ const TEXTURE_DATA_GET_AS_RENDERED: usize = 0x20;
 /// `NiDX8RenderState::maybe_textureStageStateSettings`: 0x100 bytes for each stage, 8 bytes
 /// for each state.
 const STAGE_SETTINGS: usize = 0x100;
-
-const D3DTSS_COLOROP: u32 = 1;
-const D3DTSS_ALPHAOP: u32 = 4;
-const D3DTSS_TEXCOORDINDEX: u32 = 11;
-const D3DTSS_ADDRESSU: u32 = 13;
-const D3DTSS_ADDRESSV: u32 = 14;
-const D3DTSS_MAGFILTER: u32 = 16;
-const D3DTSS_MINFILTER: u32 = 17;
-const D3DTSS_MIPFILTER: u32 = 18;
 
 // ---------------------------------------------------------------------------------------
 // Engine functions at fixed addresses, virtual calls, device calls
@@ -121,48 +104,9 @@ unsafe fn pipeline_set_stage_addressing_mode(pipeline: usize, clamp_mode: u32, s
     f(pipeline, clamp_mode, stage);
 }
 
-#[inline(always)]
-unsafe fn vtable_slot(object: usize, slot: usize) -> usize {
-    rd(rd::<usize>(object, 0), slot)
-}
-
-/// A virtual call with no argument.
-unsafe fn virtual0(object: usize, slot: usize) -> u32 {
-    let f: unsafe extern "thiscall" fn(usize) -> u32 = transmute(vtable_slot(object, slot));
-    f(object)
-}
-
-/// A virtual call with one argument.
-unsafe fn virtual1(object: usize, slot: usize, a: u32) -> u32 {
-    let f: unsafe extern "thiscall" fn(usize, u32) -> u32 = transmute(vtable_slot(object, slot));
-    f(object, a)
-}
-
 /// `NiDX8TextureManager::GetFormatFromTexture` (0x6BC6F0), slot 0x10 of the texture manager.
 unsafe fn texture_manager_get_format(texture_manager: usize, texture: usize) -> u32 {
-    virtual1(texture_manager, 0x10, texture as u32)
-}
-
-/// The release half of a `NiPointer`. It subtracts one reference. When the count becomes 0,
-/// it calls the deleting destructor (slot 0, argument 1).
-unsafe fn release(object: usize) {
-    let count = rd::<u32>(object, REF_COUNT).wrapping_sub(1);
-    wr(object, REF_COUNT, count);
-    if count == 0 {
-        virtual1(object, 0, 1);
-    }
-}
-
-unsafe fn add_reference(object: usize) {
-    wr(object, REF_COUNT, rd::<u32>(object, REF_COUNT).wrapping_add(1));
-}
-
-/// `IDirect3DDevice8::SetTexture` through the vtable of the device.
-#[inline(always)]
-unsafe fn device_set_texture(device: usize, stage: u32, texture: usize) -> u32 {
-    let vtable: usize = rd(device, 0);
-    let f: unsafe extern "system" fn(usize, u32, usize) -> u32 = transmute(rd::<usize>(vtable, 0xF4));
-    f(device, stage, texture)
+    engine::vcall1(texture_manager, 0x10, texture as u32)
 }
 
 /// The address of the setting of one texture stage state in the render state.
@@ -224,7 +168,7 @@ pub unsafe fn set_blending_state(this: usize, a2: u32, _a3: u32, a4: u32, a5: u3
         }
         let index: u32 = rd(this, TP::field_8);
         let subpass: usize = rd(this, TP::substruct_14);
-        let apply: unsafe extern "thiscall" fn(usize, usize, u32, u32, u32, u32) -> u32 = transmute(vtable_slot(subpass, 4));
+        let apply: unsafe extern "thiscall" fn(usize, usize, u32, u32, u32, u32) -> u32 = transmute(engine::virtual_at(subpass, 4));
         result = apply(subpass, rd(this, TP::renderer), a2, a4, a5, index);
         let index: u32 = rd(this, TP::field_8);
         let remaining = rd::<u32>(this, TP::field_C).wrapping_sub(index);
@@ -318,7 +262,7 @@ pub unsafe fn set_texture_pipeline(this: usize, effect_state: usize) {
         return;
     }
     // Slot 0x18 of the pass: `resetPassFlags`.
-    virtual0(this, 0x18);
+    engine::vcall0(this, 0x18);
     let pipeline: usize = rd(this, TP::configurableTexturePipeline);
     wr(pipeline, CTP::field_B04, effect_state);
     wr(this, TP::field_2BD0, effect_state);
@@ -720,14 +664,14 @@ pub unsafe fn subpass_apply(this: usize, renderer: usize, _a2: u32, _a3: u32, _a
     }
     reset_stage(index, renderer);
     let render_state: usize = rd(renderer, REN::renderState);
-    if index < rd::<u32>(MAX_STAGES, 0) {
+    if index < rd::<u32>(MAX_TEXTURE_BLEND_STAGES, 0) {
         let mut setting = stage_setting(render_state, index, D3DTSS_TEXCOORDINDEX);
         loop {
             if rd::<u32>(setting, 0) != index {
                 wr(setting, 0, index);
                 engine::device_set_texture_stage_state(rd(render_state, RS::device), index, D3DTSS_TEXCOORDINDEX, index);
             }
-            let limit: u32 = rd(MAX_STAGES, 0);
+            let limit: u32 = rd(MAX_TEXTURE_BLEND_STAGES, 0);
             index = index.wrapping_add(1);
             setting = setting.wrapping_add(STAGE_SETTINGS);
             if index >= limit {
@@ -754,7 +698,7 @@ unsafe fn available_slot_counts(this: usize, out_stages: usize, out_textures: us
 /// 0x6B7990 `NiDX8TexturePass::_1::getAvailableSlotCounts`
 pub unsafe fn subpass_get_available_slot_counts(this: usize, out_stages: usize, out_textures: usize) {
     crate::shadow::touch(&subpass_get_available_slot_counts_port::STATE);
-    available_slot_counts(this, out_stages, out_textures, || rd(MAX_STAGES, 0), || rd(MAX_TEXTURES, 0));
+    available_slot_counts(this, out_stages, out_textures, || rd(MAX_TEXTURE_BLEND_STAGES, 0), || rd(MAX_SIMULTANEOUS_TEXTURES, 0));
 }
 
 /// The end of every branch of the two append functions. The stage count becomes the next
@@ -850,7 +794,7 @@ unsafe fn append_stage_pair(this: usize, stage: usize, other_stage: usize, flag:
 /// bit 1 for the second.
 pub unsafe fn subpass_append_stage_pair(this: usize, stage: usize, other_stage: usize, flag: u8) -> u32 {
     crate::shadow::touch(&subpass_append_stage_pair_port::STATE);
-    append_stage_pair(this, stage, other_stage, flag, rd(MAX_TEXTURES, 0))
+    append_stage_pair(this, stage, other_stage, flag, rd(MAX_SIMULTANEOUS_TEXTURES, 0))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -946,10 +890,10 @@ unsafe fn texture_needs_device_work(texture: usize) -> bool {
     if data == 0 {
         return true;
     }
-    if virtual0(data, TEXTURE_DATA_GET_AS_RENDERED) != 0 {
+    if engine::vcall0(data, TEXTURE_DATA_GET_AS_RENDERED) != 0 {
         return false;
     }
-    if virtual0(data, TEXTURE_DATA_GET_D3D_TEXTURE) == 0 {
+    if engine::vcall0(data, TEXTURE_DATA_GET_D3D_TEXTURE) == 0 {
         return true;
     }
     rd::<u8>(texture, SOURCE_TEXTURE_IS_STATIC) == 0
@@ -958,6 +902,10 @@ unsafe fn texture_needs_device_work(texture: usize) -> bool {
 /// The memory that `method_4` writes: the render state and the stages. The Code Patch changes
 /// the operations of an environment-map stage in `updateRenderer`. `inside` is a block that
 /// the set has before the call.
+///
+/// The call is a skip when the stage count is more than 8, because the sub-pass has 8 stage
+/// slots. The call is a skip when a stage slot below the count is null. The call is a skip
+/// when the texture manager must make or fill the device texture of a stage.
 unsafe fn subpass_apply_regions(set: &mut Regions, this: usize, renderer: usize, inside: (usize, usize)) {
     let count: u32 = rd(this, SUB::field_C);
     if count == u32::MAX {
@@ -988,15 +936,12 @@ unsafe fn subpass_apply_regions(set: &mut Regions, this: usize, renderer: usize,
         if stage >= inside.0 && stage + ST::SIZE <= inside.0 + inside.1 {
             continue;
         }
-        if set.as_slice().len() == 8 {
-            // The call needs more blocks than the set holds.
-            set.skip();
-            return;
-        }
         set.add(stage, ST::SIZE);
     }
 }
 
+/// The call is a skip when slot 4 of the sub-pass is not `method_4` of this file. It is also
+/// a skip when `subpass_apply_regions` makes it a skip.
 unsafe fn set_blending_state_regions(set: &mut Regions, this: usize) {
     set.add(this, TP::SIZE);
     let index: u32 = rd(this, TP::field_8);
@@ -1007,7 +952,7 @@ unsafe fn set_blending_state_regions(set: &mut Regions, this: usize) {
     }
     // `patchSetEffectState` writes the alpha states and the fog states.
     set.add(rd(this, TP::renderState), RS::SIZE);
-    if vtable_slot(subpass, 4) != ADDR_METHOD_4 {
+    if engine::virtual_at(subpass, 4) != ADDR_METHOD_4 {
         // The object is not of the class that this file has.
         set.skip();
         return;
@@ -1015,14 +960,15 @@ unsafe fn set_blending_state_regions(set: &mut Regions, this: usize) {
     subpass_apply_regions(set, subpass, rd(this, TP::renderer), (this, TP::SIZE));
 }
 
-/// The two objects that an assignment to `field_48` changes. A call that deletes the old
-/// object cannot run two times.
+/// The two objects that an assignment to `field_48` changes. The call is a skip when the old
+/// object loses its last reference, because the call deletes the object.
 unsafe fn field_48_regions(set: &mut Regions, subpass: usize, object: usize) {
     let current: usize = rd(subpass, SUB::field_48);
     if current == object {
         return;
     }
     if current != 0 {
+        // The last reference: the assignment releases the old object one time.
         if rd::<u32>(current, REF_COUNT) <= 1 {
             set.skip();
         }
@@ -1033,6 +979,8 @@ unsafe fn field_48_regions(set: &mut Regions, subpass: usize, object: usize) {
     }
 }
 
+/// The call is a skip when `acquireSubpassWithCapacity` makes a sub-pass or makes the list of
+/// sub-passes longer. It is also a skip when `field_48_regions` makes it a skip.
 unsafe fn bind_stage_texture_regions(set: &mut Regions, this: usize, stage: usize, textures: u32, stages: u32) {
     set.add(this, TP::SIZE);
     if stage == 0 {
@@ -1084,33 +1032,25 @@ struct EffectWalk {
     /// `NiDX8TexturePass::field_6E0` as the function has it at this point of the walk.
     used: u32,
     /// A texture and the change of its reference count.
-    counts: [(usize, i32); 6],
-    count_len: usize,
+    counts: Vec<(usize, i32)>,
     /// A stage and the texture that the walk gave it.
-    stages: [(usize, usize); 40],
-    stage_len: usize,
+    stages: Vec<(usize, usize)>,
     skip: bool,
 }
 
 impl EffectWalk {
     fn change(&mut self, texture: usize, by: i32) {
-        for entry in &mut self.counts[..self.count_len] {
+        for entry in &mut self.counts {
             if entry.0 == texture {
                 entry.1 += by;
                 return;
             }
         }
-        if self.count_len == self.counts.len() {
-            // The call needs more blocks than the set holds.
-            self.skip = true;
-            return;
-        }
-        self.counts[self.count_len] = (texture, by);
-        self.count_len += 1;
+        self.counts.push((texture, by));
     }
 
     unsafe fn texture_of(&self, stage: usize) -> usize {
-        for &(known, texture) in self.stages[..self.stage_len].iter().rev() {
+        for &(known, texture) in self.stages.iter().rev() {
             if known == stage {
                 return texture;
             }
@@ -1141,15 +1081,10 @@ impl EffectWalk {
                 self.change(previous, -1);
             }
             self.change(texture, 1);
-            if self.stage_len == self.stages.len() {
-                self.skip = true;
-                return false;
-            }
-            self.stages[self.stage_len] = (stage, texture);
-            self.stage_len += 1;
+            self.stages.push((stage, texture));
         }
-        // A count that becomes 0 during the walk deletes the texture.
-        for &(object, by) in &self.counts[..self.count_len] {
+        // The last reference: a count that becomes 0 during the walk deletes the texture.
+        for &(object, by) in &self.counts {
             if rd::<u32>(object, REF_COUNT) as i64 + by as i64 <= 0 {
                 self.skip = true;
             }
@@ -1159,6 +1094,9 @@ impl EffectWalk {
     }
 }
 
+/// The call is a skip when slot 0x18 of the pass is not `resetPassFlags` of this file. The
+/// call is a skip when `GetFormatFromTexture` must make the device texture of an effect. The
+/// call is a skip when the reference count of a texture becomes 0 during the walk.
 unsafe fn set_texture_pipeline_regions(set: &mut Regions, this: usize, effect_state: usize) {
     set.add(this, TP::SIZE);
     let pipeline: usize = rd(this, TP::configurableTexturePipeline);
@@ -1166,7 +1104,7 @@ unsafe fn set_texture_pipeline_regions(set: &mut Regions, this: usize, effect_st
         return;
     }
     set.add(pipeline + CTP::field_B04, 4);
-    if vtable_slot(this, 0x18) != ADDR_RESET_PASS_FLAGS {
+    if engine::virtual_at(this, 0x18) != ADDR_RESET_PASS_FLAGS {
         // The object is not of the class that this file has.
         set.skip();
         return;
@@ -1174,7 +1112,7 @@ unsafe fn set_texture_pipeline_regions(set: &mut Regions, this: usize, effect_st
     if effect_state == 0 {
         return;
     }
-    let mut walk = EffectWalk { used: 0, counts: [(0, 0); 6], count_len: 0, stages: [(0, 0); 40], stage_len: 0, skip: false };
+    let mut walk = EffectWalk { used: 0, counts: Vec::new(), stages: Vec::new(), skip: false };
     // The four counters are 0 after `resetPassFlags`.
     let (mut lights, mut clipped_lights, mut shadows, mut clipped_shadows) = (0u32, 0u32, 0u32, 0u32);
 
@@ -1216,11 +1154,13 @@ unsafe fn set_texture_pipeline_regions(set: &mut Regions, this: usize, effect_st
         set.skip();
         return;
     }
-    for &(texture, _) in &walk.counts[..walk.count_len] {
+    for &(texture, _) in &walk.counts {
         add_ref_count(set, texture);
     }
 }
 
+/// The call is a skip when `GetFormatFromTexture` must make the device texture of the effect.
+/// The call is a skip when the texture that the stage had loses its last reference.
 unsafe fn configure_stage_regions(set: &mut Regions, this: usize, effect: usize, stage: usize) {
     set.add(this, TP::SIZE);
     if rd::<u32>(this, TP::field_6E0) >= 8 || rd::<u8>(effect, EFFECT_ENABLED) == 0 {
@@ -1239,6 +1179,7 @@ unsafe fn configure_stage_regions(set: &mut Regions, this: usize, effect: usize,
     let previous: usize = rd(stage, ST::ptrTexture);
     if previous != texture {
         if previous != 0 {
+            // The last reference: the assignment releases the old texture one time.
             if rd::<u32>(previous, REF_COUNT) <= 1 {
                 set.skip();
             }
@@ -1248,6 +1189,7 @@ unsafe fn configure_stage_regions(set: &mut Regions, this: usize, effect: usize,
     }
 }
 
+/// No call is a skip. The function writes the sub-pass and the two stages.
 unsafe fn subpass_append_regions(set: &mut Regions, this: usize, stage: usize, other_stage: usize) {
     set.add(this, SUB::SIZE);
     set.add(stage, ST::SIZE);
@@ -1348,14 +1290,16 @@ port_thiscall!(subpass_set_ni_object_field_48_port, 0x6B6540, "NiDX8TexturePass:
 port_thiscall!(subpass_ctor_port, 0x6B76E0, "NiDX8TexturePass::$1::ctor",
     fn(this) -> usize,
     compare_eax = true,
-    // The object is new memory. The count of all objects is outside the object.
+    // The call is a skip always: the object is new memory, and the count of all objects is
+    // outside the object.
     regions = |set| set.skip(),
     rust = subpass_ctor);
 
 port_thiscall!(subpass_dtor_port, 0x6B77E0, "NiDX8TexturePass::$1::dtor",
     fn(this) -> (),
     compare_eax = false,
-    // The function can delete the three objects that the sub-pass holds.
+    // The call is a skip always: the function can delete the three objects that the sub-pass
+    // holds.
     regions = |set| set.skip(),
     rust = subpass_dtor);
 

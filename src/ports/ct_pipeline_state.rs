@@ -11,24 +11,22 @@
 //! journal of every write and runs its own copy of the callees. Then it puts the old values
 //! back. The journal gives the memory blocks that the call writes.
 
-use core::mem::{size_of, transmute};
+use core::mem::size_of;
 
+use crate::engine::{self, MAX_SIMULTANEOUS_TEXTURES, MAX_TEXTURE_BLEND_STAGES};
 use crate::gen::layouts::{
     NiAlphaProperty as AP, NiDX8ConfigurableTexturePipeline as CTP, NiDX8RenderState as RS, NiDX8TexturePass as TP,
     NiDX8TexturePass__1 as SUB, NiDX8TextureStage as ST, NiDynamicEffectState as DES, NiPropertyState as PS, NiTexture,
     NiTexturingProperty as NTP, NiTexturingProperty_BumpMap as BUMP, NiTexturingProperty_Map as MAP,
 };
 use crate::mem::{rd, x87_pass};
+use crate::ports::ni::REF_COUNT;
 use crate::shadow::Regions;
 
 // ---------------------------------------------------------------------------------------
 // Addresses and offsets
 // ---------------------------------------------------------------------------------------
 
-/// `dword_7C3834`: the number of texture stages of one device pass.
-const MAX_STAGES: usize = 0x7C3834;
-/// `dword_7C3838`: the number of textures of one device pass.
-const MAX_TEXTURES: usize = 0x7C3838;
 /// `NiDX8TexturePass::resetPassFlags`, slot 0x18 of the pass.
 #[cfg(not(test))]
 const ADDR_RESET_PASS_FLAGS: usize = 0x6B59E0;
@@ -36,8 +34,6 @@ const ADDR_RESET_PASS_FLAGS: usize = 0x6B59E0;
 /// The two stores of the base stage that MWSE replaces with a call into MWSE.dll.
 const BASE_TEXCOORD_PATCH: usize = 0x6B42AC;
 
-/// `NiRefObject::refCount`
-const REF_COUNT: usize = 0x4;
 /// The size of a texture stage. The game code multiplies an index by this size.
 const STAGE: usize = ST::SIZE;
 
@@ -252,11 +248,6 @@ unsafe fn target(site: usize) -> usize {
     crate::site::call_target(site)
 }
 
-type This0 = unsafe extern "thiscall" fn(usize) -> u32;
-type This1 = unsafe extern "thiscall" fn(usize, usize) -> u32;
-type This2 = unsafe extern "thiscall" fn(usize, usize, usize) -> u32;
-type This3 = unsafe extern "thiscall" fn(usize, usize, usize, usize) -> u32;
-
 impl Env for Live {
     #[inline(always)]
     unsafe fn wr<T: Copy>(&mut self, base: usize, off: usize, value: T) {
@@ -264,11 +255,11 @@ impl Env for Live {
     }
     #[inline(always)]
     unsafe fn max_stages(&mut self) -> u32 {
-        rd(MAX_STAGES, 0)
+        rd(MAX_TEXTURE_BLEND_STAGES, 0)
     }
     #[inline(always)]
     unsafe fn max_textures(&mut self) -> u32 {
-        rd(MAX_TEXTURES, 0)
+        rd(MAX_SIMULTANEOUS_TEXTURES, 0)
     }
     #[inline(always)]
     unsafe fn base_texcoord_patch(&mut self) -> bool {
@@ -276,59 +267,59 @@ impl Env for Live {
     }
     #[inline(always)]
     unsafe fn set_texture_pipeline(&mut self, site: usize, pass: usize, effect_state: usize) {
-        transmute::<usize, This1>(target(site))(pass, effect_state);
+        engine::thiscall1(target(site), pass, effect_state as u32);
     }
     #[inline(always)]
     unsafe fn pointer_set(&mut self, site: usize, pointer: usize, object: usize) {
-        transmute::<usize, This1>(target(site))(pointer, object);
+        engine::thiscall1(target(site), pointer, object as u32);
     }
     #[inline(always)]
     unsafe fn release(&mut self, site: usize, object: usize) {
-        transmute::<usize, This0>(target(site))(object);
+        engine::thiscall0(target(site), object);
     }
     #[inline(always)]
     unsafe fn set_addressing(&mut self, site: usize, pipeline: usize, clamp_mode: u32, stage: usize) {
-        transmute::<usize, This2>(target(site))(pipeline, clamp_mode as usize, stage);
+        engine::thiscall2(target(site), pipeline, clamp_mode, stage as u32);
     }
     #[inline(always)]
     unsafe fn set_filter(&mut self, site: usize, pipeline: usize, filter_mode: u32, stage: usize) {
-        transmute::<usize, This2>(target(site))(pipeline, filter_mode as usize, stage);
+        engine::thiscall2(target(site), pipeline, filter_mode, stage as u32);
     }
     #[inline(always)]
     unsafe fn is_multi_texture(&mut self, site: usize, property: usize) -> u8 {
-        transmute::<usize, This0>(target(site))(property) as u8
+        engine::thiscall0(target(site), property) as u8
     }
     #[inline(always)]
     unsafe fn bind_stage_texture(&mut self, site: usize, pass: usize, stage: usize, textures: u32, stages: u32) -> u8 {
-        transmute::<usize, This3>(target(site))(pass, stage, textures as usize, stages as usize) as u8
+        engine::thiscall3(target(site), pass, stage as u32, textures, stages) as u8
     }
     #[inline(always)]
     unsafe fn apply_blend_ops(&mut self, site: usize, pass: usize, stage: usize, flag: u32) {
-        transmute::<usize, This2>(target(site))(pass, stage, flag as usize);
+        engine::thiscall2(target(site), pass, stage as u32, flag);
     }
     #[inline(always)]
     unsafe fn acquire(&mut self, site: usize, pass: usize, a2: u32, a3: u32) -> usize {
-        transmute::<usize, This2>(target(site))(pass, a2 as usize, a3 as usize) as usize
+        engine::thiscall2(target(site), pass, a2, a3) as usize
     }
     #[inline(always)]
     unsafe fn acquire_for_ps(&mut self, site: usize, pass: usize) {
-        transmute::<usize, This0>(target(site))(pass);
+        engine::thiscall0(target(site), pass);
     }
     #[inline(always)]
     unsafe fn init_or_check(&mut self, site: usize, pass: usize, a2: u32, a3: u32, a4: u32) -> u8 {
-        transmute::<usize, This3>(target(site))(pass, a2 as usize, a3 as usize, a4 as usize) as u8
+        engine::thiscall3(target(site), pass, a2, a3, a4) as u8
     }
     #[inline(always)]
     unsafe fn append_stage(&mut self, site: usize, subpass: usize, stage: usize) -> u8 {
-        transmute::<usize, This1>(target(site))(subpass, stage) as u8
+        engine::thiscall1(target(site), subpass, stage as u32) as u8
     }
     #[inline(always)]
     unsafe fn append_pair(&mut self, site: usize, subpass: usize, stage: usize, other_stage: usize, flag: u32) -> u32 {
-        transmute::<usize, This3>(target(site))(subpass, stage, other_stage, flag as usize)
+        engine::thiscall3(target(site), subpass, stage as u32, other_stage as u32, flag)
     }
     #[inline(always)]
     unsafe fn set_field_48(&mut self, site: usize, subpass: usize, object: usize) {
-        transmute::<usize, This1>(target(site))(subpass, object);
+        engine::thiscall1(target(site), subpass, object as u32);
     }
 }
 
@@ -1096,8 +1087,9 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
 
 /// 0x6B41B0 `NiDX8TexturePass::setCTPipelineState`, slot 8 of the pass. Returns 0x80000000
 /// when the draw has more than two sub-passes and none of them is of a projected light or
-/// a projected shadow with a clip plane. If not, it returns 0. The function does not use the
-/// last five arguments.
+/// a projected shadow with a clip plane. If not, it returns 0. The function uses `this`, the
+/// property state, the effect state and `texture_sets`. It does not use `has_normals` and the
+/// last four arguments.
 #[cfg_attr(test, allow(dead_code))]
 pub unsafe fn set_ct_pipeline_state(
     this: usize,
@@ -1395,8 +1387,7 @@ impl Model {
 /// texture has its device data, the function only reads.
 #[cfg(not(test))]
 unsafe fn texture_format(texture_manager: usize, texture: usize) -> u32 {
-    let vtable: usize = rd(texture_manager, 0);
-    transmute::<usize, This1>(rd::<usize>(vtable, 0x10))(texture_manager, texture)
+    engine::vcall1(texture_manager, 0x10, texture as u32)
 }
 
 #[cfg(test)]
@@ -1407,7 +1398,7 @@ unsafe fn texture_format(_texture_manager: usize, _texture: usize) -> u32 {
 /// True when slot 0x18 of the pass is the `resetPassFlags` that the model has.
 #[cfg(not(test))]
 unsafe fn knows_reset_pass_flags(this: usize) -> bool {
-    rd::<usize>(rd::<usize>(this, 0), 0x18) == ADDR_RESET_PASS_FLAGS
+    engine::virtual_at(this, 0x18) == ADDR_RESET_PASS_FLAGS
 }
 
 #[cfg(test)]
@@ -1651,10 +1642,9 @@ fn inside(addr: usize, start: usize, size: usize) -> bool {
 }
 
 /// The blocks that the call writes outside the pass and the pipeline, from the journal of a
-/// dry run. A write into a sub-pass of the array gives the full sub-pass as a block. Returns
-/// `None` when there are more blocks than `out` holds.
-fn blocks_of(model: &Model, this: usize, pipeline: usize, subpasses: &[usize], out: &mut [(usize, usize); 6]) -> Option<usize> {
-    let mut len = 0;
+/// dry run. A write into a sub-pass of the array gives the full sub-pass as a block.
+fn blocks_of(model: &Model, this: usize, pipeline: usize, subpasses: &[usize]) -> Vec<(usize, usize)> {
+    let mut out: Vec<(usize, usize)> = Vec::new();
     for entry in &model.journal {
         if inside(entry.addr, this, TP::SIZE) || inside(entry.addr, pipeline, CTP::SIZE) || model.in_scratch(entry.addr) {
             continue;
@@ -1663,16 +1653,12 @@ fn blocks_of(model: &Model, this: usize, pipeline: usize, subpasses: &[usize], o
             Some(&subpass) => (subpass, SUB::SIZE),
             None => (entry.addr, entry.len),
         };
-        if out[..len].iter().any(|&(s, n)| start >= s && start + size <= s + n) {
+        if out.iter().any(|&(s, n)| start >= s && start + size <= s + n) {
             continue;
         }
-        if len == out.len() {
-            return None;
-        }
-        out[len] = (start, size);
-        len += 1;
+        out.push((start, size));
     }
-    Some(len)
+    out
 }
 
 /// Runs the body on the model, puts the memory back, and gives the blocks that the call
@@ -1720,21 +1706,11 @@ unsafe fn plan(
     if model.allocates {
         set.allocates();
     }
-    let mut blocks = [(0usize, 0usize); 6];
-    match blocks_of(&model, this, pipeline, &subpasses[..subpass_count], &mut blocks) {
-        Some(len) => {
-            for &(start, size) in &blocks[..len] {
-                set.add(start, size);
-            }
-        }
-        None => {
-            // The call needs more blocks than `Regions` holds.
-            set.skip();
-            return;
-        }
+    for (start, size) in blocks_of(&model, this, pipeline, &subpasses[..subpass_count]) {
+        set.add(start, size);
     }
     // No callee of the function writes the render state. The test compares the render state
-    // when a block is free for it.
+    // also.
     set.add(render_state, RS::SIZE);
 }
 
@@ -1747,7 +1723,8 @@ unsafe fn plan(
 /// - the reference counts of the alpha templates that go into a sub-pass or come out of one;
 /// - the alpha test value of alpha template 4.
 ///
-/// A dry run of the body finds which of these blocks the call writes. Refer to `Model`.
+/// A dry run of the body finds which of these blocks the call writes. Refer to `Model`. The
+/// set also gets the render state. No callee of the function writes the render state.
 ///
 /// The call is a skip when the dry run finds one of these conditions:
 /// - the call deletes an object: a texture or an alpha property that loses its last
@@ -1755,14 +1732,13 @@ unsafe fn plan(
 /// - the call makes a device texture: an effect texture with no device data;
 /// - the effect state has projected lights or projected shadows and is not the effect state
 ///   of the previous call;
-/// - the sub-pass array is not in a state that the game leaves it in;
-/// - the call needs more than 8 blocks.
+/// - the sub-pass array is not in a state that the game leaves it in.
 ///
 /// A new sub-pass or a longer array calls `set.allocates()`.
 #[cfg_attr(test, allow(dead_code))]
 unsafe fn regions(set: &mut Regions, this: usize, property_state: usize, effect_state: usize, texture_sets: u32) {
     let patch = rd::<u8>(BASE_TEXCOORD_PATCH, 0) == 0xE8;
-    plan(set, rd(MAX_STAGES, 0), rd(MAX_TEXTURES, 0), patch, this, property_state, effect_state, texture_sets, rd(this, TP::renderState));
+    plan(set, rd(MAX_TEXTURE_BLEND_STAGES, 0), rd(MAX_SIMULTANEOUS_TEXTURES, 0), patch, this, property_state, effect_state, texture_sets, rd(this, TP::renderState));
 }
 
 port_thiscall!(set_ct_pipeline_state_port, 0x6B41B0, "NiDX8TexturePass::setCTPipelineState",
@@ -2048,9 +2024,7 @@ mod tests {
 
             // The blocks outside the pass and the pipeline: the sub-pass of the array and
             // the reference counts that change.
-            let mut blocks = [(0usize, 0usize); 6];
-            let len = blocks_of(&model, this, pipeline, &[subpass], &mut blocks).unwrap();
-            let mut found = blocks[..len].to_vec();
+            let mut found = blocks_of(&model, this, pipeline, &[subpass]);
             found.sort();
             let mut expected = vec![(subpass, SUB::SIZE), (base + REF_COUNT, 4), (glow + REF_COUNT, 4), (template_0 + REF_COUNT, 4)];
             if base_linked {
