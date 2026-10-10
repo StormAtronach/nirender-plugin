@@ -80,8 +80,8 @@ def gen_funcs(funcs):
         f["hash"] = len(code)
         code += bytes.fromhex(f["bytes"])
         head = bytes.fromhex(f["head"]).ljust(16, b"\0")
-        rows.append("    Func { ea: 0x%x, size: %d, name: \"%s\", argsize: %d, code: 0x%x, steal: %d, pic: %s, head: [%s] }," % (
-            f["ea"], f["size"], f["name"].replace('"', "'"), f["argsize"], f["hash"], f["steal"], "true" if f["steal_pic"] else "false",
+        rows.append("    Func { ea: 0x%x, size: %d, name: \"%s\", argsize: %d, code: 0x%x, steal: %d, pic: %s, relocs: [%d, %d], head: [%s] }," % (
+            f["ea"], f["size"], f["name"].replace('"', "'"), f["argsize"], f["hash"], f["steal"], "true" if f["steal_pic"] else "false", *(f["relocs"] + [0, 0])[:2],
             ", ".join("0x%02x" % b for b in head)))
     open(os.path.join(GEN, "code.bin"), "wb").write(code)
     return "\n".join([
@@ -99,6 +99,8 @@ def gen_funcs(funcs):
         "    pub steal: usize,",
         "    /// The displaced instructions run unchanged at another address.",
         "    pub pic: bool,",
+        "    /// Offsets in the displaced bytes of 32-bit relative targets, which move with the code. 0 = none.",
+        "    pub relocs: [u8; 2],",
         "    pub head: [u8; 16],",
         "}",
         "",

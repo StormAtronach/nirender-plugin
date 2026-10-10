@@ -1,6 +1,7 @@
 ---@diagnostic disable
--- The in-game half of tools/run_test.py. Loads a save, runs every port in shadow mode for a
--- while, then holds the game in menu mode and runs the frame comparisons.
+-- The in-game half of tools/run_test.py. Loads a save, runs the ports in shadow mode at the
+-- place of the save and in each cell of spec.cells, then holds the game in menu mode and
+-- runs the frame comparisons.
 -- Progress goes to spec.progressFile; the runner stops the game at the line "DONE".
 
 return function(nirender, spec)
@@ -34,6 +35,8 @@ return function(nirender, spec)
             end
         end
     end)
+
+    local ports = spec.ports or "*"
 
     local function finish()
         local report = nirender.report()
@@ -78,35 +81,54 @@ return function(nirender, spec)
         tes3ui.enterMenuMode("nirender:hold")
     end
 
+    local function release_menu_mode()
+        tes3ui.leaveMenuMode()
+        local menu = tes3ui.findMenu("nirender:hold")
+        if menu then menu:destroy() end
+    end
+
+    -- Shadow mode for spec.shadowSeconds, then the frame tests in menu mode, then `done`.
+    local function test_here(done)
+        local where = tes3.player.cell.editorName
+        say("shadow mode on for %d s in '%s' (%s)", spec.shadowSeconds, where, ports)
+        nirender.setMode(ports, "shadow")
+        after(spec.shadowSeconds, function()
+            nirender.setMode("*", "off")
+            hold_in_menu_mode()
+            after(0.5, function()
+                frame_tests("menu", { "control", "live", "live", "control" }, function()
+                    release_menu_mode()
+                    done()
+                end)
+            end)
+        end)
+    end
+
+    local function visit(index)
+        local cell = spec.cells and spec.cells[index]
+        if not cell then
+            -- Back in the game with the Rust code for a moment: it has to keep running.
+            nirender.setMode(ports, (spec.liveSeconds or 0) > 0 and "live" or "off")
+            say("live mode for %d s", spec.liveSeconds or 0)
+            return after(spec.liveSeconds or 0, function()
+                nirender.setMode("*", "off")
+                finish()
+            end)
+        end
+        say("going to '%s'", cell)
+        tes3.runLegacyScript({ command = string.format('CenterOnCell "%s"', cell) })
+        after(spec.settleSeconds or 4, function()
+            test_here(function() visit(index + 1) end)
+        end)
+    end
+
     local started = false
     event.register("loaded", function()
         if started then return end
         started = true
         say("save loaded, cell '%s', x87 control word 0x%04x", tes3.player.cell.editorName, nirender.fpuControlWord())
         after(spec.settleSeconds or 4, function()
-            say("shadow mode on for %d s (%s)", spec.shadowSeconds, spec.ports or "*")
-            nirender.setMode(spec.ports or "*", "shadow")
-            after(spec.shadowSeconds, function()
-                nirender.setMode("*", "off")
-                say("shadow mode off")
-                frame_tests("gameplay", { "control" }, function()
-                    hold_in_menu_mode()
-                    say("menu mode on")
-                    after(1, function()
-                        frame_tests("menu", { "control", "control", "live", "live", "control" }, function()
-                            -- Back to the game with the Rust code for a moment: it has to keep running.
-                            tes3ui.leaveMenuMode()
-                            local menu = tes3ui.findMenu("nirender:hold")
-                            if menu then menu:destroy() end
-                            nirender.setMode(spec.ports or "*", spec.liveSeconds and "live" or "off")
-                            after(spec.liveSeconds or 0, function()
-                                nirender.setMode("*", "off")
-                                finish()
-                            end)
-                        end)
-                    end)
-                end)
-            end)
+            test_here(function() visit(1) end)
         end)
     end)
 

@@ -75,7 +75,8 @@ def main():
     ap.add_argument("--shadow", type=int, default=20, help="seconds in shadow mode")
     ap.add_argument("--live", type=int, default=5, help="seconds with the Rust functions live at the end")
     ap.add_argument("--ports", default="*", help="part of the engine name of the ports to test")
-    ap.add_argument("--timeout", type=int, default=300)
+    ap.add_argument("--cells", default="", help="cells to visit after the place of the save, separated by ;")
+    ap.add_argument("--timeout", type=int, default=0, help="budget in seconds; 0 = from the scenario")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
 
@@ -98,7 +99,10 @@ def main():
         "shadowSeconds": args.shadow,
         "liveSeconds": args.live,
         "ports": args.ports,
+        "cells": [c for c in args.cells.split(";") if c],
     }
+    places = 1 + len(spec["cells"])
+    timeout = args.timeout or 90 + places * (args.shadow + 12) + args.live
     for change in harness.install_mod():
         print("  nirender mod: %s" % change)
     deployment = harness.Deployment()
@@ -108,8 +112,8 @@ def main():
     except BaseException:
         deployment.restore()
         raise
-    print("launching (budget %ds, results in %s)" % (args.timeout, run_dir), flush=True)
-    done = harness.run_game(progress_file, args.timeout, TAG, deployment, started)
+    print("launching (budget %ds, results in %s)" % (timeout, run_dir), flush=True)
+    done = harness.run_game(progress_file, timeout, TAG, deployment, started)
     harness.copy_logs(run_dir, started)
 
     failures = []

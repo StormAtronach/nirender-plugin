@@ -35,17 +35,24 @@ for ea in idautils.Functions():
     data_refs = sorted({x.frm for x in idautils.XrefsTo(ea, 0) if not x.iscode})
     # Bytes a 5-byte detour takes from the entry: whole instructions, and whether they can be
     # copied elsewhere unchanged (no relative branch, and no branch from the function into them).
-    steal, pic = 0, True
+    # `relocs` are the offsets of 32-bit relative targets (call or jmp rel32) in those bytes: the
+    # detour moves them with the code. A function shorter than 5 bytes is taken whole.
+    steal, pic, relocs = 0, True, []
     while steal < 5 and ea + steal < f.end_ea:
         insn = idautils.DecodeInstruction(ea + steal)
         if insn is None:
             pic = False
             break
         mnem = insn.get_canon_mnem()
-        if mnem.startswith("j") or mnem.startswith("call") or mnem.startswith("loop") or mnem.startswith("ret"):
+        first = ida_bytes.get_byte(ea + steal)
+        if first in (0xE8, 0xE9) and insn.size == 5:
+            relocs.append(steal + 1)
+        elif mnem.startswith("ret") or (mnem in ("jmp", "call") and first == 0xFF):
+            pass  # a return or an indirect branch runs the same anywhere
+        elif mnem.startswith("j") or mnem.startswith("call") or mnem.startswith("loop"):
             pic = False
         steal += insn.size
-    if steal < 5:
+    if steal < 5 and steal != size:
         pic = False
     for head in idautils.FuncItems(ea):
         for x in idautils.XrefsFrom(head, 0):
@@ -59,6 +66,7 @@ for ea in idautils.Functions():
         "hash": h,
         "steal": steal,
         "steal_pic": pic,
+        "relocs": relocs,
         "ea": ea,
         "name": name,
         "size": size,

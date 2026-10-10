@@ -105,10 +105,27 @@ pub unsafe fn install(ea: usize, detour: usize, stack_args: usize, cleanup: Clea
         return Err("the entry instructions cannot be moved".into());
     }
     let mut code = live[..steal].to_vec();
-    code.extend_from_slice(&[0xE9, 0, 0, 0, 0]);
+    let whole = steal < 5;
+    if whole {
+        // The function is shorter than the jump. It ends in a return, and the jump may take
+        // the padding after it, never the start of the next function.
+        if live[steal..5].iter().any(|&b| b != 0x90 && b != 0xCC) {
+            return Err("no padding after a function shorter than 5 bytes".into());
+        }
+    } else {
+        code.extend_from_slice(&[0xE9, 0, 0, 0, 0]);
+    }
     let at = arena_alloc(&code).ok_or("no memory for a trampoline")?;
-    core::ptr::copy_nonoverlapping(rel32(at + steal + 5, ea + steal).as_ptr(), (at + steal + 1) as *mut u8, 4);
-    finish(ea, at, steal, detour, stack_args, cleanup)
+    if !whole {
+        core::ptr::copy_nonoverlapping(rel32(at + steal + 5, ea + steal).as_ptr(), (at + steal + 1) as *mut u8, 4);
+    }
+    for &offset in func.relocs.iter().filter(|&&o| o != 0) {
+        let offset = offset as usize;
+        let rel = u32::from_le_bytes([live[offset], live[offset + 1], live[offset + 2], live[offset + 3]]) as usize;
+        let target = (ea + offset + 4).wrapping_add(rel);
+        core::ptr::copy_nonoverlapping(rel32(at + offset + 4, target).as_ptr(), (at + offset) as *mut u8, 4);
+    }
+    finish(ea, at, steal.max(5), detour, stack_args, cleanup)
 }
 
 unsafe fn finish(ea: usize, trampoline: usize, steal: usize, detour: usize, stack_args: usize, cleanup: Cleanup) -> Result<usize, String> {
