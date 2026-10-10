@@ -189,6 +189,7 @@ unsafe fn site_draw_indexed_primitive(
     primitives: u32,
 ) -> u32 {
     let args = [device as u32, primitive_type, 0, vertices, start_index, primitives];
+    let vtable = crate::link_client::draw_vtable(vtable);
     let result: u32;
     asm!(
         "push dword ptr [{a} + 20]",
@@ -213,6 +214,7 @@ unsafe fn site_draw_indexed_primitive(
 /// `IDirect3DDevice8::DrawPrimitive` are on the stack, and the callee removes them.
 unsafe fn site_draw_primitive(site: usize, device: usize, vtable: usize, primitive_type: u32, primitives: u32) -> u32 {
     let args = [device as u32, primitive_type, 0, primitives];
+    let vtable = crate::link_client::draw_vtable(vtable);
     let result: u32;
     asm!(
         "push dword ptr [{a} + 12]",

@@ -18,6 +18,8 @@ pub const CAP_COMMANDS: u32 = 0x40;
 pub const COMMAND_RENDER_STATE: u32 = 1;
 pub const COMMAND_STAGE_STATE: u32 = 2;
 pub const COMMAND_TRANSFORM: u32 = 3;
+pub const COMMAND_DRAW_INDEXED: u32 = 4;
+pub const COMMAND_DRAW: u32 = 5;
 
 pub const SCENE_HAS_CAMERA_ORIGIN: u32 = 0x1;
 

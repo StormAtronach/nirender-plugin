@@ -84,6 +84,7 @@ unsafe fn site_draw_indexed_primitive(
     primitive_count: u32,
 ) -> u32 {
     let block = [target(site) as u32, primitive_type, min_index, vertex_count, start_index, primitive_count];
+    let vtable = crate::link_client::draw_vtable(vtable);
     let result: u32;
     asm!(
         "push dword ptr [ecx + 20]",

@@ -278,6 +278,99 @@ unsafe fn command(command: u32, a: u32, b: u32, c: u32) -> bool {
     }
 }
 
+/// True when the host has this device kind and takes commands.
+#[inline]
+unsafe fn commands_for(fact: u32) -> bool {
+    SUPPRESS.load(Ordering::Relaxed) >> fact & 1 != 0 && host().is_some_and(|host| host.capabilities & CAP_COMMANDS != 0)
+}
+
+/// Sends a draw with the index buffer to the host. Returns false when the caller must make
+/// the D3D8 call.
+#[inline]
+pub unsafe fn draw_indexed(primitive_type: u32, min_index: u32, vertices: u32, start_index: u32, primitives: u32) -> bool {
+    if !commands_for(FACT_DEVICE_BUFFERS) {
+        return false;
+    }
+    let words = [primitive_type, min_index, vertices, start_index, primitives];
+    skip(FACT_DEVICE_BUFFERS, true);
+    command(COMMAND_DRAW_INDEXED, words.as_ptr() as u32, 0, 0)
+}
+
+/// Sends a draw without an index buffer to the host. Returns false when the caller must
+/// make the D3D8 call.
+#[inline]
+pub unsafe fn draw(primitive_type: u32, start_vertex: u32, primitives: u32) -> bool {
+    if !commands_for(FACT_DEVICE_BUFFERS) {
+        return false;
+    }
+    let words = [primitive_type, start_vertex, primitives];
+    skip(FACT_DEVICE_BUFFERS, true);
+    command(COMMAND_DRAW, words.as_ptr() as u32, 0, 0)
+}
+
+// The draw functions of the Morrowind Code Patch get the device and its vtable in registers.
+// They call the device through that vtable: the draw, and for a draw with alpha also render
+// states and stage states. The four functions below are the entries of a vtable that the
+// plugin gives them when the host draws. Each one sends a command, and makes the D3D8 call
+// only when the host does not take that command.
+
+unsafe extern "system" fn vtable_draw_indexed(device: usize, primitive_type: u32, min_index: u32, vertices: u32, start_index: u32, primitives: u32) -> u32 {
+    if draw_indexed(primitive_type, min_index, vertices, start_index, primitives) {
+        return 0;
+    }
+    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 =
+        core::mem::transmute(crate::engine::virtual_at(device, crate::d3d::DEVICE_DRAW_INDEXED_PRIMITIVE));
+    f(device, primitive_type, min_index, vertices, start_index, primitives)
+}
+
+unsafe extern "system" fn vtable_draw(device: usize, primitive_type: u32, start_vertex: u32, primitives: u32) -> u32 {
+    if draw(primitive_type, start_vertex, primitives) {
+        return 0;
+    }
+    let f: unsafe extern "system" fn(usize, u32, u32, u32) -> u32 =
+        core::mem::transmute(crate::engine::virtual_at(device, crate::d3d::DEVICE_DRAW_PRIMITIVE));
+    f(device, primitive_type, start_vertex, primitives)
+}
+
+/// A render state of the Code Patch is for the draw that follows at once, so it goes to the
+/// host now and not with the next state packet.
+unsafe extern "system" fn vtable_set_render_state(device: usize, state: u32, value: u32) -> u32 {
+    if commands_for(FACT_DEVICE_RENDER_STATES) && command(COMMAND_RENDER_STATE, state, value, 0) {
+        return 0;
+    }
+    let f: unsafe extern "system" fn(usize, u32, u32) -> u32 =
+        core::mem::transmute(crate::engine::virtual_at(device, crate::d3d::DEVICE_SET_RENDER_STATE));
+    f(device, state, value)
+}
+
+unsafe extern "system" fn vtable_set_stage_state(device: usize, stage: u32, state: u32, value: u32) -> u32 {
+    if commands_for(FACT_DEVICE_STAGE_STATES) && command(COMMAND_STAGE_STATE, stage, state, value) {
+        return 0;
+    }
+    let f: unsafe extern "system" fn(usize, u32, u32, u32) -> u32 =
+        core::mem::transmute(crate::engine::virtual_at(device, crate::d3d::DEVICE_SET_TEXTURE_STAGE_STATE));
+    f(device, stage, state, value)
+}
+
+/// The number of methods of `IDirect3DDevice8`.
+const DEVICE_METHODS: usize = 97;
+static mut DRAW_VTABLE: [usize; DEVICE_METHODS] = [0; DEVICE_METHODS];
+
+/// The vtable to give to a draw function of the Code Patch: `vtable`, the one of the device,
+/// or a copy with the four entries above when the host draws.
+pub unsafe fn draw_vtable(vtable: usize) -> usize {
+    if !commands_for(FACT_DEVICE_BUFFERS) {
+        return vtable;
+    }
+    let copy = &mut *addr_of_mut!(DRAW_VTABLE);
+    core::ptr::copy_nonoverlapping(vtable as *const usize, copy.as_mut_ptr(), DEVICE_METHODS);
+    copy[crate::d3d::DEVICE_DRAW_INDEXED_PRIMITIVE / 4] = vtable_draw_indexed as *const () as usize;
+    copy[crate::d3d::DEVICE_DRAW_PRIMITIVE / 4] = vtable_draw as *const () as usize;
+    copy[crate::d3d::DEVICE_SET_RENDER_STATE / 4] = vtable_set_render_state as *const () as usize;
+    copy[crate::d3d::DEVICE_SET_TEXTURE_STAGE_STATE / 4] = vtable_set_stage_state as *const () as usize;
+    copy.as_ptr() as usize
+}
+
 /// True when the caller must not make the D3D8 call for this render state: the host sets it
 /// from the packets, or the host got it as a command here.
 #[inline]

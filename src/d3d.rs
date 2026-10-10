@@ -420,6 +420,9 @@ pub unsafe fn device_set_texture_stage_state(device: usize, stage: u32, state: u
 /// `IDirect3DDevice8::DrawPrimitive` through the vtable of the object, slot 0x118.
 #[inline(always)]
 pub unsafe fn device_draw_primitive(device: usize, primitive_type: u32, start_vertex: u32, primitives: u32) -> u32 {
+    if crate::link_client::draw(primitive_type, start_vertex, primitives) {
+        return 0;
+    }
     let f: unsafe extern "system" fn(usize, u32, u32, u32) -> u32 = transmute(virtual_at(device, DEVICE_DRAW_PRIMITIVE));
     f(device, primitive_type, start_vertex, primitives)
 }
@@ -427,6 +430,9 @@ pub unsafe fn device_draw_primitive(device: usize, primitive_type: u32, start_ve
 /// `IDirect3DDevice8::DrawIndexedPrimitive` through the vtable of the object, slot 0x11C.
 #[inline(always)]
 pub unsafe fn device_draw_indexed_primitive(device: usize, primitive_type: u32, min_index: u32, vertices: u32, start_index: u32, primitives: u32) -> u32 {
+    if crate::link_client::draw_indexed(primitive_type, min_index, vertices, start_index, primitives) {
+        return 0;
+    }
     let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(device, DEVICE_DRAW_INDEXED_PRIMITIVE));
     f(device, primitive_type, min_index, vertices, start_index, primitives)
 }
