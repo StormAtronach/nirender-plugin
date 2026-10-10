@@ -86,6 +86,8 @@ const W_STORM: usize = 0x6C;
 
 // Offsets in a moon.
 const MOON_ROOT: usize = 0x0;
+const MOON_NODE: usize = 0x4;
+const MOON_SHADOW_NODE: usize = 0x8;
 const MOON_SHADOW_SHAPE: usize = 0x10;
 
 /// The offset of the translation of `worldTransform` in a `NiAVObject`. `NiCamera::Click`
@@ -116,8 +118,8 @@ struct Roots {
     sun_vis: usize,
     sun_base: usize,
     sun_glare: usize,
-    moon_roots: [usize; 2],
-    moon_shadows: [usize; 2],
+    moon_roots: [usize; 4],
+    moon_shadows: [usize; 4],
     particles: [usize; 3],
     water_ripples: usize,
     water_plane: usize,
@@ -137,8 +139,8 @@ const NO_ROOTS: Roots = Roots {
     sun_vis: 0,
     sun_base: 0,
     sun_glare: 0,
-    moon_roots: [0; 2],
-    moon_shadows: [0; 2],
+    moon_roots: [0; 4],
+    moon_shadows: [0; 4],
     particles: [0; 3],
     water_ripples: 0,
     water_plane: 0,
@@ -154,6 +156,9 @@ static HOST: AtomicUsize = AtomicUsize::new(0);
 static SCENE_SENT_FOR: AtomicUsize = AtomicUsize::new(0);
 // Only the render thread reads and writes these two.
 static mut ROOTS: Roots = NO_ROOTS;
+/// The number of draw packets of each class since the last read of the counters.
+static mut CLASS_COUNTS: [u32; CLASS_COUNT] = [0; CLASS_COUNT];
+const CLASS_COUNT: usize = 18;
 static mut LIGHTS: [LightV1; MAX_LIGHTS] = [LightV1 { light: 0, device_index: 0, light_type: 0, radius: 0.0 }; MAX_LIGHTS];
 
 unsafe fn host() -> Option<&'static HostV1> {
@@ -260,8 +265,19 @@ unsafe fn send_scene(camera: usize) {
         sun_vis: ptr_at(weather, W_SUN_VIS),
         sun_base: ptr_at(weather, W_SUN_BASE),
         sun_glare: ptr_at(weather, W_SUN_GLARE),
-        moon_roots: [ptr_at(masser, MOON_ROOT), ptr_at(secunda, MOON_ROOT)],
-        moon_shadows: [ptr_at(masser, MOON_SHADOW_SHAPE), ptr_at(secunda, MOON_SHADOW_SHAPE)],
+        moon_roots: [
+            ptr_at(masser, MOON_ROOT),
+            ptr_at(secunda, MOON_ROOT),
+            ptr_at(masser, MOON_NODE),
+            ptr_at(secunda, MOON_NODE),
+        ],
+        // The shadow shape of each moon, and the node above it.
+        moon_shadows: [
+            ptr_at(masser, MOON_SHADOW_SHAPE),
+            ptr_at(secunda, MOON_SHADOW_SHAPE),
+            ptr_at(masser, MOON_SHADOW_NODE),
+            ptr_at(secunda, MOON_SHADOW_NODE),
+        ],
         particles: [ptr_at(weather, W_RAIN), ptr_at(weather, W_SNOW), ptr_at(weather, W_STORM)],
         water_ripples: ptr_at(water_controller, WATER_RIPPLES),
         water_plane: ptr_at(water_controller, WATER_PLANE),
@@ -333,6 +349,8 @@ unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
             CLASS_SKY_CLOUDS
         } else if node == roots.sun_vis || node == roots.sun_base {
             CLASS_SKY_SUN
+        } else if roots.moon_shadows.contains(&node) {
+            CLASS_SKY_MOON_SHADOW
         } else if roots.moon_roots.contains(&node) {
             CLASS_SKY_MOON
         } else if node == roots.sky_root {
@@ -422,6 +440,10 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
         light_count: light_count as u32,
         lights: addr_of!(LIGHTS) as *const LightV1,
     };
+    let counts = &mut *addr_of_mut!(CLASS_COUNTS);
+    if let Some(count) = counts.get_mut(draw.object_class as usize) {
+        *count += 1;
+    }
     (host.draw)(&draw);
 }
 
@@ -554,6 +576,16 @@ pub unsafe fn counters_text(reset: bool) -> String {
             fact.host_only,
             fact.packet_only
         ));
+    }
+    // The index is `CLASS_*` of the contract.
+    let counts = &mut *addr_of_mut!(CLASS_COUNTS);
+    text.push_str("classes:");
+    for count in counts.iter() {
+        text.push_str(&format!(" {count}"));
+    }
+    text.push('\n');
+    if reset {
+        *counts = [0; CLASS_COUNT];
     }
     text
 }

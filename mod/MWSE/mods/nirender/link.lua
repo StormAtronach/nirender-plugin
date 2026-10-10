@@ -67,6 +67,11 @@ return function(nirender, spec)
         local where = tes3.player.cell.editorName
         place = place + 1
         nirender.linkUseFacts(0)
+        if spec.hour or spec.moon then
+            -- A clear sky, so that the moons are in view at night.
+            local weather = tes3.worldController.weatherController
+            pcall(function() weather:switchImmediate(0) weather:updateVisuals() end)
+        end
         measure(where, "off", "off", function()
             measure(where, "live", "live", function()
                 nirender.setMode("*", "off")
@@ -82,6 +87,80 @@ return function(nirender, spec)
                 end)
             end)
         end)
+    end
+
+    if spec.sweep then
+        -- The camera turns and looks up, so that each part of the sky comes into view. The
+        -- game does not draw a moon that is not in the view.
+        scenario.eachFrame = function(now)
+            if tes3.player then
+                local pitch = spec.sweep * (0.9 + 0.5 * math.sin(now * 0.7))
+                tes3.player.orientation = tes3vector3.new(pitch, 0, (now * 1.5) % (2 * math.pi))
+            end
+        end
+    end
+
+    -- Reports the state of a moon and returns its place in the world, or nil.
+    local function moon_state(name)
+        local moon = tes3.worldController.weatherController[name]
+        local root = moon and moon.sceneMoonRoot
+        if not root then
+            say("moon %s: no scene node", name)
+            return nil
+        end
+        local at = root.worldTransform.translation
+        local parent = root.parent
+        say("moon %s: game hour %.2f, day %s, fade in %s to %s, fade out %s to %s, weather %s", name,
+            tes3.worldController.hour.value, tostring(tes3.worldController.daysPassed.value), tostring(moon.fadeInStart),
+            tostring(moon.fadeInFinish), tostring(moon.fadeOutStart), tostring(moon.fadeOutFinish),
+            tostring(tes3.worldController.weatherController.currentWeather.index))
+        say("moon %s: phase %s, root culled %s, face culled %s, shadow culled %s, parent '%s', at %.0f %.0f %.0f", name,
+            tostring(moon.phase), tostring(root.appCulled), tostring(moon.sceneMoonFace.appCulled),
+            tostring(moon.sceneMoonShadow.appCulled), parent and tostring(parent.name) or "none", at.x, at.y, at.z)
+        return at
+    end
+
+    if spec.moon then
+        -- The camera looks at a moon. The game does not draw a moon that is not in the view.
+        scenario.eachFrame = function(now)
+            if not tes3.player then return end
+            local moon = tes3.worldController.weatherController[spec.moon]
+            local face = moon and moon.sceneMoonFace
+            if not face then return end
+            -- The root of a moon is at the camera. The bound of the face is where the moon is.
+            local to = face.worldBoundOrigin - tes3.getPlayerEyePosition()
+            local flat = math.sqrt(to.x * to.x + to.y * to.y)
+            if flat + math.abs(to.z) < 100 then return end
+            tes3.player.orientation = tes3vector3.new(-math.atan2(to.z, flat), 0, math.atan2(to.x, to.y))
+        end
+    end
+
+    -- Goes through the hours of the night until the game shows the moon of the spec, then
+    -- calls `done`. The game hides a moon that is under the horizon or that the weather hides.
+    local function find_moon(done)
+        if not spec.moon then return done() end
+        local hours = { 18, 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5, 6 }
+        local function try(index)
+            local hour = hours[index]
+            if not hour then
+                say("moon %s: the game did not show it at any hour of the night", spec.moon)
+                moon_state(spec.moon)
+                return done()
+            end
+            tes3.worldController.hour.value = hour
+            local weather = tes3.worldController.weatherController
+            pcall(function() weather:switchImmediate(0) weather:updateVisuals() end)
+            after(0.5, function()
+                local root = weather[spec.moon].sceneMoonRoot
+                if root and not root.appCulled then
+                    say("moon %s: in the sky at hour %d", spec.moon, hour)
+                    moon_state(spec.moon)
+                    return done()
+                end
+                try(index + 1)
+            end)
+        end
+        try(1)
     end
 
     local function visit(index)
@@ -103,7 +182,9 @@ return function(nirender, spec)
             local ok, message = nirender.link()
             say("link: %s (%s)", tostring(ok), message)
             if not ok then return scenario.finish() end
-            test_here(function() visit(1) end)
+            find_moon(function()
+                test_here(function() visit(1) end)
+            end)
         end)
     end)
 end

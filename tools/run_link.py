@@ -33,7 +33,11 @@ TOTALS = re.compile(r"scenes (\d+) draws (\d+) draws_without_packet (\d+)")
 # The index of each fact in the contract (MGE_LINK_FACT_*).
 FACTS = ("light_radius", "sun_light", "moon_shadow", "water_plane", "ui_scene", "scene_kind", "sky_draw", "land_splat")
 # The facts that MGE XE can take from a packet.
-USABLE = ("ui_scene", "water_plane", "sun_light", "sky_draw", "land_splat")
+USABLE = ("ui_scene", "water_plane", "sun_light", "sky_draw", "land_splat", "scene_kind", "moon_shadow")
+# The classes of the contract (MGE_LINK_CLASS_*), by index.
+CLASSES = ("unknown", "sky_dome", "sky_night", "sky_clouds", "sky_sun", "sky_moon", "sky_moon_shadow", "sky_other",
+           "sun_glare", "weather_particles", "water_plane", "landscape", "object", "shadow_volume", "shadow_overlay",
+           "first_person", "ui", "water_ripple")
 MODES = {"off": "game code", "live": "rust code", "facts": "game code, facts in use"}
 
 
@@ -81,6 +85,9 @@ def main():
     ap.add_argument("--seconds", type=int, default=8, help="time in each mode in each place")
     ap.add_argument("--hour", type=float, help="set the game hour before the test, for example 0 for night")
     ap.add_argument("--facts", default="", help="'all', or names of facts separated by ','; MGE XE takes them from the packets")
+    ap.add_argument("--sweep", type=float, help="turn the camera and look up during the test; the value is the sign "
+                    "and size of the pitch, for example -1")
+    ap.add_argument("--moon", choices=("masser", "secunda"), help="keep the camera on this moon during the test")
     ap.add_argument("--label", default="link")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -93,6 +100,10 @@ def main():
                     shotDir=run.dir.replace("\\", "/"))
     if args.hour is not None:
         spec["hour"] = args.hour
+    if args.moon:
+        spec["moon"] = args.moon
+    if args.sweep is not None:
+        spec["sweep"] = args.sweep
     per_place = (3 if mask else 2) * (args.seconds + 2) + (20 if mask else 12)
     done = run.launch(spec, 120 + (len(cells) + 1) * per_place, TAG)
 
@@ -104,7 +115,7 @@ def main():
         if line.startswith("link: "):
             connected = line.startswith("link: true")
             print(line)
-        if line.startswith("facts in use") or line.startswith("ERROR"):
+        if line.startswith(("facts in use", "ERROR", "moon ")):
             print(line)
         if line.startswith("picture|"):
             _, where, place, name, path = line.split("|", 4)
@@ -116,6 +127,8 @@ def main():
         if totals:
             rows.append({"where": where, "mode": mode, "scenes": int(totals.group(1)), "draws": int(totals.group(2)),
                          "draws_without_packet": int(totals.group(3)), "facts": {}})
+        if text.startswith("classes:") and rows:
+            rows[-1]["classes"] = {CLASSES[i]: int(n) for i, n in enumerate(text.split()[1:]) if int(n)}
         fact = FACT.search(text)
         if fact and rows:
             rows[-1]["facts"][fact.group(1)] = dict(zip(COLUMNS, (int(n) for n in fact.groups()[1:])))
@@ -128,7 +141,12 @@ def main():
             if any(count.values()):
                 print("  %-14s both yes %8d  both no %8d  only MGE XE %8d  only packet %8d" % (
                     name, count["both_yes"], count["both_no"], count["host_only"], count["packet_only"]))
-            different += count["host_only"] + count["packet_only"]
+            # With the water plane from the packets, the water mark is out of the material.
+            # Then the inference of MGE XE cannot find the water, and only the packet says yes.
+            expected = row["mode"] == "facts" and name == "water_plane" and mask >> FACTS.index(name) & 1
+            different += count["host_only"] + (0 if expected else count["packet_only"])
+        if row.get("classes"):
+            print("  draw packets by class: " + ", ".join("%s %d" % item for item in row["classes"].items()))
 
     failed_pictures = 0
     picture_results = []
