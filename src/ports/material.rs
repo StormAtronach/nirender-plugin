@@ -57,6 +57,8 @@ pub unsafe fn set_current_material(this: usize, material: usize) {
     }
 }
 
+/// The call is a skip when the material has no entry and the allocator hooks are not active.
+/// The call allocates the entry then.
 unsafe fn set_current_material_regions(set: &mut crate::shadow::Regions, this: usize, material: usize) {
     set.add(this, MM::SIZE);
     set.add(material, MP::SIZE);
