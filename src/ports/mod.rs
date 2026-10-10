@@ -97,6 +97,7 @@ pub mod material;
 pub mod render_state;
 pub mod renderer_frame;
 pub mod texture_pass_a;
+pub mod texture_pass_b;
 pub mod texture_pipeline;
 
 /// The ports of every module. A new module adds its `PORTS` here.
@@ -107,6 +108,7 @@ static MODULES: &[&[&PortState]] = &[
     light_manager::PORTS,
     texture_pipeline::PORTS,
     renderer_frame::PORTS,
+    texture_pass_b::PORTS,
 ];
 
 /// Every port.
