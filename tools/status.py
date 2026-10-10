@@ -9,6 +9,7 @@ import glob
 import json
 import os
 import re
+import sys
 import time
 from collections import defaultdict
 
@@ -25,7 +26,11 @@ def class_of(name):
 
 def newest_run():
     """The newest run that got as far as a report."""
-    runs = sorted(d for d in glob.glob(os.path.join(REPO, "results", "*")) if os.path.isfile(os.path.join(d, "report.tsv")))
+    runs = sorted(d for d in glob.glob(os.path.join(REPO, "results", "*")) if os.path.isfile(os.path.join(d, "report.tsv"))
+                  and "video" not in os.path.basename(d) and os.path.getsize(os.path.join(d, "report.tsv")) > 0)
+    # The run to report can be named: python tools/status.py <part of the run name>
+    if len(sys.argv) > 1:
+        runs = [d for d in runs if sys.argv[1] in os.path.basename(d)]
     return runs[-1] if runs else None
 
 
@@ -92,7 +97,8 @@ def main():
            "| | functions | code bytes |", "| --- | ---: | ---: |",
            "| Renderer subsystem | %d | %d |" % (total("functions"), total("bytes")),
            "| Ported | %d | %d |" % (total("ported"), total("ported_bytes")),
-           "| Compared in the game with 0 differences | %d | |" % total("clean"),
+           "| Rust code ran in the game | %d | |" % sum(1 for _, _, state, _ in rows if state in ("clean", "ran as Rust", "DIFFERENT")),
+           "| Compared call by call with 0 differences | %d | |" % total("clean"),
            "| Compared with differences | %d | |" % total("different"),
            "| Changed in memory by another mod | %d | |" % total("changed"), "",
            "## By class", "",
