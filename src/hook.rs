@@ -83,28 +83,38 @@ pub fn entry_thunk_code(at: usize, detour: usize, stack_args: usize, cleanup: Cl
 /// engine function itself.
 pub unsafe fn install(ea: usize, detour: usize, stack_args: usize, cleanup: Cleanup) -> Result<usize, String> {
     let func = find(ea).ok_or_else(|| format!("0x{ea:x} is not in the function table"))?;
-    let live = core::slice::from_raw_parts(ea as *const u8, 16);
-
-    let trampoline_code: Vec<u8>;
-    let steal: usize;
-    if live[0] == 0xE9 {
-        // Another mod has a jump here already, or the function is a jump itself. Keep its target.
-        let rel = u32::from_le_bytes([live[1], live[2], live[3], live[4]]) as usize;
-        let target = (ea + 5).wrapping_add(rel);
-        steal = 5;
-        trampoline_code = vec![0xE9, 0, 0, 0, 0];
-        let at = arena_alloc(&trampoline_code).ok_or("no memory for a trampoline")?;
-        core::ptr::copy_nonoverlapping(rel32(at + 5, target).as_ptr(), (at + 1) as *mut u8, 4);
-        return finish(ea, at, steal, detour, stack_args, cleanup);
-    }
-    steal = func.steal;
-    if live[..steal] != func.head[..steal] {
-        return Err(format!("entry bytes differ from the database: {:02x?} against {:02x?}", &live[..steal], &func.head[..steal]));
-    }
     if !func.pic {
         return Err("the entry instructions cannot be moved".into());
     }
-    let mut code = live[..steal].to_vec();
+    let relocs: Vec<usize> = func.relocs.iter().filter(|&&o| o != 0).map(|&o| o as usize).collect();
+    install_raw(ea, &func.head[..func.steal], &relocs, detour, stack_args, cleanup)
+}
+
+/// As `install`, for a function outside the table. `head` holds the whole instructions the
+/// jump displaces (all of the function when it is shorter than the jump); `relocs` are the
+/// offsets in `head` of 32-bit relative call or jump targets.
+pub unsafe fn install_raw(
+    ea: usize,
+    head: &[u8],
+    relocs: &[usize],
+    detour: usize,
+    stack_args: usize,
+    cleanup: Cleanup,
+) -> Result<usize, String> {
+    let live = core::slice::from_raw_parts(ea as *const u8, 16);
+    if live[0] == 0xE9 && head[0] != 0xE9 {
+        // Another mod has a jump here already. Keep its target.
+        let rel = u32::from_le_bytes([live[1], live[2], live[3], live[4]]) as usize;
+        let target = (ea + 5).wrapping_add(rel);
+        let at = arena_alloc(&[0xE9, 0, 0, 0, 0]).ok_or("no memory for a trampoline")?;
+        core::ptr::copy_nonoverlapping(rel32(at + 5, target).as_ptr(), (at + 1) as *mut u8, 4);
+        return finish(ea, at, 5, detour, stack_args, cleanup);
+    }
+    let steal = head.len();
+    if live[..steal] != *head {
+        return Err(format!("entry bytes differ from the database: {:02x?} against {:02x?}", &live[..steal], head));
+    }
+    let mut code = head.to_vec();
     let whole = steal < 5;
     if whole {
         // The function is shorter than the jump. It ends in a return, and the jump may take
@@ -119,8 +129,7 @@ pub unsafe fn install(ea: usize, detour: usize, stack_args: usize, cleanup: Clea
     if !whole {
         core::ptr::copy_nonoverlapping(rel32(at + steal + 5, ea + steal).as_ptr(), (at + steal + 1) as *mut u8, 4);
     }
-    for &offset in func.relocs.iter().filter(|&&o| o != 0) {
-        let offset = offset as usize;
+    for &offset in relocs {
         let rel = u32::from_le_bytes([live[offset], live[offset + 1], live[offset + 2], live[offset + 3]]) as usize;
         let target = (ea + offset + 4).wrapping_add(rel);
         core::ptr::copy_nonoverlapping(rel32(at + offset + 4, target).as_ptr(), (at + offset) as *mut u8, 4);

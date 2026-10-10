@@ -60,8 +60,8 @@ unsafe fn set_current_material_regions(set: &mut crate::shadow::Regions, this: u
     set.add(material, MP::SIZE);
     let entry: usize = rd(material, MP::rendererData);
     if entry == 0 {
-        // The entry is made in this call, at a different address in each of the two runs.
-        set.skip();
+        // The entry is made in this call.
+        set.allocates();
     }
     set.add(entry, ENTRY_SIZE);
 }

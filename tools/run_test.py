@@ -133,7 +133,7 @@ def main():
         failures.append("no report")
     if os.path.isfile(progress_file):
         for line in open(progress_file, encoding="utf-8", errors="replace").read().splitlines():
-            if "frame test menu" in line and "FAIL" in line:
+            if "frame test menu" in line and ("FAIL" in line or "RETRY" in line):
                 failures.append(line.replace(TAG, "").strip()[:300])
             if "ERROR" in line:
                 failures.append(line.replace(TAG, "").strip()[:300])

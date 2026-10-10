@@ -13,6 +13,7 @@ pub mod gen {
     pub mod layouts;
 }
 
+pub mod alloc;
 pub mod log;
 pub mod census;
 pub mod device;

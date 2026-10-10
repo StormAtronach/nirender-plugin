@@ -49,11 +49,18 @@ return function(nirender, spec)
         say("DONE")
     end
 
-    -- Runs the frame comparisons one after the other, then `done`.
+    -- Runs the frame comparisons one after the other, then `done`. A comparison that reports
+    -- a change of the scene runs again, up to 8 times.
     local function frame_tests(where, list, done)
         local index = 0
-        local function next_test()
-            index = index + 1
+        local tries = 0
+        local function next_test(again)
+            if again then
+                tries = tries + 1
+            else
+                index = index + 1
+                tries = 0
+            end
             local kind = list[index]
             if not kind then return done() end
             if not nirender.frameTest(kind) then
@@ -63,8 +70,13 @@ return function(nirender, spec)
             local function poll()
                 local result = nirender.frameTestResult()
                 if result then
-                    say("frame test %s %s: %s", where, kind, result)
-                    after(0.2, next_test)
+                    local retry = result:sub(1, 5) == "RETRY" and tries < 8
+                    if retry then
+                        mwse.log("[nirender.test] frame test %s %s try %d: %s", where, kind, tries + 1, result:sub(1, 200))
+                    else
+                        say("frame test %s %s: %s", where, kind, result)
+                    end
+                    after(0.2, function() next_test(retry) end)
                 else
                     after(0.05, poll)
                 end

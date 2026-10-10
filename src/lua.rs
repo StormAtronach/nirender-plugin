@@ -82,6 +82,10 @@ unsafe fn install_all() -> Result<String, String> {
         crate::log!("census: {}{}", census::describe(change), if ported { " (PORTED)" } else { "" });
     }
 
+    match crate::alloc::install() {
+        Ok(()) => crate::log!("allocator hooks on: calls that allocate are compared"),
+        Err(error) => crate::log!("no allocator hooks ({error}): calls that allocate are not compared"),
+    }
     device::attach(device_ptr)?;
     device::set_frame_hook(frame::on_present);
 

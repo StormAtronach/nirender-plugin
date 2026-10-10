@@ -160,7 +160,13 @@ impl Regions {
             self.len += 1;
         }
     }
-    /// This call cannot be compared (it allocates, for one). The engine function runs alone.
+    /// This call allocates or frees memory. It can be compared only with the allocator hooks.
+    pub fn allocates(&mut self) {
+        if !crate::alloc::active() {
+            self.skip = true;
+        }
+    }
+    /// This call cannot be compared (it creates a device resource, for one). The engine function runs alone.
     pub fn skip(&mut self) {
         self.skip = true;
     }
@@ -174,9 +180,10 @@ struct Scratch {
     after_rust: Vec<u8>,
     log_rust: Vec<u32>,
     log_engine: Vec<u32>,
+    blocks_rust: Vec<u8>,
 }
 
-static mut SCRATCH: Scratch = Scratch { before: Vec::new(), after_rust: Vec::new(), log_rust: Vec::new(), log_engine: Vec::new() };
+static mut SCRATCH: Scratch = Scratch { before: Vec::new(), after_rust: Vec::new(), log_rust: Vec::new(), log_engine: Vec::new(), blocks_rust: Vec::new() };
 
 unsafe fn save(regions: &[(usize, usize)], into: &mut Vec<u8>) {
     into.clear();
@@ -267,32 +274,41 @@ pub unsafe fn dispatch<R: Eax>(
             let scratch = &mut *core::ptr::addr_of_mut!(SCRATCH);
 
             save(regions, &mut scratch.before);
+            let track = crate::alloc::active();
+            if track {
+                crate::alloc::begin_rust();
+            }
             LEG.store(LEG_RUST, Ordering::Relaxed);
             device::begin(true);
             let eax_rust = rust().to_eax();
             device::end(&mut scratch.log_rust);
             save(regions, &mut scratch.after_rust);
             restore(regions, &scratch.before);
+            if track {
+                crate::alloc::begin_engine(&mut scratch.blocks_rust);
+            }
 
             LEG.store(LEG_ENGINE, Ordering::Relaxed);
             device::begin(false);
             let eax_engine = engine();
             device::end(&mut scratch.log_engine);
             LEG.store(LEG_NONE, Ordering::Relaxed);
+            let heap = if track { crate::alloc::end(&scratch.blocks_rust) } else { String::new() };
 
             state.shadow_calls.fetch_add(1, Ordering::Relaxed);
             let calls = device::first_difference(&scratch.log_rust, &scratch.log_engine);
             let memory = memory_differences(regions, &scratch.after_rust);
             let eax_differs = compare_eax && (eax_rust ^ eax_engine) & R::MASK != 0;
-            if calls.is_some() || !memory.is_empty() || eax_differs {
+            if calls.is_some() || !memory.is_empty() || !heap.is_empty() || eax_differs {
                 state.mismatches.fetch_add(1, Ordering::Relaxed);
                 if state.reported.fetch_add(1, Ordering::Relaxed) < 8 {
                     crate::log!(
-                        "MISMATCH {} (call {}): {}{}{}",
+                        "MISMATCH {} (call {}): {}{}{}{}",
                         state.name,
                         state.shadow_calls.load(Ordering::Relaxed),
                         calls.map(|c| format!("device {c};")).unwrap_or_default(),
                         if memory.is_empty() { String::new() } else { format!(" memory{memory}") },
+                        if heap.is_empty() { String::new() } else { format!(" heap{heap}") },
                         if eax_differs { format!(" eax rust {eax_rust:#x} engine {eax_engine:#x}") } else { String::new() },
                     );
                 }

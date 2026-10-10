@@ -1,9 +1,10 @@
 //! The frame comparison: the device calls of one frame with the engine functions against the
 //! calls of the next frame with the Rust functions.
 //!
-//! It needs a scene that does not change between the two frames. The control run records
-//! two frames with the engine functions; it must report no difference before a live run
-//! means anything.
+//! It needs a scene that does not change between the frames. The control run records two
+//! frames with the engine functions. The live run records three: engine, Rust, engine. When
+//! the two engine frames differ the scene changed (an animated texture moved on, for one) and
+//! the run says RETRY; a FAIL means the Rust frame differs from two equal engine frames.
 
 use core::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
@@ -24,6 +25,7 @@ const IDLE: u8 = 0;
 const ARMED: u8 = 1;
 const FIRST: u8 = 2;
 const SECOND: u8 = 3;
+const THIRD: u8 = 4;
 
 static PHASE: AtomicU8 = AtomicU8::new(IDLE);
 static KIND_LIVE: AtomicU8 = AtomicU8::new(0);
@@ -32,10 +34,11 @@ static RESULT: Mutex<Option<String>> = Mutex::new(None);
 struct Work {
     first: Vec<u32>,
     second: Vec<u32>,
+    third: Vec<u32>,
     modes: Vec<Mode>,
     live_calls_before: u64,
 }
-static mut WORK: Work = Work { first: Vec::new(), second: Vec::new(), modes: Vec::new(), live_calls_before: 0 };
+static mut WORK: Work = Work { first: Vec::new(), second: Vec::new(), third: Vec::new(), modes: Vec::new(), live_calls_before: 0 };
 
 /// Starts a comparison at the next Present. False when one is running.
 pub fn request(kind: Kind) -> bool {
@@ -102,25 +105,42 @@ pub unsafe fn on_present() {
         }
         SECOND => {
             device::end(&mut work.second);
-            for (port, mode) in ports::all().zip(work.modes.iter()) {
-                port.set_mode(*mode);
+            if KIND_LIVE.load(Ordering::Relaxed) != 0 {
+                // A third frame with the engine functions again.
+                work.live_calls_before = total_live_calls() - work.live_calls_before;
+                set_all(Mode::Off);
+                device::begin(false);
+                PHASE.store(THIRD, Ordering::Relaxed);
+                return;
             }
-            shadow::suspend_shadow(false);
-            let live = KIND_LIVE.load(Ordering::Relaxed) != 0;
-            let mut text = compare(&work.first, &work.second, "engine", if live { "rust" } else { "engine" });
-            if live {
-                let ran = total_live_calls() - work.live_calls_before;
-                text.push_str(&format!("; {ran} calls ran as Rust"));
-                if ran == 0 {
-                    text = text.replacen("PASS", "FAIL (no Rust function ran)", 1);
-                }
+            finish(work, compare(&work.first, &work.second, "engine", "engine"), "control");
+        }
+        THIRD => {
+            device::end(&mut work.third);
+            let ran = work.live_calls_before;
+            let mut text = if work.first != work.third {
+                format!("RETRY the scene changed between the two engine frames; {}", compare(&work.first, &work.third, "engine", "engine"))
+            } else {
+                compare(&work.first, &work.second, "engine", "rust")
+            };
+            text.push_str(&format!("; {ran} calls ran as Rust"));
+            if ran == 0 {
+                text = format!("FAIL no Rust function ran; {text}");
             }
-            crate::log!("frame test ({}): {}", if live { "live" } else { "control" }, text);
-            *RESULT.lock().unwrap() = Some(text);
-            PHASE.store(IDLE, Ordering::Relaxed);
+            finish(work, text, "live");
         }
         _ => {}
     }
+}
+
+unsafe fn finish(work: &Work, text: String, kind: &str) {
+    for (port, mode) in ports::all().zip(work.modes.iter()) {
+        port.set_mode(*mode);
+    }
+    shadow::suspend_shadow(false);
+    crate::log!("frame test ({kind}): {text}");
+    *RESULT.lock().unwrap() = Some(text);
+    PHASE.store(IDLE, Ordering::Relaxed);
 }
 
 #[cfg(test)]
