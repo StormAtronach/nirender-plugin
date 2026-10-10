@@ -248,6 +248,9 @@ pub unsafe fn device_test_cooperative_level(device: usize) -> u32 {
 /// `IDirect3DDevice8::ResourceManagerDiscardBytes` through the vtable of the object, slot 0x14.
 #[inline(always)]
 pub unsafe fn device_resource_manager_discard_bytes(device: usize, bytes: u32) -> u32 {
+    if let Some(result) = crate::link_client::target_call(crate::link::CALL_DISCARD_BYTES, &[bytes]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, u32) -> u32 = transmute(virtual_at(device, DEVICE_RESOURCE_MANAGER_DISCARD_BYTES));
     f(device, bytes)
 }
@@ -273,6 +276,10 @@ pub unsafe fn device_present(device: usize, source_rect: usize, dest_rect: usize
 /// `IDirect3DDevice8::CreateTexture` through the vtable of the object, slot 0x50.
 #[inline(always)]
 pub unsafe fn device_create_texture(device: usize, width: u32, height: u32, levels: u32, usage: u32, format: u32, pool: u32, out: usize) -> u32 {
+    let args = [width, height, levels, usage, format, pool, out as u32];
+    if let Some(result) = crate::link_client::target_call(crate::link::CALL_CREATE_TEXTURE, &args) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_CREATE_TEXTURE));
     f(device, width, height, levels, usage, format, pool, out)
 }
@@ -307,6 +314,9 @@ pub unsafe fn device_create_index_buffer(device: usize, length: u32, usage: u32,
 /// `IDirect3DDevice8::CreateImageSurface` through the vtable of the object, slot 0x6C.
 #[inline(always)]
 pub unsafe fn device_create_image_surface(device: usize, width: u32, height: u32, format: u32, out: usize) -> u32 {
+    if let Some(result) = crate::link_client::target_call(crate::link::CALL_CREATE_IMAGE_SURFACE, &[width, height, format, out as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, u32, u32, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_CREATE_IMAGE_SURFACE));
     f(device, width, height, format, out)
 }
@@ -314,6 +324,10 @@ pub unsafe fn device_create_image_surface(device: usize, width: u32, height: u32
 /// `IDirect3DDevice8::CopyRects` through the vtable of the object, slot 0x70.
 #[inline(always)]
 pub unsafe fn device_copy_rects(device: usize, source: usize, rects: usize, count: u32, dest: usize, points: usize) -> u32 {
+    let args = [source as u32, rects as u32, count, dest as u32, points as u32];
+    if let Some(result) = crate::link_client::target_call(crate::link::CALL_COPY_PIXELS, &args) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, usize, usize, u32, usize, usize) -> u32 = transmute(virtual_at(device, DEVICE_COPY_RECTS));
     f(device, source, rects, count, dest, points)
 }
@@ -331,6 +345,9 @@ pub unsafe fn device_set_render_target(device: usize, target: usize, depth_stenc
 /// `IDirect3DDevice8::GetRenderTarget` through the vtable of the object, slot 0x80.
 #[inline(always)]
 pub unsafe fn device_get_render_target(device: usize, out: usize) -> u32 {
+    if let Some(result) = crate::link_client::target_call(crate::link::CALL_GET_RENDER_TARGET, &[out as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, usize) -> u32 = transmute(virtual_at(device, DEVICE_GET_RENDER_TARGET));
     f(device, out)
 }
@@ -338,6 +355,9 @@ pub unsafe fn device_get_render_target(device: usize, out: usize) -> u32 {
 /// `IDirect3DDevice8::GetDepthStencilSurface` through the vtable of the object, slot 0x84.
 #[inline(always)]
 pub unsafe fn device_get_depth_stencil_surface(device: usize, out: usize) -> u32 {
+    if let Some(result) = crate::link_client::target_call(crate::link::CALL_GET_DEPTH_BUFFER, &[out as u32]) {
+        return result;
+    }
     let f: unsafe extern "system" fn(usize, usize) -> u32 = transmute(virtual_at(device, DEVICE_GET_DEPTH_STENCIL_SURFACE));
     f(device, out)
 }

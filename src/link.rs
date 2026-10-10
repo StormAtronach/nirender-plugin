@@ -19,6 +19,7 @@ pub const CAP_CALLS: u32 = 0x80;
 pub const KIND_FRAME: u32 = 0x1;
 pub const KIND_BUFFERS: u32 = 0x2;
 pub const KIND_OBJECTS: u32 = 0x4;
+pub const KIND_TARGETS: u32 = 0x8;
 
 pub const CALL_TEST_DEVICE: u32 = 1;
 pub const CALL_BEGIN_SCENE: u32 = 2;
@@ -39,6 +40,13 @@ pub const CALL_CUBE_FACE: u32 = 16;
 pub const CALL_SURFACE_DESCRIPTION: u32 = 17;
 pub const CALL_SURFACE_LOCK: u32 = 18;
 pub const CALL_SURFACE_UNLOCK: u32 = 19;
+pub const CALL_CREATE_TEXTURE: u32 = 20;
+pub const CALL_CREATE_DEPTH_BUFFER: u32 = 21;
+pub const CALL_CREATE_IMAGE_SURFACE: u32 = 22;
+pub const CALL_COPY_PIXELS: u32 = 23;
+pub const CALL_GET_RENDER_TARGET: u32 = 24;
+pub const CALL_GET_DEPTH_BUFFER: u32 = 25;
+pub const CALL_DISCARD_BYTES: u32 = 26;
 
 pub const COMMAND_RENDER_STATE: u32 = 1;
 pub const COMMAND_STAGE_STATE: u32 = 2;

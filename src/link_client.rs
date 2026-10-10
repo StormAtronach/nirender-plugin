@@ -330,6 +330,13 @@ pub unsafe fn frame_call(call: u32, args: &[u32]) -> Option<u32> {
     kind_call(KIND_FRAME, call, args)
 }
 
+/// Makes a call of the target kind on the host. Returns `None` when the caller must make
+/// the D3D8 call.
+#[inline]
+pub unsafe fn target_call(call: u32, args: &[u32]) -> Option<u32> {
+    kind_call(KIND_TARGETS, call, args)
+}
+
 /// Makes a buffer on the host. Returns `None` when the caller must make the D3D8 call.
 #[inline]
 pub unsafe fn buffer_call(call: u32, args: &[u32]) -> Option<u32> {

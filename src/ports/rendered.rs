@@ -531,7 +531,10 @@ pub unsafe fn rendered_texture_data_create(texture: usize, renderer: usize) -> u
         let width = texture_get_width(texture);
         let device: usize = rd(renderer, R::d3dDevice);
         let create: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize) -> u32 = transmute(rd::<usize>(device_vtable, 0x68));
-        let result = create(device, width, height, depth_format, 0, out);
+        let result = match crate::link_client::target_call(crate::link::CALL_CREATE_DEPTH_BUFFER, &[width, height, depth_format, 0, out as u32]) {
+            Some(result) => result,
+            None => create(device, width, height, depth_format, 0, out),
+        };
         tries += 1;
         if tries >= CREATE_TRIES {
             if result != 0 {
