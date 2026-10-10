@@ -78,6 +78,10 @@ def main():
     ap.add_argument("--cells", default="", help="cells to visit after the place of the save, separated by ;")
     ap.add_argument("--timeout", type=int, default=0, help="budget in seconds; 0 = from the scenario")
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--start", choices=("off", "shadow", "live"),
+                    help="install before the game creates its renderer and run its start in this mode")
+    ap.add_argument("--dump", action="store_true",
+                    help="write the renderer objects and one frame after the load, for tools/compare_runs.py")
     ap.add_argument("--without", default="", help="mods to switch off for the run, separated by ; (for example \"MGE XE G7 Fork\")")
     ap.add_argument("--fault", type=int, default=0,
                     help="put a fault into the Rust code (1: a device call, 2: a memory write); the run passes when the tests find it")
@@ -103,6 +107,8 @@ def main():
         "shadowSeconds": args.shadow,
         "liveSeconds": args.live,
         "ports": args.ports,
+        "startMode": args.start,
+        "dumpDir": run_dir.replace("\\", "/") if args.dump else None,
         "fault": args.fault,
         "recordBuffers": not args.no_buffers,
         "cells": [c for c in args.cells.split(";") if c],

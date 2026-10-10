@@ -1,7 +1,11 @@
--- nirender: loads nirender.dll and installs it once the game has its renderer.
+-- nirender: loads nirender.dll and installs it.
 --
--- MWSE/config/nirender.json: { "mode": "off" | "shadow" | "live" } for every ported function.
--- "off" keeps the game code, "shadow" runs both and compares, "live" runs the Rust code.
+-- MWSE/config/nirender.json:
+--   "mode":  "off" | "shadow" | "live" for every ported function once the game is up.
+--            "off" keeps the game code, "shadow" runs both and compares, "live" runs the Rust code.
+--   "early": true installs when this file loads, before the game creates its renderer, and
+--            applies "mode" at once, so the start of the game runs in that mode too.
+--            false (the default) installs at the "initialized" event.
 -- A run spec (MWSE/config/nirender_test.json, written by tools/run_test.py) starts the test
 -- scenario in nirender/test.lua; without one this file only installs.
 
@@ -11,7 +15,7 @@ if not nirender then
     return
 end
 
-local config = mwse.loadConfig("nirender", { mode = "off" })
+local config = mwse.loadConfig("nirender", { mode = "off", early = false })
 
 local spec = nil
 do
@@ -19,16 +23,38 @@ do
     if ok then spec = result end
 end
 
-mwse.log("[nirender] version %s, %d ports, mode %s, test spec %s, renderer at load 0x%x", nirender.version, nirender.ports,
-    config.mode, spec and "present" or "absent", nirender.renderer())
+local early = config.early
+local startMode = config.mode
+if spec then
+    early = spec.startMode ~= nil
+    startMode = spec.startMode or "off"
+end
 
-event.register("initialized", function()
+mwse.log("[nirender] version %s, %d ports, mode %s, early %s, test spec %s, renderer at load 0x%x", nirender.version,
+    nirender.ports, startMode, tostring(early), spec and "present" or "absent", nirender.renderer())
+
+local function install()
     local ok, message = nirender.install(spec and spec.logFile or nil)
     mwse.log("[nirender] install: %s", message)
-    if not ok then return end
+    return ok
+end
+
+local installed = false
+if early then
+    installed = install()
+    if installed then nirender.setMode("*", startMode) end
+end
+
+event.register("initialized", function()
+    if installed then
+        -- Other mods may have changed the game code since this file loaded.
+        nirender.recheck()
+    else
+        installed = install()
+        if not installed then return end
+        if not spec then nirender.setMode("*", startMode) end
+    end
     if spec then
         require("nirender.test")(nirender, spec)
-    else
-        nirender.setMode("*", config.mode)
     end
 end)

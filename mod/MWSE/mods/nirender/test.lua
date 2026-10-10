@@ -139,13 +139,46 @@ return function(nirender, spec)
         end)
     end
 
+    -- For the comparison of two runs: the renderer objects and one frame, written at the
+    -- same point of each run (the save just loaded, menu mode, every port off).
+    local function dumps(done)
+        if not spec.dumpDir then return done() end
+        nirender.setMode("*", "off")
+        hold_in_menu_mode()
+        after(1, function()
+            say("state dump: %s", tostring(nirender.dumpState(spec.dumpDir .. "/state.txt")))
+            nirender.dumpFrame(spec.dumpDir .. "/frame.txt")
+            local function poll()
+                local result = nirender.frameTestResult()
+                if result then
+                    say("frame dump: %s", result)
+                    release_menu_mode()
+                    done()
+                else
+                    after(0.05, poll)
+                end
+            end
+            after(0.05, poll)
+        end)
+    end
+
     local started = false
     event.register("loaded", function()
         if started then return end
         started = true
         say("save loaded, cell '%s', x87 control word 0x%04x", tes3.player.cell.editorName, nirender.fpuControlWord())
+        if spec.startMode then
+            -- What the start of the game ran in. The report has the counts.
+            say("the game started in mode '%s'", spec.startMode)
+        end
         after(spec.settleSeconds or 4, function()
-            test_here(function() visit(1) end)
+            dumps(function()
+                if (spec.shadowSeconds or 0) > 0 then
+                    test_here(function() visit(1) end)
+                else
+                    finish()
+                end
+            end)
         end)
     end)
 
