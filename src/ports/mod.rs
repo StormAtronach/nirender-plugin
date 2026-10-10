@@ -94,6 +94,7 @@ macro_rules! port_cdecl {
 
 pub mod base;
 pub mod buffers;
+pub mod ct_pipeline_state;
 pub mod device_setup;
 pub mod draw;
 pub mod draw_misc;
@@ -127,6 +128,7 @@ static MODULES: &[&[&PortState]] = &[
     base::PORTS,
     draw_misc::PORTS,
     draw::PORTS,
+    ct_pipeline_state::PORTS,
 ];
 
 /// The call sites the ports serve through `site::call_target`. A module with such sites
@@ -134,6 +136,7 @@ static MODULES: &[&[&PortState]] = &[
 static SITE_LISTS: &[&[usize]] = &[
     draw_misc::SITES,
     draw::SITES,
+    ct_pipeline_state::SITES,
 ];
 
 /// True when a port calls the target that is in memory at the `call` at `site`.
