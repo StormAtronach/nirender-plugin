@@ -173,6 +173,9 @@ const MAX_STATE_LIGHTS: usize = 64;
 /// to the device last. The renderer of the game keeps no record of them. Only the render
 /// thread uses them.
 static mut WORLDS: [[f32; 16]; 4] = [[0.0; 16]; 4];
+/// The transforms that the copies have: bit n is world matrix n, bit 8 + n is the texture
+/// transform of stage n.
+static mut TRANSFORMS_KNOWN: u32 = 0;
 static mut TEXTURES: [u32; STATE_STAGES as usize] = [0; STATE_STAGES as usize];
 static mut TEXTURE_TRANSFORMS: [[f32; 16]; STATE_STAGES as usize] = [[0.0; 16]; STATE_STAGES as usize];
 
@@ -180,8 +183,10 @@ static mut TEXTURE_TRANSFORMS: [[f32; 16]; STATE_STAGES as usize] = [[0.0; 16]; 
 #[inline]
 pub unsafe fn note_transform(state: u32, matrix: usize) {
     let to = if (D3DTS_WORLDMATRIX0..D3DTS_WORLDMATRIX0 + 4).contains(&state) {
+        *addr_of_mut!(TRANSFORMS_KNOWN) |= 1 << (state - D3DTS_WORLDMATRIX0);
         addr_of_mut!(WORLDS[(state - D3DTS_WORLDMATRIX0) as usize])
     } else if (D3DTS_TEXTURE0..D3DTS_TEXTURE0 + STATE_STAGES).contains(&state) {
+        *addr_of_mut!(TRANSFORMS_KNOWN) |= 0x100 << (state - D3DTS_TEXTURE0);
         addr_of_mut!(TEXTURE_TRANSFORMS[(state - D3DTS_TEXTURE0) as usize])
     } else {
         return;
@@ -200,7 +205,8 @@ static RENDERER: AtomicUsize = AtomicUsize::new(0);
 /// code makes no D3D8 call for them.
 static SUPPRESS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 const DEVICE_FACTS: u32 =
-    1 << FACT_DEVICE_RENDER_STATES | 1 << FACT_DEVICE_STAGE_STATES | 1 << FACT_DEVICE_TEXTURES | 1 << FACT_DEVICE_BUFFERS;
+    1 << FACT_DEVICE_RENDER_STATES | 1 << FACT_DEVICE_STAGE_STATES | 1 << FACT_DEVICE_TEXTURES | 1 << FACT_DEVICE_BUFFERS
+        | 1 << FACT_DEVICE_TRANSFORMS | 1 << FACT_DEVICE_LIGHTS;
 /// The render states that a state packet has, as `D3DRS_*`: ZENABLE, ZWRITEENABLE,
 /// ALPHATESTENABLE, SRCBLEND, DESTBLEND, CULLMODE, ZFUNC, ALPHAREF, ALPHAFUNC,
 /// ALPHABLENDENABLE, FOGENABLE, the eight stencil states, LIGHTING, AMBIENT,
@@ -210,8 +216,8 @@ const PACKET_RENDER_STATES: [u32; 24] = [7, 14, 15, 19, 20, 22, 23, 24, 25, 27, 
 const SAMPLER_STATES: [u32; STATE_SAMPLER_STATES as usize] = [13, 14, 16, 17, 18];
 
 /// The D3D8 calls that the Rust code did not make, for each device kind: render states,
-/// stage states, textures, buffers.
-static mut SKIPPED: [u32; 4] = [0; 4];
+/// stage states, textures, buffers, transforms, lights.
+static mut SKIPPED: [u32; 6] = [0; 6];
 
 /// True when the host has this device kind. It counts the call that the caller then skips.
 #[inline]
@@ -239,6 +245,18 @@ pub fn skip_stage_state(state: u32) -> bool {
 #[inline]
 pub fn skip_texture(stage: u32) -> bool {
     skip(FACT_DEVICE_TEXTURES, stage < STATE_STAGES)
+}
+
+/// True when the host sets this transform from the packets: a texture transform.
+#[inline]
+pub fn skip_transform(state: u32) -> bool {
+    skip(FACT_DEVICE_TRANSFORMS, (D3DTS_TEXTURE0..D3DTS_TEXTURE0 + STATE_STAGES).contains(&state))
+}
+
+/// True when the host sets the lights from the packets.
+#[inline]
+pub fn skip_lights() -> bool {
+    skip(FACT_DEVICE_LIGHTS, true)
 }
 
 /// True when the host sets the buffers and the vertex format from the packets.
@@ -298,6 +316,36 @@ unsafe fn resync(kinds: u32) {
             if *addr_of!(TEXTURES_KNOWN) >> stage & 1 != 0 {
                 crate::d3d::device_set_texture(device, stage, (*addr_of!(TEXTURES))[stage as usize] as usize);
             }
+        }
+    }
+    if kinds >> FACT_DEVICE_TRANSFORMS & 1 != 0 {
+        let known = *addr_of!(TRANSFORMS_KNOWN);
+        for stage in 0..STATE_STAGES {
+            if known >> (8 + stage) & 1 != 0 {
+                crate::d3d::device_set_transform(device, D3DTS_TEXTURE0 + stage, addr_of!(TEXTURE_TRANSFORMS[stage as usize]) as usize);
+            }
+        }
+    }
+    if kinds >> FACT_DEVICE_LIGHTS & 1 != 0 {
+        // The host put all lights off. The lights of the game go on again, the oldest first:
+        // the list of the game has the newest first.
+        let manager: usize = rd(renderer, R::lightManager);
+        let mut entries = [0usize; MAX_STATE_LIGHTS];
+        let mut count = 0;
+        let mut item: usize = rd(manager, LM::deviceLights_head);
+        while item != 0 && count < MAX_STATE_LIGHTS {
+            let light: usize = rd(item, ITEM_DATA);
+            item = rd(item, ITEM_NEXT);
+            let entry = if light != 0 { crate::ports::hash_map::find_value(manager + LM::lightEntries, rd(light, L::index)) } else { 0 };
+            if entry != 0 {
+                entries[count] = entry;
+                count += 1;
+            }
+        }
+        for &entry in entries[..count].iter().rev() {
+            let index: u32 = rd(entry, LE::lightIndex);
+            crate::d3d::device_set_light(device, index, entry + LE::d3dLight);
+            crate::d3d::device_light_enable(device, index, 1);
         }
     }
     if kinds >> FACT_DEVICE_BUFFERS & 1 != 0 {
@@ -909,12 +957,12 @@ pub unsafe fn counters_text(reset: bool) -> String {
     }
     let skipped = &mut *addr_of_mut!(SKIPPED);
     text.push_str(&format!(
-        "calls_not_made: render_states {} stage_states {} textures {} buffers {}",
-        skipped[0], skipped[1], skipped[2], skipped[3]
+        "calls_not_made: render_states {} stage_states {} textures {} buffers {} transforms {} lights {}",
+        skipped[0], skipped[1], skipped[2], skipped[3], skipped[4], skipped[5]
     ));
     text.push(0xA as char);
     if reset {
-        *skipped = [0; 4];
+        *skipped = [0; 6];
     }
     // The states that the Rust code asked for, as `state=calls`.
     let render: &mut [u32] = &mut *addr_of_mut!(RENDER_STATE_SETS);

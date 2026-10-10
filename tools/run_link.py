@@ -35,10 +35,11 @@ FACTS = ("light_radius", "sun_light", "moon_shadow", "water_plane", "ui_scene", 
          "later_view", "state_draw", "state_buffers", "state_transform", "state_blend", "state_depth", "state_lighting",
          "state_material", "state_stages", "state_lights", "state_textures", "state_texture_transforms", "state_bones",
          "state_ambient", "texture_create", "state_depth_stencil", "state_samplers", "device_render_states",
-         "device_stage_states", "device_textures", "device_buffers")
+         "device_stage_states", "device_textures", "device_buffers", "device_transforms", "device_lights")
 # The facts that MGE XE can take from a packet.
 USABLE = ("ui_scene", "water_plane", "sun_light", "sky_draw", "land_splat", "scene_kind", "moon_shadow", "state_draw",
-          "device_render_states", "device_stage_states", "device_textures", "device_buffers")
+          "device_render_states", "device_stage_states", "device_textures", "device_buffers", "device_transforms",
+          "device_lights")
 # The classes of the contract (MGE_LINK_CLASS_*), by index.
 CLASSES = ("unknown", "sky_dome", "sky_night", "sky_clouds", "sky_sun", "sky_moon", "sky_moon_shadow", "sky_other",
            "sun_glare", "weather_particles", "water_plane", "landscape", "object", "shadow_volume", "shadow_overlay",

@@ -346,6 +346,9 @@ pub unsafe fn device_clear(device: usize, count: u32, rects: usize, flags: u32, 
 #[inline(always)]
 pub unsafe fn device_set_transform(device: usize, state: u32, matrix: usize) -> u32 {
     crate::link_client::note_transform(state, matrix);
+    if crate::link_client::skip_transform(state) {
+        return 0;
+    }
     let f: unsafe extern "system" fn(usize, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_SET_TRANSFORM));
     f(device, state, matrix)
 }
@@ -360,6 +363,9 @@ pub unsafe fn device_set_viewport(device: usize, viewport: usize) -> u32 {
 /// `IDirect3DDevice8::SetLight` through the vtable of the object, slot 0xB0.
 #[inline(always)]
 pub unsafe fn device_set_light(device: usize, index: u32, light: usize) -> u32 {
+    if crate::link_client::skip_lights() {
+        return 0;
+    }
     let f: unsafe extern "system" fn(usize, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_SET_LIGHT));
     f(device, index, light)
 }
@@ -367,6 +373,9 @@ pub unsafe fn device_set_light(device: usize, index: u32, light: usize) -> u32 {
 /// `IDirect3DDevice8::LightEnable` through the vtable of the object, slot 0xB8.
 #[inline(always)]
 pub unsafe fn device_light_enable(device: usize, index: u32, enable: u32) -> u32 {
+    if crate::link_client::skip_lights() {
+        return 0;
+    }
     let f: unsafe extern "system" fn(usize, u32, u32) -> u32 = transmute(virtual_at(device, DEVICE_LIGHT_ENABLE));
     f(device, index, enable)
 }

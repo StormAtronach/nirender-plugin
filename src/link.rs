@@ -96,6 +96,8 @@ pub const FACT_DEVICE_RENDER_STATES: u32 = 25;
 pub const FACT_DEVICE_STAGE_STATES: u32 = 26;
 pub const FACT_DEVICE_TEXTURES: u32 = 27;
 pub const FACT_DEVICE_BUFFERS: u32 = 28;
+pub const FACT_DEVICE_TRANSFORMS: u32 = 29;
+pub const FACT_DEVICE_LIGHTS: u32 = 30;
 pub const STATE_SAMPLER_STATES: u32 = 5;
 pub const STATE_UNKNOWN: u32 = 0x7FFF_FFFF;
 pub const STATE_STAGES: u32 = 8;
@@ -103,7 +105,7 @@ pub const STATE_STAGE_STATES: u32 = 17;
 pub const FACT_COUNT: u32 = 32;
 
 /// The names of the facts, for reports. The index is `FACT_*`.
-pub const FACT_NAMES: [&str; 29] = [
+pub const FACT_NAMES: [&str; 31] = [
     "light radius",
     "sun light",
     "moon shadow",
@@ -133,6 +135,8 @@ pub const FACT_NAMES: [&str; 29] = [
     "device stage states",
     "device textures",
     "device buffers",
+    "device transforms",
+    "device lights",
 ];
 
 #[repr(C)]
