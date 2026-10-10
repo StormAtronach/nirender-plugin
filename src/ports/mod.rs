@@ -92,6 +92,7 @@ macro_rules! port_cdecl {
     };
 }
 
+pub mod geometry;
 pub mod light_manager;
 pub mod material;
 pub mod render_state;
@@ -109,6 +110,7 @@ static MODULES: &[&[&PortState]] = &[
     texture_pipeline::PORTS,
     renderer_frame::PORTS,
     texture_pass_b::PORTS,
+    geometry::PORTS,
 ];
 
 /// Every port.
