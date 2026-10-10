@@ -19,8 +19,8 @@ do
     if ok then spec = result end
 end
 
-mwse.log("[nirender] version %s, %d ports, mode %s, test spec %s", nirender.version, nirender.ports, config.mode,
-    spec and "present" or "absent")
+mwse.log("[nirender] version %s, %d ports, mode %s, test spec %s, renderer at load 0x%x", nirender.version, nirender.ports,
+    config.mode, spec and "present" or "absent", nirender.renderer())
 
 event.register("initialized", function()
     local ok, message = nirender.install(spec and spec.logFile or nil)

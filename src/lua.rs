@@ -199,6 +199,12 @@ unsafe extern "C" fn fault(l: LuaState) -> i32 {
     0
 }
 
+/// `nirender.renderer()` -> the address of the game's renderer, or 0 before it exists.
+unsafe extern "C" fn renderer(l: LuaState) -> i32 {
+    lua_pushnumber(l, engine::renderer() as f64);
+    1
+}
+
 /// `nirender.fpuControlWord()` -> the x87 control word of the calling thread.
 unsafe extern "C" fn fpu_control_word(l: LuaState) -> i32 {
     lua_pushnumber(l, x87::control_word() as f64);
@@ -216,6 +222,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "fpuControlWord", fpu_control_word);
     set_fn(l, "recordBuffers", record_buffers);
     set_fn(l, "fault", fault);
+    set_fn(l, "renderer", renderer);
     push_str(l, env!("CARGO_PKG_VERSION"));
     lua_setfield(l, -2, b"version\0".as_ptr() as *const c_char);
     lua_pushnumber(l, ports::all().count() as f64);
