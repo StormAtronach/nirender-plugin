@@ -1,0 +1,754 @@
+//! Three functions of `NiDX8Renderer` that other mods change in memory: `RenderPoints`,
+//! `RenderLines` and the constructor.
+//!
+//! Every direct call (`call rel32`) of these functions goes through `site::call_target`: the
+//! port calls what the instruction in memory calls now, with the convention and the
+//! arguments of the game code. `SITES` lists those instructions. No port of another module
+//! is called directly from here. The constructor also takes the sizes of its hash maps from
+//! the instructions in memory, because MWSE changes them there.
+
+use core::arch::asm;
+use core::mem::transmute;
+
+use crate::engine;
+use crate::gen::layouts::{NiDX8RenderState as RS, NiDX8Renderer as R, NiGeometryData as GD, NiPropertyState as PS, THashMap};
+use crate::mem::{rd, wr};
+use crate::shadow::Regions;
+use crate::site::call_target;
+
+// ---------------------------------------------------------------------------------------
+// The call sites
+// ---------------------------------------------------------------------------------------
+
+/// The address of every `call rel32` of the three functions, with the callee of the database.
+const SITE_TABLE: &[(usize, usize)] = &[
+    // NiDX8Renderer::RenderPoints
+    (0x6AD0ED, 0x6AC9C0), // NiDX8Renderer::SetModelTransform
+    (0x6AD100, 0x6ED100), // NiBound_or_NiQuaternion::Copy
+    (0x6AD160, 0x6B9C40), // NiDX8ConfigurableTexturePipeline::selectAndLinkPass
+    (0x6AD16F, 0x6B82A0), // NiDX8RenderState::updateD3DState
+    (0x6AD198, 0x6B9C20), // NiDX8ConfigurableTexturePipeline::buildPass
+    (0x6AD1C6, 0x65EEB0), // NiRenderStateSetting::SetValue
+    (0x6AD204, 0x6BB200), // NiDX8LightManager::setState
+    (0x6AD221, 0x6B9C30), // NiDX8ConfigurableTexturePipeline::loadBinary
+    (0x6AD236, 0x6BCFE0), // NiDX8IndexBufferManager::getOrBuildQuadIndexBuffer
+    (0x6AD2F0, 0x6BDC70), // NiDX8VertexBufferManager::CreateVertexBuffer
+    (0x6AD7C6, 0x6B9E90), // NiDX8ConfigurableTexturePipeline::buildSkinPartitionPass
+    (0x6AD84B, 0x736400), // patchDrawIndexedPrimitive
+    (0x6AD874, 0x6B9D30), // NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables
+    // NiDX8Renderer::RenderLines
+    (0x6AD8C2, 0x6AC9C0), // NiDX8Renderer::SetModelTransform
+    (0x6AD8D2, 0x6ED100), // NiBound_or_NiQuaternion::Copy
+    (0x6AD909, 0x6BD190), // NiDX8IndexBufferManager::buildLineSegmentIndexBuffer
+    (0x6AD975, 0x6BDC70), // NiDX8VertexBufferManager::CreateVertexBuffer
+    (0x6ADB2E, 0x6B9C40), // NiDX8ConfigurableTexturePipeline::selectAndLinkPass
+    (0x6ADB3D, 0x6B82A0), // NiDX8RenderState::updateD3DState
+    (0x6ADB68, 0x6B9C20), // NiDX8ConfigurableTexturePipeline::buildPass
+    (0x6ADBE8, 0x6BB200), // NiDX8LightManager::setState
+    (0x6ADBFC, 0x6B9C30), // NiDX8ConfigurableTexturePipeline::loadBinary
+    (0x6ADC92, 0x736400), // patchDrawIndexedPrimitive
+    (0x6ADCBB, 0x6B9D30), // NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables
+    // NiDX8Renderer::ctor
+    (0x6A9A90, 0x6F4E30), // NiRenderer::ctor
+    (0x6A9AAC, 0x6F25E0), // NiBound_or_NiPlane::ctor
+    (0x6A9ABC, 0x6F25E0), // NiBound_or_NiPlane::ctor
+    (0x6A9ADB, 0x7276B0), // `eh vector constructor iterator'
+    (0x6A9B11, 0x727692), // operator new
+    (0x6A9B57, 0x727692), // operator new
+    (0x6A9B9D, 0x727692), // operator new
+    (0x6A9BE3, 0x727692), // operator new
+    (0x6A9C19, 0x6A96C0), // NiDX8Renderer::init
+];
+
+const fn site_addresses<const N: usize>(table: &[(usize, usize)]) -> [usize; N] {
+    assert!(table.len() == N);
+    let mut out = [0usize; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = table[i].0;
+        i += 1;
+    }
+    out
+}
+
+static SITE_ADDRESSES: [usize; SITE_TABLE.len()] = site_addresses(SITE_TABLE);
+
+/// The call instructions this module serves through `site::call_target`.
+pub static SITES: &[usize] = &SITE_ADDRESSES;
+
+macro_rules! as_u32 {
+    ($a:expr) => {
+        u32
+    };
+}
+
+/// Calls the target of the `call` at `$site` as a `__thiscall` function.
+macro_rules! site_thiscall {
+    ($site:expr, $this:expr $(, $a:expr)*) => {
+        transmute::<usize, unsafe extern "thiscall" fn(usize $(, as_u32!($a))*) -> u32>(call_target($site))($this $(, $a as u32)*)
+    };
+}
+
+/// Calls the target of the `call` at `$site` as a `__cdecl` function.
+macro_rules! site_cdecl {
+    ($site:expr $(, $a:expr)*) => {
+        transmute::<usize, unsafe extern "C" fn($(as_u32!($a)),*) -> u32>(call_target($site))($($a as u32),*)
+    };
+}
+
+/// The call the Morrowind Code Patch put in place of `call [edx+11Ch]`
+/// (`IDirect3DDevice8::DrawIndexedPrimitive`): the six arguments of the device method on the
+/// stack, the device in EAX and its vtable in EDX. The callee removes the arguments.
+unsafe fn site_draw_indexed_primitive(
+    site: usize,
+    device: usize,
+    vtable: usize,
+    primitive_type: u32,
+    min_index: u32,
+    vertex_count: u32,
+    start_index: u32,
+    primitive_count: u32,
+) -> u32 {
+    let block = [call_target(site) as u32, primitive_type, min_index, vertex_count, start_index, primitive_count];
+    let result: u32;
+    asm!(
+        "push dword ptr [ecx + 20]",
+        "push dword ptr [ecx + 16]",
+        "push dword ptr [ecx + 12]",
+        "push dword ptr [ecx + 8]",
+        "push dword ptr [ecx + 4]",
+        "push eax",
+        "call dword ptr [ecx]",
+        inout("eax") device => result,
+        inout("ecx") block.as_ptr() => _,
+        inout("edx") vtable => _,
+        clobber_abi("C"),
+    );
+    result
+}
+
+// ---------------------------------------------------------------------------------------
+// Engine data at fixed addresses, and members the layouts do not have
+// ---------------------------------------------------------------------------------------
+
+/// `data_NiDX8Renderer_vertexBlendLookup`: the first entry is the value of
+/// `D3DRS_VERTEXBLEND` for no blending.
+const VERTEX_BLEND_LOOKUP: usize = 0x7C3840;
+const VTBL_RENDERER: u32 = 0x74F4D0;
+/// The vtables of the four hash maps of the renderer, in the order of the members.
+const VTBL_HASH_MAPS: [u32; 4] = [0x74F620, 0x74F60C, 0x74F5F8, 0x74F5E4];
+/// `NiPointer::ctor` and `NiPointer::dtor`, as the constructor passes them on.
+const NI_POINTER_CTOR: usize = 0x40B080;
+const NI_POINTER_DTOR: usize = 0x40A880;
+
+/// `NiParticlesData::particleRadius`
+const PARTICLES_RADIUS: usize = 0x38;
+/// `NiParticlesData::numActive` (16 bits)
+const PARTICLES_NUM_ACTIVE: usize = 0x3C;
+/// `NiParticlesData::sizes`
+const PARTICLES_SIZES: usize = 0x40;
+/// `NiLinesData::lineSegmentFlags`
+const LINES_SEGMENT_FLAGS: usize = 0x34;
+/// `NiRenderStateSetting` of `D3DRS_VERTEXBLEND` in the render state.
+const RS_VERTEX_BLEND: usize = RS::renderStateSettings + D3DRS_VERTEXBLEND as usize * 8;
+
+const D3DRS_VERTEXBLEND: u32 = 151;
+/// `D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1`
+const FVF_POINTS: u32 = 0x152;
+/// Bytes of one vertex of a particle quad.
+const POINT_STRIDE: u32 = 36;
+/// A pass sets this bit in the result of `buildPass` when the lights need no update.
+const PASS_NO_LIGHTS: u32 = 0x1000_0000;
+
+/// 1.0
+const ONE: u32 = 0x3F80_0000;
+/// The normal the quads of the particles get in all three components: 0.3.
+const POINT_NORMAL: u32 = 0x3E99_999A;
+const _: () = assert!(RS_VERTEX_BLEND == 0x6B0 && RS::currentVertexShader == 0xA00 && RS::currentPixelShader == 0x9F8);
+const _: () = assert!(R::hashGeomBuffers == 0x560 && R::hashmap_maybeRenderedCubemaps == 0x590 && THashMap::SIZE == 0x10);
+
+// ---------------------------------------------------------------------------------------
+// Virtual calls: the slot is read on each call
+// ---------------------------------------------------------------------------------------
+
+/// A virtual function of `object` at `offset` in its vtable.
+unsafe fn virtual_at(object: usize, offset: usize) -> usize {
+    rd(rd::<usize>(object, 0), offset)
+}
+
+/// `NiGeometryData::GetActiveVertexCount`, slot 0x30. The result is 16 bits.
+unsafe fn geometry_active_vertex_count(data: usize) -> u16 {
+    transmute::<usize, unsafe extern "thiscall" fn(usize) -> u32>(virtual_at(data, 0x30))(data) as u16
+}
+
+unsafe fn vertex_buffer_lock(buffer: usize, offset: u32, size: u32, data: *mut usize, flags: u32) -> u32 {
+    let f: unsafe extern "system" fn(usize, u32, u32, *mut usize, u32) -> u32 = transmute(virtual_at(buffer, 0x2C));
+    f(buffer, offset, size, data, flags)
+}
+
+unsafe fn vertex_buffer_unlock(buffer: usize) -> u32 {
+    transmute::<usize, unsafe extern "system" fn(usize) -> u32>(virtual_at(buffer, 0x30))(buffer)
+}
+
+unsafe fn device_set_vertex_shader(device: usize, handle: u32) -> u32 {
+    transmute::<usize, unsafe extern "system" fn(usize, u32) -> u32>(virtual_at(device, 0x130))(device, handle)
+}
+
+unsafe fn device_set_stream_source(device: usize, stream: u32, buffer: usize, stride: u32) -> u32 {
+    transmute::<usize, unsafe extern "system" fn(usize, u32, usize, u32) -> u32>(virtual_at(device, 0x14C))(device, stream, buffer, stride)
+}
+
+unsafe fn device_set_indices(device: usize, buffer: usize, base_vertex: u32) -> u32 {
+    transmute::<usize, unsafe extern "system" fn(usize, usize, u32) -> u32>(virtual_at(device, 0x154))(device, buffer, base_vertex)
+}
+
+unsafe fn device_set_pixel_shader(device: usize, handle: u32) -> u32 {
+    transmute::<usize, unsafe extern "system" fn(usize, u32) -> u32>(virtual_at(device, 0x160))(device, handle)
+}
+
+/// The vertex shader and pixel shader of a fixed-function draw, as both draw functions set
+/// them: the device call only when the render state remembers another value.
+unsafe fn set_fixed_function_shaders(this: usize, fvf: u32) {
+    let render_state: usize = rd(this, R::renderState);
+    if rd::<u32>(render_state, RS::currentVertexShader) != fvf {
+        wr(render_state, RS::currentVertexShader, fvf);
+        device_set_vertex_shader(rd(render_state, RS::device), fvf);
+    }
+    let render_state: usize = rd(this, R::renderState);
+    if rd::<u32>(render_state, RS::currentPixelShader) != 0 {
+        wr::<u32>(render_state, RS::currentPixelShader, 0);
+        device_set_pixel_shader(rd(render_state, RS::device), 0);
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// NiDX8Renderer::RenderPoints
+// ---------------------------------------------------------------------------------------
+
+#[inline(always)]
+unsafe fn float(base: usize, offset: usize) -> f32 {
+    rd(base, offset)
+}
+
+/// The two diagonals of a particle quad of size 1 (0x6AD247 to 0x6AD2EC):
+/// `(right + up) * radius` and `(up - right) * radius`, with the model-space camera axes.
+unsafe fn point_diagonals(this: usize, radius: f32) -> ([f32; 3], [f32; 3]) {
+    let a = float(this, R::modelCameraUp_x) - float(this, R::modelCameraRight_x);
+    let b = float(this, R::modelCameraUp_y) - float(this, R::modelCameraRight_y);
+    let c = float(this, R::modelCameraUp_z) - float(this, R::modelCameraRight_z);
+    let difference = [a * radius, b * radius, c * radius];
+    let d = float(this, R::modelCameraRight_x) + float(this, R::modelCameraUp_x);
+    let e = float(this, R::modelCameraRight_y) + float(this, R::modelCameraUp_y);
+    let f = float(this, R::modelCameraRight_z) + float(this, R::modelCameraUp_z);
+    let sum = [d * radius, e * radius, f * radius];
+    (sum, difference)
+}
+
+/// One vertex of a particle quad: position, the fixed normal, the color, the texture
+/// coordinates. The order of the writes is the order of the game code.
+unsafe fn write_point_vertex(to: usize, position: [f32; 3], color: u32, u: u32, v: u32) {
+    wr(to, 0, position[0]);
+    wr(to, 4, position[1]);
+    wr(to, 8, position[2]);
+    wr(to, 0x0C, POINT_NORMAL);
+    wr(to, 0x10, POINT_NORMAL);
+    wr(to, 0x14, POINT_NORMAL);
+    wr(to, 0x18, color);
+    wr(to, 0x1C, u);
+    wr(to, 0x20, v);
+}
+
+/// The vertex loops of `RenderPoints` (0x6AD340 with colors, 0x6AD584 without): four
+/// vertices for each particle. `colors` is 0 for no colors; the color is then white.
+/// One `f32` operation for each x87 operation, in the order of the instructions.
+unsafe fn write_point_quads(mut to: usize, count: u32, mut vertices: usize, mut sizes: usize, mut colors: usize, sum: [f32; 3], difference: [f32; 3]) {
+    let mut left = count;
+    while left != 0 {
+        let size = float(sizes, 0);
+        let color: u32 = if colors != 0 { rd(colors, 0) } else { 0xFFFF_FFFF };
+        let p_x = sum[0] * size;
+        let p_y = sum[1] * size;
+        // Stays on the x87 stack until the third vertex.
+        let p_z = size * sum[2];
+        let size = float(sizes, 0);
+        let q = [difference[0] * size, difference[1] * size, difference[2] * size];
+
+        let x = float(vertices, 0) - p_x;
+        let y = float(vertices, 4) - p_y;
+        let z = float(vertices, 8) - p_z;
+        write_point_vertex(to, [x, y, z], color, 0, 0);
+        to += POINT_STRIDE as usize;
+
+        let x = float(vertices, 0) - q[0];
+        let y = float(vertices, 4) - q[1];
+        let z = float(vertices, 8) - q[2];
+        write_point_vertex(to, [x, y, z], color, ONE, 0);
+        to += POINT_STRIDE as usize;
+
+        let x = p_x + float(vertices, 0);
+        let y = p_y + float(vertices, 4);
+        let z = p_z + float(vertices, 8);
+        write_point_vertex(to, [x, y, z], color, ONE, ONE);
+        to += POINT_STRIDE as usize;
+
+        let x = q[0] + float(vertices, 0);
+        let y = q[1] + float(vertices, 4);
+        let z = q[2] + float(vertices, 8);
+        write_point_vertex(to, [x, y, z], color, 0, ONE);
+        to += POINT_STRIDE as usize;
+
+        vertices += 12;
+        if colors != 0 {
+            colors += 4;
+        }
+        sizes += 4;
+        left -= 1;
+    }
+}
+
+/// 0x6AD0A0 `NiDX8Renderer::RenderPoints`: draws the particles as quads that face the camera.
+pub unsafe fn render_points(this: usize, geometry_data: usize, world_transform: usize, world_bound: usize) {
+    if rd::<u8>(this, R::bSceneOpen) == 0 {
+        return;
+    }
+    if geometry_active_vertex_count(geometry_data) == 0 {
+        return;
+    }
+    let active: u16 = rd(geometry_data, PARTICLES_NUM_ACTIVE);
+    if active == 0 {
+        return;
+    }
+    site_thiscall!(0x6AD0ED, this, world_transform);
+    site_thiscall!(0x6AD100, this + R::worldBound, world_bound);
+    let colors: usize = rd(geometry_data, GD::colors);
+    let sizes: usize = rd(geometry_data, PARTICLES_SIZES);
+    let radius: f32 = rd(geometry_data, PARTICLES_RADIUS);
+    let count = active as u32;
+    let vertex_count = count * 4;
+    let vertices: usize = rd(geometry_data, GD::vertices);
+
+    let pipeline = || rd::<usize>(this, R::configurableTexturePipeline);
+    let property_state = || rd::<usize>(this, R::currentPropertyState);
+    let effect_state = || rd::<usize>(this, R::currentEffectState);
+
+    site_thiscall!(0x6AD160, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, world_transform, world_bound);
+    site_thiscall!(0x6AD16F, rd::<usize>(this, R::renderState), property_state());
+    let pass_flags = site_thiscall!(0x6AD198, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, world_transform, world_bound);
+
+    let render_state: usize = rd(this, R::renderState);
+    let blend: u32 = rd(VERTEX_BLEND_LOOKUP, 0);
+    if rd::<u32>(render_state, RS_VERTEX_BLEND) != blend {
+        site_thiscall!(0x6AD1C6, render_state + RS_VERTEX_BLEND, blend, 0);
+        engine::device_set_render_state(rd(render_state, RS::device), D3DRS_VERTEXBLEND, blend);
+    }
+    if pass_flags & PASS_NO_LIGHTS == 0 {
+        let state = property_state();
+        let vertex_color: usize = rd(state, PS::propVertexColor);
+        let texturing: usize = rd(state, PS::propTexturing);
+        site_thiscall!(0x6AD204, rd::<usize>(this, R::lightManager), effect_state(), texturing, vertex_color);
+    }
+    site_thiscall!(0x6AD221, pipeline(), geometry_data, 0, world_transform, world_bound);
+    let index_buffer = site_thiscall!(0x6AD236, rd::<usize>(this, R::indexBufferManager), vertex_count, 1, 0, 1) as usize;
+    if index_buffer == 0 {
+        return;
+    }
+
+    let (sum, difference) = point_diagonals(this, radius);
+    let size_to_lock = vertex_count.wrapping_mul(9) << 2;
+    let vertex_buffer = site_thiscall!(0x6AD2F0, rd::<usize>(this, R::vertexBufferManager), size_to_lock, 0, FVF_POINTS, 1) as usize;
+    if vertex_buffer == 0 {
+        return;
+    }
+    let mut memory: usize = 0;
+    if vertex_buffer_lock(vertex_buffer, 0, size_to_lock, &mut memory, 0) != 0 {
+        return;
+    }
+    write_point_quads(memory, count, vertices, sizes, colors, sum, difference);
+    vertex_buffer_unlock(vertex_buffer);
+
+    site_thiscall!(0x6AD7C6, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, 0, world_transform, world_bound);
+    device_set_stream_source(rd(this, R::d3dDevice), 0, vertex_buffer, POINT_STRIDE);
+    device_set_indices(rd(this, R::d3dDevice), index_buffer, 0);
+    set_fixed_function_shaders(this, FVF_POINTS);
+    let device: usize = rd(this, R::d3dDevice);
+    site_draw_indexed_primitive(0x6AD84B, device, rd(device, 0), 4, 0, vertex_count, 0, count + count);
+    site_thiscall!(0x6AD874, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, world_transform, world_bound);
+}
+
+/// A draw that goes past the first tests reaches `buildPass` and `loadBinary` of the texture
+/// pass (stages, textures, a texture upload on first use), the light manager and the two
+/// buffer managers: more blocks than `Regions` holds, and a texture upload cannot run twice.
+/// So only the calls that return at the first tests are compared; they write nothing.
+/// `GetActiveVertexCount` only reads.
+unsafe fn render_points_regions(set: &mut Regions, this: usize, geometry_data: usize) {
+    set.add(this, R::SIZE);
+    if rd::<u8>(this, R::bSceneOpen) == 0 {
+        return;
+    }
+    if geometry_active_vertex_count(geometry_data) == 0 || rd::<u16>(geometry_data, PARTICLES_NUM_ACTIVE) == 0 {
+        return;
+    }
+    set.skip();
+}
+
+// ---------------------------------------------------------------------------------------
+// NiDX8Renderer::RenderLines
+// ---------------------------------------------------------------------------------------
+
+/// Vertex format and bytes of a vertex of `RenderLines` (0x6AD91A to 0x6AD954).
+fn lines_format(has_texture_coords: bool, has_colors: bool) -> (u32, u32) {
+    let mut fvf = 2;
+    let mut stride = 0x0C;
+    if has_texture_coords {
+        fvf = 0x102;
+        stride = 0x14;
+    }
+    if has_colors {
+        fvf |= 0x40;
+        stride += 4;
+    }
+    (fvf, stride)
+}
+
+/// The four vertex loops of `RenderLines`: integer copies. Returns the texture coordinate
+/// pointer as the game code leaves it in EBP. The loop for positions alone (0x6ADCE5) does
+/// not advance the source: it writes the first vertex `count` times.
+unsafe fn write_line_vertices(mut to: usize, count: u32, mut vertices: usize, mut colors: usize, mut texture_coords: usize) -> usize {
+    let with_colors = colors != 0;
+    let with_texture_coords = texture_coords != 0;
+    for _ in 0..count {
+        wr::<u32>(to, 0, rd(vertices, 0));
+        wr::<u32>(to, 4, rd(vertices, 4));
+        wr::<u32>(to, 8, rd(vertices, 8));
+        to += 12;
+        if with_colors || with_texture_coords {
+            vertices += 12;
+        }
+        if with_colors {
+            wr::<u32>(to, 0, rd(colors, 0));
+            colors += 4;
+            to += 4;
+        }
+        if with_texture_coords {
+            wr::<u32>(to, 0, rd(texture_coords, 0));
+            wr::<u32>(to, 4, rd(texture_coords, 4));
+            texture_coords = texture_coords.wrapping_add(8);
+            to += 8;
+        }
+    }
+    texture_coords
+}
+
+/// 0x6AD890 `NiDX8Renderer::RenderLines`. No caller reads EAX.
+pub unsafe fn render_lines(this: usize, lines_data: usize, transform: usize, world_bound: usize) {
+    if rd::<u8>(this, R::bSceneOpen) == 0 {
+        return;
+    }
+    if geometry_active_vertex_count(lines_data) == 0 {
+        return;
+    }
+    site_thiscall!(0x6AD8C2, this, transform);
+    site_thiscall!(0x6AD8D2, this + R::worldBound, world_bound);
+    let count = rd::<u16>(lines_data, GD::vertexCount) as u32;
+    let segment_flags: usize = rd(lines_data, LINES_SEGMENT_FLAGS);
+    let vertices: usize = rd(lines_data, GD::vertices);
+    let texture_coords: usize = rd(lines_data, GD::textureCoords);
+    let colors: usize = rd(lines_data, GD::colors);
+
+    let mut index_count: u32 = 0;
+    let index_count_address = &mut index_count as *mut u32 as usize;
+    let index_buffer = site_thiscall!(0x6AD909, rd::<usize>(this, R::indexBufferManager), count, segment_flags, index_count_address, 0, 1) as usize;
+    if index_buffer == 0 {
+        return;
+    }
+    let (fvf, stride) = lines_format(texture_coords != 0, colors != 0);
+    let size = count.wrapping_mul(stride);
+    let vertex_buffer = site_thiscall!(0x6AD975, rd::<usize>(this, R::vertexBufferManager), size, 8, fvf, 0) as usize;
+    if vertex_buffer == 0 {
+        return;
+    }
+    let mut memory: usize = 0;
+    if vertex_buffer_lock(vertex_buffer, 0, size, &mut memory, 0) != 0 {
+        return;
+    }
+    // EBP of the game code: the pointer after the loop. The tests below read it.
+    let texture_coords = write_line_vertices(memory, count, vertices, colors, texture_coords);
+    vertex_buffer_unlock(vertex_buffer);
+    let texture_sets = if texture_coords != 0 { count } else { 0 };
+
+    let pipeline = || rd::<usize>(this, R::configurableTexturePipeline);
+    let property_state = || rd::<usize>(this, R::currentPropertyState);
+    let effect_state = || rd::<usize>(this, R::currentEffectState);
+
+    site_thiscall!(0x6ADB2E, pipeline(), property_state(), effect_state(), 0, texture_sets, lines_data, 0, transform, world_bound);
+    site_thiscall!(0x6ADB3D, rd::<usize>(this, R::renderState), property_state());
+    let pass_flags = site_thiscall!(0x6ADB68, pipeline(), property_state(), effect_state(), 0, texture_sets, lines_data, 0, transform, world_bound);
+
+    // The game code has this block twice.
+    for _ in 0..2 {
+        let blend: u32 = rd(VERTEX_BLEND_LOOKUP, 0);
+        let render_state: usize = rd(this, R::renderState);
+        if rd::<u32>(render_state, RS_VERTEX_BLEND) != blend {
+            wr(render_state, RS_VERTEX_BLEND, blend);
+            engine::device_set_render_state(rd(render_state, RS::device), D3DRS_VERTEXBLEND, blend);
+        }
+    }
+    if pass_flags & PASS_NO_LIGHTS == 0 {
+        let state = property_state();
+        let vertex_color: usize = rd(state, PS::propVertexColor);
+        let texturing: usize = rd(state, PS::propTexturing);
+        site_thiscall!(0x6ADBE8, rd::<usize>(this, R::lightManager), effect_state(), texturing, vertex_color);
+    }
+    site_thiscall!(0x6ADBFC, pipeline(), lines_data, 0, transform, world_bound);
+    device_set_indices(rd(this, R::d3dDevice), index_buffer, 0);
+    device_set_stream_source(rd(this, R::d3dDevice), 0, vertex_buffer, stride);
+    set_fixed_function_shaders(this, fvf);
+    let device: usize = rd(this, R::d3dDevice);
+    site_draw_indexed_primitive(0x6ADC92, device, rd(device, 0), 2, 0, count, 0, index_count >> 1);
+    site_thiscall!(0x6ADCBB, pipeline(), property_state(), effect_state(), 0, texture_sets, lines_data, 0, transform, world_bound);
+}
+
+/// As `render_points_regions`: a draw that goes past the first tests is not compared.
+unsafe fn render_lines_regions(set: &mut Regions, this: usize, lines_data: usize) {
+    set.add(this, R::SIZE);
+    if rd::<u8>(this, R::bSceneOpen) == 0 || geometry_active_vertex_count(lines_data) == 0 {
+        return;
+    }
+    set.skip();
+}
+
+// ---------------------------------------------------------------------------------------
+// NiDX8Renderer::ctor
+// ---------------------------------------------------------------------------------------
+
+/// The operand of `mov ebp, imm32` at 0x6A9AEC: the bucket count of the four hash maps.
+/// 37 in the database.
+const HASH_MAP_BUCKETS_OPERAND: usize = 0x6A9AED;
+/// The operands of the four `push imm32` before `operator new`: the bytes of the bucket
+/// array of the maps for geometry buffers, skin partitions, rendered textures and rendered
+/// cube maps. 0x94 in the database.
+const HASH_MAP_BYTES_OPERANDS: [usize; 4] = [0x6A9AF2, 0x6A9B38, 0x6A9B7E, 0x6A9BC4];
+/// The calls to `operator new` for the four bucket arrays.
+const HASH_MAP_NEW_SITES: [usize; 4] = [0x6A9B11, 0x6A9B57, 0x6A9B9D, 0x6A9BE3];
+
+/// 0x6A9A70 `NiDX8Renderer::ctor`
+///
+/// MWSE changes the sizes of the hash maps in this code (the patch "Optimize renderer hash
+/// map lookups" in MWSE's PatchUtil.cpp: 37 buckets become 4093). So the port reads the
+/// bucket count and the four allocation sizes from the instructions in memory, as the code
+/// in memory uses them.
+pub unsafe fn renderer_ctor(this: usize) -> usize {
+    site_thiscall!(0x6A9A90, this);
+    wr::<u32>(this, R::propertyStatePtr, 0);
+    wr::<u32>(this, R::effectStatePtr, 0);
+    site_thiscall!(0x6A9AAC, this + R::worldBound);
+    site_thiscall!(0x6A9ABC, this + R::defaultBound);
+    let construct_array: unsafe extern "system" fn(usize, u32, u32, usize, usize) = transmute(call_target(0x6A9ADB));
+    construct_array(this + R::defaultTexturePixelData, 4, 4, NI_POINTER_CTOR, NI_POINTER_DTOR);
+    wr::<u32>(this, R::backbufferRenderTarget_field_C, 0);
+    wr::<u32>(this, R::backbufferRenderTarget_field_18, 0);
+
+    let bucket_count: u32 = rd(HASH_MAP_BUCKETS_OPERAND, 0);
+    for index in 0..4 {
+        let map = this + R::hashGeomBuffers + index * THashMap::SIZE;
+        wr(map, THashMap::vtbl, VTBL_HASH_MAPS[index]);
+        wr(map, THashMap::bucketCount, bucket_count);
+        wr::<u32>(map, THashMap::count, 0);
+        let buckets = site_cdecl!(HASH_MAP_NEW_SITES[index], rd::<u32>(HASH_MAP_BYTES_OPERANDS[index], 0)) as usize;
+        // The game code reads the count from the map and clears that many pointers.
+        let bytes = rd::<u32>(map, THashMap::bucketCount) << 2;
+        wr(map, THashMap::arrayBuckets, buckets);
+        core::ptr::write_bytes(buckets as *mut u8, 0, bytes as usize);
+    }
+    wr(this, R::vtbl, VTBL_RENDERER);
+    site_thiscall!(0x6A9C19, this);
+    this
+}
+
+// ---------------------------------------------------------------------------------------
+// Ports
+// ---------------------------------------------------------------------------------------
+
+port_thiscall!(render_points_port, 0x6AD0A0, "NiDX8Renderer::RenderPoints",
+    fn(this, geometry_data: usize, world_transform: usize, world_bound: usize) -> (),
+    compare_eax = false,
+    regions = |set| render_points_regions(set, this, geometry_data),
+    rust = render_points);
+
+port_thiscall!(render_lines_port, 0x6AD890, "NiDX8Renderer::RenderLines",
+    fn(this, lines_data: usize, transform: usize, world_bound: usize) -> (),
+    compare_eax = false,
+    regions = |set| render_lines_regions(set, this, lines_data),
+    rust = render_lines);
+
+// Not compared: the game runs it once, before the plugin loads.
+port_thiscall!(renderer_ctor_port, 0x6A9A70, "NiDX8Renderer::ctor",
+    fn(this) -> usize,
+    compare_eax = true,
+    regions = |set| set.skip(),
+    rust = renderer_ctor);
+
+pub static PORTS: &[&crate::shadow::PortState] = &[
+    &render_points_port::STATE,
+    &render_lines_port::STATE,
+    &renderer_ctor_port::STATE,
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::census;
+    use crate::hook;
+
+    const FUNCTIONS: [usize; 3] = [0x6AD0A0, 0x6AD890, 0x6A9A70];
+
+    #[test]
+    fn every_site_is_a_call_inside_one_of_the_functions() {
+        assert_eq!(SITES.len(), SITE_TABLE.len());
+        for (index, &(site, callee)) in SITE_TABLE.iter().enumerate() {
+            assert_eq!(SITES[index], site);
+            let func = FUNCTIONS
+                .iter()
+                .map(|&ea| hook::find(ea).unwrap())
+                .find(|func| site >= func.ea && site + 5 <= func.ea + func.size)
+                .unwrap_or_else(|| panic!("{site:#x} is in none of the functions"));
+            let code = census::expected(func);
+            let at = site - func.ea;
+            assert_eq!(code[at], 0xE8, "{site:#x} is not a call");
+            let rel = i32::from_le_bytes(code[at + 1..at + 5].try_into().unwrap());
+            assert_eq!((site + 5).wrapping_add(rel as usize), callee, "callee of {site:#x}");
+        }
+        let mut sorted = SITES.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), SITES.len(), "a site is listed twice");
+    }
+
+    #[test]
+    fn the_hash_map_sizes_are_operands_of_the_constructor() {
+        let func = hook::find(0x6A9A70).unwrap();
+        let code = census::expected(func);
+        let operand = |at: usize, opcode: u8| -> u32 {
+            let offset = at - func.ea;
+            assert_eq!(code[offset - 1], opcode, "{at:#x} is not the operand of that instruction");
+            u32::from_le_bytes(code[offset..offset + 4].try_into().unwrap())
+        };
+        // mov ebp, 37
+        assert_eq!(operand(HASH_MAP_BUCKETS_OPERAND, 0xBD), 37);
+        for (index, at) in HASH_MAP_BYTES_OPERANDS.into_iter().enumerate() {
+            // push 0x94, then other instructions, then the call to operator new
+            assert_eq!(operand(at, 0x68), 37 * 4);
+            assert!(at < HASH_MAP_NEW_SITES[index] && HASH_MAP_NEW_SITES[index] < at + 0x24);
+            assert!(SITES.contains(&HASH_MAP_NEW_SITES[index]));
+        }
+    }
+
+    #[test]
+    fn the_sites_are_served() {
+        assert!(crate::ports::serves_site(0x6AD84B));
+        assert!(crate::ports::serves_site(0x6ADC92));
+        assert!(!crate::ports::serves_site(0x6AD84A));
+    }
+
+    fn floats(values: &[f32]) -> Vec<u8> {
+        values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    fn words(bytes: &[u8]) -> Vec<u32> {
+        bytes.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect()
+    }
+
+    fn vertex(position: [f32; 3], color: u32, u: f32, v: f32) -> Vec<u32> {
+        let mut out: Vec<u32> = position.iter().map(|p| p.to_bits()).collect();
+        out.extend([POINT_NORMAL, POINT_NORMAL, POINT_NORMAL, color, u.to_bits(), v.to_bits()]);
+        out
+    }
+
+    #[test]
+    fn point_diagonals_use_the_model_camera_axes() {
+        let mut renderer = vec![0u8; R::SIZE];
+        let this = renderer.as_mut_ptr() as usize;
+        unsafe {
+            for (i, value) in [1.0f32, 2.0, 3.0].into_iter().enumerate() {
+                wr(this, R::modelCameraRight + i * 4, value);
+            }
+            for (i, value) in [5.0f32, 7.0, 11.0].into_iter().enumerate() {
+                wr(this, R::modelCameraUp + i * 4, value);
+            }
+            let (sum, difference) = point_diagonals(this, 0.5);
+            assert_eq!(sum, [3.0, 4.5, 7.0]);
+            assert_eq!(difference, [2.0, 2.5, 4.0]);
+        }
+    }
+
+    #[test]
+    fn a_particle_is_four_vertices_around_its_position() {
+        let vertices = floats(&[10.0, 20.0, 30.0, 100.0, 200.0, 300.0]);
+        let sizes = floats(&[2.0, 1.0]);
+        let colors: Vec<u8> = [0x1122_3344u32, 0x5566_7788].iter().flat_map(|c| c.to_le_bytes()).collect();
+        let sum = [1.0, 2.0, 3.0];
+        let difference = [0.5, 0.25, 0.125];
+        let mut out = vec![0xEEu8; 2 * 4 * 36];
+        unsafe {
+            write_point_quads(out.as_mut_ptr() as usize, 2, vertices.as_ptr() as usize, sizes.as_ptr() as usize, colors.as_ptr() as usize, sum, difference);
+        }
+        let got = words(&out);
+        let mut want = Vec::new();
+        want.extend(vertex([8.0, 16.0, 24.0], 0x1122_3344, 0.0, 0.0));
+        want.extend(vertex([9.0, 19.5, 29.75], 0x1122_3344, 1.0, 0.0));
+        want.extend(vertex([12.0, 24.0, 36.0], 0x1122_3344, 1.0, 1.0));
+        want.extend(vertex([11.0, 20.5, 30.25], 0x1122_3344, 0.0, 1.0));
+        want.extend(vertex([99.0, 198.0, 297.0], 0x5566_7788, 0.0, 0.0));
+        want.extend(vertex([99.5, 199.75, 299.875], 0x5566_7788, 1.0, 0.0));
+        want.extend(vertex([101.0, 202.0, 303.0], 0x5566_7788, 1.0, 1.0));
+        want.extend(vertex([100.5, 200.25, 300.125], 0x5566_7788, 0.0, 1.0));
+        assert_eq!(got, want);
+
+        // Without colors every vertex is white.
+        let mut out = vec![0u8; 4 * 36];
+        unsafe {
+            write_point_quads(out.as_mut_ptr() as usize, 1, vertices.as_ptr() as usize, sizes.as_ptr() as usize, 0, sum, difference);
+        }
+        let got = words(&out);
+        assert_eq!(&got[..9], &vertex([8.0, 16.0, 24.0], 0xFFFF_FFFF, 0.0, 0.0)[..]);
+        assert_eq!(got[9 * 3 + 6], 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn line_formats() {
+        assert_eq!(lines_format(false, false), (0x002, 12));
+        assert_eq!(lines_format(false, true), (0x042, 16));
+        assert_eq!(lines_format(true, false), (0x102, 20));
+        assert_eq!(lines_format(true, true), (0x142, 24));
+    }
+
+    #[test]
+    fn line_vertices_in_the_four_formats() {
+        let vertices = floats(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let colors: Vec<u8> = [0xAAu32, 0xBB].iter().flat_map(|c| c.to_le_bytes()).collect();
+        let coords = floats(&[0.25, 0.5, 0.75, 1.0]);
+        let (v, c, t) = (vertices.as_ptr() as usize, colors.as_ptr() as usize, coords.as_ptr() as usize);
+        let f = |x: f32| x.to_bits();
+        unsafe {
+            let mut out = vec![0u8; 48];
+            assert_eq!(write_line_vertices(out.as_mut_ptr() as usize, 2, v, c, t), t + 16);
+            assert_eq!(
+                words(&out),
+                vec![f(1.0), f(2.0), f(3.0), 0xAA, f(0.25), f(0.5), f(4.0), f(5.0), f(6.0), 0xBB, f(0.75), f(1.0)]
+            );
+
+            let mut out = vec![0u8; 40];
+            assert_eq!(write_line_vertices(out.as_mut_ptr() as usize, 2, v, 0, t), t + 16);
+            assert_eq!(words(&out), vec![f(1.0), f(2.0), f(3.0), f(0.25), f(0.5), f(4.0), f(5.0), f(6.0), f(0.75), f(1.0)]);
+
+            let mut out = vec![0u8; 32];
+            assert_eq!(write_line_vertices(out.as_mut_ptr() as usize, 2, v, c, 0), 0);
+            assert_eq!(words(&out), vec![f(1.0), f(2.0), f(3.0), 0xAA, f(4.0), f(5.0), f(6.0), 0xBB]);
+
+            // Positions alone: the game code repeats the first vertex.
+            let mut out = vec![0u8; 24];
+            assert_eq!(write_line_vertices(out.as_mut_ptr() as usize, 2, v, 0, 0), 0);
+            assert_eq!(words(&out), vec![f(1.0), f(2.0), f(3.0), f(1.0), f(2.0), f(3.0)]);
+        }
+    }
+}
