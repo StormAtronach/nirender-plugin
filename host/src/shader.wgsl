@@ -54,7 +54,9 @@ struct Draw {
     more: vec4u,
     // The number of lights, the number of stages, the ambient source. w: bit 1, the light is
     // made for each pixel as MGE XE makes it (see `pixel_light`); bit 2, the fog makes the
-    // colour darker and adds no fog colour (a draw that adds to the picture).
+    // colour darker and adds no fog colour (a draw that adds to the picture); bit 4, the
+    // draw is the sky dome and the extension gives its shape and its colour; bit 8, the
+    // extension gives the colour and the draw keeps its alpha (the shadow of a moon).
     counts: vec4u,
     lights: array<Light, 8>,
     stages: array<Stage, 6>,
@@ -62,6 +64,8 @@ struct Draw {
     texture_transforms: array<mat4x4f, 6>,
     // 1 / width and -1 / height of the viewport.
     pixel: vec4f,
+    // The values of the extension for its sky functions.
+    extension: array<vec4f, 8>,
 }
 
 @group(0) @binding(0) var<uniform> draw: Draw;
@@ -134,7 +138,10 @@ fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view
 
 @vertex
 fn vs(in: VertexIn) -> VertexOut {
-    let local = vec4f(in.position, 1.0);
+    var local = vec4f(in.position, 1.0);
+    if (draw.counts.w & 4u) != 0u {
+        local = vec4f(extension_sky_position(in.position), 1.0);
+    }
     var world_position: vec4f;
     var world_normal: vec3f;
     let weights = draw.flags.w;
@@ -178,6 +185,14 @@ fn vs(in: VertexIn) -> VertexOut {
     out.world_position = world_position.xyz;
     out.world_normal = world_normal;
     out.vertex_color = vertex_color;
+    if (draw.counts.w & 12u) != 0u {
+        // For the sky: the direction from the camera, in the space of the world.
+        out.world_position = transpose(mat3x3f(draw.view[0].xyz, draw.view[1].xyz, draw.view[2].xyz)) * view_position.xyz;
+    }
+    if (draw.counts.w & 4u) != 0u {
+        // The dome is behind all other things.
+        out.clip.z = 0.999999 * out.clip.w;
+    }
     if draw.flags.x == 0u || (draw.counts.w & 1u) != 0u {
         out.color = vertex_color;
     } else {
@@ -391,6 +406,9 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     texels[4] = bump_light(3u, texels[3], textureSample(texture4, sampler4, final_coordinate(4u, in.coordinate4) + bump_move(3u, texels[3])));
     texels[5] = bump_light(4u, texels[4], textureSample(texture5, sampler5, final_coordinate(5u, in.coordinate5) + bump_move(4u, texels[4])));
 
+    if (draw.counts.w & 4u) != 0u {
+        return vec4f(extension_sky_color(normalize(in.world_position), in.clip.xy), 1.0);
+    }
     let per_pixel = (draw.counts.w & 1u) != 0u;
     var diffuse = in.color;
     if per_pixel {
@@ -428,6 +446,9 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
             return vec4f(lit * clear, current.a);
         }
         return vec4f(mix(draw.fog_color.rgb, lit, clear), current.a);
+    }
+    if (draw.counts.w & 8u) != 0u {
+        return vec4f(extension_sky_color(normalize(in.world_position), in.clip.xy), current.a);
     }
     return vec4f(mix(draw.fog_color.rgb, current.rgb, clear), current.a);
 }

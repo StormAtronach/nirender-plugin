@@ -82,6 +82,28 @@ pub trait Extension {
     /// number that the two parts agree on. See `nirender_stream_extension` of the plugin.
     fn data(&mut self, _id: u32, _bytes: &[u8]) {}
 
+    /// WGSL source with the two sky functions of the extension, or `None`. The renderer
+    /// asks one time, before it makes its shader, and puts the source at the end of it:
+    ///
+    /// - `fn extension_sky_position(position: vec3f) -> vec3f`: the position of a vertex of
+    ///   the sky dome in its model, for a dome of another shape.
+    /// - `fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f`: the colour of
+    ///   the sky in a direction from the camera (length 1, in the space of the world), for
+    ///   the pixel at these coordinates.
+    ///
+    /// The source reads the values of `sky` as `draw.extension[0]` to `draw.extension[7]`.
+    fn sky_shader(&self) -> Option<String> {
+        None
+    }
+
+    /// The values for the sky functions in this frame, or `None` for the sky of the game as
+    /// it is. The renderer asks at the first sky draw of a frame. With values, the sky dome
+    /// of the game (a sky draw without a texture) gets its shape and its colour from the
+    /// functions, and the shadow of a moon gets its colour from them and keeps its alpha.
+    fn sky(&mut self) -> Option<[[f32; 4]; 8]> {
+        None
+    }
+
     /// True when the extension wants the call `blend` in this frame. The renderer asks after
     /// a `before_world` that gave true, and then keeps the picture of that moment.
     fn wants_blend(&self) -> bool {
@@ -121,6 +143,7 @@ mod tag {
     pub const SCENE_BEGIN: u32 = 3;
     pub const SCENE_END: u32 = 4;
     pub const FRAME_EVENT: u32 = 5;
+    pub const OBJECT: u32 = 6;
     pub const DRAW_STATE: u32 = 7;
     pub const COMMAND: u32 = 8;
     pub const CALL: u32 = 9;
@@ -279,6 +302,7 @@ struct DrawData {
     stages: [StageData; 6],
     texture_transforms: [[f32; 16]; 6],
     pixel: [f32; 4],
+    extension: [[f32; 4]; 8],
 }
 
 /// A D3DCOLOR as red, green, blue, alpha.
@@ -698,6 +722,7 @@ impl Renderer {
         backends: wgpu::Backends,
         window: Option<std::sync::Arc<winit::window::Window>>,
         mut target_format: wgpu::TextureFormat,
+        sky_shader: Option<String>,
     ) -> (Renderer, Option<wgpu::Surface<'static>>) {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = backends;
@@ -737,7 +762,12 @@ impl Renderer {
         .expect("no device");
 
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+        // The sky functions of an extension, or the two that change nothing.
+        let sky_shader = sky_shader.unwrap_or_else(|| {
+            "fn extension_sky_position(position: vec3f) -> vec3f { return position; }\nfn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f { return vec3f(0.0); }\n".to_string()
+        });
+        let source = format!("{}\n{sky_shader}", include_str!("shader.wgsl"));
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -1287,6 +1317,10 @@ struct Stream {
     fog_range: Option<(f32, f32)>,
     /// The light for each pixel for the draw in progress, or `None`.
     per_pixel: Option<PerPixel>,
+    /// The class of the object of the draws that follow: MGE_LINK_CLASS_* of its packet.
+    object_class: u32,
+    /// The sky values of the extension for the draw in progress, or `None`.
+    sky: Option<[[f32; 4]; 8]>,
     state: Vec<u8>,
 }
 
@@ -1427,6 +1461,17 @@ impl Stream {
             }
         }
         data.texture_factor = color(state_of(60).unwrap_or(0xFFFF_FFFF));
+        if let Some(sky) = self.sky {
+            data.extension = sky;
+            if word(s, state::TEXTURES) == 0 {
+                // The sky dome has no texture.
+                data.counts[3] |= 4;
+            } else if self.object_class == 6 && known(word(s, state::DESTINATION_BLEND), 0) == 6 {
+                // MGE_LINK_CLASS_SKY_MOON_SHADOW with D3DBLEND_INVSRCALPHA: the disc that keeps
+                // the stars out of a moon.
+                data.counts[3] |= 8;
+            }
+        }
 
         let has_color = fvf & 0x40 != 0;
         data.flags = [
@@ -1549,6 +1594,8 @@ struct Player {
     /// is that of this frame.
     before: Option<wgpu::Texture>,
     before_kept: bool,
+    /// The sky values of the extension for this frame: `None` before the first sky draw.
+    frame_sky: Option<Option<[[f32; 4]; 8]>>,
     /// The texture that the game draws into now. `None` for the back buffer.
     target: Option<u32>,
     /// The game named a rendered texture as its target.
@@ -1574,6 +1621,8 @@ impl Player {
                 interior: false,
                 fog_range: None,
                 per_pixel: None,
+                object_class: 0,
+                sky: None,
                 state: Vec::new(),
             },
             encoder: None,
@@ -1592,6 +1641,7 @@ impl Player {
             frame_per_pixel: None,
             before: None,
             before_kept: false,
+            frame_sky: None,
             target: None,
             wants_texture: false,
             size: (0, 0),
@@ -1656,6 +1706,7 @@ impl Player {
         self.world_ended = false;
         self.frame_per_pixel = None;
         self.before_kept = false;
+        self.frame_sky = None;
         self.stream.fog_range = None;
         self.stream.back_buffer = true;
         self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
@@ -1780,6 +1831,8 @@ impl Player {
                 }
             }
             tag::DRAW_STATE => self.stream.state = data.to_vec(),
+            // The kind, the class, the flags and the geometry of the object.
+            tag::OBJECT if data.len() >= 8 => self.stream.object_class = word(data, 4),
             tag::FRAME_END => return true,
             tag::CALL => {
                 let arguments = &data[16..];
@@ -2144,6 +2197,13 @@ impl Player {
         // The light for each pixel is for the world in the back buffer: not for the sky,
         // which is before the world, and not for a texture that the game draws into.
         self.stream.per_pixel = self.frame_per_pixel.filter(|_| self.world_started && self.target.is_none());
+        // The sky of the extension is for a sky draw in the back buffer: MGE_LINK_CLASS_SKY_DOME
+        // is 1 and MGE_LINK_CLASS_SKY_OTHER is 7.
+        self.stream.sky = None;
+        if self.target.is_none() && (1..=7).contains(&self.stream.object_class) {
+            let extension = self.extension.as_mut();
+            self.stream.sky = *self.frame_sky.get_or_insert_with(|| extension.and_then(|extension| extension.sky()));
+        }
         let draw_data = self.stream.draw_data(&mut renderer.counts);
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
         let clock = std::time::Instant::now();
@@ -2368,7 +2428,7 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     }
     println!("{} records, {frames} frames, frame {wanted} into {width} x {height}", records.len());
 
-    let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm).0);
+    let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, None).0);
     player.renderer.anisotropy = option(&args, "--anisotropy").and_then(|text| text.parse().ok()).unwrap_or(1);
     let device = player.renderer.device.clone();
     let target = target_texture(&device, width, height, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
@@ -2624,7 +2684,7 @@ mod live {
                 // A window that is not enabled takes no mouse and no keys: they go to the game.
                 window.set_enable(false);
             }
-            let (renderer, surface) = Renderer::new(self.backends, Some(window.clone()), wgpu::TextureFormat::Bgra8Unorm);
+            let (renderer, surface) = Renderer::new(self.backends, Some(window.clone()), wgpu::TextureFormat::Bgra8Unorm, self.extension.as_ref().and_then(|extension| extension.sky_shader()));
             let surface = surface.expect("a surface");
             let size = window.inner_size();
             self.configuration = Some(wgpu::SurfaceConfiguration {
