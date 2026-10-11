@@ -120,6 +120,10 @@ struct Ring {
     capacity: u64,
     /// The time that the game waited for room, in ticks.
     waited: i64,
+    /// The bytes that the game wrote up to the end of the frame before the last one, and the
+    /// time that the game waited for the host program to draw that frame, in ticks.
+    frame_before: u64,
+    paced: i64,
 }
 
 impl Ring {
@@ -141,7 +145,7 @@ impl Ring {
         core::ptr::write_bytes(base, 0, RING_HEAD);
         (base as *mut u32).write(RING_MAGIC);
         (base.add(4) as *mut u32).write(capacity as u32);
-        Ok(Ring { mapping, base, capacity, waited: 0 })
+        Ok(Ring { mapping, base, capacity, waited: 0, frame_before: 0, paced: 0 })
     }
 
     unsafe fn counter(&self, offset: usize) -> &core::sync::atomic::AtomicU64 {
@@ -184,6 +188,24 @@ impl Ring {
         }
         self.counter(RING_WRITTEN).store(at, Ordering::Release);
         true
+    }
+
+    /// The end of a frame. The game waits here until the host program has read the frame
+    /// before this one: without the wait the game runs ahead when it is faster than the host
+    /// program, the ring fills with frames, and the picture is late by all of them. The mouse
+    /// pointer of a menu then follows the hand late. The wait ends after a short time when
+    /// the host program does not read.
+    unsafe fn pace(&mut self) {
+        let start = ticks();
+        let limit = ticks_per_second() / 4;
+        while self.counter(RING_READ).load(Ordering::Acquire) < self.frame_before {
+            if ticks() - start > limit {
+                break;
+            }
+            Sleep(0);
+        }
+        self.paced += ticks() - start;
+        self.frame_before = self.counter(RING_WRITTEN).load(Ordering::Relaxed);
     }
 
     unsafe fn close(&mut self) {
@@ -425,7 +447,11 @@ pub unsafe fn stop() {
     match s.out.take() {
         Some(Sink::File(mut out)) => s.failed |= out.flush().is_err(),
         Some(Sink::Ring(mut ring)) => {
-            crate::log!("stream: the game waited {:.1} ms in all for room in the ring", ring.waited as f64 * 1000.0 / ticks_per_second() as f64);
+            crate::log!(
+                "stream: the game waited {:.1} ms in all for room in the ring, and {:.1} ms in all for the host program at the ends of the frames",
+                ring.waited as f64 * 1000.0 / ticks_per_second() as f64,
+                ring.paced as f64 * 1000.0 / ticks_per_second() as f64
+            );
             ring.close();
             if let Some(mut reply) = s.reply.take() {
                 crate::log!("stream: {} pixel reads, the game waited {:.1} ms in all for them", reply.requests, reply.waited as f64 * 1000.0 / ticks_per_second() as f64);
@@ -800,6 +826,9 @@ unsafe fn frame_end() {
             if s.phase == Phase::Off {
                 // The write ended the stream.
                 return;
+            }
+            if let Some(Sink::Ring(ring)) = s.out.as_mut() {
+                ring.pace();
             }
             s.frames_done += 1;
             if !s.late.is_empty() {
