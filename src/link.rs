@@ -107,6 +107,7 @@ pub const LIGHT_AMBIENT: u32 = 0;
 pub const LIGHT_DIRECTIONAL: u32 = 1;
 pub const LIGHT_POINT: u32 = 2;
 pub const LIGHT_SPOT: u32 = 3;
+pub const LIGHT_SUN: u32 = 4;
 
 pub const EVENT_CLEAR: u32 = 1;
 pub const EVENT_SET_TARGET: u32 = 2;

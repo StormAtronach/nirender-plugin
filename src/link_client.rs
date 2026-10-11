@@ -47,6 +47,8 @@ const RENDER_SCREEN_POLY: usize = 0x6ADD20;
 
 /// `*(DataHandler**)`
 const DATA_HANDLER: usize = 0x7C67E0;
+/// `DataHandler::sgSunlight`: the directional light of the sun, and of an interior cell.
+const DATA_HANDLER_SUN_LIGHT: usize = 0x98;
 /// `*(NiCamera**)`: the camera of the race menu head.
 const RACE_MENU_CAMERA: usize = 0x7D5838;
 
@@ -922,10 +924,50 @@ unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
     }
 }
 
+/// 0x4D2F40 `game_dynamicLightTest`, cdecl with 6 arguments, and its first instruction.
+const DYNAMIC_LIGHT_TEST: usize = 0x4D2F40;
+const DYNAMIC_LIGHT_TEST_HEAD: [u8; 6] = [0x64, 0xA1, 0x00, 0x00, 0x00, 0x00];
+static mut DYNAMIC_LIGHT_TEST_ORIGINAL: usize = 0;
+/// The lights that `game_dynamicLightTest` got, with the radius that it got for each: the
+/// address of the light and the radius. The slot comes from the address.
+const GAME_LIGHT_SLOTS: usize = 2048;
+static mut GAME_LIGHTS: [(u32, f32); GAME_LIGHT_SLOTS] = [(0, 0.0); GAME_LIGHT_SLOTS];
+
+fn game_light_slot(light: usize) -> usize {
+    (light >> 4) % GAME_LIGHT_SLOTS
+}
+
+/// The detour of `game_dynamicLightTest`: a note of the light, then the game function.
+unsafe extern "C" fn dynamic_light_test_detour(light: usize, node: usize, radius: u32, flags: u32, is_land: u32, high_priority: u32) {
+    if light != 0 {
+        (*addr_of_mut!(GAME_LIGHTS))[game_light_slot(light)] = (light as u32, radius as f32);
+    }
+    let original: unsafe extern "C" fn(usize, usize, u32, u32, u32, u32) = core::mem::transmute(*addr_of!(DYNAMIC_LIGHT_TEST_ORIGINAL));
+    original(light, node, radius, flags, is_land, high_priority)
+}
+
+/// The radius that the game keeps in a point light, or 0 when it is not known.
+///
+/// `game_dynamicLightTest` writes the radius into the three parts of the specular colour.
+/// A light that is part of a mesh does not go through that function, and its specular
+/// colour is a colour. Thus the value counts only for a light that the function got, and
+/// only while the colour is the radius that the function got.
+unsafe fn game_light_radius(light: usize) -> f32 {
+    let (noted, radius) = (*addr_of!(GAME_LIGHTS))[game_light_slot(light)];
+    let specular: [f32; 3] = rd(light, L::specularColor_r);
+    if noted == light as u32 && specular == [radius; 3] {
+        radius
+    } else {
+        0.0
+    }
+}
+
 /// Fills `LIGHTS` with the lights of an effect state that the light manager sends to the
 /// device. Returns the number of lights.
 unsafe fn collect_lights(effect_state: usize) -> usize {
     let lights = &mut *addr_of_mut!(LIGHTS);
+    let data_handler: usize = rd(DATA_HANDLER, 0);
+    let sun_light: usize = if data_handler != 0 { rd(data_handler, DATA_HANDLER_SUN_LIGHT) } else { 0 };
     let mut count = 0;
     let mut iter = ptr_at(effect_state, DES::lights);
     while iter != 0 && count < MAX_LIGHTS {
@@ -934,14 +976,15 @@ unsafe fn collect_lights(effect_state: usize) -> usize {
         if light == 0 || rd::<u8>(light, L::enabled) == 0 || rd::<f32>(light, L::dimmer) < MIN_DIMMER {
             continue;
         }
-        let light_type = vcall0(light, LIGHT_VTBL_GET_TYPE);
+        let mut light_type = vcall0(light, LIGHT_VTBL_GET_TYPE);
+        if light_type == LIGHT_DIRECTIONAL && light == sun_light {
+            light_type = LIGHT_SUN;
+        }
         lights[count] = LightV1 {
             light: light as u32,
             device_index: rd(light, L::index),
             light_type,
-            // `game_dynamicLightTest` (0x4D2F40) keeps the radius of the light record in the
-            // specular colour.
-            radius: if light_type == LIGHT_POINT { rd(light, L::specularColor_r) } else { 0.0 },
+            radius: if light_type == LIGHT_POINT { game_light_radius(light) } else { 0.0 },
         };
         count += 1;
     }
@@ -1155,6 +1198,11 @@ pub unsafe fn connect() -> Result<String, String> {
     let Some(host) = table.as_ref() else {
         return Err(format!("the host refused version {VERSION}"));
     };
+    if *addr_of!(DYNAMIC_LIGHT_TEST_ORIGINAL) == 0 {
+        let detour = dynamic_light_test_detour as *const () as usize;
+        *addr_of_mut!(DYNAMIC_LIGHT_TEST_ORIGINAL) =
+            crate::hook::install_raw(DYNAMIC_LIGHT_TEST, &DYNAMIC_LIGHT_TEST_HEAD, &[], detour, 6, crate::hook::Cleanup::Caller)?;
+    }
     // The members up to `read_counters` are in each version of the table.
     if (host.struct_size as usize) < core::mem::offset_of!(HostV1, use_facts) {
         return Err(format!("the table of the host has {} bytes", host.struct_size));

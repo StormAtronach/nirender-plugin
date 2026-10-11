@@ -192,6 +192,10 @@ def main():
             # With the water plane or the moons from the packets, the mark is out of the
             # material. Then the inference of MGE XE finds nothing, and only the packet says yes.
             expected = row["mode"] == "facts" and name in ("water_plane", "moon_shadow") and mask >> FACTS.index(name) & 1
+            # The packet has the later passes of each object. The inference of MGE XE finds
+            # only those of the land. An object of some other kind with two passes is thus
+            # "only packet".
+            expected = expected or name == "land_splat"
             # The texture counts are not a comparison: "only MGE XE" is a texture that the
             # device did not take.
             if name != "texture_create":
