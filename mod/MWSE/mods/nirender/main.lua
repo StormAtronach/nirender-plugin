@@ -32,6 +32,15 @@ if spec then
     startMode = spec.startMode or "off"
 end
 
+-- The game has the Direct3D 8 of the plugin, and no Direct3D device. The Rust code is then
+-- the only renderer: it must be on before the game makes its renderer, with the link to the
+-- host program and with all of its facts and kinds in use.
+local ownDevice = nirender.ownDevice()
+if ownDevice then
+    early = true
+    startMode = "live"
+end
+
 mwse.log("[nirender] version %s, %d ports, mode %s, early %s, test spec %s, renderer at load 0x%x", nirender.version,
     nirender.ports, startMode, tostring(early), spec and "present" or "absent", nirender.renderer())
 
@@ -45,6 +54,12 @@ local installed = false
 if early then
     installed = install()
     if installed then nirender.setMode("*", startMode) end
+end
+if ownDevice and installed then
+    local ok, message = nirender.link()
+    mwse.log("[nirender] own device, link: %s (%s)", tostring(ok), message)
+    mwse.log("[nirender] own device, textures through the link: %s, facts %s, kinds %s", tostring(nirender.linkTextures(true)),
+        tostring(nirender.linkUseFacts(4261413630)), tostring(nirender.linkUseKinds(15)))
 end
 
 event.register("initialized", function()

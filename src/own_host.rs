@@ -504,7 +504,14 @@ unsafe fn target_surface(slot: &AtomicU32, format: u32) -> u32 {
     if surface == 0 {
         let object = new_object(Kind::Surface, &SURFACE_TABLE);
         let renderer = crate::engine::renderer();
-        let size: [u32; 2] = if renderer != 0 { crate::mem::rd(renderer, 0x23C) } else { [640, 480] };
+        let size: [u32; 2] = if crate::own_device::present() {
+            let (width, height) = crate::own_device::size();
+            [width, height]
+        } else if renderer != 0 {
+            crate::mem::rd(renderer, 0x23C)
+        } else {
+            [640, 480]
+        };
         (*object).width = size[0];
         (*object).height = size[1];
         (*object).format = format;
@@ -611,6 +618,25 @@ pub unsafe fn take(slot: usize) {
     if let Some(count) = (*core::ptr::addr_of_mut!(TAKEN)).get_mut(slot) {
         *count += 1;
     }
+}
+
+/// The table of this host, for a link without MGE XE.
+pub fn table() -> &'static HostV1 {
+    &TABLE
+}
+
+/// The device of the game is the one of the plugin: this host is the only one, from the
+/// start. The link gets the table when the ports connect.
+pub unsafe fn activate() {
+    ACTIVE.store(true, Ordering::Relaxed);
+}
+
+/// A call of the link from the device of the plugin, before the ports use the link or for a
+/// call that no port made. The stream gets the call.
+pub unsafe fn direct_call(index: u32, arguments: &[u32]) -> u32 {
+    let result = call(index, arguments.as_ptr());
+    crate::capture::call(index, arguments, result);
+    result
 }
 
 /// The plugin is the host of the render link from now on.

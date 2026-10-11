@@ -1,0 +1,65 @@
+---@diagnostic disable
+-- The in-game part of tools/run_own_device.py: the game with the d3d8.dll of this repository
+-- in its folder. The game has no Direct3D device. main.lua put the Rust code on before the
+-- game made its renderer, and the host program draws the only picture.
+--
+-- The scenario loads a save and asks the host program for a picture after each step.
+
+return function(nirender, spec)
+    local scenario = require("nirender.scenario")(nirender, spec, "owndevice")
+    local say, after = scenario.say, scenario.after
+
+    local function inventory(on)
+        if on then
+            for _, name in ipairs({ "MenuInventory", "MenuMap", "MenuStat", "MenuMagic" }) do
+                local shown = tes3ui.findMenu(name)
+                if shown then
+                    shown.visible = true
+                    shown.disabled = false
+                    shown:updateLayout()
+                end
+            end
+            tes3ui.enterMenuMode("MenuInventory")
+        else
+            tes3ui.leaveMenuMode()
+        end
+    end
+
+    local steps = {
+        { "world", 1.0, function() end },
+        { "inventory", 2.0, function()
+            inventory(true)
+            after(0.5, function() tes3ui.updateInventoryCharacterImage() end)
+        end },
+        { "interior", spec.settleSeconds or 6, function()
+            inventory(false)
+            scenario.goTo(spec.interior)
+        end },
+        { "exterior", spec.settleSeconds or 6, function()
+            scenario.goTo(spec.exterior)
+        end },
+    }
+
+    local function step(index)
+        local this = steps[index]
+        if not this then
+            say("steps done: %s", nirender.captureStatus())
+            -- The end of the stream is the end of the picture. The host program then says
+            -- what it drew.
+            nirender.captureStop()
+            return after(1, scenario.finish)
+        end
+        local ok, problem = pcall(this[3])
+        say("step %s: %s %s", this[1], tostring(ok), ok and "" or tostring(problem))
+        after(this[2], function()
+            say("after %s: %s cell '%s'", this[1], nirender.captureStatus(), tes3.player and tes3.player.cell.editorName or "?")
+            nirender.streamShot(string.format("%s/host-%s.png", spec.dir, this[1]))
+            after(0.8, function() step(index + 1) end)
+        end)
+    end
+
+    say("own device: %s", tostring(nirender.ownDevice()))
+    scenario.start(function()
+        after(spec.settleSeconds or 6, function() step(1) end)
+    end)
+end

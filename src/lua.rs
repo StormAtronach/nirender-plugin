@@ -118,6 +118,75 @@ unsafe extern "C" fn game_screenshot(_l: LuaState) -> i32 {
     0
 }
 
+/// `nirender.dumpDevice(path)` writes what the Direct3D 8 of the game says about itself into
+/// a text file: the capabilities of the device, the display mode, the modes of the adapter,
+/// and the formats that it accepts. The device of the plugin gives the same answers.
+unsafe extern "C" fn dump_device(l: LuaState) -> i32 {
+    use core::mem::transmute;
+    use std::fmt::Write;
+    let path = arg_str(l, 1).unwrap_or_default();
+    let renderer = crate::engine::renderer();
+    if renderer == 0 {
+        lua_pushboolean(l, 0);
+        return 1;
+    }
+    let device: usize = crate::mem::rd(renderer, 0x24);
+    let method = |object: usize, index: usize| crate::engine::virtual_at(object, index * 4);
+    let hex = |bytes: &[u32]| bytes.iter().map(|w| format!("{w:08x}")).collect::<Vec<_>>().join(" ");
+    let mut text = String::new();
+    // D3DCAPS8 has 212 bytes.
+    let mut caps = [0u32; 53];
+    transmute::<usize, unsafe extern "system" fn(usize, *mut u32) -> u32>(method(device, 7))(device, caps.as_mut_ptr());
+    let _ = writeln!(text, "caps {}", hex(&caps));
+    let parameters: [u32; 13] = crate::mem::rd(renderer, 0x23C);
+    let _ = writeln!(text, "present {}", hex(&parameters));
+    let _ = writeln!(text, "behavior {:08x} type {}", crate::mem::rd::<u32>(renderer, 0x238), crate::mem::rd::<u32>(renderer, 0x230));
+    let mut direct3d = 0usize;
+    transmute::<usize, unsafe extern "system" fn(usize, *mut usize) -> u32>(method(device, 6))(device, &mut direct3d);
+    if direct3d != 0 {
+        let mut mode = [0u32; 4];
+        transmute::<usize, unsafe extern "system" fn(usize, u32, *mut u32) -> u32>(method(direct3d, 8))(direct3d, 0, mode.as_mut_ptr());
+        let _ = writeln!(text, "display {}", hex(&mode));
+        let count = transmute::<usize, unsafe extern "system" fn(usize, u32) -> u32>(method(direct3d, 6))(direct3d, 0);
+        for i in 0..count.min(400) {
+            transmute::<usize, unsafe extern "system" fn(usize, u32, u32, *mut u32) -> u32>(method(direct3d, 7))(direct3d, 0, i, mode.as_mut_ptr());
+            let _ = writeln!(text, "mode {} {} {} {}", mode[0], mode[1], mode[2], mode[3]);
+        }
+        // CheckDeviceFormat(adapter, device type, adapter format, usage, resource type, format).
+        let check: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32) -> u32 = transmute(method(direct3d, 10));
+        let formats: Vec<u32> = (20..=30).chain(40..=41).chain(50..=52).chain(60..=64).chain(70..=80).chain([0x3154_5844, 0x3254_5844, 0x3354_5844, 0x3454_5844, 0x3554_5844]).collect();
+        for (usage, kind) in [(0u32, 3u32), (1, 3), (2, 1), (2, 3), (0, 5), (1, 5), (1, 1), (0, 1)] {
+            let accepted: Vec<String> = formats.iter().filter(|f| check(direct3d, 0, 1, 22, usage, kind, **f) == 0).map(|f| format!("{f:x}")).collect();
+            let _ = writeln!(text, "formats usage {usage} type {kind}: {}", accepted.join(" "));
+        }
+        // CheckDepthStencilMatch(adapter, device type, adapter format, target format, depth format).
+        let matches: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(method(direct3d, 12));
+        for target in [21u32, 22, 23] {
+            let accepted: Vec<String> = (70..=80u32).filter(|f| matches(direct3d, 0, 1, 22, target, *f) == 0).map(|f| f.to_string()).collect();
+            let _ = writeln!(text, "depth for target {target}: {}", accepted.join(" "));
+        }
+        // D3DADAPTER_IDENTIFIER8 has 1068 bytes: the driver and the description first.
+        let mut identifier = [0u8; 1068];
+        transmute::<usize, unsafe extern "system" fn(usize, u32, u32, *mut u8) -> u32>(method(direct3d, 5))(direct3d, 0, 2, identifier.as_mut_ptr());
+        let name = |from: usize| String::from_utf8_lossy(&identifier[from..from + 512]).trim_end_matches('\0').to_string();
+        let _ = writeln!(text, "driver {}", name(0));
+        let _ = writeln!(text, "description {}", name(512));
+        let rest: Vec<String> = identifier[1024..].iter().map(|b| format!("{b:02x}")).collect();
+        let _ = writeln!(text, "identifier rest {}", rest.join(""));
+        transmute::<usize, unsafe extern "system" fn(usize) -> u32>(method(direct3d, 2))(direct3d);
+    }
+    lua_pushboolean(l, std::fs::write(&path, text).is_ok() as i32);
+    1
+}
+
+/// `nirender.ownDevice()` returns true when the game gets its Direct3D 8 from the plugin: the
+/// `d3d8.dll` of the game folder is the one of this repository, and no Direct3D device is in
+/// the process.
+unsafe extern "C" fn own_device(l: LuaState) -> i32 {
+    lua_pushboolean(l, (crate::own_device::present() || crate::link_client::own_d3d8()) as i32);
+    1
+}
+
 /// `nirender.captureStop()` ends the capture or the stream.
 unsafe extern "C" fn capture_stop(_l: LuaState) -> i32 {
     crate::capture::stop();
@@ -367,6 +436,8 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "stream", stream);
     set_fn(l, "captureStop", capture_stop);
     set_fn(l, "streamShot", stream_shot);
+    set_fn(l, "dumpDevice", dump_device);
+    set_fn(l, "ownDevice", own_device);
     set_fn(l, "gameScreenshot", game_screenshot);
     set_fn(l, "forceReset", force_reset);
     set_fn(l, "renderer", renderer);

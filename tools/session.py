@@ -76,8 +76,11 @@ class Run:
         spec.update(values)
         return spec
 
-    def launch(self, spec, timeout, tag):
+    def launch(self, spec, timeout, tag, swaps=()):
         """Starts the game with `spec` and follows it until the scenario says DONE.
+
+        `swaps` are files to put in place for the run, as (source, destination, label). The
+        files that were there come back after the run.
 
         Returns True when the scenario finished within `timeout` seconds."""
         deployment = harness.Deployment()
@@ -85,6 +88,8 @@ class Run:
         print("launching (budget %ds, results in %s)" % (timeout, self.dir), flush=True)
         try:
             deployment.write_spec(SPEC_NAME, spec)
+            for source, destination, label in swaps:
+                deployment.swap(source, destination, label)
             done = harness.run_game(self.progress, timeout, tag, deployment, self.started)
         finally:
             # run_game also restores. This restore is for a failure before run_game gets to

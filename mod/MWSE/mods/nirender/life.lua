@@ -89,6 +89,8 @@ return function(nirender, spec)
 
     scenario.start(function()
         after(spec.settleSeconds or 6, function()
+            nirender.dumpDevice(spec.dir .. "/device.txt")
+            if spec.dumpOnly then return scenario.finish() end
             local ok, message = nirender.link()
             say("link: %s (%s)", tostring(ok), message)
             if not ok then return scenario.finish() end

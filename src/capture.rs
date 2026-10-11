@@ -282,6 +282,9 @@ struct State {
     frames: u32,
     /// At the end of the warm-up the plugin becomes the host of the render link.
     own_host: bool,
+    /// The stream started with the device of the plugin: each buffer got the recorder when
+    /// the game made it, and each buffer of a draw is in the stream.
+    direct: bool,
     out: Option<Sink>,
     reply: Option<Reply>,
     /// The geometry data and the skin instances of the draws of the warm-up.
@@ -357,11 +360,31 @@ pub unsafe fn start_stream(name: &str, megabytes: u32, warmup: u32, own_host: bo
     Ok(())
 }
 
+/// Starts a stream that has all of the life of the device: the device is the one of the
+/// plugin, and the stream starts when the game makes it. No warm-up: each resource that the
+/// game makes after this is in the stream.
+pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, window: u32) -> Result<(), String> {
+    if active() {
+        return Err("a capture is in progress".into());
+    }
+    begin(Sink::Ring(Ring::create(name, megabytes)?), 1, 0);
+    if let Some(s) = state() {
+        s.direct = true;
+        s.phase = Phase::Record(0);
+        s.reply = Reply::create(name, (width as usize * height as usize * 4).max(1024 * 1024 * 4));
+    }
+    RECORDING.store(true, Ordering::Relaxed);
+    write(tag::HEADER, &[&words(&[width, height, window])]);
+    crate::log!("stream: start with the device, a ring of {megabytes} MB with the name {name}");
+    Ok(())
+}
+
 unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
     *core::ptr::addr_of_mut!(STATE) = Some(State {
         phase: Phase::Warmup(warmup.max(1)),
         frames,
         own_host: false,
+        direct: false,
         out: Some(out),
         reply: None,
         geometry: HashSet::new(),
@@ -530,10 +553,13 @@ pub unsafe fn draw_state(packet: &DrawStateV1) {
     if !active() {
         return;
     }
-    // A buffer that the game made before the capture gets the recorder here.
-    crate::resource::wrap(packet.vertex_buffer as usize);
-    crate::resource::wrap(packet.index_buffer as usize);
-    if recording() {
+    let direct = state().is_some_and(|s| s.direct);
+    if !direct {
+        // A buffer that the game made before the capture gets the recorder here.
+        crate::resource::wrap(packet.vertex_buffer as usize);
+        crate::resource::wrap(packet.index_buffer as usize);
+    }
+    if recording() && !direct {
         if let Some(s) = state() {
             let known = s.known_buffers.contains(&packet.vertex_buffer) && s.known_buffers.contains(&packet.index_buffer);
             if !known && !s.dropped_late.contains(&s.object) {

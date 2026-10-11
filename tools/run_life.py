@@ -55,6 +55,7 @@ def main():
     ap.add_argument("--megabytes", type=int, default=64)
     ap.add_argument("--backend", default="vulkan")
     ap.add_argument("--embed", action="store_true", help="the host shows its picture in the window of the game")
+    ap.add_argument("--dump-only", action="store_true", help="write device.txt, what the Direct3D of the game says, and end")
     ap.add_argument("--budget", type=int, default=240)
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -66,7 +67,7 @@ def main():
     run = session.Run(args.label)
     spec = run.spec("life", save=args.save, interior=args.interior, exterior=args.exterior, megabytes=args.megabytes, warmupFrames=5,
                     backend=args.backend, streamName="nirender-%d" % os.getpid(), facts=ALL_FACTS, kinds=ALL_KINDS,
-                    dir=run.dir.replace("\\", "/"))
+                    dir=run.dir.replace("\\", "/"), dumpOnly=args.dump_only)
 
     hosts = []
     stop = threading.Event()

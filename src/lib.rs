@@ -41,4 +41,5 @@ pub mod x87;
 // The test binary runs outside the game, where there is no lua51.dll to load.
 #[cfg(not(test))]
 pub mod lua;
+pub mod own_device;
 pub mod own_host;

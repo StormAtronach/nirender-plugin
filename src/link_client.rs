@@ -557,6 +557,12 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
                 return Some(0);
             }
         }
+        // The device of the plugin answers what it can.
+        if crate::own_device::present() {
+            if let Some(result) = crate::own_device::answer(slot, args) {
+                return Some(result);
+            }
+        }
         // No device is behind the link. The call ends here.
         crate::own_host::take(slot);
         return Some(0);
@@ -1259,22 +1265,34 @@ unsafe fn host_module() -> usize {
     win::GetModuleHandleW(path.as_ptr()) as usize
 }
 
+/// True when the `d3d8.dll` of the game folder is the one of this repository: the game gets
+/// its Direct3D 8 from the plugin. This is true before the game asks for it.
+pub unsafe fn own_d3d8() -> bool {
+    let module = host_module();
+    module != 0 && !win::GetProcAddress(module as *mut c_void, b"NirenderD3D8\0".as_ptr()).is_null()
+}
+
 /// Connects to the host and puts the packet functions on the ports. The ports must have
 /// their detours. Returns what happened, as text.
 pub unsafe fn connect() -> Result<String, String> {
     if HOST.load(Ordering::Relaxed) != 0 {
         return Ok("connected before".to_string());
     }
-    let module = host_module();
-    if module == 0 {
-        return Err("no d3d8.dll of the game folder is in the process".to_string());
-    }
-    let export = win::GetProcAddress(module as *mut c_void, CONNECT_EXPORT.as_ptr());
-    if export.is_null() {
-        return Err("the d3d8.dll has no MGE_RenderLinkConnect".to_string());
-    }
-    let connect: ConnectFn = core::mem::transmute(export);
-    let table = connect(VERSION);
+    let table: *const HostV1 = if crate::own_device::present() || own_d3d8() {
+        // The device of the game is the one of the plugin. The plugin is the host too.
+        crate::own_host::table()
+    } else {
+        let module = host_module();
+        if module == 0 {
+            return Err("no d3d8.dll of the game folder is in the process".to_string());
+        }
+        let export = win::GetProcAddress(module as *mut c_void, CONNECT_EXPORT.as_ptr());
+        if export.is_null() {
+            return Err("the d3d8.dll has no MGE_RenderLinkConnect".to_string());
+        }
+        let connect: ConnectFn = core::mem::transmute(export);
+        connect(VERSION)
+    };
     let Some(host) = table.as_ref() else {
         return Err(format!("the host refused version {VERSION}"));
     };

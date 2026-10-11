@@ -1,0 +1,14 @@
+[package]
+name = "nirender-d3d8"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The d3d8.dll for a game without a Direct3D device: it gives Direct3DCreate8 to the nirender plugin"
+
+[lib]
+name = "d3d8"
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = 2
+panic = "abort"

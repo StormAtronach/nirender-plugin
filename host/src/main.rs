@@ -231,6 +231,38 @@ fn compare(value: u32) -> wgpu::CompareFunction {
     }
 }
 
+/// The format of the GPU for a D3DFORMAT, the bytes of one of its blocks (0 for a format
+/// without blocks), and the bytes of a pixel in the stream. `None` for a format that this
+/// program does not make.
+fn texture_format(d3d_format: u32) -> Option<(wgpu::TextureFormat, usize, usize)> {
+    Some(match d3d_format {
+        0x3154_5844 => (wgpu::TextureFormat::Bc1RgbaUnorm, 8, 0),
+        0x3354_5844 => (wgpu::TextureFormat::Bc2RgbaUnorm, 16, 0),
+        0x3554_5844 => (wgpu::TextureFormat::Bc3RgbaUnorm, 16, 0),
+        21 | 22 => (wgpu::TextureFormat::Bgra8Unorm, 0, 4),
+        // D3DFMT_R5G6B5, X1R5G5B5, A1R5G5B5 and A4R4G4B4: this program makes 4 bytes of them.
+        23..=26 => (wgpu::TextureFormat::Bgra8Unorm, 0, 2),
+        _ => return None,
+    })
+}
+
+/// Makes pixels with the bytes blue, green, red, alpha from pixels with 16 bits.
+fn expand_16_bits(d3d_format: u32, source: &[u8]) -> Vec<u8> {
+    let wide = |value: u16, bits: u32| -> u8 { ((value as u32 * 255 + ((1 << bits) - 1) / 2) / ((1 << bits) - 1)) as u8 };
+    let mut pixels = Vec::with_capacity(source.len() * 2);
+    for pair in source.chunks_exact(2) {
+        let p = u16::from_le_bytes([pair[0], pair[1]]);
+        let (red, green, blue, alpha) = match d3d_format {
+            23 => (wide(p >> 11, 5), wide(p >> 5 & 63, 6), wide(p & 31, 5), 255),
+            24 => (wide(p >> 10 & 31, 5), wide(p >> 5 & 31, 5), wide(p & 31, 5), 255),
+            25 => (wide(p >> 10 & 31, 5), wide(p >> 5 & 31, 5), wide(p & 31, 5), if p >> 15 != 0 { 255 } else { 0 }),
+            _ => (wide(p >> 8 & 15, 4), wide(p >> 4 & 15, 4), wide(p & 15, 4), wide(p >> 12, 4)),
+        };
+        pixels.extend_from_slice(&[blue, green, red, alpha]);
+    }
+    pixels
+}
+
 /// D3DSTENCILOP_*.
 fn stencil_operation(value: u32) -> wgpu::StencilOperation {
     use wgpu::StencilOperation::*;
@@ -592,16 +624,10 @@ impl Renderer {
         let widths = offsets + (levels + 1) * 4;
         let heights = widths + levels * 4;
         let pixels = &data[heights + levels * 4..];
-        // The size of a block, or 0 for 4 bytes for each pixel.
-        let (format, block) = match d3d_format {
-            0x3154_5844 => (wgpu::TextureFormat::Bc1RgbaUnorm, 8),
-            0x3354_5844 => (wgpu::TextureFormat::Bc2RgbaUnorm, 16),
-            0x3554_5844 => (wgpu::TextureFormat::Bc3RgbaUnorm, 16),
-            21 | 22 => (wgpu::TextureFormat::Bgra8Unorm, 0),
-            _ => {
-                *self.counts.texture_formats.entry(d3d_format).or_default() += 1;
-                return;
-            }
+        // The size of a block (or 0), and the bytes of a pixel in the stream.
+        let Some((format, block, source_bytes)) = texture_format(d3d_format) else {
+            *self.counts.texture_formats.entry(d3d_format).or_default() += 1;
+            return;
         };
         if block != 0 && (width % 4 != 0 || height % 4 != 0) {
             *self.counts.texture_formats.entry(d3d_format).or_default() += 1;
@@ -610,12 +636,18 @@ impl Renderer {
         let mut bytes = Vec::new();
         for level in 0..levels {
             let (w, h) = (word(data, widths + level * 4) as usize, word(data, heights + level * 4) as usize);
-            let size = if block != 0 { w.div_ceil(4).max(1) * h.div_ceil(4).max(1) * block } else { w * h * 4 };
+            let size = if block != 0 { w.div_ceil(4).max(1) * h.div_ceil(4).max(1) * block } else { w * h * source_bytes };
             let from = word(data, offsets + level * 4) as usize;
             let to = (word(data, offsets + (level + 1) * 4) as usize).min(pixels.len());
             let start = bytes.len();
-            bytes.extend_from_slice(&pixels[from.min(to)..to.min(from + size)]);
-            bytes.resize(start + size, 0);
+            if source_bytes == 2 {
+                let mut source = pixels[from.min(to)..to.min(from + size)].to_vec();
+                source.resize(size, 0);
+                bytes.extend_from_slice(&expand_16_bits(d3d_format, &source));
+            } else {
+                bytes.extend_from_slice(&pixels[from.min(to)..to.min(from + size)]);
+                bytes.resize(start + size, 0);
+            }
             if d3d_format == 22 {
                 // No alpha in this format.
                 for pixel in bytes[start..].chunks_exact_mut(4) {
@@ -641,6 +673,40 @@ impl Renderer {
         self.textures.insert(handle, Rc::new(texture.create_view(&Default::default())));
         self.texture_objects.insert(handle, (texture, d3d_format));
         // A group can have the texture that had this handle before.
+        self.texture_groups.clear();
+        self.counts.textures += 1;
+    }
+
+    /// Makes a texture without pixels: the game made it with `CreateTexture` and writes each
+    /// level later. `levels` 0 is all the levels down to 1 x 1.
+    fn empty_texture(&mut self, handle: u32, width: u32, height: u32, levels: u32, d3d_format: u32) {
+        let Some((format, block, _)) = texture_format(d3d_format) else {
+            *self.counts.texture_formats.entry(d3d_format).or_default() += 1;
+            return;
+        };
+        let (width, height) = (width.max(1), height.max(1));
+        if block != 0 && (width % 4 != 0 || height % 4 != 0) {
+            *self.counts.texture_formats.entry(d3d_format).or_default() += 1;
+            return;
+        }
+        let all = 32 - width.max(height).leading_zeros();
+        let mut levels = if levels == 0 { all } else { levels.min(all) };
+        if block != 0 {
+            // A level of a block format has no side under 4 here.
+            levels = levels.min((width.min(height).trailing_zeros().max(2) - 1).max(1));
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: levels,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.textures.insert(handle, Rc::new(texture.create_view(&Default::default())));
+        self.texture_objects.insert(handle, (texture, d3d_format));
         self.texture_groups.clear();
         self.counts.textures += 1;
     }
@@ -693,18 +759,28 @@ impl Renderer {
             0x3354_5844 | 0x3554_5844 => 16,
             _ => 0,
         };
+        let source_bytes = texture_format(*d3d_format).map_or(4, |f| f.2 as u32);
         let (row, rows, expected) = if block != 0 {
             (width.div_ceil(4) * block, height.div_ceil(4), (width.div_ceil(4) * height.div_ceil(4) * block) as usize)
         } else {
-            (width * 4, height, (width * height * 4) as usize)
+            (width * 4, height, (width * height * source_bytes) as usize)
         };
         if level >= texture.mip_level_count() || size < expected || data.len() < 24 + expected {
             self.counts.texture_updates_lost += 1;
             return;
         }
+        let mut pixels = std::borrow::Cow::Borrowed(&data[24..24 + expected]);
+        if source_bytes == 2 {
+            pixels = std::borrow::Cow::Owned(expand_16_bits(*d3d_format, &pixels));
+        } else if *d3d_format == 22 {
+            // No alpha in this format.
+            for pixel in pixels.to_mut().chunks_exact_mut(4) {
+                pixel[3] = 255;
+            }
+        }
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo { texture, mip_level: level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            &data[24..24 + expected],
+            &pixels,
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(rows) },
             wgpu::Extent3d { width: if block != 0 { width.next_multiple_of(4) } else { width }, height: if block != 0 { height.next_multiple_of(4) } else { height }, depth_or_array_layers: 1 },
         );
@@ -1214,6 +1290,8 @@ impl Player {
                         let handle = word(data, 8);
                         if handle != 0 && word(arguments, 12) & 1 != 0 {
                             self.renderer.render_texture(handle, word(arguments, 0), word(arguments, 4));
+                        } else if handle != 0 {
+                            self.renderer.empty_texture(handle, word(arguments, 0), word(arguments, 4), word(arguments, 8), word(arguments, 16));
                         }
                     }
                     CALL_TEXTURE_LEVEL => {
@@ -1570,6 +1648,7 @@ mod live {
     extern "system" {
         fn OpenFileMappingA(access: u32, inherit: i32, name: *const u8) -> isize;
         fn MapViewOfFile(mapping: isize, access: u32, offset_high: u32, offset_low: u32, bytes: usize) -> *mut u8;
+        fn IsWindow(window: isize) -> i32;
     }
 
     /// The head of the shared memory. See `capture.rs` of the plugin.
@@ -1795,6 +1874,11 @@ mod live {
             event_loop.set_control_flow(ControlFlow::Poll);
             if self.player.is_none() || self.finished {
                 return;
+            }
+            // The window of the game went away: the game ended, and the window of the host
+            // with it.
+            if self.parent.is_some_and(|parent| unsafe { IsWindow(parent) } == 0) {
+                return self.finish(event_loop, "the window of the game is gone");
             }
             let size = self.size;
             let now = self.window.as_ref().unwrap().inner_size();

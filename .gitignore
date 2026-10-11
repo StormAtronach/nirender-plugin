@@ -5,3 +5,4 @@ __pycache__/
 *.pdb
 spikes/*/target/
 /host/target
+/d3d8/target
