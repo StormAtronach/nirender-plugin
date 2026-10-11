@@ -27,6 +27,8 @@ def main():
     ap.add_argument("--tour", default="", help="in each cell, put the player in front of each object whose id starts "
                     "with this text, for example @nif_ for the NIF test level")
     ap.add_argument("--tour-seconds", type=float, default=1.5, help="time at each object of the tour")
+    ap.add_argument("--extras", action="store_true", help="in the first place, with the comparison on: open the "
+                    "inventory, take a screenshot with the renderer, and make a save")
     ap.add_argument("--timeout", type=int, default=0, help="budget in seconds; 0 = from the scenario")
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--start", choices=("off", "shadow", "live"),
@@ -53,11 +55,12 @@ def main():
         recordBuffers=not args.no_buffers,
         cells=cells,
         tour=args.tour or None,
+        extras=args.extras,
         tourSeconds=args.tour_seconds,
     )
     # A tour has 60 objects at most in a cell of the test level.
     place = max(args.shadow, 60 * args.tour_seconds if args.tour else 0)
-    timeout = args.timeout or int(90 + (1 + len(cells)) * (place + 12) + args.live)
+    timeout = args.timeout or int((20 if args.extras else 0) + 90 + (1 + len(cells)) * (place + 12) + args.live)
     done = run.launch(spec, timeout, TAG)
 
     failures, notes = [], []

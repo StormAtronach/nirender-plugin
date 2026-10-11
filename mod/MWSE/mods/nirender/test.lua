@@ -71,12 +71,45 @@ return function(nirender, spec)
         if menu then menu:destroy() end
     end
 
+    -- With spec.extras, makes the game use the parts of the renderer that a normal frame does
+    -- not use, while the comparison is on: the inventory with its character image and its
+    -- map, a screenshot, and a save with its picture. Then `done`.
+    local extras_done = false
+    local function extras(done)
+        if not spec.extras or extras_done then return done() end
+        extras_done = true
+        for _, name in ipairs({ "MenuInventory", "MenuMap", "MenuStat", "MenuMagic" }) do
+            local shown = tes3ui.findMenu(name)
+            if shown then
+                shown.visible = true
+                shown.disabled = false
+                shown:updateLayout()
+            end
+        end
+        say("extras: inventory, menu mode %s", tostring(tes3ui.enterMenuMode("MenuInventory")))
+        after(3, function()
+            tes3ui.leaveMenuMode()
+            after(1, function()
+                local ok, result = pcall(function()
+                    return tes3.worldController.worldCamera.renderer:takeScreenshot(nil)
+                end)
+                say("extras: screenshot of the renderer: %s %s", tostring(ok), tostring(result))
+                after(1, function()
+                    local saved = tes3.saveGame({ file = "nirender_test", name = "nirender test" })
+                    say("extras: save with its picture: %s", tostring(saved))
+                    os.remove("saves/nirender_test.ess")
+                    after(1, done)
+                end)
+            end)
+        end)
+    end
+
     -- Runs shadow mode for spec.shadowSeconds, then the frame tests in menu mode, then `done`.
     local function test_here(done)
         local where = tes3.player.cell.editorName
         say("shadow mode on for %d s in '%s' (%s)", spec.shadowSeconds, where, ports)
         nirender.setMode(ports, "shadow")
-        scenario.tour(spec.shadowSeconds, function()
+        scenario.tour(spec.shadowSeconds, function() extras(function()
             nirender.setMode("*", "off")
             hold_in_menu_mode()
             after(0.5, function()
@@ -85,7 +118,7 @@ return function(nirender, spec)
                     done()
                 end)
             end)
-        end)
+        end) end)
     end
 
     local function visit(index)
