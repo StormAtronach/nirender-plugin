@@ -27,6 +27,21 @@ return function(nirender, spec)
 
     local steps = {
         { "world", 1.0, function() end },
+        -- The zoom of MGE XE, when MGE XE is there and runs its frame logic without a device:
+        -- the picture of the step "zoom" is the middle of the picture of the step "world",
+        -- three times as large.
+        { "zoom", 2.0, function()
+            if not (mge and mge.camera) then return say("zoom: no mge.camera") end
+            mge.camera.zoomEnable = true
+            mge.camera.zoom = 3
+            say("zoom: enable %s, zoom %s, screen %s x %s", tostring(mge.camera.zoomEnable), tostring(mge.camera.zoom),
+                tostring(mge.getScreenWidth and mge.getScreenWidth()), tostring(mge.getScreenHeight and mge.getScreenHeight()))
+        end },
+        { "zoom-off", 1.0, function()
+            if not (mge and mge.camera) then return end
+            mge.camera.zoom = 1
+            mge.camera.zoomEnable = false
+        end },
         { "inventory", 2.0, function()
             inventory(true)
             after(0.5, function() tes3ui.updateInventoryCharacterImage() end)

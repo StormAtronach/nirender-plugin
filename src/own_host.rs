@@ -604,6 +604,11 @@ unsafe extern "C" fn call(index: u32, arguments: *const u32) -> u32 {
         CALL_CUBE_FACE => FAIL,
         // Source surface, rectangles, their number, destination surface, points.
         CALL_COPY_PIXELS => copy_pixels(a(0), a(3)),
+        // The colour surface and the depth surface.
+        CALL_RENDER_TARGET => {
+            CURRENT_TARGET.store(a(0), Ordering::Relaxed);
+            OK
+        }
         // The frame, the scene, the target: nothing to do here. The stream has the call.
         _ => OK,
     }
@@ -638,6 +643,16 @@ pub unsafe fn take(slot: usize) {
     if let Some(count) = (*core::ptr::addr_of_mut!(TAKEN)).get_mut(slot) {
         *count += 1;
     }
+}
+
+/// The colour surface that the game draws into now: the last one of a call to set the
+/// render target. 0 before the first call.
+static CURRENT_TARGET: AtomicU32 = AtomicU32::new(0);
+
+/// True when the game draws into the back buffer now, and not into a texture.
+pub fn target_is_back_buffer() -> bool {
+    let target = CURRENT_TARGET.load(Ordering::Relaxed);
+    target == 0 || target == BACK_BUFFER.load(Ordering::Relaxed)
 }
 
 /// The table of this host, for a link without MGE XE.

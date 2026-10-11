@@ -268,11 +268,52 @@ fn skip(fact: u32, in_packet: bool) -> bool {
     skipped
 }
 
+/// The two functions of the `d3d8.dll` of MGE XE for a game without a Direct3D device
+/// (`MGE_StreamPresent`, `MGE_StreamTransform`), or 0. MGE XE runs its logic of a frame that
+/// is not drawing in them: zoom, field of view, screen shake, crosshair. Its proxy device
+/// ran that logic at `Present` and at `SetTransform`.
+static STREAM_PRESENT: AtomicUsize = AtomicUsize::new(0);
+static STREAM_TRANSFORM: AtomicUsize = AtomicUsize::new(0);
+
+/// Finds the functions of MGE XE. The `d3d8.dll` of this repository has none.
+unsafe fn find_stream_functions() {
+    let module = host_module();
+    if module == 0 {
+        return;
+    }
+    let present = win::GetProcAddress(module as *mut c_void, b"MGE_StreamPresent\0".as_ptr());
+    let transform = win::GetProcAddress(module as *mut c_void, b"MGE_StreamTransform\0".as_ptr());
+    STREAM_PRESENT.store(present as usize, Ordering::Relaxed);
+    STREAM_TRANSFORM.store(transform as usize, Ordering::Relaxed);
+    if !present.is_null() {
+        crate::log!("link: the frame logic of MGE XE runs from the stream");
+    }
+}
+
+/// The game showed a frame: MGE XE runs its logic of a frame.
+pub unsafe fn stream_present() {
+    let function = STREAM_PRESENT.load(Ordering::Relaxed);
+    if function != 0 && crate::shadow::on_main_thread() {
+        let (width, height) = crate::own_device::size();
+        core::mem::transmute::<usize, unsafe extern "C" fn(u32, u32)>(function)(width, height);
+    }
+}
+
 /// Sends a state command to the host. Returns false when the host takes no commands.
 #[inline]
 unsafe fn command(command: u32, a: u32, b: u32, c: u32) -> bool {
     match host() {
         Some(host) if host.capabilities & CAP_COMMANDS != 0 => {
+            // MGE XE can change the view and the projection of the game: its camera effects
+            // and its zoom. The change is for the stream only; the matrix of the game stays.
+            let function = STREAM_TRANSFORM.load(Ordering::Relaxed);
+            let changed = (function != 0 && command == COMMAND_TRANSFORM && (a == 2 || a == 3) && b != 0).then(|| {
+                let mut matrix = *(b as usize as *const [f32; 16]);
+                let back_buffer = crate::own_host::target_is_back_buffer() as u32;
+                core::mem::transmute::<usize, unsafe extern "C" fn(u32, *mut f32, u32)>(function)(a, matrix.as_mut_ptr(), back_buffer);
+                matrix
+            });
+            let b = changed.as_ref().map_or(b, |matrix| matrix.as_ptr() as u32);
             (host.command)(command, a, b, c);
             crate::capture::command(command, a, b, c);
             true
@@ -1336,6 +1377,9 @@ pub unsafe fn connect() -> Result<String, String> {
         None => missing.push(format!("{END_PAINT:#x}")),
     }
     HOST.store(table as usize, Ordering::Relaxed);
+    if own_d3d8() {
+        find_stream_functions();
+    }
     Ok(format!(
         "host version {}, capabilities {:#x}; functions without a detour: {}",
         host.version,

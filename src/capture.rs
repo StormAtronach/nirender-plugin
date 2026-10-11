@@ -712,6 +712,8 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
     }
     if index == CALL_PRESENT {
         frame_end();
+        #[cfg(not(test))]
+        crate::link_client::stream_present();
     }
 }
 
