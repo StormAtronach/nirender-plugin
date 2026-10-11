@@ -61,7 +61,8 @@ pub mod tag {
     pub const CALL: u32 = 9;
     /// The frame is complete.
     pub const FRAME_END: u32 = 10;
-    /// The first record: the width and the height of the back buffer.
+    /// The first record: the width and the height of the back buffer, and the window of
+    /// the game.
     pub const HEADER: u32 = 11;
 }
 
@@ -571,7 +572,8 @@ unsafe fn frame_end() {
                 RECORDING.store(true, Ordering::Relaxed);
                 let renderer = crate::engine::renderer();
                 let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
-                write(tag::HEADER, &[&words(&size)]);
+                let window: u32 = if renderer != 0 { rd(renderer, DEVICE_WINDOW) } else { 0 };
+                write(tag::HEADER, &[&words(&[size[0], size[1], window])]);
             }
         }
         Phase::Record(left) => {
@@ -601,3 +603,5 @@ unsafe fn frame_end() {
 
 /// `NiDX8Renderer::d3dPresentParameters`: the width and the height of the back buffer.
 const BACK_BUFFER_SIZE: usize = 0x23C;
+/// `NiDX8Renderer::d3dPresentParameters.hDeviceWindow`
+const DEVICE_WINDOW: usize = 0x254;

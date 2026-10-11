@@ -2,6 +2,10 @@
 //!
 //!     nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N]
 //!     nirender-host --live <name of the shared memory> [--backend vulkan|dx12] [--frames N] [--shot picture.png]
+//!                   [--embed]
+//!
+//! With `--embed` the window of the host is a child of the window of the game and covers it:
+//! the picture of the host is where the picture of the game was.
 //!
 //! The capture comes from `nirender.capture` of the plugin (`src/capture.rs` there has the
 //! format). This program reads the records in their order, keeps the textures and the buffers,
@@ -1136,7 +1140,9 @@ mod live {
     use std::time::{Duration, Instant};
 
     use winit::application::ApplicationHandler;
-    use winit::dpi::PhysicalSize;
+    use winit::dpi::{PhysicalPosition, PhysicalSize};
+    use winit::platform::windows::WindowExtWindows;
+    use winit::raw_window_handle::{RawWindowHandle, Win32WindowHandle};
     use winit::event::WindowEvent;
     use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
     use winit::window::{Window, WindowId};
@@ -1221,6 +1227,9 @@ mod live {
         ring: Ring,
         backends: wgpu::Backends,
         frames_wanted: u32,
+        /// The size of the back buffer of the game, and its window when the host goes into it.
+        size: (u32, u32),
+        parent: Option<isize>,
         shot: Option<String>,
         shot_frame: u32,
         window: Option<Arc<Window>>,
@@ -1282,8 +1291,18 @@ mod live {
             if self.window.is_some() {
                 return;
             }
-            let attributes = Window::default_attributes().with_title("nirender host").with_inner_size(PhysicalSize::new(1280, 720)).with_resizable(false);
+            let mut attributes =
+                Window::default_attributes().with_title("nirender host").with_inner_size(PhysicalSize::new(self.size.0, self.size.1)).with_resizable(false);
+            if let Some(parent) = self.parent.and_then(std::num::NonZeroIsize::new) {
+                // A child window of the window of the game, over all of it.
+                let handle = RawWindowHandle::Win32(Win32WindowHandle::new(parent));
+                attributes = unsafe { attributes.with_parent_window(Some(handle)) }.with_decorations(false).with_position(PhysicalPosition::new(0, 0));
+            }
             let window = Arc::new(event_loop.create_window(attributes).expect("a window"));
+            if self.parent.is_some() {
+                // A window that is not enabled takes no mouse and no keys: they go to the game.
+                window.set_enable(false);
+            }
             let (renderer, surface) = Renderer::new(self.backends, Some(window.clone()), wgpu::TextureFormat::Bgra8Unorm);
             let surface = surface.expect("a surface");
             let size = window.inner_size();
@@ -1317,16 +1336,9 @@ mod live {
             if self.player.is_none() || self.finished {
                 return;
             }
-            // The window gets the size of the back buffer of the game.
-            let size = self.player.as_ref().unwrap().size;
-            if size.0 != 0 {
-                let window = self.window.as_ref().unwrap();
-                if window.inner_size() != PhysicalSize::new(size.0, size.1) {
-                    let _ = window.request_inner_size(PhysicalSize::new(size.0, size.1));
-                }
-                let now = window.inner_size();
-                self.configure(now.width, now.height);
-            }
+            let size = self.size;
+            let now = self.window.as_ref().unwrap().inner_size();
+            self.configure(now.width, now.height);
             let waiting = Instant::now();
             loop {
                 // No frame before the size of the game is known: the records before that
@@ -1387,10 +1399,27 @@ mod live {
     pub fn run(name: &str, backends: wgpu::Backends, args: &[String]) {
         let ring = Ring::open(name);
         println!("ring: {} MB", ring.capacity >> 20);
+        // The first record has the size of the picture and the window of the game.
+        let mut data = Vec::new();
+        let start = Instant::now();
+        let tag = loop {
+            if let Some(tag) = ring.pop(&mut data) {
+                break tag;
+            }
+            assert!(start.elapsed() < Duration::from_secs(60) && !ring.closed(), "no record in the ring");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(tag, super::tag::HEADER, "the first record is not the head of the stream");
+        let size = (super::word(&data, 0).max(64), super::word(&data, 4).max(64));
+        let game_window = if data.len() >= 12 { super::word(&data, 8) as isize } else { 0 };
+        let embed = args.iter().any(|a| a == "--embed");
+        println!("picture {} x {}, window of the game {game_window:#x}{}", size.0, size.1, if embed { ", the host goes into it" } else { "" });
         let mut app = App {
             ring,
             backends,
             frames_wanted: option(args, "--frames").and_then(|text| text.parse().ok()).unwrap_or(0),
+            size,
+            parent: embed.then_some(game_window),
             shot: option(args, "--shot"),
             shot_frame: option(args, "--shot-frame").and_then(|text| text.parse().ok()).unwrap_or(60),
             window: None,
