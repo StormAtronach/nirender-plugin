@@ -302,6 +302,8 @@ pub struct DrawFacts {
     pub blend_enable: bool,
     pub source_blend: u32,
     pub destination_blend: u32,
+    /// The draw writes depth.
+    pub depth_write: bool,
 }
 
 /// A program that draws more than the game does: for example the distant land of MGE XE.
@@ -575,8 +577,9 @@ pub struct DrawData {
     /// alpha reference.
     pub more: [u32; 4],
     /// The number of lights, the number of stages, the ambient source, and bits: 1 the
-    /// extension shades the draw, 4 the sky dome, 8 the shadow of a moon; 2 and from 16 are
-    /// the extension's own.
+    /// extension shades the draw, 4 the sky dome, 8 the shadow of a moon, 128 the colour is
+    /// not kept between 0 and 1 between the texture stages; 2 and from 16 (but 128) are the
+    /// extension's own.
     pub counts: [u32; 4],
     /// The lights of the draw in the light buffer of the frame: the first and the number.
     pub light_range: [u32; 4],
@@ -2663,7 +2666,7 @@ impl Player {
         if shade && world && self.stream.projection[11] == 1.0 {
             if let Some(extension) = self.extension.as_mut() {
                 let (first, count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);
-                extension.shade(&mut draw_data, &mut self.frame_lights[first..first + count], &DrawFacts { blend_enable: key.blend[0] != 0, source_blend: key.blend[1], destination_blend: key.blend[2] });
+                extension.shade(&mut draw_data, &mut self.frame_lights[first..first + count], &DrawFacts { blend_enable: key.blend[0] != 0, source_blend: key.blend[1], destination_blend: key.blend[2], depth_write: key.depth[1] != 0 });
             }
         }
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();

@@ -56,7 +56,8 @@ struct Draw {
     // shaded by the functions of the extension (`extension_shade`, `extension_finish`);
     // bit 4, the draw is the sky dome and the extension gives its shape and its colour; bit
     // 8, the extension gives the colour and the draw keeps its alpha (the shadow of a moon);
-    // bit 2 and the bits from 16 are for the extension.
+    // bit 128, the colour is not kept between 0 and 1 between the stages; bit 2 and the
+    // bits from 16 (but 128) are for the extension.
     counts: vec4u,
     // The lights of the draw in `lights`: the first and the number.
     light_range: vec4u,
@@ -394,9 +395,9 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
                 argument(stage.alpha.z, diffuse, current, texel), vec4f(0.0), diffuse, current, texel);
         }
         current = vec4f(color.rgb, alpha.a);
-        // The fixed-function pipeline keeps a colour between 0 and 1. A draw that the
-        // extension shades has no such limit.
-        if !shaded {
+        // The fixed-function pipeline keeps a colour between 0 and 1. A draw with the light
+        // for each pixel has no such limit.
+        if (draw.counts.w & 128u) == 0u {
             current = clamp(current, vec4f(0.0), vec4f(1.0));
         }
     }
