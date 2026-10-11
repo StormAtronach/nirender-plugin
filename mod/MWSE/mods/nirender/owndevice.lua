@@ -70,6 +70,12 @@ return function(nirender, spec)
             end
             event.register("enterFrame", count)
         end },
+        -- A capture file of some frames at rest, for the offline replay: the same picture
+        -- from the same file each time, for a check of a change of the renderer.
+        { "capture", 2.5, function()
+            local ok, problem = nirender.capture(spec.dir .. "/exterior.nircap", 0, spec.captureFrames or 30)
+            say("capture: %s %s", tostring(ok), tostring(problem))
+        end },
         -- The same place with the camera turned to the two sides: a thing in the two
         -- pictures must have the same colour. The fog of a thing does not change with the
         -- direction of the camera.

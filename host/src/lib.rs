@@ -212,6 +212,11 @@ pub trait Extension {
     /// number that the two parts agree on. See `nirender_stream_extension` of the plugin.
     fn data(&mut self, _id: u32, _bytes: &[u8]) {}
 
+    /// The renderer draws a capture file and not a live stream: the frames must be the
+    /// same each time. The extension completes each load before a frame, with no limit on
+    /// the work of a frame. The renderer calls this one time, before the first record.
+    fn offline(&mut self) {}
+
     /// WGSL source with the two sky functions of the extension, or `None`. The renderer
     /// asks one time, before it makes its shader, and puts the source at the end of it:
     ///
@@ -2531,8 +2536,8 @@ pub fn run(args: Vec<String>) {
     run_with(args, None)
 }
 
-/// `run` with a program that draws more than the game does. The extension works in the
-/// live mode only.
+/// `run` with a program that draws more than the game does: in the live mode, and for a
+/// capture file.
 pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     if let Some(path) = option(&args, "--log") {
         log_to(&path);
@@ -2581,11 +2586,15 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     }
     println!("{} records, {frames} frames, frame {wanted} into {width} x {height}", records.len());
 
-    let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, None).0);
+    let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, extension.as_ref().and_then(|extension| extension.sky_shader())).0);
+    if let Some(mut extension) = extension {
+        extension.offline();
+        player.extension = Some(extension);
+    }
     player.renderer.anisotropy = option(&args, "--anisotropy").and_then(|text| text.parse().ok()).unwrap_or(1);
     let device = player.renderer.device.clone();
     let target = target_texture(&device, width, height, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
-    let depth = target_texture(&device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+    let depth = target_texture(&device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
     let mut frame = 0;
     for (tag, data) in &records {
         // Each frame up to the wanted one is drawn: the game can draw into a rendered texture

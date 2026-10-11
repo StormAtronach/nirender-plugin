@@ -350,6 +350,13 @@ struct State {
     direct: bool,
     out: Option<Sink>,
     reply: Option<Reply>,
+    /// A file that gets a copy of the records of a direct stream, with the number of frames
+    /// that are left for it. While `tee_only`, the records go into the file only: the
+    /// snapshot of the resources at its start.
+    tee: Option<(BufWriter<File>, u32)>,
+    tee_only: bool,
+    /// The words of the header record of a direct stream, for the file.
+    header: [u32; 3],
     /// The geometry data and the skin instances of the draws of the warm-up.
     geometry: HashSet<(u32, u32)>,
     /// The buffers whose bytes are in the capture.
@@ -392,6 +399,9 @@ pub fn recording() -> bool {
 /// Starts a capture into `path`: `warmup` frames, then `frames` frames of record.
 pub unsafe fn start(path: &str, warmup: u32, frames: u32) -> Result<(), String> {
     let _lock = crate::sync::device_lock();
+    if active() && state().is_some_and(|s| s.direct && s.tee.is_none()) {
+        return tee(path, frames.max(1));
+    }
     if active() {
         return Err("a capture is in progress".into());
     }
@@ -401,6 +411,41 @@ pub unsafe fn start(path: &str, warmup: u32, frames: u32) -> Result<(), String> 
     begin(Sink::File(out), warmup, frames.max(1));
     crate::log!("capture: start, {warmup} frames of warm-up, {frames} frames of record, into {path}");
     Ok(())
+}
+
+/// Starts a capture file from a direct stream: the file gets the header, the render states
+/// and all resources of the own host as they are now, and then a copy of each record of
+/// the stream for `frames` frames. The file plays alone, as a capture of the other kind.
+unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
+    let file = File::create(path).map_err(|error| format!("{path}: {error}"))?;
+    let mut out = BufWriter::with_capacity(1 << 20, file);
+    out.write_all(MAGIC).map_err(|error| error.to_string())?;
+    let Some(s) = state() else { return Err("no stream".into()) };
+    s.tee = Some((out, frames));
+    s.tee_only = true;
+    let header = s.header;
+    write(tag::HEADER, &[&words(&header)]);
+    for (state, value) in crate::link_client::render_states() {
+        write(tag::COMMAND, &[&words(&[crate::link::COMMAND_RENDER_STATE, state, value, 0])]);
+    }
+    #[cfg(not(test))]
+    crate::own_host::snapshot();
+    if let Some(s) = state() {
+        s.tee_only = false;
+        // The source textures, the rendered textures and the geometry of the game go into
+        // the file as the game makes them again.
+        purge(s);
+    }
+    crate::log!("capture: a file from the stream, {frames} frames, into {path}");
+    Ok(())
+}
+
+/// Ends the capture file of a direct stream.
+unsafe fn end_tee(s: &mut State) {
+    if let Some((mut out, _)) = s.tee.take() {
+        let ok = out.flush().is_ok();
+        crate::log!("capture: the file from the stream is complete, ok {ok}");
+    }
 }
 
 /// Starts a stream into a ring of `megabytes` in shared memory with the name `name`. It
@@ -440,6 +485,9 @@ pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, 
         s.reply = Reply::create(name, (width as usize * height as usize * 4).max(1024 * 1024 * 4));
     }
     RECORDING.store(true, Ordering::Relaxed);
+    if let Some(s) = state() {
+        s.header = [width, height, window];
+    }
     write(tag::HEADER, &[&words(&[width, height, window])]);
     crate::log!("stream: start with the device, a ring of {megabytes} MB with the name {name}");
     Ok(())
@@ -453,6 +501,9 @@ unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
         direct: false,
         out: Some(out),
         reply: None,
+        tee: None,
+        tee_only: false,
+        header: [0; 3],
         geometry: HashSet::new(),
         known_buffers: HashSet::new(),
         image_surfaces: HashSet::new(),
@@ -480,6 +531,7 @@ pub unsafe fn stop() {
     RECORDING.store(false, Ordering::Relaxed);
     ACTIVE.store(false, Ordering::Relaxed);
     s.phase = Phase::Off;
+    end_tee(s);
     match s.out.take() {
         Some(Sink::File(mut out)) => s.failed |= out.flush().is_err(),
         Some(Sink::Ring(mut ring)) => {
@@ -560,6 +612,19 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
     let Some(s) = state() else { return };
     let start = ticks();
     let length: usize = parts.iter().map(|p| p.len()).sum();
+    if let Some((out, _)) = s.tee.as_mut() {
+        let mut ok = out.write_all(&tag.to_le_bytes()).is_ok() && out.write_all(&(length as u32).to_le_bytes()).is_ok();
+        for part in parts {
+            ok = ok && out.write_all(part).is_ok();
+        }
+        if !ok {
+            crate::log!("capture: the file from the stream failed");
+            s.tee = None;
+        }
+    }
+    if s.tee_only {
+        return;
+    }
     match s.out.as_mut() {
         Some(Sink::File(out)) => {
             let mut ok = out.write_all(&tag.to_le_bytes()).is_ok() && out.write_all(&(length as u32).to_le_bytes()).is_ok();
@@ -870,6 +935,12 @@ unsafe fn frame_end() {
             if s.phase == Phase::Off {
                 // The write ended the stream.
                 return;
+            }
+            if let Some((_, left)) = s.tee.as_mut() {
+                *left -= 1;
+                if *left == 0 {
+                    end_tee(s);
+                }
             }
             if let Some(Sink::Ring(ring)) = s.out.as_mut() {
                 ring.pace();

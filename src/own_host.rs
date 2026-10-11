@@ -86,8 +86,67 @@ fn level_size(format: u32, width: u32, height: u32) -> (usize, u32) {
     ((width * height * bytes) as usize, width * bytes)
 }
 
+/// The resources that are alive, for a snapshot. Under the device lock.
+static mut LIVE: Vec<usize> = Vec::new();
+
+/// Writes each resource that is alive into the capture: its creation and its bytes. For a
+/// capture file that starts in the middle of a stream. A texture whose pixels came from the
+/// pixel data of the game (the port of the texture loader writes them, with no lock) has no
+/// memory here and is not written: the caller makes the game load it again. A rendered
+/// texture is not written: the caller makes the game make it again.
+pub unsafe fn snapshot() {
+    let live: Vec<usize> = (*core::ptr::addr_of!(LIVE)).clone();
+    let (back, depth) = (BACK_BUFFER.load(Ordering::Relaxed) as usize, DEPTH_BUFFER.load(Ordering::Relaxed) as usize);
+    // The textures before their level surfaces.
+    let order = |kind: &Kind| match kind {
+        Kind::Texture => 0,
+        Kind::LevelSurface => 1,
+        _ => 2,
+    };
+    let mut sorted = live;
+    sorted.sort_by_key(|&o| order(&(*(o as *const Object)).kind));
+    let mut count = [0u32; 4];
+    for object in sorted {
+        let o = &*(object as *const Object);
+        let handle = object as u32;
+        let address = &handle as *const u32 as u32;
+        let kept_texture = |t: &Object| t.usage & 1 == 0 && t.level_memory.iter().any(|m| !m.is_empty());
+        match o.kind {
+            Kind::Texture if !kept_texture(o) => {}
+            Kind::LevelSurface if o.owner.is_null() || !kept_texture(&*o.owner) => {}
+            Kind::Texture => {
+                crate::capture::call(CALL_CREATE_TEXTURE, &[o.width, o.height, o.levels, o.usage, o.format, o.pool, address], 0);
+                for (level, memory) in o.level_memory.iter().enumerate() {
+                    if !memory.is_empty() {
+                        crate::capture::texture_update(object, level as u32, (o.width >> level).max(1), (o.height >> level).max(1), o.format, memory);
+                    }
+                }
+                count[0] += 1;
+            }
+            Kind::LevelSurface => {
+                crate::capture::call(CALL_TEXTURE_LEVEL, &[o.owner as u32, o.level, address], 0);
+                count[1] += 1;
+            }
+            Kind::VertexBuffer | Kind::IndexBuffer => {
+                let index = if o.kind == Kind::VertexBuffer { CALL_CREATE_VERTEX_BUFFER } else { CALL_CREATE_INDEX_BUFFER };
+                crate::capture::call(index, &[o.length, o.usage, o.format, o.pool, address], 0);
+                crate::capture::buffer_data(object, 0, &o.memory);
+                count[2] += 1;
+            }
+            Kind::Surface => {
+                if object == back || object == depth {
+                    continue;
+                }
+                crate::capture::call(CALL_CREATE_IMAGE_SURFACE, &[o.width, o.height, o.format, address], 0);
+                count[3] += 1;
+            }
+        }
+    }
+    crate::log!("own host: snapshot of {} textures, {} level surfaces, {} buffers, {} surfaces", count[0], count[1], count[2], count[3]);
+}
+
 unsafe fn new_object(kind: Kind, table: &'static Table) -> *mut Object {
-    Box::into_raw(Box::new(Object {
+    let object = Box::into_raw(Box::new(Object {
         table: table.methods(),
         references: 1,
         kind,
@@ -102,7 +161,9 @@ unsafe fn new_object(kind: Kind, table: &'static Table) -> *mut Object {
         level: 0,
         memory: Vec::new(),
         level_memory: Vec::new(),
-    }))
+    }));
+    (*core::ptr::addr_of_mut!(LIVE)).push(object as usize);
+    object
 }
 
 // ---- the methods
@@ -128,6 +189,10 @@ unsafe extern "system" fn release(this: *mut Object) -> u32 {
     let left = (*this).references;
     if left == 0 {
         let owner = (*this).owner;
+        let live = &mut *core::ptr::addr_of_mut!(LIVE);
+        if let Some(at) = live.iter().position(|&o| o == this as usize) {
+            live.swap_remove(at);
+        }
         drop(Box::from_raw(this));
         if !owner.is_null() {
             release(owner);
