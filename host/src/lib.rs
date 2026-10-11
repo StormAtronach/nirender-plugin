@@ -50,6 +50,136 @@ pub struct SceneView<'a> {
     pub ambient: [f32; 3],
 }
 
+/// How the renderer draws the kept world draws of the frame again. See `Replay`.
+pub struct ReplayView {
+    /// A change of the world before the view of the game, in the space of the world of the
+    /// game and with the layout of Direct3D: a mirror for a reflection. `None`: no change.
+    pub world: Option<[f64; 16]>,
+    /// Another view matrix and not that of the game, for a camera at another place: the
+    /// light of a shadow map. `None`: the view of each draw.
+    pub view: Option<[f32; 16]>,
+    /// Another projection. `None`: that of each draw.
+    pub projection: Option<[f32; 16]>,
+    /// The size of the target of the pass.
+    pub target_size: (u32, u32),
+    /// True for a mirror: the front side of a triangle is its other side.
+    pub flip_cull: bool,
+    /// `[a, b, c, d]` in the space of the world of the game: only where
+    /// `a * x + b * y + c * z + d >= 0` is drawn.
+    pub clip_plane: Option<[f64; 4]>,
+    /// Only the draws that write depth and do not blend.
+    pub opaque_only: bool,
+}
+
+/// Draws the kept draws of the world of the frame again: those of the game in its world
+/// scene and its scene of sorted draws, into the back buffer, up to this moment. The pass
+/// must have a colour target and a depth target with the formats of `SceneView`.
+pub trait Replay {
+    fn replay(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView);
+    /// The number of kept draws.
+    fn count(&self) -> usize;
+}
+
+/// One kept draw of the world of a frame.
+struct Kept {
+    key: PipelineKey,
+    stencil_reference: u32,
+    data: DrawData,
+    /// The origin that the world matrices of the draw are relative to, or `None`.
+    origin: Option<[f64; 3]>,
+    textures: Rc<wgpu::BindGroup>,
+    samplers: Rc<wgpu::BindGroup>,
+    vertices: Rc<wgpu::Buffer>,
+    indexes: Option<Rc<wgpu::Buffer>>,
+    fan: bool,
+    /// The first index or vertex, the number of them, and the base vertex.
+    range: (u32, u32, i32),
+}
+
+/// The kept draws with the renderer, for `Replay`.
+struct Replayer<'a> {
+    renderer: &'a mut Renderer,
+    kept: &'a [Kept],
+}
+
+/// `a * b` for two matrices with the layout of Direct3D.
+fn multiply64(a: &[f64; 16], b: &[f64; 16]) -> [f64; 16] {
+    core::array::from_fn(|i| (0..4).map(|k| a[i / 4 * 4 + k] * b[k * 4 + i % 4]).sum())
+}
+
+impl Replay for Replayer<'_> {
+    fn count(&self) -> usize {
+        self.kept.len()
+    }
+
+    fn replay(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView) {
+        for kept in self.kept {
+            if view.opaque_only && (kept.key.blend[0] != 0 || kept.key.depth[1] == 0) {
+                continue;
+            }
+            let mut data = kept.data;
+            let origin = kept.origin.unwrap_or([0.0; 3]);
+            if let Some(matrix) = view.view {
+                data.view = matrix;
+            }
+            if let Some(world) = view.world {
+                // The change is in the space of the world of the game. The world of the draw
+                // can be relative to an origin: to that space, the change, and back.
+                let mut to = [0.0f64; 16];
+                let mut from = [0.0f64; 16];
+                for i in 0..4 {
+                    to[i * 5] = 1.0;
+                    from[i * 5] = 1.0;
+                }
+                for axis in 0..3 {
+                    to[12 + axis] = origin[axis];
+                    from[12 + axis] = -origin[axis];
+                }
+                let change = multiply64(&multiply64(&to, &world), &from);
+                let old: [f64; 16] = data.view.map(|v| v as f64);
+                data.view = multiply64(&change, &old).map(|v| v as f32);
+            }
+            if let Some(projection) = view.projection {
+                data.projection = projection;
+            }
+            data.pixel = [1.0 / view.target_size.0.max(1) as f32, -1.0 / view.target_size.1.max(1) as f32, 0.0, 0.0];
+            if let Some(plane) = view.clip_plane {
+                let d = plane[3] + plane[0] * origin[0] + plane[1] * origin[1] + plane[2] * origin[2];
+                data.clip_plane = [plane[0] as f32, plane[1] as f32, plane[2] as f32, d as f32];
+            }
+            let mut key = kept.key;
+            if view.flip_cull {
+                // D3DCULL_CW is 2 and D3DCULL_CCW is 3.
+                key.cull = match key.cull {
+                    2 => 3,
+                    3 => 2,
+                    other => other,
+                };
+            }
+            let Some(pipeline) = self.renderer.pipeline(key) else { continue };
+            let (group, offset) = self.renderer.draw_slot(&data);
+            pass.set_pipeline(&pipeline);
+            pass.set_stencil_reference(kept.stencil_reference);
+            pass.set_bind_group(0, &*group, &[offset]);
+            pass.set_bind_group(1, &*kept.textures, &[]);
+            pass.set_bind_group(2, &*kept.samplers, &[]);
+            pass.set_vertex_buffer(0, kept.vertices.slice(..));
+            pass.set_vertex_buffer(1, self.renderer.defaults.slice(..));
+            let (first, count, base) = kept.range;
+            if let Some(indexes) = kept.indexes.as_ref() {
+                pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
+                pass.draw_indexed(first..first + count, base, 0..1);
+            } else if kept.fan {
+                pass.set_index_buffer(self.renderer.fan_indexes.slice(..), wgpu::IndexFormat::Uint16);
+                pass.draw_indexed(0..count, first as i32, 0..1);
+            } else {
+                pass.draw(first..first + count, 0..1);
+            }
+            self.renderer.counts.replayed += 1;
+        }
+    }
+}
+
 /// The light for each pixel of MGE XE, for the draws of the world of a frame.
 #[derive(Clone, Copy)]
 pub struct PerPixel {
@@ -303,6 +433,7 @@ struct DrawData {
     texture_transforms: [[f32; 16]; 6],
     pixel: [f32; 4],
     extension: [[f32; 4]; 8],
+    clip_plane: [f32; 4],
 }
 
 /// A D3DCOLOR as red, green, blue, alpha.
@@ -645,6 +776,8 @@ struct Counts {
     screen_draws_lost: u32,
     target_copies: u32,
     target_draws: u32,
+    /// The kept draws that were drawn again for an extension.
+    replayed: u32,
     texture_updates_lost: u32,
     lost_reasons: HashMap<String, u32>,
     textures_decoded: u32,
@@ -1596,6 +1729,8 @@ struct Player {
     before_kept: bool,
     /// The sky values of the extension for this frame: `None` before the first sky draw.
     frame_sky: Option<Option<[[f32; 4]; 8]>>,
+    /// The world draws of the frame, for `Replay`. Only with an extension.
+    kept: Vec<Kept>,
     /// The texture that the game draws into now. `None` for the back buffer.
     target: Option<u32>,
     /// The game named a rendered texture as its target.
@@ -1642,6 +1777,7 @@ impl Player {
             before: None,
             before_kept: false,
             frame_sky: None,
+            kept: Vec::new(),
             target: None,
             wants_texture: false,
             size: (0, 0),
@@ -1707,6 +1843,7 @@ impl Player {
         self.frame_per_pixel = None;
         self.before_kept = false;
         self.frame_sky = None;
+        self.kept.clear();
         self.stream.fog_range = None;
         self.stream.back_buffer = true;
         self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
@@ -2243,6 +2380,22 @@ impl Player {
             return;
         };
         renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
+        // The world scene of the game is 1 and its scene of sorted draws is 2. The water
+        // plane of the game (MGE_LINK_CLASS_WATER_PLANE, 10) is not a thing of the world.
+        if self.extension.is_some() && self.world_started && self.target.is_none() && matches!(self.scene_kind, 1 | 2) && self.stream.object_class != 10 {
+            self.kept.push(Kept {
+                key,
+                stencil_reference,
+                data: draw_data,
+                origin: self.stream.origin.filter(|_| word(s, state::WORLD_RELATIVE_MASK) & 1 != 0),
+                textures: texture_group.clone(),
+                samplers: sampler_group.clone(),
+                vertices: vertex_buffer.clone(),
+                indexes: index_buffer.clone(),
+                fan,
+                range: if indexed { (first_index, indexes, word(s, state::BASE_VERTEX) as i32) } else { (first_index, indexes, 0) },
+            });
+        }
         let clock = std::time::Instant::now();
         let Some(pass) = self.pass.as_mut() else { return };
         pass.set_pipeline(&pipeline);

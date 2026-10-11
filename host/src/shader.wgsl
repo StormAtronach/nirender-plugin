@@ -66,6 +66,9 @@ struct Draw {
     pixel: vec4f,
     // The values of the extension for its sky functions.
     extension: array<vec4f, 8>,
+    // A plane in the space of the world of the draw: a pixel on its negative side is not
+    // drawn. All 0: no plane. For a draw that the renderer makes again in a reflection.
+    clip_plane: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> draw: Draw;
@@ -408,6 +411,9 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
 
     if (draw.counts.w & 4u) != 0u {
         return vec4f(extension_sky_color(normalize(in.world_position), in.clip.xy), 1.0);
+    }
+    if any(draw.clip_plane != vec4f(0.0)) && dot(in.world_position, draw.clip_plane.xyz) + draw.clip_plane.w < 0.0 {
+        discard;
     }
     let per_pixel = (draw.counts.w & 1u) != 0u;
     var diffuse = in.color;
