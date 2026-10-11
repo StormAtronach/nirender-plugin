@@ -40,6 +40,11 @@ def main():
     ap.add_argument("--instance", help="the folder of another Mod Organizer instance to run in, and not the testing instance")
     ap.add_argument("--game-dir", help="with --instance: the game folder of that instance")
     ap.add_argument("--profile", default="Default", help="with --instance: its profile")
+    ap.add_argument("--position", help="x,y,z in the exterior cell: the player goes there after the cell loads (the "
+                    "coordinates of the console)")
+    ap.add_argument("--yaw", type=float, default=None, help="the heading of the player in degrees, 0 north, with --position")
+    ap.add_argument("--steps", help="the steps of the scenario to do, with commas (for example exterior,rate,capture); "
+                    "all of them without this")
     ap.add_argument("--budget", type=int, default=200)
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -60,7 +65,8 @@ def main():
             subprocess.run([cargo, "build", "--release", "--quiet"], cwd=folder, check=True)
     session.prepare(build=not args.no_build)
     run = session.Run(args.label)
-    spec = run.spec("owndevice", save=args.save, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"))
+    spec = run.spec("owndevice", save=args.save, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
+                    position=args.position, yaw=args.yaw)
     # The plugin starts the host program. It reads these from the environment of the game.
     if not args.mge_build:
         os.environ["NIRENDER_HOST_EXE"] = HOST
@@ -71,23 +77,28 @@ def main():
     # Mod Organizer puts the Root folder of a mod into the game folder when the game starts.
     # The d3d8.dll of the game folder comes from the mod of MGE XE.
     root = os.path.join(session.harness.MO2_ROOT, "mods", args.mge_mod, "Root")
-    swaps = [(D3D8, os.path.join(root, "d3d8.dll"), "the d3d8.dll of nirender")]
+    # The mgeXE.toml of the run: no frame limit (vsync off), so that the frame rates of the two
+    # modes compare; with the switch for the wgpu renderer when the run is with it.
+    toml = os.path.join(session.harness.MO2_ROOT, "mods", args.config_mod, "Root", "mgeXE.toml")
+    text = open(toml, encoding="utf-8").read()
+    assert "[runtime]" in text, toml
+    lines = [line for line in text.splitlines() if not line.strip().startswith("renderer_wgpu")]
+    lines = ['vsync = "immediate"' if line.strip().startswith("vsync") else line for line in lines]
+    if args.mge_build and not args.reference:
+        lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = true")
+    switched = run.path("mgeXE.toml")
+    open(switched, "w", encoding="utf-8").write("".join(line + chr(10) for line in lines))
+    toml_swap = (switched, toml, "mgeXE.toml of the run")
+    swaps = [(D3D8, os.path.join(root, "d3d8.dll"), "the d3d8.dll of nirender"), toml_swap]
     if args.reference:
         kept = os.path.join(root, "d3d8.dll.mge-xe")
-        swaps = [(kept, os.path.join(root, "d3d8.dll"), "the d3d8.dll of MGE XE")] if os.path.isfile(kept) else []
+        swaps = ([(kept, os.path.join(root, "d3d8.dll"), "the d3d8.dll of MGE XE")] if os.path.isfile(kept) else []) + [toml_swap]
     elif args.mge_build:
         # MGE XE with its switch for the wgpu renderer on: its own d3d8.dll gives Direct3D to
         # the plugin, and its helper is the renderer.
-        toml = os.path.join(session.harness.MO2_ROOT, "mods", args.config_mod, "Root", "mgeXE.toml")
-        text = open(toml, encoding="utf-8").read()
-        assert "[runtime]" in text, toml
-        lines = [line for line in text.splitlines() if not line.strip().startswith("renderer_wgpu")]
-        lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = true")
-        switched = run.path("mgeXE.toml")
-        open(switched, "w", encoding="utf-8").write("".join(line + chr(10) for line in lines))
         swaps = [(os.path.join(args.mge_build, "d3d8.dll"), os.path.join(root, "d3d8.dll"), "the d3d8.dll of the MGE XE build"),
                  (os.path.join(args.mge_build, "mgeHost64.exe"), os.path.join(root, "mgeHost64.exe"), "the mgeHost64.exe of the MGE XE build"),
-                 (switched, toml, "mgeXE.toml with renderer_wgpu = true")]
+                 toml_swap]
     done = run.launch(spec, args.budget, TAG, swaps=swaps)
     # Mod Organizer leaves its copy in the game folder when the game does not end by itself.
     theirs, ours = os.path.join(root, "d3d8.dll"), os.path.join(session.harness.GAME_DIR, "d3d8.dll")

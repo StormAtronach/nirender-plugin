@@ -55,6 +55,15 @@ return function(nirender, spec)
             local hour = tes3.findGlobal("GameHour")
             if hour then hour.value = spec.hour or 12 end
             scenario.goTo(spec.exterior)
+            -- A place in the cell, and a heading: for a picture of one thing, the same each time.
+            if spec.position and spec.position ~= "" then
+                local x, y, z = tostring(spec.position):match("([-%d%.]+)%s*,%s*([-%d%.]+)%s*,%s*([-%d%.]+)")
+                after(1.5, function()
+                    local yaw = math.rad(tonumber(spec.yaw) or 0)
+                    tes3.positionCell({ reference = tes3.player, position = tes3vector3.new(tonumber(x), tonumber(y), tonumber(z)), orientation = tes3vector3.new(0, 0, yaw) })
+                    say("position: %s,%s,%s yaw %s", x, y, z, tostring(spec.yaw))
+                end)
+            end
         end },
         -- The frame rate at one place: the frames that the game gives to Lua in 10 seconds,
         -- with the player at rest in the exterior cell. The same step runs with Direct3D 9
@@ -110,6 +119,18 @@ return function(nirender, spec)
             say("walk to '%s'; calls from other threads: %s", tes3.player.cell.editorName, (nirender.threadCensus():gsub("\n", "; ")))
         end },
     }
+
+    -- With spec.steps (names with commas), only those steps: a quick run for one thing.
+    if spec.steps and spec.steps ~= "" then
+        local wanted = {}
+        for name in tostring(spec.steps):gmatch("[^,%s]+") do wanted[name] = true end
+        local kept = {}
+        for _, s in ipairs(steps) do
+            if wanted[s[1]] then kept[#kept + 1] = s end
+        end
+        steps = kept
+        say("steps: %s (%d)", tostring(spec.steps), #steps)
+    end
 
     local function step(index)
         local this = steps[index]

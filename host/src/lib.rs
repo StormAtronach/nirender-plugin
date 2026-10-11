@@ -155,6 +155,9 @@ pub struct ReplayView {
     pub clip_plane: Option<[f64; 4]>,
     /// Only the draws that write depth and do not blend.
     pub opaque_only: bool,
+    /// The depth test is on for each draw (less or equal), whatever the draw has: the sky
+    /// of the game has it off, and in a reflection it must stay behind the land.
+    pub force_depth_test: bool,
     /// The classes of the game to draw again, one bit for each (MGE_LINK_CLASS_*): the
     /// world draws of a frame have the sky too (classes 1 to 7). `ReplayView::WORLD` is
     /// all but the sky.
@@ -247,6 +250,10 @@ impl Replay for Replayer<'_> {
                 data.clip_plane = [plane[0] as f32, plane[1] as f32, plane[2] as f32, d as f32];
             }
             let mut key = kept.key;
+            if view.force_depth_test {
+                // D3DCMP_LESSEQUAL is 4.
+                key.depth = [1, key.depth[1], 4];
+            }
             if view.flip_cull {
                 // D3DCULL_CW is 2 and D3DCULL_CCW is 3.
                 key.cull = match key.cull {
@@ -1786,8 +1793,9 @@ struct Player {
     viewport: Option<([f32; 4], [f32; 2])>,
     before: Option<wgpu::Texture>,
     before_kept: bool,
-    /// The picture of the frame before a call of `Extension::draw_class`.
+    /// The picture and the depth of the frame before a call of `Extension::draw_class`.
     picture_copy: Option<wgpu::Texture>,
+    depth_copy: Option<wgpu::Texture>,
     /// The size of the back buffer of the game, from the first record. 0 when not known.
     size: (u32, u32),
     /// The size of the picture of the frame.
@@ -1836,6 +1844,7 @@ impl Player {
             before: None,
             before_kept: false,
             picture_copy: None,
+            depth_copy: None,
             size: (0, 0),
             frame_size: (0, 0),
         }
@@ -2385,7 +2394,21 @@ impl Player {
                 self.open_pass(None, None, None);
             }
         }
-        let depth = self.depth.as_ref().filter(|depth| depth.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)).map(|depth| depth.texture().create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
+        // The depth so far: a copy too, because the pass writes the depth target and a
+        // shader cannot read a target of its pass.
+        let mut depth = None;
+        if let (Some(source), Some(encoder)) = (self.depth.as_ref().map(|depth| depth.texture().clone()), self.encoder.as_mut()) {
+            if source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+                let size = source.size();
+                if self.depth_copy.as_ref().is_none_or(|copy| copy.size() != size) {
+                    self.depth_copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
+                }
+                drop(self.pass.take());
+                encoder.copy_texture_to_texture(source.as_image_copy(), self.depth_copy.as_ref().unwrap().as_image_copy(), size);
+                depth = self.depth_copy.as_ref().map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
+                self.open_pass(None, None, None);
+            }
+        }
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let mut scene = facts.view(&device, &queue, format);
         scene.picture = picture.as_ref();
@@ -2751,7 +2774,7 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     player.renderer.anisotropy = option(&args, "--anisotropy").and_then(|text| text.parse().ok()).unwrap_or(1);
     let device = player.renderer.device.clone();
     let target = target_texture(&device, width, height, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
-    let depth = target_texture(&device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
+    let depth = target_texture(&device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
     let mut frame = 0;
     for (tag, data) in &records {
         // Each frame up to the wanted one is drawn: the game can draw into a rendered texture
@@ -2951,7 +2974,7 @@ mod live {
             let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
             self.back_buffer = Some(target_texture(&player.renderer.device, width, height, player.renderer.target_format, usage));
             // An extension can read the depth in a pass that does not have it as a target.
-            let depth = target_texture(&player.renderer.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
+            let depth = target_texture(&player.renderer.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
             self.depth = Some(Rc::new(depth.create_view(&Default::default())));
         }
 

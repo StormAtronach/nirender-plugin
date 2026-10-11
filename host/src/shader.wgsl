@@ -362,7 +362,8 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     if (draw.counts.w & 4u) != 0u {
         return vec4f(extension_sky_color(normalize(in.world_position), in.clip.xy), 1.0);
     }
-    if any(draw.clip_plane != vec4f(0.0)) && dot(in.world_position, draw.clip_plane.xyz) + draw.clip_plane.w < 0.0 {
+    // A sky draw has a direction in `world_position`, and is above the water in any case.
+    if (draw.counts.w & 12u) == 0u && any(draw.clip_plane != vec4f(0.0)) && dot(in.world_position, draw.clip_plane.xyz) + draw.clip_plane.w < 0.0 {
         discard;
     }
     let shaded = (draw.counts.w & 1u) != 0u;
