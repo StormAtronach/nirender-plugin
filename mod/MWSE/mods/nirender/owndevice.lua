@@ -82,6 +82,14 @@ return function(nirender, spec)
                     end
                 end)
             end
+            -- A heading alone: the player turns after the cell loads.
+            if spec.yaw and not (spec.position and spec.position ~= "") and not spec.findWater then
+                after(1.5, function()
+                    local o = tes3.player.orientation
+                    tes3.player.orientation = tes3vector3.new(o.x, o.y, math.rad(tonumber(spec.yaw)))
+                    say("yaw: %s", tostring(spec.yaw))
+                end)
+            end
             -- A place in the cell, and a heading: for a picture of one thing, the same each time.
             if spec.position and spec.position ~= "" then
                 local x, y, z = tostring(spec.position):match("([-%d%.]+)%s*,%s*([-%d%.]+)%s*,%s*([-%d%.]+)")

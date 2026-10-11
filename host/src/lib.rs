@@ -83,6 +83,8 @@ pub struct FrameParameters {
     /// The classes of the game (MGE_LINK_CLASS_*, one bit for each) whose draws into the
     /// back buffer the extension takes: see `Extension::draw_class`.
     pub watched: u32,
+    /// True when the extension wants the call `Extension::post` in this frame.
+    pub post: bool,
 }
 
 /// The facts of the world scene of the game at a moment, for a call of the extension.
@@ -142,6 +144,8 @@ enum Item {
     WorldEnd(Box<WorldFacts>),
     /// The extension draws in place of the draws of this class.
     Replace(u32, Box<WorldFacts>),
+    /// The post-processing of the extension, after the world views.
+    Post(Box<WorldFacts>),
 }
 
 /// How the renderer draws the kept world draws of the frame again. See `Replay`.
@@ -387,6 +391,14 @@ pub trait Extension {
     /// far: for a refraction. MGE XE draws its water in place of the water plane of the
     /// game (class 10).
     fn draw_class(&mut self, _class: u32, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {}
+
+    /// The renderer calls this after the world views of the game (at the start of its user
+    /// interface scene, or at the end of the frame without one), when `FrameParameters::post`
+    /// was true. `scene.picture` is a copy of the picture of the frame and `scene.depth` a
+    /// copy of the depth of the game. The extension records its passes into `encoder` and
+    /// writes its result into `target`, the picture of the frame; the user interface of the
+    /// game draws over it after. MGE XE runs its shader chain here.
+    fn post(&mut self, _scene: &SceneView, _encoder: &mut wgpu::CommandEncoder, _target: &wgpu::TextureView) {}
 
     /// The renderer calls this after `after_world`, when `FrameParameters::blend` was true
     /// and `before_world` gave true. The pass draws into the picture of the frame and has
@@ -1890,6 +1902,8 @@ struct Player {
     world_ended: bool,
     /// The classes that the extension took in this frame, one bit for each.
     replaced: u32,
+    /// The post-processing of this frame is in the items.
+    posted: bool,
     scene_kind: u32,
     world_sun: Option<([f32; 3], [f32; 3], [f32; 3])>,
     world_ambient: [f32; 3],
@@ -1943,6 +1957,7 @@ impl Player {
             world_begun: false,
             world_ended: false,
             replaced: 0,
+            posted: false,
             scene_kind: 0,
             world_sun: None,
             world_ambient: [0.0; 3],
@@ -2018,6 +2033,7 @@ impl Player {
         self.world_begun = false;
         self.world_ended = false;
         self.replaced = 0;
+        self.posted = false;
         self.target = None;
         self.pass_target = None;
         self.before_kept = false;
@@ -2093,6 +2109,7 @@ impl Player {
     /// Ends the frame and sends its commands to the GPU. `before_submit` can add commands,
     /// for example a copy of the picture.
     fn end_frame(&mut self, before_submit: impl FnOnce(&mut wgpu::CommandEncoder)) {
+        self.post_item();
         self.run_items();
         let clock = std::time::Instant::now();
         drop(self.pass.take());
@@ -2133,6 +2150,10 @@ impl Player {
                 self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
                 self.stream.interior = word(data, 20) & 2 != 0;
                 self.scene_kind = word(data, 4);
+                // The user interface scene of the game: the world views are done.
+                if self.scene_kind == 7 {
+                    self.post_item();
+                }
             }
             tag::SCENE_END => {
                 // The end of the world scene of the game, in the back buffer.
@@ -2349,6 +2370,7 @@ impl Player {
                 Item::WorldStart(facts) => self.start_world(&facts),
                 Item::WorldEnd(facts) => self.end_world(&facts),
                 Item::Replace(class, facts) => self.replace_class(class, &facts),
+                Item::Post(facts) => self.post_process(&facts),
             }
         }
     }
@@ -2387,6 +2409,16 @@ impl Player {
         }
         renderer.counts.times[TIME_DRAW_PASS] += clock.elapsed();
         renderer.counts.draws += 1;
+    }
+
+    /// The post-processing item, one time in a frame, after the world began.
+    fn post_item(&mut self) {
+        if self.posted || !self.world_begun || !self.drawing() || !self.parameters.as_ref().is_some_and(|p| p.post) {
+            return;
+        }
+        self.posted = true;
+        let facts = self.world_facts(false);
+        self.items.push(Item::Post(Box::new(facts)));
     }
 
     /// The facts of the world scene as the stream has them now. With `first`, the sun and
@@ -2494,11 +2526,9 @@ impl Player {
         self.before_kept = true;
     }
 
-    /// Gives the extension its call in place of the draws of a class. See
-    /// `Extension::draw_class`.
-    fn replace_class(&mut self, class: u32, facts: &WorldFacts) {
-        let Some(mut extension) = self.extension.take() else { return };
-        // The picture so far: a copy, outside of the pass.
+    /// Copies the picture of the frame and the depth of the game, outside of the pass, for
+    /// a call of the extension that reads them. The pass is open again after.
+    fn copy_picture_and_depth(&mut self) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
         let mut picture = None;
         if let (Some(source), Some(encoder)) = (self.back_buffer.as_ref(), self.encoder.as_mut()) {
             if source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
@@ -2509,11 +2539,8 @@ impl Player {
                 drop(self.pass.take());
                 encoder.copy_texture_to_texture(source.as_image_copy(), self.picture_copy.as_ref().unwrap().as_image_copy(), size);
                 picture = self.picture_copy.as_ref().map(|copy| copy.create_view(&Default::default()));
-                self.open_pass(None, None, None);
             }
         }
-        // The depth so far: a copy too, because the pass writes the depth target and a
-        // shader cannot read a target of its pass.
         let mut depth = None;
         if let (Some(source), Some(encoder)) = (self.depth.as_ref().map(|depth| depth.texture().clone()), self.encoder.as_mut()) {
             if source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
@@ -2524,9 +2551,33 @@ impl Player {
                 drop(self.pass.take());
                 encoder.copy_texture_to_texture(source.as_image_copy(), self.depth_copy.as_ref().unwrap().as_image_copy(), size);
                 depth = self.depth_copy.as_ref().map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
-                self.open_pass(None, None, None);
             }
         }
+        self.open_pass(None, None, None);
+        (picture, depth)
+    }
+
+    /// Gives the extension its post-processing call. See `Extension::post`.
+    fn post_process(&mut self, facts: &WorldFacts) {
+        let Some(mut extension) = self.extension.take() else { return };
+        let (picture, depth) = self.copy_picture_and_depth();
+        let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
+        let mut scene = facts.view(&device, &queue, format);
+        scene.picture = picture.as_ref();
+        scene.depth = depth.as_ref();
+        if let (Some(color), Some(encoder)) = (self.color.clone(), self.encoder.as_mut()) {
+            drop(self.pass.take());
+            extension.post(&scene, encoder, &color);
+        }
+        self.extension = Some(extension);
+        self.open_pass(None, None, None);
+    }
+
+    /// Gives the extension its call in place of the draws of a class. See
+    /// `Extension::draw_class`.
+    fn replace_class(&mut self, class: u32, facts: &WorldFacts) {
+        let Some(mut extension) = self.extension.take() else { return };
+        let (picture, depth) = self.copy_picture_and_depth();
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let mut scene = facts.view(&device, &queue, format);
         scene.picture = picture.as_ref();
