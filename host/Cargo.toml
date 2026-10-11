@@ -5,6 +5,16 @@ edition = "2021"
 license = "MIT"
 description = "A 64-bit renderer for the render link stream of the nirender plugin, on wgpu"
 
+# The renderer is a library, so that another program can have it as a part: the helper of
+# MGE XE. `nirender-host` is the renderer as a program of its own.
+[lib]
+name = "nirender_wgpu"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nirender-host"
+path = "src/main.rs"
+
 # This crate is not a part of the plugin crate above it.
 [workspace]
 
