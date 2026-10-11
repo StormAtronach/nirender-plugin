@@ -24,6 +24,9 @@ def main():
     ap.add_argument("--live", type=int, default=5, help="seconds with the Rust functions live at the end")
     ap.add_argument("--ports", default="*", help="part of the engine name of the ports to test")
     ap.add_argument("--cells", default="", help="cells to visit after the place of the save, separated by ;")
+    ap.add_argument("--tour", default="", help="in each cell, put the player in front of each object whose id starts "
+                    "with this text, for example @nif_ for the NIF test level")
+    ap.add_argument("--tour-seconds", type=float, default=1.5, help="time at each object of the tour")
     ap.add_argument("--timeout", type=int, default=0, help="budget in seconds; 0 = from the scenario")
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--start", choices=("off", "shadow", "live"),
@@ -49,8 +52,12 @@ def main():
         fault=args.fault,
         recordBuffers=not args.no_buffers,
         cells=cells,
+        tour=args.tour or None,
+        tourSeconds=args.tour_seconds,
     )
-    timeout = args.timeout or 90 + (1 + len(cells)) * (args.shadow + 12) + args.live
+    # A tour has 60 objects at most in a cell of the test level.
+    place = max(args.shadow, 60 * args.tour_seconds if args.tour else 0)
+    timeout = args.timeout or int(90 + (1 + len(cells)) * (place + 12) + args.live)
     done = run.launch(spec, timeout, TAG)
 
     failures, notes = [], []

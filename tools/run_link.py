@@ -110,6 +110,9 @@ def main():
     ap.add_argument("--menu", help="the menu of the game to hold open for the picture test, for example MenuInventory")
     ap.add_argument("--travel-on", action="store_true", help="keep the facts and kinds in use during each change of "
                     "cell, with its load screen")
+    ap.add_argument("--tour", default="", help="in each cell, put the player in front of each object whose id starts "
+                    "with this text, for example @nif_ for the NIF test level")
+    ap.add_argument("--tour-seconds", type=float, default=1.5, help="time at each object of the tour")
     ap.add_argument("--label", default="link")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -145,7 +148,11 @@ def main():
         spec["moon"] = args.moon
     if args.sweep is not None:
         spec["sweep"] = args.sweep
-    per_place = (3 if mask else 2) * (args.seconds + 2) + (20 if mask else 12)
+    if args.tour:
+        spec.update(tour=args.tour, tourSeconds=args.tour_seconds)
+    # A tour has 60 objects at most in a cell of the test level.
+    measure = max(args.seconds, 60 * args.tour_seconds if args.tour else 0)
+    per_place = int((3 if mask else 2) * (measure + 2) + (20 if mask else 12))
     done = run.launch(spec, 120 + (len(cells) + 1) * per_place, TAG)
 
     rows = []

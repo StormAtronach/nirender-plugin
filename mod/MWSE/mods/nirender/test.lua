@@ -76,7 +76,7 @@ return function(nirender, spec)
         local where = tes3.player.cell.editorName
         say("shadow mode on for %d s in '%s' (%s)", spec.shadowSeconds, where, ports)
         nirender.setMode(ports, "shadow")
-        after(spec.shadowSeconds, function()
+        scenario.tour(spec.shadowSeconds, function()
             nirender.setMode("*", "off")
             hold_in_menu_mode()
             after(0.5, function()

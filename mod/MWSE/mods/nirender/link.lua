@@ -22,7 +22,7 @@ return function(nirender, spec)
         after(1, function()
             nirender.linkCounters(true)
             if spec.callers then nirender.deviceCallers(true) end
-            after(spec.seconds, function()
+            scenario.tour(spec.seconds, function()
                 if spec.callers then
                     for line in tostring(nirender.deviceCallers(false)):gmatch("[^\n]+") do
                         say("callers|%s|%s|%s", where, label, line)
