@@ -1265,11 +1265,17 @@ unsafe fn host_module() -> usize {
     win::GetModuleHandleW(path.as_ptr()) as usize
 }
 
-/// True when the `d3d8.dll` of the game folder is the one of this repository: the game gets
-/// its Direct3D 8 from the plugin. This is true before the game asks for it.
+/// True when the game gets its Direct3D 8 from the plugin. This is true before the game asks
+/// for it. The `d3d8.dll` of the game folder says so with its function `NirenderD3D8`, which
+/// gives a number that is not 0: the file is the one of this repository, or it is MGE XE
+/// with its switch `runtime.renderer_wgpu` on.
 pub unsafe fn own_d3d8() -> bool {
     let module = host_module();
-    module != 0 && !win::GetProcAddress(module as *mut c_void, b"NirenderD3D8\0".as_ptr()).is_null()
+    if module == 0 {
+        return false;
+    }
+    let export = win::GetProcAddress(module as *mut c_void, b"NirenderD3D8\0".as_ptr());
+    !export.is_null() && core::mem::transmute::<*mut c_void, unsafe extern "system" fn() -> u32>(export)() != 0
 }
 
 /// Connects to the host and puts the packet functions on the ports. The ports must have
