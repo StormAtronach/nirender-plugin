@@ -1,12 +1,19 @@
-//! The creation of a source texture through the render link.
+//! The creation of a source texture: `NiDX8SourceTextureData_static::Create` (0x6BFA50).
 //!
-//! `create` does the work of `NiDX8SourceTextureData_static::Create` (0x6BFA50). It makes no
-//! call on the D3D8 device and no call on a D3D8 texture: it gives the pixel data to the host
-//! of the link and keeps the handle that the host returns. In this version the handle is a
-//! D3D8 texture pointer, thus the other code of the renderer can use it as before.
+//! With the textures of the render link in use, `create` makes no call on the D3D8 device and
+//! no call on a D3D8 texture: it gives the pixel data to the host of the link and keeps the
+//! handle that the host returns. In this version the handle is a D3D8 texture pointer, thus
+//! the other code of the renderer can use it as before.
 //!
-//! MGE XE changes the game function in memory, thus the game function is not a reference for
-//! a comparison. The picture test of the link is the test of this file.
+//! Without the link, `create` makes the texture on the device as the game function does.
+//! MGE XE changes the game function in memory in two places: it puts a call of its own
+//! function in the place of `CreateTexture`, and a second call before the end. The port
+//! calls those two functions of MGE XE when the calls are in the game code.
+//!
+//! A comparison with the game function is not possible. With MGE XE the function releases
+//! the first texture that it makes, and the second run of a comparison would get that
+//! texture. The tests of this file are the start of the game on the Rust code, the frame
+//! tests after it, and the picture test of the link.
 
 use super::{ni, textures};
 use crate::engine::{cdecl1, critical_section_lock, critical_section_unlock, get_image_converter, operator_new, pixel_format_copy, CREATE_CRITICAL_SECTION};
@@ -31,13 +38,104 @@ const D3D_FORMAT_FOR_PIXEL_FORMAT: usize = 0x6B0E20;
 /// The argument is a record of 260 bytes and then the size.
 const TEXTURE_MADE: usize = 0x6ECA10;
 
+/// The place of the `CreateTexture` call in the game function, and the bytes that MGE XE
+/// writes there (`patchLoadTexture2D`): 4 pushes, `mov eax, function`, `call eax`, a jump.
+const CREATE_TEXTURE_CALL: usize = 0x6BFC4B;
+const MGE_CREATE_HEAD: [u8; 5] = [0x52, 0x55, 0x56, 0x53, 0xB8];
+const MGE_CREATE_TAIL: [u8; 4] = [0xFF, 0xD0, 0xEB, 0x0E];
+/// The place where the game function lets go of the converted pixel data, and the bytes
+/// that MGE XE writes there.
+const RELEASE_CONVERTED: usize = 0x6BFD3B;
+const MGE_UPLOAD_HEAD: [u8; 8] = [0x8B, 0x54, 0x24, 0x10, 0x52, 0x55, 0x56, 0xB8];
+const MGE_UPLOAD_TAIL: [u8; 4] = [0xFF, 0xD0, 0xEB, 0x08];
+/// `D3DPOOL_MANAGED`
+const POOL_MANAGED: u32 = 1;
+
+/// The function that the bytes at `at` call, when they are `head`, an address and `tail`.
+unsafe fn patched_call<const N: usize>(at: usize, head: &[u8; N], tail: &[u8; 4]) -> Option<usize> {
+    if rd::<[u8; N]>(at, 0) == *head && rd::<[u8; 4]>(at, N + 4) == *tail {
+        Some(rd(at, N))
+    } else {
+        None
+    }
+}
+
+/// Adds the size of the new texture to the totals of the game.
+unsafe fn texture_made(converted: usize) {
+    let levels: u32 = rd(converted, PD::mipmapLevels);
+    let mut record = [0u32; 66];
+    record[65] = rd(rd::<usize>(converted, PD::mipmapOffsets), levels as usize * 4);
+    cdecl1(TEXTURE_MADE, record.as_mut_ptr() as u32);
+}
+
+/// Makes the D3D8 texture of `this` on the device and copies each level of `converted` into
+/// it. Returns the D3D8 format.
+unsafe fn make_on_device(this: usize, converted: usize) -> u32 {
+    let mut d3d_format = 0;
+    if rd::<usize>(this, SD::d3dTexture) == 0 {
+        d3d_format = cdecl1(D3D_FORMAT_FOR_PIXEL_FORMAT, (this + SD::format) as u32);
+        wr::<u32>(this, SD::levels, rd(converted, PD::mipmapLevels));
+        let device: usize = rd(rd::<usize>(this, SD::renderer), R::d3dDevice);
+        critical_section_lock(CREATE_CRITICAL_SECTION, NAME_CREATE_SURFACE);
+        let result = match patched_call(CREATE_TEXTURE_CALL, &MGE_CREATE_HEAD, &MGE_CREATE_TAIL) {
+            // `patchLoadTexture2DCreate` of MGE XE: device, texture data, pixel data, format.
+            Some(function) => {
+                let function: unsafe extern "system" fn(usize, usize, usize, u32) -> u32 = core::mem::transmute(function);
+                function(device, this, converted, d3d_format)
+            }
+            None => crate::d3d::device_create_texture(
+                device,
+                rd(this, SD::width),
+                rd(this, SD::height),
+                rd(this, SD::levels),
+                0,
+                d3d_format,
+                POOL_MANAGED,
+                this + SD::d3dTexture,
+            ),
+        };
+        critical_section_unlock(CREATE_CRITICAL_SECTION);
+        if result != 0 {
+            wr::<usize>(this, SD::d3dTexture, 0);
+        }
+        texture_made(converted);
+        if rd::<usize>(this, SD::d3dTexture) == 0 {
+            return d3d_format;
+        }
+    }
+    let levels: u32 = rd(converted, PD::mipmapLevels);
+    wr(this, SD::levels, levels);
+    if levels != 0 {
+        let mut level = 0u32;
+        loop {
+            let mut surface = 0usize;
+            let d3d_texture: usize = rd(this, SD::d3dTexture);
+            if crate::d3d::texture_get_surface_level(d3d_texture, level, &mut surface as *mut usize as usize) != 0 {
+                // The game code lets go of the texture and keeps its address.
+                crate::d3d::com_release(rd(this, SD::d3dTexture));
+                break;
+            }
+            textures::source_data_copy_data_to_surface(converted, level, surface);
+            crate::d3d::com_release(surface);
+            level += 1;
+            if level >= rd::<u32>(this, SD::levels) {
+                break;
+            }
+        }
+    }
+    d3d_format
+}
+
 /// True for a number with one bit.
 fn power_of_two(value: u32) -> bool {
     value != 0 && value & value.wrapping_sub(1) == 0
 }
 
-/// The work of 0x6BFA50 with the render link. Returns the new `NiDX8SourceTextureData`.
+/// 0x6BFA50 `NiDX8SourceTextureData_static::Create` (cdecl). Returns the new
+/// `NiDX8SourceTextureData`.
 pub unsafe fn create(texture: usize, renderer: usize) -> usize {
+    crate::shadow::touch(&create_port::STATE);
+    let link = crate::link_client::link_textures();
     let this = operator_new(SD::SIZE);
     textures::source_data_ctor(this, texture, renderer);
 
@@ -84,6 +182,8 @@ pub unsafe fn create(texture: usize, renderer: usize) -> usize {
         let levels: u32 = rd(converted, PD::mipmapLevels);
         let offsets: usize = rd(converted, PD::mipmapOffsets);
         let size: u32 = rd(offsets, levels as usize * 4);
+        let d3d_format = if link { 0 } else { make_on_device(this, converted) };
+        if link {
         wr(this, SD::levels, levels);
 
         let description = TextureV1 {
@@ -105,10 +205,8 @@ pub unsafe fn create(texture: usize, renderer: usize) -> usize {
         let handle = crate::link_client::texture_create(&description);
         critical_section_unlock(CREATE_CRITICAL_SECTION);
         wr(this, SD::d3dTexture, handle);
-
-        let mut record = [0u32; 66];
-        record[65] = size;
-        cdecl1(TEXTURE_MADE, record.as_mut_ptr() as u32);
+        texture_made(converted);
+        }
 
         let palette: usize = rd(pixel_data, PD::palette);
         if palette != 0 {
@@ -123,10 +221,20 @@ pub unsafe fn create(texture: usize, renderer: usize) -> usize {
             }
         }
         wr(this, SD::formattedSize, size);
-        // The converter made new pixel data, or it returned the source. New data has no
-        // reference, and this deletes it.
-        if rd::<u32>(converted, REF_COUNT) == 0 {
-            ni::delete_object(converted);
+        match patched_call(RELEASE_CONVERTED, &MGE_UPLOAD_HEAD, &MGE_UPLOAD_TAIL) {
+            // `patchLoadTexture2DUpload` of MGE XE: texture data, pixel data, format. It moves
+            // a static texture to the default pool, and it deletes the converted data.
+            Some(function) if !link => {
+                let function: unsafe extern "system" fn(usize, usize, u32) = core::mem::transmute(function);
+                function(this, converted, d3d_format);
+            }
+            // The converter made new pixel data, or it returned the source. New data has no
+            // reference, and this deletes it.
+            _ => {
+                if rd::<u32>(converted, REF_COUNT) == 0 {
+                    ni::delete_object(converted);
+                }
+            }
         }
     }
 
@@ -145,3 +253,12 @@ pub unsafe fn create(texture: usize, renderer: usize) -> usize {
     }
     this
 }
+
+// The call is always a skip: see the head of this file.
+port_cdecl!(create_port, 0x6BFA50, "NiDX8SourceTextureData_static::Create",
+    fn(texture: usize, renderer: usize) -> usize,
+    compare_eax = false,
+    regions = |set| set.skip(),
+    rust = create);
+
+pub static PORTS: &[&crate::shadow::PortState] = &[&create_port::STATE];

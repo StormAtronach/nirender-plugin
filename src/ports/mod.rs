@@ -116,6 +116,8 @@ static MODULES: &[&[&PortState]] = &[
     system_desc::PORTS,
     rendered::PORTS,
     textures::PORTS,
+    #[cfg(not(test))]
+    texture_link::PORTS,
     geometry::PORTS,
     device_setup::PORTS,
     buffers::PORTS,
@@ -151,6 +153,9 @@ enum Followed {
     /// A `call` and a `nop` that a known patch puts in place of 6 bytes of code. The port does
     /// in Rust what the function of the patch does.
     InsertedCall { at: usize },
+    /// Bytes that a known patch writes around the address of its own function: `head`, 4
+    /// bytes of address, `tail`. The port calls that function.
+    CallOfPatch { at: usize, head: &'static [u8], tail: &'static [u8] },
 }
 
 static FOLLOWED: &[Followed] = &[
@@ -167,6 +172,13 @@ static FOLLOWED: &[Followed] = &[
     Followed::Operand { at: 0x6A9B38, len: 4 },
     Followed::Operand { at: 0x6A9B7E, len: 4 },
     Followed::Operand { at: 0x6A9BC4, len: 4 },
+    // `NiDX8SourceTextureData_static::Create`: the two calls and the three stack offsets of
+    // MGE XE (`patchLoadTexture2D`). `texture_link::create` calls the two functions.
+    Followed::CallOfPatch { at: 0x6BFC4B, head: &[0x52, 0x55, 0x56, 0x53, 0xB8], tail: &[0xFF, 0xD0, 0xEB, 0x0E] },
+    Followed::CallOfPatch { at: 0x6BFD3B, head: &[0x8B, 0x54, 0x24, 0x10, 0x52, 0x55, 0x56, 0xB8], tail: &[0xFF, 0xD0, 0xEB, 0x08] },
+    Followed::Patch { at: 0x6BFCC7, bytes: &[0x18] },
+    Followed::Patch { at: 0x6BFCD7, bytes: &[0x18] },
+    Followed::Patch { at: 0x6BFCE3, bytes: &[0x24] },
     // `NiDX8MaterialManager::UpdateToDevice`: the database has the call that the Morrowind
     // Code Patch puts there (MCP-011). These are the bytes of the game without the patch.
     // `material::update_to_device` reads the bytes.
@@ -189,6 +201,12 @@ pub fn follows(addr: usize, read: impl Fn(usize) -> u8) -> bool {
             (at..at + bytes.len()).contains(&addr) && bytes.iter().enumerate().all(|(i, &b)| read(at + i) == b)
         }
         Followed::InsertedCall { at } => (at..at + 6).contains(&addr) && read(at) == 0xE8 && read(at + 5) == 0x90,
+        Followed::CallOfPatch { at, head, tail } => {
+            let tail_at = at + head.len() + 4;
+            (at..tail_at + tail.len()).contains(&addr)
+                && head.iter().enumerate().all(|(i, &b)| read(at + i) == b)
+                && tail.iter().enumerate().all(|(i, &b)| read(tail_at + i) == b)
+        }
     })
 }
 

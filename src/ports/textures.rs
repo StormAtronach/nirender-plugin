@@ -105,12 +105,8 @@ mod eng {
     pub unsafe fn texture_list_head() -> usize {
         rd(0x7DE7F0, 0)
     }
-    /// 0x6BFA50 `NiDX8SourceTextureData_static::Create`. It is `__cdecl`. Another mod changes it
-    /// in memory.
+    /// 0x6BFA50 `NiDX8SourceTextureData_static::Create`. It is `__cdecl`.
     pub unsafe fn source_texture_data_create(texture: usize, renderer: usize) -> usize {
-        if crate::link_client::link_textures() {
-            return crate::ports::texture_link::create(texture, renderer);
-        }
         cdecl2(0x6BFA50, texture as u32, renderer as u32) as usize
     }
     /// 0x6C10A0 `NiDX8SourceCubeMapData_static::Create`. It is `__cdecl`.
