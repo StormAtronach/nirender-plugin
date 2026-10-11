@@ -11,6 +11,10 @@ return function(nirender, spec)
     local say, after = scenario.say, scenario.after
 
     local function capture()
+        if spec.yaw then
+            -- The direction of the view, in degrees from north.
+            tes3.player.orientation = tes3vector3.new(0, 0, math.rad(spec.yaw))
+        end
         nirender.setMode("*", "live")
         say("textures through the link: %s", tostring(nirender.linkTextures(true)))
         say("facts in use: %s", tostring(nirender.linkUseFacts(spec.facts)))

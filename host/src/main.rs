@@ -295,6 +295,9 @@ struct Renderer {
     textures: HashMap<u32, Rc<wgpu::TextureView>>,
     white: Rc<wgpu::TextureView>,
     samplers: HashMap<[u32; 5], Rc<wgpu::Sampler>>,
+    /// The textures and the samplers of a draw, by the texture handles and the sampler values
+    /// of its stages. The D3D12 backend has a small number of places for samplers.
+    texture_groups: HashMap<([u32; STAGES], [[u32; 5]; STAGES]), Rc<wgpu::BindGroup>>,
     buffers: HashMap<u32, BufferData>,
     defaults: wgpu::Buffer,
     counts: Counts,
@@ -390,6 +393,7 @@ impl Renderer {
             textures: HashMap::new(),
             white,
             samplers: HashMap::new(),
+            texture_groups: HashMap::new(),
             buffers: HashMap::new(),
             defaults,
             counts: Counts::default(),
@@ -452,6 +456,8 @@ impl Renderer {
             &bytes,
         );
         self.textures.insert(handle, Rc::new(texture.create_view(&Default::default())));
+        // A group can have the texture that had this handle before.
+        self.texture_groups.clear();
         self.counts.textures += 1;
     }
 
@@ -886,28 +892,36 @@ fn main() {
                         layout: &renderer.draw_layout,
                         entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }],
                     });
-                    let mut views = Vec::new();
-                    let mut samplers = Vec::new();
+                    let mut handles = [0u32; STAGES];
+                    let mut sampler_values = [[0u32; 5]; STAGES];
                     for stage in 0..STAGES {
                         let handle = word(s, state::TEXTURES + stage * 4);
                         let used = stage < draw_data.counts[1] as usize && handle != 0;
                         if used && !renderer.textures.contains_key(&handle) {
                             renderer.counts.missing_textures += 1;
+                        } else if used {
+                            handles[stage] = handle;
+                            sampler_values[stage] = core::array::from_fn(|i| word(s, state::SAMPLERS + stage * 20 + i * 4));
                         }
-                        views.push(renderer.textures.get(&handle).filter(|_| used).unwrap_or(&renderer.white).clone());
-                        let values: [u32; 5] = core::array::from_fn(|i| word(s, state::SAMPLERS + stage * 20 + i * 4));
-                        samplers.push(renderer.sampler(values));
                     }
-                    let mut entries = Vec::new();
-                    for stage in 0..STAGES {
-                        entries.push(wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(&views[stage]) });
-                        entries.push(wgpu::BindGroupEntry {
-                            binding: (STAGES + stage) as u32,
-                            resource: wgpu::BindingResource::Sampler(&samplers[stage]),
-                        });
+                    let group_key = (handles, sampler_values);
+                    if !renderer.texture_groups.contains_key(&group_key) {
+                        let views: Vec<Rc<wgpu::TextureView>> =
+                            handles.iter().map(|handle| renderer.textures.get(handle).unwrap_or(&renderer.white).clone()).collect();
+                        let samplers: Vec<Rc<wgpu::Sampler>> = sampler_values.iter().map(|values| renderer.sampler(*values)).collect();
+                        let mut entries = Vec::new();
+                        for stage in 0..STAGES {
+                            entries.push(wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(&views[stage]) });
+                            entries.push(wgpu::BindGroupEntry {
+                                binding: (STAGES + stage) as u32,
+                                resource: wgpu::BindingResource::Sampler(&samplers[stage]),
+                            });
+                        }
+                        let group =
+                            renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &renderer.texture_layout, entries: &entries });
+                        renderer.texture_groups.insert(group_key, Rc::new(group));
                     }
-                    let texture_group =
-                        renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &renderer.texture_layout, entries: &entries });
+                    let texture_group = renderer.texture_groups[&group_key].clone();
                     let Some(pipeline) = renderer.pipeline(key) else {
                         renderer.counts.no_layout += 1;
                         continue;
