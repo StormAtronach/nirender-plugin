@@ -502,30 +502,11 @@ pub unsafe fn skip_render_state(state: u32, value: u32) -> bool {
         || (skip(FACT_DEVICE_RENDER_STATES, true) && command(COMMAND_RENDER_STATE, state, value, 0))
 }
 
-/// A device object for `NiDX8MaterialManager::UpdateToDevice` when the host sets the
-/// material. The game function does its other work, and its `SetMaterial` call does nothing.
-/// The Morrowind Code Patch changes that function, so the plugin has no port of it.
-static mut NO_MATERIAL_VTABLE: [usize; 128] = [0; 128];
-static mut NO_MATERIAL_DEVICE: usize = 0;
-
-/// `IDirect3DDevice8::SetMaterial` that does nothing.
-unsafe extern "system" fn set_material_nothing(_device: usize, _material: usize) -> u32 {
-    0
-}
-
-/// The device to give to `NiDX8MaterialManager::UpdateToDevice`: `device`, or an object that
-/// takes no material when the host sets the material from the packets.
-pub unsafe fn material_device(device: usize) -> usize {
-    if !skip(FACT_DEVICE_RENDER_STATES, true) {
-        return device;
-    }
-    let vtable = &mut *addr_of_mut!(NO_MATERIAL_VTABLE);
-    if vtable[0] == 0 {
-        // Only the SetMaterial slot gets a call.
-        *vtable = [set_material_nothing as *const () as usize; 128];
-        *addr_of_mut!(NO_MATERIAL_DEVICE) = vtable.as_ptr() as usize;
-    }
-    addr_of!(NO_MATERIAL_DEVICE) as usize
+/// True when the host sets the material from the packets. The material is a part of the
+/// render state kind.
+#[inline]
+pub fn skip_material() -> bool {
+    skip(FACT_DEVICE_RENDER_STATES, true)
 }
 
 /// True when the caller must not make the D3D8 call for this texture stage state: the host

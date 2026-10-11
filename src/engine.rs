@@ -209,11 +209,6 @@ pub unsafe fn property_state_update_current_material_revision(property_state: us
     thiscall0(0x6FE4C0, property_state) as usize
 }
 
-/// `NiDX8MaterialManager::UpdateToDevice`. The Morrowind Code Patch changes its body, so it
-/// stays engine code.
-pub unsafe fn material_manager_update_to_device(manager: usize, device: usize) -> u32 {
-    thiscall1(0x6C2680, manager, device as u32)
-}
 
 /// A deliberate fault in the Rust code. It shows that the tests find a fault.
 /// 0 is no fault. 1 is a wrong value in a device call, the Z compare function.

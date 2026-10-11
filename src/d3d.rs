@@ -81,6 +81,8 @@ pub const DEVICE_CLEAR: usize = 0x90;
 pub const DEVICE_SET_TRANSFORM: usize = 0x94;
 /// The slot of `IDirect3DDevice8::SetViewport`.
 pub const DEVICE_SET_VIEWPORT: usize = 0xA0;
+/// The slot of `IDirect3DDevice8::SetMaterial`.
+pub const DEVICE_SET_MATERIAL: usize = 0xA8;
 /// The slot of `IDirect3DDevice8::SetLight`.
 pub const DEVICE_SET_LIGHT: usize = 0xB0;
 /// The slot of `IDirect3DDevice8::LightEnable`.
@@ -432,6 +434,17 @@ pub unsafe fn device_light_enable(device: usize, index: u32, enable: u32) -> u32
     }
     let f: unsafe extern "system" fn(usize, u32, u32) -> u32 = transmute(virtual_at(device, DEVICE_LIGHT_ENABLE));
     f(device, index, enable)
+}
+
+/// `IDirect3DDevice8::SetMaterial` through the vtable of the device. `material` is the
+/// address of a `D3DMATERIAL8`.
+#[inline(always)]
+pub unsafe fn device_set_material(device: usize, material: usize) -> u32 {
+    if crate::link_client::skip_material() {
+        return 0;
+    }
+    let f: unsafe extern "system" fn(usize, usize) -> u32 = transmute(virtual_at(device, DEVICE_SET_MATERIAL));
+    f(device, material)
 }
 
 /// `IDirect3DDevice8::SetRenderState` through the vtable of the device, as the game code calls it.

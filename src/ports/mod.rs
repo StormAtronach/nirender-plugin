@@ -167,6 +167,11 @@ static FOLLOWED: &[Followed] = &[
     Followed::Operand { at: 0x6A9B38, len: 4 },
     Followed::Operand { at: 0x6A9B7E, len: 4 },
     Followed::Operand { at: 0x6A9BC4, len: 4 },
+    // `NiDX8MaterialManager::UpdateToDevice`: the database has the call that the Morrowind
+    // Code Patch puts there (MCP-011). These are the bytes of the game without the patch.
+    // `material::update_to_device` reads the bytes.
+    Followed::Patch { at: 0x6C2686, bytes: &[0x15] },
+    Followed::Patch { at: 0x6C2696, bytes: &[0xFF, 0x92, 0xA8, 0x00, 0x00, 0x00, 0xC2, 0x04, 0x00] },
     // `NiDX8TextureData::FindMatchingPixelFormat`: four displacements that the Morrowind Code
     // Patch changes (MCP-039). `textures` reads them.
     Followed::Operand { at: 0x6B70A8, len: 1 },

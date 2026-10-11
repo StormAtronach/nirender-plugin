@@ -252,7 +252,7 @@ pub unsafe fn update_d3d_state(this: usize, property_state: usize) {
     let material_property = engine::property_state_update_current_material_revision(property_state);
     let manager = this + RS::materialManager;
     material::set_current_material(manager, material_property);
-    engine::material_manager_update_to_device(manager, crate::link_client::material_device(rd(this, RS::device)));
+    material::update_to_device(manager, rd(this, RS::device));
     wr::<u8>(this, RS::changed, 0);
 }
 

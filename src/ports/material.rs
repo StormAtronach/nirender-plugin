@@ -57,6 +57,46 @@ pub unsafe fn set_current_material(this: usize, material: usize) {
     }
 }
 
+/// The 6 bytes of the `SetMaterial` call in `UpdateToDevice`. The Morrowind Code Patch
+/// ("MCP-011") puts a call of its function `patchSetMaterialAlpha` there.
+const UPDATE_SET_MATERIAL_CALL: usize = 0x6C2696;
+const PATCH_SET_MATERIAL_ALPHA: usize = 0x736600;
+/// `patchdataRenderTargetFlags` of the Morrowind Code Patch, one byte.
+const PATCH_RENDER_TARGET_FLAGS: usize = 0x77445B;
+
+/// True when the game code calls `patchSetMaterialAlpha` in the place of `SetMaterial`.
+unsafe fn code_patch_material_alpha() -> bool {
+    rd::<u8>(UPDATE_SET_MATERIAL_CALL, 0) == 0xE8
+        && (UPDATE_SET_MATERIAL_CALL + 5).wrapping_add(rd::<u32>(UPDATE_SET_MATERIAL_CALL, 1) as usize) == PATCH_SET_MATERIAL_ALPHA
+}
+
+/// 0x6C2680 `NiDX8MaterialManager::UpdateToDevice`: sends the current material to the device
+/// when it changed.
+///
+/// With the Morrowind Code Patch the function also keeps a flag for the patch: bit 1 is on
+/// after a material that is not opaque, and only bit 0 stays after an opaque one. The port
+/// does that when the call of the patch is in the game code.
+pub unsafe fn update_to_device(this: usize, device: usize) {
+    crate::shadow::touch(&update_to_device_port::STATE);
+    if rd::<u8>(this, MM::changed) == 0 {
+        return;
+    }
+    wr::<u8>(this, MM::changed, 0);
+    let entry: usize = rd(this, MM::currentMaterialEntry);
+    if code_patch_material_alpha() {
+        // The patch compares the bits of the diffuse alpha with the bits of 1.0.
+        let flags: u8 = rd(PATCH_RENDER_TARGET_FLAGS, 0);
+        let opaque = rd::<u32>(entry, DIFFUSE + 12) == 0x3F80_0000;
+        wr::<u8>(PATCH_RENDER_TARGET_FLAGS, 0, if opaque { flags & 1 } else { flags | 2 });
+    }
+    crate::d3d::device_set_material(device, entry);
+}
+
+unsafe fn update_to_device_regions(set: &mut crate::shadow::Regions, this: usize) {
+    set.add(this, MM::SIZE);
+    set.add(PATCH_RENDER_TARGET_FLAGS, 1);
+}
+
 /// The call is a skip when the material has no entry and the allocator hooks are not active.
 /// The call allocates the entry then.
 unsafe fn set_current_material_regions(set: &mut crate::shadow::Regions, this: usize, material: usize) {
@@ -82,7 +122,14 @@ port_thiscall!(set_current_material_port, 0x6C2620, "NiDX8MaterialManager::SetCu
     regions = |set| set_current_material_regions(set, this, material),
     rust = set_current_material);
 
-pub static PORTS: &[&crate::shadow::PortState] = &[&entry_update_port::STATE, &set_current_material_port::STATE];
+port_thiscall!(update_to_device_port, 0x6C2680, "NiDX8MaterialManager::UpdateToDevice",
+    fn(this, device: usize) -> (),
+    compare_eax = false,
+    regions = |set| update_to_device_regions(set, this),
+    rust = update_to_device);
+
+pub static PORTS: &[&crate::shadow::PortState] =
+    &[&entry_update_port::STATE, &set_current_material_port::STATE, &update_to_device_port::STATE];
 
 #[cfg(test)]
 mod tests {
