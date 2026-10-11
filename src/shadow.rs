@@ -5,7 +5,7 @@
 //! return value and the memory that the function can write must be equal. The result of the
 //! engine function stays.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use crate::device;
 use crate::hook::Cleanup;
@@ -56,6 +56,62 @@ impl Counter {
     }
 }
 
+/// A sum of time stamps of the processor. Only the main thread adds to it, as `Counter`.
+pub struct Stamps {
+    low: AtomicU32,
+    high: AtomicU32,
+}
+
+impl Stamps {
+    pub const fn new() -> Stamps {
+        Stamps { low: AtomicU32::new(0), high: AtomicU32::new(0) }
+    }
+
+    #[inline(always)]
+    pub fn add(&self, delta: u64) {
+        let sum = self.get().wrapping_add(delta);
+        self.low.store(sum as u32, Ordering::Relaxed);
+        self.high.store((sum >> 32) as u32, Ordering::Relaxed);
+    }
+
+    pub fn get(&self) -> u64 {
+        (self.high.load(Ordering::Relaxed) as u64) << 32 | self.low.load(Ordering::Relaxed) as u64
+    }
+
+    /// Returns the sum and sets it to zero.
+    pub fn take(&self) -> u64 {
+        let sum = self.get();
+        self.low.store(0, Ordering::Relaxed);
+        self.high.store(0, Ordering::Relaxed);
+        sum
+    }
+}
+
+/// The time stamp counter of the processor: much cheaper than the performance counter,
+/// for a measurement on every call of a port.
+#[inline(always)]
+pub fn stamp() -> u64 {
+    unsafe { core::arch::x86::_rdtsc() }
+}
+
+/// The performance counter and the time stamp at the start, for the rate of the stamps.
+static STAMP_START_TICKS: AtomicI64 = AtomicI64::new(0);
+static STAMP_START: AtomicU64 = AtomicU64::new(0);
+
+/// Notes the start for `stamps_to_ms`.
+pub fn calibrate_stamps() {
+    STAMP_START_TICKS.store(crate::capture::ticks(), Ordering::Relaxed);
+    STAMP_START.store(stamp(), Ordering::Relaxed);
+}
+
+/// Milliseconds for a number of time stamps. The rate of the stamps is that over the time
+/// since `calibrate_stamps`.
+pub fn stamps_to_ms(stamps: u64) -> f64 {
+    let seconds = (crate::capture::ticks() - STAMP_START_TICKS.load(Ordering::Relaxed)) as f64 / crate::capture::ticks_per_second() as f64;
+    let rate = stamp().wrapping_sub(STAMP_START.load(Ordering::Relaxed)) as f64 / seconds.max(1e-6);
+    stamps as f64 * 1000.0 / rate.max(1.0)
+}
+
 /// One port.
 pub struct PortState {
     pub name: &'static str,
@@ -76,6 +132,9 @@ pub struct PortState {
     pub before: AtomicUsize,
     /// Calls that ran the Rust function for real.
     pub live_calls: Counter,
+    /// The time of the main thread in those calls, with the ports they call, in time
+    /// stamps of the processor. `take` resets it for a report of one step.
+    pub live_stamps: Stamps,
     /// The number of runs of the Rust function: live, in a comparison, or as a call from
     /// another port.
     pub rust_runs: Counter,
@@ -99,6 +158,7 @@ impl PortState {
             after: AtomicUsize::new(0),
             before: AtomicUsize::new(0),
             live_calls: Counter::new(),
+            live_stamps: Stamps::new(),
             rust_runs: Counter::new(),
             shadow_calls: Counter::new(),
             skipped: Counter::new(),
@@ -378,6 +438,17 @@ pub unsafe fn run_before(before: usize, args: &[usize]) {
     }
 }
 
+/// The calls of ports in live mode that are in progress, and the time in the outermost
+/// ones. Only the main thread changes them.
+static PORT_DEPTH: AtomicU32 = AtomicU32::new(0);
+static PORT_STAMPS: Stamps = Stamps::new();
+
+/// The time of the main thread in the ports in live mode since the start, in ms. A port
+/// that a port calls is not counted again.
+pub fn port_ms() -> f64 {
+    stamps_to_ms(PORT_STAMPS.get())
+}
+
 /// Runs a call of a port in the mode of the port.
 ///
 /// `rust` and `engine` return what the function leaves in EAX. `compare_eax` tells if that
@@ -422,7 +493,17 @@ unsafe fn dispatch_inner<R: Eax>(
         Mode::Off => engine(),
         Mode::Live => {
             state.live_calls.add();
-            rust().to_eax()
+            let depth = PORT_DEPTH.load(Ordering::Relaxed);
+            let start = stamp();
+            PORT_DEPTH.store(depth + 1, Ordering::Relaxed);
+            let eax = rust().to_eax();
+            PORT_DEPTH.store(depth, Ordering::Relaxed);
+            let spent = stamp().wrapping_sub(start);
+            state.live_stamps.add(spent);
+            if depth == 0 {
+                PORT_STAMPS.add(spent);
+            }
+            eax
         }
         Mode::Shadow => compare(state, compare_eax, regions, rust, engine),
     }

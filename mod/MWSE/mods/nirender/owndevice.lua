@@ -93,8 +93,16 @@ return function(nirender, spec)
             -- A place in the cell, and a heading: for a picture of one thing, the same each time.
             if spec.position and spec.position ~= "" then
                 local x, y, z = tostring(spec.position):match("([-%d%.]+)%s*,%s*([-%d%.]+)%s*,%s*([-%d%.]+)")
+                if not x then
+                    x, y = tostring(spec.position):match("([-%d%.]+)%s*,%s*([-%d%.]+)")
+                end
                 after(1.5, function()
                     local yaw = math.rad(tonumber(spec.yaw) or 0)
+                    if not z then
+                        -- Without a height: onto the landscape, found with a ray.
+                        local hit = tes3.rayTest({ position = tes3vector3.new(tonumber(x), tonumber(y), 8000), direction = tes3vector3.new(0, 0, -1), root = tes3.game.worldLandscapeRoot })
+                        z = hit and hit.intersection and (hit.intersection.z + 80) or 0
+                    end
                     tes3.positionCell({ reference = tes3.player, position = tes3vector3.new(tonumber(x), tonumber(y), tonumber(z)), orientation = tes3vector3.new(0, 0, yaw) })
                     say("position: %s,%s,%s yaw %s", x, y, z, tostring(spec.yaw))
                 end)
@@ -180,6 +188,9 @@ return function(nirender, spec)
         say("step %s: %s %s", this[1], tostring(ok), ok and "" or tostring(problem))
         after(this[2], function()
             local p = tes3.player and tes3.player.position
+            -- The host program prints its counts of this step at the mark.
+            if nirender.streamMark then nirender.streamMark("after " .. this[1]) end
+            if nirender.portTimes then say("ports %s: %s", this[1], nirender.portTimes(12)) end
             say("after %s: %s cell '%s' at %s", this[1], nirender.captureStatus(), tes3.player and tes3.player.cell.editorName or "?",
                 p and string.format("%.0f,%.0f,%.0f yaw %.0f", p.x, p.y, p.z, math.deg(tes3.player.orientation.z)) or "?")
             if nirender.captureStatus():sub(1, 3) == "off" and mge and mge.saveScreenshot then

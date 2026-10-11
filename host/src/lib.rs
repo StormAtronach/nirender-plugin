@@ -430,6 +430,7 @@ mod tag {
     pub const SHOT: u32 = 14;
     pub const DRAW_UP: u32 = 15;
     pub const EXTENSION: u32 = 16;
+    pub const MARK: u32 = 17;
 }
 
 const COMMAND_RENDER_STATE: u32 = 1;
@@ -801,25 +802,47 @@ struct Out { @builtin(position) position: vec4f, @location(0) color: vec4f, @loc
 }
 ";
 
-/// The parts of the work that the program measures.
-const TIME_NAMES: [&str; 8] = [
+/// The parts of the work that the program measures. The parts do not overlap: their sum is
+/// the time that the program is busy.
+const TIME_NAMES: [&str; TIME_COUNT] = [
     "read of the stream",
     "records that are not draws",
     "draw: the data of the draw",
     "draw: the upload of its data",
     "draw: textures, samplers, pipeline",
     "draw: the commands of the pass",
+    "items that are not draws (passes, clears)",
+    "extension: frame",
+    "extension: before the world",
+    "extension: after the world and blend",
+    "extension: a class of draws",
+    "extension: post-processing",
     "end of the frame and submit",
+    "wait for a picture of the window",
     "copy into the window and present",
 ];
+const TIME_COUNT: usize = 15;
 const TIME_READ: usize = 0;
 const TIME_RECORDS: usize = 1;
 const TIME_DRAW_DATA: usize = 2;
 const TIME_DRAW_UPLOAD: usize = 3;
 const TIME_DRAW_GROUPS: usize = 4;
 const TIME_DRAW_PASS: usize = 5;
-const TIME_END: usize = 6;
-const TIME_PRESENT: usize = 7;
+const TIME_ITEMS: usize = 6;
+const TIME_EXT_FRAME: usize = 7;
+const TIME_EXT_BEFORE: usize = 8;
+const TIME_EXT_AFTER: usize = 9;
+const TIME_EXT_CLASS: usize = 10;
+const TIME_EXT_POST: usize = 11;
+const TIME_END: usize = 12;
+const TIME_ACQUIRE: usize = 13;
+const TIME_PRESENT: usize = 14;
+
+/// The sum of the measured times without one of them: for a part that has other measured
+/// parts inside it, its own time is the time of the whole less the change of this sum.
+fn sum_except(times: &[std::time::Duration; TIME_COUNT], skip: usize) -> std::time::Duration {
+    times.iter().enumerate().filter(|(i, _)| *i != skip).map(|(_, t)| *t).sum()
+}
 
 /// The number of indexes in the index buffer for triangle fans.
 const FAN_INDEXES: u32 = 3 * 1024;
@@ -953,7 +976,9 @@ struct Counts {
     render_textures: u32,
     pixel_reads: u32,
     /// Where the time of the program goes, in the order of `TIME_NAMES`.
-    times: [std::time::Duration; 8],
+    times: [std::time::Duration; TIME_COUNT],
+    /// The frames that are complete.
+    frames: u32,
     screen_draws: u32,
     screen_draws_lost: u32,
     target_copies: u32,
@@ -1927,6 +1952,10 @@ struct Player {
     /// clears its depth before its later scenes.
     world_depth: Option<wgpu::Texture>,
     world_depth_kept: bool,
+    /// The counts at the last mark. See `tag::MARK`.
+    mark_times: [std::time::Duration; TIME_COUNT],
+    mark_frames: u32,
+    mark_draws: u32,
     /// The size of the back buffer of the game, from the first record. 0 when not known.
     size: (u32, u32),
     /// The size of the picture of the frame.
@@ -1981,6 +2010,9 @@ impl Player {
             depth_copy: None,
             world_depth: None,
             world_depth_kept: false,
+            mark_times: [std::time::Duration::ZERO; TIME_COUNT],
+            mark_frames: 0,
+            mark_draws: 0,
             size: (0, 0),
             frame_size: (0, 0),
         }
@@ -2119,6 +2151,22 @@ impl Player {
         self.encoder.is_some()
     }
 
+    /// Prints the counts since the last mark, for one step of a scenario.
+    fn mark(&mut self, text: &str) {
+        let counts = &self.renderer.counts;
+        let frames = counts.frames - self.mark_frames;
+        let draws = counts.draws - self.mark_draws;
+        let busy: std::time::Duration = counts.times.iter().zip(self.mark_times).map(|(now, before)| *now - before).sum();
+        let per_frame = |time: std::time::Duration| time.as_secs_f64() * 1000.0 / frames.max(1) as f64;
+        println!("mark {text}: {frames} frames, {:.1} draws for each frame, busy {:.3} ms for each frame:", draws as f64 / frames.max(1) as f64, per_frame(busy));
+        for ((name, now), before) in TIME_NAMES.iter().zip(counts.times).zip(self.mark_times) {
+            println!("  {:6.3}  {name}", per_frame(now - before));
+        }
+        self.mark_times = counts.times;
+        self.mark_frames = counts.frames;
+        self.mark_draws = counts.draws;
+    }
+
     /// Ends the frame and sends its commands to the GPU. `before_submit` can add commands,
     /// for example a copy of the picture.
     fn end_frame(&mut self, before_submit: impl FnOnce(&mut wgpu::CommandEncoder)) {
@@ -2142,6 +2190,7 @@ impl Player {
             tag::TEXTURE => self.renderer.texture(data),
             tag::TEXTURE_UPDATE => self.renderer.texture_update(data),
             tag::SHOT => self.shots.push(String::from_utf8_lossy(data).into_owned()),
+            tag::MARK => self.mark(&String::from_utf8_lossy(data)),
             tag::EXTENSION if data.len() >= 4 => {
                 if let Some(extension) = self.extension.as_mut() {
                     extension.data(word(data, 0), &data[4..]);
@@ -2185,7 +2234,10 @@ impl Player {
             tag::DRAW_STATE => self.stream.state = data.to_vec(),
             // The kind, the class, the flags and the geometry of the object.
             tag::OBJECT if data.len() >= 8 => self.stream.object_class = word(data, 4),
-            tag::FRAME_END => return true,
+            tag::FRAME_END => {
+                self.renderer.counts.frames += 1;
+                return true;
+            }
             tag::CALL => {
                 let arguments = &data[16..];
                 match word(data, 0) {
@@ -2354,6 +2406,14 @@ impl Player {
         if !self.drawing() {
             return;
         }
+        let clock = std::time::Instant::now();
+        let inside_before = sum_except(&self.renderer.counts.times, TIME_ITEMS);
+        self.run_items_inner(items);
+        let inside_after = sum_except(&self.renderer.counts.times, TIME_ITEMS);
+        self.renderer.counts.times[TIME_ITEMS] += clock.elapsed().saturating_sub(inside_after - inside_before);
+    }
+
+    fn run_items_inner(&mut self, items: Vec<Item>) {
         self.renderer.upload_lights(&self.frame_lights);
         // The resources of the extension for the frame.
         let (values, texture) = self.parameters.as_ref().map_or(([[0.0f32; 4]; 32], None), |p| (p.values, p.texture.clone()));
@@ -2483,7 +2543,9 @@ impl Player {
         let facts = self.world_facts(true);
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let scene = facts.view(&device, &queue, format);
+        let clock = std::time::Instant::now();
         self.parameters = Some(extension.frame(&scene));
+        self.renderer.counts.times[TIME_EXT_FRAME] += clock.elapsed();
         self.extension = Some(extension);
     }
 
@@ -2495,7 +2557,9 @@ impl Player {
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+            let clock = std::time::Instant::now();
             extension.after_world(&scene, pass, &mut replayer);
+            self.renderer.counts.times[TIME_EXT_AFTER] += clock.elapsed();
             self.world_draws = world;
         }
         // The depth of the world, for the post-processing: the game clears its depth before
@@ -2525,8 +2589,10 @@ impl Player {
                     multiview_mask: None,
                 })
                 .forget_lifetime();
+            let clock = std::time::Instant::now();
             extension.blend(&scene, &mut pass, &before, &depth);
             drop(pass);
+            self.renderer.counts.times[TIME_EXT_AFTER] += clock.elapsed();
             self.extension = Some(extension);
             self.open_pass(None, None, None);
             return;
@@ -2602,7 +2668,9 @@ impl Player {
         scene.depth = depth.as_ref();
         if let (Some(color), Some(encoder)) = (self.color.clone(), self.encoder.as_mut()) {
             drop(self.pass.take());
+            let clock = std::time::Instant::now();
             extension.post(&scene, encoder, &color);
+            self.renderer.counts.times[TIME_EXT_POST] += clock.elapsed();
         }
         self.extension = Some(extension);
         self.open_pass(None, None, None);
@@ -2620,7 +2688,9 @@ impl Player {
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+            let clock = std::time::Instant::now();
             extension.draw_class(class, &scene, pass, &mut replayer);
+            self.renderer.counts.times[TIME_EXT_CLASS] += clock.elapsed();
             self.world_draws = world;
         }
         self.extension = Some(extension);
@@ -2635,7 +2705,9 @@ impl Player {
             Some(pass) => {
                 let world = std::mem::take(&mut self.world_draws);
                 let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+                let clock = std::time::Instant::now();
                 let clear_depth = extension.before_world(&scene, pass, &mut replayer);
+                self.renderer.counts.times[TIME_EXT_BEFORE] += clock.elapsed();
                 self.world_draws = world;
                 clear_depth
             }
@@ -3312,11 +3384,11 @@ mod live {
                 self.bytes += 8 + self.data.len() as u64;
                 let player = self.player.as_mut().unwrap();
                 let clock = Instant::now();
-                let draws_before: std::time::Duration = player.renderer.counts.times[super::TIME_DRAW_DATA..=super::TIME_DRAW_PASS].iter().sum();
+                let inside_before = super::sum_except(&player.renderer.counts.times, super::TIME_RECORDS);
                 let frame_end = player.feed(tag, &self.data);
-                let draws_after: std::time::Duration = player.renderer.counts.times[super::TIME_DRAW_DATA..=super::TIME_DRAW_PASS].iter().sum();
-                // The time of a record without the measured parts of a draw.
-                player.renderer.counts.times[super::TIME_RECORDS] += clock.elapsed().saturating_sub(draws_after - draws_before);
+                let inside_after = super::sum_except(&player.renderer.counts.times, super::TIME_RECORDS);
+                // The time of a record without the parts that are measured on their own.
+                player.renderer.counts.times[super::TIME_RECORDS] += clock.elapsed().saturating_sub(inside_after - inside_before);
                 if !frame_end {
                     continue;
                 }
@@ -3324,10 +3396,12 @@ mod live {
                 if !std::mem::take(&mut self.in_frame) {
                     return;
                 }
+                let clock = Instant::now();
                 let frame = match self.surface.as_ref().unwrap().get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
                     _ => None,
                 };
+                player.renderer.counts.times[super::TIME_ACQUIRE] += clock.elapsed();
                 self.not_shown += frame.is_none() as u32;
                 let blue_first = matches!(player.renderer.target_format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
                 let take_shot = self.shot.is_some() && !self.shot_done && self.frames + 1 >= self.shot_frame;

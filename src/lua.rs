@@ -104,6 +104,38 @@ unsafe extern "C" fn stream_shot(l: LuaState) -> i32 {
     0
 }
 
+/// `nirender.streamMark(text)` puts a mark into the stream: the host program prints its
+/// counts since the last mark, with the text.
+unsafe extern "C" fn stream_mark(l: LuaState) -> i32 {
+    crate::capture::mark(&arg_str(l, 1).unwrap_or_default());
+    0
+}
+
+/// `nirender.portTimes(n)` returns the `n` ports with the most time of the main thread since
+/// the last call, as one text: name, calls, ms. The time of a port has the ports that it
+/// calls in it, so the numbers do not add up.
+unsafe extern "C" fn port_times(l: LuaState) -> i32 {
+    static mut LAST_CALLS: Vec<u64> = Vec::new();
+    let last = &mut *core::ptr::addr_of_mut!(LAST_CALLS);
+    let ports: Vec<_> = ports::all().collect();
+    last.resize(ports.len(), 0);
+    let mut rows: Vec<(f64, u64, &str)> = ports
+        .iter()
+        .enumerate()
+        .map(|(i, port)| {
+            let calls = port.live_calls.get();
+            let row = (crate::shadow::stamps_to_ms(port.live_stamps.take()), calls - last[i], port.name);
+            last[i] = calls;
+            row
+        })
+        .collect();
+    rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let n = (lua_tonumber(l, 1) as usize).max(1);
+    let text: Vec<String> = rows.iter().take(n).filter(|row| row.1 != 0).map(|(ms, calls, name)| format!("{name} {calls} {ms:.1}")).collect();
+    push_str(l, &text.join("; "));
+    1
+}
+
 /// `nirender.gameScreenshot()` makes the game take its own screenshot, as its screenshot
 /// key does: `WorldControllerRenderTarget::takeScreenshot` 0x42E620 of
 /// `WorldController::characterRenderTarget`. The game draws the scene again, reads the back
@@ -443,6 +475,8 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "stream", stream);
     set_fn(l, "captureStop", capture_stop);
     set_fn(l, "streamShot", stream_shot);
+    set_fn(l, "streamMark", stream_mark);
+    set_fn(l, "portTimes", port_times);
     set_fn(l, "dumpDevice", dump_device);
     set_fn(l, "ownDevice", own_device);
     set_fn(l, "threadCensus", thread_census);

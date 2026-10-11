@@ -82,6 +82,7 @@ pub unsafe fn install() -> Result<String, String> {
         return Ok(attach_device()?.unwrap_or_else(|| "the game has no renderer yet".to_string()));
     }
     shadow::set_main_thread();
+    shadow::calibrate_stamps();
     crate::log!("x87 control word {:#06x}", x87::control_word());
 
     // The census runs before the detours, because the detours change the entry bytes.

@@ -82,6 +82,9 @@ pub mod tag {
     /// (fog distances, weather) to its helper in this way. The record is in the stream at
     /// the place of the call, so the data is for the frame in progress.
     pub const EXTENSION: u32 = 16;
+    /// A text from the scenario. The host program prints its counts since the last mark
+    /// with the text, so its numbers are those of one step of the scenario.
+    pub const MARK: u32 = 17;
 }
 
 // ---- the ring in shared memory
@@ -116,13 +119,13 @@ unsafe fn wait_step() {
     Sleep(0);
 }
 
-fn ticks() -> i64 {
+pub(crate) fn ticks() -> i64 {
     let mut count = 0;
     unsafe { QueryPerformanceCounter(&mut count) };
     count
 }
 
-fn ticks_per_second() -> i64 {
+pub(crate) fn ticks_per_second() -> i64 {
     let mut frequency = 0;
     unsafe { QueryPerformanceFrequency(&mut frequency) };
     frequency.max(1)
@@ -581,7 +584,16 @@ pub unsafe fn shot(path: &str) {
     write(tag::SHOT, &[path.as_bytes()]);
 }
 
-/// One line about the capture, for the scenario: the phase, the records and the bytes.
+/// Puts a mark with a text into the stream. See `tag::MARK`.
+pub unsafe fn mark(text: &str) {
+    write(tag::MARK, &[text.as_bytes()]);
+}
+
+/// One line about the capture, for the scenario: the phase, the records and the bytes,
+/// then the time of the game thread since the start, in ms: in this module (`stream`), in
+/// the ports of the renderer (`ports`, outermost calls, with the stream time in them),
+/// in waits for room in the ring (`room`) and in waits for the host program at the ends
+/// of the frames (`pace`). The difference of two lines gives the numbers of one step.
 pub unsafe fn status() -> String {
     let _lock = crate::sync::device_lock();
     match state() {
@@ -592,12 +604,21 @@ pub unsafe fn status() -> String {
                 Phase::Warmup(_) => "warmup",
                 Phase::Record(_) => "record",
             };
+            let ms = |ticks: i64| ticks as f64 * 1000.0 / ticks_per_second() as f64;
+            let (room, pace) = match s.out.as_ref() {
+                Some(Sink::Ring(ring)) => (ring.waited, ring.paced),
+                _ => (0, 0),
+            };
             format!(
-                "{phase} {} {} frames {} ms_per_frame {:.3}{}",
+                "{phase} {} {} frames {} ms_per_frame {:.3} ms stream {:.1} ports {:.1} room {:.1} pace {:.1}{}",
                 s.records,
                 s.bytes,
                 s.frames_done,
-                s.spent as f64 * 1000.0 / ticks_per_second() as f64 / s.frames_done.max(1) as f64,
+                ms(s.spent) / s.frames_done.max(1) as f64,
+                ms(s.spent),
+                crate::shadow::port_ms(),
+                ms(room),
+                ms(pace),
                 if s.failed { " FAILED" } else { "" }
             )
         }
