@@ -32,7 +32,8 @@ struct Draw {
     material_emissive: vec4f,
     scene_ambient: vec4f,
     fog_color: vec4f,
-    // start, end, 1 when fog is on.
+    // start, end, 1 when fog is on, 1 when the fog is on the distance from the eye and not
+    // on the depth.
     fog: vec4f,
     texture_factor: vec4f,
     // lighting on, the vertex has a normal, the vertex has a colour, the number of weights.
@@ -161,10 +162,11 @@ fn vs(in: VertexIn) -> VertexOut {
         out.color = vec4f(clamp(sum, vec3f(0.0), vec3f(1.0)), diffuse.a);
     }
 
-    // The fog of the game is linear on the distance from the eye.
-    out.fog = 1.0;
-    if draw.fog.z != 0.0 {
-        out.fog = clamp((draw.fog.y - length(view_position.xyz)) / max(draw.fog.y - draw.fog.x, 0.0001), 0.0, 1.0);
+    // The fog of the game is table fog: linear on the depth, for each pixel. The fragment
+    // shader makes the fog from this depth, so that a large triangle is right.
+    out.fog = abs(view_position.z);
+    if draw.fog.w != 0.0 {
+        out.fog = length(view_position.xyz);
     }
     return out;
 }
@@ -258,5 +260,9 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     if draw.more.z != 0u && !compare(draw.more.z, floor(current.a * 255.0 + 0.5), f32(draw.more.w)) {
         discard;
     }
-    return vec4f(mix(draw.fog_color.rgb, current.rgb, in.fog), current.a);
+    var clear = 1.0;
+    if draw.fog.z != 0.0 {
+        clear = clamp((draw.fog.y - in.fog) / max(draw.fog.y - draw.fog.x, 0.0001), 0.0, 1.0);
+    }
+    return vec4f(mix(draw.fog_color.rgb, current.rgb, clear), current.a);
 }

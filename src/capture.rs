@@ -603,6 +603,10 @@ unsafe fn frame_end() {
                 let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
                 let window: u32 = if renderer != 0 { rd(renderer, DEVICE_WINDOW) } else { 0 };
                 write(tag::HEADER, &[&words(&[size[0], size[1], window])]);
+                // The render states that are not in a state packet, as they are now.
+                for (state, value) in crate::link_client::render_states() {
+                    write(tag::COMMAND, &[&words(&[crate::link::COMMAND_RENDER_STATE, state, value, 0])]);
+                }
             }
         }
         Phase::Record(left) => {

@@ -580,6 +580,23 @@ pub unsafe fn note_indices(buffer: usize, base_vertex: u32) {
 
 /// Sends to the device the state that the game believes the device has, for the kinds in
 /// `kinds`. The Rust code made no call for them while the host had them.
+/// The record of the game has 258 render states.
+const RENDER_STATES_IN_RECORD: u32 = 256;
+
+/// Each render state that the game set, with its value, from the record of the game. A
+/// stream starts with them: the game sends a state only when its value changes.
+pub unsafe fn render_states() -> Vec<(u32, u32)> {
+    let renderer = crate::engine::renderer();
+    if renderer == 0 {
+        return Vec::new();
+    }
+    let render_state: usize = rd(renderer, R::renderState);
+    (0..RENDER_STATES_IN_RECORD)
+        .map(|state| (state, rd::<u32>(render_state, RS::renderStateSettings + state as usize * 8)))
+        .filter(|(_, value)| *value != STATE_UNKNOWN)
+        .collect()
+}
+
 unsafe fn resync(kinds: u32) {
     let renderer = RENDERER.load(Ordering::Relaxed);
     if renderer == 0 {

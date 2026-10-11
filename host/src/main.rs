@@ -726,7 +726,8 @@ impl Stream {
         // D3DRS_FOGCOLOR 34, FOGSTART 36, FOGEND 37, TEXTUREFACTOR 60.
         if let (1, Some(fog_color), Some(start), Some(end)) = (known(word(s, state::FOG_ENABLE), 0), state_of(34), state_of(36), state_of(37)) {
             data.fog_color = color(fog_color);
-            data.fog = [f32::from_bits(start), f32::from_bits(end), 1.0, 0.0];
+            // D3DRS_RANGEFOGENABLE is 48.
+            data.fog = [f32::from_bits(start), f32::from_bits(end), 1.0, (state_of(48).unwrap_or(0) != 0) as u32 as f32];
         }
         data.texture_factor = color(state_of(60).unwrap_or(0xFFFF_FFFF));
 
