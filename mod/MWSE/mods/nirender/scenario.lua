@@ -108,6 +108,8 @@ return function(nirender, spec, name)
             from = tes3vector3.new(at.x + math.sin(facing) * distance, at.y + math.cos(facing) * distance, at.z)
             tes3.positionCell({
                 reference = tes3.player,
+                -- Without the cell, the game puts the player into the exterior.
+                cell = actor.cell,
                 position = from,
                 orientation = tes3vector3.new(0, 0, math.atan2(at.x - from.x, at.y - from.y)),
                 suppressFader = true,

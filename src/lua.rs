@@ -78,11 +78,13 @@ unsafe extern "C" fn capture(l: LuaState) -> i32 {
     }
 }
 
-/// `nirender.stream(name, megabytes, warmupFrames)` starts a stream of the render link into a
-/// ring in shared memory, for a host program. Returns true, or false and the problem.
+/// `nirender.stream(name, megabytes, warmupFrames, ownHost)` starts a stream of the render
+/// link into a ring in shared memory, for a host program. With `ownHost`, the plugin becomes
+/// the host of the link: no call of the game gets to a D3D device after the warm-up. Returns
+/// true, or false and the problem.
 unsafe extern "C" fn stream(l: LuaState) -> i32 {
     let name = arg_str(l, 1).unwrap_or_default();
-    match crate::capture::start_stream(&name, lua_tonumber(l, 2) as u32, lua_tonumber(l, 3) as u32) {
+    match crate::capture::start_stream(&name, lua_tonumber(l, 2) as u32, lua_tonumber(l, 3) as u32, lua_toboolean(l, 4) != 0) {
         Ok(()) => {
             lua_pushboolean(l, 1);
             1

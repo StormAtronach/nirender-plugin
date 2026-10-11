@@ -64,6 +64,9 @@ pub mod tag {
     /// The first record: the width and the height of the back buffer, and the window of
     /// the game.
     pub const HEADER: u32 = 11;
+    /// The game wrote a level of a texture: handle, level, width and height of the level,
+    /// D3D format, size; then the bytes.
+    pub const TEXTURE_UPDATE: u32 = 12;
 }
 
 // ---- the ring in shared memory
@@ -198,6 +201,8 @@ struct State {
     phase: Phase,
     /// The frames of the record. 0 for a stream: it has no end.
     frames: u32,
+    /// At the end of the warm-up the plugin becomes the host of the render link.
+    own_host: bool,
     out: Option<Sink>,
     /// The geometry data and the skin instances of the draws of the warm-up.
     geometry: HashSet<(u32, u32)>,
@@ -251,12 +256,18 @@ pub unsafe fn start(path: &str, warmup: u32, frames: u32) -> Result<(), String> 
 
 /// Starts a stream into a ring of `megabytes` in shared memory with the name `name`. It
 /// goes on until `stop`, or until the host does not read for some seconds.
-pub unsafe fn start_stream(name: &str, megabytes: u32, warmup: u32) -> Result<(), String> {
+///
+/// With `own_host`, the plugin becomes the host of the render link at the end of the warm-up:
+/// from then on no call of the game gets to a D3D device, and the stream is the only picture.
+pub unsafe fn start_stream(name: &str, megabytes: u32, warmup: u32, own_host: bool) -> Result<(), String> {
     if active() {
         return Err("a capture is in progress".into());
     }
     begin(Sink::Ring(Ring::create(name, megabytes)?), warmup, 0);
-    crate::log!("stream: start, {warmup} frames of warm-up, a ring of {megabytes} MB with the name {name}");
+    if let Some(s) = state() {
+        s.own_host = own_host;
+    }
+    crate::log!("stream: start, {warmup} frames of warm-up, a ring of {megabytes} MB with the name {name}, own host {own_host}");
     Ok(())
 }
 
@@ -264,6 +275,7 @@ unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
     *core::ptr::addr_of_mut!(STATE) = Some(State {
         phase: Phase::Warmup(warmup.max(1)),
         frames,
+        own_host: false,
         out: Some(out),
         geometry: HashSet::new(),
         known_buffers: HashSet::new(),
@@ -297,6 +309,12 @@ pub unsafe fn stop() {
             ring.close();
         }
         None => {}
+    }
+    #[cfg(not(test))]
+    {
+        if crate::own_host::active() {
+            crate::log!("{}", crate::own_host::report());
+        }
     }
     crate::log!(
         "capture: end, {} frames, {} records, {} bytes, {:.3} ms of the game thread for each frame{}",
@@ -505,6 +523,11 @@ pub unsafe fn texture(texture: &TextureV1, handle: usize) {
     write(tag::TEXTURE, &[&words(&head), &words(offsets), &words(widths), &words(heights), pixels]);
 }
 
+/// The bytes that the game wrote into a level of a texture.
+pub unsafe fn texture_update(handle: usize, level: u32, width: u32, height: u32, format: u32, bytes: &[u8]) {
+    write(tag::TEXTURE_UPDATE, &[&words(&[handle as u32, level, width, height, format, bytes.len() as u32]), bytes]);
+}
+
 /// The bytes that the game wrote into a vertex or index buffer, at its unlock.
 pub unsafe fn buffer_data(handle: usize, offset: u32, bytes: &[u8]) {
     if let Some(s) = state() {
@@ -567,6 +590,12 @@ unsafe fn frame_end() {
             if left > 1 {
                 s.phase = Phase::Warmup(left - 1);
             } else {
+                #[cfg(not(test))]
+                {
+                    if s.own_host {
+                        crate::own_host::take_over();
+                    }
+                }
                 purge(s);
                 s.phase = Phase::Record(s.frames);
                 RECORDING.store(true, Ordering::Relaxed);

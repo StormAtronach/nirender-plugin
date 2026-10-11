@@ -471,7 +471,7 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
     /// `IDirect3DDevice8::CreateDepthStencilSurface`
     const DEVICE_CREATE_DEPTH_STENCIL_SURFACE: usize = 0x68;
     let sent = |done: bool| if done { Some(0) } else { None };
-    match slot * 4 {
+    let routed = match slot * 4 {
         DEVICE_TEST_COOPERATIVE_LEVEL => frame_call(CALL_TEST_DEVICE, args),
         DEVICE_PRESENT => frame_call(CALL_PRESENT, args),
         DEVICE_BEGIN_SCENE => frame_call(CALL_BEGIN_SCENE, args),
@@ -494,7 +494,13 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
         DEVICE_DRAW_INDEXED_PRIMITIVE if commands_for(FACT_DEVICE_BUFFERS) => sent(command(COMMAND_DRAW_INDEXED, args.as_ptr() as u32, 0, 0)),
         DEVICE_DRAW_PRIMITIVE if commands_for(FACT_DEVICE_BUFFERS) => sent(command(COMMAND_DRAW, args.as_ptr() as u32, 0, 0)),
         _ => None,
+    };
+    if routed.is_none() && crate::own_host::active() {
+        // No device is behind the link. The call ends here.
+        crate::own_host::take(slot);
+        return Some(0);
     }
+    routed
 }
 
 /// True when the caller must not make the D3D8 call for this render state: the host sets it
@@ -682,6 +688,11 @@ const STAGE_STATES: [u32; STATE_STAGE_STATES as usize] = [1, 2, 3, 4, 5, 6, 26, 
 const ITEM_DATA: usize = 0x0;
 const ITEM_NEXT: usize = 0x4;
 static mut LIGHTS: [LightV1; MAX_LIGHTS] = [LightV1 { light: 0, device_index: 0, light_type: 0, radius: 0.0 }; MAX_LIGHTS];
+
+/// Makes `table` the host of the link. `own_host` uses this: the plugin answers the calls.
+pub unsafe fn set_host(table: &'static HostV1) {
+    HOST.store(table as *const HostV1 as usize, Ordering::Relaxed);
+}
 
 unsafe fn host() -> Option<&'static HostV1> {
     (HOST.load(Ordering::Relaxed) as *const HostV1).as_ref()

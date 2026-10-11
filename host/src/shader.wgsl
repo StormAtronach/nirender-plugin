@@ -52,12 +52,12 @@ struct Draw {
 @group(1) @binding(3) var texture3: texture_2d<f32>;
 @group(1) @binding(4) var texture4: texture_2d<f32>;
 @group(1) @binding(5) var texture5: texture_2d<f32>;
-@group(1) @binding(6) var sampler0: sampler;
-@group(1) @binding(7) var sampler1: sampler;
-@group(1) @binding(8) var sampler2: sampler;
-@group(1) @binding(9) var sampler3: sampler;
-@group(1) @binding(10) var sampler4: sampler;
-@group(1) @binding(11) var sampler5: sampler;
+@group(2) @binding(0) var sampler0: sampler;
+@group(2) @binding(1) var sampler1: sampler;
+@group(2) @binding(2) var sampler2: sampler;
+@group(2) @binding(3) var sampler3: sampler;
+@group(2) @binding(4) var sampler4: sampler;
+@group(2) @binding(5) var sampler5: sampler;
 
 struct VertexIn {
     @location(0) position: vec3f,

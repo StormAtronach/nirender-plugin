@@ -31,6 +31,8 @@ def main():
     ap.add_argument("--seconds", type=int, default=15, help="the time of each stream")
     ap.add_argument("--megabytes", type=int, default=64, help="the size of the ring")
     ap.add_argument("--backends", default="vulkan,dx12")
+    ap.add_argument("--own-host", action="store_true", help="the plugin becomes the host of the render link: no call of the "
+                    "game gets to a D3D device, and the host program draws the only picture. One backend only")
     ap.add_argument("--embed", action="store_true", help="the host shows its picture in the window of the game")
     ap.add_argument("--no-actor", action="store_true", help="stay at the place of the save or of the cell")
     ap.add_argument("--no-build", action="store_true")
@@ -42,9 +44,11 @@ def main():
     session.prepare(build=not args.no_build)
     run = session.Run(args.label)
     backends = [b for b in args.backends.split(",") if b]
+    if args.own_host:
+        backends = backends[:1]
     spec = run.spec("stream", save=args.save, cell=args.cell, seconds=args.seconds, megabytes=args.megabytes, warmupFrames=5,
                     backends=backends, streamName="nirender-%d" % os.getpid(), actor=not args.no_actor, facts=ALL_FACTS,
-                    kinds=ALL_KINDS, shot=run.path("game.png").replace("\\", "/"))
+                    kinds=ALL_KINDS, shot=run.path("game.png").replace("\\", "/"), ownHost=args.own_host)
 
     hosts = []
     screens = []
@@ -89,7 +93,7 @@ def main():
         print("screen during the stream on %s: %s" % (backend, path))
     if os.path.isfile(run.log):
         for line in open(run.log, encoding="utf-8", errors="replace"):
-            if line.startswith(("stream:", "capture: end", "capture: the renderer")):
+            if line.startswith(("stream:", "capture: end", "capture: the renderer", "own host")):
                 print("plugin: " + line.strip())
     problems = run.mge_problems()
     for problem in problems:

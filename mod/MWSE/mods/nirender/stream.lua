@@ -14,6 +14,11 @@ return function(nirender, spec)
         local backend = spec.backends[index]
         if not backend then
             scenario.eachFrame = nil
+            if spec.ownHost then
+                -- The plugin is the host of the link, and there is no way back in this
+                -- version. The runner ends the game.
+                return scenario.finish()
+            end
             nirender.linkUseKinds(0)
             nirender.linkUseFacts(0)
             nirender.linkTextures(false)
@@ -21,7 +26,7 @@ return function(nirender, spec)
             return after(2, scenario.finish)
         end
         local name = string.format("%s-%d", spec.streamName, index)
-        local ok, problem = nirender.stream(name, spec.megabytes, spec.warmupFrames)
+        local ok, problem = nirender.stream(name, spec.megabytes, spec.warmupFrames, spec.ownHost == true)
         -- The runner starts the host at this line.
         say("stream started %s %s %s %s", name, backend, tostring(ok), tostring(problem or ""))
         if not ok then return scenario.finish() end
