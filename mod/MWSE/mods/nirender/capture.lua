@@ -11,6 +11,19 @@ return function(nirender, spec)
     local say, after = scenario.say, scenario.after
 
     local function capture()
+        if spec.actor then
+            local actor = scenario.nearestActor()
+            if actor then
+                say("actor: %s", actor.object.id)
+                scenario.faceActor(actor, spec.actorDistance or 160, true)
+                -- Menu mode stops the animations: the picture of the game and the frames of
+                -- the capture have the same pose.
+                local menu = tes3ui.createMenu({ id = "nirender:hold", fixedFrame = true })
+                menu:createLabel({ text = "nirender capture" })
+                menu:updateLayout()
+                tes3ui.enterMenuMode("nirender:hold")
+            end
+        end
         if spec.yaw then
             -- The direction of the view, in degrees from north.
             tes3.player.orientation = tes3vector3.new(0, 0, math.rad(spec.yaw))
@@ -30,6 +43,10 @@ return function(nirender, spec)
                     local status = nirender.captureStatus()
                     if status:sub(1, 4) ~= "done" then return after(0.2, poll) end
                     say("capture: %s", status)
+                    if tes3ui.findMenu("nirender:hold") then
+                        tes3ui.leaveMenuMode()
+                        tes3ui.findMenu("nirender:hold"):destroy()
+                    end
                     nirender.linkUseKinds(0)
                     nirender.linkUseFacts(0)
                     nirender.linkTextures(false)

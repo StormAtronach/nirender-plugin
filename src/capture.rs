@@ -13,6 +13,12 @@
 //! The capture needs the Rust code, the textures of the link, and all facts and kinds of the
 //! link in use: only then is each resource call and each draw a call of the link.
 //!
+//! The capture can also go into a ring in shared memory, without an end: a stream. A host
+//! program in another process reads the ring and draws each frame while the game runs. The
+//! ring has the same records as the file. In a stream, a draw can use a buffer that the game
+//! made before the stream and that was not in view at its start. The module makes the
+//! renderer drop the buffers of such an object after the frame, so the next frame has them.
+//!
 //! The file: the 8 bytes `NIRCAP01`, then records. A record is a tag (u32), the length of its
 //! data in bytes (u32), and the data. All numbers are little endian. The tags are in `tag`.
 
@@ -55,6 +61,127 @@ pub mod tag {
     pub const CALL: u32 = 9;
     /// The frame is complete.
     pub const FRAME_END: u32 = 10;
+    /// The first record: the width and the height of the back buffer.
+    pub const HEADER: u32 = 11;
+}
+
+// ---- the ring in shared memory
+
+extern "system" {
+    fn CreateFileMappingA(file: isize, security: *const u8, protect: u32, size_high: u32, size_low: u32, name: *const u8) -> isize;
+    fn MapViewOfFile(mapping: isize, access: u32, offset_high: u32, offset_low: u32, bytes: usize) -> *mut u8;
+    fn UnmapViewOfFile(address: *const u8) -> i32;
+    fn CloseHandle(handle: isize) -> i32;
+    fn QueryPerformanceCounter(count: *mut i64) -> i32;
+    fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+    fn Sleep(milliseconds: u32);
+}
+
+fn ticks() -> i64 {
+    let mut count = 0;
+    unsafe { QueryPerformanceCounter(&mut count) };
+    count
+}
+
+fn ticks_per_second() -> i64 {
+    let mut frequency = 0;
+    unsafe { QueryPerformanceFrequency(&mut frequency) };
+    frequency.max(1)
+}
+
+/// The head of the shared memory: `RING_MAGIC`, the number of data bytes, the bytes that the
+/// game wrote (u64), the bytes that the host read (u64), and 1 when the game closed the
+/// stream. The data starts at `RING_HEAD`. A record can go around the end of the data.
+pub const RING_MAGIC: u32 = 0x474E_5231;
+pub const RING_HEAD: usize = 64;
+const RING_WRITTEN: usize = 8;
+const RING_READ: usize = 16;
+const RING_CLOSED: usize = 24;
+/// The game waits this long for room in the ring. Then it ends the stream: the host is gone.
+const RING_WAIT_SECONDS: i64 = 10;
+
+struct Ring {
+    mapping: isize,
+    base: *mut u8,
+    capacity: u64,
+    /// The time that the game waited for room, in ticks.
+    waited: i64,
+}
+
+impl Ring {
+    unsafe fn create(name: &str, megabytes: u32) -> Result<Ring, String> {
+        let capacity = megabytes.clamp(1, 512) as u64 * (1 << 20);
+        let mut text = name.as_bytes().to_vec();
+        text.push(0);
+        // INVALID_HANDLE_VALUE: memory of the page file. PAGE_READWRITE is 4.
+        let mapping = CreateFileMappingA(-1, core::ptr::null(), 4, 0, (capacity as usize + RING_HEAD) as u32, text.as_ptr());
+        if mapping == 0 {
+            return Err(format!("no shared memory with the name {name}"));
+        }
+        // FILE_MAP_ALL_ACCESS
+        let base = MapViewOfFile(mapping, 0xF001F, 0, 0, 0);
+        if base.is_null() {
+            CloseHandle(mapping);
+            return Err("the shared memory does not fit into the address space".into());
+        }
+        core::ptr::write_bytes(base, 0, RING_HEAD);
+        (base as *mut u32).write(RING_MAGIC);
+        (base.add(4) as *mut u32).write(capacity as u32);
+        Ok(Ring { mapping, base, capacity, waited: 0 })
+    }
+
+    unsafe fn counter(&self, offset: usize) -> &core::sync::atomic::AtomicU64 {
+        &*(self.base.add(offset) as *const core::sync::atomic::AtomicU64)
+    }
+
+    unsafe fn copy_in(&self, at: u64, bytes: &[u8]) {
+        let start = (at % self.capacity) as usize;
+        let first = bytes.len().min(self.capacity as usize - start);
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.base.add(RING_HEAD + start), first);
+        core::ptr::copy_nonoverlapping(bytes.as_ptr().add(first), self.base.add(RING_HEAD), bytes.len() - first);
+    }
+
+    /// Puts one record into the ring. Returns false when the host did not make room in time.
+    unsafe fn push(&mut self, tag: u32, parts: &[&[u8]]) -> bool {
+        let length: usize = parts.iter().map(|p| p.len()).sum();
+        let total = 8 + length as u64;
+        if total > self.capacity {
+            crate::log!("stream: a record of {length} bytes does not fit into the ring");
+            return true;
+        }
+        let written = self.counter(RING_WRITTEN).load(Ordering::Relaxed);
+        if self.capacity - (written - self.counter(RING_READ).load(Ordering::Acquire)) < total {
+            let start = ticks();
+            while self.capacity - (written - self.counter(RING_READ).load(Ordering::Acquire)) < total {
+                if ticks() - start > RING_WAIT_SECONDS * ticks_per_second() {
+                    return false;
+                }
+                Sleep(0);
+            }
+            self.waited += ticks() - start;
+        }
+        let mut at = written;
+        self.copy_in(at, &tag.to_le_bytes());
+        self.copy_in(at + 4, &(length as u32).to_le_bytes());
+        at += 8;
+        for part in parts {
+            self.copy_in(at, part);
+            at += part.len() as u64;
+        }
+        self.counter(RING_WRITTEN).store(at, Ordering::Release);
+        true
+    }
+
+    unsafe fn close(&mut self) {
+        (self.base.add(RING_CLOSED) as *mut u32).write_volatile(1);
+        UnmapViewOfFile(self.base);
+        CloseHandle(self.mapping);
+    }
+}
+
+enum Sink {
+    File(BufWriter<File>),
+    Ring(Ring),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -68,12 +195,23 @@ enum Phase {
 
 struct State {
     phase: Phase,
+    /// The frames of the record. 0 for a stream: it has no end.
     frames: u32,
-    out: Option<BufWriter<File>>,
+    out: Option<Sink>,
     /// The geometry data and the skin instances of the draws of the warm-up.
     geometry: HashSet<(u32, u32)>,
+    /// The buffers whose bytes are in the capture.
+    known_buffers: HashSet<u32>,
+    /// The object of the draws that follow, and the objects to drop the buffers of after this
+    /// frame: a draw used a buffer that is not in the capture.
+    object: (u32, u32),
+    late: HashSet<(u32, u32)>,
+    dropped_late: HashSet<(u32, u32)>,
     records: u64,
     bytes: u64,
+    frames_done: u32,
+    /// The time of the game thread in this module during the record, in ticks.
+    spent: i64,
     failed: bool,
 }
 
@@ -105,20 +243,68 @@ pub unsafe fn start(path: &str, warmup: u32, frames: u32) -> Result<(), String> 
     let file = File::create(path).map_err(|error| format!("{path}: {error}"))?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     out.write_all(MAGIC).map_err(|error| error.to_string())?;
+    begin(Sink::File(out), warmup, frames.max(1));
+    crate::log!("capture: start, {warmup} frames of warm-up, {frames} frames of record, into {path}");
+    Ok(())
+}
+
+/// Starts a stream into a ring of `megabytes` in shared memory with the name `name`. It
+/// goes on until `stop`, or until the host does not read for some seconds.
+pub unsafe fn start_stream(name: &str, megabytes: u32, warmup: u32) -> Result<(), String> {
+    if active() {
+        return Err("a capture is in progress".into());
+    }
+    begin(Sink::Ring(Ring::create(name, megabytes)?), warmup, 0);
+    crate::log!("stream: start, {warmup} frames of warm-up, a ring of {megabytes} MB with the name {name}");
+    Ok(())
+}
+
+unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
     *core::ptr::addr_of_mut!(STATE) = Some(State {
         phase: Phase::Warmup(warmup.max(1)),
-        frames: frames.max(1),
+        frames,
         out: Some(out),
         geometry: HashSet::new(),
+        known_buffers: HashSet::new(),
+        object: (0, 0),
+        late: HashSet::new(),
+        dropped_late: HashSet::new(),
         records: 0,
         bytes: 8,
+        frames_done: 0,
+        spent: 0,
         failed: false,
     });
     // The recorder on the buffers gives their bytes at each unlock.
     crate::resource::enable(true);
     ACTIVE.store(true, Ordering::Relaxed);
-    crate::log!("capture: start, {warmup} frames of warm-up, {frames} frames of record, into {path}");
-    Ok(())
+}
+
+/// Ends the capture or the stream.
+pub unsafe fn stop() {
+    let Some(s) = state() else { return };
+    if s.phase == Phase::Off {
+        return;
+    }
+    RECORDING.store(false, Ordering::Relaxed);
+    ACTIVE.store(false, Ordering::Relaxed);
+    s.phase = Phase::Off;
+    match s.out.take() {
+        Some(Sink::File(mut out)) => s.failed |= out.flush().is_err(),
+        Some(Sink::Ring(mut ring)) => {
+            crate::log!("stream: the game waited {:.1} ms in all for room in the ring", ring.waited as f64 * 1000.0 / ticks_per_second() as f64);
+            ring.close();
+        }
+        None => {}
+    }
+    crate::log!(
+        "capture: end, {} frames, {} records, {} bytes, {:.3} ms of the game thread for each frame{}",
+        s.frames_done,
+        s.records,
+        s.bytes,
+        s.spent as f64 * 1000.0 / ticks_per_second() as f64 / s.frames_done.max(1) as f64,
+        if s.failed { ", with a write error" } else { "" }
+    );
 }
 
 /// One line about the capture, for the scenario: the phase, the records and the bytes.
@@ -131,7 +317,14 @@ pub unsafe fn status() -> String {
                 Phase::Warmup(_) => "warmup",
                 Phase::Record(_) => "record",
             };
-            format!("{phase} {} {}{}", s.records, s.bytes, if s.failed { " FAILED" } else { "" })
+            format!(
+                "{phase} {} {} frames {} ms_per_frame {:.3}{}",
+                s.records,
+                s.bytes,
+                s.frames_done,
+                s.spent as f64 * 1000.0 / ticks_per_second() as f64 / s.frames_done.max(1) as f64,
+                if s.failed { " FAILED" } else { "" }
+            )
         }
     }
 }
@@ -141,15 +334,29 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
         return;
     }
     let Some(s) = state() else { return };
-    let Some(out) = s.out.as_mut() else { return };
+    let start = ticks();
     let length: usize = parts.iter().map(|p| p.len()).sum();
-    let mut ok = out.write_all(&tag.to_le_bytes()).is_ok() && out.write_all(&(length as u32).to_le_bytes()).is_ok();
-    for part in parts {
-        ok = ok && out.write_all(part).is_ok();
+    match s.out.as_mut() {
+        Some(Sink::File(out)) => {
+            let mut ok = out.write_all(&tag.to_le_bytes()).is_ok() && out.write_all(&(length as u32).to_le_bytes()).is_ok();
+            for part in parts {
+                ok = ok && out.write_all(part).is_ok();
+            }
+            s.failed |= !ok;
+        }
+        Some(Sink::Ring(ring)) => {
+            if !ring.push(tag, parts) {
+                crate::log!("stream: the host did not read for {RING_WAIT_SECONDS} s; the stream ends");
+                s.failed = true;
+                stop();
+                return;
+            }
+        }
+        None => return,
     }
-    s.failed |= !ok;
     s.records += 1;
     s.bytes += 8 + length as u64;
+    s.spent += ticks() - start;
 }
 
 fn words(values: &[u32]) -> Vec<u8> {
@@ -185,11 +392,12 @@ pub unsafe fn object(draw: &DrawV1) {
     if !active() {
         return;
     }
-    if !recording() {
-        if let Some(s) = state() {
-            s.geometry.insert((draw.geometry_data, draw.skin_instance));
+    if let Some(s) = state() {
+        s.object = (draw.geometry_data, draw.skin_instance);
+        if !recording() {
+            s.geometry.insert(s.object);
+            return;
         }
-        return;
     }
     // The name of a NiObjectNET is a C string pointer at offset 8.
     let mut name: &[u8] = &[];
@@ -209,6 +417,14 @@ pub unsafe fn draw_state(packet: &DrawStateV1) {
     // A buffer that the game made before the capture gets the recorder here.
     crate::resource::wrap(packet.vertex_buffer as usize);
     crate::resource::wrap(packet.index_buffer as usize);
+    if recording() {
+        if let Some(s) = state() {
+            let known = s.known_buffers.contains(&packet.vertex_buffer) && s.known_buffers.contains(&packet.index_buffer);
+            if !known && !s.dropped_late.contains(&s.object) {
+                s.late.insert(s.object);
+            }
+        }
+    }
     let lights = if packet.lights.is_null() {
         &[]
     } else {
@@ -290,6 +506,9 @@ pub unsafe fn texture(texture: &TextureV1, handle: usize) {
 
 /// The bytes that the game wrote into a vertex or index buffer, at its unlock.
 pub unsafe fn buffer_data(handle: usize, offset: u32, bytes: &[u8]) {
+    if let Some(s) = state() {
+        s.known_buffers.insert(handle as u32);
+    }
     write(tag::BUFFER_DATA, &[&words(&[handle as u32, offset, bytes.len() as u32]), bytes]);
 }
 
@@ -307,8 +526,16 @@ unsafe fn purge(s: &mut State) {
         return;
     }
     crate::ports::textures::renderer_purge_all_textures(renderer, 0);
+    let objects: Vec<(u32, u32)> = s.geometry.iter().copied().collect();
+    let skins = drop_buffers(renderer, &objects);
+    crate::log!("capture: the renderer dropped its textures and the buffers of {} objects, {skins} of them with a skin", objects.len());
+}
+
+/// Makes the renderer drop the buffers of these objects: geometry data and skin instance.
+/// Returns the number of skins.
+unsafe fn drop_buffers(renderer: usize, objects: &[(u32, u32)]) -> u32 {
     let mut skins = 0;
-    for &(geometry_data, skin_instance) in &s.geometry {
+    for &(geometry_data, skin_instance) in objects {
         if geometry_data != 0 {
             crate::ports::geometry::purge_geometry_data(renderer, geometry_data as usize);
         }
@@ -327,7 +554,7 @@ unsafe fn purge(s: &mut State) {
         }
         skins += 1;
     }
-    crate::log!("capture: the renderer dropped its textures and the buffers of {} objects, {skins} of them with a skin", s.geometry.len());
+    skins
 }
 
 /// The game showed a frame.
@@ -342,21 +569,35 @@ unsafe fn frame_end() {
                 purge(s);
                 s.phase = Phase::Record(s.frames);
                 RECORDING.store(true, Ordering::Relaxed);
+                let renderer = crate::engine::renderer();
+                let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
+                write(tag::HEADER, &[&words(&size)]);
             }
         }
         Phase::Record(left) => {
             write(tag::FRAME_END, &[]);
+            let Some(s) = state() else { return };
+            if s.phase == Phase::Off {
+                // The write ended the stream.
+                return;
+            }
+            s.frames_done += 1;
+            if !s.late.is_empty() {
+                let objects: Vec<(u32, u32)> = s.late.drain().collect();
+                drop_buffers(crate::engine::renderer(), &objects);
+                s.dropped_late.extend(objects);
+            }
+            if s.frames == 0 {
+                return;
+            }
             if left > 1 {
                 s.phase = Phase::Record(left - 1);
                 return;
             }
-            RECORDING.store(false, Ordering::Relaxed);
-            ACTIVE.store(false, Ordering::Relaxed);
-            s.phase = Phase::Off;
-            if let Some(mut out) = s.out.take() {
-                s.failed |= out.flush().is_err();
-            }
-            crate::log!("capture: end, {} records, {} bytes{}", s.records, s.bytes, if s.failed { ", with a write error" } else { "" });
+            stop();
         }
     }
 }
+
+/// `NiDX8Renderer::d3dPresentParameters`: the width and the height of the back buffer.
+const BACK_BUFFER_SIZE: usize = 0x23C;

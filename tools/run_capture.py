@@ -23,6 +23,8 @@ def main():
     ap.add_argument("--label", default="capture")
     ap.add_argument("--save", default="quiksave.ess")
     ap.add_argument("--cell", default="", help="the cell to capture; empty for the place of the save")
+    ap.add_argument("--actor", action="store_true", help="put the player in front of the nearest actor, and hold the "
+                    "game in menu mode so that its animation stops")
     ap.add_argument("--yaw", type=float, help="turn the player to this direction, in degrees from north")
     ap.add_argument("--frames", type=int, default=3, help="frames of record")
     ap.add_argument("--warmup", type=int, default=3, help="frames before the record, in which the plugin notes the geometry")
@@ -34,7 +36,7 @@ def main():
     capture = run.path("frames.nircap")
     spec = run.spec("capture", save=args.save, cell=args.cell, frames=args.frames, warmupFrames=args.warmup,
                     facts=ALL_FACTS, kinds=ALL_KINDS, captureFile=capture.replace("\\", "/"),
-                    shot=run.path("game.png").replace("\\", "/"), yaw=args.yaw)
+                    shot=run.path("game.png").replace("\\", "/"), yaw=args.yaw, actor=args.actor)
     done = run.launch(spec, 150, TAG)
     for line in run.progress_lines(TAG):
         if "capture" in line or "ERROR" in line:

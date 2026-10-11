@@ -1,10 +1,13 @@
 //! Draws a capture of the render link stream with wgpu, without the game.
 //!
 //!     nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N]
+//!     nirender-host --live <name of the shared memory> [--backend vulkan|dx12] [--frames N] [--shot picture.png]
 //!
 //! The capture comes from `nirender.capture` of the plugin (`src/capture.rs` there has the
 //! format). This program reads the records in their order, keeps the textures and the buffers,
-//! and draws one frame into a texture, which it saves as a PNG file.
+//! and draws one frame into a texture, which it saves as a PNG file. In the live mode the
+//! records come from a ring in shared memory while the game runs, and each frame goes into a
+//! window.
 //!
 //! It is a spike. What it does not do is in the counts that it prints at the end.
 
@@ -25,6 +28,7 @@ mod tag {
     pub const COMMAND: u32 = 8;
     pub const CALL: u32 = 9;
     pub const FRAME_END: u32 = 10;
+    pub const HEADER: u32 = 11;
 }
 
 const COMMAND_RENDER_STATE: u32 = 1;
@@ -200,7 +204,7 @@ struct Attribute {
 
 /// The attributes that a flexible vertex format of Direct3D 8 has. `None` for a format that
 /// this program does not draw.
-fn attributes(fvf: u32) -> Option<Vec<Attribute>> {
+fn attributes(fvf: u32, stride: u32) -> Option<Vec<Attribute>> {
     use wgpu::VertexFormat::*;
     let position = fvf & 0xE;
     if position == 0x4 || position == 0 {
@@ -209,18 +213,15 @@ fn attributes(fvf: u32) -> Option<Vec<Attribute>> {
     }
     let mut list = vec![Attribute { location: 0, offset: 0, format: Float32x3 }];
     let mut offset = 12u64;
-    let betas = (position as u64 - 2) / 2;
+    // D3DFVF_XYZ is 2. D3DFVF_XYZB1 to XYZB5 are 6 to 14: one float more for each step.
+    let betas = (position as u64).saturating_sub(4) / 2;
     if betas != 0 {
         // The last beta is the matrix indexes when the format says so.
         let weights = if fvf & 0x1000 != 0 { betas - 1 } else { betas };
-        let format = match weights {
-            0 => None,
-            1 => Some(Float32),
-            2 => Some(Float32x2),
-            _ => Some(Float32x3),
-        };
-        if let Some(format) = format {
-            list.push(Attribute { location: 7, offset, format });
+        // The shader input has three floats. With fewer weights, the floats after them are
+        // the next part of the vertex; the shader does not read those.
+        if weights != 0 && offset + 12 <= stride as u64 {
+            list.push(Attribute { location: 7, offset, format: Float32x3 });
         }
         offset += betas * 4;
     }
@@ -280,15 +281,26 @@ struct Counts {
     coordinate_work: u32,
 }
 
-const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 const STAGES: usize = 6;
+/// The size of a slot for the data of a draw: the size of `DrawData`, and a multiple of the
+/// 256 bytes that a uniform offset must be a multiple of.
+const SLOT_SIZE: usize = core::mem::size_of::<DrawData>().next_multiple_of(256);
+const SLOTS_IN_BUFFER: usize = 2048;
 
 struct Renderer {
-    device: wgpu::Device,
+    device: Rc<wgpu::Device>,
+    /// The format of the picture that the pipelines draw into.
+    target_format: wgpu::TextureFormat,
+    /// What the picture of the window can be used for.
+    surface_usages: wgpu::TextureUsages,
     queue: wgpu::Queue,
     shader: wgpu::ShaderModule,
     draw_layout: wgpu::BindGroupLayout,
+    /// The buffers for the data of the draws of a frame, each with its group, and the number
+    /// of draws of the frame so far. A draw has one slot in a buffer.
+    draw_buffers: Vec<(Rc<wgpu::Buffer>, Rc<wgpu::BindGroup>)>,
+    draw_slots: usize,
     texture_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
     pipelines: HashMap<PipelineKey, Rc<wgpu::RenderPipeline>>,
@@ -304,16 +316,32 @@ struct Renderer {
 }
 
 impl Renderer {
-    fn new(backends: wgpu::Backends) -> Renderer {
+    /// Makes the device. With a window, also the surface of the window, and the format of
+    /// the target is a format of that surface.
+    fn new(
+        backends: wgpu::Backends,
+        window: Option<std::sync::Arc<winit::window::Window>>,
+        mut target_format: wgpu::TextureFormat,
+    ) -> (Renderer, Option<wgpu::Surface<'static>>) {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends, ..Default::default() });
+        let surface = window.map(|window| instance.create_surface(window).expect("a surface for the window"));
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
+            compatible_surface: surface.as_ref(),
             force_fallback_adapter: false,
         }))
         .expect("no graphics adapter for this backend");
         let info = adapter.get_info();
         println!("adapter: {} ({:?})", info.name, info.backend);
+        let mut surface_usages = wgpu::TextureUsages::empty();
+        if let Some(surface) = surface.as_ref() {
+            // The game gives colours that are ready for the screen: no sRGB format.
+            let capabilities = surface.get_capabilities(&adapter);
+            if !capabilities.formats.contains(&target_format) {
+                target_format = capabilities.formats.iter().copied().find(|format| !format.is_srgb()).unwrap_or(capabilities.formats[0]);
+            }
+            surface_usages = capabilities.usages;
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
@@ -331,7 +359,7 @@ impl Renderer {
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: None },
                 count: None,
             }],
         });
@@ -382,11 +410,15 @@ impl Renderer {
             contents: &[0u8; 64],
             usage: wgpu::BufferUsages::VERTEX,
         });
-        Renderer {
-            device,
+        let renderer = Renderer {
+            device: Rc::new(device),
+            target_format,
+            surface_usages,
             queue,
             shader,
             draw_layout,
+            draw_buffers: Vec::new(),
+            draw_slots: 0,
             texture_layout,
             pipeline_layout,
             pipelines: HashMap::new(),
@@ -397,7 +429,39 @@ impl Renderer {
             buffers: HashMap::new(),
             defaults,
             counts: Counts::default(),
+        };
+        (renderer, surface)
+    }
+
+    /// Puts the data of a draw into the next slot. Returns the group to bind and the offset
+    /// of the slot.
+    fn draw_slot(&mut self, data: &DrawData) -> (Rc<wgpu::BindGroup>, u32) {
+        let (index, slot) = (self.draw_slots / SLOTS_IN_BUFFER, self.draw_slots % SLOTS_IN_BUFFER);
+        self.draw_slots += 1;
+        if index == self.draw_buffers.len() {
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: (SLOTS_IN_BUFFER * SLOT_SIZE) as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &self.draw_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(core::mem::size_of::<DrawData>() as u64),
+                    }),
+                }],
+            });
+            self.draw_buffers.push((Rc::new(buffer), Rc::new(group)));
         }
+        let (buffer, group) = &self.draw_buffers[index];
+        self.queue.write_buffer(buffer, (slot * SLOT_SIZE) as u64, bytemuck::bytes_of(data));
+        (group.clone(), (slot * SLOT_SIZE) as u32)
     }
 
     /// Makes a texture from a texture record.
@@ -503,7 +567,7 @@ impl Renderer {
 
     fn pipeline(&mut self, key: PipelineKey) -> Option<Rc<wgpu::RenderPipeline>> {
         if !self.pipelines.contains_key(&key) {
-            let present = attributes(key.fvf)?;
+            let present = attributes(key.fvf, key.stride)?;
             let topology = match key.topology {
                 1 => wgpu::PrimitiveTopology::PointList,
                 2 => wgpu::PrimitiveTopology::LineList,
@@ -515,7 +579,7 @@ impl Renderer {
             let from_vertex: Vec<wgpu::VertexAttribute> =
                 present.iter().map(|a| wgpu::VertexAttribute { format: a.format, offset: a.offset, shader_location: a.location }).collect();
             // An input that the vertex does not have comes from a buffer of zeros.
-            let from_defaults: Vec<wgpu::VertexAttribute> = (0..8u32)
+            let from_defaults: Vec<wgpu::VertexAttribute> = (0..INPUT_FORMATS.len() as u32)
                 .filter(|location| !present.iter().any(|a| a.location == *location))
                 .map(|location| wgpu::VertexAttribute { format: INPUT_FORMATS[location as usize], offset: 0, shader_location: location })
                 .collect();
@@ -555,7 +619,7 @@ impl Renderer {
                     module: &self.shader,
                     entry_point: "fs",
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: TARGET_FORMAT, blend, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState { format: self.target_format, blend, write_mask: wgpu::ColorWrites::ALL })],
                 }),
                 multiview: None,
                 cache: None,
@@ -683,18 +747,333 @@ impl Stream {
     }
 }
 
+/// Reads the records of a stream in their order and draws the frames.
+struct Player {
+    renderer: Renderer,
+    stream: Stream,
+    /// The frame in progress: its commands, its pass, and its two targets.
+    encoder: Option<wgpu::CommandEncoder>,
+    pass: Option<wgpu::RenderPass<'static>>,
+    color: Option<Rc<wgpu::TextureView>>,
+    depth: Option<Rc<wgpu::TextureView>>,
+    /// The size of the back buffer of the game, from the first record. 0 when not known.
+    size: (u32, u32),
+    /// The size of the targets of the frame in progress.
+    target_size: (u32, u32),
+}
+
+impl Player {
+    fn new(renderer: Renderer) -> Player {
+        Player {
+            renderer,
+            stream: Stream {
+                view: [0.0; 16],
+                projection: [0.0; 16],
+                render_states: HashMap::new(),
+                viewport: None,
+                back_buffer: true,
+                origin: None,
+                state: Vec::new(),
+            },
+            encoder: None,
+            pass: None,
+            color: None,
+            depth: None,
+            size: (0, 0),
+            target_size: (0, 0),
+        }
+    }
+
+    /// Starts a pass on the targets of the frame: it draws on what is there, or it clears first.
+    fn open_pass(&mut self, clear_color: Option<wgpu::Color>, clear_depth: Option<f32>) {
+        drop(self.pass.take());
+        let (Some(encoder), Some(color), Some(depth)) = (self.encoder.as_mut(), self.color.as_ref(), self.depth.as_ref()) else { return };
+        let mut pass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: clear_color.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations { load: clear_depth.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store }),
+                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            })
+            .forget_lifetime();
+        self.pass = Some(pass);
+        self.apply_viewport();
+    }
+
+    /// Gives the viewport of the stream to the pass, cut to the size of the targets.
+    fn apply_viewport(&mut self) {
+        let (Some(pass), Some((rectangle, range))) = (self.pass.as_mut(), self.stream.viewport) else { return };
+        let (width, height) = (self.target_size.0 as f32, self.target_size.1 as f32);
+        let (x, y) = (rectangle[0].min(width - 1.0).max(0.0), rectangle[1].min(height - 1.0).max(0.0));
+        let (w, h) = (rectangle[2].min(width - x), rectangle[3].min(height - y));
+        if w >= 1.0 && h >= 1.0 {
+            pass.set_viewport(x, y, w, h, range[0], range[1]);
+        }
+    }
+
+    /// Starts a frame that draws into these targets. Until the next start, the records
+    /// change only the state and the resources.
+    fn begin_frame(&mut self, color: Rc<wgpu::TextureView>, depth: Rc<wgpu::TextureView>, size: (u32, u32)) {
+        self.target_size = size;
+        self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
+        self.renderer.draw_slots = 0;
+        self.color = Some(color);
+        self.depth = Some(depth);
+        self.open_pass(Some(wgpu::Color::BLACK), Some(1.0));
+    }
+
+    fn drawing(&self) -> bool {
+        self.encoder.is_some()
+    }
+
+    /// Ends the frame and sends its commands to the GPU. `before_submit` can add commands,
+    /// for example a copy of the picture.
+    fn end_frame(&mut self, before_submit: impl FnOnce(&mut wgpu::CommandEncoder)) {
+        drop(self.pass.take());
+        self.color = None;
+        self.depth = None;
+        if let Some(mut encoder) = self.encoder.take() {
+            before_submit(&mut encoder);
+            self.renderer.queue.submit([encoder.finish()]);
+        }
+    }
+
+    /// Does one record. Returns true for the record that ends a frame.
+    fn feed(&mut self, tag: u32, data: &[u8]) -> bool {
+        match tag {
+            tag::HEADER => self.size = (word(data, 0), word(data, 4)),
+            tag::TEXTURE => self.renderer.texture(data),
+            tag::BUFFER_DATA => self.renderer.buffer_data(data),
+            tag::SCENE_BEGIN => {
+                self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
+            }
+            tag::FRAME_EVENT => {
+                if word(data, 0) == EVENT_SET_TARGET {
+                    self.stream.back_buffer = word(data, 4) == 0;
+                }
+            }
+            tag::DRAW_STATE => self.stream.state = data.to_vec(),
+            tag::FRAME_END => return true,
+            tag::CALL => {
+                let arguments = &data[16..];
+                match word(data, 0) {
+                    CALL_VIEWPORT => {
+                        let viewport = &arguments[word(data, 12) as usize * 4..];
+                        if viewport.len() >= 24 {
+                            let rectangle = [word(viewport, 0) as f32, word(viewport, 4) as f32, word(viewport, 8) as f32, word(viewport, 12) as f32];
+                            self.stream.viewport = Some((rectangle, [float(viewport, 16), float(viewport, 20)]));
+                            if self.stream.back_buffer {
+                                self.apply_viewport();
+                            }
+                        }
+                    }
+                    CALL_CLEAR if self.drawing() && self.stream.back_buffer => {
+                        // Rectangles, their address, flags, colour, depth, stencil.
+                        let flags = word(arguments, 8);
+                        let clear_color = (flags & 1 != 0).then(|| {
+                            let c = color(word(arguments, 12));
+                            wgpu::Color { r: c[0] as f64, g: c[1] as f64, b: c[2] as f64, a: c[3] as f64 }
+                        });
+                        let clear_depth = (flags & 2 != 0).then(|| float(arguments, 16));
+                        self.open_pass(clear_color, clear_depth);
+                    }
+                    _ => {}
+                }
+            }
+            tag::COMMAND => match word(data, 0) {
+                COMMAND_RENDER_STATE => {
+                    self.stream.render_states.insert(word(data, 4), word(data, 8));
+                }
+                COMMAND_TRANSFORM if data.len() >= 16 + 64 => match word(data, 4) {
+                    2 => self.stream.view = floats(data, 16),
+                    3 => self.stream.projection = floats(data, 16),
+                    _ => {}
+                },
+                COMMAND_DRAW_INDEXED if self.drawing() && data.len() >= 16 + 20 && self.stream.state.len() >= state::SIZE => self.draw(data),
+                _ => {}
+            },
+            _ => {}
+        }
+        false
+    }
+
+    /// Draws with the current state packet. `data` is the draw command.
+    fn draw(&mut self, data: &[u8]) {
+        let renderer = &mut self.renderer;
+        if !self.stream.back_buffer {
+            renderer.counts.other_target += 1;
+            return;
+        }
+        let s = &self.stream.state;
+        // Primitive type, least index, vertices, first index, primitives.
+        let (topology, first_index, primitives) = (word(data, 16), word(data, 28), word(data, 32));
+        let indexes = match topology {
+            4 => primitives * 3,
+            5 => primitives + 2,
+            2 => primitives * 2,
+            3 => primitives + 1,
+            1 => primitives,
+            _ => {
+                renderer.counts.topology += 1;
+                return;
+            }
+        };
+        let key = PipelineKey {
+            fvf: word(s, state::VERTEX_FORMAT),
+            stride: word(s, state::VERTEX_STRIDE),
+            topology,
+            blend: [(known(word(s, state::BLEND_ENABLE), 0) != 0) as u32, known(word(s, state::SOURCE_BLEND), 2), known(word(s, state::DESTINATION_BLEND), 1)],
+            depth: [
+                (known(word(s, state::DEPTH_ENABLE), 1) != 0) as u32,
+                (known(word(s, state::DEPTH_WRITE), 1) != 0) as u32,
+                known(word(s, state::DEPTH_FUNCTION), 4),
+            ],
+            cull: known(word(s, state::CULL_MODE), 3),
+        };
+        let (vertex_handle, index_handle) = (word(s, state::VERTEX_BUFFER), word(s, state::INDEX_BUFFER));
+        let (Some(vertex_buffer), Some(index_buffer)) = (renderer.gpu_buffer(vertex_handle, false), renderer.gpu_buffer(index_handle, true)) else {
+            renderer.counts.no_buffer += 1;
+            return;
+        };
+        let draw_data = self.stream.draw_data(&mut renderer.counts);
+        let (draw_group, draw_offset) = renderer.draw_slot(&draw_data);
+        let mut handles = [0u32; STAGES];
+        let mut sampler_values = [[0u32; 5]; STAGES];
+        for stage in 0..STAGES {
+            let handle = word(s, state::TEXTURES + stage * 4);
+            let used = stage < draw_data.counts[1] as usize && handle != 0;
+            if used && !renderer.textures.contains_key(&handle) {
+                renderer.counts.missing_textures += 1;
+            } else if used {
+                handles[stage] = handle;
+                sampler_values[stage] = core::array::from_fn(|i| word(s, state::SAMPLERS + stage * 20 + i * 4));
+            }
+        }
+        let group_key = (handles, sampler_values);
+        if !renderer.texture_groups.contains_key(&group_key) {
+            let views: Vec<Rc<wgpu::TextureView>> = handles.iter().map(|handle| renderer.textures.get(handle).unwrap_or(&renderer.white).clone()).collect();
+            let samplers: Vec<Rc<wgpu::Sampler>> = sampler_values.iter().map(|values| renderer.sampler(*values)).collect();
+            let mut entries = Vec::new();
+            for stage in 0..STAGES {
+                entries.push(wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(&views[stage]) });
+                entries.push(wgpu::BindGroupEntry { binding: (STAGES + stage) as u32, resource: wgpu::BindingResource::Sampler(&samplers[stage]) });
+            }
+            let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &renderer.texture_layout, entries: &entries });
+            renderer.texture_groups.insert(group_key, Rc::new(group));
+        }
+        let texture_group = renderer.texture_groups[&group_key].clone();
+        let Some(pipeline) = renderer.pipeline(key) else {
+            renderer.counts.no_layout += 1;
+            return;
+        };
+        let Some(pass) = self.pass.as_mut() else { return };
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &draw_group, &[draw_offset]);
+        pass.set_bind_group(1, &texture_group, &[]);
+        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        pass.set_vertex_buffer(1, renderer.defaults.slice(..));
+        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(first_index..first_index + indexes, word(s, state::BASE_VERTEX) as i32, 0..1);
+        renderer.counts.draws += 1;
+    }
+
+    fn print_counts(&self) {
+        let c = &self.renderer.counts;
+        println!("draws {}, pipelines {}, textures {}, samplers {}", c.draws, self.renderer.pipelines.len(), c.textures, self.renderer.samplers.len());
+        println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);
+        println!(
+            "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}, more than 8 lights {}, texture coordinate work {}",
+            c.missing_textures, c.more_stages, c.more_lights, c.coordinate_work
+        );
+        for (format, count) in &c.texture_formats {
+            println!("texture format {format:#x} not made: {count}");
+        }
+    }
+}
+
+fn target_texture(device: &wgpu::Device, width: u32, height: u32, format: wgpu::TextureFormat, usage: wgpu::TextureUsages) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage,
+        view_formats: &[],
+    })
+}
+
+/// Adds the copy of a picture into a new buffer to the commands. Returns the buffer and the
+/// length of a row in it.
+fn copy_picture(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, texture: &wgpu::Texture, width: u32, height: u32) -> (wgpu::Buffer, usize) {
+    let row = (width as usize * 4).next_multiple_of(256);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: (row * height as usize) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::ImageCopyBuffer { buffer: &buffer, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(row as u32), rows_per_image: None } },
+        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+    );
+    (buffer, row)
+}
+
+/// Saves a picture that `copy_picture` put into `buffer` as a PNG file. `blue_first` for a
+/// texture format with the bytes blue, green, red.
+fn save_picture(device: &wgpu::Device, buffer: &wgpu::Buffer, row: usize, width: u32, height: u32, blue_first: bool, path: &str) {
+    buffer.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("the read of the picture"));
+    device.poll(wgpu::Maintain::Wait);
+    let mapped = buffer.slice(..).get_mapped_range();
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height as usize {
+        pixels.extend_from_slice(&mapped[y * row..y * row + width as usize * 4]);
+    }
+    for pixel in pixels.chunks_exact_mut(4) {
+        if blue_first {
+            pixel.swap(0, 2);
+        }
+        // The alpha of the target is of no use in a picture file.
+        pixel[3] = 255;
+    }
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(std::fs::File::create(path).expect("the picture file")), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header().unwrap().write_image_data(&pixels).unwrap();
+    println!("picture: {path}");
+}
+
+fn option(args: &[String], name: &str) -> Option<String> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 3 {
-        eprintln!("use: nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N]");
-        std::process::exit(2);
-    }
-    let option = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
-    let backends = match option("--backend").as_deref() {
+    let backends = match option(&args, "--backend").as_deref() {
         Some("dx12") => wgpu::Backends::DX12,
         Some("vulkan") => wgpu::Backends::VULKAN,
         _ => wgpu::Backends::PRIMARY,
     };
+    if let Some(name) = option(&args, "--live") {
+        return live::run(&name, backends, &args);
+    }
+    if args.len() < 3 {
+        eprintln!("use: nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N]");
+        eprintln!("     nirender-host --live <name of the shared memory> [--backend vulkan|dx12] [--frames N] [--shot picture.png]");
+        std::process::exit(2);
+    }
     let file = std::fs::read(&args[1]).expect("the capture file");
     assert_eq!(&file[..8], b"NIRCAP01", "not a capture file");
     let mut records = Vec::new();
@@ -705,10 +1084,14 @@ fn main() {
         at += 8 + length;
     }
     let frames = records.iter().filter(|(tag, _)| *tag == tag::FRAME_END).count();
-    let wanted = option("--frame").and_then(|text| text.parse().ok()).unwrap_or(frames.saturating_sub(1));
-    // The size of the back buffer: the largest viewport of the capture.
+    let wanted = option(&args, "--frame").and_then(|text| text.parse().ok()).unwrap_or(frames.saturating_sub(1));
+    // The size of the back buffer: the first record, or the largest viewport of an old capture.
     let (mut width, mut height) = (0u32, 0u32);
     for (tag, data) in &records {
+        if *tag == tag::HEADER {
+            (width, height) = (word(data, 0), word(data, 4));
+            break;
+        }
         if *tag == tag::CALL && word(data, 0) == CALL_VIEWPORT {
             let viewport = &data[16 + word(data, 12) as usize * 4..];
             if viewport.len() >= 24 {
@@ -722,269 +1105,309 @@ fn main() {
     }
     println!("{} records, {frames} frames, frame {wanted} into {width} x {height}", records.len());
 
-    let mut renderer = Renderer::new(backends);
-    let target_descriptor = |format, usage| wgpu::TextureDescriptor {
-        label: None,
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage,
-        view_formats: &[],
-    };
-    let target = renderer
-        .device
-        .create_texture(&target_descriptor(TARGET_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC));
-    let target_view = target.create_view(&Default::default());
-    let depth = renderer.device.create_texture(&target_descriptor(DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT));
-    let depth_view = depth.create_view(&Default::default());
-
-    let mut stream = Stream {
-        view: [0.0; 16],
-        projection: [0.0; 16],
-        render_states: HashMap::new(),
-        viewport: None,
-        back_buffer: true,
-        origin: None,
-        state: Vec::new(),
-    };
-    let mut encoder = renderer.device.create_command_encoder(&Default::default());
-    let mut pass: Option<wgpu::RenderPass<'static>> = None;
-    // The pass that draws on what is in the target, or that clears it first.
-    let begin = |encoder: &mut wgpu::CommandEncoder, clear_color: Option<wgpu::Color>, clear_depth: Option<f32>, stream: &Stream| {
-        let mut pass = encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: clear_color.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_view,
-                    depth_ops: Some(wgpu::Operations { load: clear_depth.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store }),
-                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            })
-            .forget_lifetime();
-        if let Some((rectangle, range)) = stream.viewport {
-            pass.set_viewport(rectangle[0], rectangle[1], rectangle[2], rectangle[3], range[0], range[1]);
-        }
-        pass
-    };
-
+    let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm).0);
+    let device = player.renderer.device.clone();
+    let target = target_texture(&device, width, height, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+    let depth = target_texture(&device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
     let mut frame = 0;
-    if wanted == 0 {
-        pass = Some(begin(&mut encoder, Some(wgpu::Color::BLACK), Some(1.0), &stream));
-    }
     for (tag, data) in &records {
-        let drawing = frame == wanted;
-        match *tag {
-            tag::TEXTURE => renderer.texture(data),
-            tag::BUFFER_DATA => renderer.buffer_data(data),
-            tag::SCENE_BEGIN => {
-                stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
+        if frame == wanted && !player.drawing() {
+            player.begin_frame(Rc::new(target.create_view(&Default::default())), Rc::new(depth.create_view(&Default::default())), (width, height));
+        }
+        if player.feed(*tag, data) {
+            if player.drawing() {
+                let mut read = None;
+                player.end_frame(|encoder| read = Some(copy_picture(&device, encoder, &target, width, height)));
+                let (buffer, row) = read.unwrap();
+                save_picture(&device, &buffer, row, width, height, false, &args[2]);
             }
-            tag::FRAME_EVENT => {
-                if word(data, 0) == EVENT_SET_TARGET {
-                    stream.back_buffer = word(data, 4) == 0;
-                }
-            }
-            tag::DRAW_STATE => stream.state = data.to_vec(),
-            tag::FRAME_END => {
-                frame += 1;
-                drop(pass.take());
-                if frame == wanted {
-                    pass = Some(begin(&mut encoder, Some(wgpu::Color::BLACK), Some(1.0), &stream));
-                }
-            }
-            tag::CALL => {
-                let arguments = &data[16..];
-                match word(data, 0) {
-                    CALL_VIEWPORT => {
-                        let viewport = &arguments[word(data, 12) as usize * 4..];
-                        if viewport.len() >= 24 {
-                            let rectangle = [word(viewport, 0) as f32, word(viewport, 4) as f32, word(viewport, 8) as f32, word(viewport, 12) as f32];
-                            stream.viewport = Some((rectangle, [float(viewport, 16), float(viewport, 20)]));
-                            if let (Some(pass), true) = (pass.as_mut(), stream.back_buffer) {
-                                pass.set_viewport(rectangle[0], rectangle[1], rectangle[2], rectangle[3], float(viewport, 16), float(viewport, 20));
-                            }
-                        }
-                    }
-                    CALL_CLEAR if drawing && stream.back_buffer => {
-                        // Rectangles, their address, flags, colour, depth, stencil.
-                        let flags = word(arguments, 8);
-                        let clear_color = (flags & 1 != 0).then(|| {
-                            let c = color(word(arguments, 12));
-                            wgpu::Color { r: c[0] as f64, g: c[1] as f64, b: c[2] as f64, a: c[3] as f64 }
-                        });
-                        let clear_depth = (flags & 2 != 0).then(|| float(arguments, 16));
-                        drop(pass.take());
-                        pass = Some(begin(&mut encoder, clear_color, clear_depth, &stream));
-                    }
-                    _ => {}
-                }
-            }
-            tag::COMMAND => match word(data, 0) {
-                COMMAND_RENDER_STATE => {
-                    stream.render_states.insert(word(data, 4), word(data, 8));
-                }
-                COMMAND_TRANSFORM if data.len() >= 16 + 64 => match word(data, 4) {
-                    2 => stream.view = floats(data, 16),
-                    3 => stream.projection = floats(data, 16),
-                    _ => {}
-                },
-                COMMAND_DRAW_INDEXED if drawing && data.len() >= 16 + 20 && stream.state.len() >= state::SIZE => {
-                    if !stream.back_buffer {
-                        renderer.counts.other_target += 1;
-                        continue;
-                    }
-                    let s = &stream.state;
-                    // Primitive type, least index, vertices, first index, primitives.
-                    let (topology, first_index, primitives) = (word(data, 16), word(data, 28), word(data, 32));
-                    let indexes = match topology {
-                        4 => primitives * 3,
-                        5 => primitives + 2,
-                        2 => primitives * 2,
-                        3 => primitives + 1,
-                        1 => primitives,
-                        _ => {
-                            renderer.counts.topology += 1;
-                            continue;
-                        }
-                    };
-                    let key = PipelineKey {
-                        fvf: word(s, state::VERTEX_FORMAT),
-                        stride: word(s, state::VERTEX_STRIDE),
-                        topology,
-                        blend: [
-                            (known(word(s, state::BLEND_ENABLE), 0) != 0) as u32,
-                            known(word(s, state::SOURCE_BLEND), 2),
-                            known(word(s, state::DESTINATION_BLEND), 1),
-                        ],
-                        depth: [
-                            (known(word(s, state::DEPTH_ENABLE), 1) != 0) as u32,
-                            (known(word(s, state::DEPTH_WRITE), 1) != 0) as u32,
-                            known(word(s, state::DEPTH_FUNCTION), 4),
-                        ],
-                        cull: known(word(s, state::CULL_MODE), 3),
-                    };
-                    let (vertex_handle, index_handle) = (word(s, state::VERTEX_BUFFER), word(s, state::INDEX_BUFFER));
-                    let Some(vertex_buffer) = renderer.gpu_buffer(vertex_handle, false) else {
-                        renderer.counts.no_buffer += 1;
-                        continue;
-                    };
-                    let Some(index_buffer) = renderer.gpu_buffer(index_handle, true) else {
-                        renderer.counts.no_buffer += 1;
-                        continue;
-                    };
-                    let draw_data = stream.draw_data(&mut renderer.counts);
-                    let uniform = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: None,
-                        contents: bytemuck::bytes_of(&draw_data),
-                        usage: wgpu::BufferUsages::UNIFORM,
-                    });
-                    let draw_group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: None,
-                        layout: &renderer.draw_layout,
-                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }],
-                    });
-                    let mut handles = [0u32; STAGES];
-                    let mut sampler_values = [[0u32; 5]; STAGES];
-                    for stage in 0..STAGES {
-                        let handle = word(s, state::TEXTURES + stage * 4);
-                        let used = stage < draw_data.counts[1] as usize && handle != 0;
-                        if used && !renderer.textures.contains_key(&handle) {
-                            renderer.counts.missing_textures += 1;
-                        } else if used {
-                            handles[stage] = handle;
-                            sampler_values[stage] = core::array::from_fn(|i| word(s, state::SAMPLERS + stage * 20 + i * 4));
-                        }
-                    }
-                    let group_key = (handles, sampler_values);
-                    if !renderer.texture_groups.contains_key(&group_key) {
-                        let views: Vec<Rc<wgpu::TextureView>> =
-                            handles.iter().map(|handle| renderer.textures.get(handle).unwrap_or(&renderer.white).clone()).collect();
-                        let samplers: Vec<Rc<wgpu::Sampler>> = sampler_values.iter().map(|values| renderer.sampler(*values)).collect();
-                        let mut entries = Vec::new();
-                        for stage in 0..STAGES {
-                            entries.push(wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(&views[stage]) });
-                            entries.push(wgpu::BindGroupEntry {
-                                binding: (STAGES + stage) as u32,
-                                resource: wgpu::BindingResource::Sampler(&samplers[stage]),
-                            });
-                        }
-                        let group =
-                            renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &renderer.texture_layout, entries: &entries });
-                        renderer.texture_groups.insert(group_key, Rc::new(group));
-                    }
-                    let texture_group = renderer.texture_groups[&group_key].clone();
-                    let Some(pipeline) = renderer.pipeline(key) else {
-                        renderer.counts.no_layout += 1;
-                        continue;
-                    };
-                    let Some(pass) = pass.as_mut() else { continue };
-                    pass.set_pipeline(&pipeline);
-                    pass.set_bind_group(0, &draw_group, &[]);
-                    pass.set_bind_group(1, &texture_group, &[]);
-                    pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                    pass.set_vertex_buffer(1, renderer.defaults.slice(..));
-                    pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                    pass.draw_indexed(first_index..first_index + indexes, word(s, state::BASE_VERTEX) as i32, 0..1);
-                    renderer.counts.draws += 1;
-                }
-                _ => {}
-            },
-            _ => {}
+            frame += 1;
         }
     }
-    drop(pass);
+    player.print_counts();
+}
 
-    // The picture: the target into a buffer, and the buffer into a PNG file.
-    let row = (width as usize * 4).next_multiple_of(256);
-    let read = renderer.device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: (row * height as usize) as u64,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    encoder.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture { texture: &target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-        wgpu::ImageCopyBuffer { buffer: &read, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(row as u32), rows_per_image: None } },
-        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-    );
-    renderer.queue.submit([encoder.finish()]);
-    read.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("the read of the picture"));
-    renderer.device.poll(wgpu::Maintain::Wait);
-    let mapped = read.slice(..).get_mapped_range();
-    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
-    for y in 0..height as usize {
-        pixels.extend_from_slice(&mapped[y * row..y * row + width as usize * 4]);
-    }
-    // The alpha of the target is of no use in a picture file.
-    for pixel in pixels.chunks_exact_mut(4) {
-        pixel[3] = 255;
-    }
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(std::fs::File::create(&args[2]).expect("the picture file")), width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder.write_header().unwrap().write_image_data(&pixels).unwrap();
+/// The live mode: the records come from a ring in shared memory while the game runs, and
+/// the frames go into a window.
+mod live {
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
-    let c = &renderer.counts;
-    println!("draws {}, pipelines {}, textures {}, samplers {}", c.draws, renderer.pipelines.len(), c.textures, renderer.samplers.len());
-    println!(
-        "not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}",
-        c.other_target, c.no_layout, c.no_buffer, c.topology
-    );
-    println!(
-        "not complete: draws with a texture that is not in the capture {}, more than 6 stages {}, more than 8 lights {}, texture coordinate work {}",
-        c.missing_textures, c.more_stages, c.more_lights, c.coordinate_work
-    );
-    for (format, count) in &c.texture_formats {
-        println!("texture format {format:#x} not made: {count}");
+    use winit::application::ApplicationHandler;
+    use winit::dpi::PhysicalSize;
+    use winit::event::WindowEvent;
+    use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+    use winit::window::{Window, WindowId};
+
+    use super::{copy_picture, option, save_picture, target_texture, Player, Renderer, DEPTH_FORMAT};
+
+    extern "system" {
+        fn OpenFileMappingA(access: u32, inherit: i32, name: *const u8) -> isize;
+        fn MapViewOfFile(mapping: isize, access: u32, offset_high: u32, offset_low: u32, bytes: usize) -> *mut u8;
     }
-    println!("picture: {}", args[2]);
+
+    /// The head of the shared memory. See `capture.rs` of the plugin.
+    const RING_MAGIC: u32 = 0x474E_5231;
+    const RING_HEAD: usize = 64;
+    const RING_WRITTEN: usize = 8;
+    const RING_READ: usize = 16;
+    const RING_CLOSED: usize = 24;
+
+    struct Ring {
+        base: *mut u8,
+        capacity: u64,
+    }
+
+    impl Ring {
+        /// Opens the ring that the plugin made. Waits for it for some seconds.
+        fn open(name: &str) -> Ring {
+            let mut text = name.as_bytes().to_vec();
+            text.push(0);
+            let start = Instant::now();
+            loop {
+                // FILE_MAP_ALL_ACCESS
+                let mapping = unsafe { OpenFileMappingA(0xF001F, 0, text.as_ptr()) };
+                if mapping != 0 {
+                    let base = unsafe { MapViewOfFile(mapping, 0xF001F, 0, 0, 0) };
+                    assert!(!base.is_null(), "the shared memory does not map");
+                    assert_eq!(unsafe { (base as *const u32).read() }, RING_MAGIC, "not a ring of the plugin");
+                    let capacity = unsafe { (base.add(4) as *const u32).read() } as u64;
+                    return Ring { base, capacity };
+                }
+                assert!(start.elapsed() < Duration::from_secs(60), "no shared memory with the name {name}");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+
+        fn counter(&self, offset: usize) -> &AtomicU64 {
+            unsafe { &*(self.base.add(offset) as *const AtomicU64) }
+        }
+
+        fn closed(&self) -> bool {
+            unsafe { (self.base.add(RING_CLOSED) as *const u32).read_volatile() != 0 }
+        }
+
+        fn copy_out(&self, at: u64, to: &mut [u8]) {
+            let start = (at % self.capacity) as usize;
+            let first = to.len().min(self.capacity as usize - start);
+            unsafe {
+                std::ptr::copy_nonoverlapping(self.base.add(RING_HEAD + start), to.as_mut_ptr(), first);
+                std::ptr::copy_nonoverlapping(self.base.add(RING_HEAD), to.as_mut_ptr().add(first), to.len() - first);
+            }
+        }
+
+        /// Takes the next record out of the ring into `data`. Returns its tag, or `None` when
+        /// the ring has no complete record.
+        fn pop(&self, data: &mut Vec<u8>) -> Option<u32> {
+            let read = self.counter(RING_READ).load(Ordering::Relaxed);
+            let available = self.counter(RING_WRITTEN).load(Ordering::Acquire) - read;
+            if available < 8 {
+                return None;
+            }
+            let mut head = [0u8; 8];
+            self.copy_out(read, &mut head);
+            let tag = u32::from_le_bytes(head[0..4].try_into().unwrap());
+            let length = u32::from_le_bytes(head[4..8].try_into().unwrap()) as usize;
+            data.resize(length, 0);
+            self.copy_out(read + 8, data);
+            self.counter(RING_READ).store(read + 8 + length as u64, Ordering::Release);
+            Some(tag)
+        }
+    }
+
+    struct App {
+        ring: Ring,
+        backends: wgpu::Backends,
+        frames_wanted: u32,
+        shot: Option<String>,
+        shot_frame: u32,
+        window: Option<Arc<Window>>,
+        surface: Option<wgpu::Surface<'static>>,
+        configuration: Option<wgpu::SurfaceConfiguration>,
+        player: Option<Player>,
+        depth: Option<Rc<wgpu::TextureView>>,
+        frame: Option<wgpu::SurfaceTexture>,
+        data: Vec<u8>,
+        frames: u32,
+        first_frame: Option<Instant>,
+        waited: Duration,
+        records: u64,
+        bytes: u64,
+        shot_done: bool,
+        finished: bool,
+    }
+
+    impl App {
+        /// Sets the size of the picture in the window, and makes the depth buffer for it.
+        fn configure(&mut self, width: u32, height: u32) {
+            let (Some(surface), Some(configuration), Some(player)) = (self.surface.as_ref(), self.configuration.as_mut(), self.player.as_ref()) else { return };
+            if width == 0 || height == 0 || (configuration.width, configuration.height) == (width, height) && self.depth.is_some() {
+                return;
+            }
+            configuration.width = width;
+            configuration.height = height;
+            surface.configure(&player.renderer.device, configuration);
+            let depth = target_texture(&player.renderer.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+            self.depth = Some(Rc::new(depth.create_view(&Default::default())));
+        }
+
+        fn finish(&mut self, event_loop: &ActiveEventLoop, why: &str) {
+            self.finished = true;
+            // The picture of the window that is in progress goes away before the surface.
+            if let Some(player) = self.player.as_mut() {
+                player.end_frame(|_| {});
+            }
+            drop(self.frame.take());
+            let seconds = self.first_frame.map_or(0.0, |start| start.elapsed().as_secs_f64());
+            println!("end: {why}");
+            println!(
+                "frames {}, {:.1} frames in a second, {:.2} ms for each frame; the host waited for the game {:.0} % of the time",
+                self.frames,
+                self.frames as f64 / seconds.max(0.001),
+                seconds * 1000.0 / self.frames.max(1) as f64,
+                self.waited.as_secs_f64() * 100.0 / seconds.max(0.001)
+            );
+            println!("records {}, {:.1} MB, {:.2} MB for each frame", self.records, self.bytes as f64 / 1e6, self.bytes as f64 / 1e6 / self.frames.max(1) as f64);
+            if let Some(player) = self.player.as_ref() {
+                player.print_counts();
+            }
+            event_loop.exit();
+        }
+    }
+
+    impl ApplicationHandler for App {
+        fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+            if self.window.is_some() {
+                return;
+            }
+            let attributes = Window::default_attributes().with_title("nirender host").with_inner_size(PhysicalSize::new(1280, 720)).with_resizable(false);
+            let window = Arc::new(event_loop.create_window(attributes).expect("a window"));
+            let (renderer, surface) = Renderer::new(self.backends, Some(window.clone()), wgpu::TextureFormat::Bgra8Unorm);
+            let surface = surface.expect("a surface");
+            let size = window.inner_size();
+            self.configuration = Some(wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | (renderer.surface_usages & wgpu::TextureUsages::COPY_SRC),
+                format: renderer.target_format,
+                width: 0,
+                height: 0,
+                // The host shows a frame when the game gives one. It does not wait for the screen.
+                present_mode: wgpu::PresentMode::AutoNoVsync,
+                desired_maximum_frame_latency: 2,
+                alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                view_formats: vec![],
+            });
+            self.player = Some(Player::new(renderer));
+            self.surface = Some(surface);
+            self.window = Some(window);
+            self.configure(size.width, size.height);
+        }
+
+        fn window_event(&mut self, event_loop: &ActiveEventLoop, _window: WindowId, event: WindowEvent) {
+            match event {
+                WindowEvent::CloseRequested if !self.finished => self.finish(event_loop, "the window closed"),
+                WindowEvent::Resized(size) => self.configure(size.width, size.height),
+                _ => {}
+            }
+        }
+
+        fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+            event_loop.set_control_flow(ControlFlow::Poll);
+            if self.player.is_none() || self.finished {
+                return;
+            }
+            // The window gets the size of the back buffer of the game.
+            let size = self.player.as_ref().unwrap().size;
+            if size.0 != 0 {
+                let window = self.window.as_ref().unwrap();
+                if window.inner_size() != PhysicalSize::new(size.0, size.1) {
+                    let _ = window.request_inner_size(PhysicalSize::new(size.0, size.1));
+                }
+                let now = window.inner_size();
+                self.configure(now.width, now.height);
+            }
+            let waiting = Instant::now();
+            loop {
+                // No frame before the size of the game is known: the records before that
+                // make the resources only.
+                if self.frame.is_none() && self.depth.is_some() && size.0 != 0 {
+                    let Ok(frame) = self.surface.as_ref().unwrap().get_current_texture() else { return };
+                    let view = Rc::new(frame.texture.create_view(&Default::default()));
+                    let frame_size = (frame.texture.width(), frame.texture.height());
+                    self.player.as_mut().unwrap().begin_frame(view, self.depth.clone().unwrap(), frame_size);
+                    self.frame = Some(frame);
+                }
+                let Some(tag) = self.ring.pop(&mut self.data) else {
+                    if self.ring.closed() {
+                        return self.finish(event_loop, "the game closed the stream");
+                    }
+                    if waiting.elapsed() > Duration::from_millis(20) {
+                        // Back to the events of the window.
+                        self.waited += waiting.elapsed();
+                        return;
+                    }
+                    std::thread::yield_now();
+                    continue;
+                };
+                self.records += 1;
+                self.bytes += 8 + self.data.len() as u64;
+                let player = self.player.as_mut().unwrap();
+                if !player.feed(tag, &self.data) {
+                    continue;
+                }
+                // The frame is complete.
+                let Some(frame) = self.frame.take() else { return };
+                let can_copy = player.renderer.surface_usages.contains(wgpu::TextureUsages::COPY_SRC);
+                let blue_first = matches!(player.renderer.target_format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+                let take_shot = can_copy && self.shot.is_some() && !self.shot_done && self.frames + 1 >= self.shot_frame;
+                let (width, height) = (frame.texture.width(), frame.texture.height());
+                let device = player.renderer.device.clone();
+                let mut read = None;
+                player.end_frame(|encoder| {
+                    if take_shot {
+                        read = Some(copy_picture(&device, encoder, &frame.texture, width, height));
+                    }
+                });
+                if let Some((buffer, row)) = read {
+                    save_picture(&device, &buffer, row, width, height, blue_first, self.shot.as_ref().unwrap());
+                    self.shot_done = true;
+                }
+                frame.present();
+                self.frames += 1;
+                self.first_frame.get_or_insert_with(Instant::now);
+                if self.frames_wanted != 0 && self.frames >= self.frames_wanted {
+                    return self.finish(event_loop, "all the frames that were asked for");
+                }
+                return;
+            }
+        }
+    }
+
+    pub fn run(name: &str, backends: wgpu::Backends, args: &[String]) {
+        let ring = Ring::open(name);
+        println!("ring: {} MB", ring.capacity >> 20);
+        let mut app = App {
+            ring,
+            backends,
+            frames_wanted: option(args, "--frames").and_then(|text| text.parse().ok()).unwrap_or(0),
+            shot: option(args, "--shot"),
+            shot_frame: option(args, "--shot-frame").and_then(|text| text.parse().ok()).unwrap_or(60),
+            window: None,
+            surface: None,
+            configuration: None,
+            player: None,
+            depth: None,
+            frame: None,
+            data: Vec::new(),
+            frames: 0,
+            first_frame: None,
+            waited: Duration::ZERO,
+            records: 0,
+            bytes: 0,
+            shot_done: false,
+            finished: false,
+        };
+        EventLoop::new().expect("an event loop").run_app(&mut app).expect("the event loop");
+    }
 }

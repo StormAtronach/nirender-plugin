@@ -68,6 +68,8 @@ struct VertexIn {
     @location(4) uv1: vec2f,
     @location(5) uv2: vec2f,
     @location(6) uv3: vec2f,
+    // The weights of the vertex blend. A vertex has 0 to 3 of them; the shader reads only
+    // the ones that the draw has.
     @location(7) weights: vec3f,
 }
 

@@ -78,6 +78,29 @@ unsafe extern "C" fn capture(l: LuaState) -> i32 {
     }
 }
 
+/// `nirender.stream(name, megabytes, warmupFrames)` starts a stream of the render link into a
+/// ring in shared memory, for a host program. Returns true, or false and the problem.
+unsafe extern "C" fn stream(l: LuaState) -> i32 {
+    let name = arg_str(l, 1).unwrap_or_default();
+    match crate::capture::start_stream(&name, lua_tonumber(l, 2) as u32, lua_tonumber(l, 3) as u32) {
+        Ok(()) => {
+            lua_pushboolean(l, 1);
+            1
+        }
+        Err(error) => {
+            lua_pushboolean(l, 0);
+            push_str(l, &error);
+            2
+        }
+    }
+}
+
+/// `nirender.captureStop()` ends the capture or the stream.
+unsafe extern "C" fn capture_stop(_l: LuaState) -> i32 {
+    crate::capture::stop();
+    0
+}
+
 /// `nirender.captureStatus()` returns the phase of the capture ("off", "warmup", "record",
 /// "done"), its records and its bytes, as one text.
 unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
@@ -318,6 +341,8 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "fault", fault);
     set_fn(l, "capture", capture);
     set_fn(l, "captureStatus", capture_status);
+    set_fn(l, "stream", stream);
+    set_fn(l, "captureStop", capture_stop);
     set_fn(l, "forceReset", force_reset);
     set_fn(l, "renderer", renderer);
     set_fn(l, "liveCalls", live_calls);

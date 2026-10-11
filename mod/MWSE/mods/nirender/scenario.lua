@@ -82,6 +82,42 @@ return function(nirender, spec, name)
         stop(1)
     end
 
+    -- The living actor that is nearest to the player, in the cells that the game has loaded.
+    -- Nil when there is none.
+    function scenario.nearestActor()
+        local best, best_distance = nil, math.huge
+        local from = tes3.player.position
+        for _, cell in ipairs(tes3.getActiveCells()) do
+            for ref in cell:iterateReferences({ tes3.objectType.npc, tes3.objectType.creature }, false) do
+                if ref ~= tes3.player and ref.sceneNode and ref.mobile and not ref.mobile.isDead then
+                    local distance = ref.position:distance(from)
+                    if distance < best_distance then best, best_distance = ref, distance end
+                end
+            end
+        end
+        return best
+    end
+
+    -- Turns the player to an actor. With `move`, or when the actor is more than two times
+    -- `distance` away, it also puts the player at `distance` in front of the actor.
+    function scenario.faceActor(actor, distance, move)
+        local at = actor.position
+        local from = tes3.player.position
+        if move or at:distance(from) > distance * 2 then
+            local facing = actor.facing
+            from = tes3vector3.new(at.x + math.sin(facing) * distance, at.y + math.cos(facing) * distance, at.z)
+            tes3.positionCell({
+                reference = tes3.player,
+                position = from,
+                orientation = tes3vector3.new(0, 0, math.atan2(at.x - from.x, at.y - from.y)),
+                suppressFader = true,
+                teleportCompanions = false,
+            })
+        else
+            tes3.player.orientation = tes3vector3.new(0, 0, math.atan2(at.x - from.x, at.y - from.y))
+        end
+    end
+
     -- Writes the port table to spec.reportFile and ends the scenario.
     function scenario.finish()
         local f = io.open(spec.reportFile, "wb")

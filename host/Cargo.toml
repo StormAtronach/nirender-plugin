@@ -13,6 +13,7 @@ bytemuck = { version = "1", features = ["derive"] }
 png = "0.18"
 pollster = "0.3"
 wgpu = "22.1"
+winit = "0.30"
 
 [profile.dev]
 opt-level = 1
