@@ -104,10 +104,34 @@ return function(nirender, spec)
         end)
     end
 
+    -- With spec.eachSeconds, the comparison of each port alone, one after the other, then
+    -- `done`. A port that another port calls has no comparison of its own while the caller
+    -- is in a comparison: the caller runs it as Rust. Alone, each call of it is compared.
+    local function each_port(done)
+        local names = {}
+        for line in nirender.report():gmatch("[^
+]+") do
+            local name = line:match("^([^	]+)	0x")
+            if name and (ports == "*" or name:find(ports, 1, true)) then names[#names + 1] = name end
+        end
+        say("comparison of %d ports, each one alone, %s s each", #names, tostring(spec.eachSeconds))
+        local function step(index)
+            nirender.setMode("*", "off")
+            local name = names[index]
+            if not name then return done() end
+            nirender.setMode(name, "shadow")
+            scenario.tour(spec.eachSeconds, function() step(index + 1) end)
+        end
+        step(1)
+    end
+
     -- Runs shadow mode for spec.shadowSeconds, then the frame tests in menu mode, then `done`.
     local function test_here(done)
         local where = tes3.player.cell.editorName
         say("shadow mode on for %d s in '%s' (%s)", spec.shadowSeconds, where, ports)
+        if spec.eachSeconds then
+            return each_port(done)
+        end
         nirender.setMode(ports, "shadow")
         scenario.tour(spec.shadowSeconds, function() extras(function()
             nirender.setMode("*", "off")

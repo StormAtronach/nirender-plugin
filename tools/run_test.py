@@ -31,6 +31,8 @@ def main():
                     "inventory, take a screenshot with the renderer, and make a save")
     ap.add_argument("--reset", choices=("off", "live"), help="after the load, make the game reset its device, with the "
                     "game code (off) or the Rust code (live)")
+    ap.add_argument("--each", type=float, default=0, help="compare each port alone for this number of seconds, one "
+                    "after the other, in the place of one comparison of all ports together")
     ap.add_argument("--timeout", type=int, default=0, help="budget in seconds; 0 = from the scenario")
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--start", choices=("off", "shadow", "live"),
@@ -58,6 +60,7 @@ def main():
         cells=cells,
         tour=args.tour or None,
         extras=args.extras,
+        eachSeconds=args.each or None,
         reset=args.reset,
         tourSeconds=args.tour_seconds,
     )
