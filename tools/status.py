@@ -33,6 +33,34 @@ def newest_run():
     return runs[-1] if runs else None
 
 
+def all_runs():
+    """Each run that has a report, the oldest first."""
+    return sorted(d for d in glob.glob(os.path.join(REPO, "results", "*")) if os.path.isfile(os.path.join(d, "report.tsv"))
+                  and os.path.getsize(os.path.join(d, "report.tsv")) > 0)
+
+
+def history():
+    """What all runs together say about each port: address -> a dict.
+
+    `compared_in` is the newest run that compared the function call by call, with the calls
+    and the differences of that run. `ran` is true when the Rust code of the function ran in
+    the game in a run. A port can change after its last comparison: these numbers do not
+    show that."""
+    seen = {}
+    for run in all_runs():
+        for row in read_report(os.path.join(run, "report.tsv")):
+            try:
+                ea, calls, different = int(row["addr"], 16), int(row["shadow_calls"]), int(row["mismatches"])
+                ran = int(row["rust_runs"]) > 0
+            except (KeyError, ValueError):
+                continue
+            entry = seen.setdefault(ea, {"compared_in": "", "calls": 0, "different": 0, "ran": False})
+            entry["ran"] = entry["ran"] or ran
+            if calls:
+                entry.update(compared_in=os.path.basename(run), calls=calls, different=different)
+    return seen
+
+
 def main():
     inventory = json.load(open(os.path.join(HERE, "out", "inventory.json")))
     funcs = [f for f in inventory if is_renderer_function(f["name"])]
@@ -54,6 +82,7 @@ def main():
                 if line.startswith("frame test"):
                     frame_lines.append(line.strip()[:160])
 
+    seen = history()
     classes = defaultdict(lambda: {"functions": 0, "bytes": 0, "ported": 0, "ported_bytes": 0, "clean": 0, "different": 0, "changed": 0})
     rows = []
     for f in funcs:
@@ -96,6 +125,16 @@ def main():
            "| Compared call by call with 0 differences | %d | |" % total("clean"),
            "| Compared with differences | %d | |" % total("different"),
            "| Changed in memory by another mod | %d | |" % total("changed"), "",
+           "## All runs together", "",
+           "%d runs have a report. A port can change after its last comparison; these numbers do not show that." % len(all_runs()), "",
+           "| | functions |", "| --- | ---: |",
+           "| Compared call by call, 0 differences in the newest comparison | %d |" % sum(
+               1 for ea in ported if seen.get(ea, {}).get("calls") and not seen[ea]["different"]),
+           "| Compared, with differences in the newest comparison | %d |" % sum(
+               1 for ea in ported if seen.get(ea, {}).get("calls") and seen[ea]["different"]),
+           "| Ran as Rust in the game, not compared | %d |" % sum(
+               1 for ea in ported if seen.get(ea, {}).get("ran") and not seen[ea]["calls"]),
+           "| Did not run in a run | %d |" % sum(1 for ea in ported if not seen.get(ea, {}).get("ran") and not seen.get(ea, {}).get("calls")), "",
            "## By class", "",
            "| class | functions | ported | clean | different | changed by a mod |", "| --- | ---: | ---: | ---: | ---: | ---: |"]
     for name, c in sorted(classes.items(), key=lambda kv: -kv[1]["bytes"]):
@@ -106,6 +145,10 @@ def main():
     for name, ea, state, row in rows:
         out.append("| %s | 0x%x | %s | %s | %s | %s | %s |" % (
             name, ea, state, row.get("shadow_calls", ""), row.get("mismatches", ""), row.get("skipped", ""), row.get("rust_runs", "")))
+    never = [(name, ea) for name, ea, _, _ in rows if not seen.get(ea, {}).get("ran") and not seen.get(ea, {}).get("calls")]
+    only_ran = [(name, ea) for name, ea, _, _ in rows if seen.get(ea, {}).get("ran") and not seen[ea]["calls"]]
+    out += ["", "## Ports that did not run in a run", ""] + ["- %s 0x%x" % item for item in never]
+    out += ["", "## Ports that ran as Rust and were not compared", ""] + ["- %s 0x%x" % item for item in only_ran]
     if frame_lines:
         out += ["", "## Frame tests of the last run", ""] + ["- " + line for line in frame_lines]
     if changed:
