@@ -90,6 +90,9 @@ pub mod tag {
     /// then the strip lengths (u16, padded to 4 bytes), the vertices, the indexes. See
     /// `geometry_stream`.
     pub const GEOMETRY: u32 = 18;
+    /// The material of a shape as facts: the handle (a hash of the words), then the words.
+    /// See `material_stream`.
+    pub const MATERIAL: u32 = 19;
 }
 
 // ---- the ring in shared memory
@@ -368,6 +371,10 @@ struct State {
     /// The buffers and textures whose content changed while the file holds: their content
     /// goes into the file once, when frames are asked for.
     tee_dirty: HashSet<u32>,
+    /// The geometry and material records that came while the file held: the plugin sends
+    /// them again at the next frames.
+    tee_dirty_geometry: HashSet<u32>,
+    tee_dirty_material: HashSet<u32>,
     tee_only: bool,
     /// The words of the header record of a direct stream, for the file.
     header: [u32; 3],
@@ -451,6 +458,7 @@ unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
     #[cfg(not(test))]
     crate::own_host::snapshot();
     crate::geometry_stream::reset();
+    crate::material_stream::reset();
     if let Some(s) = state() {
         s.tee_only = false;
         if s.tee_hold {
@@ -490,6 +498,12 @@ pub unsafe fn tee_frames(frames: u32) -> bool {
     }
     #[cfg(test)]
     drop(dirty);
+    // The geometry and material records of the hold: forgotten, so that the next draw of
+    // each sends it again, into the frames.
+    let geometry: Vec<u32> = state().map(|s| s.tee_dirty_geometry.drain().collect()).unwrap_or_default();
+    crate::geometry_stream::forget(&geometry);
+    let material: Vec<u32> = state().map(|s| s.tee_dirty_material.drain().collect()).unwrap_or_default();
+    crate::material_stream::forget(&material);
     true
 }
 
@@ -499,6 +513,8 @@ pub unsafe fn tee_end() {
     if let Some(s) = state() {
         s.tee_hold = false;
         s.tee_dirty.clear();
+        s.tee_dirty_geometry.clear();
+        s.tee_dirty_material.clear();
         end_tee(s);
     }
 }
@@ -574,6 +590,8 @@ unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
         tee: None,
         tee_hold: false,
         tee_dirty: HashSet::new(),
+        tee_dirty_geometry: HashSet::new(),
+        tee_dirty_material: HashSet::new(),
         tee_only: false,
         header: [0; 3],
         geometry: HashSet::new(),
@@ -628,6 +646,7 @@ pub unsafe fn stop() {
     }
     crate::log!("threads: {}", crate::sync::census_text().replace('\n', "; "));
     crate::log!("{}", crate::geometry_stream::report());
+    crate::log!("{}", crate::material_stream::report());
     crate::log!(
         "capture: end, {} frames, {} records, {} bytes, {:.3} ms of the game thread for each frame{}",
         s.frames_done,
@@ -704,9 +723,22 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
     let start = ticks();
     let length: usize = parts.iter().map(|p| p.len()).sum();
     let hold = s.tee_hold;
-    if hold && s.tee.as_ref().is_some_and(|tee| tee.1 == 0) && matches!(tag, tag::BUFFER_DATA | tag::TEXTURE_UPDATE) && parts[0].len() >= 4 {
+    // A record of a resource while the file holds: its handle is the first word. The record
+    // of the end of a frame has no parts.
+    if hold && s.tee.as_ref().is_some_and(|tee| tee.1 == 0) && parts.first().is_some_and(|p| p.len() >= 4) {
         let handle = u32::from_le_bytes([parts[0][0], parts[0][1], parts[0][2], parts[0][3]]);
-        s.tee_dirty.insert(handle);
+        match tag {
+            tag::BUFFER_DATA | tag::TEXTURE_UPDATE => {
+                s.tee_dirty.insert(handle);
+            }
+            tag::GEOMETRY => {
+                s.tee_dirty_geometry.insert(handle);
+            }
+            tag::MATERIAL => {
+                s.tee_dirty_material.insert(handle);
+            }
+            _ => {}
+        }
     }
     if let Some((out, _)) = s.tee.as_mut().filter(|tee| !hold || tee.1 > 0 || resource_record(tag)) {
         let mut ok = out.write_all(&tag.to_le_bytes()).is_ok() && out.write_all(&(length as u32).to_le_bytes()).is_ok();
@@ -773,7 +805,7 @@ pub unsafe fn frame_event(kind: u32, a: u32, b: u32) {
 }
 
 /// The object packet of the draws that follow.
-pub unsafe fn object(draw: &DrawV1, geometry_handle: u32) {
+pub unsafe fn object(draw: &DrawV1, geometry_handle: u32, material_handle: u32) {
     let _lock = crate::sync::device_lock();
     if !active() {
         return;
@@ -793,15 +825,24 @@ pub unsafe fn object(draw: &DrawV1, geometry_handle: u32) {
             name = core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_bytes();
         }
     }
-    if geometry_handle != 0 {
-        write(tag::OBJECT, &[&words(&[draw.kind, draw.object_class, draw.flags | OBJECT_HAS_GEOMETRY, draw.geometry, geometry_handle]), &name[..name.len().min(96)]]);
+    if geometry_handle != 0 || material_handle != 0 {
+        let flags = draw.flags | if geometry_handle != 0 { OBJECT_HAS_GEOMETRY } else { 0 } | if material_handle != 0 { OBJECT_HAS_MATERIAL } else { 0 };
+        write(tag::OBJECT, &[&words(&[draw.kind, draw.object_class, flags, draw.geometry, geometry_handle, material_handle]), &name[..name.len().min(96)]]);
     } else {
         write(tag::OBJECT, &[&words(&[draw.kind, draw.object_class, draw.flags, draw.geometry]), &name[..name.len().min(96)]]);
     }
 }
 
-/// The flag in the object record that says a fifth word with the geometry handle follows.
+/// The flags in the object record that say two more words follow: the geometry handle and
+/// the material handle (each 0 when its flag is off).
 pub const OBJECT_HAS_GEOMETRY: u32 = 0x100;
+pub const OBJECT_HAS_MATERIAL: u32 = 0x200;
+
+/// A material record. See `tag::MATERIAL`.
+pub unsafe fn material(handle: u32, record: &[u32]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::MATERIAL, &[&words(&[handle]), &words(record)]);
+}
 
 /// A geometry record. See `tag::GEOMETRY`.
 pub unsafe fn geometry(head: &[u32], lengths: &[u8], vertices: &[u8], indexes: &[u8]) {

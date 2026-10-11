@@ -91,8 +91,9 @@ def inventory(path):
             kind, cls, flags = words(body, 0, 3)
             objects[kind] += 1
             classes[cls] += 1
-            # With the flag 0x100 a fifth word, the geometry handle, is before the name.
-            current_object = body[20 if flags & 0x100 else 16:].decode("latin-1", errors="replace")
+            # With the flags 0x100 or 0x200 two more words (the geometry and material
+            # handles) are before the name.
+            current_object = body[24 if flags & 0x300 else 16:].decode("latin-1", errors="replace")
         elif tag == 1:
             textures += 1
             texture_bytes += length

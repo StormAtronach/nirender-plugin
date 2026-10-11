@@ -54,6 +54,13 @@ pub unsafe fn reset() {
     versions().clear();
 }
 
+/// Forgets these geometries: the next draw of each sends it again.
+pub unsafe fn forget(handles: &[u32]) {
+    for handle in handles {
+        versions().remove(handle);
+    }
+}
+
 /// One line for the log: the records and the bytes that were sent.
 pub unsafe fn report() -> String {
     let (records, bytes) = (*core::ptr::addr_of!(RECORDS), *core::ptr::addr_of!(BYTES));

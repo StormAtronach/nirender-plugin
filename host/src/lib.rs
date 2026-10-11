@@ -432,10 +432,15 @@ mod tag {
     pub const EXTENSION: u32 = 16;
     pub const MARK: u32 = 17;
     pub const GEOMETRY: u32 = 18;
+    pub const MATERIAL: u32 = 19;
 }
 
-/// The flag in an object record that says a fifth word with the geometry handle follows.
+/// The flags in an object record that say two more words follow: the geometry handle and
+/// the material handle.
 const OBJECT_HAS_GEOMETRY: u32 = 0x100;
+const OBJECT_HAS_MATERIAL: u32 = 0x200;
+
+pub mod material;
 
 /// The geometry of a shape from a `GEOMETRY` record: resident buffers, keyed by the
 /// geometry data of the game. See `geometry_stream` of the plugin.
@@ -1006,6 +1011,16 @@ struct Counts {
     geometry_fallbacks: u32,
     geometry_bad: u32,
     geometry_mismatches: u32,
+    /// The material records; the draws with a material; those whose material the model
+    /// does not make (projected lights or shadows); the draws that differ from their
+    /// derived state, in all and by part (`material::PARTS`).
+    material_records: u32,
+    material_draws: u32,
+    material_unmodelled: u32,
+    material_different: u32,
+    material_parts: [u32; 12],
+    /// The draws that differ, by the class of their object.
+    material_classes: HashMap<u32, u32>,
     screen_draws: u32,
     screen_draws_lost: u32,
     target_copies: u32,
@@ -1107,6 +1122,10 @@ struct Renderer {
     buffers: HashMap<u32, BufferData>,
     /// The geometry records, by the geometry data of the game.
     geometries: HashMap<u32, Geometry>,
+    /// The material records by handle, and the states derived from them by (handle, texture
+    /// sets of the geometry).
+    materials: HashMap<u32, material::Material>,
+    derived: HashMap<(u32, u32), Rc<material::Derived>>,
     defaults: wgpu::Buffer,
     /// The indexes of a triangle fan as a triangle list.
     fan_indexes: wgpu::Buffer,
@@ -1299,6 +1318,8 @@ impl Renderer {
             sampler_groups: HashMap::new(),
             buffers: HashMap::new(),
             geometries: HashMap::new(),
+            materials: HashMap::new(),
+            derived: HashMap::new(),
             defaults,
             fan_indexes,
             screen_pipelines: [None, None],
@@ -1802,6 +1823,11 @@ struct Stream {
     state: Vec<u8>,
     /// The geometry handle of the object of the draws that follow, or 0.
     geometry: u32,
+    /// The material handle of the object of the draws that follow, or 0.
+    material: u32,
+    /// The number of the pass of the draw in progress: later passes of one geometry count
+    /// up from the first draw of it.
+    pass: u32,
 }
 
 impl Stream {
@@ -2034,6 +2060,8 @@ impl Player {
                 sky: None,
                 state: Vec::new(),
                 geometry: 0,
+                material: 0,
+                pass: 0,
             },
             encoder: None,
             pass: None,
@@ -2208,6 +2236,77 @@ impl Player {
         self.encoder.is_some()
     }
 
+    /// Compares the state derived from the material of the object with the state packet of
+    /// the draw in progress, and counts the differences. See `material`.
+    fn compare_material(renderer: &mut Renderer, stream: &Stream, fvf: u32, fill: u32, pass: usize) {
+        let handle = stream.material;
+        let sets = (fvf >> 8) & 0xF;
+        let derived = match renderer.derived.get(&(handle, sets)) {
+            Some(d) => d.clone(),
+            None => {
+                let Some(m) = renderer.materials.get(&handle) else { return };
+                let d = Rc::new(material::derive(m, sets));
+                renderer.derived.insert((handle, sets), d.clone());
+                d
+            }
+        };
+        renderer.counts.material_draws += 1;
+        if !derived.modelled {
+            renderer.counts.material_unmodelled += 1;
+            return;
+        }
+        let s = &stream.state;
+        let mut stages: Vec<([u32; 3], [u32; 3], u32)> = Vec::new();
+        for i in 0..8 {
+            let at = state::STAGES + i * state::STAGE_SIZE;
+            let op = known(word(s, at), 1);
+            if op == 1 {
+                break;
+            }
+            let v = |k: usize| word(s, at + k * 4);
+            stages.push(([op, known(v(1), 2), known(v(2), 1)], [known(v(3), 2), known(v(4), 2), known(v(5), 1)], known(v(9), i as u32) & 0xFFFF));
+        }
+        let textures: Vec<u32> = (0..8).map(|i| word(s, state::TEXTURES + i * 4)).collect();
+        let st: [u32; 8] = core::array::from_fn(|i| known(word(s, state::STENCIL + i * 4), 0));
+        let packet = material::Packet {
+            stages: &stages,
+            textures: &textures,
+            blend: [(known(word(s, state::BLEND_ENABLE), 0) != 0) as u32, known(word(s, state::SOURCE_BLEND), 2), known(word(s, state::DESTINATION_BLEND), 1)],
+            alpha_test: [(known(word(s, state::ALPHA_TEST_ENABLE), 0) != 0) as u32, known(word(s, state::ALPHA_FUNCTION), 8), known(word(s, state::ALPHA_REFERENCE), 0)],
+            depth: [(known(word(s, state::DEPTH_ENABLE), 1) != 0) as u32, (known(word(s, state::DEPTH_WRITE), 1) != 0) as u32, known(word(s, state::DEPTH_FUNCTION), 4)],
+            cull: known(word(s, state::CULL_MODE), 3),
+            fill,
+            stencil: [st[0], st[4], st[5], st[6], st[1], st[2], st[3]],
+            lighting: (known(word(s, state::LIGHTING), 1) != 0) as u32,
+            sources: [known(word(s, state::DIFFUSE_SOURCE), 1), known(word(s, state::EMISSIVE_SOURCE), 0)],
+            material: floats(s, state::MATERIAL),
+        };
+        let bits = material::compare(&derived, pass, &packet);
+        if bits != 0 {
+            renderer.counts.material_different += 1;
+            for (i, count) in renderer.counts.material_parts.iter_mut().enumerate() {
+                *count += (bits >> i) & 1;
+            }
+            *renderer.counts.material_classes.entry(stream.object_class).or_insert(0) += 1;
+            // `MGE_XE_MATERIAL_DEBUG=N` prints the first N differences.
+            static LEFT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+            if LEFT.load(std::sync::atomic::Ordering::Relaxed) < 0 {
+                LEFT.store(std::env::var("MGE_XE_MATERIAL_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+            }
+            if LEFT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > 0 {
+                let parts: Vec<&str> = material::PARTS.iter().enumerate().filter(|(i, _)| bits >> i & 1 != 0).map(|(_, n)| *n).collect();
+                println!(
+                    "material difference: class {} pass {} handle {:#x} parts {:?}\n  derived: stages {:?} blend {:?} alpha {:?} depth {:?} cull {} stencil {:?} lighting {} sources {:?}\n  packet:  stages {:?} textures {:?} blend {:?} alpha {:?} depth {:?} cull {} stencil {:?} lighting {} sources {:?}\n  material {:?} flags {:#x} apply {} maps {:?}",
+                    stream.object_class, pass, handle, parts,
+                    derived.passes.get(pass), derived.blends.get(pass), derived.alpha_test, derived.depth, derived.cull, derived.stencil, derived.lighting, derived.sources,
+                    packet.stages, &packet.textures[..packet.stages.len().max(1)], packet.blend, packet.alpha_test, packet.depth, packet.cull, packet.stencil, packet.lighting, packet.sources,
+                    renderer.materials.get(&handle).map(|m| m.material), renderer.materials.get(&handle).map_or(0, |m| m.flags), renderer.materials.get(&handle).map_or(0, |m| m.apply_mode),
+                    renderer.materials.get(&handle).map(|m| m.maps.iter().filter(|x| x.present).map(|x| (x.texture, x.set)).collect::<Vec<_>>())
+                );
+            }
+        }
+    }
+
     /// Prints the counts since the last mark, for one step of a scenario.
     fn mark(&mut self, text: &str) {
         let counts = &self.renderer.counts;
@@ -2266,6 +2365,14 @@ impl Player {
             }
             tag::BUFFER_DATA => self.renderer.buffer_data(data),
             tag::GEOMETRY if data.len() >= 32 => self.renderer.geometry(data),
+            tag::MATERIAL if data.len() >= 4 => {
+                if let Some(parsed) = material::Material::parse(&data[4..]) {
+                    let handle = word(data, 0);
+                    self.renderer.derived.retain(|key, _| key.0 != handle);
+                    self.renderer.materials.insert(handle, parsed);
+                    self.renderer.counts.material_records += 1;
+                }
+            }
             tag::SCENE_BEGIN => {
                 self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
                 self.stream.interior = word(data, 20) & 2 != 0;
@@ -2294,7 +2401,11 @@ impl Player {
             // handle when the flags say so.
             tag::OBJECT if data.len() >= 8 => {
                 self.stream.object_class = word(data, 4);
-                self.stream.geometry = if word(data, 8) & OBJECT_HAS_GEOMETRY != 0 && data.len() >= 20 { word(data, 16) } else { 0 };
+                let flags = word(data, 8);
+                let more = flags & (OBJECT_HAS_GEOMETRY | OBJECT_HAS_MATERIAL) != 0 && data.len() >= 24;
+                self.stream.geometry = if more && flags & OBJECT_HAS_GEOMETRY != 0 { word(data, 16) } else { 0 };
+                self.stream.material = if more && flags & OBJECT_HAS_MATERIAL != 0 { word(data, 20) } else { 0 };
+                self.stream.pass = 0;
             }
             tag::FRAME_END => {
                 self.renderer.counts.frames += 1;
@@ -2864,6 +2975,16 @@ impl Player {
         let stencil_reference = known(word(s, state::STENCIL + 5 * 4), 0);
         // D3DRS_COLORWRITEENABLE is 168.
         let key = PipelineKey { color_write: self.stream.render_states.get(&168).copied().unwrap_or(15) & 15, ..key };
+        // The material record of the object against the state packet of this draw (R2).
+        if self.stream.material != 0 {
+            let later = word(s, 4) & 2 != 0;
+            if later {
+                self.stream.pass += 1;
+            } else {
+                self.stream.pass = 0;
+            }
+            Self::compare_material(renderer, &self.stream, key.fvf, key.fill, self.stream.pass as usize);
+        }
         let (vertex_handle, index_handle) = (word(s, state::VERTEX_BUFFER), word(s, state::INDEX_BUFFER));
         // The buffers of the geometry record of the object, when it has one that fits the
         // draw; else the buffers of the device. The two are compared once for each record.
@@ -2990,6 +3111,18 @@ impl Player {
             c.geometry_bad,
             c.geometry_mismatches
         );
+        let parts: Vec<String> = material::PARTS.iter().zip(c.material_parts).filter(|(_, n)| *n != 0).map(|(name, n)| format!("{name} {n}")).collect();
+        println!(
+            "material: {} records, {} draws with one, {} not modelled, {} draws that differ from the derived state ({})",
+            c.material_records,
+            c.material_draws,
+            c.material_unmodelled,
+            c.material_different,
+            parts.join(", ")
+        );
+        let mut classes: Vec<(u32, u32)> = c.material_classes.iter().map(|(k, v)| (*k, *v)).collect();
+        classes.sort();
+        println!("material differences by class: {classes:?}");
         println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);
         println!(
             "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}; draws with a made or moved texture coordinate {}; the most lights of a draw {}",
