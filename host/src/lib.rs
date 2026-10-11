@@ -1138,6 +1138,8 @@ struct Counts {
     shape_draws: u32,
     shape_missing: u32,
     shape_skipped: u32,
+    /// The opaque draws that were sorted.
+    sorted_draws: u32,
     /// The draws that differ, by the class of their object.
     material_classes: HashMap<u32, u32>,
     screen_draws: u32,
@@ -1207,6 +1209,12 @@ struct Renderer {
     /// of draws of the frame so far. A draw has one slot in a buffer.
     draw_buffers: Vec<(Rc<wgpu::Buffer>, Rc<wgpu::BindGroup>)>,
     draw_slots: usize,
+    /// The data of the draws of the frame, one block for each buffer of slots, written to
+    /// the GPU once before the submit (`flush_draw_slots`).
+    draw_staging: Vec<Vec<u8>>,
+    /// The opaque draws of a run are sorted by pipeline and textures. `MGE_XE_SORT=0`
+    /// keeps the order of the game, for a comparison.
+    sort_draws: bool,
     /// The lights of all draws of the frame, and the number of them that the buffer holds.
     light_buffer: wgpu::Buffer,
     light_capacity: usize,
@@ -1421,6 +1429,8 @@ impl Renderer {
             draw_layout,
             draw_buffers: Vec::new(),
             draw_slots: 0,
+            draw_staging: Vec::new(),
+            sort_draws: std::env::var("MGE_XE_SORT").map_or(true, |v| v != "0"),
             light_capacity: LIGHTS_AT_FIRST,
             texture_layout,
             sampler_layout,
@@ -1493,9 +1503,34 @@ impl Renderer {
             let group = self.slot_group(&buffer);
             self.draw_buffers.push((Rc::new(buffer), Rc::new(group)));
         }
-        let (buffer, group) = &self.draw_buffers[index];
-        self.queue.write_buffer(buffer, (slot * SLOT_SIZE) as u64, bytemuck::bytes_of(data));
-        (group.clone(), (slot * SLOT_SIZE) as u32)
+        let (_, group) = &self.draw_buffers[index];
+        if index == self.draw_staging.len() {
+            self.draw_staging.push(Vec::with_capacity(SLOTS_IN_BUFFER * SLOT_SIZE));
+        }
+        let staging = &mut self.draw_staging[index];
+        let at = slot * SLOT_SIZE;
+        if staging.len() < at + SLOT_SIZE {
+            staging.resize(at + SLOT_SIZE, 0);
+        }
+        staging[at..at + core::mem::size_of::<DrawData>()].copy_from_slice(bytemuck::bytes_of(data));
+        (group.clone(), at as u32)
+    }
+
+    /// Writes the data of the draws since the last write to the GPU: one write for each
+    /// buffer of slots. Before a submit.
+    fn flush_draw_slots(&mut self) {
+        for (index, staging) in self.draw_staging.iter_mut().enumerate() {
+            if !staging.is_empty() {
+                self.queue.write_buffer(&self.draw_buffers[index].0, 0, staging);
+            }
+        }
+        // The slots go on after the ones written: a later write of the same buffer in the
+        // frame must not undo the earlier.
+        for staging in &mut self.draw_staging {
+            let kept = staging.len();
+            staging.clear();
+            staging.resize(kept, 0);
+        }
     }
 
     /// Makes a texture from a texture record.
@@ -2306,6 +2341,7 @@ impl Player {
         self.stream.back_buffer = true;
         self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
         self.renderer.draw_slots = 0;
+        self.renderer.draw_staging.clear();
         self.color = Some(Rc::new(color.create_view(&Default::default())));
         self.back_buffer = Some(color.clone());
         self.depth = Some(depth);
@@ -2322,6 +2358,7 @@ impl Player {
         let in_frame = self.drawing();
         drop(self.pass.take());
         if let Some(encoder) = self.encoder.take() {
+            self.renderer.flush_draw_slots();
             self.renderer.queue.submit([encoder.finish()]);
         }
         let result = between(self);
@@ -2536,6 +2573,7 @@ impl Player {
         self.depth = None;
         if let Some(mut encoder) = self.encoder.take() {
             before_submit(&mut encoder);
+            self.renderer.flush_draw_slots();
             self.renderer.queue.submit([encoder.finish()]);
         }
         self.renderer.counts.times[TIME_END] += clock.elapsed();
@@ -2792,7 +2830,45 @@ impl Player {
         self.renderer.counts.times[TIME_ITEMS] += clock.elapsed().saturating_sub(inside_after - inside_before);
     }
 
+    /// Sorts the opaque draws of each run of draws by pipeline and textures, and keeps the
+    /// other draws of the run after them in their order. An opaque draw writes depth with
+    /// the test on, does not blend, has no stencil and writes all colours: its order does
+    /// not change the picture, but for the ties of the depth test.
+    fn sort_items(items: &mut [Item], counts: &mut Counts) {
+        let opaque = |draw: &Draw| draw.key.blend[0] == 0 && draw.key.depth[0] != 0 && draw.key.depth[1] != 0 && draw.key.stencil[0] == 0 && draw.key.color_write == 15;
+        let order = |draw: &Draw| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            draw.key.hash(&mut hasher);
+            (hasher.finish(), Rc::as_ptr(&draw.textures) as usize, Rc::as_ptr(&draw.vertices) as usize)
+        };
+        let mut start = 0;
+        while start < items.len() {
+            if !matches!(items[start], Item::Draw(_)) {
+                start += 1;
+                continue;
+            }
+            let mut end = start;
+            while end < items.len() && matches!(items[end], Item::Draw(_)) {
+                end += 1;
+            }
+            let run = &mut items[start..end];
+            let mut draws: Vec<Rc<Draw>> = run.iter().map(|item| if let Item::Draw(d) = item { d.clone() } else { unreachable!() }).collect();
+            let (mut first, rest): (Vec<Rc<Draw>>, Vec<Rc<Draw>>) = draws.drain(..).partition(|d| opaque(d));
+            counts.sorted_draws += first.len() as u32;
+            first.sort_by_cached_key(|d| order(d));
+            for (item, draw) in run.iter_mut().zip(first.into_iter().chain(rest)) {
+                *item = Item::Draw(draw);
+            }
+            start = end;
+        }
+    }
+
     fn run_items_inner(&mut self, items: Vec<Item>) {
+        let mut items = items;
+        if self.renderer.sort_draws {
+            Self::sort_items(&mut items, &mut self.renderer.counts);
+        }
         self.renderer.upload_lights(&self.frame_lights);
         // The resources of the extension for the frame.
         let (values, texture) = self.parameters.as_ref().map_or(([[0.0f32; 4]; 32], None), |p| (p.values, p.texture.clone()));
@@ -3338,6 +3414,7 @@ impl Player {
             "shapes: {} records, {} draws from them, {} without a geometry or a material, {} draws of the device skipped",
             c.shape_records, c.shape_draws, c.shape_missing, c.shape_skipped
         );
+        println!("sorted draws {}", c.sorted_draws);
         println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);
         println!(
             "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}; draws with a made or moved texture coordinate {}; the most lights of a draw {}",
