@@ -61,6 +61,12 @@ pub trait Extension {
     /// extension drew with a projection of its own.
     fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>) -> bool;
 
+    /// The renderer calls this one time in a frame, at the end of the world scene of the
+    /// game: its draws without a sort are in the picture and in the depth target, and the
+    /// draws with a sort, the first-person view and the user interface are not. The pass and
+    /// the matrices are those of the game. MGE XE draws its grass here.
+    fn after_world(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>) {}
+
     /// Data that the part of this program in the game process put into the stream, with the
     /// number that the two parts agree on. See `nirender_stream_extension` of the plugin.
     fn data(&mut self, _id: u32, _bytes: &[u8]) {}
@@ -82,6 +88,7 @@ mod tag {
     pub const TEXTURE: u32 = 1;
     pub const BUFFER_DATA: u32 = 2;
     pub const SCENE_BEGIN: u32 = 3;
+    pub const SCENE_END: u32 = 4;
     pub const FRAME_EVENT: u32 = 5;
     pub const DRAW_STATE: u32 = 7;
     pub const COMMAND: u32 = 8;
@@ -1395,6 +1402,14 @@ struct Player {
     /// frame.
     extension: Option<Box<dyn Extension>>,
     world_started: bool,
+    /// The extension had its call at the end of the world scene in this frame.
+    world_ended: bool,
+    /// The kind of the scene in progress, from its packet: 1 is the world.
+    scene_kind: u32,
+    /// The sun and the ambient light of the draw that started the world: the direction, the
+    /// colour and the ambient colour of the sun, and the ambient light of the scene.
+    world_sun: Option<([f32; 3], [f32; 3], [f32; 3])>,
+    world_ambient: [f32; 3],
     /// The texture that the game draws into now. `None` for the back buffer.
     target: Option<u32>,
     /// The game named a rendered texture as its target.
@@ -1430,6 +1445,10 @@ impl Player {
             shots: Vec::new(),
             extension: None,
             world_started: false,
+            world_ended: false,
+            scene_kind: 0,
+            world_sun: None,
+            world_ambient: [0.0; 3],
             target: None,
             wants_texture: false,
             size: (0, 0),
@@ -1491,6 +1510,7 @@ impl Player {
         self.frame_size = (color.width(), color.height());
         self.target = None;
         self.world_started = false;
+        self.world_ended = false;
         self.stream.fog_range = None;
         self.stream.back_buffer = true;
         self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
@@ -1599,6 +1619,15 @@ impl Player {
             tag::SCENE_BEGIN => {
                 self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
                 self.stream.interior = word(data, 20) & 2 != 0;
+                self.scene_kind = word(data, 4);
+            }
+            tag::SCENE_END => {
+                // The end of the world scene of the game, in the back buffer.
+                if self.scene_kind == 1 && self.world_started && !self.world_ended && self.target.is_none() && self.drawing() {
+                    self.world_ended = true;
+                    self.end_world();
+                }
+                self.scene_kind = 0;
             }
             tag::FRAME_EVENT => {
                 if word(data, 0) == EVENT_SET_TARGET {
@@ -1767,6 +1796,33 @@ impl Player {
         renderer.counts.screen_draws += 1;
     }
 
+    /// Gives the extension its call at the end of the world scene. See `Extension::after_world`.
+    fn end_world(&mut self) {
+        let Some(mut extension) = self.extension.take() else { return };
+        let state_of = |index: u32| self.stream.render_states.get(&index).copied();
+        let scene = SceneView {
+            device: &self.renderer.device,
+            queue: &self.renderer.queue,
+            target_format: self.renderer.target_format,
+            depth_format: DEPTH_FORMAT,
+            target_size: self.target_size,
+            view: self.stream.view,
+            projection: self.stream.projection,
+            interior: self.stream.interior,
+            fog_color: color(state_of(34).unwrap_or(0)),
+            fog_start: f32::from_bits(state_of(36).unwrap_or(0)),
+            fog_end: f32::from_bits(state_of(37).unwrap_or(0)),
+            sun_direction: self.world_sun.map(|sun| sun.0),
+            sun_color: self.world_sun.map_or([0.0; 3], |sun| sun.1),
+            sun_ambient: self.world_sun.map_or([0.0; 3], |sun| sun.2),
+            ambient: self.world_ambient,
+        };
+        if let Some(pass) = self.pass.as_mut() {
+            extension.after_world(&scene, pass);
+        }
+        self.extension = Some(extension);
+    }
+
     /// Gives the extension its call of the frame. See `Extension::before_world`.
     fn start_world(&mut self) {
         let Some(mut extension) = self.extension.take() else { return };
@@ -1786,6 +1842,8 @@ impl Player {
             }
         }
         let ambient = color(known(word(s, state::AMBIENT), 0));
+        self.world_sun = sun;
+        self.world_ambient = [ambient[0], ambient[1], ambient[2]];
         let scene = SceneView {
             device: &self.renderer.device,
             queue: &self.renderer.queue,
