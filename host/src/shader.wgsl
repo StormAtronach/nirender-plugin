@@ -53,10 +53,10 @@ struct Draw {
     // diffuse source, emissive source, alpha test function (0 is off), alpha reference.
     more: vec4u,
     // The number of lights, the number of stages, the ambient source. w: bit 1, the light is
-    // made for each pixel as MGE XE makes it (see `pixel_light`); bit 2, the fog makes the
-    // colour darker and adds no fog colour (a draw that adds to the picture); bit 4, the
-    // draw is the sky dome and the extension gives its shape and its colour; bit 8, the
-    // extension gives the colour and the draw keeps its alpha (the shadow of a moon).
+    // shaded by the functions of the extension (`extension_shade`, `extension_finish`);
+    // bit 4, the draw is the sky dome and the extension gives its shape and its colour; bit
+    // 8, the extension gives the colour and the draw keeps its alpha (the shadow of a moon);
+    // bit 2 and the bits from 16 are for the extension.
     counts: vec4u,
     lights: array<Light, 8>,
     stages: array<Stage, 6>,
@@ -347,56 +347,6 @@ fn bump_light(index: u32, bump_texel: vec4f, texel: vec4f) -> vec4f {
     return texel;
 }
 
-// The light of a pixel, as the shader of MGE XE for its light for each pixel makes it
-// (`PerPixelPS` of `XE FixedFuncEmu.fx`). The program packs the lights of the draw for it:
-// a directional light is the sun; for a point light `ambient.x` is a part that does not
-// depend on the normal, `attenuation.z` and `attenuation.x` are the two numbers of the
-// falloff, and `cone.x` is 1 over the distance where the light ends (0: no end).
-fn pixel_light(in: VertexOut) -> vec4f {
-    if draw.flags.x == 0u {
-        return in.vertex_color;
-    }
-    var normal = vec3f(0.0, 0.0, 1.0);
-    if draw.flags.y != 0u {
-        normal = normalize(in.world_normal + vec3f(0.0, 0.0, 1e-20));
-    }
-    var d = vec3f(0.0);
-    var a = draw.scene_ambient.rgb;
-    for (var i = 0u; i < draw.counts.x; i++) {
-        let light = draw.lights[i];
-        if light.position.w == 3.0 {
-            d += light.diffuse.rgb * clamp(dot(normal, -light.direction.xyz), 0.0, 1.0);
-            a += light.ambient.rgb;
-        } else {
-            let to_light = light.position.xyz - in.world_position;
-            let distance2 = dot(to_light, to_light);
-            let distance = sqrt(distance2);
-            let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
-            var strength = 1.0 / max(light.attenuation.z * distance2 + light.attenuation.x, 0.0001);
-            // The light goes to zero over the last quarter of its distance.
-            var fade = clamp(4.0 * distance * light.cone.x - 3.0, 0.0, 1.0);
-            fade = 1.0 - fade * fade;
-            strength *= fade * fade;
-            d += (lambert + light.ambient.x) * strength * light.diffuse.rgb;
-        }
-    }
-    // The three ways of a material with a vertex colour.
-    if draw.more.x == 1u {
-        return vec4f(in.vertex_color.rgb * (d + a) + draw.material_emissive.rgb, in.vertex_color.a);
-    }
-    if draw.more.y == 1u {
-        return vec4f(draw.material_diffuse.rgb * d + draw.material_ambient.rgb * a + in.vertex_color.rgb, draw.material_diffuse.a);
-    }
-    return vec4f(draw.material_diffuse.rgb * d + draw.material_ambient.rgb * a + draw.material_emissive.rgb, draw.material_diffuse.a);
-}
-
-// The curve of MGE XE for a colour with light for each pixel: 0 stays 0, 1 becomes 0.84,
-// and 2.2 becomes 1.
-fn tonemap(color: vec3f) -> vec3f {
-    let c = clamp(color, vec3f(0.0), vec3f(2.2));
-    return (((0.0548303 * c - 0.189786) * c - 0.154732) * c + 1.12969) * c;
-}
-
 @fragment
 fn fs(in: VertexOut) -> @location(0) vec4f {
     // A texture read must not be in a branch, so each stage reads its texture first.
@@ -415,10 +365,10 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     if any(draw.clip_plane != vec4f(0.0)) && dot(in.world_position, draw.clip_plane.xyz) + draw.clip_plane.w < 0.0 {
         discard;
     }
-    let per_pixel = (draw.counts.w & 1u) != 0u;
+    let shaded = (draw.counts.w & 1u) != 0u;
     var diffuse = in.color;
-    if per_pixel {
-        diffuse = pixel_light(in);
+    if shaded {
+        diffuse = extension_shade(in);
     }
     var current = diffuse;
     for (var i = 0u; i < draw.counts.y; i++) {
@@ -432,9 +382,9 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
                 argument(stage.alpha.z, diffuse, current, texel), vec4f(0.0), diffuse, current, texel);
         }
         current = vec4f(color.rgb, alpha.a);
-        // The fixed-function pipeline keeps a colour between 0 and 1. The light for each
-        // pixel has no such limit before its curve.
-        if !per_pixel {
+        // The fixed-function pipeline keeps a colour between 0 and 1. A draw that the
+        // extension shades has no such limit.
+        if !shaded {
             current = clamp(current, vec4f(0.0), vec4f(1.0));
         }
     }
@@ -446,12 +396,8 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     if draw.fog.z != 0.0 {
         clear = clamp((draw.fog.y - in.fog) / max(draw.fog.y - draw.fog.x, 0.0001), 0.0, 1.0);
     }
-    if per_pixel {
-        let lit = tonemap(current.rgb);
-        if (draw.counts.w & 2u) != 0u {
-            return vec4f(lit * clear, current.a);
-        }
-        return vec4f(mix(draw.fog_color.rgb, lit, clear), current.a);
+    if shaded {
+        return extension_finish(current.rgb, current.a, clear);
     }
     if (draw.counts.w & 8u) != 0u {
         return vec4f(extension_sky_color(normalize(in.world_position), in.clip.xy), current.a);

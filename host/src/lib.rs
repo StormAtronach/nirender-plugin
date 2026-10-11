@@ -57,9 +57,10 @@ pub struct FrameParameters {
     /// the game, in place of those of the game: so that they go into the fog as what the
     /// extension draws does. `None`: the fog of the game.
     pub fog_range: Option<(f32, f32)>,
-    /// `Some` when the draws of the world get their light for each pixel, as the shader
-    /// of MGE XE makes it, and not for each vertex as the game does.
-    pub per_pixel: Option<PerPixel>,
+    /// True when the extension shades the draws of the world: the renderer calls
+    /// `Extension::shade` for each of them, and its shader uses the functions of
+    /// `Extension::draw_shader` for a draw that the call marks.
+    pub shade: bool,
     /// The values for the sky functions of `Extension::sky_shader`, or `None` for the sky
     /// of the game as it is. With values, the sky dome of the game (a sky draw without a
     /// texture) gets its shape and its colour from the functions, and the shadow of a moon
@@ -254,15 +255,13 @@ impl Replay for Replayer<'_> {
     }
 }
 
-/// The light for each pixel of MGE XE, for the draws of the world of a frame.
-#[derive(Clone, Copy)]
-pub struct PerPixel {
-    /// The numbers that the light of the sun and the ambient light are multiplied with: the
-    /// settings of MGE XE for the weather.
-    pub sun: f32,
-    pub ambient: f32,
-    /// A point light ends at this number times its radius. 0: a light has no end.
-    pub fade: f32,
+/// The facts of a draw that are not in its uniform, for `Extension::shade`.
+pub struct DrawFacts {
+    /// The alpha blend of the draw: on, and the two factors as Direct3D 8 numbers them
+    /// (D3DBLEND_ONE is 2).
+    pub blend_enable: bool,
+    pub source_blend: u32,
+    pub destination_blend: u32,
 }
 
 /// A program that draws more than the game does: for example the distant land of MGE XE.
@@ -290,6 +289,30 @@ pub trait Extension {
     fn sky_shader(&self) -> Option<String> {
         None
     }
+
+    /// WGSL source with the two draw functions of the extension, or `None`. The renderer
+    /// puts the source at the end of its shader, after the sky functions. For a draw with
+    /// bit 1 of `counts.w` set (see `shade`):
+    ///
+    /// - `fn extension_shade(in: VertexOut) -> vec4f`: the colour of the pixel before the
+    ///   texture stages, in place of the colour that the vertex stage made. `in` has the
+    ///   position and the normal in the space of the lights (`world_position`,
+    ///   `world_normal`) and the colour of the vertex.
+    /// - `fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f`: the pixel
+    ///   after the stages and the alpha test; `clear` is 1 with no fog and 0 in full fog.
+    ///
+    /// The functions read the uniform of the draw as `draw` (see `DrawData`); the colour of
+    /// such a draw is not kept between 0 and 1 after the stages.
+    fn draw_shader(&self) -> Option<String> {
+        None
+    }
+
+    /// Changes the uniform of a world draw before the renderer puts the draw into the pass:
+    /// the lights, the ambient light, the fog. Called for each draw of the world of the
+    /// game into the back buffer with a perspective projection, when `FrameParameters::shade`
+    /// is true. The extension sets bit 1 of `counts[3]` for a draw that its shader functions
+    /// shade; bit 2 and the bits from 16 are its own.
+    fn shade(&mut self, _draw: &mut DrawData, _facts: &DrawFacts) {}
 
     /// The answers of the extension for a frame. The renderer asks at the first draw of the
     /// world scene of the game into the back buffer: before the sky, so the matrices of the
@@ -452,49 +475,83 @@ mod state {
 
 // ---- the data of a draw for the shader
 
+/// A light of a draw, as the shader sees it. From the state packet of the draw: the first
+/// 8 lights of the draw, as Direct3D 8 gives them.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct LightData {
-    diffuse: [f32; 4],
-    ambient: [f32; 4],
-    position: [f32; 4],
-    direction: [f32; 4],
-    attenuation: [f32; 4],
-    cone: [f32; 4],
+pub struct LightData {
+    pub diffuse: [f32; 4],
+    pub ambient: [f32; 4],
+    /// The position, relative to the origin of the scene when the draw is; `w` is the type
+    /// of the light: 1 a point light, 2 a spot light, 3 a directional light.
+    pub position: [f32; 4],
+    /// The direction (not of length 1); `w` is the range.
+    pub direction: [f32; 4],
+    /// The three numbers of the falloff; `w` is the falloff of a spot light.
+    pub attenuation: [f32; 4],
+    /// The cosines of the half angles of a spot light; `z` is the radius of the light of the
+    /// game (from its first specular word; 0 when the light has none).
+    pub cone: [f32; 4],
 }
 
+/// A texture stage of a draw, as the shader sees it.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct StageData {
-    color: [u32; 4],
-    alpha: [u32; 4],
-    coordinate: [u32; 4],
-    bump: [f32; 4],
-    luminance: [f32; 4],
+pub struct StageData {
+    pub color: [u32; 4],
+    pub alpha: [u32; 4],
+    pub coordinate: [u32; 4],
+    pub bump: [f32; 4],
+    pub luminance: [f32; 4],
 }
 
+/// The uniform of a draw: `Draw` in `shader.wgsl`, where each field has its meaning.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct DrawData {
-    world: [[f32; 16]; 4],
-    view: [f32; 16],
-    projection: [f32; 16],
-    material_diffuse: [f32; 4],
-    material_ambient: [f32; 4],
-    material_emissive: [f32; 4],
-    scene_ambient: [f32; 4],
-    fog_color: [f32; 4],
-    fog: [f32; 4],
-    texture_factor: [f32; 4],
-    flags: [u32; 4],
-    more: [u32; 4],
-    counts: [u32; 4],
-    lights: [LightData; 8],
-    stages: [StageData; 6],
-    texture_transforms: [[f32; 16]; 6],
-    pixel: [f32; 4],
-    extension: [[f32; 4]; 8],
-    clip_plane: [f32; 4],
+pub struct DrawData {
+    pub world: [[f32; 16]; 4],
+    pub view: [f32; 16],
+    pub projection: [f32; 16],
+    pub material_diffuse: [f32; 4],
+    pub material_ambient: [f32; 4],
+    pub material_emissive: [f32; 4],
+    pub scene_ambient: [f32; 4],
+    pub fog_color: [f32; 4],
+    /// The start, the end, 1 when the fog is on, 1 when the fog is on the distance from the
+    /// camera and not on the depth.
+    pub fog: [f32; 4],
+    pub texture_factor: [f32; 4],
+    /// Lighting on, the vertex has a normal, the vertex has a colour, the number of weights.
+    pub flags: [u32; 4],
+    /// The diffuse source, the emissive source, the alpha test function (0 is off), the
+    /// alpha reference.
+    pub more: [u32; 4],
+    /// The number of lights, the number of stages, the ambient source, and bits: 1 the
+    /// extension shades the draw, 4 the sky dome, 8 the shadow of a moon; 2 and from 16 are
+    /// the extension's own.
+    pub counts: [u32; 4],
+    pub lights: [LightData; 8],
+    pub stages: [StageData; 6],
+    pub texture_transforms: [[f32; 16]; 6],
+    /// 1 / width and -1 / height of the viewport.
+    pub pixel: [f32; 4],
+    /// The values of `FrameParameters::sky`.
+    pub extension: [[f32; 4]; 8],
+    /// A plane in the space of the world of the draw: a pixel on its negative side is not
+    /// drawn. All 0: no plane.
+    pub clip_plane: [f32; 4],
+}
+
+/// The WGSL of the extension at the end of the shader: its sky functions and its draw
+/// functions, or those that change nothing.
+fn extension_shaders(extension: Option<&dyn Extension>) -> String {
+    let sky = extension.and_then(|extension| extension.sky_shader()).unwrap_or_else(|| {
+        "fn extension_sky_position(position: vec3f) -> vec3f { return position; }\nfn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f { return vec3f(0.0); }\n".to_string()
+    });
+    let draw = extension.and_then(|extension| extension.draw_shader()).unwrap_or_else(|| {
+        "fn extension_shade(in: VertexOut) -> vec4f { return in.vertex_color; }\nfn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f { return vec4f(mix(draw.fog_color.rgb, color, clear), alpha); }\n".to_string()
+    });
+    format!("{sky}\n{draw}\n")
 }
 
 /// A D3DCOLOR as red, green, blue, alpha.
@@ -916,7 +973,7 @@ impl Renderer {
         backends: wgpu::Backends,
         window: Option<std::sync::Arc<winit::window::Window>>,
         mut target_format: wgpu::TextureFormat,
-        sky_shader: Option<String>,
+        extension_shader: String,
     ) -> (Renderer, Option<wgpu::Surface<'static>>) {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = backends;
@@ -956,11 +1013,7 @@ impl Renderer {
         .expect("no device");
 
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
-        // The sky functions of an extension, or the two that change nothing.
-        let sky_shader = sky_shader.unwrap_or_else(|| {
-            "fn extension_sky_position(position: vec3f) -> vec3f { return position; }\nfn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f { return vec3f(0.0); }\n".to_string()
-        });
-        let source = format!("{}\n{sky_shader}", include_str!("shader.wgsl"));
+        let source = format!("{}\n{extension_shader}", include_str!("shader.wgsl"));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -1509,8 +1562,6 @@ struct Stream {
     interior: bool,
     /// The fog distances of the extension for the draws of the world, or `None`.
     fog_range: Option<(f32, f32)>,
-    /// The light for each pixel for the draw in progress, or `None`.
-    per_pixel: Option<PerPixel>,
     /// The class of the object of the draws that follow: MGE_LINK_CLASS_* of its packet.
     object_class: u32,
     /// The sky values of the extension for the draw in progress, or `None`.
@@ -1519,93 +1570,6 @@ struct Stream {
 }
 
 impl Stream {
-    /// The data of the shader for the draw of the current state packet.
-    /// Packs the lights of the draw for the light of a pixel, as `buildPplDrawData` and
-    /// `decodeMorrowindPointLight` of MGE XE do (`ffeshader.cpp`).
-    ///
-    /// MGE XE takes at most 8 lights with the sun, the newest first. The lights of the state
-    /// packet are in that order, so these are the last 8 of the packet in their order. The
-    /// game gives a point light in one of four forms of its three falloff numbers, and each
-    /// form has its own sum; one constant is for all lights of the draw, from the last light
-    /// that has one.
-    fn pixel_lights(&self, data: &mut DrawData, per_pixel: PerPixel, relative: Option<[f64; 3]>) {
-        let s = &self.state;
-        let lights = word(s, state::LIGHT_COUNT) as usize;
-        let taken = lights.min(8);
-        let mut shared_constant = 0.33f32;
-        // The z axis of the camera in the space of the lights: MGE XE moves one form of
-        // light 25 units along it.
-        let camera_z = [self.view[2], self.view[6], self.view[10]];
-        // A scene with white ambient light (the sky dome, a menu) has a fixed ambient light
-        // and no sun.
-        let white = word(s, state::AMBIENT) == 0xFFFF_FFFF;
-        for slot in 0..taken {
-            let at = state::SIZE + (lights - taken + slot) * state::LIGHT_SIZE + 4;
-            if at + 104 > s.len() {
-                break;
-            }
-            let diffuse: [f32; 4] = floats(s, at + 4);
-            let ambient: [f32; 4] = floats(s, at + 9 * 4);
-            let mut light = LightData::zeroed();
-            if word(s, at) == 3 {
-                let direction: [f32; 3] = floats(s, at + 16 * 4);
-                let length = (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]).sqrt().max(1e-12);
-                let (sun, amb) = if white { (0.0, 0.0) } else { (per_pixel.sun, per_pixel.ambient) };
-                light.diffuse = [diffuse[0] * sun, diffuse[1] * sun, diffuse[2] * sun, 0.0];
-                light.ambient = [ambient[0] * amb, ambient[1] * amb, ambient[2] * amb, 0.0];
-                light.position = [0.0, 0.0, 0.0, 3.0];
-                light.direction = [direction[0] / length, direction[1] / length, direction[2] / length, 0.0];
-            } else {
-                let mut position: [f32; 3] = floats(s, at + 13 * 4);
-                if let Some(origin) = relative {
-                    for axis in 0..3 {
-                        position[axis] = (position[axis] as f64 - origin[axis]) as f32;
-                    }
-                }
-                let falloff: [f32; 3] = floats(s, at + 21 * 4);
-                let mut color = [diffuse[0], diffuse[1], diffuse[2]];
-                let (mut wrap, mut quadratic, mut bias) = (0.0f32, 0.0f32, 0.0f32);
-                if falloff[0] > 0.0 {
-                    shared_constant = falloff[0];
-                    quadratic = falloff[2];
-                } else if falloff[2] > 0.0 {
-                    color = color.map(|c| c * shared_constant);
-                    wrap = 1.0 + 1e-4 / falloff[2].sqrt();
-                    quadratic = shared_constant * falloff[2];
-                } else if falloff[1] == 0.100_000_01 {
-                    quadratic = 5e-5;
-                } else if falloff[1] > 0.0 {
-                    color = [0.25 + 1e-4 / falloff[1]; 3];
-                    wrap = 1.0;
-                    quadratic = 0.5555 * falloff[1] * falloff[1];
-                    bias = 25.0;
-                }
-                // The plugin puts the radius of a light of the game into the first number of
-                // the specular colour of the light.
-                let radius = float(s, at + 5 * 4);
-                let cutoff = if per_pixel.fade > 0.0 && radius > 0.0 { (per_pixel.fade * radius.max(16.0)).min(8192.0) } else { 0.0 };
-                light.diffuse = [color[0], color[1], color[2], 0.0];
-                light.ambient = [wrap, 0.0, 0.0, 0.0];
-                light.position = [position[0] + bias * camera_z[0], position[1] + bias * camera_z[1], position[2] + bias * camera_z[2], 1.0];
-                light.attenuation = [0.0, 0.0, quadratic, 0.0];
-                light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, 0.0, 0.0];
-            }
-            data.lights[slot] = light;
-            data.counts[0] = slot as u32 + 1;
-        }
-        for light in &mut data.lights[..data.counts[0] as usize] {
-            light.attenuation[0] = shared_constant;
-        }
-        data.scene_ambient = if white {
-            [1.25, 1.25, 1.25, 1.0]
-        } else {
-            [data.scene_ambient[0] * per_pixel.ambient, data.scene_ambient[1] * per_pixel.ambient, data.scene_ambient[2] * per_pixel.ambient, data.scene_ambient[3]]
-        };
-        // A draw that adds to the picture gets darker in the fog and no fog colour:
-        // D3DBLEND_ONE is 2.
-        let adds = known(word(s, state::BLEND_ENABLE), 0) != 0 && (known(word(s, state::SOURCE_BLEND), 2) == 2 || known(word(s, state::DESTINATION_BLEND), 1) == 2);
-        data.counts[3] = 1 | if adds { 2 } else { 0 };
-    }
 
     fn draw_data(&self, counts: &mut Counts) -> DrawData {
         let s = &self.state;
@@ -1649,10 +1613,6 @@ impl Stream {
                 // of the camera.
                 data.fog[3] = 1.0;
             }
-            // So is the fog of the shader for the light of a pixel.
-            if self.per_pixel.is_some() && self.projection[11] == 1.0 {
-                data.fog[3] = 1.0;
-            }
         }
         data.texture_factor = color(state_of(60).unwrap_or(0xFFFF_FFFF));
         if let Some(sky) = self.sky {
@@ -1686,12 +1646,7 @@ impl Stream {
         if lights > 8 {
             counts.more_lights += 1;
         }
-        // The light for each pixel is for a draw of the world: a perspective projection.
-        let per_pixel = self.per_pixel.filter(|_| self.projection[11] == 1.0);
-        if let Some(per_pixel) = per_pixel {
-            self.pixel_lights(&mut data, per_pixel, relative);
-        }
-        for i in 0..if per_pixel.is_some() { 0 } else { lights.min(8) } {
+        for i in 0..lights.min(8) {
             let at = state::SIZE + i * state::LIGHT_SIZE + 4;
             if at + 104 > s.len() {
                 break;
@@ -1711,7 +1666,8 @@ impl Stream {
                 direction: [direction[0], direction[1], direction[2], float(s, at + 19 * 4)],
                 // The falloff, and the two angles of a spot light: words 20, 24 and 25.
                 attenuation: [attenuation[0], attenuation[1], attenuation[2], float(s, at + 20 * 4)],
-                cone: [(float(s, at + 24 * 4) * 0.5).cos(), (float(s, at + 25 * 4) * 0.5).cos(), 0.0, 0.0],
+                // The plugin puts the radius of a light of the game into its first specular word.
+                cone: [(float(s, at + 24 * 4) * 0.5).cos(), (float(s, at + 25 * 4) * 0.5).cos(), float(s, at + 5 * 4), 0.0],
             };
             data.counts[0] = i as u32 + 1;
         }
@@ -1815,7 +1771,6 @@ impl Player {
                 origin: None,
                 interior: false,
                 fog_range: None,
-                per_pixel: None,
                 object_class: 0,
                 sky: None,
                 state: Vec::new(),
@@ -1908,7 +1863,6 @@ impl Player {
         self.pass_target = None;
         self.before_kept = false;
         self.stream.fog_range = None;
-        self.stream.per_pixel = None;
         self.stream.sky = None;
         self.stream.back_buffer = true;
         self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
@@ -2483,10 +2437,14 @@ impl Player {
         // (MGE_LINK_CLASS_SKY_DOME is 1 and MGE_LINK_CLASS_SKY_OTHER is 7).
         let parameters = self.parameters.unwrap_or_default();
         let world = self.world_begun && in_back_buffer;
-        self.stream.per_pixel = parameters.per_pixel.filter(|_| world);
         self.stream.fog_range = parameters.fog_range.filter(|_| world);
         self.stream.sky = parameters.sky.filter(|_| in_back_buffer && (1..=7).contains(&self.stream.object_class));
-        let draw_data = self.stream.draw_data(&mut renderer.counts);
+        let mut draw_data = self.stream.draw_data(&mut renderer.counts);
+        if parameters.shade && world && self.stream.projection[11] == 1.0 {
+            if let Some(extension) = self.extension.as_mut() {
+                extension.shade(&mut draw_data, &DrawFacts { blend_enable: key.blend[0] != 0, source_blend: key.blend[1], destination_blend: key.blend[2] });
+            }
+        }
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
         let clock = std::time::Instant::now();
         let mut handles = [0u32; STAGES];
@@ -2701,7 +2659,7 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     }
     println!("{} records, {frames} frames, frame {wanted} into {width} x {height}", records.len());
 
-    let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, extension.as_ref().and_then(|extension| extension.sky_shader())).0);
+    let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, extension_shaders(extension.as_deref())).0);
     if let Some(mut extension) = extension {
         extension.offline();
         player.extension = Some(extension);
@@ -2961,7 +2919,7 @@ mod live {
                 // A window that is not enabled takes no mouse and no keys: they go to the game.
                 window.set_enable(false);
             }
-            let (renderer, surface) = Renderer::new(self.backends, Some(window.clone()), wgpu::TextureFormat::Bgra8Unorm, self.extension.as_ref().and_then(|extension| extension.sky_shader()));
+            let (renderer, surface) = Renderer::new(self.backends, Some(window.clone()), wgpu::TextureFormat::Bgra8Unorm, crate::extension_shaders(self.extension.as_deref()));
             let surface = surface.expect("a surface");
             let size = window.inner_size();
             self.configuration = Some(wgpu::SurfaceConfiguration {
