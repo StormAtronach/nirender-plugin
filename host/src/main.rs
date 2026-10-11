@@ -34,6 +34,8 @@ mod tag {
     pub const FRAME_END: u32 = 10;
     pub const HEADER: u32 = 11;
     pub const TEXTURE_UPDATE: u32 = 12;
+    pub const READ_PIXELS: u32 = 13;
+    pub const SHOT: u32 = 14;
 }
 
 const COMMAND_RENDER_STATE: u32 = 1;
@@ -356,6 +358,7 @@ struct Counts {
     textures: u32,
     texture_updates: u32,
     render_textures: u32,
+    pixel_reads: u32,
     target_copies: u32,
     target_draws: u32,
     texture_updates_lost: u32,
@@ -645,7 +648,7 @@ impl Renderer {
     /// Makes a texture that the game draws into, with a depth buffer of its size.
     fn render_texture(&mut self, handle: u32, width: u32, height: u32) {
         let (width, height) = (width.max(1), height.max(1));
-        let texture = target_texture(&self.device, width, height, self.target_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
+        let texture = target_texture(&self.device, width, height, self.target_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC);
         let depth = target_texture(&self.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
         let view = Rc::new(texture.create_view(&Default::default()));
         self.textures.insert(handle, view.clone());
@@ -989,6 +992,13 @@ struct Player {
     pass: Option<wgpu::RenderPass<'static>>,
     color: Option<Rc<wgpu::TextureView>>,
     depth: Option<Rc<wgpu::TextureView>>,
+    /// The texture of `color`, for a read of its pixels. It stays after the frame.
+    back_buffer: Option<wgpu::Texture>,
+    /// Takes the answer to a pixel read: the number of the request, the width, the height
+    /// and the pixels with 4 bytes each, blue first. `None` without a game to answer.
+    reply: Option<Box<dyn FnMut(u32, u32, u32, &[u8])>>,
+    /// The picture files that the game asked for: the frame in progress goes into them.
+    shots: Vec<String>,
     /// The texture that the game draws into now. `None` for the back buffer.
     target: Option<u32>,
     /// The game named a rendered texture as its target.
@@ -1017,6 +1027,9 @@ impl Player {
             pass: None,
             color: None,
             depth: None,
+            back_buffer: None,
+            reply: None,
+            shots: Vec::new(),
             target: None,
             wants_texture: false,
             size: (0, 0),
@@ -1071,16 +1084,72 @@ impl Player {
     }
 
     /// Starts a frame that draws into these targets. Until the next start, the records
-    /// change only the state and the resources.
-    fn begin_frame(&mut self, color: Rc<wgpu::TextureView>, depth: Rc<wgpu::TextureView>, size: (u32, u32)) {
-        self.frame_size = size;
+    /// change only the state and the resources. With `keep`, the frame starts with the
+    /// picture that is in the colour target: the game can read the last frame before it
+    /// clears the target.
+    fn begin_frame(&mut self, color: &wgpu::Texture, depth: Rc<wgpu::TextureView>, keep: bool) {
+        self.frame_size = (color.width(), color.height());
         self.target = None;
         self.stream.back_buffer = true;
         self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
         self.renderer.draw_slots = 0;
-        self.color = Some(color);
+        self.color = Some(Rc::new(color.create_view(&Default::default())));
+        self.back_buffer = Some(color.clone());
         self.depth = Some(depth);
-        self.open_pass(Some(wgpu::Color::BLACK), Some(1.0), Some(0));
+        if keep {
+            self.open_pass(None, None, None);
+        } else {
+            self.open_pass(Some(wgpu::Color::BLACK), Some(1.0), Some(0));
+        }
+    }
+
+    /// Sends the commands of the frame up to now to the GPU. The frame goes on after `between`.
+    fn flush<T>(&mut self, between: impl FnOnce(&mut Player) -> T) -> T {
+        let in_frame = self.drawing();
+        drop(self.pass.take());
+        if let Some(encoder) = self.encoder.take() {
+            self.renderer.queue.submit([encoder.finish()]);
+        }
+        let result = between(self);
+        if in_frame {
+            self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
+            self.open_pass(None, None, None);
+        }
+        result
+    }
+
+    /// The pixels of a rendered texture, or of the back buffer with the handle 0: the width,
+    /// the height and 4 bytes for each pixel, blue first.
+    fn read_pixels(&mut self, handle: u32) -> Option<(u32, u32, Vec<u8>)> {
+        let texture = match handle {
+            0 => self.back_buffer.clone()?,
+            _ => self.renderer.targets.get(&handle)?.texture.clone(),
+        };
+        if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+            return None;
+        }
+        let (width, height) = (texture.width(), texture.height());
+        let blue_first = matches!(texture.format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        self.flush(|player| {
+            let device = player.renderer.device.clone();
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let (buffer, row) = copy_picture(&device, &mut encoder, &texture, width, height);
+            player.renderer.queue.submit([encoder.finish()]);
+            buffer.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("the read of the pixels"));
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            let mapped = buffer.slice(..).get_mapped_range().expect("the bytes of the pixels");
+            let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+            for y in 0..height as usize {
+                pixels.extend_from_slice(&mapped[y * row..y * row + width as usize * 4]);
+            }
+            if !blue_first {
+                for pixel in pixels.chunks_exact_mut(4) {
+                    pixel.swap(0, 2);
+                }
+            }
+            player.renderer.counts.pixel_reads += 1;
+            Some((width, height, pixels))
+        })
     }
 
     fn drawing(&self) -> bool {
@@ -1105,6 +1174,17 @@ impl Player {
             tag::HEADER => self.size = (word(data, 0), word(data, 4)),
             tag::TEXTURE => self.renderer.texture(data),
             tag::TEXTURE_UPDATE => self.renderer.texture_update(data),
+            tag::SHOT => self.shots.push(String::from_utf8_lossy(data).into_owned()),
+            tag::READ_PIXELS => {
+                // The game waits for the answer. Without the target, the answer has no size.
+                let answer = self.read_pixels(word(data, 4));
+                if let Some(reply) = self.reply.as_mut() {
+                    match answer {
+                        Some((width, height, pixels)) => reply(word(data, 0), width, height, &pixels),
+                        None => reply(word(data, 0), 0, 0, &[]),
+                    }
+                }
+            }
             tag::BUFFER_DATA => self.renderer.buffer_data(data),
             tag::SCENE_BEGIN => {
                 self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
@@ -1161,22 +1241,14 @@ impl Player {
                         // points. With pixels, the source is an image surface: the game read
                         // a rendered texture, changed the pixels, and now writes them back.
                         let pixels = &arguments[(word(data, 12) as usize * 4).min(arguments.len())..];
-                        let texture = self.renderer.surfaces.get(&word(arguments, 12)).copied();
-                        if let (Some(texture), true) = (texture, pixels.len() >= 16) {
+                        // The record names the texture, or the surface is one that a call
+                        // of the stream gave.
+                        let named = (pixels.len() >= 20 && word(pixels, 16) != 0).then(|| word(pixels, 16));
+                        let texture = named.or_else(|| self.renderer.surfaces.get(&word(arguments, 12)).copied());
+                        if let (Some(texture), true) = (texture, pixels.len() >= 20) {
                             // The draws into the texture come first: a write of a texture is
                             // done before the commands that are not sent yet.
-                            let in_frame = self.drawing();
-                            if in_frame {
-                                drop(self.pass.take());
-                                if let Some(encoder) = self.encoder.take() {
-                                    self.renderer.queue.submit([encoder.finish()]);
-                                }
-                            }
-                            self.renderer.target_pixels(texture, word(pixels, 0), word(pixels, 4), &pixels[16..]);
-                            if in_frame {
-                                self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
-                                self.open_pass(None, None, None);
-                            }
+                            self.flush(|player| player.renderer.target_pixels(texture, word(pixels, 0), word(pixels, 4), &pixels[20..]));
                         }
                     }
                     CALL_CLEAR if self.drawing() && self.stream.back_buffer => {
@@ -1332,7 +1404,10 @@ impl Player {
             c.missing_textures, c.more_stages, c.more_lights, c.coordinate_work
         );
         println!("texture levels written again {}, not written {}", c.texture_updates, c.texture_updates_lost);
-        println!("rendered textures made {}, draws into them {}, copies of pixels into them {}", c.render_textures, c.target_draws, c.target_copies);
+        println!(
+            "rendered textures made {}, draws into them {}, copies of pixels into them {}, pixel reads {}",
+            c.render_textures, c.target_draws, c.target_copies, c.pixel_reads
+        );
         for (format, count) in &c.texture_formats {
             println!("texture format {format:#x} not made: {count}");
         }
@@ -1454,7 +1529,7 @@ fn main() {
         // Each frame up to the wanted one is drawn: the game can draw into a rendered texture
         // in one frame and use it in the frames after that.
         if frame <= wanted && !player.drawing() {
-            player.begin_frame(Rc::new(target.create_view(&Default::default())), Rc::new(depth.create_view(&Default::default())), (width, height));
+            player.begin_frame(&target, Rc::new(depth.create_view(&Default::default())), false);
         }
         if player.feed(*tag, data) {
             if player.drawing() {
@@ -1566,8 +1641,39 @@ mod live {
         }
     }
 
+    /// The reply memory. See `capture.rs` of the plugin.
+    const REPLY_HEAD: usize = 16;
+
+    struct Reply {
+        base: *mut u8,
+    }
+
+    impl Reply {
+        fn open(name: &str) -> Option<Reply> {
+            let mut text = format!("{name}.reply").into_bytes();
+            text.push(0);
+            let mapping = unsafe { OpenFileMappingA(0xF001F, 0, text.as_ptr()) };
+            if mapping == 0 {
+                return None;
+            }
+            let base = unsafe { MapViewOfFile(mapping, 0xF001F, 0, 0, 0) };
+            (!base.is_null()).then_some(Reply { base })
+        }
+
+        /// The game made the memory large enough for its back buffer and its textures.
+        fn answer(&self, request: u32, width: u32, height: u32, pixels: &[u8]) {
+            unsafe {
+                std::ptr::copy_nonoverlapping(pixels.as_ptr(), self.base.add(REPLY_HEAD), pixels.len());
+                (self.base.add(4) as *mut u32).write_volatile(width);
+                (self.base.add(8) as *mut u32).write_volatile(height);
+                (*(self.base as *const std::sync::atomic::AtomicU32)).store(request, Ordering::Release);
+            }
+        }
+    }
+
     struct App {
         ring: Ring,
+        reply: Option<Reply>,
         backends: wgpu::Backends,
         frames_wanted: u32,
         /// The size of the back buffer of the game, and its window when the host goes into it.
@@ -1580,6 +1686,9 @@ mod live {
         configuration: Option<wgpu::SurfaceConfiguration>,
         player: Option<Player>,
         depth: Option<Rc<wgpu::TextureView>>,
+        /// The back buffer of the game: the frames go into it, and then into the window. It
+        /// keeps the last frame for a pixel read of the game.
+        back_buffer: Option<wgpu::Texture>,
         frame: Option<wgpu::SurfaceTexture>,
         data: Vec<u8>,
         frames: u32,
@@ -1601,6 +1710,10 @@ mod live {
             configuration.width = width;
             configuration.height = height;
             surface.configure(&player.renderer.device, configuration);
+            // The back buffer has the size of the picture of the game.
+            let (width, height) = self.size;
+            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+            self.back_buffer = Some(target_texture(&player.renderer.device, width, height, player.renderer.target_format, usage));
             let depth = target_texture(&player.renderer.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
             self.depth = Some(Rc::new(depth.create_view(&Default::default())));
         }
@@ -1635,7 +1748,7 @@ mod live {
                 return;
             }
             let mut attributes =
-                Window::default_attributes().with_title("nirender host").with_inner_size(PhysicalSize::new(self.size.0, self.size.1)).with_resizable(false);
+                Window::default_attributes().with_title("nirender host").with_inner_size(PhysicalSize::new(self.size.0, self.size.1)).with_resizable(false).with_active(false);
             if let Some(parent) = self.parent.and_then(std::num::NonZeroIsize::new) {
                 // A child window of the window of the game, over all of it.
                 let handle = RawWindowHandle::Win32(Win32WindowHandle::new(parent));
@@ -1650,7 +1763,7 @@ mod live {
             let surface = surface.expect("a surface");
             let size = window.inner_size();
             self.configuration = Some(wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | (renderer.surface_usages & wgpu::TextureUsages::COPY_SRC),
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
                 format: renderer.target_format,
                 width: 0,
                 height: 0,
@@ -1661,7 +1774,10 @@ mod live {
                 view_formats: vec![],
                 color_space: Default::default(),
             });
-            self.player = Some(Player::new(renderer));
+            assert!(renderer.surface_usages.contains(wgpu::TextureUsages::COPY_DST), "the window does not take a copy of a picture");
+            let mut player = Player::new(renderer);
+            player.reply = self.reply.take().map(|reply| Box::new(move |request, width, height, pixels: &[u8]| reply.answer(request, width, height, pixels)) as _);
+            self.player = Some(player);
             self.surface = Some(surface);
             self.window = Some(window);
             self.configure(size.width, size.height);
@@ -1692,9 +1808,7 @@ mod live {
                         wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
                         _ => return,
                     };
-                    let view = Rc::new(frame.texture.create_view(&Default::default()));
-                    let frame_size = (frame.texture.width(), frame.texture.height());
-                    self.player.as_mut().unwrap().begin_frame(view, self.depth.clone().unwrap(), frame_size);
+                    self.player.as_mut().unwrap().begin_frame(self.back_buffer.as_ref().unwrap(), self.depth.clone().unwrap(), true);
                     self.frame = Some(frame);
                 }
                 let Some(tag) = self.ring.pop(&mut self.data) else {
@@ -1717,20 +1831,37 @@ mod live {
                 }
                 // The frame is complete.
                 let Some(frame) = self.frame.take() else { return };
-                let can_copy = player.renderer.surface_usages.contains(wgpu::TextureUsages::COPY_SRC);
                 let blue_first = matches!(player.renderer.target_format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
-                let take_shot = can_copy && self.shot.is_some() && !self.shot_done && self.frames + 1 >= self.shot_frame;
-                let (width, height) = (frame.texture.width(), frame.texture.height());
+                let take_shot = self.shot.is_some() && !self.shot_done && self.frames + 1 >= self.shot_frame;
+                let back_buffer = self.back_buffer.as_ref().unwrap();
+                let (width, height) = (back_buffer.width(), back_buffer.height());
                 let device = player.renderer.device.clone();
                 let mut read = None;
                 player.end_frame(|encoder| {
+                    // The picture goes into the window: the part that the two have.
+                    encoder.copy_texture_to_texture(
+                        back_buffer.as_image_copy(),
+                        frame.texture.as_image_copy(),
+                        wgpu::Extent3d { width: width.min(frame.texture.width()), height: height.min(frame.texture.height()), depth_or_array_layers: 1 },
+                    );
                     if take_shot {
-                        read = Some(copy_picture(&device, encoder, &frame.texture, width, height));
+                        read = Some(copy_picture(&device, encoder, back_buffer, width, height));
                     }
                 });
                 if let Some((buffer, row)) = read {
                     save_picture(&device, &buffer, row, width, height, blue_first, self.shot.as_ref().unwrap());
                     self.shot_done = true;
+                }
+                // The picture files that the game asked for in this frame.
+                let shots = std::mem::take(&mut player.shots);
+                if !shots.is_empty() {
+                    let mut encoder = device.create_command_encoder(&Default::default());
+                    let (buffer, row) = copy_picture(&device, &mut encoder, back_buffer, width, height);
+                    player.renderer.queue.submit([encoder.finish()]);
+                    for path in &shots {
+                        save_picture(&device, &buffer, row, width, height, blue_first, path);
+                        buffer.unmap();
+                    }
                 }
                 player.renderer.queue.present(frame);
                 self.frames += 1;
@@ -1763,6 +1894,8 @@ mod live {
         println!("picture {} x {}, window of the game {game_window:#x}{}", size.0, size.1, if embed { ", the host goes into it" } else { "" });
         let mut app = App {
             ring,
+            reply: Reply::open(name),
+            back_buffer: None,
             backends,
             frames_wanted: option(args, "--frames").and_then(|text| text.parse().ok()).unwrap_or(0),
             size,

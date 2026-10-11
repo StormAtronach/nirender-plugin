@@ -524,6 +524,15 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
         DEVICE_DRAW_PRIMITIVE if commands_for(FACT_DEVICE_BUFFERS) => sent(command(COMMAND_DRAW, args.as_ptr() as u32, 0, 0)),
         _ => None,
     };
+    /// `IDirect3DDevice8::GetBackBuffer`
+    const DEVICE_GET_BACK_BUFFER: usize = 0x40;
+    // `GetBackBuffer(index, type, address)`: with the own host, the back buffer is the
+    // surface that the host gives as the first render target.
+    let routed = if routed.is_none() && crate::own_host::active() && slot * 4 == DEVICE_GET_BACK_BUFFER && args.len() >= 3 {
+        target_call(CALL_GET_RENDER_TARGET, &args[2..3])
+    } else {
+        routed
+    };
     if routed.is_none() && crate::own_host::active() {
         // `GetRenderState(state, address)`: the Code Patch asks for the blend state before a
         // draw into a rendered texture. The answer is the value in the record of the game.
@@ -533,6 +542,18 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
                 let render_state: usize = rd(renderer, R::renderState);
                 let value: u32 = rd(render_state, RS::renderStateSettings + args[0] as usize * 8);
                 *(args[1] as usize as *mut u32) = if value == STATE_UNKNOWN { 0 } else { value };
+                return Some(0);
+            }
+        }
+        // `GetTextureStageState(stage, state, address)`: the Code Patch keeps the alpha
+        // operation of stage 0 and puts it back after its draws.
+        const DEVICE_GET_TEXTURE_STAGE_STATE: usize = 0xF8;
+        if slot * 4 == DEVICE_GET_TEXTURE_STAGE_STATE && args.len() >= 3 && args[2] != 0 && args[0] < 8 && args[1] < 32 {
+            let renderer = crate::engine::renderer();
+            if renderer != 0 {
+                let render_state: usize = rd(renderer, R::renderState);
+                let value: u32 = rd(render_state, RS::maybe_textureStageStateSettings + (args[1] + args[0] * 32) as usize * 8);
+                *(args[2] as usize as *mut u32) = if value == STATE_UNKNOWN { 0 } else { value };
                 return Some(0);
             }
         }

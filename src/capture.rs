@@ -67,6 +67,12 @@ pub mod tag {
     /// The game wrote a level of a texture: handle, level, width and height of the level,
     /// D3D format, size; then the bytes.
     pub const TEXTURE_UPDATE: u32 = 12;
+    /// The game asks for the pixels of a target: the number of the request, and the texture
+    /// (0 for the back buffer). Only in a stream. The host puts the answer into the reply
+    /// memory.
+    pub const READ_PIXELS: u32 = 13;
+    /// The host saves the picture of the frame in progress into the file with this name.
+    pub const SHOT: u32 = 14;
 }
 
 // ---- the ring in shared memory
@@ -183,6 +189,79 @@ impl Ring {
     }
 }
 
+/// The reply memory of a stream: shared memory with the name of the ring and `.reply`. The
+/// host writes the answer to a `READ_PIXELS` record into it: the number of the request (the
+/// host writes it last), the width, the height, one unused word, and then the pixels with 4
+/// bytes each, blue first. A width of 0 says that the host has no such target.
+pub const REPLY_HEAD: usize = 16;
+/// The game waits this long for an answer.
+const REPLY_WAIT_SECONDS: i64 = 5;
+
+struct Reply {
+    mapping: isize,
+    base: *mut u8,
+    capacity: usize,
+    requests: u32,
+    /// The time that the game waited for answers, in ticks.
+    waited: i64,
+}
+
+impl Reply {
+    unsafe fn create(name: &str, capacity: usize) -> Option<Reply> {
+        let mut text = format!("{name}.reply").into_bytes();
+        text.push(0);
+        let mapping = CreateFileMappingA(-1, core::ptr::null(), 4, 0, (capacity + REPLY_HEAD) as u32, text.as_ptr());
+        if mapping == 0 {
+            return None;
+        }
+        let base = MapViewOfFile(mapping, 0xF001F, 0, 0, 0);
+        if base.is_null() {
+            CloseHandle(mapping);
+            return None;
+        }
+        core::ptr::write_bytes(base, 0, REPLY_HEAD);
+        Some(Reply { mapping, base, capacity, requests: 0, waited: 0 })
+    }
+
+    unsafe fn close(&mut self) {
+        UnmapViewOfFile(self.base);
+        CloseHandle(self.mapping);
+    }
+}
+
+/// Asks the host of the stream for the pixels of a rendered texture, or of the back buffer
+/// with `texture` 0. Gives the width, the height and the pixels: 4 bytes each, blue first.
+/// `None` without a stream, or when the host has no answer in time.
+pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
+    if !recording() {
+        return None;
+    }
+    let s = state()?;
+    let request = {
+        let reply = s.reply.as_mut()?;
+        reply.requests += 1;
+        reply.requests
+    };
+    write(tag::READ_PIXELS, &[&words(&[request, texture])]);
+    // The write can end the stream.
+    let reply = state()?.reply.as_mut()?;
+    let start = ticks();
+    while (reply.base as *const u32).read_volatile() != request {
+        if ticks() - start > REPLY_WAIT_SECONDS * ticks_per_second() {
+            crate::log!("stream: no answer to the pixel read {request} of the texture {texture:#x}");
+            return None;
+        }
+        Sleep(0);
+    }
+    reply.waited += ticks() - start;
+    let (width, height) = ((reply.base.add(4) as *const u32).read_volatile(), (reply.base.add(8) as *const u32).read_volatile());
+    let size = width as usize * height as usize * 4;
+    if size == 0 || size > reply.capacity {
+        return None;
+    }
+    Some((width, height, core::slice::from_raw_parts(reply.base.add(REPLY_HEAD), size)))
+}
+
 enum Sink {
     File(BufWriter<File>),
     Ring(Ring),
@@ -204,6 +283,7 @@ struct State {
     /// At the end of the warm-up the plugin becomes the host of the render link.
     own_host: bool,
     out: Option<Sink>,
+    reply: Option<Reply>,
     /// The geometry data and the skin instances of the draws of the warm-up.
     geometry: HashSet<(u32, u32)>,
     /// The buffers whose bytes are in the capture.
@@ -268,6 +348,10 @@ pub unsafe fn start_stream(name: &str, megabytes: u32, warmup: u32, own_host: bo
     begin(Sink::Ring(Ring::create(name, megabytes)?), warmup, 0);
     if let Some(s) = state() {
         s.own_host = own_host;
+        // Room for the back buffer, and for a rendered texture of 1024 x 1024.
+        let renderer = crate::engine::renderer();
+        let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
+        s.reply = Reply::create(name, (size[0] as usize * size[1] as usize * 4).max(1024 * 1024 * 4));
     }
     crate::log!("stream: start, {warmup} frames of warm-up, a ring of {megabytes} MB with the name {name}, own host {own_host}");
     Ok(())
@@ -279,6 +363,7 @@ unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
         frames,
         own_host: false,
         out: Some(out),
+        reply: None,
         geometry: HashSet::new(),
         known_buffers: HashSet::new(),
         image_surfaces: HashSet::new(),
@@ -310,6 +395,10 @@ pub unsafe fn stop() {
         Some(Sink::Ring(mut ring)) => {
             crate::log!("stream: the game waited {:.1} ms in all for room in the ring", ring.waited as f64 * 1000.0 / ticks_per_second() as f64);
             ring.close();
+            if let Some(mut reply) = s.reply.take() {
+                crate::log!("stream: {} pixel reads, the game waited {:.1} ms in all for them", reply.requests, reply.waited as f64 * 1000.0 / ticks_per_second() as f64);
+                reply.close();
+            }
         }
         None => {}
     }
@@ -327,6 +416,11 @@ pub unsafe fn stop() {
         s.spent as f64 * 1000.0 / ticks_per_second() as f64 / s.frames_done.max(1) as f64,
         if s.failed { ", with a write error" } else { "" }
     );
+}
+
+/// Asks the host of the stream for a picture file of the frame in progress.
+pub unsafe fn shot(path: &str) {
+    write(tag::SHOT, &[path.as_bytes()]);
 }
 
 /// One line about the capture, for the scenario: the phase, the records and the bytes.
@@ -501,12 +595,13 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
         head.extend_from_slice(args);
         // A copy from an image surface: the pixels are those that the game wrote, for
         // example the character image after the game changed its alpha. The record has
-        // width, height, format, size and the pixels. The own host has no pixels to give:
-        // its surfaces do not get the picture of the target.
-        let from_image = index == CALL_COPY_PIXELS && (result as i32) >= 0 && !args.is_empty() && !crate::own_host::active() && state().is_some_and(|s| s.image_surfaces.contains(&args[0]));
+        // width, height, format, size, the texture of the destination when the own host
+        // knows it (or 0), and the pixels.
+        let from_image = index == CALL_COPY_PIXELS && (result as i32) >= 0 && !args.is_empty() && state().is_some_and(|s| s.image_surfaces.contains(&args[0]));
         let pixels = if from_image { crate::link_client::surface_pixels(args[0]) } else { None };
         if let Some((width, height, format, pixels)) = pixels {
-            write(tag::CALL, &[&words(&head), &words(&[width, height, format, pixels.len() as u32]), &pixels]);
+            let texture = if args.len() > 3 { destination_texture(args[3]) } else { 0 };
+            write(tag::CALL, &[&words(&head), &words(&[width, height, format, pixels.len() as u32, texture]), &pixels]);
         } else {
             let data: &[u8] = if index == CALL_VIEWPORT && !args.is_empty() { bytes_at(args[0], 24) } else { &[] };
             write(tag::CALL, &[&words(&head), data]);
@@ -515,6 +610,20 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
     if index == CALL_PRESENT {
         frame_end();
     }
+}
+
+#[cfg(not(test))]
+unsafe fn destination_texture(surface: u32) -> u32 {
+    if crate::own_host::active() {
+        crate::own_host::texture_of(surface)
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+unsafe fn destination_texture(_surface: u32) -> u32 {
+    0
 }
 
 /// A texture that the host made from these pixels.

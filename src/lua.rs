@@ -97,6 +97,27 @@ unsafe extern "C" fn stream(l: LuaState) -> i32 {
     }
 }
 
+/// `nirender.streamShot(path)` asks the host program of the stream for a picture file of the
+/// frame in progress.
+unsafe extern "C" fn stream_shot(l: LuaState) -> i32 {
+    crate::capture::shot(&arg_str(l, 1).unwrap_or_default());
+    0
+}
+
+/// `nirender.gameScreenshot()` makes the game take its own screenshot, as its screenshot
+/// key does: `WorldControllerRenderTarget::takeScreenshot` 0x42E620 of
+/// `WorldController::characterRenderTarget`. The game draws the scene again, reads the back
+/// buffer and writes a BMP file into its folder.
+unsafe extern "C" fn game_screenshot(_l: LuaState) -> i32 {
+    const TAKE_SCREENSHOT: usize = 0x42E620;
+    const CHARACTER_RENDER_TARGET: usize = 0x1A8;
+    let world_controller: usize = crate::mem::rd(crate::engine::WORLD_CONTROLLER, 0);
+    if world_controller != 0 {
+        crate::engine::thiscall0(TAKE_SCREENSHOT, world_controller + CHARACTER_RENDER_TARGET);
+    }
+    0
+}
+
 /// `nirender.captureStop()` ends the capture or the stream.
 unsafe extern "C" fn capture_stop(_l: LuaState) -> i32 {
     crate::capture::stop();
@@ -345,6 +366,8 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "captureStatus", capture_status);
     set_fn(l, "stream", stream);
     set_fn(l, "captureStop", capture_stop);
+    set_fn(l, "streamShot", stream_shot);
+    set_fn(l, "gameScreenshot", game_screenshot);
     set_fn(l, "forceReset", force_reset);
     set_fn(l, "renderer", renderer);
     set_fn(l, "liveCalls", live_calls);

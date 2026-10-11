@@ -11,8 +11,9 @@
 //! Direct3D 8, and with memory of its own for a lock. A call of the link on a resource goes
 //! through the table of the object: an object that MGE XE made before the change works too.
 //!
-//! What this host does not do: a pixel read gives the bytes that the game wrote or zeros,
-//! and a copy between surfaces does nothing.
+//! The pixels of a target are in the other process. For a copy from a rendered texture or
+//! from the back buffer into a surface, and for a lock of the back buffer, this host asks
+//! the host program of the stream for them. Without a stream such a read gives zeros.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -254,6 +255,86 @@ unsafe extern "system" fn surface_description(this: *mut Object, description: *m
     OK
 }
 
+/// The object of this host at this address, or `None` for an object of Direct3D.
+unsafe fn own(object: u32) -> Option<&'static mut Object> {
+    if object == 0 {
+        return None;
+    }
+    let object = object as usize as *mut Object;
+    let table = (*object).table;
+    [&BUFFER_TABLE, &TEXTURE_TABLE, &SURFACE_TABLE].iter().any(|t| t.methods() == table).then(|| &mut *object)
+}
+
+/// The target that a surface is, as the stream names it: the texture of a level 0 surface
+/// of a rendered texture, or 0 for the back buffer. D3DUSAGE_RENDERTARGET is 1.
+unsafe fn target_of(surface: &Object) -> Option<u32> {
+    if surface as *const Object as u32 == BACK_BUFFER.load(Ordering::Relaxed) {
+        return Some(0);
+    }
+    (surface.kind == Kind::LevelSurface && surface.level == 0 && (*surface.owner).usage & 1 != 0).then_some(surface.owner as u32)
+}
+
+/// The rendered texture that a surface of this host is level 0 of, or 0. This host makes a
+/// new surface object for each `GetSurfaceLevel`, so the address of a surface does not name
+/// the texture.
+pub unsafe fn texture_of(surface: u32) -> u32 {
+    own(surface).and_then(|surface| target_of(surface)).unwrap_or(0)
+}
+
+/// The memory of a surface with 4 bytes for each pixel, made when it is not there.
+unsafe fn pixel_memory(surface: &mut Object) -> Option<&'static mut Vec<u8>> {
+    // D3DFMT_A8R8G8B8 is 21 and D3DFMT_X8R8G8B8 is 22.
+    if !(surface.format == 21 || surface.format == 22) {
+        return None;
+    }
+    let size = (surface.width.max(1) * surface.height.max(1) * 4) as usize;
+    let memory: &'static mut Vec<u8> = if surface.kind == Kind::LevelSurface {
+        let texture = &mut *surface.owner;
+        if texture.level_memory.len() < texture.levels as usize {
+            texture.level_memory.resize(texture.levels as usize, Vec::new());
+        }
+        &mut *(&mut texture.level_memory[surface.level as usize] as *mut Vec<u8>)
+    } else {
+        &mut *(&mut surface.memory as *mut Vec<u8>)
+    };
+    if memory.len() != size {
+        memory.resize(size, 0);
+    }
+    Some(memory)
+}
+
+/// Gets the pixels of a target from the host program of the stream into the memory of a
+/// surface of the same size.
+unsafe fn read_target(target: u32, into: &mut Object) -> bool {
+    let (into_width, into_height) = (into.width, into.height);
+    let Some(memory) = pixel_memory(into) else { return false };
+    let Some((width, height, pixels)) = crate::capture::read_pixels(target) else { return false };
+    if (width, height) != (into_width, into_height) {
+        return false;
+    }
+    memory.copy_from_slice(pixels);
+    *core::ptr::addr_of_mut!(PIXEL_READS) += 1;
+    true
+}
+
+/// `IDirect3DDevice8::CopyRects` for all of a surface.
+unsafe fn copy_pixels(source: u32, destination: u32) -> u32 {
+    let (Some(source), Some(destination)) = (own(source), own(destination)) else { return OK };
+    if let Some(target) = target_of(source) {
+        // Out of a target: the pixels come from the host program.
+        read_target(target, destination);
+    } else if target_of(destination).is_none() && (source.width, source.height, source.format) == (destination.width, destination.height, destination.format) {
+        // Between two surfaces with memory here.
+        if let (Some(from), Some(to)) = (pixel_memory(source), pixel_memory(destination)) {
+            to.copy_from_slice(from);
+        }
+    }
+    // Into a target: the stream has the call with the pixels of the source.
+    OK
+}
+
+static mut PIXEL_READS: u32 = 0;
+
 unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, _rectangle: usize, _flags: u32) -> u32 {
     let object = &mut *this;
     if object.kind == Kind::LevelSurface {
@@ -261,6 +342,10 @@ unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, _rec
     }
     if locked.is_null() {
         return FAIL;
+    }
+    if this as u32 == BACK_BUFFER.load(Ordering::Relaxed) {
+        // The game reads the picture of the last frame: a screenshot.
+        read_target(0, object);
     }
     let (size, row) = level_size(object.format, object.width, object.height);
     if object.memory.len() != size {
@@ -490,8 +575,9 @@ unsafe extern "C" fn call(index: u32, arguments: *const u32) -> u32 {
         }
         CALL_SURFACE_UNLOCK => core::mem::transmute::<usize, unsafe extern "system" fn(u32) -> u32>(method(a(0), 10))(a(0)),
         CALL_CUBE_FACE => FAIL,
-        // The frame, the scene, the target, a copy of pixels: nothing to do here. The stream
-        // has the call.
+        // Source surface, rectangles, their number, destination surface, points.
+        CALL_COPY_PIXELS => copy_pixels(a(0), a(3)),
+        // The frame, the scene, the target: nothing to do here. The stream has the call.
         _ => OK,
     }
 }
@@ -546,5 +632,5 @@ pub unsafe fn report() -> String {
     if text.is_empty() {
         text.push_str(" none");
     }
-    format!("own host: device calls without a call of the link, taken and not done:{text}")
+    format!("own host: {} pixel reads from the host program; device calls without a call of the link, taken and not done:{text}", *core::ptr::addr_of!(PIXEL_READS))
 }
