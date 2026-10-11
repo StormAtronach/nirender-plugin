@@ -7,7 +7,8 @@
 //! The file takes the place of the `d3d8.dll` of MGE XE. The `dinput8.dll` of MGE XE asks the
 //! `d3d8.dll` of the game folder for `DirectInput8Create`, so this file has that function
 //! too: it gives the call to the DirectInput of Windows. MGE XE also loads the script
-//! extender, `MWSE.dll`; this file does that as well.
+//! extender, `MWSE.dll`, and it turns the films of the start off when `mgeXE.toml` says so;
+//! this file does the two as well.
 
 use core::ffi::c_void;
 
@@ -17,6 +18,43 @@ extern "system" {
     fn GetModuleFileNameA(module: *mut c_void, name: *mut u8, size: u32) -> u32;
     fn GetSystemDirectoryA(buffer: *mut u8, size: u32) -> u32;
     fn OutputDebugStringA(text: *const u8);
+    fn VirtualProtect(address: *mut c_void, size: usize, protect: u32, old: *mut u32) -> i32;
+}
+
+/// The two places in Morrowind.exe where MGE XE turns the films of the start off
+/// (`MWPatches::disableIntroMovies`): the film of the company and the check for the film of
+/// the game. Each gets a short jump over the code that plays the film.
+const FILM_PATCHES: [usize; 2] = [0x418EF0, 0x5FC8F7];
+const FILM_JUMP: [u8; 2] = [0xEB, 0x16];
+
+/// True when `mgeXE.toml` of the game folder has `skip_intro = true`. This is the setting of
+/// MGE XE (`runtime.skip_intro`), so the game starts in the same way with either file.
+unsafe fn skip_films_wanted() -> bool {
+    let path = beside_program(b"mgeXE.toml");
+    let Ok(text) = std::fs::read_to_string(String::from_utf8_lossy(&path).as_ref()) else { return false };
+    text.lines().any(|line| {
+        let line = line.split('#').next().unwrap_or("");
+        let mut parts = line.splitn(2, '=');
+        parts.next().map(str::trim) == Some("skip_intro") && parts.next().map(str::trim) == Some("true")
+    })
+}
+
+/// Turns the films of the start off. Only in Morrowind.exe: the addresses are of that program.
+unsafe fn skip_films() {
+    let mut name = [0u8; 600];
+    let length = GetModuleFileNameA(core::ptr::null_mut(), name.as_mut_ptr(), 512) as usize;
+    if !name[..length].to_ascii_lowercase().ends_with(b"morrowind.exe") {
+        return;
+    }
+    for address in FILM_PATCHES {
+        let mut old = 0u32;
+        // PAGE_EXECUTE_READWRITE
+        if VirtualProtect(address as *mut c_void, 2, 0x40, &mut old) != 0 {
+            core::ptr::copy_nonoverlapping(FILM_JUMP.as_ptr(), address as *mut u8, 2);
+            let mut ignored = 0u32;
+            VirtualProtect(address as *mut c_void, 2, old, &mut ignored);
+        }
+    }
 }
 
 /// The plugin, from the folder of the game.
@@ -54,6 +92,9 @@ pub unsafe extern "system" fn Direct3DCreate8(sdk_version: u32) -> *mut c_void {
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(_module: *mut c_void, reason: u32, _reserved: *mut c_void) -> i32 {
     // DLL_PROCESS_ATTACH
+    if reason == 1 && skip_films_wanted() {
+        skip_films();
+    }
     if reason == 1 && LoadLibraryA(beside_program(b"MWSE.dll\0").as_ptr()).is_null() {
         OutputDebugStringA(b"nirender d3d8.dll: no MWSE.dll in the game folder\n\0".as_ptr());
     }

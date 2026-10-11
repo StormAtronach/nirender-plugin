@@ -42,11 +42,11 @@ def main():
         if session.harness.processes("Morrowind.exe"):
             raise SystemExit("Morrowind is running; close it first")
         session.prepare(build=False)
-        if not is_on(theirs):
-            if os.path.exists(kept):
-                raise SystemExit("%s is there already: look at it first" % kept)
+        # The file of MGE XE is kept one time. A newer build of the d3d8.dll of this
+        # repository then takes the place of the older one.
+        if not os.path.exists(kept):
             shutil.copy2(theirs, kept)
-            shutil.copy2(D3D8, theirs)
+        shutil.copy2(D3D8, theirs)
         shutil.copy2(HOST, host)
         print("on: the game of the testing instance has no Direct3D device now. Start it from Mod Organizer.")
     elif action == "off":

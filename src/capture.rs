@@ -91,6 +91,26 @@ extern "system" {
     fn Sleep(milliseconds: u32);
 }
 
+#[link(name = "user32")]
+extern "system" {
+    fn PeekMessageA(message: *mut [u32; 7], window: usize, first: u32, last: u32, flags: u32) -> i32;
+}
+
+/// One step of a wait for the host program. The thread answers the window messages that
+/// other threads sent to its windows, and then gives its time away.
+///
+/// The host program makes its window inside the window of the game, and Windows then sends
+/// messages to the thread of the game and waits for the answers. A game thread that only
+/// sleeps while it waits for the host program stops the host program: each one then waits
+/// for the other. `PeekMessage` answers the sent messages; with these flags it takes no
+/// message out of the queue of the game.
+unsafe fn wait_step() {
+    // PM_NOREMOVE with PM_QS_SENDMESSAGE: QS_SENDMESSAGE (0x40) in the high word.
+    let mut message = [0u32; 7];
+    PeekMessageA(&mut message, 0, 0, 0, 0x0040_0000);
+    Sleep(0);
+}
+
 fn ticks() -> i64 {
     let mut count = 0;
     unsafe { QueryPerformanceCounter(&mut count) };
@@ -124,6 +144,9 @@ struct Ring {
     /// time that the game waited for the host program to draw that frame, in ticks.
     frame_before: u64,
     paced: i64,
+    /// The host program did not read in time at the end of a frame. The game does not wait
+    /// again before the host program has read all that it was late with.
+    host_late: bool,
 }
 
 impl Ring {
@@ -145,7 +168,7 @@ impl Ring {
         core::ptr::write_bytes(base, 0, RING_HEAD);
         (base as *mut u32).write(RING_MAGIC);
         (base.add(4) as *mut u32).write(capacity as u32);
-        Ok(Ring { mapping, base, capacity, waited: 0, frame_before: 0, paced: 0 })
+        Ok(Ring { mapping, base, capacity, waited: 0, frame_before: 0, paced: 0, host_late: false })
     }
 
     unsafe fn counter(&self, offset: usize) -> &core::sync::atomic::AtomicU64 {
@@ -174,7 +197,7 @@ impl Ring {
                 if ticks() - start > RING_WAIT_SECONDS * ticks_per_second() {
                     return false;
                 }
-                Sleep(0);
+                wait_step();
             }
             self.waited += ticks() - start;
         }
@@ -197,14 +220,22 @@ impl Ring {
     /// the host program does not read.
     unsafe fn pace(&mut self) {
         let start = ticks();
-        let limit = ticks_per_second() / 4;
-        while self.counter(RING_READ).load(Ordering::Acquire) < self.frame_before {
-            if ticks() - start > limit {
-                break;
+        let limit = ticks_per_second() / 20;
+        let read = |ring: &Ring| ring.counter(RING_READ).load(Ordering::Acquire);
+        if self.host_late {
+            // A host program that does not read must not make the game slow: one wait, then
+            // none until the host program is there again.
+            self.host_late = read(self) < self.frame_before;
+        } else {
+            while read(self) < self.frame_before {
+                if ticks() - start > limit {
+                    self.host_late = true;
+                    break;
+                }
+                wait_step();
             }
-            Sleep(0);
+            self.paced += ticks() - start;
         }
-        self.paced += ticks() - start;
         self.frame_before = self.counter(RING_WRITTEN).load(Ordering::Relaxed);
     }
 
@@ -278,7 +309,7 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
             crate::log!("stream: no answer to the pixel read {request} of the texture {texture:#x}");
             return None;
         }
-        Sleep(0);
+        wait_step();
     }
     reply.waited += ticks() - start;
     let (width, height) = ((reply.base.add(4) as *const u32).read_volatile(), (reply.base.add(8) as *const u32).read_volatile());

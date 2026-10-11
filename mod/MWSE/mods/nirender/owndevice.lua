@@ -38,6 +38,24 @@ return function(nirender, spec)
         { "exterior", spec.settleSeconds or 6, function()
             scenario.goTo(spec.exterior)
         end },
+        -- The player goes north over the borders of exterior cells, a small step in each
+        -- frame, as on foot but faster. The game then loads the cells in front of the player
+        -- on its second thread while the main thread draws.
+        { "walk", spec.walkSeconds or 25, function()
+            local last = os.clock()
+            local from = tes3.player.cell.editorName
+            scenario.eachFrame = function(now)
+                local step = math.min(now - last, 0.1) * (spec.walkSpeed or 2500)
+                last = now
+                local at = tes3.player.position
+                tes3.player.position = tes3vector3.new(at.x, at.y + step, at.z + 0)
+            end
+            say("walk from '%s'", from)
+        end },
+        { "walk-end", 3.0, function()
+            scenario.eachFrame = nil
+            say("walk to '%s'; calls from other threads: %s", tes3.player.cell.editorName, (nirender.threadCensus():gsub("\n", "; ")))
+        end },
     }
 
     local function step(index)

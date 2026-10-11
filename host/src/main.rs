@@ -244,8 +244,100 @@ fn texture_format(d3d_format: u32) -> Option<(wgpu::TextureFormat, usize, usize)
         21 | 22 => (wgpu::TextureFormat::Bgra8Unorm, 0, 4),
         // D3DFMT_R5G6B5, X1R5G5B5, A1R5G5B5 and A4R4G4B4: this program makes 4 bytes of them.
         23..=26 => (wgpu::TextureFormat::Bgra8Unorm, 0, 2),
+        // D3DFMT_V8U8, a bump map: two numbers with a sign, U in the first byte.
+        60 => (wgpu::TextureFormat::Rg8Snorm, 0, 2),
         _ => return None,
     })
+}
+
+/// True for a format with 16 bits that this program makes 4 bytes of.
+fn expands(d3d_format: u32) -> bool {
+    (23..=26).contains(&d3d_format)
+}
+
+/// The bytes of a pixel on the GPU, for a format without blocks.
+fn gpu_bytes(d3d_format: u32) -> usize {
+    if d3d_format == 60 {
+        2
+    } else {
+        4
+    }
+}
+
+/// Makes pixels with the bytes blue, green, red, alpha from a level of a DXT1, DXT3 or DXT5
+/// texture. The GPU takes a block format only for a size that is a multiple of 4; for each
+/// other size this program makes the pixels itself.
+fn decode_dxt(d3d_format: u32, width: usize, height: usize, source: &[u8]) -> Vec<u8> {
+    let block = if d3d_format == 0x3154_5844 { 8 } else { 16 };
+    let mut pixels = vec![0u8; width * height * 4];
+    let across = width.div_ceil(4).max(1);
+    for (index, data) in source.chunks_exact(block).enumerate() {
+        let (block_x, block_y) = (index % across * 4, index / across * 4);
+        if block_y >= height {
+            break;
+        }
+        let colors = &data[block - 8..];
+        let (c0, c1) = (u16::from_le_bytes([colors[0], colors[1]]), u16::from_le_bytes([colors[2], colors[3]]));
+        let wide = |c: u16| [((c & 31) * 255 / 31) as u32, ((c >> 5 & 63) * 255 / 63) as u32, ((c >> 11) * 255 / 31) as u32];
+        let (a, b) = (wide(c0), wide(c1));
+        // Blue, green, red, alpha for each of the 4 colours of the block.
+        let mut palette = [[0u8; 4]; 4];
+        for channel in 0..3 {
+            palette[0][channel] = a[channel] as u8;
+            palette[1][channel] = b[channel] as u8;
+            if c0 > c1 || block == 16 {
+                palette[2][channel] = ((2 * a[channel] + b[channel]) / 3) as u8;
+                palette[3][channel] = ((a[channel] + 2 * b[channel]) / 3) as u8;
+            } else {
+                palette[2][channel] = ((a[channel] + b[channel]) / 2) as u8;
+            }
+        }
+        let transparent = block == 8 && c0 <= c1;
+        for entry in palette.iter_mut() {
+            entry[3] = 255;
+        }
+        if transparent {
+            palette[3] = [0, 0, 0, 0];
+        }
+        // The alpha of DXT5: two values and 3 bits for each pixel.
+        let mut alphas = [255u8; 8];
+        let mut alpha_bits = 0u64;
+        if d3d_format == 0x3554_5844 || d3d_format == 0x3454_5844 {
+            let (a0, a1) = (data[0] as u32, data[1] as u32);
+            alphas[0] = a0 as u8;
+            alphas[1] = a1 as u8;
+            for i in 2..8u32 {
+                alphas[i as usize] = if a0 > a1 {
+                    (((8 - i) * a0 + (i - 1) * a1) / 7) as u8
+                } else if i < 6 {
+                    (((6 - i) * a0 + (i - 1) * a1) / 5) as u8
+                } else if i == 6 {
+                    0
+                } else {
+                    255
+                };
+            }
+            for (i, byte) in data[2..8].iter().enumerate() {
+                alpha_bits |= (*byte as u64) << (8 * i);
+            }
+        }
+        let bits = u32::from_le_bytes([colors[4], colors[5], colors[6], colors[7]]);
+        for n in 0..16 {
+            let (x, y) = (block_x + n % 4, block_y + n / 4);
+            if x >= width || y >= height {
+                continue;
+            }
+            let mut pixel = palette[(bits >> (2 * n) & 3) as usize];
+            match d3d_format {
+                // DXT3: 4 bits of alpha for each pixel.
+                0x3354_5844 | 0x3254_5844 => pixel[3] = (data[n / 2] >> (4 * (n % 2)) & 15) * 17,
+                0x3554_5844 | 0x3454_5844 => pixel[3] = alphas[(alpha_bits >> (3 * n) & 7) as usize],
+                _ => {}
+            }
+            pixels[(y * width + x) * 4..][..4].copy_from_slice(&pixel);
+        }
+    }
+    pixels
 }
 
 /// Makes pixels with the bytes blue, green, red, alpha from pixels with 16 bits.
@@ -414,6 +506,8 @@ struct Counts {
     target_copies: u32,
     target_draws: u32,
     texture_updates_lost: u32,
+    lost_reasons: HashMap<String, u32>,
+    textures_decoded: u32,
     texture_formats: HashMap<u32, u32>,
     missing_textures: u32,
     more_stages: u32,
@@ -455,6 +549,9 @@ struct Renderer {
     /// each surface that the game got from a texture.
     targets: HashMap<u32, RenderTexture>,
     surfaces: HashMap<u32, u32>,
+    /// The textures with a block format that this program made the pixels of: their size is
+    /// not a multiple of 4.
+    decoded: std::collections::HashSet<u32>,
     /// The textures themselves, for a write of a level later.
     texture_objects: HashMap<u32, (wgpu::Texture, u32)>,
     white: Rc<wgpu::TextureView>,
@@ -604,6 +701,7 @@ impl Renderer {
             pipelines: HashMap::new(),
             textures: HashMap::new(),
             texture_objects: HashMap::new(),
+            decoded: Default::default(),
             targets: HashMap::new(),
             surfaces: HashMap::new(),
             white,
@@ -666,10 +764,9 @@ impl Renderer {
             *self.counts.texture_formats.entry(d3d_format).or_default() += 1;
             return;
         };
-        if block != 0 && (width % 4 != 0 || height % 4 != 0) {
-            *self.counts.texture_formats.entry(d3d_format).or_default() += 1;
-            return;
-        }
+        // The GPU takes a block format only for a size that is a multiple of 4.
+        let decode = block != 0 && (width % 4 != 0 || height % 4 != 0);
+        let format = if decode { wgpu::TextureFormat::Bgra8Unorm } else { format };
         let mut bytes = Vec::new();
         for level in 0..levels {
             let (w, h) = (word(data, widths + level * 4) as usize, word(data, heights + level * 4) as usize);
@@ -677,7 +774,12 @@ impl Renderer {
             let from = word(data, offsets + level * 4) as usize;
             let to = (word(data, offsets + (level + 1) * 4) as usize).min(pixels.len());
             let start = bytes.len();
-            if source_bytes == 2 {
+            if decode {
+                let mut source = pixels[from.min(to)..to.min(from + size)].to_vec();
+                source.resize(size, 0);
+                bytes.extend_from_slice(&decode_dxt(d3d_format, w.max(1), h.max(1), &source));
+                self.counts.textures_decoded += (level == 0) as u32;
+            } else if expands(d3d_format) {
                 let mut source = pixels[from.min(to)..to.min(from + size)].to_vec();
                 source.resize(size, 0);
                 bytes.extend_from_slice(&expand_16_bits(d3d_format, &source));
@@ -798,16 +900,18 @@ impl Renderer {
             return;
         };
         let (width, height) = (width.max(1), height.max(1));
-        if block != 0 && (width % 4 != 0 || height % 4 != 0) {
-            *self.counts.texture_formats.entry(d3d_format).or_default() += 1;
-            return;
+        // The GPU takes a block format only for a size that is a multiple of 4. For each other
+        // size this program makes the pixels of each level itself.
+        let decode = block != 0 && (width % 4 != 0 || height % 4 != 0);
+        let format = if decode { wgpu::TextureFormat::Bgra8Unorm } else { format };
+        if decode {
+            self.decoded.insert(handle);
+            self.counts.textures_decoded += 1;
+        } else {
+            self.decoded.remove(&handle);
         }
         let all = 32 - width.max(height).leading_zeros();
-        let mut levels = if levels == 0 { all } else { levels.min(all) };
-        if block != 0 {
-            // A level of a block format has no side under 4 here.
-            levels = levels.min((width.min(height).trailing_zeros().max(2) - 1).max(1));
-        }
+        let levels = if levels == 0 { all } else { levels.min(all) };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -865,8 +969,10 @@ impl Renderer {
         let (handle, level, width, height, size) = (word(data, 0), word(data, 4), word(data, 8), word(data, 12), word(data, 20) as usize);
         let Some((texture, d3d_format)) = self.texture_objects.get(&handle) else {
             self.counts.texture_updates_lost += 1;
+            *self.counts.lost_reasons.entry(format!("the texture is not one that this program made, format {:#x}", word(data, 16))).or_default() += 1;
             return;
         };
+        let decode = self.decoded.contains(&handle);
         let block = match d3d_format {
             0x3154_5844 => 8,
             0x3354_5844 | 0x3554_5844 => 16,
@@ -876,14 +982,22 @@ impl Renderer {
         let (row, rows, expected) = if block != 0 {
             (width.div_ceil(4) * block, height.div_ceil(4), (width.div_ceil(4) * height.div_ceil(4) * block) as usize)
         } else {
-            (width * 4, height, (width * height * source_bytes) as usize)
+            (width * gpu_bytes(*d3d_format) as u32, height, (width * height * source_bytes) as usize)
         };
         if level >= texture.mip_level_count() || size < expected || data.len() < 24 + expected {
             self.counts.texture_updates_lost += 1;
+            let reason = if level >= texture.mip_level_count() { "the texture has no such level" } else { "the record has too few bytes" };
+            *self.counts.lost_reasons.entry(format!("{reason}, format {d3d_format:#x}, level {level} of {}, {width} x {height}", texture.mip_level_count())).or_default() += 1;
             return;
         }
         let mut pixels = std::borrow::Cow::Borrowed(&data[24..24 + expected]);
-        if source_bytes == 2 {
+        let (mut row, mut block) = (row, block);
+        if decode {
+            pixels = std::borrow::Cow::Owned(decode_dxt(*d3d_format, width as usize, height as usize, &pixels));
+            (row, block) = (width * 4, 0);
+        }
+        let rows = if decode { height } else { rows };
+        if expands(*d3d_format) {
             pixels = std::borrow::Cow::Owned(expand_16_bits(*d3d_format, &pixels));
         } else if *d3d_format == 22 {
             // No alpha in this format.
@@ -1674,7 +1788,10 @@ impl Player {
             "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}, more than 8 lights {}; draws with a made or moved texture coordinate {}",
             c.missing_textures, c.more_stages, c.more_lights, c.coordinate_work
         );
-        println!("texture levels written again {}, not written {}", c.texture_updates, c.texture_updates_lost);
+        println!("texture levels written again {}, not written {}; textures with a block format made as pixels {}", c.texture_updates, c.texture_updates_lost, c.textures_decoded);
+        for (reason, count) in &c.lost_reasons {
+            println!("  not written: {reason}: {count}");
+        }
         println!(
             "rendered textures made {}, draws into them {}, copies of pixels into them {}, pixel reads {}",
             c.render_textures, c.target_draws, c.target_copies, c.pixel_reads
@@ -1985,7 +2102,10 @@ mod live {
         /// The back buffer of the game: the frames go into it, and then into the window. It
         /// keeps the last frame for a pixel read of the game.
         back_buffer: Option<wgpu::Texture>,
-        frame: Option<wgpu::SurfaceTexture>,
+        /// A frame of the game is in progress.
+        in_frame: bool,
+        /// The frames that the window did not take: it was hidden or had no size.
+        not_shown: u32,
         data: Vec<u8>,
         frames: u32,
         first_frame: Option<Instant>,
@@ -2020,7 +2140,7 @@ mod live {
             if let Some(player) = self.player.as_mut() {
                 player.end_frame(|_| {});
             }
-            drop(self.frame.take());
+            self.in_frame = false;
             let seconds = self.first_frame.map_or(0.0, |start| start.elapsed().as_secs_f64());
             println!("end: {why}");
             println!(
@@ -2030,6 +2150,7 @@ mod live {
                 seconds * 1000.0 / self.frames.max(1) as f64,
                 self.waited.as_secs_f64() * 100.0 / seconds.max(0.001)
             );
+            println!("frames that the window did not take: {}", self.not_shown);
             println!("records {}, {:.1} MB, {:.2} MB for each frame", self.records, self.bytes as f64 / 1e6, self.bytes as f64 / 1e6 / self.frames.max(1) as f64);
             if let Some(player) = self.player.as_ref() {
                 player.print_counts();
@@ -2104,13 +2225,12 @@ mod live {
             loop {
                 // No frame before the size of the game is known: the records before that
                 // make the resources only.
-                if self.frame.is_none() && self.depth.is_some() && size.0 != 0 {
-                    let frame = match self.surface.as_ref().unwrap().get_current_texture() {
-                        wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-                        _ => return,
-                    };
+                // The frame goes into the back buffer of this program. The window is not a
+                // part of it: this program reads the stream also when the window is hidden,
+                // because the game waits for it.
+                if !self.in_frame && self.depth.is_some() && size.0 != 0 {
                     self.player.as_mut().unwrap().begin_frame(self.back_buffer.as_ref().unwrap(), self.depth.clone().unwrap(), true);
-                    self.frame = Some(frame);
+                    self.in_frame = true;
                 }
                 let Some(tag) = self.ring.pop(&mut self.data) else {
                     if self.ring.closed() {
@@ -2130,8 +2250,15 @@ mod live {
                 if !player.feed(tag, &self.data) {
                     continue;
                 }
-                // The frame is complete.
-                let Some(frame) = self.frame.take() else { return };
+                // The frame is complete. It goes into the window when the window takes one.
+                if !std::mem::take(&mut self.in_frame) {
+                    return;
+                }
+                let frame = match self.surface.as_ref().unwrap().get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
+                    _ => None,
+                };
+                self.not_shown += frame.is_none() as u32;
                 let blue_first = matches!(player.renderer.target_format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
                 let take_shot = self.shot.is_some() && !self.shot_done && self.frames + 1 >= self.shot_frame;
                 let back_buffer = self.back_buffer.as_ref().unwrap();
@@ -2140,11 +2267,13 @@ mod live {
                 let mut read = None;
                 player.end_frame(|encoder| {
                     // The picture goes into the window: the part that the two have.
-                    encoder.copy_texture_to_texture(
-                        back_buffer.as_image_copy(),
-                        frame.texture.as_image_copy(),
-                        wgpu::Extent3d { width: width.min(frame.texture.width()), height: height.min(frame.texture.height()), depth_or_array_layers: 1 },
-                    );
+                    if let Some(frame) = frame.as_ref() {
+                        encoder.copy_texture_to_texture(
+                            back_buffer.as_image_copy(),
+                            frame.texture.as_image_copy(),
+                            wgpu::Extent3d { width: width.min(frame.texture.width()), height: height.min(frame.texture.height()), depth_or_array_layers: 1 },
+                        );
+                    }
                     if take_shot {
                         read = Some(copy_picture(&device, encoder, back_buffer, width, height));
                     }
@@ -2168,7 +2297,9 @@ mod live {
                         buffer.unmap();
                     }
                 }
-                player.renderer.queue.present(frame);
+                if let Some(frame) = frame {
+                    player.renderer.queue.present(frame);
+                }
                 self.frames += 1;
                 self.first_frame.get_or_insert_with(Instant::now);
                 if self.frames_wanted != 0 && self.frames >= self.frames_wanted {
@@ -2214,7 +2345,8 @@ mod live {
             configuration: None,
             player: None,
             depth: None,
-            frame: None,
+            in_frame: false,
+            not_shown: 0,
             data: Vec::new(),
             frames: 0,
             first_frame: None,
