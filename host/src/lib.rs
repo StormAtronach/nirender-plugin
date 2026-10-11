@@ -689,7 +689,9 @@ impl Renderer {
             &wgpu::DeviceDescriptor {
                 label: None,
                 required_features: wgpu::Features::TEXTURE_COMPRESSION_BC | (adapter.features() & wgpu::Features::POLYGON_MODE_LINE),
-                required_limits: wgpu::Limits::default(),
+                // The largest texture that the adapter takes, up to 16384: an atlas of the
+                // distant land of MGE XE has that size.
+                required_limits: wgpu::Limits { max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d.min(16384), ..wgpu::Limits::default() },
                 memory_hints: wgpu::MemoryHints::default(),
                 ..Default::default()
             },
