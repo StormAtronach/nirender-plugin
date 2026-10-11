@@ -60,18 +60,20 @@ return function(nirender, spec)
         if spec.holdMenu then
             -- A menu of the game, for example "MenuInventory": the inventory, the map, the
             -- character image.
-            say("menu %s: %s", spec.holdMenu, tostring(tes3ui.enterMenuMode(spec.holdMenu)))
-            -- The game shows these four menus together in the inventory mode.
+            -- The game shows these four menus together in the inventory mode. They must be
+            -- visible before the start of menu mode.
             if spec.holdMenu == "MenuInventory" then
                 for _, name in ipairs({ "MenuInventory", "MenuMap", "MenuStat", "MenuMagic" }) do
                     local shown = tes3ui.findMenu(name)
                     if shown then
                         shown.visible = true
+                        shown.disabled = false
                         shown:updateLayout()
                     end
                     say("menu %s found: %s", name, tostring(shown ~= nil))
                 end
             end
+            say("menu %s: %s, menu mode %s", spec.holdMenu, tostring(tes3ui.enterMenuMode(spec.holdMenu)), tostring(tes3ui.menuMode()))
         else
             local menu = tes3ui.createMenu({ id = "nirender:hold", fixedFrame = true })
             menu:createLabel({ text = "nirender link test" })
