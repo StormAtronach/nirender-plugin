@@ -4,3 +4,4 @@
 __pycache__/
 *.pdb
 spikes/*/target/
+/host/target

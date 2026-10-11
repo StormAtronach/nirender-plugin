@@ -1,0 +1,18 @@
+[package]
+name = "nirender-host"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A 64-bit renderer for the render link stream of the nirender plugin, on wgpu"
+
+# This crate is not a part of the plugin crate above it.
+[workspace]
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+png = "0.18"
+pollster = "0.3"
+wgpu = "22.1"
+
+[profile.dev]
+opt-level = 1
