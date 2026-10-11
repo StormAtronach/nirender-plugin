@@ -25,6 +25,46 @@ return function(nirender, spec)
         end
     end
 
+    -- Holds every animation of a scene node at one moment, so that the two renderers see the
+    -- same moment of an exhibit: each time controller of the node, of its children and of
+    -- their properties gets frequency 0 and a fixed phase in its key range. A particle
+    -- system starts again instead, 3 seconds before its current time, so that it is in
+    -- the middle of its life at the picture. Returns the number of controllers.
+    local function holdAnimation(node)
+        local count = 0
+        local function holdChain(c)
+            while c do
+                local particles = pcall(function() return c:isInstanceOfType(ni.type.NiParticleSystemController) end)
+                    and c:isInstanceOfType(ni.type.NiParticleSystemController)
+                if particles then
+                    local now = tonumber(c.lastTime) or 0
+                    c:stop()
+                    c:start(now - 3)
+                else
+                    local low, high = tonumber(c.lowKeyFrame) or 0, tonumber(c.highKeyFrame) or 0
+                    c.frequency = 0
+                    c.phase = low + (high - low) * 0.37
+                end
+                count = count + 1
+                c = c.nextController
+            end
+        end
+        local function visit(obj)
+            if not obj then return end
+            holdChain(obj.controller)
+            for _, name in ipairs({ "alphaProperty", "materialProperty", "texturingProperty", "vertexColorProperty", "stencilProperty", "zBufferProperty", "fogProperty" }) do
+                local ok, prop = pcall(function() return obj[name] end)
+                if ok and prop then holdChain(prop.controller) end
+            end
+            local ok, children = pcall(function() return obj.children end)
+            if ok and children then
+                for i = 1, #children do visit(children[i]) end
+            end
+        end
+        pcall(visit, node)
+        return count
+    end
+
     -- The step tour is complete when its cells are done.
     local tourDone = false
     local steps = {
@@ -147,16 +187,20 @@ return function(nirender, spec)
                         if own then nirender.captureEnd() end
                         after(0.5, function() cell(index + 1) end)
                     end, function(stop, ref, go)
-                        if own then nirender.captureFrames(2) end
-                        say("tour: cell %d stop %d %s", index, stop, ref.object.id)
-                        if not own and mge and mge.saveScreenshot then
-                            -- The reference with MGE XE on Direct3D 9: a picture of each stop, with
-                            -- the name that tools/validate_tour.py gives the replayed picture.
-                            local name = string.format("%d-%02d-%s.png", index, stop, ref.object.id:gsub("[^%w_]", "_"))
-                            lfs.mkdir(spec.dir .. "/ref")
-                            mge.saveScreenshot({ path = spec.dir .. "/ref/" .. name, captureWithUI = true })
-                        end
-                        after(0.3, go)
+                        -- The animations of the object at one moment, the same in each run.
+                        local held = holdAnimation(ref.sceneNode)
+                        after(0.5, function()
+                            if own then nirender.captureFrames(2) end
+                            say("tour: cell %d stop %d %s (%d controllers held)", index, stop, ref.object.id, held)
+                            if not own and mge and mge.saveScreenshot then
+                                -- The reference with MGE XE on Direct3D 9: a picture of each stop, with
+                                -- the name that tools/validate_tour.py gives the replayed picture.
+                                local name = string.format("%d-%02d-%s.png", index, stop, ref.object.id:gsub("[^%w_]", "_"))
+                                lfs.mkdir(spec.dir .. "/ref")
+                                mge.saveScreenshot({ path = spec.dir .. "/ref/" .. name, captureWithUI = true })
+                            end
+                            after(0.3, go)
+                        end)
                     end)
                 end)
             end
