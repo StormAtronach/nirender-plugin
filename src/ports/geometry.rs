@@ -223,6 +223,41 @@ pub unsafe fn purge_skin_partition(this: usize, partition: usize) {
     hash_map::remove(this + R::hashmap_skinPartitionsToGeomBuffers, partition as u32);
 }
 
+/// The keys of a hash map of the renderer.
+unsafe fn keys(map: usize) -> Vec<u32> {
+    let mut list = Vec::new();
+    let mut position = hash_map::first(map);
+    while position != 0 {
+        let key: u32 = rd(position, THashMap_Node::key);
+        let next: usize = rd(position, THashMap_Node::nextNode);
+        list.push(key);
+        position = if next != 0 { next } else { hash_map::next_bucket(map, key) };
+    }
+    list
+}
+
+/// Makes the renderer drop the buffers of each geometry and of each skin partition that it
+/// has buffers for. The game makes them again at the next draw of the object. This is not a
+/// function of the game; the capture uses it. Returns the two numbers.
+pub unsafe fn purge_all_geometry(this: usize) -> (u32, u32) {
+    // The key of the first map is the number of a geometry data, not its address.
+    let map = this + R::hashGeomBuffers;
+    let shapes = keys(map);
+    for &key in &shapes {
+        let node = hash_map::find(map, key);
+        if node != 0 {
+            destroy_geometry_buffer(rd(node, THashMap_Node::data));
+            hash_map::remove(map, key);
+        }
+    }
+    // The key of the second map is the partition.
+    let partitions = keys(this + R::hashmap_skinPartitionsToGeomBuffers);
+    for &partition in &partitions {
+        purge_skin_partition(this, partition as usize);
+    }
+    (shapes.len() as u32, partitions.len() as u32)
+}
+
 /// 0x6AF3A0 `NiDX8Renderer::PurgeGeometryData`
 pub unsafe fn purge_geometry_data(this: usize, geom_data: usize) {
     crate::shadow::touch(&purge_geometry_data_port::STATE);

@@ -28,7 +28,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use crate::link::{
-    DrawStateV1, DrawV1, SceneV1, StateLightV1, TextureV1, CALL_CREATE_DEPTH_BUFFER, CALL_CREATE_IMAGE_SURFACE, CALL_CREATE_INDEX_BUFFER,
+    DrawStateV1, DrawV1, SceneV1, StateLightV1, TextureV1, CALL_COPY_PIXELS, CALL_CREATE_DEPTH_BUFFER, CALL_CREATE_IMAGE_SURFACE, CALL_CREATE_INDEX_BUFFER,
     CALL_CREATE_TEXTURE, CALL_CREATE_VERTEX_BUFFER, CALL_CUBE_FACE, CALL_GET_DEPTH_BUFFER, CALL_GET_RENDER_TARGET, CALL_PRESENT,
     CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_DRAW, COMMAND_DRAW_INDEXED, COMMAND_TRANSFORM,
 };
@@ -208,6 +208,8 @@ struct State {
     geometry: HashSet<(u32, u32)>,
     /// The buffers whose bytes are in the capture.
     known_buffers: HashSet<u32>,
+    /// The image surfaces: surfaces in system memory, where the game changes pixels.
+    image_surfaces: HashSet<u32>,
     /// The object of the draws that follow, and the objects to drop the buffers of after this
     /// frame: a draw used a buffer that is not in the capture.
     object: (u32, u32),
@@ -279,6 +281,7 @@ unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
         out: Some(out),
         geometry: HashSet::new(),
         known_buffers: HashSet::new(),
+        image_surfaces: HashSet::new(),
         object: (0, 0),
         late: HashSet::new(),
         dropped_late: HashSet::new(),
@@ -488,11 +491,26 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
     if index == CALL_CREATE_VERTEX_BUFFER || index == CALL_CREATE_INDEX_BUFFER {
         crate::resource::wrap(handle as usize);
     }
+    if index == CALL_CREATE_IMAGE_SURFACE && handle != 0 {
+        if let Some(s) = state() {
+            s.image_surfaces.insert(handle);
+        }
+    }
     if recording() {
         let mut head = vec![index, result, handle, args.len() as u32];
         head.extend_from_slice(args);
-        let data: &[u8] = if index == CALL_VIEWPORT && !args.is_empty() { bytes_at(args[0], 24) } else { &[] };
-        write(tag::CALL, &[&words(&head), data]);
+        // A copy from an image surface: the pixels are those that the game wrote, for
+        // example the character image after the game changed its alpha. The record has
+        // width, height, format, size and the pixels. The own host has no pixels to give:
+        // its surfaces do not get the picture of the target.
+        let from_image = index == CALL_COPY_PIXELS && (result as i32) >= 0 && !args.is_empty() && !crate::own_host::active() && state().is_some_and(|s| s.image_surfaces.contains(&args[0]));
+        let pixels = if from_image { crate::link_client::surface_pixels(args[0]) } else { None };
+        if let Some((width, height, format, pixels)) = pixels {
+            write(tag::CALL, &[&words(&head), &words(&[width, height, format, pixels.len() as u32]), &pixels]);
+        } else {
+            let data: &[u8] = if index == CALL_VIEWPORT && !args.is_empty() { bytes_at(args[0], 24) } else { &[] };
+            write(tag::CALL, &[&words(&head), data]);
+        }
     }
     if index == CALL_PRESENT {
         frame_end();
@@ -550,9 +568,16 @@ unsafe fn purge(s: &mut State) {
         return;
     }
     let textures = crate::ports::textures::purge_source_textures();
+    let rendered = crate::ports::rendered::remake_rendered_textures(renderer);
+    // All the buffers, not only those of the objects in view: the game can draw an object
+    // into a rendered texture one time and not again.
+    let (shapes, partitions) = crate::ports::geometry::purge_all_geometry(renderer);
     let objects: Vec<(u32, u32)> = s.geometry.iter().copied().collect();
     let skins = drop_buffers(renderer, &objects);
-    crate::log!("capture: the renderer dropped {textures} source textures and the buffers of {} objects, {skins} of them with a skin", objects.len());
+    crate::log!(
+        "capture: the renderer dropped {textures} source textures, the buffers of {shapes} shapes and {partitions} skin partitions (and of {} objects in view, {skins} with a skin), and made {rendered} rendered textures again",
+        objects.len()
+    );
 }
 
 /// Makes the renderer drop the buffers of these objects: geometry data and skin instance.
@@ -596,7 +621,8 @@ unsafe fn frame_end() {
                         crate::own_host::take_over();
                     }
                 }
-                purge(s);
+                // The record starts before the drop: the calls that make the rendered textures
+                // again are a part of the stream.
                 s.phase = Phase::Record(s.frames);
                 RECORDING.store(true, Ordering::Relaxed);
                 let renderer = crate::engine::renderer();
@@ -606,6 +632,9 @@ unsafe fn frame_end() {
                 // The render states that are not in a state packet, as they are now.
                 for (state, value) in crate::link_client::render_states() {
                     write(tag::COMMAND, &[&words(&[crate::link::COMMAND_RENDER_STATE, state, value, 0])]);
+                }
+                if let Some(s) = state() {
+                    purge(s);
                 }
             }
         }

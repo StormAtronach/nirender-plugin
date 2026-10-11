@@ -672,6 +672,20 @@ pub unsafe fn clear_texture_data(_renderer: usize) {
     }
 }
 
+/// The textures that are alive and whose first renderer data has this method table.
+pub unsafe fn textures_with_data(table: u32) -> Vec<usize> {
+    let mut list = Vec::new();
+    let mut texture = eng::texture_list_head();
+    while texture != 0 {
+        let data: usize = rd(texture, T::rendererData);
+        if data != 0 && rd::<u32>(data, TD::vtbl_vtbl) == table {
+            list.push(texture);
+        }
+        texture = rd(texture, T::nextTexture);
+    }
+    list
+}
+
 /// Makes each source texture lose its renderer data: the game makes it again at the next use
 /// of the texture. A rendered texture keeps its data: the game does not make that again by
 /// itself. This is not a function of the game; the capture uses it. Returns the number of

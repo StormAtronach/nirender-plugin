@@ -37,10 +37,15 @@ mod tag {
 }
 
 const COMMAND_RENDER_STATE: u32 = 1;
+const COMMAND_STAGE_STATE: u32 = 2;
 const COMMAND_TRANSFORM: u32 = 3;
 const COMMAND_DRAW_INDEXED: u32 = 4;
 const CALL_CLEAR: u32 = 4;
 const CALL_VIEWPORT: u32 = 5;
+const CALL_RENDER_TARGET: u32 = 7;
+const CALL_TEXTURE_LEVEL: u32 = 15;
+const CALL_CREATE_TEXTURE: u32 = 20;
+const CALL_COPY_PIXELS: u32 = 23;
 const EVENT_SET_TARGET: u32 = 2;
 /// The value of a state that the game did not set.
 const UNKNOWN: u32 = 0x7FFF_FFFF;
@@ -63,6 +68,38 @@ fn double(bytes: &[u8], offset: usize) -> f64 {
 
 /// The offsets of `MgeLinkDrawStateV1`. The struct has 1728 bytes.
 mod state {
+    /// The place of a render state of Direct3D in the packet, when the packet has it.
+    pub fn of_render_state(render_state: u32) -> Option<usize> {
+        Some(match render_state {
+            7 => DEPTH_ENABLE,
+            14 => DEPTH_WRITE,
+            15 => ALPHA_TEST_ENABLE,
+            19 => SOURCE_BLEND,
+            20 => DESTINATION_BLEND,
+            22 => CULL_MODE,
+            23 => DEPTH_FUNCTION,
+            24 => ALPHA_REFERENCE,
+            25 => ALPHA_FUNCTION,
+            27 => BLEND_ENABLE,
+            28 => FOG_ENABLE,
+            // The stencil states of Direct3D are 52 to 59, in the order of the packet.
+            52..=59 => STENCIL + (render_state as usize - 52) * 4,
+            137 => LIGHTING,
+            139 => AMBIENT,
+            145 => DIFFUSE_SOURCE,
+            148 => EMISSIVE_SOURCE,
+            151 => VERTEX_BLEND,
+            _ => return None,
+        })
+    }
+
+    /// The place of a texture stage state of Direct3D in the packet.
+    pub fn of_stage_state(stage: u32, stage_state: u32) -> Option<usize> {
+        const ORDER: [u32; 17] = [1, 2, 3, 4, 5, 6, 26, 27, 28, 11, 24, 7, 8, 9, 10, 22, 23];
+        let index = ORDER.iter().position(|s| *s == stage_state)?;
+        (stage < 8).then(|| STAGES + stage as usize * STAGE_SIZE + index * 4)
+    }
+
     pub const SIZE: usize = 1728;
     pub const BASE_VERTEX: usize = 12;
     pub const VERTEX_BUFFER: usize = 32;
@@ -291,6 +328,16 @@ struct PipelineKey {
     fill: u32,
     /// The stencil: enable, fail, depth fail, pass, function, mask, write mask.
     stencil: [u32; 7],
+    /// D3DRS_COLORWRITEENABLE: red 1, green 2, blue 4, alpha 8.
+    color_write: u32,
+}
+
+/// A texture that the game draws into.
+struct RenderTexture {
+    texture: wgpu::Texture,
+    view: Rc<wgpu::TextureView>,
+    depth: Rc<wgpu::TextureView>,
+    size: (u32, u32),
 }
 
 struct BufferData {
@@ -308,6 +355,9 @@ struct Counts {
     topology: u32,
     textures: u32,
     texture_updates: u32,
+    render_textures: u32,
+    target_copies: u32,
+    target_draws: u32,
     texture_updates_lost: u32,
     texture_formats: HashMap<u32, u32>,
     missing_textures: u32,
@@ -346,6 +396,10 @@ struct Renderer {
     pipeline_layout: wgpu::PipelineLayout,
     pipelines: HashMap<PipelineKey, Rc<wgpu::RenderPipeline>>,
     textures: HashMap<u32, Rc<wgpu::TextureView>>,
+    /// The textures that the game draws into, by the handle of the texture, and the texture of
+    /// each surface that the game got from a texture.
+    targets: HashMap<u32, RenderTexture>,
+    surfaces: HashMap<u32, u32>,
     /// The textures themselves, for a write of a level later.
     texture_objects: HashMap<u32, (wgpu::Texture, u32)>,
     white: Rc<wgpu::TextureView>,
@@ -482,6 +536,8 @@ impl Renderer {
             pipelines: HashMap::new(),
             textures: HashMap::new(),
             texture_objects: HashMap::new(),
+            targets: HashMap::new(),
+            surfaces: HashMap::new(),
             white,
             samplers: HashMap::new(),
             texture_groups: HashMap::new(),
@@ -584,6 +640,42 @@ impl Renderer {
         // A group can have the texture that had this handle before.
         self.texture_groups.clear();
         self.counts.textures += 1;
+    }
+
+    /// Makes a texture that the game draws into, with a depth buffer of its size.
+    fn render_texture(&mut self, handle: u32, width: u32, height: u32) {
+        let (width, height) = (width.max(1), height.max(1));
+        let texture = target_texture(&self.device, width, height, self.target_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
+        let depth = target_texture(&self.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let view = Rc::new(texture.create_view(&Default::default()));
+        self.textures.insert(handle, view.clone());
+        self.texture_objects.remove(&handle);
+        self.targets.insert(handle, RenderTexture { texture, view, depth: Rc::new(depth.create_view(&Default::default())), size: (width, height) });
+        self.texture_groups.clear();
+        self.counts.render_textures += 1;
+    }
+
+    /// The game copied pixels of its own into a texture that it draws into. `pixels` has 4
+    /// bytes for each pixel, blue first.
+    fn target_pixels(&mut self, handle: u32, width: u32, height: u32, pixels: &[u8]) {
+        let Some(target) = self.targets.get(&handle) else { return };
+        if target.size != (width, height) || pixels.len() < (width * height * 4) as usize {
+            self.counts.texture_updates_lost += 1;
+            return;
+        }
+        let mut bytes = pixels[..(width * height * 4) as usize].to_vec();
+        if !matches!(self.target_format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+            for pixel in bytes.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &target.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.counts.target_copies += 1;
     }
 
     /// The game wrote a level of a texture again.
@@ -742,7 +834,11 @@ impl Renderer {
                     module: &self.shader,
                     entry_point: Some("fs"),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: self.target_format, blend, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: self.target_format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::from_bits_truncate(key.color_write),
+                    })],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -893,10 +989,15 @@ struct Player {
     pass: Option<wgpu::RenderPass<'static>>,
     color: Option<Rc<wgpu::TextureView>>,
     depth: Option<Rc<wgpu::TextureView>>,
+    /// The texture that the game draws into now. `None` for the back buffer.
+    target: Option<u32>,
+    /// The game named a rendered texture as its target.
+    wants_texture: bool,
     /// The size of the back buffer of the game, from the first record. 0 when not known.
     size: (u32, u32),
-    /// The size of the targets of the frame in progress.
+    /// The size of the target of the pass in progress, and the size of the picture of the frame.
     target_size: (u32, u32),
+    frame_size: (u32, u32),
 }
 
 impl Player {
@@ -916,16 +1017,26 @@ impl Player {
             pass: None,
             color: None,
             depth: None,
+            target: None,
+            wants_texture: false,
             size: (0, 0),
             target_size: (0, 0),
+            frame_size: (0, 0),
         }
     }
 
     /// Starts a pass on the targets of the frame: it draws on what is there, or it clears first.
     fn open_pass(&mut self, clear_color: Option<wgpu::Color>, clear_depth: Option<f32>, clear_stencil: Option<u32>) {
         drop(self.pass.take());
-        let (Some(encoder), Some(color), Some(depth)) = (self.encoder.as_mut(), self.color.as_ref(), self.depth.as_ref()) else { return };
-        let mut pass = encoder
+        let rendered = self.target.and_then(|handle| self.renderer.targets.get(&handle));
+        let views = match rendered {
+            Some(texture) => Some((texture.view.clone(), texture.depth.clone(), texture.size)),
+            None => self.color.clone().zip(self.depth.clone()).map(|(color, depth)| (color, depth, self.frame_size)),
+        };
+        let (Some(encoder), Some((color, depth, size))) = (self.encoder.as_mut(), views) else { return };
+        self.target_size = size;
+        let (color, depth) = (&*color, &*depth);
+        let pass = encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -962,7 +1073,9 @@ impl Player {
     /// Starts a frame that draws into these targets. Until the next start, the records
     /// change only the state and the resources.
     fn begin_frame(&mut self, color: Rc<wgpu::TextureView>, depth: Rc<wgpu::TextureView>, size: (u32, u32)) {
-        self.target_size = size;
+        self.frame_size = size;
+        self.target = None;
+        self.stream.back_buffer = true;
         self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
         self.renderer.draw_slots = 0;
         self.color = Some(color);
@@ -998,7 +1111,7 @@ impl Player {
             }
             tag::FRAME_EVENT => {
                 if word(data, 0) == EVENT_SET_TARGET {
-                    self.stream.back_buffer = word(data, 4) == 0;
+                    self.wants_texture = word(data, 4) != 0;
                 }
             }
             tag::DRAW_STATE => self.stream.state = data.to_vec(),
@@ -1013,6 +1126,56 @@ impl Player {
                             self.stream.viewport = Some((rectangle, [float(viewport, 16), float(viewport, 20)]));
                             if self.stream.back_buffer {
                                 self.apply_viewport();
+                            }
+                        }
+                    }
+                    CALL_CREATE_TEXTURE => {
+                        // Width, height, levels, usage, format, pool. D3DUSAGE_RENDERTARGET is 1.
+                        let handle = word(data, 8);
+                        if handle != 0 && word(arguments, 12) & 1 != 0 {
+                            self.renderer.render_texture(handle, word(arguments, 0), word(arguments, 4));
+                        }
+                    }
+                    CALL_TEXTURE_LEVEL => {
+                        // Texture, level; the handle that the call gave is the surface.
+                        if word(data, 8) != 0 && word(arguments, 4) == 0 {
+                            self.renderer.surfaces.insert(word(data, 8), word(arguments, 0));
+                        }
+                    }
+                    CALL_RENDER_TARGET => {
+                        // The colour surface and the depth surface. A surface of a texture
+                        // that this program made is that texture; each other one is the
+                        // back buffer.
+                        let texture = self.renderer.surfaces.get(&word(arguments, 0)).copied().filter(|handle| self.renderer.targets.contains_key(handle));
+                        // A rendered texture that is not known here: its draws go nowhere.
+                        self.stream.back_buffer = texture.is_some() || !self.wants_texture;
+                        if texture != self.target {
+                            self.target = texture;
+                            if self.drawing() {
+                                self.open_pass(None, None, None);
+                            }
+                        }
+                    }
+                    CALL_COPY_PIXELS => {
+                        // Source surface, rectangles, their number, destination surface,
+                        // points. With pixels, the source is an image surface: the game read
+                        // a rendered texture, changed the pixels, and now writes them back.
+                        let pixels = &arguments[(word(data, 12) as usize * 4).min(arguments.len())..];
+                        let texture = self.renderer.surfaces.get(&word(arguments, 12)).copied();
+                        if let (Some(texture), true) = (texture, pixels.len() >= 16) {
+                            // The draws into the texture come first: a write of a texture is
+                            // done before the commands that are not sent yet.
+                            let in_frame = self.drawing();
+                            if in_frame {
+                                drop(self.pass.take());
+                                if let Some(encoder) = self.encoder.take() {
+                                    self.renderer.queue.submit([encoder.finish()]);
+                                }
+                            }
+                            self.renderer.target_pixels(texture, word(pixels, 0), word(pixels, 4), &pixels[16..]);
+                            if in_frame {
+                                self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
+                                self.open_pass(None, None, None);
                             }
                         }
                     }
@@ -1031,8 +1194,19 @@ impl Player {
                 }
             }
             tag::COMMAND => match word(data, 0) {
+                // A state command after a state packet is for the draws that follow: the Code
+                // Patch changes the blend and the alpha test around its draws into a
+                // rendered texture.
                 COMMAND_RENDER_STATE => {
                     self.stream.render_states.insert(word(data, 4), word(data, 8));
+                    if let Some(at) = state::of_render_state(word(data, 4)).filter(|at| at + 4 <= self.stream.state.len()) {
+                        self.stream.state[at..at + 4].copy_from_slice(&data[8..12]);
+                    }
+                }
+                COMMAND_STAGE_STATE => {
+                    if let Some(at) = state::of_stage_state(word(data, 4), word(data, 8)).filter(|at| at + 4 <= self.stream.state.len()) {
+                        self.stream.state[at..at + 4].copy_from_slice(&data[12..16]);
+                    }
                 }
                 COMMAND_TRANSFORM if data.len() >= 16 + 64 => match word(data, 4) {
                     2 => self.stream.view = floats(data, 16),
@@ -1081,6 +1255,7 @@ impl Player {
             cull: known(word(s, state::CULL_MODE), 3),
             // D3DRS_FILLMODE is 8. The game sends it as a command.
             fill: self.stream.render_states.get(&8).copied().unwrap_or(3),
+            color_write: 15,
             stencil: {
                 let v: [u32; 8] = core::array::from_fn(|i| word(s, state::STENCIL + i * 4));
                 if known(v[0], 0) == 0 {
@@ -1091,6 +1266,8 @@ impl Player {
             },
         };
         let stencil_reference = known(word(s, state::STENCIL + 5 * 4), 0);
+        // D3DRS_COLORWRITEENABLE is 168.
+        let key = PipelineKey { color_write: self.stream.render_states.get(&168).copied().unwrap_or(15) & 15, ..key };
         let (vertex_handle, index_handle) = (word(s, state::VERTEX_BUFFER), word(s, state::INDEX_BUFFER));
         let (Some(vertex_buffer), Some(index_buffer)) = (renderer.gpu_buffer(vertex_handle, false), renderer.gpu_buffer(index_handle, true)) else {
             renderer.counts.no_buffer += 1;
@@ -1141,6 +1318,9 @@ impl Player {
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         pass.draw_indexed(first_index..first_index + indexes, word(s, state::BASE_VERTEX) as i32, 0..1);
         renderer.counts.draws += 1;
+        if self.target.is_some() {
+            renderer.counts.target_draws += 1;
+        }
     }
 
     fn print_counts(&self) {
@@ -1152,6 +1332,7 @@ impl Player {
             c.missing_textures, c.more_stages, c.more_lights, c.coordinate_work
         );
         println!("texture levels written again {}, not written {}", c.texture_updates, c.texture_updates_lost);
+        println!("rendered textures made {}, draws into them {}, copies of pixels into them {}", c.render_textures, c.target_draws, c.target_copies);
         for (format, count) in &c.texture_formats {
             println!("texture format {format:#x} not made: {count}");
         }
@@ -1270,15 +1451,22 @@ fn main() {
     let depth = target_texture(&device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
     let mut frame = 0;
     for (tag, data) in &records {
-        if frame == wanted && !player.drawing() {
+        // Each frame up to the wanted one is drawn: the game can draw into a rendered texture
+        // in one frame and use it in the frames after that.
+        if frame <= wanted && !player.drawing() {
             player.begin_frame(Rc::new(target.create_view(&Default::default())), Rc::new(depth.create_view(&Default::default())), (width, height));
         }
         if player.feed(*tag, data) {
             if player.drawing() {
                 let mut read = None;
-                player.end_frame(|encoder| read = Some(copy_picture(&device, encoder, &target, width, height)));
-                let (buffer, row) = read.unwrap();
-                save_picture(&device, &buffer, row, width, height, false, &args[2]);
+                player.end_frame(|encoder| {
+                    if frame == wanted {
+                        read = Some(copy_picture(&device, encoder, &target, width, height));
+                    }
+                });
+                if let Some((buffer, row)) = read {
+                    save_picture(&device, &buffer, row, width, height, false, &args[2]);
+                }
             }
             frame += 1;
         }

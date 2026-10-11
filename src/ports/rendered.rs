@@ -1059,6 +1059,23 @@ unsafe fn source_cube_map_data_update_regions(set: &mut Regions, this: usize) {
 // NiDX8Renderer
 // ---------------------------------------------------------------------------------------
 
+/// Makes the renderer data of each rendered texture again. The pictures in the textures are
+/// lost: the game draws a rendered texture again only when it needs a new picture. This is
+/// not a function of the game; the capture uses it, so that the making of each rendered
+/// texture is in the stream. Returns the number of textures.
+///
+/// It takes the textures from the list of the textures that are alive. The map of rendered
+/// textures of the renderer is no source for this: no function takes a texture out of that
+/// map when the texture dies, so the map can have textures that are gone.
+pub unsafe fn remake_rendered_textures(this: usize) -> u32 {
+    let list = crate::ports::textures::textures_with_data(VTBL_RENDERED_TEXTURE_DATA as u32);
+    for &texture in &list {
+        crate::ports::textures::renderer_purge_texture(this, texture);
+        create_rendered_texture_renderer_data(this, texture);
+    }
+    list.len() as u32
+}
+
 /// 0x6B03B0 `NiDX8Renderer::CreateRenderedTextureRendererData`. Returns 1 when the texture
 /// has renderer data.
 pub unsafe fn create_rendered_texture_renderer_data(this: usize, texture: usize) -> u8 {

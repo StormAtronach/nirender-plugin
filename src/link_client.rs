@@ -333,6 +333,35 @@ pub unsafe fn frame_call(call: u32, args: &[u32]) -> Option<u32> {
     kind_call(KIND_FRAME, call, args)
 }
 
+/// The pixels of a surface of the host with 4 bytes for each pixel: width, height, format and
+/// the rows without the bytes after each row. The capture uses it; the call is not in the
+/// stream.
+pub unsafe fn surface_pixels(surface: u32) -> Option<(u32, u32, u32, Vec<u8>)> {
+    let host = host()?;
+    // D3DSURFACE_DESC: format, type, usage, pool, size, multisample type, width, height.
+    let mut description = [0u32; 8];
+    if (host.call)(CALL_SURFACE_DESCRIPTION, [surface, description.as_mut_ptr() as u32].as_ptr()) as i32 != 0 {
+        return None;
+    }
+    let (format, width, height) = (description[0], description[6], description[7]);
+    // D3DFMT_A8R8G8B8 is 21 and D3DFMT_X8R8G8B8 is 22.
+    if !(format == 21 || format == 22) || width == 0 || height == 0 {
+        return None;
+    }
+    // D3DLOCKED_RECT: pitch, bits. D3DLOCK_READONLY is 0x10.
+    let mut locked = [0u32; 2];
+    if (host.call)(CALL_SURFACE_LOCK, [surface, locked.as_mut_ptr() as u32, 0, 0x10].as_ptr()) as i32 != 0 {
+        return None;
+    }
+    let row = width as usize * 4;
+    let mut pixels = Vec::with_capacity(row * height as usize);
+    for y in 0..height as usize {
+        pixels.extend_from_slice(core::slice::from_raw_parts((locked[1] as usize + y * locked[0] as usize) as *const u8, row));
+    }
+    (host.call)(CALL_SURFACE_UNLOCK, [surface].as_ptr());
+    Some((width, height, format, pixels))
+}
+
 /// Makes a call of the target kind on the host. Returns `None` when the caller must make
 /// the D3D8 call.
 #[inline]
@@ -496,6 +525,17 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
         _ => None,
     };
     if routed.is_none() && crate::own_host::active() {
+        // `GetRenderState(state, address)`: the Code Patch asks for the blend state before a
+        // draw into a rendered texture. The answer is the value in the record of the game.
+        if slot * 4 == DEVICE_GET_RENDER_STATE && args.len() >= 2 && args[1] != 0 {
+            let renderer = crate::engine::renderer();
+            if renderer != 0 && args[0] < RENDER_STATES_IN_RECORD {
+                let render_state: usize = rd(renderer, R::renderState);
+                let value: u32 = rd(render_state, RS::renderStateSettings + args[0] as usize * 8);
+                *(args[1] as usize as *mut u32) = if value == STATE_UNKNOWN { 0 } else { value };
+                return Some(0);
+            }
+        }
         // No device is behind the link. The call ends here.
         crate::own_host::take(slot);
         return Some(0);

@@ -89,6 +89,8 @@ pub const DEVICE_SET_LIGHT: usize = 0xB0;
 pub const DEVICE_LIGHT_ENABLE: usize = 0xB8;
 /// The slot of `IDirect3DDevice8::SetRenderState`.
 pub const DEVICE_SET_RENDER_STATE: usize = 0xC8;
+/// The slot of `IDirect3DDevice8::GetRenderState`.
+pub const DEVICE_GET_RENDER_STATE: usize = 0xCC;
 /// The slot of `IDirect3DDevice8::SetTexture`.
 pub const DEVICE_SET_TEXTURE: usize = 0xF4;
 /// The slot of `IDirect3DDevice8::SetTextureStageState`.

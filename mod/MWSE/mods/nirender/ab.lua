@@ -10,7 +10,7 @@
 -- Each view holds the game in menu mode. Menu mode stops the animations and the clock, so
 -- the two pictures are of the same moment.
 --
--- spec.places is a list of { cell = name or "", views = "here" | "actor" | "tour" }.
+-- spec.places is a list of { cell = name or "", views = "here" | "actor" | "inventory" | "tour" }.
 -- "tour" is each object of the cell whose id starts with spec.tour.
 
 return function(nirender, spec)
@@ -40,8 +40,20 @@ return function(nirender, spec)
         end
     end
 
-    local function hold(on)
-        if on then
+    local function hold(on, inventory)
+        if on and inventory then
+            -- The inventory with the character image and the map. The game shows these four
+            -- menus together, and they must be visible before the start of menu mode.
+            for _, name in ipairs({ "MenuInventory", "MenuMap", "MenuStat", "MenuMagic" }) do
+                local shown = tes3ui.findMenu(name)
+                if shown then
+                    shown.visible = true
+                    shown.disabled = false
+                    shown:updateLayout()
+                end
+            end
+            tes3ui.enterMenuMode("MenuInventory")
+        elseif on then
             local menu = tes3ui.createMenu({ id = "nirender:hold", fixedFrame = true })
             menu:createLabel({ text = "nirender A/B" })
             menu:updateLayout()
@@ -54,14 +66,19 @@ return function(nirender, spec)
     end
 
     -- One view: the reference picture, then the capture.
-    local function one_view(label, done)
+    local function one_view(label, inventory, done)
         number = number + 1
         local n = number
-        hold(true)
+        hold(true, inventory)
         nirender.linkUseKinds(0)
         nirender.linkUseFacts(0)
         nirender.linkTextures(false)
         nirender.setMode("*", "off")
+        if inventory then
+            -- The game draws the character image only when it changes. The reference gets a
+            -- new one, as the capture does: the two are then of the same state of the game.
+            after(0.4, function() tes3ui.updateInventoryCharacterImage() end)
+        end
         -- The frame with the game code and the plain MGE XE must be on the screen.
         after(1.2, function()
             mge.saveScreenshot({ path = string.format("%s/ref-%03d.png", spec.dir, n), captureWithUI = true })
@@ -70,16 +87,28 @@ return function(nirender, spec)
                 nirender.linkTextures(true)
                 nirender.linkUseFacts(spec.facts)
                 nirender.linkUseKinds(spec.kinds)
-                after(0.3, function()
-                    local ok, problem = nirender.capture(string.format("%s/view-%03d.nircap", spec.dir, n), 3, 2)
+                if inventory then after(0.2, function() tes3ui.updateInventoryCharacterImage() end) end
+                -- A second picture, of MGE XE as it draws from the stream. A difference between
+                -- it and the reference is a difference of the Rust code or of the link, not of
+                -- the host program.
+                after(0.8, function() mge.saveScreenshot({ path = string.format("%s/link-%03d.png", spec.dir, n), captureWithUI = true }) end)
+                after(1.6, function()
+                    local ok, problem = nirender.capture(string.format("%s/view-%03d.nircap", spec.dir, n), 3, inventory and 4 or 2)
                     if not ok then
                         say("view|%d|%s|capture failed: %s", n, label, tostring(problem))
                         hold(false)
                         return done()
                     end
+                    local asked = false
                     local function poll()
                         local status = nirender.captureStatus()
-                        if status:sub(1, 4) ~= "done" then return after(0.1, poll) end
+                        if inventory and not asked and status:sub(1, 6) == "record" then
+                            -- The capture made the rendered textures again, and they are
+                            -- empty. The game draws the character image only when it changes.
+                            asked = true
+                            tes3ui.updateInventoryCharacterImage()
+                        end
+                        if status:sub(1, 4) ~= "done" then return after(0.01, poll) end
                         say("view|%d|%s|%s", n, label, status)
                         hold(false)
                         after(0.3, done)
@@ -97,6 +126,8 @@ return function(nirender, spec)
             if actor then
                 list[1] = { label = "actor " .. actor.object.id, go = function() scenario.faceActor(actor, spec.actorDistance or 160, true) end }
             end
+        elseif place.views == "inventory" then
+            list[1] = { label = "inventory", inventory = true, go = function() end }
         elseif place.views == "tour" then
             local prefix = spec.tour:lower()
             for ref in tes3.player.cell:iterateReferences() do
@@ -142,7 +173,7 @@ return function(nirender, spec)
                 view.go()
                 -- The game must draw the new view, and a level-of-detail node must switch.
                 after(1.0, function()
-                    one_view(where .. " / " .. view.label, function() next_view(i + 1) end)
+                    one_view(where .. " / " .. view.label, view.inventory, function() next_view(i + 1) end)
                 end)
             end
             next_view(1)
