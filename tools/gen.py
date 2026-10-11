@@ -70,12 +70,25 @@ def gen_layouts(structs):
     return "\n".join(out)
 
 
+# The bytes of stack arguments that a function removes, where the database has 0 and the code
+# says another number. Three functions end in a jump to a function that removes the
+# arguments. For the fourth the type in the database has no argument, and the code ends in
+# `retn 4`.
+ARGSIZE = {
+    0x6AC370: 12,  # NiDX8Renderer::PrecacheTexture: jmp to NiDX8TextureManager::PrecacheTexture
+    0x6F53E0: 16,  # NiRenderer::BatchRenderShape: jmp to RenderShape
+    0x6F53F0: 16,  # NiRenderer::BatchRenderStrips: jmp to RenderTriStrips
+    0x6F5650: 4,   # NiRenderer::SetLeftRightSwap
+}
+
+
 def gen_funcs(funcs):
     rows = []
     code = bytearray()
     for f in sorted(funcs, key=lambda f: f["ea"]):
         if not is_renderer_function(f["name"]):
             continue
+        f = dict(f, argsize=ARGSIZE.get(f["ea"], f["argsize"]))
         offset = len(code)
         code += bytes.fromhex(f["bytes"])
         head = bytes.fromhex(f["head"]).ljust(16, b"\0")

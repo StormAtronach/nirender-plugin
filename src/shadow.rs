@@ -158,6 +158,13 @@ impl Eax for u32 {
     }
     const MASK: u32 = !0;
 }
+/// A float result is on the x87 stack, not in EAX. The comparison uses its bits.
+impl Eax for f32 {
+    fn to_eax(self) -> u32 {
+        self.to_bits()
+    }
+    const MASK: u32 = !0;
+}
 impl Eax for usize {
     fn to_eax(self) -> u32 {
         self as u32

@@ -705,6 +705,44 @@ pub unsafe fn get_left_right_swap(this: usize) -> u8 {
     (rd::<u32>(render_state, RS::bLeftRightSwap) != 0) as u8
 }
 
+/// 0x6AC310 `NiDX8Renderer::GetMaxFogValue`. The result is on the x87 stack.
+pub unsafe fn get_max_fog_value(this: usize) -> f32 {
+    crate::shadow::touch(&get_max_fog_value_port::STATE);
+    rd(rd::<usize>(this, R::renderState), RS::maxFogValue)
+}
+
+/// 0x6F5670 `NiRenderer::GetMaxFogValue`: the base class gives 1.
+pub unsafe fn base_get_max_fog_value(_this: usize) -> f32 {
+    crate::shadow::touch(&base_get_max_fog_value_port::STATE);
+    1.0
+}
+
+/// 0x6F5650 `NiRenderer::SetLeftRightSwap`: the base class cannot swap, and returns 0.
+pub unsafe fn base_set_left_right_swap(_this: usize, _swap: u8) -> u8 {
+    crate::shadow::touch(&base_set_left_right_swap_port::STATE);
+    0
+}
+
+/// 0x6AC370 `NiDX8Renderer::PrecacheTexture`: gives the call to the texture manager. The game
+/// code jumps to the function of the manager, so the result is the result of that function.
+pub unsafe fn precache_texture(this: usize, texture: usize, a3: u32, a4: u32) -> u32 {
+    crate::shadow::touch(&precache_texture_port::STATE);
+    let manager: usize = rd(this, R::textureManager);
+    engine::thiscall3(engine::virtual_at(manager, 0xC), manager, texture as u32, a3, a4)
+}
+
+/// 0x6F53E0 `NiRenderer::BatchRenderShape`: the base class gives the call to `RenderShape`.
+pub unsafe fn base_batch_render_shape(this: usize, geometry_data: usize, skin: usize, transform: usize, bound: usize) -> u32 {
+    crate::shadow::touch(&base_batch_render_shape_port::STATE);
+    engine::thiscall4(engine::virtual_at(this, 0xBC), this, geometry_data as u32, skin as u32, transform as u32, bound as u32)
+}
+
+/// 0x6F53F0 `NiRenderer::BatchRenderStrips`: the base class gives the call to `RenderTriStrips`.
+pub unsafe fn base_batch_render_strips(this: usize, geometry_data: usize, skin: usize, transform: usize, bound: usize) -> u32 {
+    crate::shadow::touch(&base_batch_render_strips_port::STATE);
+    engine::thiscall4(engine::virtual_at(this, 0xC0), this, geometry_data as u32, skin as u32, transform as u32, bound as u32)
+}
+
 /// 0x6ABFD0 `NiDX8Renderer::SetLeftRightSwap`
 pub unsafe fn set_left_right_swap(this: usize, swap: u8) -> u8 {
     crate::shadow::touch(&set_left_right_swap_port::STATE);
@@ -940,6 +978,42 @@ port_thiscall!(get_left_right_swap_port, 0x6ABFB0, "NiDX8Renderer::GetLeftRightS
     regions = |set| set.add(this, R::SIZE),
     rust = get_left_right_swap);
 
+port_thiscall!(get_max_fog_value_port, 0x6AC310, "NiDX8Renderer::GetMaxFogValue",
+    fn(this) -> f32,
+    compare_eax = true,
+    regions = |set| set.add(rd(this, R::renderState), RS::SIZE),
+    rust = get_max_fog_value);
+
+port_thiscall!(base_get_max_fog_value_port, 0x6F5670, "NiRenderer::GetMaxFogValue",
+    fn(this) -> f32,
+    compare_eax = true,
+    regions = |set| set.add(this, 4),
+    rust = base_get_max_fog_value);
+
+port_thiscall!(base_set_left_right_swap_port, 0x6F5650, "NiRenderer::SetLeftRightSwap",
+    fn(this, swap: u8) -> u8,
+    compare_eax = false,
+    regions = |set| set.add(this, 4),
+    rust = base_set_left_right_swap);
+
+port_thiscall!(precache_texture_port, 0x6AC370, "NiDX8Renderer::PrecacheTexture",
+    fn(this, texture: usize, a3: u32, a4: u32) -> u32,
+    compare_eax = false,
+    regions = |set| set.add(this, R::SIZE),
+    rust = precache_texture);
+
+port_thiscall!(base_batch_render_shape_port, 0x6F53E0, "NiRenderer::BatchRenderShape",
+    fn(this, geometry_data: usize, skin: usize, transform: usize, bound: usize) -> u32,
+    compare_eax = false,
+    regions = |set| set.add(this, 4),
+    rust = base_batch_render_shape);
+
+port_thiscall!(base_batch_render_strips_port, 0x6F53F0, "NiRenderer::BatchRenderStrips",
+    fn(this, geometry_data: usize, skin: usize, transform: usize, bound: usize) -> u32,
+    compare_eax = false,
+    regions = |set| set.add(this, 4),
+    rust = base_batch_render_strips);
+
 port_thiscall!(set_left_right_swap_port, 0x6ABFD0, "NiDX8Renderer::SetLeftRightSwap",
     fn(this, swap: u8) -> u8,
     compare_eax = true,
@@ -1039,6 +1113,12 @@ pub static PORTS: &[&crate::shadow::PortState] = &[
     &clear_buffer_port::STATE,
     &get_left_right_swap_port::STATE,
     &set_left_right_swap_port::STATE,
+    &get_max_fog_value_port::STATE,
+    &base_get_max_fog_value_port::STATE,
+    &base_set_left_right_swap_port::STATE,
+    &precache_texture_port::STATE,
+    &base_batch_render_shape_port::STATE,
+    &base_batch_render_strips_port::STATE,
     &set_use_w_buffer_port::STATE,
     &get_backbuffer_width_port::STATE,
     &get_backbuffer_height_port::STATE,
