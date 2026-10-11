@@ -35,6 +35,8 @@ def main():
     ap.add_argument("--mge-build", help="a folder with a build of MGE XE that has the switch runtime.renderer_wgpu (its bin/MSVC-Release): "
                     "the run uses its d3d8.dll and its mgeHost64.exe with the switch on, and not the d3d8.dll and the host program of this repository")
     ap.add_argument("--config-mod", default="Configuration", help="the mod of the testing instance with mgeXE.toml")
+    ap.add_argument("--reference", action="store_true", help="run the same scenario with MGE XE on Direct3D 9, for its frame rate: the "
+                    "d3d8.dll of MGE XE that tools/own_device.py kept, or the one that is in place")
     ap.add_argument("--budget", type=int, default=200)
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -57,7 +59,10 @@ def main():
     # The d3d8.dll of the game folder comes from the mod of MGE XE.
     root = os.path.join(session.harness.MO2_ROOT, "mods", args.mge_mod, "Root")
     swaps = [(D3D8, os.path.join(root, "d3d8.dll"), "the d3d8.dll of nirender")]
-    if args.mge_build:
+    if args.reference:
+        kept = os.path.join(root, "d3d8.dll.mge-xe")
+        swaps = [(kept, os.path.join(root, "d3d8.dll"), "the d3d8.dll of MGE XE")] if os.path.isfile(kept) else []
+    elif args.mge_build:
         # MGE XE with its switch for the wgpu renderer on: its own d3d8.dll gives Direct3D to
         # the plugin, and its helper is the renderer.
         toml = os.path.join(session.harness.MO2_ROOT, "mods", args.config_mod, "Root", "mgeXE.toml")
@@ -72,7 +77,7 @@ def main():
                  (switched, toml, "mgeXE.toml with renderer_wgpu = true")]
     done = run.launch(spec, args.budget, TAG, swaps=swaps)
     # Mod Organizer leaves its copy in the game folder when the game does not end by itself.
-    theirs, ours = swaps[0][1], os.path.join(session.harness.GAME_DIR, "d3d8.dll")
+    theirs, ours = os.path.join(root, "d3d8.dll"), os.path.join(session.harness.GAME_DIR, "d3d8.dll")
     if os.path.isfile(ours) and not session.harness.same_file_content(theirs, ours):
         import shutil
         shutil.copy2(theirs, ours)
@@ -80,7 +85,7 @@ def main():
 
     print()
     for line in run.progress_lines(TAG):
-        if line.startswith(("own device", "step", "after", "steps done", "ERROR", "save loaded")):
+        if line.startswith(("own device", "step", "after", "steps done", "ERROR", "save loaded", "rate", "zoom")):
             print("game: " + line[:200])
     if os.path.isfile(run.path("host.txt")):
         print("\nhost:")

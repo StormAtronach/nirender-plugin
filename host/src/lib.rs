@@ -370,6 +370,26 @@ struct Out { @builtin(position) position: vec4f, @location(0) color: vec4f, @loc
 }
 ";
 
+/// The parts of the work that the program measures.
+const TIME_NAMES: [&str; 8] = [
+    "read of the stream",
+    "records that are not draws",
+    "draw: the data of the draw",
+    "draw: the upload of its data",
+    "draw: textures, samplers, pipeline",
+    "draw: the commands of the pass",
+    "end of the frame and submit",
+    "copy into the window and present",
+];
+const TIME_READ: usize = 0;
+const TIME_RECORDS: usize = 1;
+const TIME_DRAW_DATA: usize = 2;
+const TIME_DRAW_UPLOAD: usize = 3;
+const TIME_DRAW_GROUPS: usize = 4;
+const TIME_DRAW_PASS: usize = 5;
+const TIME_END: usize = 6;
+const TIME_PRESENT: usize = 7;
+
 /// The number of indexes in the index buffer for triangle fans.
 const FAN_INDEXES: u32 = 3 * 1024;
 
@@ -501,6 +521,8 @@ struct Counts {
     texture_updates: u32,
     render_textures: u32,
     pixel_reads: u32,
+    /// Where the time of the program goes, in the order of `TIME_NAMES`.
+    times: [std::time::Duration; 8],
     screen_draws: u32,
     screen_draws_lost: u32,
     target_copies: u32,
@@ -1462,6 +1484,7 @@ impl Player {
     /// Ends the frame and sends its commands to the GPU. `before_submit` can add commands,
     /// for example a copy of the picture.
     fn end_frame(&mut self, before_submit: impl FnOnce(&mut wgpu::CommandEncoder)) {
+        let clock = std::time::Instant::now();
         drop(self.pass.take());
         self.color = None;
         self.depth = None;
@@ -1469,6 +1492,7 @@ impl Player {
             before_submit(&mut encoder);
             self.renderer.queue.submit([encoder.finish()]);
         }
+        self.renderer.counts.times[TIME_END] += clock.elapsed();
     }
 
     /// Does one record. Returns true for the record that ends a frame.
@@ -1723,8 +1747,13 @@ impl Player {
             renderer.counts.no_buffer += 1;
             return;
         }
+        let clock = std::time::Instant::now();
         let draw_data = self.stream.draw_data(&mut renderer.counts);
+        renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
+        let clock = std::time::Instant::now();
         let (draw_group, draw_offset) = renderer.draw_slot(&draw_data);
+        renderer.counts.times[TIME_DRAW_UPLOAD] += clock.elapsed();
+        let clock = std::time::Instant::now();
         let mut handles = [0u32; STAGES];
         let mut sampler_values = [[0u32; 5]; STAGES];
         for stage in 0..STAGES {
@@ -1757,6 +1786,8 @@ impl Player {
             renderer.counts.no_layout += 1;
             return;
         };
+        renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
+        let clock = std::time::Instant::now();
         let Some(pass) = self.pass.as_mut() else { return };
         pass.set_pipeline(&pipeline);
         pass.set_stencil_reference(stencil_reference);
@@ -1774,6 +1805,7 @@ impl Player {
         } else {
             pass.draw(first_index..first_index + indexes, 0..1);
         }
+        renderer.counts.times[TIME_DRAW_PASS] += clock.elapsed();
         renderer.counts.draws += 1;
         if self.target.is_some() {
             renderer.counts.target_draws += 1;
@@ -2157,6 +2189,12 @@ mod live {
                 self.waited.as_secs_f64() * 100.0 / seconds.max(0.001)
             );
             println!("frames that the window did not take: {}", self.not_shown);
+            if let Some(player) = self.player.as_ref() {
+                println!("time for each frame, in ms:");
+                for (name, time) in super::TIME_NAMES.iter().zip(player.renderer.counts.times) {
+                    println!("  {:6.3}  {name}", time.as_secs_f64() * 1000.0 / self.frames.max(1) as f64);
+                }
+            }
             println!("records {}, {:.1} MB, {:.2} MB for each frame", self.records, self.bytes as f64 / 1e6, self.bytes as f64 / 1e6 / self.frames.max(1) as f64);
             if let Some(player) = self.player.as_ref() {
                 player.print_counts();
@@ -2238,7 +2276,12 @@ mod live {
                     self.player.as_mut().unwrap().begin_frame(self.back_buffer.as_ref().unwrap(), self.depth.clone().unwrap(), true);
                     self.in_frame = true;
                 }
-                let Some(tag) = self.ring.pop(&mut self.data) else {
+                let clock = Instant::now();
+                let popped = self.ring.pop(&mut self.data);
+                if popped.is_some() {
+                    self.player.as_mut().unwrap().renderer.counts.times[super::TIME_READ] += clock.elapsed();
+                }
+                let Some(tag) = popped else {
                     if self.ring.closed() {
                         return self.finish(event_loop, "the game closed the stream");
                     }
@@ -2253,7 +2296,13 @@ mod live {
                 self.records += 1;
                 self.bytes += 8 + self.data.len() as u64;
                 let player = self.player.as_mut().unwrap();
-                if !player.feed(tag, &self.data) {
+                let clock = Instant::now();
+                let draws_before: std::time::Duration = player.renderer.counts.times[super::TIME_DRAW_DATA..=super::TIME_DRAW_PASS].iter().sum();
+                let frame_end = player.feed(tag, &self.data);
+                let draws_after: std::time::Duration = player.renderer.counts.times[super::TIME_DRAW_DATA..=super::TIME_DRAW_PASS].iter().sum();
+                // The time of a record without the measured parts of a draw.
+                player.renderer.counts.times[super::TIME_RECORDS] += clock.elapsed().saturating_sub(draws_after - draws_before);
+                if !frame_end {
                     continue;
                 }
                 // The frame is complete. It goes into the window when the window takes one.
@@ -2303,9 +2352,11 @@ mod live {
                         buffer.unmap();
                     }
                 }
+                let clock = Instant::now();
                 if let Some(frame) = frame {
                     player.renderer.queue.present(frame);
                 }
+                player.renderer.counts.times[super::TIME_PRESENT] += clock.elapsed();
                 self.frames += 1;
                 self.first_frame.get_or_insert_with(Instant::now);
                 if self.frames_wanted != 0 && self.frames >= self.frames_wanted {

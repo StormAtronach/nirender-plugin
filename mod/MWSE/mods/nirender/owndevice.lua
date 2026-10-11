@@ -53,6 +53,20 @@ return function(nirender, spec)
         { "exterior", spec.settleSeconds or 6, function()
             scenario.goTo(spec.exterior)
         end },
+        -- The frame rate at one place: the frames that the game gives to Lua in 10 seconds,
+        -- with the player at rest in the exterior cell. The same step runs with Direct3D 9
+        -- (tools/run_own_device.py --reference), for a number to compare with.
+        { "rate", 10.5, function()
+            local frames, from = 0, os.clock()
+            local function count()
+                frames = frames + 1
+                if os.clock() - from >= 10 then
+                    event.unregister("enterFrame", count)
+                    say("rate: %.1f frames in a second at '%s'", frames / (os.clock() - from), tes3.player.cell.editorName)
+                end
+            end
+            event.register("enterFrame", count)
+        end },
         -- The player goes north over the borders of exterior cells, a small step in each
         -- frame, as on foot but faster. The game then loads the cells in front of the player
         -- on its second thread while the main thread draws.
