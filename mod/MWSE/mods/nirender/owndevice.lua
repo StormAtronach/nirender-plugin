@@ -59,7 +59,17 @@ return function(nirender, spec)
     end
 
     say("own device: %s", tostring(nirender.ownDevice()))
-    scenario.start(function()
-        after(spec.settleSeconds or 6, function() step(1) end)
-    end)
+    -- The game gives no frame to Lua before the main menu is there: it shows its films and
+    -- loads its data first. The scenario starts at the first frame of the main menu, takes a
+    -- picture of the menu, and then loads the save.
+    spec.menuSeconds = 8
+    local function at_main_menu()
+        event.unregister("enterFrame", at_main_menu)
+        say("main menu: %s", nirender.captureStatus())
+        after(5, function() nirender.streamShot(string.format("%s/host-menu.png", spec.dir)) end)
+        scenario.start(function()
+            after(spec.settleSeconds or 6, function() step(1) end)
+        end)
+    end
+    event.register("enterFrame", at_main_menu)
 end

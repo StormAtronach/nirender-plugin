@@ -31,6 +31,7 @@ def main():
     ap.add_argument("--exterior", default="Balmora")
     ap.add_argument("--backend", default="vulkan")
     ap.add_argument("--mge-mod", default="MGE XE G7 Fork", help="the mod of the testing instance with the d3d8.dll of MGE XE")
+    ap.add_argument("--start-frames", default="5,100,300,600,900,1040", help="the frames of the start to take a picture of")
     ap.add_argument("--budget", type=int, default=200)
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -46,6 +47,8 @@ def main():
     os.environ["NIRENDER_HOST_EXE"] = HOST
     os.environ["NIRENDER_HOST_LOG"] = run.path("host.txt")
     os.environ["NIRENDER_BACKEND"] = args.backend
+    # Pictures of the start of the game, before the scenario can ask for one.
+    os.environ["NIRENDER_HOST_ARGS"] = '--shots-at %s --shots-prefix "%s"' % (args.start_frames, run.path("start"))
     # Mod Organizer puts the Root folder of a mod into the game folder when the game starts.
     # The d3d8.dll of the game folder comes from the mod of MGE XE.
     swaps = [(D3D8, os.path.join(session.harness.MO2_ROOT, "mods", args.mge_mod, "Root", "d3d8.dll"), "the d3d8.dll of nirender")]

@@ -73,6 +73,10 @@ pub mod tag {
     pub const READ_PIXELS: u32 = 13;
     /// The host saves the picture of the frame in progress into the file with this name.
     pub const SHOT: u32 = 14;
+    /// A draw with its vertices in the call, `DrawPrimitiveUP`: the texture of stage 0, the
+    /// vertex format, the bytes of a vertex, the primitive type, the number of primitives;
+    /// then the vertices. The films of the game are such draws, in screen coordinates.
+    pub const DRAW_UP: u32 = 15;
 }
 
 // ---- the ring in shared memory
@@ -439,6 +443,11 @@ pub unsafe fn stop() {
         s.spent as f64 * 1000.0 / ticks_per_second() as f64 / s.frames_done.max(1) as f64,
         if s.failed { ", with a write error" } else { "" }
     );
+}
+
+/// A draw with its vertices in the call.
+pub unsafe fn draw_up(texture: u32, vertex_format: u32, stride: u32, primitive_type: u32, primitives: u32, vertices: &[u8]) {
+    write(tag::DRAW_UP, &[&words(&[texture, vertex_format, stride, primitive_type, primitives]), vertices]);
 }
 
 /// Asks the host of the stream for a picture file of the frame in progress.

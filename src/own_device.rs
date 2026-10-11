@@ -380,6 +380,10 @@ unsafe fn start_stream(s: &State) {
     if let Ok(backend) = std::env::var("NIRENDER_BACKEND") {
         command.push_str(&format!(" --backend {backend}"));
     }
+    // More arguments for the host program, for a test.
+    if let Ok(more) = std::env::var("NIRENDER_HOST_ARGS") {
+        command.push_str(&format!(" {more}"));
+    }
     // The text of the host program goes into a file when NIRENDER_HOST_LOG names one.
     if let Ok(log) = std::env::var("NIRENDER_HOST_LOG") {
         command = format!("cmd.exe /c \"{command} > \"{log}\" 2>&1\"");
@@ -609,6 +613,16 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
         }
         71 => {
             crate::capture::command(COMMAND_DRAW_INDEXED, a.as_ptr() as u32, 0, 0);
+            OK
+        }
+        72 => {
+            // DrawPrimitiveUP(type, primitives, vertices, bytes of a vertex): the films of
+            // the game.
+            let length = crate::device::vertex_count(a[0], a[1]) * a[3];
+            if a[2] != 0 && length != 0 {
+                let vertices = core::slice::from_raw_parts(a[2] as usize as *const u8, length as usize);
+                crate::capture::draw_up(s.textures[0], s.vertex_shader, a[3], a[0], a[1], vertices);
+            }
             OK
         }
         // ProcessVertices, CreateVertexShader, CreatePixelShader: no shaders and no software

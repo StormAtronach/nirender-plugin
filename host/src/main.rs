@@ -36,12 +36,14 @@ mod tag {
     pub const TEXTURE_UPDATE: u32 = 12;
     pub const READ_PIXELS: u32 = 13;
     pub const SHOT: u32 = 14;
+    pub const DRAW_UP: u32 = 15;
 }
 
 const COMMAND_RENDER_STATE: u32 = 1;
 const COMMAND_STAGE_STATE: u32 = 2;
 const COMMAND_TRANSFORM: u32 = 3;
 const COMMAND_DRAW_INDEXED: u32 = 4;
+const COMMAND_DRAW: u32 = 5;
 const CALL_CLEAR: u32 = 4;
 const CALL_VIEWPORT: u32 = 5;
 const CALL_RENDER_TARGET: u32 = 7;
@@ -263,6 +265,22 @@ fn expand_16_bits(d3d_format: u32, source: &[u8]) -> Vec<u8> {
     pixels
 }
 
+/// The shader for a draw in screen coordinates: the colour of the vertex times the texture.
+const SCREEN_SHADER: &str = "
+struct Out { @builtin(position) position: vec4f, @location(0) color: vec4f, @location(1) uv: vec2f }
+@group(0) @binding(0) var picture: texture_2d<f32>;
+@group(0) @binding(1) var picture_sampler: sampler;
+@vertex fn vs(@location(0) position: vec4f, @location(1) color: vec4f, @location(2) uv: vec2f) -> Out {
+    return Out(position, color, uv);
+}
+@fragment fn fs(in: Out) -> @location(0) vec4f {
+    return in.color * textureSample(picture, picture_sampler, in.uv);
+}
+";
+
+/// The number of indexes in the index buffer for triangle fans.
+const FAN_INDEXES: u32 = 3 * 1024;
+
 /// D3DSTENCILOP_*.
 fn stencil_operation(value: u32) -> wgpu::StencilOperation {
     use wgpu::StencilOperation::*;
@@ -391,6 +409,8 @@ struct Counts {
     texture_updates: u32,
     render_textures: u32,
     pixel_reads: u32,
+    screen_draws: u32,
+    screen_draws_lost: u32,
     target_copies: u32,
     target_draws: u32,
     texture_updates_lost: u32,
@@ -448,6 +468,13 @@ struct Renderer {
     sampler_groups: HashMap<[[u32; 5]; STAGES], Rc<wgpu::BindGroup>>,
     buffers: HashMap<u32, BufferData>,
     defaults: wgpu::Buffer,
+    /// The indexes of a triangle fan as a triangle list.
+    fan_indexes: wgpu::Buffer,
+    /// For a draw in screen coordinates: the pipelines without and with blend, the layout of
+    /// its group, and its sampler.
+    screen_pipelines: [Option<wgpu::RenderPipeline>; 2],
+    screen_layout: Option<wgpu::BindGroupLayout>,
+    screen_sampler: Option<wgpu::Sampler>,
     counts: Counts,
 }
 
@@ -549,6 +576,12 @@ impl Renderer {
                 &[255, 255, 255, 255],
             )
             .create_view(&Default::default()));
+        let fan: Vec<u16> = (0..FAN_INDEXES as u16 / 3).flat_map(|n| [0, n + 1, n + 2]).collect();
+        let fan_indexes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&fan),
+            usage: wgpu::BufferUsages::INDEX,
+        });
         let defaults = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
             contents: &[0u8; 64],
@@ -579,6 +612,10 @@ impl Renderer {
             sampler_groups: HashMap::new(),
             buffers: HashMap::new(),
             defaults,
+            fan_indexes,
+            screen_pipelines: [None, None],
+            screen_layout: None,
+            screen_sampler: None,
             counts: Counts::default(),
         };
         (renderer, surface)
@@ -675,6 +712,82 @@ impl Renderer {
         // A group can have the texture that had this handle before.
         self.texture_groups.clear();
         self.counts.textures += 1;
+    }
+
+    /// The pipeline for a draw in screen coordinates, with the usual blend of alpha or
+    /// without blend.
+    fn screen_pipeline(&mut self, blend: bool) -> wgpu::RenderPipeline {
+        if self.screen_layout.is_none() {
+            self.screen_layout = Some(self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            }));
+            self.screen_sampler = Some(self.device.create_sampler(&wgpu::SamplerDescriptor {
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            }));
+        }
+        if let Some(pipeline) = &self.screen_pipelines[blend as usize] {
+            return pipeline.clone();
+        }
+        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(SCREEN_SHADER.into()) });
+        let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[self.screen_layout.as_ref()],
+            immediate_size: 0,
+        });
+        let attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x2];
+        let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 40, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attributes })],
+            },
+            primitive: Default::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: self.target_format,
+                    blend: blend.then_some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        self.screen_pipelines[blend as usize] = Some(pipeline.clone());
+        pipeline
     }
 
     /// Makes a texture without pixels: the game made it with `CreateTexture` and writes each
@@ -1251,6 +1364,7 @@ impl Player {
             tag::TEXTURE => self.renderer.texture(data),
             tag::TEXTURE_UPDATE => self.renderer.texture_update(data),
             tag::SHOT => self.shots.push(String::from_utf8_lossy(data).into_owned()),
+            tag::DRAW_UP if self.drawing() && data.len() >= 20 => self.draw_up(data),
             tag::READ_PIXELS => {
                 // The game waits for the answer. Without the target, the answer has no size.
                 let answer = self.read_pixels(word(data, 4));
@@ -1363,7 +1477,10 @@ impl Player {
                     3 => self.stream.projection = floats(data, 16),
                     _ => {}
                 },
-                COMMAND_DRAW_INDEXED if self.drawing() && data.len() >= 16 + 20 && self.stream.state.len() >= state::SIZE => self.draw(data),
+                COMMAND_DRAW_INDEXED if self.drawing() && data.len() >= 16 + 20 && self.stream.state.len() >= state::SIZE => self.draw(data, true),
+                // A draw without an index buffer: a screen polygon, for example the picture
+                // of a loading screen or of the main menu.
+                COMMAND_DRAW if self.drawing() && data.len() >= 16 + 12 && self.stream.state.len() >= state::SIZE => self.draw(data, false),
                 _ => {}
             },
             _ => {}
@@ -1371,16 +1488,80 @@ impl Player {
         false
     }
 
-    /// Draws with the current state packet. `data` is the draw command.
-    fn draw(&mut self, data: &[u8]) {
+    /// A draw with its vertices in the record. This program does the vertex format of the
+    /// films of the game: a position on the screen, a colour and one texture coordinate
+    /// (D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1, 28 bytes).
+    fn draw_up(&mut self, data: &[u8]) {
+        let (texture, vertex_format, stride, kind, primitives) = (word(data, 0), word(data, 4), word(data, 8) as usize, word(data, 12), word(data, 16) as usize);
+        let vertices = &data[20..];
+        if vertex_format != 0x144 || stride != 28 || !self.stream.back_buffer || !(4..=6).contains(&kind) {
+            self.renderer.counts.screen_draws_lost += 1;
+            return;
+        }
+        let count = vertices.len() / stride;
+        let (width, height) = (self.target_size.0 as f32, self.target_size.1 as f32);
+        // The centre of a pixel is at a whole number in Direct3D 8, and at a half here.
+        let vertex = |i: usize| -> [f32; 10] {
+            let v = &vertices[i * stride..];
+            let c = color(word(v, 16));
+            [(float(v, 0) + 0.5) / width * 2.0 - 1.0, 1.0 - (float(v, 4) + 0.5) / height * 2.0, float(v, 8).clamp(0.0, 1.0), 1.0, c[0], c[1], c[2], c[3], float(v, 20), float(v, 24)]
+        };
+        // A triangle list from a list, a strip or a fan.
+        let mut list: Vec<f32> = Vec::new();
+        for n in 0..primitives {
+            let corners = match kind {
+                4 => [n * 3, n * 3 + 1, n * 3 + 2],
+                5 if n % 2 == 0 => [n, n + 1, n + 2],
+                5 => [n + 1, n, n + 2],
+                _ => [0, n + 1, n + 2],
+            };
+            if corners.iter().all(|i| *i < count) {
+                for i in corners {
+                    list.extend_from_slice(&vertex(i));
+                }
+            }
+        }
+        if list.is_empty() {
+            return;
+        }
+        // D3DRS_ALPHABLENDENABLE is 27.
+        let blend = self.stream.render_states.get(&27).copied().unwrap_or(0) != 0;
+        let renderer = &mut self.renderer;
+        let pipeline = renderer.screen_pipeline(blend);
+        let buffer = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&list), usage: wgpu::BufferUsages::VERTEX });
+        let view = renderer.textures.get(&texture).unwrap_or(&renderer.white).clone();
+        let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: renderer.screen_layout.as_ref().unwrap(),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(renderer.screen_sampler.as_ref().unwrap()) },
+            ],
+        });
+        let Some(pass) = self.pass.as_mut() else { return };
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.set_vertex_buffer(0, buffer.slice(..));
+        pass.draw(0..(list.len() / 10) as u32, 0..1);
+        renderer.counts.screen_draws += 1;
+    }
+
+    /// Draws with the current state packet. `data` is the draw command: with an index buffer,
+    /// or the vertices in their order.
+    fn draw(&mut self, data: &[u8], indexed: bool) {
         let renderer = &mut self.renderer;
         if !self.stream.back_buffer {
             renderer.counts.other_target += 1;
             return;
         }
         let s = &self.stream.state;
-        // Primitive type, least index, vertices, first index, primitives.
-        let (topology, first_index, primitives) = (word(data, 16), word(data, 28), word(data, 32));
+        // With an index buffer: primitive type, least index, vertices, first index, primitives.
+        // Without: primitive type, first vertex, primitives.
+        let (topology, first_index, primitives) = if indexed { (word(data, 16), word(data, 28), word(data, 32)) } else { (word(data, 16), word(data, 20), word(data, 24)) };
+        // The GPU has no triangle fan. Without an index buffer, a fan is a triangle list with
+        // the indexes 0, n + 1, n + 2 for the triangle n.
+        let fan = topology == 6 && !indexed && primitives * 3 <= FAN_INDEXES;
+        let (topology, primitives) = if fan { (4, primitives) } else { (topology, primitives) };
         let indexes = match topology {
             4 => primitives * 3,
             5 => primitives + 2,
@@ -1419,10 +1600,15 @@ impl Player {
         // D3DRS_COLORWRITEENABLE is 168.
         let key = PipelineKey { color_write: self.stream.render_states.get(&168).copied().unwrap_or(15) & 15, ..key };
         let (vertex_handle, index_handle) = (word(s, state::VERTEX_BUFFER), word(s, state::INDEX_BUFFER));
-        let (Some(vertex_buffer), Some(index_buffer)) = (renderer.gpu_buffer(vertex_handle, false), renderer.gpu_buffer(index_handle, true)) else {
+        let Some(vertex_buffer) = renderer.gpu_buffer(vertex_handle, false) else {
             renderer.counts.no_buffer += 1;
             return;
         };
+        let index_buffer = if indexed { renderer.gpu_buffer(index_handle, true) } else { None };
+        if indexed && index_buffer.is_none() {
+            renderer.counts.no_buffer += 1;
+            return;
+        }
         let draw_data = self.stream.draw_data(&mut renderer.counts);
         let (draw_group, draw_offset) = renderer.draw_slot(&draw_data);
         let mut handles = [0u32; STAGES];
@@ -1465,8 +1651,15 @@ impl Player {
         pass.set_bind_group(2, &*sampler_group, &[]);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, renderer.defaults.slice(..));
-        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        pass.draw_indexed(first_index..first_index + indexes, word(s, state::BASE_VERTEX) as i32, 0..1);
+        if let Some(index_buffer) = index_buffer.as_ref() {
+            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(first_index..first_index + indexes, word(s, state::BASE_VERTEX) as i32, 0..1);
+        } else if fan {
+            pass.set_index_buffer(renderer.fan_indexes.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(0..indexes, first_index as i32, 0..1);
+        } else {
+            pass.draw(first_index..first_index + indexes, 0..1);
+        }
         renderer.counts.draws += 1;
         if self.target.is_some() {
             renderer.counts.target_draws += 1;
@@ -1486,6 +1679,7 @@ impl Player {
             "rendered textures made {}, draws into them {}, copies of pixels into them {}, pixel reads {}",
             c.render_textures, c.target_draws, c.target_copies, c.pixel_reads
         );
+        println!("draws in screen coordinates {}, not drawn {}", c.screen_draws, c.screen_draws_lost);
         for (format, count) in &c.texture_formats {
             println!("texture format {format:#x} not made: {count}");
         }
@@ -1760,6 +1954,9 @@ mod live {
         parent: Option<isize>,
         shot: Option<String>,
         shot_frame: u32,
+        /// Frames to save a picture of, and the start of the names of the files.
+        shots_at: Vec<u32>,
+        shots_prefix: String,
         window: Option<Arc<Window>>,
         surface: Option<wgpu::Surface<'static>>,
         configuration: Option<wgpu::SurfaceConfiguration>,
@@ -1936,8 +2133,12 @@ mod live {
                     save_picture(&device, &buffer, row, width, height, blue_first, self.shot.as_ref().unwrap());
                     self.shot_done = true;
                 }
-                // The picture files that the game asked for in this frame.
-                let shots = std::mem::take(&mut player.shots);
+                // The picture files that the game asked for in this frame, and the one that
+                // the command line asked for.
+                let mut shots = std::mem::take(&mut player.shots);
+                if self.shots_at.contains(&(self.frames + 1)) {
+                    shots.push(format!("{}-{:05}.png", self.shots_prefix, self.frames + 1));
+                }
                 if !shots.is_empty() {
                     let mut encoder = device.create_command_encoder(&Default::default());
                     let (buffer, row) = copy_picture(&device, &mut encoder, back_buffer, width, height);
@@ -1986,6 +2187,8 @@ mod live {
             parent: embed.then_some(game_window),
             shot: option(args, "--shot"),
             shot_frame: option(args, "--shot-frame").and_then(|text| text.parse().ok()).unwrap_or(60),
+            shots_at: option(args, "--shots-at").map(|text| text.split(',').filter_map(|n| n.parse().ok()).collect()).unwrap_or_default(),
+            shots_prefix: option(args, "--shots-prefix").unwrap_or_else(|| "frame".into()),
             window: None,
             surface: None,
             configuration: None,
