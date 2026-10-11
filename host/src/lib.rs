@@ -50,6 +50,80 @@ pub struct SceneView<'a> {
     pub ambient: [f32; 3],
 }
 
+/// The answers of an extension for a frame. See `Extension::frame`.
+#[derive(Clone, Copy, Default)]
+pub struct FrameParameters {
+    /// The distances of the start and of the end of the fog for the draws of the world of
+    /// the game, in place of those of the game: so that they go into the fog as what the
+    /// extension draws does. `None`: the fog of the game.
+    pub fog_range: Option<(f32, f32)>,
+    /// `Some` when the draws of the world get their light for each pixel, as the shader
+    /// of MGE XE makes it, and not for each vertex as the game does.
+    pub per_pixel: Option<PerPixel>,
+    /// The values for the sky functions of `Extension::sky_shader`, or `None` for the sky
+    /// of the game as it is. With values, the sky dome of the game (a sky draw without a
+    /// texture) gets its shape and its colour from the functions, and the shadow of a moon
+    /// gets its colour from them and keeps its alpha.
+    pub sky: Option<[[f32; 4]; 8]>,
+    /// True when the extension wants the call `Extension::blend` in this frame.
+    pub blend: bool,
+}
+
+/// The facts of the world scene of the game at a moment, for a call of the extension.
+struct WorldFacts {
+    target_size: (u32, u32),
+    view: [f32; 16],
+    projection: [f32; 16],
+    interior: bool,
+    fog_color: [f32; 4],
+    fog_start: f32,
+    fog_end: f32,
+    sun: Option<([f32; 3], [f32; 3], [f32; 3])>,
+    ambient: [f32; 3],
+}
+
+impl WorldFacts {
+    fn view<'a>(&self, device: &'a wgpu::Device, queue: &'a wgpu::Queue, target_format: wgpu::TextureFormat) -> SceneView<'a> {
+        SceneView {
+            device,
+            queue,
+            target_format,
+            depth_format: DEPTH_FORMAT,
+            target_size: self.target_size,
+            view: self.view,
+            projection: self.projection,
+            interior: self.interior,
+            fog_color: self.fog_color,
+            fog_start: self.fog_start,
+            fog_end: self.fog_end,
+            sun_direction: self.sun.map(|sun| sun.0),
+            sun_color: self.sun.map_or([0.0; 3], |sun| sun.1),
+            sun_ambient: self.sun.map_or([0.0; 3], |sun| sun.2),
+            ambient: self.ambient,
+        }
+    }
+}
+
+/// A draw with its vertices in the record, ready for the pass.
+struct ScreenDraw {
+    pipeline: wgpu::RenderPipeline,
+    group: wgpu::BindGroup,
+    buffer: wgpu::Buffer,
+    vertices: u32,
+}
+
+/// What a frame has, in its order. `feed` collects the items and `run_items` does them.
+enum Item {
+    /// The game draws into this rendered texture, or into the back buffer.
+    Target(Option<u32>),
+    Clear(Option<wgpu::Color>, Option<f32>, Option<u32>),
+    Viewport(([f32; 4], [f32; 2])),
+    Draw(Rc<Draw>),
+    Screen(ScreenDraw),
+    WorldStart(Box<WorldFacts>),
+    WorldEnd(Box<WorldFacts>),
+}
+
 /// How the renderer draws the kept world draws of the frame again. See `Replay`.
 pub struct ReplayView {
     /// A change of the world before the view of the game, in the space of the world of the
@@ -71,17 +145,17 @@ pub struct ReplayView {
     pub opaque_only: bool,
 }
 
-/// Draws the kept draws of the world of the frame again: those of the game in its world
-/// scene and its scene of sorted draws, into the back buffer, up to this moment. The pass
-/// must have a colour target and a depth target with the formats of `SceneView`.
+/// Draws the world draws of the frame again: those of the game in its world scene and its
+/// scene of sorted draws, into the back buffer. The pass must have a colour target and a
+/// depth target with the formats of `SceneView`.
 pub trait Replay {
     fn replay(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView);
     /// The number of kept draws.
     fn count(&self) -> usize;
 }
 
-/// One kept draw of the world of a frame.
-struct Kept {
+/// One draw of the game, ready for the pass.
+struct Draw {
     key: PipelineKey,
     stencil_reference: u32,
     data: DrawData,
@@ -99,7 +173,7 @@ struct Kept {
 /// The kept draws with the renderer, for `Replay`.
 struct Replayer<'a> {
     renderer: &'a mut Renderer,
-    kept: &'a [Kept],
+    kept: &'a [Rc<Draw>],
 }
 
 /// `a * b` for two matrices with the layout of Direct3D.
@@ -193,23 +267,8 @@ pub struct PerPixel {
 
 /// A program that draws more than the game does: for example the distant land of MGE XE.
 pub trait Extension {
-    /// The renderer calls this one time in a frame, before the first draw of the world of
-    /// the game: the first draw into the back buffer with fog, with depth writes and with a
-    /// perspective projection. The sky of the game is in the picture then. The pass has the
-    /// colour target and the depth target of the frame.
-    ///
-    /// Returns true when the depth target must be cleared before the draws of the game: the
-    /// extension drew with a projection of its own.
-    fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>) -> bool;
-
-    /// The renderer calls this one time in a frame, at the end of the world scene of the
-    /// game: its draws without a sort are in the picture and in the depth target, and the
-    /// draws with a sort, the first-person view and the user interface are not. The pass and
-    /// the matrices are those of the game. MGE XE draws its grass here.
-    fn after_world(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>) {}
-
     /// Data that the part of this program in the game process put into the stream, with the
-    /// number that the two parts agree on. See `nirender_stream_extension` of the plugin.
+    /// number that names its kind.
     fn data(&mut self, _id: u32, _bytes: &[u8]) {}
 
     /// The renderer draws a capture file and not a live stream: the frames must be the
@@ -226,45 +285,42 @@ pub trait Extension {
     ///   the sky in a direction from the camera (length 1, in the space of the world), for
     ///   the pixel at these coordinates.
     ///
-    /// The source reads the values of `sky` as `draw.extension[0]` to `draw.extension[7]`.
+    /// The source reads the values of `FrameParameters::sky` as `draw.extension[0]` to
+    /// `draw.extension[7]`.
     fn sky_shader(&self) -> Option<String> {
         None
     }
 
-    /// The values for the sky functions in this frame, or `None` for the sky of the game as
-    /// it is. The renderer asks at the first sky draw of a frame. With values, the sky dome
-    /// of the game (a sky draw without a texture) gets its shape and its colour from the
-    /// functions, and the shadow of a moon gets its colour from them and keeps its alpha.
-    fn sky(&mut self) -> Option<[[f32; 4]; 8]> {
-        None
+    /// The answers of the extension for a frame. The renderer asks at the first draw of the
+    /// world scene of the game into the back buffer: before the sky, so the matrices of the
+    /// scene are those of that draw and the sun is not known yet. The answers are for each
+    /// draw of the frame after that.
+    fn frame(&mut self, _scene: &SceneView) -> FrameParameters {
+        FrameParameters::default()
     }
 
-    /// True when the extension wants the call `blend` in this frame. The renderer asks after
-    /// a `before_world` that gave true, and then keeps the picture of that moment.
-    fn wants_blend(&self) -> bool {
-        false
-    }
+    /// The renderer calls this one time in a frame, at the start of the world of the game:
+    /// after the sky and before the first draw of the world. The pass draws into the
+    /// picture of the frame with the depth of the game; the matrices are those of the first
+    /// draw of the world. `replay` draws the world draws of the frame again, for a picture
+    /// from another view: the renderer has all of them at this moment, and a draw of the
+    /// extension into the pass goes before them in the picture. Returns true when the depth
+    /// target must be cleared after the call: the draws of the extension then do not hide
+    /// the draws of the game.
+    fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay) -> bool;
 
-    /// The renderer calls this after `after_world`, when `wants_blend` gave true. The pass
-    /// draws into the picture of the frame and has no depth target. `before` is the picture
-    /// as it was after `before_world`, and `depth` is the depth of the draws of the game:
-    /// 1 where the game drew nothing. MGE XE lets the draws of the game near the end of
-    /// their view range go into its distant land here.
+    /// The renderer calls this one time in a frame, at the end of the world scene of the
+    /// game: its draws without a sort are in the picture and in the depth target, and the
+    /// draws with a sort, the first-person view and the user interface are not. The pass and
+    /// the matrices are those of the game. MGE XE draws its grass here.
+    fn after_world(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {}
+
+    /// The renderer calls this after `after_world`, when `FrameParameters::blend` was true
+    /// and `before_world` gave true. The pass draws into the picture of the frame and has
+    /// no depth target. `before` is the picture as it was after `before_world`, and `depth`
+    /// is the depth of the draws of the game: 1 where the game drew nothing. MGE XE lets
+    /// the draws of the game near the end of their view range go into its distant land here.
     fn blend(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _before: &wgpu::TextureView, _depth: &wgpu::TextureView) {}
-
-    /// `Some` when the draws of the world of this frame get their light for each pixel, as
-    /// the shader of MGE XE makes it, and not for each vertex as the game does. The renderer
-    /// asks after `before_world`.
-    fn per_pixel(&self) -> Option<PerPixel> {
-        None
-    }
-
-    /// The distances of the start and of the end of the fog for the draws of the world of
-    /// the game in this frame, or `None` for the fog of the game. The renderer asks after
-    /// `before_world`.
-    fn fog_range(&self) -> Option<(f32, f32)> {
-        None
-    }
 }
 
 use bytemuck::{Pod, Zeroable};
@@ -1714,36 +1770,35 @@ struct Player {
     reply: Option<Box<dyn FnMut(u32, u32, u32, &[u8])>>,
     /// The picture files that the game asked for: the frame in progress goes into them.
     shots: Vec<String>,
-    /// A program that draws more than the game does, and true when it had its call in this
-    /// frame.
+    /// A program that draws more than the game does.
     extension: Option<Box<dyn Extension>>,
-    world_started: bool,
-    /// The extension had its call at the end of the world scene in this frame.
+    /// The items of the frame that are not done yet, and the world draws of the frame for
+    /// `Replay`.
+    items: Vec<Item>,
+    world_draws: Vec<Rc<Draw>>,
+    /// The collect: the answers of the extension for the frame (`None` before the world
+    /// scene), the world began, the world ended, the kind of the scene in progress (1 is the
+    /// world), the sun and the ambient light of the first draw of the world, the texture
+    /// that the game draws into (`None` for the back buffer), and whether the game named a
+    /// rendered texture as its target.
+    parameters: Option<FrameParameters>,
+    world_begun: bool,
     world_ended: bool,
-    /// The kind of the scene in progress, from its packet: 1 is the world.
     scene_kind: u32,
-    /// The sun and the ambient light of the draw that started the world: the direction, the
-    /// colour and the ambient colour of the sun, and the ambient light of the scene.
     world_sun: Option<([f32; 3], [f32; 3], [f32; 3])>,
     world_ambient: [f32; 3],
-    /// The light for each pixel of the frame, from the extension.
-    frame_per_pixel: Option<PerPixel>,
-    /// The picture after `Extension::before_world`, for `Extension::blend`, and true when it
-    /// is that of this frame.
+    target: Option<u32>,
+    wants_texture: bool,
+    /// The pass: its target, its size, its viewport, and the picture after
+    /// `Extension::before_world` for `Extension::blend` with true when it is of this frame.
+    pass_target: Option<u32>,
+    target_size: (u32, u32),
+    viewport: Option<([f32; 4], [f32; 2])>,
     before: Option<wgpu::Texture>,
     before_kept: bool,
-    /// The sky values of the extension for this frame: `None` before the first sky draw.
-    frame_sky: Option<Option<[[f32; 4]; 8]>>,
-    /// The world draws of the frame, for `Replay`. Only with an extension.
-    kept: Vec<Kept>,
-    /// The texture that the game draws into now. `None` for the back buffer.
-    target: Option<u32>,
-    /// The game named a rendered texture as its target.
-    wants_texture: bool,
     /// The size of the back buffer of the game, from the first record. 0 when not known.
     size: (u32, u32),
-    /// The size of the target of the pass in progress, and the size of the picture of the frame.
-    target_size: (u32, u32),
+    /// The size of the picture of the frame.
     frame_size: (u32, u32),
 }
 
@@ -1773,20 +1828,22 @@ impl Player {
             reply: None,
             shots: Vec::new(),
             extension: None,
-            world_started: false,
+            items: Vec::new(),
+            world_draws: Vec::new(),
+            parameters: None,
+            world_begun: false,
             world_ended: false,
             scene_kind: 0,
             world_sun: None,
             world_ambient: [0.0; 3],
-            frame_per_pixel: None,
-            before: None,
-            before_kept: false,
-            frame_sky: None,
-            kept: Vec::new(),
             target: None,
             wants_texture: false,
-            size: (0, 0),
+            pass_target: None,
             target_size: (0, 0),
+            viewport: None,
+            before: None,
+            before_kept: false,
+            size: (0, 0),
             frame_size: (0, 0),
         }
     }
@@ -1794,7 +1851,7 @@ impl Player {
     /// Starts a pass on the targets of the frame: it draws on what is there, or it clears first.
     fn open_pass(&mut self, clear_color: Option<wgpu::Color>, clear_depth: Option<f32>, clear_stencil: Option<u32>) {
         drop(self.pass.take());
-        let rendered = self.target.and_then(|handle| self.renderer.targets.get(&handle));
+        let rendered = self.pass_target.and_then(|handle| self.renderer.targets.get(&handle));
         let views = match rendered {
             Some(texture) => Some((texture.view.clone(), texture.depth.clone(), texture.size)),
             None => self.color.clone().zip(self.depth.clone()).map(|(color, depth)| (color, depth, self.frame_size)),
@@ -1827,7 +1884,7 @@ impl Player {
 
     /// Gives the viewport of the stream to the pass, cut to the size of the targets.
     fn apply_viewport(&mut self) {
-        let (Some(pass), Some((rectangle, range))) = (self.pass.as_mut(), self.stream.viewport) else { return };
+        let (Some(pass), Some((rectangle, range))) = (self.pass.as_mut(), self.viewport) else { return };
         let (width, height) = (self.target_size.0 as f32, self.target_size.1 as f32);
         let (x, y) = (rectangle[0].min(width - 1.0).max(0.0), rectangle[1].min(height - 1.0).max(0.0));
         let (w, h) = (rectangle[2].min(width - x), rectangle[3].min(height - y));
@@ -1842,14 +1899,17 @@ impl Player {
     /// clears the target.
     fn begin_frame(&mut self, color: &wgpu::Texture, depth: Rc<wgpu::TextureView>, keep: bool) {
         self.frame_size = (color.width(), color.height());
-        self.target = None;
-        self.world_started = false;
+        self.items.clear();
+        self.world_draws.clear();
+        self.parameters = None;
+        self.world_begun = false;
         self.world_ended = false;
-        self.frame_per_pixel = None;
+        self.target = None;
+        self.pass_target = None;
         self.before_kept = false;
-        self.frame_sky = None;
-        self.kept.clear();
         self.stream.fog_range = None;
+        self.stream.per_pixel = None;
+        self.stream.sky = None;
         self.stream.back_buffer = true;
         self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
         self.renderer.draw_slots = 0;
@@ -1865,6 +1925,7 @@ impl Player {
 
     /// Sends the commands of the frame up to now to the GPU. The frame goes on after `between`.
     fn flush<T>(&mut self, between: impl FnOnce(&mut Player) -> T) -> T {
+        self.run_items();
         let in_frame = self.drawing();
         drop(self.pass.take());
         if let Some(encoder) = self.encoder.take() {
@@ -1919,6 +1980,7 @@ impl Player {
     /// Ends the frame and sends its commands to the GPU. `before_submit` can add commands,
     /// for example a copy of the picture.
     fn end_frame(&mut self, before_submit: impl FnOnce(&mut wgpu::CommandEncoder)) {
+        self.run_items();
         let clock = std::time::Instant::now();
         drop(self.pass.take());
         self.color = None;
@@ -1961,9 +2023,10 @@ impl Player {
             }
             tag::SCENE_END => {
                 // The end of the world scene of the game, in the back buffer.
-                if self.scene_kind == 1 && self.world_started && !self.world_ended && self.target.is_none() && self.drawing() {
+                if self.scene_kind == 1 && self.world_begun && !self.world_ended && self.target.is_none() && self.drawing() {
                     self.world_ended = true;
-                    self.end_world();
+                    let facts = self.world_facts(false);
+                    self.items.push(Item::WorldEnd(Box::new(facts)));
                 }
                 self.scene_kind = 0;
             }
@@ -1983,9 +2046,10 @@ impl Player {
                         let viewport = &arguments[word(data, 12) as usize * 4..];
                         if viewport.len() >= 24 {
                             let rectangle = [word(viewport, 0) as f32, word(viewport, 4) as f32, word(viewport, 8) as f32, word(viewport, 12) as f32];
-                            self.stream.viewport = Some((rectangle, [float(viewport, 16), float(viewport, 20)]));
+                            let viewport = (rectangle, [float(viewport, 16), float(viewport, 20)]);
+                            self.stream.viewport = Some(viewport);
                             if self.stream.back_buffer {
-                                self.apply_viewport();
+                                self.items.push(Item::Viewport(viewport));
                             }
                         }
                     }
@@ -2014,7 +2078,7 @@ impl Player {
                         if texture != self.target {
                             self.target = texture;
                             if self.drawing() {
-                                self.open_pass(None, None, None);
+                                self.items.push(Item::Target(texture));
                             }
                         }
                     }
@@ -2042,7 +2106,7 @@ impl Player {
                         });
                         let clear_depth = (flags & 2 != 0).then(|| float(arguments, 16));
                         let clear_stencil = (flags & 4 != 0).then(|| word(arguments, 20));
-                        self.open_pass(clear_color, clear_depth, clear_stencil);
+                        self.items.push(Item::Clear(clear_color, clear_depth, clear_stencil));
                     }
                     _ => {}
                 }
@@ -2089,7 +2153,8 @@ impl Player {
             return;
         }
         let count = vertices.len() / stride;
-        let (width, height) = (self.target_size.0 as f32, self.target_size.1 as f32);
+        let size = self.size_of_target();
+        let (width, height) = (size.0 as f32, size.1 as f32);
         // The centre of a pixel is at a whole number in Direct3D 8, and at a half here.
         let vertex = |i: usize| -> [f32; 10] {
             let v = &vertices[i * stride..];
@@ -2128,37 +2193,140 @@ impl Player {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(renderer.screen_sampler.as_ref().unwrap()) },
             ],
         });
-        let Some(pass) = self.pass.as_mut() else { return };
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &group, &[]);
-        pass.set_vertex_buffer(0, buffer.slice(..));
-        pass.draw(0..(list.len() / 10) as u32, 0..1);
-        renderer.counts.screen_draws += 1;
+        self.items.push(Item::Screen(ScreenDraw { pipeline, group, buffer, vertices: (list.len() / 10) as u32 }));
     }
 
-    /// Gives the extension its call at the end of the world scene. See `Extension::after_world`.
-    fn end_world(&mut self) {
-        let Some(mut extension) = self.extension.take() else { return };
+    /// The size of the target that the game draws into.
+    fn size_of_target(&self) -> (u32, u32) {
+        self.target.and_then(|handle| self.renderer.targets.get(&handle)).map_or(self.frame_size, |texture| texture.size)
+    }
+
+    /// Does the items of the frame that are not done yet. See `Item`.
+    fn run_items(&mut self) {
+        let items = std::mem::take(&mut self.items);
+        if !self.drawing() {
+            return;
+        }
+        for item in items {
+            match item {
+                Item::Target(target) => {
+                    self.pass_target = target;
+                    self.open_pass(None, None, None);
+                }
+                Item::Clear(color, depth, stencil) => self.open_pass(color, depth, stencil),
+                Item::Viewport(viewport) => {
+                    self.viewport = Some(viewport);
+                    self.apply_viewport();
+                }
+                Item::Draw(draw) => self.issue(&draw),
+                Item::Screen(screen) => {
+                    let Some(pass) = self.pass.as_mut() else { continue };
+                    pass.set_pipeline(&screen.pipeline);
+                    pass.set_bind_group(0, &screen.group, &[]);
+                    pass.set_vertex_buffer(0, screen.buffer.slice(..));
+                    pass.draw(0..screen.vertices, 0..1);
+                    self.renderer.counts.screen_draws += 1;
+                }
+                Item::WorldStart(facts) => self.start_world(&facts),
+                Item::WorldEnd(facts) => self.end_world(&facts),
+            }
+        }
+    }
+
+    /// Puts a draw into the pass.
+    fn issue(&mut self, draw: &Draw) {
+        let renderer = &mut self.renderer;
+        let clock = std::time::Instant::now();
+        let (draw_group, draw_offset) = renderer.draw_slot(&draw.data);
+        renderer.counts.times[TIME_DRAW_UPLOAD] += clock.elapsed();
+        let clock = std::time::Instant::now();
+        let Some(pipeline) = renderer.pipeline(draw.key) else {
+            renderer.counts.no_layout += 1;
+            return;
+        };
+        renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
+        let clock = std::time::Instant::now();
+        let Some(pass) = self.pass.as_mut() else { return };
+        pass.set_pipeline(&pipeline);
+        pass.set_stencil_reference(draw.stencil_reference);
+        pass.set_bind_group(0, &*draw_group, &[draw_offset]);
+        pass.set_bind_group(1, &*draw.textures, &[]);
+        pass.set_bind_group(2, &*draw.samplers, &[]);
+        pass.set_vertex_buffer(0, draw.vertices.slice(..));
+        pass.set_vertex_buffer(1, renderer.defaults.slice(..));
+        let (first, count, base) = draw.range;
+        if let Some(indexes) = draw.indexes.as_ref() {
+            pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(first..first + count, base, 0..1);
+        } else if draw.fan {
+            pass.set_index_buffer(renderer.fan_indexes.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(0..count, first as i32, 0..1);
+        } else {
+            pass.draw(first..first + count, 0..1);
+        }
+        renderer.counts.times[TIME_DRAW_PASS] += clock.elapsed();
+        renderer.counts.draws += 1;
+    }
+
+    /// The facts of the world scene as the stream has them now. With `first`, the sun and
+    /// the ambient light come from the state packet (the first draw of the world); without
+    /// it, they are those of that draw.
+    fn world_facts(&mut self, first: bool) -> WorldFacts {
+        if first {
+            let s = &self.stream.state;
+            // The first light of the draw that is a sun or another directional light: type 3,
+            // or type 4 for the light that the plugin names as the sun.
+            let mut sun = None;
+            for i in 0..(word(s, state::LIGHT_COUNT) as usize).min(8) {
+                let at = state::SIZE + i * state::LIGHT_SIZE + 4;
+                if at + 104 <= s.len() && matches!(word(s, at), 3 | 4) {
+                    let diffuse: [f32; 3] = floats(s, at + 4);
+                    let light_ambient: [f32; 3] = floats(s, at + 9 * 4);
+                    // The game does not give a direction of length 1.
+                    let direction: [f32; 3] = floats(s, at + 16 * 4);
+                    let length = direction.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
+                    sun = Some((direction.map(|v| v / length), diffuse, light_ambient));
+                    break;
+                }
+            }
+            let ambient = color(known(word(s, state::AMBIENT), 0));
+            self.world_sun = sun;
+            self.world_ambient = [ambient[0], ambient[1], ambient[2]];
+        }
         let state_of = |index: u32| self.stream.render_states.get(&index).copied();
-        let scene = SceneView {
-            device: &self.renderer.device,
-            queue: &self.renderer.queue,
-            target_format: self.renderer.target_format,
-            depth_format: DEPTH_FORMAT,
-            target_size: self.target_size,
+        WorldFacts {
+            target_size: self.size_of_target(),
             view: self.stream.view,
             projection: self.stream.projection,
             interior: self.stream.interior,
             fog_color: color(state_of(34).unwrap_or(0)),
             fog_start: f32::from_bits(state_of(36).unwrap_or(0)),
             fog_end: f32::from_bits(state_of(37).unwrap_or(0)),
-            sun_direction: self.world_sun.map(|sun| sun.0),
-            sun_color: self.world_sun.map_or([0.0; 3], |sun| sun.1),
-            sun_ambient: self.world_sun.map_or([0.0; 3], |sun| sun.2),
+            sun: self.world_sun,
             ambient: self.world_ambient,
-        };
+        }
+    }
+
+    /// Asks the extension for its answers for the frame. See `Extension::frame`.
+    fn ask_frame(&mut self) {
+        let Some(mut extension) = self.extension.take() else { return };
+        let facts = self.world_facts(true);
+        let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
+        let scene = facts.view(&device, &queue, format);
+        self.parameters = Some(extension.frame(&scene));
+        self.extension = Some(extension);
+    }
+
+    /// Gives the extension its call at the end of the world scene. See `Extension::after_world`.
+    fn end_world(&mut self, facts: &WorldFacts) {
+        let Some(mut extension) = self.extension.take() else { return };
+        let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
+        let scene = facts.view(&device, &queue, format);
         if let Some(pass) = self.pass.as_mut() {
-            extension.after_world(&scene, pass);
+            let world = std::mem::take(&mut self.world_draws);
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+            extension.after_world(&scene, pass, &mut replayer);
+            self.world_draws = world;
         }
         // The blend: a pass on the picture only, so that a shader can read the depth.
         if let (true, Some(before), Some(color), Some(depth), Some(encoder)) = (self.before_kept, self.before.as_ref(), self.color.clone(), self.depth.clone(), self.encoder.as_mut()) {
@@ -2205,55 +2373,24 @@ impl Player {
         self.before_kept = true;
     }
 
-    /// Gives the extension its call of the frame. See `Extension::before_world`.
-    fn start_world(&mut self) {
+    /// Gives the extension its call at the start of the world. See `Extension::before_world`.
+    fn start_world(&mut self, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
-        let s = &self.stream.state;
-        let state_of = |index: u32| self.stream.render_states.get(&index).copied();
-        // The first light of the draw that is a sun or another directional light: type 3,
-        // or type 4 for the light that the plugin names as the sun.
-        let mut sun = None;
-        for i in 0..(word(s, state::LIGHT_COUNT) as usize).min(8) {
-            let at = state::SIZE + i * state::LIGHT_SIZE + 4;
-            if at + 104 <= s.len() && matches!(word(s, at), 3 | 4) {
-                let diffuse: [f32; 3] = floats(s, at + 4);
-                let light_ambient: [f32; 3] = floats(s, at + 9 * 4);
-                // The game does not give a direction of length 1.
-                let direction: [f32; 3] = floats(s, at + 16 * 4);
-                let length = direction.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
-                sun = Some((direction.map(|v| v / length), diffuse, light_ambient));
-                break;
-            }
-        }
-        let ambient = color(known(word(s, state::AMBIENT), 0));
-        self.world_sun = sun;
-        self.world_ambient = [ambient[0], ambient[1], ambient[2]];
-        let scene = SceneView {
-            device: &self.renderer.device,
-            queue: &self.renderer.queue,
-            target_format: self.renderer.target_format,
-            depth_format: DEPTH_FORMAT,
-            target_size: self.target_size,
-            view: self.stream.view,
-            projection: self.stream.projection,
-            interior: self.stream.interior,
-            fog_color: color(state_of(34).unwrap_or(0)),
-            fog_start: f32::from_bits(state_of(36).unwrap_or(0)),
-            fog_end: f32::from_bits(state_of(37).unwrap_or(0)),
-            sun_direction: sun.map(|(direction, _, _)| direction),
-            sun_color: sun.map_or([0.0; 3], |(_, diffuse, _)| diffuse),
-            sun_ambient: sun.map_or([0.0; 3], |(_, _, light_ambient)| light_ambient),
-            ambient: [ambient[0], ambient[1], ambient[2]],
-        };
+        let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
+        let scene = facts.view(&device, &queue, format);
         let clear_depth = match self.pass.as_mut() {
-            Some(pass) => extension.before_world(&scene, pass),
+            Some(pass) => {
+                let world = std::mem::take(&mut self.world_draws);
+                let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+                let clear_depth = extension.before_world(&scene, pass, &mut replayer);
+                self.world_draws = world;
+                clear_depth
+            }
             None => false,
         };
-        self.stream.fog_range = extension.fog_range();
-        self.frame_per_pixel = extension.per_pixel();
-        let keep = clear_depth && extension.wants_blend();
+        let blend = self.parameters.is_some_and(|p| p.blend);
         self.extension = Some(extension);
-        if keep {
+        if clear_depth && blend {
             self.keep_before();
         }
         if clear_depth {
@@ -2262,20 +2399,26 @@ impl Player {
         }
     }
 
-    /// Draws with the current state packet. `data` is the draw command: with an index buffer,
-    /// or the vertices in their order.
+    /// Collects a draw with the current state packet. `data` is the draw command: with an
+    /// index buffer, or the vertices in their order.
     fn draw(&mut self, data: &[u8], indexed: bool) {
-        let renderer = &mut self.renderer;
         if !self.stream.back_buffer {
-            renderer.counts.other_target += 1;
+            self.renderer.counts.other_target += 1;
             return;
         }
-        // The world of the game starts with the first draw of its world scene (kind 1) into
-        // the back buffer that is not a part of the sky: the classes 1 to 7 are the sky and
+        let in_back_buffer = self.target.is_none();
+        // The first draw of the world scene (kind 1) into the back buffer: the answers of
+        // the extension for the frame.
+        if self.extension.is_some() && self.parameters.is_none() && in_back_buffer && self.scene_kind == 1 {
+            self.ask_frame();
+        }
+        // The world of the game starts with the first draw of its world scene into the
+        // back buffer that is not a part of the sky: the classes 1 to 7 are the sky and
         // 8 is the glare of the sun.
-        if self.extension.is_some() && !self.world_started && self.target.is_none() && self.scene_kind == 1 && !(1..=8).contains(&self.stream.object_class) {
-            self.world_started = true;
-            self.start_world();
+        if self.extension.is_some() && !self.world_begun && in_back_buffer && self.scene_kind == 1 && !(1..=8).contains(&self.stream.object_class) {
+            self.world_begun = true;
+            let facts = self.world_facts(true);
+            self.items.push(Item::WorldStart(Box::new(facts)));
         }
         let renderer = &mut self.renderer;
         let s = &self.stream.state;
@@ -2334,21 +2477,17 @@ impl Player {
             return;
         }
         let clock = std::time::Instant::now();
-        // The light for each pixel is for the world in the back buffer: not for the sky,
-        // which is before the world, and not for a texture that the game draws into.
-        self.stream.per_pixel = self.frame_per_pixel.filter(|_| self.world_started && self.target.is_none());
-        // The sky of the extension is for a sky draw in the back buffer: MGE_LINK_CLASS_SKY_DOME
-        // is 1 and MGE_LINK_CLASS_SKY_OTHER is 7.
-        self.stream.sky = None;
-        if self.target.is_none() && (1..=7).contains(&self.stream.object_class) {
-            let extension = self.extension.as_mut();
-            self.stream.sky = *self.frame_sky.get_or_insert_with(|| extension.and_then(|extension| extension.sky()));
-        }
+        // The answers of the extension: the light for each pixel and the fog distances for
+        // the world in the back buffer (not for the sky, which is before the world, and not
+        // for a texture that the game draws into), the sky for a sky draw in the back buffer
+        // (MGE_LINK_CLASS_SKY_DOME is 1 and MGE_LINK_CLASS_SKY_OTHER is 7).
+        let parameters = self.parameters.unwrap_or_default();
+        let world = self.world_begun && in_back_buffer;
+        self.stream.per_pixel = parameters.per_pixel.filter(|_| world);
+        self.stream.fog_range = parameters.fog_range.filter(|_| world);
+        self.stream.sky = parameters.sky.filter(|_| in_back_buffer && (1..=7).contains(&self.stream.object_class));
         let draw_data = self.stream.draw_data(&mut renderer.counts);
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
-        let clock = std::time::Instant::now();
-        let (draw_group, draw_offset) = renderer.draw_slot(&draw_data);
-        renderer.counts.times[TIME_DRAW_UPLOAD] += clock.elapsed();
         let clock = std::time::Instant::now();
         let mut handles = [0u32; STAGES];
         let mut sampler_values = [[0u32; 5]; STAGES];
@@ -2378,50 +2517,28 @@ impl Player {
             renderer.sampler_groups.insert(sampler_values, Rc::new(group));
         }
         let sampler_group = renderer.sampler_groups[&sampler_values].clone();
-        let Some(pipeline) = renderer.pipeline(key) else {
-            renderer.counts.no_layout += 1;
-            return;
-        };
         renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
-        // The world scene of the game is 1 and its scene of sorted draws is 2. The water
-        // plane of the game (MGE_LINK_CLASS_WATER_PLANE, 10) is not a thing of the world.
-        if self.extension.is_some() && self.world_started && self.target.is_none() && matches!(self.scene_kind, 1 | 2) && self.stream.object_class != 10 {
-            self.kept.push(Kept {
-                key,
-                stencil_reference,
-                data: draw_data,
-                origin: self.stream.origin.filter(|_| word(s, state::WORLD_RELATIVE_MASK) & 1 != 0),
-                textures: texture_group.clone(),
-                samplers: sampler_group.clone(),
-                vertices: vertex_buffer.clone(),
-                indexes: index_buffer.clone(),
-                fan,
-                range: if indexed { (first_index, indexes, word(s, state::BASE_VERTEX) as i32) } else { (first_index, indexes, 0) },
-            });
-        }
-        let clock = std::time::Instant::now();
-        let Some(pass) = self.pass.as_mut() else { return };
-        pass.set_pipeline(&pipeline);
-        pass.set_stencil_reference(stencil_reference);
-        pass.set_bind_group(0, &*draw_group, &[draw_offset]);
-        pass.set_bind_group(1, &*texture_group, &[]);
-        pass.set_bind_group(2, &*sampler_group, &[]);
-        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        pass.set_vertex_buffer(1, renderer.defaults.slice(..));
-        if let Some(index_buffer) = index_buffer.as_ref() {
-            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(first_index..first_index + indexes, word(s, state::BASE_VERTEX) as i32, 0..1);
-        } else if fan {
-            pass.set_index_buffer(renderer.fan_indexes.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(0..indexes, first_index as i32, 0..1);
-        } else {
-            pass.draw(first_index..first_index + indexes, 0..1);
-        }
-        renderer.counts.times[TIME_DRAW_PASS] += clock.elapsed();
-        renderer.counts.draws += 1;
         if self.target.is_some() {
             renderer.counts.target_draws += 1;
         }
+        let draw = Rc::new(Draw {
+            key,
+            stencil_reference,
+            data: draw_data,
+            origin: self.stream.origin.filter(|_| word(s, state::WORLD_RELATIVE_MASK) & 1 != 0),
+            textures: texture_group,
+            samplers: sampler_group,
+            vertices: vertex_buffer,
+            indexes: index_buffer,
+            fan,
+            range: if indexed { (first_index, indexes, word(s, state::BASE_VERTEX) as i32) } else { (first_index, indexes, 0) },
+        });
+        // The world scene of the game is 1 and its scene of sorted draws is 2. The water
+        // plane of the game (MGE_LINK_CLASS_WATER_PLANE, 10) is not a thing of the world.
+        if world && matches!(self.scene_kind, 1 | 2) && self.stream.object_class != 10 {
+            self.world_draws.push(draw.clone());
+        }
+        self.items.push(Item::Draw(draw));
     }
 
     fn print_counts(&self) {
