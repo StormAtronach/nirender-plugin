@@ -83,9 +83,6 @@ return function(nirender, spec)
         -- The frame changes for a moment after the start of menu mode.
         after(3, function()
             pictures(where, { { "off1", 0 }, { "on", facts }, { "off2", 0 } }, 1, function()
-                if spec.holdMenu then
-                    mge.saveScreenshot({ path = string.format("%s/%d-menu.png", spec.shotDir, place), captureWithUI = true })
-                end
                 tes3ui.leaveMenuMode()
                 local held = tes3ui.findMenu("nirender:hold")
                 if held then held:destroy() end
