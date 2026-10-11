@@ -58,7 +58,8 @@ struct Draw {
     // 8, the extension gives the colour and the draw keeps its alpha (the shadow of a moon);
     // bit 2 and the bits from 16 are for the extension.
     counts: vec4u,
-    lights: array<Light, 8>,
+    // The lights of the draw in `lights`: the first and the number.
+    light_range: vec4u,
     stages: array<Stage, 6>,
     // The texture transform of each stage.
     texture_transforms: array<mat4x4f, 6>,
@@ -72,6 +73,8 @@ struct Draw {
 }
 
 @group(0) @binding(0) var<uniform> draw: Draw;
+// The lights of all draws of the frame.
+@group(0) @binding(1) var<storage, read> lights: array<Light>;
 @group(1) @binding(0) var texture0: texture_2d<f32>;
 @group(1) @binding(1) var texture1: texture_2d<f32>;
 @group(1) @binding(2) var texture2: texture_2d<f32>;
@@ -216,8 +219,8 @@ fn vs(in: VertexIn) -> VertexOut {
             normal = normalize(world_normal);
         }
         var sum = emissive + ambient * draw.scene_ambient.rgb;
-        for (var i = 0u; i < draw.counts.x; i++) {
-            let light = draw.lights[i];
+        for (var i = 0u; i < draw.light_range.y; i++) {
+            let light = lights[draw.light_range.x + i];
             var direction: vec3f;
             var strength = 1.0;
             if light.position.w == 3.0 {

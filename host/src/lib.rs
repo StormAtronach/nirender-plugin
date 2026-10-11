@@ -338,12 +338,12 @@ pub trait Extension {
         None
     }
 
-    /// Changes the uniform of a world draw before the renderer puts the draw into the pass:
-    /// the lights, the ambient light, the fog. Called for each draw of the world of the
-    /// game into the back buffer with a perspective projection, when `FrameParameters::shade`
-    /// is true. The extension sets bit 1 of `counts[3]` for a draw that its shader functions
-    /// shade; bit 2 and the bits from 16 are its own.
-    fn shade(&mut self, _draw: &mut DrawData, _facts: &DrawFacts) {}
+    /// Changes the uniform of a world draw and its lights before the renderer puts the draw
+    /// into the pass: the lights, the ambient light, the fog. Called for each draw of the
+    /// world of the game into the back buffer with a perspective projection, when
+    /// `FrameParameters::shade` is true. The extension sets bit 1 of `counts[3]` for a draw
+    /// that its shader functions shade; bit 2 and the bits from 16 are its own.
+    fn shade(&mut self, _draw: &mut DrawData, _lights: &mut [LightData], _facts: &DrawFacts) {}
 
     /// The answers of the extension for a frame. The renderer asks at the first draw of the
     /// world scene of the game into the back buffer: before the sky, so the matrices of the
@@ -514,8 +514,8 @@ mod state {
 
 // ---- the data of a draw for the shader
 
-/// A light of a draw, as the shader sees it. From the state packet of the draw: the first
-/// 8 lights of the draw, as Direct3D 8 gives them.
+/// A light of a draw, as the shader sees it. From the state packet of the draw: all of its
+/// lights, in their order (the plugin takes up to 64).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct LightData {
@@ -569,7 +569,8 @@ pub struct DrawData {
     /// extension shades the draw, 4 the sky dome, 8 the shadow of a moon; 2 and from 16 are
     /// the extension's own.
     pub counts: [u32; 4],
-    pub lights: [LightData; 8],
+    /// The lights of the draw in the light buffer of the frame: the first and the number.
+    pub light_range: [u32; 4],
     pub stages: [StageData; 6],
     pub texture_transforms: [[f32; 16]; 6],
     /// 1 / width and -1 / height of the viewport.
@@ -941,7 +942,8 @@ struct Counts {
     texture_formats: HashMap<u32, u32>,
     missing_textures: u32,
     more_stages: u32,
-    more_lights: u32,
+    /// The most lights that a draw had.
+    most_lights: u32,
     coordinate_work: u32,
 }
 
@@ -950,6 +952,18 @@ const STAGES: usize = 6;
 /// The size of a slot for the data of a draw: the size of `DrawData`, and a multiple of the
 /// 256 bytes that a uniform offset must be a multiple of.
 const SLOT_SIZE: usize = core::mem::size_of::<DrawData>().next_multiple_of(256);
+/// The lights that the light buffer of a frame holds at first.
+const LIGHTS_AT_FIRST: usize = 4096;
+
+/// A buffer for the lights of a frame.
+fn light_buffer(device: &wgpu::Device, lights: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("lights"),
+        size: (lights * core::mem::size_of::<LightData>()) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
 const SLOTS_IN_BUFFER: usize = 2048;
 
 struct Renderer {
@@ -970,6 +984,9 @@ struct Renderer {
     /// of draws of the frame so far. A draw has one slot in a buffer.
     draw_buffers: Vec<(Rc<wgpu::Buffer>, Rc<wgpu::BindGroup>)>,
     draw_slots: usize,
+    /// The lights of all draws of the frame, and the number of them that the buffer holds.
+    light_buffer: wgpu::Buffer,
+    light_capacity: usize,
     texture_layout: wgpu::BindGroupLayout,
     sampler_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
@@ -1056,12 +1073,20 @@ impl Renderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: None },
-                count: None,
-            }],
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+            ],
         });
         let mut entries = Vec::new();
         let mut sampler_entries = Vec::new();
@@ -1119,6 +1144,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
         let renderer = Renderer {
+            light_buffer: light_buffer(&device, LIGHTS_AT_FIRST),
             device: Rc::new(device),
             target_format,
             surface_usages,
@@ -1129,6 +1155,7 @@ impl Renderer {
             draw_layout,
             draw_buffers: Vec::new(),
             draw_slots: 0,
+            light_capacity: LIGHTS_AT_FIRST,
             texture_layout,
             sampler_layout,
             pipeline_layout,
@@ -1155,6 +1182,35 @@ impl Renderer {
 
     /// Puts the data of a draw into the next slot. Returns the group to bind and the offset
     /// of the slot.
+    /// The bind group of a buffer of draw slots: the slots, and the lights of the frame.
+    fn slot_group(&self, buffer: &wgpu::Buffer) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.draw_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer, offset: 0, size: wgpu::BufferSize::new(core::mem::size_of::<DrawData>() as u64) }),
+                },
+                wgpu::BindGroupEntry { binding: 1, resource: self.light_buffer.as_entire_binding() },
+            ],
+        })
+    }
+
+    /// Puts the lights of the frame into the light buffer: all of them each time, because
+    /// a write is before the commands of the frame in any case. A larger buffer gets the
+    /// bind groups of the slots again.
+    fn upload_lights(&mut self, lights: &[LightData]) {
+        if lights.len() > self.light_capacity {
+            self.light_capacity = lights.len().next_power_of_two();
+            self.light_buffer = light_buffer(&self.device, self.light_capacity);
+            self.draw_buffers = self.draw_buffers.iter().map(|(buffer, _)| (buffer.clone(), Rc::new(self.slot_group(buffer)))).collect();
+        }
+        if !lights.is_empty() {
+            self.queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(lights));
+        }
+    }
+
     fn draw_slot(&mut self, data: &DrawData) -> (Rc<wgpu::BindGroup>, u32) {
         let (index, slot) = (self.draw_slots / SLOTS_IN_BUFFER, self.draw_slots % SLOTS_IN_BUFFER);
         self.draw_slots += 1;
@@ -1165,18 +1221,7 @@ impl Renderer {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.draw_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &buffer,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(core::mem::size_of::<DrawData>() as u64),
-                    }),
-                }],
-            });
+            let group = self.slot_group(&buffer);
             self.draw_buffers.push((Rc::new(buffer), Rc::new(group)));
         }
         let (buffer, group) = &self.draw_buffers[index];
@@ -1610,7 +1655,7 @@ struct Stream {
 
 impl Stream {
 
-    fn draw_data(&self, counts: &mut Counts) -> DrawData {
+    fn draw_data(&self, counts: &mut Counts, frame_lights: &mut Vec<LightData>) -> DrawData {
         let s = &self.state;
         let mut data = DrawData::zeroed();
         let fvf = word(s, state::VERTEX_FORMAT);
@@ -1682,10 +1727,9 @@ impl Stream {
         ];
 
         let lights = word(s, state::LIGHT_COUNT) as usize;
-        if lights > 8 {
-            counts.more_lights += 1;
-        }
-        for i in 0..lights.min(8) {
+        counts.most_lights = counts.most_lights.max(lights as u32);
+        data.light_range = [frame_lights.len() as u32, 0, 0, 0];
+        for i in 0..lights {
             let at = state::SIZE + i * state::LIGHT_SIZE + 4;
             if at + 104 > s.len() {
                 break;
@@ -1698,7 +1742,7 @@ impl Stream {
             }
             let direction: [f32; 3] = floats(s, at + 16 * 4);
             let attenuation: [f32; 3] = floats(s, at + 21 * 4);
-            data.lights[i] = LightData {
+            frame_lights.push(LightData {
                 diffuse: floats(s, at + 4),
                 ambient: floats(s, at + 9 * 4),
                 position: [position[0], position[1], position[2], word(s, at) as f32],
@@ -1707,8 +1751,9 @@ impl Stream {
                 attenuation: [attenuation[0], attenuation[1], attenuation[2], float(s, at + 20 * 4)],
                 // The plugin puts the radius of a light of the game into its first specular word.
                 cone: [(float(s, at + 24 * 4) * 0.5).cos(), (float(s, at + 25 * 4) * 0.5).cos(), float(s, at + 5 * 4), 0.0],
-            };
+            });
             data.counts[0] = i as u32 + 1;
+            data.light_range[1] = i as u32 + 1;
         }
 
         let mut stages = 0;
@@ -1771,6 +1816,8 @@ struct Player {
     /// `Replay`.
     items: Vec<Item>,
     world_draws: Vec<Rc<Draw>>,
+    /// The lights of all draws of the frame, in the order of the draws.
+    frame_lights: Vec<LightData>,
     /// The collect: the answers of the extension for the frame (`None` before the world
     /// scene), the world began, the world ended, the kind of the scene in progress (1 is the
     /// world), the sun and the ambient light of the first draw of the world, the texture
@@ -1829,6 +1876,7 @@ impl Player {
             extension: None,
             items: Vec::new(),
             world_draws: Vec::new(),
+            frame_lights: Vec::new(),
             parameters: None,
             world_begun: false,
             world_ended: false,
@@ -1903,6 +1951,7 @@ impl Player {
         self.frame_size = (color.width(), color.height());
         self.items.clear();
         self.world_draws.clear();
+        self.frame_lights.clear();
         self.parameters = None;
         self.world_begun = false;
         self.world_ended = false;
@@ -2209,6 +2258,7 @@ impl Player {
         if !self.drawing() {
             return;
         }
+        self.renderer.upload_lights(&self.frame_lights);
         for item in items {
             match item {
                 Item::Target(target) => {
@@ -2280,7 +2330,7 @@ impl Player {
             // The first light of the draw that is a sun or another directional light: type 3,
             // or type 4 for the light that the plugin names as the sun.
             let mut sun = None;
-            for i in 0..(word(s, state::LIGHT_COUNT) as usize).min(8) {
+            for i in 0..(word(s, state::LIGHT_COUNT) as usize).min(64) {
                 let at = state::SIZE + i * state::LIGHT_SIZE + 4;
                 if at + 104 <= s.len() && matches!(word(s, at), 3 | 4) {
                     let diffuse: [f32; 3] = floats(s, at + 4);
@@ -2544,10 +2594,11 @@ impl Player {
         let world = self.world_begun && in_back_buffer;
         self.stream.fog_range = parameters.fog_range.filter(|_| world);
         self.stream.sky = parameters.sky.filter(|_| in_back_buffer && (1..=7).contains(&self.stream.object_class));
-        let mut draw_data = self.stream.draw_data(&mut renderer.counts);
+        let mut draw_data = self.stream.draw_data(&mut renderer.counts, &mut self.frame_lights);
         if parameters.shade && world && self.stream.projection[11] == 1.0 {
             if let Some(extension) = self.extension.as_mut() {
-                extension.shade(&mut draw_data, &DrawFacts { blend_enable: key.blend[0] != 0, source_blend: key.blend[1], destination_blend: key.blend[2] });
+                let (first, count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);
+                extension.shade(&mut draw_data, &mut self.frame_lights[first..first + count], &DrawFacts { blend_enable: key.blend[0] != 0, source_blend: key.blend[1], destination_blend: key.blend[2] });
             }
         }
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
@@ -2611,8 +2662,8 @@ impl Player {
         println!("draws {}, pipelines {}, textures {}, samplers {}", c.draws, self.renderer.pipelines.len(), c.textures, self.renderer.samplers.len());
         println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);
         println!(
-            "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}, more than 8 lights {}; draws with a made or moved texture coordinate {}",
-            c.missing_textures, c.more_stages, c.more_lights, c.coordinate_work
+            "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}; draws with a made or moved texture coordinate {}; the most lights of a draw {}",
+            c.missing_textures, c.more_stages, c.coordinate_work, c.most_lights
         );
         println!("texture levels written again {}, not written {}; textures with a block format made as pixels {}", c.texture_updates, c.texture_updates_lost, c.textures_decoded);
         for (reason, count) in &c.lost_reasons {

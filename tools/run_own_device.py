@@ -43,6 +43,8 @@ def main():
     ap.add_argument("--position", help="x,y,z in the exterior cell: the player goes there after the cell loads (the "
                     "coordinates of the console)")
     ap.add_argument("--yaw", type=float, default=None, help="the heading of the player in degrees, 0 north, with --position")
+    ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for the run, key = value: the line with "
+                    "that key is replaced (for example \"expanded_light_limit = true\")")
     ap.add_argument("--steps", help="the steps of the scenario to do, with commas (for example exterior,rate,capture); "
                     "all of them without this")
     ap.add_argument("--budget", type=int, default=200)
@@ -84,6 +86,9 @@ def main():
     assert "[runtime]" in text, toml
     lines = [line for line in text.splitlines() if not line.strip().startswith("renderer_wgpu")]
     lines = ['vsync = "immediate"' if line.strip().startswith("vsync") else line for line in lines]
+    for setting in args.set:
+        key = setting.split("=")[0].strip()
+        lines = [setting if line.split("=")[0].strip() == key else line for line in lines]
     if args.mge_build and not args.reference:
         lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = true")
     switched = run.path("mgeXE.toml")
