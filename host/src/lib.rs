@@ -82,6 +82,19 @@ pub trait Extension {
     /// number that the two parts agree on. See `nirender_stream_extension` of the plugin.
     fn data(&mut self, _id: u32, _bytes: &[u8]) {}
 
+    /// True when the extension wants the call `blend` in this frame. The renderer asks after
+    /// a `before_world` that gave true, and then keeps the picture of that moment.
+    fn wants_blend(&self) -> bool {
+        false
+    }
+
+    /// The renderer calls this after `after_world`, when `wants_blend` gave true. The pass
+    /// draws into the picture of the frame and has no depth target. `before` is the picture
+    /// as it was after `before_world`, and `depth` is the depth of the draws of the game:
+    /// 1 where the game drew nothing. MGE XE lets the draws of the game near the end of
+    /// their view range go into its distant land here.
+    fn blend(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _before: &wgpu::TextureView, _depth: &wgpu::TextureView) {}
+
     /// `Some` when the draws of the world of this frame get their light for each pixel, as
     /// the shader of MGE XE makes it, and not for each vertex as the game does. The renderer
     /// asks after `before_world`.
@@ -1526,6 +1539,10 @@ struct Player {
     world_ambient: [f32; 3],
     /// The light for each pixel of the frame, from the extension.
     frame_per_pixel: Option<PerPixel>,
+    /// The picture after `Extension::before_world`, for `Extension::blend`, and true when it
+    /// is that of this frame.
+    before: Option<wgpu::Texture>,
+    before_kept: bool,
     /// The texture that the game draws into now. `None` for the back buffer.
     target: Option<u32>,
     /// The game named a rendered texture as its target.
@@ -1567,6 +1584,8 @@ impl Player {
             world_sun: None,
             world_ambient: [0.0; 3],
             frame_per_pixel: None,
+            before: None,
+            before_kept: false,
             target: None,
             wants_texture: false,
             size: (0, 0),
@@ -1630,6 +1649,7 @@ impl Player {
         self.world_started = false;
         self.world_ended = false;
         self.frame_per_pixel = None;
+        self.before_kept = false;
         self.stream.fog_range = None;
         self.stream.back_buffer = true;
         self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
@@ -1939,7 +1959,49 @@ impl Player {
         if let Some(pass) = self.pass.as_mut() {
             extension.after_world(&scene, pass);
         }
+        // The blend: a pass on the picture only, so that a shader can read the depth.
+        if let (true, Some(before), Some(color), Some(depth), Some(encoder)) = (self.before_kept, self.before.as_ref(), self.color.clone(), self.depth.clone(), self.encoder.as_mut()) {
+            drop(self.pass.take());
+            let before = before.create_view(&Default::default());
+            let depth = depth.texture().create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() });
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("blend"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &color,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime();
+            extension.blend(&scene, &mut pass, &before, &depth);
+            drop(pass);
+            self.extension = Some(extension);
+            self.open_pass(None, None, None);
+            return;
+        }
         self.extension = Some(extension);
+    }
+
+    /// Keeps the picture of the frame as it is now, for `Extension::blend`.
+    fn keep_before(&mut self) {
+        let (Some(source), Some(encoder)) = (self.back_buffer.as_ref(), self.encoder.as_mut()) else { return };
+        if !source.usage().contains(wgpu::TextureUsages::COPY_SRC) || !self.depth.as_ref().is_some_and(|depth| depth.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)) {
+            return;
+        }
+        let size = source.size();
+        if self.before.as_ref().is_none_or(|before| before.size() != size) {
+            self.before = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
+        }
+        // A copy is not a part of a pass.
+        drop(self.pass.take());
+        encoder.copy_texture_to_texture(source.as_image_copy(), self.before.as_ref().unwrap().as_image_copy(), size);
+        self.before_kept = true;
     }
 
     /// Gives the extension its call of the frame. See `Extension::before_world`.
@@ -1988,7 +2050,11 @@ impl Player {
         };
         self.stream.fog_range = extension.fog_range();
         self.frame_per_pixel = extension.per_pixel();
+        let keep = clear_depth && extension.wants_blend();
         self.extension = Some(extension);
+        if keep {
+            self.keep_before();
+        }
         if clear_depth {
             // The draws of the game start with a depth target of their own.
             self.open_pass(None, Some(1.0), None);
@@ -2499,7 +2565,8 @@ mod live {
             let (width, height) = self.size;
             let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
             self.back_buffer = Some(target_texture(&player.renderer.device, width, height, player.renderer.target_format, usage));
-            let depth = target_texture(&player.renderer.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+            // An extension can read the depth in a pass that does not have it as a target.
+            let depth = target_texture(&player.renderer.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
             self.depth = Some(Rc::new(depth.create_view(&Default::default())));
         }
 
