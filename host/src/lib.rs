@@ -2270,14 +2270,12 @@ impl Player {
             renderer.counts.other_target += 1;
             return;
         }
-        // The world of the game starts with its first draw into the back buffer that has fog,
-        // writes depth and has a perspective projection. The sky is before it.
-        if self.extension.is_some() && !self.world_started && self.target.is_none() {
-            let s = &self.stream.state;
-            if known(word(s, state::FOG_ENABLE), 0) != 0 && known(word(s, state::DEPTH_WRITE), 1) != 0 && self.stream.projection[11] == 1.0 {
-                self.world_started = true;
-                self.start_world();
-            }
+        // The world of the game starts with the first draw of its world scene (kind 1) into
+        // the back buffer that is not a part of the sky: the classes 1 to 7 are the sky and
+        // 8 is the glare of the sun.
+        if self.extension.is_some() && !self.world_started && self.target.is_none() && self.scene_kind == 1 && !(1..=8).contains(&self.stream.object_class) {
+            self.world_started = true;
+            self.start_world();
         }
         let renderer = &mut self.renderer;
         let s = &self.stream.state;
