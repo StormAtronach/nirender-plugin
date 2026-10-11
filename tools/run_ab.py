@@ -32,12 +32,20 @@ HOST = os.path.join(HOST_DIR, "target", "x86_64-pc-windows-msvc", "release", "ni
 MGE_CONFIGS = (r"D:\GOG\Morrowind\Morrowind\mgeXE.toml", r"D:\Modlists\Morrowind75testing\mods\Configuration\Root\mgeXE.toml")
 
 
-class GameFog:
-    """Makes MGE XE leave the fog of the game as it is, for the time of a run.
+# The settings of MGE XE that a run changes, each with the value for a plain reference.
+PLAIN = {
+    # MGE XE puts its own fog mode on the device and drops the mode that the game asks for.
+    # The game asks for linear fog on the depth for each pixel.
+    "fog_mode": '"depth_pixel"',
+    # The host does not smooth edges yet.
+    "anti_aliasing": '"none"',
+    "transparency_antialiasing": "false",
+}
 
-    MGE XE puts its own fog mode on the device, from `fog_mode` of its configuration, and
-    drops the mode that the game asks for. The game asks for linear fog on the depth for each
-    pixel: "depth_pixel". With another mode the reference picture has not the fog of the game."""
+
+class GameFog:
+    """Gives MGE XE the settings of `PLAIN` for the time of a run, so that the reference
+    picture is the picture of the game."""
 
     def __enter__(self):
         self.saved = {}
@@ -45,7 +53,11 @@ class GameFog:
             if os.path.isfile(path):
                 text = open(path, encoding="utf-8", newline="").read()
                 self.saved[path] = text
-                lines = [('fog_mode = "depth_pixel"' if line.strip().startswith("fog_mode") else line) for line in text.splitlines(keepends=False)]
+                lines = text.splitlines(keepends=False)
+                for i, line in enumerate(lines):
+                    key = line.split("=")[0].strip()
+                    if key in PLAIN and "=" in line:
+                        lines[i] = "%s = %s" % (key, PLAIN[key])
                 ending = "\r\n" if "\r\n" in text else "\n"
                 open(path, "w", encoding="utf-8", newline="").write(ending.join(lines) + ending)
         return self

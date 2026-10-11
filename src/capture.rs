@@ -549,10 +549,10 @@ unsafe fn purge(s: &mut State) {
     if renderer == 0 {
         return;
     }
-    crate::ports::textures::renderer_purge_all_textures(renderer, 0);
+    let textures = crate::ports::textures::purge_source_textures();
     let objects: Vec<(u32, u32)> = s.geometry.iter().copied().collect();
     let skins = drop_buffers(renderer, &objects);
-    crate::log!("capture: the renderer dropped its textures and the buffers of {} objects, {skins} of them with a skin", objects.len());
+    crate::log!("capture: the renderer dropped {textures} source textures and the buffers of {} objects, {skins} of them with a skin", objects.len());
 }
 
 /// Makes the renderer drop the buffers of these objects: geometry data and skin instance.

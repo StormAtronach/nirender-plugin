@@ -138,6 +138,7 @@ struct DrawData {
     lights: [LightData; 8],
     stages: [StageData; 6],
     texture_transforms: [[f32; 16]; 6],
+    pixel: [f32; 4],
 }
 
 /// A D3DCOLOR as red, green, blue, alpha.
@@ -266,6 +267,8 @@ struct PipelineKey {
     blend: [u32; 3],
     depth: [u32; 3],
     cull: u32,
+    /// D3DRS_FILLMODE: 2 is wireframe.
+    fill: u32,
 }
 
 struct BufferData {
@@ -307,6 +310,8 @@ struct Renderer {
     /// The anisotropic filter that MGE XE forces, for a comparison with its picture. 1 for the
     /// filters that the game asks for.
     anisotropy: u16,
+    /// The device can draw the edges of triangles only.
+    wireframe: bool,
     queue: wgpu::Queue,
     shader: wgpu::ShaderModule,
     draw_layout: wgpu::BindGroupLayout,
@@ -370,7 +375,7 @@ impl Renderer {
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::TEXTURE_COMPRESSION_BC,
+                required_features: wgpu::Features::TEXTURE_COMPRESSION_BC | (adapter.features() & wgpu::Features::POLYGON_MODE_LINE),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::default(),
                 ..Default::default()
@@ -378,6 +383,7 @@ impl Renderer {
         ))
         .expect("no device");
 
+        let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
         let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -442,6 +448,7 @@ impl Renderer {
             target_format,
             surface_usages,
             anisotropy: 1,
+            wireframe,
             queue,
             shader,
             draw_layout,
@@ -627,6 +634,8 @@ impl Renderer {
                 // MGE XE gives each texture that the game filters its anisotropic filter, with
                 // a linear filter between the levels. wgpu wants all filters linear for that.
                 anisotropy_clamp: if forced { anisotropy } else { 1 },
+                // D3DTEXF_NONE for the filter between levels: Direct3D reads the first level only.
+                lod_max_clamp: if known(values[4], 0) == 0 { 0.0 } else { 32.0 },
                 mag_filter: filter(values[2]),
                 min_filter: filter(values[3]),
                 mipmap_filter: if filter(values[4]) == wgpu::FilterMode::Linear || forced {
@@ -681,7 +690,13 @@ impl Renderer {
                 label: None,
                 layout: Some(&self.pipeline_layout),
                 vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &buffers },
-                primitive: wgpu::PrimitiveState { topology, front_face: wgpu::FrontFace::Cw, cull_mode, ..Default::default() },
+                primitive: wgpu::PrimitiveState {
+                    topology,
+                    front_face: wgpu::FrontFace::Cw,
+                    cull_mode,
+                    polygon_mode: if key.fill == 2 && self.wireframe { wgpu::PolygonMode::Line } else { wgpu::PolygonMode::Fill },
+                    ..Default::default()
+                },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
                     depth_write_enabled: Some(depth_on && key.depth[1] != 0),
@@ -736,6 +751,9 @@ impl Stream {
             data.view[14] = 0.0;
         }
         data.projection = self.projection;
+        if let Some((rectangle, _)) = self.viewport {
+            data.pixel = [1.0 / rectangle[2].max(1.0), -1.0 / rectangle[3].max(1.0), 0.0, 0.0];
+        }
 
         let material: [f32; 17] = floats(s, state::MATERIAL);
         data.material_diffuse = material[0..4].try_into().unwrap();
@@ -1022,6 +1040,8 @@ impl Player {
                 known(word(s, state::DEPTH_FUNCTION), 4),
             ],
             cull: known(word(s, state::CULL_MODE), 3),
+            // D3DRS_FILLMODE is 8. The game sends it as a command.
+            fill: self.stream.render_states.get(&8).copied().unwrap_or(3),
         };
         let (vertex_handle, index_handle) = (word(s, state::VERTEX_BUFFER), word(s, state::INDEX_BUFFER));
         let (Some(vertex_buffer), Some(index_buffer)) = (renderer.gpu_buffer(vertex_handle, false), renderer.gpu_buffer(index_handle, true)) else {

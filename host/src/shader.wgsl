@@ -51,6 +51,8 @@ struct Draw {
     stages: array<Stage, 6>,
     // The texture transform of each stage.
     texture_transforms: array<mat4x4f, 6>,
+    // 1 / width and -1 / height of the viewport.
+    pixel: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> draw: Draw;
@@ -143,6 +145,9 @@ fn vs(in: VertexIn) -> VertexOut {
 
     var out: VertexOut;
     out.clip = draw.projection * view_position;
+    // Direct3D 8 has the centre of a pixel at a whole number: the picture is half a pixel to
+    // the right and down from where newer APIs put it.
+    out.clip = vec4f(out.clip.xy + draw.pixel.xy * out.clip.w, out.clip.zw);
     let uvs = array<vec2f, 4>(in.uv0, in.uv1, in.uv2, in.uv3);
     let view_normal = normalize((draw.view * vec4f(world_normal, 0.0)).xyz + vec3f(0.0, 0.0, 1e-20));
     out.coordinate0 = stage_coordinate(0u, uvs, view_position.xyz, view_normal);

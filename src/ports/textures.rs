@@ -672,6 +672,25 @@ pub unsafe fn clear_texture_data(_renderer: usize) {
     }
 }
 
+/// Makes each source texture lose its renderer data: the game makes it again at the next use
+/// of the texture. A rendered texture keeps its data: the game does not make that again by
+/// itself. This is not a function of the game; the capture uses it. Returns the number of
+/// textures.
+pub unsafe fn purge_source_textures() -> u32 {
+    let mut count = 0;
+    let mut texture = eng::texture_list_head();
+    while texture != 0 {
+        let data: usize = rd(texture, T::rendererData);
+        if data != 0 && rd::<u32>(data, TD::vtbl_vtbl) == VTBL_SOURCE_TEXTURE_DATA {
+            wr::<usize>(texture, T::rendererData, rd(data, TD::vtbl_linkedData));
+            ni::delete_object(data);
+            count += 1;
+        }
+        texture = rd(texture, T::nextTexture);
+    }
+    count
+}
+
 // ---- NiDX8SourceTextureData
 
 /// 0x6BFDE0 `NiDX8SourceTextureData::ctor`. Returns `this`.
