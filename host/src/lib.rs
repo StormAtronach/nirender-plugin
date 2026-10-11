@@ -1377,8 +1377,6 @@ impl Stream {
         // D3DBLEND_ONE is 2.
         let adds = known(word(s, state::BLEND_ENABLE), 0) != 0 && (known(word(s, state::SOURCE_BLEND), 2) == 2 || known(word(s, state::DESTINATION_BLEND), 1) == 2);
         data.counts[3] = 1 | if adds { 2 } else { 0 };
-        // The fog of this shader is on the distance from the camera.
-        data.fog[3] = 1.0;
     }
 
     fn draw_data(&self, counts: &mut Counts) -> DrawData {
@@ -1418,6 +1416,14 @@ impl Stream {
             if let (Some((start, end)), true) = (self.fog_range, self.projection[11] == 1.0) {
                 data.fog[0] = start;
                 data.fog[1] = end;
+                // The fog of the extension is on the distance from the camera, as the fog
+                // of what the extension draws: the two do not change with the direction
+                // of the camera.
+                data.fog[3] = 1.0;
+            }
+            // So is the fog of the shader for the light of a pixel.
+            if self.per_pixel.is_some() && self.projection[11] == 1.0 {
+                data.fog[3] = 1.0;
             }
         }
         data.texture_factor = color(state_of(60).unwrap_or(0xFFFF_FFFF));

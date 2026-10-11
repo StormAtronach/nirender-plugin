@@ -70,6 +70,21 @@ return function(nirender, spec)
             end
             event.register("enterFrame", count)
         end },
+        -- The same place with the camera turned to the two sides: a thing in the two
+        -- pictures must have the same colour. The fog of a thing does not change with the
+        -- direction of the camera.
+        { "yaw-a", 2.0, function()
+            local o = tes3.player.orientation
+            tes3.player.orientation = tes3vector3.new(o.x, o.y, o.z + 0.3)
+        end },
+        { "yaw-b", 2.0, function()
+            local o = tes3.player.orientation
+            tes3.player.orientation = tes3vector3.new(o.x, o.y, o.z - 0.6)
+        end },
+        { "yaw-off", 0.5, function()
+            local o = tes3.player.orientation
+            tes3.player.orientation = tes3vector3.new(o.x, o.y, o.z + 0.3)
+        end },
         -- The player goes north over the borders of exterior cells, a small step in each
         -- frame, as on foot but faster. The game then loads the cells in front of the player
         -- on its second thread while the main thread draws.
