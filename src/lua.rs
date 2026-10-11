@@ -232,6 +232,19 @@ unsafe extern "C" fn capture_stop(_l: LuaState) -> i32 {
     0
 }
 
+/// `nirender.captureFrames(n)` asks a capture file that holds (`nirender.capture(path, 0, 0)`
+/// on a stream) for `n` frames more. Returns true when there is such a file.
+unsafe extern "C" fn capture_frames(l: LuaState) -> i32 {
+    lua_pushboolean(l, crate::capture::tee_frames(lua_tonumber(l, 1) as u32) as i32);
+    1
+}
+
+/// `nirender.captureEnd()` ends a capture file that holds; the stream goes on.
+unsafe extern "C" fn capture_end(_l: LuaState) -> i32 {
+    crate::capture::tee_end();
+    0
+}
+
 /// `nirender.captureStatus()` returns the phase of the capture ("off", "warmup", "record",
 /// "done"), its records and its bytes, as one text.
 unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
@@ -472,6 +485,8 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "fault", fault);
     set_fn(l, "capture", capture);
     set_fn(l, "captureStatus", capture_status);
+    set_fn(l, "captureFrames", capture_frames);
+    set_fn(l, "captureEnd", capture_end);
     set_fn(l, "stream", stream);
     set_fn(l, "captureStop", capture_stop);
     set_fn(l, "streamShot", stream_shot);

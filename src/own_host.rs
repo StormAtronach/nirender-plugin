@@ -145,6 +145,26 @@ pub unsafe fn snapshot() {
     crate::log!("own host: snapshot of {} textures, {} level surfaces, {} buffers, {} surfaces", count[0], count[1], count[2], count[3]);
 }
 
+/// Writes the content of one buffer or texture that is alive into the capture, as it is
+/// now. For a capture file that holds between its frames.
+pub unsafe fn write_resource(handle: usize) {
+    if !(*core::ptr::addr_of!(LIVE)).contains(&handle) {
+        return;
+    }
+    let o = &*(handle as *const Object);
+    match o.kind {
+        Kind::VertexBuffer | Kind::IndexBuffer => crate::capture::buffer_data(handle, 0, &o.memory),
+        Kind::Texture => {
+            for (level, memory) in o.level_memory.iter().enumerate() {
+                if !memory.is_empty() {
+                    crate::capture::texture_update(handle, level as u32, (o.width >> level).max(1), (o.height >> level).max(1), o.format, memory);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 unsafe fn new_object(kind: Kind, table: &'static Table) -> *mut Object {
     let object = Box::into_raw(Box::new(Object {
         table: table.methods(),

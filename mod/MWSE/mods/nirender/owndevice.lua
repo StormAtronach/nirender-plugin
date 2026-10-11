@@ -25,6 +25,8 @@ return function(nirender, spec)
         end
     end
 
+    -- The step tour is complete when its cells are done.
+    local tourDone = false
     local steps = {
         { "world", 1.0, function() end },
         -- The zoom of MGE XE, when MGE XE is there and runs its frame logic without a device:
@@ -122,6 +124,34 @@ return function(nirender, spec)
             end
             event.register("enterFrame", count)
         end },
+        -- The tour of a test level: in each cell of spec.tourCells, in front of each object
+        -- whose id starts with spec.tour, two frames into the capture file of the cell. The
+        -- file holds between the stops. tools/validate_tour.py replays the stops.
+        { "tour", 1.0, function()
+            local cells = {}
+            for name in tostring(spec.tourCells or ""):gmatch("[^;]+") do cells[#cells + 1] = name end
+            local function cell(index)
+                local name = cells[index]
+                if not name then
+                    tourDone = true
+                    return say("tour: done, %d cells", #cells)
+                end
+                scenario.goTo(name)
+                after(spec.settleSeconds or 6, function()
+                    local path = string.format("%s/tour-%d.nircap", spec.dir, index)
+                    say("tour: cell %d '%s' into %s: %s", index, name, path, tostring(nirender.capture(path, 0, 0)))
+                    scenario.tour(1, function()
+                        nirender.captureEnd()
+                        after(0.5, function() cell(index + 1) end)
+                    end, function(stop, ref, go)
+                        nirender.captureFrames(2)
+                        say("tour: cell %d stop %d %s", index, stop, ref.object.id)
+                        after(0.3, go)
+                    end)
+                end)
+            end
+            cell(1)
+        end, function() return tourDone end },
         -- A capture file of some frames at rest, for the offline replay: the same picture
         -- from the same file each time, for a check of a change of the renderer.
         { "capture", 2.5, function()
@@ -186,7 +216,13 @@ return function(nirender, spec)
         end
         local ok, problem = pcall(this[3])
         say("step %s: %s %s", this[1], tostring(ok), ok and "" or tostring(problem))
-        after(this[2], function()
+        -- A step with a fourth field is complete when that function says so: after its time,
+        -- the scenario waits for it, one second at a time.
+        local function when_done(continue)
+            if this[4] and not this[4]() then return after(1, function() when_done(continue) end) end
+            continue()
+        end
+        after(this[2], function() when_done(function()
             local p = tes3.player and tes3.player.position
             -- The host program prints its counts of this step at the mark.
             if nirender.streamMark then nirender.streamMark("after " .. this[1]) end
@@ -201,7 +237,7 @@ return function(nirender, spec)
                 nirender.streamShot(string.format("%s/host-%s.png", spec.dir, this[1]))
             end
             after(0.8, function() step(index + 1) end)
-        end)
+        end) end)
     end
 
     say("own device: %s", tostring(nirender.ownDevice()))

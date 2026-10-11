@@ -48,6 +48,10 @@ def main():
     ap.add_argument("--yaw", type=float, default=None, help="the heading of the player in degrees, 0 north, with --position")
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for the run, key = value: the line with "
                     "that key is replaced (for example \"expanded_light_limit = true\")")
+    ap.add_argument("--tour-cells", help="the cells of a test level for the step tour, with semicolons (the NIF test level: "
+                    "\"@nifTest_1;@nifTest_2;@nifTest_3\")")
+    ap.add_argument("--tour", default="@nif_", help="the start of the ids of the objects of the tour")
+    ap.add_argument("--tour-seconds", type=float, default=1.5, help="the time at each object of the tour")
     ap.add_argument("--steps", help="the steps of the scenario to do, with commas (for example exterior,rate,capture); "
                     "all of them without this")
     ap.add_argument("--budget", type=int, default=200)
@@ -71,7 +75,8 @@ def main():
     session.prepare(build=not args.no_build)
     run = session.Run(args.label)
     spec = run.spec("owndevice", save=args.save, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
-                    position=args.position, yaw=args.yaw, findWater=args.find_water, hour=args.hour)
+                    position=args.position, yaw=args.yaw, findWater=args.find_water, hour=args.hour,
+                    tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds)
     # The plugin starts the host program. It reads these from the environment of the game.
     if not args.mge_build:
         os.environ["NIRENDER_HOST_EXE"] = HOST

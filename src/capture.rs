@@ -357,6 +357,12 @@ struct State {
     /// that are left for it. While `tee_only`, the records go into the file only: the
     /// snapshot of the resources at its start.
     tee: Option<(BufWriter<File>, u32)>,
+    /// The file from the stream stays open when its frames are done: it takes the resource
+    /// records only, until `tee_frames` asks for frames again. See `tee`.
+    tee_hold: bool,
+    /// The buffers and textures whose content changed while the file holds: their content
+    /// goes into the file once, when frames are asked for.
+    tee_dirty: HashSet<u32>,
     tee_only: bool,
     /// The words of the header record of a direct stream, for the file.
     header: [u32; 3],
@@ -403,7 +409,7 @@ pub fn recording() -> bool {
 pub unsafe fn start(path: &str, warmup: u32, frames: u32) -> Result<(), String> {
     let _lock = crate::sync::device_lock();
     if active() && state().is_some_and(|s| s.direct && s.tee.is_none()) {
-        return tee(path, frames.max(1));
+        return tee(path, frames);
     }
     if active() {
         return Err("a capture is in progress".into());
@@ -419,12 +425,18 @@ pub unsafe fn start(path: &str, warmup: u32, frames: u32) -> Result<(), String> 
 /// Starts a capture file from a direct stream: the file gets the header, the render states
 /// and all resources of the own host as they are now, and then a copy of each record of
 /// the stream for `frames` frames. The file plays alone, as a capture of the other kind.
+///
+/// With 0 frames the file holds: it takes only the records that make or change resources,
+/// until `tee_frames` asks for frames, and it ends with `tee_end`. A tour of a test level
+/// records two frames at each stop into one file, and the textures and the geometry that
+/// the game makes between the stops are in the file once.
 unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
     let file = File::create(path).map_err(|error| format!("{path}: {error}"))?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     out.write_all(MAGIC).map_err(|error| error.to_string())?;
     let Some(s) = state() else { return Err("no stream".into()) };
-    s.tee = Some((out, frames));
+    s.tee = Some((out, frames.max(1)));
+    s.tee_hold = frames == 0;
     s.tee_only = true;
     let header = s.header;
     write(tag::HEADER, &[&words(&header)]);
@@ -435,12 +447,61 @@ unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
     crate::own_host::snapshot();
     if let Some(s) = state() {
         s.tee_only = false;
+        if s.tee_hold {
+            if let Some((_, left)) = s.tee.as_mut() {
+                *left = 0;
+            }
+        }
         // The source textures, the rendered textures and the geometry of the game go into
         // the file as the game makes them again.
         purge(s);
     }
     crate::log!("capture: a file from the stream, {frames} frames, into {path}");
     Ok(())
+}
+
+/// Asks a file from the stream that holds for `frames` frames more. The render states go
+/// into the file first, as they are now: a frame that was not recorded can have changed
+/// them. Returns false without such a file.
+pub unsafe fn tee_frames(frames: u32) -> bool {
+    let _lock = crate::sync::device_lock();
+    let Some(s) = state() else { return false };
+    if !s.tee_hold || s.tee.is_none() {
+        return false;
+    }
+    if let Some((_, left)) = s.tee.as_mut() {
+        *left = frames.max(1);
+    }
+    for (state, value) in crate::link_client::render_states() {
+        write(tag::COMMAND, &[&words(&[crate::link::COMMAND_RENDER_STATE, state, value, 0])]);
+    }
+    // The content of the buffers and textures that changed while the file held, as it is
+    // now, once each.
+    let dirty: Vec<u32> = state().map(|s| s.tee_dirty.drain().collect()).unwrap_or_default();
+    #[cfg(not(test))]
+    for handle in dirty {
+        crate::own_host::write_resource(handle as usize);
+    }
+    #[cfg(test)]
+    drop(dirty);
+    true
+}
+
+/// Ends a file from the stream that holds.
+pub unsafe fn tee_end() {
+    let _lock = crate::sync::device_lock();
+    if let Some(s) = state() {
+        s.tee_hold = false;
+        s.tee_dirty.clear();
+        end_tee(s);
+    }
+}
+
+/// A record that makes a resource, or changes one in a way that has no content: a file that
+/// holds takes these between its frames, so that the resources of a recorded frame are in
+/// the file. The content of buffers and textures comes once, at the frames.
+fn resource_record(tag: u32) -> bool {
+    matches!(tag, tag::TEXTURE | tag::CALL)
 }
 
 /// Ends the capture file of a direct stream.
@@ -505,6 +566,8 @@ unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
         out: Some(out),
         reply: None,
         tee: None,
+        tee_hold: false,
+        tee_dirty: HashSet::new(),
         tee_only: false,
         header: [0; 3],
         geometry: HashSet::new(),
@@ -633,7 +696,12 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
     let Some(s) = state() else { return };
     let start = ticks();
     let length: usize = parts.iter().map(|p| p.len()).sum();
-    if let Some((out, _)) = s.tee.as_mut() {
+    let hold = s.tee_hold;
+    if hold && s.tee.as_ref().is_some_and(|tee| tee.1 == 0) && matches!(tag, tag::BUFFER_DATA | tag::TEXTURE_UPDATE) && parts[0].len() >= 4 {
+        let handle = u32::from_le_bytes([parts[0][0], parts[0][1], parts[0][2], parts[0][3]]);
+        s.tee_dirty.insert(handle);
+    }
+    if let Some((out, _)) = s.tee.as_mut().filter(|tee| !hold || tee.1 > 0 || resource_record(tag)) {
         let mut ok = out.write_all(&tag.to_le_bytes()).is_ok() && out.write_all(&(length as u32).to_le_bytes()).is_ok();
         for part in parts {
             ok = ok && out.write_all(part).is_ok();
@@ -957,9 +1025,10 @@ unsafe fn frame_end() {
                 // The write ended the stream.
                 return;
             }
-            if let Some((_, left)) = s.tee.as_mut() {
+            let hold = s.tee_hold;
+            if let Some((_, left)) = s.tee.as_mut().filter(|tee| tee.1 > 0) {
                 *left -= 1;
-                if *left == 0 {
+                if *left == 0 && !hold {
                     end_tee(s);
                 }
             }

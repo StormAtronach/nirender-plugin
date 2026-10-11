@@ -56,8 +56,9 @@ return function(nirender, spec, name)
     -- Puts the player in front of each object of the cell whose id starts with spec.tour, for
     -- spec.tourSeconds each, then calls `done`. A test level shows some effects only from
     -- near: its meshes have level-of-detail nodes. Without spec.tour, or in a cell that has
-    -- no such object, it waits `seconds` and calls `done`.
-    function scenario.tour(seconds, done)
+    -- no such object, it waits `seconds` and calls `done`. With `each`, it calls
+    -- `each(index, ref, next)` after the wait at each stop, and `next()` goes on.
+    function scenario.tour(seconds, done, each)
         local stops = {}
         if spec.tour then
             local prefix = spec.tour:lower()
@@ -77,7 +78,13 @@ return function(nirender, spec, name)
             local at = ref.position
             tes3.player.position = tes3vector3.new(at.x, at.y - (spec.tourDistance or 300), at.z)
             tes3.player.orientation = tes3vector3.new(0, 0, 0)
-            scenario.after(spec.tourSeconds or 1.5, function() stop(index + 1) end)
+            scenario.after(spec.tourSeconds or 1.5, function()
+                if each then
+                    each(index, ref, function() stop(index + 1) end)
+                else
+                    stop(index + 1)
+                end
+            end)
         end
         stop(1)
     end
