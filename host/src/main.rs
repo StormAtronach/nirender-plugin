@@ -93,6 +93,8 @@ mod state {
     pub const TEXTURE_TRANSFORMS: usize = 1012;
     pub const DEPTH_ENABLE: usize = 1524;
     pub const DEPTH_FUNCTION: usize = 1528;
+    /// Enable, fail, depth fail, pass, function, reference, mask, write mask.
+    pub const STENCIL: usize = 1532;
     pub const SAMPLERS: usize = 1564;
     pub const WORLD_RELATIVE_MASK: usize = 1724;
     /// A light after the struct: the device index, then a D3DLIGHT8 of 26 words.
@@ -109,6 +111,7 @@ struct LightData {
     position: [f32; 4],
     direction: [f32; 4],
     attenuation: [f32; 4],
+    cone: [f32; 4],
 }
 
 #[repr(C)]
@@ -117,6 +120,8 @@ struct StageData {
     color: [u32; 4],
     alpha: [u32; 4],
     coordinate: [u32; 4],
+    bump: [f32; 4],
+    luminance: [f32; 4],
 }
 
 #[repr(C)]
@@ -184,6 +189,21 @@ fn compare(value: u32) -> wgpu::CompareFunction {
         6 => NotEqual,
         7 => GreaterEqual,
         _ => Always,
+    }
+}
+
+/// D3DSTENCILOP_*.
+fn stencil_operation(value: u32) -> wgpu::StencilOperation {
+    use wgpu::StencilOperation::*;
+    match value {
+        2 => Zero,
+        3 => Replace,
+        4 => IncrementClamp,
+        5 => DecrementClamp,
+        6 => Invert,
+        7 => IncrementWrap,
+        8 => DecrementWrap,
+        _ => Keep,
     }
 }
 
@@ -269,6 +289,8 @@ struct PipelineKey {
     cull: u32,
     /// D3DRS_FILLMODE: 2 is wireframe.
     fill: u32,
+    /// The stencil: enable, fail, depth fail, pass, function, mask, write mask.
+    stencil: [u32; 7],
 }
 
 struct BufferData {
@@ -701,7 +723,18 @@ impl Renderer {
                     format: DEPTH_FORMAT,
                     depth_write_enabled: Some(depth_on && key.depth[1] != 0),
                     depth_compare: Some(if depth_on { compare(key.depth[2]) } else { wgpu::CompareFunction::Always }),
-                    stencil: Default::default(),
+                    stencil: if key.stencil[0] == 0 {
+                        Default::default()
+                    } else {
+                        // Direct3D 8 has one stencil rule for the two sides of a triangle.
+                        let face = wgpu::StencilFaceState {
+                            compare: compare(key.stencil[4]),
+                            fail_op: stencil_operation(key.stencil[1]),
+                            depth_fail_op: stencil_operation(key.stencil[2]),
+                            pass_op: stencil_operation(key.stencil[3]),
+                        };
+                        wgpu::StencilState { front: face, back: face, read_mask: key.stencil[5] & 0xFF, write_mask: key.stencil[6] & 0xFF }
+                    },
                     bias: Default::default(),
                 }),
                 multisample: Default::default(),
@@ -806,7 +839,9 @@ impl Stream {
                 ambient: floats(s, at + 9 * 4),
                 position: [position[0], position[1], position[2], word(s, at) as f32],
                 direction: [direction[0], direction[1], direction[2], float(s, at + 19 * 4)],
-                attenuation: [attenuation[0], attenuation[1], attenuation[2], 0.0],
+                // The falloff, and the two angles of a spot light: words 20, 24 and 25.
+                attenuation: [attenuation[0], attenuation[1], attenuation[2], float(s, at + 20 * 4)],
+                cone: [(float(s, at + 24 * 4) * 0.5).cos(), (float(s, at + 25 * 4) * 0.5).cos(), 0.0, 0.0],
             };
             data.counts[0] = i as u32 + 1;
         }
@@ -831,6 +866,9 @@ impl Stream {
                     color: [op, known(word(s, at + 4), 2), known(word(s, at + 8), 1), known(word(s, at + 24), 1)],
                     alpha: [known(word(s, at + 12), 2), known(word(s, at + 16), 2), known(word(s, at + 20), 1), 0],
                     coordinate: [coordinate >> 16 & 3, coordinate & 3, transform & 7, (transform & 256 != 0) as u32],
+                    // The four values of the bump matrix, then the scale and the offset: floats.
+                    bump: core::array::from_fn(|i| f32::from_bits(known(word(s, at + (11 + i) * 4), 0))),
+                    luminance: [f32::from_bits(known(word(s, at + 15 * 4), 0)), f32::from_bits(known(word(s, at + 16 * 4), 0)), 0.0, 0.0],
                 };
                 data.texture_transforms[stages] = floats(s, state::TEXTURE_TRANSFORMS + stages * 64);
             }
@@ -884,7 +922,7 @@ impl Player {
     }
 
     /// Starts a pass on the targets of the frame: it draws on what is there, or it clears first.
-    fn open_pass(&mut self, clear_color: Option<wgpu::Color>, clear_depth: Option<f32>) {
+    fn open_pass(&mut self, clear_color: Option<wgpu::Color>, clear_depth: Option<f32>, clear_stencil: Option<u32>) {
         drop(self.pass.take());
         let (Some(encoder), Some(color), Some(depth)) = (self.encoder.as_mut(), self.color.as_ref(), self.depth.as_ref()) else { return };
         let mut pass = encoder
@@ -899,7 +937,7 @@ impl Player {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: depth,
                     depth_ops: Some(wgpu::Operations { load: clear_depth.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store }),
-                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                    stencil_ops: Some(wgpu::Operations { load: clear_stencil.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store }),
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -929,7 +967,7 @@ impl Player {
         self.renderer.draw_slots = 0;
         self.color = Some(color);
         self.depth = Some(depth);
-        self.open_pass(Some(wgpu::Color::BLACK), Some(1.0));
+        self.open_pass(Some(wgpu::Color::BLACK), Some(1.0), Some(0));
     }
 
     fn drawing(&self) -> bool {
@@ -986,7 +1024,8 @@ impl Player {
                             wgpu::Color { r: c[0] as f64, g: c[1] as f64, b: c[2] as f64, a: c[3] as f64 }
                         });
                         let clear_depth = (flags & 2 != 0).then(|| float(arguments, 16));
-                        self.open_pass(clear_color, clear_depth);
+                        let clear_stencil = (flags & 4 != 0).then(|| word(arguments, 20));
+                        self.open_pass(clear_color, clear_depth, clear_stencil);
                     }
                     _ => {}
                 }
@@ -1042,7 +1081,16 @@ impl Player {
             cull: known(word(s, state::CULL_MODE), 3),
             // D3DRS_FILLMODE is 8. The game sends it as a command.
             fill: self.stream.render_states.get(&8).copied().unwrap_or(3),
+            stencil: {
+                let v: [u32; 8] = core::array::from_fn(|i| word(s, state::STENCIL + i * 4));
+                if known(v[0], 0) == 0 {
+                    [0; 7]
+                } else {
+                    [1, known(v[1], 1), known(v[2], 1), known(v[3], 1), known(v[4], 8), known(v[6], !0), known(v[7], !0)]
+                }
+            },
         };
+        let stencil_reference = known(word(s, state::STENCIL + 5 * 4), 0);
         let (vertex_handle, index_handle) = (word(s, state::VERTEX_BUFFER), word(s, state::INDEX_BUFFER));
         let (Some(vertex_buffer), Some(index_buffer)) = (renderer.gpu_buffer(vertex_handle, false), renderer.gpu_buffer(index_handle, true)) else {
             renderer.counts.no_buffer += 1;
@@ -1084,6 +1132,7 @@ impl Player {
         };
         let Some(pass) = self.pass.as_mut() else { return };
         pass.set_pipeline(&pipeline);
+        pass.set_stencil_reference(stencil_reference);
         pass.set_bind_group(0, &*draw_group, &[draw_offset]);
         pass.set_bind_group(1, &*texture_group, &[]);
         pass.set_bind_group(2, &*sampler_group, &[]);

@@ -12,8 +12,10 @@ struct Light {
     position: vec4f,
     // w: the range.
     direction: vec4f,
-    // The three attenuation values.
+    // The three attenuation values. w: the falloff of a spot light.
     attenuation: vec4f,
+    // A spot light: the cosine of half of the inner angle and of half of the outer angle.
+    cone: vec4f,
 }
 
 struct Stage {
@@ -26,6 +28,11 @@ struct Stage {
     // vertex, the number of parts that the texture transform gives (0 for no transform), and
     // 1 when the last of them divides the others.
     coordinate: vec4u,
+    // A bump stage: the matrix that turns its texel into a move of the coordinate of the
+    // next stage (m00, m01, m10, m11).
+    bump: vec4f,
+    // A bump stage with luminance: the scale and the offset of the luminance.
+    luminance: vec4f,
 }
 
 struct Draw {
@@ -197,6 +204,16 @@ fn vs(in: VertexIn) -> VertexOut {
                     let a = light.attenuation;
                     strength = 1.0 / max(a.x + a.y * distance + a.z * distance * distance, 0.0001);
                 }
+                if light.position.w == 2.0 {
+                    // The cone of a spot light: all of the light inside the inner angle, none
+                    // outside the outer angle, and a curve between them.
+                    let rho = dot(normalize(light.direction.xyz), -direction);
+                    if rho <= light.cone.y {
+                        strength = 0.0;
+                    } else if rho < light.cone.x {
+                        strength *= pow((rho - light.cone.y) / max(light.cone.x - light.cone.y, 0.0001), light.attenuation.w);
+                    }
+                }
             }
             sum += strength * (ambient * light.ambient.rgb + diffuse.rgb * light.diffuse.rgb * max(dot(normal, direction), 0.0));
         }
@@ -248,6 +265,8 @@ fn operation(op: u32, a1: vec4f, a2: vec4f, a0: vec4f, diffuse: vec4f, current: 
         case 13u: { return mix(a2, a1, texel.a); }
         case 14u: { return mix(a2, a1, draw.texture_factor.a); }
         case 16u: { return mix(a2, a1, current.a); }
+        // A bump stage gives what the stage before it gave.
+        case 22u, 23u: { return current; }
         case 24u: {
             let d = dot(a1.rgb - 0.5, a2.rgb - 0.5) * 4.0;
             return vec4f(d);
@@ -282,16 +301,35 @@ fn final_coordinate(index: u32, value: vec4f) -> vec2f {
     return value.xy / divisor;
 }
 
+// D3DTOP_BUMPENVMAP is 22 and D3DTOP_BUMPENVMAPLUMINANCE is 23. The move that the bump stage
+// `index` gives to the coordinate of the next stage, from its texel.
+fn bump_move(index: u32, texel: vec4f) -> vec2f {
+    let stage = draw.stages[index];
+    if index >= draw.counts.y || (stage.color.x != 22u && stage.color.x != 23u) {
+        return vec2f(0.0);
+    }
+    return vec2f(texel.r * stage.bump.x + texel.g * stage.bump.z, texel.r * stage.bump.y + texel.g * stage.bump.w);
+}
+
+// With luminance, a bump stage also makes the texel of the next stage darker, by the
+// luminance channel of the bump map. The bump maps of the game have formats without such a
+// channel, and then Direct3D takes a luminance of 1: the texel stays as it is. A format with
+// luminance is not in this program.
+fn bump_light(index: u32, bump_texel: vec4f, texel: vec4f) -> vec4f {
+    return texel;
+}
+
 @fragment
 fn fs(in: VertexOut) -> @location(0) vec4f {
     // A texture read must not be in a branch, so each stage reads its texture first.
     var texels: array<vec4f, 6>;
+    // A bump stage moves the coordinate of the stage after it.
     texels[0] = textureSample(texture0, sampler0, final_coordinate(0u, in.coordinate0));
-    texels[1] = textureSample(texture1, sampler1, final_coordinate(1u, in.coordinate1));
-    texels[2] = textureSample(texture2, sampler2, final_coordinate(2u, in.coordinate2));
-    texels[3] = textureSample(texture3, sampler3, final_coordinate(3u, in.coordinate3));
-    texels[4] = textureSample(texture4, sampler4, final_coordinate(4u, in.coordinate4));
-    texels[5] = textureSample(texture5, sampler5, final_coordinate(5u, in.coordinate5));
+    texels[1] = bump_light(0u, texels[0], textureSample(texture1, sampler1, final_coordinate(1u, in.coordinate1) + bump_move(0u, texels[0])));
+    texels[2] = bump_light(1u, texels[1], textureSample(texture2, sampler2, final_coordinate(2u, in.coordinate2) + bump_move(1u, texels[1])));
+    texels[3] = bump_light(2u, texels[2], textureSample(texture3, sampler3, final_coordinate(3u, in.coordinate3) + bump_move(2u, texels[2])));
+    texels[4] = bump_light(3u, texels[3], textureSample(texture4, sampler4, final_coordinate(4u, in.coordinate4) + bump_move(3u, texels[3])));
+    texels[5] = bump_light(4u, texels[4], textureSample(texture5, sampler5, final_coordinate(5u, in.coordinate5) + bump_move(4u, texels[4])));
 
     let diffuse = in.color;
     var current = diffuse;

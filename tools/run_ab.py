@@ -76,12 +76,16 @@ def main():
     ap.add_argument("--max-views", type=int, default=0, help="at most this number of views in a place; 0 for all")
     ap.add_argument("--backends", default="vulkan", help="the backends of the host, separated by ','; the first one is compared")
     ap.add_argument("--anisotropy", type=int, default=8, help="the anisotropic filter of MGE XE in the reference")
+    ap.add_argument("--again", help="the folder of a run: draw its captures again and compare, without the game")
+    ap.add_argument("--only", default="", help="with --again: the numbers of the views, separated by ','")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
 
     if not args.no_build:
         cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
         subprocess.run([cargo, "build", "--release", "--quiet"], cwd=HOST_DIR, check=True)
+    if args.again:
+        return again(args)
     session.prepare(build=not args.no_build)
     run = session.Run(args.label)
     places = []
@@ -103,30 +107,56 @@ def main():
         elif "ERROR" in line:
             print("  " + line[:300])
 
+    results = draw_and_compare(args, run.dir, views)
+    json.dump(results, open(run.path("ab.json"), "w"), indent=1)
+    show(results, run.dir)
+    problems = run.mge_problems()
+    for problem in problems:
+        print("  " + problem)
+    return 0 if done and results and not problems else 1
+
+
+def again(args):
+    """Draws the captures of an earlier run again and compares them with its references."""
+    folder = args.again
+    only = {int(n) for n in args.only.split(",") if n}
+    views = [(e["view"], e["label"], e.get("capture", "")) for e in json.load(open(os.path.join(folder, "ab.json")))]
+    views = sorted(v for v in views if not only or v[0] in only)
+    results = draw_and_compare(args, folder, views)
+    if not only:
+        json.dump(results, open(os.path.join(folder, "ab.json"), "w"), indent=1)
+    show(results, folder)
+    return 0
+
+
+def draw_and_compare(args, folder, views):
+    path = lambda name: os.path.join(folder, name)
     backends = [b for b in args.backends.split(",") if b]
     results = []
     for number, label, status in views:
-        capture = run.path("view-%03d.nircap" % number)
-        reference = run.path("ref-%03d.png" % number)
+        capture = path("view-%03d.nircap" % number)
+        reference = path("ref-%03d.png" % number)
         entry = {"view": number, "label": label, "capture": status}
         for backend in backends:
-            picture = run.path("host-%03d-%s.png" % (number, backend))
+            picture = path("host-%03d-%s.png" % (number, backend))
             # The reference has the anisotropic filter of MGE XE: 8 in the test install.
             host = subprocess.run([HOST, capture, picture, "--backend", backend, "--anisotropy", str(args.anisotropy)], capture_output=True, text=True)
             entry["host_" + backend] = [line for line in host.stdout.splitlines() if line.startswith(("draws", "not drawn", "not complete"))]
             if host.returncode != 0 or not os.path.isfile(picture):
                 entry["problem"] = "the host failed on %s: %s" % (backend, (host.stderr or host.stdout).strip()[-300:])
-        first = run.path("host-%03d-%s.png" % (number, backends[0]))
+        first = path("host-%03d-%s.png" % (number, backends[0]))
         if "problem" not in entry and os.path.isfile(reference):
             a, b = picture_diff.load(reference), picture_diff.load(first)
             entry["numbers"] = picture_diff.compare(a, b)
             if "problem" not in entry["numbers"]:
-                picture_diff.sheet(a, b, run.path("sheet-%03d.png" % number))
+                picture_diff.sheet(a, b, path("sheet-%03d.png" % number))
         elif "problem" not in entry:
             entry["problem"] = "no reference picture"
         results.append(entry)
+    return results
 
-    json.dump(results, open(run.path("ab.json"), "w"), indent=1)
+
+def show(results, folder):
     # The worst view first: by the part of the pixels that are different by more than 8.
     results.sort(key=lambda e: -e.get("numbers", {}).get("over8", 1.0))
     print("\n%-4s %-52s %9s %9s %9s %7s" % ("view", "what", "over 2", "over 8", "over 32", "mean"))
@@ -137,11 +167,7 @@ def main():
                                                             numbers["over32"] * 100, numbers["mean"]))
         else:
             print("%-4d %-52s %s" % (entry["view"], entry["label"][:52], entry.get("problem") or numbers.get("problem")))
-    print("\n%d views; pictures and sheets in %s" % (len(results), run.dir))
-    problems = run.mge_problems()
-    for problem in problems:
-        print("  " + problem)
-    return 0 if done and results and not problems else 1
+    print("\n%d views; pictures and sheets in %s" % (len(results), folder))
 
 
 if __name__ == "__main__":
