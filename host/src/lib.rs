@@ -18,6 +18,55 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// The wgpu of this crate, for a program that draws with it through `Extension`.
+pub use wgpu;
+
+/// What a program that draws more than the game does gets at the start of the world of a
+/// frame. The matrices have the layout of Direct3D: 16 numbers, row after row, for a
+/// position as a row vector (`position * view * projection`).
+pub struct SceneView<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    /// The formats of the targets of the pass.
+    pub target_format: wgpu::TextureFormat,
+    pub depth_format: wgpu::TextureFormat,
+    pub target_size: (u32, u32),
+    /// From the world space of the game to the camera, and the projection of the game.
+    pub view: [f32; 16],
+    pub projection: [f32; 16],
+    /// The player is in an interior cell.
+    pub interior: bool,
+    /// The fog of the game: its colour, and the distances of its start and its end.
+    pub fog_color: [f32; 4],
+    pub fog_start: f32,
+    pub fog_end: f32,
+    /// The direction that the light of the sun goes in, and its colour, when the draw of
+    /// the game that starts the world has such a light.
+    pub sun_direction: Option<[f32; 3]>,
+    pub sun_color: [f32; 3],
+    /// The ambient light of the scene.
+    pub ambient: [f32; 3],
+}
+
+/// A program that draws more than the game does: for example the distant land of MGE XE.
+pub trait Extension {
+    /// The renderer calls this one time in a frame, before the first draw of the world of
+    /// the game: the first draw into the back buffer with fog, with depth writes and with a
+    /// perspective projection. The sky of the game is in the picture then. The pass has the
+    /// colour target and the depth target of the frame.
+    ///
+    /// Returns true when the depth target must be cleared before the draws of the game: the
+    /// extension drew with a projection of its own.
+    fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>) -> bool;
+
+    /// The distances of the start and of the end of the fog for the draws of the world of
+    /// the game in this frame, or `None` for the fog of the game. The renderer asks after
+    /// `before_world`.
+    fn fog_range(&self) -> Option<(f32, f32)> {
+        None
+    }
+}
+
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
@@ -1185,6 +1234,10 @@ struct Stream {
     viewport: Option<([f32; 4], [f32; 2])>,
     back_buffer: bool,
     origin: Option<[f64; 3]>,
+    /// The player is in an interior cell, from the scene packet.
+    interior: bool,
+    /// The fog distances of the extension for the draws of the world, or `None`.
+    fog_range: Option<(f32, f32)>,
     state: Vec<u8>,
 }
 
@@ -1223,6 +1276,11 @@ impl Stream {
             data.fog_color = color(fog_color);
             // D3DRS_RANGEFOGENABLE is 48.
             data.fog = [f32::from_bits(start), f32::from_bits(end), 1.0, (state_of(48).unwrap_or(0) != 0) as u32 as f32];
+            // The fog of the extension is for the world only: a perspective projection.
+            if let (Some((start, end)), true) = (self.fog_range, self.projection[11] == 1.0) {
+                data.fog[0] = start;
+                data.fog[1] = end;
+            }
         }
         data.texture_factor = color(state_of(60).unwrap_or(0xFFFF_FFFF));
 
@@ -1324,6 +1382,10 @@ struct Player {
     reply: Option<Box<dyn FnMut(u32, u32, u32, &[u8])>>,
     /// The picture files that the game asked for: the frame in progress goes into them.
     shots: Vec<String>,
+    /// A program that draws more than the game does, and true when it had its call in this
+    /// frame.
+    extension: Option<Box<dyn Extension>>,
+    world_started: bool,
     /// The texture that the game draws into now. `None` for the back buffer.
     target: Option<u32>,
     /// The game named a rendered texture as its target.
@@ -1346,6 +1408,8 @@ impl Player {
                 viewport: None,
                 back_buffer: true,
                 origin: None,
+                interior: false,
+                fog_range: None,
                 state: Vec::new(),
             },
             encoder: None,
@@ -1355,6 +1419,8 @@ impl Player {
             back_buffer: None,
             reply: None,
             shots: Vec::new(),
+            extension: None,
+            world_started: false,
             target: None,
             wants_texture: false,
             size: (0, 0),
@@ -1415,6 +1481,8 @@ impl Player {
     fn begin_frame(&mut self, color: &wgpu::Texture, depth: Rc<wgpu::TextureView>, keep: bool) {
         self.frame_size = (color.width(), color.height());
         self.target = None;
+        self.world_started = false;
+        self.stream.fog_range = None;
         self.stream.back_buffer = true;
         self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
         self.renderer.draw_slots = 0;
@@ -1516,6 +1584,7 @@ impl Player {
             tag::BUFFER_DATA => self.renderer.buffer_data(data),
             tag::SCENE_BEGIN => {
                 self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
+                self.stream.interior = word(data, 20) & 2 != 0;
             }
             tag::FRAME_EVENT => {
                 if word(data, 0) == EVENT_SET_TARGET {
@@ -1684,6 +1753,52 @@ impl Player {
         renderer.counts.screen_draws += 1;
     }
 
+    /// Gives the extension its call of the frame. See `Extension::before_world`.
+    fn start_world(&mut self) {
+        let Some(mut extension) = self.extension.take() else { return };
+        let s = &self.stream.state;
+        let state_of = |index: u32| self.stream.render_states.get(&index).copied();
+        // The first light of the draw that is a sun or another directional light: type 3,
+        // or type 4 for the light that the plugin names as the sun.
+        let mut sun = None;
+        for i in 0..(word(s, state::LIGHT_COUNT) as usize).min(8) {
+            let at = state::SIZE + i * state::LIGHT_SIZE + 4;
+            if at + 104 <= s.len() && matches!(word(s, at), 3 | 4) {
+                let diffuse: [f32; 3] = floats(s, at + 4);
+                let direction: [f32; 3] = floats(s, at + 16 * 4);
+                sun = Some((direction, diffuse));
+                break;
+            }
+        }
+        let ambient = color(known(word(s, state::AMBIENT), 0));
+        let scene = SceneView {
+            device: &self.renderer.device,
+            queue: &self.renderer.queue,
+            target_format: self.renderer.target_format,
+            depth_format: DEPTH_FORMAT,
+            target_size: self.target_size,
+            view: self.stream.view,
+            projection: self.stream.projection,
+            interior: self.stream.interior,
+            fog_color: color(state_of(34).unwrap_or(0)),
+            fog_start: f32::from_bits(state_of(36).unwrap_or(0)),
+            fog_end: f32::from_bits(state_of(37).unwrap_or(0)),
+            sun_direction: sun.map(|(direction, _)| direction),
+            sun_color: sun.map_or([0.0; 3], |(_, diffuse)| diffuse),
+            ambient: [ambient[0], ambient[1], ambient[2]],
+        };
+        let clear_depth = match self.pass.as_mut() {
+            Some(pass) => extension.before_world(&scene, pass),
+            None => false,
+        };
+        self.stream.fog_range = extension.fog_range();
+        self.extension = Some(extension);
+        if clear_depth {
+            // The draws of the game start with a depth target of their own.
+            self.open_pass(None, Some(1.0), None);
+        }
+    }
+
     /// Draws with the current state packet. `data` is the draw command: with an index buffer,
     /// or the vertices in their order.
     fn draw(&mut self, data: &[u8], indexed: bool) {
@@ -1692,6 +1807,16 @@ impl Player {
             renderer.counts.other_target += 1;
             return;
         }
+        // The world of the game starts with its first draw into the back buffer that has fog,
+        // writes depth and has a perspective projection. The sky is before it.
+        if self.extension.is_some() && !self.world_started && self.target.is_none() {
+            let s = &self.stream.state;
+            if known(word(s, state::FOG_ENABLE), 0) != 0 && known(word(s, state::DEPTH_WRITE), 1) != 0 && self.stream.projection[11] == 1.0 {
+                self.world_started = true;
+                self.start_world();
+            }
+        }
+        let renderer = &mut self.renderer;
         let s = &self.stream.state;
         // With an index buffer: primitive type, least index, vertices, first index, primitives.
         // Without: primitive type, first vertex, primitives.
@@ -1919,6 +2044,12 @@ fn log_to(path: &str) {
 /// part, for example the helper of MGE XE. Without it, it draws a frame of a capture file
 /// into a picture file.
 pub fn run(args: Vec<String>) {
+    run_with(args, None)
+}
+
+/// `run` with a program that draws more than the game does. The extension works in the
+/// live mode only.
+pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     if let Some(path) = option(&args, "--log") {
         log_to(&path);
     }
@@ -1928,7 +2059,7 @@ pub fn run(args: Vec<String>) {
         _ => wgpu::Backends::PRIMARY,
     };
     if let Some(name) = option(&args, "--live") {
-        return live::run(&name, backends, &args);
+        return live::run(&name, backends, &args, extension);
     }
     if args.len() < 3 {
         eprintln!("use: nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N]");
@@ -2122,6 +2253,7 @@ mod live {
     struct App {
         ring: Ring,
         reply: Option<Reply>,
+        extension: Option<Box<dyn super::Extension>>,
         backends: wgpu::Backends,
         frames_wanted: u32,
         /// The size of the back buffer of the game, and its window when the host goes into it.
@@ -2237,6 +2369,7 @@ mod live {
             });
             assert!(renderer.surface_usages.contains(wgpu::TextureUsages::COPY_DST), "the window does not take a copy of a picture");
             let mut player = Player::new(renderer);
+            player.extension = self.extension.take();
             player.reply = self.reply.take().map(|reply| Box::new(move |request, width, height, pixels: &[u8]| reply.answer(request, width, height, pixels)) as _);
             self.player = Some(player);
             self.surface = Some(surface);
@@ -2367,7 +2500,7 @@ mod live {
         }
     }
 
-    pub fn run(name: &str, backends: wgpu::Backends, args: &[String]) {
+    pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Option<Box<dyn super::Extension>>) {
         let ring = Ring::open(name);
         println!("ring: {} MB", ring.capacity >> 20);
         // The first record has the size of the picture and the window of the game.
@@ -2388,6 +2521,7 @@ mod live {
         let mut app = App {
             ring,
             reply: Reply::open(name),
+            extension,
             back_buffer: None,
             backends,
             frames_wanted: option(args, "--frames").and_then(|text| text.parse().ok()).unwrap_or(0),

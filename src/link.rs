@@ -55,6 +55,7 @@ pub const COMMAND_DRAW_INDEXED: u32 = 4;
 pub const COMMAND_DRAW: u32 = 5;
 
 pub const SCENE_HAS_CAMERA_ORIGIN: u32 = 0x1;
+pub const SCENE_INTERIOR: u32 = 0x2;
 
 pub const TEXTURE_DYNAMIC: u32 = 0x1;
 

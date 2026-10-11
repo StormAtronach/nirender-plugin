@@ -268,6 +268,15 @@ fn skip(fact: u32, in_packet: bool) -> bool {
     skipped
 }
 
+/// `DataHandler::currentInteriorCell`: the interior cell that the player is in, or 0.
+const CURRENT_INTERIOR_CELL: usize = 0xAC;
+
+/// True when the player is in an interior cell.
+unsafe fn in_interior() -> bool {
+    let data_handler: usize = rd(DATA_HANDLER, 0);
+    data_handler != 0 && rd::<usize>(data_handler, CURRENT_INTERIOR_CELL) != 0
+}
+
 /// The two functions of the `d3d8.dll` of MGE XE for a game without a Direct3D device
 /// (`MGE_StreamPresent`, `MGE_StreamTransform`), or 0. MGE XE runs its logic of a frame that
 /// is not drawing in them: zoom, field of view, screen shake, crosshair. Its proxy device
@@ -950,7 +959,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
         camera: camera as u32,
         scene_root: ptr_at(camera, CAM::spScene) as u32,
         render_target: roots.render_target,
-        flags: if origin.is_some() { SCENE_HAS_CAMERA_ORIGIN } else { 0 },
+        flags: if origin.is_some() { SCENE_HAS_CAMERA_ORIGIN } else { 0 } | if in_interior() { SCENE_INTERIOR } else { 0 },
         camera_origin: origin.unwrap_or_default(),
     };
     (host.scene_begin)(&scene);
