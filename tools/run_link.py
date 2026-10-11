@@ -114,6 +114,12 @@ def main():
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
 
+    # The picture test takes its frames in menu mode. With the menu cache of MGE XE on, the
+    # world of such a frame is a copy of an earlier frame, and the test would compare nothing.
+    for config in (r"D:\GOG\Morrowind\Morrowind\mgeXE.toml", r"D:\Modlists\Morrowind75testing\mods\Configuration\Root\mgeXE.toml"):
+        if os.path.isfile(config) and any(line.split("#")[0].replace(" ", "") == "menu_caching=true"
+                                           for line in open(config, encoding="utf-8", errors="replace").read().splitlines()):
+            raise SystemExit("menu_caching is true in %s: the picture test is not valid with it" % config)
     cells = [c.strip() for c in args.cells.split(";") if c.strip()]
     mask = fact_mask(args.facts) if args.facts else 0
     session.prepare(build=not args.no_build)
