@@ -439,6 +439,7 @@ unsafe fn compare<R: Eax>(
     if SUSPENDED.load(Ordering::Relaxed) || device::recording() {
         return engine();
     }
+    crate::install::attach_device_early();
     let scratch = &mut *core::ptr::addr_of_mut!(SCRATCH);
     let mut set = Regions { list: core::mem::take(&mut scratch.regions), skip: false };
     set.list.clear();

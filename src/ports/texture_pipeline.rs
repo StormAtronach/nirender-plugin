@@ -289,7 +289,7 @@ pub unsafe fn texture_stage_ctor(this: usize) -> usize {
         wr::<u32>(this, TS::textureMatrix + i * 4, 0);
     }
     wr::<u32>(this, TS::extraBlendColorArgument, 0xFFFF_FFFF);
-    wr::<u32>(this, TS::field_90, 1);
+    wr::<u8>(this, TS::field_90, 1);
     wr::<u32>(this, TS::field_94, 9);
     wr::<u8>(this, TS::bumpEnvMapEnabled, 0);
     wr::<u32>(this, TS::bumpEnvMap00, 0);
@@ -1386,7 +1386,10 @@ mod tests {
             assert_eq!(rd::<[u32; 4]>(s, TS::sourceTexcoordIndex), [0, 3, 3, 3]);
             assert_eq!(rd::<[u32; 5]>(s, TS::textureStageIndex), [0, 11, 12, 13, 0]);
             assert_eq!(rd::<[u32; 16]>(s, TS::textureMatrix), [0; 16]);
-            assert_eq!(rd::<[u32; 3]>(s, TS::extraBlendColorArgument), [0xFFFF_FFFF, 1, 9]);
+            assert_eq!(rd::<u32>(s, TS::extraBlendColorArgument), 0xFFFF_FFFF);
+            // The constructor writes one byte here: the instruction at 0x6C19F0 has 7 bytes.
+            assert_eq!(rd::<u8>(s, TS::field_90), 1);
+            assert_eq!(rd::<u32>(s, TS::field_94), 9);
             assert_eq!(rd::<u8>(s, TS::bumpEnvMapEnabled), 0);
             // The constructor does not write the padding after the bool.
             assert_eq!(rd::<u8>(s, TS::bumpEnvMapEnabled + 1), 0xAA);

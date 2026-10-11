@@ -10,14 +10,22 @@ use crate::{census, device, engine, frame, hook, ports, site, x87};
 /// `NiDX8Renderer::BeginPaint`. The game calls it before the first device call of a frame.
 const BEGIN_PAINT: usize = 0x6AC520;
 
-/// Runs after each call of `BeginPaint` until the recorder is on the device.
+/// Runs before each call of `BeginPaint` until the recorder is on the device. `args[0]` is
+/// the renderer: the world controller does not have it yet at the first frames.
+///
+/// The recorder must be there before the first frame. Without it, the Rust run of a
+/// comparison makes its device calls on the device of the game: the scene opens two times,
+/// the second `BeginScene` fails, and the game draws nothing more.
 ///
 /// The recorder does not go on the device when the game creates it. A wrapper on
 /// `IDirect3D8::CreateDevice` did that before, and MGE XE then did not install its own hooks.
-unsafe fn after_begin_paint() {
-    if matches!(attach_device(), Ok(Some(_))) {
+unsafe fn before_begin_paint(args: &[usize]) {
+    let device_ptr: usize = crate::mem::rd(args[0], NiDX8Renderer::d3dDevice);
+    if device_ptr != 0 && device::attach(device_ptr).is_ok() {
+        ATTACHED.store(true, Ordering::Relaxed);
+        crate::log!("first frame: renderer {:#x}, device {device_ptr:#x} with the recorder", args[0]);
         if let Some(port) = ports::all().find(|p| p.addr == BEGIN_PAINT) {
-            port.after.store(0, Ordering::Relaxed);
+            port.before.store(0, Ordering::Relaxed);
         }
     }
 }
@@ -100,7 +108,7 @@ pub unsafe fn install() -> Result<String, String> {
         None => {
             // The game has no renderer yet. The recorder goes on the device at the first frame.
             if let Some(port) = ports::all().find(|p| p.addr == BEGIN_PAINT) {
-                port.after.store(after_begin_paint as *const () as usize, Ordering::Relaxed);
+                port.before.store(before_begin_paint as *const () as usize, Ordering::Relaxed);
             }
             "the game has no renderer yet".to_string()
         }
@@ -112,6 +120,19 @@ pub unsafe fn install() -> Result<String, String> {
         changed,
         attached
     ))
+}
+
+static ATTACHED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Puts the recorder on the device when the game has a device and the recorder is not on
+/// it. A comparison calls this first: without the recorder its Rust run makes its device
+/// calls on the device of the game.
+pub unsafe fn attach_device_early() {
+    if !ATTACHED.load(Ordering::Relaxed) {
+        if let Ok(Some(text)) = attach_device() {
+            crate::log!("before the first frame: {text}");
+        }
+    }
 }
 
 /// Puts the recorder on the device of the renderer. Returns `None` when the game has no
@@ -126,6 +147,7 @@ pub unsafe fn attach_device() -> Result<Option<String>, String> {
         return Ok(None);
     }
     device::attach(device_ptr)?;
+    ATTACHED.store(true, Ordering::Relaxed);
     Ok(Some(format!("renderer {renderer:#x}, device {device_ptr:#x} with the recorder")))
 }
 

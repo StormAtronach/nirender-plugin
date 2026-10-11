@@ -165,13 +165,24 @@ pub unsafe fn vcall3(object: usize, slot_offset: usize, a: u32, b: u32, c: u32) 
     thiscall3(virtual_at(object, slot_offset), object, a, b, c)
 }
 
-/// The renderer that the game draws with, or 0 before it exists.
+/// The first node of the list of renderers of `NiRenderer`, and the renderer in a node.
+const RENDERER_LIST_HEAD: usize = 0x7DEA58;
+const RENDERER_NODE_RENDERER: usize = 0;
+
+/// The renderer that the game draws with, or 0 before it exists. At the start of the game
+/// the world controller does not have the renderer yet. The list of renderers has it from
+/// its constructor on.
 pub unsafe fn renderer() -> usize {
     let world_controller: usize = rd(WORLD_CONTROLLER, 0);
-    if world_controller == 0 {
+    let known: usize = if world_controller == 0 { 0 } else { rd(world_controller, WORLD_CONTROLLER_RENDERER) };
+    if known != 0 {
+        return known;
+    }
+    let node: usize = rd(RENDERER_LIST_HEAD, 0);
+    if node == 0 {
         0
     } else {
-        rd(world_controller, WORLD_CONTROLLER_RENDERER)
+        rd(node, RENDERER_NODE_RENDERER)
     }
 }
 
