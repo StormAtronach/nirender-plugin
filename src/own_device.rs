@@ -384,10 +384,11 @@ unsafe fn start_stream(s: &State) {
     if let Ok(more) = std::env::var("NIRENDER_HOST_ARGS") {
         command.push_str(&format!(" {more}"));
     }
-    // The text of the host program goes into a file when NIRENDER_HOST_LOG names one.
-    if let Ok(log) = std::env::var("NIRENDER_HOST_LOG") {
-        command = format!("cmd.exe /c \"{command} > \"{log}\" 2>&1\"");
-    }
+    // The text of the host program goes into a file: the one that NIRENDER_HOST_LOG names, or
+    // nirender-host.log in the folder of the game.
+    let log = std::env::var("NIRENDER_HOST_LOG").unwrap_or_else(|_| "nirender-host.log".into());
+    let log = std::path::absolute(&log).map(|path| path.to_string_lossy().into_owned()).unwrap_or(log);
+    command.push_str(&format!(" --log \"{log}\""));
     let mut line = command.clone().into_bytes();
     line.push(0);
     // A STARTUPINFOA has 68 bytes and starts with its size.

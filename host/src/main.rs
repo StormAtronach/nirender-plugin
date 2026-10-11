@@ -1745,8 +1745,28 @@ fn option(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
 }
 
+extern "system" {
+    fn SetStdHandle(which: u32, handle: *mut core::ffi::c_void) -> i32;
+}
+
+/// Sends the text of this program, and the text of a failure, into a file.
+fn log_to(path: &str) {
+    use std::os::windows::io::IntoRawHandle;
+    if let Ok(file) = std::fs::File::create(path) {
+        let handle = file.into_raw_handle();
+        // STD_OUTPUT_HANDLE and STD_ERROR_HANDLE
+        unsafe {
+            SetStdHandle(-11i32 as u32, handle as _);
+            SetStdHandle(-12i32 as u32, handle as _);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(path) = option(&args, "--log") {
+        log_to(&path);
+    }
     let backends = match option(&args, "--backend").as_deref() {
         Some("dx12") => wgpu::Backends::DX12,
         Some("vulkan") => wgpu::Backends::VULKAN,
