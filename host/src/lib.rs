@@ -55,8 +55,16 @@ pub struct SceneView<'a> {
 }
 
 /// The answers of an extension for a frame. See `Extension::frame`.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct FrameParameters {
+    /// The values of the extension for the frame, for its shader functions: `frame.values`
+    /// in WGSL (bind group 3, binding 0).
+    pub values: [[f32; 4]; 32],
+    /// A texture of the extension for its shader functions: `extension_texture` with
+    /// `extension_sampler` (linear, clamp) in WGSL. White without one. The view must stay
+    /// valid for the frame; the extension draws into the texture before the draws of the
+    /// game read it (in `before_world`, in a pass of its own).
+    pub texture: Option<Rc<wgpu::TextureView>>,
     /// The distances of the start and of the end of the fog for the draws of the world of
     /// the game, in place of those of the game: so that they go into the fog as what the
     /// extension draws does. `None`: the fog of the game.
@@ -269,6 +277,7 @@ impl Replay for Replayer<'_> {
             pass.set_bind_group(0, &*group, &[offset]);
             pass.set_bind_group(1, &*kept.textures, &[]);
             pass.set_bind_group(2, &*kept.samplers, &[]);
+            pass.set_bind_group(3, &*self.renderer.frame_group, &[]);
             pass.set_vertex_buffer(0, kept.vertices.slice(..));
             pass.set_vertex_buffer(1, self.renderer.defaults.slice(..));
             let (first, count, base) = kept.range;
@@ -955,6 +964,19 @@ const SLOT_SIZE: usize = core::mem::size_of::<DrawData>().next_multiple_of(256);
 /// The lights that the light buffer of a frame holds at first.
 const LIGHTS_AT_FIRST: usize = 4096;
 
+/// The bind group of the resources of the extension for a frame.
+fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("extension frame"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(texture) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    })
+}
+
 /// A buffer for the lights of a frame.
 fn light_buffer(device: &wgpu::Device, lights: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
@@ -1002,6 +1024,11 @@ struct Renderer {
     /// The textures themselves, for a write of a level later.
     texture_objects: HashMap<u32, (wgpu::Texture, u32)>,
     white: Rc<wgpu::TextureView>,
+    /// The resources of the extension for the frame: bind group 3 of each draw.
+    frame_layout: wgpu::BindGroupLayout,
+    frame_uniform: wgpu::Buffer,
+    frame_sampler: wgpu::Sampler,
+    frame_group: Rc<wgpu::BindGroup>,
     samplers: HashMap<[u32; 5], Rc<wgpu::Sampler>>,
     /// The textures and the samplers of a draw, by the texture handles and the sampler values
     /// of its stages. The D3D12 backend has a small number of places for samplers.
@@ -1110,9 +1137,27 @@ impl Renderer {
         }
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &entries });
         let sampler_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &sampler_entries });
+        let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("extension frame"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[Some(&draw_layout), Some(&texture_layout), Some(&sampler_layout)],
+            bind_group_layouts: &[Some(&draw_layout), Some(&texture_layout), Some(&sampler_layout), Some(&frame_layout)],
             immediate_size: 0,
         });
         let white = Rc::new(device
@@ -1143,7 +1188,21 @@ impl Renderer {
             contents: &[0u8; 64],
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let frame_uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("extension frame"), size: 512, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let frame_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("extension frame"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white));
         let renderer = Renderer {
+            frame_layout,
+            frame_uniform,
+            frame_sampler,
+            frame_group,
             light_buffer: light_buffer(&device, LIGHTS_AT_FIRST),
             device: Rc::new(device),
             target_format,
@@ -2259,6 +2318,11 @@ impl Player {
             return;
         }
         self.renderer.upload_lights(&self.frame_lights);
+        // The resources of the extension for the frame.
+        let (values, texture) = self.parameters.as_ref().map_or(([[0.0f32; 4]; 32], None), |p| (p.values, p.texture.clone()));
+        self.renderer.queue.write_buffer(&self.renderer.frame_uniform, 0, bytemuck::cast_slice(&values));
+        let texture = texture.unwrap_or_else(|| self.renderer.white.clone());
+        self.renderer.frame_group = Rc::new(frame_group(&self.renderer.device, &self.renderer.frame_layout, &self.renderer.frame_uniform, &self.renderer.frame_sampler, &texture));
         for item in items {
             match item {
                 Item::Target(target) => {
@@ -2305,6 +2369,7 @@ impl Player {
         pass.set_bind_group(0, &*draw_group, &[draw_offset]);
         pass.set_bind_group(1, &*draw.textures, &[]);
         pass.set_bind_group(2, &*draw.samplers, &[]);
+        pass.set_bind_group(3, &*renderer.frame_group, &[]);
         pass.set_vertex_buffer(0, draw.vertices.slice(..));
         pass.set_vertex_buffer(1, renderer.defaults.slice(..));
         let (first, count, base) = draw.range;
@@ -2487,7 +2552,7 @@ impl Player {
             }
             None => false,
         };
-        let blend = self.parameters.is_some_and(|p| p.blend);
+        let blend = self.parameters.as_ref().is_some_and(|p| p.blend);
         self.extension = Some(extension);
         if clear_depth && blend {
             self.keep_before();
@@ -2521,8 +2586,8 @@ impl Player {
         }
         // A draw of a class that the extension takes: the extension draws at the first one.
         let class = self.stream.object_class;
-        let parameters = self.parameters.unwrap_or_default();
-        if in_back_buffer && class < 32 && parameters.watched & (1 << class) != 0 {
+        let (watched, shade, fog_range, sky) = self.parameters.as_ref().map_or((0, false, None, None), |p| (p.watched, p.shade, p.fog_range, p.sky));
+        if in_back_buffer && class < 32 && watched & (1 << class) != 0 {
             if self.replaced & (1 << class) == 0 {
                 self.replaced |= 1 << class;
                 let facts = self.world_facts(false);
@@ -2592,10 +2657,10 @@ impl Player {
         // for a texture that the game draws into), the sky for a sky draw in the back buffer
         // (MGE_LINK_CLASS_SKY_DOME is 1 and MGE_LINK_CLASS_SKY_OTHER is 7).
         let world = self.world_begun && in_back_buffer;
-        self.stream.fog_range = parameters.fog_range.filter(|_| world);
-        self.stream.sky = parameters.sky.filter(|_| in_back_buffer && (1..=7).contains(&self.stream.object_class));
+        self.stream.fog_range = fog_range.filter(|_| world);
+        self.stream.sky = sky.filter(|_| in_back_buffer && (1..=7).contains(&self.stream.object_class));
         let mut draw_data = self.stream.draw_data(&mut renderer.counts, &mut self.frame_lights);
-        if parameters.shade && world && self.stream.projection[11] == 1.0 {
+        if shade && world && self.stream.projection[11] == 1.0 {
             if let Some(extension) = self.extension.as_mut() {
                 let (first, count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);
                 extension.shade(&mut draw_data, &mut self.frame_lights[first..first + count], &DrawFacts { blend_enable: key.blend[0] != 0, source_blend: key.blend[1], destination_blend: key.blend[2] });

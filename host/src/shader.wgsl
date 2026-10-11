@@ -72,6 +72,14 @@ struct Draw {
     clip_plane: vec4f,
 }
 
+// The values of the extension for the frame, and its texture: see `FrameParameters`.
+struct Frame {
+    values: array<vec4f, 32>,
+}
+@group(3) @binding(0) var<uniform> frame: Frame;
+@group(3) @binding(1) var extension_texture: texture_2d<f32>;
+@group(3) @binding(2) var extension_sampler: sampler;
+
 @group(0) @binding(0) var<uniform> draw: Draw;
 // The lights of all draws of the frame.
 @group(0) @binding(1) var<storage, read> lights: array<Light>;
