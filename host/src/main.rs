@@ -1,6 +1,6 @@
 //! Draws a capture of the render link stream with wgpu, without the game.
 //!
-//!     nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N]
+//!     nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N] [--anisotropy N]
 //!     nirender-host --live <name of the shared memory> [--backend vulkan|dx12] [--frames N] [--shot picture.png]
 //!                   [--embed]
 //!
@@ -90,6 +90,7 @@ mod state {
     pub const STAGE_SIZE: usize = 17 * 4;
     pub const BLEND_WORLDS: usize = 788;
     pub const TEXTURES: usize = 980;
+    pub const TEXTURE_TRANSFORMS: usize = 1012;
     pub const DEPTH_ENABLE: usize = 1524;
     pub const DEPTH_FUNCTION: usize = 1528;
     pub const SAMPLERS: usize = 1564;
@@ -115,6 +116,7 @@ struct LightData {
 struct StageData {
     color: [u32; 4],
     alpha: [u32; 4],
+    coordinate: [u32; 4],
 }
 
 #[repr(C)]
@@ -135,6 +137,7 @@ struct DrawData {
     counts: [u32; 4],
     lights: [LightData; 8],
     stages: [StageData; 6],
+    texture_transforms: [[f32; 16]; 6],
 }
 
 /// A D3DCOLOR as red, green, blue, alpha.
@@ -301,6 +304,9 @@ struct Renderer {
     target_format: wgpu::TextureFormat,
     /// What the picture of the window can be used for.
     surface_usages: wgpu::TextureUsages,
+    /// The anisotropic filter that MGE XE forces, for a comparison with its picture. 1 for the
+    /// filters that the game asks for.
+    anisotropy: u16,
     queue: wgpu::Queue,
     shader: wgpu::ShaderModule,
     draw_layout: wgpu::BindGroupLayout,
@@ -435,6 +441,7 @@ impl Renderer {
             device: Rc::new(device),
             target_format,
             surface_usages,
+            anisotropy: 1,
             queue,
             shader,
             draw_layout,
@@ -607,13 +614,26 @@ impl Renderer {
 
     fn sampler(&mut self, values: [u32; 5]) -> Rc<wgpu::Sampler> {
         let device = &self.device;
+        let anisotropy = self.anisotropy;
+        // D3DTEXF_NONE is 0: a texture without levels in use keeps its filter.
+        let forced = anisotropy > 1
+            && filter(values[2]) == wgpu::FilterMode::Linear
+            && filter(values[3]) == wgpu::FilterMode::Linear
+            && known(values[4], 0) != 0;
         let sampler = self.samplers.entry(values).or_insert_with(|| {
             Rc::new(device.create_sampler(&wgpu::SamplerDescriptor {
                 address_mode_u: address(values[0]),
                 address_mode_v: address(values[1]),
+                // MGE XE gives each texture that the game filters its anisotropic filter, with
+                // a linear filter between the levels. wgpu wants all filters linear for that.
+                anisotropy_clamp: if forced { anisotropy } else { 1 },
                 mag_filter: filter(values[2]),
                 min_filter: filter(values[3]),
-                mipmap_filter: if filter(values[4]) == wgpu::FilterMode::Linear { wgpu::MipmapFilterMode::Linear } else { wgpu::MipmapFilterMode::Nearest },
+                mipmap_filter: if filter(values[4]) == wgpu::FilterMode::Linear || forced {
+                    wgpu::MipmapFilterMode::Linear
+                } else {
+                    wgpu::MipmapFilterMode::Nearest
+                },
                 ..Default::default()
             }))
         });
@@ -781,15 +801,20 @@ impl Stream {
                 break;
             }
             if stages < STAGES {
-                // D3DTA_TEXTURE is 2 and D3DTA_CURRENT is 1: the defaults of Direct3D.
+                // The coordinate index has the way to generate it in its high word. The
+                // transform flags are the number of parts, and 256 for a projected coordinate.
                 let coordinate = known(word(s, at + 9 * 4), stages as u32);
-                if coordinate >> 16 != 0 || known(word(s, at + 10 * 4), 0) != 0 {
+                let transform = known(word(s, at + 10 * 4), 0);
+                if coordinate >> 16 != 0 || transform != 0 {
                     counts.coordinate_work += 1;
                 }
+                // D3DTA_TEXTURE is 2 and D3DTA_CURRENT is 1: the defaults of Direct3D.
                 data.stages[stages] = StageData {
                     color: [op, known(word(s, at + 4), 2), known(word(s, at + 8), 1), known(word(s, at + 24), 1)],
-                    alpha: [known(word(s, at + 12), 2), known(word(s, at + 16), 2), known(word(s, at + 20), 1), coordinate & 3],
+                    alpha: [known(word(s, at + 12), 2), known(word(s, at + 16), 2), known(word(s, at + 20), 1), 0],
+                    coordinate: [coordinate >> 16 & 3, coordinate & 3, transform & 7, (transform & 256 != 0) as u32],
                 };
+                data.texture_transforms[stages] = floats(s, state::TEXTURE_TRANSFORMS + stages * 64);
             }
             stages += 1;
         }
@@ -1054,7 +1079,7 @@ impl Player {
         println!("draws {}, pipelines {}, textures {}, samplers {}", c.draws, self.renderer.pipelines.len(), c.textures, self.renderer.samplers.len());
         println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);
         println!(
-            "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}, more than 8 lights {}, texture coordinate work {}",
+            "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}, more than 8 lights {}; draws with a made or moved texture coordinate {}",
             c.missing_textures, c.more_stages, c.more_lights, c.coordinate_work
         );
         println!("texture levels written again {}, not written {}", c.texture_updates, c.texture_updates_lost);
@@ -1170,6 +1195,7 @@ fn main() {
     println!("{} records, {frames} frames, frame {wanted} into {width} x {height}", records.len());
 
     let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm).0);
+    player.renderer.anisotropy = option(&args, "--anisotropy").and_then(|text| text.parse().ok()).unwrap_or(1);
     let device = player.renderer.device.clone();
     let target = target_texture(&device, width, height, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
     let depth = target_texture(&device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);

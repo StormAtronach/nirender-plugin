@@ -63,6 +63,7 @@ def main():
     ap.add_argument("--tour", default="@nif_")
     ap.add_argument("--max-views", type=int, default=0, help="at most this number of views in a place; 0 for all")
     ap.add_argument("--backends", default="vulkan", help="the backends of the host, separated by ','; the first one is compared")
+    ap.add_argument("--anisotropy", type=int, default=8, help="the anisotropic filter of MGE XE in the reference")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
 
@@ -98,7 +99,8 @@ def main():
         entry = {"view": number, "label": label, "capture": status}
         for backend in backends:
             picture = run.path("host-%03d-%s.png" % (number, backend))
-            host = subprocess.run([HOST, capture, picture, "--backend", backend], capture_output=True, text=True)
+            # The reference has the anisotropic filter of MGE XE: 8 in the test install.
+            host = subprocess.run([HOST, capture, picture, "--backend", backend, "--anisotropy", str(args.anisotropy)], capture_output=True, text=True)
             entry["host_" + backend] = [line for line in host.stdout.splitlines() if line.startswith(("draws", "not drawn", "not complete"))]
             if host.returncode != 0 or not os.path.isfile(picture):
                 entry["problem"] = "the host failed on %s: %s" % (backend, (host.stderr or host.stdout).strip()[-300:])

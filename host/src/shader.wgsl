@@ -19,8 +19,13 @@ struct Light {
 struct Stage {
     // Colour: operation, argument 1, argument 2, argument 0.
     color: vec4u,
-    // Alpha: operation, argument 1, argument 2. w: the texture coordinate set.
+    // Alpha: operation, argument 1, argument 2.
     alpha: vec4u,
+    // The texture coordinate: how Direct3D makes it (0 from the vertex, 1 the normal, 2 the
+    // position, 3 the reflection vector, each in camera space), the coordinate set of the
+    // vertex, the number of parts that the texture transform gives (0 for no transform), and
+    // 1 when the last of them divides the others.
+    coordinate: vec4u,
 }
 
 struct Draw {
@@ -44,6 +49,8 @@ struct Draw {
     counts: vec4u,
     lights: array<Light, 8>,
     stages: array<Stage, 6>,
+    // The texture transform of each stage.
+    texture_transforms: array<mat4x4f, 6>,
 }
 
 @group(0) @binding(0) var<uniform> draw: Draw;
@@ -77,11 +84,36 @@ struct VertexIn {
 struct VertexOut {
     @builtin(position) clip: vec4f,
     @location(0) color: vec4f,
-    @location(1) uv0: vec2f,
-    @location(2) uv1: vec2f,
-    @location(3) uv2: vec2f,
-    @location(4) uv3: vec2f,
-    @location(5) fog: f32,
+    // The texture coordinate of each stage, before the divide of a projected one.
+    @location(1) coordinate0: vec4f,
+    @location(2) coordinate1: vec4f,
+    @location(3) coordinate2: vec4f,
+    @location(4) coordinate3: vec4f,
+    @location(5) coordinate4: vec4f,
+    @location(6) coordinate5: vec4f,
+    @location(7) fog: f32,
+}
+
+// The texture coordinate of a stage, as the fixed-function pipeline makes it.
+fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view_normal: vec3f) -> vec4f {
+    let how = draw.stages[index].coordinate;
+    var sets = uvs;
+    var value: vec4f;
+    switch how.x {
+        case 1u: { value = vec4f(view_normal, 1.0); }
+        case 2u: { value = vec4f(view_position, 1.0); }
+        case 3u: {
+            let from_eye = normalize(view_position);
+            value = vec4f(from_eye - 2.0 * dot(view_normal, from_eye) * view_normal, 1.0);
+        }
+        // A coordinate set with two parts: Direct3D puts 1 into the third part, so that the
+        // third row of a texture transform moves the coordinate.
+        default: { value = vec4f(sets[how.y & 3u], 1.0, 0.0); }
+    }
+    if how.z != 0u {
+        value = draw.texture_transforms[index] * value;
+    }
+    return value;
 }
 
 @vertex
@@ -111,10 +143,14 @@ fn vs(in: VertexIn) -> VertexOut {
 
     var out: VertexOut;
     out.clip = draw.projection * view_position;
-    out.uv0 = in.uv0;
-    out.uv1 = in.uv1;
-    out.uv2 = in.uv2;
-    out.uv3 = in.uv3;
+    let uvs = array<vec2f, 4>(in.uv0, in.uv1, in.uv2, in.uv3);
+    let view_normal = normalize((draw.view * vec4f(world_normal, 0.0)).xyz + vec3f(0.0, 0.0, 1e-20));
+    out.coordinate0 = stage_coordinate(0u, uvs, view_position.xyz, view_normal);
+    out.coordinate1 = stage_coordinate(1u, uvs, view_position.xyz, view_normal);
+    out.coordinate2 = stage_coordinate(2u, uvs, view_position.xyz, view_normal);
+    out.coordinate3 = stage_coordinate(3u, uvs, view_position.xyz, view_normal);
+    out.coordinate4 = stage_coordinate(4u, uvs, view_position.xyz, view_normal);
+    out.coordinate5 = stage_coordinate(5u, uvs, view_position.xyz, view_normal);
 
     var vertex_color = vec4f(1.0);
     if draw.flags.z != 0u {
@@ -230,17 +266,27 @@ fn compare(function: u32, value: f32, reference: f32) -> bool {
     }
 }
 
+// The two parts of a texture coordinate that the texture read uses. A projected coordinate
+// is divided by the last part that its texture transform gives.
+fn final_coordinate(index: u32, value: vec4f) -> vec2f {
+    let how = draw.stages[index].coordinate;
+    var divisor = 1.0;
+    if how.w != 0u && how.z >= 2u {
+        divisor = value[min(how.z, 4u) - 1u];
+    }
+    return value.xy / divisor;
+}
+
 @fragment
 fn fs(in: VertexOut) -> @location(0) vec4f {
-    var uvs = array<vec2f, 4>(in.uv0, in.uv1, in.uv2, in.uv3);
     // A texture read must not be in a branch, so each stage reads its texture first.
     var texels: array<vec4f, 6>;
-    texels[0] = textureSample(texture0, sampler0, uvs[draw.stages[0].alpha.w & 3u]);
-    texels[1] = textureSample(texture1, sampler1, uvs[draw.stages[1].alpha.w & 3u]);
-    texels[2] = textureSample(texture2, sampler2, uvs[draw.stages[2].alpha.w & 3u]);
-    texels[3] = textureSample(texture3, sampler3, uvs[draw.stages[3].alpha.w & 3u]);
-    texels[4] = textureSample(texture4, sampler4, uvs[draw.stages[4].alpha.w & 3u]);
-    texels[5] = textureSample(texture5, sampler5, uvs[draw.stages[5].alpha.w & 3u]);
+    texels[0] = textureSample(texture0, sampler0, final_coordinate(0u, in.coordinate0));
+    texels[1] = textureSample(texture1, sampler1, final_coordinate(1u, in.coordinate1));
+    texels[2] = textureSample(texture2, sampler2, final_coordinate(2u, in.coordinate2));
+    texels[3] = textureSample(texture3, sampler3, final_coordinate(3u, in.coordinate3));
+    texels[4] = textureSample(texture4, sampler4, final_coordinate(4u, in.coordinate4));
+    texels[5] = textureSample(texture5, sampler5, final_coordinate(5u, in.coordinate5));
 
     let diffuse = in.color;
     var current = diffuse;
