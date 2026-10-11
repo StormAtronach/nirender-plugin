@@ -128,8 +128,13 @@ return function(nirender, spec)
             nirender.setMode(ports, (spec.liveSeconds or 0) > 0 and "live" or "off")
             say("live mode for %d s", spec.liveSeconds or 0)
             return after(spec.liveSeconds or 0, function()
-                nirender.setMode("*", "off")
-                scenario.finish()
+                -- The extras again, on the Rust code: a comparison does not include the
+                -- calls that it skips.
+                extras_done = (spec.liveSeconds or 0) == 0
+                extras(function()
+                    nirender.setMode("*", "off")
+                    scenario.finish()
+                end)
             end)
         end
         scenario.goTo(cell)
