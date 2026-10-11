@@ -337,12 +337,17 @@ impl Renderer {
         window: Option<std::sync::Arc<winit::window::Window>>,
         mut target_format: wgpu::TextureFormat,
     ) -> (Renderer, Option<wgpu::Surface<'static>>) {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends, ..Default::default() });
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = backends;
+        // The new shader compiler of Direct3D, a part of this program: the old one is slow.
+        descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::StaticDxc;
+        let instance = wgpu::Instance::new(descriptor);
         let surface = window.map(|window| instance.create_surface(window).expect("a surface for the window"));
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: surface.as_ref(),
             force_fallback_adapter: false,
+            ..Default::default()
         }))
         .expect("no graphics adapter for this backend");
         let info = adapter.get_info();
@@ -362,8 +367,8 @@ impl Renderer {
                 required_features: wgpu::Features::TEXTURE_COMPRESSION_BC,
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::default(),
+                ..Default::default()
             },
-            None,
         ))
         .expect("no device");
 
@@ -401,8 +406,8 @@ impl Renderer {
         let sampler_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &sampler_entries });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&draw_layout, &texture_layout, &sampler_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&draw_layout), Some(&texture_layout), Some(&sampler_layout)],
+            immediate_size: 0,
         });
         let white = Rc::new(device
             .create_texture_with_data(
@@ -567,9 +572,9 @@ impl Renderer {
             return;
         }
         self.queue.write_texture(
-            wgpu::ImageCopyTexture { texture, mip_level: level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo { texture, mip_level: level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             &data[24..24 + expected],
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(rows) },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(rows) },
             wgpu::Extent3d { width: if block != 0 { width.next_multiple_of(4) } else { width }, height: if block != 0 { height.next_multiple_of(4) } else { height }, depth_or_array_layers: 1 },
         );
         self.counts.texture_updates += 1;
@@ -608,7 +613,7 @@ impl Renderer {
                 address_mode_v: address(values[1]),
                 mag_filter: filter(values[2]),
                 min_filter: filter(values[3]),
-                mipmap_filter: filter(values[4]),
+                mipmap_filter: if filter(values[4]) == wgpu::FilterMode::Linear { wgpu::MipmapFilterMode::Linear } else { wgpu::MipmapFilterMode::Nearest },
                 ..Default::default()
             }))
         });
@@ -634,8 +639,8 @@ impl Renderer {
                 .map(|location| wgpu::VertexAttribute { format: INPUT_FORMATS[location as usize], offset: 0, shader_location: location })
                 .collect();
             let buffers = [
-                wgpu::VertexBufferLayout { array_stride: key.stride as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &from_vertex },
-                wgpu::VertexBufferLayout { array_stride: 64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_defaults },
+                Some(wgpu::VertexBufferLayout { array_stride: key.stride as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &from_vertex }),
+                Some(wgpu::VertexBufferLayout { array_stride: 64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_defaults }),
             ];
             let blend = (key.blend[0] != 0).then(|| {
                 let component = wgpu::BlendComponent {
@@ -655,23 +660,23 @@ impl Renderer {
             let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: None,
                 layout: Some(&self.pipeline_layout),
-                vertex: wgpu::VertexState { module: &self.shader, entry_point: "vs", compilation_options: Default::default(), buffers: &buffers },
+                vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &buffers },
                 primitive: wgpu::PrimitiveState { topology, front_face: wgpu::FrontFace::Cw, cull_mode, ..Default::default() },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
-                    depth_write_enabled: depth_on && key.depth[1] != 0,
-                    depth_compare: if depth_on { compare(key.depth[2]) } else { wgpu::CompareFunction::Always },
+                    depth_write_enabled: Some(depth_on && key.depth[1] != 0),
+                    depth_compare: Some(if depth_on { compare(key.depth[2]) } else { wgpu::CompareFunction::Always }),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &self.shader,
-                    entry_point: "fs",
+                    entry_point: Some("fs"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState { format: self.target_format, blend, write_mask: wgpu::ColorWrites::ALL })],
                 }),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
             self.pipelines.insert(key, Rc::new(pipeline));
@@ -843,6 +848,7 @@ impl Player {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: color,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: clear_color.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store },
                 })],
@@ -853,6 +859,7 @@ impl Player {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             })
             .forget_lifetime();
         self.pass = Some(pass);
@@ -1031,9 +1038,9 @@ impl Player {
         };
         let Some(pass) = self.pass.as_mut() else { return };
         pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &draw_group, &[draw_offset]);
-        pass.set_bind_group(1, &texture_group, &[]);
-        pass.set_bind_group(2, &sampler_group, &[]);
+        pass.set_bind_group(0, &*draw_group, &[draw_offset]);
+        pass.set_bind_group(1, &*texture_group, &[]);
+        pass.set_bind_group(2, &*sampler_group, &[]);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, renderer.defaults.slice(..));
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
@@ -1080,8 +1087,8 @@ fn copy_picture(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, textu
         mapped_at_creation: false,
     });
     encoder.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-        wgpu::ImageCopyBuffer { buffer: &buffer, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(row as u32), rows_per_image: None } },
+        wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row as u32), rows_per_image: None } },
         wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
     );
     (buffer, row)
@@ -1091,8 +1098,8 @@ fn copy_picture(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, textu
 /// texture format with the bytes blue, green, red.
 fn save_picture(device: &wgpu::Device, buffer: &wgpu::Buffer, row: usize, width: u32, height: u32, blue_first: bool, path: &str) {
     buffer.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("the read of the picture"));
-    device.poll(wgpu::Maintain::Wait);
-    let mapped = buffer.slice(..).get_mapped_range();
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    let mapped = buffer.slice(..).get_mapped_range().expect("the bytes of the picture");
     let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height as usize {
         pixels.extend_from_slice(&mapped[y * row..y * row + width as usize * 4]);
@@ -1368,6 +1375,7 @@ mod live {
                 desired_maximum_frame_latency: 2,
                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
                 view_formats: vec![],
+                color_space: Default::default(),
             });
             self.player = Some(Player::new(renderer));
             self.surface = Some(surface);
@@ -1396,7 +1404,10 @@ mod live {
                 // No frame before the size of the game is known: the records before that
                 // make the resources only.
                 if self.frame.is_none() && self.depth.is_some() && size.0 != 0 {
-                    let Ok(frame) = self.surface.as_ref().unwrap().get_current_texture() else { return };
+                    let frame = match self.surface.as_ref().unwrap().get_current_texture() {
+                        wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+                        _ => return,
+                    };
                     let view = Rc::new(frame.texture.create_view(&Default::default()));
                     let frame_size = (frame.texture.width(), frame.texture.height());
                     self.player.as_mut().unwrap().begin_frame(view, self.depth.clone().unwrap(), frame_size);
@@ -1437,7 +1448,7 @@ mod live {
                     save_picture(&device, &buffer, row, width, height, blue_first, self.shot.as_ref().unwrap());
                     self.shot_done = true;
                 }
-                frame.present();
+                player.renderer.queue.present(frame);
                 self.frames += 1;
                 self.first_frame.get_or_insert_with(Instant::now);
                 if self.frames_wanted != 0 && self.frames >= self.frames_wanted {

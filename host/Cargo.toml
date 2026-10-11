@@ -12,7 +12,7 @@ description = "A 64-bit renderer for the render link stream of the nirender plug
 bytemuck = { version = "1", features = ["derive"] }
 png = "0.18"
 pollster = "0.3"
-wgpu = "22.1"
+wgpu = { version = "30", features = ["static-dxc"] }
 winit = "0.30"
 
 [profile.dev]
