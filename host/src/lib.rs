@@ -433,6 +433,116 @@ mod tag {
     pub const MARK: u32 = 17;
     pub const GEOMETRY: u32 = 18;
     pub const MATERIAL: u32 = 19;
+    pub const SHAPE: u32 = 20;
+}
+
+/// The size of a light in a state packet.
+const STATE_LIGHT_SIZE: usize = 108;
+
+/// A state packet made from the derived state of a material, for one pass of a shape draw.
+/// The fields are those of `DrawStateV1`; the lights come after it.
+#[allow(clippy::too_many_arguments)]
+fn synthesize_state(d: &material::Derived, pass: usize, m: &material::Material, textures: &HashMap<u32, Rc<wgpu::TextureView>>, fvf: u32, stride: u32, vertices: u32, entries: u32, world: &[f32; 16], relative: bool, ambient: u32, lights: u32, material: &[f32; 17]) -> Vec<u8> {
+    let mut s = vec![0u8; state::SIZE];
+    let put = |s: &mut Vec<u8>, at: usize, v: u32| s[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    let putf = |s: &mut Vec<u8>, at: usize, v: f32| s[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    put(&mut s, 0, state::SIZE as u32);
+    put(&mut s, 4, if pass > 0 { 2 } else { 0 });
+    put(&mut s, 8, if entries != 0 { 4 } else { 5 });
+    put(&mut s, 20, vertices);
+    put(&mut s, 28, entries / 3);
+    put(&mut s, state::VERTEX_STRIDE, stride);
+    put(&mut s, state::VERTEX_FORMAT, fvf);
+    for (i, v) in world.iter().enumerate() {
+        putf(&mut s, state::WORLD + i * 4, *v);
+    }
+    put(&mut s, state::DEPTH_WRITE, d.depth[1]);
+    put(&mut s, state::CULL_MODE, d.cull);
+    let blend = d.blends.get(pass).copied().unwrap_or([0; 3]);
+    put(&mut s, state::BLEND_ENABLE, blend[0]);
+    put(&mut s, state::SOURCE_BLEND, if blend[0] != 0 { blend[1] } else { 2 });
+    put(&mut s, state::DESTINATION_BLEND, if blend[0] != 0 { blend[2] } else { 1 });
+    put(&mut s, state::ALPHA_TEST_ENABLE, d.alpha_test[0]);
+    put(&mut s, state::ALPHA_FUNCTION, if d.alpha_test[0] != 0 { d.alpha_test[1] } else { 8 });
+    put(&mut s, state::ALPHA_REFERENCE, d.alpha_test[2]);
+    put(&mut s, state::LIGHTING, d.lighting as u32);
+    put(&mut s, state::FOG_ENABLE, d.fog as u32);
+    put(&mut s, state::DIFFUSE_SOURCE, d.sources[0].unwrap_or(1));
+    put(&mut s, state::EMISSIVE_SOURCE, d.sources[1].unwrap_or(0));
+    put(&mut s, state::AMBIENT, ambient);
+    put(&mut s, state::LIGHT_COUNT, lights);
+    for (i, v) in material.iter().enumerate() {
+        putf(&mut s, state::MATERIAL + i * 4, *v);
+    }
+    // The stages: operations, arguments, the coordinate index with its generation, the
+    // bump values; the texture and the sampler of each.
+    let stages = &d.passes[pass];
+    for i in 0..8 {
+        let at = state::STAGES + i * state::STAGE_SIZE;
+        match stages.get(i) {
+            Some(st) => {
+                let values = [st.color[0], st.color[1], st.color[2], st.alpha[0], st.alpha[1], st.alpha[2], 1, 1, 0];
+                for (k, v) in values.into_iter().enumerate() {
+                    put(&mut s, at + k * 4, v);
+                }
+                let generated = match st.source {
+                    8 => 0x30000,
+                    9 => 0x20000,
+                    _ => 0,
+                };
+                put(&mut s, at + 9 * 4, st.set | generated);
+                put(&mut s, at + 10 * 4, 0);
+                let bump = if st.source == 5 { [m.bump[2], m.bump[3], m.bump[4], m.bump[5], m.bump[0], m.bump[1]] } else { [0.5, 0.0, 0.0, 0.5, 1.0, 0.0] };
+                for (k, v) in bump.into_iter().enumerate() {
+                    putf(&mut s, at + (11 + k) * 4, v);
+                }
+                put(&mut s, state::TEXTURES + i * 4, st.texture);
+                let (clamp, filter) = match st.source {
+                    8 => (m.environment.clamp, m.environment.filter),
+                    9 => (m.fog_map.clamp, m.fog_map.filter),
+                    10 => (3, 1),
+                    map => (m.maps[map as usize].clamp, m.maps[map as usize].filter),
+                };
+                let (u, v) = match clamp {
+                    0 => (3, 3),
+                    1 => (3, 1),
+                    2 => (1, 3),
+                    _ => (1, 1),
+                };
+                let filters = match filter {
+                    0 => [1, 1, 0],
+                    1 => [2, 2, 0],
+                    2 => [2, 2, 2],
+                    3 => [1, 1, 1],
+                    4 => [1, 1, 2],
+                    _ => [2, 2, 1],
+                };
+                let mut sampler = material::sampler_states(clamp, filter);
+                let _ = (u, v, filters);
+                // A texture with one level gets no mip filter, as the texture manager sets it.
+                if textures.get(&st.texture).is_some_and(|t| t.texture().mip_level_count() <= 1) {
+                    sampler[4] = 0;
+                }
+                for (k, value) in sampler.into_iter().enumerate() {
+                    put(&mut s, state::SAMPLERS + i * 20 + k * 4, value);
+                }
+            }
+            None => {
+                put(&mut s, at, 1);
+                put(&mut s, at + 12, 1);
+            }
+        }
+    }
+    put(&mut s, state::DEPTH_ENABLE, d.depth[0]);
+    put(&mut s, state::DEPTH_FUNCTION, d.depth[2]);
+    // D3DRS 52 to 59: enable, fail, z-fail, pass, function, reference, mask, write mask.
+    let st = d.stencil;
+    let stencil = [st[0], st[4], st[5], st[6], st[1], st[2], st[3], 0xFFFF_FFFF];
+    for (k, v) in stencil.into_iter().enumerate() {
+        put(&mut s, state::STENCIL + k * 4, v);
+    }
+    put(&mut s, state::WORLD_RELATIVE_MASK, relative as u32);
+    s
 }
 
 /// The flags in an object record that say two more words follow: the geometry handle and
@@ -447,7 +557,10 @@ pub mod material;
 struct Geometry {
     fvf: u32,
     stride: u32,
+    vertices: u32,
     entries: u32,
+    /// The lengths of the strips, or empty for a triangle list.
+    strips: Vec<u16>,
     vertex: Rc<wgpu::Buffer>,
     index: Rc<wgpu::Buffer>,
     /// The bytes, for the comparison with the buffers of the device, once.
@@ -1018,7 +1131,13 @@ struct Counts {
     material_draws: u32,
     material_unmodelled: u32,
     material_different: u32,
-    material_parts: [u32; 12],
+    material_parts: [u32; 13],
+    /// The shape records, the draws made from them, the records without a geometry or a
+    /// material, and the draws of the device skipped for a shape.
+    shape_records: u32,
+    shape_draws: u32,
+    shape_missing: u32,
+    shape_skipped: u32,
     /// The draws that differ, by the class of their object.
     material_classes: HashMap<u32, u32>,
     screen_draws: u32,
@@ -1666,12 +1785,13 @@ impl Renderer {
         }
         let vertex_bytes = data[vertex_at..index_at].to_vec();
         let index_bytes = data[index_at..index_end].to_vec();
+        let strip_lengths: Vec<u16> = (0..strips as usize).map(|i| u16::from_le_bytes([data[32 + i * 2], data[33 + i * 2]])).collect();
         let make = |bytes: &[u8], usage: wgpu::BufferUsages| Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytes, usage }));
         let vertex = make(&vertex_bytes, wgpu::BufferUsages::VERTEX);
         let index = make(&index_bytes, wgpu::BufferUsages::INDEX);
         self.counts.geometry_records += 1;
         self.counts.geometry_bytes += data.len() as u64;
-        self.geometries.insert(handle, Geometry { fvf, stride, entries, vertex, index, vertex_bytes, index_bytes, checked: std::cell::Cell::new(false) });
+        self.geometries.insert(handle, Geometry { fvf, stride, vertices, entries, strips: strip_lengths, vertex, index, vertex_bytes, index_bytes, checked: std::cell::Cell::new(false) });
     }
 
     /// The buffer on the GPU with the bytes that the game wrote last.
@@ -1828,6 +1948,11 @@ struct Stream {
     /// The number of the pass of the draw in progress: later passes of one geometry count
     /// up from the first draw of it.
     pass: u32,
+    /// The object of the draws that follow was drawn from its shape record: the draws of
+    /// the device for it are skipped.
+    shape_drawn: bool,
+    /// The colours of the material from the last shape record, or `None`.
+    shape_material: Option<[f32; 17]>,
 }
 
 impl Stream {
@@ -2033,6 +2158,11 @@ struct Player {
     /// The draws take the buffers of the geometry records. `MGE_XE_GEOMETRY=0` in the
     /// environment turns it off, for a comparison of the two paths on one capture.
     use_geometry: bool,
+    /// The draws come from the shape records where there are any; `MGE_XE_SHAPES=0` makes
+    /// the draws of the device count instead.
+    use_shapes: bool,
+    /// A draw made from a shape record is in progress (it goes through `draw` too).
+    from_shape: bool,
     /// The counts at the last mark. See `tag::MARK`.
     mark_times: [std::time::Duration; TIME_COUNT],
     mark_frames: u32,
@@ -2062,6 +2192,8 @@ impl Player {
                 geometry: 0,
                 material: 0,
                 pass: 0,
+                shape_drawn: false,
+                shape_material: None,
             },
             encoder: None,
             pass: None,
@@ -2095,6 +2227,8 @@ impl Player {
             world_depth: None,
             world_depth_kept: false,
             use_geometry: std::env::var("MGE_XE_GEOMETRY").map_or(true, |v| v != "0"),
+            use_shapes: std::env::var("MGE_XE_SHAPES").map_or(true, |v| v != "0"),
+            from_shape: false,
             mark_times: [std::time::Duration::ZERO; TIME_COUNT],
             mark_frames: 0,
             mark_draws: 0,
@@ -2267,10 +2401,12 @@ impl Player {
             stages.push(([op, known(v(1), 2), known(v(2), 1)], [known(v(3), 2), known(v(4), 2), known(v(5), 1)], known(v(9), i as u32) & 0xFFFF));
         }
         let textures: Vec<u32> = (0..8).map(|i| word(s, state::TEXTURES + i * 4)).collect();
+        let samplers: Vec<[u32; 5]> = (0..8).map(|i| core::array::from_fn(|k| known(word(s, state::SAMPLERS + i * 20 + k * 4), [1, 1, 1, 1, 0][k]))).collect();
         let st: [u32; 8] = core::array::from_fn(|i| known(word(s, state::STENCIL + i * 4), 0));
         let packet = material::Packet {
             stages: &stages,
             textures: &textures,
+            samplers: &samplers,
             blend: [(known(word(s, state::BLEND_ENABLE), 0) != 0) as u32, known(word(s, state::SOURCE_BLEND), 2), known(word(s, state::DESTINATION_BLEND), 1)],
             alpha_test: [(known(word(s, state::ALPHA_TEST_ENABLE), 0) != 0) as u32, known(word(s, state::ALPHA_FUNCTION), 8), known(word(s, state::ALPHA_REFERENCE), 0)],
             depth: [(known(word(s, state::DEPTH_ENABLE), 1) != 0) as u32, (known(word(s, state::DEPTH_WRITE), 1) != 0) as u32, known(word(s, state::DEPTH_FUNCTION), 4)],
@@ -2281,7 +2417,7 @@ impl Player {
             sources: [known(word(s, state::DIFFUSE_SOURCE), 1), known(word(s, state::EMISSIVE_SOURCE), 0)],
             material: floats(s, state::MATERIAL),
         };
-        let bits = material::compare(&derived, pass, &packet);
+        let bits = material::compare(&derived, pass, &packet, stream.shape_material);
         if bits != 0 {
             renderer.counts.material_different += 1;
             for (i, count) in renderer.counts.material_parts.iter_mut().enumerate() {
@@ -2301,10 +2437,76 @@ impl Player {
                     derived.passes.get(pass), derived.blends.get(pass), derived.alpha_test, derived.depth, derived.cull, derived.stencil, derived.lighting, derived.sources,
                     packet.stages, &packet.textures[..packet.stages.len().max(1)], packet.blend, packet.alpha_test, packet.depth, packet.cull, packet.stencil, packet.lighting, packet.sources,
                     renderer.materials.get(&handle).map(|m| m.material), renderer.materials.get(&handle).map_or(0, |m| m.flags), renderer.materials.get(&handle).map_or(0, |m| m.apply_mode),
-                    renderer.materials.get(&handle).map(|m| m.maps.iter().filter(|x| x.present).map(|x| (x.texture, x.set)).collect::<Vec<_>>())
+                    renderer.materials.get(&handle).map(|m| m.maps.iter().filter(|x| x.present).map(|x| (x.texture, x.set, x.clamp, x.filter)).collect::<Vec<_>>())
                 );
+                println!("  packet samplers {:?}", &packet.samplers[..packet.stages.len().max(1)]);
             }
         }
+    }
+
+    /// A shape record: the draws of the object from its geometry and material records. The
+    /// state packet of each pass is made from the derived state, so that the draw goes the
+    /// way of a draw of the device.
+    fn shape(&mut self, data: &[u8]) {
+        let (geometry, material, flags, light_count, ambient) = (word(data, 0), word(data, 4), word(data, 8), word(data, 12) as usize, word(data, 16));
+        self.renderer.counts.shape_records += 1;
+        if !self.use_shapes {
+            return;
+        }
+        let colours: [f32; 14] = core::array::from_fn(|i| float(data, 84 + i * 4));
+        let d3d_material = material::d3d_material(&colours);
+        self.stream.shape_material = Some(d3d_material);
+        let lights_at = 20 + 64 + 56;
+        let lights = &data[lights_at..(lights_at + light_count * STATE_LIGHT_SIZE).min(data.len())];
+        let sets = match self.renderer.geometries.get(&geometry) {
+            Some(g) => (g.fvf >> 8) & 0xF,
+            None => {
+                self.renderer.counts.shape_missing += 1;
+                return;
+            }
+        };
+        let derived = match self.renderer.derived.get(&(material, sets)) {
+            Some(d) => d.clone(),
+            None => {
+                let Some(m) = self.renderer.materials.get(&material) else {
+                    self.renderer.counts.shape_missing += 1;
+                    return;
+                };
+                let d = Rc::new(material::derive(m, sets));
+                self.renderer.derived.insert((material, sets), d.clone());
+                d
+            }
+        };
+        let Some(m) = self.renderer.materials.get(&material).cloned() else { return };
+        let (fvf, stride, vertices, entries, strips) = {
+            let g = &self.renderer.geometries[&geometry];
+            (g.fvf, g.stride, g.vertices, g.entries, g.strips.clone())
+        };
+        let world: [f32; 16] = core::array::from_fn(|i| float(data, 20 + i * 4));
+        self.stream.geometry = geometry;
+        self.stream.material = 0;
+        self.stream.shape_drawn = true;
+        self.from_shape = true;
+        for pass in 0..derived.passes.len() {
+            let mut state = synthesize_state(&derived, pass, &m, &self.renderer.textures, fvf, stride, vertices, entries, &world, flags & 1 != 0, ambient, light_count as u32, &d3d_material);
+            state.extend_from_slice(lights);
+            self.stream.state = state;
+            // A draw command as a COMMAND record has it: the command and three words, then
+            // the primitive type, the least index, the vertices, the first index, the
+            // primitives.
+            let command_bytes = |words: [u32; 5]| -> Vec<u8> { [COMMAND_DRAW_INDEXED, 0, 0, 0].iter().chain(words.iter()).flat_map(|v| v.to_le_bytes()).collect() };
+            if strips.is_empty() {
+                self.draw(&command_bytes([4, 0, vertices, 0, entries / 3]), true);
+            } else {
+                let mut start = 0u32;
+                for &length in &strips {
+                    self.draw(&command_bytes([5, 0, vertices, start, (length as u32).saturating_sub(2)]), true);
+                    start += length as u32;
+                }
+            }
+            self.renderer.counts.shape_draws += 1;
+        }
+        self.from_shape = false;
     }
 
     /// Prints the counts since the last mark, for one step of a scenario.
@@ -2368,8 +2570,9 @@ impl Player {
             tag::MATERIAL if data.len() >= 4 => {
                 if let Some(parsed) = material::Material::parse(&data[4..]) {
                     let handle = word(data, 0);
-                    self.renderer.derived.retain(|key, _| key.0 != handle);
-                    self.renderer.materials.insert(handle, parsed);
+                    // A record with a handle that is known has the same content: a hold of a
+                    // capture file sends it again.
+                    self.renderer.materials.entry(handle).or_insert(parsed);
                     self.renderer.counts.material_records += 1;
                 }
             }
@@ -2406,7 +2609,10 @@ impl Player {
                 self.stream.geometry = if more && flags & OBJECT_HAS_GEOMETRY != 0 { word(data, 16) } else { 0 };
                 self.stream.material = if more && flags & OBJECT_HAS_MATERIAL != 0 { word(data, 20) } else { 0 };
                 self.stream.pass = 0;
+                self.stream.shape_drawn = false;
+                self.stream.shape_material = None;
             }
+            tag::SHAPE if data.len() >= 140 => self.shape(data),
             tag::FRAME_END => {
                 self.renderer.counts.frames += 1;
                 return true;
@@ -2904,6 +3110,11 @@ impl Player {
             self.renderer.counts.other_target += 1;
             return;
         }
+        // The object was drawn from its shape record: this is the draw of the device for it.
+        if self.stream.shape_drawn && !self.from_shape {
+            self.renderer.counts.shape_skipped += 1;
+            return;
+        }
         let in_back_buffer = self.target.is_none();
         // The first draw of the world scene (kind 1) into the back buffer: the answers of
         // the extension for the frame.
@@ -2993,7 +3204,7 @@ impl Player {
         if self.stream.geometry != 0 && indexed && self.use_geometry {
             match renderer.geometries.get(&self.stream.geometry) {
                 Some(g) if g.fvf == key.fvf && g.stride == key.stride && first_index + indexes <= g.entries && word(s, state::BASE_VERTEX) == 0 => {
-                    if !g.checked.get() {
+                    if !g.checked.get() && !self.from_shape {
                         g.checked.set(true);
                         let same = |handle: u32, bytes: &[u8]| renderer.buffers.get(&handle).is_some_and(|b| b.bytes.len() >= bytes.len() && b.bytes[..bytes.len()] == *bytes);
                         mismatch = !(same(vertex_handle, &g.vertex_bytes) && same(index_handle, &g.index_bytes));
@@ -3123,6 +3334,10 @@ impl Player {
         let mut classes: Vec<(u32, u32)> = c.material_classes.iter().map(|(k, v)| (*k, *v)).collect();
         classes.sort();
         println!("material differences by class: {classes:?}");
+        println!(
+            "shapes: {} records, {} draws from them, {} without a geometry or a material, {} draws of the device skipped",
+            c.shape_records, c.shape_draws, c.shape_missing, c.shape_skipped
+        );
         println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);
         println!(
             "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}; draws with a made or moved texture coordinate {}; the most lights of a draw {}",

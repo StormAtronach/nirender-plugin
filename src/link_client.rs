@@ -1162,6 +1162,7 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     (host.draw)(&draw);
     let geometry_handle = crate::geometry_stream::note(kind, geometry_data, skin);
     let material_handle = crate::material_stream::note(this, property_state, effect_state);
+    crate::shape_stream::note_handles(geometry_handle, material_handle);
     crate::capture::object(&draw, geometry_handle, material_handle);
 }
 
@@ -1271,6 +1272,35 @@ pub unsafe fn draw_state(
     }
     (host.draw_state)(&state);
     crate::capture::draw_state(&state);
+}
+
+/// The size of a state light.
+pub const STATE_LIGHT_SIZE: usize = size_of::<StateLightV1>();
+
+/// The lights of the light manager of the renderer as state lights, as `draw_state` reads
+/// them: the bytes of the records.
+pub unsafe fn state_lights(renderer: usize) -> &'static [u8] {
+    let lights = &mut *addr_of_mut!(STATE_LIGHTS);
+    let mut light_count = 0;
+    let manager: usize = rd(renderer, R::lightManager);
+    let mut item: usize = rd(manager, LM::deviceLights_head);
+    while item != 0 && light_count < MAX_STATE_LIGHTS {
+        let light: usize = rd(item, ITEM_DATA);
+        item = rd(item, ITEM_NEXT);
+        let entry = if light != 0 { crate::ports::hash_map::find_value(manager + LM::lightEntries, rd(light, L::index)) } else { 0 };
+        if entry == 0 {
+            continue;
+        }
+        lights[light_count].device_index = rd(entry, LE::lightIndex);
+        core::ptr::copy_nonoverlapping((entry + LE::d3dLight) as *const u32, lights[light_count].d3d_light.as_mut_ptr(), 26);
+        light_count += 1;
+    }
+    core::slice::from_raw_parts(addr_of!(STATE_LIGHTS) as *const u8, light_count * STATE_LIGHT_SIZE)
+}
+
+/// True when the world matrix of the renderer is relative to the camera.
+pub unsafe fn world_is_relative() -> bool {
+    *addr_of!(WORLD_RELATIVE) & 1 != 0
 }
 
 /// `RenderShape(this, geometryData, skinInstance, transform, bound)`

@@ -36,6 +36,7 @@ pub mod perf;
 pub mod ports;
 pub mod resource;
 pub mod shadow;
+pub mod shape_stream;
 pub mod site;
 pub mod sync;
 pub mod win;

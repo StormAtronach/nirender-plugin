@@ -112,6 +112,31 @@ pub struct Stage {
     /// The map the stage came from, for the report: 0 to 7 the maps, 8 the environment
     /// map, 9 the fog map, 10 the stage with no texture.
     pub source: u32,
+    /// The clamp mode and the filter mode of the map (`NiTexturingProperty` values).
+    pub clamp: u32,
+    pub filter: u32,
+}
+
+/// The sampler states of a map: address U, address V, the magnify, minify and mip filters,
+/// as Direct3D has them. The clamp modes are clamp-clamp, clamp-wrap, wrap-clamp, wrap-wrap;
+/// the filters nearest, bilinear, trilinear, nearest with nearest mip, nearest with linear
+/// mip, bilinear with nearest mip.
+pub fn sampler_states(clamp: u32, filter: u32) -> [u32; 5] {
+    let (u, v) = match clamp {
+        0 => (3, 3),
+        1 => (3, 1),
+        2 => (1, 3),
+        _ => (1, 1),
+    };
+    let f = match filter {
+        0 => [1, 1, 0],
+        1 => [2, 2, 0],
+        2 => [2, 2, 2],
+        3 => [1, 1, 1],
+        4 => [1, 1, 2],
+        _ => [2, 2, 1],
+    };
+    [u, v, f[0], f[1], f[2]]
 }
 
 /// The state of a draw as the pipeline would set it for a material.
@@ -246,14 +271,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
         [0; 7]
     };
     d.fog = m.flags & FOG != 0 && m.fog_mode < 2;
-    let mt = &m.material;
-    for (i, from) in [3usize, 0, 6, 9].into_iter().enumerate() {
-        d.material[i * 4] = mt[from];
-        d.material[i * 4 + 1] = mt[from + 1];
-        d.material[i * 4 + 2] = mt[from + 2];
-        d.material[i * 4 + 3] = mt[13];
-    }
-    d.material[16] = mt[12];
+    // The colours come with each draw (the shape record): `d3d_material`.
 
     // The lighting and the material sources (`NiDX8LightManager::setState`).
     let base = m.maps[BASE];
@@ -280,7 +298,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
     let stage = |map: usize, slot: u32, first: bool| -> Stage {
         let mp = m.maps[map];
         let (color, alpha) = ops(slot, first, apply, mp.texture != 0);
-        Stage { texture: mp.texture, color, alpha, set: coordinate_set(mp.set, sets), source: map as u32 }
+        Stage { texture: mp.texture, color, alpha, set: coordinate_set(mp.set, sets), source: map as u32, clamp: mp.clamp, filter: mp.filter }
     };
     let mut pass: Vec<Stage> = Vec::new();
     let mut pass_slot = 2u32;
@@ -293,7 +311,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
             pass.push(stage(BASE, 2, true));
         } else {
             let (color, alpha) = ops(2, true, true, false);
-            pass.push(Stage { texture: 0, color, alpha, set: 0, source: 10 });
+            pass.push(Stage { texture: 0, color, alpha, set: 0, source: 10, clamp: 3, filter: 1 });
         }
         d.passes.push(pass);
         d.blends.push(if m.flags & BLEND != 0 { [1, blend_mode(m.source_blend), blend_mode(m.destination_blend)] } else { [0, 0, 0] });
@@ -307,7 +325,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
         }
     } else if !has(DARK) {
         let (color, alpha) = ops(2, true, true, false);
-        pass.push(Stage { texture: 0, color, alpha, set: 0, source: 10 });
+        pass.push(Stage { texture: 0, color, alpha, set: 0, source: 10, clamp: 3, filter: 1 });
     }
     if has(DARK) {
         let first = pass.is_empty();
@@ -342,7 +360,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
         if !pass.is_empty() && m.flags & FOG != 0 && (has(BUMP) || !has(BASE)) {
             color = [25, 2, 0];
         }
-        pass.push(Stage { texture: m.environment.texture, color, alpha, set: 0, source: 8 });
+        pass.push(Stage { texture: m.environment.texture, color, alpha, set: 0, source: 8, clamp: m.environment.clamp, filter: m.environment.filter });
         if has(GLOSS) {
             pass.push(stage(GLOSS, 2, false));
         }
@@ -361,7 +379,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
             pass_slot = 2;
         }
         let (color, alpha) = ops(2, pass.is_empty(), false, true);
-        pass.push(Stage { texture: m.fog_map.texture, color, alpha, set: 1, source: 9 });
+        pass.push(Stage { texture: m.fog_map.texture, color, alpha, set: 1, source: 9, clamp: m.fog_map.clamp, filter: m.fog_map.filter });
     }
     if !pass.is_empty() {
         passes.push((pass, pass_slot));
@@ -377,15 +395,31 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
     d
 }
 
+/// The `D3DMATERIAL8` of the colours of a material (ambient, diffuse, specular, emissive,
+/// shininess, alpha, as the records have them): diffuse, ambient, specular, emissive with the
+/// alpha, then the power.
+pub fn d3d_material(values: &[f32; 14]) -> [f32; 17] {
+    let mut material = [0.0f32; 17];
+    for (i, from) in [3usize, 0, 6, 9].into_iter().enumerate() {
+        material[i * 4] = values[from];
+        material[i * 4 + 1] = values[from + 1];
+        material[i * 4 + 2] = values[from + 2];
+        material[i * 4 + 3] = values[13];
+    }
+    material[16] = values[12];
+    material
+}
+
 /// The parts of a comparison, for the counts.
-pub const PARTS: [&str; 12] = [
-    "textures", "stage operations", "coordinate sets", "blend", "alpha test", "depth", "cull", "fill", "stencil", "lighting", "material sources", "material colours",
+pub const PARTS: [&str; 13] = [
+    "textures", "stage operations", "coordinate sets", "blend", "alpha test", "depth", "cull", "fill", "stencil", "lighting", "material sources", "material colours", "samplers",
 ];
 
 /// The state packet of a draw, as `compare` reads it: the fields of `DrawStateV1`.
 pub struct Packet<'a> {
     pub stages: &'a [([u32; 3], [u32; 3], u32)],
     pub textures: &'a [u32],
+    pub samplers: &'a [[u32; 5]],
     pub blend: [u32; 3],
     pub alpha_test: [u32; 3],
     pub depth: [u32; 3],
@@ -400,7 +434,7 @@ pub struct Packet<'a> {
 /// Compares one pass of the derived state with the packet of a draw. Returns a bit for each
 /// part of `PARTS` that differs. `pass` is the number of the pass of the draw (0 for the
 /// first, from the later-pass flag).
-pub fn compare(d: &Derived, pass: usize, p: &Packet) -> u32 {
+pub fn compare(d: &Derived, pass: usize, p: &Packet, material: Option<[f32; 17]>) -> u32 {
     let mut bits = 0;
     let Some(stages) = d.passes.get(pass) else { return 1 << 1 };
     if stages.len() != p.stages.len() {
@@ -417,6 +451,17 @@ pub fn compare(d: &Derived, pass: usize, p: &Packet) -> u32 {
         // The stage with no texture keeps the coordinate index of its last use: no meaning.
         if ps.2 != s.set && s.texture != 0 {
             bits |= 1 << 2;
+        }
+        // The mip filter of the device is none for a texture with one level, whatever the
+        // map asks: a packet mip filter of 0 is not compared.
+        if s.texture != 0 && p.samplers.get(i).is_some_and(|ps| {
+            let mut want = sampler_states(s.clamp, s.filter);
+            if ps[4] == 0 {
+                want[4] = 0;
+            }
+            *ps != want
+        }) {
+            bits |= 1 << 12;
         }
     }
     let blend = d.blends.get(pass).copied().unwrap_or([0; 3]);
@@ -446,7 +491,7 @@ pub fn compare(d: &Derived, pass: usize, p: &Packet) -> u32 {
             bits |= 1 << 10;
         }
     }
-    if d.material.iter().zip(p.material).any(|(a, b)| a.to_bits() != b.to_bits()) {
+    if material.is_some_and(|mine| mine.iter().zip(p.material).any(|(a, b)| a.to_bits() != b.to_bits())) {
         bits |= 1 << 11;
     }
     bits

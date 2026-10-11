@@ -16,13 +16,18 @@ use std::collections::HashSet;
 use crate::engine;
 use crate::gen::layouts::{
     NiAlphaProperty as AP, NiDX8Renderer as R, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as LIST,
-    NiFogProperty as FP, NiMaterialProperty as MP, NiPropertyState as PS, NiStencilProperty as SP, NiTexturingProperty as NTP,
+    NiPropertyState as PS, NiStencilProperty as SP, NiTexturingProperty as NTP,
     NiTexturingProperty_BumpMap as BUMP, NiTexturingProperty_Map as MAP, NiVertexColorProperty as VC, NiZBufferProperty as ZP,
 };
 use crate::mem::rd;
 
 /// The number of words of a record.
 pub const WORDS: usize = 91;
+/// `NiTexture::rendererData` and `NiDX8SourceTextureData::d3dTexture`.
+const NI_TEXTURE_RENDERER_DATA: usize = 0x20;
+const SOURCE_DATA_D3D_TEXTURE: usize = 0x60;
+/// The table of `NiDX8SourceTextureData`: a rendered texture has another renderer data.
+const VTBL_SOURCE_TEXTURE_DATA: u32 = 0x74F770;
 /// The flags of a property: `NiProperty::flags` (u16 at 0x14).
 const PROPERTY_FLAGS: usize = 0x14;
 /// `NiDynamicEffect::enabled`, and the fields of a `NiTextureEffect` (see `texture_pass_b`).
@@ -50,6 +55,13 @@ pub const PROJECTED_SHADOWS: u32 = 8192;
 
 static mut SENT: Option<HashSet<u32>> = None;
 static mut RECORDS: u64 = 0;
+/// The flags of the last record noted: the helper models a material without projected
+/// lights and shadows.
+static mut LAST_FLAGS: u32 = 0;
+
+pub unsafe fn last_modelled() -> bool {
+    *core::ptr::addr_of!(LAST_FLAGS) & (PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0
+}
 
 unsafe fn sent() -> &'static mut HashSet<u32> {
     (*core::ptr::addr_of_mut!(SENT)).get_or_insert_with(HashSet::new)
@@ -77,19 +89,27 @@ unsafe fn device_texture(renderer: usize, texture: usize) -> u32 {
     if texture == 0 {
         return 0;
     }
+    // A texture that is loaded has its device texture in its renderer data
+    // (`NiDX8SourceTextureData::d3dTexture`): no call of the manager for it.
+    let data: usize = rd(texture, NI_TEXTURE_RENDERER_DATA);
+    if data != 0 && rd::<u32>(data, 0) == VTBL_SOURCE_TEXTURE_DATA {
+        let loaded: u32 = rd(data, SOURCE_DATA_D3D_TEXTURE);
+        if loaded != 0 {
+            return loaded;
+        }
+    }
     let manager: usize = rd(renderer, R::textureManager);
     let (mut created, mut mipmapped) = (0u32, 0u32);
     let prepare: unsafe extern "thiscall" fn(usize, usize, *mut u32, *mut u32) -> usize = transmute(rd::<usize>(rd::<usize>(manager, 0), 8));
     prepare(manager, texture, &mut created, &mut mipmapped) as u32
 }
 
+/// A hash of the words, one multiply and one rotation for each word: the record is hashed
+/// at every draw.
 fn hash(words: &[u32]) -> u32 {
     let mut h: u32 = 0x811C_9DC5;
     for &w in words {
-        for b in w.to_le_bytes() {
-            h ^= b as u32;
-            h = h.wrapping_mul(0x0100_0193);
-        }
+        h = (h ^ w).wrapping_mul(0x9E37_79B1).rotate_left(13);
     }
     h.max(1)
 }
@@ -151,15 +171,9 @@ pub unsafe fn note(renderer: usize, property_state: usize, effect_state: usize) 
         }
     }
 
-    // Material: ambient, diffuse, specular, emissive, shininess, alpha.
-    let material = engine::property_state_update_current_material_revision(property_state);
-    if material != 0 {
-        for k in 0..12 {
-            w[54 + k] = rd(material, MP::ambient + k * 4);
-        }
-        w[66] = rd(material, MP::shininess);
-        w[67] = rd(material, MP::alpha);
-    }
+    // The colours, the shininess and the alpha of the material are in the shape record:
+    // controllers change them for each frame, and the hash of this record must not change
+    // with them. Words 54 to 67 stay 0.
 
     // Vertex colour.
     let vertex_color: usize = rd(property_state, PS::propVertexColor);
@@ -196,9 +210,10 @@ pub unsafe fn note(renderer: usize, property_state: usize, effect_state: usize) 
     if (ff >> 1) & 1 != 0 {
         flags |= FOG;
     }
+    // The density and the colour of the fog change with the weather at each frame: they
+    // are not in the record (the helper takes the fog from the render states). Words 78
+    // and 79 stay 0.
     if fog != 0 {
-        w[78] = rd(fog, FP::density);
-        w[79] = rd(fog, FP::color);
         w[80] = (ff >> 3) & 3;
     }
 
@@ -260,6 +275,7 @@ pub unsafe fn note(renderer: usize, property_state: usize, effect_state: usize) 
         }
     }
     w[1] = flags;
+    *core::ptr::addr_of_mut!(LAST_FLAGS) = flags;
 
     let handle = hash(&w);
     if sent().insert(handle) {

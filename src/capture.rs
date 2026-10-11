@@ -93,6 +93,9 @@ pub mod tag {
     /// The material of a shape as facts: the handle (a hash of the words), then the words.
     /// See `material_stream`.
     pub const MATERIAL: u32 = 19;
+    /// The draw of a shape: geometry handle, material handle, flags, light count, the world
+    /// matrix (16 floats), then the lights as in a state packet. See `shape_stream`.
+    pub const SHAPE: u32 = 20;
 }
 
 // ---- the ring in shared memory
@@ -647,6 +650,7 @@ pub unsafe fn stop() {
     crate::log!("threads: {}", crate::sync::census_text().replace('\n', "; "));
     crate::log!("{}", crate::geometry_stream::report());
     crate::log!("{}", crate::material_stream::report());
+    crate::log!("{}", crate::shape_stream::report());
     crate::log!(
         "capture: end, {} frames, {} records, {} bytes, {:.3} ms of the game thread for each frame{}",
         s.frames_done,
@@ -837,6 +841,12 @@ pub unsafe fn object(draw: &DrawV1, geometry_handle: u32, material_handle: u32) 
 /// the material handle (each 0 when its flag is off).
 pub const OBJECT_HAS_GEOMETRY: u32 = 0x100;
 pub const OBJECT_HAS_MATERIAL: u32 = 0x200;
+
+/// A shape record. See `tag::SHAPE`.
+pub unsafe fn shape(head: &[u32], lights: &[u8]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::SHAPE, &[&words(head), lights]);
+}
 
 /// A material record. See `tag::MATERIAL`.
 pub unsafe fn material(handle: u32, record: &[u32]) {
