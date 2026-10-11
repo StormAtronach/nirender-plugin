@@ -35,6 +35,7 @@ pub mod ports;
 pub mod resource;
 pub mod shadow;
 pub mod site;
+pub mod sync;
 pub mod win;
 pub mod x87;
 

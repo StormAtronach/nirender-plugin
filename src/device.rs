@@ -401,6 +401,9 @@ const SLOT_TEST_COOPERATIVE_LEVEL: usize = crate::d3d::DEVICE_TEST_COOPERATIVE_L
 pub static FORCE_RESET: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
+    // One call of the device at a time, as with a device of Direct3D for more than one thread.
+    let _lock = crate::sync::device_lock();
+    crate::sync::off_thread("device", NAMES.get(slot).copied().unwrap_or("?"));
     if DEPTH.load(Ordering::Relaxed) != 0 {
         return call_original(slot, this, args);
     }

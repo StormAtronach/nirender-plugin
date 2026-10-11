@@ -187,6 +187,13 @@ unsafe extern "C" fn own_device(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.threadCensus()` returns the calls that came into the plugin from a thread that is
+/// not the main thread, as text: one line for each kind of call, with its count.
+unsafe extern "C" fn thread_census(l: LuaState) -> i32 {
+    push_str(l, &crate::sync::census_text());
+    1
+}
+
 /// `nirender.captureStop()` ends the capture or the stream.
 unsafe extern "C" fn capture_stop(_l: LuaState) -> i32 {
     crate::capture::stop();
@@ -438,6 +445,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "streamShot", stream_shot);
     set_fn(l, "dumpDevice", dump_device);
     set_fn(l, "ownDevice", own_device);
+    set_fn(l, "threadCensus", thread_census);
     set_fn(l, "gameScreenshot", game_screenshot);
     set_fn(l, "forceReset", force_reset);
     set_fn(l, "renderer", renderer);

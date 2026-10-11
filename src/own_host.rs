@@ -115,11 +115,15 @@ unsafe extern "system" fn query_interface(_this: *mut Object, _id: usize, out: *
 }
 
 unsafe extern "system" fn add_reference(this: *mut Object) -> u32 {
+    let _lock = crate::sync::device_lock();
+    crate::sync::off_thread("resource", "AddRef");
     (*this).references += 1;
     (*this).references
 }
 
 unsafe extern "system" fn release(this: *mut Object) -> u32 {
+    let _lock = crate::sync::device_lock();
+    crate::sync::off_thread("resource", "Release");
     (*this).references -= 1;
     let left = (*this).references;
     if left == 0 {
@@ -153,6 +157,8 @@ unsafe extern "system" fn fail2(_this: *mut Object, _a: u32, _b: u32) -> u32 {
 }
 
 unsafe extern "system" fn buffer_lock(this: *mut Object, offset: u32, _size: u32, data: *mut usize, _flags: u32) -> u32 {
+    let _lock = crate::sync::device_lock();
+    crate::sync::off_thread("resource", "buffer Lock (own)");
     let object = &mut *this;
     if offset > object.length || data.is_null() {
         return FAIL;
@@ -195,6 +201,8 @@ unsafe extern "system" fn texture_level_description(this: *mut Object, level: u3
 }
 
 unsafe extern "system" fn texture_surface_level(this: *mut Object, level: u32, out: *mut usize) -> u32 {
+    let _lock = crate::sync::device_lock();
+    crate::sync::off_thread("resource", "texture GetSurfaceLevel");
     if level >= (*this).levels || out.is_null() {
         return FAIL;
     }
@@ -243,10 +251,14 @@ unsafe fn unlock_level(texture: *mut Object, level: u32) -> u32 {
 }
 
 unsafe extern "system" fn texture_lock(this: *mut Object, level: u32, locked: *mut u32, _rectangle: usize, _flags: u32) -> u32 {
+    let _lock = crate::sync::device_lock();
+    crate::sync::off_thread("resource", "texture LockRect");
     lock_level(this, level, locked)
 }
 
 unsafe extern "system" fn texture_unlock(this: *mut Object, level: u32) -> u32 {
+    let _lock = crate::sync::device_lock();
+    crate::sync::off_thread("resource", "texture UnlockRect");
     unlock_level(this, level)
 }
 
@@ -336,6 +348,8 @@ unsafe fn copy_pixels(source: u32, destination: u32) -> u32 {
 static mut PIXEL_READS: u32 = 0;
 
 unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, _rectangle: usize, _flags: u32) -> u32 {
+    let _lock = crate::sync::device_lock();
+    crate::sync::off_thread("resource", "surface LockRect");
     let object = &mut *this;
     if object.kind == Kind::LevelSurface {
         return lock_level(object.owner, object.level, locked);
@@ -357,6 +371,8 @@ unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, _rec
 }
 
 unsafe extern "system" fn surface_unlock(this: *mut Object) -> u32 {
+    let _lock = crate::sync::device_lock();
+    crate::sync::off_thread("resource", "surface UnlockRect");
     let object = &*this;
     if object.kind == Kind::LevelSurface {
         return unlock_level(object.owner, object.level);
@@ -485,6 +501,8 @@ unsafe extern "C" fn camera_space(_origin: *mut f64) -> u32 {
 }
 
 unsafe extern "C" fn texture_create(texture: *const TextureV1) -> u32 {
+    let _lock = crate::sync::device_lock();
+    crate::sync::off_thread("resource", "host texture_create");
     let texture = &*texture;
     let object = new_object(Kind::Texture, &TEXTURE_TABLE);
     (*object).width = texture.width;
@@ -531,6 +549,8 @@ unsafe fn put(out: u32, value: u32) -> u32 {
 }
 
 unsafe extern "C" fn call(index: u32, arguments: *const u32) -> u32 {
+    let _lock = crate::sync::device_lock();
+    crate::sync::off_thread("resource", "host call");
     let a = |i: usize| *arguments.add(i);
     match index {
         CALL_CREATE_VERTEX_BUFFER | CALL_CREATE_INDEX_BUFFER => {

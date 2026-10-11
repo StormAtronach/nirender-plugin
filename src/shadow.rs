@@ -203,7 +203,7 @@ pub fn set_main_thread() {
     MAIN_THREAD.store(unsafe { win::GetCurrentThreadId() }, Ordering::Relaxed);
 }
 
-fn on_main_thread() -> bool {
+pub fn on_main_thread() -> bool {
     unsafe { win::GetCurrentThreadId() == MAIN_THREAD.load(Ordering::Relaxed) }
 }
 
@@ -405,6 +405,7 @@ unsafe fn dispatch_inner<R: Eax>(
     engine: impl FnOnce() -> u32,
 ) -> u32 {
     if !on_main_thread() {
+        crate::sync::off_thread("port", state.name);
         return engine();
     }
     let mode = state.mode();

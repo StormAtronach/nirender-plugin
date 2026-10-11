@@ -1,0 +1,80 @@
+//! The lock of the device, and the census of the calls from other threads.
+//!
+//! The game uses more than one thread for its renderer. A second thread loads the cells
+//! around the player and makes their textures (`game_threadLoadCells` 0x48FC90), and the
+//! loading screen has a thread too (`LoadScreenManager::startMovie` 0x4588CB). The game asks
+//! Direct3D for a device that takes calls from more than one thread
+//! (D3DCREATE_MULTITHREADED): Direct3D then does one call at a time, of the device and of
+//! each resource.
+//!
+//! The plugin gives the game the same. Each call that comes into the plugin from the game
+//! holds `device_lock`: a call of the device, a method of a resource of `own_host`, a
+//! function of the host table, the recorder on a buffer, and each write into the stream. A
+//! thread can take the lock again when it has it.
+//!
+//! A port runs its Rust code only on the main thread (`shadow::dispatch`). On another thread
+//! the game code runs, and it calls the device and the resources. The census has a count for
+//! each kind of call that came from another thread, and the log gets a line at the first one.
+
+use std::collections::BTreeMap;
+use std::sync::{Mutex, Once};
+
+#[repr(C)]
+struct CriticalSection([usize; 6]);
+
+extern "system" {
+    fn InitializeCriticalSection(section: *mut CriticalSection);
+    fn EnterCriticalSection(section: *mut CriticalSection);
+    fn LeaveCriticalSection(section: *mut CriticalSection);
+}
+
+static mut SECTION: CriticalSection = CriticalSection([0; 6]);
+static SECTION_MADE: Once = Once::new();
+
+/// The lock is free again when this value goes away.
+pub struct DeviceLock;
+
+pub fn device_lock() -> DeviceLock {
+    unsafe {
+        SECTION_MADE.call_once(|| InitializeCriticalSection(core::ptr::addr_of_mut!(SECTION)));
+        EnterCriticalSection(core::ptr::addr_of_mut!(SECTION));
+    }
+    DeviceLock
+}
+
+impl Drop for DeviceLock {
+    fn drop(&mut self) {
+        unsafe { LeaveCriticalSection(core::ptr::addr_of_mut!(SECTION)) };
+    }
+}
+
+static CENSUS: Mutex<BTreeMap<(&'static str, &'static str), u32>> = Mutex::new(BTreeMap::new());
+
+/// Counts a call when it is not on the main thread. `group` is the kind of the entry
+/// ("device", "resource", "port") and `name` is the method or the function.
+#[inline]
+pub fn off_thread(group: &'static str, name: &'static str) {
+    if crate::shadow::on_main_thread() {
+        return;
+    }
+    let first = match CENSUS.lock() {
+        Ok(mut census) => {
+            let count = census.entry((group, name)).or_insert(0);
+            *count += 1;
+            *count == 1
+        }
+        Err(_) => false,
+    };
+    if first {
+        crate::log!("threads: the first call of {group} {name} from another thread (thread {})", unsafe { crate::win::GetCurrentThreadId() });
+    }
+}
+
+/// The census as text: one line for each kind of call, with its count.
+pub fn census_text() -> String {
+    let Ok(census) = CENSUS.lock() else { return String::new() };
+    if census.is_empty() {
+        return "no call from another thread".to_string();
+    }
+    census.iter().map(|((group, name), count)| format!("{group} {name} {count}")).collect::<Vec<_>>().join("\n")
+}
