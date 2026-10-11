@@ -42,6 +42,8 @@ def main():
     ap.add_argument("--profile", default="Default", help="with --instance: its profile")
     ap.add_argument("--position", help="x,y,z in the exterior cell: the player goes there after the cell loads (the "
                     "coordinates of the console)")
+    ap.add_argument("--find-water", action="store_true", help="after the cell loads, put the player under the water at the "
+                    "nearest spot where the land is deep enough (a test of the view from under the water)")
     ap.add_argument("--yaw", type=float, default=None, help="the heading of the player in degrees, 0 north, with --position")
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for the run, key = value: the line with "
                     "that key is replaced (for example \"expanded_light_limit = true\")")
@@ -68,7 +70,7 @@ def main():
     session.prepare(build=not args.no_build)
     run = session.Run(args.label)
     spec = run.spec("owndevice", save=args.save, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
-                    position=args.position, yaw=args.yaw)
+                    position=args.position, yaw=args.yaw, findWater=args.find_water)
     # The plugin starts the host program. It reads these from the environment of the game.
     if not args.mge_build:
         os.environ["NIRENDER_HOST_EXE"] = HOST

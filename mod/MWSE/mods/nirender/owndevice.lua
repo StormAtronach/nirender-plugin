@@ -55,6 +55,33 @@ return function(nirender, spec)
             local hour = tes3.findGlobal("GameHour")
             if hour then hour.value = spec.hour or 12 end
             scenario.goTo(spec.exterior)
+            -- Under the water: the nearest spot around the player where the land is 170 units
+            -- or more under the water level, found with rays onto the landscape.
+            if spec.findWater then
+                after(1.5, function()
+                    local from = tes3.player.position
+                    local found
+                    for ring = 1, 24 do
+                        local r = ring * 256
+                        for a = 0, 15 do
+                            local x, y = from.x + r * math.cos(a * math.pi / 8), from.y + r * math.sin(a * math.pi / 8)
+                            local hit = tes3.rayTest({ position = tes3vector3.new(x, y, 4000), direction = tes3vector3.new(0, 0, -1), root = tes3.game.worldLandscapeRoot })
+                            if hit and hit.intersection and hit.intersection.z < -170 then
+                                found = tes3vector3.new(x, y, -130)
+                                break
+                            end
+                        end
+                        if found then break end
+                    end
+                    if found then
+                        local yaw = math.rad(tonumber(spec.yaw) or 0)
+                        tes3.positionCell({ reference = tes3.player, position = found, orientation = tes3vector3.new(0, 0, yaw) })
+                        say("find water: at %.0f,%.0f,%.0f", found.x, found.y, found.z)
+                    else
+                        say("find water: no spot within 6144 units")
+                    end
+                end)
+            end
             -- A place in the cell, and a heading: for a picture of one thing, the same each time.
             if spec.position and spec.position ~= "" then
                 local x, y, z = tostring(spec.position):match("([-%d%.]+)%s*,%s*([-%d%.]+)%s*,%s*([-%d%.]+)")
@@ -144,7 +171,9 @@ return function(nirender, spec)
         local ok, problem = pcall(this[3])
         say("step %s: %s %s", this[1], tostring(ok), ok and "" or tostring(problem))
         after(this[2], function()
-            say("after %s: %s cell '%s'", this[1], nirender.captureStatus(), tes3.player and tes3.player.cell.editorName or "?")
+            local p = tes3.player and tes3.player.position
+            say("after %s: %s cell '%s' at %s", this[1], nirender.captureStatus(), tes3.player and tes3.player.cell.editorName or "?",
+                p and string.format("%.0f,%.0f,%.0f yaw %.0f", p.x, p.y, p.z, math.deg(tes3.player.orientation.z)) or "?")
             if nirender.captureStatus():sub(1, 3) == "off" and mge and mge.saveScreenshot then
                 -- No stream: the run is the reference with MGE XE on Direct3D 9. The picture
                 -- is that of MGE XE.
