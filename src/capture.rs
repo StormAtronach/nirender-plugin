@@ -77,6 +77,11 @@ pub mod tag {
     /// vertex format, the bytes of a vertex, the primitive type, the number of primitives;
     /// then the vertices. The films of the game are such draws, in screen coordinates.
     pub const DRAW_UP: u32 = 15;
+    /// Data of another program for the part of it that draws: a number that the two parts
+    /// agree on, then the bytes. MGE XE sends the state of the game that its features need
+    /// (fog distances, weather) to its helper in this way. The record is in the stream at
+    /// the place of the call, so the data is for the frame in progress.
+    pub const EXTENSION: u32 = 16;
 }
 
 // ---- the ring in shared memory
@@ -511,6 +516,12 @@ pub unsafe fn stop() {
 /// A draw with its vertices in the call.
 pub unsafe fn draw_up(texture: u32, vertex_format: u32, stride: u32, primitive_type: u32, primitives: u32, vertices: &[u8]) {
     write(tag::DRAW_UP, &[&words(&[texture, vertex_format, stride, primitive_type, primitives]), vertices]);
+}
+
+/// Data of another program for its part in the renderer. See `tag::EXTENSION`.
+pub unsafe fn extension(id: u32, bytes: &[u8]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::EXTENSION, &[&words(&[id]), bytes]);
 }
 
 /// Asks the host of the stream for a picture file of the frame in progress.

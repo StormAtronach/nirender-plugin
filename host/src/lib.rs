@@ -44,6 +44,8 @@ pub struct SceneView<'a> {
     /// the game that starts the world has such a light.
     pub sun_direction: Option<[f32; 3]>,
     pub sun_color: [f32; 3],
+    /// The ambient colour of that light.
+    pub sun_ambient: [f32; 3],
     /// The ambient light of the scene.
     pub ambient: [f32; 3],
 }
@@ -58,6 +60,10 @@ pub trait Extension {
     /// Returns true when the depth target must be cleared before the draws of the game: the
     /// extension drew with a projection of its own.
     fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>) -> bool;
+
+    /// Data that the part of this program in the game process put into the stream, with the
+    /// number that the two parts agree on. See `nirender_stream_extension` of the plugin.
+    fn data(&mut self, _id: u32, _bytes: &[u8]) {}
 
     /// The distances of the start and of the end of the fog for the draws of the world of
     /// the game in this frame, or `None` for the fog of the game. The renderer asks after
@@ -86,6 +92,7 @@ mod tag {
     pub const READ_PIXELS: u32 = 13;
     pub const SHOT: u32 = 14;
     pub const DRAW_UP: u32 = 15;
+    pub const EXTENSION: u32 = 16;
 }
 
 const COMMAND_RENDER_STATE: u32 = 1;
@@ -1570,6 +1577,11 @@ impl Player {
             tag::TEXTURE => self.renderer.texture(data),
             tag::TEXTURE_UPDATE => self.renderer.texture_update(data),
             tag::SHOT => self.shots.push(String::from_utf8_lossy(data).into_owned()),
+            tag::EXTENSION if data.len() >= 4 => {
+                if let Some(extension) = self.extension.as_mut() {
+                    extension.data(word(data, 0), &data[4..]);
+                }
+            }
             tag::DRAW_UP if self.drawing() && data.len() >= 20 => self.draw_up(data),
             tag::READ_PIXELS => {
                 // The game waits for the answer. Without the target, the answer has no size.
@@ -1765,8 +1777,9 @@ impl Player {
             let at = state::SIZE + i * state::LIGHT_SIZE + 4;
             if at + 104 <= s.len() && matches!(word(s, at), 3 | 4) {
                 let diffuse: [f32; 3] = floats(s, at + 4);
+                let light_ambient: [f32; 3] = floats(s, at + 9 * 4);
                 let direction: [f32; 3] = floats(s, at + 16 * 4);
-                sun = Some((direction, diffuse));
+                sun = Some((direction, diffuse, light_ambient));
                 break;
             }
         }
@@ -1783,8 +1796,9 @@ impl Player {
             fog_color: color(state_of(34).unwrap_or(0)),
             fog_start: f32::from_bits(state_of(36).unwrap_or(0)),
             fog_end: f32::from_bits(state_of(37).unwrap_or(0)),
-            sun_direction: sun.map(|(direction, _)| direction),
-            sun_color: sun.map_or([0.0; 3], |(_, diffuse)| diffuse),
+            sun_direction: sun.map(|(direction, _, _)| direction),
+            sun_color: sun.map_or([0.0; 3], |(_, diffuse, _)| diffuse),
+            sun_ambient: sun.map_or([0.0; 3], |(_, _, light_ambient)| light_ambient),
             ambient: [ambient[0], ambient[1], ambient[2]],
         };
         let clear_depth = match self.pass.as_mut() {

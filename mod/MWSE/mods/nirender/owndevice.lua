@@ -51,6 +51,9 @@ return function(nirender, spec)
             scenario.goTo(spec.interior)
         end },
         { "exterior", spec.settleSeconds or 6, function()
+            -- Noon, so that the pictures of the exterior have the light of the day.
+            local hour = tes3.findGlobal("GameHour")
+            if hour then hour.value = spec.hour or 12 end
             scenario.goTo(spec.exterior)
         end },
         -- The frame rate at one place: the frames that the game gives to Lua in 10 seconds,
@@ -100,7 +103,13 @@ return function(nirender, spec)
         say("step %s: %s %s", this[1], tostring(ok), ok and "" or tostring(problem))
         after(this[2], function()
             say("after %s: %s cell '%s'", this[1], nirender.captureStatus(), tes3.player and tes3.player.cell.editorName or "?")
-            nirender.streamShot(string.format("%s/host-%s.png", spec.dir, this[1]))
+            if nirender.captureStatus():sub(1, 3) == "off" and mge and mge.saveScreenshot then
+                -- No stream: the run is the reference with MGE XE on Direct3D 9. The picture
+                -- is that of MGE XE.
+                mge.saveScreenshot({ path = string.format("%s/ref-%s.png", spec.dir, this[1]), captureWithUI = true })
+            else
+                nirender.streamShot(string.format("%s/host-%s.png", spec.dir, this[1]))
+            end
             after(0.8, function() step(index + 1) end)
         end)
     end

@@ -414,6 +414,15 @@ unsafe fn start_stream(s: &State) {
     crate::log!("own device: host program {}: {command}", if started != 0 { "started" } else { "NOT started" });
 }
 
+/// Puts data of another program into the stream, for its part in the renderer: `id` is a
+/// number that the two parts agree on. The `d3d8.dll` of MGE XE calls it.
+#[no_mangle]
+pub unsafe extern "C" fn nirender_stream_extension(id: u32, data: *const u8, length: u32) {
+    if !data.is_null() && length != 0 && length < (1 << 20) {
+        crate::capture::extension(id, core::slice::from_raw_parts(data, length as usize));
+    }
+}
+
 /// The `Direct3DCreate8` of the plugin. The `d3d8.dll` of this repository calls it.
 #[no_mangle]
 pub unsafe extern "C" fn nirender_direct3d_create8(_sdk_version: u32) -> usize {
