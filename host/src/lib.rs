@@ -48,6 +48,10 @@ pub struct SceneView<'a> {
     pub sun_ambient: [f32; 3],
     /// The ambient light of the scene.
     pub ambient: [f32; 3],
+    /// For `Extension::draw_class` only: the picture of the frame as it is before the call
+    /// (a copy), and the depth of the draws of the game so far. `None` in the other calls.
+    pub picture: Option<&'a wgpu::TextureView>,
+    pub depth: Option<&'a wgpu::TextureView>,
 }
 
 /// The answers of an extension for a frame. See `Extension::frame`.
@@ -68,6 +72,9 @@ pub struct FrameParameters {
     pub sky: Option<[[f32; 4]; 8]>,
     /// True when the extension wants the call `Extension::blend` in this frame.
     pub blend: bool,
+    /// The classes of the game (MGE_LINK_CLASS_*, one bit for each) whose draws into the
+    /// back buffer the extension takes: see `Extension::draw_class`.
+    pub watched: u32,
 }
 
 /// The facts of the world scene of the game at a moment, for a call of the extension.
@@ -101,6 +108,8 @@ impl WorldFacts {
             sun_color: self.sun.map_or([0.0; 3], |sun| sun.1),
             sun_ambient: self.sun.map_or([0.0; 3], |sun| sun.2),
             ambient: self.ambient,
+            picture: None,
+            depth: None,
         }
     }
 }
@@ -123,6 +132,8 @@ enum Item {
     Screen(ScreenDraw),
     WorldStart(Box<WorldFacts>),
     WorldEnd(Box<WorldFacts>),
+    /// The extension draws in place of the draws of this class.
+    Replace(u32, Box<WorldFacts>),
 }
 
 /// How the renderer draws the kept world draws of the frame again. See `Replay`.
@@ -144,11 +155,22 @@ pub struct ReplayView {
     pub clip_plane: Option<[f64; 4]>,
     /// Only the draws that write depth and do not blend.
     pub opaque_only: bool,
+    /// The classes of the game to draw again, one bit for each (MGE_LINK_CLASS_*): the
+    /// world draws of a frame have the sky too (classes 1 to 7). `ReplayView::WORLD` is
+    /// all but the sky.
+    pub classes: u32,
+}
+
+impl ReplayView {
+    /// All classes but the sky (1 to 7) and the glare of the sun (8).
+    pub const WORLD: u32 = !0x1FE;
+    pub const SKY: u32 = 0xFE;
 }
 
 /// Draws the world draws of the frame again: those of the game in its world scene and its
-/// scene of sorted draws, into the back buffer. The pass must have a colour target and a
-/// depth target with the formats of `SceneView`.
+/// scene of sorted draws, into the back buffer, with the sky and without the water plane of
+/// the game. The pass must have a colour target and a depth target with the formats of
+/// `SceneView`.
 pub trait Replay {
     fn replay(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView);
     /// The number of kept draws.
@@ -157,6 +179,8 @@ pub trait Replay {
 
 /// One draw of the game, ready for the pass.
 struct Draw {
+    /// The class of the object of the draw: MGE_LINK_CLASS_*.
+    class: u32,
     key: PipelineKey,
     stencil_reference: u32,
     data: DrawData,
@@ -189,7 +213,7 @@ impl Replay for Replayer<'_> {
 
     fn replay(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView) {
         for kept in self.kept {
-            if view.opaque_only && (kept.key.blend[0] != 0 || kept.key.depth[1] == 0) {
+            if view.classes & (1 << kept.class.min(31)) == 0 || (view.opaque_only && (kept.key.blend[0] != 0 || kept.key.depth[1] == 0)) {
                 continue;
             }
             let mut data = kept.data;
@@ -337,6 +361,14 @@ pub trait Extension {
     /// draws with a sort, the first-person view and the user interface are not. The pass and
     /// the matrices are those of the game. MGE XE draws its grass here.
     fn after_world(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {}
+
+    /// The renderer calls this at the first draw of a frame into the back buffer of a class
+    /// in `FrameParameters::watched`, in place of the draws of that class: none of them is
+    /// drawn. The pass and the matrices are those of that draw. `scene.picture` is the
+    /// picture of the frame before the call and `scene.depth` is the depth of the game so
+    /// far: for a refraction. MGE XE draws its water in place of the water plane of the
+    /// game (class 10).
+    fn draw_class(&mut self, _class: u32, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {}
 
     /// The renderer calls this after `after_world`, when `FrameParameters::blend` was true
     /// and `before_world` gave true. The pass draws into the picture of the frame and has
@@ -1740,6 +1772,8 @@ struct Player {
     parameters: Option<FrameParameters>,
     world_begun: bool,
     world_ended: bool,
+    /// The classes that the extension took in this frame, one bit for each.
+    replaced: u32,
     scene_kind: u32,
     world_sun: Option<([f32; 3], [f32; 3], [f32; 3])>,
     world_ambient: [f32; 3],
@@ -1752,6 +1786,8 @@ struct Player {
     viewport: Option<([f32; 4], [f32; 2])>,
     before: Option<wgpu::Texture>,
     before_kept: bool,
+    /// The picture of the frame before a call of `Extension::draw_class`.
+    picture_copy: Option<wgpu::Texture>,
     /// The size of the back buffer of the game, from the first record. 0 when not known.
     size: (u32, u32),
     /// The size of the picture of the frame.
@@ -1788,6 +1824,7 @@ impl Player {
             parameters: None,
             world_begun: false,
             world_ended: false,
+            replaced: 0,
             scene_kind: 0,
             world_sun: None,
             world_ambient: [0.0; 3],
@@ -1798,6 +1835,7 @@ impl Player {
             viewport: None,
             before: None,
             before_kept: false,
+            picture_copy: None,
             size: (0, 0),
             frame_size: (0, 0),
         }
@@ -1859,6 +1897,7 @@ impl Player {
         self.parameters = None;
         self.world_begun = false;
         self.world_ended = false;
+        self.replaced = 0;
         self.target = None;
         self.pass_target = None;
         self.before_kept = false;
@@ -2183,6 +2222,7 @@ impl Player {
                 }
                 Item::WorldStart(facts) => self.start_world(&facts),
                 Item::WorldEnd(facts) => self.end_world(&facts),
+                Item::Replace(class, facts) => self.replace_class(class, &facts),
             }
         }
     }
@@ -2327,6 +2367,38 @@ impl Player {
         self.before_kept = true;
     }
 
+    /// Gives the extension its call in place of the draws of a class. See
+    /// `Extension::draw_class`.
+    fn replace_class(&mut self, class: u32, facts: &WorldFacts) {
+        let Some(mut extension) = self.extension.take() else { return };
+        // The picture so far: a copy, outside of the pass.
+        let mut picture = None;
+        if let (Some(source), Some(encoder)) = (self.back_buffer.as_ref(), self.encoder.as_mut()) {
+            if source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+                let size = source.size();
+                if self.picture_copy.as_ref().is_none_or(|copy| copy.size() != size) {
+                    self.picture_copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
+                }
+                drop(self.pass.take());
+                encoder.copy_texture_to_texture(source.as_image_copy(), self.picture_copy.as_ref().unwrap().as_image_copy(), size);
+                picture = self.picture_copy.as_ref().map(|copy| copy.create_view(&Default::default()));
+                self.open_pass(None, None, None);
+            }
+        }
+        let depth = self.depth.as_ref().filter(|depth| depth.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)).map(|depth| depth.texture().create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
+        let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
+        let mut scene = facts.view(&device, &queue, format);
+        scene.picture = picture.as_ref();
+        scene.depth = depth.as_ref();
+        if let Some(pass) = self.pass.as_mut() {
+            let world = std::mem::take(&mut self.world_draws);
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+            extension.draw_class(class, &scene, pass, &mut replayer);
+            self.world_draws = world;
+        }
+        self.extension = Some(extension);
+    }
+
     /// Gives the extension its call at the start of the world. See `Extension::before_world`.
     fn start_world(&mut self, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
@@ -2373,6 +2445,17 @@ impl Player {
             self.world_begun = true;
             let facts = self.world_facts(true);
             self.items.push(Item::WorldStart(Box::new(facts)));
+        }
+        // A draw of a class that the extension takes: the extension draws at the first one.
+        let class = self.stream.object_class;
+        let parameters = self.parameters.unwrap_or_default();
+        if in_back_buffer && class < 32 && parameters.watched & (1 << class) != 0 {
+            if self.replaced & (1 << class) == 0 {
+                self.replaced |= 1 << class;
+                let facts = self.world_facts(false);
+                self.items.push(Item::Replace(class, Box::new(facts)));
+            }
+            return;
         }
         let renderer = &mut self.renderer;
         let s = &self.stream.state;
@@ -2435,7 +2518,6 @@ impl Player {
         // the world in the back buffer (not for the sky, which is before the world, and not
         // for a texture that the game draws into), the sky for a sky draw in the back buffer
         // (MGE_LINK_CLASS_SKY_DOME is 1 and MGE_LINK_CLASS_SKY_OTHER is 7).
-        let parameters = self.parameters.unwrap_or_default();
         let world = self.world_begun && in_back_buffer;
         self.stream.fog_range = parameters.fog_range.filter(|_| world);
         self.stream.sky = parameters.sky.filter(|_| in_back_buffer && (1..=7).contains(&self.stream.object_class));
@@ -2480,6 +2562,7 @@ impl Player {
             renderer.counts.target_draws += 1;
         }
         let draw = Rc::new(Draw {
+            class,
             key,
             stencil_reference,
             data: draw_data,
@@ -2491,9 +2574,10 @@ impl Player {
             fan,
             range: if indexed { (first_index, indexes, word(s, state::BASE_VERTEX) as i32) } else { (first_index, indexes, 0) },
         });
-        // The world scene of the game is 1 and its scene of sorted draws is 2. The water
-        // plane of the game (MGE_LINK_CLASS_WATER_PLANE, 10) is not a thing of the world.
-        if world && matches!(self.scene_kind, 1 | 2) && self.stream.object_class != 10 {
+        // The world scene of the game is 1 and its scene of sorted draws is 2, with the sky
+        // at the start of the first. The water plane of the game (MGE_LINK_CLASS_WATER_PLANE,
+        // 10) is not a thing of the world.
+        if in_back_buffer && matches!(self.scene_kind, 1 | 2) && class != 10 {
             self.world_draws.push(draw.clone());
         }
         self.items.push(Item::Draw(draw));
