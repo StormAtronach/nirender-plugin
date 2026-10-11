@@ -161,6 +161,23 @@ return function(nirender, spec)
         end)
     end
 
+    -- With spec.reset, makes the game reset its device, with the game code ("off") or the
+    -- Rust code ("live"), then `done`. The frame tests after it show that the renderer is
+    -- as before.
+    local function reset(done)
+        if not spec.reset then return done() end
+        nirender.setMode(ports, spec.reset)
+        after(1, function()
+            say("reset of the device asked, mode %s", spec.reset)
+            nirender.forceReset()
+            after(4, function()
+                say("after the reset: the game runs")
+                nirender.setMode("*", "off")
+                done()
+            end)
+        end)
+    end
+
     scenario.start(function()
         say("x87 control word 0x%04x", nirender.fpuControlWord())
         if spec.startMode then
@@ -168,13 +185,13 @@ return function(nirender, spec)
             say("the game started in mode '%s'", spec.startMode)
         end
         after(spec.settleSeconds or 4, function()
-            dumps(function()
+            dumps(function() reset(function()
                 if (spec.shadowSeconds or 0) > 0 then
                     test_here(function() visit(1) end)
                 else
                     scenario.finish()
                 end
-            end)
+            end) end)
         end)
     end, function()
         if spec.dumpDir then

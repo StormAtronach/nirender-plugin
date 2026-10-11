@@ -396,9 +396,19 @@ unsafe fn record(slot: usize, this: usize, args: &[u32]) -> Option<u32> {
     }
 }
 
+const SLOT_TEST_COOPERATIVE_LEVEL: usize = crate::d3d::DEVICE_TEST_COOPERATIVE_LEVEL / 4;
+/// A test asked for a reset of the device. See `device_call`.
+pub static FORCE_RESET: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
     if DEPTH.load(Ordering::Relaxed) != 0 {
         return call_original(slot, this, args);
+    }
+    // A test asked for a reset: the next `TestCooperativeLevel` of the game says that the
+    // device was lost and can be reset. `BeginPaint` then calls `Recreate`.
+    if slot == SLOT_TEST_COOPERATIVE_LEVEL && !DRY.load(Ordering::Relaxed) && FORCE_RESET.swap(false, Ordering::Relaxed) {
+        crate::log!("TestCooperativeLevel: D3DERR_DEVICENOTRESET on purpose");
+        return crate::d3d::D3DERR_DEVICENOTRESET;
     }
     // A call that the host of the render link takes does not go to the device.
     if !DRY.load(Ordering::Relaxed) {

@@ -156,6 +156,13 @@ unsafe extern "C" fn fault(l: LuaState) -> i32 {
     0
 }
 
+/// `nirender.forceReset()` makes the next `TestCooperativeLevel` of the game say that the
+/// device can be reset. The game then makes its renderer again: `NiDX8Renderer::Recreate`.
+unsafe extern "C" fn force_reset(_l: LuaState) -> i32 {
+    crate::device::FORCE_RESET.store(true, Ordering::Relaxed);
+    0
+}
+
 /// `nirender.renderer()` returns the address of the renderer of the game, or 0 before it
 /// exists.
 unsafe extern "C" fn renderer(l: LuaState) -> i32 {
@@ -285,6 +292,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "fpuControlWord", fpu_control_word);
     set_fn(l, "recordBuffers", record_buffers);
     set_fn(l, "fault", fault);
+    set_fn(l, "forceReset", force_reset);
     set_fn(l, "renderer", renderer);
     set_fn(l, "liveCalls", live_calls);
     set_fn(l, "timing", timing);
