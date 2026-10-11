@@ -1904,6 +1904,10 @@ struct Player {
     replaced: u32,
     /// The post-processing of this frame is in the items.
     posted: bool,
+    /// The view and the projection of the last world draw of the frame: the matrices of
+    /// the world for a call after the world views, when the stream has those of the user
+    /// interface.
+    world_matrices: Option<([f32; 16], [f32; 16])>,
     scene_kind: u32,
     world_sun: Option<([f32; 3], [f32; 3], [f32; 3])>,
     world_ambient: [f32; 3],
@@ -1919,6 +1923,10 @@ struct Player {
     /// The picture and the depth of the frame before a call of `Extension::draw_class`.
     picture_copy: Option<wgpu::Texture>,
     depth_copy: Option<wgpu::Texture>,
+    /// The depth of the game at the end of its world scene, for `Extension::post`: the game
+    /// clears its depth before its later scenes.
+    world_depth: Option<wgpu::Texture>,
+    world_depth_kept: bool,
     /// The size of the back buffer of the game, from the first record. 0 when not known.
     size: (u32, u32),
     /// The size of the picture of the frame.
@@ -1958,6 +1966,7 @@ impl Player {
             world_ended: false,
             replaced: 0,
             posted: false,
+            world_matrices: None,
             scene_kind: 0,
             world_sun: None,
             world_ambient: [0.0; 3],
@@ -1970,6 +1979,8 @@ impl Player {
             before_kept: false,
             picture_copy: None,
             depth_copy: None,
+            world_depth: None,
+            world_depth_kept: false,
             size: (0, 0),
             frame_size: (0, 0),
         }
@@ -2034,6 +2045,8 @@ impl Player {
         self.world_ended = false;
         self.replaced = 0;
         self.posted = false;
+        self.world_matrices = None;
+        self.world_depth_kept = false;
         self.target = None;
         self.pass_target = None;
         self.before_kept = false;
@@ -2417,7 +2430,11 @@ impl Player {
             return;
         }
         self.posted = true;
-        let facts = self.world_facts(false);
+        let mut facts = self.world_facts(false);
+        if let Some((view, projection)) = self.world_matrices {
+            facts.view = view;
+            facts.projection = projection;
+        }
         self.items.push(Item::Post(Box::new(facts)));
     }
 
@@ -2481,6 +2498,13 @@ impl Player {
             extension.after_world(&scene, pass, &mut replayer);
             self.world_draws = world;
         }
+        // The depth of the world, for the post-processing: the game clears its depth before
+        // its later scenes.
+        if self.parameters.as_ref().is_some_and(|p| p.post) {
+            self.copy_depth(true);
+            self.world_depth_kept = true;
+            self.open_pass(None, None, None);
+        }
         // The blend: a pass on the picture only, so that a shader can read the depth.
         if let (true, Some(before), Some(color), Some(depth), Some(encoder)) = (self.before_kept, self.before.as_ref(), self.color.clone(), self.depth.clone(), self.encoder.as_mut()) {
             drop(self.pass.take());
@@ -2541,26 +2565,37 @@ impl Player {
                 picture = self.picture_copy.as_ref().map(|copy| copy.create_view(&Default::default()));
             }
         }
-        let mut depth = None;
-        if let (Some(source), Some(encoder)) = (self.depth.as_ref().map(|depth| depth.texture().clone()), self.encoder.as_mut()) {
-            if source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
-                let size = source.size();
-                if self.depth_copy.as_ref().is_none_or(|copy| copy.size() != size) {
-                    self.depth_copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
-                }
-                drop(self.pass.take());
-                encoder.copy_texture_to_texture(source.as_image_copy(), self.depth_copy.as_ref().unwrap().as_image_copy(), size);
-                depth = self.depth_copy.as_ref().map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
-            }
-        }
+        let depth = self.copy_depth(false);
         self.open_pass(None, None, None);
         (picture, depth)
+    }
+
+    /// Copies the depth of the game, outside of the pass: into the copy of the world (for
+    /// `Extension::post`) or into the copy of the moment. The caller opens the pass again.
+    fn copy_depth(&mut self, world: bool) -> Option<wgpu::TextureView> {
+        let (Some(source), Some(encoder)) = (self.depth.as_ref().map(|depth| depth.texture().clone()), self.encoder.as_mut()) else { return None };
+        if !source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+            return None;
+        }
+        let size = source.size();
+        let copy = if world { &mut self.world_depth } else { &mut self.depth_copy };
+        if copy.as_ref().is_none_or(|copy| copy.size() != size) {
+            *copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
+        }
+        drop(self.pass.take());
+        encoder.copy_texture_to_texture(source.as_image_copy(), copy.as_ref().unwrap().as_image_copy(), size);
+        copy.as_ref().map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }))
     }
 
     /// Gives the extension its post-processing call. See `Extension::post`.
     fn post_process(&mut self, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
-        let (picture, depth) = self.copy_picture_and_depth();
+        let (picture, depth_now) = self.copy_picture_and_depth();
+        // The depth of the end of the world scene, when it was kept; else that of now.
+        let depth = match (self.world_depth_kept, self.world_depth.as_ref()) {
+            (true, Some(copy)) => Some(copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() })),
+            _ => depth_now,
+        };
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let mut scene = facts.view(&device, &queue, format);
         scene.picture = picture.as_ref();
@@ -2711,6 +2746,9 @@ impl Player {
         // for a texture that the game draws into), the sky for a sky draw in the back buffer
         // (MGE_LINK_CLASS_SKY_DOME is 1 and MGE_LINK_CLASS_SKY_OTHER is 7).
         let world = self.world_begun && in_back_buffer;
+        if world && self.stream.projection[11] == 1.0 {
+            self.world_matrices = Some((self.stream.view, self.stream.projection));
+        }
         self.stream.fog_range = fog_range.filter(|_| world);
         self.stream.sky = sky.filter(|_| in_back_buffer && (1..=7).contains(&self.stream.object_class));
         let mut draw_data = self.stream.draw_data(&mut renderer.counts, &mut self.frame_lights);
