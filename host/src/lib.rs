@@ -50,6 +50,17 @@ pub struct SceneView<'a> {
     pub ambient: [f32; 3],
 }
 
+/// The light for each pixel of MGE XE, for the draws of the world of a frame.
+#[derive(Clone, Copy)]
+pub struct PerPixel {
+    /// The numbers that the light of the sun and the ambient light are multiplied with: the
+    /// settings of MGE XE for the weather.
+    pub sun: f32,
+    pub ambient: f32,
+    /// A point light ends at this number times its radius. 0: a light has no end.
+    pub fade: f32,
+}
+
 /// A program that draws more than the game does: for example the distant land of MGE XE.
 pub trait Extension {
     /// The renderer calls this one time in a frame, before the first draw of the world of
@@ -70,6 +81,13 @@ pub trait Extension {
     /// Data that the part of this program in the game process put into the stream, with the
     /// number that the two parts agree on. See `nirender_stream_extension` of the plugin.
     fn data(&mut self, _id: u32, _bytes: &[u8]) {}
+
+    /// `Some` when the draws of the world of this frame get their light for each pixel, as
+    /// the shader of MGE XE makes it, and not for each vertex as the game does. The renderer
+    /// asks after `before_world`.
+    fn per_pixel(&self) -> Option<PerPixel> {
+        None
+    }
 
     /// The distances of the start and of the end of the fog for the draws of the world of
     /// the game in this frame, or `None` for the fog of the game. The renderer asks after
@@ -1254,11 +1272,102 @@ struct Stream {
     interior: bool,
     /// The fog distances of the extension for the draws of the world, or `None`.
     fog_range: Option<(f32, f32)>,
+    /// The light for each pixel for the draw in progress, or `None`.
+    per_pixel: Option<PerPixel>,
     state: Vec<u8>,
 }
 
 impl Stream {
     /// The data of the shader for the draw of the current state packet.
+    /// Packs the lights of the draw for the light of a pixel, as `buildPplDrawData` and
+    /// `decodeMorrowindPointLight` of MGE XE do (`ffeshader.cpp`).
+    ///
+    /// MGE XE takes at most 8 lights with the sun, the newest first. The lights of the state
+    /// packet are in that order, so these are the last 8 of the packet in their order. The
+    /// game gives a point light in one of four forms of its three falloff numbers, and each
+    /// form has its own sum; one constant is for all lights of the draw, from the last light
+    /// that has one.
+    fn pixel_lights(&self, data: &mut DrawData, per_pixel: PerPixel, relative: Option<[f64; 3]>) {
+        let s = &self.state;
+        let lights = word(s, state::LIGHT_COUNT) as usize;
+        let taken = lights.min(8);
+        let mut shared_constant = 0.33f32;
+        // The z axis of the camera in the space of the lights: MGE XE moves one form of
+        // light 25 units along it.
+        let camera_z = [self.view[2], self.view[6], self.view[10]];
+        // A scene with white ambient light (the sky dome, a menu) has a fixed ambient light
+        // and no sun.
+        let white = word(s, state::AMBIENT) == 0xFFFF_FFFF;
+        for slot in 0..taken {
+            let at = state::SIZE + (lights - taken + slot) * state::LIGHT_SIZE + 4;
+            if at + 104 > s.len() {
+                break;
+            }
+            let diffuse: [f32; 4] = floats(s, at + 4);
+            let ambient: [f32; 4] = floats(s, at + 9 * 4);
+            let mut light = LightData::zeroed();
+            if word(s, at) == 3 {
+                let direction: [f32; 3] = floats(s, at + 16 * 4);
+                let length = (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]).sqrt().max(1e-12);
+                let (sun, amb) = if white { (0.0, 0.0) } else { (per_pixel.sun, per_pixel.ambient) };
+                light.diffuse = [diffuse[0] * sun, diffuse[1] * sun, diffuse[2] * sun, 0.0];
+                light.ambient = [ambient[0] * amb, ambient[1] * amb, ambient[2] * amb, 0.0];
+                light.position = [0.0, 0.0, 0.0, 3.0];
+                light.direction = [direction[0] / length, direction[1] / length, direction[2] / length, 0.0];
+            } else {
+                let mut position: [f32; 3] = floats(s, at + 13 * 4);
+                if let Some(origin) = relative {
+                    for axis in 0..3 {
+                        position[axis] = (position[axis] as f64 - origin[axis]) as f32;
+                    }
+                }
+                let falloff: [f32; 3] = floats(s, at + 21 * 4);
+                let mut color = [diffuse[0], diffuse[1], diffuse[2]];
+                let (mut wrap, mut quadratic, mut bias) = (0.0f32, 0.0f32, 0.0f32);
+                if falloff[0] > 0.0 {
+                    shared_constant = falloff[0];
+                    quadratic = falloff[2];
+                } else if falloff[2] > 0.0 {
+                    color = color.map(|c| c * shared_constant);
+                    wrap = 1.0 + 1e-4 / falloff[2].sqrt();
+                    quadratic = shared_constant * falloff[2];
+                } else if falloff[1] == 0.100_000_01 {
+                    quadratic = 5e-5;
+                } else if falloff[1] > 0.0 {
+                    color = [0.25 + 1e-4 / falloff[1]; 3];
+                    wrap = 1.0;
+                    quadratic = 0.5555 * falloff[1] * falloff[1];
+                    bias = 25.0;
+                }
+                // The plugin puts the radius of a light of the game into the first number of
+                // the specular colour of the light.
+                let radius = float(s, at + 5 * 4);
+                let cutoff = if per_pixel.fade > 0.0 && radius > 0.0 { (per_pixel.fade * radius.max(16.0)).min(8192.0) } else { 0.0 };
+                light.diffuse = [color[0], color[1], color[2], 0.0];
+                light.ambient = [wrap, 0.0, 0.0, 0.0];
+                light.position = [position[0] + bias * camera_z[0], position[1] + bias * camera_z[1], position[2] + bias * camera_z[2], 1.0];
+                light.attenuation = [0.0, 0.0, quadratic, 0.0];
+                light.cone = [if cutoff > 0.0 { 1.0 / cutoff } else { 0.0 }, 0.0, 0.0, 0.0];
+            }
+            data.lights[slot] = light;
+            data.counts[0] = slot as u32 + 1;
+        }
+        for light in &mut data.lights[..data.counts[0] as usize] {
+            light.attenuation[0] = shared_constant;
+        }
+        data.scene_ambient = if white {
+            [1.25, 1.25, 1.25, 1.0]
+        } else {
+            [data.scene_ambient[0] * per_pixel.ambient, data.scene_ambient[1] * per_pixel.ambient, data.scene_ambient[2] * per_pixel.ambient, data.scene_ambient[3]]
+        };
+        // A draw that adds to the picture gets darker in the fog and no fog colour:
+        // D3DBLEND_ONE is 2.
+        let adds = known(word(s, state::BLEND_ENABLE), 0) != 0 && (known(word(s, state::SOURCE_BLEND), 2) == 2 || known(word(s, state::DESTINATION_BLEND), 1) == 2);
+        data.counts[3] = 1 | if adds { 2 } else { 0 };
+        // The fog of this shader is on the distance from the camera.
+        data.fog[3] = 1.0;
+    }
+
     fn draw_data(&self, counts: &mut Counts) -> DrawData {
         let s = &self.state;
         let mut data = DrawData::zeroed();
@@ -1319,7 +1428,12 @@ impl Stream {
         if lights > 8 {
             counts.more_lights += 1;
         }
-        for i in 0..lights.min(8) {
+        // The light for each pixel is for a draw of the world: a perspective projection.
+        let per_pixel = self.per_pixel.filter(|_| self.projection[11] == 1.0);
+        if let Some(per_pixel) = per_pixel {
+            self.pixel_lights(&mut data, per_pixel, relative);
+        }
+        for i in 0..if per_pixel.is_some() { 0 } else { lights.min(8) } {
             let at = state::SIZE + i * state::LIGHT_SIZE + 4;
             if at + 104 > s.len() {
                 break;
@@ -1410,6 +1524,8 @@ struct Player {
     /// colour and the ambient colour of the sun, and the ambient light of the scene.
     world_sun: Option<([f32; 3], [f32; 3], [f32; 3])>,
     world_ambient: [f32; 3],
+    /// The light for each pixel of the frame, from the extension.
+    frame_per_pixel: Option<PerPixel>,
     /// The texture that the game draws into now. `None` for the back buffer.
     target: Option<u32>,
     /// The game named a rendered texture as its target.
@@ -1434,6 +1550,7 @@ impl Player {
                 origin: None,
                 interior: false,
                 fog_range: None,
+                per_pixel: None,
                 state: Vec::new(),
             },
             encoder: None,
@@ -1449,6 +1566,7 @@ impl Player {
             scene_kind: 0,
             world_sun: None,
             world_ambient: [0.0; 3],
+            frame_per_pixel: None,
             target: None,
             wants_texture: false,
             size: (0, 0),
@@ -1511,6 +1629,7 @@ impl Player {
         self.target = None;
         self.world_started = false;
         self.world_ended = false;
+        self.frame_per_pixel = None;
         self.stream.fog_range = None;
         self.stream.back_buffer = true;
         self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
@@ -1866,6 +1985,7 @@ impl Player {
             None => false,
         };
         self.stream.fog_range = extension.fog_range();
+        self.frame_per_pixel = extension.per_pixel();
         self.extension = Some(extension);
         if clear_depth {
             // The draws of the game start with a depth target of their own.
@@ -1947,6 +2067,9 @@ impl Player {
             return;
         }
         let clock = std::time::Instant::now();
+        // The light for each pixel is for the world in the back buffer: not for the sky,
+        // which is before the world, and not for a texture that the game draws into.
+        self.stream.per_pixel = self.frame_per_pixel.filter(|_| self.world_started && self.target.is_none());
         let draw_data = self.stream.draw_data(&mut renderer.counts);
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
         let clock = std::time::Instant::now();

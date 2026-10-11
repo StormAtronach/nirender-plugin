@@ -37,10 +37,23 @@ def main():
     ap.add_argument("--config-mod", default="Configuration", help="the mod of the testing instance with mgeXE.toml")
     ap.add_argument("--reference", action="store_true", help="run the same scenario with MGE XE on Direct3D 9, for its frame rate: the "
                     "d3d8.dll of MGE XE that tools/own_device.py kept, or the one that is in place")
+    ap.add_argument("--instance", help="the folder of another Mod Organizer instance to run in, and not the testing instance")
+    ap.add_argument("--game-dir", help="with --instance: the game folder of that instance")
+    ap.add_argument("--profile", default="Default", help="with --instance: its profile")
     ap.add_argument("--budget", type=int, default=200)
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
 
+    if args.instance:
+        # The harness has the places of the testing instance. They become those of this one.
+        harness = session.harness
+        harness.MO2_ROOT = args.instance
+        harness.MO2_EXE = os.path.join(args.instance, "ModOrganizer.exe")
+        harness.PROFILE = os.path.join(args.instance, "profiles", args.profile)
+        harness.GAME_DIR = args.game_dir or harness.GAME_DIR
+        harness.MWSE_LOGS = (os.path.join(args.instance, "overwrite", "Root", "MWSE.log"), os.path.join(harness.GAME_DIR, "MWSE.log"))
+        harness.WARNINGS = (os.path.join(args.instance, "overwrite", "Root", "Warnings.txt"), os.path.join(harness.GAME_DIR, "Warnings.txt"))
+        session.MGE_LOGS = (os.path.join(harness.GAME_DIR, "mgeXE.log"), os.path.join(args.instance, "overwrite", "Root", "mgeXE.log"))
     if not args.no_build:
         cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
         for folder in (HOST_DIR, D3D8_DIR):

@@ -52,7 +52,9 @@ struct Draw {
     flags: vec4u,
     // diffuse source, emissive source, alpha test function (0 is off), alpha reference.
     more: vec4u,
-    // The number of lights, the number of stages, the ambient source.
+    // The number of lights, the number of stages, the ambient source. w: bit 1, the light is
+    // made for each pixel as MGE XE makes it (see `pixel_light`); bit 2, the fog makes the
+    // colour darker and adds no fog colour (a draw that adds to the picture).
     counts: vec4u,
     lights: array<Light, 8>,
     stages: array<Stage, 6>,
@@ -101,6 +103,11 @@ struct VertexOut {
     @location(5) coordinate4: vec4f,
     @location(6) coordinate5: vec4f,
     @location(7) fog: f32,
+    // For the light of a pixel: the position and the normal in the space of the lights, and
+    // the colour of the vertex.
+    @location(8) world_position: vec3f,
+    @location(9) world_normal: vec3f,
+    @location(10) vertex_color: vec4f,
 }
 
 // The texture coordinate of a stage, as the fixed-function pipeline makes it.
@@ -168,7 +175,10 @@ fn vs(in: VertexIn) -> VertexOut {
     if draw.flags.z != 0u {
         vertex_color = in.color.bgra;
     }
-    if draw.flags.x == 0u {
+    out.world_position = world_position.xyz;
+    out.world_normal = world_normal;
+    out.vertex_color = vertex_color;
+    if draw.flags.x == 0u || (draw.counts.w & 1u) != 0u {
         out.color = vertex_color;
     } else {
         var diffuse = draw.material_diffuse;
@@ -319,6 +329,56 @@ fn bump_light(index: u32, bump_texel: vec4f, texel: vec4f) -> vec4f {
     return texel;
 }
 
+// The light of a pixel, as the shader of MGE XE for its light for each pixel makes it
+// (`PerPixelPS` of `XE FixedFuncEmu.fx`). The program packs the lights of the draw for it:
+// a directional light is the sun; for a point light `ambient.x` is a part that does not
+// depend on the normal, `attenuation.z` and `attenuation.x` are the two numbers of the
+// falloff, and `cone.x` is 1 over the distance where the light ends (0: no end).
+fn pixel_light(in: VertexOut) -> vec4f {
+    if draw.flags.x == 0u {
+        return in.vertex_color;
+    }
+    var normal = vec3f(0.0, 0.0, 1.0);
+    if draw.flags.y != 0u {
+        normal = normalize(in.world_normal + vec3f(0.0, 0.0, 1e-20));
+    }
+    var d = vec3f(0.0);
+    var a = draw.scene_ambient.rgb;
+    for (var i = 0u; i < draw.counts.x; i++) {
+        let light = draw.lights[i];
+        if light.position.w == 3.0 {
+            d += light.diffuse.rgb * clamp(dot(normal, -light.direction.xyz), 0.0, 1.0);
+            a += light.ambient.rgb;
+        } else {
+            let to_light = light.position.xyz - in.world_position;
+            let distance2 = dot(to_light, to_light);
+            let distance = sqrt(distance2);
+            let lambert = clamp(dot(normal, to_light) / max(distance, 0.0001), 0.0, 1.0);
+            var strength = 1.0 / max(light.attenuation.z * distance2 + light.attenuation.x, 0.0001);
+            // The light goes to zero over the last quarter of its distance.
+            var fade = clamp(4.0 * distance * light.cone.x - 3.0, 0.0, 1.0);
+            fade = 1.0 - fade * fade;
+            strength *= fade * fade;
+            d += (lambert + light.ambient.x) * strength * light.diffuse.rgb;
+        }
+    }
+    // The three ways of a material with a vertex colour.
+    if draw.more.x == 1u {
+        return vec4f(in.vertex_color.rgb * (d + a) + draw.material_emissive.rgb, in.vertex_color.a);
+    }
+    if draw.more.y == 1u {
+        return vec4f(draw.material_diffuse.rgb * d + draw.material_ambient.rgb * a + in.vertex_color.rgb, draw.material_diffuse.a);
+    }
+    return vec4f(draw.material_diffuse.rgb * d + draw.material_ambient.rgb * a + draw.material_emissive.rgb, draw.material_diffuse.a);
+}
+
+// The curve of MGE XE for a colour with light for each pixel: 0 stays 0, 1 becomes 0.84,
+// and 2.2 becomes 1.
+fn tonemap(color: vec3f) -> vec3f {
+    let c = clamp(color, vec3f(0.0), vec3f(2.2));
+    return (((0.0548303 * c - 0.189786) * c - 0.154732) * c + 1.12969) * c;
+}
+
 @fragment
 fn fs(in: VertexOut) -> @location(0) vec4f {
     // A texture read must not be in a branch, so each stage reads its texture first.
@@ -331,7 +391,11 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     texels[4] = bump_light(3u, texels[3], textureSample(texture4, sampler4, final_coordinate(4u, in.coordinate4) + bump_move(3u, texels[3])));
     texels[5] = bump_light(4u, texels[4], textureSample(texture5, sampler5, final_coordinate(5u, in.coordinate5) + bump_move(4u, texels[4])));
 
-    let diffuse = in.color;
+    let per_pixel = (draw.counts.w & 1u) != 0u;
+    var diffuse = in.color;
+    if per_pixel {
+        diffuse = pixel_light(in);
+    }
     var current = diffuse;
     for (var i = 0u; i < draw.counts.y; i++) {
         let stage = draw.stages[i];
@@ -343,7 +407,12 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
             alpha = operation(stage.alpha.x, argument(stage.alpha.y, diffuse, current, texel),
                 argument(stage.alpha.z, diffuse, current, texel), vec4f(0.0), diffuse, current, texel);
         }
-        current = clamp(vec4f(color.rgb, alpha.a), vec4f(0.0), vec4f(1.0));
+        current = vec4f(color.rgb, alpha.a);
+        // The fixed-function pipeline keeps a colour between 0 and 1. The light for each
+        // pixel has no such limit before its curve.
+        if !per_pixel {
+            current = clamp(current, vec4f(0.0), vec4f(1.0));
+        }
     }
 
     if draw.more.z != 0u && !compare(draw.more.z, floor(current.a * 255.0 + 0.5), f32(draw.more.w)) {
@@ -352,6 +421,13 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     var clear = 1.0;
     if draw.fog.z != 0.0 {
         clear = clamp((draw.fog.y - in.fog) / max(draw.fog.y - draw.fog.x, 0.0001), 0.0, 1.0);
+    }
+    if per_pixel {
+        let lit = tonemap(current.rgb);
+        if (draw.counts.w & 2u) != 0u {
+            return vec4f(lit * clear, current.a);
+        }
+        return vec4f(mix(draw.fog_color.rgb, lit, clear), current.a);
     }
     return vec4f(mix(draw.fog_color.rgb, current.rgb, clear), current.a);
 }
