@@ -40,7 +40,7 @@ pub struct SceneView<'a> {
     pub fog_color: [f32; 4],
     pub fog_start: f32,
     pub fog_end: f32,
-    /// The direction that the light of the sun goes in, and its colour, when the draw of
+    /// The direction that the light of the sun goes in (length 1), and its colour, when the draw of
     /// the game that starts the world has such a light.
     pub sun_direction: Option<[f32; 3]>,
     pub sun_color: [f32; 3],
@@ -1955,8 +1955,10 @@ impl Player {
             if at + 104 <= s.len() && matches!(word(s, at), 3 | 4) {
                 let diffuse: [f32; 3] = floats(s, at + 4);
                 let light_ambient: [f32; 3] = floats(s, at + 9 * 4);
+                // The game does not give a direction of length 1.
                 let direction: [f32; 3] = floats(s, at + 16 * 4);
-                sun = Some((direction, diffuse, light_ambient));
+                let length = direction.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
+                sun = Some((direction.map(|v| v / length), diffuse, light_ambient));
                 break;
             }
         }
