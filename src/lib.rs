@@ -16,6 +16,7 @@ pub mod gen {
 
 pub mod alloc;
 pub mod callers;
+pub mod capture;
 pub mod camera_space;
 pub mod log;
 pub mod census;

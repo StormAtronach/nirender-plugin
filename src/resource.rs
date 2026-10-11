@@ -97,7 +97,7 @@ unsafe fn buffer_size(object: usize) -> u32 {
 unsafe extern "system" fn lock_wrapper(this: usize, offset: u32, size: u32, data: *mut usize, flags: u32) -> u32 {
     let lock: unsafe extern "system" fn(usize, u32, u32, *mut usize, u32) -> u32 = core::mem::transmute(original(this, LOCK));
     let result = lock(this, offset, size, data, flags);
-    if (result as i32) >= 0 && device::recording() {
+    if (result as i32) >= 0 && (device::recording() || crate::capture::active()) {
         // Size 0 locks the whole buffer.
         let size = if size == 0 { buffer_size(this).saturating_sub(offset) } else { size };
         let s = state();
@@ -111,6 +111,9 @@ unsafe extern "system" fn unlock_wrapper(this: usize) -> u32 {
     let s = state();
     if let Some(index) = s.locked.iter().position(|l| l.object == this) {
         let locked = s.locked.swap_remove(index);
+        if crate::capture::recording() && locked.data != 0 {
+            crate::capture::buffer_data(this, locked.offset, core::slice::from_raw_parts(locked.data as *const u8, locked.size as usize));
+        }
         if device::recording() && locked.data != 0 {
             let bytes = core::slice::from_raw_parts(locked.data as *const u8, locked.size as usize);
             let args = [this as u32, locked.offset, locked.size, locked.flags];

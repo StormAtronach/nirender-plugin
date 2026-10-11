@@ -274,6 +274,7 @@ unsafe fn command(command: u32, a: u32, b: u32, c: u32) -> bool {
     match host() {
         Some(host) if host.capabilities & CAP_COMMANDS != 0 => {
             (host.command)(command, a, b, c);
+            crate::capture::command(command, a, b, c);
             true
         }
         _ => false,
@@ -358,7 +359,9 @@ unsafe fn kind_call(kind: u32, call: u32, args: &[u32]) -> Option<u32> {
             crate::perf::on_present();
         }
     }
-    Some((host.call)(call, args.as_ptr()))
+    let result = (host.call)(call, args.as_ptr());
+    crate::capture::call(call, args, result);
+    Some(result)
 }
 
 /// True when the host has this device kind and takes commands.
@@ -815,12 +818,14 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
         camera_origin: origin.unwrap_or_default(),
     };
     (host.scene_begin)(&scene);
+    crate::capture::scene_begin(&scene);
 }
 
 /// Runs after `EndPaint`.
 unsafe fn end_paint() {
     if let Some(host) = host() {
         (host.scene_end)();
+        crate::capture::scene_end();
     }
 }
 
@@ -828,6 +833,7 @@ unsafe fn end_paint() {
 unsafe fn clear_buffer(args: &[usize]) {
     if let Some(host) = host() {
         (host.frame_event)(EVENT_CLEAR, args[2] as u32, 0);
+        crate::capture::frame_event(EVENT_CLEAR, args[2] as u32, 0);
     }
 }
 
@@ -836,6 +842,7 @@ unsafe fn set_render_target(args: &[usize]) {
     (*addr_of_mut!(ROOTS)).render_target = args[1] as u32;
     if let Some(host) = host() {
         (host.frame_event)(EVENT_SET_TARGET, args[1] as u32, 0);
+        crate::capture::frame_event(EVENT_SET_TARGET, args[1] as u32, 0);
     }
 }
 
@@ -844,6 +851,7 @@ unsafe fn swap_buffers(_args: &[usize]) {
     crate::camera_space::frame_end();
     if let Some(host) = host() {
         (host.frame_event)(EVENT_SWAP, 0, 0);
+        crate::capture::frame_event(EVENT_SWAP, 0, 0);
     }
 }
 
@@ -1007,6 +1015,7 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
         *count += 1;
     }
     (host.draw)(&draw);
+    crate::capture::object(&draw);
 }
 
 /// Sends the state of the D3D8 draw call that follows. The draw ports call it. `renderer` is
@@ -1114,6 +1123,7 @@ pub unsafe fn draw_state(
         core::ptr::copy_nonoverlapping((renderer + R::currentWorldMatrix) as *const f32, state.world.as_mut_ptr(), 16);
     }
     (host.draw_state)(&state);
+    crate::capture::draw_state(&state);
 }
 
 /// `RenderShape(this, geometryData, skinInstance, transform, bound)`
@@ -1262,7 +1272,11 @@ pub fn link_textures() -> bool {
 /// Asks the host for a texture with these pixels. Returns the handle, or 0.
 pub unsafe fn texture_create(texture: &TextureV1) -> usize {
     match host() {
-        Some(host) => (host.texture_create)(texture) as usize,
+        Some(host) => {
+            let handle = (host.texture_create)(texture) as usize;
+            crate::capture::texture(texture, handle);
+            handle
+        }
         None => 0,
     }
 }

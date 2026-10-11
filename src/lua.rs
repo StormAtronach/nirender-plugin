@@ -61,6 +61,30 @@ unsafe extern "C" fn install(l: LuaState) -> i32 {
     2
 }
 
+/// `nirender.capture(path, warmupFrames, frames)` starts a capture of the render link stream
+/// into a file. See `capture`. Returns true, or false and the problem.
+unsafe extern "C" fn capture(l: LuaState) -> i32 {
+    let path = arg_str(l, 1).unwrap_or_default();
+    match crate::capture::start(&path, lua_tonumber(l, 2) as u32, lua_tonumber(l, 3) as u32) {
+        Ok(()) => {
+            lua_pushboolean(l, 1);
+            1
+        }
+        Err(error) => {
+            lua_pushboolean(l, 0);
+            push_str(l, &error);
+            2
+        }
+    }
+}
+
+/// `nirender.captureStatus()` returns the phase of the capture ("off", "warmup", "record",
+/// "done"), its records and its bytes, as one text.
+unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
+    push_str(l, &crate::capture::status());
+    1
+}
+
 /// `nirender.recheck()` returns the number of changed functions. It does the census again,
 /// for mods that change the game code after this plugin loaded. It locks the ports of such
 /// functions.
@@ -292,6 +316,8 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "fpuControlWord", fpu_control_word);
     set_fn(l, "recordBuffers", record_buffers);
     set_fn(l, "fault", fault);
+    set_fn(l, "capture", capture);
+    set_fn(l, "captureStatus", capture_status);
     set_fn(l, "forceReset", force_reset);
     set_fn(l, "renderer", renderer);
     set_fn(l, "liveCalls", live_calls);
