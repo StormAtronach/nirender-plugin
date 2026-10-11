@@ -237,6 +237,7 @@ impl Reply {
 /// with `texture` 0. Gives the width, the height and the pixels: 4 bytes each, blue first.
 /// `None` without a stream, or when the host has no answer in time.
 pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
+    let _lock = lock();
     if !recording() {
         return None;
     }
@@ -264,6 +265,38 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
         return None;
     }
     Some((width, height, core::slice::from_raw_parts(reply.base.add(REPLY_HEAD), size)))
+}
+
+/// The lock of this module. The game makes its textures on a second thread while it loads a
+/// cell, and it asks Direct3D for a device that takes calls from more than one thread. Each
+/// function that writes a record or changes the state of the capture holds the lock. A
+/// thread can take the lock again when it has it.
+struct Lock;
+
+#[repr(C)]
+struct CriticalSection([usize; 6]);
+
+extern "system" {
+    fn InitializeCriticalSection(section: *mut CriticalSection);
+    fn EnterCriticalSection(section: *mut CriticalSection);
+    fn LeaveCriticalSection(section: *mut CriticalSection);
+}
+
+static mut SECTION: CriticalSection = CriticalSection([0; 6]);
+static SECTION_MADE: std::sync::Once = std::sync::Once::new();
+
+fn lock() -> Lock {
+    unsafe {
+        SECTION_MADE.call_once(|| InitializeCriticalSection(core::ptr::addr_of_mut!(SECTION)));
+        EnterCriticalSection(core::ptr::addr_of_mut!(SECTION));
+    }
+    Lock
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        unsafe { LeaveCriticalSection(core::ptr::addr_of_mut!(SECTION)) };
+    }
 }
 
 enum Sink {
@@ -332,6 +365,7 @@ pub fn recording() -> bool {
 
 /// Starts a capture into `path`: `warmup` frames, then `frames` frames of record.
 pub unsafe fn start(path: &str, warmup: u32, frames: u32) -> Result<(), String> {
+    let _lock = lock();
     if active() {
         return Err("a capture is in progress".into());
     }
@@ -349,6 +383,7 @@ pub unsafe fn start(path: &str, warmup: u32, frames: u32) -> Result<(), String> 
 /// With `own_host`, the plugin becomes the host of the render link at the end of the warm-up:
 /// from then on no call of the game gets to a D3D device, and the stream is the only picture.
 pub unsafe fn start_stream(name: &str, megabytes: u32, warmup: u32, own_host: bool) -> Result<(), String> {
+    let _lock = lock();
     if active() {
         return Err("a capture is in progress".into());
     }
@@ -368,6 +403,7 @@ pub unsafe fn start_stream(name: &str, megabytes: u32, warmup: u32, own_host: bo
 /// plugin, and the stream starts when the game makes it. No warm-up: each resource that the
 /// game makes after this is in the stream.
 pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, window: u32) -> Result<(), String> {
+    let _lock = lock();
     if active() {
         return Err("a capture is in progress".into());
     }
@@ -410,6 +446,7 @@ unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
 
 /// Ends the capture or the stream.
 pub unsafe fn stop() {
+    let _lock = lock();
     let Some(s) = state() else { return };
     if s.phase == Phase::Off {
         return;
@@ -457,6 +494,7 @@ pub unsafe fn shot(path: &str) {
 
 /// One line about the capture, for the scenario: the phase, the records and the bytes.
 pub unsafe fn status() -> String {
+    let _lock = lock();
     match state() {
         None => "off 0 0".into(),
         Some(s) => {
@@ -478,6 +516,7 @@ pub unsafe fn status() -> String {
 }
 
 unsafe fn write(tag: u32, parts: &[&[u8]]) {
+    let _lock = lock();
     if !recording() {
         return;
     }
@@ -537,6 +576,7 @@ pub unsafe fn frame_event(kind: u32, a: u32, b: u32) {
 
 /// The object packet of the draws that follow.
 pub unsafe fn object(draw: &DrawV1) {
+    let _lock = lock();
     if !active() {
         return;
     }
@@ -559,6 +599,7 @@ pub unsafe fn object(draw: &DrawV1) {
 }
 
 pub unsafe fn draw_state(packet: &DrawStateV1) {
+    let _lock = lock();
     if !active() {
         return;
     }
@@ -599,6 +640,7 @@ pub unsafe fn command(command: u32, a: u32, b: u32, c: u32) {
 
 /// A call of the link, after the host did it.
 pub unsafe fn call(index: u32, args: &[u32], result: u32) {
+    let _lock = lock();
     if !active() {
         return;
     }
@@ -692,6 +734,7 @@ pub unsafe fn texture_update(handle: usize, level: u32, width: u32, height: u32,
 
 /// The bytes that the game wrote into a vertex or index buffer, at its unlock.
 pub unsafe fn buffer_data(handle: usize, offset: u32, bytes: &[u8]) {
+    let _lock = lock();
     if let Some(s) = state() {
         s.known_buffers.insert(handle as u32);
     }
