@@ -88,10 +88,11 @@ def inventory(path):
         if tag == 10:
             frames += 1
         elif tag == 6:
-            kind, cls = words(body, 0, 2)
+            kind, cls, flags = words(body, 0, 3)
             objects[kind] += 1
             classes[cls] += 1
-            current_object = body[16:].decode("latin-1", errors="replace")
+            # With the flag 0x100 a fifth word, the geometry handle, is before the name.
+            current_object = body[20 if flags & 0x100 else 16:].decode("latin-1", errors="replace")
         elif tag == 1:
             textures += 1
             texture_bytes += length

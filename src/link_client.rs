@@ -1160,7 +1160,8 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
         *count += 1;
     }
     (host.draw)(&draw);
-    crate::capture::object(&draw);
+    let geometry_handle = crate::geometry_stream::note(kind, geometry_data, skin);
+    crate::capture::object(&draw, geometry_handle);
 }
 
 /// Sends the state of the D3D8 draw call that follows. The draw ports call it. `renderer` is

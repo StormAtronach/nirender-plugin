@@ -25,6 +25,7 @@ pub mod device;
 pub mod dump;
 pub mod engine;
 pub mod frame;
+pub mod geometry_stream;
 pub mod hook;
 pub mod install;
 pub mod link;

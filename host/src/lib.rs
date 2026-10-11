@@ -431,6 +431,24 @@ mod tag {
     pub const DRAW_UP: u32 = 15;
     pub const EXTENSION: u32 = 16;
     pub const MARK: u32 = 17;
+    pub const GEOMETRY: u32 = 18;
+}
+
+/// The flag in an object record that says a fifth word with the geometry handle follows.
+const OBJECT_HAS_GEOMETRY: u32 = 0x100;
+
+/// The geometry of a shape from a `GEOMETRY` record: resident buffers, keyed by the
+/// geometry data of the game. See `geometry_stream` of the plugin.
+struct Geometry {
+    fvf: u32,
+    stride: u32,
+    entries: u32,
+    vertex: Rc<wgpu::Buffer>,
+    index: Rc<wgpu::Buffer>,
+    /// The bytes, for the comparison with the buffers of the device, once.
+    vertex_bytes: Vec<u8>,
+    index_bytes: Vec<u8>,
+    checked: std::cell::Cell<bool>,
 }
 
 const COMMAND_RENDER_STATE: u32 = 1;
@@ -979,6 +997,15 @@ struct Counts {
     times: [std::time::Duration; TIME_COUNT],
     /// The frames that are complete.
     frames: u32,
+    /// The geometry records, their bytes, the draws from them, the draws that named a
+    /// geometry but took the buffers of the device, the records that did not parse, and the
+    /// geometries whose bytes differ from the buffers of the device.
+    geometry_records: u32,
+    geometry_bytes: u64,
+    geometry_draws: u32,
+    geometry_fallbacks: u32,
+    geometry_bad: u32,
+    geometry_mismatches: u32,
     screen_draws: u32,
     screen_draws_lost: u32,
     target_copies: u32,
@@ -1078,6 +1105,8 @@ struct Renderer {
     /// values are few.
     sampler_groups: HashMap<[[u32; 5]; STAGES], Rc<wgpu::BindGroup>>,
     buffers: HashMap<u32, BufferData>,
+    /// The geometry records, by the geometry data of the game.
+    geometries: HashMap<u32, Geometry>,
     defaults: wgpu::Buffer,
     /// The indexes of a triangle fan as a triangle list.
     fan_indexes: wgpu::Buffer,
@@ -1269,6 +1298,7 @@ impl Renderer {
             texture_groups: HashMap::new(),
             sampler_groups: HashMap::new(),
             buffers: HashMap::new(),
+            geometries: HashMap::new(),
             defaults,
             fan_indexes,
             screen_pipelines: [None, None],
@@ -1603,6 +1633,26 @@ impl Renderer {
         buffer.gpu = None;
     }
 
+    /// A geometry record: resident buffers for the draws that name it.
+    fn geometry(&mut self, data: &[u8]) {
+        let (handle, fvf, stride, vertices, entries, strips) = (word(data, 0), word(data, 12), word(data, 16), word(data, 20), word(data, 24), word(data, 28));
+        let lengths = ((strips as usize * 2) + 3) & !3;
+        let (vertex_at, index_at) = (32 + lengths, 32 + lengths + vertices as usize * stride as usize);
+        let index_end = index_at + entries as usize * 2;
+        if data.len() < index_end || stride == 0 {
+            self.counts.geometry_bad += 1;
+            return;
+        }
+        let vertex_bytes = data[vertex_at..index_at].to_vec();
+        let index_bytes = data[index_at..index_end].to_vec();
+        let make = |bytes: &[u8], usage: wgpu::BufferUsages| Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytes, usage }));
+        let vertex = make(&vertex_bytes, wgpu::BufferUsages::VERTEX);
+        let index = make(&index_bytes, wgpu::BufferUsages::INDEX);
+        self.counts.geometry_records += 1;
+        self.counts.geometry_bytes += data.len() as u64;
+        self.geometries.insert(handle, Geometry { fvf, stride, entries, vertex, index, vertex_bytes, index_bytes, checked: std::cell::Cell::new(false) });
+    }
+
     /// The buffer on the GPU with the bytes that the game wrote last.
     fn gpu_buffer(&mut self, handle: u32, index: bool) -> Option<Rc<wgpu::Buffer>> {
         let buffer = self.buffers.get_mut(&handle)?;
@@ -1750,6 +1800,8 @@ struct Stream {
     /// The sky values of the extension for the draw in progress, or `None`.
     sky: Option<[[f32; 4]; 8]>,
     state: Vec<u8>,
+    /// The geometry handle of the object of the draws that follow, or 0.
+    geometry: u32,
 }
 
 impl Stream {
@@ -1952,6 +2004,9 @@ struct Player {
     /// clears its depth before its later scenes.
     world_depth: Option<wgpu::Texture>,
     world_depth_kept: bool,
+    /// The draws take the buffers of the geometry records. `MGE_XE_GEOMETRY=0` in the
+    /// environment turns it off, for a comparison of the two paths on one capture.
+    use_geometry: bool,
     /// The counts at the last mark. See `tag::MARK`.
     mark_times: [std::time::Duration; TIME_COUNT],
     mark_frames: u32,
@@ -1978,6 +2033,7 @@ impl Player {
                 object_class: 0,
                 sky: None,
                 state: Vec::new(),
+                geometry: 0,
             },
             encoder: None,
             pass: None,
@@ -2010,6 +2066,7 @@ impl Player {
             depth_copy: None,
             world_depth: None,
             world_depth_kept: false,
+            use_geometry: std::env::var("MGE_XE_GEOMETRY").map_or(true, |v| v != "0"),
             mark_times: [std::time::Duration::ZERO; TIME_COUNT],
             mark_frames: 0,
             mark_draws: 0,
@@ -2208,6 +2265,7 @@ impl Player {
                 }
             }
             tag::BUFFER_DATA => self.renderer.buffer_data(data),
+            tag::GEOMETRY if data.len() >= 32 => self.renderer.geometry(data),
             tag::SCENE_BEGIN => {
                 self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
                 self.stream.interior = word(data, 20) & 2 != 0;
@@ -2232,8 +2290,12 @@ impl Player {
                 }
             }
             tag::DRAW_STATE => self.stream.state = data.to_vec(),
-            // The kind, the class, the flags and the geometry of the object.
-            tag::OBJECT if data.len() >= 8 => self.stream.object_class = word(data, 4),
+            // The kind, the class, the flags and the geometry of the object; a geometry
+            // handle when the flags say so.
+            tag::OBJECT if data.len() >= 8 => {
+                self.stream.object_class = word(data, 4);
+                self.stream.geometry = if word(data, 8) & OBJECT_HAS_GEOMETRY != 0 && data.len() >= 20 { word(data, 16) } else { 0 };
+            }
             tag::FRAME_END => {
                 self.renderer.counts.frames += 1;
                 return true;
@@ -2803,15 +2865,45 @@ impl Player {
         // D3DRS_COLORWRITEENABLE is 168.
         let key = PipelineKey { color_write: self.stream.render_states.get(&168).copied().unwrap_or(15) & 15, ..key };
         let (vertex_handle, index_handle) = (word(s, state::VERTEX_BUFFER), word(s, state::INDEX_BUFFER));
-        let Some(vertex_buffer) = renderer.gpu_buffer(vertex_handle, false) else {
-            renderer.counts.no_buffer += 1;
-            return;
-        };
-        let index_buffer = if indexed { renderer.gpu_buffer(index_handle, true) } else { None };
-        if indexed && index_buffer.is_none() {
-            renderer.counts.no_buffer += 1;
-            return;
+        // The buffers of the geometry record of the object, when it has one that fits the
+        // draw; else the buffers of the device. The two are compared once for each record.
+        let mut from_geometry = None;
+        let (mut mismatch, mut fallback) = (false, false);
+        if self.stream.geometry != 0 && indexed && self.use_geometry {
+            match renderer.geometries.get(&self.stream.geometry) {
+                Some(g) if g.fvf == key.fvf && g.stride == key.stride && first_index + indexes <= g.entries && word(s, state::BASE_VERTEX) == 0 => {
+                    if !g.checked.get() {
+                        g.checked.set(true);
+                        let same = |handle: u32, bytes: &[u8]| renderer.buffers.get(&handle).is_some_and(|b| b.bytes.len() >= bytes.len() && b.bytes[..bytes.len()] == *bytes);
+                        mismatch = !(same(vertex_handle, &g.vertex_bytes) && same(index_handle, &g.index_bytes));
+                    }
+                    from_geometry = Some((g.vertex.clone(), Some(g.index.clone())));
+                }
+                _ => fallback = true,
+            }
+        } else if self.stream.geometry != 0 {
+            fallback = true;
         }
+        renderer.counts.geometry_mismatches += mismatch as u32;
+        renderer.counts.geometry_fallbacks += fallback as u32;
+        let (vertex_buffer, index_buffer) = match from_geometry {
+            Some(pair) => {
+                renderer.counts.geometry_draws += 1;
+                pair
+            }
+            None => {
+                let Some(vertex_buffer) = renderer.gpu_buffer(vertex_handle, false) else {
+                    renderer.counts.no_buffer += 1;
+                    return;
+                };
+                let index_buffer = if indexed { renderer.gpu_buffer(index_handle, true) } else { None };
+                if indexed && index_buffer.is_none() {
+                    renderer.counts.no_buffer += 1;
+                    return;
+                }
+                (vertex_buffer, index_buffer)
+            }
+        };
         let clock = std::time::Instant::now();
         // The answers of the extension: the light for each pixel and the fog distances for
         // the world in the back buffer (not for the sky, which is before the world, and not
@@ -2889,6 +2981,15 @@ impl Player {
     fn print_counts(&self) {
         let c = &self.renderer.counts;
         println!("draws {}, pipelines {}, textures {}, samplers {}", c.draws, self.renderer.pipelines.len(), c.textures, self.renderer.samplers.len());
+        println!(
+            "geometry: {} records ({:.1} MB), {} draws from them, {} draws that fell back to the buffers of the device, {} records that did not parse, {} records that differ from the buffers of the device",
+            c.geometry_records,
+            c.geometry_bytes as f64 / 1e6,
+            c.geometry_draws,
+            c.geometry_fallbacks,
+            c.geometry_bad,
+            c.geometry_mismatches
+        );
         println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);
         println!(
             "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}; draws with a made or moved texture coordinate {}; the most lights of a draw {}",

@@ -85,6 +85,11 @@ pub mod tag {
     /// A text from the scenario. The host program prints its counts since the last mark
     /// with the text, so its numbers are those of one step of the scenario.
     pub const MARK: u32 = 17;
+    /// The geometry of a shape, packed by the plugin and keyed by the geometry data: handle,
+    /// unique id, revision, vertex format, stride, vertices, index entries, strip count;
+    /// then the strip lengths (u16, padded to 4 bytes), the vertices, the indexes. See
+    /// `geometry_stream`.
+    pub const GEOMETRY: u32 = 18;
 }
 
 // ---- the ring in shared memory
@@ -445,6 +450,7 @@ unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
     }
     #[cfg(not(test))]
     crate::own_host::snapshot();
+    crate::geometry_stream::reset();
     if let Some(s) = state() {
         s.tee_only = false;
         if s.tee_hold {
@@ -621,6 +627,7 @@ pub unsafe fn stop() {
         }
     }
     crate::log!("threads: {}", crate::sync::census_text().replace('\n', "; "));
+    crate::log!("{}", crate::geometry_stream::report());
     crate::log!(
         "capture: end, {} frames, {} records, {} bytes, {:.3} ms of the game thread for each frame{}",
         s.frames_done,
@@ -766,7 +773,7 @@ pub unsafe fn frame_event(kind: u32, a: u32, b: u32) {
 }
 
 /// The object packet of the draws that follow.
-pub unsafe fn object(draw: &DrawV1) {
+pub unsafe fn object(draw: &DrawV1, geometry_handle: u32) {
     let _lock = crate::sync::device_lock();
     if !active() {
         return;
@@ -786,7 +793,20 @@ pub unsafe fn object(draw: &DrawV1) {
             name = core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_bytes();
         }
     }
-    write(tag::OBJECT, &[&words(&[draw.kind, draw.object_class, draw.flags, draw.geometry]), &name[..name.len().min(96)]]);
+    if geometry_handle != 0 {
+        write(tag::OBJECT, &[&words(&[draw.kind, draw.object_class, draw.flags | OBJECT_HAS_GEOMETRY, draw.geometry, geometry_handle]), &name[..name.len().min(96)]]);
+    } else {
+        write(tag::OBJECT, &[&words(&[draw.kind, draw.object_class, draw.flags, draw.geometry]), &name[..name.len().min(96)]]);
+    }
+}
+
+/// The flag in the object record that says a fifth word with the geometry handle follows.
+pub const OBJECT_HAS_GEOMETRY: u32 = 0x100;
+
+/// A geometry record. See `tag::GEOMETRY`.
+pub unsafe fn geometry(head: &[u32], lengths: &[u8], vertices: &[u8], indexes: &[u8]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::GEOMETRY, &[&words(head), lengths, vertices, indexes]);
 }
 
 pub unsafe fn draw_state(packet: &DrawStateV1) {
