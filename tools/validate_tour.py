@@ -74,8 +74,13 @@ def main():
     import picture_diff
 
     rows = []
+    import glob
     for _, _, picture, name in work:
         other = os.path.join(args.against, name)
+        if not os.path.isfile(other):
+            # The same stop with another spelling of the id (a reference run names it in Lua).
+            candidates = glob.glob(os.path.join(args.against, name[:name.index("-", 2) + 1] + "*.png"))
+            other = candidates[0] if len(candidates) == 1 else other
         if not (os.path.isfile(picture) and os.path.isfile(other)):
             rows.append((float("inf"), name, "missing"))
             continue

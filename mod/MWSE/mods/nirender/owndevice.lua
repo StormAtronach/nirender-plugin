@@ -138,14 +138,24 @@ return function(nirender, spec)
                 end
                 scenario.goTo(name)
                 after(spec.settleSeconds or 6, function()
+                    -- The capture is of the stream of the own device. The reference run with
+                    -- MGE XE on Direct3D 9 has none: it takes a picture of each stop instead.
+                    local own = nirender.ownDevice()
                     local path = string.format("%s/tour-%d.nircap", spec.dir, index)
-                    say("tour: cell %d '%s' into %s: %s", index, name, path, tostring(nirender.capture(path, 0, 0)))
+                    say("tour: cell %d '%s' into %s: %s", index, name, path, tostring(own and nirender.capture(path, 0, 0)))
                     scenario.tour(1, function()
-                        nirender.captureEnd()
+                        if own then nirender.captureEnd() end
                         after(0.5, function() cell(index + 1) end)
                     end, function(stop, ref, go)
-                        nirender.captureFrames(2)
+                        if own then nirender.captureFrames(2) end
                         say("tour: cell %d stop %d %s", index, stop, ref.object.id)
+                        if not own and mge and mge.saveScreenshot then
+                            -- The reference with MGE XE on Direct3D 9: a picture of each stop, with
+                            -- the name that tools/validate_tour.py gives the replayed picture.
+                            local name = string.format("%d-%02d-%s.png", index, stop, ref.object.id:gsub("[^%w_]", "_"))
+                            lfs.mkdir(spec.dir .. "/ref")
+                            mge.saveScreenshot({ path = spec.dir .. "/ref/" .. name, captureWithUI = true })
+                        end
                         after(0.3, go)
                     end)
                 end)
