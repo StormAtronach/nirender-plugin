@@ -4340,8 +4340,10 @@ mod live {
         back_buffer: Option<wgpu::Texture>,
         /// A frame of the game is in progress.
         in_frame: bool,
-        /// The frames that the window did not take: it was hidden or had no size.
+        /// The frames that the window did not take: its surface gave no picture.
         not_shown: u32,
+        /// The status of the surface when the window last gave no picture, or an empty text.
+        surface_status: &'static str,
         data: Vec<u8>,
         frames: u32,
         first_frame: Option<Instant>,
@@ -4364,6 +4366,39 @@ mod live {
     /// frames, and the time of one step of the sign.
     const SIGN_AFTER: Duration = Duration::from_millis(500);
     const SIGN_STEP: Duration = Duration::from_millis(125);
+
+    /// Gets the picture of the window for a frame. A surface that is outdated or lost is
+    /// configured again, one time for each frame. The log has each change of the status of a
+    /// surface that gives no picture.
+    fn acquire(surface: &wgpu::Surface, device: &wgpu::Device, configuration: Option<&wgpu::SurfaceConfiguration>, status: &mut &'static str, frame: u32) -> Option<wgpu::SurfaceTexture> {
+        let mut configured_again = false;
+        loop {
+            let (name, stale) = match surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(picture) | wgpu::CurrentSurfaceTexture::Suboptimal(picture) => {
+                    if !status.is_empty() {
+                        println!("window: the surface gives a picture again at frame {frame}");
+                        *status = "";
+                    }
+                    return Some(picture);
+                }
+                wgpu::CurrentSurfaceTexture::Outdated => ("outdated", true),
+                wgpu::CurrentSurfaceTexture::Lost => ("lost", true),
+                wgpu::CurrentSurfaceTexture::Timeout => ("not ready in time", false),
+                wgpu::CurrentSurfaceTexture::Occluded => ("hidden", false),
+                wgpu::CurrentSurfaceTexture::Validation => ("not valid", false),
+            };
+            if let (true, false, Some(configuration)) = (stale, configured_again, configuration.filter(|c| c.width != 0 && c.height != 0)) {
+                surface.configure(device, configuration);
+                configured_again = true;
+                continue;
+            }
+            if *status != name {
+                println!("window: no picture at frame {frame}: the surface is {name}{}", if configured_again { ", also after it was configured again" } else { "" });
+                *status = name;
+            }
+            return None;
+        }
+    }
 
     impl App {
         /// Sets the size of the picture in the window, and makes the depth buffer for it.
@@ -4392,10 +4427,7 @@ mod live {
             self.sign_step += 1;
             let (Some(surface), Some(player), Some(overlay)) = (self.surface.as_ref(), self.player.as_ref(), self.overlay.as_mut()) else { return };
             let Some(back_buffer) = player.shown_picture() else { return };
-            let frame = match surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-                _ => return,
-            };
+            let Some(frame) = acquire(surface, &player.renderer.device, self.configuration.as_ref(), &mut self.surface_status, self.frames) else { return };
             let (device, queue) = (&player.renderer.device, &player.renderer.queue);
             let size = (frame.texture.width(), frame.texture.height());
             let mut encoder = device.create_command_encoder(&Default::default());
@@ -4565,10 +4597,7 @@ mod live {
                     return;
                 }
                 let clock = Instant::now();
-                let frame = match self.surface.as_ref().unwrap().get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
-                    _ => None,
-                };
+                let frame = acquire(self.surface.as_ref().unwrap(), &player.renderer.device, self.configuration.as_ref(), &mut self.surface_status, self.frames);
                 player.renderer.counts.times[super::TIME_ACQUIRE] += clock.elapsed();
                 self.not_shown += frame.is_none() as u32;
                 let blue_first = matches!(player.renderer.target_format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
@@ -4676,6 +4705,7 @@ mod live {
             depth: None,
             in_frame: false,
             not_shown: 0,
+            surface_status: "",
             data: Vec::new(),
             frames: 0,
             first_frame: None,
