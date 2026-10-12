@@ -104,6 +104,7 @@ end
 mwse.log("[nirender] keys: capture %s, overlay %s", tostring(captureKey or "none"), tostring(overlayKey or "none"))
 
 event.register("initialized", function()
+    nirender.loadingDone()
     if installed then
         -- It is possible that other mods changed the game code after this file loaded.
         nirender.recheck()

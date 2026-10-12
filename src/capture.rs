@@ -156,6 +156,40 @@ unsafe fn wait_step() {
     Sleep(0);
 }
 
+/// The game loads its data: from its start to the "initialized" event of MWSE.
+static LOADING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// The time of the last frame while the game loads, and the longest time between two.
+static LOAD_LAST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static LOAD_LONGEST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// A frame while the game loads. The game does not read the messages of its window while
+/// it loads, and after 5 seconds Windows puts a copy of the window in its place ("Not
+/// Responding"), which hides the picture of the host program. A look at the queue tells
+/// Windows that the thread is alive. It takes no message out of the queue.
+unsafe fn loading_tick() {
+    if !LOADING.load(Ordering::Relaxed) {
+        return;
+    }
+    // PM_NOREMOVE.
+    let mut message = [0u32; 7];
+    PeekMessageA(&mut message, 0, 0, 0, 0);
+    let now = ticks();
+    let last = LOAD_LAST.swap(now, Ordering::Relaxed);
+    if last != 0 {
+        LOAD_LONGEST.fetch_max(now - last, Ordering::Relaxed);
+    }
+}
+
+/// The game has its data. From now on Windows finds a game that hangs, as without this
+/// plugin. Windows shows its copy of the window when the time between two looks is more
+/// than 5 seconds: the log has the longest time.
+pub fn loading_done() {
+    if LOADING.swap(false, Ordering::Relaxed) {
+        let longest = LOAD_LONGEST.load(Ordering::Relaxed) as f64 / ticks_per_second() as f64;
+        crate::log!("load: the longest time between two frames was {longest:.1} s (Windows shows \"Not Responding\" after 5 s)");
+    }
+}
+
 pub(crate) fn ticks() -> i64 {
     let mut count = 0;
     unsafe { QueryPerformanceCounter(&mut count) };
@@ -1085,6 +1119,7 @@ unsafe fn drop_buffers(renderer: usize, objects: &[(u32, u32)]) -> u32 {
 
 /// The game showed a frame.
 unsafe fn frame_end() {
+    loading_tick();
     let Some(s) = state() else { return };
     match s.phase {
         Phase::Off => {}

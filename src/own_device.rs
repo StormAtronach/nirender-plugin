@@ -29,7 +29,6 @@ const NOT_AVAILABLE: u32 = 0x8876_086A;
 extern "system" {
     fn EnumDisplaySettingsA(device: *const u8, mode: u32, out: *mut u8) -> i32;
     fn MonitorFromWindow(window: usize, flags: u32) -> usize;
-    fn DisableProcessWindowsGhosting();
 }
 
 extern "system" {
@@ -358,10 +357,6 @@ unsafe fn device_window(s: &State) -> u32 {
 /// NIRENDER_HOST_EXE names, or the one in the folder of this plugin.
 unsafe fn start_stream(s: &State) {
     crate::own_host::activate();
-    // The game does not read the messages of its window while it loads. Windows then puts a
-    // copy of the window in its place ("Not Responding"), which hides the picture of the
-    // host program. Without that copy the host program shows its sign that the game loads.
-    DisableProcessWindowsGhosting();
     let name = format!("nirender-{}", GetCurrentProcessId());
     let megabytes = std::env::var("NIRENDER_RING_MB").ok().and_then(|text| text.parse().ok()).unwrap_or(64);
     if let Err(problem) = crate::capture::start_direct(&name, megabytes, s.parameters[0], s.parameters[1], device_window(s)) {

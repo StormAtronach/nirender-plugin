@@ -112,6 +112,12 @@ unsafe extern "C" fn stream_mark(l: LuaState) -> i32 {
     0
 }
 
+/// `nirender.loadingDone()`: the game has its data (the "initialized" event).
+unsafe extern "C" fn loading_done(_: LuaState) -> i32 {
+    crate::capture::loading_done();
+    0
+}
+
 /// `nirender.overlay([on])` turns the debug overlay of the host program on or off; without
 /// a value, to the other state. Returns the state.
 unsafe extern "C" fn overlay(l: LuaState) -> i32 {
@@ -502,6 +508,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "streamShot", stream_shot);
     set_fn(l, "streamMark", stream_mark);
     set_fn(l, "overlay", overlay);
+    set_fn(l, "loadingDone", loading_done);
     set_fn(l, "portTimes", port_times);
     set_fn(l, "dumpDevice", dump_device);
     set_fn(l, "ownDevice", own_device);
