@@ -94,6 +94,10 @@ def inventory(path):
             # With the flags 0x100 or 0x200 two more words (the geometry and material
             # handles) are before the name.
             current_object = body[24 if flags & 0x300 else 16:].decode("latin-1", errors="replace")
+            # A draw without a geometry object has no name: the particles (kind 3), the
+            # lines (4) and the screen polygons (5) are named by their kind.
+            if not current_object:
+                current_object = {3: "(particles)", 4: "(lines)", 5: "(screen polygon)"}.get(kind, "(kind %d)" % kind)
         elif tag == 1:
             textures += 1
             texture_bytes += length
@@ -112,8 +116,10 @@ def inventory(path):
             flags = words(body, O_FLAGS, 1)[0]
             skinned += flags & 1 != 0
             later += flags & 2 != 0
-            vb = words(body, O_VB, 1)[0]
+            vb, ib = words(body, O_VB, 1)[0], words(body, O_IB, 1)[0]
             buffer_object.setdefault(vb, current_object)
+            if ib:
+                buffer_object.setdefault(ib, current_object + " (indexes)")
             fvfs[words(body, O_FVF, 1)[0]] += 1
             render = words(body, O_DEPTH_WRITE, 14)
             depth_write, cull, vblend, blend, src, dst, atest, afunc, aref, lighting, fog, diffsrc, emisrc, ambient = render
