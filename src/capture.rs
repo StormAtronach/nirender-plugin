@@ -1041,7 +1041,7 @@ unsafe fn purge(s: &mut State) {
     if renderer == 0 {
         return;
     }
-    let textures = crate::ports::textures::purge_source_textures();
+    let (textures, kept) = crate::ports::textures::purge_source_textures();
     let rendered = crate::ports::rendered::remake_rendered_textures(renderer);
     // All the buffers, not only those of the objects in view: the game can draw an object
     // into a rendered texture one time and not again.
@@ -1052,6 +1052,9 @@ unsafe fn purge(s: &mut State) {
         "capture: the renderer dropped {textures} source textures, the buffers of {shapes} shapes and {partitions} skin partitions (and of {} objects in view, {skins} with a skin), and made {rendered} rendered textures again",
         objects.len()
     );
+    if kept != 0 {
+        crate::log!("capture: {kept} source textures kept their data: the game cannot make them again (no file name, no pixel data); a capture file does not have them");
+    }
 }
 
 /// Makes the renderer drop the buffers of these objects: geometry data and skin instance.

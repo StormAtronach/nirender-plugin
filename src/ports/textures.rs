@@ -688,21 +688,33 @@ pub unsafe fn textures_with_data(table: u32) -> Vec<usize> {
 
 /// Makes each source texture lose its renderer data: the game makes it again at the next use
 /// of the texture. A rendered texture keeps its data: the game does not make that again by
-/// itself. This is not a function of the game; the capture uses it. Returns the number of
-/// textures.
-pub unsafe fn purge_source_textures() -> u32 {
-    let mut count = 0;
+/// itself. This is not a function of the game; the capture uses it.
+///
+/// A source texture that the game cannot make again keeps its data.
+/// `NiDX8SourceTextureData_static::Create` (0x6BFA50) reads the file of the texture when it
+/// has a file name, else it takes the pixel data of the texture, and with neither it takes
+/// the default texture of the renderer. A static texture made from pixel data has neither
+/// after its first use: without its renderer data it is the default texture until the game
+/// ends (the buttons of the main menu, after a capture in the game).
+///
+/// Returns the number of textures that lost their data, and the number that kept it.
+pub unsafe fn purge_source_textures() -> (u32, u32) {
+    let (mut dropped, mut kept) = (0, 0);
     let mut texture = eng::texture_list_head();
     while texture != 0 {
         let data: usize = rd(texture, T::rendererData);
         if data != 0 && rd::<u32>(data, TD::vtbl_vtbl) == VTBL_SOURCE_TEXTURE_DATA {
-            wr::<usize>(texture, T::rendererData, rd(data, TD::vtbl_linkedData));
-            ni::delete_object(data);
-            count += 1;
+            if rd::<usize>(texture, ST::filenameOnPC) == 0 && rd::<usize>(texture, ST::pixelData) == 0 {
+                kept += 1;
+            } else {
+                wr::<usize>(texture, T::rendererData, rd(data, TD::vtbl_linkedData));
+                ni::delete_object(data);
+                dropped += 1;
+            }
         }
         texture = rd(texture, T::nextTexture);
     }
-    count
+    (dropped, kept)
 }
 
 // ---- NiDX8SourceTextureData
