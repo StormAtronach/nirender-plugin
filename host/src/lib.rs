@@ -3369,17 +3369,28 @@ impl Player {
         self.renderer.counts.times[TIME_ITEMS] += clock.elapsed().saturating_sub(inside_after - inside_before);
     }
 
-    /// Sorts the opaque draws of each run of draws by pipeline and textures, and keeps the
-    /// other draws of the run after them in their order. An opaque draw writes depth with
-    /// the test on, does not blend, has no stencil and writes all colours: its order does
-    /// not change the picture, but for the ties of the depth test.
+    /// Sorts each run of opaque draws that follow each other by pipeline and textures. An
+    /// opaque draw does not blend, writes the depth with the test "less" or "less or
+    /// equal", has no stencil and writes all colours: among such draws the order does not
+    /// change the picture, but for the ties of the depth test. No draw goes across a draw
+    /// of another kind: the place of that one in the order is a part of the picture. The
+    /// cursor of the game is such a draw: the last of the menu scene, with the depth
+    /// written and not tested, over 1000 draws that blend.
     /// With `instances` (the world matrices of the instances of the frame), opaque draws
     /// that follow each other in the sorted run with the same pipeline, textures, samplers,
     /// buffers, range, lights and data but the world matrix become one draw with as many
     /// instances: the world matrices go to `instances`, the first at the index the draw
     /// keeps. A skinned draw and a draw with a vertex blend keep their own.
     fn sort_items(items: &mut Vec<Item>, counts: &mut Counts, lights: &[LightData], mut instances: Option<&mut Vec<[f32; 16]>>) {
-        let opaque = |draw: &Draw| draw.key.blend[0] == 0 && draw.key.depth[0] != 0 && draw.key.depth[1] != 0 && draw.key.stencil[0] == 0 && draw.key.color_write == 15;
+        // The depth function is a D3DCMPFUNC: 2 is "less" and 4 is "less or equal".
+        let opaque = |item: &Item| {
+            matches!(item, Item::Draw(draw) if draw.key.blend[0] == 0
+                && draw.key.depth[0] != 0
+                && draw.key.depth[1] != 0
+                && matches!(draw.key.depth[2], 2 | 4)
+                && draw.key.stencil[0] == 0
+                && draw.key.color_write == 15)
+        };
         let same_lights = |a: &Draw, b: &Draw| {
             let (first_a, first_b, count) = (a.data.light_range[0] as usize, b.data.light_range[0] as usize, a.data.light_range[1] as usize);
             b.data.light_range[1] as usize == count
@@ -3416,17 +3427,15 @@ impl Player {
         };
         let mut start = 0;
         while start < items.len() {
-            if !matches!(items[start], Item::Draw(_)) {
+            if !opaque(&items[start]) {
                 start += 1;
                 continue;
             }
             let mut end = start;
-            while end < items.len() && matches!(items[end], Item::Draw(_)) {
+            while end < items.len() && opaque(&items[end]) {
                 end += 1;
             }
-            let run = &mut items[start..end];
-            let mut draws: Vec<Rc<Draw>> = run.iter().map(|item| if let Item::Draw(d) = item { d.clone() } else { unreachable!() }).collect();
-            let (mut first, rest): (Vec<Rc<Draw>>, Vec<Rc<Draw>>) = draws.drain(..).partition(|d| opaque(d));
+            let mut first: Vec<Rc<Draw>> = items[start..end].iter().map(|item| if let Item::Draw(d) = item { d.clone() } else { unreachable!() }).collect();
             counts.sorted_draws += first.len() as u32;
             first.sort_by_cached_key(|d| order(d));
             if let Some(instances) = instances.as_deref_mut() {
@@ -3451,7 +3460,7 @@ impl Player {
                 }
                 first = joined;
             }
-            let kept: Vec<Item> = first.into_iter().chain(rest).map(Item::Draw).collect();
+            let kept: Vec<Item> = first.into_iter().map(Item::Draw).collect();
             let removed = end - start - kept.len();
             items.splice(start..end, kept);
             start = end - removed;
