@@ -115,9 +115,6 @@ unsafe extern "system" fn unlock_wrapper(this: usize) -> u32 {
     let s = state();
     if let Some(index) = s.locked.iter().position(|l| l.object == this) {
         let locked = s.locked.swap_remove(index);
-        if crate::capture::recording() && locked.data != 0 {
-            crate::capture::buffer_data(this, locked.offset, core::slice::from_raw_parts(locked.data as *const u8, locked.size as usize));
-        }
         if device::recording() && locked.data != 0 {
             let bytes = core::slice::from_raw_parts(locked.data as *const u8, locked.size as usize);
             let args = [this as u32, locked.offset, locked.size, locked.flags];

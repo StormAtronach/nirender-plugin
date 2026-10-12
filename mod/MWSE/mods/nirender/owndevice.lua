@@ -411,8 +411,6 @@ return function(nirender, spec)
     end
 
     say("own device: %s", tostring(nirender.ownDevice()))
-    -- The mode of the shape records: 0 off, 1 dual, 2 only the records (see shape_stream).
-    if spec.shapes and nirender.shapes then say("shapes: mode %s", tostring(nirender.shapes(spec.shapes))) end
     -- The game gives no frame to Lua before the main menu is there: it shows its films and
     -- loads its data first. The scenario starts at the first frame of the main menu, takes a
     -- picture of the menu, and then loads the save.

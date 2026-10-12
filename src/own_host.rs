@@ -130,7 +130,6 @@ pub unsafe fn snapshot() {
             Kind::VertexBuffer | Kind::IndexBuffer => {
                 let index = if o.kind == Kind::VertexBuffer { CALL_CREATE_VERTEX_BUFFER } else { CALL_CREATE_INDEX_BUFFER };
                 crate::capture::call(index, &[o.length, o.usage, o.format, o.pool, address], 0);
-                crate::capture::buffer_data(object, 0, &o.memory);
                 count[2] += 1;
             }
             Kind::Surface => {
@@ -153,7 +152,8 @@ pub unsafe fn write_resource(handle: usize) {
     }
     let o = &*(handle as *const Object);
     match o.kind {
-        Kind::VertexBuffer | Kind::IndexBuffer => crate::capture::buffer_data(handle, 0, &o.memory),
+        // The bytes of a buffer are not in the stream: the helper draws from the records.
+        Kind::VertexBuffer | Kind::IndexBuffer => {}
         Kind::Texture => {
             for (level, memory) in o.level_memory.iter().enumerate() {
                 if !memory.is_empty() {

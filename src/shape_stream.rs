@@ -2,22 +2,18 @@
 //! geometry handle, the material handle, the world matrix and the lights of the draw. The
 //! helper makes the state of the draw from the geometry and material records.
 //!
-//! `RenderShape` and `RenderTriStrips` send the record for a shape that has both handles and
-//! a material the helper models, and do not call the pipeline of the device for it. In the
-//! dual mode they call the pipeline too, and the helper takes one of the two draws by its
-//! switch: the two can then be compared on one capture.
+//! The draw functions of the renderer send the record for a draw that has both handles and a
+//! material the helper models. The helper draws from the records only. When the device is
+//! the one of the plugin (`own_host`), the pipeline of the device does not run for such a
+//! draw; with a Direct3D device behind the link (a capture file of a game that the device
+//! draws) the pipeline runs too, for the picture of the game.
 
 use crate::capture;
 use crate::mem::rd;
 
-/// The modes of `nirender.shapes(mode)`.
-pub const OFF: u32 = 0;
-pub const DUAL: u32 = 1;
-pub const ONLY: u32 = 2;
-
-/// The flags of a record.
+/// The flags of a record. The flag 2 said that a draw of the device follows the record (the
+/// dual mode of the steps before R7b); a capture from then has it.
 pub const RELATIVE: u32 = 1;
-pub const DUAL_DRAW: u32 = 2;
 /// The shape is skinned: the record has the palette of its bones after the lights.
 pub const SKINNED: u32 = 4;
 /// The record is a particle system (step R7): the particles follow the lights, and the
@@ -63,30 +59,37 @@ pub unsafe fn fog_values(renderer: usize, property_state: usize) -> Option<[u32;
     Some([rd(fog, NiFogProperty::color), start, end, ((flags >> 3) & 3 == 1) as u32])
 }
 
-static mut MODE: u32 = DUAL;
 /// The handles of the object of the draw in progress, from the object record.
 static mut HANDLES: (u32, u32) = (0, 0);
 static mut RECORDS: u64 = 0;
-static mut SKIPPED: u64 = 0;
+/// The draws that got no record while the stream recorded, by the reason: no geometry
+/// handle, no material handle, a material that the helper does not model (projected lights
+/// or shadows). The helper does not draw them. The last count is the draws of an empty
+/// geometry (no active vertex, no triangle): those have nothing to draw.
+static mut WITHOUT: [u64; 4] = [0; 4];
 
-pub unsafe fn set_mode(mode: u32) {
-    *core::ptr::addr_of_mut!(MODE) = mode.min(ONLY);
+/// True when the shape records go out: a stream or a capture file records.
+pub fn on() -> bool {
+    capture::recording()
 }
 
-pub unsafe fn mode() -> u32 {
-    *core::ptr::addr_of!(MODE)
-}
-
-/// True when the records are the only draws: the pipeline of the device does not run for a
-/// shape, so the ports make no device buffer for a geometry (the records carry the
+/// True when the records are the only draws: the device is the one of the plugin, and the
+/// helper draws the frames from the stream. The pipeline of the device does not run for a
+/// shape then, and the ports make no device buffer for a geometry (the records carry the
 /// vertices). The partitions of a skin are still made: the records need them.
-pub unsafe fn records_only() -> bool {
-    mode() == ONLY && capture::recording()
+pub fn records_only() -> bool {
+    capture::recording() && crate::own_host::active()
 }
 
-/// Notes the handles of the object of the draws that follow.
-pub unsafe fn note_handles(geometry: u32, material: u32) {
+/// The draw kind, the class and the geometry data of the object of the draws that follow,
+/// for the log of a draw without a record.
+static mut OBJECT: (u32, u32, usize) = (0, 0, 0);
+
+/// Notes the handles of the object of the draws that follow, with its draw kind, its class
+/// and its geometry data.
+pub unsafe fn note_handles(geometry: u32, material: u32, kind: u32, class: u32, geometry_data: usize) {
     *core::ptr::addr_of_mut!(HANDLES) = (geometry, material);
+    *core::ptr::addr_of_mut!(OBJECT) = (kind, class, geometry_data);
 }
 
 /// Notes the geometry of the draw in progress, for a draw whose geometry the port packs
@@ -112,17 +115,50 @@ pub unsafe fn ambient(renderer: usize) -> u32 {
 }
 
 pub unsafe fn report() -> String {
-    format!("shapes: mode {}, {} records, {} draws of the device skipped", mode(), *core::ptr::addr_of!(RECORDS), *core::ptr::addr_of!(SKIPPED))
+    let without = *core::ptr::addr_of!(WITHOUT);
+    format!(
+        "shapes: {} records; draws without a record: {} with no geometry, {} with no material, {} with a material that is not modelled; {} draws of an empty geometry",
+        *core::ptr::addr_of!(RECORDS),
+        without[0],
+        without[1],
+        without[2],
+        without[3]
+    )
 }
 
-/// Sends the record of the draw in progress when the object has both handles and the mode
-/// is on. `world` is the current world matrix of the renderer, after the transform of the
+/// Counts a draw that gets no record while the stream records. The log gets the first ones
+/// without a geometry that is not empty: the kind and the class of the object, and the
+/// reason.
+unsafe fn without(reason: usize) {
+    if !on() {
+        return;
+    }
+    let counts = &mut *core::ptr::addr_of_mut!(WITHOUT);
+    if reason != 0 {
+        counts[reason] += 1;
+        return;
+    }
+    let (kind, class, geometry_data) = *core::ptr::addr_of!(OBJECT);
+    let (why, empty) = crate::geometry_stream::why_none(kind, geometry_data);
+    if empty {
+        counts[3] += 1;
+        return;
+    }
+    counts[0] += 1;
+    if counts[0] <= 8 {
+        crate::log!("shapes: a draw without a geometry record: kind {kind}, class {class}: {why}");
+    }
+}
+
+/// Sends the record of the draw in progress when the object has both handles and the
+/// stream records. `world` is the current world matrix of the renderer, after the transform of the
 /// draw was set, with the camera-relative mask of the plugin; for a skinned shape `palette`
 /// has the matrix of each bone of the skin instead. Returns true when the ports of the
 /// pipeline must not run for this draw.
 pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>, palette: &[[f32; 16]]) -> bool {
     let (geometry, _) = *core::ptr::addr_of!(HANDLES);
     if geometry == 0 {
+        without(0);
         return false;
     }
     let bones: Vec<u8> = palette.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
@@ -136,6 +172,7 @@ pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u
 pub unsafe fn send_lines(renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>) -> bool {
     let (geometry, _) = *core::ptr::addr_of!(HANDLES);
     if geometry == 0 {
+        without(0);
         return false;
     }
     record(renderer, geometry, LINES, world, relative, ambient, material_values, fog, 0, &[], &[])
@@ -160,6 +197,7 @@ pub unsafe fn send_particles(
 ) -> bool {
     let count = (particles.len() / PARTICLE_BYTES) as u32;
     if key == 0 || count == 0 {
+        without(0);
         return false;
     }
     let tail = [count, radius.to_bits(), right[0].to_bits(), right[1].to_bits(), right[2].to_bits(), up[0].to_bits(), up[1].to_bits(), up[2].to_bits()];
@@ -197,15 +235,18 @@ unsafe fn effect_words(renderer: usize) -> Vec<u32> {
 /// texture effects when the draw has any, the fog when the draw has it, then `tail` and
 /// `bytes` (the bones, or the particle words and the particles).
 unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>, bone_count: u32, tail: &[u32], bytes: &[u8]) -> bool {
-    let mode = mode();
     let (_, material) = *core::ptr::addr_of!(HANDLES);
-    if mode == OFF || material == 0 || !capture::recording() || !crate::material_stream::last_modelled() {
+    if !on() {
+        return false;
+    }
+    if material == 0 || !crate::material_stream::last_modelled() {
+        without(if material == 0 { 1 } else { 2 });
         return false;
     }
     let lights = crate::light_stream::note(renderer);
     let count = lights.len() as u32;
     let mut effects = effect_words(renderer);
-    let flags = (relative as u32) | if mode == DUAL { DUAL_DRAW } else { 0 } | kind | if effects.is_empty() { 0 } else { EFFECTS } | if fog.is_some() { FOG } else { 0 };
+    let flags = (relative as u32) | kind | if effects.is_empty() { 0 } else { EFFECTS } | if fog.is_some() { FOG } else { 0 };
     if let Some(fog) = fog {
         effects.extend_from_slice(&fog);
     }
@@ -225,11 +266,7 @@ unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], re
     words[35] = bone_count;
     capture::shape(&words, lights, tail, bytes);
     *core::ptr::addr_of_mut!(RECORDS) += 1;
-    if mode == ONLY {
-        *core::ptr::addr_of_mut!(SKIPPED) += 1;
-        return true;
-    }
-    false
+    records_only()
 }
 
 /// The colours of the material of a property state, for `send`: ambient, diffuse, specular,

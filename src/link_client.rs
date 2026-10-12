@@ -1171,7 +1171,7 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     (host.draw)(&draw);
     let geometry_handle = crate::geometry_stream::note(kind, geometry_data, skin);
     let material_handle = crate::material_stream::note(this, property_state, effect_state);
-    crate::shape_stream::note_handles(geometry_handle, material_handle);
+    crate::shape_stream::note_handles(geometry_handle, material_handle, kind, draw.object_class, geometry_data);
     crate::capture::object(&draw, geometry_handle, material_handle);
 }
 
@@ -1280,7 +1280,6 @@ pub unsafe fn draw_state(
         core::ptr::copy_nonoverlapping((renderer + R::currentWorldMatrix) as *const f32, state.world.as_mut_ptr(), 16);
     }
     (host.draw_state)(&state);
-    crate::capture::draw_state(&state);
 }
 
 /// The size of a state light.

@@ -216,10 +216,9 @@ struct Draw {
     textures: Rc<wgpu::BindGroup>,
     samplers: Rc<wgpu::BindGroup>,
     vertices: Rc<wgpu::Buffer>,
-    indexes: Option<Rc<wgpu::Buffer>>,
-    fan: bool,
-    /// The first index or vertex, the number of them, and the base vertex.
-    range: (u32, u32, i32),
+    indexes: Rc<wgpu::Buffer>,
+    /// The first index and the number of indexes.
+    range: (u32, u32),
     /// The instances: the first in the instance buffer of the frame and the number. (0, 1)
     /// for a draw of its own: its world matrix is in its data.
     instances: (u32, u32),
@@ -302,25 +301,18 @@ impl Replay for Replayer<'_> {
             pass.set_vertex_buffer(0, kept.vertices.slice(..));
             pass.set_vertex_buffer(1, self.renderer.defaults.slice(..));
             pass.set_vertex_buffer(2, self.renderer.instance_buffer.slice(kept.instances.0 as u64 * 64..));
-            let (first, count, base) = kept.range;
+            let (first, count) = kept.range;
             let instances = 0..kept.instances.1;
             // `MGE_XE_REPLAY_DEBUG=1`: each draw that a replay issues, for a comparison of
             // the two paths of the shapes.
             if std::env::var("MGE_XE_REPLAY_DEBUG").is_ok_and(|v| v == "1") {
                 println!(
-                    "replay class {} blend {:?} depth {:?} cull {} fill {} origin {:?} range {:?} instances {:?} fan {} world {:?} view {:?} flags {:?} light_range {:?}",
-                    kept.class, key.blend, key.depth, key.cull, key.fill, kept.origin, kept.range, kept.instances, kept.fan, data.world[0], &data.view[12..16], data.flags, data.light_range
+                    "replay class {} blend {:?} depth {:?} cull {} fill {} origin {:?} range {:?} instances {:?} world {:?} view {:?} flags {:?} light_range {:?}",
+                    kept.class, key.blend, key.depth, key.cull, key.fill, kept.origin, kept.range, kept.instances, data.world[0], &data.view[12..16], data.flags, data.light_range
                 );
             }
-            if let Some(indexes) = kept.indexes.as_ref() {
-                pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
-                pass.draw_indexed(first..first + count, base, instances);
-            } else if kept.fan {
-                pass.set_index_buffer(self.renderer.fan_indexes.slice(..), wgpu::IndexFormat::Uint16);
-                pass.draw_indexed(0..count, first as i32, instances);
-            } else {
-                pass.draw(first..first + count, instances);
-            }
+            pass.set_index_buffer(kept.indexes.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(first..first + count, 0, instances);
             self.renderer.counts.replayed += 1;
         }
     }
@@ -442,12 +434,12 @@ use wgpu::util::DeviceExt;
 
 mod tag {
     pub const TEXTURE: u32 = 1;
-    pub const BUFFER_DATA: u32 = 2;
+    // 2 was the bytes of a buffer of the device, and 7 the state packet of a draw of the
+    // device: a capture from before the retained pipeline has them, and they do nothing.
     pub const SCENE_BEGIN: u32 = 3;
     pub const SCENE_END: u32 = 4;
     pub const FRAME_EVENT: u32 = 5;
     pub const OBJECT: u32 = 6;
-    pub const DRAW_STATE: u32 = 7;
     pub const COMMAND: u32 = 8;
     pub const CALL: u32 = 9;
     pub const FRAME_END: u32 = 10;
@@ -464,143 +456,97 @@ mod tag {
     pub const LIGHT: u32 = 21;
 }
 
-/// The size of a light in a state packet.
+/// The size of a light of a shape draw: its key, then the `D3DLIGHT8` of 26 words.
 const STATE_LIGHT_SIZE: usize = 108;
 
-/// A state packet made from the derived state of a material, for one pass of a shape draw.
-/// The fields are those of `DrawStateV1`; the lights come after it.
-#[allow(clippy::too_many_arguments)]
 /// The words of the stage of a texture effect in a shape record: the coordinate index with
 /// its generation, the transform flags, the texture matrix.
 const EFFECT_STAGE_WORDS: usize = 18;
 
-/// The state packet of a draw from its records, as the pipeline of the device would set it.
-/// `effects` is the stages of the environment map and of the fog map from the shape record
-/// (the texture pass makes them from the effect and the camera of the frame); without them
-/// a stage of an effect gets the generation of its kind and no transform.
-fn synthesize_state(d: &material::Derived, pass: usize, m: &material::Material, textures: &HashMap<u32, Rc<wgpu::TextureView>>, fvf: u32, stride: u32, vertices: u32, entries: u32, world: &[f32; 16], relative: bool, ambient: u32, lights: u32, material: &[f32; 17], effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>) -> Vec<u8> {
-    let mut s = vec![0u8; state::SIZE];
-    let put = |s: &mut Vec<u8>, at: usize, v: u32| s[at..at + 4].copy_from_slice(&v.to_le_bytes());
-    let putf = |s: &mut Vec<u8>, at: usize, v: f32| s[at..at + 4].copy_from_slice(&v.to_le_bytes());
-    put(&mut s, 0, state::SIZE as u32);
-    put(&mut s, 4, if pass > 0 { 2 } else { 0 });
-    put(&mut s, 8, if entries != 0 { 4 } else { 5 });
-    put(&mut s, 20, vertices);
-    put(&mut s, 28, entries / 3);
-    put(&mut s, state::VERTEX_STRIDE, stride);
-    put(&mut s, state::VERTEX_FORMAT, fvf);
-    for (i, v) in world.iter().enumerate() {
-        putf(&mut s, state::WORLD + i * 4, *v);
-    }
-    put(&mut s, state::DEPTH_WRITE, d.depth[1]);
-    put(&mut s, state::CULL_MODE, d.cull);
-    let blend = d.blends.get(pass).copied().unwrap_or([0; 3]);
-    put(&mut s, state::BLEND_ENABLE, blend[0]);
-    put(&mut s, state::SOURCE_BLEND, if blend[0] != 0 { blend[1] } else { 2 });
-    put(&mut s, state::DESTINATION_BLEND, if blend[0] != 0 { blend[2] } else { 1 });
-    put(&mut s, state::ALPHA_TEST_ENABLE, d.alpha_test[0]);
-    put(&mut s, state::ALPHA_FUNCTION, if d.alpha_test[0] != 0 { d.alpha_test[1] } else { 8 });
-    put(&mut s, state::ALPHA_REFERENCE, d.alpha_test[2]);
-    put(&mut s, state::LIGHTING, d.lighting as u32);
-    put(&mut s, state::FOG_ENABLE, d.fog as u32);
-    put(&mut s, state::DIFFUSE_SOURCE, d.sources[0].unwrap_or(1));
-    put(&mut s, state::EMISSIVE_SOURCE, d.sources[1].unwrap_or(0));
-    put(&mut s, state::AMBIENT, ambient);
-    put(&mut s, state::LIGHT_COUNT, lights);
-    for (i, v) in material.iter().enumerate() {
-        putf(&mut s, state::MATERIAL + i * 4, *v);
-    }
-    // The stages: operations, arguments, the coordinate index with its generation, the
-    // bump values; the texture and the sampler of each.
-    let stages = &d.passes[pass];
-    for i in 0..8 {
-        let at = state::STAGES + i * state::STAGE_SIZE;
-        match stages.get(i) {
-            Some(st) => {
-                let values = [st.color[0], st.color[1], st.color[2], st.alpha[0], st.alpha[1], st.alpha[2], 1, 1, 0];
-                for (k, v) in values.into_iter().enumerate() {
-                    put(&mut s, at + k * 4, v);
-                }
-                let effect = effects.and_then(|e| match st.source {
+/// One stage of a pass of a shape draw, as the texture pass of the game sets it.
+#[derive(Clone, Copy)]
+struct PassStage {
+    /// Operation, argument 1, argument 2 (Direct3D values). The operation 1 (disable) ends
+    /// the stages of the pass.
+    color: [u32; 3],
+    alpha: [u32; 3],
+    /// The coordinate index with its generation in the high word, and the transform flags.
+    coordinate: u32,
+    transform: u32,
+    /// The four values of the bump matrix, then the luminance scale and offset.
+    bump: [f32; 6],
+    texture: u32,
+    /// Address U, address V, the magnify, minify and mip filters.
+    sampler: [u32; 5],
+    texture_transform: [f32; 16],
+}
+
+/// The state of one pass of a shape draw, from the derived state of its material: what the
+/// pipeline of the game sets for the pass, and the shape is the same for each pass.
+struct Pass {
+    /// Blend on, source, destination.
+    blend: [u32; 3],
+    stages: [PassStage; 8],
+}
+
+impl Pass {
+    /// `effects` is the stages of the environment map and of the fog map from the shape
+    /// record (the texture pass of the game makes them from the effect and the camera of
+    /// the frame); without them a stage of an effect gets the generation of its kind and no
+    /// transform.
+    fn new(d: &material::Derived, pass: usize, m: &material::Material, textures: &HashMap<u32, Rc<wgpu::TextureView>>, effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>) -> Pass {
+        const NONE: PassStage = PassStage { color: [1, 0, 0], alpha: [1, 0, 0], coordinate: 0, transform: 0, bump: [0.0; 6], texture: 0, sampler: [0; 5], texture_transform: [0.0; 16] };
+        // D3DBLEND_ONE is 2 and D3DBLEND_ZERO is 1: the blend of a pass that does not blend.
+        let blend = d.blends.get(pass).copied().unwrap_or([0; 3]);
+        let blend = if blend[0] != 0 { [1, blend[1], blend[2]] } else { [0, 2, 1] };
+        let mut stages = [NONE; 8];
+        for (stage, st) in stages.iter_mut().zip(&d.passes[pass]) {
+            let effect = effects
+                .and_then(|e| match st.source {
                     8 => Some(&e[0]),
                     9 => Some(&e[1]),
                     _ => None,
-                });
-                match effect {
-                    Some(words) if words[0] != 0 => {
-                        put(&mut s, at + 9 * 4, words[0]);
-                        put(&mut s, at + 10 * 4, words[1]);
-                        for (k, v) in words[2..].iter().enumerate() {
-                            put(&mut s, state::TEXTURE_TRANSFORMS + i * 64 + k * 4, *v);
-                        }
-                    }
-                    _ => {
-                        let generated = match st.source {
-                            8 => 0x30000,
-                            9 => 0x20000,
-                            _ => 0,
-                        };
-                        put(&mut s, at + 9 * 4, st.set | generated);
-                        put(&mut s, at + 10 * 4, 0);
-                    }
+                })
+                .filter(|words| words[0] != 0);
+            let (coordinate, transform, texture_transform) = match effect {
+                Some(words) => (words[0], words[1], core::array::from_fn(|k| f32::from_bits(words[2 + k]))),
+                None => {
+                    // D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR for the environment map and
+                    // D3DTSS_TCI_CAMERASPACEPOSITION for the fog map.
+                    let generated = match st.source {
+                        8 => 0x30000,
+                        9 => 0x20000,
+                        _ => 0,
+                    };
+                    (st.set | generated, 0, [0.0; 16])
                 }
-                let bump = if st.source == 5 { [m.bump[2], m.bump[3], m.bump[4], m.bump[5], m.bump[0], m.bump[1]] } else { [0.5, 0.0, 0.0, 0.5, 1.0, 0.0] };
-                for (k, v) in bump.into_iter().enumerate() {
-                    putf(&mut s, at + (11 + k) * 4, v);
-                }
-                put(&mut s, state::TEXTURES + i * 4, st.texture);
-                let (clamp, filter) = match st.source {
-                    8 => (m.environment.clamp, m.environment.filter),
-                    9 => (m.fog_map.clamp, m.fog_map.filter),
-                    10 => (3, 1),
-                    map => (m.maps[map as usize].clamp, m.maps[map as usize].filter),
-                };
-                let (u, v) = match clamp {
-                    0 => (3, 3),
-                    1 => (3, 1),
-                    2 => (1, 3),
-                    _ => (1, 1),
-                };
-                let filters = match filter {
-                    0 => [1, 1, 0],
-                    1 => [2, 2, 0],
-                    2 => [2, 2, 2],
-                    3 => [1, 1, 1],
-                    4 => [1, 1, 2],
-                    _ => [2, 2, 1],
-                };
-                let mut sampler = material::sampler_states(clamp, filter);
-                let _ = (u, v, filters);
-                // A texture with one level gets no mip filter, as the texture manager sets it.
-                if textures.get(&st.texture).is_some_and(|t| t.texture().mip_level_count() <= 1) {
-                    sampler[4] = 0;
-                }
-                for (k, value) in sampler.into_iter().enumerate() {
-                    put(&mut s, state::SAMPLERS + i * 20 + k * 4, value);
-                }
+            };
+            let (clamp, filter) = match st.source {
+                8 => (m.environment.clamp, m.environment.filter),
+                9 => (m.fog_map.clamp, m.fog_map.filter),
+                10 => (3, 1),
+                map => (m.maps[map as usize].clamp, m.maps[map as usize].filter),
+            };
+            let mut sampler = material::sampler_states(clamp, filter);
+            // A texture with one level gets no mip filter, as the texture manager sets it.
+            if textures.get(&st.texture).is_some_and(|t| t.texture().mip_level_count() <= 1) {
+                sampler[4] = 0;
             }
-            None => {
-                put(&mut s, at, 1);
-                put(&mut s, at + 12, 1);
-            }
+            *stage = PassStage {
+                color: st.color,
+                alpha: st.alpha,
+                coordinate,
+                transform,
+                // The stage of the bump map has the values of the material.
+                bump: if st.source == 5 { [m.bump[2], m.bump[3], m.bump[4], m.bump[5], m.bump[0], m.bump[1]] } else { [0.5, 0.0, 0.0, 0.5, 1.0, 0.0] },
+                texture: st.texture,
+                sampler,
+                texture_transform,
+            };
         }
+        Pass { blend, stages }
     }
-    put(&mut s, state::DEPTH_ENABLE, d.depth[0]);
-    put(&mut s, state::DEPTH_FUNCTION, d.depth[2]);
-    // D3DRS 52 to 59: enable, fail, z-fail, pass, function, reference, mask, write mask.
-    let st = d.stencil;
-    let stencil = [st[0], st[4], st[5], st[6], st[1], st[2], st[3], 0xFFFF_FFFF];
-    for (k, v) in stencil.into_iter().enumerate() {
-        put(&mut s, state::STENCIL + k * 4, v);
-    }
-    put(&mut s, state::WORLD_RELATIVE_MASK, relative as u32);
-    s
 }
-
-/// The flags in an object record that say two more words follow: the geometry handle and
-/// the material handle.
-const OBJECT_HAS_GEOMETRY: u32 = 0x100;
-const OBJECT_HAS_MATERIAL: u32 = 0x200;
 
 pub mod material;
 
@@ -609,23 +555,16 @@ pub mod material;
 struct Geometry {
     fvf: u32,
     stride: u32,
-    vertices: u32,
+    /// The number of entries of the index list.
     entries: u32,
     /// The lengths of the strips, or empty for a triangle list.
     strips: Vec<u16>,
     vertex: Rc<wgpu::Buffer>,
     index: Rc<wgpu::Buffer>,
-    /// The bytes, for the comparison with the buffers of the device, once.
-    vertex_bytes: Vec<u8>,
-    index_bytes: Vec<u8>,
-    checked: std::cell::Cell<bool>,
 }
 
 const COMMAND_RENDER_STATE: u32 = 1;
-const COMMAND_STAGE_STATE: u32 = 2;
 const COMMAND_TRANSFORM: u32 = 3;
-const COMMAND_DRAW_INDEXED: u32 = 4;
-const COMMAND_DRAW: u32 = 5;
 const CALL_CLEAR: u32 = 4;
 const CALL_VIEWPORT: u32 = 5;
 const CALL_RENDER_TARGET: u32 = 7;
@@ -650,78 +589,6 @@ fn floats<const N: usize>(bytes: &[u8], offset: usize) -> [f32; N] {
 
 fn double(bytes: &[u8], offset: usize) -> f64 {
     f64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
-}
-
-/// The offsets of `MgeLinkDrawStateV1`. The struct has 1728 bytes.
-mod state {
-    /// The place of a render state of Direct3D in the packet, when the packet has it.
-    pub fn of_render_state(render_state: u32) -> Option<usize> {
-        Some(match render_state {
-            7 => DEPTH_ENABLE,
-            14 => DEPTH_WRITE,
-            15 => ALPHA_TEST_ENABLE,
-            19 => SOURCE_BLEND,
-            20 => DESTINATION_BLEND,
-            22 => CULL_MODE,
-            23 => DEPTH_FUNCTION,
-            24 => ALPHA_REFERENCE,
-            25 => ALPHA_FUNCTION,
-            27 => BLEND_ENABLE,
-            28 => FOG_ENABLE,
-            // The stencil states of Direct3D are 52 to 59, in the order of the packet.
-            52..=59 => STENCIL + (render_state as usize - 52) * 4,
-            137 => LIGHTING,
-            139 => AMBIENT,
-            145 => DIFFUSE_SOURCE,
-            148 => EMISSIVE_SOURCE,
-            151 => VERTEX_BLEND,
-            _ => return None,
-        })
-    }
-
-    /// The place of a texture stage state of Direct3D in the packet.
-    pub fn of_stage_state(stage: u32, stage_state: u32) -> Option<usize> {
-        const ORDER: [u32; 17] = [1, 2, 3, 4, 5, 6, 26, 27, 28, 11, 24, 7, 8, 9, 10, 22, 23];
-        let index = ORDER.iter().position(|s| *s == stage_state)?;
-        (stage < 8).then(|| STAGES + stage as usize * STAGE_SIZE + index * 4)
-    }
-
-    pub const SIZE: usize = 1728;
-    pub const BASE_VERTEX: usize = 12;
-    pub const VERTEX_BUFFER: usize = 32;
-    pub const VERTEX_STRIDE: usize = 36;
-    pub const VERTEX_FORMAT: usize = 40;
-    pub const INDEX_BUFFER: usize = 44;
-    pub const WORLD: usize = 48;
-    pub const DEPTH_WRITE: usize = 112;
-    pub const CULL_MODE: usize = 116;
-    pub const VERTEX_BLEND: usize = 120;
-    pub const BLEND_ENABLE: usize = 124;
-    pub const SOURCE_BLEND: usize = 128;
-    pub const DESTINATION_BLEND: usize = 132;
-    pub const ALPHA_TEST_ENABLE: usize = 136;
-    pub const ALPHA_FUNCTION: usize = 140;
-    pub const ALPHA_REFERENCE: usize = 144;
-    pub const LIGHTING: usize = 148;
-    pub const FOG_ENABLE: usize = 152;
-    pub const DIFFUSE_SOURCE: usize = 156;
-    pub const EMISSIVE_SOURCE: usize = 160;
-    pub const AMBIENT: usize = 164;
-    pub const MATERIAL: usize = 168;
-    pub const LIGHT_COUNT: usize = 236;
-    pub const STAGES: usize = 244;
-    pub const STAGE_SIZE: usize = 17 * 4;
-    pub const BLEND_WORLDS: usize = 788;
-    pub const TEXTURES: usize = 980;
-    pub const TEXTURE_TRANSFORMS: usize = 1012;
-    pub const DEPTH_ENABLE: usize = 1524;
-    pub const DEPTH_FUNCTION: usize = 1528;
-    /// Enable, fail, depth fail, pass, function, reference, mask, write mask.
-    pub const STENCIL: usize = 1532;
-    pub const SAMPLERS: usize = 1564;
-    pub const WORLD_RELATIVE_MASK: usize = 1724;
-    /// A light after the struct: the device index, then a D3DLIGHT8 of 26 words.
-    pub const LIGHT_SIZE: usize = 27 * 4;
 }
 
 // ---- the data of a draw for the shader
@@ -1043,9 +910,6 @@ fn sum_except(times: &[std::time::Duration; TIME_COUNT], skip: usize) -> std::ti
     times.iter().enumerate().filter(|(i, _)| *i != skip).map(|(_, t)| *t).sum()
 }
 
-/// The number of indexes in the index buffer for triangle fans.
-const FAN_INDEXES: u32 = 3 * 1024;
-
 /// D3DSTENCILOP_*.
 fn stencil_operation(value: u32) -> wgpu::StencilOperation {
     use wgpu::StencilOperation::*;
@@ -1160,19 +1024,11 @@ struct RenderTexture {
     size: (u32, u32),
 }
 
-struct BufferData {
-    bytes: Vec<u8>,
-    gpu: Option<Rc<wgpu::Buffer>>,
-    index: bool,
-}
-
 #[derive(Default)]
 struct Counts {
     draws: u32,
     other_target: u32,
     no_layout: u32,
-    no_buffer: u32,
-    topology: u32,
     textures: u32,
     texture_updates: u32,
     render_textures: u32,
@@ -1181,29 +1037,19 @@ struct Counts {
     times: [std::time::Duration; TIME_COUNT],
     /// The frames that are complete.
     frames: u32,
-    /// The geometry records, their bytes, the draws from them, the draws that named a
-    /// geometry but took the buffers of the device, the records that did not parse, and the
-    /// geometries whose bytes differ from the buffers of the device.
+    /// The geometry records, their bytes, the draws from them, the records that did not
+    /// parse, and the draws of more index entries than their geometry has.
     geometry_records: u32,
     geometry_bytes: u64,
     geometry_draws: u32,
-    geometry_fallbacks: u32,
     geometry_bad: u32,
-    geometry_mismatches: u32,
-    /// The material records; the draws with a material; those whose material the model
-    /// does not make (projected lights or shadows); the draws that differ from their
-    /// derived state, in all and by part (`material::PARTS`).
+    geometry_short: u32,
     material_records: u32,
-    material_draws: u32,
-    material_unmodelled: u32,
-    material_different: u32,
-    material_parts: [u32; 13],
-    /// The shape records, the draws made from them, the records without a geometry or a
-    /// material, and the draws of the device skipped for a shape.
+    /// The shape records, the draws made from them, and the records without a geometry or
+    /// a material.
     shape_records: u32,
     shape_draws: u32,
     shape_missing: u32,
-    shape_skipped: u32,
     /// The shape records with a palette of bones, and the records of particle systems.
     shape_skinned: u32,
     shape_particles: u32,
@@ -1225,8 +1071,6 @@ struct Counts {
     /// The opaque draws that were sorted, and the draws that became an instance of another.
     sorted_draws: u32,
     instanced_draws: u32,
-    /// The draws that differ, by the class of their object.
-    material_classes: HashMap<u32, u32>,
     screen_draws: u32,
     screen_draws_lost: u32,
     target_copies: u32,
@@ -1741,7 +1585,6 @@ struct Renderer {
     /// textures: the D3D12 backend has places for 2048 samplers only, and the sets of sampler
     /// values are few.
     sampler_groups: HashMap<[[u32; 5]; STAGES], Rc<wgpu::BindGroup>>,
-    buffers: HashMap<u32, BufferData>,
     /// The geometry records, by the geometry data of the game.
     geometries: HashMap<u32, Geometry>,
     /// The index buffer of the quads of the particle systems, as the game keeps one: the
@@ -1757,8 +1600,6 @@ struct Renderer {
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
     instancing: bool,
-    /// The indexes of a triangle fan as a triangle list.
-    fan_indexes: wgpu::Buffer,
     /// For a draw in screen coordinates: the pipelines without and with blend, the layout of
     /// its group, and its sampler.
     screen_pipelines: [Option<wgpu::RenderPipeline>; 2],
@@ -1920,12 +1761,6 @@ impl Renderer {
                 &[255, 255, 255, 255],
             )
             .create_view(&Default::default()));
-        let fan: Vec<u16> = (0..FAN_INDEXES as u16 / 3).flat_map(|n| [0, n + 1, n + 2]).collect();
-        let fan_indexes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::cast_slice(&fan),
-            usage: wgpu::BufferUsages::INDEX,
-        });
         // The inputs a vertex does not have, for each instance of a draw.
         let defaults = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
@@ -1983,13 +1818,11 @@ impl Renderer {
             samplers: HashMap::new(),
             texture_groups: HashMap::new(),
             sampler_groups: HashMap::new(),
-            buffers: HashMap::new(),
             geometries: HashMap::new(),
             quad_indexes: None,
             materials: HashMap::new(),
             derived: HashMap::new(),
             defaults,
-            fan_indexes,
             screen_pipelines: [None, None],
             screen_layout: None,
             screen_sampler: None,
@@ -2373,17 +2206,6 @@ impl Renderer {
         self.counts.texture_updates += 1;
     }
 
-    /// Keeps the bytes of a buffer data record.
-    fn buffer_data(&mut self, data: &[u8]) {
-        let (handle, offset, size) = (word(data, 0), word(data, 4) as usize, word(data, 8) as usize);
-        let buffer = self.buffers.entry(handle).or_insert(BufferData { bytes: Vec::new(), gpu: None, index: false });
-        if buffer.bytes.len() < offset + size {
-            buffer.bytes.resize(offset + size, 0);
-        }
-        buffer.bytes[offset..offset + size].copy_from_slice(&data[12..12 + size]);
-        buffer.gpu = None;
-    }
-
     /// A geometry record: resident buffers for the draws that name it.
     fn geometry(&mut self, data: &[u8]) {
         let (handle, fvf, stride, vertices, entries, strips) = (word(data, 0), word(data, 12), word(data, 16), word(data, 20), word(data, 24), word(data, 28));
@@ -2394,15 +2216,13 @@ impl Renderer {
             self.counts.geometry_bad += 1;
             return;
         }
-        let vertex_bytes = data[vertex_at..index_at].to_vec();
-        let index_bytes = data[index_at..index_end].to_vec();
         let strip_lengths: Vec<u16> = (0..strips as usize).map(|i| u16::from_le_bytes([data[32 + i * 2], data[33 + i * 2]])).collect();
         let make = |bytes: &[u8], usage: wgpu::BufferUsages| Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytes, usage }));
-        let vertex = make(&vertex_bytes, wgpu::BufferUsages::VERTEX);
-        let index = make(&index_bytes, wgpu::BufferUsages::INDEX);
+        let vertex = make(&data[vertex_at..index_at], wgpu::BufferUsages::VERTEX);
+        let index = make(&data[index_at..index_end], wgpu::BufferUsages::INDEX);
         self.counts.geometry_records += 1;
         self.counts.geometry_bytes += data.len() as u64;
-        self.geometries.insert(handle, Geometry { fvf, stride, vertices, entries, strips: strip_lengths, vertex, index, vertex_bytes, index_bytes, checked: std::cell::Cell::new(false) });
+        self.geometries.insert(handle, Geometry { fvf, stride, entries, strips: strip_lengths, vertex, index });
     }
 
     /// The geometry of a particle system for this frame, from the particles of its shape
@@ -2448,24 +2268,9 @@ impl Renderer {
         let index = self.quad_indexes.as_ref().map(|(_, buffer)| buffer.clone()).expect("the quad index buffer was just made");
         let vertex = Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("particles"), contents: &bytes, usage: wgpu::BufferUsages::VERTEX }));
         self.counts.shape_particles += 1;
-        // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1. The bytes stay out: the
-        // comparison with the buffers of the device is for the resident geometries.
-        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, vertices: quads * 4, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_bytes: Vec::new(), index_bytes: Vec::new(), checked: std::cell::Cell::new(true) };
+        // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
+        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index };
         self.geometries.insert(handle, geometry);
-    }
-
-    /// The buffer on the GPU with the bytes that the game wrote last.
-    fn gpu_buffer(&mut self, handle: u32, index: bool) -> Option<Rc<wgpu::Buffer>> {
-        let buffer = self.buffers.get_mut(&handle)?;
-        if buffer.gpu.is_none() || buffer.index != index {
-            buffer.index = index;
-            buffer.gpu = Some(Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: None,
-                contents: &buffer.bytes,
-                usage: if index { wgpu::BufferUsages::INDEX } else { wgpu::BufferUsages::VERTEX },
-            })));
-        }
-        buffer.gpu.clone()
     }
 
     fn sampler(&mut self, values: [u32; 5]) -> Rc<wgpu::Sampler> {
@@ -2588,10 +2393,33 @@ impl Renderer {
     }
 }
 
+/// The facts of the shape record in progress, or of the last one: what is the same for each
+/// pass of its draw.
+struct ShapeFacts {
+    /// The geometry handle of the record.
+    geometry: u32,
+    fvf: u32,
+    stride: u32,
+    world: [f32; 16],
+    /// The world matrix is relative to the origin of the scene.
+    relative: bool,
+    /// The `D3DMATERIAL8`: diffuse, ambient, specular, emissive with the alpha, then power.
+    material: [f32; 17],
+    /// `D3DRS_AMBIENT` of the draw.
+    ambient: u32,
+    /// The fill mode of the material (D3DFILLMODE: 2 lines, 3 solid).
+    fill: u32,
+    /// The lights of the draw from their records: the key, then the `D3DLIGHT8`,
+    /// `STATE_LIGHT_SIZE` bytes each.
+    lights: Vec<u8>,
+}
+
 /// What the stream said before a draw.
 struct Stream {
     view: [f32; 16],
     projection: [f32; 16],
+    /// The render states that code of the game outside its renderer sent to the device (the
+    /// film player, the Code Patch). The states of a shape draw come from its records.
     render_states: HashMap<u32, u32>,
     viewport: Option<([f32; 4], [f32; 2])>,
     back_buffer: bool,
@@ -2607,48 +2435,33 @@ struct Stream {
     object_class: u32,
     /// The sky values of the extension for the draw in progress, or `None`.
     sky: Option<[[f32; 4]; 8]>,
-    state: Vec<u8>,
-    /// The geometry handle of the object of the draws that follow, or 0.
-    geometry: u32,
-    /// The material handle of the object of the draws that follow, or 0.
-    material: u32,
-    /// The number of the pass of the draw in progress: later passes of one geometry count
-    /// up from the first draw of it.
-    pass: u32,
-    /// The object of the draws that follow was drawn from its shape record: the draws of
-    /// the device for it are skipped.
-    shape_drawn: bool,
-    /// The fill mode of the shape record in progress, from its derived material: the game
-    /// sends `D3DRS_FILLMODE` as a command after the record, so a draw from the record
-    /// cannot take it from the commands.
-    shape_fill: Option<u32>,
-    /// The state that the shape record in progress was drawn with, for the comparison with
-    /// the packet of the device draw that follows it (`MGE_XE_STATE_DEBUG`).
-    shape_state: Vec<u8>,
+    shape: ShapeFacts,
     /// The fog of the shape record in progress (flag 32): the colour, the start, the end
-    /// and the range fog flag, as the render state of the device gets them from the fog
-    /// property of the draw. The game sends those as commands after the record.
+    /// and the range fog flag, as the render state of the game gets them from the fog
+    /// property of the draw. `None` for a draw without fog.
     shape_fog: Option<[u32; 4]>,
-    /// The colours of the material from the last shape record, or `None`.
-    shape_material: Option<[f32; 17]>,
+    /// The fog of the last shape record that had one: the fog states of the device of the
+    /// game stay as the last draw with fog set them.
+    fog: [u32; 4],
+    /// `D3DRS_AMBIENTMATERIALSOURCE` as the last shape record with a value for it set it:
+    /// the light manager of the game leaves the state of the draw before for a material
+    /// without one (see `material::Derived::sources`).
+    ambient_source: u32,
     /// The bones of the skinned shape in progress in the bones of the frame: the first and
     /// the number, or `None` for a draw that is not skinned.
     shape_bones: Option<(u32, u32)>,
 }
 
 impl Stream {
-
-    fn draw_data(&self, counts: &mut Counts, frame_lights: &mut Vec<LightData>) -> DrawData {
-        let s = &self.state;
+    /// The data of one pass of the shape in progress for the shader.
+    fn draw_data(&self, derived: &material::Derived, pass: &Pass, counts: &mut Counts, frame_lights: &mut Vec<LightData>) -> DrawData {
+        let shape = &self.shape;
         let mut data = DrawData::zeroed();
-        let fvf = word(s, state::VERTEX_FORMAT);
-        // The world matrices are relative to the camera when the scene has an origin and the
-        // packet says so. Then the camera is at 0.
-        let relative = self.origin.filter(|_| word(s, state::WORLD_RELATIVE_MASK) & 1 != 0);
-        data.world[0] = floats(s, state::WORLD);
-        for i in 0..3 {
-            data.world[i + 1] = floats(s, state::BLEND_WORLDS + i * 64);
-        }
+        let fvf = shape.fvf;
+        // The world matrix is relative to the camera when the scene has an origin and the
+        // record says so. Then the camera is at 0.
+        let relative = self.origin.filter(|_| shape.relative);
+        data.world[0] = shape.world;
         data.view = self.view;
         if relative.is_some() {
             data.view[12] = 0.0;
@@ -2660,24 +2473,15 @@ impl Stream {
             data.pixel = [1.0 / rectangle[2].max(1.0), -1.0 / rectangle[3].max(1.0), 0.0, 0.0];
         }
 
-        let material: [f32; 17] = floats(s, state::MATERIAL);
+        let material = &shape.material;
         data.material_diffuse = material[0..4].try_into().unwrap();
         data.material_ambient = material[4..8].try_into().unwrap();
         data.material_emissive = material[12..16].try_into().unwrap();
-        data.scene_ambient = color(known(word(s, state::AMBIENT), 0));
-        let state_of = |index: u32| self.render_states.get(&index).copied();
-        // D3DRS_FOGCOLOR 34, FOGSTART 36, FOGEND 37, RANGEFOGENABLE 48, TEXTUREFACTOR 60. A
-        // shape record brings the fog of its draw; the game sends the states of the fog
-        // property as commands after the record, so a draw from a record cannot take them
-        // from the commands.
-        let fog_of_record = self.shape_fog.filter(|_| self.shape_drawn);
-        let (fog_color, start, end, range) = match fog_of_record {
-            Some(fog) => (Some(fog[0]), Some(fog[1]), Some(fog[2]), Some(fog[3])),
-            None => (state_of(34), state_of(36), state_of(37), state_of(48)),
-        };
-        if let (1, Some(fog_color), Some(start), Some(end)) = (known(word(s, state::FOG_ENABLE), 0), fog_color, start, end) {
-            data.fog_color = color(fog_color);
-            data.fog = [f32::from_bits(start), f32::from_bits(end), 1.0, (range.unwrap_or(0) != 0) as u32 as f32];
+        data.scene_ambient = color(known(shape.ambient, 0));
+        // The fog of the draw: the colour, the start, the end, the range fog flag.
+        if let (true, Some(fog)) = (derived.fog, self.shape_fog) {
+            data.fog_color = color(fog[0]);
+            data.fog = [f32::from_bits(fog[1]), f32::from_bits(fog[2]), 1.0, (fog[3] != 0) as u32 as f32];
             // The fog of the extension is for the world only: a perspective projection.
             if let (Some((start, end)), true) = (self.fog_range, self.projection[11] == 1.0) {
                 data.fog[0] = start;
@@ -2688,13 +2492,14 @@ impl Stream {
                 data.fog[3] = 1.0;
             }
         }
-        data.texture_factor = color(state_of(60).unwrap_or(0xFFFF_FFFF));
+        // D3DRS_TEXTUREFACTOR is 60.
+        data.texture_factor = color(self.render_states.get(&60).copied().unwrap_or(0xFFFF_FFFF));
         if let Some(sky) = self.sky {
             data.extension = sky;
-            if word(s, state::TEXTURES) == 0 {
+            if pass.stages[0].texture == 0 {
                 // The sky dome has no texture.
                 data.counts[3] |= 4;
-            } else if self.object_class == 6 && known(word(s, state::DESTINATION_BLEND), 0) == 6 {
+            } else if self.object_class == 6 && pass.blend[2] == 6 {
                 // MGE_LINK_CLASS_SKY_MOON_SHADOW with D3DBLEND_INVSRCALPHA: the disc that keeps
                 // the stars out of a moon.
                 data.counts[3] |= 8;
@@ -2702,80 +2507,71 @@ impl Stream {
         }
 
         let has_color = fvf & 0x40 != 0;
-        data.flags = [
-            (known(word(s, state::LIGHTING), 1) != 0) as u32,
-            (fvf & 0x10 != 0) as u32,
-            has_color as u32,
-            known(word(s, state::VERTEX_BLEND), 0).min(3),
-        ];
-        let alpha_test = known(word(s, state::ALPHA_TEST_ENABLE), 0) != 0;
+        data.flags = [derived.lighting as u32, (fvf & 0x10 != 0) as u32, has_color as u32, 0];
+        // D3DMCS_COLOR1 (1) is the default of the diffuse source and D3DMCS_MATERIAL (0) of
+        // the emissive source.
         data.more = [
-            if has_color { known(word(s, state::DIFFUSE_SOURCE), 1) } else { 0 },
-            if has_color { known(word(s, state::EMISSIVE_SOURCE), 0) } else { 0 },
-            if alpha_test { known(word(s, state::ALPHA_FUNCTION), 8) } else { 0 },
-            known(word(s, state::ALPHA_REFERENCE), 0),
+            if has_color { derived.sources[0].unwrap_or(1) } else { 0 },
+            if has_color { derived.sources[1].unwrap_or(0) } else { 0 },
+            if derived.alpha_test[0] != 0 { derived.alpha_test[1] } else { 0 },
+            derived.alpha_test[2],
         ];
 
-        let lights = word(s, state::LIGHT_COUNT) as usize;
+        let lights = shape.lights.len() / STATE_LIGHT_SIZE;
         counts.most_lights = counts.most_lights.max(lights as u32);
-        data.light_range = [frame_lights.len() as u32, 0, 0, 0];
+        data.light_range = [frame_lights.len() as u32, lights as u32, 0, 0];
+        data.counts[0] = lights as u32;
         if let Some((first, _)) = self.shape_bones {
             // A skinned shape: the vertex blend reads four bones of the palette of the frame.
             data.flags[3] = 4;
             data.light_range[2] = first;
         }
-        for i in 0..lights {
-            let at = state::SIZE + i * state::LIGHT_SIZE + 4;
-            if at + 104 > s.len() {
-                break;
-            }
-            let mut position: [f32; 3] = floats(s, at + 13 * 4);
+        for light in shape.lights.chunks_exact(STATE_LIGHT_SIZE) {
+            // The `D3DLIGHT8` after the key: the type, the diffuse, specular and ambient
+            // colours, the position, the direction, the range, the falloff, the three
+            // attenuations and the two angles of a spot light.
+            let l = &light[4..];
+            let mut position: [f32; 3] = floats(l, 13 * 4);
             if let Some(origin) = relative {
                 for axis in 0..3 {
                     position[axis] = (position[axis] as f64 - origin[axis]) as f32;
                 }
             }
-            let direction: [f32; 3] = floats(s, at + 16 * 4);
-            let attenuation: [f32; 3] = floats(s, at + 21 * 4);
+            let direction: [f32; 3] = floats(l, 16 * 4);
+            let attenuation: [f32; 3] = floats(l, 21 * 4);
             frame_lights.push(LightData {
-                diffuse: floats(s, at + 4),
-                ambient: floats(s, at + 9 * 4),
-                position: [position[0], position[1], position[2], word(s, at) as f32],
-                direction: [direction[0], direction[1], direction[2], float(s, at + 19 * 4)],
-                // The falloff, and the two angles of a spot light: words 20, 24 and 25.
-                attenuation: [attenuation[0], attenuation[1], attenuation[2], float(s, at + 20 * 4)],
+                diffuse: floats(l, 4),
+                ambient: floats(l, 9 * 4),
+                position: [position[0], position[1], position[2], word(l, 0) as f32],
+                direction: [direction[0], direction[1], direction[2], float(l, 19 * 4)],
+                attenuation: [attenuation[0], attenuation[1], attenuation[2], float(l, 20 * 4)],
                 // The plugin puts the radius of a light of the game into its first specular word.
-                cone: [(float(s, at + 24 * 4) * 0.5).cos(), (float(s, at + 25 * 4) * 0.5).cos(), float(s, at + 5 * 4), 0.0],
+                cone: [(float(l, 24 * 4) * 0.5).cos(), (float(l, 25 * 4) * 0.5).cos(), float(l, 5 * 4), 0.0],
             });
-            data.counts[0] = i as u32 + 1;
-            data.light_range[1] = i as u32 + 1;
         }
 
         let mut stages = 0;
         while stages < 8 {
-            let at = state::STAGES + stages * state::STAGE_SIZE;
-            let op = known(word(s, at), 1);
-            if op == 1 {
+            let stage = &pass.stages[stages];
+            if stage.color[0] == 1 {
                 break;
             }
             if stages < STAGES {
                 // The coordinate index has the way to generate it in its high word. The
                 // transform flags are the number of parts, and 256 for a projected coordinate.
-                let coordinate = known(word(s, at + 9 * 4), stages as u32);
-                let transform = known(word(s, at + 10 * 4), 0);
+                let (coordinate, transform) = (stage.coordinate, stage.transform);
                 if coordinate >> 16 != 0 || transform != 0 {
                     counts.coordinate_work += 1;
                 }
-                // D3DTA_TEXTURE is 2 and D3DTA_CURRENT is 1: the defaults of Direct3D.
+                // The result argument of a stage is D3DTA_CURRENT (1).
                 data.stages[stages] = StageData {
-                    color: [op, known(word(s, at + 4), 2), known(word(s, at + 8), 1), known(word(s, at + 24), 1)],
-                    alpha: [known(word(s, at + 12), 2), known(word(s, at + 16), 2), known(word(s, at + 20), 1), 0],
+                    color: [stage.color[0], stage.color[1], stage.color[2], 1],
+                    alpha: [stage.alpha[0], stage.alpha[1], stage.alpha[2], 0],
                     coordinate: [coordinate >> 16 & 3, coordinate & 3, transform & 7, (transform & 256 != 0) as u32],
-                    // The four values of the bump matrix, then the scale and the offset: floats.
-                    bump: core::array::from_fn(|i| f32::from_bits(known(word(s, at + (11 + i) * 4), 0))),
-                    luminance: [f32::from_bits(known(word(s, at + 15 * 4), 0)), f32::from_bits(known(word(s, at + 16 * 4), 0)), 0.0, 0.0],
+                    bump: [stage.bump[0], stage.bump[1], stage.bump[2], stage.bump[3]],
+                    luminance: [stage.bump[4], stage.bump[5], 0.0, 0.0],
                 };
-                data.texture_transforms[stages] = floats(s, state::TEXTURE_TRANSFORMS + stages * 64);
+                data.texture_transforms[stages] = stage.texture_transform;
             }
             stages += 1;
         }
@@ -2783,8 +2579,7 @@ impl Stream {
             counts.more_stages += 1;
         }
         data.counts[1] = stages.min(STAGES) as u32;
-        // D3DRS_AMBIENTMATERIALSOURCE is 147. The game sends it as a command.
-        data.counts[2] = if has_color { state_of(147).unwrap_or(0) } else { 0 };
+        data.counts[2] = if has_color { self.ambient_source } else { 0 };
         data
     }
 }
@@ -2864,14 +2659,6 @@ struct Player {
     /// clears its depth before its later scenes.
     world_depth: Option<wgpu::Texture>,
     world_depth_kept: bool,
-    /// The draws take the buffers of the geometry records. `MGE_XE_GEOMETRY=0` in the
-    /// environment turns it off, for a comparison of the two paths on one capture.
-    use_geometry: bool,
-    /// The draws come from the shape records where there are any; `MGE_XE_SHAPES=0` makes
-    /// the draws of the device count instead.
-    use_shapes: bool,
-    /// A draw made from a shape record is in progress (it goes through `draw` too).
-    from_shape: bool,
     /// The counts at the last mark. See `tag::MARK`.
     mark_times: [std::time::Duration; TIME_COUNT],
     mark_frames: u32,
@@ -2899,15 +2686,11 @@ impl Player {
                 fog_range: None,
                 object_class: 0,
                 sky: None,
-                state: Vec::new(),
-                geometry: 0,
-                material: 0,
-                pass: 0,
-                shape_drawn: false,
-                shape_fill: None,
-                shape_state: Vec::new(),
+                // D3DFILL_SOLID is 3.
+                shape: ShapeFacts { geometry: 0, fvf: 0, stride: 0, world: [0.0; 16], relative: false, material: [0.0; 17], ambient: 0, fill: 3, lights: Vec::new() },
                 shape_fog: None,
-                shape_material: None,
+                fog: [0; 4],
+                ambient_source: 0,
                 shape_bones: None,
             },
             encoder: None,
@@ -2948,9 +2731,6 @@ impl Player {
             depth_copy: None,
             world_depth: None,
             world_depth_kept: false,
-            use_geometry: std::env::var("MGE_XE_GEOMETRY").map_or(true, |v| v != "0"),
-            use_shapes: std::env::var("MGE_XE_SHAPES").map_or(true, |v| v != "0"),
-            from_shape: false,
             mark_times: [std::time::Duration::ZERO; TIME_COUNT],
             mark_frames: 0,
             mark_draws: 0,
@@ -3109,92 +2889,12 @@ impl Player {
         self.encoder.is_some()
     }
 
-    /// Compares the state derived from the material of the object with the state packet of
-    /// the draw in progress, and counts the differences. See `material`.
-    fn compare_material(renderer: &mut Renderer, stream: &Stream, fvf: u32, fill: u32, pass: usize) {
-        let handle = stream.material;
-        let sets = (fvf >> 8) & 0xF;
-        let derived = match renderer.derived.get(&(handle, sets)) {
-            Some(d) => d.clone(),
-            None => {
-                let Some(m) = renderer.materials.get(&handle) else { return };
-                let d = Rc::new(material::derive(m, sets));
-                renderer.derived.insert((handle, sets), d.clone());
-                d
-            }
-        };
-        renderer.counts.material_draws += 1;
-        if !derived.modelled {
-            renderer.counts.material_unmodelled += 1;
-            return;
-        }
-        let s = &stream.state;
-        let mut stages: Vec<([u32; 3], [u32; 3], u32)> = Vec::new();
-        for i in 0..8 {
-            let at = state::STAGES + i * state::STAGE_SIZE;
-            let op = known(word(s, at), 1);
-            if op == 1 {
-                break;
-            }
-            let v = |k: usize| word(s, at + k * 4);
-            stages.push(([op, known(v(1), 2), known(v(2), 1)], [known(v(3), 2), known(v(4), 2), known(v(5), 1)], known(v(9), i as u32) & 0xFFFF));
-        }
-        let textures: Vec<u32> = (0..8).map(|i| word(s, state::TEXTURES + i * 4)).collect();
-        let samplers: Vec<[u32; 5]> = (0..8).map(|i| core::array::from_fn(|k| known(word(s, state::SAMPLERS + i * 20 + k * 4), [1, 1, 1, 1, 0][k]))).collect();
-        let st: [u32; 8] = core::array::from_fn(|i| known(word(s, state::STENCIL + i * 4), 0));
-        let packet = material::Packet {
-            stages: &stages,
-            textures: &textures,
-            samplers: &samplers,
-            blend: [(known(word(s, state::BLEND_ENABLE), 0) != 0) as u32, known(word(s, state::SOURCE_BLEND), 2), known(word(s, state::DESTINATION_BLEND), 1)],
-            alpha_test: [(known(word(s, state::ALPHA_TEST_ENABLE), 0) != 0) as u32, known(word(s, state::ALPHA_FUNCTION), 8), known(word(s, state::ALPHA_REFERENCE), 0)],
-            depth: [(known(word(s, state::DEPTH_ENABLE), 1) != 0) as u32, (known(word(s, state::DEPTH_WRITE), 1) != 0) as u32, known(word(s, state::DEPTH_FUNCTION), 4)],
-            cull: known(word(s, state::CULL_MODE), 3),
-            fill,
-            stencil: [st[0], st[4], st[5], st[6], st[1], st[2], st[3]],
-            lighting: (known(word(s, state::LIGHTING), 1) != 0) as u32,
-            sources: [known(word(s, state::DIFFUSE_SOURCE), 1), known(word(s, state::EMISSIVE_SOURCE), 0)],
-            material: floats(s, state::MATERIAL),
-        };
-        let bits = material::compare(&derived, pass, &packet, stream.shape_material);
-        if bits != 0 {
-            renderer.counts.material_different += 1;
-            for (i, count) in renderer.counts.material_parts.iter_mut().enumerate() {
-                *count += (bits >> i) & 1;
-            }
-            *renderer.counts.material_classes.entry(stream.object_class).or_insert(0) += 1;
-            // `MGE_XE_MATERIAL_DEBUG=N` prints the first N differences.
-            static LEFT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
-            if LEFT.load(std::sync::atomic::Ordering::Relaxed) < 0 {
-                LEFT.store(std::env::var("MGE_XE_MATERIAL_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
-            }
-            if LEFT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > 0 {
-                let parts: Vec<&str> = material::PARTS.iter().enumerate().filter(|(i, _)| bits >> i & 1 != 0).map(|(_, n)| *n).collect();
-                println!(
-                    "material difference: class {} pass {} handle {:#x} parts {:?}\n  derived: stages {:?} blend {:?} alpha {:?} depth {:?} cull {} stencil {:?} lighting {} sources {:?}\n  packet:  stages {:?} textures {:?} blend {:?} alpha {:?} depth {:?} cull {} stencil {:?} lighting {} sources {:?}\n  material {:?} flags {:#x} apply {} maps {:?}",
-                    stream.object_class, pass, handle, parts,
-                    derived.passes.get(pass), derived.blends.get(pass), derived.alpha_test, derived.depth, derived.cull, derived.stencil, derived.lighting, derived.sources,
-                    packet.stages, &packet.textures[..packet.stages.len().max(1)], packet.blend, packet.alpha_test, packet.depth, packet.cull, packet.stencil, packet.lighting, packet.sources,
-                    renderer.materials.get(&handle).map(|m| m.material), renderer.materials.get(&handle).map_or(0, |m| m.flags), renderer.materials.get(&handle).map_or(0, |m| m.apply_mode),
-                    renderer.materials.get(&handle).map(|m| m.maps.iter().filter(|x| x.present).map(|x| (x.texture, x.set, x.clamp, x.filter)).collect::<Vec<_>>())
-                );
-                println!("  packet samplers {:?}", &packet.samplers[..packet.stages.len().max(1)]);
-            }
-        }
-    }
-
-    /// A shape record: the draws of the object from its geometry and material records. The
-    /// state packet of each pass is made from the derived state, so that the draw goes the
-    /// way of a draw of the device.
+    /// A shape record: the draws of the object from its geometry and material records, one
+    /// for each pass of the state derived from its material.
     fn shape(&mut self, data: &[u8]) {
         let (geometry, material, flags, light_count, ambient) = (word(data, 0), word(data, 4), word(data, 8), word(data, 12) as usize, word(data, 16));
         self.renderer.counts.shape_records += 1;
-        if !self.use_shapes {
-            return;
-        }
         let colours: [f32; 14] = core::array::from_fn(|i| float(data, 84 + i * 4));
-        let d3d_material = material::d3d_material(&colours);
-        self.stream.shape_material = Some(d3d_material);
         let bone_count = word(data, 140) as usize;
         let lights_at = 20 + 64 + 56 + 4;
         // The stages of the texture effects (flag 16): the environment map, the fog map.
@@ -3210,9 +2910,12 @@ impl Player {
         }
         let effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, effects_at + (e * EFFECT_STAGE_WORDS + i) * 4))));
         self.stream.shape_fog = has_fog.then(|| core::array::from_fn(|i| word(data, fog_at + i * 4)));
-        // The lights of the draw from their records, as a state packet has them: the key
-        // in place of the device index, then the D3DLIGHT8.
-        let mut lights = Vec::with_capacity(light_count * STATE_LIGHT_SIZE);
+        if let Some(fog) = self.stream.shape_fog {
+            self.stream.fog = fog;
+        }
+        // The lights of the draw from their records: the key, then the D3DLIGHT8.
+        let lights = &mut self.stream.shape.lights;
+        lights.clear();
         for i in 0..light_count {
             let key = word(data, lights_at + i * 4);
             match self.renderer.lights_known.get(&key) {
@@ -3223,8 +2926,7 @@ impl Player {
                 None => self.renderer.counts.light_missing += 1,
             }
         }
-        let light_count = lights.len() / STATE_LIGHT_SIZE;
-        let lights = &lights[..];
+        self.stream.shape.ambient = ambient;
         // The bones of a skinned shape go to the palette of the frame.
         self.stream.shape_bones = (bone_count != 0).then(|| {
             let first = self.frame_bones.len() as u32;
@@ -3246,60 +2948,51 @@ impl Player {
             let axes: [f32; 6] = core::array::from_fn(|i| float(data, tail + 8 + i * 4));
             self.renderer.particles(geometry, float(data, tail + 4), [axes[0], axes[1], axes[2]], [axes[3], axes[4], axes[5]], &data[at..at + count * 20]);
         }
-        let sets = match self.renderer.geometries.get(&geometry) {
-            Some(g) => (g.fvf >> 8) & 0xF,
-            None => {
-                self.renderer.counts.shape_missing += 1;
-                return;
-            }
+        let Some((fvf, stride, entries, strips)) = self.renderer.geometries.get(&geometry).map(|g| (g.fvf, g.stride, g.entries, g.strips.clone())) else {
+            self.renderer.counts.shape_missing += 1;
+            return;
+        };
+        let sets = (fvf >> 8) & 0xF;
+        let Some(m) = self.renderer.materials.get(&material).cloned() else {
+            self.renderer.counts.shape_missing += 1;
+            return;
         };
         let derived = match self.renderer.derived.get(&(material, sets)) {
             Some(d) => d.clone(),
             None => {
-                let Some(m) = self.renderer.materials.get(&material) else {
-                    self.renderer.counts.shape_missing += 1;
-                    return;
-                };
-                let d = Rc::new(material::derive(m, sets));
+                let d = Rc::new(material::derive(&m, sets));
                 self.renderer.derived.insert((material, sets), d.clone());
                 d
             }
         };
-        let Some(m) = self.renderer.materials.get(&material).cloned() else { return };
-        let (fvf, stride, vertices, entries, strips) = {
-            let g = &self.renderer.geometries[&geometry];
-            (g.fvf, g.stride, g.vertices, g.entries, g.strips.clone())
-        };
-        let world: [f32; 16] = core::array::from_fn(|i| float(data, 20 + i * 4));
-        self.stream.geometry = geometry;
-        self.stream.material = 0;
-        self.stream.shape_drawn = true;
-        self.stream.shape_fill = Some(derived.fill);
-        self.from_shape = true;
+        let shape = &mut self.stream.shape;
+        shape.geometry = geometry;
+        shape.fvf = fvf;
+        shape.stride = stride;
+        shape.world = core::array::from_fn(|i| float(data, 20 + i * 4));
+        shape.relative = flags & 1 != 0;
+        shape.material = material::d3d_material(&colours);
+        shape.fill = derived.fill;
+        if let Some(source) = derived.sources[2] {
+            self.stream.ambient_source = source;
+        }
         for pass in 0..derived.passes.len() {
-            let mut state = synthesize_state(&derived, pass, &m, &self.renderer.textures, fvf, stride, vertices, entries, &world, flags & 1 != 0, ambient, light_count as u32, &d3d_material, effects.as_ref());
-            state.extend_from_slice(lights);
-            self.stream.shape_state = state.clone();
-            self.stream.state = state;
-            // A draw command as a COMMAND record has it: the command and three words, then
-            // the primitive type, the least index, the vertices, the first index, the
-            // primitives.
-            let command_bytes = |words: [u32; 5]| -> Vec<u8> { [COMMAND_DRAW_INDEXED, 0, 0, 0].iter().chain(words.iter()).flat_map(|v| v.to_le_bytes()).collect() };
+            let state = Pass::new(&derived, pass, &m, &self.renderer.textures, effects.as_ref());
+            // The primitive type of Direct3D, the first index and the number of indexes.
             // The flag 64: lines, as a line list of the index entries of the geometry.
             if flags & 64 != 0 {
-                self.draw(&command_bytes([2, 0, vertices, 0, entries / 2]), true);
+                self.draw(&derived, &state, 2, 0, entries / 2 * 2);
             } else if strips.is_empty() {
-                self.draw(&command_bytes([4, 0, vertices, 0, entries / 3]), true);
+                self.draw(&derived, &state, 4, 0, entries / 3 * 3);
             } else {
                 let mut start = 0u32;
                 for &length in &strips {
-                    self.draw(&command_bytes([5, 0, vertices, start, (length as u32).saturating_sub(2)]), true);
+                    self.draw(&derived, &state, 5, start, (length as u32).max(2));
                     start += length as u32;
                 }
             }
             self.renderer.counts.shape_draws += 1;
         }
-        self.from_shape = false;
         self.stream.shape_bones = None;
     }
 
@@ -3371,7 +3064,6 @@ impl Player {
                     }
                 }
             }
-            tag::BUFFER_DATA => self.renderer.buffer_data(data),
             tag::GEOMETRY if data.len() >= 32 => self.renderer.geometry(data),
             tag::MATERIAL if data.len() >= 4 => {
                 if let Some(parsed) = material::Material::parse(&data[4..]) {
@@ -3424,20 +3116,10 @@ impl Player {
                     self.wants_texture = word(data, 4) != 0;
                 }
             }
-            tag::DRAW_STATE => self.stream.state = data.to_vec(),
-            // The kind, the class, the flags and the geometry of the object; a geometry
-            // handle when the flags say so.
+            // The kind and the class of the object of the shape records that follow.
             tag::OBJECT if data.len() >= 8 => {
                 self.stream.object_class = word(data, 4);
-                let flags = word(data, 8);
-                let more = flags & (OBJECT_HAS_GEOMETRY | OBJECT_HAS_MATERIAL) != 0 && data.len() >= 24;
-                self.stream.geometry = if more && flags & OBJECT_HAS_GEOMETRY != 0 { word(data, 16) } else { 0 };
-                self.stream.material = if more && flags & OBJECT_HAS_MATERIAL != 0 { word(data, 20) } else { 0 };
-                self.stream.pass = 0;
-                self.stream.shape_drawn = false;
-                self.stream.shape_fill = None;
                 self.stream.shape_fog = None;
-                self.stream.shape_material = None;
                 self.stream.shape_bones = None;
             }
             tag::SHAPE if data.len() >= 144 => self.shape(data),
@@ -3521,30 +3203,21 @@ impl Player {
                     _ => {}
                 }
             }
+            // The states of the device of the game that are not a part of a shape: a render
+            // state from code outside the renderer of the game (the film player sets the
+            // blend of its draws), and the view and the projection of the camera
+            // (D3DTS_VIEW is 2 and D3DTS_PROJECTION is 3). The draws of the game come as
+            // shape records and as draws with their vertices; a command of another kind, in
+            // a capture from before, does nothing.
             tag::COMMAND => match word(data, 0) {
-                // A state command after a state packet is for the draws that follow: the Code
-                // Patch changes the blend and the alpha test around its draws into a
-                // rendered texture.
                 COMMAND_RENDER_STATE => {
                     self.stream.render_states.insert(word(data, 4), word(data, 8));
-                    if let Some(at) = state::of_render_state(word(data, 4)).filter(|at| at + 4 <= self.stream.state.len()) {
-                        self.stream.state[at..at + 4].copy_from_slice(&data[8..12]);
-                    }
-                }
-                COMMAND_STAGE_STATE => {
-                    if let Some(at) = state::of_stage_state(word(data, 4), word(data, 8)).filter(|at| at + 4 <= self.stream.state.len()) {
-                        self.stream.state[at..at + 4].copy_from_slice(&data[12..16]);
-                    }
                 }
                 COMMAND_TRANSFORM if data.len() >= 16 + 64 => match word(data, 4) {
                     2 => self.stream.view = floats(data, 16),
                     3 => self.stream.projection = floats(data, 16),
                     _ => {}
                 },
-                COMMAND_DRAW_INDEXED if self.drawing() && data.len() >= 16 + 20 && self.stream.state.len() >= state::SIZE => self.draw(data, true),
-                // A draw without an index buffer: a screen polygon, for example the picture
-                // of a loading screen or of the main menu.
-                COMMAND_DRAW if self.drawing() && data.len() >= 16 + 12 && self.stream.state.len() >= state::SIZE => self.draw(data, false),
                 _ => {}
             },
             _ => {}
@@ -3655,23 +3328,17 @@ impl Player {
             y.light_range[0] = 0;
             bytemuck::bytes_of(&x) == bytemuck::bytes_of(&y)
         };
-        let same_rc = |a: &Option<Rc<wgpu::Buffer>>, b: &Option<Rc<wgpu::Buffer>>| match (a, b) {
-            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        };
         let can_join = |a: &Draw, b: &Draw| {
             a.data.flags[3] == 0
                 && b.data.flags[3] == 0
                 && a.key == b.key
                 && a.stencil_reference == b.stencil_reference
                 && a.range == b.range
-                && a.fan == b.fan
                 && a.origin == b.origin
                 && Rc::ptr_eq(&a.textures, &b.textures)
                 && Rc::ptr_eq(&a.samplers, &b.samplers)
                 && Rc::ptr_eq(&a.vertices, &b.vertices)
-                && same_rc(&a.indexes, &b.indexes)
+                && Rc::ptr_eq(&a.indexes, &b.indexes)
                 && same_lights(a, b)
                 && same_data(a, b)
         };
@@ -3794,17 +3461,9 @@ impl Player {
         pass.set_vertex_buffer(0, draw.vertices.slice(..));
         pass.set_vertex_buffer(1, renderer.defaults.slice(..));
         pass.set_vertex_buffer(2, renderer.instance_buffer.slice(draw.instances.0 as u64 * 64..));
-        let (first, count, base) = draw.range;
-        let instances = 0..draw.instances.1;
-        if let Some(indexes) = draw.indexes.as_ref() {
-            pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(first..first + count, base, instances);
-        } else if draw.fan {
-            pass.set_index_buffer(renderer.fan_indexes.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(0..count, first as i32, instances);
-        } else {
-            pass.draw(first..first + count, instances);
-        }
+        let (first, count) = draw.range;
+        pass.set_index_buffer(draw.indexes.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(first..first + count, 0, 0..draw.instances.1);
         renderer.counts.times[TIME_DRAW_PASS] += clock.elapsed();
         renderer.counts.draws += 1;
     }
@@ -3823,50 +3482,43 @@ impl Player {
         self.items.push(Item::Post(Box::new(facts)));
     }
 
-    /// The fill mode of the device of the game now (D3DFILLMODE: 1 points, 2 lines, 3
-    /// solid): that of the material of the shape in progress, or the render state 8.
-    fn fill_mode(stream: &Stream, from_shape: bool) -> u32 {
-        stream.shape_fill.filter(|_| from_shape).unwrap_or_else(|| stream.render_states.get(&8).copied().unwrap_or(3))
-    }
-
     /// The facts of the world scene as the stream has them now. With `first`, the sun and
-    /// the ambient light come from the state packet (the first draw of the world); without
-    /// it, they are those of that draw.
+    /// the ambient light come from the shape record in progress (the first draw of the
+    /// world), or from the last one for a world scene without a draw; without it, they are
+    /// those of that draw.
     fn world_facts(&mut self, first: bool) -> WorldFacts {
+        let shape = &self.stream.shape;
         if first {
-            let s = &self.stream.state;
             // The first light of the draw that is a sun or another directional light: type 3,
             // or type 4 for the light that the plugin names as the sun.
-            let mut sun = None;
-            for i in 0..(word(s, state::LIGHT_COUNT) as usize).min(64) {
-                let at = state::SIZE + i * state::LIGHT_SIZE + 4;
-                if at + 104 <= s.len() && matches!(word(s, at), 3 | 4) {
-                    let diffuse: [f32; 3] = floats(s, at + 4);
-                    let light_ambient: [f32; 3] = floats(s, at + 9 * 4);
-                    // The game does not give a direction of length 1.
-                    let direction: [f32; 3] = floats(s, at + 16 * 4);
-                    let length = direction.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
-                    sun = Some((direction.map(|v| v / length), diffuse, light_ambient));
-                    break;
-                }
-            }
-            let ambient = color(known(word(s, state::AMBIENT), 0));
+            let sun = shape.lights.chunks_exact(STATE_LIGHT_SIZE).map(|light| &light[4..]).find(|l| matches!(word(l, 0), 3 | 4)).map(|l| {
+                let diffuse: [f32; 3] = floats(l, 4);
+                let light_ambient: [f32; 3] = floats(l, 9 * 4);
+                // The game does not give a direction of length 1.
+                let direction: [f32; 3] = floats(l, 16 * 4);
+                let length = direction.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
+                (direction.map(|v| v / length), diffuse, light_ambient)
+            });
+            let ambient = color(known(shape.ambient, 0));
             if std::env::var("MGE_XE_REPLAY_DEBUG").is_ok_and(|v| v == "1") {
-                println!("world start: from_shape {} lights {} sun {:?} ambient {:?} state {} bytes", self.from_shape, word(s, state::LIGHT_COUNT), sun, ambient, s.len());
+                println!("world start: lights {} sun {:?} ambient {:?}", shape.lights.len() / STATE_LIGHT_SIZE, sun, ambient);
             }
             self.world_sun = sun;
             self.world_ambient = [ambient[0], ambient[1], ambient[2]];
         }
-        let state_of = |index: u32| self.stream.render_states.get(&index).copied();
+        // The fog and the fill mode as the device of the game has them now: the fog states
+        // of the last draw with fog, and the fill mode of the last draw (D3DFILL_WIREFRAME
+        // is 2).
+        let fog = self.stream.fog;
         WorldFacts {
             target_size: self.size_of_target(),
             view: self.stream.view,
             projection: self.stream.projection,
             interior: self.stream.interior,
-            wireframe: Self::fill_mode(&self.stream, self.from_shape) == 2,
-            fog_color: color(state_of(34).unwrap_or(0)),
-            fog_start: f32::from_bits(state_of(36).unwrap_or(0)),
-            fog_end: f32::from_bits(state_of(37).unwrap_or(0)),
+            wireframe: self.stream.shape.fill == 2,
+            fog_color: color(fog[0]),
+            fog_start: f32::from_bits(fog[1]),
+            fog_end: f32::from_bits(fog[2]),
             sun: self.world_sun,
             ambient: self.world_ambient,
         }
@@ -4059,35 +3711,12 @@ impl Player {
         }
     }
 
-    /// Collects a draw with the current state packet. `data` is the draw command: with an
-    /// index buffer, or the vertices in their order.
-    fn draw(&mut self, data: &[u8], indexed: bool) {
+    /// Collects one draw of a pass of the shape in progress: `topology` is the primitive
+    /// type of Direct3D (2 a line list, 4 a triangle list, 5 a triangle strip), over
+    /// `indexes` entries of the index list of the geometry from `first_index`.
+    fn draw(&mut self, derived: &material::Derived, pass: &Pass, topology: u32, first_index: u32, indexes: u32) {
         if !self.stream.back_buffer {
             self.renderer.counts.other_target += 1;
-            return;
-        }
-        // The object was drawn from its shape record: this is the draw of the device for it.
-        if self.stream.shape_drawn && !self.from_shape {
-            self.renderer.counts.shape_skipped += 1;
-            // `MGE_XE_STATE_DEBUG=1`: the words of the packet of the device that differ from
-            // the state the record was drawn with, by their offset in the packet.
-            if std::env::var("MGE_XE_STATE_DEBUG").is_ok() {
-                let (a, b) = (&self.stream.shape_state, &self.stream.state);
-                let differences: Vec<String> =
-                    (0..a.len().min(b.len())).step_by(4).filter(|&at| word(a, at) != word(b, at)).map(|at| format!("{at}: record {:#x} device {:#x}", word(a, at), word(b, at))).collect();
-                println!(
-                    "skipped draw in frame {} of class {} (geometry {:#x}, vertices {}, format {:#x}, stencil {}; {} and {} bytes): {}",
-                    self.renderer.counts.frames,
-                    self.stream.object_class,
-                    self.stream.geometry,
-                    word(b, 20),
-                    word(b, state::VERTEX_FORMAT),
-                    word(b, state::STENCIL),
-                    a.len(),
-                    b.len(),
-                    differences.join(", ")
-                );
-            }
             return;
         }
         let in_back_buffer = self.target.is_none();
@@ -4131,102 +3760,28 @@ impl Player {
             return;
         }
         let renderer = &mut self.renderer;
-        let s = &self.stream.state;
-        // With an index buffer: primitive type, least index, vertices, first index, primitives.
-        // Without: primitive type, first vertex, primitives.
-        let (topology, first_index, primitives) = if indexed { (word(data, 16), word(data, 28), word(data, 32)) } else { (word(data, 16), word(data, 20), word(data, 24)) };
-        // The GPU has no triangle fan. Without an index buffer, a fan is a triangle list with
-        // the indexes 0, n + 1, n + 2 for the triangle n.
-        let fan = topology == 6 && !indexed && primitives * 3 <= FAN_INDEXES;
-        let (topology, primitives) = if fan { (4, primitives) } else { (topology, primitives) };
-        let indexes = match topology {
-            4 => primitives * 3,
-            5 => primitives + 2,
-            2 => primitives * 2,
-            3 => primitives + 1,
-            1 => primitives,
-            _ => {
-                renderer.counts.topology += 1;
-                return;
-            }
-        };
+        let shape = &self.stream.shape;
+        let stencil = derived.stencil;
         let key = PipelineKey {
-            fvf: word(s, state::VERTEX_FORMAT),
-            stride: word(s, state::VERTEX_STRIDE),
+            fvf: shape.fvf,
+            stride: shape.stride,
             topology,
-            blend: [(known(word(s, state::BLEND_ENABLE), 0) != 0) as u32, known(word(s, state::SOURCE_BLEND), 2), known(word(s, state::DESTINATION_BLEND), 1)],
-            depth: [
-                (known(word(s, state::DEPTH_ENABLE), 1) != 0) as u32,
-                (known(word(s, state::DEPTH_WRITE), 1) != 0) as u32,
-                known(word(s, state::DEPTH_FUNCTION), 4),
-            ],
-            cull: known(word(s, state::CULL_MODE), 3),
-            // D3DRS_FILLMODE is 8. The game sends it as a command after the shape record of
-            // its object: a draw from the record takes the fill of its derived material.
-            fill: Self::fill_mode(&self.stream, self.from_shape),
-            color_write: 15,
-            stencil: {
-                let v: [u32; 8] = core::array::from_fn(|i| word(s, state::STENCIL + i * 4));
-                if known(v[0], 0) == 0 {
-                    [0; 7]
-                } else {
-                    [1, known(v[1], 1), known(v[2], 1), known(v[3], 1), known(v[4], 8), known(v[6], !0), known(v[7], !0)]
-                }
-            },
+            blend: pass.blend,
+            depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
+            cull: derived.cull,
+            fill: derived.fill,
+            // D3DRS_COLORWRITEENABLE is 168.
+            color_write: self.stream.render_states.get(&168).copied().unwrap_or(15) & 15,
+            // On, fail, depth fail, pass, function, mask, write mask.
+            stencil: if stencil[0] == 0 { [0; 7] } else { [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0] },
         };
-        let stencil_reference = known(word(s, state::STENCIL + 5 * 4), 0);
-        // D3DRS_COLORWRITEENABLE is 168.
-        let key = PipelineKey { color_write: self.stream.render_states.get(&168).copied().unwrap_or(15) & 15, ..key };
-        // The material record of the object against the state packet of this draw (R2).
-        if self.stream.material != 0 {
-            let later = word(s, 4) & 2 != 0;
-            if later {
-                self.stream.pass += 1;
-            } else {
-                self.stream.pass = 0;
-            }
-            Self::compare_material(renderer, &self.stream, key.fvf, key.fill, self.stream.pass as usize);
-        }
-        let (vertex_handle, index_handle) = (word(s, state::VERTEX_BUFFER), word(s, state::INDEX_BUFFER));
-        // The buffers of the geometry record of the object, when it has one that fits the
-        // draw; else the buffers of the device. The two are compared once for each record.
-        let mut from_geometry = None;
-        let (mut mismatch, mut fallback) = (false, false);
-        if self.stream.geometry != 0 && indexed && self.use_geometry {
-            match renderer.geometries.get(&self.stream.geometry) {
-                Some(g) if g.fvf == key.fvf && g.stride == key.stride && first_index + indexes <= g.entries && word(s, state::BASE_VERTEX) == 0 => {
-                    if !g.checked.get() && !self.from_shape {
-                        g.checked.set(true);
-                        let same = |handle: u32, bytes: &[u8]| renderer.buffers.get(&handle).is_some_and(|b| b.bytes.len() >= bytes.len() && b.bytes[..bytes.len()] == *bytes);
-                        mismatch = !(same(vertex_handle, &g.vertex_bytes) && same(index_handle, &g.index_bytes));
-                    }
-                    from_geometry = Some((g.vertex.clone(), Some(g.index.clone())));
-                }
-                _ => fallback = true,
-            }
-        } else if self.stream.geometry != 0 {
-            fallback = true;
-        }
-        renderer.counts.geometry_mismatches += mismatch as u32;
-        renderer.counts.geometry_fallbacks += fallback as u32;
-        let (vertex_buffer, index_buffer) = match from_geometry {
-            Some(pair) => {
-                renderer.counts.geometry_draws += 1;
-                pair
-            }
-            None => {
-                let Some(vertex_buffer) = renderer.gpu_buffer(vertex_handle, false) else {
-                    renderer.counts.no_buffer += 1;
-                    return;
-                };
-                let index_buffer = if indexed { renderer.gpu_buffer(index_handle, true) } else { None };
-                if indexed && index_buffer.is_none() {
-                    renderer.counts.no_buffer += 1;
-                    return;
-                }
-                (vertex_buffer, index_buffer)
-            }
+        let stencil_reference = stencil[2];
+        // The buffers of the geometry record of the shape.
+        let Some((vertex_buffer, index_buffer)) = renderer.geometries.get(&shape.geometry).filter(|g| first_index + indexes <= g.entries).map(|g| (g.vertex.clone(), g.index.clone())) else {
+            renderer.counts.geometry_short += 1;
+            return;
         };
+        renderer.counts.geometry_draws += 1;
         let clock = std::time::Instant::now();
         // The answers of the extension: the light for each pixel and the fog distances for
         // the world in the back buffer (not for the sky, which is before the world, and not
@@ -4238,16 +3793,16 @@ impl Player {
         }
         self.stream.fog_range = fog_range.filter(|_| world);
         self.stream.sky = sky.filter(|_| in_back_buffer && (1..=7).contains(&self.stream.object_class));
-        let mut draw_data = self.stream.draw_data(&mut renderer.counts, &mut self.frame_lights);
+        let mut draw_data = self.stream.draw_data(derived, pass, &mut renderer.counts, &mut self.frame_lights);
         if shade && world && self.stream.projection[11] == 1.0 {
             if let Some(extension) = self.extension.as_mut() {
                 let (first, count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);
                 extension.shade(&mut draw_data, &mut self.frame_lights[first..first + count], &DrawFacts { blend_enable: key.blend[0] != 0, source_blend: key.blend[1], destination_blend: key.blend[2], depth_write: key.depth[1] != 0 });
-                // The lights of a shape draw have keys: they are candidates for the clusters
-                // of the frame, and the draw can take its light from them.
-                if self.from_shape && renderer.clusters.on {
-                    for i in 0..count {
-                        if let Some(slot) = renderer.clusters.note(word(s, state::SIZE + i * state::LIGHT_SIZE), (first + i) as u32) {
+                // The lights of a draw have keys: they are candidates for the clusters of
+                // the frame, and the draw can take its light from them.
+                if renderer.clusters.on {
+                    for (i, light) in shape.lights.chunks_exact(STATE_LIGHT_SIZE).enumerate() {
+                        if let Some(slot) = renderer.clusters.note(word(light, 0), (first + i) as u32) {
                             draw_data.light_mask[slot as usize / 128][slot as usize / 32 % 4] |= 1 << (slot % 32);
                         }
                     }
@@ -4260,13 +3815,13 @@ impl Player {
         let mut handles = [0u32; STAGES];
         let mut sampler_values = [[0u32; 5]; STAGES];
         for stage in 0..STAGES {
-            let handle = word(s, state::TEXTURES + stage * 4);
+            let handle = pass.stages[stage].texture;
             let used = stage < draw_data.counts[1] as usize && handle != 0;
             if used && !renderer.textures.contains_key(&handle) {
                 renderer.counts.missing_textures += 1;
             } else if used {
                 handles[stage] = handle;
-                sampler_values[stage] = core::array::from_fn(|i| word(s, state::SAMPLERS + stage * 20 + i * 4));
+                sampler_values[stage] = pass.stages[stage].sampler;
             }
         }
         if !renderer.texture_groups.contains_key(&handles) {
@@ -4294,13 +3849,12 @@ impl Player {
             key,
             stencil_reference,
             data: draw_data,
-            origin: self.stream.origin.filter(|_| word(s, state::WORLD_RELATIVE_MASK) & 1 != 0),
+            origin: self.stream.origin.filter(|_| shape.relative),
             textures: texture_group,
             samplers: sampler_group,
             vertices: vertex_buffer,
             indexes: index_buffer,
-            fan,
-            range: if indexed { (first_index, indexes, word(s, state::BASE_VERTEX) as i32) } else { (first_index, indexes, 0) },
+            range: (first_index, indexes),
             instances: (0, 1),
         });
         // The world scene of the game is 1 and its scene of sorted draws is 2, with the sky
@@ -4320,30 +3874,15 @@ impl Player {
         let c = &self.renderer.counts;
         println!("draws {}, pipelines {}, textures {}, samplers {}", c.draws, self.renderer.pipelines.len(), c.textures, self.renderer.samplers.len());
         println!(
-            "geometry: {} records ({:.1} MB), {} draws from them, {} draws that fell back to the buffers of the device, {} records that did not parse, {} records that differ from the buffers of the device",
+            "geometry: {} records ({:.1} MB), {} draws from them, {} records that did not parse, {} draws of more index entries than their geometry has",
             c.geometry_records,
             c.geometry_bytes as f64 / 1e6,
             c.geometry_draws,
-            c.geometry_fallbacks,
             c.geometry_bad,
-            c.geometry_mismatches
+            c.geometry_short
         );
-        let parts: Vec<String> = material::PARTS.iter().zip(c.material_parts).filter(|(_, n)| *n != 0).map(|(name, n)| format!("{name} {n}")).collect();
-        println!(
-            "material: {} records, {} draws with one, {} not modelled, {} draws that differ from the derived state ({})",
-            c.material_records,
-            c.material_draws,
-            c.material_unmodelled,
-            c.material_different,
-            parts.join(", ")
-        );
-        let mut classes: Vec<(u32, u32)> = c.material_classes.iter().map(|(k, v)| (*k, *v)).collect();
-        classes.sort();
-        println!("material differences by class: {classes:?}");
-        println!(
-            "shapes: {} records, {} draws from them, {} without a geometry or a material, {} draws of the device skipped",
-            c.shape_records, c.shape_draws, c.shape_missing, c.shape_skipped
-        );
+        println!("material: {} records", c.material_records);
+        println!("shapes: {} records, {} draws from them, {} without a geometry or a material", c.shape_records, c.shape_draws, c.shape_missing);
         println!("sorted draws {}, instanced away {}, skinned shapes {}, particle systems {}", c.sorted_draws, c.instanced_draws, c.shape_skinned, c.shape_particles);
         println!("lights: {} records, {} lights of a shape without a record", c.light_records, c.light_missing);
         println!(
@@ -4353,7 +3892,7 @@ impl Player {
             c.cluster_frames_off,
             c.cluster_frames_many
         );
-        println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);
+        println!("not drawn: other target {}, vertex format {}", c.other_target, c.no_layout);
         println!(
             "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}; draws with a made or moved texture coordinate {}; the most lights of a draw {}",
             c.missing_textures, c.more_stages, c.coordinate_work, c.most_lights

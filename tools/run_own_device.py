@@ -70,8 +70,6 @@ def main():
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for the run, key = value: the line with "
                     "that key is replaced (for example \"expanded_light_limit = true\"); with a section first, "
                     "\"[distant_land] key = value\", a key the file does not have goes at the end of that section")
-    ap.add_argument("--shapes", type=int, default=None, help="the mode of the shape records: 0 off, 1 dual (the records and the "
-                    "draws of the device), 2 only the records")
     ap.add_argument("--tour-cells", help="the cells of a test level for the step tour, with semicolons (the NIF test level: "
                     "\"@nifTest_1;@nifTest_2;@nifTest_3\")")
     ap.add_argument("--tour", default="@nif_", help="the start of the ids of the objects of the tour")
@@ -103,7 +101,7 @@ def main():
     # Without a save (--save ""), the scenario starts a new game: the films of the game play.
     spec = run.spec("owndevice", save=args.save or None, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
                     position=args.position, yaw=args.yaw, findWater=args.find_water, hour=args.hour, weather=args.weather,
-                    tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, shapes=args.shapes, captureMenu=args.capture_menu)
+                    tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, captureMenu=args.capture_menu)
     # The plugin starts the host program. It reads these from the environment of the game.
     if not args.mge_build:
         os.environ["NIRENDER_HOST_EXE"] = HOST

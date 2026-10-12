@@ -450,7 +450,7 @@ unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize)
 /// pipeline of the device must not run for the draw. `RenderScreenPoly` uses it too, with
 /// the identity transform that it gives `DrawPrimitive`.
 pub(crate) unsafe fn shape_record(this: usize, skin: usize, transform: usize, world_bound: usize) -> bool {
-    if crate::shape_stream::mode() == crate::shape_stream::OFF || !crate::capture::recording() {
+    if !crate::shape_stream::on() {
         return false;
     }
     let property_state: usize = rd(this, R::currentPropertyState);

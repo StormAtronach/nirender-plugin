@@ -250,7 +250,7 @@ unsafe fn write_point_quads(mut to: usize, count: u32, mut vertices: usize, mut 
 /// and the colour of each active particle. The helper makes the quads. Returns true when
 /// the pipeline of the device must not run for the draw.
 unsafe fn particles_record(this: usize, geometry_data: usize, count: u32, radius: f32, vertices: usize, sizes: usize, colors: usize) -> bool {
-    if crate::shape_stream::mode() == crate::shape_stream::OFF || !crate::capture::recording() {
+    if !crate::shape_stream::on() {
         return false;
     }
     let property_state: usize = rd(this, R::currentPropertyState);
@@ -424,7 +424,7 @@ unsafe fn write_line_vertices(mut to: usize, count: u32, mut vertices: usize, mu
 /// lines data, noted by the link before the port. Returns true when the pipeline of the
 /// device must not run for the draw.
 unsafe fn lines_record(this: usize) -> bool {
-    if crate::shape_stream::mode() == crate::shape_stream::OFF || !crate::capture::recording() {
+    if !crate::shape_stream::on() {
         return false;
     }
     let property_state: usize = rd(this, R::currentPropertyState);

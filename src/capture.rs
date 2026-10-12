@@ -28,9 +28,9 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use crate::link::{
-    DrawStateV1, DrawV1, SceneV1, StateLightV1, TextureV1, CALL_COPY_PIXELS, CALL_CREATE_DEPTH_BUFFER, CALL_CREATE_IMAGE_SURFACE, CALL_CREATE_INDEX_BUFFER,
+    DrawV1, SceneV1, TextureV1, CALL_COPY_PIXELS, CALL_CREATE_DEPTH_BUFFER, CALL_CREATE_IMAGE_SURFACE, CALL_CREATE_INDEX_BUFFER,
     CALL_CREATE_TEXTURE, CALL_CREATE_VERTEX_BUFFER, CALL_CUBE_FACE, CALL_GET_DEPTH_BUFFER, CALL_GET_RENDER_TARGET, CALL_PRESENT,
-    CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_DRAW, COMMAND_DRAW_INDEXED, COMMAND_TRANSFORM,
+    CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_TRANSFORM,
 };
 use crate::mem::rd;
 
@@ -42,7 +42,9 @@ pub mod tag {
     /// for each pixel; then levels + 1 offsets, the widths and the heights of the levels; then
     /// the pixels.
     pub const TEXTURE: u32 = 1;
-    /// handle, offset, size; then the bytes that the game wrote into the buffer.
+    /// handle, offset, size; then the bytes that the game wrote into a buffer of the device.
+    /// Not written since the helper draws from the records (step R7b); a capture from
+    /// before has it.
     pub const BUFFER_DATA: u32 = 2;
     /// A `MgeLinkSceneV1`.
     pub const SCENE_BEGIN: u32 = 3;
@@ -51,10 +53,11 @@ pub mod tag {
     pub const FRAME_EVENT: u32 = 5;
     /// The object of the draws that follow: kind, class, flags, geometry, then its name.
     pub const OBJECT: u32 = 6;
-    /// A `MgeLinkDrawStateV1`, then its lights.
-    pub const DRAW_STATE: u32 = 7;
-    /// command, a, b, c; then the data at an address: 16 floats for a transform, the words
-    /// of a draw.
+    /// 7 was a `MgeLinkDrawStateV1` with its lights, the state of a draw of the device. Not
+    /// written since step R7b; a capture from before has it.
+    ///
+    /// command, a, b, c; then the data at an address: 16 floats for a transform. Only a
+    /// render state and a transform are written (see `command`).
     pub const COMMAND: u32 = 8;
     /// call, result, the handle that the call gave (or 0), the number of arguments, the
     /// arguments; then the data at an address: the viewport.
@@ -399,15 +402,10 @@ struct State {
     header: [u32; 3],
     /// The geometry data and the skin instances of the draws of the warm-up.
     geometry: HashSet<(u32, u32)>,
-    /// The buffers whose bytes are in the capture.
-    known_buffers: HashSet<u32>,
     /// The image surfaces: surfaces in system memory, where the game changes pixels.
     image_surfaces: HashSet<u32>,
-    /// The object of the draws that follow, and the objects to drop the buffers of after this
-    /// frame: a draw used a buffer that is not in the capture.
+    /// The object of the draws that follow.
     object: (u32, u32),
-    late: HashSet<(u32, u32)>,
-    dropped_late: HashSet<(u32, u32)>,
     records: u64,
     bytes: u64,
     frames_done: u32,
@@ -617,11 +615,8 @@ unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
         tee_only: false,
         header: [0; 3],
         geometry: HashSet::new(),
-        known_buffers: HashSet::new(),
         image_surfaces: HashSet::new(),
         object: (0, 0),
-        late: HashSet::new(),
-        dropped_late: HashSet::new(),
         records: 0,
         bytes: 8,
         frames_done: 0,
@@ -887,42 +882,18 @@ pub unsafe fn geometry(head: &[u32], lengths: &[u8], vertices: &[u8], indexes: &
     write(tag::GEOMETRY, &[&words(head), lengths, vertices, indexes]);
 }
 
-pub unsafe fn draw_state(packet: &DrawStateV1) {
-    let _lock = crate::sync::device_lock();
-    if !active() {
-        return;
-    }
-    let direct = state().is_some_and(|s| s.direct);
-    if !direct {
-        // A buffer that the game made before the capture gets the recorder here.
-        crate::resource::wrap(packet.vertex_buffer as usize);
-        crate::resource::wrap(packet.index_buffer as usize);
-    }
-    if recording() && !direct {
-        if let Some(s) = state() {
-            let known = s.known_buffers.contains(&packet.vertex_buffer) && s.known_buffers.contains(&packet.index_buffer);
-            if !known && !s.dropped_late.contains(&s.object) {
-                s.late.insert(s.object);
-            }
-        }
-    }
-    let lights = if packet.lights.is_null() {
-        &[]
-    } else {
-        core::slice::from_raw_parts(packet.lights as *const u8, packet.light_count as usize * core::mem::size_of::<StateLightV1>())
-    };
-    write(tag::DRAW_STATE, &[bytes_of(packet), lights]);
-}
-
+/// A state command of the device: a render state, or a transform with its matrix. The helper
+/// takes the view, the projection and the render states of code outside the renderer (the
+/// film player) from them. A draw of the device and a stage state are not in the stream:
+/// the helper draws from the shape records.
 pub unsafe fn command(command: u32, a: u32, b: u32, c: u32) {
     if !recording() {
         return;
     }
     let data: &[u8] = match command {
         COMMAND_TRANSFORM => bytes_at(b, 64),
-        COMMAND_DRAW_INDEXED => bytes_at(a, 20),
-        COMMAND_DRAW => bytes_at(a, 12),
-        _ => &[],
+        crate::link::COMMAND_RENDER_STATE => &[],
+        _ => return,
     };
     write(tag::COMMAND, &[&words(&[command, a, b, c]), data]);
 }
@@ -1021,15 +992,6 @@ pub unsafe fn texture(texture: &TextureV1, handle: usize) {
 /// The bytes that the game wrote into a level of a texture.
 pub unsafe fn texture_update(handle: usize, level: u32, width: u32, height: u32, format: u32, bytes: &[u8]) {
     write(tag::TEXTURE_UPDATE, &[&words(&[handle as u32, level, width, height, format, bytes.len() as u32]), bytes]);
-}
-
-/// The bytes that the game wrote into a vertex or index buffer, at its unlock.
-pub unsafe fn buffer_data(handle: usize, offset: u32, bytes: &[u8]) {
-    let _lock = crate::sync::device_lock();
-    if let Some(s) = state() {
-        s.known_buffers.insert(handle as u32);
-    }
-    write(tag::BUFFER_DATA, &[&words(&[handle as u32, offset, bytes.len() as u32]), bytes]);
 }
 
 /// `NiSkinInstance::skinData`, `NiSkinData::skinPartition`, and a `NiSkinPartition`.
@@ -1134,11 +1096,6 @@ unsafe fn frame_end() {
                 ring.pace();
             }
             s.frames_done += 1;
-            if !s.late.is_empty() {
-                let objects: Vec<(u32, u32)> = s.late.drain().collect();
-                drop_buffers(crate::engine::renderer(), &objects);
-                s.dropped_late.extend(objects);
-            }
             if s.frames == 0 {
                 return;
             }

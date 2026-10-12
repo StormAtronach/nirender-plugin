@@ -1,5 +1,6 @@
-"""Reads the records of a capture, for the root cause of a difference of the retained
-pipeline against the device path.
+"""Reads the records of a capture, for the root cause of a difference of a picture of the
+retained pipeline. A capture from before the cut of the device path (step R7b) also has the
+state packets, the stage states and the draws of the device; the helper does not read them.
 
     python -I tools/capture_dump.py <capture.nircap> sequence <frame>
     python -I tools/capture_dump.py <capture.nircap> materials <frame> [--geometry 0x...]
@@ -7,18 +8,17 @@ pipeline against the device path.
     python -I tools/capture_dump.py <capture.nircap> calls
 
 sequence   the records of one frame in their order: the objects, the shape records, the
-           render state commands that the pipeline sets for a draw (fill mode, fog, the
-           ambient source, the stencil states) and the draws of the device. It shows
-           which commands come after the shape record of their object: a draw from the
-           record cannot take those from the commands.
+           render state commands (in a capture from before the cut: those that the
+           pipeline of the device sets for a draw, and the draws of the device).
 materials  the material of each shape record of the frame, decoded, once for each
            material: the flags, the blend modes, the maps present, the vertex colour
            modes, the stencil, the effects. `--geometry` keeps one geometry.
 particles  the particle records of the frame: the count, the radius, the camera axes,
            the first particles, the material, and the material of the device draw that
-           follows (the dual mode).
+           follows (a capture from before the cut).
 calls      the CALL and COMMAND records of the whole capture by their kind, for each
-           frame: what the device path still does when the records carry every draw.
+           frame: the calls of the frame (clear, viewport, targets), the view and the
+           projection, and the render states of code outside the renderer.
 
 The frames count from 0, as `replay.py --frame` does.
 """

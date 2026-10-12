@@ -745,7 +745,7 @@ unsafe fn identity_transform(transform: &mut [u32; NiTransform::SIZE / 4]) -> us
 /// projection of the screen polygons stay as the port sets them on the device: the helper
 /// draws the record under them. Returns true when the pipeline of the device must not run.
 unsafe fn screen_polygon_record(this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize, transform: usize, bound: usize) -> bool {
-    if crate::shape_stream::mode() == crate::shape_stream::OFF || !crate::capture::recording() {
+    if !crate::shape_stream::on() {
         return false;
     }
     let handle = crate::geometry_stream::note_screen_polygon(count, vertices, tex_coords, colour, rd(this, R::frustumNear), rd(this, R::frustumDistance));

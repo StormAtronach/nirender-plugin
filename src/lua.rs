@@ -136,13 +136,6 @@ unsafe extern "C" fn port_times(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.shapes(mode)` sets the mode of the shape records: 0 off, 1 dual (the record and
-/// the draw of the device), 2 only the record. Returns the mode.
-unsafe extern "C" fn shapes(l: LuaState) -> i32 {
-    crate::shape_stream::set_mode(lua_tonumber(l, 1) as u32);
-    lua_pushnumber(l, crate::shape_stream::mode() as f64);
-    1
-}
 
 /// `nirender.gameScreenshot()` makes the game take its own screenshot, as its screenshot
 /// key does: `WorldControllerRenderTarget::takeScreenshot` 0x42E620 of
@@ -500,7 +493,6 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "streamShot", stream_shot);
     set_fn(l, "streamMark", stream_mark);
     set_fn(l, "portTimes", port_times);
-    set_fn(l, "shapes", shapes);
     set_fn(l, "dumpDevice", dump_device);
     set_fn(l, "ownDevice", own_device);
     set_fn(l, "threadCensus", thread_census);

@@ -1,8 +1,7 @@
 //! The material of a draw, from the `MATERIAL` record of the plugin (step R2 of the retained
 //! pipeline): the facts of the properties of the shape, and the derivation of the state of
-//! the draw from them, as the fixed-function pipeline of the engine makes it. Until step R3
-//! the derivation is only compared with the state packet of each draw; `compare` counts the
-//! differences by part.
+//! the draw from them, as the fixed-function pipeline of the engine makes it. The helper
+//! draws a shape with the derived state (`Pass` in lib.rs).
 //!
 //! The rules come from the ports of `NiDX8TexturePass::setCTPipelineState`,
 //! `NiDX8ConfigurableTexturePipeline::initAlphaStateTemplates`, `NiDX8RenderState` and
@@ -416,91 +415,4 @@ pub fn d3d_material(values: &[f32; 14]) -> [f32; 17] {
     }
     material[16] = values[12];
     material
-}
-
-/// The parts of a comparison, for the counts.
-pub const PARTS: [&str; 13] = [
-    "textures", "stage operations", "coordinate sets", "blend", "alpha test", "depth", "cull", "fill", "stencil", "lighting", "material sources", "material colours", "samplers",
-];
-
-/// The state packet of a draw, as `compare` reads it: the fields of `DrawStateV1`.
-pub struct Packet<'a> {
-    pub stages: &'a [([u32; 3], [u32; 3], u32)],
-    pub textures: &'a [u32],
-    pub samplers: &'a [[u32; 5]],
-    pub blend: [u32; 3],
-    pub alpha_test: [u32; 3],
-    pub depth: [u32; 3],
-    pub cull: u32,
-    pub fill: u32,
-    pub stencil: [u32; 7],
-    pub lighting: u32,
-    pub sources: [u32; 2],
-    pub material: [f32; 17],
-}
-
-/// Compares one pass of the derived state with the packet of a draw. Returns a bit for each
-/// part of `PARTS` that differs. `pass` is the number of the pass of the draw (0 for the
-/// first, from the later-pass flag).
-pub fn compare(d: &Derived, pass: usize, p: &Packet, material: Option<[f32; 17]>) -> u32 {
-    let mut bits = 0;
-    let Some(stages) = d.passes.get(pass) else { return 1 << 1 };
-    if stages.len() != p.stages.len() {
-        bits |= 1 << 1;
-    }
-    for (i, s) in stages.iter().enumerate() {
-        let Some(ps) = p.stages.get(i) else { break };
-        if p.textures.get(i).copied().unwrap_or(0) != s.texture {
-            bits |= 1;
-        }
-        if ps.0 != s.color || ps.1 != s.alpha {
-            bits |= 1 << 1;
-        }
-        // The stage with no texture keeps the coordinate index of its last use: no meaning.
-        if ps.2 != s.set && s.texture != 0 {
-            bits |= 1 << 2;
-        }
-        // The mip filter of the device is none for a texture with one level, whatever the
-        // map asks: a packet mip filter of 0 is not compared.
-        if s.texture != 0 && p.samplers.get(i).is_some_and(|ps| {
-            let mut want = sampler_states(s.clamp, s.filter);
-            if ps[4] == 0 {
-                want[4] = 0;
-            }
-            *ps != want
-        }) {
-            bits |= 1 << 12;
-        }
-    }
-    let blend = d.blends.get(pass).copied().unwrap_or([0; 3]);
-    if blend[0] != p.blend[0] || (blend[0] != 0 && (blend[1] != p.blend[1] || blend[2] != p.blend[2])) {
-        bits |= 1 << 3;
-    }
-    if d.alpha_test[0] != p.alpha_test[0] || (d.alpha_test[0] != 0 && (d.alpha_test[1] != p.alpha_test[1] || d.alpha_test[2] != p.alpha_test[2])) {
-        bits |= 1 << 4;
-    }
-    if d.depth != p.depth {
-        bits |= 1 << 5;
-    }
-    if d.cull != p.cull {
-        bits |= 1 << 6;
-    }
-    if d.fill != p.fill {
-        bits |= 1 << 7;
-    }
-    if d.stencil[0] != p.stencil[0] || (d.stencil[0] != 0 && d.stencil != p.stencil) {
-        bits |= 1 << 8;
-    }
-    if d.lighting as u32 != p.lighting {
-        bits |= 1 << 9;
-    }
-    if d.lighting {
-        if d.sources[0].is_some_and(|v| v != p.sources[0]) || d.sources[1].is_some_and(|v| v != p.sources[1]) {
-            bits |= 1 << 10;
-        }
-    }
-    if material.is_some_and(|mine| mine.iter().zip(p.material).any(|(a, b)| a.to_bits() != b.to_bits())) {
-        bits |= 1 << 11;
-    }
-    bits
 }

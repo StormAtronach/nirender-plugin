@@ -84,9 +84,37 @@ pub unsafe fn report() -> String {
     format!("geometry: {} records, {:.1} MB, {} geometries known", records, bytes as f64 / 1e6, versions().len())
 }
 
+/// Why `note` gives no handle for this geometry: the checks of `note` in their order, and
+/// true when the geometry is empty (the device would draw nothing for it either). For the
+/// counts and the log of the draws without a record.
+pub unsafe fn why_none(kind: u32, geom_data: usize) -> (&'static str, bool) {
+    if geom_data == 0 {
+        return ("no geometry data", false);
+    }
+    let strips = match kind {
+        DRAW_SHAPE => false,
+        DRAW_STRIPS => true,
+        DRAW_LINES => return ("lines without vertices or segments", true),
+        _ => return ("a draw kind without a geometry record", false),
+    };
+    if !ni::is_kind_of(geom_data, if strips { RTTI_NI_TRI_STRIPS_DATA } else { RTTI_NI_TRI_SHAPE_DATA }) {
+        return ("the data is not of the class of its draw function", false);
+    }
+    if vcall0(geom_data, V_GET_ACTIVE_VERTEX_COUNT) & 0xFFFF == 0 {
+        return ("no active vertex", true);
+    }
+    if strips {
+        ("no strips", true)
+    } else if vcall0(geom_data, V_GET_TRI_LIST) == 0 {
+        ("no triangle list", true)
+    } else {
+        ("no active triangle", true)
+    }
+}
+
 /// Notes the geometry of a shape that is about to be drawn: sends it when it is new or
-/// changed. Returns the handle for the draws that follow, or 0 when the geometry stays on
-/// the path of the device.
+/// changed. Returns the handle for the draws that follow, or 0 for a geometry that has
+/// nothing to draw (see `why_none`).
 pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
     if !crate::capture::recording() || geom_data == 0 {
         return 0;
