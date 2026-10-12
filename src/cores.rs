@@ -1,6 +1,7 @@
 //! The scheduling of the game on a hybrid processor: its main thread goes to the cores of
-//! the highest efficiency class and the process above normal priority. In some runs the
-//! scheduler gave the thread an efficiency core and the ports took twice their time.
+//! the highest efficiency class. In some runs the scheduler gave the thread an efficiency
+//! core and the ports took twice their time. A processor with one class of cores gets no
+//! change. The priority of the process stays as the user or Windows set it.
 //! `MGE_XE_CORES=0` in the environment leaves the scheduler alone. The helper program does
 //! the same for itself (`cores` in the renderer crate).
 
@@ -23,11 +24,9 @@ struct CpuSetInformation {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetCurrentThread() -> *mut core::ffi::c_void;
-    fn SetPriorityClass(process: *mut core::ffi::c_void, class: u32) -> i32;
     fn GetSystemCpuSetInformation(information: *mut CpuSetInformation, length: u32, returned: *mut u32, process: *mut core::ffi::c_void, flags: u32) -> i32;
     fn SetThreadSelectedCpuSets(thread: *mut core::ffi::c_void, ids: *const u32, count: u32) -> i32;
 }
-const ABOVE_NORMAL_PRIORITY_CLASS: u32 = 0x8000;
 
 /// Returns one line for the log with what was done. Called on the main thread of the game.
 pub fn prefer_performance_cores() -> String {
@@ -38,7 +37,6 @@ pub fn prefer_performance_cores() -> String {
     // first call.
     unsafe {
         let process = crate::win::GetCurrentProcess();
-        let priority = SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS) != 0;
         let mut needed = 0u32;
         GetSystemCpuSetInformation(core::ptr::null_mut(), 0, &mut needed, process, 0);
         let count = needed as usize / core::mem::size_of::<CpuSetInformation>();
@@ -51,11 +49,10 @@ pub fn prefer_performance_cores() -> String {
         let ids: Vec<u32> = sets.iter().filter(|s| s.efficiency_class == best).map(|s| s.id).collect();
         let pinned = classes && !ids.is_empty() && SetThreadSelectedCpuSets(GetCurrentThread(), ids.as_ptr(), ids.len() as u32) != 0;
         format!(
-            "cores: {} of {} logical processors in the highest efficiency class{}; priority above normal {}",
+            "cores: {} of {} logical processors in the highest efficiency class{}",
             ids.len(),
             sets.len(),
-            if pinned { ", the main thread on them" } else if classes { ", not pinned" } else { ", one class, not pinned" },
-            if priority { "set" } else { "not set" }
+            if pinned { ", the main thread on them" } else if classes { ", not pinned" } else { ", one class, not pinned" }
         )
     }
 }

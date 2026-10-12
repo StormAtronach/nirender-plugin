@@ -1148,8 +1148,9 @@ const LIGHTS_AT_FIRST: usize = 4096;
 /// The scheduling of this program on Windows: it draws for the game from the background,
 /// and a hybrid processor gave it an efficiency core in some runs, so that a frame took
 /// twice its time. The thread of the frames goes to the cores of the highest efficiency
-/// class, the process above normal priority and out of the power throttling of a
-/// background process. `MGE_XE_CORES=0` leaves the scheduler alone.
+/// class, and the process out of the power throttling of a background process. A
+/// processor with one class of cores gets no change of its cores. The priority of the
+/// process stays as it is. `MGE_XE_CORES=0` leaves the scheduler alone.
 #[cfg(windows)]
 mod cores {
     #[repr(C)]
@@ -1177,12 +1178,10 @@ mod cores {
     extern "system" {
         fn GetCurrentProcess() -> isize;
         fn GetCurrentThread() -> isize;
-        fn SetPriorityClass(process: isize, class: u32) -> i32;
         fn SetProcessInformation(process: isize, class: u32, information: *const core::ffi::c_void, size: u32) -> i32;
         fn GetSystemCpuSetInformation(information: *mut CpuSetInformation, length: u32, returned: *mut u32, process: isize, flags: u32) -> i32;
         fn SetThreadSelectedCpuSets(thread: isize, ids: *const u32, count: u32) -> i32;
     }
-    const ABOVE_NORMAL_PRIORITY_CLASS: u32 = 0x8000;
     const PROCESS_POWER_THROTTLING: u32 = 4;
     const PROCESS_POWER_THROTTLING_EXECUTION_SPEED: u32 = 1;
 
@@ -1195,7 +1194,6 @@ mod cores {
         // first call.
         unsafe {
             let process = GetCurrentProcess();
-            let priority = SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS) != 0;
             let state = PowerThrottlingState { version: 1, control_mask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED, state_mask: 0 };
             let throttling = SetProcessInformation(process, PROCESS_POWER_THROTTLING, &state as *const _ as *const core::ffi::c_void, core::mem::size_of::<PowerThrottlingState>() as u32) != 0;
             let mut needed = 0u32;
@@ -1211,11 +1209,10 @@ mod cores {
             let ids: Vec<u32> = sets.iter().filter(|s| s.efficiency_class == best).map(|s| s.id).collect();
             let pinned = classes && !ids.is_empty() && SetThreadSelectedCpuSets(GetCurrentThread(), ids.as_ptr(), ids.len() as u32) != 0;
             format!(
-                "cores: {} of {} logical processors in the highest efficiency class{}; priority above normal {}; power throttling off {}",
+                "cores: {} of {} logical processors in the highest efficiency class{}; power throttling off {}",
                 ids.len(),
                 sets.len(),
                 if pinned { ", the thread of the frames on them" } else if classes { ", not pinned" } else { ", one class, not pinned" },
-                if priority { "set" } else { "not set" },
                 if throttling { "set" } else { "not set" }
             )
         }
