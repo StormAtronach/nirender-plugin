@@ -308,7 +308,13 @@ return function(nirender, spec)
         -- (`--shot-film`, host-film-frame.png); the picture of the step is the frame after
         -- the film.
         { "film", 4.0, function()
-            say("film: %s", tostring(tes3.runLegacyScript({ command = 'PlayBink "mw_logo.bik"' })))
+            -- PlayBink takes the file and the interrupt flag (1: Escape ends the film); the
+            -- compiler refuses the command without the flag ("You need to enter a flag for
+            -- interupt", Warnings.txt). The call holds the main loop while the film plays:
+            -- the time of the call says whether it played.
+            local from = os.clock()
+            local ok = tes3.runLegacyScript({ command = 'PlayBink "mw_logo.bik" 1' })
+            say("film: %s in %.2f s", tostring(ok), os.clock() - from)
         end },
         -- The same place with the camera turned to the two sides: a thing in the two
         -- pictures must have the same colour. The fog of a thing does not change with the
