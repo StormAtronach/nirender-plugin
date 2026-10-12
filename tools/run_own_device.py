@@ -129,15 +129,20 @@ def main():
             section, setting = setting[1:].split("]", 1)
             setting = setting.strip()
         key = setting.split("=")[0].strip()
-        if any(line.split("=")[0].strip() == key for line in lines):
-            lines = [setting if line.split("=")[0].strip() == key else line for line in lines]
-        elif section is not None:
+        if section is not None:
+            # In its section only: a key such as `enabled` is in several sections.
             assert "[%s]" % section in lines, "no section [%s] in %s" % (section, toml)
             start = lines.index("[%s]" % section) + 1
             end = next((i for i in range(start, len(lines)) if lines[i].startswith("[")), len(lines))
-            while end > start and not lines[end - 1].strip():
-                end -= 1
-            lines.insert(end, setting)
+            at = next((i for i in range(start, end) if lines[i].split("=")[0].strip() == key), None)
+            if at is not None:
+                lines[at] = setting
+            else:
+                while end > start and not lines[end - 1].strip():
+                    end -= 1
+                lines.insert(end, setting)
+        elif any(line.split("=")[0].strip() == key for line in lines):
+            lines = [setting if line.split("=")[0].strip() == key else line for line in lines]
         else:
             raise SystemExit("no line with the key %s in %s: give its section, [section] %s" % (key, toml, setting))
     if args.mge_build and not args.reference:

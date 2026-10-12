@@ -30,11 +30,14 @@ def main():
     ap.add_argument("--distant-land", default=DISTANT_LAND)
     ap.add_argument("--game-dir", default=GAME_DIR, help="the game folder with Morrowind.ini and the archives")
     ap.add_argument("--backend", default="vulkan")
+    ap.add_argument("--anisotropy", type=int, default=None, help="the anisotropic filter of the textures the game filters (1 without this)")
     args = ap.parse_args()
     exe = os.path.join(args.mge_build, "mgeHost64.exe")
     command = [exe, "--replay", os.path.abspath(args.capture), os.path.abspath(args.picture), "--backend", args.backend]
     if args.frame is not None:
         command += ["--frame", str(args.frame)]
+    if args.anisotropy is not None:
+        command += ["--anisotropy", str(args.anisotropy)]
     env = dict(os.environ, MGE_XE_DISTANT_LAND_DIR=args.distant_land, MGE_XE_GAME_DIR=args.game_dir)
     result = subprocess.run(command, cwd=args.config_root, env=env, capture_output=True, text=True)
     sys.stdout.write(result.stdout)
