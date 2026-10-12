@@ -23,6 +23,25 @@ D3D8_DIR = os.path.join(REPO, "d3d8")
 D3D8 = os.path.join(D3D8_DIR, "target", "i686-pc-windows-msvc", "release", "d3d8.dll")
 
 
+def disable_mod(name):
+    """Switches a mod off in modlist.txt of the profile. Returns the function that puts the
+    file back."""
+    path = os.path.join(session.harness.PROFILE, "modlist.txt")
+    text = open(path, encoding="utf-8", newline="").read()
+    on = "+" + name
+    if not any(line.strip() == on for line in text.splitlines()):
+        raise SystemExit("the mod %s is not on in %s" % (name, path))
+    edited = "".join(line.replace(on, "-" + name, 1) if line.strip() == on else line for line in text.splitlines(keepends=True))
+    open(path, "w", encoding="utf-8", newline="").write(edited)
+    print("the mod %s is off in modlist.txt for the run" % name, flush=True)
+
+    def put_back():
+        open(path, "w", encoding="utf-8", newline="").write(text)
+        print("the mod %s is on again" % name, flush=True)
+
+    return put_back
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--label", default="owndevice")
@@ -43,6 +62,8 @@ def main():
     ap.add_argument("--position", help="x,y,z in the exterior cell: the player goes there after the cell loads (the "
                     "coordinates of the console)")
     ap.add_argument("--hour", type=float, default=None, help="the hour of the day in the exterior (12 without this)")
+    ap.add_argument("--weather", type=int, default=None, help="the weather in the exterior, 0 clear to 9 blizzard (the game's without this)")
+    ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off in its modlist.txt for the run, and back after")
     ap.add_argument("--find-water", action="store_true", help="after the cell loads, put the player under the water at the "
                     "nearest spot where the land is deep enough (a test of the view from under the water)")
     ap.add_argument("--yaw", type=float, default=None, help="the heading of the player in degrees, 0 north, with --position")
@@ -78,7 +99,7 @@ def main():
     session.prepare(build=not args.no_build)
     run = session.Run(args.label)
     spec = run.spec("owndevice", save=args.save, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
-                    position=args.position, yaw=args.yaw, findWater=args.find_water, hour=args.hour,
+                    position=args.position, yaw=args.yaw, findWater=args.find_water, hour=args.hour, weather=args.weather,
                     tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, shapes=args.shapes)
     # The plugin starts the host program. It reads these from the environment of the game.
     if not args.mge_build:
@@ -129,7 +150,12 @@ def main():
         swaps = [(os.path.join(args.mge_build, "d3d8.dll"), os.path.join(root, "d3d8.dll"), "the d3d8.dll of the MGE XE build"),
                  (os.path.join(args.mge_build, "mgeHost64.exe"), os.path.join(root, "mgeHost64.exe"), "the mgeHost64.exe of the MGE XE build"),
                  toml_swap]
-    done = run.launch(spec, args.budget, TAG, swaps=swaps)
+    put_back = disable_mod(args.disable_mod) if args.disable_mod else None
+    try:
+        done = run.launch(spec, args.budget, TAG, swaps=swaps)
+    finally:
+        if put_back:
+            put_back()
     # Mod Organizer leaves its copy in the game folder when the game does not end by itself.
     theirs, ours = os.path.join(root, "d3d8.dll"), os.path.join(session.harness.GAME_DIR, "d3d8.dll")
     if os.path.isfile(ours) and not session.harness.same_file_content(theirs, ours):

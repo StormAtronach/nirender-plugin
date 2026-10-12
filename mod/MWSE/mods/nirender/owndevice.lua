@@ -97,12 +97,14 @@ return function(nirender, spec)
             local hour = tes3.findGlobal("GameHour")
             if hour then hour.value = spec.hour or 12 end
             scenario.goTo(spec.exterior)
-            -- The weather is random: clear (0) after the cell loads, or the fog and the sky
-            -- differ between runs. `spec.weather` is another one.
-            after(2, function()
-                local weather = tes3.worldController.weatherController
-                pcall(function() weather:switchImmediate(spec.weather or 0) weather:updateVisuals() end)
-            end)
+            -- The weather of the run, when the spec asks for one (the game's otherwise: it
+            -- is random, so the pictures of two runs can differ). 0 clear to 9 blizzard.
+            if spec.weather then
+                after(2, function()
+                    local weather = tes3.worldController.weatherController
+                    pcall(function() weather:switchImmediate(spec.weather) weather:updateVisuals() end)
+                end)
+            end
             -- Under the water: the nearest spot around the player where the land is 170 units
             -- or more under the water level, found with rays onto the landscape.
             if spec.findWater then
@@ -169,6 +171,33 @@ return function(nirender, spec)
                 end
             end
             event.register("enterFrame", count)
+        end },
+        -- Each weather of the game in turn, with the frame rate of each over 4 seconds: a
+        -- cost of one weather (its sky, its fog, its particles) shows against the others.
+        { "weathers", 66, function()
+            local weather = tes3.worldController.weatherController
+            local index = 0
+            local function measure()
+                if index > 9 then
+                    say("weathers: done")
+                    return
+                end
+                pcall(function() weather:switchImmediate(index) weather:updateVisuals() end)
+                after(2, function()
+                    local frames, from = 0, os.clock()
+                    local function count()
+                        frames = frames + 1
+                        if os.clock() - from >= 4 then
+                            event.unregister("enterFrame", count)
+                            say("rate: %.1f frames in a second at '%s' weather %d", frames / (os.clock() - from), tes3.player.cell.editorName, index)
+                            index = index + 1
+                            measure()
+                        end
+                    end
+                    event.register("enterFrame", count)
+                end)
+            end
+            measure()
         end },
         -- The tour of a test level: in each cell of spec.tourCells, in front of each object
         -- whose id starts with spec.tour, two frames into the capture file of the cell. The

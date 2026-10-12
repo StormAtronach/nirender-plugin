@@ -15,6 +15,10 @@ Stages (all by default, in this order):
   tour     the dual run over the NIF test level and its replay comparison (slow).
   clusters the newest dual capture of each place replayed with the clusters of lights and
            without (MGE_XE_CLUSTERS=0), compared; then the rate step with and without.
+  weathers a run with the shape records alone that measures the frame rate of each of the
+           ten weathers of the game in turn, at each place.
+
+--disable-mod NAME switches a mod of the profile off for the runs (an A/B of a mod).
 """
 import argparse
 import os
@@ -47,10 +51,11 @@ def newest(label):
 
 
 GPU_TIME = {}
+RUNNER_ARGS = []
 
 
 def game(label, extra, mge_build, env=None):
-    args = [PY, os.path.join(HERE, "run_own_device.py"), "--mge-build", mge_build, "--no-build", "--label", label, "--set", "expanded_light_limit = true"] + extra
+    args = [PY, os.path.join(HERE, "run_own_device.py"), "--mge-build", mge_build, "--no-build", "--label", label, "--set", "expanded_light_limit = true"] + RUNNER_ARGS + extra
     e = dict(GPU_TIME)
     e.update(env or {})
     run(args, e)
@@ -166,6 +171,21 @@ def stage_clusters(place, mge_build):
     return ok
 
 
+WEATHERS = ["clear", "cloudy", "foggy", "overcast", "rain", "thunder", "ash", "blight", "snow", "blizzard"]
+
+
+def stage_weathers(place, mge_build):
+    print("weathers at %s" % place, flush=True)
+    folder = game("v-weathers-" + place, PLACES[place] + ["--steps", "exterior,weathers", "--shapes", "2", "--budget", "300"], mge_build)
+    if not folder:
+        return check(False, "no run")
+    log = open(os.path.join(folder, "MWSE.log"), errors="replace").read()
+    rates = {int(m.group(2)): float(m.group(1)) for m in re.finditer(r"rate: ([\d.]+) frames in a second at '[^']*' weather (\d+)", log)}
+    for index, name in enumerate(WEATHERS):
+        print("       %-9s %s" % (name, ("%.1f" % rates[index]) if index in rates else "?"), flush=True)
+    return check(len(rates) == 10, "%d of 10 weathers measured" % len(rates))
+
+
 def stage_tour(mge_build):
     print("tour of the test level", flush=True)
     folder = game("v-tour", ["--steps", "tour", "--tour-cells", "@nifTest_1;@nifTest_2;@nifTest_3", "--budget", "560"], mge_build)
@@ -185,7 +205,10 @@ def main():
     ap.add_argument("--mge-build", default=os.path.join(REPO, "..", "MGE-XE-G7-render-link", "bin", "MSVC-Release"))
     ap.add_argument("--places", default="seyda,narsis")
     ap.add_argument("--gpu-time", action="store_true", help="the helper writes GPU time stamps in the only stage")
+    ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off for the runs")
     args = ap.parse_args()
+    if args.disable_mod:
+        RUNNER_ARGS.extend(["--disable-mod", args.disable_mod])
     if args.gpu_time:
         GPU_TIME["MGE_XE_GPU_TIME"] = "1"
     places = args.places.split(",")
@@ -204,6 +227,10 @@ def main():
         elif stage == "clusters":
             for place in places:
                 if not stage_clusters(place, args.mge_build):
+                    return 1
+        elif stage == "weathers":
+            for place in places:
+                if not stage_weathers(place, args.mge_build):
                     return 1
         else:
             print("unknown stage " + stage)
