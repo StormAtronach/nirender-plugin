@@ -78,6 +78,8 @@ def main():
     ap.add_argument("--tour-seconds", type=float, default=1.5, help="the time at each object of the tour")
     ap.add_argument("--steps", help="the steps of the scenario to do, with commas (for example exterior,rate,capture); "
                     "all of them without this")
+    ap.add_argument("--capture-menu", type=int, default=0, help="frames of a capture file that starts at the main menu and holds the load of the "
+                    "save (menu.nircap): the loading screen is a screen polygon")
     ap.add_argument("--budget", type=int, default=200)
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -100,7 +102,7 @@ def main():
     run = session.Run(args.label)
     spec = run.spec("owndevice", save=args.save, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
                     position=args.position, yaw=args.yaw, findWater=args.find_water, hour=args.hour, weather=args.weather,
-                    tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, shapes=args.shapes)
+                    tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, shapes=args.shapes, captureMenu=args.capture_menu)
     # The plugin starts the host program. It reads these from the environment of the game.
     if not args.mge_build:
         os.environ["NIRENDER_HOST_EXE"] = HOST

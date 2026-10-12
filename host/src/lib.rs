@@ -2780,6 +2780,9 @@ struct Player {
     /// `Replay`.
     items: Vec<Item>,
     world_draws: Vec<Rc<Draw>>,
+    /// The draws of the world scene that are not the sky and came before the sky (see
+    /// `draw`): they go into the items after the start of the world.
+    held_draws: Vec<Item>,
     /// The lights of all draws of the frame, in the order of the draws.
     frame_lights: Vec<LightData>,
     /// The bones of the skinned draws of the frame, for the bone buffer.
@@ -2794,6 +2797,8 @@ struct Player {
     /// rendered texture as its target.
     parameters: Option<FrameParameters>,
     world_begun: bool,
+    /// A draw of a sky class went into the back buffer in the world scene of this frame.
+    sky_seen: bool,
     world_ended: bool,
     /// The classes that the extension took in this frame, one bit for each.
     replaced: u32,
@@ -2877,11 +2882,13 @@ impl Player {
             extension: None,
             items: Vec::new(),
             world_draws: Vec::new(),
+            held_draws: Vec::new(),
             frame_lights: Vec::new(),
             frame_bones: Vec::new(),
             frame_instances: Vec::new(),
             parameters: None,
             world_begun: false,
+            sky_seen: false,
             world_ended: false,
             replaced: 0,
             posted: false,
@@ -2976,6 +2983,8 @@ impl Player {
         self.frame_instances.push(core::array::from_fn(|i| if i % 5 == 0 { 1.0 } else { 0.0 }));
         self.parameters = None;
         self.world_begun = false;
+        self.sky_seen = false;
+        self.held_draws.clear();
         self.world_ended = false;
         self.replaced = 0;
         self.posted = false;
@@ -3235,7 +3244,10 @@ impl Player {
             // the primitive type, the least index, the vertices, the first index, the
             // primitives.
             let command_bytes = |words: [u32; 5]| -> Vec<u8> { [COMMAND_DRAW_INDEXED, 0, 0, 0].iter().chain(words.iter()).flat_map(|v| v.to_le_bytes()).collect() };
-            if strips.is_empty() {
+            // The flag 64: lines, as a line list of the index entries of the geometry.
+            if flags & 64 != 0 {
+                self.draw(&command_bytes([2, 0, vertices, 0, entries / 2]), true);
+            } else if strips.is_empty() {
                 self.draw(&command_bytes([4, 0, vertices, 0, entries / 3]), true);
             } else {
                 let mut start = 0u32;
@@ -3344,6 +3356,11 @@ impl Player {
                     self.world_ended = true;
                     let facts = self.world_facts(false);
                     self.items.push(Item::WorldEnd(Box::new(facts)));
+                }
+                // A world scene without a sky, so without a start of the world: the draws
+                // held for the start are drawn at its end.
+                if self.scene_kind == 1 {
+                    self.items.append(&mut self.held_draws);
                 }
                 self.scene_kind = 0;
             }
@@ -4009,13 +4026,27 @@ impl Player {
             self.ask_frame();
         }
         // The world of the game starts with the first draw of its world scene into the
-        // back buffer that is not a part of the sky: the classes 1 to 7 are the sky and
-        // 8 is the glare of the sun.
-        if self.extension.is_some() && !self.world_begun && in_back_buffer && self.scene_kind == 1 && !(1..=8).contains(&self.stream.object_class) {
+        // back buffer that is not a part of the sky and comes after the sky: the classes 1
+        // to 7 are the sky and 8 is the glare of the sun. The world scene is one
+        // `NiCamera::Click`: the engine draws a geometry without alpha blending as it comes
+        // to it in the scene graph (`NiAlphaAccumulator::RegisterObject` 0x429B90 keeps
+        // the blended ones for the end), so a draw can come before the sky (the lines of
+        // the cell borders); it is not the world. An interior has no sky: the world starts
+        // at its first draw.
+        let sky = (1..=8).contains(&self.stream.object_class);
+        if in_back_buffer && self.scene_kind == 1 && sky {
+            self.sky_seen = true;
+        }
+        if self.extension.is_some() && !self.world_begun && in_back_buffer && self.scene_kind == 1 && !sky && (self.sky_seen || self.stream.interior) {
             self.world_begun = true;
             let facts = self.world_facts(true);
             self.items.push(Item::WorldStart(Box::new(facts)));
+            // The draws from before the sky, in their order: the extension draws its
+            // distant land under them and starts the depth of the world, so a draw before
+            // the start would lose its depth.
+            self.items.append(&mut self.held_draws);
         }
+        let hold = self.extension.is_some() && !self.world_begun && in_back_buffer && self.scene_kind == 1 && !sky;
         // A draw of a class that the extension takes: the extension draws at the first one.
         let class = self.stream.object_class;
         let (watched, shade, fog_range, sky) = self.parameters.as_ref().map_or((0, false, None, None), |p| (p.watched, p.shade, p.fog_range, p.sky));
@@ -4206,7 +4237,11 @@ impl Player {
         if in_back_buffer && matches!(self.scene_kind, 1 | 2) && class != 10 {
             self.world_draws.push(draw.clone());
         }
-        self.items.push(Item::Draw(draw));
+        if hold {
+            self.held_draws.push(Item::Draw(draw));
+        } else {
+            self.items.push(Item::Draw(draw));
+        }
     }
 
     fn print_counts(&self) {

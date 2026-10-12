@@ -724,6 +724,38 @@ unsafe fn pack_screen_poly_geom_buffer_regions(set: &mut Regions, this: usize, c
     }
 }
 
+/// The identity transform that `RenderScreenPoly` gives `DrawPrimitive`, written into
+/// `transform` in the order of the game code.
+unsafe fn identity_transform(transform: &mut [u32; NiTransform::SIZE / 4]) -> usize {
+    let at = transform.as_mut_ptr() as usize;
+    matrix33_copy(at + NiTransform::rotation, IDENTITY_MATRIX33);
+    let z: u32 = rd(VEC3_ZERO, 8);
+    let x: u32 = rd(VEC3_ZERO, 0);
+    let y: u32 = rd(VEC3_ZERO, 4);
+    wr(at, NiTransform::translation_z, z);
+    wr(at, NiTransform::translation_x, x);
+    wr(at, NiTransform::translation_y, y);
+    wr(at, NiTransform::scale, ONE);
+    at
+}
+
+/// The shape record of a screen polygon (step R7b): its geometry for this draw (see
+/// `geometry_stream::note_screen_polygon`), then the transform, the bound and the lights
+/// as `DrawPrimitive` sets them, and the record with the identity world. The view and the
+/// projection of the screen polygons stay as the port sets them on the device: the helper
+/// draws the record under them. Returns true when the pipeline of the device must not run.
+unsafe fn screen_polygon_record(this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize, transform: usize, bound: usize) -> bool {
+    if crate::shape_stream::mode() == crate::shape_stream::OFF || !crate::capture::recording() {
+        return false;
+    }
+    let handle = crate::geometry_stream::note_screen_polygon(count, vertices, tex_coords, colour, rd(this, R::frustumNear), rd(this, R::frustumDistance));
+    if handle == 0 {
+        return false;
+    }
+    crate::shape_stream::note_geometry(handle);
+    crate::ports::draw::shape_record(this, 0, transform, bound)
+}
+
 /// 0x6ADD20 `NiDX8Renderer::RenderScreenPoly`
 pub unsafe fn render_screen_poly(this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize) {
     crate::shadow::touch(&render_screen_poly_port::STATE);
@@ -733,23 +765,17 @@ pub unsafe fn render_screen_poly(this: usize, count: u32, vertices: usize, tex_c
     ni_bound_copy(this + R::worldBound, this + R::defaultBound);
     device_set_transform(rd(this, R::d3dDevice), D3DTS_VIEW, this + R::screenPolyView);
     device_set_transform(rd(this, R::d3dDevice), D3DTS_PROJECTION, this + R::screenPolyProj);
-    let buffer = pack_screen_poly_geom_buffer(this, count, vertices, tex_coords, colour, rd(this, R::frustumNear), rd(this, R::frustumDistance));
-    if buffer != 0 {
-        let mut transform = [0u32; NiTransform::SIZE / 4];
-        let at = transform.as_mut_ptr() as usize;
-        matrix33_copy(at + NiTransform::rotation, IDENTITY_MATRIX33);
-        let z: u32 = rd(VEC3_ZERO, 8);
-        let x: u32 = rd(VEC3_ZERO, 0);
-        let y: u32 = rd(VEC3_ZERO, 4);
-        wr(at, NiTransform::translation_z, z);
-        wr(at, NiTransform::translation_x, x);
-        wr(at, NiTransform::translation_y, y);
-        wr(at, NiTransform::scale, ONE);
-        let mut bound = [0u32; 4];
-        ni_bound_ctor(bound.as_mut_ptr() as usize);
-        renderer_draw_primitive(this, 0, 0, at, bound.as_mut_ptr() as usize, buffer, 0);
-        ni_bound_dtor(bound.as_mut_ptr() as usize);
+    let mut transform = [0u32; NiTransform::SIZE / 4];
+    let mut bound = [0u32; 4];
+    let at = identity_transform(&mut transform);
+    ni_bound_ctor(bound.as_mut_ptr() as usize);
+    if !screen_polygon_record(this, count, vertices, tex_coords, colour, at, bound.as_mut_ptr() as usize) {
+        let buffer = pack_screen_poly_geom_buffer(this, count, vertices, tex_coords, colour, rd(this, R::frustumNear), rd(this, R::frustumDistance));
+        if buffer != 0 {
+            renderer_draw_primitive(this, 0, 0, at, bound.as_mut_ptr() as usize, buffer, 0);
+        }
     }
+    ni_bound_dtor(bound.as_mut_ptr() as usize);
     device_set_transform(rd(this, R::d3dDevice), D3DTS_VIEW, this + R::d3dViewMat);
     device_set_transform(rd(this, R::d3dDevice), D3DTS_PROJECTION, this + R::d3dProjMat);
 }

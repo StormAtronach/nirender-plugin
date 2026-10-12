@@ -246,6 +246,12 @@ return function(nirender, spec)
             end
             cell(1)
         end, function() return tourDone end },
+        -- Lines: the cell borders of the game (the console command ToggleBorders makes a
+        -- NiLines for each loaded exterior cell, `Land::setDisplayCellBorders`). The game
+        -- draws them with `RenderLines`, which no mesh of the game reaches.
+        { "lines", 2.0, function()
+            say("lines: cell borders %s", tostring(tes3.runLegacyScript({ command = "ToggleBorders" })))
+        end },
         -- A capture file of some frames at rest, for the offline replay: the same picture
         -- from the same file each time, for a check of a change of the renderer.
         { "capture", 2.5, function()
@@ -345,6 +351,14 @@ return function(nirender, spec)
         event.unregister("enterFrame", at_main_menu)
         say("main menu: %s", nirender.captureStatus())
         after(5, function() nirender.streamShot(string.format("%s/host-menu.png", spec.dir)) end)
+        -- A capture file of the load of the save, from the main menu: the loading screen of
+        -- the game is a screen polygon (`RenderScreenPoly`), which no place of the game has.
+        if spec.captureMenu and spec.captureMenu > 0 then
+            after(5.5, function()
+                local ok, problem = nirender.capture(spec.dir .. "/menu.nircap", 0, spec.captureMenu)
+                say("capture of the menu and the load: %s %s", tostring(ok), tostring(problem))
+            end)
+        end
         scenario.start(function()
             after(spec.settleSeconds or 6, function() step(1) end)
         end)

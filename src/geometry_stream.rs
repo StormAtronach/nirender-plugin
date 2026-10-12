@@ -12,17 +12,23 @@
 //!
 //! A skinned shape (step R5) is packed with the weights and the bone indexes of each vertex
 //! for the whole skin, from the partitions of its skin data, so one draw with the palette
-//! of the skin replaces the draws of the partitions. Particles, lines, points and screen
-//! polygons stay on the path of the device until step R7.
+//! of the skin replaces the draws of the partitions. The particles of a system come in the
+//! shape record itself (step R7a). Lines are packed as `RenderLines` packs them, with the
+//! index list of their segments, and a screen polygon as `PackScreenPolyVB` packs it, at
+//! each draw (step R7b).
 
 use std::collections::HashMap;
 
 use crate::d3d::{D3DFVF_DIFFUSE, D3DFVF_NORMAL, D3DFVF_TEX1, D3DFVF_XYZ};
 use crate::engine::vcall0;
 use crate::gen::layouts::{NiGeometryData as GD, NiSkinInstance, NiSkinPartition, NiSkinPartition_Partition as P, NiTriStripsData as TS};
-use crate::link::{DRAW_SHAPE, DRAW_STRIPS};
+use crate::link::{DRAW_LINES, DRAW_SHAPE, DRAW_STRIPS};
 use crate::mem::rd;
 use crate::ports::ni;
+
+/// `NiLinesData::lineSegmentFlags`: one byte for each vertex, not 0 when a segment goes from
+/// the vertex to the next one.
+pub const LINES_SEGMENT_FLAGS: usize = 0x34;
 
 /// `D3DFVF_XYZB4` and `D3DFVF_LASTBETA_UBYTE4`: a position, three weights and four bone
 /// indexes in a byte each. The format of a skinned vertex.
@@ -88,6 +94,7 @@ pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
     let strips = match kind {
         DRAW_SHAPE => false,
         DRAW_STRIPS => true,
+        DRAW_LINES => return note_lines(geom_data),
         _ => return 0,
     };
     if !ni::is_kind_of(geom_data, if strips { RTTI_NI_TRI_STRIPS_DATA } else { RTTI_NI_TRI_SHAPE_DATA }) {
@@ -188,15 +195,119 @@ pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
     if strip_count != 0 {
         lengths[..strip_count as usize * 2].copy_from_slice(core::slice::from_raw_parts(strip_lengths as *const u8, strip_count as usize * 2));
     }
-    crate::capture::geometry(
-        &[handle, version.unique, version.revision as u32, fvf, stride as u32, active, entries, strip_count],
-        &lengths,
-        &bytes,
-        index_bytes,
-    );
+    send(handle, version, fvf, stride as u32, strip_count, &lengths, &bytes, index_bytes);
+    handle
+}
+
+/// Sends a geometry record and notes its version. `lengths` has the strip lengths, padded
+/// to 4 bytes.
+unsafe fn send(handle: u32, version: Version, fvf: u32, stride: u32, strip_count: u32, lengths: &[u8], bytes: &[u8], index_bytes: &[u8]) {
+    crate::capture::geometry(&[handle, version.unique, version.revision as u32, fvf, stride, version.vertices, version.entries, strip_count], lengths, bytes, index_bytes);
     versions().insert(handle, version);
     RECORDS += 1;
     BYTES += (32 + lengths.len() + bytes.len() + index_bytes.len()) as u64;
+}
+
+/// The vertex format and the stride of a vertex with a position, a colour when `colours`
+/// and one texture coordinate when `coords`: the format of `RenderLines` and of
+/// `PackScreenPolyVB`, which pack no normal.
+fn plain_format(colours: bool, coords: bool) -> (u32, usize) {
+    let (mut fvf, mut stride) = (D3DFVF_XYZ, 12usize);
+    if colours {
+        fvf |= D3DFVF_DIFFUSE;
+        stride += 4;
+    }
+    if coords {
+        fvf |= D3DFVF_TEX1;
+        stride += 8;
+    }
+    (fvf, stride)
+}
+
+/// The geometry of a lines data (`RenderLines`), once for each version: the vertices as the
+/// function packs them (the position, the colour, the texture coordinate of each), and the
+/// index list of the segments as `NiDX8IndexBufferManager::buildLineSegmentIndexBuffer`
+/// builds it: the vertex and the next one for each vertex with its segment flag. For the
+/// last vertex with the flag the function writes one index and counts two: the second index
+/// is what the buffer had there. The record has the vertex twice: a segment without length.
+unsafe fn note_lines(geom_data: usize) -> u32 {
+    let count = rd::<u16>(geom_data, GD::vertexCount) as usize;
+    let flags: usize = rd(geom_data, LINES_SEGMENT_FLAGS);
+    let vertices: usize = rd(geom_data, GD::vertices);
+    if count == 0 || flags == 0 || vertices == 0 {
+        return 0;
+    }
+    let mut indexes: Vec<u16> = Vec::new();
+    for i in 0..count {
+        if rd::<u8>(flags, i) != 0 {
+            let next = if i + 1 < count { i + 1 } else { i };
+            indexes.extend([i as u16, next as u16]);
+        }
+    }
+    if indexes.is_empty() {
+        return 0;
+    }
+    let handle = geom_data as u32;
+    let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: count as u32, entries: indexes.len() as u32, skin_data: 0 };
+    if versions().get(&handle) == Some(&version) {
+        return handle;
+    }
+    let colours: usize = rd(geom_data, GD::colors);
+    let coords: usize = rd(geom_data, GD::textureCoords);
+    let (fvf, stride) = plain_format(colours != 0, coords != 0);
+    let mut bytes = Vec::with_capacity(count * stride);
+    for i in 0..count {
+        bytes.extend_from_slice(&rd::<[u8; 12]>(vertices, i * 12));
+        if colours != 0 {
+            bytes.extend_from_slice(&rd::<[u8; 4]>(colours, i * 4));
+        }
+        if coords != 0 {
+            bytes.extend_from_slice(&rd::<[u8; 8]>(coords, i * 8));
+        }
+    }
+    let index_bytes: Vec<u8> = indexes.iter().flat_map(|i| i.to_le_bytes()).collect();
+    send(handle, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes);
+    handle
+}
+
+/// The geometry of a screen polygon (`RenderScreenPoly`) for this draw, as
+/// `NiDX8VertexBufferManager::PackScreenPolyVB` packs it: each vertex at `(x * d, y * d, d)`
+/// with `d = distance * z + near` (the polygon is at that depth under the screen projection
+/// of the renderer), then its colour and its texture coordinate when the polygon has them.
+/// The fan of the polygon is a triangle list in the record. The record goes out at each
+/// draw: the vertices of a polygon can change, and the record is small. Returns the handle,
+/// the vertex array of the polygon, or 0 for a polygon with fewer than three vertices.
+///
+/// The game keeps `d` on the x87 stack with 64 bits of mantissa and rounds at each store;
+/// this code keeps it as an `f64` (53 bits) and rounds at each store. The two differ only
+/// when the extra bits change a rounding (inference: not measured).
+pub unsafe fn note_screen_polygon(count: u32, vertices: usize, tex_coords: usize, colour: usize, near: f32, distance: f32) -> u32 {
+    if !crate::capture::recording() || vertices == 0 || count < 3 {
+        return 0;
+    }
+    let count = count as usize;
+    let (fvf, stride) = plain_format(colour != 0, tex_coords != 0);
+    let mut bytes = Vec::with_capacity(count * stride);
+    for i in 0..count {
+        let [x, y, z]: [f32; 3] = rd(vertices, i * 12);
+        let d = distance as f64 * z as f64 + near as f64;
+        for value in [(d * x as f64) as f32, (d * y as f64) as f32, d as f32] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        if colour != 0 {
+            bytes.extend_from_slice(&rd::<[u8; 4]>(colour, i * 4));
+        }
+        if tex_coords != 0 {
+            bytes.extend_from_slice(&rd::<[u8; 8]>(tex_coords, i * 8));
+        }
+    }
+    let indexes: Vec<u16> = (0..count as u16 - 2).flat_map(|n| [0, n + 1, n + 2]).collect();
+    let index_bytes: Vec<u8> = indexes.iter().flat_map(|i| i.to_le_bytes()).collect();
+    let handle = vertices as u32;
+    let version = Version { unique: 0, revision: 0, vertices: count as u32, entries: indexes.len() as u32, skin_data: 0 };
+    send(handle, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes);
+    // The next draw of the polygon sends it again.
+    versions().remove(&handle);
     handle
 }
 

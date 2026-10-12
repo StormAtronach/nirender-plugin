@@ -34,6 +34,9 @@ pub const EFFECTS: u32 = 16;
 /// words). The density and the colour of a fog property change with the weather, so they
 /// come with each draw and not in the material record. See `fog_values`.
 pub const FOG: u32 = 32;
+/// The record is the draw of lines (`RenderLines`, step R7b): its geometry has the vertices
+/// and the index list of the segments, and the helper draws it as a line list.
+pub const LINES: u32 = 64;
 
 /// The fog of a draw as `NiDX8RenderState::updateFogStates` and `updateD3DState` set it
 /// for its fog property: `None` when the fog is off for the draw (the property is off, or
@@ -79,6 +82,28 @@ pub unsafe fn note_handles(geometry: u32, material: u32) {
     *core::ptr::addr_of_mut!(HANDLES) = (geometry, material);
 }
 
+/// Notes the geometry of the draw in progress, for a draw whose geometry the port packs
+/// itself (a screen polygon): the object record of the link had none.
+pub unsafe fn note_geometry(geometry: u32) {
+    (*core::ptr::addr_of_mut!(HANDLES)).0 = geometry;
+}
+
+/// The arguments of `NiDX8LightManager::setState` for the draw in progress: the light
+/// manager, the effect state, the texturing and the vertex colour properties. Each draw
+/// function of the renderer makes this call before its draw; a port makes it at its own
+/// call site before the record.
+pub unsafe fn light_state_arguments(renderer: usize) -> (usize, usize, usize, usize) {
+    use crate::gen::layouts::{NiDX8Renderer as R, NiPropertyState as PS};
+    let property_state: usize = rd(renderer, R::currentPropertyState);
+    (rd(renderer, R::lightManager), rd(renderer, R::currentEffectState), rd(property_state, PS::propTexturing), rd(property_state, PS::propVertexColor))
+}
+
+/// `D3DRS_AMBIENT` (139) as the render state record of the renderer has it.
+pub unsafe fn ambient(renderer: usize) -> u32 {
+    use crate::gen::layouts::{NiDX8RenderState as RS, NiDX8Renderer as R};
+    rd(rd::<usize>(renderer, R::renderState), RS::renderStateSettings + 139 * 8)
+}
+
 pub unsafe fn report() -> String {
     format!("shapes: mode {}, {} records, {} draws of the device skipped", mode(), *core::ptr::addr_of!(RECORDS), *core::ptr::addr_of!(SKIPPED))
 }
@@ -96,6 +121,17 @@ pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u
     let bones: Vec<u8> = palette.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
     let flags = if palette.is_empty() { 0 } else { SKINNED };
     record(renderer, geometry, flags, world, relative, ambient, material_values, fog, palette.len() as u32, &[], &bones)
+}
+
+/// Sends the record of the lines that are about to be drawn (`RenderLines`), with the flag
+/// `LINES`; the geometry is the lines data, noted by the link. Returns true when the
+/// pipeline of the device must not run for the draw.
+pub unsafe fn send_lines(renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>) -> bool {
+    let (geometry, _) = *core::ptr::addr_of!(HANDLES);
+    if geometry == 0 {
+        return false;
+    }
+    record(renderer, geometry, LINES, world, relative, ambient, material_values, fog, 0, &[], &[])
 }
 
 /// Sends the record of a particle system that is about to be drawn (`RenderPoints`), with

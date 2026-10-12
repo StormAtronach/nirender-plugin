@@ -1315,19 +1315,20 @@ unsafe fn render_tri_strips(args: &[usize]) {
     send_draw(DRAW_STRIPS, args[0], args[3] - AV_WORLD_TRANSFORM, args[1], args[2]);
 }
 
-// The three functions below send no geometry: it is not known that their callers pass the
-// transform of the object itself.
+// `NiParticles::Display` (0x6DD3E0) and `NiLines::Display` (0x6DA850) give the renderer the
+// address of their own world transform, as the shapes do: the object of the draw is at
+// that address less the offset of the transform, and its class comes from its parents.
 
 /// `RenderPoints(this, geometryData, transform, bound)`
 unsafe fn render_points(args: &[usize]) {
-    crate::camera_space::geometry_begin(0);
-    send_draw(DRAW_POINTS, args[0], 0, args[1], 0);
+    crate::camera_space::geometry_begin(args[2]);
+    send_draw(DRAW_POINTS, args[0], args[2] - AV_WORLD_TRANSFORM, args[1], 0);
 }
 
 /// `RenderLines(this, linesData, transform, bound)`
 unsafe fn render_lines(args: &[usize]) {
-    crate::camera_space::geometry_begin(0);
-    send_draw(DRAW_LINES, args[0], 0, args[1], 0);
+    crate::camera_space::geometry_begin(args[2]);
+    send_draw(DRAW_LINES, args[0], args[2] - AV_WORLD_TRANSFORM, args[1], 0);
 }
 
 /// `RenderScreenPoly(this, ...)`

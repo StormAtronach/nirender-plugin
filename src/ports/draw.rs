@@ -447,19 +447,18 @@ unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize)
 /// lights of the draw as `DrawPrimitive` sets them, then the record. For a skinned shape
 /// (`skin` not 0, hardware skinning) the lights and the bound as `DrawSkinnedPrimitive2`
 /// sets them, and the palette of the skin in place of the transform. Returns true when the
-/// pipeline of the device must not run for the draw.
-unsafe fn shape_record(this: usize, skin: usize, transform: usize, world_bound: usize) -> bool {
+/// pipeline of the device must not run for the draw. `RenderScreenPoly` uses it too, with
+/// the identity transform that it gives `DrawPrimitive`.
+pub(crate) unsafe fn shape_record(this: usize, skin: usize, transform: usize, world_bound: usize) -> bool {
     if crate::shape_stream::mode() == crate::shape_stream::OFF || !crate::capture::recording() {
         return false;
     }
     let property_state: usize = rd(this, R::currentPropertyState);
-    let vertex_color: usize = rd(property_state, PS::propVertexColor);
-    let texturing: usize = rd(property_state, PS::propTexturing);
-    let effect_state: usize = rd(this, R::currentEffectState);
+    let (light_manager, effect_state, texturing, vertex_color) = crate::shape_stream::light_state_arguments(this);
     let mut palette = Vec::new();
     let (world, relative) = if skin != 0 {
         let Some(relative) = crate::camera_space::skin_palette(skin, transform, true, &mut palette) else { return false };
-        site_thiscall!(S2_LIGHT_SET_STATE, rd::<usize>(this, R::lightManager), effect_state, texturing, vertex_color);
+        site_thiscall!(S2_LIGHT_SET_STATE, light_manager, effect_state, texturing, vertex_color);
         site_thiscall!(S2_BOUND_COPY, this + R::worldBound, world_bound);
         let mut identity = [0f32; 16];
         for i in 0..4 {
@@ -472,13 +471,11 @@ unsafe fn shape_record(this: usize, skin: usize, transform: usize, world_bound: 
             crate::camera_space::check_model_transform(this, transform, true);
         }
         site_thiscall!(DP_BOUND_COPY, this + R::worldBound, world_bound);
-        site_thiscall!(DP_LIGHT_SET_STATE, rd::<usize>(this, R::lightManager), effect_state, texturing, vertex_color);
+        site_thiscall!(DP_LIGHT_SET_STATE, light_manager, effect_state, texturing, vertex_color);
         (crate::shape_stream::current_world(this), crate::link_client::world_is_relative())
     };
-    // D3DRS_AMBIENT (139) as the render state record of the renderer has it.
-    let ambient: u32 = rd(rd::<usize>(this, R::renderState), crate::gen::layouts::NiDX8RenderState::renderStateSettings + 139 * 8);
     let fog = crate::shape_stream::fog_values(this, property_state);
-    crate::shape_stream::send(this, world, relative, ambient, crate::shape_stream::material_values(property_state), fog, &palette)
+    crate::shape_stream::send(this, world, relative, crate::shape_stream::ambient(this), crate::shape_stream::material_values(property_state), fog, &palette)
 }
 
 pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {

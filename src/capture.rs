@@ -106,7 +106,8 @@ pub mod tag {
     /// of the particle data, and after the bones come the count, the radius, the camera
     /// right and up axes in the model space (3 floats each), then for each particle its
     /// position (3 floats), its size and its colour (20 bytes). The helper makes the
-    /// quads. See `shape_stream`.
+    /// quads. A record with the flag `LINES` is the draw of lines: the helper draws its
+    /// geometry as a line list. See `shape_stream`.
     pub const SHAPE: u32 = 20;
     /// A light of the light manager: its key (the index of the light), then its
     /// `D3DLIGHT8` (26 words). Sent when the light is new or changed. See `light_stream`.

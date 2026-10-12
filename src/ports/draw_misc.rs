@@ -120,8 +120,6 @@ const PARTICLES_RADIUS: usize = 0x38;
 const PARTICLES_NUM_ACTIVE: usize = 0x3C;
 /// `NiParticlesData::sizes`
 const PARTICLES_SIZES: usize = 0x40;
-/// `NiLinesData::lineSegmentFlags`
-const LINES_SEGMENT_FLAGS: usize = 0x34;
 /// `NiRenderStateSetting` of `D3DRS_VERTEXBLEND` in the render state.
 const RS_VERTEX_BLEND: usize = RS::renderStateSettings + D3DRS_VERTEXBLEND as usize * 8;
 
@@ -256,12 +254,8 @@ unsafe fn particles_record(this: usize, geometry_data: usize, count: u32, radius
         return false;
     }
     let property_state: usize = rd(this, R::currentPropertyState);
-    let vertex_color: usize = rd(property_state, PS::propVertexColor);
-    let texturing: usize = rd(property_state, PS::propTexturing);
-    let effect_state: usize = rd(this, R::currentEffectState);
-    site_thiscall!(0x6AD204, rd::<usize>(this, R::lightManager), effect_state, texturing, vertex_color);
-    // D3DRS_AMBIENT (139) as the render state record of the renderer has it.
-    let ambient: u32 = rd(rd::<usize>(this, R::renderState), RS::renderStateSettings + 139 * 8);
+    let (light_manager, effect_state, texturing, vertex_color) = crate::shape_stream::light_state_arguments(this);
+    site_thiscall!(0x6AD204, light_manager, effect_state, texturing, vertex_color);
     let right: [f32; 3] = rd(this, R::modelCameraRight_x);
     let up: [f32; 3] = rd(this, R::modelCameraUp_x);
     let mut particles = Vec::with_capacity(count as usize * crate::shape_stream::PARTICLE_BYTES);
@@ -275,7 +269,7 @@ unsafe fn particles_record(this: usize, geometry_data: usize, count: u32, radius
         geometry_data as u32,
         crate::shape_stream::current_world(this),
         crate::link_client::world_is_relative(),
-        ambient,
+        crate::shape_stream::ambient(this),
         crate::shape_stream::material_values(property_state),
         crate::shape_stream::fog_values(this, property_state),
         radius,
@@ -425,7 +419,30 @@ unsafe fn write_line_vertices(mut to: usize, count: u32, mut vertices: usize, mu
     texture_coords
 }
 
-/// 0x6AD890 `NiDX8Renderer::RenderLines`. No caller reads EAX.
+/// The shape record of lines (see `shape_stream::send_lines`, step R7b): the lights of the
+/// draw as `RenderLines` sets them, then the record. The geometry of the record is the
+/// lines data, noted by the link before the port. Returns true when the pipeline of the
+/// device must not run for the draw.
+unsafe fn lines_record(this: usize) -> bool {
+    if crate::shape_stream::mode() == crate::shape_stream::OFF || !crate::capture::recording() {
+        return false;
+    }
+    let property_state: usize = rd(this, R::currentPropertyState);
+    let (light_manager, effect_state, texturing, vertex_color) = crate::shape_stream::light_state_arguments(this);
+    site_thiscall!(0x6ADBE8, light_manager, effect_state, texturing, vertex_color);
+    crate::shape_stream::send_lines(
+        this,
+        crate::shape_stream::current_world(this),
+        crate::link_client::world_is_relative(),
+        crate::shape_stream::ambient(this),
+        crate::shape_stream::material_values(property_state),
+        crate::shape_stream::fog_values(this, property_state),
+    )
+}
+
+/// 0x6AD890 `NiDX8Renderer::RenderLines`. No caller reads EAX. With the shape records on,
+/// the record of the lines goes out after the transform and the bound are set, and the
+/// pipeline of the device does not run (see `lines_record`).
 pub unsafe fn render_lines(this: usize, lines_data: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_lines_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -436,8 +453,11 @@ pub unsafe fn render_lines(this: usize, lines_data: usize, transform: usize, wor
     }
     site_thiscall!(0x6AD8C2, this, transform);
     site_thiscall!(0x6AD8D2, this + R::worldBound, world_bound);
+    if lines_record(this) {
+        return;
+    }
     let count = rd::<u16>(lines_data, GD::vertexCount) as u32;
-    let segment_flags: usize = rd(lines_data, LINES_SEGMENT_FLAGS);
+    let segment_flags: usize = rd(lines_data, crate::geometry_stream::LINES_SEGMENT_FLAGS);
     let vertices: usize = rd(lines_data, GD::vertices);
     let texture_coords: usize = rd(lines_data, GD::textureCoords);
     let colors: usize = rd(lines_data, GD::colors);
