@@ -2649,6 +2649,10 @@ struct Player {
     depth: Option<Rc<wgpu::TextureView>>,
     /// The texture of `color`, for a read of its pixels. It stays after the frame.
     back_buffer: Option<wgpu::Texture>,
+    /// A part of the frame in progress went to the GPU before its end, so the back buffer
+    /// has a picture that is not complete. `last_picture` then has the last complete one.
+    sent_in_part: bool,
+    last_picture: Option<wgpu::Texture>,
     /// Takes the answer to a pixel read: the number of the request, the width, the height
     /// and the pixels with 4 bytes each, blue first. `None` without a game to answer.
     reply: Option<Box<dyn FnMut(u32, u32, u32, &[u8])>>,
@@ -2754,6 +2758,8 @@ impl Player {
             color: None,
             depth: None,
             back_buffer: None,
+            sent_in_part: false,
+            last_picture: None,
             reply: None,
             shots: Vec::new(),
             overlay_record: None,
@@ -2874,6 +2880,7 @@ impl Player {
         self.stream.fog_range = None;
         self.stream.sky = None;
         self.stream.back_buffer = true;
+        self.sent_in_part = false;
         let mut encoder = self.renderer.device.create_command_encoder(&Default::default());
         if let Some(timing) = self.renderer.timing.as_mut() {
             timing.begin(&mut encoder);
@@ -2898,7 +2905,11 @@ impl Player {
         drop(self.pass.take());
         if let Some(encoder) = self.encoder.take() {
             self.renderer.flush_draw_slots();
-            self.renderer.queue.submit([encoder.finish()]);
+            // The first part of a frame: the back buffer has the last complete picture
+            // until these commands run. A copy of it stays for the window (see
+            // `shown_picture`).
+            let copy = (in_frame && !std::mem::replace(&mut self.sent_in_part, true)).then(|| self.keep_picture()).flatten();
+            self.renderer.queue.submit(copy.into_iter().chain([encoder.finish()]));
         }
         let result = between(self);
         if in_frame {
@@ -2906,6 +2917,24 @@ impl Player {
             self.open_pass(None, None, None);
         }
         result
+    }
+
+    /// The commands that copy the back buffer into `last_picture`.
+    fn keep_picture(&mut self) -> Option<wgpu::CommandBuffer> {
+        let source = self.back_buffer.as_ref()?;
+        let (width, height) = (source.width(), source.height());
+        if self.last_picture.as_ref().is_none_or(|kept| (kept.width(), kept.height()) != (width, height)) {
+            self.last_picture = Some(target_texture(&self.renderer.device, width, height, source.format(), wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC));
+        }
+        let mut encoder = self.renderer.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_texture(source.as_image_copy(), self.last_picture.as_ref()?.as_image_copy(), wgpu::Extent3d { width, height, depth_or_array_layers: 1 });
+        Some(encoder.finish())
+    }
+
+    /// The last complete picture of the game: the back buffer, or the copy from before the
+    /// frame in progress when a part of that frame is in the back buffer.
+    fn shown_picture(&self) -> Option<&wgpu::Texture> {
+        if self.sent_in_part { self.last_picture.as_ref() } else { self.back_buffer.as_ref() }
     }
 
     /// The pixels of a rendered texture, or of the back buffer with the handle 0: the width,
@@ -4364,7 +4393,8 @@ mod live {
         fn show_sign(&mut self) {
             self.sign_at = Instant::now();
             self.sign_step += 1;
-            let (Some(surface), Some(player), Some(back_buffer), Some(overlay)) = (self.surface.as_ref(), self.player.as_ref(), self.back_buffer.as_ref(), self.overlay.as_mut()) else { return };
+            let (Some(surface), Some(player), Some(overlay)) = (self.surface.as_ref(), self.player.as_ref(), self.overlay.as_mut()) else { return };
+            let Some(back_buffer) = player.shown_picture() else { return };
             let frame = match surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
                 _ => return,
