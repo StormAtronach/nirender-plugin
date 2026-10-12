@@ -45,7 +45,7 @@ def disable_mod(name):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--label", default="owndevice")
-    ap.add_argument("--save", default="quiksave.ess")
+    ap.add_argument("--save", default="quiksave.ess", help="the save to load; \"\" starts a new game instead (the films of the game play)")
     ap.add_argument("--interior", default="Balmora, Guild of Mages")
     ap.add_argument("--exterior", default="Balmora")
     ap.add_argument("--backend", default="vulkan")
@@ -100,7 +100,8 @@ def main():
             subprocess.run([cargo, "build", "--release", "--quiet"], cwd=folder, check=True)
     session.prepare(build=not args.no_build)
     run = session.Run(args.label)
-    spec = run.spec("owndevice", save=args.save, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
+    # Without a save (--save ""), the scenario starts a new game: the films of the game play.
+    spec = run.spec("owndevice", save=args.save or None, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
                     position=args.position, yaw=args.yaw, findWater=args.find_water, hour=args.hour, weather=args.weather,
                     tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, shapes=args.shapes, captureMenu=args.capture_menu)
     # The plugin starts the host program. It reads these from the environment of the game.
@@ -109,7 +110,10 @@ def main():
     os.environ["NIRENDER_HOST_LOG"] = run.path("host.txt")
     os.environ["NIRENDER_BACKEND"] = args.backend
     # Pictures of the start of the game, before the scenario can ask for one.
-    os.environ["NIRENDER_HOST_ARGS"] = '--shots-at %s --shots-prefix "%s"' % (args.start_frames, run.path("start"))
+    # Pictures of the start of the game, before the scenario can ask for one, and of a frame of
+    # a film (the 120th: a film starts from black): a film holds the main loop, so the scenario
+    # cannot ask for it.
+    os.environ["NIRENDER_HOST_ARGS"] = '--shots-at %s --shots-prefix "%s" --shot-film "%s"' % (args.start_frames, run.path("start"), run.path("host-film-frame.png"))
     # Mod Organizer puts the Root folder of a mod into the game folder when the game starts.
     # The d3d8.dll of the game folder comes from the mod of MGE XE.
     root = os.path.join(session.harness.MO2_ROOT, "mods", args.mge_mod, "Root")

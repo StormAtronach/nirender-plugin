@@ -36,6 +36,12 @@ pub struct SceneView<'a> {
     pub projection: [f32; 16],
     /// The player is in an interior cell.
     pub interior: bool,
+    /// The fill mode of the device of the game is wireframe at this call: the draw of the
+    /// game that is current, or the last one, has the wireframe property (the console
+    /// command ToggleWireframe puts the shared wireframe property of the engine on every
+    /// mesh). MGE XE on Direct3D 9 draws with the render state the engine left, so its
+    /// distant land, statics, grass and water are lines then.
+    pub wireframe: bool,
     /// The fog of the game: its colour, and the distances of its start and its end.
     pub fog_color: [f32; 4],
     pub fog_start: f32,
@@ -93,6 +99,7 @@ struct WorldFacts {
     view: [f32; 16],
     projection: [f32; 16],
     interior: bool,
+    wireframe: bool,
     fog_color: [f32; 4],
     fog_start: f32,
     fog_end: f32,
@@ -111,6 +118,7 @@ impl WorldFacts {
             view: self.view,
             projection: self.projection,
             interior: self.interior,
+            wireframe: self.wireframe,
             fog_color: self.fog_color,
             fog_start: self.fog_start,
             fog_end: self.fog_end,
@@ -284,7 +292,7 @@ impl Replay for Replayer<'_> {
                 };
             }
             let Some(pipeline) = self.renderer.pipeline(key) else { continue };
-            let (group, offset) = self.renderer.draw_slot(&data);
+            let (group, offset) = self.renderer.draw_slot_now(&data);
             pass.set_pipeline(&pipeline);
             pass.set_stencil_reference(kept.stencil_reference);
             pass.set_bind_group(0, &*group, &[offset]);
@@ -296,6 +304,14 @@ impl Replay for Replayer<'_> {
             pass.set_vertex_buffer(2, self.renderer.instance_buffer.slice(kept.instances.0 as u64 * 64..));
             let (first, count, base) = kept.range;
             let instances = 0..kept.instances.1;
+            // `MGE_XE_REPLAY_DEBUG=1`: each draw that a replay issues, for a comparison of
+            // the two paths of the shapes.
+            if std::env::var("MGE_XE_REPLAY_DEBUG").is_ok_and(|v| v == "1") {
+                println!(
+                    "replay class {} blend {:?} depth {:?} cull {} fill {} origin {:?} range {:?} instances {:?} fan {} world {:?} view {:?} flags {:?} light_range {:?}",
+                    kept.class, key.blend, key.depth, key.cull, key.fill, kept.origin, kept.range, kept.instances, kept.fan, data.world[0], &data.view[12..16], data.flags, data.light_range
+                );
+            }
             if let Some(indexes) = kept.indexes.as_ref() {
                 pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed(first..first + count, base, instances);
@@ -2064,6 +2080,18 @@ impl Renderer {
         (group.clone(), at as u32)
     }
 
+    /// `draw_slot`, with the data written to the GPU at once: for a draw of a pass that the
+    /// extension submits before the flush of the frame (the replay of the kept draws into
+    /// its reflection). The flush comes after that submit, so the pass would read the slot
+    /// as the frame before left it: a draw that is not this one, by chance of the slot
+    /// numbers.
+    fn draw_slot_now(&mut self, data: &DrawData) -> (Rc<wgpu::BindGroup>, u32) {
+        let (group, at) = self.draw_slot(data);
+        let index = (self.draw_slots - 1) / SLOTS_IN_BUFFER;
+        self.queue.write_buffer(&self.draw_buffers[index].0, at as u64, bytemuck::bytes_of(data));
+        (group, at)
+    }
+
     /// Writes the data of the draws since the last write to the GPU: one write for each
     /// buffer of slots. Before a submit.
     fn flush_draw_slots(&mut self) {
@@ -2777,6 +2805,12 @@ struct Player {
     reply: Option<Box<dyn FnMut(u32, u32, u32, &[u8])>>,
     /// The picture files that the game asked for: the frame in progress goes into them.
     shots: Vec<String>,
+    /// A picture file for a frame with a draw of the film player (`--shot-film`, the
+    /// `--shot-film-frame`th such draw: a film starts from black): a film holds the main loop
+    /// of the game, so the game cannot ask for it in time.
+    film_shot: Option<String>,
+    film_shot_at: u32,
+    film_draws: u32,
     /// A program that draws more than the game does.
     extension: Option<Box<dyn Extension>>,
     /// The items of the frame that are not done yet, and the world draws of the frame for
@@ -2883,6 +2917,9 @@ impl Player {
             back_buffer: None,
             reply: None,
             shots: Vec::new(),
+            film_shot: None,
+            film_shot_at: 1,
+            film_draws: 0,
             extension: None,
             items: Vec::new(),
             world_draws: Vec::new(),
@@ -3356,16 +3393,29 @@ impl Player {
                 }
             }
             tag::SCENE_END => {
+                let world_scene = self.scene_kind == 1 && self.target.is_none() && self.drawing();
+                // A world scene in which the game drew nothing of the world (the console
+                // command ToggleWorld culls the world roots; a view with nothing in it): the
+                // world starts at the end of the scene, so that the extension draws its
+                // distant land under the sky. MGE XE on Direct3D 9 does the same: its stage
+                // 0 runs from `EndScene` when no draw started it (mged3d8device.cpp 466).
+                if self.extension.is_some() && world_scene && !self.world_begun {
+                    if self.parameters.is_none() {
+                        self.ask_frame();
+                    }
+                    self.world_begun = true;
+                    let facts = self.world_facts(true);
+                    self.items.push(Item::WorldStart(Box::new(facts)));
+                }
+                // The draws held for the start of the world, when the start came only here.
+                if self.scene_kind == 1 {
+                    self.items.append(&mut self.held_draws);
+                }
                 // The end of the world scene of the game, in the back buffer.
-                if self.scene_kind == 1 && self.world_begun && !self.world_ended && self.target.is_none() && self.drawing() {
+                if world_scene && self.world_begun && !self.world_ended {
                     self.world_ended = true;
                     let facts = self.world_facts(false);
                     self.items.push(Item::WorldEnd(Box::new(facts)));
-                }
-                // A world scene without a sky, so without a start of the world: the draws
-                // held for the start are drawn at its end.
-                if self.scene_kind == 1 {
-                    self.items.append(&mut self.held_draws);
                 }
                 self.scene_kind = 0;
             }
@@ -3511,6 +3561,12 @@ impl Player {
         if vertex_format != 0x144 || stride != 28 || !self.stream.back_buffer || !(4..=6).contains(&kind) {
             self.renderer.counts.screen_draws_lost += 1;
             return;
+        }
+        self.film_draws += 1;
+        if self.film_draws >= self.film_shot_at {
+            if let Some(path) = self.film_shot.take() {
+                self.shots.push(path);
+            }
         }
         let count = vertices.len() / stride;
         let size = self.size_of_target();
@@ -3767,6 +3823,12 @@ impl Player {
         self.items.push(Item::Post(Box::new(facts)));
     }
 
+    /// The fill mode of the device of the game now (D3DFILLMODE: 1 points, 2 lines, 3
+    /// solid): that of the material of the shape in progress, or the render state 8.
+    fn fill_mode(stream: &Stream, from_shape: bool) -> u32 {
+        stream.shape_fill.filter(|_| from_shape).unwrap_or_else(|| stream.render_states.get(&8).copied().unwrap_or(3))
+    }
+
     /// The facts of the world scene as the stream has them now. With `first`, the sun and
     /// the ambient light come from the state packet (the first draw of the world); without
     /// it, they are those of that draw.
@@ -3789,6 +3851,9 @@ impl Player {
                 }
             }
             let ambient = color(known(word(s, state::AMBIENT), 0));
+            if std::env::var("MGE_XE_REPLAY_DEBUG").is_ok_and(|v| v == "1") {
+                println!("world start: from_shape {} lights {} sun {:?} ambient {:?} state {} bytes", self.from_shape, word(s, state::LIGHT_COUNT), sun, ambient, s.len());
+            }
             self.world_sun = sun;
             self.world_ambient = [ambient[0], ambient[1], ambient[2]];
         }
@@ -3798,6 +3863,7 @@ impl Player {
             view: self.stream.view,
             projection: self.stream.projection,
             interior: self.stream.interior,
+            wireframe: Self::fill_mode(&self.stream, self.from_shape) == 2,
             fog_color: color(state_of(34).unwrap_or(0)),
             fog_start: f32::from_bits(state_of(36).unwrap_or(0)),
             fog_end: f32::from_bits(state_of(37).unwrap_or(0)),
@@ -4097,7 +4163,7 @@ impl Player {
             cull: known(word(s, state::CULL_MODE), 3),
             // D3DRS_FILLMODE is 8. The game sends it as a command after the shape record of
             // its object: a draw from the record takes the fill of its derived material.
-            fill: self.stream.shape_fill.filter(|_| self.from_shape).unwrap_or_else(|| self.stream.render_states.get(&8).copied().unwrap_or(3)),
+            fill: Self::fill_mode(&self.stream, self.from_shape),
             color_write: 15,
             stencil: {
                 let v: [u32; 8] = core::array::from_fn(|i| word(s, state::STENCIL + i * 4));
@@ -4615,6 +4681,10 @@ mod live {
         /// Frames to save a picture of, and the start of the names of the files.
         shots_at: Vec<u32>,
         shots_prefix: String,
+        /// A picture of a frame with a draw of the film player, or `None`, and which such
+        /// draw (the first is 1).
+        shot_film: Option<String>,
+        shot_film_frame: u32,
         window: Option<Arc<Window>>,
         surface: Option<wgpu::Surface<'static>>,
         configuration: Option<wgpu::SurfaceConfiguration>,
@@ -4722,6 +4792,8 @@ mod live {
             assert!(renderer.surface_usages.contains(wgpu::TextureUsages::COPY_DST), "the window does not take a copy of a picture");
             let mut player = Player::new(renderer);
             player.extension = self.extension.take();
+            player.film_shot = self.shot_film.take();
+            player.film_shot_at = self.shot_film_frame;
             player.reply = self.reply.take().map(|reply| Box::new(move |request, width, height, pixels: &[u8]| reply.answer(request, width, height, pixels)) as _);
             self.player = Some(player);
             self.surface = Some(surface);
@@ -4886,6 +4958,8 @@ mod live {
             shot_frame: option(args, "--shot-frame").and_then(|text| text.parse().ok()).unwrap_or(60),
             shots_at: option(args, "--shots-at").map(|text| text.split(',').filter_map(|n| n.parse().ok()).collect()).unwrap_or_default(),
             shots_prefix: option(args, "--shots-prefix").unwrap_or_else(|| "frame".into()),
+            shot_film: option(args, "--shot-film"),
+            shot_film_frame: option(args, "--shot-film-frame").and_then(|text| text.parse().ok()).unwrap_or(120),
             window: None,
             surface: None,
             configuration: None,

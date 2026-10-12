@@ -65,6 +65,30 @@ return function(nirender, spec)
         return count
     end
 
+    -- A console command of the engine that switches a debug overlay or a part of the scene
+    -- (engine-debug-toggles-inventory.md): two steps, the command on and the picture, then
+    -- the same command again so that the steps after it see the game as it was. The pair is
+    -- one entry of the list of steps (a call in the middle of a table constructor gives one
+    -- value); the list is flattened below.
+    local function toggle(name, command, seconds)
+        local function run()
+            say("%s: %s %s", name, command, tostring(tes3.runLegacyScript({ command = command })))
+        end
+        local function on()
+            run()
+            -- A capture of two frames with the toggle in effect, for the replay of the
+            -- records against the draws of the device (tools/replay.py): the engine's own
+            -- draws are the reference of a debug overlay, not MGE XE on Direct3D 9.
+            after(1.0, function()
+                if nirender.ownDevice() then
+                    local ok, problem = nirender.capture(string.format("%s/%s.nircap", spec.dir, name), 0, 2)
+                    say("%s: capture %s %s", name, tostring(ok), tostring(problem))
+                end
+            end)
+        end
+        return { pair = true, { name, seconds or 2.5, on }, { name .. "-off", 0.5, run } }
+    end
+
     -- The step tour is complete when its cells are done.
     local tourDone = false
     local steps = {
@@ -92,6 +116,8 @@ return function(nirender, spec)
             inventory(false)
             scenario.goTo(spec.interior)
         end },
+        -- The lights of the scene off, in the interior, where they make the picture.
+        toggle("lights", "ToggleLights"),
         { "exterior", spec.settleSeconds or 6, function()
             -- Noon, so that the pictures of the exterior have the light of the day.
             local hour = tes3.findGlobal("GameHour")
@@ -261,8 +287,28 @@ return function(nirender, spec)
         -- The sky off in the exterior (the console command ToggleSky: `WeatherController`
         -- 0x440870 culls the sky root; the same function hides the sky of a plain interior
         -- cell). The world scene then has no sky draw, and the scene packet says so.
-        { "sky", 2.5, function()
-            say("sky: toggle %s", tostring(tes3.runLegacyScript({ command = "ToggleSky" })))
+        toggle("sky", "ToggleSky"),
+        -- The debug overlays of the engine, each a draw path of its own: the collision boxes
+        -- of the actors (`DataHandler::showActorCollisionBoxes` 0x48DCC0, the shared
+        -- wireframe property), everything in wireframe (the same property), the collision
+        -- grid (`updateCollisionGridDebugOverlay` 0x488590, shapes and a text for each cell),
+        -- the path grid (NiTriShapes of the `PathGridNode`s).
+        toggle("boxes", "ToggleCollisionBoxes"),
+        toggle("wireframe", "ToggleWireframe"),
+        toggle("grid", "ToggleGrid"),
+        toggle("pathgrid", "TogglePathGrid"),
+        -- The parts of the scene off: the world object roots (the sky alone), the water.
+        toggle("noworld", "ToggleWorld"),
+        toggle("nowater", "ToggleWater"),
+        -- The local map without the fog of war: the map texture of the HUD is a render to
+        -- texture (`ui_MenuMap_toggleFogOfWar` 0x5EB340).
+        toggle("fog", "ToggleFogOfWar"),
+        -- A film (the film player draws with `DrawPrimitiveUP`): the film holds the main loop
+        -- of the game, so the host program takes the picture of its first frame on its own
+        -- (`--shot-film`, host-film-frame.png); the picture of the step is the frame after
+        -- the film.
+        { "film", 4.0, function()
+            say("film: %s", tostring(tes3.runLegacyScript({ command = 'PlayBink "mw_logo.bik"' })))
         end },
         -- The same place with the camera turned to the two sides: a thing in the two
         -- pictures must have the same colour. The fog of a thing does not change with the
@@ -298,6 +344,18 @@ return function(nirender, spec)
             say("walk to '%s'; calls from other threads: %s", tes3.player.cell.editorName, (nirender.threadCensus():gsub("\n", "; ")))
         end },
     }
+
+    -- The pairs of toggle() become their two steps, in place.
+    local flat = {}
+    for _, s in ipairs(steps) do
+        if s.pair then
+            flat[#flat + 1] = s[1]
+            flat[#flat + 1] = s[2]
+        else
+            flat[#flat + 1] = s
+        end
+    end
+    steps = flat
 
     -- With spec.steps (names with commas), only those steps: a quick run for one thing.
     if spec.steps and spec.steps ~= "" then
