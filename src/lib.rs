@@ -30,6 +30,7 @@ pub mod hook;
 pub mod install;
 pub mod link;
 pub mod link_client;
+pub mod light_stream;
 pub mod material_stream;
 pub mod mem;
 pub mod perf;

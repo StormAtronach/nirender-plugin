@@ -55,8 +55,8 @@ pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u
     if mode == OFF || geometry == 0 || material == 0 || !capture::recording() || !crate::material_stream::last_modelled() {
         return false;
     }
-    let lights = crate::link_client::state_lights(renderer);
-    let count = (lights.len() / crate::link_client::STATE_LIGHT_SIZE) as u32;
+    let lights = crate::light_stream::note(renderer);
+    let count = lights.len() as u32;
     let flags = (relative as u32) | if mode == DUAL { DUAL_DRAW } else { 0 } | if palette.is_empty() { 0 } else { SKINNED };
     let mut words = [0u32; 36];
     words[0] = geometry;

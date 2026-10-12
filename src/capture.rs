@@ -93,9 +93,14 @@ pub mod tag {
     /// The material of a shape as facts: the handle (a hash of the words), then the words.
     /// See `material_stream`.
     pub const MATERIAL: u32 = 19;
-    /// The draw of a shape: geometry handle, material handle, flags, light count, the world
-    /// matrix (16 floats), then the lights as in a state packet. See `shape_stream`.
+    /// The draw of a shape: geometry handle, material handle, flags, light count, the scene
+    /// ambient, the world matrix (16 floats), the 14 colour values of the material, the
+    /// bone count; then the keys of the lights (4 bytes each), then the matrix of each
+    /// bone. See `shape_stream`.
     pub const SHAPE: u32 = 20;
+    /// A light of the light manager: its key (the index of the light), then its
+    /// `D3DLIGHT8` (26 words). Sent when the light is new or changed. See `light_stream`.
+    pub const LIGHT: u32 = 21;
 }
 
 // ---- the ring in shared memory
@@ -462,6 +467,7 @@ unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
     crate::own_host::snapshot();
     crate::geometry_stream::reset();
     crate::material_stream::reset();
+    crate::light_stream::reset();
     if let Some(s) = state() {
         s.tee_only = false;
         if s.tee_hold {
@@ -507,6 +513,8 @@ pub unsafe fn tee_frames(frames: u32) -> bool {
     crate::geometry_stream::forget(&geometry);
     let material: Vec<u32> = state().map(|s| s.tee_dirty_material.drain().collect()).unwrap_or_default();
     crate::material_stream::forget(&material);
+    // The lights change in most frames: all of them again, into the frames.
+    crate::light_stream::reset();
     true
 }
 
@@ -650,6 +658,7 @@ pub unsafe fn stop() {
     crate::log!("threads: {}", crate::sync::census_text().replace('\n', "; "));
     crate::log!("{}", crate::geometry_stream::report());
     crate::log!("{}", crate::material_stream::report());
+    crate::log!("{}", crate::light_stream::report());
     crate::log!("{}", crate::shape_stream::report());
     crate::log!(
         "capture: end, {} frames, {} records, {} bytes, {:.3} ms of the game thread for each frame{}",
@@ -843,9 +852,15 @@ pub const OBJECT_HAS_GEOMETRY: u32 = 0x100;
 pub const OBJECT_HAS_MATERIAL: u32 = 0x200;
 
 /// A shape record. See `tag::SHAPE`.
-pub unsafe fn shape(head: &[u32], lights: &[u8], bones: &[u8]) {
+pub unsafe fn shape(head: &[u32], lights: &[u32], bones: &[u8]) {
     let _lock = crate::sync::device_lock();
-    write(tag::SHAPE, &[&words(head), lights, bones]);
+    write(tag::SHAPE, &[&words(head), &words(lights), bones]);
+}
+
+/// A light record. See `tag::LIGHT`.
+pub unsafe fn light(key: u32, values: &[u32; 26]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::LIGHT, &[&words(&[key]), &words(values)]);
 }
 
 /// A material record. See `tag::MATERIAL`.

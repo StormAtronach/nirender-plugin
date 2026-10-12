@@ -81,6 +81,32 @@ struct Frame {
 @group(3) @binding(1) var extension_texture: texture_2d<f32>;
 @group(3) @binding(2) var extension_sampler: sampler;
 
+// The clusters of the lights of the frame: a grid of tiles of the screen by slices of
+// depth, each with the lights whose sphere touches it, as indexes into `lights`.
+struct Clusters {
+    // Tiles across, tiles down, slices; w is 1 when the clusters are on.
+    grid: vec4u,
+    // The tiles for each pixel, across and down.
+    screen: vec4f,
+    // The slice of a depth z is scale * log(z) + bias; z is at least the third value.
+    depth: vec4f,
+}
+@group(3) @binding(3) var<uniform> clusters: Clusters;
+@group(3) @binding(4) var<storage, read> cluster_table: array<vec2u>;
+@group(3) @binding(5) var<storage, read> cluster_indexes: array<u32>;
+
+// The lights of the cluster of a pixel: the first entry in `cluster_indexes` and the
+// number, for a pixel of the picture at a depth of the view. None when the clusters are
+// off or the draw cannot use them (`draw.light_range.w`).
+fn cluster_lights(pixel: vec2f, view_z: f32) -> vec2u {
+    if clusters.grid.w == 0u || draw.light_range.w == 0u {
+        return vec2u(0u, 0u);
+    }
+    let tile = vec2u(clamp(vec2i(pixel * clusters.screen.xy), vec2i(0), vec2i(clusters.grid.xy) - 1));
+    let slice = u32(clamp(log(max(view_z, clusters.depth.z)) * clusters.depth.x + clusters.depth.y, 0.0, f32(clusters.grid.z) - 1.0));
+    return cluster_table[(slice * clusters.grid.y + tile.y) * clusters.grid.x + tile.x];
+}
+
 @group(0) @binding(0) var<uniform> draw: Draw;
 // The lights of all draws of the frame.
 @group(0) @binding(1) var<storage, read> lights: array<Light>;

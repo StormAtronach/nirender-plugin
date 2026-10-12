@@ -233,6 +233,8 @@ impl Replay for Replayer<'_> {
             }
             let mut data = kept.data;
             let origin = kept.origin.unwrap_or([0.0; 3]);
+            // The clusters are those of the view of the world: not for another view.
+            data.light_range[3] = 0;
             if let Some(matrix) = view.view {
                 data.view = matrix;
             }
@@ -434,6 +436,7 @@ mod tag {
     pub const GEOMETRY: u32 = 18;
     pub const MATERIAL: u32 = 19;
     pub const SHAPE: u32 = 20;
+    pub const LIGHT: u32 = 21;
 }
 
 /// The size of a light in a state packet.
@@ -732,7 +735,9 @@ pub struct DrawData {
     /// extension's own.
     pub counts: [u32; 4],
     /// The lights of the draw in the light buffer of the frame: the first and the number.
-    /// z: the first bone of a skinned draw in the palette buffer of the frame.
+    /// z: the first bone of a skinned draw in the palette buffer of the frame. w: 1 when
+    /// the light of a pixel of the draw can come from the clusters of the frame
+    /// (`cluster_lights` in the shader) in place of the lights of the draw.
     pub light_range: [u32; 4],
     pub stages: [StageData; 6],
     pub texture_transforms: [[f32; 16]; 6],
@@ -958,8 +963,10 @@ const TIME_NAMES: [&str; TIME_COUNT] = [
     "end of the frame and submit",
     "wait for a picture of the window",
     "copy into the window and present",
+    "clusters of the lights",
 ];
-const TIME_COUNT: usize = 15;
+const TIME_COUNT: usize = 16;
+const TIME_CLUSTERS: usize = 15;
 const TIME_READ: usize = 0;
 const TIME_RECORDS: usize = 1;
 const TIME_DRAW_DATA: usize = 2;
@@ -1145,6 +1152,19 @@ struct Counts {
     shape_skipped: u32,
     /// The shape records with a palette of bones.
     shape_skinned: u32,
+    /// The light records, and the lights of a shape that no record came for.
+    light_records: u32,
+    light_missing: u32,
+    /// The lights and the entries of the clusters of the frames, and the frames that kept
+    /// the lights of the draws because a light had no cut-off.
+    cluster_lights: u64,
+    cluster_entries: u64,
+    cluster_frames_off: u32,
+    /// The GPU time of the render passes and of the whole frame, in nanoseconds, and the
+    /// frames that were timed.
+    gpu_passes: f64,
+    gpu_frame: f64,
+    gpu_frames: u32,
     /// The opaque draws that were sorted.
     sorted_draws: u32,
     /// The draws that differ, by the class of their object.
@@ -1174,8 +1194,9 @@ const SLOT_SIZE: usize = core::mem::size_of::<DrawData>().next_multiple_of(256);
 /// The lights that the light buffer of a frame holds at first.
 const LIGHTS_AT_FIRST: usize = 4096;
 
-/// The bind group of the resources of the extension for a frame.
-fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView) -> wgpu::BindGroup {
+/// The bind group of the resources of the extension for a frame, and the clusters of the
+/// lights of the frame.
+fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("extension frame"),
         layout,
@@ -1183,8 +1204,169 @@ fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &
             wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(texture) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 3, resource: clusters.uniform.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 4, resource: clusters.table.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 5, resource: clusters.indexes.as_entire_binding() },
         ],
     })
+}
+
+/// The grid of the clusters: tiles across and down the screen, slices of depth.
+const CLUSTER_GRID: [u32; 3] = [16, 9, 24];
+/// The most lights of a cluster.
+const CLUSTER_LIGHTS: usize = 64;
+
+/// The values of the clusters for the shader: the grid (w: 1 when the clusters are on),
+/// the tiles for each pixel across and down, then the scale, the bias and the least depth
+/// of the slice of a depth.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ClusterData {
+    grid: [u32; 4],
+    screen: [f32; 4],
+    depth: [f32; 4],
+}
+
+/// The clusters of the lights of the frame: for each cluster of the grid, the lights of
+/// the frame whose sphere touches it, as indexes into the light buffer of the frame.
+/// Binned on the CPU from the view and the projection of the world of the frame.
+struct Clusters {
+    on: bool,
+    uniform: wgpu::Buffer,
+    table: wgpu::Buffer,
+    indexes: wgpu::Buffer,
+    index_capacity: usize,
+    /// The lights of the frame that are candidates, by their key, as indexes.
+    unique: HashMap<u32, u32>,
+    lists: Vec<Vec<u32>>,
+}
+
+impl Clusters {
+    fn new(device: &wgpu::Device) -> Clusters {
+        let cells = (CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]) as usize;
+        let buffer = |label, size, usage| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
+        let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        let index_capacity = 1 << 16;
+        Clusters {
+            on: std::env::var("MGE_XE_CLUSTERS").map_or(true, |v| v != "0"),
+            uniform: buffer("clusters", core::mem::size_of::<ClusterData>() as u64, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST),
+            table: buffer("cluster table", (cells * 8) as u64, storage),
+            indexes: buffer("cluster lights", (index_capacity * 4) as u64, storage),
+            index_capacity,
+            unique: HashMap::new(),
+            lists: (0..cells).map(|_| Vec::new()).collect(),
+        }
+    }
+
+    /// Notes a light of the frame as a candidate, by its key and its index in the light
+    /// buffer: the first draw with the key gives the values.
+    fn note(&mut self, key: u32, index: u32) {
+        self.unique.entry(key).or_insert(index);
+    }
+
+    /// Bins the candidates into the grid for the view of the world and writes the buffers.
+    /// `size` is the size of the picture. Returns false when the clusters are off for the
+    /// frame (no view of the world).
+    fn build(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lights: &[LightData], view: Option<([f32; 16], [f32; 16])>, relative: bool, size: (u32, u32), counts: &mut Counts) -> bool {
+        for list in &mut self.lists {
+            list.clear();
+        }
+        let Some((mut view, projection)) = view.filter(|_| self.on && !self.unique.is_empty()) else {
+            self.unique.clear();
+            queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&ClusterData::zeroed()));
+            return false;
+        };
+        if relative {
+            view[12] = 0.0;
+            view[13] = 0.0;
+            view[14] = 0.0;
+        }
+        let (gx, gy, gz) = (CLUSTER_GRID[0] as usize, CLUSTER_GRID[1] as usize, CLUSTER_GRID[2] as usize);
+        // The near and far planes of a projection of Direct3D.
+        let near = if projection[10] != 0.0 { (-projection[14] / projection[10]).max(1.0) } else { 1.0 };
+        let far = if projection[10] != 1.0 { (projection[14] / (1.0 - projection[10])).max(near * 2.0) } else { near * 1000.0 };
+        let depth_scale = gz as f32 / (far / near).ln();
+        let slice_of = |z: f32| ((z.max(near) / near).ln() * depth_scale).floor().clamp(0.0, gz as f32 - 1.0) as usize;
+        let (sx, sy) = (projection[0], projection[5]);
+        let mut candidates: Vec<u32> = self.unique.values().copied().collect();
+        candidates.sort_unstable();
+        // A point light without a cut-off (the fade of the extension is off) has no end:
+        // its tail would reach the pixels of objects the game never attached it to. The
+        // frame keeps the lights of the draws then.
+        if candidates.iter().any(|&index| lights.get(index as usize).is_some_and(|light| light.position[3] != 3.0 && light.cone[0] <= 0.0)) {
+            self.unique.clear();
+            counts.cluster_frames_off += 1;
+            queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&ClusterData::zeroed()));
+            return false;
+        }
+        counts.cluster_lights += candidates.len() as u64;
+        for index in candidates {
+            let Some(light) = lights.get(index as usize) else { continue };
+            // A directional light is in every cluster.
+            let (x0, x1, y0, y1, z0, z1);
+            if light.position[3] == 3.0 {
+                (x0, x1, y0, y1, z0, z1) = (0, gx - 1, 0, gy - 1, 0, gz - 1);
+            } else {
+                let p = light.position;
+                let c = [
+                    p[0] * view[0] + p[1] * view[4] + p[2] * view[8] + view[12],
+                    p[0] * view[1] + p[1] * view[5] + p[2] * view[9] + view[13],
+                    p[0] * view[2] + p[1] * view[6] + p[2] * view[10] + view[14],
+                ];
+                // The reach: the cut-off of the extension (its fade).
+                let reach = 1.0 / light.cone[0];
+                if c[2] + reach < near || c[2] - reach > far {
+                    continue;
+                }
+                z0 = slice_of(c[2] - reach);
+                z1 = slice_of(c[2] + reach);
+                if c[2] - reach < near {
+                    (x0, x1, y0, y1) = (0, gx - 1, 0, gy - 1);
+                } else {
+                    let nearest = c[2] - reach;
+                    let (half_w, half_h) = (reach * sx / nearest, reach * sy / nearest);
+                    let (cx, cy) = (c[0] * sx / c[2], c[1] * sy / c[2]);
+                    let tile_x = |ndc: f32| (((ndc + 1.0) * 0.5 * gx as f32).floor()).clamp(0.0, gx as f32 - 1.0) as usize;
+                    let tile_y = |ndc: f32| (((1.0 - ndc) * 0.5 * gy as f32).floor()).clamp(0.0, gy as f32 - 1.0) as usize;
+                    (x0, x1) = (tile_x(cx - half_w), tile_x(cx + half_w));
+                    (y0, y1) = (tile_y(cy + half_h), tile_y(cy - half_h));
+                }
+            }
+            for z in z0..=z1 {
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        let list = &mut self.lists[(z * gy + y) * gx + x];
+                        if list.len() < CLUSTER_LIGHTS {
+                            list.push(index);
+                        }
+                    }
+                }
+            }
+        }
+        self.unique.clear();
+        let mut table: Vec<[u32; 2]> = Vec::with_capacity(self.lists.len());
+        let mut indexes: Vec<u32> = Vec::new();
+        for list in &self.lists {
+            table.push([indexes.len() as u32, list.len() as u32]);
+            indexes.extend_from_slice(list);
+        }
+        if indexes.len() > self.index_capacity {
+            self.index_capacity = indexes.len().next_power_of_two();
+            self.indexes = device.create_buffer(&wgpu::BufferDescriptor { label: Some("cluster lights"), size: (self.index_capacity * 4) as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        }
+        counts.cluster_entries += indexes.len() as u64;
+        queue.write_buffer(&self.table, 0, bytemuck::cast_slice(&table));
+        if !indexes.is_empty() {
+            queue.write_buffer(&self.indexes, 0, bytemuck::cast_slice(&indexes));
+        }
+        let data = ClusterData {
+            grid: [CLUSTER_GRID[0], CLUSTER_GRID[1], CLUSTER_GRID[2], 1],
+            screen: [gx as f32 / size.0.max(1) as f32, gy as f32 / size.1.max(1) as f32, 0.0, 0.0],
+            depth: [depth_scale, -near.ln() * depth_scale, near, 0.0],
+        };
+        queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&data));
+        true
+    }
 }
 
 /// A buffer for the lights of a frame.
@@ -1197,6 +1379,118 @@ fn light_buffer(device: &wgpu::Device, lights: usize) -> wgpu::Buffer {
     })
 }
 const BONES_AT_FIRST: usize = 4096;
+
+/// The render passes of a frame that get a pair of time stamps, and the pair of the frame
+/// after them.
+const TIMING_PASSES: u32 = 126;
+const TIMING_QUERIES: u32 = 2 * (TIMING_PASSES + 1);
+
+/// GPU time stamps: a pair for each render pass of the frame, and a pair for the frame
+/// (when the adapter writes them outside a pass). They are resolved at the end of the
+/// frame into one of three staging buffers, and read when the buffer is mapped, frames
+/// later, so the program never waits for the GPU.
+struct Timing {
+    set: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    staging: Vec<wgpu::Buffer>,
+    /// The staging buffers that are mapped or being mapped, and the passes of the frame
+    /// of each: a pair that no pass of the frame wrote keeps the stamps of an older frame.
+    busy: Vec<bool>,
+    slot_passes: Vec<u32>,
+    ready: std::sync::mpsc::Receiver<usize>,
+    sender: std::sync::mpsc::Sender<usize>,
+    /// The passes of the frame with a pair.
+    passes: u32,
+    /// Nanoseconds for each stamp step.
+    period: f32,
+    /// The adapter writes stamps outside a pass: the frame has its pair.
+    frame_stamps: bool,
+}
+
+/// With `MGE_XE_GPU_TIME=1`: the stamps cost about 0.4 ms a frame at the end of the frame.
+fn make_timing(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Timing> {
+    if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) || std::env::var("MGE_XE_GPU_TIME").map_or(true, |v| v != "1") {
+        return None;
+    }
+    let size = TIMING_QUERIES as u64 * 8;
+    let buffer = |usage| device.create_buffer(&wgpu::BufferDescriptor { label: Some("timing"), size, usage, mapped_at_creation: false });
+    let (sender, ready) = std::sync::mpsc::channel();
+    Some(Timing {
+        set: device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("timing"), ty: wgpu::QueryType::Timestamp, count: TIMING_QUERIES }),
+        resolve: buffer(wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST),
+        staging: (0..3).map(|_| buffer(wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST)).collect(),
+        busy: vec![false; 3],
+        slot_passes: vec![0; 3],
+        ready,
+        sender,
+        passes: 0,
+        period: queue.get_timestamp_period(),
+        frame_stamps: device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
+    })
+}
+
+impl Timing {
+    /// The pair of the next render pass of the frame, or `None` when the frame has more
+    /// passes than pairs.
+    fn next_pass(&mut self) -> Option<u32> {
+        let index = self.passes;
+        if index >= TIMING_PASSES {
+            return None;
+        }
+        self.passes += 1;
+        Some(index)
+    }
+
+    /// The start of a frame: the stamp of the frame, when the adapter can write it.
+    fn begin(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        self.passes = 0;
+        if self.frame_stamps {
+            encoder.write_timestamp(&self.set, 2 * TIMING_PASSES);
+        }
+    }
+
+    /// The end of a frame, before the submit: reads the staging buffers that are mapped,
+    /// then resolves the stamps of this frame into a free one. Returns the buffer to map
+    /// after the submit.
+    fn end(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, counts: &mut Counts) -> Option<usize> {
+        let _ = device.poll(wgpu::PollType::Poll);
+        while let Ok(slot) = self.ready.try_recv() {
+            {
+                let mapped = self.staging[slot].slice(..).get_mapped_range().expect("the time stamps");
+                let stamp = |i: u32| u64::from_le_bytes(mapped[i as usize * 8..i as usize * 8 + 8].try_into().unwrap());
+                let span = |i: u32| -> f64 {
+                    let (begin, end) = (stamp(2 * i), stamp(2 * i + 1));
+                    if begin != 0 && end > begin { (end - begin) as f64 * self.period as f64 } else { 0.0 }
+                };
+                counts.gpu_passes += (0..self.slot_passes[slot]).map(span).sum::<f64>();
+                counts.gpu_frame += span(TIMING_PASSES);
+                counts.gpu_frames += 1;
+            }
+            self.staging[slot].unmap();
+            self.busy[slot] = false;
+        }
+        if self.frame_stamps {
+            encoder.write_timestamp(&self.set, 2 * TIMING_PASSES + 1);
+        }
+        let slot = self.busy.iter().position(|busy| !busy)?;
+        encoder.clear_buffer(&self.resolve, 0, None);
+        encoder.resolve_query_set(&self.set, 0..TIMING_QUERIES, &self.resolve, 0);
+        encoder.copy_buffer_to_buffer(&self.resolve, 0, &self.staging[slot], 0, TIMING_QUERIES as u64 * 8);
+        self.busy[slot] = true;
+        self.slot_passes[slot] = self.passes;
+        Some(slot)
+    }
+
+    /// After the submit: asks for the map of the buffer of the frame.
+    fn map(&self, slot: usize) {
+        let sender = self.sender.clone();
+        self.staging[slot].slice(..).map_async(wgpu::MapMode::Read, move |result| {
+            if result.is_ok() {
+                let _ = sender.send(slot);
+            }
+        });
+    }
+}
 /// The bones of the skinned draws of the frame, matrices.
 fn bone_buffer(device: &wgpu::Device, bones: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
@@ -1237,6 +1531,10 @@ struct Renderer {
     light_capacity: usize,
     bone_buffer: wgpu::Buffer,
     bone_capacity: usize,
+    /// The lights that came as records, by key: a `D3DLIGHT8`.
+    lights_known: HashMap<u32, [u8; 104]>,
+    /// The GPU time stamps, when the adapter has them.
+    timing: Option<Timing>,
     texture_layout: wgpu::BindGroupLayout,
     sampler_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
@@ -1257,6 +1555,7 @@ struct Renderer {
     frame_uniform: wgpu::Buffer,
     frame_sampler: wgpu::Sampler,
     frame_group: Rc<wgpu::BindGroup>,
+    clusters: Clusters,
     samplers: HashMap<[u32; 5], Rc<wgpu::Sampler>>,
     /// The textures and the samplers of a draw, by the texture handles and the sampler values
     /// of its stages. The D3D12 backend has a small number of places for samplers.
@@ -1319,7 +1618,8 @@ impl Renderer {
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::TEXTURE_COMPRESSION_BC | (adapter.features() & wgpu::Features::POLYGON_MODE_LINE),
+                required_features: wgpu::Features::TEXTURE_COMPRESSION_BC
+                    | (adapter.features() & (wgpu::Features::POLYGON_MODE_LINE | wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)),
                 // The largest texture that the adapter takes, up to 16384: an atlas of the
                 // distant land of MGE XE has that size.
                 required_limits: wgpu::Limits { max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d.min(16384), ..wgpu::Limits::default() },
@@ -1393,6 +1693,24 @@ impl Renderer {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1437,13 +1755,17 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white));
+        let clusters = Clusters::new(&device);
+        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters));
         let renderer = Renderer {
             frame_layout,
             frame_uniform,
+            clusters,
             frame_sampler,
             frame_group,
             light_buffer: light_buffer(&device, LIGHTS_AT_FIRST),
+            lights_known: HashMap::new(),
+            timing: make_timing(&device, &queue),
             bone_buffer: bone_buffer(&device, BONES_AT_FIRST),
             bone_capacity: BONES_AT_FIRST,
             device: Rc::new(device),
@@ -2253,6 +2575,7 @@ struct Player {
     mark_times: [std::time::Duration; TIME_COUNT],
     mark_frames: u32,
     mark_draws: u32,
+    mark_gpu: (f64, f64, u32),
     /// The size of the back buffer of the game, from the first record. 0 when not known.
     size: (u32, u32),
     /// The size of the picture of the frame.
@@ -2320,6 +2643,7 @@ impl Player {
             mark_times: [std::time::Duration::ZERO; TIME_COUNT],
             mark_frames: 0,
             mark_draws: 0,
+            mark_gpu: (0.0, 0.0, 0),
             size: (0, 0),
             frame_size: (0, 0),
         }
@@ -2336,6 +2660,7 @@ impl Player {
         let (Some(encoder), Some((color, depth, size))) = (self.encoder.as_mut(), views) else { return };
         self.target_size = size;
         let (color, depth) = (&*color, &*depth);
+        let stamps = self.renderer.timing.as_mut().and_then(Timing::next_pass);
         let pass = encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -2350,7 +2675,11 @@ impl Player {
                     depth_ops: Some(wgpu::Operations { load: clear_depth.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store }),
                     stencil_ops: Some(wgpu::Operations { load: clear_stencil.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store }),
                 }),
-                timestamp_writes: None,
+                timestamp_writes: stamps.map(|index| wgpu::RenderPassTimestampWrites {
+                    query_set: &self.renderer.timing.as_ref().unwrap().set,
+                    beginning_of_pass_write_index: Some(2 * index),
+                    end_of_pass_write_index: Some(2 * index + 1),
+                }),
                 occlusion_query_set: None,
                 multiview_mask: None,
             })
@@ -2393,7 +2722,11 @@ impl Player {
         self.stream.fog_range = None;
         self.stream.sky = None;
         self.stream.back_buffer = true;
-        self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
+        let mut encoder = self.renderer.device.create_command_encoder(&Default::default());
+        if let Some(timing) = self.renderer.timing.as_mut() {
+            timing.begin(&mut encoder);
+        }
+        self.encoder = Some(encoder);
         self.renderer.draw_slots = 0;
         self.renderer.draw_staging.clear();
         self.color = Some(Rc::new(color.create_view(&Default::default())));
@@ -2549,12 +2882,26 @@ impl Player {
         self.stream.shape_material = Some(d3d_material);
         let bone_count = word(data, 140) as usize;
         let lights_at = 20 + 64 + 56 + 4;
-        let bones_at = lights_at + light_count * STATE_LIGHT_SIZE;
+        let bones_at = lights_at + light_count * 4;
         if data.len() < bones_at + bone_count * 64 {
             self.renderer.counts.shape_missing += 1;
             return;
         }
-        let lights = &data[lights_at..bones_at];
+        // The lights of the draw from their records, as a state packet has them: the key
+        // in place of the device index, then the D3DLIGHT8.
+        let mut lights = Vec::with_capacity(light_count * STATE_LIGHT_SIZE);
+        for i in 0..light_count {
+            let key = word(data, lights_at + i * 4);
+            match self.renderer.lights_known.get(&key) {
+                Some(values) => {
+                    lights.extend_from_slice(&key.to_le_bytes());
+                    lights.extend_from_slice(values);
+                }
+                None => self.renderer.counts.light_missing += 1,
+            }
+        }
+        let light_count = lights.len() / STATE_LIGHT_SIZE;
+        let lights = &lights[..];
         // The bones of a skinned shape go to the palette of the frame.
         self.stream.shape_bones = (bone_count != 0).then(|| {
             let first = self.frame_bones.len() as u32;
@@ -2627,6 +2974,12 @@ impl Player {
         for ((name, now), before) in TIME_NAMES.iter().zip(counts.times).zip(self.mark_times) {
             println!("  {:6.3}  {name}", per_frame(now - before));
         }
+        let timed = counts.gpu_frames - self.mark_gpu.2;
+        if timed != 0 {
+            let per_frame = |now: f64, before: f64| (now - before) / 1e6 / timed as f64;
+            println!("  gpu: {:.3} ms in the passes, {:.3} ms the frame, for each of {timed} timed frames", per_frame(counts.gpu_passes, self.mark_gpu.0), per_frame(counts.gpu_frame, self.mark_gpu.1));
+        }
+        self.mark_gpu = (counts.gpu_passes, counts.gpu_frame, counts.gpu_frames);
         self.mark_times = counts.times;
         self.mark_frames = counts.frames;
         self.mark_draws = counts.draws;
@@ -2643,8 +2996,13 @@ impl Player {
         self.depth = None;
         if let Some(mut encoder) = self.encoder.take() {
             before_submit(&mut encoder);
-            self.renderer.flush_draw_slots();
-            self.renderer.queue.submit([encoder.finish()]);
+            let renderer = &mut self.renderer;
+            let slot = renderer.timing.as_mut().and_then(|timing| timing.end(&renderer.device, &mut encoder, &mut renderer.counts));
+            renderer.flush_draw_slots();
+            renderer.queue.submit([encoder.finish()]);
+            if let (Some(timing), Some(slot)) = (renderer.timing.as_ref(), slot) {
+                timing.map(slot);
+            }
         }
         self.renderer.counts.times[TIME_END] += clock.elapsed();
     }
@@ -2722,6 +3080,10 @@ impl Player {
                 self.stream.shape_bones = None;
             }
             tag::SHAPE if data.len() >= 144 => self.shape(data),
+            tag::LIGHT if data.len() >= 108 => {
+                self.renderer.lights_known.insert(word(data, 0), data[4..108].try_into().unwrap());
+                self.renderer.counts.light_records += 1;
+            }
             tag::FRAME_END => {
                 self.renderer.counts.frames += 1;
                 return true;
@@ -2946,7 +3308,11 @@ impl Player {
         let (values, texture) = self.parameters.as_ref().map_or(([[0.0f32; 4]; 32], None), |p| (p.values, p.texture.clone()));
         self.renderer.queue.write_buffer(&self.renderer.frame_uniform, 0, bytemuck::cast_slice(&values));
         let texture = texture.unwrap_or_else(|| self.renderer.white.clone());
-        self.renderer.frame_group = Rc::new(frame_group(&self.renderer.device, &self.renderer.frame_layout, &self.renderer.frame_uniform, &self.renderer.frame_sampler, &texture));
+        let renderer = &mut self.renderer;
+        let clock = std::time::Instant::now();
+        renderer.clusters.build(&renderer.device, &renderer.queue, &self.frame_lights, self.world_matrices, self.stream.origin.is_some(), self.frame_size, &mut renderer.counts);
+        renderer.counts.times[TIME_CLUSTERS] += clock.elapsed();
+        renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters));
         for item in items {
             match item {
                 Item::Target(target) => {
@@ -3400,6 +3766,14 @@ impl Player {
             if let Some(extension) = self.extension.as_mut() {
                 let (first, count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);
                 extension.shade(&mut draw_data, &mut self.frame_lights[first..first + count], &DrawFacts { blend_enable: key.blend[0] != 0, source_blend: key.blend[1], destination_blend: key.blend[2], depth_write: key.depth[1] != 0 });
+                // The lights of a shape draw have keys: they are candidates for the clusters
+                // of the frame, and the draw can take its light from them.
+                if self.from_shape && renderer.clusters.on {
+                    for i in 0..count {
+                        renderer.clusters.note(word(s, state::SIZE + i * state::LIGHT_SIZE), (first + i) as u32);
+                    }
+                    draw_data.light_range[3] = 1;
+                }
             }
         }
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
@@ -3487,6 +3861,8 @@ impl Player {
             c.shape_records, c.shape_draws, c.shape_missing, c.shape_skipped
         );
         println!("sorted draws {}, skinned shapes {}", c.sorted_draws, c.shape_skinned);
+        println!("lights: {} records, {} lights of a shape without a record", c.light_records, c.light_missing);
+        println!("clusters: {:.1} lights and {:.0} entries for each frame, {} frames without (a light had no cut-off)", c.cluster_lights as f64 / c.frames.max(1) as f64, c.cluster_entries as f64 / c.frames.max(1) as f64, c.cluster_frames_off);
         println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);
         println!(
             "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}; draws with a made or moved texture coordinate {}; the most lights of a draw {}",

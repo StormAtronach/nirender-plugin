@@ -47,7 +47,8 @@ def main():
                     "nearest spot where the land is deep enough (a test of the view from under the water)")
     ap.add_argument("--yaw", type=float, default=None, help="the heading of the player in degrees, 0 north, with --position")
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for the run, key = value: the line with "
-                    "that key is replaced (for example \"expanded_light_limit = true\")")
+                    "that key is replaced (for example \"expanded_light_limit = true\"); with a section first, "
+                    "\"[distant_land] key = value\", a key the file does not have goes at the end of that section")
     ap.add_argument("--shapes", type=int, default=None, help="the mode of the shape records: 0 off, 1 dual (the records and the "
                     "draws of the device), 2 only the records")
     ap.add_argument("--tour-cells", help="the cells of a test level for the step tour, with semicolons (the NIF test level: "
@@ -97,8 +98,22 @@ def main():
     lines = [line for line in text.splitlines() if not line.strip().startswith("renderer_wgpu")]
     lines = ['vsync = "immediate"' if line.strip().startswith("vsync") else line for line in lines]
     for setting in args.set:
+        section = None
+        if setting.startswith("["):
+            section, setting = setting[1:].split("]", 1)
+            setting = setting.strip()
         key = setting.split("=")[0].strip()
-        lines = [setting if line.split("=")[0].strip() == key else line for line in lines]
+        if any(line.split("=")[0].strip() == key for line in lines):
+            lines = [setting if line.split("=")[0].strip() == key else line for line in lines]
+        elif section is not None:
+            assert "[%s]" % section in lines, "no section [%s] in %s" % (section, toml)
+            start = lines.index("[%s]" % section) + 1
+            end = next((i for i in range(start, len(lines)) if lines[i].startswith("[")), len(lines))
+            while end > start and not lines[end - 1].strip():
+                end -= 1
+            lines.insert(end, setting)
+        else:
+            raise SystemExit("no line with the key %s in %s: give its section, [section] %s" % (key, toml, setting))
     if args.mge_build and not args.reference:
         lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = true")
     switched = run.path("mgeXE.toml")
