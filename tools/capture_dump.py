@@ -92,7 +92,8 @@ def sequence(path, wanted):
         if frame != wanted:
             continue
         if tag == TAG_SCENE_BEGIN:
-            print("SCENE_BEGIN kind %d" % words(body, 4, 1)[0])
+            kind, flags = words(body, 4, 1)[0], words(body, 20, 1)[0]
+            print("SCENE_BEGIN kind %d flags %#x%s" % (kind, flags, " sky hidden" if flags & 4 else ""))
         elif tag == TAG_SCENE_END:
             print("SCENE_END")
         elif tag == TAG_OBJECT:

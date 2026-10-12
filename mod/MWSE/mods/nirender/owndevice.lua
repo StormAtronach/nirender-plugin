@@ -258,6 +258,12 @@ return function(nirender, spec)
             local ok, problem = nirender.capture(spec.dir .. "/exterior.nircap", 0, spec.captureFrames or 30)
             say("capture: %s %s", tostring(ok), tostring(problem))
         end },
+        -- The sky off in the exterior (the console command ToggleSky: `WeatherController`
+        -- 0x440870 culls the sky root; the same function hides the sky of a plain interior
+        -- cell). The world scene then has no sky draw, and the scene packet says so.
+        { "sky", 2.5, function()
+            say("sky: toggle %s", tostring(tes3.runLegacyScript({ command = "ToggleSky" })))
+        end },
         -- The same place with the camera turned to the two sides: a thing in the two
         -- pictures must have the same colour. The fog of a thing does not change with the
         -- direction of the camera.

@@ -2570,6 +2570,9 @@ struct Stream {
     origin: Option<[f64; 3]>,
     /// The player is in an interior cell, from the scene packet.
     interior: bool,
+    /// The game hides the sky (the sky root is culled), from the scene packet: the world
+    /// scene has no sky draw.
+    sky_hidden: bool,
     /// The fog distances of the extension for the draws of the world, or `None`.
     fog_range: Option<(f32, f32)>,
     /// The class of the object of the draws that follow: MGE_LINK_CLASS_* of its packet.
@@ -2858,6 +2861,7 @@ impl Player {
                 back_buffer: true,
                 origin: None,
                 interior: false,
+                sky_hidden: false,
                 fog_range: None,
                 object_class: 0,
                 sky: None,
@@ -3344,6 +3348,7 @@ impl Player {
             tag::SCENE_BEGIN => {
                 self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
                 self.stream.interior = word(data, 20) & 2 != 0;
+                self.stream.sky_hidden = word(data, 20) & 4 != 0;
                 self.scene_kind = word(data, 4);
                 // The user interface scene of the game: the world views are done.
                 if self.scene_kind == 7 {
@@ -4031,13 +4036,14 @@ impl Player {
         // `NiCamera::Click`: the engine draws a geometry without alpha blending as it comes
         // to it in the scene graph (`NiAlphaAccumulator::RegisterObject` 0x429B90 keeps
         // the blended ones for the end), so a draw can come before the sky (the lines of
-        // the cell borders); it is not the world. An interior has no sky: the world starts
-        // at its first draw.
+        // the cell borders); it is not the world. With the sky hidden (the scene packet:
+        // a plain interior cell, or ToggleSky) there is no sky draw: the world starts at
+        // the first draw.
         let sky = (1..=8).contains(&self.stream.object_class);
         if in_back_buffer && self.scene_kind == 1 && sky {
             self.sky_seen = true;
         }
-        if self.extension.is_some() && !self.world_begun && in_back_buffer && self.scene_kind == 1 && !sky && (self.sky_seen || self.stream.interior) {
+        if self.extension.is_some() && !self.world_begun && in_back_buffer && self.scene_kind == 1 && !sky && (self.sky_seen || self.stream.sky_hidden) {
             self.world_begun = true;
             let facts = self.world_facts(true);
             self.items.push(Item::WorldStart(Box::new(facts)));

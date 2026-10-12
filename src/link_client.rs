@@ -277,6 +277,13 @@ unsafe fn in_interior() -> bool {
     data_handler != 0 && rd::<usize>(data_handler, CURRENT_INTERIOR_CELL) != 0
 }
 
+/// True when the game hides the sky: `WeatherController` 0x440870 culls the sky root for an
+/// interior cell that does not behave like an exterior, and for the console command
+/// ToggleSky; 0x440820 shows it again. Without a sky root there is no sky either.
+unsafe fn sky_hidden(sky_root: usize) -> bool {
+    sky_root == 0 || app_culled(sky_root)
+}
+
 /// The two functions of the `d3d8.dll` of MGE XE for a game without a Direct3D device
 /// (`MGE_StreamPresent`, `MGE_StreamTransform`), or 0. MGE XE runs its logic of a frame that
 /// is not drawing in them: zoom, field of view, screen shake, crosshair. Its proxy device
@@ -959,7 +966,9 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
         camera: camera as u32,
         scene_root: ptr_at(camera, CAM::spScene) as u32,
         render_target: roots.render_target,
-        flags: if origin.is_some() { SCENE_HAS_CAMERA_ORIGIN } else { 0 } | if in_interior() { SCENE_INTERIOR } else { 0 },
+        flags: if origin.is_some() { SCENE_HAS_CAMERA_ORIGIN } else { 0 }
+            | if in_interior() { SCENE_INTERIOR } else { 0 }
+            | if sky_hidden(roots.sky_root) { SCENE_SKY_HIDDEN } else { 0 },
         camera_origin: origin.unwrap_or_default(),
     };
     (host.scene_begin)(&scene);
