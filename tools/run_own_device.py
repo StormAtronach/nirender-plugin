@@ -148,7 +148,11 @@ def main():
             lines = [setting if line.split("=")[0].strip() == key else line for line in lines]
         else:
             raise SystemExit("no line with the key %s in %s: give its section, [section] %s" % (key, toml, setting))
-    if args.mge_build and not args.reference:
+    # The switch is written for each mode: the default of MGE XE is on, and a reference run is
+    # MGE XE on Direct3D 9.
+    if args.reference:
+        lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = false")
+    elif args.mge_build:
         lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = true")
     switched = run.path("mgeXE.toml")
     open(switched, "w", encoding="utf-8").write("".join(line + chr(10) for line in lines))

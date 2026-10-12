@@ -53,8 +53,8 @@ def main():
             lines.insert(start, setting)
         else:
             lines[at] = setting
-    if not args.reference:
-        lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = true")
+    # The switch is written for each mode: the default of MGE XE is on.
+    lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = %s" % ("false" if args.reference else "true"))
     switched = os.path.join(tempfile.mkdtemp(prefix="nirender-play-"), "mgeXE.toml")
     open(switched, "w", encoding="utf-8").write("".join(line + chr(10) for line in lines))
 

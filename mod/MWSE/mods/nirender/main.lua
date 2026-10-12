@@ -17,7 +17,7 @@ if not nirender then
     return
 end
 
-local config = mwse.loadConfig("nirender", { mode = "off", early = false, captureKey = "f11", overlayKey = "f10" })
+local config = mwse.loadConfig("nirender", { mode = "off", early = false, captureKey = "f11", overlayKey = "f10", offNotice = true })
 
 local spec = nil
 do
@@ -116,7 +116,16 @@ event.register("initialized", function()
         -- for the ports: the plugin does nothing. With its detours on the 301 functions of
         -- the renderer and its recorder on the device, each call of the game would go
         -- through code of the plugin for no use, and the game would be slower.
-        mwse.log("[nirender] idle: the wgpu renderer is not on (runtime.renderer_wgpu in mgeXE.toml); nothing installed")
+        mwse.log("[nirender] idle: the wgpu renderer is not in use (see mgeXE.log; the switch is runtime.renderer_wgpu in mgeXE.toml); nothing installed")
+        -- The player sees it one time after a load. The switch is off (the settings file of
+        -- an earlier build has it off, and MGE XE does not change a settings file), or a
+        -- part of the renderer is missing and MGE XE wrote its name into mgeXE.log.
+        -- "offNotice": false in the configuration stops the message.
+        if config.offNotice ~= false then
+            event.register("loaded", function()
+                tes3.messageBox("MGE XE: the wgpu renderer is not in use. To use it, set renderer_wgpu = true below [runtime] in mgeXE.toml. If it is set, see mgeXE.log for the cause.")
+            end, { doOnce = true })
+        end
     end
     if spec then
         -- The scenario is "test", "perf" or "video".
