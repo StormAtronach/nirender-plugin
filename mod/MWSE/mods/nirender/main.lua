@@ -68,12 +68,24 @@ elseif ownDevice then
     end, { doOnce = true })
 end
 
--- A capture of the next frames for a bug report: the key of the configuration (a name of
--- tes3.scanCode; "none" for no key) writes nirender-<date>.nircap into the folder of the game.
-local captureKey = tostring(config.captureKey or "none"):lower()
-if ownDevice and installed and captureKey ~= "none" and tes3.scanCode[captureKey] then
+-- The scan code of a key of the configuration, by its name in tes3.scanCode: the case of
+-- the name does not matter (the table has "F10" and "a"). No code for "none"; a name that
+-- the table does not have goes into the log.
+local function keyOf(setting, value)
+    local name = tostring(value or "none"):lower()
+    if name == "none" then return nil end
+    for key, code in pairs(tes3.scanCode) do
+        if key:lower() == name then return code end
+    end
+    mwse.log("[nirender] %s = \"%s\" is not a key name of tes3.scanCode: no key for it", setting, tostring(value))
+end
+
+-- A capture of the next frames for a bug report: the key of the configuration ("none" for
+-- no key) writes nirender-<date>.nircap into the folder of the game.
+local captureKey = ownDevice and installed and keyOf("captureKey", config.captureKey)
+if captureKey then
     event.register("keyDown", function(e)
-        if e.keyCode ~= tes3.scanCode[captureKey] or e.isAltDown or e.isControlDown or e.isShiftDown then return end
+        if e.keyCode ~= captureKey or e.isAltDown or e.isControlDown or e.isShiftDown then return end
         local path = string.format("nirender-%s.nircap", os.date("%Y%m%d-%H%M%S"))
         local ok, problem = nirender.capture(path, 0, 3)
         tes3.messageBox(ok and ("nirender: 3 frames go into " .. path) or ("nirender: no capture: " .. tostring(problem)))
@@ -82,13 +94,14 @@ end
 
 -- The debug overlay of the renderer (the frame rate, the long frames, the memory of the game
 -- and of the renderer): the key of the configuration turns it on and off ("none" for no key).
-local overlayKey = tostring(config.overlayKey or "none"):lower()
-if ownDevice and installed and overlayKey ~= "none" and tes3.scanCode[overlayKey] then
+local overlayKey = ownDevice and installed and keyOf("overlayKey", config.overlayKey)
+if overlayKey then
     event.register("keyDown", function(e)
-        if e.keyCode ~= tes3.scanCode[overlayKey] or e.isAltDown or e.isControlDown or e.isShiftDown then return end
+        if e.keyCode ~= overlayKey or e.isAltDown or e.isControlDown or e.isShiftDown then return end
         nirender.overlay()
     end)
 end
+mwse.log("[nirender] keys: capture %s, overlay %s", tostring(captureKey or "none"), tostring(overlayKey or "none"))
 
 event.register("initialized", function()
     if installed then
