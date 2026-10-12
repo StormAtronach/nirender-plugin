@@ -143,7 +143,19 @@ return function(nirender, spec)
         end },
         { "interior", spec.settleSeconds or 6, function()
             inventory(false)
+            -- The hour and the weather of the run, when the spec asks for them: for an
+            -- interior that behaves as an exterior. The save's otherwise.
+            if spec.hour then
+                local hour = tes3.findGlobal("GameHour")
+                if hour then hour.value = spec.hour end
+            end
             scenario.goTo(spec.interior)
+            if spec.weather then
+                after(2, function()
+                    local weather = tes3.worldController.weatherController
+                    pcall(function() weather:switchImmediate(spec.weather) weather:updateVisuals() end)
+                end)
+            end
         end },
         -- The lights of the scene off, in the interior, where they make the picture.
         toggle("lights", "ToggleLights"),
