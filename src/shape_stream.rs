@@ -20,6 +20,11 @@ pub const RELATIVE: u32 = 1;
 pub const DUAL_DRAW: u32 = 2;
 /// The shape is skinned: the record has the palette of its bones after the lights.
 pub const SKINNED: u32 = 4;
+/// The record is a particle system (step R7): the particles follow the lights, and the
+/// geometry handle is the key of the particle data. See `tag::SHAPE`.
+pub const PARTICLES: u32 = 8;
+/// Bytes of one particle in the record: the position, the size, the colour.
+pub const PARTICLE_BYTES: usize = 20;
 
 static mut MODE: u32 = DUAL;
 /// The handles of the object of the draw in progress, from the object record.
@@ -50,14 +55,50 @@ pub unsafe fn report() -> String {
 /// has the matrix of each bone of the skin instead. Returns true when the ports of the
 /// pipeline must not run for this draw.
 pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], palette: &[[f32; 16]]) -> bool {
+    let (geometry, _) = *core::ptr::addr_of!(HANDLES);
+    if geometry == 0 {
+        return false;
+    }
+    let bones: Vec<u8> = palette.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
+    let flags = if palette.is_empty() { 0 } else { SKINNED };
+    record(renderer, geometry, flags, world, relative, ambient, material_values, palette.len() as u32, &[], &bones)
+}
+
+/// Sends the record of a particle system that is about to be drawn (`RenderPoints`), with
+/// the flag `PARTICLES`. `key` is the particle data of the game; `right` and `up` are the
+/// axes of the camera in the model space of the draw; `particles` has `PARTICLE_BYTES` for
+/// each particle. Returns true when the pipeline of the device must not run for the draw.
+pub unsafe fn send_particles(
+    renderer: usize,
+    key: u32,
+    world: [f32; 16],
+    relative: bool,
+    ambient: u32,
+    material_values: [u32; 14],
+    radius: f32,
+    right: [f32; 3],
+    up: [f32; 3],
+    particles: &[u8],
+) -> bool {
+    let count = (particles.len() / PARTICLE_BYTES) as u32;
+    if key == 0 || count == 0 {
+        return false;
+    }
+    let tail = [count, radius.to_bits(), right[0].to_bits(), right[1].to_bits(), right[2].to_bits(), up[0].to_bits(), up[1].to_bits(), up[2].to_bits()];
+    record(renderer, key, PARTICLES, world, relative, ambient, material_values, 0, &tail, particles)
+}
+
+/// The record itself: the 36 words of the head, the keys of the lights, then `tail` and
+/// `bytes` (the bones, or the particle words and the particles).
+unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], bone_count: u32, tail: &[u32], bytes: &[u8]) -> bool {
     let mode = mode();
-    let (geometry, material) = *core::ptr::addr_of!(HANDLES);
-    if mode == OFF || geometry == 0 || material == 0 || !capture::recording() || !crate::material_stream::last_modelled() {
+    let (_, material) = *core::ptr::addr_of!(HANDLES);
+    if mode == OFF || material == 0 || !capture::recording() || !crate::material_stream::last_modelled() {
         return false;
     }
     let lights = crate::light_stream::note(renderer);
     let count = lights.len() as u32;
-    let flags = (relative as u32) | if mode == DUAL { DUAL_DRAW } else { 0 } | if palette.is_empty() { 0 } else { SKINNED };
+    let flags = (relative as u32) | if mode == DUAL { DUAL_DRAW } else { 0 } | kind;
     let mut words = [0u32; 36];
     words[0] = geometry;
     words[1] = material;
@@ -69,9 +110,8 @@ pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u
     }
     // The colours of the material: ambient, diffuse, specular, emissive, shininess, alpha.
     words[21..35].copy_from_slice(&material_values);
-    words[35] = palette.len() as u32;
-    let bones: Vec<u8> = palette.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
-    capture::shape(&words, lights, &bones);
+    words[35] = bone_count;
+    capture::shape(&words, lights, tail, bytes);
     *core::ptr::addr_of_mut!(RECORDS) += 1;
     if mode == ONLY {
         *core::ptr::addr_of_mut!(SKIPPED) += 1;

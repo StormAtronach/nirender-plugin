@@ -174,11 +174,16 @@ return function(nirender, spec)
         end },
         -- Each weather of the game in turn, with the frame rate of each over 4 seconds: a
         -- cost of one weather (its sky, its fog, its particles) shows against the others.
-        { "weathers", 66, function()
+        -- Two passes, 0 to 9 then 9 to 0: a trend of the run (the game still settles in a
+        -- large modlist) shows as a difference between the passes, a weather as a cost in
+        -- both.
+        { "weathers", 128, function()
             local weather = tes3.worldController.weatherController
-            local index = 0
+            local order = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 }
+            local at = 1
             local function measure()
-                if index > 9 then
+                local index = order[at]
+                if not index then
                     say("weathers: done")
                     return
                 end
@@ -189,8 +194,8 @@ return function(nirender, spec)
                         frames = frames + 1
                         if os.clock() - from >= 4 then
                             event.unregister("enterFrame", count)
-                            say("rate: %.1f frames in a second at '%s' weather %d", frames / (os.clock() - from), tes3.player.cell.editorName, index)
-                            index = index + 1
+                            say("rate: %.1f frames in a second at '%s' weather %d pass %d", frames / (os.clock() - from), tes3.player.cell.editorName, index, at <= 10 and 1 or 2)
+                            at = at + 1
                             measure()
                         end
                     end

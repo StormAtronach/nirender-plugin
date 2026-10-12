@@ -1160,8 +1160,9 @@ struct Counts {
     shape_draws: u32,
     shape_missing: u32,
     shape_skipped: u32,
-    /// The shape records with a palette of bones.
+    /// The shape records with a palette of bones, and the records of particle systems.
     shape_skinned: u32,
+    shape_particles: u32,
     /// The light records, and the lights of a shape that no record came for.
     light_records: u32,
     light_missing: u32,
@@ -1671,6 +1672,9 @@ struct Renderer {
     buffers: HashMap<u32, BufferData>,
     /// The geometry records, by the geometry data of the game.
     geometries: HashMap<u32, Geometry>,
+    /// The index buffer of the quads of the particle systems, as the game keeps one: the
+    /// number of quads it has, and the buffer. It grows to the largest system seen.
+    quad_indexes: Option<(u32, Rc<wgpu::Buffer>)>,
     /// The material records by handle, and the states derived from them by (handle, texture
     /// sets of the geometry).
     materials: HashMap<u32, material::Material>,
@@ -1909,6 +1913,7 @@ impl Renderer {
             sampler_groups: HashMap::new(),
             buffers: HashMap::new(),
             geometries: HashMap::new(),
+            quad_indexes: None,
             materials: HashMap::new(),
             derived: HashMap::new(),
             defaults,
@@ -2314,6 +2319,55 @@ impl Renderer {
         self.counts.geometry_records += 1;
         self.counts.geometry_bytes += data.len() as u64;
         self.geometries.insert(handle, Geometry { fvf, stride, vertices, entries, strips: strip_lengths, vertex, index, vertex_bytes, index_bytes, checked: std::cell::Cell::new(false) });
+    }
+
+    /// The geometry of a particle system for this frame, from the particles of its shape
+    /// record: four vertices for each particle, a quad that faces the camera, as
+    /// `NiDX8Renderer::RenderPoints` writes them (the position, the normal 0.3, the
+    /// colour, the texture coordinates; 36 bytes). The quads are `(right + up) * radius`
+    /// and `(up - right) * radius` from the position, scaled by the size of the particle.
+    /// The buffer replaces the one of the last frame under the same key.
+    fn particles(&mut self, handle: u32, radius: f32, right: [f32; 3], up: [f32; 3], particles: &[u8]) {
+        const STRIDE: usize = 36;
+        const NORMAL: f32 = 0.3;
+        let count = particles.len() / 20;
+        let sum: [f32; 3] = core::array::from_fn(|i| (right[i] + up[i]) * radius);
+        let difference: [f32; 3] = core::array::from_fn(|i| (up[i] - right[i]) * radius);
+        let mut bytes = Vec::with_capacity(count * 4 * STRIDE);
+        for p in particles.chunks_exact(20) {
+            let position = [float(p, 0), float(p, 4), float(p, 8)];
+            let size = float(p, 12);
+            let colour = &p[16..20];
+            let s: [f32; 3] = core::array::from_fn(|i| sum[i] * size);
+            let d: [f32; 3] = core::array::from_fn(|i| difference[i] * size);
+            let corners = [
+                ([position[0] - s[0], position[1] - s[1], position[2] - s[2]], [0.0f32, 0.0f32]),
+                ([position[0] - d[0], position[1] - d[1], position[2] - d[2]], [1.0, 0.0]),
+                ([s[0] + position[0], s[1] + position[1], s[2] + position[2]], [1.0, 1.0]),
+                ([d[0] + position[0], d[1] + position[1], d[2] + position[2]], [0.0, 1.0]),
+            ];
+            for (at, uv) in corners {
+                for v in at.iter().chain([NORMAL; 3].iter()) {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+                bytes.extend_from_slice(colour);
+                bytes.extend_from_slice(&uv[0].to_le_bytes());
+                bytes.extend_from_slice(&uv[1].to_le_bytes());
+            }
+        }
+        let quads = count as u32;
+        if self.quad_indexes.as_ref().is_none_or(|(have, _)| *have < quads) {
+            let indexes: Vec<u8> = (0..quads).flat_map(|q| [0u16, 1, 2, 0, 2, 3].map(|i| (q * 4) as u16 + i)).flat_map(|i| i.to_le_bytes()).collect();
+            let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("quads"), contents: &indexes, usage: wgpu::BufferUsages::INDEX });
+            self.quad_indexes = Some((quads, Rc::new(buffer)));
+        }
+        let index = self.quad_indexes.as_ref().map(|(_, buffer)| buffer.clone()).expect("the quad index buffer was just made");
+        let vertex = Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("particles"), contents: &bytes, usage: wgpu::BufferUsages::VERTEX }));
+        self.counts.shape_particles += 1;
+        // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1. The bytes stay out: the
+        // comparison with the buffers of the device is for the resident geometries.
+        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, vertices: quads * 4, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_bytes: Vec::new(), index_bytes: Vec::new(), checked: std::cell::Cell::new(true) };
+        self.geometries.insert(handle, geometry);
     }
 
     /// The buffer on the GPU with the bytes that the game wrote last.
@@ -3045,6 +3099,18 @@ impl Player {
             self.renderer.counts.shape_skinned += 1;
             (first, bone_count as u32)
         });
+        // A particle system: its geometry for the frame comes from the record itself.
+        if flags & 8 != 0 {
+            let tail = bones_at + bone_count * 64;
+            let count = if data.len() >= tail + 32 { word(data, tail) as usize } else { 0 };
+            let at = tail + 32;
+            if count == 0 || data.len() < at + count * 20 {
+                self.renderer.counts.shape_missing += 1;
+                return;
+            }
+            let axes: [f32; 6] = core::array::from_fn(|i| float(data, tail + 8 + i * 4));
+            self.renderer.particles(geometry, float(data, tail + 4), [axes[0], axes[1], axes[2]], [axes[3], axes[4], axes[5]], &data[at..at + count * 20]);
+        }
         let sets = match self.renderer.geometries.get(&geometry) {
             Some(g) => (g.fvf >> 8) & 0xF,
             None => {
@@ -4060,7 +4126,7 @@ impl Player {
             "shapes: {} records, {} draws from them, {} without a geometry or a material, {} draws of the device skipped",
             c.shape_records, c.shape_draws, c.shape_missing, c.shape_skipped
         );
-        println!("sorted draws {}, instanced away {}, skinned shapes {}", c.sorted_draws, c.instanced_draws, c.shape_skinned);
+        println!("sorted draws {}, instanced away {}, skinned shapes {}, particle systems {}", c.sorted_draws, c.instanced_draws, c.shape_skinned, c.shape_particles);
         println!("lights: {} records, {} lights of a shape without a record", c.light_records, c.light_missing);
         println!("clusters: {:.1} lights and {:.0} entries for each frame, {} frames without (a light had no cut-off)", c.cluster_lights as f64 / c.frames.max(1) as f64, c.cluster_entries as f64 / c.frames.max(1) as f64, c.cluster_frames_off);
         println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);

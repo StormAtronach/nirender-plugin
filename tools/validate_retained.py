@@ -131,8 +131,8 @@ def stage_only(place, mge_build):
     ok &= check(" 0 without a geometry or a material" in counts["shapes"], counts["shapes"][:160])
     lights = re.search(r"lights: (\d+) records, (\d+) lights of a shape without a record", host)
     ok &= check(lights is not None and lights.group(2) == "0", lights.group(0) if lights else "no lights line")
-    skinned = re.search(r"instanced away (\d+), skinned shapes (\d+)", open(os.path.join(folder, "host.txt"), errors="replace").read())
-    print("       instanced away %s, skinned shapes %s" % ((skinned.group(1), skinned.group(2)) if skinned else ("?", "?")), flush=True)
+    skinned = re.search(r"instanced away (\d+), skinned shapes (\d+), particle systems (\d+)", host)
+    print("       instanced away %s, skinned shapes %s, particle systems %s" % (skinned.groups() if skinned else ("?", "?", "?")), flush=True)
     return ok
 
 
@@ -180,10 +180,23 @@ def stage_weathers(place, mge_build):
     if not folder:
         return check(False, "no run")
     log = open(os.path.join(folder, "MWSE.log"), errors="replace").read()
-    rates = {int(m.group(2)): float(m.group(1)) for m in re.finditer(r"rate: ([\d.]+) frames in a second at '[^']*' weather (\d+)", log)}
+    rates = weather_rates(log)
+    print("       %-9s %6s %6s %6s" % ("", "pass 1", "pass 2", "mean"), flush=True)
     for index, name in enumerate(WEATHERS):
-        print("       %-9s %s" % (name, ("%.1f" % rates[index]) if index in rates else "?"), flush=True)
-    return check(len(rates) == 10, "%d of 10 weathers measured" % len(rates))
+        print("       %-9s %s" % (name, weather_line(rates, index)), flush=True)
+    return check(len(rates) == 20, "%d of 20 measurements (10 weathers, two passes)" % len(rates))
+
+
+def weather_rates(log):
+    """The frame rate of each (weather, pass) of the step "weathers" in a log: the second
+    pass goes from 9 to 0, so a trend of the run shows between the passes."""
+    return {(int(m.group(2)), int(m.group(3))): float(m.group(1)) for m in re.finditer(r"rate: ([\d.]+) frames in a second at '[^']*' weather (\d+) pass (\d+)", log)}
+
+
+def weather_line(rates, index):
+    passes = [rates.get((index, p)) for p in (1, 2)]
+    mean = sum(p for p in passes if p is not None) / max(sum(p is not None for p in passes), 1)
+    return "%6s %6s %6.1f" % tuple([("%.1f" % p) if p is not None else "?" for p in passes] + [mean])
 
 
 def stage_tour(mge_build):
@@ -206,9 +219,12 @@ def main():
     ap.add_argument("--places", default="seyda,narsis")
     ap.add_argument("--gpu-time", action="store_true", help="the helper writes GPU time stamps in the only stage")
     ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off for the runs")
+    ap.add_argument("--weather", type=int, default=None, help="the weather of the runs, 0 clear to 9 blizzard (the game's without this)")
     args = ap.parse_args()
     if args.disable_mod:
         RUNNER_ARGS.extend(["--disable-mod", args.disable_mod])
+    if args.weather is not None:
+        RUNNER_ARGS.extend(["--weather", str(args.weather)])
     if args.gpu_time:
         GPU_TIME["MGE_XE_GPU_TIME"] = "1"
     places = args.places.split(",")

@@ -247,7 +247,46 @@ unsafe fn write_point_quads(mut to: usize, count: u32, mut vertices: usize, mut 
     }
 }
 
+/// The shape record of a particle system (see `shape_stream::send_particles`): the lights
+/// of the draw as `RenderPoints` sets them, then the record with the position, the size
+/// and the colour of each active particle. The helper makes the quads. Returns true when
+/// the pipeline of the device must not run for the draw.
+unsafe fn particles_record(this: usize, geometry_data: usize, count: u32, radius: f32, vertices: usize, sizes: usize, colors: usize) -> bool {
+    if crate::shape_stream::mode() == crate::shape_stream::OFF || !crate::capture::recording() {
+        return false;
+    }
+    let property_state: usize = rd(this, R::currentPropertyState);
+    let vertex_color: usize = rd(property_state, PS::propVertexColor);
+    let texturing: usize = rd(property_state, PS::propTexturing);
+    let effect_state: usize = rd(this, R::currentEffectState);
+    site_thiscall!(0x6AD204, rd::<usize>(this, R::lightManager), effect_state, texturing, vertex_color);
+    // D3DRS_AMBIENT (139) as the render state record of the renderer has it.
+    let ambient: u32 = rd(rd::<usize>(this, R::renderState), RS::renderStateSettings + 139 * 8);
+    let right: [f32; 3] = rd(this, R::modelCameraRight_x);
+    let up: [f32; 3] = rd(this, R::modelCameraUp_x);
+    let mut particles = Vec::with_capacity(count as usize * crate::shape_stream::PARTICLE_BYTES);
+    for i in 0..count as usize {
+        particles.extend_from_slice(&rd::<[u8; 12]>(vertices, i * 12));
+        particles.extend_from_slice(&rd::<[u8; 4]>(sizes, i * 4));
+        particles.extend_from_slice(&if colors != 0 { rd::<[u8; 4]>(colors, i * 4) } else { [0xFF; 4] });
+    }
+    crate::shape_stream::send_particles(
+        this,
+        geometry_data as u32,
+        crate::shape_stream::current_world(this),
+        crate::link_client::world_is_relative(),
+        ambient,
+        crate::shape_stream::material_values(property_state),
+        radius,
+        right,
+        up,
+        &particles,
+    )
+}
+
 /// 0x6AD0A0 `NiDX8Renderer::RenderPoints`: draws the particles as quads that face the camera.
+/// With the shape records on, the record of the particles goes out after the transform and
+/// the bound are set, and the pipeline of the device does not run (see `particles_record`).
 pub unsafe fn render_points(this: usize, geometry_data: usize, world_transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_points_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -268,6 +307,9 @@ pub unsafe fn render_points(this: usize, geometry_data: usize, world_transform: 
     let count = active as u32;
     let vertex_count = count * 4;
     let vertices: usize = rd(geometry_data, GD::vertices);
+    if particles_record(this, geometry_data, count, radius, vertices, sizes, colors) {
+        return;
+    }
 
     let pipeline = || rd::<usize>(this, R::configurableTexturePipeline);
     let property_state = || rd::<usize>(this, R::currentPropertyState);
