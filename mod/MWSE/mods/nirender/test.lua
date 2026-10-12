@@ -109,8 +109,7 @@ return function(nirender, spec)
     -- is in a comparison: the caller runs it as Rust. Alone, each call of it is compared.
     local function each_port(done)
         local names = {}
-        for line in nirender.report():gmatch("[^
-]+") do
+        for line in nirender.report():gmatch("[^\n]+") do
             local name = line:match("^([^	]+)	0x")
             if name and (ports == "*" or name:find(ports, 1, true)) then names[#names + 1] = name end
         end
