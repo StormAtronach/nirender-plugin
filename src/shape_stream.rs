@@ -33,6 +33,45 @@ pub const FOG: u32 = 32;
 /// The record is the draw of lines (`RenderLines`, step R7b): its geometry has the vertices
 /// and the index list of the segments, and the helper draws it as a line list.
 pub const LINES: u32 = 64;
+/// The draw goes into the picture of the character of the inventory, and the Morrowind Code
+/// Patch has its draw function there: with the blend on it draws the shape in a way of its
+/// own. See `code_patch_picture`.
+pub const CODE_PATCH_PICTURE: u32 = 128;
+
+/// The address of the flags of the Code Patch for the picture of the character, 1 when the
+/// game has no such patch, 0 before the first look.
+static CODE_PATCH_FLAGS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// True while the game draws the picture of the character of the inventory with the Code
+/// Patch. `ui_updateCharacterImage` calls `WorldControllerRenderTarget::draw` 0x42DE10 at
+/// 0x5CD38C; the Code Patch puts a function of its own there, which sets a byte to 1, makes
+/// the call and sets the byte to 0 (`C6 05 address 01`, then the call). Its function at
+/// the draw call of the device (`patchDrawIndexedPrimitive`) reads the byte: for a draw
+/// with the blend on, it draws with the alpha of the texture (the blend SRCALPHA and
+/// INVSRCALPHA, the alpha test "greater than 0", the alpha of stage 0 from its first
+/// argument) and then, for a material with an alpha that is not 1, into the alpha channel
+/// only (the blend ONE and ZERO, the alpha of stage 0 modulated): the game puts the number
+/// of the equipment slot into the alpha of the material of each part, and reads the alpha
+/// of the picture back to find the part under the pointer. The helper makes the same draws
+/// for a record with `CODE_PATCH_PICTURE`.
+pub unsafe fn code_patch_picture() -> bool {
+    use core::sync::atomic::Ordering;
+    const CALL: usize = 0x5CD38C;
+    const DRAW: usize = 0x42DE10;
+    let mut address = CODE_PATCH_FLAGS.load(Ordering::Relaxed);
+    if address == 0 {
+        address = 1;
+        if rd::<u8>(CALL, 0) == 0xE8 {
+            let target = (CALL + 5).wrapping_add(rd::<i32>(CALL, 1) as usize);
+            if target != DRAW && rd::<u16>(target, 0) == 0x05C6 && rd::<u8>(target, 6) == 1 {
+                address = rd::<u32>(target, 2) as usize;
+                crate::log!("shapes: the Code Patch draws the picture of the character, its flags are at {address:#x}");
+            }
+        }
+        CODE_PATCH_FLAGS.store(address, Ordering::Relaxed);
+    }
+    address > 1 && rd::<u8>(address, 0) & 1 != 0
+}
 
 /// The fog of a draw as `NiDX8RenderState::updateFogStates` and `updateD3DState` set it
 /// for its fog property: `None` when the fog is off for the draw (the property is off, or
@@ -246,7 +285,11 @@ unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], re
     let lights = crate::light_stream::note(renderer);
     let count = lights.len() as u32;
     let mut effects = effect_words(renderer);
-    let flags = (relative as u32) | kind | if effects.is_empty() { 0 } else { EFFECTS } | if fog.is_some() { FOG } else { 0 };
+    let flags = (relative as u32)
+        | kind
+        | if effects.is_empty() { 0 } else { EFFECTS }
+        | if fog.is_some() { FOG } else { 0 }
+        | if code_patch_picture() { CODE_PATCH_PICTURE } else { 0 };
     if let Some(fog) = fog {
         effects.extend_from_slice(&fog);
     }

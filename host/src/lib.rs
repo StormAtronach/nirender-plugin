@@ -483,10 +483,16 @@ struct PassStage {
 
 /// The state of one pass of a shape draw, from the derived state of its material: what the
 /// pipeline of the game sets for the pass, and the shape is the same for each pass.
+#[derive(Clone)]
 struct Pass {
     /// Blend on, source, destination.
     blend: [u32; 3],
     stages: [PassStage; 8],
+    /// The alpha test in place of that of the material (on, function, reference), and the
+    /// colour channels that the draw writes (D3DCOLORWRITEENABLE: red 1, green 2, blue 4,
+    /// alpha 8): for the draws of the Code Patch into the picture of the character.
+    alpha_test: Option<[u32; 3]>,
+    color_write: u32,
 }
 
 impl Pass {
@@ -544,7 +550,31 @@ impl Pass {
                 texture_transform,
             };
         }
-        Pass { blend, stages }
+        Pass { blend, stages, alpha_test: None, color_write: 15 }
+    }
+
+    /// The draws of the Morrowind Code Patch for this pass into the picture of the character
+    /// of the inventory (`patchDrawIndexedPrimitive`; see `shape_stream::code_patch_picture`
+    /// of the plugin). A pass that does not blend is drawn as it is. A pass that blends is
+    /// drawn with the alpha of the texture: the alpha test "greater than 0" (D3DCMP_GREATER
+    /// is 5), the blend SRCALPHA and INVSRCALPHA (5 and 6), and the alpha of stage 0 from
+    /// its first argument (D3DTOP_SELECTARG1 is 2). Then, for a material with an alpha that
+    /// is not 1, it is drawn into the alpha channel only, with the blend ONE and ZERO (2
+    /// and 1) and the alpha of stage 0 modulated (D3DTOP_MODULATE is 4): the alpha of the
+    /// picture gets the number of the equipment slot, which the game put into the material.
+    fn code_patch_picture(&self, material_alpha: f32) -> (Pass, Option<Pass>) {
+        if self.blend[0] == 0 {
+            return (self.clone(), None);
+        }
+        let draw = |blend: [u32; 3], alpha_operation: u32, color_write: u32| {
+            let mut pass = self.clone();
+            pass.blend = blend;
+            pass.stages[0].alpha[0] = alpha_operation;
+            pass.alpha_test = Some([1, 5, 0]);
+            pass.color_write = color_write;
+            pass
+        };
+        (draw([1, 5, 6], 2, 15), (material_alpha != 1.0).then(|| draw([1, 2, 1], 4, 8)))
     }
 }
 
@@ -1011,6 +1041,8 @@ struct PipelineKey {
     fill: u32,
     /// The stencil: enable, fail, depth fail, pass, function, mask, write mask.
     stencil: [u32; 7],
+    /// D3DRS_COLORWRITEENABLE: red 1, green 2, blue 4, alpha 8.
+    color_write: u32,
 }
 
 /// A texture that the game draws into.
@@ -2380,7 +2412,7 @@ impl Renderer {
                     targets: &[Some(wgpu::ColorTargetState {
                         format: self.target_format,
                         blend,
-                        write_mask: wgpu::ColorWrites::ALL,
+                        write_mask: wgpu::ColorWrites::from_bits_truncate(key.color_write),
                     })],
                 }),
                 multiview_mask: None,
@@ -2505,13 +2537,14 @@ impl Stream {
 
         let has_color = fvf & 0x40 != 0;
         data.flags = [derived.lighting as u32, (fvf & 0x10 != 0) as u32, has_color as u32, 0];
+        let alpha_test = pass.alpha_test.unwrap_or(derived.alpha_test);
         // D3DMCS_COLOR1 (1) is the default of the diffuse source and D3DMCS_MATERIAL (0) of
         // the emissive source.
         data.more = [
             if has_color { derived.sources[0].unwrap_or(1) } else { 0 },
             if has_color { derived.sources[1].unwrap_or(0) } else { 0 },
-            if derived.alpha_test[0] != 0 { derived.alpha_test[1] } else { 0 },
-            derived.alpha_test[2],
+            if alpha_test[0] != 0 { alpha_test[1] } else { 0 },
+            alpha_test[2],
         ];
 
         let lights = shape.lights.len() / STATE_LIGHT_SIZE;
@@ -2974,16 +3007,27 @@ impl Player {
         }
         for pass in 0..derived.passes.len() {
             let state = Pass::new(&derived, pass, &m, &self.renderer.textures, effects.as_ref());
+            // The flag 128: the draw goes into the picture of the character with the Code
+            // Patch, which draws a pass that blends in a way of its own. The alpha of the
+            // material is the last of its colours.
+            let (state, second) = if flags & 128 != 0 { state.code_patch_picture(colours[13]) } else { (state, None) };
             // The primitive type of Direct3D, the first index and the number of indexes.
             // The flag 64: lines, as a line list of the index entries of the geometry.
             if flags & 64 != 0 {
-                self.draw(&derived, &state, 2, 0, entries / 2 * 2);
+                for state in core::iter::once(&state).chain(&second) {
+                    self.draw(&derived, state, 2, 0, entries / 2 * 2);
+                }
             } else if strips.is_empty() {
-                self.draw(&derived, &state, 4, 0, entries / 3 * 3);
+                for state in core::iter::once(&state).chain(&second) {
+                    self.draw(&derived, state, 4, 0, entries / 3 * 3);
+                }
             } else {
+                // The Code Patch makes its draws at each draw call: for each strip.
                 let mut start = 0u32;
                 for &length in &strips {
-                    self.draw(&derived, &state, 5, start, (length as u32).max(2));
+                    for state in core::iter::once(&state).chain(&second) {
+                        self.draw(&derived, state, 5, start, (length as u32).max(2));
+                    }
                     start += length as u32;
                 }
             }
@@ -3302,7 +3346,7 @@ impl Player {
     /// instances: the world matrices go to `instances`, the first at the index the draw
     /// keeps. A skinned draw and a draw with a vertex blend keep their own.
     fn sort_items(items: &mut Vec<Item>, counts: &mut Counts, lights: &[LightData], mut instances: Option<&mut Vec<[f32; 16]>>) {
-        let opaque = |draw: &Draw| draw.key.blend[0] == 0 && draw.key.depth[0] != 0 && draw.key.depth[1] != 0 && draw.key.stencil[0] == 0;
+        let opaque = |draw: &Draw| draw.key.blend[0] == 0 && draw.key.depth[0] != 0 && draw.key.depth[1] != 0 && draw.key.stencil[0] == 0 && draw.key.color_write == 15;
         let same_lights = |a: &Draw, b: &Draw| {
             let (first_a, first_b, count) = (a.data.light_range[0] as usize, b.data.light_range[0] as usize, a.data.light_range[1] as usize);
             b.data.light_range[1] as usize == count
@@ -3759,6 +3803,7 @@ impl Player {
             depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
             cull: derived.cull,
             fill: derived.fill,
+            color_write: pass.color_write,
             // On, fail, depth fail, pass, function, mask, write mask.
             stencil: if stencil[0] == 0 { [0; 7] } else { [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0] },
         };

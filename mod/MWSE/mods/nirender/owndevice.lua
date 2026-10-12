@@ -112,6 +112,35 @@ return function(nirender, spec)
             inventory(true)
             after(0.5, function() tes3ui.updateInventoryCharacterImage() end)
         end },
+        -- The picture of the character with a blended body: a chameleon effect gives the
+        -- materials of the player an alpha under 1. The Code Patch draws such a part into
+        -- the picture in a way of its own (patchDrawIndexedPrimitive, see the plan). The
+        -- capture has the frame that draws the picture.
+        { "ghost", 5.0, function()
+            -- The game applies a magic effect when its time runs: not in the menu mode.
+            inventory(false)
+            tes3.applyMagicSource({ reference = tes3.player, name = "nirender test", bypassResistances = true,
+                effects = { { id = tes3.effect.chameleon, min = 75, max = 75, duration = 600 } } })
+            after(2.0, function()
+                say("ghost: chameleon %s", tostring(tes3.mobilePlayer.chameleon))
+                inventory(true)
+                after(1.0, function()
+                    if nirender.ownDevice() then
+                        local ok, problem = nirender.capture(string.format("%s/ghost.nircap", spec.dir), 0, 3)
+                        say("ghost: capture %s %s", tostring(ok), tostring(problem))
+                    end
+                    tes3ui.updateInventoryCharacterImage()
+                end)
+            end)
+        end },
+        { "ghost-off", 3.0, function()
+            inventory(false)
+            tes3.removeEffects({ reference = tes3.player, effect = tes3.effect.chameleon })
+            after(1.5, function()
+                inventory(true)
+                after(0.5, function() tes3ui.updateInventoryCharacterImage() end)
+            end)
+        end },
         { "interior", spec.settleSeconds or 6, function()
             inventory(false)
             scenario.goTo(spec.interior)
