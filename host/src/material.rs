@@ -16,6 +16,7 @@ pub const DEPTH_TEST: u32 = 4;
 pub const DEPTH_WRITE: u32 = 8;
 pub const WIREFRAME: u32 = 16;
 pub const SMOOTH: u32 = 32;
+pub const SPECULAR: u32 = 128;
 pub const FOG: u32 = 256;
 pub const STENCIL: u32 = 512;
 pub const ENVIRONMENT_MAP: u32 = 1024;

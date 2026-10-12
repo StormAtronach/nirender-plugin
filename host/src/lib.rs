@@ -914,8 +914,10 @@ const TIME_NAMES: [&str; TIME_COUNT] = [
     "wait for a picture of the window",
     "copy into the window and present",
     "clusters of the lights",
+    "buffers made for a frame (geometry records, particles, films)",
 ];
-const TIME_COUNT: usize = 16;
+const TIME_COUNT: usize = 17;
+const TIME_BUFFERS: usize = 16;
 const TIME_CLUSTERS: usize = 15;
 const TIME_READ: usize = 0;
 const TIME_RECORDS: usize = 1;
@@ -1079,6 +1081,11 @@ struct Counts {
     shape_records: u32,
     shape_draws: u32,
     shape_missing: u32,
+    /// The shapes with a rule of the engine that this program does not follow: a material
+    /// without the smooth flag (the game sets `D3DSHADE_FLAT` for it), and a material with
+    /// the specular flag (the game sets `D3DRS_SPECULARENABLE`).
+    shape_flat: u32,
+    shape_specular: u32,
     /// The shape records with a palette of bones, and the records of particle systems.
     shape_skinned: u32,
     shape_particles: u32,
@@ -2239,6 +2246,7 @@ impl Renderer {
 
     /// A geometry record: resident buffers for the draws that name it.
     fn geometry(&mut self, data: &[u8]) {
+        let clock = std::time::Instant::now();
         let (handle, fvf, stride, vertices, entries, strips) = (word(data, 0), word(data, 12), word(data, 16), word(data, 20), word(data, 24), word(data, 28));
         let lengths = ((strips as usize * 2) + 3) & !3;
         let (vertex_at, index_at) = (32 + lengths, 32 + lengths + vertices as usize * stride as usize);
@@ -2254,6 +2262,7 @@ impl Renderer {
         self.counts.geometry_records += 1;
         self.counts.geometry_bytes += data.len() as u64;
         self.geometries.insert(handle, Geometry { fvf, stride, entries, strips: strip_lengths, vertex, index });
+        self.counts.times[TIME_BUFFERS] += clock.elapsed();
     }
 
     /// The geometry of a particle system for this frame, from the particles of its shape
@@ -2263,6 +2272,7 @@ impl Renderer {
     /// and `(up - right) * radius` from the position, scaled by the size of the particle.
     /// The buffer replaces the one of the last frame under the same key.
     fn particles(&mut self, handle: u32, radius: f32, right: [f32; 3], up: [f32; 3], particles: &[u8]) {
+        let clock = std::time::Instant::now();
         const STRIDE: usize = 36;
         const NORMAL: f32 = 0.3;
         let count = particles.len() / 20;
@@ -2302,6 +2312,7 @@ impl Renderer {
         // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
         let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index };
         self.geometries.insert(handle, geometry);
+        self.counts.times[TIME_BUFFERS] += clock.elapsed();
     }
 
     fn sampler(&mut self, values: [u32; 5]) -> Rc<wgpu::Sampler> {
@@ -2986,6 +2997,8 @@ impl Player {
             self.renderer.counts.shape_missing += 1;
             return;
         };
+        self.renderer.counts.shape_flat += (m.flags & material::SMOOTH == 0) as u32;
+        self.renderer.counts.shape_specular += (m.flags & material::SPECULAR != 0) as u32;
         let derived = match self.renderer.derived.get(&(material, sets)) {
             Some(d) => d.clone(),
             None => {
@@ -3305,6 +3318,7 @@ impl Player {
         }
         let renderer = &mut self.renderer;
         let pipeline = renderer.screen_pipeline();
+        let clock = std::time::Instant::now();
         let buffer = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&list), usage: wgpu::BufferUsages::VERTEX });
         let view = renderer.textures.get(&texture).unwrap_or(&renderer.white).clone();
         let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -3315,6 +3329,7 @@ impl Player {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(renderer.screen_sampler.as_ref().unwrap()) },
             ],
         });
+        renderer.counts.times[TIME_BUFFERS] += clock.elapsed();
         self.items.push(Item::Screen(ScreenDraw { pipeline, group, buffer, vertices: (list.len() / 10) as u32 }));
     }
 
@@ -3915,6 +3930,7 @@ impl Player {
         );
         println!("material: {} records", c.material_records);
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material", c.shape_records, c.shape_draws, c.shape_missing);
+        println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
         println!("sorted draws {}, instanced away {}, skinned shapes {}, particle systems {}", c.sorted_draws, c.instanced_draws, c.shape_skinned, c.shape_particles);
         println!("lights: {} records, {} lights of a shape without a record", c.light_records, c.light_missing);
         println!(
