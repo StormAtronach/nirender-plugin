@@ -107,10 +107,16 @@ event.register("initialized", function()
     if installed then
         -- It is possible that other mods changed the game code after this file loaded.
         nirender.recheck()
-    else
+    elseif spec or startMode ~= "off" then
         installed = install()
         if not installed then return end
         if not spec then nirender.setMode("*", startMode) end
+    else
+        -- The wgpu renderer is not on (runtime.renderer_wgpu of mgeXE.toml), and no test asks
+        -- for the ports: the plugin does nothing. With its detours on the 301 functions of
+        -- the renderer and its recorder on the device, each call of the game would go
+        -- through code of the plugin for no use, and the game would be slower.
+        mwse.log("[nirender] idle: the wgpu renderer is not on (runtime.renderer_wgpu in mgeXE.toml); nothing installed")
     end
     if spec then
         -- The scenario is "test", "perf" or "video".
