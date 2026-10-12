@@ -336,6 +336,12 @@ pub trait Extension {
         String::new()
     }
 
+    /// The anisotropic filter for the textures that the game filters, from the settings of
+    /// the extension: 1 is no such filter.
+    fn anisotropy(&self) -> u16 {
+        1
+    }
+
     /// Data that the part of this program in the game process put into the stream, with the
     /// number that names its kind.
     fn data(&mut self, _id: u32, _bytes: &[u8]) {}
@@ -4104,11 +4110,13 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     println!("{} records, {frames} frames, frame {wanted} into {width} x {height}", records.len());
 
     let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, extension_shaders(extension.as_deref())).0);
+    // The filter of the extension's settings, as in the live mode; the argument is for a test.
+    player.renderer.anisotropy =
+        option(&args, "--anisotropy").and_then(|text| text.parse().ok()).or(extension.as_ref().map(|extension| extension.anisotropy())).unwrap_or(1);
     if let Some(mut extension) = extension {
         extension.offline();
         player.extension = Some(extension);
     }
-    player.renderer.anisotropy = option(&args, "--anisotropy").and_then(|text| text.parse().ok()).unwrap_or(1);
     let device = player.renderer.device.clone();
     let target = target_texture(&device, width, height, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
     let depth = target_texture(&device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
@@ -4385,6 +4393,7 @@ mod live {
             assert!(renderer.surface_usages.contains(wgpu::TextureUsages::COPY_DST), "the window does not take a copy of a picture");
             let mut player = Player::new(renderer);
             player.extension = self.extension.take();
+            player.renderer.anisotropy = player.extension.as_ref().map_or(1, |extension| extension.anisotropy());
             player.film_shot = self.shot_film.take();
             player.film_shot_at = self.shot_film_frame;
             player.reply = self.reply.take().map(|reply| Box::new(move |request, width, height, pixels: &[u8]| reply.answer(request, width, height, pixels)) as _);
