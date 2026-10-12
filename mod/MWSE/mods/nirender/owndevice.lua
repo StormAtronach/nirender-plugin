@@ -175,6 +175,8 @@ return function(nirender, spec)
         -- The lights of the scene off, in the interior, where they make the picture.
         toggle("lights", "ToggleLights"),
         { "exterior", spec.settleSeconds or 6, function()
+            -- The debug overlay of the renderer, when the spec asks for it.
+            if spec.overlay and nirender.overlay then nirender.overlay(true) end
             -- Noon, so that the pictures of the exterior have the light of the day.
             local hour = tes3.findGlobal("GameHour")
             if hour then hour.value = spec.hour or 12 end

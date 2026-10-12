@@ -17,7 +17,7 @@ if not nirender then
     return
 end
 
-local config = mwse.loadConfig("nirender", { mode = "off", early = false, captureKey = "f11" })
+local config = mwse.loadConfig("nirender", { mode = "off", early = false, captureKey = "f11", overlayKey = "f10" })
 
 local spec = nil
 do
@@ -77,6 +77,16 @@ if ownDevice and installed and captureKey ~= "none" and tes3.scanCode[captureKey
         local path = string.format("nirender-%s.nircap", os.date("%Y%m%d-%H%M%S"))
         local ok, problem = nirender.capture(path, 0, 3)
         tes3.messageBox(ok and ("nirender: 3 frames go into " .. path) or ("nirender: no capture: " .. tostring(problem)))
+    end)
+end
+
+-- The debug overlay of the renderer (the frame rate, the long frames, the memory of the game
+-- and of the renderer): the key of the configuration turns it on and off ("none" for no key).
+local overlayKey = tostring(config.overlayKey or "none"):lower()
+if ownDevice and installed and overlayKey ~= "none" and tes3.scanCode[overlayKey] then
+    event.register("keyDown", function(e)
+        if e.keyCode ~= tes3.scanCode[overlayKey] or e.isAltDown or e.isControlDown or e.isShiftDown then return end
+        nirender.overlay()
     end)
 end
 

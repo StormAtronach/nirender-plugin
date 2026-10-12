@@ -465,6 +465,7 @@ mod tag {
     pub const MATERIAL: u32 = 19;
     pub const SHAPE: u32 = 20;
     pub const LIGHT: u32 = 21;
+    pub const OVERLAY: u32 = 22;
 }
 
 /// The size of a light of a shape draw: its key, then the `D3DLIGHT8` of 26 words.
@@ -590,6 +591,7 @@ impl Pass {
 }
 
 pub mod material;
+mod overlay;
 
 /// The geometry of a shape from a `GEOMETRY` record: resident buffers, keyed by the
 /// geometry data of the game. See `geometry_stream` of the plugin.
@@ -2652,6 +2654,9 @@ struct Player {
     reply: Option<Box<dyn FnMut(u32, u32, u32, &[u8])>>,
     /// The picture files that the game asked for: the frame in progress goes into them.
     shots: Vec<String>,
+    /// The last `OVERLAY` record of the stream, for the live mode to take: the debug overlay
+    /// on or off, with the numbers of the game process.
+    overlay_record: Option<Vec<u8>>,
     /// A picture file for a frame with a draw of the film player (`--shot-film`, the
     /// `--shot-film-frame`th such draw: a film starts from black): a film holds the main loop
     /// of the game, so the game cannot ask for it in time.
@@ -2751,6 +2756,7 @@ impl Player {
             back_buffer: None,
             reply: None,
             shots: Vec::new(),
+            overlay_record: None,
             film_shot: None,
             film_shot_at: 1,
             film_draws: 0,
@@ -3112,6 +3118,7 @@ impl Player {
             tag::TEXTURE_UPDATE => self.renderer.texture_update(data),
             tag::SHOT => self.shots.push(String::from_utf8_lossy(data).into_owned()),
             tag::MARK => self.mark(&String::from_utf8_lossy(data)),
+            tag::OVERLAY => self.overlay_record = Some(data.to_vec()),
             tag::EXTENSION if data.len() >= 4 => {
                 if let Some(extension) = self.extension.as_mut() {
                     extension.data(word(data, 0), &data[4..]);
@@ -4290,6 +4297,8 @@ mod live {
         surface: Option<wgpu::Surface<'static>>,
         configuration: Option<wgpu::SurfaceConfiguration>,
         player: Option<Player>,
+        /// The debug overlay: a panel on the picture of the window, when the game asks.
+        overlay: Option<super::overlay::Overlay>,
         depth: Option<Rc<wgpu::TextureView>>,
         /// The back buffer of the game: the frames go into it, and then into the window. It
         /// keeps the last frame for a pixel read of the game.
@@ -4302,6 +4311,9 @@ mod live {
         frames: u32,
         first_frame: Option<Instant>,
         waited: Duration,
+        /// All the time with no record to read, for the debug overlay: `waited` has only
+        /// the waits that went back to the events of the window.
+        idle: Duration,
         records: u64,
         bytes: u64,
         shot_done: bool,
@@ -4391,6 +4403,7 @@ mod live {
                 color_space: Default::default(),
             });
             assert!(renderer.surface_usages.contains(wgpu::TextureUsages::COPY_DST), "the window does not take a copy of a picture");
+            self.overlay = Some(super::overlay::Overlay::new(&renderer.device, renderer.target_format));
             let mut player = Player::new(renderer);
             player.extension = self.extension.take();
             player.renderer.anisotropy = player.extension.as_ref().map_or(1, |extension| extension.anisotropy());
@@ -4425,6 +4438,7 @@ mod live {
             let now = self.window.as_ref().unwrap().inner_size();
             self.configure(now.width, now.height);
             let waiting = Instant::now();
+            let mut idle_since: Option<Instant> = None;
             loop {
                 // No frame before the size of the game is known: the records before that
                 // make the resources only.
@@ -4444,14 +4458,19 @@ mod live {
                     if self.ring.closed() {
                         return self.finish(event_loop, "the game closed the stream");
                     }
+                    let since = *idle_since.get_or_insert(clock);
                     if waiting.elapsed() > Duration::from_millis(20) {
                         // Back to the events of the window.
                         self.waited += waiting.elapsed();
+                        self.idle += since.elapsed();
                         return;
                     }
                     std::thread::yield_now();
                     continue;
                 };
+                if let Some(since) = idle_since.take() {
+                    self.idle += since.elapsed();
+                }
                 self.records += 1;
                 self.bytes += 8 + self.data.len() as u64;
                 let player = self.player.as_mut().unwrap();
@@ -4461,6 +4480,9 @@ mod live {
                 let inside_after = super::sum_except(&player.renderer.counts.times, super::TIME_RECORDS);
                 // The time of a record without the parts that are measured on their own.
                 player.renderer.counts.times[super::TIME_RECORDS] += clock.elapsed().saturating_sub(inside_after - inside_before);
+                if let (Some(overlay), Some(record)) = (self.overlay.as_mut(), player.overlay_record.take()) {
+                    overlay.record(&record);
+                }
                 if !frame_end {
                     continue;
                 }
@@ -4480,6 +4502,8 @@ mod live {
                 let back_buffer = self.back_buffer.as_ref().unwrap();
                 let (width, height) = (back_buffer.width(), back_buffer.height());
                 let device = player.renderer.device.clone();
+                let queue = player.renderer.queue.clone();
+                let overlay = self.overlay.as_mut();
                 let mut read = None;
                 player.end_frame(|encoder| {
                     // The picture goes into the window: the part that the two have.
@@ -4489,6 +4513,11 @@ mod live {
                             frame.texture.as_image_copy(),
                             wgpu::Extent3d { width: width.min(frame.texture.width()), height: height.min(frame.texture.height()), depth_or_array_layers: 1 },
                         );
+                        // The debug overlay goes on the picture of the window, not into the
+                        // back buffer: a picture file and a pixel read do not have it.
+                        if let Some(overlay) = overlay {
+                            overlay.draw(&device, &queue, encoder, &frame.texture.create_view(&Default::default()), (frame.texture.width(), frame.texture.height()));
+                        }
                     }
                     if take_shot {
                         read = Some(copy_picture(&device, encoder, back_buffer, width, height));
@@ -4518,6 +4547,9 @@ mod live {
                     player.renderer.queue.present(frame);
                 }
                 player.renderer.counts.times[super::TIME_PRESENT] += clock.elapsed();
+                if let Some(overlay) = self.overlay.as_mut() {
+                    overlay.frame(&device, self.idle, player.renderer.counts.draws as u64);
+                }
                 self.frames += 1;
                 self.first_frame.get_or_insert_with(Instant::now);
                 if self.frames_wanted != 0 && self.frames >= self.frames_wanted {
@@ -4566,6 +4598,7 @@ mod live {
             surface: None,
             configuration: None,
             player: None,
+            overlay: None,
             depth: None,
             in_frame: false,
             not_shown: 0,
@@ -4573,6 +4606,7 @@ mod live {
             frames: 0,
             first_frame: None,
             waited: Duration::ZERO,
+            idle: Duration::ZERO,
             records: 0,
             bytes: 0,
             shot_done: false,

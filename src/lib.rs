@@ -34,6 +34,7 @@ pub mod link_client;
 pub mod light_stream;
 pub mod material_stream;
 pub mod mem;
+pub mod overlay;
 pub mod perf;
 pub mod ports;
 pub mod resource;

@@ -115,6 +115,13 @@ pub mod tag {
     /// A light of the light manager: its key (the index of the light), then its
     /// `D3DLIGHT8` (26 words). Sent when the light is new or changed. See `light_stream`.
     pub const LIGHT: u32 = 21;
+    /// The debug overlay of the host program: 1 or 0 for on or off, a word of zero, then
+    /// the numbers of the game process as 64-bit values (the working set, the private
+    /// bytes, the address space in use, the address space in all, its largest free block),
+    /// then the time of the game thread for each frame in ms as floats (in the stream, in
+    /// the ports of the renderer, in waits for the host program). Sent when the state
+    /// changes, and one time in a second while the overlay is on. See `overlay`.
+    pub const OVERLAY: u32 = 22;
 }
 
 // ---- the ring in shared memory
@@ -686,6 +693,44 @@ pub unsafe fn shot(path: &str) {
     write(tag::SHOT, &[path.as_bytes()]);
 }
 
+/// The totals at the last `OVERLAY` record: the time of the record in ticks, the frames
+/// since it, and the ticks in the stream, the ms in the ports and the ticks in waits.
+static mut OVERLAY_LAST: (i64, u32, i64, f64, i64) = (0, 0, 0, 0.0, 0);
+
+/// Turns the debug overlay of the host program on or off (to the other state without a
+/// value) and tells the host program. Returns the state.
+pub unsafe fn overlay(value: Option<bool>) -> bool {
+    let _lock = crate::sync::device_lock();
+    let now = crate::overlay::set(value);
+    overlay_record();
+    now
+}
+
+/// Writes an `OVERLAY` record with the numbers since the last one.
+unsafe fn overlay_record() {
+    let Some(s) = state() else { return };
+    let waits = match s.out.as_ref() {
+        Some(Sink::Ring(ring)) => ring.waited + ring.paced,
+        _ => 0,
+    };
+    let (spent, ports) = (s.spent, crate::shadow::port_ms());
+    let last = &mut *core::ptr::addr_of_mut!(OVERLAY_LAST);
+    let frames = last.1.max(1) as f64;
+    let ms = |ticks: i64| (ticks as f64 * 1000.0 / ticks_per_second() as f64 / frames) as f32;
+    let body = crate::overlay::body(ms(spent - last.2), ((ports - last.3) / frames) as f32, ms(waits - last.4));
+    *last = (ticks(), 0, spent, ports, waits);
+    write(tag::OVERLAY, &[&body]);
+}
+
+/// At the end of a frame: the record of the overlay, one time in a second while it is on.
+unsafe fn overlay_tick() {
+    let last = &mut *core::ptr::addr_of_mut!(OVERLAY_LAST);
+    last.1 += 1;
+    if crate::overlay::on() && ticks() - last.0 >= ticks_per_second() {
+        overlay_record();
+    }
+}
+
 /// Puts a mark with a text into the stream. See `tag::MARK`.
 pub unsafe fn mark(text: &str) {
     write(tag::MARK, &[text.as_bytes()]);
@@ -1064,6 +1109,7 @@ unsafe fn frame_end() {
             }
         }
         Phase::Record(left) => {
+            overlay_tick();
             write(tag::FRAME_END, &[]);
             let Some(s) = state() else { return };
             if s.phase == Phase::Off {

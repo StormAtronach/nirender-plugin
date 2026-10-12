@@ -22,6 +22,7 @@ extern "C" {
     fn lua_pushnil(l: LuaState);
     fn lua_tonumber(l: LuaState, index: i32) -> f64;
     fn lua_toboolean(l: LuaState, index: i32) -> i32;
+    fn lua_gettop(l: LuaState) -> i32;
     fn lua_tolstring(l: LuaState, index: i32, len: *mut usize) -> *const c_char;
 }
 
@@ -109,6 +110,14 @@ unsafe extern "C" fn stream_shot(l: LuaState) -> i32 {
 unsafe extern "C" fn stream_mark(l: LuaState) -> i32 {
     crate::capture::mark(&arg_str(l, 1).unwrap_or_default());
     0
+}
+
+/// `nirender.overlay([on])` turns the debug overlay of the host program on or off; without
+/// a value, to the other state. Returns the state.
+unsafe extern "C" fn overlay(l: LuaState) -> i32 {
+    let value = if lua_gettop(l) >= 1 { Some(lua_toboolean(l, 1) != 0) } else { None };
+    lua_pushboolean(l, crate::capture::overlay(value) as i32);
+    1
 }
 
 /// `nirender.portTimes(n)` returns the `n` ports with the most time of the main thread since
@@ -492,6 +501,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "captureStop", capture_stop);
     set_fn(l, "streamShot", stream_shot);
     set_fn(l, "streamMark", stream_mark);
+    set_fn(l, "overlay", overlay);
     set_fn(l, "portTimes", port_times);
     set_fn(l, "dumpDevice", dump_device);
     set_fn(l, "ownDevice", own_device);
