@@ -453,8 +453,20 @@ return function(nirender, spec)
             -- The host program prints its counts of this step at the mark.
             if nirender.streamMark then nirender.streamMark("after " .. this[1]) end
             if nirender.portTimes then say("ports %s: %s", this[1], nirender.portTimes(12)) end
-            say("after %s: %s cell '%s' at %s", this[1], nirender.captureStatus(), tes3.player and tes3.player.cell.editorName or "?",
-                p and string.format("%.0f,%.0f,%.0f yaw %.0f", p.x, p.y, p.z, math.deg(tes3.player.orientation.z)) or "?")
+            -- The hour of the game at the picture: the light of the sun follows it, so two
+            -- pictures compare only at the same hour.
+            local hour = tes3.findGlobal("GameHour")
+            say("after %s: %s cell '%s' at %s hour %.4f", this[1], nirender.captureStatus(), tes3.player and tes3.player.cell.editorName or "?",
+                p and string.format("%.0f,%.0f,%.0f yaw %.0f", p.x, p.y, p.z, math.deg(tes3.player.orientation.z)) or "?", hour and hour.value or -1)
+            -- The fog of the scene graph (MGE XE changes its colour for the scattering) and
+            -- the fog colour of the weather.
+            local fogOk, fogProblem = pcall(function()
+                local fog, weather = tes3.game.fogProperty, tes3.worldController.weatherController.currentFogColor
+                -- The bytes of the colour as the game keeps them: blue, green, red, alpha.
+                say("fog %s: scene %s %s %s %s density %.4f, weather %s", this[1], tostring(fog.color[1]), tostring(fog.color[2]), tostring(fog.color[3]),
+                    tostring(fog.color[4]), fog.density, tostring(weather))
+            end)
+            if not fogOk then say("fog %s: not read: %s", this[1], tostring(fogProblem)) end
             if nirender.captureStatus():sub(1, 3) == "off" and mge and mge.saveScreenshot then
                 -- No stream: the run is the reference with MGE XE on Direct3D 9. The picture
                 -- is that of MGE XE.
