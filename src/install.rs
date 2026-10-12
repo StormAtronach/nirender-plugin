@@ -86,6 +86,22 @@ pub fn refused() -> bool {
 
 const REFUSED_MESSAGE: &str = "the renderer is refused for this session (see the census above); the game keeps MGE XE on Direct3D 9";
 
+/// Refuses the renderer for the session when the game asks for its Direct3D 8 before a port
+/// is installed: the Lua side of the plugin did not run (the Lua of MWSE failed, or
+/// `mods/nirender/main.lua` is missing). Without the ports, the game would draw on a device
+/// that nothing feeds, and it crashes. True when the renderer is refused.
+pub fn refuse_without_ports() -> bool {
+    if refused() {
+        return true;
+    }
+    if ports::all().any(|p| p.installed()) {
+        return false;
+    }
+    REFUSED.store(true, Ordering::Relaxed);
+    crate::log!("no port is installed when the game asks for its Direct3D 8: the Lua side of the plugin did not run (see MWSE.log); the game keeps MGE XE on Direct3D 9");
+    true
+}
+
 /// Puts the detours on the engine functions and the recorder on the device. Every port
 /// starts in mode off. A second call only puts the recorder on the device.
 pub unsafe fn install() -> Result<String, String> {

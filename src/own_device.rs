@@ -426,8 +426,8 @@ pub unsafe extern "C" fn nirender_stream_extension(id: u32, data: *const u8, len
 /// The `Direct3DCreate8` of the plugin. The `d3d8.dll` of this repository calls it.
 #[no_mangle]
 pub unsafe extern "C" fn nirender_direct3d_create8(_sdk_version: u32) -> usize {
-    if crate::install::refused() {
-        crate::log!("own device: the game asked for a Direct3D 8; refused (see install): it gets the Direct3D 9 of MGE XE");
+    if crate::install::refuse_without_ports() {
+        crate::log!("own device: the game asked for a Direct3D 8; refused (see above): it gets the Direct3D 9 of MGE XE");
         return 0;
     }
     PRESENT.store(true, Ordering::Relaxed);
