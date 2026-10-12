@@ -773,6 +773,10 @@ pub struct DrawData {
     /// (`cluster_lights` in the shader) in place of the lights of the draw; bit 2 when the
     /// world matrix of the draw comes from its instance.
     pub light_range: [u32; 4],
+    /// The lights of the draw among the clustered lights of the frame, one bit for each
+    /// slot (`Clusters::note`): a pixel of the draw takes a light of its cluster only when
+    /// the draw has it, as the engine lights a draw with the lights of its effect state.
+    pub light_mask: [[u32; 4]; 2],
     pub stages: [StageData; 6],
     pub texture_transforms: [[f32; 16]; 6],
     /// 1 / width and -1 / height of the viewport.
@@ -1195,6 +1199,8 @@ struct Counts {
     cluster_lights: u64,
     cluster_entries: u64,
     cluster_frames_off: u32,
+    /// The frames with more clustered lights than a mask of a draw has bits.
+    cluster_frames_many: u32,
     /// The GPU time of the render passes and of the whole frame, in nanoseconds, and the
     /// frames that were timed.
     gpu_passes: f64,
@@ -1355,10 +1361,17 @@ struct Clusters {
     table: wgpu::Buffer,
     indexes: wgpu::Buffer,
     index_capacity: usize,
-    /// The lights of the frame that are candidates, by their key, as indexes.
-    unique: HashMap<u32, u32>,
+    /// The lights of the frame that are candidates, by their key: the index in the light
+    /// buffer of the frame and the slot of the light in the masks of the draws.
+    unique: HashMap<u32, (u32, u32)>,
+    /// The frame has more candidates than a mask has bits, or an index a cluster entry
+    /// cannot hold: the frame keeps the lights of the draws.
+    overflow: bool,
     lists: Vec<Vec<u32>>,
 }
+
+/// The bits of the mask of a draw over the clustered lights of the frame.
+const CLUSTER_SLOTS: usize = 256;
 
 impl Clusters {
     fn new(device: &wgpu::Device) -> Clusters {
@@ -1373,14 +1386,22 @@ impl Clusters {
             indexes: buffer("cluster lights", (index_capacity * 4) as u64, storage),
             index_capacity,
             unique: HashMap::new(),
+            overflow: false,
             lists: (0..cells).map(|_| Vec::new()).collect(),
         }
     }
 
     /// Notes a light of the frame as a candidate, by its key and its index in the light
-    /// buffer: the first draw with the key gives the values.
-    fn note(&mut self, key: u32, index: u32) {
-        self.unique.entry(key).or_insert(index);
+    /// buffer: the first draw with the key gives the values. Returns the slot of the light
+    /// in the masks of the draws, or `None` when the frame has no slot left.
+    fn note(&mut self, key: u32, index: u32) -> Option<u32> {
+        let next = self.unique.len() as u32;
+        let (_, slot) = *self.unique.entry(key).or_insert((index, next));
+        if slot as usize >= CLUSTER_SLOTS || index >= 1 << 16 {
+            self.overflow = true;
+            return None;
+        }
+        Some(slot)
     }
 
     /// Bins the candidates into the grid for the view of the world and writes the buffers.
@@ -1390,7 +1411,11 @@ impl Clusters {
         for list in &mut self.lists {
             list.clear();
         }
-        let Some((mut view, projection)) = view.filter(|_| self.on && !self.unique.is_empty()) else {
+        let overflow = core::mem::replace(&mut self.overflow, false);
+        if overflow {
+            counts.cluster_frames_many += 1;
+        }
+        let Some((mut view, projection)) = view.filter(|_| self.on && !self.unique.is_empty() && !overflow) else {
             self.unique.clear();
             queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&ClusterData::zeroed()));
             return false;
@@ -1407,20 +1432,23 @@ impl Clusters {
         let depth_scale = gz as f32 / (far / near).ln();
         let slice_of = |z: f32| ((z.max(near) / near).ln() * depth_scale).floor().clamp(0.0, gz as f32 - 1.0) as usize;
         let (sx, sy) = (projection[0], projection[5]);
-        let mut candidates: Vec<u32> = self.unique.values().copied().collect();
+        // The candidates by their slot; an entry of a list is the slot in its high half and
+        // the index in its low half.
+        let mut candidates: Vec<(u32, u32)> = self.unique.values().map(|&(index, slot)| (slot, index)).collect();
         candidates.sort_unstable();
         // A point light without a cut-off (the fade of the extension is off) has no end:
         // its tail would reach the pixels of objects the game never attached it to. The
         // frame keeps the lights of the draws then.
-        if candidates.iter().any(|&index| lights.get(index as usize).is_some_and(|light| light.position[3] != 3.0 && light.cone[0] <= 0.0)) {
+        if candidates.iter().any(|&(_, index)| lights.get(index as usize).is_some_and(|light| light.position[3] != 3.0 && light.cone[0] <= 0.0)) {
             self.unique.clear();
             counts.cluster_frames_off += 1;
             queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&ClusterData::zeroed()));
             return false;
         }
         counts.cluster_lights += candidates.len() as u64;
-        for index in candidates {
+        for (slot, index) in candidates {
             let Some(light) = lights.get(index as usize) else { continue };
+            let entry = index | slot << 16;
             // A directional light is in every cluster.
             let (x0, x1, y0, y1, z0, z1);
             if light.position[3] == 3.0 {
@@ -1456,7 +1484,7 @@ impl Clusters {
                     for x in x0..=x1 {
                         let list = &mut self.lists[(z * gy + y) * gx + x];
                         if list.len() < CLUSTER_LIGHTS {
-                            list.push(index);
+                            list.push(entry);
                         }
                     }
                 }
@@ -4112,7 +4140,9 @@ impl Player {
                 // of the frame, and the draw can take its light from them.
                 if self.from_shape && renderer.clusters.on {
                     for i in 0..count {
-                        renderer.clusters.note(word(s, state::SIZE + i * state::LIGHT_SIZE), (first + i) as u32);
+                        if let Some(slot) = renderer.clusters.note(word(s, state::SIZE + i * state::LIGHT_SIZE), (first + i) as u32) {
+                            draw_data.light_mask[slot as usize / 128][slot as usize / 32 % 4] |= 1 << (slot % 32);
+                        }
                     }
                     draw_data.light_range[3] = 1;
                 }
@@ -4205,7 +4235,13 @@ impl Player {
         );
         println!("sorted draws {}, instanced away {}, skinned shapes {}, particle systems {}", c.sorted_draws, c.instanced_draws, c.shape_skinned, c.shape_particles);
         println!("lights: {} records, {} lights of a shape without a record", c.light_records, c.light_missing);
-        println!("clusters: {:.1} lights and {:.0} entries for each frame, {} frames without (a light had no cut-off)", c.cluster_lights as f64 / c.frames.max(1) as f64, c.cluster_entries as f64 / c.frames.max(1) as f64, c.cluster_frames_off);
+        println!(
+            "clusters: {:.1} lights and {:.0} entries for each frame, {} frames without (a light had no cut-off), {} frames with more lights than a mask holds",
+            c.cluster_lights as f64 / c.frames.max(1) as f64,
+            c.cluster_entries as f64 / c.frames.max(1) as f64,
+            c.cluster_frames_off,
+            c.cluster_frames_many
+        );
         println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);
         println!(
             "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}; draws with a made or moved texture coordinate {}; the most lights of a draw {}",

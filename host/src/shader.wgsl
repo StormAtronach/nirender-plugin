@@ -61,6 +61,10 @@ struct Draw {
     counts: vec4u,
     // The lights of the draw in `lights`: the first and the number.
     light_range: vec4u,
+    // The lights of the draw among the clustered lights of the frame, a bit for each slot:
+    // an entry of `cluster_indexes` is the slot in its high half and the index in `lights`
+    // in its low half, and a pixel takes the light only when the draw has its bit.
+    light_mask: array<vec4u, 2>,
     stages: array<Stage, 6>,
     // The texture transform of each stage.
     texture_transforms: array<mat4x4f, 6>,
