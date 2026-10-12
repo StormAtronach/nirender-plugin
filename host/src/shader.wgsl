@@ -139,6 +139,11 @@ struct VertexIn {
     @location(7) weights: vec3f,
     // A skinned draw: the four bones of the vertex, indexes into its part of the palette.
     @location(8) bones: vec4u,
+    // The world matrix of the instance, by columns, for a draw with instances.
+    @location(9) instance0: vec4f,
+    @location(10) instance1: vec4f,
+    @location(11) instance2: vec4f,
+    @location(12) instance3: vec4f,
 }
 
 struct VertexOut {
@@ -191,8 +196,12 @@ fn vs(in: VertexIn) -> VertexOut {
     var world_normal: vec3f;
     let weights = draw.flags.w;
     if weights == 0u {
-        world_position = draw.world[0] * local;
-        world_normal = (draw.world[0] * vec4f(in.normal, 0.0)).xyz;
+        var world0 = draw.world[0];
+        if (draw.light_range.w & 2u) != 0u {
+            world0 = mat4x4f(in.instance0, in.instance1, in.instance2, in.instance3);
+        }
+        world_position = world0 * local;
+        world_normal = (world0 * vec4f(in.normal, 0.0)).xyz;
     } else if weights == 4u {
         // A skinned draw: four bones of the palette of the frame, the fourth weight 1 less
         // the sum of the three, as the vertex blend of Direct3D.

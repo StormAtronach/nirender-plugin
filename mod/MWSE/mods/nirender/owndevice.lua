@@ -97,6 +97,12 @@ return function(nirender, spec)
             local hour = tes3.findGlobal("GameHour")
             if hour then hour.value = spec.hour or 12 end
             scenario.goTo(spec.exterior)
+            -- The weather is random: clear (0) after the cell loads, or the fog and the sky
+            -- differ between runs. `spec.weather` is another one.
+            after(2, function()
+                local weather = tes3.worldController.weatherController
+                pcall(function() weather:switchImmediate(spec.weather or 0) weather:updateVisuals() end)
+            end)
             -- Under the water: the nearest spot around the player where the land is 170 units
             -- or more under the water level, found with rays onto the landscape.
             if spec.findWater then

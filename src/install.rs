@@ -83,6 +83,7 @@ pub unsafe fn install() -> Result<String, String> {
     }
     shadow::set_main_thread();
     shadow::calibrate_stamps();
+    crate::log!("{}", crate::cores::prefer_performance_cores());
     // A panic of the Rust code ends the game. Its message and place go into the log first.
     std::panic::set_hook(Box::new(|info| {
         crate::log!("panic: {info}");

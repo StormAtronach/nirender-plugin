@@ -18,6 +18,7 @@ pub mod alloc;
 pub mod callers;
 pub mod capture;
 pub mod camera_space;
+pub mod cores;
 pub mod log;
 pub mod census;
 pub mod d3d;

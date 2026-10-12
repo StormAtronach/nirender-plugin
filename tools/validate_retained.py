@@ -93,6 +93,13 @@ def stage_dual(place, mge_build):
     numbers = picture_diff.compare(picture_diff.load(a), picture_diff.load(b))
     text = "replay with the records against without: %s" % (numbers.get("problem") or "%.1f %% different, mean %.3f, largest %d" % (numbers["different"] * 100, numbers["mean"], numbers.get("max", 0)))
     ok &= check("problem" not in numbers and numbers["mean"] < 0.01, text)
+    # The instances: the picture with them against the picture of one draw for each.
+    c = os.path.join(folder, "replay-one-draw-each.png")
+    run([PY, os.path.join(HERE, "replay.py"), capture, c, "--frame", "20"], {"MGE_XE_INSTANCING": "0"})
+    numbers = picture_diff.compare(picture_diff.load(a), picture_diff.load(c))
+    instanced = re.search(r"instanced away (\d+)", out_a)
+    text = "replay with the instances against one draw for each: %s, %s instanced away" % (numbers.get("problem") or "%.2f %% different, mean %.3f" % (numbers["different"] * 100, numbers["mean"]), instanced.group(1) if instanced else "?")
+    ok &= check("problem" not in numbers and numbers["mean"] < 0.01, text)
     return ok
 
 
@@ -119,8 +126,8 @@ def stage_only(place, mge_build):
     ok &= check(" 0 without a geometry or a material" in counts["shapes"], counts["shapes"][:160])
     lights = re.search(r"lights: (\d+) records, (\d+) lights of a shape without a record", host)
     ok &= check(lights is not None and lights.group(2) == "0", lights.group(0) if lights else "no lights line")
-    skinned = re.search(r"skinned shapes (\d+)", open(os.path.join(folder, "host.txt"), errors="replace").read())
-    print("       skinned shapes %s" % (skinned.group(1) if skinned else "?"), flush=True)
+    skinned = re.search(r"instanced away (\d+), skinned shapes (\d+)", open(os.path.join(folder, "host.txt"), errors="replace").read())
+    print("       instanced away %s, skinned shapes %s" % ((skinned.group(1), skinned.group(2)) if skinned else ("?", "?")), flush=True)
     return ok
 
 

@@ -192,7 +192,11 @@ pub trait Replay {
     fn count(&self) -> usize;
 }
 
+/// The most instances of one draw: the buffer of defaults has that many.
+const INSTANCES_MOST: usize = 1024;
+
 /// One draw of the game, ready for the pass.
+#[derive(Clone)]
 struct Draw {
     /// The class of the object of the draw: MGE_LINK_CLASS_*.
     class: u32,
@@ -208,6 +212,9 @@ struct Draw {
     fan: bool,
     /// The first index or vertex, the number of them, and the base vertex.
     range: (u32, u32, i32),
+    /// The instances: the first in the instance buffer of the frame and the number. (0, 1)
+    /// for a draw of its own: its world matrix is in its data.
+    instances: (u32, u32),
 }
 
 /// The kept draws with the renderer, for `Replay`.
@@ -286,15 +293,17 @@ impl Replay for Replayer<'_> {
             pass.set_bind_group(3, &*self.renderer.frame_group, &[]);
             pass.set_vertex_buffer(0, kept.vertices.slice(..));
             pass.set_vertex_buffer(1, self.renderer.defaults.slice(..));
+            pass.set_vertex_buffer(2, self.renderer.instance_buffer.slice(kept.instances.0 as u64 * 64..));
             let (first, count, base) = kept.range;
+            let instances = 0..kept.instances.1;
             if let Some(indexes) = kept.indexes.as_ref() {
                 pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
-                pass.draw_indexed(first..first + count, base, 0..1);
+                pass.draw_indexed(first..first + count, base, instances);
             } else if kept.fan {
                 pass.set_index_buffer(self.renderer.fan_indexes.slice(..), wgpu::IndexFormat::Uint16);
-                pass.draw_indexed(0..count, first as i32, 0..1);
+                pass.draw_indexed(0..count, first as i32, instances);
             } else {
-                pass.draw(first..first + count, 0..1);
+                pass.draw(first..first + count, instances);
             }
             self.renderer.counts.replayed += 1;
         }
@@ -735,9 +744,10 @@ pub struct DrawData {
     /// extension's own.
     pub counts: [u32; 4],
     /// The lights of the draw in the light buffer of the frame: the first and the number.
-    /// z: the first bone of a skinned draw in the palette buffer of the frame. w: 1 when
-    /// the light of a pixel of the draw can come from the clusters of the frame
-    /// (`cluster_lights` in the shader) in place of the lights of the draw.
+    /// z: the first bone of a skinned draw in the palette buffer of the frame. w: bit 1
+    /// when the light of a pixel of the draw can come from the clusters of the frame
+    /// (`cluster_lights` in the shader) in place of the lights of the draw; bit 2 when the
+    /// world matrix of the draw comes from its instance.
     pub light_range: [u32; 4],
     pub stages: [StageData; 6],
     pub texture_transforms: [[f32; 16]; 6],
@@ -1165,8 +1175,9 @@ struct Counts {
     gpu_passes: f64,
     gpu_frame: f64,
     gpu_frames: u32,
-    /// The opaque draws that were sorted.
+    /// The opaque draws that were sorted, and the draws that became an instance of another.
     sorted_draws: u32,
+    instanced_draws: u32,
     /// The draws that differ, by the class of their object.
     material_classes: HashMap<u32, u32>,
     screen_draws: u32,
@@ -1193,6 +1204,89 @@ const STAGES: usize = 6;
 const SLOT_SIZE: usize = core::mem::size_of::<DrawData>().next_multiple_of(256);
 /// The lights that the light buffer of a frame holds at first.
 const LIGHTS_AT_FIRST: usize = 4096;
+
+/// The scheduling of this program on Windows: it draws for the game from the background,
+/// and a hybrid processor gave it an efficiency core in some runs, so that a frame took
+/// twice its time. The thread of the frames goes to the cores of the highest efficiency
+/// class, the process above normal priority and out of the power throttling of a
+/// background process. `MGE_XE_CORES=0` leaves the scheduler alone.
+#[cfg(windows)]
+mod cores {
+    #[repr(C)]
+    struct CpuSetInformation {
+        size: u32,
+        kind: u32,
+        id: u32,
+        group: u16,
+        logical_processor_index: u8,
+        core_index: u8,
+        last_level_cache_index: u8,
+        numa_node_index: u8,
+        efficiency_class: u8,
+        all_flags: u8,
+        reserved: u32,
+        allocation_tag: u64,
+    }
+    #[repr(C)]
+    struct PowerThrottlingState {
+        version: u32,
+        control_mask: u32,
+        state_mask: u32,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> isize;
+        fn GetCurrentThread() -> isize;
+        fn SetPriorityClass(process: isize, class: u32) -> i32;
+        fn SetProcessInformation(process: isize, class: u32, information: *const core::ffi::c_void, size: u32) -> i32;
+        fn GetSystemCpuSetInformation(information: *mut CpuSetInformation, length: u32, returned: *mut u32, process: isize, flags: u32) -> i32;
+        fn SetThreadSelectedCpuSets(thread: isize, ids: *const u32, count: u32) -> i32;
+    }
+    const ABOVE_NORMAL_PRIORITY_CLASS: u32 = 0x8000;
+    const PROCESS_POWER_THROTTLING: u32 = 4;
+    const PROCESS_POWER_THROTTLING_EXECUTION_SPEED: u32 = 1;
+
+    /// Returns one line for the log with what was done.
+    pub fn prefer_performance_cores() -> String {
+        if std::env::var("MGE_XE_CORES").is_ok_and(|v| v == "0") {
+            return "cores: left to the scheduler (MGE_XE_CORES=0)".into();
+        }
+        // SAFETY: calls of the Windows API with valid arguments; the buffer is sized by the
+        // first call.
+        unsafe {
+            let process = GetCurrentProcess();
+            let priority = SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS) != 0;
+            let state = PowerThrottlingState { version: 1, control_mask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED, state_mask: 0 };
+            let throttling = SetProcessInformation(process, PROCESS_POWER_THROTTLING, &state as *const _ as *const core::ffi::c_void, core::mem::size_of::<PowerThrottlingState>() as u32) != 0;
+            let mut needed = 0u32;
+            GetSystemCpuSetInformation(core::ptr::null_mut(), 0, &mut needed, process, 0);
+            let count = needed as usize / core::mem::size_of::<CpuSetInformation>();
+            let mut sets: Vec<CpuSetInformation> = Vec::with_capacity(count.max(1));
+            let got = GetSystemCpuSetInformation(sets.as_mut_ptr(), needed, &mut needed, process, 0) != 0;
+            if got {
+                sets.set_len(needed as usize / core::mem::size_of::<CpuSetInformation>());
+            }
+            let best = sets.iter().map(|s| s.efficiency_class).max().unwrap_or(0);
+            let classes = sets.iter().map(|s| s.efficiency_class).min().unwrap_or(0) != best;
+            let ids: Vec<u32> = sets.iter().filter(|s| s.efficiency_class == best).map(|s| s.id).collect();
+            let pinned = classes && !ids.is_empty() && SetThreadSelectedCpuSets(GetCurrentThread(), ids.as_ptr(), ids.len() as u32) != 0;
+            format!(
+                "cores: {} of {} logical processors in the highest efficiency class{}; priority above normal {}; power throttling off {}",
+                ids.len(),
+                sets.len(),
+                if pinned { ", the thread of the frames on them" } else if classes { ", not pinned" } else { ", one class, not pinned" },
+                if priority { "set" } else { "not set" },
+                if throttling { "set" } else { "not set" }
+            )
+        }
+    }
+}
+#[cfg(not(windows))]
+mod cores {
+    pub fn prefer_performance_cores() -> String {
+        "cores: left to the scheduler".into()
+    }
+}
 
 /// The bind group of the resources of the extension for a frame, and the clusters of the
 /// lights of the frame.
@@ -1379,6 +1473,16 @@ fn light_buffer(device: &wgpu::Device, lights: usize) -> wgpu::Buffer {
     })
 }
 const BONES_AT_FIRST: usize = 4096;
+const INSTANCES_AT_FIRST: usize = 4096;
+/// The world matrices of the instances of a frame.
+fn instance_buffer(device: &wgpu::Device, instances: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("instances"),
+        size: (instances * 64) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
 
 /// The render passes of a frame that get a pair of time stamps, and the pair of the frame
 /// after them.
@@ -1572,6 +1676,11 @@ struct Renderer {
     materials: HashMap<u32, material::Material>,
     derived: HashMap<(u32, u32), Rc<material::Derived>>,
     defaults: wgpu::Buffer,
+    /// The world matrices of the instances of the frame. `MGE_XE_INSTANCING=0` keeps one
+    /// draw for each.
+    instance_buffer: wgpu::Buffer,
+    instance_capacity: usize,
+    instancing: bool,
     /// The indexes of a triangle fan as a triangle list.
     fan_indexes: wgpu::Buffer,
     /// For a draw in screen coordinates: the pipelines without and with blend, the layout of
@@ -1741,9 +1850,10 @@ impl Renderer {
             contents: bytemuck::cast_slice(&fan),
             usage: wgpu::BufferUsages::INDEX,
         });
+        // The inputs a vertex does not have, for each instance of a draw.
         let defaults = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
-            contents: &[0u8; 64],
+            contents: &vec![0u8; 64 * INSTANCES_MOST],
             usage: wgpu::BufferUsages::VERTEX,
         });
         let frame_uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("extension frame"), size: 512, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -1764,6 +1874,9 @@ impl Renderer {
             frame_sampler,
             frame_group,
             light_buffer: light_buffer(&device, LIGHTS_AT_FIRST),
+            instance_buffer: instance_buffer(&device, INSTANCES_AT_FIRST),
+            instance_capacity: INSTANCES_AT_FIRST,
+            instancing: std::env::var("MGE_XE_INSTANCING").map_or(true, |v| v != "0"),
             lights_known: HashMap::new(),
             timing: make_timing(&device, &queue),
             bone_buffer: bone_buffer(&device, BONES_AT_FIRST),
@@ -1824,6 +1937,17 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 2, resource: self.bone_buffer.as_entire_binding() },
             ],
         })
+    }
+
+    /// Puts the world matrices of the instances of the frame into the instance buffer.
+    fn upload_instances(&mut self, instances: &[[f32; 16]]) {
+        if instances.len() > self.instance_capacity {
+            self.instance_capacity = instances.len().next_power_of_two();
+            self.instance_buffer = instance_buffer(&self.device, self.instance_capacity);
+        }
+        if !instances.is_empty() {
+            self.queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+        }
     }
 
     /// Puts the bones of the skinned draws of the frame into the bone buffer, as
@@ -2254,9 +2378,13 @@ impl Renderer {
                 .filter(|location| !present.iter().any(|a| a.location == *location))
                 .map(|location| wgpu::VertexAttribute { format: INPUT_FORMATS[location as usize], offset: 0, shader_location: location })
                 .collect();
+            // The world matrix of an instance: four columns at the locations 9 to 12.
+            let from_instances: Vec<wgpu::VertexAttribute> =
+                (0..4).map(|column| wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: column as u64 * 16, shader_location: 9 + column }).collect();
             let buffers = [
                 Some(wgpu::VertexBufferLayout { array_stride: key.stride as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &from_vertex }),
                 Some(wgpu::VertexBufferLayout { array_stride: 64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_defaults }),
+                Some(wgpu::VertexBufferLayout { array_stride: 64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_instances }),
             ];
             let blend = (key.blend[0] != 0).then(|| {
                 let component = wgpu::BlendComponent {
@@ -2528,6 +2656,9 @@ struct Player {
     frame_lights: Vec<LightData>,
     /// The bones of the skinned draws of the frame, for the bone buffer.
     frame_bones: Vec<[f32; 16]>,
+    /// The world matrices of the instances of the frame; the first is an identity, for
+    /// the draws of their own.
+    frame_instances: Vec<[f32; 16]>,
     /// The collect: the answers of the extension for the frame (`None` before the world
     /// scene), the world began, the world ended, the kind of the scene in progress (1 is the
     /// world), the sun and the ambient light of the first draw of the world, the texture
@@ -2617,6 +2748,7 @@ impl Player {
             world_draws: Vec::new(),
             frame_lights: Vec::new(),
             frame_bones: Vec::new(),
+            frame_instances: Vec::new(),
             parameters: None,
             world_begun: false,
             world_ended: false,
@@ -2709,6 +2841,8 @@ impl Player {
         self.world_draws.clear();
         self.frame_lights.clear();
         self.frame_bones.clear();
+        self.frame_instances.clear();
+        self.frame_instances.push(core::array::from_fn(|i| if i % 5 == 0 { 1.0 } else { 0.0 }));
         self.parameters = None;
         self.world_begun = false;
         self.world_ended = false;
@@ -3267,8 +3401,47 @@ impl Player {
     /// other draws of the run after them in their order. An opaque draw writes depth with
     /// the test on, does not blend, has no stencil and writes all colours: its order does
     /// not change the picture, but for the ties of the depth test.
-    fn sort_items(items: &mut [Item], counts: &mut Counts) {
+    /// With `instances` (the world matrices of the instances of the frame), opaque draws
+    /// that follow each other in the sorted run with the same pipeline, textures, samplers,
+    /// buffers, range, lights and data but the world matrix become one draw with as many
+    /// instances: the world matrices go to `instances`, the first at the index the draw
+    /// keeps. A skinned draw and a draw with a vertex blend keep their own.
+    fn sort_items(items: &mut Vec<Item>, counts: &mut Counts, lights: &[LightData], mut instances: Option<&mut Vec<[f32; 16]>>) {
         let opaque = |draw: &Draw| draw.key.blend[0] == 0 && draw.key.depth[0] != 0 && draw.key.depth[1] != 0 && draw.key.stencil[0] == 0 && draw.key.color_write == 15;
+        let same_lights = |a: &Draw, b: &Draw| {
+            let (first_a, first_b, count) = (a.data.light_range[0] as usize, b.data.light_range[0] as usize, a.data.light_range[1] as usize);
+            b.data.light_range[1] as usize == count
+                && (count == 0 || lights.get(first_a..first_a + count).zip(lights.get(first_b..first_b + count)).is_some_and(|(x, y)| bytemuck::cast_slice::<LightData, u8>(x) == bytemuck::cast_slice::<LightData, u8>(y)))
+        };
+        let same_data = |a: &Draw, b: &Draw| {
+            let mut x = a.data;
+            let mut y = b.data;
+            x.world[0] = [0.0; 16];
+            y.world[0] = [0.0; 16];
+            x.light_range[0] = 0;
+            y.light_range[0] = 0;
+            bytemuck::bytes_of(&x) == bytemuck::bytes_of(&y)
+        };
+        let same_rc = |a: &Option<Rc<wgpu::Buffer>>, b: &Option<Rc<wgpu::Buffer>>| match (a, b) {
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        let can_join = |a: &Draw, b: &Draw| {
+            a.data.flags[3] == 0
+                && b.data.flags[3] == 0
+                && a.key == b.key
+                && a.stencil_reference == b.stencil_reference
+                && a.range == b.range
+                && a.fan == b.fan
+                && a.origin == b.origin
+                && Rc::ptr_eq(&a.textures, &b.textures)
+                && Rc::ptr_eq(&a.samplers, &b.samplers)
+                && Rc::ptr_eq(&a.vertices, &b.vertices)
+                && same_rc(&a.indexes, &b.indexes)
+                && same_lights(a, b)
+                && same_data(a, b)
+        };
         let order = |draw: &Draw| {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -3290,20 +3463,44 @@ impl Player {
             let (mut first, rest): (Vec<Rc<Draw>>, Vec<Rc<Draw>>) = draws.drain(..).partition(|d| opaque(d));
             counts.sorted_draws += first.len() as u32;
             first.sort_by_cached_key(|d| order(d));
-            for (item, draw) in run.iter_mut().zip(first.into_iter().chain(rest)) {
-                *item = Item::Draw(draw);
+            if let Some(instances) = instances.as_deref_mut() {
+                let mut joined: Vec<Rc<Draw>> = Vec::with_capacity(first.len());
+                let mut at = 0;
+                while at < first.len() {
+                    let mut end = at + 1;
+                    while end < first.len() && end - at < INSTANCES_MOST && can_join(&first[at], &first[end]) {
+                        end += 1;
+                    }
+                    if end - at < 2 {
+                        joined.push(first[at].clone());
+                    } else {
+                        let mut draw = (*first[at]).clone();
+                        draw.instances = (instances.len() as u32, (end - at) as u32);
+                        draw.data.light_range[3] |= 2;
+                        instances.extend(first[at..end].iter().map(|d| d.data.world[0]));
+                        counts.instanced_draws += (end - at - 1) as u32;
+                        joined.push(Rc::new(draw));
+                    }
+                    at = end;
+                }
+                first = joined;
             }
-            start = end;
+            let kept: Vec<Item> = first.into_iter().chain(rest).map(Item::Draw).collect();
+            let removed = end - start - kept.len();
+            items.splice(start..end, kept);
+            start = end - removed;
         }
     }
 
     fn run_items_inner(&mut self, items: Vec<Item>) {
         let mut items = items;
         if self.renderer.sort_draws {
-            Self::sort_items(&mut items, &mut self.renderer.counts);
+            let instancing = self.renderer.instancing;
+            Self::sort_items(&mut items, &mut self.renderer.counts, &self.frame_lights, instancing.then_some(&mut self.frame_instances));
         }
         self.renderer.upload_lights(&self.frame_lights);
         self.renderer.upload_bones(&self.frame_bones);
+        self.renderer.upload_instances(&self.frame_instances);
         // The resources of the extension for the frame.
         let (values, texture) = self.parameters.as_ref().map_or(([[0.0f32; 4]; 32], None), |p| (p.values, p.texture.clone()));
         self.renderer.queue.write_buffer(&self.renderer.frame_uniform, 0, bytemuck::cast_slice(&values));
@@ -3363,15 +3560,17 @@ impl Player {
         pass.set_bind_group(3, &*renderer.frame_group, &[]);
         pass.set_vertex_buffer(0, draw.vertices.slice(..));
         pass.set_vertex_buffer(1, renderer.defaults.slice(..));
+        pass.set_vertex_buffer(2, renderer.instance_buffer.slice(draw.instances.0 as u64 * 64..));
         let (first, count, base) = draw.range;
+        let instances = 0..draw.instances.1;
         if let Some(indexes) = draw.indexes.as_ref() {
             pass.set_index_buffer(indexes.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(first..first + count, base, 0..1);
+            pass.draw_indexed(first..first + count, base, instances);
         } else if draw.fan {
             pass.set_index_buffer(renderer.fan_indexes.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(0..count, first as i32, 0..1);
+            pass.draw_indexed(0..count, first as i32, instances);
         } else {
-            pass.draw(first..first + count, 0..1);
+            pass.draw(first..first + count, instances);
         }
         renderer.counts.times[TIME_DRAW_PASS] += clock.elapsed();
         renderer.counts.draws += 1;
@@ -3822,6 +4021,7 @@ impl Player {
             indexes: index_buffer,
             fan,
             range: if indexed { (first_index, indexes, word(s, state::BASE_VERTEX) as i32) } else { (first_index, indexes, 0) },
+            instances: (0, 1),
         });
         // The world scene of the game is 1 and its scene of sorted draws is 2, with the sky
         // at the start of the first. The water plane of the game (MGE_LINK_CLASS_WATER_PLANE,
@@ -3860,7 +4060,7 @@ impl Player {
             "shapes: {} records, {} draws from them, {} without a geometry or a material, {} draws of the device skipped",
             c.shape_records, c.shape_draws, c.shape_missing, c.shape_skipped
         );
-        println!("sorted draws {}, skinned shapes {}", c.sorted_draws, c.shape_skinned);
+        println!("sorted draws {}, instanced away {}, skinned shapes {}", c.sorted_draws, c.instanced_draws, c.shape_skinned);
         println!("lights: {} records, {} lights of a shape without a record", c.light_records, c.light_missing);
         println!("clusters: {:.1} lights and {:.0} entries for each frame, {} frames without (a light had no cut-off)", c.cluster_lights as f64 / c.frames.max(1) as f64, c.cluster_entries as f64 / c.frames.max(1) as f64, c.cluster_frames_off);
         println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);
@@ -4431,6 +4631,7 @@ mod live {
     }
 
     pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Option<Box<dyn super::Extension>>) {
+        println!("{}", super::cores::prefer_performance_cores());
         let ring = Ring::open(name);
         println!("ring: {} MB", ring.capacity >> 20);
         // The first record has the size of the picture and the window of the game.
