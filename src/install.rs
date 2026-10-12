@@ -1,6 +1,6 @@
 //! The installation of the plugin: the census, the detours, the recorder, and the report.
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::gen::funcs::FUNCS;
 use crate::gen::layouts::NiDX8Renderer;
@@ -75,12 +75,27 @@ pub unsafe fn census(hooked: bool) -> usize {
     changed.len()
 }
 
+/// Set when the plugin is the Direct3D 8 of the game and a port cannot run as Rust: the game
+/// must not get the device of the plugin, and MGE XE goes on with Direct3D 9.
+static REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// True when the renderer is refused for this session.
+pub fn refused() -> bool {
+    REFUSED.load(Ordering::Relaxed)
+}
+
+const REFUSED_MESSAGE: &str = "the renderer is refused for this session (see the census above); the game keeps MGE XE on Direct3D 9";
+
 /// Puts the detours on the engine functions and the recorder on the device. Every port
 /// starts in mode off. A second call only puts the recorder on the device.
 pub unsafe fn install() -> Result<String, String> {
+    if refused() {
+        return Err(REFUSED_MESSAGE.to_string());
+    }
     if ports::all().any(|p| p.installed()) {
         return Ok(attach_device()?.unwrap_or_else(|| "the game has no renderer yet".to_string()));
     }
+    crate::log!("nirender v{}", env!("CARGO_PKG_VERSION"));
     shadow::set_main_thread();
     shadow::calibrate_stamps();
     crate::log!("{}", crate::cores::prefer_performance_cores());
@@ -107,6 +122,18 @@ pub unsafe fn install() -> Result<String, String> {
                 failed += 1;
                 crate::log!("no detour on {}: {}", port.name, error);
             }
+        }
+    }
+    // With the plugin as the Direct3D 8 of the game, every port must run as Rust: a port
+    // that stays game code would call a device that draws nothing. A function that another
+    // mod changed in a way the port does not follow, or a detour that failed, refuses the
+    // renderer for the session, and MGE XE goes on with Direct3D 9.
+    if crate::link_client::own_d3d8() {
+        let cannot: Vec<&str> = ports::all().filter(|p| p.locked() || !p.installed()).map(|p| p.name).collect();
+        if !cannot.is_empty() {
+            REFUSED.store(true, Ordering::Relaxed);
+            crate::log!("{} of {} ports cannot run as Rust: {}", cannot.len(), ports::all().count(), cannot.join(", "));
+            return Err(REFUSED_MESSAGE.to_string());
         }
     }
     let attached = match attach_device()? {

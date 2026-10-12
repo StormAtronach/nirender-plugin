@@ -331,6 +331,11 @@ pub struct DrawFacts {
 
 /// A program that draws more than the game does: for example the distant land of MGE XE.
 pub trait Extension {
+    /// The name and the version of the extension, for the first line of the log.
+    fn name(&self) -> String {
+        String::new()
+    }
+
     /// Data that the part of this program in the game process put into the stream, with the
     /// number that names its kind.
     fn data(&mut self, _id: u32, _bytes: &[u8]) {}
@@ -4053,6 +4058,7 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     if let Some(path) = option(&args, "--log") {
         log_to(&path);
     }
+    println!("nirender-host v{}{}", env!("CARGO_PKG_VERSION"), extension.as_ref().map_or(String::new(), |e| format!(", {}", e.name())));
     let backends = match option(&args, "--backend").as_deref() {
         Some("dx12") => wgpu::Backends::DX12,
         Some("vulkan") => wgpu::Backends::VULKAN,

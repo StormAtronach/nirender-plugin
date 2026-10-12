@@ -17,7 +17,7 @@ if not nirender then
     return
 end
 
-local config = mwse.loadConfig("nirender", { mode = "off", early = false })
+local config = mwse.loadConfig("nirender", { mode = "off", early = false, captureKey = "f11" })
 
 local spec = nil
 do
@@ -60,6 +60,24 @@ if ownDevice and installed then
     mwse.log("[nirender] own device, link: %s (%s)", tostring(ok), message)
     mwse.log("[nirender] own device, textures through the link: %s, facts %s, kinds %s", tostring(nirender.linkTextures(true)),
         tostring(nirender.linkUseFacts(4261413630)), tostring(nirender.linkUseKinds(15)))
+elseif ownDevice then
+    -- The renderer is refused for this session (a port cannot run as Rust): the game runs
+    -- MGE XE on Direct3D 9. The player sees why.
+    event.register("loaded", function()
+        tes3.messageBox("MGE XE: the wgpu renderer is off for this session. See MWSE.log and nirender.log in the Morrowind folder.")
+    end, { doOnce = true })
+end
+
+-- A capture of the next frames for a bug report: the key of the configuration (a name of
+-- tes3.scanCode; "none" for no key) writes nirender-<date>.nircap into the folder of the game.
+local captureKey = tostring(config.captureKey or "none"):lower()
+if ownDevice and installed and captureKey ~= "none" and tes3.scanCode[captureKey] then
+    event.register("keyDown", function(e)
+        if e.keyCode ~= tes3.scanCode[captureKey] or e.isAltDown or e.isControlDown or e.isShiftDown then return end
+        local path = string.format("nirender-%s.nircap", os.date("%Y%m%d-%H%M%S"))
+        local ok, problem = nirender.capture(path, 0, 3)
+        tes3.messageBox(ok and ("nirender: 3 frames go into " .. path) or ("nirender: no capture: " .. tostring(problem)))
+    end)
 end
 
 event.register("initialized", function()

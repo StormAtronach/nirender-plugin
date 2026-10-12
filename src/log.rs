@@ -6,9 +6,13 @@ use std::sync::Mutex;
 
 static LOG: Mutex<Option<File>> = Mutex::new(None);
 
+/// Opens the log at `path`, one time: a second call keeps the file of the first, so that a
+/// second install keeps what the first one wrote.
 pub fn open(path: &str) {
-    let file = OpenOptions::new().create(true).write(true).truncate(true).open(path).ok();
-    *LOG.lock().unwrap() = file;
+    let mut guard = LOG.lock().unwrap();
+    if guard.is_none() {
+        *guard = OpenOptions::new().create(true).write(true).truncate(true).open(path).ok();
+    }
 }
 
 pub fn write(line: &str) {
