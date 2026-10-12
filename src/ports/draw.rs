@@ -477,7 +477,8 @@ unsafe fn shape_record(this: usize, skin: usize, transform: usize, world_bound: 
     };
     // D3DRS_AMBIENT (139) as the render state record of the renderer has it.
     let ambient: u32 = rd(rd::<usize>(this, R::renderState), crate::gen::layouts::NiDX8RenderState::renderStateSettings + 139 * 8);
-    crate::shape_stream::send(this, world, relative, ambient, crate::shape_stream::material_values(property_state), &palette)
+    let fog = crate::shape_stream::fog_values(this, property_state);
+    crate::shape_stream::send(this, world, relative, ambient, crate::shape_stream::material_values(property_state), fog, &palette)
 }
 
 pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {

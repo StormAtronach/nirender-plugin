@@ -277,6 +277,7 @@ unsafe fn particles_record(this: usize, geometry_data: usize, count: u32, radius
         crate::link_client::world_is_relative(),
         ambient,
         crate::shape_stream::material_values(property_state),
+        crate::shape_stream::fog_values(this, property_state),
         radius,
         right,
         up,

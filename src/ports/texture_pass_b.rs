@@ -439,9 +439,16 @@ unsafe fn camera(pipeline: usize, offset: usize) -> f32 {
 /// 0x6B5CE0 `NiDX8TexturePass::texGen_WorldParallel_Claude_`. Leaves the pipeline in EAX.
 pub unsafe fn tex_gen_world_parallel(this: usize, matrix: usize, translation: usize, stage: usize) -> usize {
     crate::shadow::touch(&tex_gen_world_parallel_port::STATE);
+    let pipeline: usize = rd(this, TP::configurableTexturePipeline);
+    world_parallel(pipeline, matrix, translation, stage);
+    pipeline
+}
+
+/// The writes of `tex_gen_world_parallel`, with the pipeline given.
+#[inline(always)]
+unsafe fn world_parallel(pipeline: usize, matrix: usize, translation: usize, stage: usize) {
     wr::<u32>(stage, ST::sourceTexcoordIndex, 0x20000);
     wr::<u32>(stage, ST::textureTransformFlags, 2);
-    let pipeline: usize = rd(this, TP::configurableTexturePipeline);
     let w = |offset: usize| camera(pipeline, offset);
     let m = |offset: usize| rd::<f32>(matrix, offset);
     let t = |offset: usize| rd::<f32>(translation, offset);
@@ -458,17 +465,25 @@ pub unsafe fn tex_gen_world_parallel(this: usize, matrix: usize, translation: us
     wr(stage, 0x7C, dot3(m(0x04), w(0x28), m(0x08), w(0x2C), m(0x00), w(0x24)) + t(0x0));
     wr(stage, 0x80, dot3(m(0x0C), w(0x24), m(0x10), w(0x28), m(0x14), w(0x2C)) + t(0x4));
     wr(stage, 0x84, dot3(m(0x18), w(0x24), m(0x1C), w(0x28), m(0x20), w(0x2C)) + t(0x8));
-    pipeline
 }
 
 /// 0x6B5EB0 `NiDX8TexturePass::texGen_WorldPerspective_Claude_`. Leaves the pipeline in EAX.
 pub unsafe fn tex_gen_world_perspective(this: usize, matrix: usize, translation: usize, stage: usize) -> usize {
     crate::shadow::touch(&tex_gen_world_perspective_port::STATE);
-    wr::<u32>(stage, ST::sourceTexcoordIndex, 0x20000);
     let renderer: usize = rd(this, TP::renderer);
     let renderer_pipeline: usize = rd(renderer, REN::configurableTexturePipeline);
-    wr::<u32>(stage, ST::textureTransformFlags, rd(renderer_pipeline, CTP::field_310));
+    let flags: u32 = rd(renderer_pipeline, CTP::field_310);
     let pipeline: usize = rd(this, TP::configurableTexturePipeline);
+    world_perspective(pipeline, flags, matrix, translation, stage);
+    pipeline
+}
+
+/// The writes of `tex_gen_world_perspective`, with the pipeline and the transform flags of
+/// the pipeline of the renderer given.
+#[inline(always)]
+unsafe fn world_perspective(pipeline: usize, flags: u32, matrix: usize, translation: usize, stage: usize) {
+    wr::<u32>(stage, ST::sourceTexcoordIndex, 0x20000);
+    wr::<u32>(stage, ST::textureTransformFlags, flags);
     let w = |offset: usize| camera(pipeline, offset);
     let m = |offset: usize| rd::<f32>(matrix, offset);
     let t = |offset: usize| rd::<f32>(translation, offset);
@@ -485,7 +500,6 @@ pub unsafe fn tex_gen_world_perspective(this: usize, matrix: usize, translation:
     wr(stage, 0x7C, dot3(m(0x04), w(0x28), m(0x08), w(0x2C), m(0x00), w(0x24)) + t(0x0));
     wr(stage, 0x80, dot3(m(0x14), w(0x2C), m(0x0C), w(0x24), m(0x10), w(0x28)) + t(0x4));
     wr(stage, 0x84, dot3(m(0x1C), w(0x28), m(0x20), w(0x2C), m(0x18), w(0x24)) + t(0x8));
-    pipeline
 }
 
 /// The body of the three callbacks that work on a direction. It applies the rotation only and
@@ -493,9 +507,15 @@ pub unsafe fn tex_gen_world_perspective(this: usize, matrix: usize, translation:
 /// translation in EAX.
 #[inline(always)]
 unsafe fn tex_gen_direction(this: usize, matrix: usize, translation: usize, stage: usize, source: u32, flags: u32) -> u32 {
+    let pipeline: usize = rd(this, TP::configurableTexturePipeline);
+    direction(pipeline, matrix, translation, stage, source, flags)
+}
+
+/// The writes of `tex_gen_direction`, with the pipeline given.
+#[inline(always)]
+unsafe fn direction(pipeline: usize, matrix: usize, translation: usize, stage: usize, source: u32, flags: u32) -> u32 {
     wr::<u32>(stage, ST::sourceTexcoordIndex, source);
     wr::<u32>(stage, ST::textureTransformFlags, flags);
-    let pipeline: usize = rd(this, TP::configurableTexturePipeline);
     let w = |offset: usize| camera(pipeline, offset);
     let m = |offset: usize| rd::<f32>(matrix, offset);
 
@@ -513,6 +533,44 @@ unsafe fn tex_gen_direction(this: usize, matrix: usize, translation: usize, stag
     let last: u32 = rd(translation, 0x8);
     wr(stage, 0x84, last);
     last
+}
+
+/// The number of words of `effect_stage_words`: the coordinate index, the transform flags
+/// and the 16 values of the texture matrix.
+pub const EFFECT_STAGE_WORDS: usize = 18;
+
+/// The stage of a texture effect as its coordinate callback makes it, for the shape record
+/// of the retained pipeline: the texture coordinate index with its generation, the transform
+/// flags, then the texture matrix. The callback writes into a stage of zeros, as a stage is
+/// after its constructor, with the pipeline of the renderer and its camera of the frame: the
+/// same values the pass of the device would set for the draw. Returns zeros when the effect
+/// gives no stage (off, or without a texture).
+pub unsafe fn effect_stage_words(renderer: usize, effect: usize) -> [u32; EFFECT_STAGE_WORDS] {
+    let mut words = [0u32; EFFECT_STAGE_WORDS];
+    if effect == 0 || rd::<u8>(effect, EFFECT_ENABLED) == 0 || rd::<usize>(effect, EFFECT_TEXTURE) == 0 {
+        return words;
+    }
+    let mut stage = [0u8; ST::SIZE];
+    let at = stage.as_mut_ptr() as usize;
+    let pipeline: usize = rd(renderer, REN::configurableTexturePipeline);
+    let (matrix, translation) = (effect + EFFECT_PROJECTION_MATRIX, effect + EFFECT_PROJECTION_TRANSLATION);
+    match rd::<u32>(effect, EFFECT_COORDINATE_MODE) {
+        0 => world_parallel(pipeline, matrix, translation, at),
+        1 => world_perspective(pipeline, rd(pipeline, CTP::field_310), matrix, translation, at),
+        2 => {
+            direction(pipeline, matrix, translation, at, 0x30000, 2);
+        }
+        3 => {
+            direction(pipeline, matrix, translation, at, 0x30000, 3);
+        }
+        _ => {
+            direction(pipeline, matrix, translation, at, 0x10000, 3);
+        }
+    }
+    words[0] = rd(at, ST::sourceTexcoordIndex);
+    words[1] = rd(at, ST::textureTransformFlags);
+    words[2..].copy_from_slice(&rd::<[u32; 16]>(at, ST::textureMatrix__11));
+    words
 }
 
 /// 0x6B6090 `NiDX8TexturePass::texGen_SphereMap_Claude_`

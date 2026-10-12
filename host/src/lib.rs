@@ -454,7 +454,15 @@ const STATE_LIGHT_SIZE: usize = 108;
 /// A state packet made from the derived state of a material, for one pass of a shape draw.
 /// The fields are those of `DrawStateV1`; the lights come after it.
 #[allow(clippy::too_many_arguments)]
-fn synthesize_state(d: &material::Derived, pass: usize, m: &material::Material, textures: &HashMap<u32, Rc<wgpu::TextureView>>, fvf: u32, stride: u32, vertices: u32, entries: u32, world: &[f32; 16], relative: bool, ambient: u32, lights: u32, material: &[f32; 17]) -> Vec<u8> {
+/// The words of the stage of a texture effect in a shape record: the coordinate index with
+/// its generation, the transform flags, the texture matrix.
+const EFFECT_STAGE_WORDS: usize = 18;
+
+/// The state packet of a draw from its records, as the pipeline of the device would set it.
+/// `effects` is the stages of the environment map and of the fog map from the shape record
+/// (the texture pass makes them from the effect and the camera of the frame); without them
+/// a stage of an effect gets the generation of its kind and no transform.
+fn synthesize_state(d: &material::Derived, pass: usize, m: &material::Material, textures: &HashMap<u32, Rc<wgpu::TextureView>>, fvf: u32, stride: u32, vertices: u32, entries: u32, world: &[f32; 16], relative: bool, ambient: u32, lights: u32, material: &[f32; 17], effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>) -> Vec<u8> {
     let mut s = vec![0u8; state::SIZE];
     let put = |s: &mut Vec<u8>, at: usize, v: u32| s[at..at + 4].copy_from_slice(&v.to_le_bytes());
     let putf = |s: &mut Vec<u8>, at: usize, v: f32| s[at..at + 4].copy_from_slice(&v.to_le_bytes());
@@ -497,13 +505,29 @@ fn synthesize_state(d: &material::Derived, pass: usize, m: &material::Material, 
                 for (k, v) in values.into_iter().enumerate() {
                     put(&mut s, at + k * 4, v);
                 }
-                let generated = match st.source {
-                    8 => 0x30000,
-                    9 => 0x20000,
-                    _ => 0,
-                };
-                put(&mut s, at + 9 * 4, st.set | generated);
-                put(&mut s, at + 10 * 4, 0);
+                let effect = effects.and_then(|e| match st.source {
+                    8 => Some(&e[0]),
+                    9 => Some(&e[1]),
+                    _ => None,
+                });
+                match effect {
+                    Some(words) if words[0] != 0 => {
+                        put(&mut s, at + 9 * 4, words[0]);
+                        put(&mut s, at + 10 * 4, words[1]);
+                        for (k, v) in words[2..].iter().enumerate() {
+                            put(&mut s, state::TEXTURE_TRANSFORMS + i * 64 + k * 4, *v);
+                        }
+                    }
+                    _ => {
+                        let generated = match st.source {
+                            8 => 0x30000,
+                            9 => 0x20000,
+                            _ => 0,
+                        };
+                        put(&mut s, at + 9 * 4, st.set | generated);
+                        put(&mut s, at + 10 * 4, 0);
+                    }
+                }
                 let bump = if st.source == 5 { [m.bump[2], m.bump[3], m.bump[4], m.bump[5], m.bump[0], m.bump[1]] } else { [0.5, 0.0, 0.0, 0.5, 1.0, 0.0] };
                 for (k, v) in bump.into_iter().enumerate() {
                     putf(&mut s, at + (11 + k) * 4, v);
@@ -2531,6 +2555,17 @@ struct Stream {
     /// The object of the draws that follow was drawn from its shape record: the draws of
     /// the device for it are skipped.
     shape_drawn: bool,
+    /// The fill mode of the shape record in progress, from its derived material: the game
+    /// sends `D3DRS_FILLMODE` as a command after the record, so a draw from the record
+    /// cannot take it from the commands.
+    shape_fill: Option<u32>,
+    /// The state that the shape record in progress was drawn with, for the comparison with
+    /// the packet of the device draw that follows it (`MGE_XE_STATE_DEBUG`).
+    shape_state: Vec<u8>,
+    /// The fog of the shape record in progress (flag 32): the colour, the start, the end
+    /// and the range fog flag, as the render state of the device gets them from the fog
+    /// property of the draw. The game sends those as commands after the record.
+    shape_fog: Option<[u32; 4]>,
     /// The colours of the material from the last shape record, or `None`.
     shape_material: Option<[f32; 17]>,
     /// The bones of the skinned shape in progress in the bones of the frame: the first and
@@ -2568,11 +2603,18 @@ impl Stream {
         data.material_emissive = material[12..16].try_into().unwrap();
         data.scene_ambient = color(known(word(s, state::AMBIENT), 0));
         let state_of = |index: u32| self.render_states.get(&index).copied();
-        // D3DRS_FOGCOLOR 34, FOGSTART 36, FOGEND 37, TEXTUREFACTOR 60.
-        if let (1, Some(fog_color), Some(start), Some(end)) = (known(word(s, state::FOG_ENABLE), 0), state_of(34), state_of(36), state_of(37)) {
+        // D3DRS_FOGCOLOR 34, FOGSTART 36, FOGEND 37, RANGEFOGENABLE 48, TEXTUREFACTOR 60. A
+        // shape record brings the fog of its draw; the game sends the states of the fog
+        // property as commands after the record, so a draw from a record cannot take them
+        // from the commands.
+        let fog_of_record = self.shape_fog.filter(|_| self.shape_drawn);
+        let (fog_color, start, end, range) = match fog_of_record {
+            Some(fog) => (Some(fog[0]), Some(fog[1]), Some(fog[2]), Some(fog[3])),
+            None => (state_of(34), state_of(36), state_of(37), state_of(48)),
+        };
+        if let (1, Some(fog_color), Some(start), Some(end)) = (known(word(s, state::FOG_ENABLE), 0), fog_color, start, end) {
             data.fog_color = color(fog_color);
-            // D3DRS_RANGEFOGENABLE is 48.
-            data.fog = [f32::from_bits(start), f32::from_bits(end), 1.0, (state_of(48).unwrap_or(0) != 0) as u32 as f32];
+            data.fog = [f32::from_bits(start), f32::from_bits(end), 1.0, (range.unwrap_or(0) != 0) as u32 as f32];
             // The fog of the extension is for the world only: a perspective projection.
             if let (Some((start, end)), true) = (self.fog_range, self.projection[11] == 1.0) {
                 data.fog[0] = start;
@@ -2787,6 +2829,9 @@ impl Player {
                 material: 0,
                 pass: 0,
                 shape_drawn: false,
+                shape_fill: None,
+                shape_state: Vec::new(),
+                shape_fog: None,
                 shape_material: None,
                 shape_bones: None,
             },
@@ -3070,11 +3115,19 @@ impl Player {
         self.stream.shape_material = Some(d3d_material);
         let bone_count = word(data, 140) as usize;
         let lights_at = 20 + 64 + 56 + 4;
-        let bones_at = lights_at + light_count * 4;
+        // The stages of the texture effects (flag 16): the environment map, the fog map.
+        let effects_at = lights_at + light_count * 4;
+        let has_effects = flags & 16 != 0;
+        // The fog of the draw (flag 32): colour, start, end, range fog.
+        let fog_at = effects_at + if has_effects { 2 * EFFECT_STAGE_WORDS * 4 } else { 0 };
+        let has_fog = flags & 32 != 0;
+        let bones_at = fog_at + if has_fog { 16 } else { 0 };
         if data.len() < bones_at + bone_count * 64 {
             self.renderer.counts.shape_missing += 1;
             return;
         }
+        let effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, effects_at + (e * EFFECT_STAGE_WORDS + i) * 4))));
+        self.stream.shape_fog = has_fog.then(|| core::array::from_fn(|i| word(data, fog_at + i * 4)));
         // The lights of the draw from their records, as a state packet has them: the key
         // in place of the device index, then the D3DLIGHT8.
         let mut lights = Vec::with_capacity(light_count * STATE_LIGHT_SIZE);
@@ -3139,10 +3192,12 @@ impl Player {
         self.stream.geometry = geometry;
         self.stream.material = 0;
         self.stream.shape_drawn = true;
+        self.stream.shape_fill = Some(derived.fill);
         self.from_shape = true;
         for pass in 0..derived.passes.len() {
-            let mut state = synthesize_state(&derived, pass, &m, &self.renderer.textures, fvf, stride, vertices, entries, &world, flags & 1 != 0, ambient, light_count as u32, &d3d_material);
+            let mut state = synthesize_state(&derived, pass, &m, &self.renderer.textures, fvf, stride, vertices, entries, &world, flags & 1 != 0, ambient, light_count as u32, &d3d_material, effects.as_ref());
             state.extend_from_slice(lights);
+            self.stream.shape_state = state.clone();
             self.stream.state = state;
             // A draw command as a COMMAND record has it: the command and three words, then
             // the primitive type, the least index, the vertices, the first index, the
@@ -3276,6 +3331,8 @@ impl Player {
                 self.stream.material = if more && flags & OBJECT_HAS_MATERIAL != 0 { word(data, 20) } else { 0 };
                 self.stream.pass = 0;
                 self.stream.shape_drawn = false;
+                self.stream.shape_fill = None;
+                self.stream.shape_fog = None;
                 self.stream.shape_material = None;
                 self.stream.shape_bones = None;
             }
@@ -3892,6 +3949,25 @@ impl Player {
         // The object was drawn from its shape record: this is the draw of the device for it.
         if self.stream.shape_drawn && !self.from_shape {
             self.renderer.counts.shape_skipped += 1;
+            // `MGE_XE_STATE_DEBUG=1`: the words of the packet of the device that differ from
+            // the state the record was drawn with, by their offset in the packet.
+            if std::env::var("MGE_XE_STATE_DEBUG").is_ok() {
+                let (a, b) = (&self.stream.shape_state, &self.stream.state);
+                let differences: Vec<String> =
+                    (0..a.len().min(b.len())).step_by(4).filter(|&at| word(a, at) != word(b, at)).map(|at| format!("{at}: record {:#x} device {:#x}", word(a, at), word(b, at))).collect();
+                println!(
+                    "skipped draw in frame {} of class {} (geometry {:#x}, vertices {}, format {:#x}, stencil {}; {} and {} bytes): {}",
+                    self.renderer.counts.frames,
+                    self.stream.object_class,
+                    self.stream.geometry,
+                    word(b, 20),
+                    word(b, state::VERTEX_FORMAT),
+                    word(b, state::STENCIL),
+                    a.len(),
+                    b.len(),
+                    differences.join(", ")
+                );
+            }
             return;
         }
         let in_back_buffer = self.target.is_none();
@@ -3950,8 +4026,9 @@ impl Player {
                 known(word(s, state::DEPTH_FUNCTION), 4),
             ],
             cull: known(word(s, state::CULL_MODE), 3),
-            // D3DRS_FILLMODE is 8. The game sends it as a command.
-            fill: self.stream.render_states.get(&8).copied().unwrap_or(3),
+            // D3DRS_FILLMODE is 8. The game sends it as a command after the shape record of
+            // its object: a draw from the record takes the fill of its derived material.
+            fill: self.stream.shape_fill.filter(|_| self.from_shape).unwrap_or_else(|| self.stream.render_states.get(&8).copied().unwrap_or(3)),
             color_write: 15,
             stencil: {
                 let v: [u32; 8] = core::array::from_fn(|i| word(s, state::STENCIL + i * 4));

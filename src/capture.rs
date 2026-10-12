@@ -96,11 +96,17 @@ pub mod tag {
     /// The draw of a shape: geometry handle, material handle, flags, light count, the scene
     /// ambient, the world matrix (16 floats), the 14 colour values of the material, the
     /// bone count; then the keys of the lights (4 bytes each), then the matrix of each
-    /// bone. A record with the flag `PARTICLES` is the draw of a particle system: the
-    /// geometry handle is the key of the particle data, and after the bones come the
-    /// count, the radius, the camera right and up axes in the model space (3 floats each),
-    /// then for each particle its position (3 floats), its size and its colour (20
-    /// bytes). The helper makes the quads. See `shape_stream`.
+    /// bone. With the flag `EFFECTS`, before the bones come the stages of the texture
+    /// effects of the draw: for the environment map and then for the fog map, the
+    /// coordinate index with its generation, the transform flags and the texture matrix
+    /// (18 words each; zeros for an effect the draw does not have). With the flag `FOG`,
+    /// after the effects come the fog of the draw: the colour, the start, the end and the
+    /// range fog flag (4 words). A record with the flag `PARTICLES` is the draw of a
+    /// particle system: the geometry handle is the key
+    /// of the particle data, and after the bones come the count, the radius, the camera
+    /// right and up axes in the model space (3 floats each), then for each particle its
+    /// position (3 floats), its size and its colour (20 bytes). The helper makes the
+    /// quads. See `shape_stream`.
     pub const SHAPE: u32 = 20;
     /// A light of the light manager: its key (the index of the light), then its
     /// `D3DLIGHT8` (26 words). Sent when the light is new or changed. See `light_stream`.
