@@ -13,8 +13,9 @@ Stages (all by default, in this order):
            the time of the ports for each frame and the busy time of the helper. With
            --gpu-time the helper writes GPU time stamps (they cost it about 0.4 ms a frame).
   tour     the dual run over the NIF test level and its replay comparison (slow).
-  clusters the newest dual capture of each place replayed with the clusters of lights and
-           without (MGE_XE_CLUSTERS=0), compared; then the rate step with and without.
+  clusters the newest dual capture of each place replayed with the clusters of lights
+           (MGE_XE_CLUSTERS=1; they are off by default) and without, compared; then the
+           rate step with and without.
   weathers a run with the shape records alone that measures the frame rate of each of the
            ten weathers of the game in turn, at each place.
 
@@ -144,7 +145,7 @@ def stage_clusters(place, mge_build):
         return check(False, "no dual capture of the place: run the dual stage first")
     a, b = os.path.join(folder, "replay-clusters.png"), os.path.join(folder, "replay-draw-lights.png")
     # The replays read the mgeXE.toml of the run (the fade of the lights is on in it).
-    out = run([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--config-root", folder])
+    out = run([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--config-root", folder], {"MGE_XE_CLUSTERS": "1"})
     run([PY, os.path.join(HERE, "replay.py"), capture, b, "--frame", "20", "--config-root", folder], {"MGE_XE_CLUSTERS": "0"})
     sys.path.insert(0, HERE)
     import picture_diff
@@ -155,7 +156,7 @@ def stage_clusters(place, mge_build):
     text = "replay with the clusters against the lights of the draws: %s" % (numbers.get("problem") or "%.2f %% different, %.2f %% by more than 8, mean %.3f, largest %d" % (
         numbers["different"] * 100, numbers.get("over8", 0) * 100, numbers["mean"], numbers.get("largest", 0)))
     ok &= check("problem" not in numbers and numbers["mean"] < 0.5, text)
-    for name, env in (("clusters", {}), ("draw-lights", {"MGE_XE_CLUSTERS": "0"})):
+    for name, env in (("clusters", {"MGE_XE_CLUSTERS": "1"}), ("draw-lights", {"MGE_XE_CLUSTERS": "0"})):
         label = "v-%s-%s" % (name, place)
         env = dict(env)
         env["MGE_XE_GPU_TIME"] = "1"

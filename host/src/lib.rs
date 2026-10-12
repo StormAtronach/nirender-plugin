@@ -1380,7 +1380,11 @@ impl Clusters {
         let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let index_capacity = 1 << 16;
         Clusters {
-            on: std::env::var("MGE_XE_CLUSTERS").map_or(true, |v| v != "0"),
+            // Off unless `MGE_XE_CLUSTERS=1`: with the masks the clusters give the picture of
+            // the lights of the draws, and at Narsis by night (13 lights for a draw at most)
+            // the GPU takes the same time either way while the binning costs the helper
+            // 0.4 ms a frame. They pay only with many more lights for each draw.
+            on: std::env::var("MGE_XE_CLUSTERS").is_ok_and(|v| v == "1"),
             uniform: buffer("clusters", core::mem::size_of::<ClusterData>() as u64, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST),
             table: buffer("cluster table", (cells * 8) as u64, storage),
             indexes: buffer("cluster lights", (index_capacity * 4) as u64, storage),
