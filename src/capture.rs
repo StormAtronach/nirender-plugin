@@ -223,8 +223,10 @@ struct Ring {
     /// time that the game waited for the host program to draw that frame, in ticks.
     frame_before: u64,
     paced: i64,
-    /// The host program did not read in time at the end of a frame. The game does not wait
-    /// again before the host program has read all that it was late with.
+    /// The bytes that the host program had read at the end of the last frame.
+    read_before: u64,
+    /// The host program did not read at all for the time limit of a wait. The game does not
+    /// wait again before the host program reads.
     host_late: bool,
 }
 
@@ -247,7 +249,7 @@ impl Ring {
         core::ptr::write_bytes(base, 0, RING_HEAD);
         (base as *mut u32).write(RING_MAGIC);
         (base.add(4) as *mut u32).write(capacity as u32);
-        Ok(Ring { mapping, base, capacity, waited: 0, frame_before: 0, paced: 0, host_late: false })
+        Ok(Ring { mapping, base, capacity, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false })
     }
 
     unsafe fn counter(&self, offset: usize) -> &core::sync::atomic::AtomicU64 {
@@ -295,26 +297,34 @@ impl Ring {
     /// The end of a frame. The game waits here until the host program has read the frame
     /// before this one: without the wait the game runs ahead when it is faster than the host
     /// program, the ring fills with frames, and the picture is late by all of them. The mouse
-    /// pointer of a menu then follows the hand late. The wait ends after a short time when
-    /// the host program does not read.
+    /// pointer of a menu then follows the hand late.
+    ///
+    /// The wait ends only when the host program does not read at all for a short time: it
+    /// is not there yet, it is gone, or it is in one long step. The game then runs without
+    /// a wait until the host program reads again. A host program that reads, also a slow
+    /// one, keeps the game at its rate: after a long step the game waits until the host
+    /// program has read the frames that the game made in that time.
     unsafe fn pace(&mut self) {
         let start = ticks();
         let limit = ticks_per_second() / 20;
-        let read = |ring: &Ring| ring.counter(RING_READ).load(Ordering::Acquire);
-        if self.host_late {
-            // A host program that does not read must not make the game slow: one wait, then
-            // none until the host program is there again.
-            self.host_late = read(self) < self.frame_before;
-        } else {
-            while read(self) < self.frame_before {
-                if ticks() - start > limit {
+        let mut read = self.counter(RING_READ).load(Ordering::Acquire);
+        if !(self.host_late && read == self.read_before) {
+            self.host_late = false;
+            let mut moved = start;
+            while read < self.frame_before {
+                wait_step();
+                let now = self.counter(RING_READ).load(Ordering::Acquire);
+                if now != read {
+                    read = now;
+                    moved = ticks();
+                } else if ticks() - moved > limit {
                     self.host_late = true;
                     break;
                 }
-                wait_step();
             }
             self.paced += ticks() - start;
         }
+        self.read_before = read;
         self.frame_before = self.counter(RING_WRITTEN).load(Ordering::Relaxed);
     }
 
