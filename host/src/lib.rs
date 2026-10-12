@@ -563,7 +563,6 @@ struct Geometry {
     index: Rc<wgpu::Buffer>,
 }
 
-const COMMAND_RENDER_STATE: u32 = 1;
 const COMMAND_TRANSFORM: u32 = 3;
 const CALL_CLEAR: u32 = 4;
 const CALL_VIEWPORT: u32 = 5;
@@ -1012,8 +1011,6 @@ struct PipelineKey {
     fill: u32,
     /// The stencil: enable, fail, depth fail, pass, function, mask, write mask.
     stencil: [u32; 7],
-    /// D3DRS_COLORWRITEENABLE: red 1, green 2, blue 4, alpha 8.
-    color_write: u32,
 }
 
 /// A texture that the game draws into.
@@ -1600,9 +1597,9 @@ struct Renderer {
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
     instancing: bool,
-    /// For a draw in screen coordinates: the pipelines without and with blend, the layout of
-    /// its group, and its sampler.
-    screen_pipelines: [Option<wgpu::RenderPipeline>; 2],
+    /// For a draw in screen coordinates: the pipeline, the layout of its group, and its
+    /// sampler.
+    screen_pipeline: Option<wgpu::RenderPipeline>,
     screen_layout: Option<wgpu::BindGroupLayout>,
     screen_sampler: Option<wgpu::Sampler>,
     counts: Counts,
@@ -1823,7 +1820,7 @@ impl Renderer {
             materials: HashMap::new(),
             derived: HashMap::new(),
             defaults,
-            screen_pipelines: [None, None],
+            screen_pipeline: None,
             screen_layout: None,
             screen_sampler: None,
             counts: Counts::default(),
@@ -2008,9 +2005,11 @@ impl Renderer {
         self.counts.textures += 1;
     }
 
-    /// The pipeline for a draw in screen coordinates, with the usual blend of alpha or
-    /// without blend.
-    fn screen_pipeline(&mut self, blend: bool) -> wgpu::RenderPipeline {
+    /// The pipeline for a draw in screen coordinates: a frame of a film. It does not blend:
+    /// the film player of the game is the only caller of `DrawPrimitiveUP`
+    /// (`CutscenePlayer_static::drawRect`), and it sets `D3DRS_ALPHABLENDENABLE` to 0 before
+    /// its draws (`CutscenePlayer_static::setupD3DState` 0x64ECD0).
+    fn screen_pipeline(&mut self) -> wgpu::RenderPipeline {
         if self.screen_layout.is_none() {
             self.screen_layout = Some(self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: None,
@@ -2039,7 +2038,7 @@ impl Renderer {
                 ..Default::default()
             }));
         }
-        if let Some(pipeline) = &self.screen_pipelines[blend as usize] {
+        if let Some(pipeline) = &self.screen_pipeline {
             return pipeline.clone();
         }
         let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(SCREEN_SHADER.into()) });
@@ -2073,14 +2072,14 @@ impl Renderer {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: self.target_format,
-                    blend: blend.then_some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
             multiview_mask: None,
             cache: None,
         });
-        self.screen_pipelines[blend as usize] = Some(pipeline.clone());
+        self.screen_pipeline = Some(pipeline.clone());
         pipeline
     }
 
@@ -2381,7 +2380,7 @@ impl Renderer {
                     targets: &[Some(wgpu::ColorTargetState {
                         format: self.target_format,
                         blend,
-                        write_mask: wgpu::ColorWrites::from_bits_truncate(key.color_write),
+                        write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
                 multiview_mask: None,
@@ -2418,9 +2417,6 @@ struct ShapeFacts {
 struct Stream {
     view: [f32; 16],
     projection: [f32; 16],
-    /// The render states that code of the game outside its renderer sent to the device (the
-    /// film player, the Code Patch). The states of a shape draw come from its records.
-    render_states: HashMap<u32, u32>,
     viewport: Option<([f32; 4], [f32; 2])>,
     back_buffer: bool,
     origin: Option<[f64; 3]>,
@@ -2492,8 +2488,9 @@ impl Stream {
                 data.fog[3] = 1.0;
             }
         }
-        // D3DRS_TEXTUREFACTOR is 60.
-        data.texture_factor = color(self.render_states.get(&60).copied().unwrap_or(0xFFFF_FFFF));
+        // D3DRS_TEXTUREFACTOR: white, the value of a new texture stage of the game. No stage
+        // of a derived state has the factor as an argument or as its blend.
+        data.texture_factor = [1.0; 4];
         if let Some(sky) = self.sky {
             data.extension = sky;
             if pass.stages[0].texture == 0 {
@@ -2677,7 +2674,6 @@ impl Player {
             stream: Stream {
                 view: [0.0; 16],
                 projection: [0.0; 16],
-                render_states: HashMap::new(),
                 viewport: None,
                 back_buffer: true,
                 origin: None,
@@ -3203,16 +3199,11 @@ impl Player {
                     _ => {}
                 }
             }
-            // The states of the device of the game that are not a part of a shape: a render
-            // state from code outside the renderer of the game (the film player sets the
-            // blend of its draws), and the view and the projection of the camera
-            // (D3DTS_VIEW is 2 and D3DTS_PROJECTION is 3). The draws of the game come as
-            // shape records and as draws with their vertices; a command of another kind, in
-            // a capture from before, does nothing.
+            // The view and the projection of the camera (D3DTS_VIEW is 2 and
+            // D3DTS_PROJECTION is 3). The draws of the game come as shape records and as
+            // draws with their vertices, each with its own state; a command of another
+            // kind, in a capture from before, does nothing.
             tag::COMMAND => match word(data, 0) {
-                COMMAND_RENDER_STATE => {
-                    self.stream.render_states.insert(word(data, 4), word(data, 8));
-                }
                 COMMAND_TRANSFORM if data.len() >= 16 + 64 => match word(data, 4) {
                     2 => self.stream.view = floats(data, 16),
                     3 => self.stream.projection = floats(data, 16),
@@ -3268,10 +3259,8 @@ impl Player {
         if list.is_empty() {
             return;
         }
-        // D3DRS_ALPHABLENDENABLE is 27.
-        let blend = self.stream.render_states.get(&27).copied().unwrap_or(0) != 0;
         let renderer = &mut self.renderer;
-        let pipeline = renderer.screen_pipeline(blend);
+        let pipeline = renderer.screen_pipeline();
         let buffer = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&list), usage: wgpu::BufferUsages::VERTEX });
         let view = renderer.textures.get(&texture).unwrap_or(&renderer.white).clone();
         let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -3313,7 +3302,7 @@ impl Player {
     /// instances: the world matrices go to `instances`, the first at the index the draw
     /// keeps. A skinned draw and a draw with a vertex blend keep their own.
     fn sort_items(items: &mut Vec<Item>, counts: &mut Counts, lights: &[LightData], mut instances: Option<&mut Vec<[f32; 16]>>) {
-        let opaque = |draw: &Draw| draw.key.blend[0] == 0 && draw.key.depth[0] != 0 && draw.key.depth[1] != 0 && draw.key.stencil[0] == 0 && draw.key.color_write == 15;
+        let opaque = |draw: &Draw| draw.key.blend[0] == 0 && draw.key.depth[0] != 0 && draw.key.depth[1] != 0 && draw.key.stencil[0] == 0;
         let same_lights = |a: &Draw, b: &Draw| {
             let (first_a, first_b, count) = (a.data.light_range[0] as usize, b.data.light_range[0] as usize, a.data.light_range[1] as usize);
             b.data.light_range[1] as usize == count
@@ -3770,8 +3759,6 @@ impl Player {
             depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
             cull: derived.cull,
             fill: derived.fill,
-            // D3DRS_COLORWRITEENABLE is 168.
-            color_write: self.stream.render_states.get(&168).copied().unwrap_or(15) & 15,
             // On, fail, depth fail, pass, function, mask, write mask.
             stencil: if stencil[0] == 0 { [0; 7] } else { [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0] },
         };

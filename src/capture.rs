@@ -57,7 +57,7 @@ pub mod tag {
     /// written since step R7b; a capture from before has it.
     ///
     /// command, a, b, c; then the data at an address: 16 floats for a transform. Only a
-    /// render state and a transform are written (see `command`).
+    /// transform is written (see `command`).
     pub const COMMAND: u32 = 8;
     /// call, result, the handle that the call gave (or 0), the number of arguments, the
     /// arguments; then the data at an address: the viewport.
@@ -469,9 +469,6 @@ unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
     s.tee_only = true;
     let header = s.header;
     write(tag::HEADER, &[&words(&header)]);
-    for (state, value) in crate::link_client::render_states() {
-        write(tag::COMMAND, &[&words(&[crate::link::COMMAND_RENDER_STATE, state, value, 0])]);
-    }
     #[cfg(not(test))]
     crate::own_host::snapshot();
     crate::geometry_stream::reset();
@@ -503,9 +500,6 @@ pub unsafe fn tee_frames(frames: u32) -> bool {
     }
     if let Some((_, left)) = s.tee.as_mut() {
         *left = frames.max(1);
-    }
-    for (state, value) in crate::link_client::render_states() {
-        write(tag::COMMAND, &[&words(&[crate::link::COMMAND_RENDER_STATE, state, value, 0])]);
     }
     // The content of the buffers and textures that changed while the file held, as it is
     // now, once each.
@@ -882,20 +876,15 @@ pub unsafe fn geometry(head: &[u32], lengths: &[u8], vertices: &[u8], indexes: &
     write(tag::GEOMETRY, &[&words(head), lengths, vertices, indexes]);
 }
 
-/// A state command of the device: a render state, or a transform with its matrix. The helper
-/// takes the view, the projection and the render states of code outside the renderer (the
-/// film player) from them. A draw of the device and a stage state are not in the stream:
-/// the helper draws from the shape records.
+/// A state command of the device. Only a transform goes into the stream, with its matrix:
+/// the helper takes the view and the projection from it. A render state, a stage state and
+/// a draw of the device do not: the helper draws from the shape records, and each record
+/// has the state of its draw.
 pub unsafe fn command(command: u32, a: u32, b: u32, c: u32) {
-    if !recording() {
+    if !recording() || command != COMMAND_TRANSFORM {
         return;
     }
-    let data: &[u8] = match command {
-        COMMAND_TRANSFORM => bytes_at(b, 64),
-        crate::link::COMMAND_RENDER_STATE => &[],
-        _ => return,
-    };
-    write(tag::COMMAND, &[&words(&[command, a, b, c]), data]);
+    write(tag::COMMAND, &[&words(&[command, a, b, c]), bytes_at(b, 64)]);
 }
 
 /// A call of the link, after the host did it.
@@ -1069,10 +1058,6 @@ unsafe fn frame_end() {
                 let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
                 let window: u32 = if renderer != 0 { rd(renderer, DEVICE_WINDOW) } else { 0 };
                 write(tag::HEADER, &[&words(&[size[0], size[1], window])]);
-                // The render states that are not in a state packet, as they are now.
-                for (state, value) in crate::link_client::render_states() {
-                    write(tag::COMMAND, &[&words(&[crate::link::COMMAND_RENDER_STATE, state, value, 0])]);
-                }
                 if let Some(s) = state() {
                     purge(s);
                 }
