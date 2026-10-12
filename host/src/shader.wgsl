@@ -56,7 +56,8 @@ struct Draw {
     // shaded by the functions of the extension (`extension_shade`, `extension_finish`);
     // bit 4, the draw is the sky dome and the extension gives its shape and its colour; bit
     // 8, the extension gives the colour and the draw keeps its alpha (the shadow of a moon);
-    // bit 128, the colour is not kept between 0 and 1 between the stages; bit 2 and the
+    // bit 128, the extension makes the light for each pixel: the vertex stage makes no light
+    // and the colour is not kept between 0 and 1 between the stages; bit 2 and the
     // bits from 16 (but 128) are for the extension.
     counts: vec4u,
     // The lights of the draw in `lights`: the first and the number.
@@ -268,7 +269,10 @@ fn vs(in: VertexIn) -> VertexOut {
         // The dome is behind all other things.
         out.clip.z = 0.999999 * out.clip.w;
     }
-    if draw.flags.x == 0u || (draw.counts.w & 1u) != 0u {
+    // With bit 128 the extension makes the light for each pixel, and this stage makes none.
+    // A draw that the extension only finishes (bit 1 alone: its fog, its shadow) keeps the
+    // light of this stage.
+    if draw.flags.x == 0u || (draw.counts.w & 128u) != 0u {
         out.color = vertex_color;
     } else {
         var diffuse = draw.material_diffuse;
