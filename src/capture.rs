@@ -843,9 +843,9 @@ pub const OBJECT_HAS_GEOMETRY: u32 = 0x100;
 pub const OBJECT_HAS_MATERIAL: u32 = 0x200;
 
 /// A shape record. See `tag::SHAPE`.
-pub unsafe fn shape(head: &[u32], lights: &[u8]) {
+pub unsafe fn shape(head: &[u32], lights: &[u8], bones: &[u8]) {
     let _lock = crate::sync::device_lock();
-    write(tag::SHAPE, &[&words(head), lights]);
+    write(tag::SHAPE, &[&words(head), lights, bones]);
 }
 
 /// A material record. See `tag::MATERIAL`.

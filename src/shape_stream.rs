@@ -18,6 +18,8 @@ pub const ONLY: u32 = 2;
 /// The flags of a record.
 pub const RELATIVE: u32 = 1;
 pub const DUAL_DRAW: u32 = 2;
+/// The shape is skinned: the record has the palette of its bones after the lights.
+pub const SKINNED: u32 = 4;
 
 static mut MODE: u32 = DUAL;
 /// The handles of the object of the draw in progress, from the object record.
@@ -44,9 +46,10 @@ pub unsafe fn report() -> String {
 
 /// Sends the record of the draw in progress when the object has both handles and the mode
 /// is on. `world` is the current world matrix of the renderer, after the transform of the
-/// draw was set, with the camera-relative mask of the plugin. Returns true when the ports
-/// of the pipeline must not run for this draw.
-pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14]) -> bool {
+/// draw was set, with the camera-relative mask of the plugin; for a skinned shape `palette`
+/// has the matrix of each bone of the skin instead. Returns true when the ports of the
+/// pipeline must not run for this draw.
+pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], palette: &[[f32; 16]]) -> bool {
     let mode = mode();
     let (geometry, material) = *core::ptr::addr_of!(HANDLES);
     if mode == OFF || geometry == 0 || material == 0 || !capture::recording() || !crate::material_stream::last_modelled() {
@@ -54,8 +57,8 @@ pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u
     }
     let lights = crate::link_client::state_lights(renderer);
     let count = (lights.len() / crate::link_client::STATE_LIGHT_SIZE) as u32;
-    let flags = (relative as u32) | if mode == DUAL { DUAL_DRAW } else { 0 };
-    let mut words = [0u32; 35];
+    let flags = (relative as u32) | if mode == DUAL { DUAL_DRAW } else { 0 } | if palette.is_empty() { 0 } else { SKINNED };
+    let mut words = [0u32; 36];
     words[0] = geometry;
     words[1] = material;
     words[2] = flags;
@@ -66,7 +69,9 @@ pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u
     }
     // The colours of the material: ambient, diffuse, specular, emissive, shininess, alpha.
     words[21..35].copy_from_slice(&material_values);
-    capture::shape(&words, lights);
+    words[35] = palette.len() as u32;
+    let bones: Vec<u8> = palette.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
+    capture::shape(&words, lights, &bones);
     *core::ptr::addr_of_mut!(RECORDS) += 1;
     if mode == ONLY {
         *core::ptr::addr_of_mut!(SKIPPED) += 1;

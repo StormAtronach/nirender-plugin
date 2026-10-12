@@ -720,7 +720,8 @@ pub struct DrawData {
     /// camera and not on the depth.
     pub fog: [f32; 4],
     pub texture_factor: [f32; 4],
-    /// Lighting on, the vertex has a normal, the vertex has a colour, the number of weights.
+    /// Lighting on, the vertex has a normal, the vertex has a colour, the number of weights
+    /// (4: a skinned draw, the four bones of a vertex are indexes into the palette).
     pub flags: [u32; 4],
     /// The diffuse source, the emissive source, the alpha test function (0 is off), the
     /// alpha reference.
@@ -731,6 +732,7 @@ pub struct DrawData {
     /// extension's own.
     pub counts: [u32; 4],
     /// The lights of the draw in the light buffer of the frame: the first and the number.
+    /// z: the first bone of a skinned draw in the palette buffer of the frame.
     pub light_range: [u32; 4],
     pub stages: [StageData; 6],
     pub texture_transforms: [[f32; 16]; 6],
@@ -1043,6 +1045,9 @@ fn attributes(fvf: u32, stride: u32) -> Option<Vec<Attribute>> {
         if weights != 0 && offset + 12 <= stride as u64 {
             list.push(Attribute { location: 7, offset, format: Float32x3 });
         }
+        if betas == 4 && fvf & 0x1000 != 0 {
+            list.push(Attribute { location: 8, offset: offset + 12, format: Uint8x4 });
+        }
         offset += betas * 4;
     }
     if fvf & 0x10 != 0 {
@@ -1065,9 +1070,9 @@ fn attributes(fvf: u32, stride: u32) -> Option<Vec<Attribute>> {
 }
 
 /// The formats of the shader inputs, by location, for the inputs that a vertex does not have.
-const INPUT_FORMATS: [wgpu::VertexFormat; 8] = {
+const INPUT_FORMATS: [wgpu::VertexFormat; 9] = {
     use wgpu::VertexFormat::*;
-    [Float32x3, Float32x3, Unorm8x4, Float32x2, Float32x2, Float32x2, Float32x2, Float32x3]
+    [Float32x3, Float32x3, Unorm8x4, Float32x2, Float32x2, Float32x2, Float32x2, Float32x3, Uint8x4]
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -1138,6 +1143,8 @@ struct Counts {
     shape_draws: u32,
     shape_missing: u32,
     shape_skipped: u32,
+    /// The shape records with a palette of bones.
+    shape_skinned: u32,
     /// The opaque draws that were sorted.
     sorted_draws: u32,
     /// The draws that differ, by the class of their object.
@@ -1189,6 +1196,16 @@ fn light_buffer(device: &wgpu::Device, lights: usize) -> wgpu::Buffer {
         mapped_at_creation: false,
     })
 }
+const BONES_AT_FIRST: usize = 4096;
+/// The bones of the skinned draws of the frame, matrices.
+fn bone_buffer(device: &wgpu::Device, bones: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("bones"),
+        size: (bones * 64) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
 const SLOTS_IN_BUFFER: usize = 2048;
 
 struct Renderer {
@@ -1218,6 +1235,8 @@ struct Renderer {
     /// The lights of all draws of the frame, and the number of them that the buffer holds.
     light_buffer: wgpu::Buffer,
     light_capacity: usize,
+    bone_buffer: wgpu::Buffer,
+    bone_capacity: usize,
     texture_layout: wgpu::BindGroupLayout,
     sampler_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
@@ -1328,6 +1347,12 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
             ],
         });
         let mut entries = Vec::new();
@@ -1419,6 +1444,8 @@ impl Renderer {
             frame_sampler,
             frame_group,
             light_buffer: light_buffer(&device, LIGHTS_AT_FIRST),
+            bone_buffer: bone_buffer(&device, BONES_AT_FIRST),
+            bone_capacity: BONES_AT_FIRST,
             device: Rc::new(device),
             target_format,
             surface_usages,
@@ -1472,8 +1499,22 @@ impl Renderer {
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer, offset: 0, size: wgpu::BufferSize::new(core::mem::size_of::<DrawData>() as u64) }),
                 },
                 wgpu::BindGroupEntry { binding: 1, resource: self.light_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.bone_buffer.as_entire_binding() },
             ],
         })
+    }
+
+    /// Puts the bones of the skinned draws of the frame into the bone buffer, as
+    /// `upload_lights` does with the lights.
+    fn upload_bones(&mut self, bones: &[[f32; 16]]) {
+        if bones.len() > self.bone_capacity {
+            self.bone_capacity = bones.len().next_power_of_two();
+            self.bone_buffer = bone_buffer(&self.device, self.bone_capacity);
+            self.draw_buffers = self.draw_buffers.iter().map(|(buffer, _)| (buffer.clone(), Rc::new(self.slot_group(buffer)))).collect();
+        }
+        if !bones.is_empty() {
+            self.queue.write_buffer(&self.bone_buffer, 0, bytemuck::cast_slice(bones));
+        }
     }
 
     /// Puts the lights of the frame into the light buffer: all of them each time, because
@@ -1988,6 +2029,9 @@ struct Stream {
     shape_drawn: bool,
     /// The colours of the material from the last shape record, or `None`.
     shape_material: Option<[f32; 17]>,
+    /// The bones of the skinned shape in progress in the bones of the frame: the first and
+    /// the number, or `None` for a draw that is not skinned.
+    shape_bones: Option<(u32, u32)>,
 }
 
 impl Stream {
@@ -2066,6 +2110,11 @@ impl Stream {
         let lights = word(s, state::LIGHT_COUNT) as usize;
         counts.most_lights = counts.most_lights.max(lights as u32);
         data.light_range = [frame_lights.len() as u32, 0, 0, 0];
+        if let Some((first, _)) = self.shape_bones {
+            // A skinned shape: the vertex blend reads four bones of the palette of the frame.
+            data.flags[3] = 4;
+            data.light_range[2] = first;
+        }
         for i in 0..lights {
             let at = state::SIZE + i * state::LIGHT_SIZE + 4;
             if at + 104 > s.len() {
@@ -2155,6 +2204,8 @@ struct Player {
     world_draws: Vec<Rc<Draw>>,
     /// The lights of all draws of the frame, in the order of the draws.
     frame_lights: Vec<LightData>,
+    /// The bones of the skinned draws of the frame, for the bone buffer.
+    frame_bones: Vec<[f32; 16]>,
     /// The collect: the answers of the extension for the frame (`None` before the world
     /// scene), the world began, the world ended, the kind of the scene in progress (1 is the
     /// world), the sun and the ambient light of the first draw of the world, the texture
@@ -2229,6 +2280,7 @@ impl Player {
                 pass: 0,
                 shape_drawn: false,
                 shape_material: None,
+                shape_bones: None,
             },
             encoder: None,
             pass: None,
@@ -2241,6 +2293,7 @@ impl Player {
             items: Vec::new(),
             world_draws: Vec::new(),
             frame_lights: Vec::new(),
+            frame_bones: Vec::new(),
             parameters: None,
             world_begun: false,
             world_ended: false,
@@ -2326,6 +2379,7 @@ impl Player {
         self.items.clear();
         self.world_draws.clear();
         self.frame_lights.clear();
+        self.frame_bones.clear();
         self.parameters = None;
         self.world_begun = false;
         self.world_ended = false;
@@ -2493,8 +2547,23 @@ impl Player {
         let colours: [f32; 14] = core::array::from_fn(|i| float(data, 84 + i * 4));
         let d3d_material = material::d3d_material(&colours);
         self.stream.shape_material = Some(d3d_material);
-        let lights_at = 20 + 64 + 56;
-        let lights = &data[lights_at..(lights_at + light_count * STATE_LIGHT_SIZE).min(data.len())];
+        let bone_count = word(data, 140) as usize;
+        let lights_at = 20 + 64 + 56 + 4;
+        let bones_at = lights_at + light_count * STATE_LIGHT_SIZE;
+        if data.len() < bones_at + bone_count * 64 {
+            self.renderer.counts.shape_missing += 1;
+            return;
+        }
+        let lights = &data[lights_at..bones_at];
+        // The bones of a skinned shape go to the palette of the frame.
+        self.stream.shape_bones = (bone_count != 0).then(|| {
+            let first = self.frame_bones.len() as u32;
+            for b in 0..bone_count {
+                self.frame_bones.push(floats(data, bones_at + b * 64));
+            }
+            self.renderer.counts.shape_skinned += 1;
+            (first, bone_count as u32)
+        });
         let sets = match self.renderer.geometries.get(&geometry) {
             Some(g) => (g.fvf >> 8) & 0xF,
             None => {
@@ -2544,6 +2613,7 @@ impl Player {
             self.renderer.counts.shape_draws += 1;
         }
         self.from_shape = false;
+        self.stream.shape_bones = None;
     }
 
     /// Prints the counts since the last mark, for one step of a scenario.
@@ -2649,8 +2719,9 @@ impl Player {
                 self.stream.pass = 0;
                 self.stream.shape_drawn = false;
                 self.stream.shape_material = None;
+                self.stream.shape_bones = None;
             }
-            tag::SHAPE if data.len() >= 140 => self.shape(data),
+            tag::SHAPE if data.len() >= 144 => self.shape(data),
             tag::FRAME_END => {
                 self.renderer.counts.frames += 1;
                 return true;
@@ -2870,6 +2941,7 @@ impl Player {
             Self::sort_items(&mut items, &mut self.renderer.counts);
         }
         self.renderer.upload_lights(&self.frame_lights);
+        self.renderer.upload_bones(&self.frame_bones);
         // The resources of the extension for the frame.
         let (values, texture) = self.parameters.as_ref().map_or(([[0.0f32; 4]; 32], None), |p| (p.values, p.texture.clone()));
         self.renderer.queue.write_buffer(&self.renderer.frame_uniform, 0, bytemuck::cast_slice(&values));
@@ -3414,7 +3486,7 @@ impl Player {
             "shapes: {} records, {} draws from them, {} without a geometry or a material, {} draws of the device skipped",
             c.shape_records, c.shape_draws, c.shape_missing, c.shape_skipped
         );
-        println!("sorted draws {}", c.sorted_draws);
+        println!("sorted draws {}, skinned shapes {}", c.sorted_draws, c.shape_skinned);
         println!("not drawn: other target {}, vertex format {}, no buffer data {}, primitive type {}", c.other_target, c.no_layout, c.no_buffer, c.topology);
         println!(
             "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}; draws with a made or moved texture coordinate {}; the most lights of a draw {}",

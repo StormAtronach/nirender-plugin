@@ -515,6 +515,54 @@ unsafe fn skinned_relative(
     true
 }
 
+/// The palette of a skin for the shape record: the transform of each bone of the skin as a
+/// world matrix of the device (as `write_world_matrix` makes one), relative to the origin
+/// when this module owns the matrices. Returns whether the matrices are relative, or `None`
+/// when the data of the skin is not complete.
+pub unsafe fn skin_palette(skin: usize, transform: usize, geometry_site: bool, out: &mut Vec<[f32; 16]>) -> Option<bool> {
+    out.clear();
+    if skin == 0 || transform == 0 {
+        return None;
+    }
+    let data: usize = rd(skin, SKIN_DATA);
+    let root_parent: usize = rd(skin, SKIN_ROOT_PARENT);
+    let bones: usize = rd(skin, SKIN_BONES);
+    if data == 0 || root_parent == 0 || bones == 0 {
+        return None;
+    }
+    let bone_records: usize = rd(data, DATA_BONES);
+    let bone_count: u32 = rd(data, DATA_BONE_COUNT);
+    if bone_records == 0 || bone_count == 0 || bone_count > 256 {
+        return None;
+    }
+    for i in 0..bone_count as usize {
+        if rd::<usize>(bones, i * 4) == 0 {
+            return None;
+        }
+    }
+    let origin = if own() { active_origin() } else { None };
+    let relative = origin.is_some();
+    let origin = origin.unwrap_or([0.0; 3]);
+    let shape = if geometry_site && transform == *addr_of!(GEOMETRY_TRANSFORM) { exact_transform(transform - AV_WORLD) } else { from_ni(transform) };
+    let inverse_root_parent = invert(&exact_transform(root_parent))?;
+    let skin_to_root = combine(&combine(&shape, &from_ni(data + DATA_TRANSFORM)), &inverse_root_parent);
+    for i in 0..bone_count as usize {
+        let bone = exact_transform(rd(bones, i * 4));
+        let palette = combine(&combine(&skin_to_root, &bone), &from_ni(bone_records + i * BONE_RECORD_SIZE));
+        let scale = palette.s as f32;
+        let mut matrix = [0f32; 16];
+        for c in 0..3 {
+            for r in 0..3 {
+                matrix[c * 4 + r] = (palette.r[r][c] as f32) * scale;
+            }
+            matrix[12 + c] = (palette.t[c] - origin[c]) as f32;
+        }
+        matrix[15] = 1.0;
+        out.push(matrix);
+    }
+    Some(relative)
+}
+
 /// Called in place of the call of `SetSkinnedModelTransforms` at a draw site. Returns true
 /// when this module set the world matrices of the bones.
 pub unsafe fn take_skinned_transforms(this: usize, skin: usize, partition: usize, transform: usize, geometry_site: bool) -> bool {

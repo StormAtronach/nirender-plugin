@@ -25,6 +25,7 @@ PY = sys.executable
 PLACES = {
     "seyda": ["--exterior", "Seyda Neen", "--position=-12288,-69632,74", "--yaw", "0"],
     "narsis": ["--exterior", "Narsis"],
+    "council": ["--exterior", "Narsis, Council Quarter", "--position=53000,-412000", "--yaw", "270"],
 }
 
 
@@ -103,6 +104,8 @@ def stage_only(place, mge_build):
     busy = re.search(r"mark after rate: .*busy ([\d.]+) ms", open(os.path.join(folder, "host.txt"), errors="replace").read())
     ok = check(rate is not None, "frame rate %s, ports %.3f ms for each frame, helper busy %s ms" % (rate.group(1) if rate else "?", per_frame, busy.group(1) if busy else "?"))
     ok &= check(" 0 without a geometry or a material" in counts["shapes"], counts["shapes"][:160])
+    skinned = re.search(r"skinned shapes (\d+)", open(os.path.join(folder, "host.txt"), errors="replace").read())
+    print("       skinned shapes %s" % (skinned.group(1) if skinned else "?"), flush=True)
     return ok
 
 

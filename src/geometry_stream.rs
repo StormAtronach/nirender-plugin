@@ -10,17 +10,26 @@
 //! still made by the ports (step R3 stops that), and the helper compares the two once for
 //! each version, so a difference of the pack shows as a count.
 //!
-//! Skinned shapes, particles, lines, points and screen polygons stay on the path of the
-//! device until steps R5 and R7.
+//! A skinned shape (step R5) is packed with the weights and the bone indexes of each vertex
+//! for the whole skin, from the partitions of its skin data, so one draw with the palette
+//! of the skin replaces the draws of the partitions. Particles, lines, points and screen
+//! polygons stay on the path of the device until step R7.
 
 use std::collections::HashMap;
 
 use crate::d3d::{D3DFVF_DIFFUSE, D3DFVF_NORMAL, D3DFVF_TEX1, D3DFVF_XYZ};
 use crate::engine::vcall0;
-use crate::gen::layouts::{NiGeometryData as GD, NiTriStripsData as TS};
+use crate::gen::layouts::{NiGeometryData as GD, NiSkinInstance, NiSkinPartition, NiSkinPartition_Partition as P, NiTriStripsData as TS};
 use crate::link::{DRAW_SHAPE, DRAW_STRIPS};
 use crate::mem::rd;
 use crate::ports::ni;
+
+/// `D3DFVF_XYZB4` and `D3DFVF_LASTBETA_UBYTE4`: a position, three weights and four bone
+/// indexes in a byte each. The format of a skinned vertex.
+const D3DFVF_XYZB4: u32 = 0x00C;
+const D3DFVF_LASTBETA_UBYTE4: u32 = 0x1000;
+/// `NiSkinData::skinPartition`
+const SKIN_DATA_SKIN_PARTITION: usize = 8;
 
 /// `NiRTTI` of `NiTriShapeData` and of `NiTriStripsData`.
 const RTTI_NI_TRI_SHAPE_DATA: usize = 0x7DE490;
@@ -38,6 +47,8 @@ struct Version {
     revision: u16,
     vertices: u32,
     entries: u32,
+    /// The skin data of a skinned shape: its partitions give the weights.
+    skin_data: u32,
 }
 
 static mut VERSIONS: Option<HashMap<u32, Version>> = None;
@@ -71,7 +82,7 @@ pub unsafe fn report() -> String {
 /// changed. Returns the handle for the draws that follow, or 0 when the geometry stays on
 /// the path of the device.
 pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
-    if !crate::capture::recording() || geom_data == 0 || skin != 0 {
+    if !crate::capture::recording() || geom_data == 0 {
         return 0;
     }
     let strips = match kind {
@@ -105,19 +116,29 @@ pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
         return 0;
     }
     let handle = geom_data as u32;
-    let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: active, entries };
+    let skin_data: usize = if skin != 0 { rd(skin, NiSkinInstance::skinData) } else { 0 };
+    let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: active, entries, skin_data: skin_data as u32 };
     if versions().get(&handle) == Some(&version) {
         return handle;
     }
-    // The vertices, as `NiDX8VertexBufferManager::PackUntransformedVB` packs them.
+    // The vertices, as `NiDX8VertexBufferManager::PackUntransformedVB` packs them, with the
+    // weights and the bone indexes of a skinned shape after the position.
     let vertices: usize = rd(geom_data, GD::vertices);
     let normals: usize = rd(geom_data, GD::normals);
     let colors: usize = rd(geom_data, GD::colors);
     let coords: usize = rd(geom_data, GD::textureCoords);
     let all_vertices = rd::<u16>(geom_data, GD::vertexCount) as usize;
     let sets = (rd::<u16>(geom_data, GD::textureSets) as u32).min(8);
-    let mut fvf = D3DFVF_XYZ;
-    let mut stride = 12usize;
+    let influences = if skin != 0 {
+        match skin_influences(skin_data, all_vertices) {
+            Some(influences) => Some(influences),
+            None => return 0,
+        }
+    } else {
+        None
+    };
+    let mut fvf = if skin != 0 { D3DFVF_XYZB4 | D3DFVF_LASTBETA_UBYTE4 } else { D3DFVF_XYZ };
+    let mut stride = if skin != 0 { 28usize } else { 12usize };
     let normal_offset = stride;
     if normals != 0 {
         fvf |= D3DFVF_NORMAL;
@@ -141,6 +162,13 @@ pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
     for i in 0..count {
         let to = &mut bytes[i * stride..];
         to[..12].copy_from_slice(core::slice::from_raw_parts((vertices + i * 12) as *const u8, 12));
+        if let Some(influences) = &influences {
+            let (weights, bones) = influences[i];
+            for (k, weight) in weights.iter().enumerate() {
+                to[12 + k * 4..16 + k * 4].copy_from_slice(&weight.to_le_bytes());
+            }
+            to[24..28].copy_from_slice(&bones);
+        }
         if normals != 0 {
             to[normal_offset..normal_offset + 12].copy_from_slice(core::slice::from_raw_parts((normals + i * 12) as *const u8, 12));
         }
@@ -170,4 +198,56 @@ pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
     RECORDS += 1;
     BYTES += (32 + lengths.len() + bytes.len() + index_bytes.len()) as u64;
     handle
+}
+
+/// The bone influences of each vertex of a skinned geometry, from the partitions of its
+/// skin data: three weights, then the index in the bones of the skin of each of four bones.
+/// The fourth weight is 1 less the sum of the three, as the vertex blend of the device has
+/// it. The stock packer (`PackSkinnedVB`) gives weight `k` of a vertex to bone `k` of its
+/// partition and leaves the last weight to the device: here the last bone of the partition
+/// goes to the fourth place, so the arithmetic is the same. `None` when the skin has no
+/// partitions yet, or the data does not fit the format.
+unsafe fn skin_influences(skin_data: usize, vertices: usize) -> Option<Vec<([f32; 3], [u8; 4])>> {
+    if skin_data == 0 {
+        return None;
+    }
+    let skin_partition: usize = rd(skin_data, SKIN_DATA_SKIN_PARTITION);
+    if skin_partition == 0 {
+        return None;
+    }
+    let count: u32 = rd(skin_partition, NiSkinPartition::partitionCount);
+    let mut partition: usize = rd(skin_partition, NiSkinPartition::partitions);
+    if count == 0 || partition == 0 {
+        return None;
+    }
+    let mut out = vec![([0.0f32; 3], [0u8; 4]); vertices];
+    for _ in 0..count {
+        let bones: usize = rd(partition, P::bones);
+        let weights: usize = rd(partition, P::weights);
+        let map: usize = rd(partition, P::vertices);
+        let per_vertex = rd::<u16>(partition, P::numBones) as usize;
+        let in_partition = rd::<u16>(partition, P::numVertices) as usize;
+        if bones == 0 || weights == 0 || map == 0 || per_vertex == 0 || per_vertex > 4 {
+            return None;
+        }
+        let mut indexes = [0u8; 4];
+        for (k, index) in indexes.iter_mut().enumerate().take(per_vertex) {
+            *index = u8::try_from(rd::<u16>(bones, k * 2)).ok()?;
+        }
+        for v in 0..in_partition {
+            let g = rd::<u16>(map, v * 2) as usize;
+            if g >= vertices {
+                return None;
+            }
+            let mut entry = ([0.0f32; 3], [0u8; 4]);
+            for k in 0..per_vertex - 1 {
+                entry.0[k] = rd(weights, (v * per_vertex + k) * 4);
+                entry.1[k] = indexes[k];
+            }
+            entry.1[3] = indexes[per_vertex - 1];
+            out[g] = entry;
+        }
+        partition += P::SIZE;
+    }
+    Some(out)
 }

@@ -444,26 +444,40 @@ unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize)
 /// 0x6ACEF0 `NiDX8Renderer::RenderShape`. The port uses the skinning check that MWSE puts at
 /// +0x2F when the memory has that check.
 /// The shape record of a draw (see `shape_stream`): the transform, the bound and the
-/// lights of the draw as `DrawPrimitive` sets them, then the record. Returns true when the
+/// lights of the draw as `DrawPrimitive` sets them, then the record. For a skinned shape
+/// (`skin` not 0, hardware skinning) the lights and the bound as `DrawSkinnedPrimitive2`
+/// sets them, and the palette of the skin in place of the transform. Returns true when the
 /// pipeline of the device must not run for the draw.
 unsafe fn shape_record(this: usize, skin: usize, transform: usize, world_bound: usize) -> bool {
-    if skin != 0 || crate::shape_stream::mode() == crate::shape_stream::OFF {
+    if crate::shape_stream::mode() == crate::shape_stream::OFF || !crate::capture::recording() {
         return false;
     }
-    if !crate::camera_space::take_model_transform(this, transform, true) {
-        site_thiscall!(DP_SET_MODEL_TRANSFORM, this, transform);
-        crate::camera_space::check_model_transform(this, transform, true);
-    }
-    site_thiscall!(DP_BOUND_COPY, this + R::worldBound, world_bound);
     let property_state: usize = rd(this, R::currentPropertyState);
     let vertex_color: usize = rd(property_state, PS::propVertexColor);
     let texturing: usize = rd(property_state, PS::propTexturing);
     let effect_state: usize = rd(this, R::currentEffectState);
-    site_thiscall!(DP_LIGHT_SET_STATE, rd::<usize>(this, R::lightManager), effect_state, texturing, vertex_color);
-    let world = crate::shape_stream::current_world(this);
+    let mut palette = Vec::new();
+    let (world, relative) = if skin != 0 {
+        let Some(relative) = crate::camera_space::skin_palette(skin, transform, true, &mut palette) else { return false };
+        site_thiscall!(S2_LIGHT_SET_STATE, rd::<usize>(this, R::lightManager), effect_state, texturing, vertex_color);
+        site_thiscall!(S2_BOUND_COPY, this + R::worldBound, world_bound);
+        let mut identity = [0f32; 16];
+        for i in 0..4 {
+            identity[i * 5] = 1.0;
+        }
+        (identity, relative)
+    } else {
+        if !crate::camera_space::take_model_transform(this, transform, true) {
+            site_thiscall!(DP_SET_MODEL_TRANSFORM, this, transform);
+            crate::camera_space::check_model_transform(this, transform, true);
+        }
+        site_thiscall!(DP_BOUND_COPY, this + R::worldBound, world_bound);
+        site_thiscall!(DP_LIGHT_SET_STATE, rd::<usize>(this, R::lightManager), effect_state, texturing, vertex_color);
+        (crate::shape_stream::current_world(this), crate::link_client::world_is_relative())
+    };
     // D3DRS_AMBIENT (139) as the render state record of the renderer has it.
     let ambient: u32 = rd(rd::<usize>(this, R::renderState), crate::gen::layouts::NiDX8RenderState::renderStateSettings + 139 * 8);
-    crate::shape_stream::send(this, world, crate::link_client::world_is_relative(), ambient, crate::shape_stream::material_values(property_state))
+    crate::shape_stream::send(this, world, relative, ambient, crate::shape_stream::material_values(property_state), &palette)
 }
 
 pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
@@ -475,10 +489,13 @@ pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform
         return;
     }
     if skin != 0 && !software_skinning(skinning_check(&skinning_check_bytes()), this, geom_data) {
+        if shape_record(this, skin, transform, world_bound) {
+            return;
+        }
         site_thiscall!(RS_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
         return;
     }
-    if shape_record(this, skin, transform, world_bound) {
+    if skin == 0 && shape_record(this, 0, transform, world_bound) {
         return;
     }
     let mut geom_buffer: usize = 0;
@@ -505,10 +522,13 @@ pub unsafe fn render_tri_strips(this: usize, geom_data: usize, skin: usize, tran
         return;
     }
     if skin != 0 && rd::<u32>(this, R::countHWBones) >= 4 {
+        if shape_record(this, skin, transform, world_bound) {
+            return;
+        }
         site_thiscall!(RT_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
         return;
     }
-    if shape_record(this, skin, transform, world_bound) {
+    if skin == 0 && shape_record(this, 0, transform, world_bound) {
         return;
     }
     let mut geom_buffer: usize = 0;

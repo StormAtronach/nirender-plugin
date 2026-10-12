@@ -84,6 +84,8 @@ struct Frame {
 @group(0) @binding(0) var<uniform> draw: Draw;
 // The lights of all draws of the frame.
 @group(0) @binding(1) var<storage, read> lights: array<Light>;
+// The bones of all skinned draws of the frame.
+@group(0) @binding(2) var<storage, read> palette: array<mat4x4f>;
 @group(1) @binding(0) var texture0: texture_2d<f32>;
 @group(1) @binding(1) var texture1: texture_2d<f32>;
 @group(1) @binding(2) var texture2: texture_2d<f32>;
@@ -109,6 +111,8 @@ struct VertexIn {
     // The weights of the vertex blend. A vertex has 0 to 3 of them; the shader reads only
     // the ones that the draw has.
     @location(7) weights: vec3f,
+    // A skinned draw: the four bones of the vertex, indexes into its part of the palette.
+    @location(8) bones: vec4u,
 }
 
 struct VertexOut {
@@ -163,6 +167,23 @@ fn vs(in: VertexIn) -> VertexOut {
     if weights == 0u {
         world_position = draw.world[0] * local;
         world_normal = (draw.world[0] * vec4f(in.normal, 0.0)).xyz;
+    } else if weights == 4u {
+        // A skinned draw: four bones of the palette of the frame, the fourth weight 1 less
+        // the sum of the three, as the vertex blend of Direct3D.
+        let first = draw.light_range.z;
+        var last = 1.0;
+        world_position = vec4f(0.0);
+        world_normal = vec3f(0.0);
+        for (var i = 0u; i < 3u; i++) {
+            let weight = in.weights[i];
+            last -= weight;
+            let bone = palette[first + in.bones[i]];
+            world_position += weight * (bone * local);
+            world_normal += weight * (bone * vec4f(in.normal, 0.0)).xyz;
+        }
+        let bone = palette[first + in.bones[3]];
+        world_position += last * (bone * local);
+        world_normal += last * (bone * vec4f(in.normal, 0.0)).xyz;
     } else {
         // The vertex blend of Direct3D: the last weight is 1 less the sum of the others.
         var last = 1.0;
