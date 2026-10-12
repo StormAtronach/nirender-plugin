@@ -15,6 +15,8 @@ use crate::wgpu;
 const HISTORY: usize = 600;
 /// A long frame: more than this many times the mean of the frames in the graph.
 const LONG: f32 = 2.0;
+/// The sign that the game sends no frames: a line that turns.
+const SIGN: [&str; 4] = ["|", "/", "-", "\\"];
 
 /// What the game process says about itself, from the `OVERLAY` record of the plugin.
 #[derive(Clone, Copy, Default)]
@@ -182,9 +184,11 @@ impl Overlay {
         }
     }
 
-    /// Draws the panel into the picture of the window, when it is on.
-    pub fn draw(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, size: (u32, u32)) {
-        if !self.on {
+    /// Draws the panel into the picture of the window, when it is on. With `sign`, it also
+    /// draws the sign that the game sends no frames: one of the four characters of a line
+    /// that turns, which `sign` selects.
+    pub fn draw(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, size: (u32, u32), sign: Option<u32>) {
+        if !self.on && sign.is_none() {
             return;
         }
         // The text has the same part of the height of a picture of any size: 1 at 1080 lines.
@@ -194,8 +198,19 @@ impl Overlay {
             ..Default::default()
         };
         self.context.set_pixels_per_point(scale);
-        let (shown, game, history) = (&self.shown, self.game, &self.history);
+        let (on, shown, game, history) = (self.on, &self.shown, self.game, &self.history);
         let output = self.context.run_ui(input, |ui| {
+            if let Some(step) = sign {
+                egui::Area::new(egui::Id::new("nirender sign")).anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0)).show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).fill(egui::Color32::from_black_alpha(190)).show(ui, |ui| {
+                        ui.style_mut().override_font_id = Some(egui::FontId::monospace(22.0));
+                        ui.label(SIGN[step as usize % SIGN.len()]);
+                    });
+                });
+            }
+            if !on {
+                return;
+            }
             egui::Area::new(egui::Id::new("nirender overlay")).fixed_pos(egui::pos2(8.0, 8.0)).show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).fill(egui::Color32::from_black_alpha(190)).show(ui, |ui| {
                     ui.style_mut().override_font_id = Some(egui::FontId::monospace(13.0));

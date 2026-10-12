@@ -4323,11 +4323,21 @@ mod live {
         /// All the time with no record to read, for the debug overlay: `waited` has only
         /// the waits that went back to the events of the window.
         idle: Duration,
+        /// The time of the last record, and of the last picture with the sign that the game
+        /// sends no frames, with the count of these pictures.
+        last_record: Instant,
+        sign_at: Instant,
+        sign_step: u32,
         records: u64,
         bytes: u64,
         shot_done: bool,
         finished: bool,
     }
+
+    /// The time without a record after which the window shows the sign that the game sends no
+    /// frames, and the time of one step of the sign.
+    const SIGN_AFTER: Duration = Duration::from_millis(500);
+    const SIGN_STEP: Duration = Duration::from_millis(125);
 
     impl App {
         /// Sets the size of the picture in the window, and makes the depth buffer for it.
@@ -4346,6 +4356,30 @@ mod live {
             // An extension can read the depth in a pass that does not have it as a target.
             let depth = target_texture(&player.renderer.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
             self.depth = Some(Rc::new(depth.create_view(&Default::default())));
+        }
+
+        /// Shows the last picture of the game again, with the sign that the game sends no
+        /// frames. The game does this at its start and when it loads: the window then has a
+        /// part that moves. The frame in progress stays as it is.
+        fn show_sign(&mut self) {
+            self.sign_at = Instant::now();
+            self.sign_step += 1;
+            let (Some(surface), Some(player), Some(back_buffer), Some(overlay)) = (self.surface.as_ref(), self.player.as_ref(), self.back_buffer.as_ref(), self.overlay.as_mut()) else { return };
+            let frame = match surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+                _ => return,
+            };
+            let (device, queue) = (&player.renderer.device, &player.renderer.queue);
+            let size = (frame.texture.width(), frame.texture.height());
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.copy_texture_to_texture(
+                back_buffer.as_image_copy(),
+                frame.texture.as_image_copy(),
+                wgpu::Extent3d { width: back_buffer.width().min(size.0), height: back_buffer.height().min(size.1), depth_or_array_layers: 1 },
+            );
+            overlay.draw(device, queue, &mut encoder, &frame.texture.create_view(&Default::default()), size, Some(self.sign_step));
+            queue.submit([encoder.finish()]);
+            queue.present(frame);
         }
 
         fn finish(&mut self, event_loop: &ActiveEventLoop, why: &str) {
@@ -4472,6 +4506,9 @@ mod live {
                         // Back to the events of the window.
                         self.waited += waiting.elapsed();
                         self.idle += since.elapsed();
+                        if self.last_record.elapsed() > SIGN_AFTER && self.sign_at.elapsed() > SIGN_STEP {
+                            self.show_sign();
+                        }
                         return;
                     }
                     std::thread::yield_now();
@@ -4480,6 +4517,7 @@ mod live {
                 if let Some(since) = idle_since.take() {
                     self.idle += since.elapsed();
                 }
+                self.last_record = clock;
                 self.records += 1;
                 self.bytes += 8 + self.data.len() as u64;
                 let player = self.player.as_mut().unwrap();
@@ -4525,7 +4563,7 @@ mod live {
                         // The debug overlay goes on the picture of the window, not into the
                         // back buffer: a picture file and a pixel read do not have it.
                         if let Some(overlay) = overlay {
-                            overlay.draw(&device, &queue, encoder, &frame.texture.create_view(&Default::default()), (frame.texture.width(), frame.texture.height()));
+                            overlay.draw(&device, &queue, encoder, &frame.texture.create_view(&Default::default()), (frame.texture.width(), frame.texture.height()), None);
                         }
                     }
                     if take_shot {
@@ -4616,6 +4654,9 @@ mod live {
             first_frame: None,
             waited: Duration::ZERO,
             idle: Duration::ZERO,
+            last_record: Instant::now(),
+            sign_at: Instant::now(),
+            sign_step: 0,
             records: 0,
             bytes: 0,
             shot_done: false,
