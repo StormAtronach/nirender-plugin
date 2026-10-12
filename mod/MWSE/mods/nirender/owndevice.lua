@@ -156,6 +156,21 @@ return function(nirender, spec)
                     pcall(function() weather:switchImmediate(spec.weather) weather:updateVisuals() end)
                 end)
             end
+            -- A place in the cell (x,y,z) and a heading, as in the exterior step; or the
+            -- heading alone: the player turns after the cell loads.
+            local x, y, z = tostring(spec.position or ""):match("([-%d%.]+)%s*,%s*([-%d%.]+)%s*,%s*([-%d%.]+)")
+            if x then
+                after(1.5, function()
+                    local yaw = math.rad(tonumber(spec.yaw) or 0)
+                    tes3.positionCell({ reference = tes3.player, cell = spec.interior, position = tes3vector3.new(tonumber(x), tonumber(y), tonumber(z)), orientation = tes3vector3.new(0, 0, yaw) })
+                    say("position: %s,%s,%s yaw %s", x, y, z, tostring(spec.yaw))
+                end)
+            elseif spec.yaw then
+                after(1.5, function()
+                    local o = tes3.player.orientation
+                    tes3.player.orientation = tes3vector3.new(o.x, o.y, math.rad(tonumber(spec.yaw)))
+                end)
+            end
         end },
         -- The lights of the scene off, in the interior, where they make the picture.
         toggle("lights", "ToggleLights"),
