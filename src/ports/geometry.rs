@@ -806,6 +806,10 @@ pub unsafe fn precache_geometry_data(this: usize, geom_data: usize, indices: u32
     if node != 0 && rd::<u32>(node, THashMap_Node::data) != 0 {
         return 1;
     }
+    // With the records only, no draw of the device reads these buffers (step R7b).
+    if crate::shape_stream::records_only() {
+        return 1;
+    }
     let mut index_buffer = 0u32;
     let mut vertex_buffer_size = 0u32;
     let mut index_buffer_size = 0u32;
@@ -909,6 +913,11 @@ pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
             return 0;
         }
         ni::pointer_assign(rd::<usize>(skin, NiSkinInstance::skinData) + SKIN_DATA_SKIN_PARTITION, object);
+    }
+    // With the records only, the partitions are what the records need; no draw of the
+    // device reads the buffers (step R7b).
+    if crate::shape_stream::records_only() {
+        return 1;
     }
     let partitions: usize = rd(object, NiSkinPartition::partitions);
     let partition_count: u32 = rd(object, NiSkinPartition::partitionCount);

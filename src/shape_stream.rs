@@ -77,6 +77,13 @@ pub unsafe fn mode() -> u32 {
     *core::ptr::addr_of!(MODE)
 }
 
+/// True when the records are the only draws: the pipeline of the device does not run for a
+/// shape, so the ports make no device buffer for a geometry (the records carry the
+/// vertices). The partitions of a skin are still made: the records need them.
+pub unsafe fn records_only() -> bool {
+    mode() == ONLY && capture::recording()
+}
+
 /// Notes the handles of the object of the draws that follow.
 pub unsafe fn note_handles(geometry: u32, material: u32) {
     *core::ptr::addr_of_mut!(HANDLES) = (geometry, material);

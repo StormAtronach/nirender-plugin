@@ -177,8 +177,11 @@ def particles(path, wanted):
 
 
 def calls(path):
+    """The first frame of a capture file has the snapshot of the device objects that exist
+    at its start (buffers, textures, surfaces) as creation calls: it is counted apart."""
     frames = 0
     counts = collections.Counter()
+    snapshot = collections.Counter()
     commands = collections.Counter()
     released = collections.Counter()
     origin = {}
@@ -187,19 +190,20 @@ def calls(path):
         if tag == TAG_CALL:
             call, result, handle, nargs = words(body, 0, 4)
             name = CALLS.get(call, call)
-            counts[name] += 1
+            (snapshot if frame == 0 else counts)[name] += 1
             if call in (8, 9, 15, 20, 21, 22, 24, 25):
                 origin[result] = name
-            if call == 11:
+            if call == 11 and frame != 0:
                 released[origin.get(handle, "unknown")] += 1
-        elif tag == TAG_COMMAND:
+        elif tag == TAG_COMMAND and frame != 0:
             commands[COMMANDS.get(words(body, 0, 1)[0], words(body, 0, 1)[0])] += 1
 
     def per_frame(counter):
-        return sorted(((k, round(v / max(frames, 1), 1)) for k, v in counter.items()), key=lambda kv: -kv[1])
+        return sorted(((k, round(v / max(frames - 1, 1), 1)) for k, v in counter.items()), key=lambda kv: -kv[1])
 
     print("frames", frames)
-    print("calls for each frame:", per_frame(counts))
+    print("the first frame, with the snapshot of the device objects:", sorted(snapshot.items(), key=lambda kv: -kv[1]))
+    print("calls for each frame after it:", per_frame(counts))
     print("releases for each frame, by what made the handle:", per_frame(released))
     print("commands for each frame:", per_frame(commands))
 
