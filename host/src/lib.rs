@@ -1686,6 +1686,7 @@ impl Renderer {
                 target_format = capabilities.formats.iter().copied().find(|format| !format.is_srgb()).unwrap_or(capabilities.formats[0]);
             }
             surface_usages = capabilities.usages;
+            println!("window: the present modes of the surface are {:?}", capabilities.present_modes);
         }
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -4458,6 +4459,9 @@ mod live {
                 self.waited.as_secs_f64() * 100.0 / seconds.max(0.001)
             );
             println!("frames that the window did not take: {}", self.not_shown);
+            if let Some(line) = self.overlay.as_mut().and_then(|overlay| overlay.age_line()) {
+                println!("{line}");
+            }
             if let Some(player) = self.player.as_ref() {
                 println!("time for each frame, in ms:");
                 for (name, time) in super::TIME_NAMES.iter().zip(player.renderer.counts.times) {
@@ -4581,6 +4585,12 @@ mod live {
                 self.bytes += 8 + self.data.len() as u64;
                 let player = self.player.as_mut().unwrap();
                 let clock = Instant::now();
+                // The times of the frame in the game, and the time of this read: for the age
+                // of the picture in the debug overlay.
+                let stamps = (tag == super::tag::FRAME_END && self.data.len() >= 16).then(|| {
+                    let wide = |at: usize| i64::from_le_bytes(self.data[at..at + 8].try_into().unwrap());
+                    (wide(0), wide(8), super::overlay::ticks())
+                });
                 let inside_before = super::sum_except(&player.renderer.counts.times, super::TIME_RECORDS);
                 let frame_end = player.feed(tag, &self.data);
                 let inside_after = super::sum_except(&player.renderer.counts.times, super::TIME_RECORDS);
@@ -4588,6 +4598,12 @@ mod live {
                 player.renderer.counts.times[super::TIME_RECORDS] += clock.elapsed().saturating_sub(inside_after - inside_before);
                 if let (Some(overlay), Some(record)) = (self.overlay.as_mut(), player.overlay_record.take()) {
                     overlay.record(&record);
+                }
+                // The age of the pictures of a step of a scenario, after the lines of its mark.
+                if tag == super::tag::MARK {
+                    if let Some(line) = self.overlay.as_mut().and_then(|overlay| overlay.age_line()) {
+                        println!("  {line}");
+                    }
                 }
                 if !frame_end {
                     continue;
@@ -4600,6 +4616,7 @@ mod live {
                 let frame = acquire(self.surface.as_ref().unwrap(), &player.renderer.device, self.configuration.as_ref(), &mut self.surface_status, self.frames);
                 player.renderer.counts.times[super::TIME_ACQUIRE] += clock.elapsed();
                 self.not_shown += frame.is_none() as u32;
+                let in_window = frame.is_some();
                 let blue_first = matches!(player.renderer.target_format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
                 let take_shot = self.shot.is_some() && !self.shot_done && self.frames + 1 >= self.shot_frame;
                 let back_buffer = self.back_buffer.as_ref().unwrap();
@@ -4651,6 +4668,9 @@ mod live {
                 }
                 player.renderer.counts.times[super::TIME_PRESENT] += clock.elapsed();
                 if let Some(overlay) = self.overlay.as_mut() {
+                    if let (Some((start, end, read)), true) = (stamps, in_window) {
+                        overlay.age(start, end, read, super::overlay::ticks());
+                    }
                     overlay.frame(&device, self.idle, player.renderer.counts.draws as u64);
                 }
                 self.frames += 1;

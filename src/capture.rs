@@ -1158,7 +1158,18 @@ unsafe fn frame_end() {
         }
         Phase::Record(left) => {
             overlay_tick();
-            write(tag::FRAME_END, &[]);
+            // The times of the frame, for the age of the picture in the debug overlay: the
+            // start of the frame of the game (the end of the wait of the frame before) and
+            // its end, in ticks of the performance counter. The host program has the same
+            // counter.
+            static FRAME_START: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+            let end = ticks();
+            let start = match FRAME_START.load(Ordering::Relaxed) {
+                0 => end,
+                start => start,
+            };
+            write(tag::FRAME_END, &[&start.to_le_bytes(), &end.to_le_bytes()]);
+            FRAME_START.store(ticks(), Ordering::Relaxed);
             let Some(s) = state() else { return };
             if s.phase == Phase::Off {
                 // The write ended the stream.

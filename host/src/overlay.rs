@@ -43,6 +43,10 @@ struct Shown {
     long_frames: usize,
     waited: f32,
     draws: f32,
+    /// The age of the picture when it goes to the window, in ms, and its three parts: the
+    /// frame of the game, the wait in the stream, this program. The medians of the part.
+    /// `None` without the times of the game.
+    age: Option<[f32; 4]>,
     working_set: u64,
     private: u64,
     gpu: Option<(u64, u64)>,
@@ -62,6 +66,10 @@ pub struct Overlay {
     part_waited: Duration,
     part_draws: u64,
     part_worst: f32,
+    /// The ages of the pictures of the part in progress, and of the pictures since the last
+    /// mark of the stream, for the log: the age and its three parts, in ms.
+    part_age: Vec<[f32; 4]>,
+    mark_age: Vec<[f32; 4]>,
     /// The parts since the last read of the memory: one read in a second.
     parts: u32,
     shown: Shown,
@@ -83,6 +91,8 @@ struct ProcessMemory {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetCurrentProcess() -> isize;
+    fn QueryPerformanceCounter(count: *mut i64) -> i32;
+    fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
     fn K32GetProcessMemoryInfo(process: isize, counters: *mut ProcessMemory, size: u32) -> i32;
 }
 
@@ -94,6 +104,32 @@ fn process_memory() -> (u64, u64) {
         return (0, 0);
     }
     (memory.working_set as u64, memory.private as u64)
+}
+
+/// The frames that a log line about the age of the pictures takes.
+const MARK_FRAMES: usize = 100_000;
+
+/// The median of each of the four numbers. A mean is not of use here: one long step of the
+/// game or of this program makes some pictures late by much, and the mean then says
+/// nothing about a usual picture.
+fn medians(ages: &mut [[f32; 4]]) -> Option<[f32; 4]> {
+    if ages.is_empty() {
+        return None;
+    }
+    let mut result = [0.0; 4];
+    for (i, value) in result.iter_mut().enumerate() {
+        ages.sort_unstable_by(|a, b| a[i].total_cmp(&b[i]));
+        *value = ages[ages.len() / 2][i];
+    }
+    Some(result)
+}
+
+/// The performance counter of Windows: the plugin in the game has the same one.
+pub fn ticks() -> i64 {
+    let mut count = 0;
+    // SAFETY: the call writes one number.
+    unsafe { QueryPerformanceCounter(&mut count) };
+    count
 }
 
 fn megabytes(bytes: u64) -> f64 {
@@ -116,6 +152,8 @@ impl Overlay {
             part_waited: Duration::ZERO,
             part_draws: 0,
             part_worst: 0.0,
+            part_age: Vec::new(),
+            mark_age: Vec::new(),
             parts: 0,
             shown: Shown::default(),
         }
@@ -141,6 +179,34 @@ impl Overlay {
                 wait_ms: crate::float(data, 56),
             });
         }
+    }
+
+    /// The times of a frame that went to the window, in ticks of the performance counter:
+    /// the start and the end of the frame in the game, the read of its last record here,
+    /// and the end of its present.
+    pub fn age(&mut self, start: i64, end: i64, read: i64, shown: i64) {
+        let mut frequency = 0;
+        // SAFETY: the call writes one number.
+        unsafe { QueryPerformanceFrequency(&mut frequency) };
+        let ms = |from: i64, to: i64| (to - from) as f64 * 1000.0 / frequency.max(1) as f64;
+        let values = [ms(start, shown), ms(start, end), ms(end, read), ms(read, shown)].map(|value| value as f32);
+        self.part_age.push(values);
+        // The log line is for a step of a scenario: not more frames than a long step has.
+        if self.mark_age.len() < MARK_FRAMES {
+            self.mark_age.push(values);
+        }
+    }
+
+    /// One line for the log with the mean age of the pictures since the last call, or
+    /// `None` without a picture with the times of the game.
+    pub fn age_line(&mut self) -> Option<String> {
+        let mut ages = std::mem::take(&mut self.mark_age);
+        let frames = ages.len();
+        let worst = ages.iter().map(|age| age[0]).fold(0.0, f32::max);
+        let [age, game, stream, renderer] = medians(&mut ages)?;
+        Some(format!(
+            "picture: {age:.1} ms old when shown, as the median of {frames} frames (at most {worst:.0} ms): the game {game:.1} ms, the stream {stream:.2} ms, the renderer {renderer:.1} ms"
+        ))
     }
 
     /// A frame went to the window. `waited` and `draws` are the totals of the program: the
@@ -169,6 +235,8 @@ impl Overlay {
         self.shown.long_frames = self.history.iter().filter(|&&ms| ms > LONG * mean).count();
         self.shown.waited = (waited - self.part_waited).as_secs_f32() * 100.0 / seconds;
         self.shown.draws = (draws - self.part_draws) as f32 / frames;
+        self.shown.age = medians(&mut self.part_age);
+        self.part_age.clear();
         self.part = now;
         self.part_frames = 0;
         self.part_waited = waited;
@@ -219,6 +287,9 @@ impl Overlay {
                     ui.label(format!("worst frame {:6.1} ms in the last half second, {:6.1} ms in the last {} frames", shown.worst_second_ms, shown.worst_ms, history.len()));
                     ui.label(format!("long frames {:3} of {} (more than {LONG} times the mean)", shown.long_frames, history.len()));
                     graph(ui, history);
+                    if let Some([age, game, stream, renderer]) = shown.age {
+                        ui.label(format!("picture     {age:5.1} ms old when shown: the game {game:5.1} ms, the stream {stream:5.2} ms, the renderer {renderer:5.1} ms"));
+                    }
                     ui.label(format!("renderer    waits for the game {:3.0} % of the time, {:.0} draws in a frame", shown.waited, shown.draws));
                     ui.label(format!("            memory {:6.0} MB in use, {:6.0} MB private", megabytes(shown.working_set), megabytes(shown.private)));
                     match shown.gpu {
