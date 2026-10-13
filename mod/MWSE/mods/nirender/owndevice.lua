@@ -70,6 +70,22 @@ return function(nirender, spec)
     -- the same command again so that the steps after it see the game as it was. The pair is
     -- one entry of the list of steps (a call in the middle of a table constructor gives one
     -- value); the list is flattened below.
+    -- The Lua of the run (`--lua-file` of the runner), a little after the player arrives at
+    -- a place: for a test that needs a state that a mod makes from Lua, for example the
+    -- variables of a post shader.
+    local function runLua()
+        if not spec.lua then return end
+        after(2.5, function()
+            local chunk, problem = loadstring(spec.lua)
+            if not chunk then
+                say("lua: does not compile: %s", tostring(problem))
+                return
+            end
+            local ok, result = pcall(chunk)
+            say("lua: %s", ok and ("ran " .. tostring(result)) or ("failed: " .. tostring(result)))
+        end)
+    end
+
     local function toggle(name, command, seconds)
         local function run()
             say("%s: %s %s", name, command, tostring(tes3.runLegacyScript({ command = command })))
@@ -150,6 +166,7 @@ return function(nirender, spec)
                 if hour then hour.value = spec.hour end
             end
             scenario.goTo(spec.interior)
+            runLua()
             if spec.weather then
                 after(2, function()
                     local weather = tes3.worldController.weatherController
@@ -209,6 +226,7 @@ return function(nirender, spec)
             local hour = tes3.findGlobal("GameHour")
             if hour then hour.value = spec.hour or 12 end
             scenario.goTo(spec.exterior)
+            runLua()
             -- The weather of the run, when the spec asks for one (the game's otherwise: it
             -- is random, so the pictures of two runs can differ). 0 clear to 9 blizzard.
             if spec.weather then

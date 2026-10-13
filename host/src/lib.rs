@@ -3294,8 +3294,9 @@ impl Player {
                         // Rectangles, their address, flags, colour, depth, stencil.
                         let flags = word(arguments, 8);
                         let clear_color = (flags & 1 != 0).then(|| {
+                            // The alpha of the back buffer is 1: see the colour write of a draw.
                             let c = color(word(arguments, 12));
-                            wgpu::Color { r: c[0] as f64, g: c[1] as f64, b: c[2] as f64, a: c[3] as f64 }
+                            wgpu::Color { r: c[0] as f64, g: c[1] as f64, b: c[2] as f64, a: 1.0 }
                         });
                         let clear_depth = (flags & 2 != 0).then(|| float(arguments, 16));
                         let clear_stencil = (flags & 4 != 0).then(|| word(arguments, 20));
@@ -3419,7 +3420,7 @@ impl Player {
                 && draw.key.depth[1] != 0
                 && matches!(draw.key.depth[2], 2 | 4)
                 && draw.key.stencil[0] == 0
-                && draw.key.color_write == 15)
+                && draw.key.color_write & 7 == 7)
         };
         let same_lights = |a: &Draw, b: &Draw| {
             let (first_a, first_b, count) = (a.data.light_range[0] as usize, b.data.light_range[0] as usize, a.data.light_range[1] as usize);
@@ -3882,7 +3883,9 @@ impl Player {
             depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
             cull: derived.cull,
             fill: derived.fill,
-            color_write: pass.color_write,
+            // The back buffer of the game has no alpha (X8R8G8B8): a draw into it writes
+            // none, and the alpha there stays 1, as a read of such a target gives.
+            color_write: if in_back_buffer { pass.color_write & 7 } else { pass.color_write },
             // On, fail, depth fail, pass, function, mask, write mask.
             stencil: if stencil[0] == 0 { [0; 7] } else { [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0] },
         };
