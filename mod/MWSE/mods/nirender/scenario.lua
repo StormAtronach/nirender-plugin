@@ -152,7 +152,9 @@ return function(nirender, spec, name)
             -- answer "yes to all" sets: the game then takes "yes" and shows no box. The
             -- warnings continue to go to Warnings.txt.
             mwse.memory.writeByte({ address = 0x7C8F72, byte = 1 })
-            scenario.say("save loaded, cell '%s', god mode on", tes3.player.cell.editorName)
+            -- The actors stand still: two pictures of one place then show the same thing.
+            local ai = tes3.runLegacyScript({ command = "ToggleAI" })
+            scenario.say("save loaded, cell '%s', god mode on, AI toggled %s", tes3.player.cell.editorName, tostring(ai))
             onLoaded()
         end)
         scenario.after(spec.menuSeconds or 6, function()
