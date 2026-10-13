@@ -165,6 +165,34 @@ return function(nirender, spec)
                     tes3.positionCell({ reference = tes3.player, cell = spec.interior, position = tes3vector3.new(tonumber(x), tonumber(y), tonumber(z)), orientation = tes3vector3.new(0, 0, yaw) })
                     say("position: %s,%s,%s yaw %s", x, y, z, tostring(spec.yaw))
                 end)
+            elseif spec.findDry then
+                -- Above the water of the cell: the nearest spot around the player where the
+                -- floor is above the water level, found with rays onto the objects of the
+                -- cell; the player looks back at the spot of the entry, where the water is.
+                after(1.5, function()
+                    local from = tes3.player.position
+                    local level = tes3.player.cell.waterLevel or 0
+                    local found
+                    for ring = 1, 24 do
+                        local r = ring * 128
+                        for a = 0, 15 do
+                            local x, y = from.x + r * math.cos(a * math.pi / 8), from.y + r * math.sin(a * math.pi / 8)
+                            local hit = tes3.rayTest({ position = tes3vector3.new(x, y, level + 1500), direction = tes3vector3.new(0, 0, -1), root = tes3.game.worldObjectRoot })
+                            if hit and hit.intersection and hit.intersection.z > level + 10 then
+                                found = tes3vector3.new(x, y, hit.intersection.z + 80)
+                                break
+                            end
+                        end
+                        if found then break end
+                    end
+                    if found then
+                        local yaw = math.atan2(from.x - found.x, from.y - found.y)
+                        tes3.positionCell({ reference = tes3.player, cell = spec.interior, position = found, orientation = tes3vector3.new(0, 0, yaw) })
+                        say("find dry: at %.0f,%.0f,%.0f yaw %.0f, water level %.0f", found.x, found.y, found.z, math.deg(yaw), level)
+                    else
+                        say("find dry: no floor above the water level %.0f within 3072 units", level)
+                    end
+                end)
             elseif spec.yaw then
                 after(1.5, function()
                     local o = tes3.player.orientation

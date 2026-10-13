@@ -66,6 +66,8 @@ def main():
     ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off in its modlist.txt for the run, and back after")
     ap.add_argument("--find-water", action="store_true", help="after the cell loads, put the player under the water at the "
                     "nearest spot where the land is deep enough (a test of the view from under the water)")
+    ap.add_argument("--find-dry", action="store_true", help="after the interior cell loads, put the player on the nearest floor above "
+                    "the water level of the cell, looking back at the entry (a test of the water of an interior)")
     ap.add_argument("--yaw", type=float, default=None, help="the heading of the player in degrees, 0 north, with --position")
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for the run, key = value: the line with "
                     "that key is replaced (for example \"expanded_light_limit = true\"); with a section first, "
@@ -103,7 +105,7 @@ def main():
     run = session.Run(args.label)
     # Without a save (--save ""), the scenario starts a new game: the films of the game play.
     spec = run.spec("owndevice", save=args.save or None, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
-                    position=args.position, yaw=args.yaw, findWater=args.find_water, hour=args.hour, weather=args.weather,
+                    position=args.position, yaw=args.yaw, findWater=args.find_water, findDry=args.find_dry, hour=args.hour, weather=args.weather,
                     tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, captureMenu=args.capture_menu, settleSeconds=args.settle,
                     overlay=args.overlay or None)
     # The plugin starts the host program. It reads these from the environment of the game.
