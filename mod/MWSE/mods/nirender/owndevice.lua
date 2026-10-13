@@ -457,6 +457,7 @@ return function(nirender, spec)
 
     -- The shader batch of the run (`--shader-batch` of the runner): a Lua file that gives a
     -- list of sets of post shaders, `{ name = "lens", { "Lens Effects", variable = value } }`.
+    -- A set can have `run`, a function that the step calls first, and `seconds`, its wait.
     -- One step for each set: the shaders of the set before go off, those of this set are
     -- loaded, get their variables and go on, and the picture is `sh-<name>`. A set without
     -- a shader is the picture without post shaders. One start of the game then gives the
@@ -476,6 +477,12 @@ return function(nirender, spec)
         for _, set in ipairs(sets) do
             steps[#steps + 1] = { "sh-" .. tostring(set.name), set.seconds or 1.5, function()
                 allOff()
+                -- A set can have a function `run`: for a state that a mod makes itself (a
+                -- menu of the mod that turns its shaders on).
+                if set.run then
+                    local ok, problem = pcall(set.run)
+                    say("shader batch: %s: run %s %s", tostring(set.name), tostring(ok), ok and "" or tostring(problem))
+                end
                 for _, item in ipairs(set) do
                     local shader = mge.shaders.find({ name = item[1] }) or mge.shaders.load({ name = item[1] })
                     if shader then

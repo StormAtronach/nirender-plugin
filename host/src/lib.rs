@@ -65,6 +65,16 @@ pub struct SceneView<'a> {
     pub before_depth: Option<&'a wgpu::TextureView>,
 }
 
+/// A picture file that an extension wants of a frame. See `Extension::pictures`.
+pub struct PictureRequest {
+    /// The file. Its extension gives the format: `.png`, `.bmp`, `.tga`, `.dds`, `.jpg`;
+    /// PNG for another one.
+    pub path: String,
+    /// With the interface of the game (the picture at the end of the frame), or without it
+    /// (the picture after `Extension::post`).
+    pub with_ui: bool,
+}
+
 /// The answers of an extension for a frame. See `Extension::frame`.
 #[derive(Clone, Default)]
 pub struct FrameParameters {
@@ -435,6 +445,14 @@ pub trait Extension {
     /// writes its result into `target`, the picture of the frame; the user interface of the
     /// game draws over it after. MGE XE runs its shader chain here.
     fn post(&mut self, _scene: &SceneView, _encoder: &mut wgpu::CommandEncoder, _target: &wgpu::TextureView) {}
+
+    /// The picture files that the extension wants of this frame. The renderer calls this
+    /// after `post` and at the end of the frame, and writes each file one time: a request
+    /// gives its file in one call only. A picture without the interface of the game that
+    /// comes at the end of the frame (a frame without `post`) has the interface.
+    fn pictures(&mut self) -> Vec<PictureRequest> {
+        Vec::new()
+    }
 
     /// The renderer calls this after `after_world`, when `FrameParameters::blend` was true
     /// and `before_world` gave true. The pass draws into the picture of the frame and has
@@ -2670,6 +2688,9 @@ struct Player {
     reply: Option<Box<dyn FnMut(u32, u32, u32, &[u8])>>,
     /// The picture files that the game asked for: the frame in progress goes into them.
     shots: Vec<String>,
+    /// The pictures of the frame from before the interface of the game, for an extension:
+    /// the buffer, the length of a row, the size, the file. Saved at the end of the frame.
+    early_pictures: Vec<(wgpu::Buffer, usize, u32, u32, String)>,
     /// The last `OVERLAY` record of the stream, for the live mode to take: the debug overlay
     /// on or off, with the numbers of the game process.
     overlay_record: Option<Vec<u8>>,
@@ -2778,6 +2799,7 @@ impl Player {
             last_picture: None,
             reply: None,
             shots: Vec::new(),
+            early_pictures: Vec::new(),
             overlay_record: None,
             film_shot: None,
             film_shot_at: 1,
@@ -3141,6 +3163,10 @@ impl Player {
     fn end_frame(&mut self, before_submit: impl FnOnce(&mut wgpu::CommandEncoder)) {
         self.post_item();
         self.run_items();
+        // The pictures that an extension wants and did not get after its post-processing.
+        if let Some(extension) = self.extension.as_mut() {
+            self.shots.extend(extension.pictures().into_iter().map(|request| request.path));
+        }
         let clock = std::time::Instant::now();
         drop(self.pass.take());
         self.color = None;
@@ -3154,6 +3180,10 @@ impl Player {
             if let (Some(timing), Some(slot)) = (renderer.timing.as_ref(), slot) {
                 timing.map(slot);
             }
+        }
+        let blue_first = matches!(self.renderer.target_format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        for (buffer, row, width, height, path) in std::mem::take(&mut self.early_pictures) {
+            save_picture(&self.renderer.device, &buffer, row, width, height, blue_first, &path);
         }
         self.renderer.counts.times[TIME_END] += clock.elapsed();
     }
@@ -3796,6 +3826,17 @@ impl Player {
             let clock = std::time::Instant::now();
             extension.post(&scene, encoder, &color);
             self.renderer.counts.times[TIME_EXT_POST] += clock.elapsed();
+            // The pictures that the extension wants: one without the interface of the game
+            // is the picture as it is now.
+            for request in extension.pictures() {
+                match self.back_buffer.as_ref().filter(|source| !request.with_ui && source.usage().contains(wgpu::TextureUsages::COPY_SRC)) {
+                    Some(source) => {
+                        let (buffer, row) = copy_picture(&device, encoder, source, source.width(), source.height());
+                        self.early_pictures.push((buffer, row, source.width(), source.height(), request.path));
+                    }
+                    None => self.shots.push(request.path),
+                }
+            }
         }
         self.extension = Some(extension);
         self.open_pass(None, None, None);
@@ -4087,8 +4128,9 @@ fn copy_picture(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, textu
     (buffer, row)
 }
 
-/// Saves a picture that `copy_picture` put into `buffer` as a PNG file. `blue_first` for a
-/// texture format with the bytes blue, green, red.
+/// Saves a picture that `copy_picture` put into `buffer` as a file: the format of the
+/// extension of `path` (`.bmp`, `.tga`, `.dds`, `.jpg`), a PNG file for another one.
+/// `blue_first` for a texture format with the bytes blue, green, red.
 fn save_picture(device: &wgpu::Device, buffer: &wgpu::Buffer, row: usize, width: u32, height: u32, blue_first: bool, path: &str) {
     buffer.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("the read of the picture"));
     let _ = device.poll(wgpu::PollType::wait_indefinitely());
@@ -4104,11 +4146,88 @@ fn save_picture(device: &wgpu::Device, buffer: &wgpu::Buffer, row: usize, width:
         // The alpha of the target is of no use in a picture file.
         pixel[3] = 255;
     }
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(std::fs::File::create(path).expect("the picture file")), width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder.write_header().unwrap().write_image_data(&pixels).unwrap();
-    println!("picture: {path}");
+    drop(mapped);
+    match write_picture(path, &pixels, width, height) {
+        Ok(()) => println!("picture: {path}"),
+        Err(problem) => println!("picture: {path} was not written: {problem}"),
+    }
+}
+
+/// Writes pixels (red, green, blue, alpha; the first row at the top) as a picture file.
+fn write_picture(path: &str, pixels: &[u8], width: u32, height: u32) -> std::io::Result<()> {
+    use std::io::Write;
+    let kind = std::path::Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let (w, h) = (width as usize, height as usize);
+    // The bytes blue, green, red of a row, for the formats that have them in that order.
+    let bgr_row = |y: usize, with_alpha: bool| -> Vec<u8> {
+        pixels[y * w * 4..(y + 1) * w * 4].chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255].into_iter().take(if with_alpha { 4 } else { 3 })).collect()
+    };
+    if kind == "jpg" || kind == "jpeg" {
+        let rgb: Vec<u8> = pixels.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let encoder = jpeg_encoder::Encoder::new_file(path, 90).map_err(|problem| std::io::Error::other(problem.to_string()))?;
+        return encoder.encode(&rgb, width as u16, height as u16, jpeg_encoder::ColorType::Rgb).map_err(|problem| std::io::Error::other(problem.to_string()));
+    }
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    match kind.as_str() {
+        "bmp" => {
+            // 24 bits, the rows from the bottom, each row a multiple of 4 bytes.
+            let row = (w * 3).next_multiple_of(4);
+            let size = 54 + row * h;
+            file.write_all(b"BM")?;
+            for word in [size as u32, 0, 54, 40, width, height, 1 | (24 << 16), 0, (row * h) as u32, 2835, 2835, 0, 0] {
+                file.write_all(&word.to_le_bytes())?;
+            }
+            for y in (0..h).rev() {
+                let mut bytes = bgr_row(y, false);
+                bytes.resize(row, 0);
+                file.write_all(&bytes)?;
+            }
+        }
+        "tga" => {
+            // True colour, 24 bits, the first row at the top.
+            file.write_all(&[0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0])?;
+            file.write_all(&(width as u16).to_le_bytes())?;
+            file.write_all(&(height as u16).to_le_bytes())?;
+            file.write_all(&[24, 0x20])?;
+            for y in 0..h {
+                file.write_all(&bgr_row(y, false))?;
+            }
+        }
+        "dds" => {
+            // No compression, 32 bits: the format A8R8G8B8 of Direct3D.
+            file.write_all(b"DDS ")?;
+            let mut head = [0u32; 31];
+            head[0] = 124;
+            head[1] = 0x1 | 0x2 | 0x4 | 0x8 | 0x1000;
+            head[2] = height;
+            head[3] = width;
+            head[4] = width * 4;
+            head[18] = 32;
+            head[19] = 0x41;
+            head[21] = 32;
+            head[22] = 0x00FF_0000;
+            head[23] = 0x0000_FF00;
+            head[24] = 0x0000_00FF;
+            head[25] = 0xFF00_0000;
+            head[26] = 0x1000;
+            for word in head {
+                file.write_all(&word.to_le_bytes())?;
+            }
+            for y in 0..h {
+                file.write_all(&bgr_row(y, true))?;
+            }
+        }
+        _ => {
+            // The fast compression: a picture of the game must not take a second.
+            let mut encoder = png::Encoder::new(file, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_compression(png::Compression::Fast);
+            encoder.write_header().and_then(|mut writer| writer.write_image_data(pixels)).map_err(|problem| std::io::Error::other(problem.to_string()))?;
+            return Ok(());
+        }
+    }
+    file.flush()
 }
 
 fn option(args: &[String], name: &str) -> Option<String> {
