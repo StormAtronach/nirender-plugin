@@ -59,6 +59,10 @@ pub struct SceneView<'a> {
     /// the depth comes as an argument). `None` in the other calls.
     pub picture: Option<&'a wgpu::TextureView>,
     pub depth: Option<&'a wgpu::TextureView>,
+    /// For `Extension::post`: the depth of what `Extension::before_world` drew, when it
+    /// gave true in this frame (the renderer then clears the depth for the game). It has
+    /// the projection of the extension, not that of the game.
+    pub before_depth: Option<&'a wgpu::TextureView>,
 }
 
 /// The answers of an extension for a frame. See `Extension::frame`.
@@ -129,6 +133,7 @@ impl WorldFacts {
             ambient: self.ambient,
             picture: None,
             depth: None,
+            before_depth: None,
         }
     }
 }
@@ -2727,6 +2732,10 @@ struct Player {
     /// clears its depth before its later scenes.
     world_depth: Option<wgpu::Texture>,
     world_depth_kept: bool,
+    /// The depth of the draws of `Extension::before_world`, for `Extension::post`: the
+    /// renderer clears the depth after them.
+    before_depth: Option<wgpu::Texture>,
+    before_depth_kept: bool,
     /// The counts at the last mark. See `tag::MARK`.
     mark_times: [std::time::Duration; TIME_COUNT],
     mark_frames: u32,
@@ -2801,6 +2810,8 @@ impl Player {
             depth_copy: None,
             world_depth: None,
             world_depth_kept: false,
+            before_depth: None,
+            before_depth_kept: false,
             mark_times: [std::time::Duration::ZERO; TIME_COUNT],
             mark_frames: 0,
             mark_draws: 0,
@@ -2881,6 +2892,7 @@ impl Player {
         self.posted = false;
         self.world_matrices = None;
         self.world_depth_kept = false;
+        self.before_depth_kept = false;
         self.target = None;
         self.pass_target = None;
         self.before_kept = false;
@@ -3664,7 +3676,7 @@ impl Player {
         // The depth of the world, for the post-processing: the game clears its depth before
         // its later scenes.
         if self.parameters.as_ref().is_some_and(|p| p.post) {
-            self.copy_depth(true);
+            self.copy_depth(1);
             self.world_depth_kept = true;
             self.open_pass(None, None, None);
         }
@@ -3722,7 +3734,7 @@ impl Player {
     /// a call of the extension that reads them. The pass is open again after.
     fn copy_picture_and_depth(&mut self) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
         let picture = self.copy_picture();
-        let depth = self.copy_depth(false);
+        let depth = self.copy_depth(0);
         self.open_pass(None, None, None);
         (picture, depth)
     }
@@ -3742,15 +3754,20 @@ impl Player {
         self.picture_copy.as_ref().map(|copy| copy.create_view(&Default::default()))
     }
 
-    /// Copies the depth of the game, outside of the pass: into the copy of the world (for
-    /// `Extension::post`) or into the copy of the moment. The caller opens the pass again.
-    fn copy_depth(&mut self, world: bool) -> Option<wgpu::TextureView> {
+    /// Copies the depth as it is now, outside of the pass: into the copy of the moment (0),
+    /// the copy of the world (1, for `Extension::post`) or the copy of the draws of
+    /// `Extension::before_world` (2). The caller opens the pass again.
+    fn copy_depth(&mut self, which: u32) -> Option<wgpu::TextureView> {
         let (Some(source), Some(encoder)) = (self.depth.as_ref().map(|depth| depth.texture().clone()), self.encoder.as_mut()) else { return None };
         if !source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
             return None;
         }
         let size = source.size();
-        let copy = if world { &mut self.world_depth } else { &mut self.depth_copy };
+        let copy = match which {
+            1 => &mut self.world_depth,
+            2 => &mut self.before_depth,
+            _ => &mut self.depth_copy,
+        };
         if copy.as_ref().is_none_or(|copy| copy.size() != size) {
             *copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
         }
@@ -3770,8 +3787,10 @@ impl Player {
         };
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let mut scene = facts.view(&device, &queue, format);
+        let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
+        scene.before_depth = before_depth.as_ref();
         if let (Some(color), Some(encoder)) = (self.color.clone(), self.encoder.as_mut()) {
             drop(self.pass.take());
             let clock = std::time::Instant::now();
@@ -3825,6 +3844,10 @@ impl Player {
             self.keep_before();
         }
         if clear_depth {
+            // The depth of the draws of the extension, for its post-processing.
+            if self.parameters.as_ref().is_some_and(|p| p.post) {
+                self.before_depth_kept = self.copy_depth(2).is_some();
+            }
             // The draws of the game start with a depth target of their own.
             self.open_pass(None, Some(1.0), None);
         }
