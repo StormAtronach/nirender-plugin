@@ -71,6 +71,8 @@ def main():
     ap.add_argument("--yaw", type=float, default=None, help="the heading of the player in degrees, 0 north, with --position")
     ap.add_argument("--lua-file", help="a file of Lua that the game runs a little after the player arrives at the interior and at the "
                     "exterior: for a state that a mod makes from Lua (the variables of a post shader)")
+    ap.add_argument("--shader-batch", help="a file of Lua that gives a list of sets of post shaders, { name = \"lens\", { \"Lens Effects\", "
+                    "variable = value } }: the step `shaders` takes one picture for each set (sh-<name>), with one start of the game")
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for the run, key = value: the line with "
                     "that key is replaced (for example \"expanded_light_limit = true\"); with a section first, "
                     "\"[distant_land] key = value\", a key the file does not have goes at the end of that section")
@@ -109,6 +111,7 @@ def main():
     spec = run.spec("owndevice", save=args.save or None, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
                     position=args.position, yaw=args.yaw, findWater=args.find_water, findDry=args.find_dry, hour=args.hour, weather=args.weather,
                     lua=open(args.lua_file, encoding="utf-8").read() if args.lua_file else None,
+                    shaderBatch=open(args.shader_batch, encoding="utf-8").read() if args.shader_batch else None,
                     tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, captureMenu=args.capture_menu, settleSeconds=args.settle,
                     overlay=args.overlay or None)
     # The plugin starts the host program. It reads these from the environment of the game.

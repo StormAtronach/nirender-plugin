@@ -455,6 +455,44 @@ return function(nirender, spec)
         end },
     }
 
+    -- The shader batch of the run (`--shader-batch` of the runner): a Lua file that gives a
+    -- list of sets of post shaders, `{ name = "lens", { "Lens Effects", variable = value } }`.
+    -- One step for each set: the shaders of the set before go off, those of this set are
+    -- loaded, get their variables and go on, and the picture is `sh-<name>`. A set without
+    -- a shader is the picture without post shaders. One start of the game then gives the
+    -- pictures of each shader.
+    if spec.shaderBatch then
+        local chunk, problem = loadstring(spec.shaderBatch)
+        local ok, sets = pcall(chunk or function() error(problem) end)
+        if not ok or type(sets) ~= "table" then
+            say("shader batch: not read: %s", tostring(sets))
+            sets = {}
+        end
+        local on = {}
+        local function allOff()
+            for _, shader in ipairs(on) do shader.enabled = false end
+            on = {}
+        end
+        for _, set in ipairs(sets) do
+            steps[#steps + 1] = { "sh-" .. tostring(set.name), set.seconds or 1.5, function()
+                allOff()
+                for _, item in ipairs(set) do
+                    local shader = mge.shaders.find({ name = item[1] }) or mge.shaders.load({ name = item[1] })
+                    if shader then
+                        for variable, value in pairs(item) do
+                            if type(variable) == "string" then shader[variable] = value end
+                        end
+                        shader.enabled = true
+                        on[#on + 1] = shader
+                    else
+                        say("shader batch: %s: no shader %s", tostring(set.name), tostring(item[1]))
+                    end
+                end
+            end }
+        end
+        steps[#steps + 1] = { "sh-off", 0.5, allOff }
+    end
+
     -- The pairs of toggle() become their two steps, in place.
     local flat = {}
     for _, s in ipairs(steps) do
@@ -473,7 +511,8 @@ return function(nirender, spec)
         for name in tostring(spec.steps):gmatch("[^,%s]+") do wanted[name] = true end
         local kept = {}
         for _, s in ipairs(steps) do
-            if wanted[s[1]] then kept[#kept + 1] = s end
+            -- `shaders` is each step of the shader batch.
+            if wanted[s[1]] or (wanted.shaders and s[1]:sub(1, 3) == "sh-") then kept[#kept + 1] = s end
         end
         steps = kept
         say("steps: %s (%d)", tostring(spec.steps), #steps)

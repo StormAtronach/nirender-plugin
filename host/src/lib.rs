@@ -1698,7 +1698,13 @@ impl Renderer {
                     | (adapter.features() & (wgpu::Features::POLYGON_MODE_LINE | wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)),
                 // The largest texture that the adapter takes, up to 16384: an atlas of the
                 // distant land of MGE XE has that size.
-                required_limits: wgpu::Limits { max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d.min(16384), ..wgpu::Limits::default() },
+                // A post shader of MGE XE reads up to 22 textures: 10 of its own, the picture,
+                // the depth, the waves, and the outputs of its passes.
+                required_limits: wgpu::Limits {
+                    max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d.min(16384),
+                    max_sampled_textures_per_shader_stage: adapter.limits().max_sampled_textures_per_shader_stage.min(32),
+                    ..wgpu::Limits::default()
+                },
                 memory_hints: wgpu::MemoryHints::default(),
                 ..Default::default()
             },
