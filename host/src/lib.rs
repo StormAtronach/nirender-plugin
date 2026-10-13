@@ -54,8 +54,9 @@ pub struct SceneView<'a> {
     pub sun_ambient: [f32; 3],
     /// The ambient light of the scene.
     pub ambient: [f32; 3],
-    /// For `Extension::draw_class` only: the picture of the frame as it is before the call
-    /// (a copy), and the depth of the draws of the game so far. `None` in the other calls.
+    /// For `Extension::draw_class` and `Extension::blend`: the picture of the frame as it is
+    /// before the call (a copy), and the depth of the draws of the game so far (in `blend`,
+    /// the depth comes as an argument). `None` in the other calls.
     pub picture: Option<&'a wgpu::TextureView>,
     pub depth: Option<&'a wgpu::TextureView>,
 }
@@ -432,9 +433,11 @@ pub trait Extension {
 
     /// The renderer calls this after `after_world`, when `FrameParameters::blend` was true
     /// and `before_world` gave true. The pass draws into the picture of the frame and has
-    /// no depth target. `before` is the picture as it was after `before_world`, and `depth`
-    /// is the depth of the draws of the game: 1 where the game drew nothing. MGE XE lets
-    /// the draws of the game near the end of their view range go into its distant land here.
+    /// no depth target. `before` is the picture as it was after `before_world`, `depth`
+    /// is the depth of the draws of the game (1 where the game drew nothing), and
+    /// `scene.picture` is a copy of the picture as it is now. MGE XE draws its caustics on
+    /// the picture here, then lets the draws of the game near the end of their view range
+    /// go into its distant land.
     fn blend(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _before: &wgpu::TextureView, _depth: &wgpu::TextureView) {}
 }
 
@@ -3642,7 +3645,7 @@ impl Player {
     fn end_world(&mut self, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
-        let scene = facts.view(&device, &queue, format);
+        let mut scene = facts.view(&device, &queue, format);
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
@@ -3658,9 +3661,12 @@ impl Player {
             self.world_depth_kept = true;
             self.open_pass(None, None, None);
         }
-        // The blend: a pass on the picture only, so that a shader can read the depth.
+        // The blend: a pass on the picture only, so that a shader can read the depth. The
+        // extension reads the picture of the game too (the caustics of MGE XE): a copy.
+        let picture = if self.before_kept { self.copy_picture() } else { None };
         if let (true, Some(before), Some(color), Some(depth), Some(encoder)) = (self.before_kept, self.before.as_ref(), self.color.clone(), self.depth.clone(), self.encoder.as_mut()) {
             drop(self.pass.take());
+            scene.picture = picture.as_ref();
             let before = before.create_view(&Default::default());
             let depth = depth.texture().create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() });
             let mut pass = encoder
@@ -3708,21 +3714,25 @@ impl Player {
     /// Copies the picture of the frame and the depth of the game, outside of the pass, for
     /// a call of the extension that reads them. The pass is open again after.
     fn copy_picture_and_depth(&mut self) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
-        let mut picture = None;
-        if let (Some(source), Some(encoder)) = (self.back_buffer.as_ref(), self.encoder.as_mut()) {
-            if source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
-                let size = source.size();
-                if self.picture_copy.as_ref().is_none_or(|copy| copy.size() != size) {
-                    self.picture_copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
-                }
-                drop(self.pass.take());
-                encoder.copy_texture_to_texture(source.as_image_copy(), self.picture_copy.as_ref().unwrap().as_image_copy(), size);
-                picture = self.picture_copy.as_ref().map(|copy| copy.create_view(&Default::default()));
-            }
-        }
+        let picture = self.copy_picture();
         let depth = self.copy_depth(false);
         self.open_pass(None, None, None);
         (picture, depth)
+    }
+
+    /// Copies the picture of the frame, outside of the pass. The pass stays closed.
+    fn copy_picture(&mut self) -> Option<wgpu::TextureView> {
+        let (Some(source), Some(encoder)) = (self.back_buffer.as_ref(), self.encoder.as_mut()) else { return None };
+        if !source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+            return None;
+        }
+        let size = source.size();
+        if self.picture_copy.as_ref().is_none_or(|copy| copy.size() != size) {
+            self.picture_copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
+        }
+        drop(self.pass.take());
+        encoder.copy_texture_to_texture(source.as_image_copy(), self.picture_copy.as_ref().unwrap().as_image_copy(), size);
+        self.picture_copy.as_ref().map(|copy| copy.create_view(&Default::default()))
     }
 
     /// Copies the depth of the game, outside of the pass: into the copy of the world (for
