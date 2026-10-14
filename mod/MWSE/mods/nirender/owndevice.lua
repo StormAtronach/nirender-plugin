@@ -480,10 +480,21 @@ return function(nirender, spec)
                 -- A set can have a function `run`: for a state that a mod makes itself (a
                 -- menu of the mod that turns its shaders on). A text that it returns goes
                 -- into the line: "click X Y of WxH" or "drag X1 Y1 X2 Y2 of WxH" makes the
-                -- runner use the real mouse there.
+                -- runner use the real mouse there (the question box of a load only: it puts
+                -- the cursor of Windows there). In menu mode the cursor of the game moves
+                -- only with the motion of the mouse: "menu-click X Y" and "menu-drag X1 Y1
+                -- X2 Y2" give the place in the coordinates of tes3.getCursorPosition (0, 0
+                -- in the middle, y up). The runner moves the mouse until the cursor of the
+                -- game, which the lines "cursor X Y" report, is there, and presses.
                 if set.run then
                     local ok, result = pcall(set.run)
                     say("shader batch: %s: run %s %s", tostring(set.name), tostring(ok), tostring(result or ""))
+                    if ok and type(result) == "string" and result:find("^menu%-") then
+                        timer.start({ type = timer.real, duration = 0.1, iterations = 150, callback = function()
+                            local cursor = tes3.getCursorPosition()
+                            say("cursor %d %d", cursor.x, cursor.y)
+                        end })
+                    end
                 end
                 for _, item in ipairs(set) do
                     local shader = mge.shaders.find({ name = item[1] }) or mge.shaders.load({ name = item[1] })
