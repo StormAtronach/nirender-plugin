@@ -1,6 +1,6 @@
 [package]
 name = "nirender"
-version = "0.2.9"
+version = "0.2.10"
 edition = "2021"
 license = "MIT"
 description = "Rust replica of the NiDX8Renderer subsystem of Morrowind.exe, with 1:1 tests against the game code"

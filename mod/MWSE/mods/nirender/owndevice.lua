@@ -478,10 +478,12 @@ return function(nirender, spec)
             steps[#steps + 1] = { "sh-" .. tostring(set.name), set.seconds or 1.5, function()
                 allOff()
                 -- A set can have a function `run`: for a state that a mod makes itself (a
-                -- menu of the mod that turns its shaders on).
+                -- menu of the mod that turns its shaders on). A text that it returns goes
+                -- into the line: "click X Y of WxH" or "drag X1 Y1 X2 Y2 of WxH" makes the
+                -- runner use the real mouse there.
                 if set.run then
-                    local ok, problem = pcall(set.run)
-                    say("shader batch: %s: run %s %s", tostring(set.name), tostring(ok), ok and "" or tostring(problem))
+                    local ok, result = pcall(set.run)
+                    say("shader batch: %s: run %s %s", tostring(set.name), tostring(ok), tostring(result or ""))
                 end
                 for _, item in ipairs(set) do
                     local shader = mge.shaders.find({ name = item[1] }) or mge.shaders.load({ name = item[1] })
