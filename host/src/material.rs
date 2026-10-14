@@ -368,9 +368,13 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
     // The environment map with the bump and gloss maps.
     if m.environment.present {
         let needed = 1 + has(BUMP) as u32 + has(GLOSS) as u32;
+        // A new pass takes the alpha template of the blend slot of its first stage
+        // (`template_for` of `setCTPipelineState`): 8 for the bump stage, else 0 for the
+        // stage of the environment map, which adds. The enchanted items of the game have a
+        // gloss map (a texture of one colour), so their glow is always a pass of its own.
         if has(GLOSS) || pass.len() as u32 + needed > 8 {
             passes.push((core::mem::take(&mut pass), pass_slot));
-            pass_slot = if has(BUMP) { 8 } else { 2 };
+            pass_slot = if has(BUMP) { 8 } else { 0 };
         }
         if has(BUMP) {
             pass.push(stage(BUMP, 8, pass.is_empty()));
