@@ -168,7 +168,13 @@ def main():
     open(switched, "w", encoding="utf-8").write("".join(line + chr(10) for line in lines))
     toml_swap = (switched, toml, "mgeXE.toml of the run")
     swaps = [(D3D8, os.path.join(root, "d3d8.dll"), "the d3d8.dll of nirender"), toml_swap]
-    if args.reference:
+    if args.reference and args.mge_build:
+        # The MGE XE build with its switch off: Direct3D 9 with the d3d8.dll and the helper of
+        # that build (the helper as the IPC host of distant land).
+        swaps = [(os.path.join(args.mge_build, "d3d8.dll"), os.path.join(root, "d3d8.dll"), "the d3d8.dll of the MGE XE build"),
+                 (os.path.join(args.mge_build, "mgeHost64.exe"), os.path.join(root, "mgeHost64.exe"), "the mgeHost64.exe of the MGE XE build"),
+                 toml_swap]
+    elif args.reference:
         kept = os.path.join(root, "d3d8.dll.mge-xe")
         swaps = ([(kept, os.path.join(root, "d3d8.dll"), "the d3d8.dll of MGE XE")] if os.path.isfile(kept) else []) + [toml_swap]
     elif args.mge_build:
