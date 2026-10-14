@@ -110,7 +110,7 @@ def check_counts(folder):
     lights = re.search(r"lights: (\d+) records, (\d+) lights of a shape without a record", host)
     ok &= check(lights is not None and lights.group(2) == "0", lights.group(0) if lights else "no lights line")
     report = plugin_report(folder)
-    without = re.search(r"draws without a record: (\d+) with no geometry, (\d+) with no material, (\d+) with a material that is not modelled", report)
+    without = re.search(r"draws without a record: (\d+) with no geometry, (\d+) with no material;", report)
     ok &= check(without is not None and set(without.groups()) == {"0"}, report[-170:] or "no shapes line of the plugin")
     return ok
 

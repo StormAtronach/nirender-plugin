@@ -858,7 +858,9 @@ impl Pass {
                 texture_transform,
             };
         }
-        Pass { blend, stages, alpha_test: None, color_write: 15 }
+        // A pass after the first has the alpha test of its template, not that of the material.
+        let alpha_test = if pass > 0 { d.alpha_tests.get(pass).copied() } else { None };
+        Pass { blend, stages, alpha_test, color_write: 15 }
     }
 
     /// The draws of the Morrowind Code Patch for this pass into the picture of the character
@@ -5647,5 +5649,25 @@ mod tests {
         // A range without an end ends at one cell.
         assert_eq!(light_reach(&light(0.0, 0.0, f32::MAX)), LIGHT_REACH_MAX);
         assert_eq!(light_reach(&light(0.0, 0.0, f32::NAN)), LIGHT_REACH_MAX);
+    }
+
+    /// A material with an alpha test and a decal: the base pass tests as the material says,
+    /// the pass of the decal blends by its alpha with no test (its template, slot 1).
+    #[test]
+    fn a_later_pass_has_the_alpha_test_of_its_template() {
+        use super::material::{derive, Material, ALPHA_TEST, BASE, DECAL0, DEPTH_TEST, WORDS};
+        let mut words = [0u32; WORDS];
+        words[1] = ALPHA_TEST | DEPTH_TEST;
+        // "Greater than" (4) at 128, one decal.
+        (words[4], words[5], words[7]) = (4, 128, 1);
+        for (map, texture) in [(BASE, 1), (DECAL0, 2)] {
+            words[8 + map * 5] = texture;
+            words[12 + map * 5] = 1;
+        }
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let d = derive(&Material::parse(&bytes).unwrap(), 1);
+        assert_eq!(d.passes.len(), 2);
+        assert_eq!(d.alpha_tests, vec![[1, 5, 128], [0, 0, 0]]);
+        assert_eq!(d.blends[1], [1, 5, 6]);
     }
 }

@@ -146,7 +146,10 @@ pub struct Derived {
     pub passes: Vec<Vec<Stage>>,
     /// For each pass: blend on, source, destination (Direct3D values).
     pub blends: Vec<[u32; 3]>,
+    /// The alpha test of the first pass (on, function, reference); the passes after it have
+    /// the test of their template (`template_alpha_test`), in `alpha_tests`.
     pub alpha_test: [u32; 3],
+    pub alpha_tests: Vec<[u32; 3]>,
     /// Depth test on, depth write on, function.
     pub depth: [u32; 3],
     pub cull: u32,
@@ -161,7 +164,8 @@ pub struct Derived {
     /// The `D3DMATERIAL8`: diffuse, ambient, specular, emissive with the alpha, then power.
     pub material: [f32; 17],
     pub fog: bool,
-    /// The record has effects that this model does not make (projected lights or shadows).
+    /// The record has no effects that this model does not make (projected lights or
+    /// shadows); a shape with them is drawn without them.
     pub modelled: bool,
 }
 
@@ -202,6 +206,17 @@ fn template_blend(slot: u32) -> [u32; 3] {
         0 | 8 => [1, 2, 2],
         1 | 6 => [1, 5, 6],
         2 | 4 => [1, 1, 3],
+        _ => [0, 0, 0],
+    }
+}
+
+/// The alpha test of a pass after the first, whose first stage has the slot: the pass takes
+/// the alpha state of its template (`NiDX8TexturePass::setBlendingState` gives the template
+/// to `updateAlphaStates` for each pass after the first), not that of the material. Only
+/// template 4 tests: "greater than" 128 (`adjustAlphaTemplate`).
+fn template_alpha_test(slot: u32) -> [u32; 3] {
+    match slot {
+        4 => [1, compare_function(4), 0x80],
         _ => [0, 0, 0],
     }
 }
@@ -319,6 +334,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
         }
         d.passes.push(pass);
         d.blends.push(if m.flags & BLEND != 0 { [1, blend_mode(m.source_blend), blend_mode(m.destination_blend)] } else { [0, 0, 0] });
+        d.alpha_tests.push(d.alpha_test);
         return d;
     }
     // The base stage with the detail stage, then the dark stage.
@@ -399,6 +415,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
         } else {
             template_blend(slot)
         });
+        d.alpha_tests.push(if index == 0 { d.alpha_test } else { template_alpha_test(slot) });
     }
     d
 }

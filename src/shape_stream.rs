@@ -102,10 +102,12 @@ pub unsafe fn fog_values(renderer: usize, property_state: usize) -> Option<[u32;
 static mut HANDLES: (u32, u32) = (0, 0);
 static mut RECORDS: u64 = 0;
 /// The draws that got no record while the stream recorded, by the reason: no geometry
-/// handle, no material handle, a material that the helper does not model (projected lights
-/// or shadows). The helper does not draw them. The last count is the draws of an empty
-/// geometry (no active vertex, no triangle): those have nothing to draw.
-static mut WITHOUT: [u64; 4] = [0; 4];
+/// handle, no material handle. The helper does not draw them. The last count is the draws
+/// of an empty geometry (no active vertex, no triangle): those have nothing to draw.
+static mut WITHOUT: [u64; 3] = [0; 3];
+/// The records of a material with projected lights or shadows: the helper draws the shape
+/// without them.
+static mut PROJECTED: u64 = 0;
 
 /// True when the shape records go out: a stream or a capture file records.
 pub fn on() -> bool {
@@ -156,12 +158,12 @@ pub unsafe fn ambient(renderer: usize) -> u32 {
 pub unsafe fn report() -> String {
     let without = *core::ptr::addr_of!(WITHOUT);
     format!(
-        "shapes: {} records; draws without a record: {} with no geometry, {} with no material, {} with a material that is not modelled; {} draws of an empty geometry",
+        "shapes: {} records, {} of them without their projected lights or shadows; draws without a record: {} with no geometry, {} with no material; {} draws of an empty geometry",
         *core::ptr::addr_of!(RECORDS),
+        *core::ptr::addr_of!(PROJECTED),
         without[0],
         without[1],
-        without[2],
-        without[3]
+        without[2]
     )
 }
 
@@ -180,7 +182,7 @@ unsafe fn without(reason: usize) {
     let (kind, class, geometry_data) = *core::ptr::addr_of!(OBJECT);
     let (why, empty) = crate::geometry_stream::why_none(kind, geometry_data);
     if empty {
-        counts[3] += 1;
+        counts[2] += 1;
         return;
     }
     counts[0] += 1;
@@ -278,9 +280,12 @@ unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], re
     if !on() {
         return false;
     }
-    if material == 0 || !crate::material_stream::last_modelled() {
-        without(if material == 0 { 1 } else { 2 });
+    if material == 0 {
+        without(1);
         return false;
+    }
+    if !crate::material_stream::last_modelled() {
+        *core::ptr::addr_of_mut!(PROJECTED) += 1;
     }
     let lights = crate::light_stream::note(renderer);
     let count = lights.len() as u32;
