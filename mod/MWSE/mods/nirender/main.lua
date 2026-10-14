@@ -62,9 +62,23 @@ if ownDevice and installed then
         tostring(nirender.linkUseFacts(4261413630)), tostring(nirender.linkUseKinds(15)))
 elseif ownDevice then
     -- The renderer is refused for this session (a port cannot run as Rust): the game runs
-    -- MGE XE on Direct3D 9. The player sees why.
+    -- MGE XE on Direct3D 9. The player sees why. When an option of the Morrowind Code Patch
+    -- is the cause, the message names it and says whether it is on (MWSE reads the options
+    -- that the Code Patch installed).
+    local causes = {}
+    for _, option in ipairs(nirender.refusalOptions and nirender.refusalOptions() or {}) do
+        local on = tes3.hasCodePatchFeature(option.id)
+        local state = on == true and "on" or (on == false and "off" or "unknown")
+        causes[#causes + 1] = string.format("the Morrowind Code Patch option \"%s\" (%s)", option.name, state)
+        mwse.log("[nirender] the renderer is refused because of the Morrowind Code Patch option \"%s\" (feature %d), which is %s", option.name, option.id, state)
+    end
+    local message = "MGE XE: the wgpu renderer is off for this session. See MWSE.log and nirender.log in the Morrowind folder."
+    if #causes > 0 then
+        message = string.format("MGE XE: the wgpu renderer is off for this session. The cause is %s: change it with the Code Patch, or tell us. See nirender.log in the Morrowind folder.",
+            table.concat(causes, " and "))
+    end
     event.register("loaded", function()
-        tes3.messageBox("MGE XE: the wgpu renderer is off for this session. See MWSE.log and nirender.log in the Morrowind folder.")
+        tes3.messageBox(message)
     end, { doOnce = true })
 end
 

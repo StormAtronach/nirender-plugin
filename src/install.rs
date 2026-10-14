@@ -65,6 +65,17 @@ pub unsafe fn census(hooked: bool) -> usize {
             Some(port) => {
                 let ran = !port.locked() && port.mode() != Mode::Off;
                 port.lock();
+                let feature = ports::code_patch_feature(change.func.ea + change.offset, change.len);
+                if let Some(feature) = feature {
+                    let mut options = LOCKED_BY_OPTIONS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if !options.contains(&feature) {
+                        options.push(feature);
+                    }
+                    crate::log!(
+                        "census: the change is in a record of the Morrowind Code Patch option \"{}\" (feature {feature})",
+                        ports::code_patch_option(feature)
+                    );
+                }
                 if ran {
                     " (PORT LOCKED NOW; it ran as Rust before)"
                 } else {
@@ -83,12 +94,32 @@ pub unsafe fn census(hooked: bool) -> usize {
 /// must not get the device of the plugin, and MGE XE goes on with Direct3D 9.
 static REFUSED: AtomicBool = AtomicBool::new(false);
 
+/// The features of the Morrowind Code Patch whose records hold a change that locked a port.
+static LOCKED_BY_OPTIONS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+/// The features of the Code Patch that locked a port: the cause of a refusal that the player
+/// can change.
+pub fn locked_by_options() -> Vec<u32> {
+    LOCKED_BY_OPTIONS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+}
+
 /// True when the renderer is refused for this session.
 pub fn refused() -> bool {
     REFUSED.load(Ordering::Relaxed)
 }
 
 const REFUSED_MESSAGE: &str = "the renderer is refused for this session (see the census above); the game keeps MGE XE on Direct3D 9";
+
+/// The message of a refusal, with the options of the Code Patch that caused it.
+fn refused_message() -> String {
+    let options: Vec<String> =
+        locked_by_options().iter().map(|&feature| format!("\"{}\" (feature {feature})", ports::code_patch_option(feature))).collect();
+    if options.is_empty() {
+        REFUSED_MESSAGE.to_string()
+    } else {
+        format!("{REFUSED_MESSAGE}; the cause is the Morrowind Code Patch option {}", options.join(", "))
+    }
+}
 
 /// Refuses the renderer for the session when the game asks for its Direct3D 8 before a port
 /// is installed: the Lua side of the plugin did not run (the Lua of MWSE failed, or
@@ -110,7 +141,7 @@ pub fn refuse_without_ports() -> bool {
 /// starts in mode off. A second call only puts the recorder on the device.
 pub unsafe fn install() -> Result<String, String> {
     if refused() {
-        return Err(REFUSED_MESSAGE.to_string());
+        return Err(refused_message());
     }
     if ports::all().any(|p| p.installed()) {
         return Ok(attach_device()?.unwrap_or_else(|| "the game has no renderer yet".to_string()));
@@ -153,7 +184,7 @@ pub unsafe fn install() -> Result<String, String> {
         if !cannot.is_empty() {
             REFUSED.store(true, Ordering::Relaxed);
             crate::log!("{} of {} ports cannot run as Rust: {}", cannot.len(), ports::all().count(), cannot.join(", "));
-            return Err(REFUSED_MESSAGE.to_string());
+            return Err(refused_message());
         }
     }
     let attached = match attach_device()? {
@@ -269,13 +300,15 @@ mod tests {
     }
 
     /// The function as the census sees it with `bytes` written at `at`. A record of the Code
-    /// Patch can end after the function (`UpdateToDevice`): the census compares the function
-    /// only.
+    /// Patch can start before the function or end after it (`UpdateToDevice`): the census
+    /// compares the function only.
     fn live_with(func: &crate::gen::funcs::Func, at: usize, bytes: &[u8]) -> Vec<u8> {
         let mut live = census::expected(func).to_vec();
-        let start = at - func.ea;
-        let end = (start + bytes.len()).min(live.len());
-        live[start..end].copy_from_slice(&bytes[..end - start]);
+        for (i, &byte) in bytes.iter().enumerate() {
+            if let Some(slot) = (at + i).checked_sub(func.ea).and_then(|offset| live.get_mut(offset)) {
+                *slot = byte;
+            }
+        }
         live
     }
 
@@ -294,6 +327,74 @@ mod tests {
             let func = containing(at);
             assert!(followed(func, &live_with(func, at, bytes), at, bytes), "feature {feature} off at {at:#x} in {}: a port does not follow it", func.name);
         }
+    }
+
+    /// The game folder of the testing instance, with the `mcpatch` folder of the Morrowind
+    /// Code Patch and `Morrowind.Original.exe`.
+    const GAME: &str = "D:/GOG/Morrowind/Morrowind";
+    /// The `Morrowind.exe` that the database is made from (sha256): the Code Patch has a
+    /// folder of its patch file for each exe that it knows.
+    const DATABASE_EXE: &str = "6fb89bbe8932b7de718c86dd4387fd59e04b9a33b011b61bc78254ded32f5456";
+
+    /// The records of a patch file of the Code Patch: the feature, the file offset and the
+    /// bytes.
+    fn code_patch_records(blob: &[u8]) -> Vec<(u32, usize, &[u8])> {
+        let word = |at: usize| u32::from_le_bytes([blob[at], blob[at + 1], blob[at + 2], blob[at + 3]]);
+        let mut records = Vec::new();
+        let mut at = 0;
+        while at + 12 <= blob.len() {
+            let (feature, offset, len) = (word(at), word(at + 4) as usize, word(at + 8) as usize);
+            records.push((feature, offset, &blob[at + 12..at + 12 + len]));
+            at += 12 + len;
+        }
+        records
+    }
+
+    /// Step 0b.4 of the wgpu plan: a new version of the Morrowind Code Patch that writes inside
+    /// a ported function fails here, on the machine of a developer, and not in the session of
+    /// a player. Each record of each patch file in `NIRENDER_MCPATCH` (folders with a folder
+    /// `mcpatch`, with `;` between them; the game folder of the testing instance without it)
+    /// that writes inside a ported function must be in `ports::CODE_PATCH_RECORDS`, and the
+    /// census must follow it with the option on (the bytes of the record) and off (the bytes
+    /// of `Morrowind.Original.exe`, or `NIRENDER_VANILLA_EXE`). Skipped without the files:
+    /// the patch file is not ours to ship.
+    #[test]
+    fn every_code_patch_record_in_a_port_is_followed() {
+        let roots: Vec<String> = std::env::var("NIRENDER_MCPATCH").map(|roots| roots.split(';').map(str::to_string).collect()).unwrap_or_else(|_| vec![GAME.to_string()]);
+        let vanilla_path = std::env::var("NIRENDER_VANILLA_EXE").unwrap_or_else(|_| format!("{GAME}/Morrowind.Original.exe"));
+        let Ok(vanilla) = std::fs::read(&vanilla_path) else {
+            eprintln!("skipped: no {vanilla_path}");
+            return;
+        };
+        let mut checked = 0;
+        for root in &roots {
+            let path = format!("{root}/mcpatch/{DATABASE_EXE}/patch");
+            let Ok(blob) = std::fs::read(&path) else {
+                eprintln!("no {path}");
+                continue;
+            };
+            for (feature, offset, data) in code_patch_records(&blob) {
+                let va = 0x400000 + offset;
+                for port in ports::all() {
+                    let func = crate::gen::funcs::FUNCS.iter().find(|f| f.ea == port.addr).expect("a port is in the function table");
+                    let (lo, hi) = (va.max(func.ea), (va + data.len()).min(func.ea + func.size));
+                    if lo >= hi {
+                        continue;
+                    }
+                    let known = ports::CODE_PATCH_RECORDS.iter().any(|&(f, start, len)| f == feature && start <= lo && hi <= start + len);
+                    assert!(known, "{path}: feature {feature} writes {lo:#x}..{hi:#x} in {}, and ports::CODE_PATCH_RECORDS has no such record", func.name);
+                    for (state, bytes) in [("on", data), ("off", &vanilla[offset..offset + data.len()])] {
+                        let live = live_with(func, va, bytes);
+                        if census::runs(&live, census::expected(func)).is_empty() {
+                            continue;
+                        }
+                        assert!(followed(func, &live, va, bytes), "{path}: feature {feature} {state} at {lo:#x} in {}: a port does not follow it", func.name);
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        eprintln!("{checked} records of the Code Patch in ports checked, on and off");
     }
 
     #[test]

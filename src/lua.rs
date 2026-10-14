@@ -24,6 +24,7 @@ extern "C" {
     fn lua_toboolean(l: LuaState, index: i32) -> i32;
     fn lua_gettop(l: LuaState) -> i32;
     fn lua_tolstring(l: LuaState, index: i32, len: *mut usize) -> *const c_char;
+    fn lua_rawseti(l: LuaState, index: i32, n: i32);
 }
 
 unsafe fn push_str(l: LuaState, text: &str) {
@@ -60,6 +61,23 @@ unsafe extern "C" fn install(l: LuaState) -> i32 {
     lua_pushboolean(l, ok as i32);
     push_str(l, &message);
     2
+}
+
+/// `nirender.refusalOptions()` returns a list of `{ id = <feature>, name = <option> }`: the
+/// options of the Morrowind Code Patch whose changes locked a port. A refusal with an empty
+/// list has another cause.
+unsafe extern "C" fn refusal_options(l: LuaState) -> i32 {
+    let options = install::locked_by_options();
+    lua_createtable(l, options.len() as i32, 0);
+    for (index, &feature) in options.iter().enumerate() {
+        lua_createtable(l, 0, 2);
+        lua_pushnumber(l, feature as f64);
+        lua_setfield(l, -2, b"id\0".as_ptr() as *const c_char);
+        push_str(l, ports::code_patch_option(feature));
+        lua_setfield(l, -2, b"name\0".as_ptr() as *const c_char);
+        lua_rawseti(l, -2, index as i32 + 1);
+    }
+    1
 }
 
 /// `nirender.capture(path, warmupFrames, frames)` starts a capture of the render link stream
@@ -504,6 +522,7 @@ unsafe extern "C" fn device_callers(l: LuaState) -> i32 {
 pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     lua_createtable(l, 0, 20);
     set_fn(l, "install", install);
+    set_fn(l, "refusalOptions", refusal_options);
     set_fn(l, "setMode", set_mode);
     set_fn(l, "report", report_lua);
     set_fn(l, "frameTest", frame_test);

@@ -219,6 +219,41 @@ static FOLLOWED: &[Followed] = &[
     Followed::Operand { at: 0x6B737A, len: 1 },
 ];
 
+/// The records of the Morrowind Code Patch that write inside a ported function: the feature,
+/// the first address and the number of bytes. The Code Patch 2.4 has these 11, and the 2.5
+/// beta 19 has the same. A record of `UpdateToDevice` ends one byte after the function. The
+/// test `every_code_patch_record_in_a_port_is_followed` of `install` checks the patch files
+/// of the Code Patch on the machine against this table.
+pub static CODE_PATCH_RECORDS: &[(u32, usize, usize)] = &[
+    (11, 0x6AD84A, 5),  // NiDX8Renderer::RenderPoints
+    (11, 0x6ADC91, 5),  // NiDX8Renderer::RenderLines
+    (11, 0x6AEF05, 19), // NiDX8Renderer::DrawPrimitive
+    (11, 0x6AF231, 35), // NiDX8Renderer::DrawSkinnedPrimitive2
+    (12, 0x6B5664, 3),  // NiDX8TexturePass::setBlendingState
+    (39, 0x6B70A8, 1),  // NiDX8TextureData::FindMatchingPixelFormat
+    (39, 0x6B70DF, 1),
+    (39, 0x6B7357, 1),
+    (39, 0x6B737A, 1),
+    (131, 0x6C1BA5, 4), // NiDX8TextureStage::updateRenderer
+    (11, 0x6C2686, 25), // NiDX8MaterialManager::UpdateToDevice
+];
+
+/// The name of an option of the Morrowind Code Patch in the installer of the Code Patch.
+pub fn code_patch_option(feature: u32) -> &'static str {
+    match feature {
+        11 => "Show transparent clothes in the inventory",
+        12 => "Enchant glow in fog fix",
+        39 => "Better quality splash and title screens",
+        131 => "Bump/reflect map local lighting",
+        _ => "an option that is not known",
+    }
+}
+
+/// The feature of the Code Patch whose record has bytes in the `len` bytes from `at`.
+pub fn code_patch_feature(at: usize, len: usize) -> Option<u32> {
+    CODE_PATCH_RECORDS.iter().find(|&&(_, start, count)| at < start + count && start < at + len).map(|&(feature, _, _)| feature)
+}
+
 /// True when a port follows a change of the byte at `addr`. `read` gives the byte that is in
 /// memory at an address.
 pub fn follows(addr: usize, read: impl Fn(usize) -> u8) -> bool {
@@ -263,6 +298,17 @@ mod tests {
         assert!(follows(0x6B42AD, |addr| call[addr - 0x6B42AC]));
         assert!(!follows(0x6B42AD, database));
         assert!(!follows(0x400000, database));
+    }
+
+    #[test]
+    fn a_change_in_a_record_of_the_code_patch_names_its_option() {
+        assert_eq!(code_patch_feature(0x6B5665, 1), Some(12));
+        assert_eq!(code_patch_feature(0x6B5660, 6), Some(12), "a run that starts before the record");
+        assert_eq!(code_patch_feature(0x6B5667, 2), None, "after the record");
+        assert_eq!(code_patch_option(12), "Enchant glow in fog fix");
+        for &(feature, _, _) in CODE_PATCH_RECORDS {
+            assert_ne!(code_patch_option(feature), code_patch_option(0), "feature {feature} has a name");
+        }
     }
 
     #[test]
