@@ -126,6 +126,16 @@ unsafe extern "C" fn overlay(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.tune(command)` sends a command for the parameters that the renderer shows in
+/// its debug overlay, as a text: `next`, `previous`, `more [steps]`, `less [steps]`, `reset`,
+/// `reset all`, or `set <name> <value>`. The command goes into the stream as data of an
+/// extension, with the number 5; a renderer without parameters does nothing with it.
+unsafe extern "C" fn tune(l: LuaState) -> i32 {
+    const TUNE: u32 = 5;
+    crate::capture::extension(TUNE, arg_str(l, 1).unwrap_or_default().as_bytes());
+    0
+}
+
 /// `nirender.portTimes(n)` returns the `n` ports with the most time of the main thread since
 /// the last call, as one text: name, calls, ms. The time of a port has the ports that it
 /// calls in it, so the numbers do not add up.
@@ -508,6 +518,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "streamShot", stream_shot);
     set_fn(l, "streamMark", stream_mark);
     set_fn(l, "overlay", overlay);
+    set_fn(l, "tune", tune);
     set_fn(l, "loadingDone", loading_done);
     set_fn(l, "portTimes", port_times);
     set_fn(l, "dumpDevice", dump_device);

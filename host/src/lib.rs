@@ -362,6 +362,13 @@ pub trait Extension {
     /// number that names its kind.
     fn data(&mut self, _id: u32, _bytes: &[u8]) {}
 
+    /// Lines of text for the debug overlay, under the numbers of the renderer: for example
+    /// the parameters that a person can change while the game runs. The overlay asks in
+    /// each frame in which it shows.
+    fn overlay_lines(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The renderer draws a capture file and not a live stream: the frames must be the
     /// same each time. The extension completes each load before a frame, with no limit on
     /// the work of a frame. The renderer calls this one time, before the first record.
@@ -4598,7 +4605,7 @@ mod live {
                 frame.texture.as_image_copy(),
                 wgpu::Extent3d { width: back_buffer.width().min(size.0), height: back_buffer.height().min(size.1), depth_or_array_layers: 1 },
             );
-            overlay.draw(device, queue, &mut encoder, &frame.texture.create_view(&Default::default()), size, Some(self.sign_step));
+            overlay.draw(device, queue, &mut encoder, &frame.texture.create_view(&Default::default()), size, Some(self.sign_step), &[]);
             queue.submit([encoder.finish()]);
             queue.present(frame);
         }
@@ -4784,6 +4791,11 @@ mod live {
                 let (width, height) = (back_buffer.width(), back_buffer.height());
                 let device = player.renderer.device.clone();
                 let queue = player.renderer.queue.clone();
+                // The lines of the extension for the debug overlay, when it shows.
+                let lines = match (self.overlay.as_ref(), player.extension.as_ref()) {
+                    (Some(overlay), Some(extension)) if overlay.is_on() => extension.overlay_lines(),
+                    _ => Vec::new(),
+                };
                 let overlay = self.overlay.as_mut();
                 let mut read = None;
                 player.end_frame(|encoder| {
@@ -4797,7 +4809,7 @@ mod live {
                         // The debug overlay goes on the picture of the window, not into the
                         // back buffer: a picture file and a pixel read do not have it.
                         if let Some(overlay) = overlay {
-                            overlay.draw(&device, &queue, encoder, &frame.texture.create_view(&Default::default()), (frame.texture.width(), frame.texture.height()), None);
+                            overlay.draw(&device, &queue, encoder, &frame.texture.create_view(&Default::default()), (frame.texture.width(), frame.texture.height()), None, &lines);
                         }
                     }
                     if take_shot {

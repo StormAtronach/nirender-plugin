@@ -252,10 +252,16 @@ impl Overlay {
         }
     }
 
+    /// True when the panel shows.
+    pub fn is_on(&self) -> bool {
+        self.on
+    }
+
     /// Draws the panel into the picture of the window, when it is on. With `sign`, it also
     /// draws the sign that the game sends no frames: one of the four characters of a line
-    /// that turns, which `sign` selects.
-    pub fn draw(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, size: (u32, u32), sign: Option<u32>) {
+    /// that turns, which `sign` selects. `lines` go under the numbers of the panel: the
+    /// text of the extension of the renderer.
+    pub fn draw(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, size: (u32, u32), sign: Option<u32>, lines: &[String]) {
         if !self.on && sign.is_none() {
             return;
         }
@@ -313,6 +319,9 @@ impl Overlay {
                         None => {
                             ui.label("game        no numbers yet");
                         }
+                    }
+                    for line in lines {
+                        ui.label(line.as_str());
                     }
                 });
             });
