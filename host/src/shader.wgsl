@@ -287,7 +287,9 @@ fn vs(in: VertexIn) -> VertexOut {
         if draw.counts.z == 1u {
             ambient = vertex_color.rgb;
         }
-        var normal = vec3f(0.0, 0.0, 1.0);
+        // A lit draw without normals: the fixed function takes a zero normal, so the lights
+        // give it their ambient light and no diffuse light.
+        var normal = vec3f(0.0);
         if draw.flags.y != 0u {
             normal = normalize(world_normal);
         }
