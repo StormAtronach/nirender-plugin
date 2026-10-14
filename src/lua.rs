@@ -129,8 +129,8 @@ unsafe extern "C" fn overlay(l: LuaState) -> i32 {
 /// `nirender.tune(command)` sends a command for the parameters that the renderer shows in
 /// its debug overlay, as a text: `set <name> <value>`, `reset <name>`, or `reset all`. The
 /// command goes into the stream as data of an extension, with the number 5; a renderer
-/// without parameters does nothing with it. The window "renderer parameters" of the MGE XE
-/// options sends these from its sliders.
+/// without parameters does nothing with it. The parameters window of the MGE XE options
+/// sends these from its sliders (the row "water (renderer)" of its shader list).
 unsafe extern "C" fn tune(l: LuaState) -> i32 {
     const TUNE: u32 = 5;
     crate::capture::extension(TUNE, arg_str(l, 1).unwrap_or_default().as_bytes());
