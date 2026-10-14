@@ -1645,7 +1645,8 @@ fn storage_buffer(device: &wgpu::Device, label: &str, count: usize, item: usize)
 
 /// The clusters of the lights of the frame: for each cluster of the grid, the lights of
 /// the frame whose sphere touches it, as indexes into the light buffer of the frame.
-/// Binned on the CPU from the view and the projection of the world of the frame.
+/// Binned on the CPU in one space, relative to the origin of the scene, for the view and
+/// the projection of the scene (the start of the world).
 struct Clusters {
     on: bool,
     uniform: wgpu::Buffer,
@@ -1653,8 +1654,13 @@ struct Clusters {
     indexes: wgpu::Buffer,
     index_capacity: usize,
     /// The lights of the frame that are candidates, by their key: the index in the light
-    /// buffer of the frame and the slot of the light in the masks of the draws.
-    unique: HashMap<u32, (u32, u32)>,
+    /// buffer of the frame, the slot of the light in the masks of the draws, and whether
+    /// its position is relative to the origin of the scene (the light buffer of the frame
+    /// has some relative and some not, as the draws are).
+    unique: HashMap<u32, (u32, u32, bool)>,
+    /// The origin of the scene of the candidates, which the relative positions are
+    /// relative to.
+    origin: Option<[f64; 3]>,
     /// The frame has more candidates than a mask has bits, or an index a cluster entry
     /// cannot hold: the frame keeps the lights of the draws.
     overflow: bool,
@@ -1679,17 +1685,21 @@ impl Clusters {
             indexes: storage_buffer(device, "cluster lights", index_capacity, 4),
             index_capacity,
             unique: HashMap::new(),
+            origin: None,
             overflow: false,
             lists: (0..cells).map(|_| Vec::new()).collect(),
         }
     }
 
     /// Notes a light of the frame as a candidate, by its key and its index in the light
-    /// buffer: the first draw with the key gives the values. Returns the slot of the light
-    /// in the masks of the draws, or `None` when the frame has no slot left.
-    fn note(&mut self, key: u32, index: u32) -> Option<u32> {
+    /// buffer: the first draw with the key gives the values. `origin` is that of the scene
+    /// of the draw; `relative` says that the position of the light is relative to it.
+    /// Returns the slot of the light in the masks of the draws, or `None` when the frame
+    /// has no slot left.
+    fn note(&mut self, key: u32, index: u32, relative: bool, origin: Option<[f64; 3]>) -> Option<u32> {
         let next = self.unique.len() as u32;
-        let (_, slot) = *self.unique.entry(key).or_insert((index, next));
+        let (_, slot, _) = *self.unique.entry(key).or_insert((index, next, relative));
+        self.origin = origin;
         if slot as usize >= CLUSTER_SLOTS || index >= 1 << 16 {
             self.overflow = true;
             return None;
@@ -1697,10 +1707,10 @@ impl Clusters {
         Some(slot)
     }
 
-    /// Bins the candidates into the grid for the view of the world and writes the buffers.
-    /// `size` is the size of the picture. Returns false when the clusters are off for the
-    /// frame (no view of the world).
-    fn build(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lights: &[LightData], view: Option<([f32; 16], [f32; 16])>, relative: bool, size: (u32, u32), counts: &mut Counts) -> bool {
+    /// Bins the candidates into the grid for the view and the projection of the scene and
+    /// writes the buffers. `size` is the size of the picture. Returns false when the
+    /// clusters are off for the frame (no start of the world).
+    fn build(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lights: &[LightData], view: Option<([f32; 16], [f32; 16])>, size: (u32, u32), counts: &mut Counts) -> bool {
         let overflow = core::mem::replace(&mut self.overflow, false);
         if overflow {
             counts.cluster_frames_many += 1;
@@ -1710,28 +1720,38 @@ impl Clusters {
             queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&ClusterData::zeroed()));
             return false;
         };
-        if relative {
+        // Relative to the origin of the scene, the camera: the view without its move.
+        let origin = self.origin;
+        if origin.is_some() {
             view[12] = 0.0;
             view[13] = 0.0;
             view[14] = 0.0;
         }
         // The candidates by their slot; an entry of a list is the slot in its high half and
         // the index in its low half.
-        let mut candidates: Vec<(u32, u32)> = self.unique.values().map(|&(index, slot)| (slot, index)).collect();
+        let mut candidates: Vec<(u32, u32, bool)> = self.unique.values().map(|&(index, slot, relative)| (slot, index, relative)).collect();
         candidates.sort_unstable();
         // A point light without a cut-off (the fade of the extension is off) has no end:
         // its tail would reach the pixels of objects the game never attached it to. The
         // frame keeps the lights of the draws then.
-        if candidates.iter().any(|&(_, index)| lights.get(index as usize).is_some_and(|light| light.position[3] != 3.0 && light.cone[0] <= 0.0)) {
+        if candidates.iter().any(|&(_, index, _)| lights.get(index as usize).is_some_and(|light| light.position[3] != 3.0 && light.cone[0] <= 0.0)) {
             self.unique.clear();
             counts.cluster_frames_off += 1;
             queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&ClusterData::zeroed()));
             return false;
         }
         counts.cluster_lights += candidates.len() as u64;
-        let items = candidates.iter().filter_map(|&(slot, index)| {
+        let items = candidates.iter().filter_map(|&(slot, index, relative)| {
             let light = lights.get(index as usize)?;
-            let centre = (light.position[3] != 3.0).then(|| view_point(&view, light.position));
+            let centre = (light.position[3] != 3.0).then(|| {
+                let mut position = light.position;
+                if let (Some(o), false) = (origin, relative) {
+                    for axis in 0..3 {
+                        position[axis] = (position[axis] as f64 - o[axis]) as f32;
+                    }
+                }
+                view_point(&view, position)
+            });
             // The reach: the cut-off of the extension (its fade).
             Some((index | slot << 16, centre, 1.0 / light.cone[0]))
         });
@@ -4107,7 +4127,10 @@ impl Player {
         let texture = texture.unwrap_or_else(|| self.renderer.white.clone());
         let renderer = &mut self.renderer;
         let clock = std::time::Instant::now();
-        renderer.clusters.build(&renderer.device, &renderer.queue, &self.frame_lights, self.world_matrices, self.stream.origin.is_some(), self.frame_size, &mut renderer.counts);
+        // The view and the projection of the scene: those of the start of the world, as the
+        // lights of the extension have them.
+        let scene = items.iter().find_map(|item| if let Item::WorldStart(facts) = item { Some((facts.view, facts.projection)) } else { None });
+        renderer.clusters.build(&renderer.device, &renderer.queue, &self.frame_lights, scene, self.frame_size, &mut renderer.counts);
         renderer.counts.times[TIME_CLUSTERS] += clock.elapsed();
         renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters));
         for item in items {
@@ -4681,7 +4704,7 @@ impl Player {
         let relative = shape.relative && self.stream.origin.is_some();
         for (i, light) in shape.lights.chunks_exact(STATE_LIGHT_SIZE).enumerate() {
             if masked {
-                if let Some(slot) = renderer.clusters.note(word(light, 0), (first + i) as u32) {
+                if let Some(slot) = renderer.clusters.note(word(light, 0), (first + i) as u32, relative, self.stream.origin) {
                     draw_data.light_mask[slot as usize / 128][slot as usize / 32 % 4] |= 1 << (slot % 32);
                 }
             }
