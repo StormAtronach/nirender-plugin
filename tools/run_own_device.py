@@ -50,7 +50,7 @@ def main():
                     "coordinates of the console)")
     ap.add_argument("--hour", type=float, default=None, help="the hour of the day in the exterior (12 without this)")
     ap.add_argument("--weather", type=int, default=None, help="the weather in the exterior, 0 clear to 9 blizzard (the game's without this)")
-    ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off in its modlist.txt for the run, and back after")
+    ap.add_argument("--disable-mod", action="append", default=[], help="a mod of the profile switched off in its modlist.txt for the run, and back after; again for more mods")
     ap.add_argument("--find-water", action="store_true", help="after the cell loads, put the player under the water at the "
                     "nearest spot where the land is deep enough (a test of the view from under the water)")
     ap.add_argument("--find-dry", action="store_true", help="after the interior cell loads, put the player on the nearest floor above "
@@ -165,7 +165,7 @@ def main():
         mods.pop(0)
     if args.exe:
         mods.append((EXE_MOD, {"Root/Morrowind.exe": args.exe}))
-    done = run.launch(spec, args.budget, TAG, mods=mods, disable=[args.disable_mod] if args.disable_mod else [])
+    done = run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod)
 
     print()
     for line in run.progress_lines(TAG):
