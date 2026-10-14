@@ -1,9 +1,12 @@
 """One run of the game with the nirender mod, through the testing instance.
 
-`prepare()` builds and installs the mod. `Run` holds the folder of a run and starts the game
-with a run spec. The spec goes to the scenario of the mod (nirender/test.lua, perf.lua or
-video.lua). The testing instance is put back after each run. The mod "nirender" stays
-installed: it does nothing without a run spec and with mode "off".
+`prepare()` builds the plugin and puts it into the mod "Harness - nirender" of the testing
+instance. `Run` holds the folder of a run and starts the game with a run spec. The spec goes to
+the scenario of the mod (nirender/test.lua, perf.lua or video.lua). For the run, that mod and the
+other mods of the run ("Harness - MGE XE" and so on) go on at the top of the mod list, over the
+mods of the instance (its own "nirender" is the release); after the run the mod list is as it
+was. The mods of the instance and the game folder are not written: Root Builder copies the Root
+folders of the run's mods into the game folder at the start and takes them out at the end.
 """
 import os
 import shutil
@@ -17,9 +20,9 @@ HARNESS_DIR = r"C:\Users\ivan_\source\repos\moreFPS\docs\scripts\test-harness-20
 sys.path.insert(0, HARNESS_DIR)
 import harness  # noqa: E402
 
-MOD_NAME = "nirender"
+MOD_NAME = harness.RUN_MOD_PREFIX + "nirender"
 DLL = os.path.join(REPO, "target", "i686-pc-windows-msvc", "release", "nirender.dll")
-DIST = os.path.join(REPO, "target", "dist", MOD_NAME)
+DIST = os.path.join(REPO, "target", "dist", "nirender")
 RESULTS = os.path.join(REPO, "results")
 SPEC_NAME = "nirender_test"
 # MGE XE writes its log into the game folder. Mod Organizer moves it to overwrite at its exit.
@@ -47,8 +50,9 @@ def prepare(build=True):
     harness.MOD_DIR = os.path.join(harness.MO2_ROOT, "mods", MOD_NAME)
     harness.SPEC_DIR = os.path.join(harness.MOD_DIR, "MWSE", "config")
     harness.refuse_if_busy()
-    for change in harness.install_mod():
-        print("  nirender mod: %s" % change)
+    # The mod stays off between runs: it would take the place of the release in a game by hand.
+    for change in harness.install_mod(enable=False):
+        print("  %s: %s" % (MOD_NAME, change))
 
 
 class Run:
@@ -76,11 +80,12 @@ class Run:
         spec.update(values)
         return spec
 
-    def launch(self, spec, timeout, tag, swaps=()):
+    def launch(self, spec, timeout, tag, mods=(), disable=()):
         """Starts the game with `spec` and follows it until the scenario says DONE.
 
-        `swaps` are files to put in place for the run, as (source, destination, label). The
-        files that were there come back after the run.
+        `mods` are the other mods of the run, as (name, {path in the mod: source file}); the
+        names start with harness.RUN_MOD_PREFIX. `disable` are mods of the instance that are off
+        for the run. The mod list is as it was after the run.
 
         Returns True when the scenario finished within `timeout` seconds."""
         deployment = harness.Deployment()
@@ -88,8 +93,11 @@ class Run:
         print("launching (budget %ds, results in %s)" % (timeout, self.dir), flush=True)
         try:
             deployment.write_spec(SPEC_NAME, spec)
-            for source, destination, label in swaps:
-                deployment.swap(source, destination, label)
+            deployment.enable_mod(MOD_NAME)
+            for name, files in mods:
+                deployment.use_mod(name, files)
+            for name in disable:
+                deployment.disable_mod(name)
             done = harness.run_game(self.progress, timeout, tag, deployment, self.started)
         finally:
             # run_game also restores. This restore is for a failure before run_game gets to

@@ -1,12 +1,15 @@
-"""Runs the game without a Direct3D device: the d3d8.dll of this repository takes the place of
-the one of MGE XE in the game folder for the run, and the game gets the Direct3D 8 of the
-plugin. The host program draws the only picture, in the window of the game.
+"""Runs the game without a Direct3D device: the d3d8.dll of this repository (or of a build of
+MGE XE with --mge-build) takes the place of the one of MGE XE in the game folder for the run,
+and the game gets the Direct3D 8 of the plugin. The host program draws the only picture, in
+the window of the game.
 
     python tools/run_own_device.py --label owndevice [--backend vulkan]
 
-The runner puts the d3d8.dll of MGE XE back after the run. The result is a picture of the
-host program after each step of the scenario (host-<step>.png), the text of the host program
-(host.txt) and the lines of the plugin about its device.
+The files of the run are in mods of the harness that are on for the run only (session.py):
+"Harness - MGE XE" (d3d8.dll, mgeHost64.exe), "Harness - config" (mgeXE.toml of the run) and
+"Harness - exe" (--exe). The result is a picture of the host program after each step of the
+scenario (host-<step>.png), the text of the host program (host.txt) and the lines of the
+plugin about its device.
 """
 import argparse
 import os
@@ -21,25 +24,10 @@ HOST_DIR = os.path.join(REPO, "host")
 HOST = os.path.join(HOST_DIR, "target", "x86_64-pc-windows-msvc", "release", "nirender-host.exe")
 D3D8_DIR = os.path.join(REPO, "d3d8")
 D3D8 = os.path.join(D3D8_DIR, "target", "i686-pc-windows-msvc", "release", "d3d8.dll")
-
-
-def disable_mod(name):
-    """Switches a mod off in modlist.txt of the profile. Returns the function that puts the
-    file back."""
-    path = os.path.join(session.harness.PROFILE, "modlist.txt")
-    text = open(path, encoding="utf-8", newline="").read()
-    on = "+" + name
-    if not any(line.strip() == on for line in text.splitlines()):
-        raise SystemExit("the mod %s is not on in %s" % (name, path))
-    edited = "".join(line.replace(on, "-" + name, 1) if line.strip() == on else line for line in text.splitlines(keepends=True))
-    open(path, "w", encoding="utf-8", newline="").write(edited)
-    print("the mod %s is off in modlist.txt for the run" % name, flush=True)
-
-    def put_back():
-        open(path, "w", encoding="utf-8", newline="").write(text)
-        print("the mod %s is on again" % name, flush=True)
-
-    return put_back
+# The mods of the harness for the files of a run.
+MGE_MOD = session.harness.RUN_MOD_PREFIX + "MGE XE"
+CONFIG_MOD = session.harness.RUN_MOD_PREFIX + "config"
+EXE_MOD = session.harness.RUN_MOD_PREFIX + "exe"
 
 
 def main():
@@ -49,13 +37,12 @@ def main():
     ap.add_argument("--interior", default="Balmora, Guild of Mages")
     ap.add_argument("--exterior", default="Balmora")
     ap.add_argument("--backend", default="vulkan")
-    ap.add_argument("--mge-mod", default="MGE XE G7 Fork", help="the mod of the testing instance with the d3d8.dll of MGE XE")
     ap.add_argument("--start-frames", default="5,100,300,600,900,1040", help="the frames of the start to take a picture of")
     ap.add_argument("--mge-build", help="a folder with a build of MGE XE that has the switch runtime.renderer_wgpu (its bin/MSVC-Release): "
                     "the run uses its d3d8.dll and its mgeHost64.exe with the switch on, and not the d3d8.dll and the host program of this repository")
     ap.add_argument("--config-mod", default="Configuration", help="the mod of the testing instance with mgeXE.toml")
     ap.add_argument("--reference", action="store_true", help="run the same scenario with MGE XE on Direct3D 9, for its frame rate: the "
-                    "d3d8.dll of MGE XE that tools/own_device.py kept, or the one that is in place")
+                    "MGE XE of the instance, or of --mge-build")
     ap.add_argument("--instance", help="the folder of another Mod Organizer instance to run in, and not the testing instance")
     ap.add_argument("--game-dir", help="with --instance: the game folder of that instance")
     ap.add_argument("--profile", default="Default", help="with --instance: its profile")
@@ -103,6 +90,7 @@ def main():
         harness.MWSE_LOGS = (os.path.join(args.instance, "overwrite", "Root", "MWSE.log"), os.path.join(harness.GAME_DIR, "MWSE.log"))
         harness.WARNINGS = (os.path.join(args.instance, "overwrite", "Root", "Warnings.txt"), os.path.join(harness.GAME_DIR, "Warnings.txt"))
         session.MGE_LOGS = (os.path.join(harness.GAME_DIR, "mgeXE.log"), os.path.join(args.instance, "overwrite", "Root", "mgeXE.log"))
+        harness.ROOT_BUILDER_DATA = os.path.join(args.instance, "plugins", "data", "RootBuilder")
     if not args.no_build:
         cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
         for folder in (HOST_DIR, D3D8_DIR):
@@ -126,9 +114,6 @@ def main():
     # a film (the 120th: a film starts from black): a film holds the main loop, so the scenario
     # cannot ask for it.
     os.environ["NIRENDER_HOST_ARGS"] = '--shots-at %s --shots-prefix "%s" --shot-film "%s"' % (args.start_frames, run.path("start"), run.path("host-film-frame.png"))
-    # Mod Organizer puts the Root folder of a mod into the game folder when the game starts.
-    # The d3d8.dll of the game folder comes from the mod of MGE XE.
-    root = os.path.join(session.harness.MO2_ROOT, "mods", args.mge_mod, "Root")
     # The mgeXE.toml of the run: no frame limit (vsync off), so that the frame rates of the two
     # modes compare; with the switch for the wgpu renderer when the run is with it.
     toml = os.path.join(session.harness.MO2_ROOT, "mods", args.config_mod, "Root", "mgeXE.toml")
@@ -166,48 +151,21 @@ def main():
         lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = true")
     switched = run.path("mgeXE.toml")
     open(switched, "w", encoding="utf-8").write("".join(line + chr(10) for line in lines))
-    toml_swap = (switched, toml, "mgeXE.toml of the run")
-    swaps = [(D3D8, os.path.join(root, "d3d8.dll"), "the d3d8.dll of nirender"), toml_swap]
-    if args.reference and args.mge_build:
-        # The MGE XE build with its switch off: Direct3D 9 with the d3d8.dll and the helper of
-        # that build (the helper as the IPC host of distant land).
-        swaps = [(os.path.join(args.mge_build, "d3d8.dll"), os.path.join(root, "d3d8.dll"), "the d3d8.dll of the MGE XE build"),
-                 (os.path.join(args.mge_build, "mgeHost64.exe"), os.path.join(root, "mgeHost64.exe"), "the mgeHost64.exe of the MGE XE build"),
-                 toml_swap]
-    elif args.reference:
-        kept = os.path.join(root, "d3d8.dll.mge-xe")
-        swaps = ([(kept, os.path.join(root, "d3d8.dll"), "the d3d8.dll of MGE XE")] if os.path.isfile(kept) else []) + [toml_swap]
-    elif args.mge_build:
+    # The files of the run are in mods of the harness, on for the run over the mods of the
+    # instance; Root Builder copies their Root folders into the game folder.
+    mods = [(MGE_MOD, {"Root/d3d8.dll": D3D8}), (CONFIG_MOD, {"Root/mgeXE.toml": switched})]
+    if args.mge_build:
         # MGE XE with its switch for the wgpu renderer on: its own d3d8.dll gives Direct3D to
-        # the plugin, and its helper is the renderer.
-        swaps = [(os.path.join(args.mge_build, "d3d8.dll"), os.path.join(root, "d3d8.dll"), "the d3d8.dll of the MGE XE build"),
-                 (os.path.join(args.mge_build, "mgeHost64.exe"), os.path.join(root, "mgeHost64.exe"), "the mgeHost64.exe of the MGE XE build"),
-                 toml_swap]
+        # the plugin, and its helper is the renderer. With --reference the same build with the
+        # switch off: Direct3D 9 with the d3d8.dll and the helper of that build (the helper as
+        # the IPC host of distant land).
+        mods[0] = (MGE_MOD, {"Root/d3d8.dll": os.path.join(args.mge_build, "d3d8.dll"), "Root/mgeHost64.exe": os.path.join(args.mge_build, "mgeHost64.exe")})
+    elif args.reference:
+        # MGE XE of the instance on Direct3D 9.
+        mods.pop(0)
     if args.exe:
-        # Mod Organizer puts a file of its overwrite/Root folder over the one of the game folder.
-        overlay = os.path.join(session.harness.MO2_ROOT, "overwrite", "Root", "Morrowind.exe")
-        target = overlay if os.path.isfile(overlay) else os.path.join(session.harness.GAME_DIR, "Morrowind.exe")
-        swaps.append((args.exe, target, "the Morrowind.exe " + args.exe))
-    put_back = disable_mod(args.disable_mod) if args.disable_mod else None
-    try:
-        done = run.launch(spec, args.budget, TAG, swaps=swaps)
-    finally:
-        if put_back:
-            put_back()
-    # Mod Organizer leaves its copy in the game folder when the game does not end by itself.
-    theirs, ours = os.path.join(root, "d3d8.dll"), os.path.join(session.harness.GAME_DIR, "d3d8.dll")
-    if os.path.isfile(ours) and not session.harness.same_file_content(theirs, ours):
-        import shutil
-        shutil.copy2(theirs, ours)
-        print("the d3d8.dll of the mod is back in the game folder")
-    # The same for the exe of --exe: Mod Organizer copied it from overwrite/Root into the game
-    # folder, and the run put the one of overwrite/Root back but not the copy.
-    if args.exe:
-        theirs, ours = target, os.path.join(session.harness.GAME_DIR, "Morrowind.exe")
-        if theirs != ours and not session.harness.same_file_content(theirs, ours):
-            import shutil
-            shutil.copy2(theirs, ours)
-            print("the Morrowind.exe of overwrite/Root is back in the game folder")
+        mods.append((EXE_MOD, {"Root/Morrowind.exe": args.exe}))
+    done = run.launch(spec, args.budget, TAG, mods=mods, disable=[args.disable_mod] if args.disable_mod else [])
 
     print()
     for line in run.progress_lines(TAG):

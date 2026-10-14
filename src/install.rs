@@ -329,9 +329,11 @@ mod tests {
         }
     }
 
-    /// The game folder of the testing instance, with the `mcpatch` folder of the Morrowind
-    /// Code Patch and `Morrowind.Original.exe`.
-    const GAME: &str = "D:/GOG/Morrowind/Morrowind";
+    /// Where the testing instance keeps the `mcpatch` folder of the Morrowind Code Patch (the
+    /// Root folder of its mod) and `Morrowind.Original.exe` (the Root folder of overwrite). Root
+    /// Builder copies them into the game folder only while the game runs.
+    const MCPATCH_ROOT: &str = "D:/Modlists/Morrowind75testing/mods/Morrowind Code Patch/Root";
+    const VANILLA_EXE: &str = "D:/Modlists/Morrowind75testing/overwrite/Root/Morrowind.Original.exe";
     /// The `Morrowind.exe` that the database is made from (sha256): the Code Patch has a
     /// folder of its patch file for each exe that it knows.
     const DATABASE_EXE: &str = "6fb89bbe8932b7de718c86dd4387fd59e04b9a33b011b61bc78254ded32f5456";
@@ -353,15 +355,15 @@ mod tests {
     /// Step 0b.4 of the wgpu plan: a new version of the Morrowind Code Patch that writes inside
     /// a ported function fails here, on the machine of a developer, and not in the session of
     /// a player. Each record of each patch file in `NIRENDER_MCPATCH` (folders with a folder
-    /// `mcpatch`, with `;` between them; the game folder of the testing instance without it)
-    /// that writes inside a ported function must be in `ports::CODE_PATCH_RECORDS`, and the
-    /// census must follow it with the option on (the bytes of the record) and off (the bytes
-    /// of `Morrowind.Original.exe`, or `NIRENDER_VANILLA_EXE`). Skipped without the files:
-    /// the patch file is not ours to ship.
+    /// `mcpatch`, with `;` between them; `MCPATCH_ROOT` without it) that writes inside a ported
+    /// function must be in `ports::CODE_PATCH_RECORDS`, and the census must follow it with the
+    /// option on (the bytes of the record) and off (the bytes of `NIRENDER_VANILLA_EXE`, or
+    /// `VANILLA_EXE`). Skipped without the files: the patch file is not ours to ship.
     #[test]
     fn every_code_patch_record_in_a_port_is_followed() {
-        let roots: Vec<String> = std::env::var("NIRENDER_MCPATCH").map(|roots| roots.split(';').map(str::to_string).collect()).unwrap_or_else(|_| vec![GAME.to_string()]);
-        let vanilla_path = std::env::var("NIRENDER_VANILLA_EXE").unwrap_or_else(|_| format!("{GAME}/Morrowind.Original.exe"));
+        let roots: Vec<String> =
+            std::env::var("NIRENDER_MCPATCH").map(|roots| roots.split(';').map(str::to_string).collect()).unwrap_or_else(|_| vec![MCPATCH_ROOT.to_string()]);
+        let vanilla_path = std::env::var("NIRENDER_VANILLA_EXE").unwrap_or_else(|_| VANILLA_EXE.to_string());
         let Ok(vanilla) = std::fs::read(&vanilla_path) else {
             eprintln!("skipped: no {vanilla_path}");
             return;
