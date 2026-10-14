@@ -117,6 +117,9 @@ pub struct FrameParameters {
     /// after the call. `None`: the draws that blend come in their place in the order of the
     /// game.
     pub class_plane: Option<(u32, [f64; 4])>,
+    /// True when the extension takes draws of the world: the renderer calls `Extension::hold`
+    /// for each shape of the world, and gives the shapes it took to `Extension::draw_held`.
+    pub hold: bool,
 }
 
 /// The facts of the world scene of the game at a moment, for a call of the extension.
@@ -370,8 +373,12 @@ impl Replay for Replayer<'_> {
     }
 }
 
-/// The facts of a draw that are not in its uniform, for `Extension::shade`.
+/// The facts of a draw that are not in its uniform, for `Extension::shade` and
+/// `Extension::hold`.
+#[derive(Clone, Copy, Debug)]
 pub struct DrawFacts {
+    /// The class of the object of the draw: MGE_LINK_CLASS_*.
+    pub class: u32,
     /// The alpha blend of the draw: on, and the two factors as Direct3D 8 numbers them
     /// (D3DBLEND_ONE is 2).
     pub blend_enable: bool,
@@ -379,6 +386,93 @@ pub struct DrawFacts {
     pub destination_blend: u32,
     /// The draw writes depth.
     pub depth_write: bool,
+    /// The specular power of the material (`D3DMATERIAL8::Power`). A mod marks a surface of
+    /// water with it.
+    pub specular_power: f32,
+    /// The emissive colour of the material, with its alpha.
+    pub emissive: [f32; 4],
+}
+
+/// Where the parts of a vertex of a draw of the game are: offsets in bytes from the start of
+/// the vertex, as the renderer reads the flexible vertex format of Direct3D 8.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct VertexLayout {
+    /// The bytes from one vertex to the next.
+    pub stride: u64,
+    /// Three floats.
+    pub position: u64,
+    /// Three floats, or `None`.
+    pub normal: Option<u64>,
+    /// A D3DCOLOR (`Unorm8x4`: blue, green, red, alpha), or `None`.
+    pub color: Option<u64>,
+    /// Two floats for each set of texture coordinates (four at most).
+    pub coordinates: Vec<u64>,
+}
+
+impl VertexLayout {
+    /// The layout of a format with no blend weights. `None` for one that the renderer does not
+    /// draw, or that has blend weights.
+    fn of(fvf: u32, stride: u32) -> Option<VertexLayout> {
+        let attributes = attributes(fvf, stride)?;
+        if attributes.iter().any(|a| a.location >= 7) {
+            return None;
+        }
+        let at = |location: u32| attributes.iter().find(|a| a.location == location).map(|a| a.offset);
+        Some(VertexLayout {
+            stride: stride as u64,
+            position: at(0)?,
+            normal: at(1),
+            color: at(2),
+            coordinates: (3..7).map_while(at).collect(),
+        })
+    }
+}
+
+/// A map of the material of a held draw, with the texture of the game.
+#[derive(Clone)]
+pub struct HeldMap {
+    /// The map in the texturing property: `material::BASE` to `material::DECAL0 + 1`.
+    pub map: usize,
+    pub texture: Rc<wgpu::TextureView>,
+    /// The set of texture coordinates of the map, in `VertexLayout::coordinates`.
+    pub set: u32,
+    /// The sampler states: address U, address V, the magnify, minify and mip filters, as
+    /// Direct3D 8 has them.
+    pub sampler: [u32; 5],
+}
+
+/// A shape of the world of the game that the extension took (`Extension::hold`): the renderer
+/// draws none of its passes, and the extension draws it in its own way in
+/// `Extension::draw_held`. It is never an instance of another draw.
+#[derive(Clone)]
+pub struct HeldDraw {
+    pub facts: DrawFacts,
+    pub vertices: Rc<wgpu::Buffer>,
+    /// The indexes, 16 bits each.
+    pub indexes: Rc<wgpu::Buffer>,
+    pub layout: VertexLayout,
+    pub topology: wgpu::PrimitiveTopology,
+    /// The parts of the shape: the first index and the number of indexes of each. A strip
+    /// topology has one part for each strip.
+    pub parts: Vec<(u32, u32)>,
+    /// The uniform that the renderer made for the first pass of the shape: the world matrix,
+    /// the view and the projection of the draw (see `origin`), the material, the fog and the
+    /// texture stages. Its `light_range` counts in `lights`.
+    pub data: DrawData,
+    /// The origin that the world matrix is relative to, or `None`. With an origin, the view
+    /// of `data` has the camera at 0.
+    pub origin: Option<[f64; 3]>,
+    /// The lights that the game lit the shape with, relative to `origin` when there is one.
+    pub lights: Vec<LightData>,
+    /// The maps of the material that have a texture.
+    pub maps: Vec<HeldMap>,
+    /// The depth test of the shape: on, write, function (D3DCMPFUNC).
+    pub depth: [u32; 3],
+    /// D3DCULL: 1 none, 2 clockwise, 3 counter-clockwise.
+    pub cull: u32,
+    /// The stencil of the shape: on, function, reference, mask, fail, depth fail, pass
+    /// (Direct3D values).
+    pub stencil: [u32; 7],
 }
 
 /// A program that draws more than the game does: for example the distant land of MGE XE.
@@ -480,6 +574,24 @@ pub trait Extension {
     /// far: for a refraction. MGE XE draws its water in place of the water plane of the
     /// game (class 10).
     fn draw_class(&mut self, _class: u32, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {}
+
+    /// Takes a shape of the world of the game away from the renderer, when
+    /// `FrameParameters::hold` is true: none of its passes is drawn, and the extension gets
+    /// it in `draw_held`. Called one time for each shape record into the back buffer in the
+    /// scenes of the world (with a perspective projection), but not for the sky, the water
+    /// plane of the game, a skinned shape, a particle system or lines. `facts` are those of
+    /// the first pass.
+    fn hold(&mut self, _facts: &DrawFacts) -> bool {
+        false
+    }
+
+    /// The renderer calls this one time in a frame, at the end of the world scene of the
+    /// game, with the shapes that `hold` took in the frame: after `after_world` and `blend`,
+    /// before the draws of the game that blend (they come after the world scene) and its
+    /// water plane. The pass and the matrices are those of the game; `scene.picture` is the
+    /// picture of the frame before the call and `scene.depth` the depth of the game so far:
+    /// for a refraction. Not called without a held shape.
+    fn draw_held(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _held: &[HeldDraw], _replay: &mut dyn Replay) {}
 
     /// The renderer calls this after the world views of the game (at the start of its user
     /// interface scene, or at the end of the frame without one), when `FrameParameters::post`
@@ -1195,6 +1307,8 @@ struct Counts {
     target_draws: u32,
     /// The kept draws that were drawn again for an extension.
     replayed: u32,
+    /// The shapes that the extension took (`Extension::hold`).
+    held: u32,
     texture_updates_lost: u32,
     lost_reasons: HashMap<String, u32>,
     textures_decoded: u32,
@@ -2752,6 +2866,8 @@ struct Player {
     /// The draws of the world scene that are not the sky and came before the sky (see
     /// `draw`): they go into the items after the start of the world.
     held_draws: Vec<Item>,
+    /// The shapes of the frame that the extension took, for `Extension::draw_held`.
+    taken: Vec<HeldDraw>,
     /// The lights of all draws of the frame, in the order of the draws.
     frame_lights: Vec<LightData>,
     /// The bones of the skinned draws of the frame, for the bone buffer.
@@ -2856,6 +2972,7 @@ impl Player {
             items: Vec::new(),
             world_draws: Vec::new(),
             held_draws: Vec::new(),
+            taken: Vec::new(),
             frame_lights: Vec::new(),
             frame_bones: Vec::new(),
             frame_instances: Vec::new(),
@@ -2959,6 +3076,7 @@ impl Player {
         self.world_begun = false;
         self.sky_seen = false;
         self.held_draws.clear();
+        self.taken.clear();
         self.world_ended = false;
         self.replaced = 0;
         self.plane_ahead = None;
@@ -3157,6 +3275,10 @@ impl Player {
         if let Some(source) = derived.sources[2] {
             self.stream.ambient_source = source;
         }
+        if self.hold_shape(&m, &derived, flags, effects.as_ref(), entries, &strips) {
+            self.stream.shape_bones = None;
+            return;
+        }
         for pass in 0..derived.passes.len() {
             let state = Pass::new(&derived, pass, &m, &self.renderer.textures, effects.as_ref());
             // The flag 128: the draw goes into the picture of the character with the Code
@@ -3186,6 +3308,101 @@ impl Player {
             self.renderer.counts.shape_draws += 1;
         }
         self.stream.shape_bones = None;
+    }
+
+    /// Gives the shape in progress to the extension when it takes it: see `Extension::hold`.
+    /// True when the extension took it; then none of its passes is drawn.
+    fn hold_shape(&mut self, m: &material::Material, derived: &material::Derived, flags: u32, effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>, entries: u32, strips: &[u16]) -> bool {
+        let class = self.stream.object_class;
+        // Flag 8 is a particle system, 64 lines, 128 a draw into the picture of the
+        // character. Classes 1 to 8 are the sky and the glare of the sun, 10 the water plane.
+        let world = self.extension.is_some()
+            && self.stream.back_buffer
+            && self.target.is_none()
+            && matches!(self.scene_kind, 1..=3)
+            && !(1..=8).contains(&class)
+            && class != 10
+            && self.stream.projection[11] == 1.0
+            && flags & (8 | 64 | 128) == 0
+            && self.stream.shape_bones.is_none()
+            && !derived.passes.is_empty();
+        if !world {
+            return false;
+        }
+        // The answers of the frame, as `draw` asks for them at the first draw of the world
+        // scene.
+        if self.parameters.is_none() && self.scene_kind == 1 {
+            self.ask_frame();
+        }
+        let Some((true, fog_range)) = self.parameters.as_ref().map(|p| (p.hold, p.fog_range)) else { return false };
+        let shape = &self.stream.shape;
+        let Some(layout) = VertexLayout::of(shape.fvf, shape.stride) else { return false };
+        let Some((vertices, indexes)) = self.renderer.geometries.get(&shape.geometry).filter(|g| entries <= g.entries).map(|g| (g.vertex.clone(), g.index.clone())) else { return false };
+        let pass = Pass::new(derived, 0, m, &self.renderer.textures, effects);
+        let facts = DrawFacts {
+            class,
+            blend_enable: pass.blend[0] != 0,
+            source_blend: pass.blend[1],
+            destination_blend: pass.blend[2],
+            depth_write: derived.depth[1] != 0,
+            specular_power: shape.material[16],
+            emissive: shape.material[12..16].try_into().unwrap(),
+        };
+        if !self.extension.as_mut().is_some_and(|extension| extension.hold(&facts)) {
+            return false;
+        }
+        let (topology, parts) = if strips.is_empty() {
+            (wgpu::PrimitiveTopology::TriangleList, vec![(0, entries / 3 * 3)])
+        } else {
+            let mut start = 0u32;
+            let parts = strips
+                .iter()
+                .map(|&length| {
+                    let part = (start, (length as u32).max(2));
+                    start += length as u32;
+                    part
+                })
+                .collect();
+            (wgpu::PrimitiveTopology::TriangleStrip, parts)
+        };
+        let sets = layout.coordinates.len() as u32;
+        let maps = m
+            .maps
+            .iter()
+            .enumerate()
+            .filter(|(_, map)| map.present && map.texture != 0)
+            .filter_map(|(index, map)| {
+                let texture = self.renderer.textures.get(&map.texture)?.clone();
+                let mut sampler = material::sampler_states(map.clamp, map.filter);
+                // A texture with one level gets no mip filter, as the texture manager sets it.
+                if texture.texture().mip_level_count() <= 1 {
+                    sampler[4] = 0;
+                }
+                Some(HeldMap { map: index, texture, set: map.set.min(sets.saturating_sub(1)), sampler })
+            })
+            .collect();
+        self.stream.fog_range = fog_range;
+        self.stream.sky = None;
+        let mut lights = Vec::new();
+        let data = self.stream.draw_data(derived, &pass, &mut self.renderer.counts, &mut lights);
+        let origin = self.stream.origin.filter(|_| self.stream.shape.relative);
+        self.taken.push(HeldDraw {
+            facts,
+            vertices,
+            indexes,
+            layout,
+            topology,
+            parts,
+            data,
+            origin,
+            lights,
+            maps,
+            depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
+            cull: derived.cull,
+            stencil: derived.stencil,
+        });
+        self.renderer.counts.held += 1;
+        true
     }
 
     /// Prints the counts since the last mark, for one step of a scenario.
@@ -3805,9 +4022,30 @@ impl Player {
             extension.blend(&scene, &mut pass, &before, &depth);
             drop(pass);
             self.renderer.counts.times[TIME_EXT_AFTER] += clock.elapsed();
-            self.extension = Some(extension);
             self.open_pass(None, None, None);
+        }
+        self.extension = Some(extension);
+        self.give_held(facts);
+    }
+
+    /// Gives the extension the shapes that it took in the frame. See `Extension::draw_held`.
+    fn give_held(&mut self, facts: &WorldFacts) {
+        if self.taken.is_empty() {
             return;
+        }
+        let Some(mut extension) = self.extension.take() else { return };
+        let (picture, depth) = self.copy_picture_and_depth();
+        let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
+        let mut scene = facts.view(&device, &queue, format);
+        scene.picture = picture.as_ref();
+        scene.depth = depth.as_ref();
+        if let Some(pass) = self.pass.as_mut() {
+            let world = std::mem::take(&mut self.world_draws);
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+            let clock = std::time::Instant::now();
+            extension.draw_held(&scene, pass, &self.taken, &mut replayer);
+            self.renderer.counts.times[TIME_EXT_CLASS] += clock.elapsed();
+            self.world_draws = world;
         }
         self.extension = Some(extension);
     }
@@ -4088,7 +4326,16 @@ impl Player {
         if shade && world && self.stream.projection[11] == 1.0 {
             if let Some(extension) = self.extension.as_mut() {
                 let (first, count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);
-                extension.shade(&mut draw_data, &mut self.frame_lights[first..first + count], &DrawFacts { blend_enable: key.blend[0] != 0, source_blend: key.blend[1], destination_blend: key.blend[2], depth_write: key.depth[1] != 0 });
+                let facts = DrawFacts {
+                    class,
+                    blend_enable: key.blend[0] != 0,
+                    source_blend: key.blend[1],
+                    destination_blend: key.blend[2],
+                    depth_write: key.depth[1] != 0,
+                    specular_power: shape.material[16],
+                    emissive: shape.material[12..16].try_into().unwrap(),
+                };
+                extension.shade(&mut draw_data, &mut self.frame_lights[first..first + count], &facts);
                 // The lights of a draw have keys: they are candidates for the clusters of
                 // the frame, and the draw can take its light from them.
                 if renderer.clusters.on {
@@ -4180,6 +4427,7 @@ impl Player {
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material", c.shape_records, c.shape_draws, c.shape_missing);
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
         println!("sorted draws {}, instanced away {}, skinned shapes {}, particle systems {}", c.sorted_draws, c.instanced_draws, c.shape_skinned, c.shape_particles);
+        println!("shapes held for the extension {}", c.held);
         println!("lights: {} records, {} lights of a shape without a record", c.light_records, c.light_missing);
         println!(
             "clusters: {:.1} lights and {:.0} entries for each frame, {} frames without (a light had no cut-off), {} frames with more lights than a mask holds",
@@ -5017,5 +5265,24 @@ mod live {
             finished: false,
         };
         EventLoop::new().expect("an event loop").run_app(&mut app).expect("the event loop");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VertexLayout;
+
+    #[test]
+    fn layout_of_a_format() {
+        // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX2: 12 + 12 + 4 + 2 * 8 bytes.
+        let layout = VertexLayout::of(0x2 | 0x10 | 0x40 | 0x200, 44).unwrap();
+        assert_eq!(layout, VertexLayout { stride: 44, position: 0, normal: Some(12), color: Some(24), coordinates: vec![28, 36] });
+        // D3DFVF_XYZ | D3DFVF_TEX1, with no normal and no colour.
+        let layout = VertexLayout::of(0x2 | 0x100, 20).unwrap();
+        assert_eq!(layout, VertexLayout { stride: 20, position: 0, normal: None, color: None, coordinates: vec![12] });
+        // Transformed vertices (D3DFVF_XYZRHW) and blend weights (D3DFVF_XYZB4 with the
+        // indexes) have no layout for a held draw.
+        assert!(VertexLayout::of(0x4 | 0x40, 20).is_none());
+        assert!(VertexLayout::of(0xC | 0x1000 | 0x10, 40).is_none());
     }
 }
