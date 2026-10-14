@@ -419,7 +419,8 @@ unsafe extern "C" fn fpu_control_word(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.link()` returns ok and a message. It connects to the render link of MGE XE.
+/// `nirender.link()` returns ok and a message. It connects the ports to the host of the render
+/// link in the plugin.
 /// After that the plugin tells MGE XE the scene and the object of the device calls. Call
 /// `install` first.
 unsafe extern "C" fn link(l: LuaState) -> i32 {

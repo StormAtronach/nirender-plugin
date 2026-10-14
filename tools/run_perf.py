@@ -43,8 +43,6 @@ def main():
     ap.add_argument("--save", default="quiksave.ess")
     ap.add_argument("--rounds", type=int, default=6, help="rounds for each mode")
     ap.add_argument("--seconds", type=int, default=10, help="length of a round")
-    ap.add_argument("--link", action="store_true", help="connect to MGE XE, and measure a third mode: the Rust code "
-                    "with all facts and kinds of the render link in use")
     ap.add_argument("--label", default="perf")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -52,9 +50,9 @@ def main():
     session.prepare(build=not args.no_build)
     run = session.Run(args.label)
     result_file = run.path("frames.json")
-    modes = (("off", "game"), ("live", "rust"), ("link", "link")) if args.link else (("off", "game"), ("live", "rust"))
+    modes = (("off", "game"), ("live", "rust"))
     spec = run.spec("perf", save=args.save, cell=args.cell, rounds=args.rounds, roundSeconds=args.seconds,
-                    resultFile=result_file.replace("\\", "/"), link=args.link, facts=4261413630, kinds=7)
+                    resultFile=result_file.replace("\\", "/"))
     done = run.launch(spec, 90 + args.rounds * len(modes) * (args.seconds + 2), TAG)
     if not done or not os.path.isfile(result_file):
         print("FAIL: the measurement did not finish")
@@ -81,9 +79,6 @@ def main():
     change = (summary["rust"]["mean_ms"] / summary["game"]["mean_ms"] - 1) * 100
     print("\nmean frame time, rust against game: %+.2f %%" % change)
     names = dict(modes)
-    if args.link:
-        change_link = (summary["link"]["mean_ms"] / summary["game"]["mean_ms"] - 1) * 100
-        print("mean frame time, link against game: %+.2f %%" % change_link)
     print("\nrounds (mean ms): " + "  ".join("%s %.3f" % (names[m], d["mean_ms"]) for m, d in rounds))
     # The spread between rounds of the same mode shows how much a difference between the
     # modes means.

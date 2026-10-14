@@ -1,4 +1,4 @@
-//! The client of the render link. It tells MGE XE the scene and the object of the device
+//! The client of the render link. It tells the host (`own_host`) the scene and the object of the device
 //! calls that follow. `link.rs` has the contract.
 //!
 //! The packets come from `before` functions on the ports. They do not depend on the mode of
@@ -1361,21 +1361,12 @@ pub unsafe fn connect() -> Result<String, String> {
     if HOST.load(Ordering::Relaxed) != 0 {
         return Ok("connected before".to_string());
     }
-    let table: *const HostV1 = if crate::own_device::present() || own_d3d8() {
-        // The device of the game is the one of the plugin. The plugin is the host too.
-        crate::own_host::table()
-    } else {
-        let module = host_module();
-        if module == 0 {
-            return Err("no d3d8.dll of the game folder is in the process".to_string());
-        }
-        let export = win::GetProcAddress(module as *mut c_void, CONNECT_EXPORT.as_ptr());
-        if export.is_null() {
-            return Err("the d3d8.dll has no MGE_RenderLinkConnect".to_string());
-        }
-        let connect: ConnectFn = core::mem::transmute(export);
-        connect(VERSION)
-    };
+    // The plugin is the host of the link when the device of the game is its own. With a
+    // Direct3D device of MGE XE in the process there is no host.
+    if !(crate::own_device::present() || own_d3d8()) {
+        return Err("the game has a Direct3D device of MGE XE: no host of the render link".to_string());
+    }
+    let table: *const HostV1 = crate::own_host::table();
     let Some(host) = table.as_ref() else {
         return Err(format!("the host refused version {VERSION}"));
     };

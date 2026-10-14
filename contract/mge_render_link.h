@@ -1,19 +1,15 @@
 #pragma once
 
-// The render link: the contract between nirender.dll (the client) and the d3d8.dll of
-// MGE XE (the host).
+// The render link: the contract between the ports of nirender.dll (the client) and its own
+// host (`src/own_host.rs`). The d3d8.dll of MGE XE was the host on Direct3D 9 before.
 //
 // The client knows what the game draws. It tells the host the scene and the object of the
 // D3D8 calls that follow. The host does not have to infer these facts from the calls.
 //
-// This file is the same, byte for byte, in the two repos:
-//   nirender-plugin/contract/mge_render_link.h   (the source)
-//   MGE-XE/d3d8/cpp/mge/mge_render_link.h        (the copy)
-// `tools/check_contract.py` of nirender-plugin compares them. `src/link.rs` has the same
-// structs for Rust.
+// `src/link.rs` has the same structs for Rust; `tools/check_contract.py` compares the two.
 //
 // Rules:
-// - The two DLLs are 32-bit. A pointer and a `uint32_t` have the same size.
+// - The plugin is 32-bit. A pointer and a `uint32_t` have the same size.
 // - An address of a game object is a `uint32_t`. The host must not keep it after the scene.
 // - Each struct starts with its size. A new version adds members at the end.
 // - Every function is `__cdecl` and runs on the render thread of the game.

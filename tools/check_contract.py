@@ -1,10 +1,9 @@
 """Checks the render link contract.
 
-    python tools/check_contract.py [path of the MGE XE repo]
+    python tools/check_contract.py
 
-1. `contract/mge_render_link.h` and the copy in the MGE XE repo are the same bytes.
-2. Each `#define` number of the header has the same value in `src/link.rs`.
-3. Each struct size of the header has the same value in `src/link.rs`.
+1. Each `#define` number of the header has the same value in `src/link.rs`.
+2. Each struct size of the header has the same value in `src/link.rs`.
 
 The exit code is 0 when all checks pass.
 """
@@ -16,8 +15,6 @@ from common import REPO
 
 HEADER = os.path.join(REPO, "contract", "mge_render_link.h")
 RUST = os.path.join(REPO, "src", "link.rs")
-MGE_DEFAULT = os.path.join(os.path.dirname(REPO), "MGE-XE-G7-render-link")
-MGE_COPY = os.path.join("d3d8", "cpp", "mge", "mge_render_link.h")
 
 # Header prefixes, longest first. The Rust name is the header name without its prefix.
 PREFIXES = ("MGE_RENDER_LINK_", "MGE_LINK_")
@@ -36,16 +33,9 @@ def camel(name):
 
 
 def main():
-    mge = sys.argv[1] if len(sys.argv) > 1 else MGE_DEFAULT
     header = open(HEADER, "rb").read()
     rust = open(RUST, encoding="utf-8").read()
     problems = []
-
-    copy = os.path.join(mge, MGE_COPY)
-    if not os.path.exists(copy):
-        problems.append("no copy of the header at %s" % copy)
-    elif open(copy, "rb").read() != header:
-        problems.append("the copy at %s is different from the source" % copy)
 
     text = header.decode("ascii")
     rust_consts = {m.group(1): int(m.group(2), 0) for m in re.finditer(r"pub const (\w+): u32 = (\w+);", rust)}
@@ -68,7 +58,7 @@ def main():
     for problem in problems:
         print("FAIL: " + problem)
     if not problems:
-        print("contract ok: %d constants, %d structs, copy equal" % (len(defines), len(header_sizes)))
+        print("contract ok: %d constants, %d structs" % (len(defines), len(header_sizes)))
     return 1 if problems else 0
 
 

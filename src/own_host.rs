@@ -1,9 +1,9 @@
 //! The plugin as the host of its own render link.
 //!
-//! The host of the render link is MGE XE at first: each call of the link ends on its D3D9
-//! device. After `take_over` the plugin answers the calls itself. Then the game makes no
-//! call that gets to a D3D device: the commands go only into the stream of `capture`, and a
-//! renderer in another process draws them.
+//! The plugin is the host of the render link: each call of the link ends here, and not on a
+//! Direct3D device. The game makes no call that gets to a D3D device: the commands go only
+//! into the stream of `capture`, and a renderer in another process draws them. (The
+//! `d3d8.dll` of MGE XE was the host on Direct3D 9 before; that host is gone.)
 //!
 //! The game holds pointers to its buffers, textures and surfaces and calls their methods.
 //! Other code in the process does that too, for example the skinning code of MGE XE. So each

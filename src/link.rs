@@ -1,4 +1,5 @@
-//! The render link: the contract between this plugin and the `d3d8.dll` of MGE XE.
+//! The render link: the contract between the ports of this plugin (the client) and `own_host`
+//! (the host).
 //!
 //! `contract/mge_render_link.h` is the source of the contract. This module has the same
 //! structs and constants. `tools/check_contract.py` compares the sizes and the constants.
@@ -342,12 +343,6 @@ pub struct HostV1 {
     pub call: unsafe extern "C" fn(call: u32, args: *const u32) -> u32,
     pub use_kinds: unsafe extern "C" fn(kind_mask: u32) -> u32,
 }
-
-/// `MGE_RenderLinkConnect`
-pub type ConnectFn = unsafe extern "C" fn(client_version: u32) -> *const HostV1;
-
-/// The name of the export of the host, with the NUL at the end.
-pub const CONNECT_EXPORT: &[u8] = b"MGE_RenderLinkConnect\0";
 
 // The sizes of the header. They are for the 32-bit target only.
 #[cfg(target_pointer_width = "32")]
