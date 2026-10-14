@@ -234,6 +234,9 @@ enum Item {
     Replace(u32, Box<WorldFacts>, usize),
     /// The post-processing of the extension, after the world views.
     Post(Box<WorldFacts>),
+    /// A held shape that the extension draws in its place in the order of the game
+    /// (`Extension::draw_held_in_place`), with the facts of the world there.
+    HeldHere(Box<HeldDraw>, Box<WorldFacts>),
 }
 
 /// How the renderer draws the kept world draws of the frame again. See `Replay`.
@@ -643,6 +646,23 @@ pub trait Extension {
     /// for a refraction. `scene.before_depth` is the depth of what `before_world` drew, when
     /// it gave true. Called when a shape was held, or when `wants_held` says so.
     fn draw_held(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _held: &[HeldDraw], _replay: &mut dyn Replay) {}
+
+    /// True when the extension draws this held shape in its place in the order of the game,
+    /// in `draw_held_in_place`, and not in `draw_held`: for a shape whose look depends on the
+    /// draws around it, as one with a stencil test of its own. The engine sets the stencil
+    /// state of each shape as it draws it (`NiD3DRenderState::ApplyStencil`), so a mask is
+    /// the shapes before it in the order of the scene graph, and a shape after it can draw
+    /// over it through the same mask (a well: the mask of the opening, the water, then the
+    /// shaft through the opening).
+    fn held_in_place(&self, _held: &HeldDraw) -> bool {
+        false
+    }
+
+    /// The renderer calls this for each held shape that `held_in_place` named, at the place of
+    /// the shape in the order of the game: after the draws of the game before it, before
+    /// those after it. The pass, `scene.picture` (a copy of the picture there),
+    /// `scene.depth` and `scene.lights` are as for `draw_held`.
+    fn draw_held_in_place(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _held: &[HeldDraw], _replay: &mut dyn Replay) {}
 
     /// True when the extension wants its call `draw_held` in this frame without a held shape,
     /// for draws of its own at that place in the frame: MGE XE draws the water among its
@@ -1191,6 +1211,17 @@ const TIME_PRESENT: usize = 14;
 /// parts inside it, its own time is the time of the whole less the change of this sum.
 fn sum_except(times: &[std::time::Duration; TIME_COUNT], skip: usize) -> std::time::Duration {
     times.iter().enumerate().filter(|(i, _)| *i != skip).map(|(_, t)| *t).sum()
+}
+
+/// The test of a D3DCMPFUNC value, for an extension that draws with the tests of a shape
+/// (`HeldDraw::depth`, `HeldDraw::stencil`).
+pub fn d3d_compare(value: u32) -> wgpu::CompareFunction {
+    compare(value)
+}
+
+/// The operation of a D3DSTENCILOP value, for the same.
+pub fn d3d_stencil_operation(value: u32) -> wgpu::StencilOperation {
+    stencil_operation(value)
 }
 
 /// D3DSTENCILOP_*.
@@ -3581,7 +3612,7 @@ impl Player {
         let mut lights = Vec::new();
         let data = self.stream.draw_data(derived, &pass, &mut self.renderer.counts, &mut lights);
         let origin = self.stream.origin.filter(|_| self.stream.shape.relative);
-        self.taken.push(HeldDraw {
+        let held = HeldDraw {
             facts,
             vertices,
             indexes,
@@ -3595,7 +3626,13 @@ impl Player {
             depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
             cull: derived.cull,
             stencil: derived.stencil,
-        });
+        };
+        if self.extension.as_ref().is_some_and(|extension| extension.held_in_place(&held)) {
+            let facts = self.world_facts(false);
+            self.items.push(Item::HeldHere(Box::new(held), Box::new(facts)));
+        } else {
+            self.taken.push(held);
+        }
         self.renderer.counts.held += 1;
         true
     }
@@ -4051,6 +4088,7 @@ impl Player {
                 }
                 Item::WorldStart(facts) => self.start_world(&facts),
                 Item::WorldEnd(facts) => self.end_world(&facts),
+                Item::HeldHere(held, facts) => self.give_held_here(*held, &facts),
                 Item::Replace(class, facts, drawn) => self.replace_class(class, &facts, drawn),
                 Item::Post(facts) => self.post_process(&facts),
             }
@@ -4247,6 +4285,28 @@ impl Player {
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
             let clock = std::time::Instant::now();
             extension.draw_held(&scene, pass, &self.taken, &mut replayer);
+            self.renderer.counts.times[TIME_EXT_CLASS] += clock.elapsed();
+            self.world_draws = world;
+        }
+        self.extension = Some(extension);
+    }
+
+    /// Gives the extension a held shape in its place. See `Extension::draw_held_in_place`.
+    fn give_held_here(&mut self, held: HeldDraw, facts: &WorldFacts) {
+        let Some(mut extension) = self.extension.take() else { return };
+        let (picture, depth) = self.copy_picture_and_depth();
+        let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
+        let mut scene = facts.view(&device, &queue, format);
+        scene.picture = picture.as_ref();
+        scene.depth = depth.as_ref();
+        let own = &self.renderer.extension_lights;
+        let lights = own.built.then(|| (own.lights.clone(), own.uniform.clone(), own.table.clone(), own.indexes.clone(), own.origin));
+        scene.lights = lights.as_ref().map(|(lights, clusters, table, indexes, origin)| FrameLights { lights, clusters, table, indexes, origin: *origin });
+        if let Some(pass) = self.pass.as_mut() {
+            let world = std::mem::take(&mut self.world_draws);
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+            let clock = std::time::Instant::now();
+            extension.draw_held_in_place(&scene, pass, core::slice::from_ref(&held), &mut replayer);
             self.renderer.counts.times[TIME_EXT_CLASS] += clock.elapsed();
             self.world_draws = world;
         }
