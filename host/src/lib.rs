@@ -56,9 +56,10 @@ pub struct SceneView<'a> {
     pub sun_ambient: [f32; 3],
     /// The ambient light of the scene.
     pub ambient: [f32; 3],
-    /// For `Extension::draw_class` and `Extension::blend`: the picture of the frame as it is
-    /// before the call (a copy), and the depth of the draws of the game so far (in `blend`,
-    /// the depth comes as an argument). `None` in the other calls.
+    /// For the calls of `ReadingCall`: the picture of the frame as it is before the call (a
+    /// copy), and the depth of the draws of the game so far (in `blend`, the depth comes as
+    /// an argument), when `Extension::reads` says that the call reads them. `None` in the
+    /// other calls.
     pub picture: Option<&'a wgpu::TextureView>,
     pub depth: Option<&'a wgpu::TextureView>,
     /// For `Extension::post`, `Extension::draw_class` and `Extension::draw_held`: the depth
@@ -153,6 +154,36 @@ pub struct FrameLights<'a> {
     pub indexes: &'a wgpu::Buffer,
     /// The point of the world that the positions of the lights are relative to.
     pub origin: [f64; 3],
+}
+
+/// A call of the extension that can read the picture of the frame and the depth of the game
+/// (`SceneView::picture`, `SceneView::depth`). See `Extension::reads`.
+#[derive(Clone, Copy)]
+pub enum ReadingCall<'a> {
+    /// `Extension::blend`: only the picture counts (its depth is an argument).
+    Blend,
+    /// `Extension::draw_class` for this class.
+    Class(u32),
+    /// `Extension::draw_held` with these shapes.
+    Held(&'a [HeldDraw]),
+    /// `Extension::draw_held_in_place` with this shape.
+    HeldInPlace(&'a HeldDraw),
+    /// `Extension::post`.
+    Post,
+}
+
+/// What a call of the extension reads. A pass cannot read its own targets, so the renderer
+/// gives a copy of each; it makes only the copies that the call reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Reads {
+    pub picture: bool,
+    pub depth: bool,
+}
+
+impl Reads {
+    pub const ALL: Reads = Reads { picture: true, depth: true };
+    pub const NONE: Reads = Reads { picture: false, depth: false };
+    pub const DEPTH: Reads = Reads { picture: false, depth: true };
 }
 
 /// The most reach of a light in the clusters: one cell of the game.
@@ -691,10 +722,16 @@ pub trait Extension {
     /// and `before_world` gave true. The pass draws into the picture of the frame and has
     /// no depth target. `before` is the picture as it was after `before_world`, `depth`
     /// is the depth of the draws of the game (1 where the game drew nothing), and
-    /// `scene.picture` is a copy of the picture as it is now. MGE XE draws its caustics on
-    /// the picture here, then lets the draws of the game near the end of their view range
-    /// go into its distant land.
+    /// `scene.picture` is a copy of the picture as it is now. MGE XE lets the draws of the
+    /// game near the end of their view range go into its distant land here.
     fn blend(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _before: &wgpu::TextureView, _depth: &wgpu::TextureView) {}
+
+    /// What `call` reads of the picture and of the depth, asked just before the call: the
+    /// renderer copies only these, and gives `None` in `SceneView` for the others. A picture
+    /// that a draw only modulates needs no copy: a blend state reads the target.
+    fn reads(&self, _call: ReadingCall) -> Reads {
+        Reads::ALL
+    }
 }
 
 use bytemuck::{Pod, Zeroable};
@@ -1347,6 +1384,9 @@ struct Counts {
     texture_updates: u32,
     render_textures: u32,
     pixel_reads: u32,
+    /// The copies of the picture and of the depth for the calls of the extension.
+    picture_copies: u32,
+    depth_copies: u32,
     /// Where the time of the program goes, in the order of `TIME_NAMES`.
     times: [std::time::Duration; TIME_COUNT],
     /// The frames that are complete.
@@ -4223,14 +4263,15 @@ impl Player {
         }
         // The depth of the world, for the post-processing: the game clears its depth before
         // its later scenes.
+        let mut world_depth_now = false;
         if self.parameters.as_ref().is_some_and(|p| p.post) {
-            self.copy_depth(1);
-            self.world_depth_kept = true;
+            world_depth_now = self.copy_depth(1).is_some();
+            self.world_depth_kept = world_depth_now;
             self.open_pass(None, None, None);
         }
-        // The blend: a pass on the picture only, so that a shader can read the depth. The
-        // extension reads the picture of the game too (the caustics of MGE XE): a copy.
-        let picture = if self.before_kept { self.copy_picture() } else { None };
+        // The blend: a pass on the picture only, so that a shader can read the depth. A copy
+        // of the picture when the extension reads it.
+        let picture = if self.before_kept && extension.reads(ReadingCall::Blend).picture { self.copy_picture() } else { None };
         if let (true, Some(before), Some(color), Some(depth), Some(encoder)) = (self.before_kept, self.before.as_ref(), self.color.clone(), self.depth.clone(), self.encoder.as_mut()) {
             drop(self.pass.take());
             scene.picture = picture.as_ref();
@@ -4258,16 +4299,18 @@ impl Player {
             self.open_pass(None, None, None);
         }
         self.extension = Some(extension);
-        self.give_held(facts);
+        // The blend pass has no depth target: the copy of the world depth is the depth now.
+        self.give_held(facts, world_depth_now);
     }
 
     /// Gives the extension the shapes that it took in the frame. See `Extension::draw_held`.
-    fn give_held(&mut self, facts: &WorldFacts) {
+    /// `world_depth_now`: the copy of the world depth is the depth as it is now.
+    fn give_held(&mut self, facts: &WorldFacts, world_depth_now: bool) {
         if self.taken.is_empty() && !self.extension.as_ref().is_some_and(|extension| extension.wants_held()) {
             return;
         }
         let Some(mut extension) = self.extension.take() else { return };
-        let (picture, depth) = self.copy_picture_and_depth();
+        let (picture, depth) = self.copy_for(extension.reads(ReadingCall::Held(&self.taken)), world_depth_now);
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let mut scene = facts.view(&device, &queue, format);
         let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
@@ -4294,7 +4337,7 @@ impl Player {
     /// Gives the extension a held shape in its place. See `Extension::draw_held_in_place`.
     fn give_held_here(&mut self, held: HeldDraw, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
-        let (picture, depth) = self.copy_picture_and_depth();
+        let (picture, depth) = self.copy_for(extension.reads(ReadingCall::HeldInPlace(&held)), false);
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let mut scene = facts.view(&device, &queue, format);
         scene.picture = picture.as_ref();
@@ -4326,16 +4369,33 @@ impl Player {
         // A copy is not a part of a pass.
         drop(self.pass.take());
         encoder.copy_texture_to_texture(source.as_image_copy(), self.before.as_ref().unwrap().as_image_copy(), size);
+        self.renderer.counts.picture_copies += 1;
         self.before_kept = true;
     }
 
-    /// Copies the picture of the frame and the depth of the game, outside of the pass, for
-    /// a call of the extension that reads them. The pass is open again after.
-    fn copy_picture_and_depth(&mut self) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
-        let picture = self.copy_picture();
-        let depth = self.copy_depth(0);
-        self.open_pass(None, None, None);
+    /// Copies what a call of the extension reads (`Extension::reads`): the picture of the
+    /// frame and the depth of the game, outside of the pass. With `world_depth_now`, the copy
+    /// of the world depth is the depth as it is now, and is given for it. The pass is open
+    /// again after a copy.
+    fn copy_for(&mut self, reads: Reads, world_depth_now: bool) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
+        let picture = if reads.picture { self.copy_picture() } else { None };
+        let depth = match (reads.depth, world_depth_now) {
+            (false, _) => None,
+            (true, true) => self.world_depth_view(),
+            (true, false) => self.copy_depth(0),
+        };
+        if self.pass.is_none() {
+            self.open_pass(None, None, None);
+        }
         (picture, depth)
+    }
+
+    /// The copy of the depth at the end of the world scene, when it was kept in this frame.
+    fn world_depth_view(&self) -> Option<wgpu::TextureView> {
+        self.world_depth
+            .as_ref()
+            .filter(|_| self.world_depth_kept)
+            .map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }))
     }
 
     /// Copies the picture of the frame, outside of the pass. The pass stays closed.
@@ -4350,6 +4410,7 @@ impl Player {
         }
         drop(self.pass.take());
         encoder.copy_texture_to_texture(source.as_image_copy(), self.picture_copy.as_ref().unwrap().as_image_copy(), size);
+        self.renderer.counts.picture_copies += 1;
         self.picture_copy.as_ref().map(|copy| copy.create_view(&Default::default()))
     }
 
@@ -4372,18 +4433,19 @@ impl Player {
         }
         drop(self.pass.take());
         encoder.copy_texture_to_texture(source.as_image_copy(), copy.as_ref().unwrap().as_image_copy(), size);
+        self.renderer.counts.depth_copies += 1;
         copy.as_ref().map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }))
     }
 
     /// Gives the extension its post-processing call. See `Extension::post`.
     fn post_process(&mut self, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
-        let (picture, depth_now) = self.copy_picture_and_depth();
-        // The depth of the end of the world scene, when it was kept; else that of now.
-        let depth = match (self.world_depth_kept, self.world_depth.as_ref()) {
-            (true, Some(copy)) => Some(copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() })),
-            _ => depth_now,
-        };
+        // The depth of the end of the world scene, when it was kept; else a copy of that of now.
+        let mut reads = extension.reads(ReadingCall::Post);
+        let world_depth = self.world_depth_view().filter(|_| reads.depth);
+        reads.depth &= world_depth.is_none();
+        let (picture, depth_now) = self.copy_for(reads, false);
+        let depth = world_depth.or(depth_now);
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let mut scene = facts.view(&device, &queue, format);
         let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
@@ -4427,7 +4489,7 @@ impl Player {
             self.plane_ahead = None;
             self.split = Some(plane);
         }
-        let (picture, depth) = self.copy_picture_and_depth();
+        let (picture, depth) = self.copy_for(extension.reads(ReadingCall::Class(class)), false);
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let mut scene = facts.view(&device, &queue, format);
         let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
@@ -4715,6 +4777,11 @@ impl Player {
             c.cluster_frames_many
         );
         println!("lights for the extension: {:.1} for each frame", c.extension_lights as f64 / c.frames.max(1) as f64);
+        println!(
+            "copies for the extension: {:.2} of the picture and {:.2} of the depth for each frame",
+            c.picture_copies as f64 / c.frames.max(1) as f64,
+            c.depth_copies as f64 / c.frames.max(1) as f64
+        );
         // With `MGE_XE_GPU_TIME=1`: the GPU time of all timed frames (a replay has no marks).
         if c.gpu_frames != 0 {
             println!("gpu: {:.3} ms in the passes, {:.3} ms the frame, for each of {} timed frames", c.gpu_passes / 1e6 / c.gpu_frames as f64, c.gpu_frame / 1e6 / c.gpu_frames as f64, c.gpu_frames);
