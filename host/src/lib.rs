@@ -61,10 +61,10 @@ pub struct SceneView<'a> {
     /// the depth comes as an argument). `None` in the other calls.
     pub picture: Option<&'a wgpu::TextureView>,
     pub depth: Option<&'a wgpu::TextureView>,
-    /// For `Extension::post` and `Extension::draw_held`: the depth of what
-    /// `Extension::before_world` drew, when it gave true in this frame (the renderer then
-    /// clears the depth for the game). It has the projection of the extension, not that of
-    /// the game.
+    /// For `Extension::post`, `Extension::draw_class` and `Extension::draw_held`: the depth
+    /// of what `Extension::before_world` drew, when it gave true in this frame (the renderer
+    /// then clears the depth for the game). It has the projection of the extension, not that
+    /// of the game.
     pub before_depth: Option<&'a wgpu::TextureView>,
 }
 
@@ -572,8 +572,9 @@ pub trait Extension {
     /// in `FrameParameters::watched`, in place of the draws of that class: none of them is
     /// drawn. The pass and the matrices are those of that draw. `scene.picture` is the
     /// picture of the frame before the call and `scene.depth` is the depth of the game so
-    /// far: for a refraction. MGE XE draws its water in place of the water plane of the
-    /// game (class 10).
+    /// far: for a refraction. `scene.before_depth` is the depth of what `before_world` drew,
+    /// when it gave true. MGE XE draws its water in place of the water plane of the game
+    /// (class 10).
     fn draw_class(&mut self, _class: u32, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {}
 
     /// Takes a shape of the world of the game away from the renderer, when
@@ -4178,8 +4179,10 @@ impl Player {
         let (picture, depth) = self.copy_picture_and_depth();
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let mut scene = facts.view(&device, &queue, format);
+        let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
+        scene.before_depth = before_depth.as_ref();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
@@ -4243,7 +4246,7 @@ impl Player {
         if clear_depth {
             // The depth of the draws of the extension, for its post-processing and for the
             // draws that it makes with the held shapes.
-            if self.parameters.as_ref().is_some_and(|p| p.post || p.hold) {
+            if self.parameters.as_ref().is_some_and(|p| p.post || p.hold || p.watched != 0) {
                 self.before_depth_kept = self.copy_depth(2).is_some();
             }
             // The draws of the game start with a depth target of their own.
