@@ -415,7 +415,9 @@ unsafe fn start_stream(s: &State) {
 }
 
 /// Puts data of another program into the stream, for its part in the renderer: `id` is a
-/// number that the two parts agree on. The `d3d8.dll` of MGE XE calls it.
+/// number that the two parts agree on. With the bit `capture::EXTENSION_KEPT` the data is a
+/// state: the stream and each capture file start with its last record. The `d3d8.dll` of MGE
+/// XE calls it.
 #[no_mangle]
 pub unsafe extern "C" fn nirender_stream_extension(id: u32, data: *const u8, length: u32) {
     if !data.is_null() && length != 0 && length < (1 << 20) {

@@ -520,6 +520,7 @@ unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
     s.tee_only = true;
     let header = s.header;
     write(tag::HEADER, &[&words(&header)]);
+    write_kept();
     #[cfg(not(test))]
     crate::own_host::snapshot();
     crate::geometry_stream::reset();
@@ -640,6 +641,7 @@ pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, 
         s.header = [width, height, window];
     }
     write(tag::HEADER, &[&words(&[width, height, window])]);
+    write_kept();
     crate::log!("stream: start with the device, a ring of {megabytes} MB with the name {name}");
     Ok(())
 }
@@ -726,10 +728,36 @@ pub unsafe fn draw_up(texture: u32, vertex_format: u32, stride: u32, primitive_t
     write(tag::DRAW_UP, &[&words(&[texture, vertex_format, stride, primitive_type, primitives]), vertices]);
 }
 
+/// The bit of the number of an extension record that marks a state, not an event: the
+/// stream keeps the last record of each such number and writes it again at the start of a
+/// stream and of a capture file, so they have the state that was set before them. The record
+/// has the number without the bit.
+pub const EXTENSION_KEPT: u32 = 0x8000_0000;
+
+/// The last record of each number with `EXTENSION_KEPT`, without the bit.
+static mut KEPT: Vec<(u32, Vec<u8>)> = Vec::new();
+
 /// Data of another program for its part in the renderer. See `tag::EXTENSION`.
 pub unsafe fn extension(id: u32, bytes: &[u8]) {
     let _lock = crate::sync::device_lock();
+    let id = if id & EXTENSION_KEPT != 0 {
+        let id = id & !EXTENSION_KEPT;
+        let kept = &mut *core::ptr::addr_of_mut!(KEPT);
+        kept.retain(|(known, _)| *known != id);
+        kept.push((id, bytes.to_vec()));
+        id
+    } else {
+        id
+    };
     write(tag::EXTENSION, &[&words(&[id]), bytes]);
+}
+
+/// Writes the kept extension records again, after the header of a stream or of a file.
+unsafe fn write_kept() {
+    let kept = (*core::ptr::addr_of!(KEPT)).clone();
+    for (id, bytes) in kept {
+        write(tag::EXTENSION, &[&words(&[id]), &bytes]);
+    }
 }
 
 /// Asks the host of the stream for a picture file of the frame in progress.
@@ -1151,6 +1179,7 @@ unsafe fn frame_end() {
                 let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
                 let window: u32 = if renderer != 0 { rd(renderer, DEVICE_WINDOW) } else { 0 };
                 write(tag::HEADER, &[&words(&[size[0], size[1], window])]);
+                write_kept();
                 if let Some(s) = state() {
                     purge(s);
                 }
