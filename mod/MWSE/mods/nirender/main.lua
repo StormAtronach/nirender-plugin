@@ -95,31 +95,10 @@ end
 -- The debug overlay of the renderer (the frame rate, the long frames, the memory of the game
 -- and of the renderer): the key of the configuration turns it on and off ("none" for no key).
 local overlayKey = ownDevice and installed and keyOf("overlayKey", config.overlayKey)
-local overlayOn = false
 if overlayKey then
     event.register("keyDown", function(e)
         if e.keyCode ~= overlayKey or e.isAltDown or e.isControlDown or e.isShiftDown then return end
-        overlayOn = nirender.overlay()
-    end)
-end
-
--- The parameters of the renderer, which the debug overlay lists: while the overlay shows,
--- the number pad selects one (8 and 2), changes it by a step (4 and 6; with shift, by 10
--- steps), and puts it back to its start value (5). The values are for a look by eye:
--- nothing is written to a file.
-if overlayKey and nirender.tune then
-    local commands = {
-        [tes3.scanCode.numpad8] = "previous",
-        [tes3.scanCode.numpad2] = "next",
-        [tes3.scanCode.numpad4] = "less",
-        [tes3.scanCode.numpad6] = "more",
-        [tes3.scanCode.numpad5] = "reset",
-    }
-    event.register("keyDown", function(e)
-        local command = overlayOn and commands[e.keyCode]
-        if not command or e.isAltDown or e.isControlDown then return end
-        if e.isShiftDown and (command == "less" or command == "more") then command = command .. " 10" end
-        nirender.tune(command)
+        nirender.overlay()
     end)
 end
 mwse.log("[nirender] keys: capture %s, overlay %s", tostring(captureKey or "none"), tostring(overlayKey or "none"))
