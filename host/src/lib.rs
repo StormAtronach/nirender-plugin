@@ -61,9 +61,10 @@ pub struct SceneView<'a> {
     /// the depth comes as an argument). `None` in the other calls.
     pub picture: Option<&'a wgpu::TextureView>,
     pub depth: Option<&'a wgpu::TextureView>,
-    /// For `Extension::post`: the depth of what `Extension::before_world` drew, when it
-    /// gave true in this frame (the renderer then clears the depth for the game). It has
-    /// the projection of the extension, not that of the game.
+    /// For `Extension::post` and `Extension::draw_held`: the depth of what
+    /// `Extension::before_world` drew, when it gave true in this frame (the renderer then
+    /// clears the depth for the game). It has the projection of the extension, not that of
+    /// the game.
     pub before_depth: Option<&'a wgpu::TextureView>,
 }
 
@@ -590,8 +591,16 @@ pub trait Extension {
     /// before the draws of the game that blend (they come after the world scene) and its
     /// water plane. The pass and the matrices are those of the game; `scene.picture` is the
     /// picture of the frame before the call and `scene.depth` the depth of the game so far:
-    /// for a refraction. Not called without a held shape.
+    /// for a refraction. `scene.before_depth` is the depth of what `before_world` drew, when
+    /// it gave true. Called when a shape was held, or when `wants_held` says so.
     fn draw_held(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _held: &[HeldDraw], _replay: &mut dyn Replay) {}
+
+    /// True when the extension wants its call `draw_held` in this frame without a held shape,
+    /// for draws of its own at that place in the frame: MGE XE draws the water among its
+    /// distant statics there. Asked at the end of the world scene, after `before_world`.
+    fn wants_held(&self) -> bool {
+        false
+    }
 
     /// The renderer calls this after the world views of the game (at the start of its user
     /// interface scene, or at the end of the frame without one), when `FrameParameters::post`
@@ -4030,15 +4039,17 @@ impl Player {
 
     /// Gives the extension the shapes that it took in the frame. See `Extension::draw_held`.
     fn give_held(&mut self, facts: &WorldFacts) {
-        if self.taken.is_empty() {
+        if self.taken.is_empty() && !self.extension.as_ref().is_some_and(|extension| extension.wants_held()) {
             return;
         }
         let Some(mut extension) = self.extension.take() else { return };
         let (picture, depth) = self.copy_picture_and_depth();
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let mut scene = facts.view(&device, &queue, format);
+        let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
+        scene.before_depth = before_depth.as_ref();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
@@ -4230,8 +4241,9 @@ impl Player {
             self.keep_before();
         }
         if clear_depth {
-            // The depth of the draws of the extension, for its post-processing.
-            if self.parameters.as_ref().is_some_and(|p| p.post) {
+            // The depth of the draws of the extension, for its post-processing and for the
+            // draws that it makes with the held shapes.
+            if self.parameters.as_ref().is_some_and(|p| p.post || p.hold) {
                 self.before_depth_kept = self.copy_depth(2).is_some();
             }
             // The draws of the game start with a depth target of their own.
