@@ -108,6 +108,15 @@ pub struct FrameParameters {
     pub watched: u32,
     /// True when the extension wants the call `Extension::post` in this frame.
     pub post: bool,
+    /// A class in `watched` and a plane for its call, `[a, b, c, d]` in the space of the
+    /// world of the game, with the camera on the side where `a * x + b * y + c * z + d >= 0`:
+    /// a surface of water. The world draws that blend and write no depth (particles, glows,
+    /// smoke) go into the picture on the other side of the plane before the call (so that the
+    /// picture of the call has them, for a refraction), and on the side of the camera after
+    /// the call, over what the call drew: each of them, whether the game sends it before or
+    /// after the call. `None`: the draws that blend come in their place in the order of the
+    /// game.
+    pub class_plane: Option<(u32, [f64; 4])>,
 }
 
 /// The facts of the world scene of the game at a moment, for a call of the extension.
@@ -168,8 +177,9 @@ enum Item {
     Screen(ScreenDraw),
     WorldStart(Box<WorldFacts>),
     WorldEnd(Box<WorldFacts>),
-    /// The extension draws in place of the draws of this class.
-    Replace(u32, Box<WorldFacts>),
+    /// The extension draws in place of the draws of this class. The number of world draws
+    /// before this item: those after it are not in the picture yet.
+    Replace(u32, Box<WorldFacts>, usize),
     /// The post-processing of the extension, after the world views.
     Post(Box<WorldFacts>),
 }
@@ -193,6 +203,9 @@ pub struct ReplayView {
     pub clip_plane: Option<[f64; 4]>,
     /// Only the draws that write depth and do not blend.
     pub opaque_only: bool,
+    /// Only the draws that blend and do not write depth: those that a surface drawn after
+    /// them hides, whatever is nearer.
+    pub translucent_only: bool,
     /// The depth test is on for each draw (less or equal), whatever the draw has: the sky
     /// of the game has it off, and in a reflection it must stay behind the land.
     pub force_depth_test: bool,
@@ -208,10 +221,10 @@ impl ReplayView {
     pub const SKY: u32 = 0xFE;
 }
 
-/// Draws the world draws of the frame again: those of the game in its world scene and its
-/// scene of sorted draws, into the back buffer, with the sky and without the water plane of
-/// the game. The pass must have a colour target and a depth target with the formats of
-/// `SceneView`.
+/// Draws the world draws of the frame again: those of the game in its world scene, its
+/// scene of sorted draws and its scene of the water, into the back buffer, with the sky and
+/// without the water plane of the game. The pass must have a colour target and a depth
+/// target with the formats of `SceneView`.
 pub trait Replay {
     fn replay(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView);
     /// The number of kept draws.
@@ -226,6 +239,8 @@ const INSTANCES_MOST: usize = 1024;
 struct Draw {
     /// The class of the object of the draw: MGE_LINK_CLASS_*.
     class: u32,
+    /// A draw of the world of the game into the back buffer: one of the draws of `Replay`.
+    world: bool,
     key: PipelineKey,
     stencil_reference: u32,
     data: DrawData,
@@ -247,10 +262,25 @@ struct Draw {
     instances: (u32, u32),
 }
 
+impl Draw {
+    /// The draw blends and writes no depth: a surface drawn after it hides it.
+    fn translucent(&self) -> bool {
+        self.key.blend[0] != 0 && self.key.depth[1] == 0
+    }
+}
+
 /// The kept draws with the renderer, for `Replay`.
 struct Replayer<'a> {
     renderer: &'a mut Renderer,
     kept: &'a [Rc<Draw>],
+}
+
+/// A plane in the space of the world of the game, in the space of a draw whose world is
+/// relative to `origin`.
+fn plane_of_draw(plane: [f64; 4], origin: Option<[f64; 3]>) -> [f32; 4] {
+    let origin = origin.unwrap_or([0.0; 3]);
+    let d = plane[3] + plane[0] * origin[0] + plane[1] * origin[1] + plane[2] * origin[2];
+    [plane[0] as f32, plane[1] as f32, plane[2] as f32, d as f32]
 }
 
 /// `a * b` for two matrices with the layout of Direct3D.
@@ -265,7 +295,7 @@ impl Replay for Replayer<'_> {
 
     fn replay(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView) {
         for kept in self.kept {
-            if view.classes & (1 << kept.class.min(31)) == 0 || (view.opaque_only && (kept.key.blend[0] != 0 || kept.key.depth[1] == 0)) {
+            if view.classes & (1 << kept.class.min(31)) == 0 || (view.opaque_only && (kept.key.blend[0] != 0 || kept.key.depth[1] == 0)) || (view.translucent_only && !kept.translucent()) {
                 continue;
             }
             let mut data = kept.data;
@@ -297,8 +327,7 @@ impl Replay for Replayer<'_> {
             }
             data.pixel = [1.0 / view.target_size.0.max(1) as f32, -1.0 / view.target_size.1.max(1) as f32, 0.0, 0.0];
             if let Some(plane) = view.clip_plane {
-                let d = plane[3] + plane[0] * origin[0] + plane[1] * origin[1] + plane[2] * origin[2];
-                data.clip_plane = [plane[0] as f32, plane[1] as f32, plane[2] as f32, d as f32];
+                data.clip_plane = plane_of_draw(plane, kept.origin);
             }
             let mut key = kept.key;
             if view.force_depth_test {
@@ -2742,6 +2771,11 @@ struct Player {
     world_ended: bool,
     /// The classes that the extension took in this frame, one bit for each.
     replaced: u32,
+    /// The plane of `FrameParameters::class_plane` when its call is in the items of the
+    /// frame: before the call the world draws that blend and write no depth are drawn only
+    /// on its far side, and after it (`split`) only on the side of the camera.
+    plane_ahead: Option<[f64; 4]>,
+    split: Option<[f64; 4]>,
     /// The post-processing of this frame is in the items.
     posted: bool,
     /// The view and the projection of the last world draw of the frame: the matrices of
@@ -2830,6 +2864,8 @@ impl Player {
             sky_seen: false,
             world_ended: false,
             replaced: 0,
+            plane_ahead: None,
+            split: None,
             posted: false,
             world_matrices: None,
             scene_kind: 0,
@@ -2925,6 +2961,8 @@ impl Player {
         self.held_draws.clear();
         self.world_ended = false;
         self.replaced = 0;
+        self.plane_ahead = None;
+        self.split = None;
         self.posted = false;
         self.world_matrices = None;
         self.world_depth_kept = false;
@@ -3562,6 +3600,7 @@ impl Player {
 
     fn run_items_inner(&mut self, items: Vec<Item>) {
         let mut items = items;
+        self.plane_ahead = self.parameters.as_ref().and_then(|p| p.class_plane).filter(|(class, _)| items.iter().any(|item| matches!(item, Item::Replace(c, ..) if c == class))).map(|(_, plane)| plane);
         if self.renderer.sort_draws {
             let instancing = self.renderer.instancing;
             Self::sort_items(&mut items, &mut self.renderer.counts, &self.frame_lights, instancing.then_some(&mut self.frame_instances));
@@ -3600,7 +3639,7 @@ impl Player {
                 }
                 Item::WorldStart(facts) => self.start_world(&facts),
                 Item::WorldEnd(facts) => self.end_world(&facts),
-                Item::Replace(class, facts) => self.replace_class(class, &facts),
+                Item::Replace(class, facts, drawn) => self.replace_class(class, &facts, drawn),
                 Item::Post(facts) => self.post_process(&facts),
             }
         }
@@ -3610,7 +3649,22 @@ impl Player {
     fn issue(&mut self, draw: &Draw) {
         let renderer = &mut self.renderer;
         let clock = std::time::Instant::now();
-        let (draw_group, draw_offset) = renderer.draw_slot(&draw.data);
+        // A world draw that blends and writes no depth (not the sky), with the call of a
+        // class with a plane in the frame: on the far side before the call, on the side of
+        // the camera after it. The call draws the other side again. A draw that writes depth
+        // needs no split: the depth test of the call keeps it in front where it is.
+        let side = match (self.split, self.plane_ahead) {
+            (Some(plane), _) => Some(plane),
+            (None, Some(plane)) => Some(plane.map(|v| -v)),
+            (None, None) => None,
+        };
+        let split = draw.world && draw.translucent() && ReplayView::WORLD & (1 << draw.class.min(31)) != 0;
+        let clipped = side.filter(|_| split).map(|plane| {
+            let mut data = draw.data;
+            data.clip_plane = plane_of_draw(plane, draw.origin);
+            data
+        });
+        let (draw_group, draw_offset) = renderer.draw_slot(clipped.as_ref().unwrap_or(&draw.data));
         renderer.counts.times[TIME_DRAW_UPLOAD] += clock.elapsed();
         let clock = std::time::Instant::now();
         let Some(pipeline) = renderer.pipeline(draw.key) else {
@@ -3857,9 +3911,21 @@ impl Player {
     }
 
     /// Gives the extension its call in place of the draws of a class. See
-    /// `Extension::draw_class`.
-    fn replace_class(&mut self, class: u32, facts: &WorldFacts) {
+    /// `Extension::draw_class`. `drawn` is the number of world draws before the call. With
+    /// a plane for the class (`FrameParameters::class_plane`): the world draws that blend,
+    /// write no depth and come after the call go into the picture first, on the far side of
+    /// the plane (those before the call are there already, on that side only); after the
+    /// call each of them that came before it goes on the side of the camera, over the call's
+    /// drawing.
+    fn replace_class(&mut self, class: u32, facts: &WorldFacts, drawn: usize) {
         let Some(mut extension) = self.extension.take() else { return };
+        let plane = self.parameters.as_ref().and_then(|p| p.class_plane).filter(|(c, _)| *c == class).map(|(_, plane)| plane);
+        let drawn = drawn.min(self.world_draws.len());
+        if let Some(plane) = plane {
+            self.replay_blended(drawn.., plane.map(|v| -v), facts.target_size);
+            self.plane_ahead = None;
+            self.split = Some(plane);
+        }
         let (picture, depth) = self.copy_picture_and_depth();
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let mut scene = facts.view(&device, &queue, format);
@@ -3873,7 +3939,34 @@ impl Player {
             self.renderer.counts.times[TIME_EXT_CLASS] += clock.elapsed();
             self.world_draws = world;
         }
+        if let Some(plane) = plane {
+            self.replay_blended(..drawn, plane, facts.target_size);
+        }
         self.extension = Some(extension);
+    }
+
+    /// Draws the world draws in `range` that blend and write no depth again, into the pass,
+    /// only where they are on the positive side of `plane`.
+    fn replay_blended(&mut self, range: impl std::slice::SliceIndex<[Rc<Draw>], Output = [Rc<Draw>]>, plane: [f64; 4], target_size: (u32, u32)) {
+        let Some(pass) = self.pass.as_mut() else { return };
+        let world = std::mem::take(&mut self.world_draws);
+        let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world[range] };
+        replayer.replay(
+            pass,
+            &ReplayView {
+                world: None,
+                view: None,
+                projection: None,
+                target_size,
+                flip_cull: false,
+                clip_plane: Some(plane),
+                opaque_only: false,
+                translucent_only: true,
+                force_depth_test: false,
+                classes: ReplayView::WORLD,
+            },
+        );
+        self.world_draws = world;
     }
 
     /// Gives the extension its call at the start of the world. See `Extension::before_world`.
@@ -3952,7 +4045,7 @@ impl Player {
             if self.replaced & (1 << class) == 0 {
                 self.replaced |= 1 << class;
                 let facts = self.world_facts(false);
-                self.items.push(Item::Replace(class, Box::new(facts)));
+                self.items.push(Item::Replace(class, Box::new(facts), self.world_draws.len()));
             }
             return;
         }
@@ -4044,6 +4137,11 @@ impl Player {
         }
         let draw = Rc::new(Draw {
             class,
+            // The world scene of the game is 1, with the sky at its start; its sorted draws
+            // come in a scene of their own (2), or with the water plane in the scene of the
+            // water (3). The water plane of the game (MGE_LINK_CLASS_WATER_PLANE, 10) is not
+            // a thing of the world.
+            world: in_back_buffer && matches!(self.scene_kind, 1..=3) && class != 10,
             key,
             stencil_reference,
             data: draw_data,
@@ -4057,10 +4155,7 @@ impl Player {
             range: (first_index, indexes),
             instances: (0, 1),
         });
-        // The world scene of the game is 1 and its scene of sorted draws is 2, with the sky
-        // at the start of the first. The water plane of the game (MGE_LINK_CLASS_WATER_PLANE,
-        // 10) is not a thing of the world.
-        if in_back_buffer && matches!(self.scene_kind, 1 | 2) && class != 10 {
+        if draw.world {
             self.world_draws.push(draw.clone());
         }
         if hold {
