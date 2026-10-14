@@ -11,12 +11,12 @@ kept, each with the picture that was accepted for it.
 Stages (capture, baseline and only by default, in this order):
   capture  a run at each place with a capture; the counts of the helper must show no shape
            without a geometry or a material and no light without a record, and the plugin
-           no draw without a record; the capture replayed with the instances and with one
-           draw for each must give the same picture.
+           no draw without a record; the capture replayed with the sort and the instances
+           (MGE_XE_SORT=1, off by default) and with one draw for each must give the same
+           picture.
   baseline replays each capture of the baseline folder (--baseline, results/baseline-records by
-           default: `<name>.nircap` files, frame 1) with the sort of the draws and the
-           instances on, as a player has them (the sort orders equal draws by the handles
-           of the stream, so each build gives the same order) and compares the picture
+           default: `<name>.nircap` files, frame 1) in the order of the game, as a player
+           has them (MGE_XE_SORT=0, the default) and compares the picture
            with `accepted/<name>.png` there. --accept
            writes the pictures instead: for a new baseline, or after a change that is
            meant to change them. A tour run in `tour/` of the baseline folder is replayed
@@ -123,13 +123,13 @@ def stage_capture(place, mge_build):
     ok = check_counts(folder)
     capture = os.path.join(folder, "exterior.nircap")
     a = os.path.join(folder, "replay.png")
-    out_a = run([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20"])
+    out_a = run([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20"], {"MGE_XE_SORT": "1"})
     sys.path.insert(0, HERE)
     import picture_diff
 
     # The instances: the picture with them against the picture of one draw for each.
     c = os.path.join(folder, "replay-one-draw-each.png")
-    run([PY, os.path.join(HERE, "replay.py"), capture, c, "--frame", "20"], {"MGE_XE_INSTANCING": "0"})
+    run([PY, os.path.join(HERE, "replay.py"), capture, c, "--frame", "20"], {"MGE_XE_SORT": "1", "MGE_XE_INSTANCING": "0"})
     numbers = picture_diff.compare(picture_diff.load(a), picture_diff.load(c))
     instanced = re.search(r"instanced away (\d+)", out_a)
     text = "replay with the instances against one draw for each: %s, %s instanced away" % (numbers.get("problem") or "%.2f %% different, mean %.3f" % (numbers["different"] * 100, numbers["mean"]), instanced.group(1) if instanced else "?")
@@ -138,14 +138,13 @@ def stage_capture(place, mge_build):
 
 
 def stage_baseline(baseline, accept):
-    """The captures of the baseline folder against their accepted pictures, with the sort of
-    the draws on: its order of equal draws comes from the handles of the stream, so a replay
-    is the same picture for each build that draws the same."""
+    """The captures of the baseline folder against their accepted pictures, in the order of
+    the draws of the game, as a player has them."""
     print("baseline %s" % baseline, flush=True)
     captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
     if not captures:
         return check(False, "no capture in the baseline folder")
-    env = {"MGE_XE_SORT": "1"}
+    env = {"MGE_XE_SORT": "0"}
     accepted = os.path.join(baseline, "accepted")
     out = accepted if accept else os.path.join(baseline, "now")
     os.makedirs(out, exist_ok=True)

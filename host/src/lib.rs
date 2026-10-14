@@ -2037,8 +2037,10 @@ struct Renderer {
     /// The data of the draws of the frame, one block for each buffer of slots, written to
     /// the GPU once before the submit (`flush_draw_slots`).
     draw_staging: Vec<Vec<u8>>,
-    /// The opaque draws of a run are sorted by pipeline and textures. `MGE_XE_SORT=0`
-    /// keeps the order of the game, for a comparison.
+    /// The draws keep the order of the game: it decides the ties of the depth test (the lines
+    /// of the collision boxes lie on their meshes). `MGE_XE_SORT=1` sorts the opaque draws of
+    /// a run by pipeline and textures and joins them into instances, for a comparison; it
+    /// saved no time of the frame in the measures of plan step 1c.6.
     sort_draws: bool,
     /// The lights of all draws of the frame, and the number of them that the buffer holds.
     light_buffer: wgpu::Buffer,
@@ -2306,7 +2308,7 @@ impl Renderer {
             draw_buffers: Vec::new(),
             draw_slots: 0,
             draw_staging: Vec::new(),
-            sort_draws: std::env::var("MGE_XE_SORT").map_or(true, |v| v != "0"),
+            sort_draws: std::env::var("MGE_XE_SORT").is_ok_and(|v| v == "1"),
             light_capacity: LIGHTS_AT_FIRST,
             texture_layout,
             sampler_layout,
