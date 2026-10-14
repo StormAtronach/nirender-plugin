@@ -14,9 +14,10 @@ Stages (capture, baseline and only by default, in this order):
            no draw without a record; the capture replayed with the instances and with one
            draw for each must give the same picture.
   baseline replays each capture of the baseline folder (--baseline, results/baseline-records by
-           default: `<name>.nircap` files, frame 1) with the sort of the draws off (the
-           order of equal draws changes with the build, and with it a few pixels of
-           leaves) and compares the picture with `accepted/<name>.png` there. --accept
+           default: `<name>.nircap` files, frame 1) with the sort of the draws and the
+           instances on, as a player has them (the sort orders equal draws by the handles
+           of the stream, so each build gives the same order) and compares the picture
+           with `accepted/<name>.png` there. --accept
            writes the pictures instead: for a new baseline, or after a change that is
            meant to change them. A tour run in `tour/` of the baseline folder is replayed
            and compared the same way (`tour/accepted`).
@@ -138,12 +139,13 @@ def stage_capture(place, mge_build):
 
 def stage_baseline(baseline, accept):
     """The captures of the baseline folder against their accepted pictures, with the sort of
-    the draws off: a replay is then the same picture for each build that draws the same."""
+    the draws on: its order of equal draws comes from the handles of the stream, so a replay
+    is the same picture for each build that draws the same."""
     print("baseline %s" % baseline, flush=True)
     captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
     if not captures:
         return check(False, "no capture in the baseline folder")
-    env = {"MGE_XE_SORT": "0"}
+    env = {"MGE_XE_SORT": "1"}
     accepted = os.path.join(baseline, "accepted")
     out = accepted if accept else os.path.join(baseline, "now")
     os.makedirs(out, exist_ok=True)

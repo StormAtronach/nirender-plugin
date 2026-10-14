@@ -1,8 +1,10 @@
 //! Draws a capture of the render link stream with wgpu, without the game.
 //!
-//!     nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N] [--anisotropy N]
-//!     nirender-host --live <name of the shared memory> [--backend vulkan|dx12] [--frames N] [--shot picture.png]
-//!                   [--embed]
+//! ```text
+//! nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N] [--anisotropy N]
+//! nirender-host --live <name of the shared memory> [--backend vulkan|dx12] [--frames N] [--shot picture.png]
+//!               [--embed]
+//! ```
 //!
 //! With `--embed` the window of the host is a child of the window of the game and covers it:
 //! the picture of the host is where the picture of the game was.
@@ -233,6 +235,11 @@ struct Draw {
     samplers: Rc<wgpu::BindGroup>,
     vertices: Rc<wgpu::Buffer>,
     indexes: Rc<wgpu::Buffer>,
+    /// The handles of the textures of the stages and of the geometry record, as the stream has
+    /// them. The sort of the opaque draws orders by these and not by the addresses of the
+    /// buffers, so a replay of a capture gives the same order in each build.
+    texture_handles: [u32; STAGES],
+    geometry: u32,
     /// The first index and the number of indexes.
     range: (u32, u32),
     /// The instances: the first in the instance buffer of the frame and the number. (0, 1)
@@ -3509,7 +3516,7 @@ impl Player {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             draw.key.hash(&mut hasher);
-            (hasher.finish(), Rc::as_ptr(&draw.textures) as usize, Rc::as_ptr(&draw.vertices) as usize)
+            (hasher.finish(), draw.texture_handles, draw.geometry)
         };
         let mut start = 0;
         while start < items.len() {
@@ -4045,6 +4052,8 @@ impl Player {
             samplers: sampler_group,
             vertices: vertex_buffer,
             indexes: index_buffer,
+            texture_handles: handles,
+            geometry: shape.geometry,
             range: (first_index, indexes),
             instances: (0, 1),
         });
