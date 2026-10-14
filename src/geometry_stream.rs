@@ -58,6 +58,9 @@ struct Version {
 }
 
 static mut VERSIONS: Option<HashMap<u32, Version>> = None;
+/// The last geometry whose skin gave no bone influences (`skin_influences`), for the count of
+/// the draws without a record: such a geometry is not empty.
+static mut NO_INFLUENCES: usize = 0;
 static mut RECORDS: u64 = 0;
 static mut BYTES: u64 = 0;
 
@@ -102,6 +105,9 @@ pub unsafe fn why_none(kind: u32, geom_data: usize) -> (&'static str, bool) {
     }
     if vcall0(geom_data, V_GET_ACTIVE_VERTEX_COUNT) & 0xFFFF == 0 {
         return ("no active vertex", true);
+    }
+    if geom_data == *core::ptr::addr_of!(NO_INFLUENCES) {
+        return ("the skin partitions give no bone influences in the vertex format", false);
     }
     if strips {
         ("no strips", true)
@@ -167,7 +173,10 @@ pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
     let influences = if skin != 0 {
         match skin_influences(skin_data, all_vertices) {
             Some(influences) => Some(influences),
-            None => return 0,
+            None => {
+                *core::ptr::addr_of_mut!(NO_INFLUENCES) = geom_data;
+                return 0;
+            }
         }
     } else {
         None
@@ -342,10 +351,12 @@ pub unsafe fn note_screen_polygon(count: u32, vertices: usize, tex_coords: usize
 /// The bone influences of each vertex of a skinned geometry, from the partitions of its
 /// skin data: three weights, then the index in the bones of the skin of each of four bones.
 /// The fourth weight is 1 less the sum of the three, as the vertex blend of the device has
-/// it. The stock packer (`PackSkinnedVB`) gives weight `k` of a vertex to bone `k` of its
-/// partition and leaves the last weight to the device: here the last bone of the partition
-/// goes to the fourth place, so the arithmetic is the same. `None` when the skin has no
-/// partitions yet, or the data does not fit the format.
+/// it. A partition has `numBonesPerVertex` weights for each vertex. Without a bone palette
+/// that is all its bones, and weight `k` is for bone `k` of the partition, as the stock
+/// packer (`PackSkinnedVB`) has it; with a palette (a partition with more bones than a
+/// vertex has weights), the palette gives for each weight of a vertex the bone of the
+/// partition. The last bone of a vertex goes to the fourth place, so the arithmetic is the
+/// same. `None` when the skin has no partitions yet, or the data does not fit the format.
 unsafe fn skin_influences(skin_data: usize, vertices: usize) -> Option<Vec<([f32; 3], [u8; 4])>> {
     if skin_data == 0 {
         return None;
@@ -364,15 +375,21 @@ unsafe fn skin_influences(skin_data: usize, vertices: usize) -> Option<Vec<([f32
         let bones: usize = rd(partition, P::bones);
         let weights: usize = rd(partition, P::weights);
         let map: usize = rd(partition, P::vertices);
-        let per_vertex = rd::<u16>(partition, P::numBones) as usize;
+        let palette: usize = rd(partition, P::bonePalette);
+        let bone_count = rd::<u16>(partition, P::numBones) as usize;
+        let per_vertex = rd::<u16>(partition, P::numBonesPerVertex) as usize;
         let in_partition = rd::<u16>(partition, P::numVertices) as usize;
-        if bones == 0 || weights == 0 || map == 0 || per_vertex == 0 || per_vertex > 4 {
+        if bones == 0 || weights == 0 || map == 0 || per_vertex == 0 || per_vertex > 4 || (palette == 0 && per_vertex != bone_count) {
             return None;
         }
-        let mut indexes = [0u8; 4];
-        for (k, index) in indexes.iter_mut().enumerate().take(per_vertex) {
-            *index = u8::try_from(rd::<u16>(bones, k * 2)).ok()?;
-        }
+        // The bone of the skin for weight `k` of vertex `v` of the partition.
+        let bone = |v: usize, k: usize| -> Option<u8> {
+            let local = if palette != 0 { rd::<u8>(palette, v * per_vertex + k) as usize } else { k };
+            if local >= bone_count {
+                return None;
+            }
+            u8::try_from(rd::<u16>(bones, local * 2)).ok()
+        };
         for v in 0..in_partition {
             let g = rd::<u16>(map, v * 2) as usize;
             if g >= vertices {
@@ -381,9 +398,9 @@ unsafe fn skin_influences(skin_data: usize, vertices: usize) -> Option<Vec<([f32
             let mut entry = ([0.0f32; 3], [0u8; 4]);
             for k in 0..per_vertex - 1 {
                 entry.0[k] = rd(weights, (v * per_vertex + k) * 4);
-                entry.1[k] = indexes[k];
+                entry.1[k] = bone(v, k)?;
             }
-            entry.1[3] = indexes[per_vertex - 1];
+            entry.1[3] = bone(v, per_vertex - 1)?;
             out[g] = entry;
         }
         partition += P::SIZE;

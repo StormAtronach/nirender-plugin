@@ -469,7 +469,13 @@ pub(crate) unsafe fn shape_record(this: usize, skin: usize, transform: usize, wo
     let (light_manager, effect_state, texturing, vertex_color) = crate::shape_stream::light_state_arguments(this);
     let mut palette = Vec::new();
     let (world, relative) = if skin != 0 {
-        let Some(relative) = crate::camera_space::skin_palette(skin, transform, true, &mut palette) else { return false };
+        let relative = match crate::camera_space::skin_palette(skin, transform, true, &mut palette) {
+            Ok(relative) => relative,
+            Err(why) => {
+                crate::shape_stream::without_palette(why);
+                return false;
+            }
+        };
         site_thiscall!(S2_LIGHT_SET_STATE, light_manager, effect_state, texturing, vertex_color);
         site_thiscall!(S2_BOUND_COPY, this + R::worldBound, world_bound);
         let mut identity = [0f32; 16];
@@ -505,6 +511,13 @@ pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform
         site_thiscall!(RS_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
         return;
     }
+    if skin != 0 {
+        let check = skinning_check(&skinning_check_bytes());
+        crate::shape_stream::software_skinned(match check {
+            SkinningCheck::HardwareBones => "less than 4 bones of the device",
+            SkinningCheck::GeometryFlag => "the flag of MWSE on the geometry",
+        });
+    }
     if skin == 0 && shape_record(this, 0, transform, world_bound) {
         return;
     }
@@ -537,6 +550,9 @@ pub unsafe fn render_tri_strips(this: usize, geom_data: usize, skin: usize, tran
         }
         site_thiscall!(RT_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
         return;
+    }
+    if skin != 0 {
+        crate::shape_stream::software_skinned("strips, less than 4 bones of the device");
     }
     if skin == 0 && shape_record(this, 0, transform, world_bound) {
         return;
@@ -775,28 +791,39 @@ unsafe fn draw_primitive_regions(set: &mut Regions, this: usize, geom_data: usiz
 // DrawSkinnedPrimitive
 // ---------------------------------------------------------------------------------------
 
+/// The skin partitions of a skinned shape, made as `DrawSkinnedPrimitive` makes them (6ADE70
+/// to 6ADF0B) when the skin data has none: a `NiSkinPartition` with `MakePartitions` for the
+/// bones of the device. Returns the skin partition, or the one that `MakePartitions` did not
+/// fill when it failed (as the game goes on with it). The record of a skinned shape needs the
+/// partitions before the draw function runs: the game makes them at the first draw of a skin,
+/// and the inventory draws a new copy of the character for each picture.
+pub(crate) unsafe fn ensure_skin_partitions(this: usize, geom_data: usize, skin: usize) -> usize {
+    let skin_data: usize = rd(skin, NiSkinInstance::skinData);
+    let skin_partition: usize = if skin_data != 0 { rd(skin_data, SKIN_DATA_SKIN_PARTITION) } else { 0 };
+    if skin_partition != 0 {
+        return skin_partition;
+    }
+    let mut new_partition: usize = 0;
+    let mut eax = site_cdecl!(SP_OPERATOR_NEW, NiSkinPartition::SIZE) as usize;
+    if eax != 0 {
+        eax = site_thiscall!(SP_SKIN_PARTITION_CTOR, eax) as usize;
+        new_partition = eax;
+    }
+    // `mov al, countHWBones; push eax; push eax`: the high bytes keep the value EAX had.
+    let bones = (eax as u32 & 0xFFFF_FF00) | rd::<u8>(this, R::countHWBones) as u32;
+    if site_thiscall!(SP_MAKE_PARTITIONS, new_partition, geom_data, skin_data, bones, bones) as u8 != 0 {
+        let slot = rd::<usize>(skin, NiSkinInstance::skinData) + SKIN_DATA_SKIN_PARTITION;
+        ni::pointer_assign(slot, new_partition);
+    }
+    new_partition
+}
+
 /// 0x6ADE70 `NiDX8Renderer::DrawSkinnedPrimitive`. The port makes the skin partitions when
 /// the skin data has none. Then it fills the geometry buffer of each partition and draws the
 /// partitions.
 pub unsafe fn draw_skinned_primitive(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&draw_skinned_primitive_port::STATE);
-    let skin_data: usize = rd(skin, NiSkinInstance::skinData);
-    let mut skin_partition: usize = if skin_data != 0 { rd(skin_data, SKIN_DATA_SKIN_PARTITION) } else { 0 };
-    if skin_partition == 0 {
-        let mut new_partition: usize = 0;
-        let mut eax = site_cdecl!(SP_OPERATOR_NEW, NiSkinPartition::SIZE) as usize;
-        if eax != 0 {
-            eax = site_thiscall!(SP_SKIN_PARTITION_CTOR, eax) as usize;
-            new_partition = eax;
-        }
-        // `mov al, countHWBones; push eax; push eax`: the high bytes keep the value EAX had.
-        let bones = (eax as u32 & 0xFFFF_FF00) | rd::<u8>(this, R::countHWBones) as u32;
-        skin_partition = new_partition;
-        if site_thiscall!(SP_MAKE_PARTITIONS, new_partition, geom_data, skin_data, bones, bones) as u8 != 0 {
-            let slot = rd::<usize>(skin, NiSkinInstance::skinData) + SKIN_DATA_SKIN_PARTITION;
-            ni::pointer_assign(slot, new_partition);
-        }
-    }
+    let skin_partition = ensure_skin_partitions(this, geom_data, skin);
 
     let partitions: usize = rd(skin_partition, NiSkinPartition::partitions);
     let count: u32 = rd(skin_partition, NiSkinPartition::partitionCount);

@@ -158,13 +158,49 @@ pub unsafe fn ambient(renderer: usize) -> u32 {
 pub unsafe fn report() -> String {
     let without = *core::ptr::addr_of!(WITHOUT);
     format!(
-        "shapes: {} records, {} of them without their projected lights or shadows; draws without a record: {} with no geometry, {} with no material; {} draws of an empty geometry",
+        "shapes: {} records, {} of them without their projected lights or shadows; draws without a record: {} with no geometry, {} with no material, {} skinned with no palette, {} skinned in software; {} draws of an empty geometry",
         *core::ptr::addr_of!(RECORDS),
         *core::ptr::addr_of!(PROJECTED),
         without[0],
         without[1],
+        *core::ptr::addr_of!(WITHOUT_PALETTE),
+        *core::ptr::addr_of!(SOFTWARE_SKINNED),
         without[2]
     )
+}
+
+/// The skinned draws that got no record because their skin has no complete palette.
+static mut WITHOUT_PALETTE: u64 = 0;
+/// The skinned draws that the game skins in software (MWSE's flag of the geometry, or less
+/// than 4 bones of the device): `RenderShape` gives them to `DrawPrimitive`, which sends no
+/// record.
+static mut SOFTWARE_SKINNED: u64 = 0;
+
+/// Counts a skinned draw that the game skins in software, and writes the first ones to the
+/// log with the reason and the picture flag of the Code Patch.
+pub unsafe fn software_skinned(why: &str) {
+    if !on() {
+        return;
+    }
+    let count = &mut *core::ptr::addr_of_mut!(SOFTWARE_SKINNED);
+    *count += 1;
+    if *count <= 8 {
+        crate::log!("shapes: a skinned draw that the game skins in software ({why}), picture of the character {}", code_patch_picture());
+    }
+}
+
+/// Counts a skinned draw that gets no record because the palette of its skin cannot be made
+/// (`camera_space::skin_palette`), and writes the first ones to the log with the reason.
+pub unsafe fn without_palette(why: &str) {
+    if !on() {
+        return;
+    }
+    let count = &mut *core::ptr::addr_of_mut!(WITHOUT_PALETTE);
+    *count += 1;
+    if *count <= 8 {
+        let (kind, class, _) = *core::ptr::addr_of!(OBJECT);
+        crate::log!("shapes: a skinned draw without a record: kind {kind}, class {class}: {why}");
+    }
 }
 
 /// Counts a draw that gets no record while the stream records. The log gets the first ones

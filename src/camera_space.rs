@@ -517,34 +517,40 @@ unsafe fn skinned_relative(
 
 /// The palette of a skin for the shape record: the transform of each bone of the skin as a
 /// world matrix of the device (as `write_world_matrix` makes one), relative to the origin
-/// when this module owns the matrices. Returns whether the matrices are relative, or `None`
-/// when the data of the skin is not complete.
-pub unsafe fn skin_palette(skin: usize, transform: usize, geometry_site: bool, out: &mut Vec<[f32; 16]>) -> Option<bool> {
+/// when this module owns the matrices. Returns whether the matrices are relative, or what
+/// is missing when the data of the skin is not complete.
+pub unsafe fn skin_palette(skin: usize, transform: usize, geometry_site: bool, out: &mut Vec<[f32; 16]>) -> Result<bool, &'static str> {
     out.clear();
     if skin == 0 || transform == 0 {
-        return None;
+        return Err("no skin instance or no transform");
     }
     let data: usize = rd(skin, SKIN_DATA);
     let root_parent: usize = rd(skin, SKIN_ROOT_PARENT);
     let bones: usize = rd(skin, SKIN_BONES);
-    if data == 0 || root_parent == 0 || bones == 0 {
-        return None;
+    if data == 0 {
+        return Err("the skin instance has no skin data");
+    }
+    if root_parent == 0 {
+        return Err("the skin instance has no root parent");
+    }
+    if bones == 0 {
+        return Err("the skin instance has no bones");
     }
     let bone_records: usize = rd(data, DATA_BONES);
     let bone_count: u32 = rd(data, DATA_BONE_COUNT);
     if bone_records == 0 || bone_count == 0 || bone_count > 256 {
-        return None;
+        return Err("the skin data has no bone records, or more than 256");
     }
     for i in 0..bone_count as usize {
         if rd::<usize>(bones, i * 4) == 0 {
-            return None;
+            return Err("a bone of the skin instance is null");
         }
     }
     let origin = if own() { active_origin() } else { None };
     let relative = origin.is_some();
     let origin = origin.unwrap_or([0.0; 3]);
     let shape = if geometry_site && transform == *addr_of!(GEOMETRY_TRANSFORM) { exact_transform(transform - AV_WORLD) } else { from_ni(transform) };
-    let inverse_root_parent = invert(&exact_transform(root_parent))?;
+    let inverse_root_parent = invert(&exact_transform(root_parent)).ok_or("the transform of the root parent has no inverse")?;
     let skin_to_root = combine(&combine(&shape, &from_ni(data + DATA_TRANSFORM)), &inverse_root_parent);
     for i in 0..bone_count as usize {
         let bone = exact_transform(rd(bones, i * 4));
@@ -560,7 +566,7 @@ pub unsafe fn skin_palette(skin: usize, transform: usize, geometry_site: bool, o
         matrix[15] = 1.0;
         out.push(matrix);
     }
-    Some(relative)
+    Ok(relative)
 }
 
 /// Called in place of the call of `SetSkinnedModelTransforms` at a draw site. Returns true
