@@ -10,7 +10,7 @@ use core::mem::transmute;
 
 use crate::d3d::{
     device_draw_indexed_primitive, device_draw_primitive, device_set_indices, device_set_stream_source, D3DFVF_NORMAL,
-    D3DPT_TRIANGLELIST, D3DPT_TRIANGLESTRIP, D3DRS_VERTEXBLEND,
+    D3DPT_TRIANGLELIST, D3DPT_TRIANGLESTRIP, D3DRS_VERTEXBLEND, DEVICE_DRAW_INDEXED_PRIMITIVE, DEVICE_DRAW_PRIMITIVE,
 };
 use crate::engine::{device_set_render_state, vcall0};
 use crate::gen::layouts::{
@@ -190,6 +190,12 @@ unsafe fn site_draw_indexed_primitive(
 ) -> u32 {
     let args = [device as u32, primitive_type, 0, vertices, start_index, primitives];
     let vtable = crate::link_client::draw_vtable(vtable);
+    if !crate::site::is_call(site) {
+        // The Code Patch option "Show transparent clothes in the inventory" is off: the game
+        // calls `DrawIndexedPrimitive` of the device here, with the same arguments.
+        let f: unsafe extern "system" fn(u32, u32, u32, u32, u32, u32) -> u32 = transmute(rd::<usize>(vtable, DEVICE_DRAW_INDEXED_PRIMITIVE));
+        return f(args[0], args[1], args[2], args[3], args[4], args[5]);
+    }
     let result: u32;
     asm!(
         "push dword ptr [{a} + 20]",
@@ -215,6 +221,12 @@ unsafe fn site_draw_indexed_primitive(
 unsafe fn site_draw_primitive(site: usize, device: usize, vtable: usize, primitive_type: u32, primitives: u32) -> u32 {
     let args = [device as u32, primitive_type, 0, primitives];
     let vtable = crate::link_client::draw_vtable(vtable);
+    if !crate::site::is_call(site) {
+        // The Code Patch option "Show transparent clothes in the inventory" is off: the game
+        // calls `DrawPrimitive` of the device here, with the same arguments.
+        let f: unsafe extern "system" fn(u32, u32, u32, u32) -> u32 = transmute(rd::<usize>(vtable, DEVICE_DRAW_PRIMITIVE));
+        return f(args[0], args[1], args[2], args[3]);
+    }
     let result: u32;
     asm!(
         "push dword ptr [{a} + 12]",

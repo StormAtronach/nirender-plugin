@@ -134,7 +134,11 @@ static SITE_LISTS: &[&[usize]] = &[
     draw::SITES,
     ct_pipeline_state::SITES,
     // `NiDX8TextureStage::updateRenderer`: `texture_pipeline` reads the target of this call.
+    // The Morrowind Code Patch option "Bump/reflect map local lighting" (feature 131) changes it.
     &[0x6C1BA4],
+    // `NiDX8TexturePass::setBlendingState`: `texture_pass_b` reads the target of this call.
+    // The Code Patch option "Enchant glow in fog fix" (feature 12) changes it.
+    &[texture_pass_b::SET_ALPHA_SITE],
 ];
 
 /// True when a port calls the target that is in memory at the `call` at `site`.
@@ -179,6 +183,29 @@ static FOLLOWED: &[Followed] = &[
     Followed::Patch { at: 0x6BFCC7, bytes: &[0x18] },
     Followed::Patch { at: 0x6BFCD7, bytes: &[0x18] },
     Followed::Patch { at: 0x6BFCE3, bytes: &[0x24] },
+    // The draw calls of the device that the Morrowind Code Patch option "Show transparent
+    // clothes in the inventory" (feature 11) replaces with calls of its draw functions. The
+    // database has the calls of the Code Patch. These are the bytes of the game without the
+    // option: `site_draw_indexed_primitive` and `site_draw_primitive` of `draw` and
+    // `draw_misc` call the device when the site has no `call rel32`.
+    // `NiDX8Renderer::RenderPoints` and `NiDX8Renderer::RenderLines`: `call [edx+11Ch]`.
+    Followed::Patch { at: 0x6AD84A, bytes: &[0xFF, 0x92, 0x1C, 0x01, 0x00, 0x00] },
+    Followed::Patch { at: 0x6ADC91, bytes: &[0xFF, 0x92, 0x1C, 0x01, 0x00, 0x00] },
+    // `NiDX8Renderer::DrawPrimitive`: the device and the vtable in other registers, then
+    // `call [edx+11Ch]`.
+    Followed::Patch {
+        at: 0x6AEF04,
+        bytes: &[0x8B, 0x4E, 0x24, 0x8B, 0x40, 0x2C, 0x57, 0x8B, 0x11, 0x55, 0x53, 0x6A, 0x00, 0x50, 0x51, 0xFF, 0x92, 0x1C, 0x01, 0x00, 0x00],
+    },
+    // `NiDX8Renderer::DrawSkinnedPrimitive2`: `call [ecx+11Ch]` and `call [ecx+118h]`, and the
+    // jumps around them.
+    Followed::Patch {
+        at: 0x6AF230,
+        bytes: &[
+            0x74, 0x17, 0x33, 0xD2, 0x66, 0x8B, 0x55, 0xF4, 0x52, 0x8B, 0x54, 0x24, 0x44, 0x6A, 0x00, 0x52, 0x50, 0xFF, 0x91, 0x1C, 0x01, 0x00, 0x00,
+            0xEB, 0x0C, 0x8B, 0x54, 0x24, 0x40, 0x52, 0x50, 0xFF, 0x91, 0x18, 0x01, 0x00, 0x00,
+        ],
+    },
     // `NiDX8MaterialManager::UpdateToDevice`: the database has the call that the Morrowind
     // Code Patch puts there (MCP-011). These are the bytes of the game without the patch.
     // `material::update_to_device` reads the bytes.

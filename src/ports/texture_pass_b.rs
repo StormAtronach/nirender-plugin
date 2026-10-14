@@ -73,11 +73,37 @@ const STAGE_SETTINGS: usize = 0x100;
 // Engine functions at fixed addresses, virtual calls, device calls
 // ---------------------------------------------------------------------------------------
 
-/// 0x7364E0 `patchSetEffectState` (Morrowind Code Patch). The code takes the property from
-/// EDX and drops the stack argument. Thus the call gives it both, as the call site does.
-unsafe fn patch_set_effect_state(render_state: usize, alpha_property: usize) {
-    let f: unsafe extern "fastcall" fn(usize, usize, usize) -> u32 = transmute(0x7364E0usize);
-    f(render_state, alpha_property, alpha_property);
+/// The call in `setBlendingState` that sets the alpha property of a sub-pass.
+pub const SET_ALPHA_SITE: usize = 0x6B5663;
+/// `patchSetEffectState` of the Morrowind Code Patch: the target of the call with the option
+/// "Enchant glow in fog fix" (feature 12).
+const PATCH_SET_EFFECT_STATE: usize = 0x7364E0;
+
+/// The target of the call at `SET_ALPHA_SITE` as it is in memory now.
+#[cfg(not(test))]
+unsafe fn set_alpha_target() -> usize {
+    crate::site::call_target(SET_ALPHA_SITE)
+}
+
+#[cfg(test)]
+unsafe fn set_alpha_target() -> usize {
+    PATCH_SET_EFFECT_STATE
+}
+
+/// The call at `SET_ALPHA_SITE`. With the Code Patch option on, the target is
+/// `patchSetEffectState`: it takes the property from EDX and drops the stack argument, so the
+/// call gives it both, as the call site does. Without the option the target is
+/// `NiDX8RenderState::updateAlphaStates` (0x6B8480, a port too), a `__thiscall` with the
+/// property on the stack.
+unsafe fn set_alpha_state(render_state: usize, alpha_property: usize) {
+    let target = set_alpha_target();
+    if target == PATCH_SET_EFFECT_STATE {
+        let f: unsafe extern "fastcall" fn(usize, usize, usize) -> u32 = transmute(target);
+        f(render_state, alpha_property, alpha_property);
+    } else {
+        let f: unsafe extern "thiscall" fn(usize, usize) -> u32 = transmute(target);
+        f(render_state, alpha_property);
+    }
 }
 
 /// 0x6B3B30 `NiDX8TexturePass::acquireSubpassWithCapacity` (first half of the class).
@@ -164,7 +190,7 @@ pub unsafe fn set_blending_state(this: usize, a2: u32, _a3: u32, a4: u32, a5: u3
     wr(this, TP::substruct_14, subpass);
     if subpass != 0 {
         if index != 0 {
-            patch_set_effect_state(rd(this, TP::renderState), rd(subpass, SUB::field_48));
+            set_alpha_state(rd(this, TP::renderState), rd(subpass, SUB::field_48));
         }
         let index: u32 = rd(this, TP::field_8);
         let subpass: usize = rd(this, TP::substruct_14);

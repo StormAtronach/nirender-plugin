@@ -88,6 +88,8 @@ def main():
     ap.add_argument("--settle", type=float, default=None, help="the seconds to wait at the interior and at the exterior before the picture (6 without this)")
     ap.add_argument("--overlay", action="store_true", help="turn the debug overlay of the renderer on at the exterior step (it is on the picture of the "
                     "window only, not in the picture files)")
+    ap.add_argument("--exe", help="a Morrowind.exe to put in the game folder for the run, and the one of the game back after: "
+                    "for example the exe with other options of the Morrowind Code Patch")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
 
@@ -175,6 +177,11 @@ def main():
         swaps = [(os.path.join(args.mge_build, "d3d8.dll"), os.path.join(root, "d3d8.dll"), "the d3d8.dll of the MGE XE build"),
                  (os.path.join(args.mge_build, "mgeHost64.exe"), os.path.join(root, "mgeHost64.exe"), "the mgeHost64.exe of the MGE XE build"),
                  toml_swap]
+    if args.exe:
+        # Mod Organizer puts a file of its overwrite/Root folder over the one of the game folder.
+        overlay = os.path.join(session.harness.MO2_ROOT, "overwrite", "Root", "Morrowind.exe")
+        target = overlay if os.path.isfile(overlay) else os.path.join(session.harness.GAME_DIR, "Morrowind.exe")
+        swaps.append((args.exe, target, "the Morrowind.exe " + args.exe))
     put_back = disable_mod(args.disable_mod) if args.disable_mod else None
     try:
         done = run.launch(spec, args.budget, TAG, swaps=swaps)
@@ -187,6 +194,14 @@ def main():
         import shutil
         shutil.copy2(theirs, ours)
         print("the d3d8.dll of the mod is back in the game folder")
+    # The same for the exe of --exe: Mod Organizer copied it from overwrite/Root into the game
+    # folder, and the run put the one of overwrite/Root back but not the copy.
+    if args.exe:
+        theirs, ours = target, os.path.join(session.harness.GAME_DIR, "Morrowind.exe")
+        if theirs != ours and not session.harness.same_file_content(theirs, ours):
+            import shutil
+            shutil.copy2(theirs, ours)
+            print("the Morrowind.exe of overwrite/Root is back in the game folder")
 
     print()
     for line in run.progress_lines(TAG):

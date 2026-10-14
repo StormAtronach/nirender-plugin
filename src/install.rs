@@ -34,13 +34,17 @@ unsafe fn before_begin_paint(args: &[usize]) {
 unsafe fn port_follows(change: &census::Change) -> bool {
     let func = change.func;
     let live = core::slice::from_raw_parts(func.ea as *const u8, func.size);
-    if let site::Kind::RedirectedCall(at) = site::classify(func, live, change.offset, change.len) {
+    follows_change(func, live, change.offset, change.len, |addr| *(addr as *const u8))
+}
+
+/// True when a port follows the run of `len` changed bytes at `offset` of `func`. `live` is
+/// the function in memory, and `read` gives the byte in memory at an address.
+fn follows_change(func: &crate::gen::funcs::Func, live: &[u8], offset: usize, len: usize, read: impl Fn(usize) -> u8) -> bool {
+    if let site::Kind::RedirectedCall(at) = site::classify(func, live, offset, len) {
         return ports::serves_site(at);
     }
     let expected = census::expected(func);
-    (change.offset..change.offset + change.len)
-        .filter(|&i| live[i] != expected[i])
-        .all(|i| ports::follows(func.ea + i, |addr| *(addr as *const u8)))
+    (offset..offset + len).filter(|&i| live[i] != expected[i]).all(|i| ports::follows(func.ea + i, &read))
 }
 
 /// Does the census and writes it to the log. It locks the port of a function that another
@@ -220,4 +224,87 @@ pub fn report() -> String {
         ));
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bytes of the game without the Morrowind Code Patch at each place where the Code
+    /// Patch 2.4 (and 2.5 beta 19, which adds none) writes inside a ported function: the
+    /// feature, the address and the bytes of `Morrowind.Original.exe`. The database has the
+    /// bytes with each of these features on. A player can turn a feature off, and the game
+    /// then has these bytes there. From `docs/scripts/mcp-overlap` of moreFPS.
+    const VANILLA: &[(u32, usize, &[u8])] = &[
+        // NiDX8Renderer::RenderPoints
+        (11, 0x6AD84A, &[0xFF, 0x92, 0x1C, 0x01, 0x00]),
+        // NiDX8Renderer::RenderLines
+        (11, 0x6ADC91, &[0xFF, 0x92, 0x1C, 0x01, 0x00]),
+        // NiDX8Renderer::DrawPrimitive
+        (11, 0x6AEF05, &[0x4E, 0x24, 0x8B, 0x40, 0x2C, 0x57, 0x8B, 0x11, 0x55, 0x53, 0x6A, 0x00, 0x50, 0x51, 0xFF, 0x92, 0x1C, 0x01, 0x00]),
+        // NiDX8Renderer::DrawSkinnedPrimitive2
+        (
+            11,
+            0x6AF231,
+            &[
+                0x17, 0x33, 0xD2, 0x66, 0x8B, 0x55, 0xF4, 0x52, 0x8B, 0x54, 0x24, 0x44, 0x6A, 0x00, 0x52, 0x50, 0xFF, 0x91, 0x1C, 0x01, 0x00, 0x00, 0xEB,
+                0x0C, 0x8B, 0x54, 0x24, 0x40, 0x52, 0x50, 0xFF, 0x91, 0x18, 0x01, 0x00,
+            ],
+        ),
+        // NiDX8TexturePass::setBlendingState
+        (12, 0x6B5664, &[0x18, 0x2E, 0x00]),
+        // NiDX8TextureData::FindMatchingPixelFormat
+        (39, 0x6B70A8, &[0x04]),
+        (39, 0x6B70DF, &[0x08]),
+        (39, 0x6B7357, &[0x10]),
+        (39, 0x6B737A, &[0x14]),
+        // NiDX8TextureStage::updateRenderer
+        (131, 0x6C1BA5, &[0x37, 0xD2, 0xF9, 0xFF]),
+        // NiDX8MaterialManager::UpdateToDevice
+        (11, 0x6C2686, &[0x15, 0x8B, 0x44, 0x24, 0x04, 0xC6, 0x41, 0x1C, 0x00, 0x8B, 0x49, 0x18, 0x8B, 0x10, 0x51, 0x50, 0xFF, 0x92, 0xA8, 0x00, 0x00, 0x00, 0xC2, 0x04, 0x00]),
+    ];
+
+    fn containing(va: usize) -> &'static crate::gen::funcs::Func {
+        crate::gen::funcs::FUNCS.iter().find(|f| f.ea <= va && va < f.ea + f.size).expect("a ported function")
+    }
+
+    /// The function as the census sees it with `bytes` written at `at`. A record of the Code
+    /// Patch can end after the function (`UpdateToDevice`): the census compares the function
+    /// only.
+    fn live_with(func: &crate::gen::funcs::Func, at: usize, bytes: &[u8]) -> Vec<u8> {
+        let mut live = census::expected(func).to_vec();
+        let start = at - func.ea;
+        let end = (start + bytes.len()).min(live.len());
+        live[start..end].copy_from_slice(&bytes[..end - start]);
+        live
+    }
+
+    /// True when the census follows each run of changed bytes. A byte in memory after the
+    /// function (a known patch can reach there) comes from `bytes` at `at`.
+    fn followed(func: &crate::gen::funcs::Func, live: &[u8], at: usize, bytes: &[u8]) -> bool {
+        let runs = census::runs(live, census::expected(func));
+        assert!(!runs.is_empty(), "{}: the bytes are those of the database", func.name);
+        let read = |addr: usize| if (at..at + bytes.len()).contains(&addr) { bytes[addr - at] } else { live[addr - func.ea] };
+        runs.iter().all(|&(offset, len)| follows_change(func, live, offset, len, read))
+    }
+
+    #[test]
+    fn each_code_patch_feature_in_a_port_can_be_off() {
+        for &(feature, at, bytes) in VANILLA {
+            let func = containing(at);
+            assert!(followed(func, &live_with(func, at, bytes), at, bytes), "feature {feature} off at {at:#x} in {}: a port does not follow it", func.name);
+        }
+    }
+
+    #[test]
+    fn a_change_of_another_kind_is_not_followed() {
+        // The places of feature 11 with other bytes: a mod that is not known. The other
+        // features change the target of a call (12, 131), which a port calls whatever it is,
+        // or an operand (39), which a port reads whatever it is.
+        for &(feature, at, bytes) in VANILLA.iter().filter(|(feature, _, _)| *feature == 11) {
+            let func = containing(at);
+            let other: Vec<u8> = bytes.iter().map(|b| b ^ 0x5A).collect();
+            assert!(!followed(func, &live_with(func, at, &other), at, &other), "feature {feature} at {at:#x}: other bytes are followed");
+        }
+    }
 }

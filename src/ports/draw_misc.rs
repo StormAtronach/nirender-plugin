@@ -83,8 +83,16 @@ unsafe fn site_draw_indexed_primitive(
     start_index: u32,
     primitive_count: u32,
 ) -> u32 {
-    let block = [target(site) as u32, primitive_type, min_index, vertex_count, start_index, primitive_count];
     let vtable = crate::link_client::draw_vtable(vtable);
+    if !crate::site::is_call(site) {
+        // The Code Patch option "Show transparent clothes in the inventory" is off: the game
+        // calls `DrawIndexedPrimitive` of the device here. The function of the Code Patch
+        // makes the same call when it has no work for the draw.
+        let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 =
+            core::mem::transmute(rd::<usize>(vtable, crate::d3d::DEVICE_DRAW_INDEXED_PRIMITIVE));
+        return f(device, primitive_type, min_index, vertex_count, start_index, primitive_count);
+    }
+    let block = [target(site) as u32, primitive_type, min_index, vertex_count, start_index, primitive_count];
     let result: u32;
     asm!(
         "push dword ptr [ecx + 20]",
