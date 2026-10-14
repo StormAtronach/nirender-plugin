@@ -1155,9 +1155,11 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
         *count += 1;
     }
     (host.draw)(&draw);
-    // The record of a skinned shape has the bone influences from the skin partitions, which
-    // the game makes at the first draw of a skin, after this point: they are made here first.
-    if skin != 0 && geometry_data != 0 && crate::capture::recording() && rd::<usize>(skin, crate::gen::layouts::NiSkinInstance::skinData) != 0 {
+    // The record of a skinned shape has the bone influences from the skin data. When it takes
+    // them from the skin partitions (see `geometry_stream::needs_partitions`), which the game
+    // makes at the first draw of a skin, after this point, they are made here first.
+    let skin_data: usize = if skin != 0 { rd(skin, crate::gen::layouts::NiSkinInstance::skinData) } else { 0 };
+    if skin_data != 0 && geometry_data != 0 && crate::capture::recording() && crate::geometry_stream::needs_partitions(skin_data) {
         crate::ports::draw::ensure_skin_partitions(this, geometry_data, skin);
     }
     let geometry_handle = crate::geometry_stream::note(kind, geometry_data, skin);

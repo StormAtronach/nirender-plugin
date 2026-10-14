@@ -63,6 +63,21 @@ unsafe extern "C" fn install(l: LuaState) -> i32 {
     2
 }
 
+/// `nirender.skinSource([name])` sets where the bone influences of a skinned shape come from:
+/// "skindata" (the weights of the model) or "partitions" (the skin partitions of the game, as
+/// for Direct3D 8). The geometries are packed again. Returns the source before. Without a
+/// name it only returns the source.
+unsafe extern "C" fn skin_source(l: LuaState) -> i32 {
+    let name = arg_str(l, 1);
+    let before = match name.as_deref() {
+        Some("partitions") => crate::geometry_stream::set_skin_from_partitions(true),
+        Some("skindata") => crate::geometry_stream::set_skin_from_partitions(false),
+        _ => crate::geometry_stream::skin_from_partitions(),
+    };
+    push_str(l, if before { "partitions" } else { "skindata" });
+    1
+}
+
 /// `nirender.refusalOptions()` returns a list of `{ id = <feature>, name = <option> }`: the
 /// options of the Morrowind Code Patch whose changes locked a port. A refusal with an empty
 /// list has another cause.
@@ -523,6 +538,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     lua_createtable(l, 0, 20);
     set_fn(l, "install", install);
     set_fn(l, "refusalOptions", refusal_options);
+    set_fn(l, "skinSource", skin_source);
     set_fn(l, "setMode", set_mode);
     set_fn(l, "report", report_lua);
     set_fn(l, "frameTest", frame_test);

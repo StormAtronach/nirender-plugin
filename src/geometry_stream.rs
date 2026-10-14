@@ -81,10 +81,232 @@ pub unsafe fn forget(handles: &[u32]) {
     }
 }
 
-/// One line for the log: the records and the bytes that were sent.
+/// One line for the log: the records and the bytes that were sent, and the counts of the
+/// bone influences of the skins.
 pub unsafe fn report() -> String {
     let (records, bytes) = (*core::ptr::addr_of!(RECORDS), *core::ptr::addr_of!(BYTES));
-    format!("geometry: {} records, {:.1} MB, {} geometries known", records, bytes as f64 / 1e6, versions().len())
+    let s = &*core::ptr::addr_of!(SKIN_COUNTS);
+    format!(
+        "geometry: {} records, {:.1} MB, {} geometries known; skins: {} from the skin data, {} from the partitions ({} without bone data); vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
+        records,
+        bytes as f64 / 1e6,
+        versions().len(),
+        s.from_data,
+        s.from_partitions,
+        s.without_bone_data,
+        s.vertices,
+        s.over_four,
+        s.most,
+        s.triangles,
+        s.triangles_over_four,
+        s.compared,
+        s.different
+    )
+}
+
+/// Where the bone influences of a skinned geometry come from: the weights of the bones in the
+/// skin data (`NiSkinData`, the weights of the model), or the skin partitions that the game
+/// makes for the 4 blend matrices of Direct3D 8. The partitions change the weights: a triangle
+/// gets at most 4 bones, and a vertex loses its smallest weights. The helper draws a whole skin
+/// with one palette, so it needs no partitions. A skin data without its weights (freed after
+/// the partitions were made) takes the partitions.
+static SKIN_FROM_PARTITIONS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Sets the source of the bone influences (true: the skin partitions) and forgets the
+/// geometries, so that each is packed again. Returns the source before.
+pub unsafe fn set_skin_from_partitions(partitions: bool) -> bool {
+    let before = SKIN_FROM_PARTITIONS.swap(partitions, core::sync::atomic::Ordering::Relaxed);
+    reset();
+    before
+}
+
+/// True when the skin partitions are the source of the bone influences.
+pub fn skin_from_partitions() -> bool {
+    SKIN_FROM_PARTITIONS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// True when the record of a skinned shape needs the skin partitions: they are the source, or
+/// the skin data has no weights.
+pub unsafe fn needs_partitions(skin_data: usize) -> bool {
+    SKIN_FROM_PARTITIONS.load(core::sync::atomic::Ordering::Relaxed) || !has_bone_weights(skin_data)
+}
+
+/// The counts of the skins packed from the skin data, for the report.
+struct SkinCounts {
+    from_data: u64,
+    from_partitions: u64,
+    without_bone_data: u64,
+    vertices: u64,
+    over_four: u64,
+    most: usize,
+    triangles: u64,
+    triangles_over_four: u64,
+    compared: u64,
+    different: u64,
+}
+
+static mut SKIN_COUNTS: SkinCounts = SkinCounts {
+    from_data: 0,
+    from_partitions: 0,
+    without_bone_data: 0,
+    vertices: 0,
+    over_four: 0,
+    most: 0,
+    triangles: 0,
+    triangles_over_four: 0,
+    compared: 0,
+    different: 0,
+};
+
+/// `NiSkinData`: the number of bones and the array of their `BoneData`, each with the skin to
+/// bone transform, the bound, then the array of `BoneVertData` (a vertex and its weight, 8
+/// bytes) and its length.
+const DATA_BONE_COUNT: usize = 0x40;
+const DATA_BONES: usize = 0x44;
+const BONE_DATA_SIZE: usize = 0x4C;
+const BONE_VERT_DATA: usize = 0x44;
+const BONE_VERT_COUNT: usize = 0x48;
+
+/// True when the skin data has the weights of its bones.
+unsafe fn has_bone_weights(skin_data: usize) -> bool {
+    if skin_data == 0 {
+        return false;
+    }
+    let count: u32 = rd(skin_data, DATA_BONE_COUNT);
+    let bones: usize = rd(skin_data, DATA_BONES);
+    if count == 0 || count > 256 || bones == 0 {
+        return false;
+    }
+    (0..count as usize).all(|b| rd::<u16>(bones + b * BONE_DATA_SIZE, BONE_VERT_COUNT) == 0 || rd::<usize>(bones + b * BONE_DATA_SIZE, BONE_VERT_DATA) != 0)
+}
+
+/// The weights of the bones of each vertex from the skin data, as the skin partition code of
+/// Gamebryo collects them (`CreateVertexInteractions`): the sum of the weights of a vertex is
+/// made 1. `None` when the data is not complete.
+unsafe fn skin_data_weights(skin_data: usize, vertices: usize) -> Option<Vec<Vec<(u8, f32)>>> {
+    if !has_bone_weights(skin_data) {
+        return None;
+    }
+    let count: u32 = rd(skin_data, DATA_BONE_COUNT);
+    let bones: usize = rd(skin_data, DATA_BONES);
+    let mut lists: Vec<Vec<(u8, f32)>> = vec![Vec::new(); vertices];
+    for b in 0..count as usize {
+        let record = bones + b * BONE_DATA_SIZE;
+        let data: usize = rd(record, BONE_VERT_DATA);
+        for j in 0..rd::<u16>(record, BONE_VERT_COUNT) as usize {
+            let vertex = rd::<u16>(data, j * 8) as usize;
+            let weight: f32 = rd(data, j * 8 + 4);
+            lists.get_mut(vertex)?.push((b as u8, weight));
+        }
+    }
+    for list in &mut lists {
+        unitize(list);
+    }
+    Some(lists)
+}
+
+/// Makes the sum of the weights 1.
+fn unitize(list: &mut [(u8, f32)]) {
+    let sum: f32 = list.iter().map(|(_, weight)| weight).sum();
+    if sum > 0.0 {
+        for (_, weight) in list.iter_mut() {
+            *weight /= sum;
+        }
+    }
+}
+
+/// The influences of a vertex for the vertex format from its weights: at most 4 bones, the
+/// largest weights, with a sum of 1 again (`SortByWeight`, `Truncate`, `Unitize` of the skin
+/// partition code); the last bone in the fourth place with the rest of the weight.
+fn pack_weights(list: &[(u8, f32)]) -> ([f32; 3], [u8; 4]) {
+    let mut entry = ([0.0f32; 3], [0u8; 4]);
+    if list.is_empty() {
+        return entry;
+    }
+    let mut kept = list.to_vec();
+    if kept.len() > 4 {
+        kept.sort_by(|a, b| b.1.total_cmp(&a.1));
+        kept.truncate(4);
+        unitize(&mut kept);
+    }
+    let (last, first) = kept.split_last().expect("not empty");
+    for (k, &(bone, weight)) in first.iter().enumerate() {
+        entry.0[k] = weight;
+        entry.1[k] = bone;
+    }
+    entry.1[3] = last.0;
+    entry
+}
+
+/// The weight of each bone of a packed vertex, the fourth weight as the rest of 1.
+fn unpacked(entry: &([f32; 3], [u8; 4])) -> Vec<(u8, f32)> {
+    let mut out: Vec<(u8, f32)> = Vec::new();
+    let last = 1.0 - entry.0.iter().sum::<f32>();
+    for (k, &bone) in entry.1.iter().enumerate() {
+        let weight = if k < 3 { entry.0[k] } else { last };
+        if weight.abs() < 1e-6 {
+            continue;
+        }
+        match out.iter_mut().find(|(b, _)| *b == bone) {
+            Some(found) => found.1 += weight,
+            None => out.push((bone, weight)),
+        }
+    }
+    out.sort_by_key(|(bone, _)| *bone);
+    out
+}
+
+/// True when two packed vertices have the same weight for each bone, within `1e-3`.
+fn same_influences(a: &([f32; 3], [u8; 4]), b: &([f32; 3], [u8; 4])) -> bool {
+    let (a, b) = (unpacked(a), unpacked(b));
+    a.len() == b.len() && a.iter().zip(&b).all(|(x, y)| x.0 == y.0 && (x.1 - y.1).abs() < 1e-3)
+}
+
+/// The influences of a skinned geometry from the skin data, with the counts for the report:
+/// the vertices with more than 4 bones, the triangles with more than 4 bones (the partitions
+/// take bones from those), and the vertices whose influences are not those of the partitions,
+/// when the skin has partitions. `triangles` gives the vertices of each triangle.
+unsafe fn skin_data_influences(skin_data: usize, vertices: usize, triangles: &[[usize; 3]]) -> Option<Vec<([f32; 3], [u8; 4])>> {
+    let lists = skin_data_weights(skin_data, vertices)?;
+    let packed: Vec<([f32; 3], [u8; 4])> = lists.iter().map(|list| pack_weights(list)).collect();
+    let s = &mut *core::ptr::addr_of_mut!(SKIN_COUNTS);
+    s.from_data += 1;
+    s.vertices += vertices as u64;
+    s.over_four += lists.iter().filter(|list| list.len() > 4).count() as u64;
+    s.most = s.most.max(lists.iter().map(Vec::len).max().unwrap_or(0));
+    s.triangles += triangles.len() as u64;
+    for triangle in triangles {
+        let mut bones: Vec<u8> = triangle.iter().flat_map(|&v| lists.get(v).into_iter().flatten().map(|(bone, _)| *bone)).collect();
+        bones.sort_unstable();
+        bones.dedup();
+        s.triangles_over_four += (bones.len() > 4) as u64;
+    }
+    if let Some(partitions) = skin_influences(skin_data, vertices) {
+        s.compared += vertices as u64;
+        s.different += packed.iter().zip(&partitions).filter(|(a, b)| !same_influences(a, b)).count() as u64;
+    }
+    Some(packed)
+}
+
+/// The vertices of each triangle of a geometry: of the triangle list, or of each strip.
+unsafe fn triangle_vertices(indexes: usize, entries: u32, strip_count: u32, strip_lengths: usize) -> Vec<[usize; 3]> {
+    let index = |i: usize| rd::<u16>(indexes, i * 2) as usize;
+    let mut out = Vec::new();
+    if strip_count == 0 {
+        for t in 0..entries as usize / 3 {
+            out.push([index(t * 3), index(t * 3 + 1), index(t * 3 + 2)]);
+        }
+    } else {
+        let mut start = 0usize;
+        for s in 0..strip_count as usize {
+            let length = rd::<u16>(strip_lengths, s * 2) as usize;
+            for i in 2..length {
+                out.push([index(start + i - 2), index(start + i - 1), index(start + i)]);
+            }
+            start += length;
+        }
+    }
+    out
 }
 
 /// Why `note` gives no handle for this geometry: the checks of `note` in their order, and
@@ -171,7 +393,22 @@ pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
     let all_vertices = rd::<u16>(geom_data, GD::vertexCount) as usize;
     let sets = (rd::<u16>(geom_data, GD::textureSets) as u32).min(8);
     let influences = if skin != 0 {
-        match skin_influences(skin_data, all_vertices) {
+        let from_data = if SKIN_FROM_PARTITIONS.load(core::sync::atomic::Ordering::Relaxed) {
+            None
+        } else {
+            let triangles = triangle_vertices(indexes, entries, strip_count, strip_lengths);
+            let found = skin_data_influences(skin_data, all_vertices, &triangles);
+            if found.is_none() {
+                (*core::ptr::addr_of_mut!(SKIN_COUNTS)).without_bone_data += 1;
+            }
+            found
+        };
+        let found = from_data.or_else(|| {
+            let partitions = skin_influences(skin_data, all_vertices);
+            (*core::ptr::addr_of_mut!(SKIN_COUNTS)).from_partitions += partitions.is_some() as u64;
+            partitions
+        });
+        match found {
             Some(influences) => Some(influences),
             None => {
                 *core::ptr::addr_of_mut!(NO_INFLUENCES) = geom_data;
@@ -406,4 +643,39 @@ unsafe fn skin_influences(skin_data: usize, vertices: usize) -> Option<Vec<([f32
         partition += P::SIZE;
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pack_weights, same_influences, unitize, unpacked};
+
+    #[test]
+    fn a_vertex_with_up_to_four_bones_keeps_them() {
+        let entry = pack_weights(&[(3, 0.5), (7, 0.3), (9, 0.2)]);
+        assert_eq!(entry.1, [3, 7, 0, 9]);
+        assert_eq!(unpacked(&entry).len(), 3);
+        assert!((unpacked(&entry).iter().find(|(b, _)| *b == 9).unwrap().1 - 0.2).abs() < 1e-6);
+        // One bone: all of the weight on it.
+        assert_eq!(unpacked(&pack_weights(&[(5, 1.0)])), vec![(5, 1.0)]);
+    }
+
+    #[test]
+    fn a_vertex_with_more_than_four_bones_keeps_the_four_largest() {
+        let mut list = vec![(1, 0.05), (2, 0.4), (3, 0.25), (4, 0.2), (5, 0.1)];
+        unitize(&mut list);
+        let kept = unpacked(&pack_weights(&list));
+        assert_eq!(kept.iter().map(|(b, _)| *b).collect::<Vec<_>>(), vec![2, 3, 4, 5]);
+        let sum: f32 = kept.iter().map(|(_, w)| w).sum();
+        assert!((sum - 1.0).abs() < 1e-6);
+        // 0.4 of the 0.95 kept.
+        assert!((kept[0].1 - 0.4 / 0.95).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_order_of_the_bones_does_not_matter() {
+        let a = pack_weights(&[(3, 0.6), (7, 0.4)]);
+        let b = pack_weights(&[(7, 0.4), (3, 0.6)]);
+        assert!(same_influences(&a, &b));
+        assert!(!same_influences(&a, &pack_weights(&[(3, 0.5), (7, 0.5)])));
+    }
 }
