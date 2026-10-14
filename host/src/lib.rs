@@ -2161,8 +2161,15 @@ impl Renderer {
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
+                // The draws of an extension from the GPU (the distant statics of MGE XE) need the
+                // first instance and the count of indirect draws; without them it draws as before.
                 required_features: wgpu::Features::TEXTURE_COMPRESSION_BC
-                    | (adapter.features() & (wgpu::Features::POLYGON_MODE_LINE | wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)),
+                    | (adapter.features()
+                        & (wgpu::Features::POLYGON_MODE_LINE
+                            | wgpu::Features::TIMESTAMP_QUERY
+                            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+                            | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                            | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT)),
                 // The largest texture that the adapter takes, up to 16384: an atlas of the
                 // distant land of MGE XE has that size.
                 // A post shader of MGE XE reads up to 22 textures: 10 of its own, the picture,
@@ -2170,6 +2177,9 @@ impl Renderer {
                 required_limits: wgpu::Limits {
                     max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d.min(16384),
                     max_sampled_textures_per_shader_stage: adapter.limits().max_sampled_textures_per_shader_stage.min(32),
+                    // One buffer for the geometry of many meshes of an extension (the pool of
+                    // the distant statics of MGE XE).
+                    max_buffer_size: adapter.limits().max_buffer_size,
                     ..wgpu::Limits::default()
                 },
                 memory_hints: wgpu::MemoryHints::default(),
