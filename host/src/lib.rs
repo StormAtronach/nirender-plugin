@@ -1630,9 +1630,9 @@ mod cores {
     }
 }
 
-/// The bind group of the resources of the extension for a frame, and the clusters of the
-/// lights of the frame.
-fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters) -> wgpu::BindGroup {
+/// The bind group of the frame: the resources of the extension, the clusters of the lights,
+/// and the lights and the bones of the frame.
+fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters, lights: &wgpu::Buffer, bones: &wgpu::Buffer) -> wgpu::BindGroup {
     crate::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
         label: Some("extension frame"),
         layout,
@@ -1643,6 +1643,8 @@ fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &
             wgpu::BindGroupEntry { binding: 3, resource: clusters.uniform.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 4, resource: clusters.table.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 5, resource: clusters.indexes.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 6, resource: lights.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 7, resource: bones.as_entire_binding() },
         ],
     })
 }
@@ -2295,18 +2297,6 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: None },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
-                    count: None,
-                },
             ],
         });
         let mut entries = Vec::new();
@@ -2365,6 +2355,19 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
+                // The lights and the bones of the frame.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -2408,7 +2411,8 @@ impl Renderer {
         });
         let clusters = Clusters::new(&device);
         let extension_lights = ExtensionLights::new(&device);
-        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters));
+        let (first_lights, first_bones) = (light_buffer(&device, LIGHTS_AT_FIRST), bone_buffer(&device, BONES_AT_FIRST));
+        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones));
         let renderer = Renderer {
             frame_layout,
             frame_uniform,
@@ -2416,13 +2420,13 @@ impl Renderer {
             extension_lights,
             frame_sampler,
             frame_group,
-            light_buffer: light_buffer(&device, LIGHTS_AT_FIRST),
+            light_buffer: first_lights,
             instance_buffer: instance_buffer(&device, INSTANCES_AT_FIRST),
             instance_capacity: INSTANCES_AT_FIRST,
             instancing: std::env::var("MGE_XE_INSTANCING").map_or(true, |v| v != "0"),
             lights_known: HashMap::new(),
             timing: make_timing(&device, &queue),
-            bone_buffer: bone_buffer(&device, BONES_AT_FIRST),
+            bone_buffer: first_bones,
             bone_capacity: BONES_AT_FIRST,
             device: Rc::new(device),
             target_format,
@@ -2466,19 +2470,15 @@ impl Renderer {
 
     /// Puts the data of a draw into the next slot. Returns the group to bind and the offset
     /// of the slot.
-    /// The bind group of a buffer of draw slots: the slots, and the lights of the frame.
+    /// The bind group of a buffer of draw slots.
     fn slot_group(&self, buffer: &wgpu::Buffer) -> wgpu::BindGroup {
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("draw slots"),
             layout: &self.draw_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer, offset: 0, size: wgpu::BufferSize::new(core::mem::size_of::<DrawData>() as u64) }),
-                },
-                wgpu::BindGroupEntry { binding: 1, resource: self.light_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.bone_buffer.as_entire_binding() },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer, offset: 0, size: wgpu::BufferSize::new(core::mem::size_of::<DrawData>() as u64) }),
+            }],
         })
     }
 
@@ -2499,7 +2499,6 @@ impl Renderer {
         if bones.len() > self.bone_capacity {
             self.bone_capacity = bones.len().next_power_of_two();
             self.bone_buffer = bone_buffer(&self.device, self.bone_capacity);
-            self.draw_buffers = self.draw_buffers.iter().map(|(buffer, _)| (buffer.clone(), Rc::new(self.slot_group(buffer)))).collect();
         }
         if !bones.is_empty() {
             self.queue.write_buffer(&self.bone_buffer, 0, bytemuck::cast_slice(bones));
@@ -2507,13 +2506,12 @@ impl Renderer {
     }
 
     /// Puts the lights of the frame into the light buffer: all of them each time, because
-    /// a write is before the commands of the frame in any case. A larger buffer gets the
-    /// bind groups of the slots again.
+    /// a write is before the commands of the frame in any case. The frame group, made after
+    /// this, binds the buffer.
     fn upload_lights(&mut self, lights: &[LightData]) {
         if lights.len() > self.light_capacity {
             self.light_capacity = lights.len().next_power_of_two();
             self.light_buffer = light_buffer(&self.device, self.light_capacity);
-            self.draw_buffers = self.draw_buffers.iter().map(|(buffer, _)| (buffer.clone(), Rc::new(self.slot_group(buffer)))).collect();
         }
         if !lights.is_empty() {
             self.queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(lights));
@@ -4264,7 +4262,7 @@ impl Player {
         let scene = items.iter().find_map(|item| if let Item::WorldStart(facts) = item { Some((facts.view, facts.projection)) } else { None });
         renderer.clusters.build(&renderer.device, &renderer.queue, &self.frame_lights, scene, self.frame_size, &mut renderer.counts);
         renderer.counts.times[TIME_CLUSTERS] += clock.elapsed();
-        renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters));
+        renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters, &renderer.light_buffer, &renderer.bone_buffer));
         for item in items {
             if !matches!(item, Item::Draw(_)) {
                 self.bound.forget();

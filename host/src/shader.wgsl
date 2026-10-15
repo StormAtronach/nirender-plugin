@@ -99,6 +99,10 @@ struct Clusters {
 @group(0) @binding(3) var<uniform> clusters: Clusters;
 @group(0) @binding(4) var<storage, read> cluster_table: array<vec2u>;
 @group(0) @binding(5) var<storage, read> cluster_indexes: array<u32>;
+// The lights of all draws of the frame.
+@group(0) @binding(6) var<storage, read> lights: array<Light>;
+// The bones of all skinned draws of the frame.
+@group(0) @binding(7) var<storage, read> palette: array<mat4x4f>;
 
 // The lights of the cluster of a pixel: the first entry in `cluster_indexes` and the
 // number, for a pixel of the picture at a depth of the view. None when the clusters are
@@ -113,10 +117,6 @@ fn cluster_lights(pixel: vec2f, view_z: f32) -> vec2u {
 }
 
 @group(3) @binding(0) var<uniform> draw: Draw;
-// The lights of all draws of the frame.
-@group(3) @binding(1) var<storage, read> lights: array<Light>;
-// The bones of all skinned draws of the frame.
-@group(3) @binding(2) var<storage, read> palette: array<mat4x4f>;
 @group(2) @binding(0) var texture0: texture_2d<f32>;
 @group(2) @binding(1) var texture1: texture_2d<f32>;
 @group(2) @binding(2) var texture2: texture_2d<f32>;
