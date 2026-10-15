@@ -290,6 +290,9 @@ unsafe fn sky_hidden(sky_root: usize) -> bool {
 /// ran that logic at `Present` and at `SetTransform`.
 static STREAM_PRESENT: AtomicUsize = AtomicUsize::new(0);
 static STREAM_TRANSFORM: AtomicUsize = AtomicUsize::new(0);
+/// `MGE_StreamMessage` of MGE XE: a message of the extension in the host program for MGE XE
+/// (`Extension::messages` of the crate), or 0.
+static STREAM_MESSAGE: AtomicUsize = AtomicUsize::new(0);
 
 /// Finds the functions of MGE XE. The `d3d8.dll` of this repository has none.
 unsafe fn find_stream_functions() {
@@ -301,6 +304,8 @@ unsafe fn find_stream_functions() {
     let transform = win::GetProcAddress(module as *mut c_void, b"MGE_StreamTransform\0".as_ptr());
     STREAM_PRESENT.store(present as usize, Ordering::Relaxed);
     STREAM_TRANSFORM.store(transform as usize, Ordering::Relaxed);
+    let message = win::GetProcAddress(module as *mut c_void, b"MGE_StreamMessage\0".as_ptr());
+    STREAM_MESSAGE.store(message as usize, Ordering::Relaxed);
     if !present.is_null() {
         crate::log!("link: the frame logic of MGE XE runs from the stream");
     }
@@ -312,6 +317,14 @@ pub unsafe fn stream_present() {
     if function != 0 && crate::shadow::on_main_thread() {
         let (width, height) = crate::own_device::size();
         core::mem::transmute::<usize, unsafe extern "C" fn(u32, u32)>(function)(width, height);
+    }
+}
+
+/// Gives MGE XE a message of its extension in the host program.
+pub unsafe fn stream_message(id: u32, bytes: &[u8]) {
+    let function = STREAM_MESSAGE.load(Ordering::Relaxed);
+    if function != 0 && crate::shadow::on_main_thread() {
+        core::mem::transmute::<usize, unsafe extern "C" fn(u32, *const u8, u32)>(function)(id, bytes.as_ptr(), bytes.len() as u32);
     }
 }
 

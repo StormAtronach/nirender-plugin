@@ -409,6 +409,69 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
     Some((width, height, core::slice::from_raw_parts(reply.base.add(REPLY_HEAD), size)))
 }
 
+/// The message memory of a stream: shared memory with the name of the ring and `.messages`.
+/// The host writes messages of its extension into it (`Extension::messages` of the crate):
+/// records of the number, the length and the bytes, which can go around the end of the data.
+/// The head: `MESSAGES_MAGIC`, the number of data bytes, the bytes that the host wrote (u64),
+/// the bytes that the game read (u64). The plugin reads them at the end of each frame and
+/// gives each one to MGE XE (`link_client::stream_message`).
+pub const MESSAGES_MAGIC: u32 = 0x4753_4D31;
+const MESSAGES_HEAD: usize = 32;
+const MESSAGES_BYTES: usize = 64 * 1024;
+
+struct Messages {
+    mapping: isize,
+    base: *mut u8,
+}
+
+impl Messages {
+    unsafe fn create(name: &str) -> Option<Messages> {
+        let mut text = format!("{name}.messages").into_bytes();
+        text.push(0);
+        let mapping = CreateFileMappingA(-1, core::ptr::null(), 4, 0, (MESSAGES_BYTES + MESSAGES_HEAD) as u32, text.as_ptr());
+        if mapping == 0 {
+            return None;
+        }
+        let base = MapViewOfFile(mapping, 0xF001F, 0, 0, 0);
+        if base.is_null() {
+            CloseHandle(mapping);
+            return None;
+        }
+        core::ptr::write_bytes(base, 0, MESSAGES_HEAD);
+        (base.add(4) as *mut u32).write(MESSAGES_BYTES as u32);
+        (base as *mut u32).write_volatile(MESSAGES_MAGIC);
+        Some(Messages { mapping, base })
+    }
+
+    unsafe fn counter(&self, offset: usize) -> &core::sync::atomic::AtomicU64 {
+        &*(self.base.add(offset) as *const core::sync::atomic::AtomicU64)
+    }
+
+    /// The messages that the host wrote since the last call.
+    unsafe fn take(&mut self) -> Vec<(u32, Vec<u8>)> {
+        let written = self.counter(8).load(Ordering::Acquire);
+        let mut read = self.counter(16).load(Ordering::Relaxed);
+        let mut out = Vec::new();
+        let byte = |at: u64| self.base.add(MESSAGES_HEAD + (at % MESSAGES_BYTES as u64) as usize).read();
+        let word = |at: u64| u32::from_le_bytes([byte(at), byte(at + 1), byte(at + 2), byte(at + 3)]);
+        while written - read >= 8 {
+            let (id, length) = (word(read), word(read + 4) as u64);
+            if written - read < 8 + length {
+                break;
+            }
+            out.push((id, (0..length).map(|n| byte(read + 8 + n)).collect()));
+            read += 8 + length;
+        }
+        self.counter(16).store(read, Ordering::Release);
+        out
+    }
+
+    unsafe fn close(&mut self) {
+        UnmapViewOfFile(self.base);
+        CloseHandle(self.mapping);
+    }
+}
+
 enum Sink {
     File(BufWriter<File>),
     Ring(Ring),
@@ -434,6 +497,7 @@ struct State {
     direct: bool,
     out: Option<Sink>,
     reply: Option<Reply>,
+    messages: Option<Messages>,
     /// A file that gets a copy of the records of a direct stream, with the number of frames
     /// that are left for it. While `tee_only`, the records go into the file only: the
     /// snapshot of the resources at its start.
@@ -635,6 +699,7 @@ pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, 
         s.direct = true;
         s.phase = Phase::Record(0);
         s.reply = Reply::create(name, (width as usize * height as usize * 4).max(1024 * 1024 * 4));
+        s.messages = Messages::create(name);
     }
     RECORDING.store(true, Ordering::Relaxed);
     if let Some(s) = state() {
@@ -654,6 +719,7 @@ unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
         direct: false,
         out: Some(out),
         reply: None,
+        messages: None,
         tee: None,
         tee_hold: false,
         tee_dirty: HashSet::new(),
@@ -698,6 +764,9 @@ pub unsafe fn stop() {
             if let Some(mut reply) = s.reply.take() {
                 crate::log!("stream: {} pixel reads, the game waited {:.1} ms in all for them", reply.requests, reply.waited as f64 * 1000.0 / ticks_per_second() as f64);
                 reply.close();
+            }
+            if let Some(mut messages) = s.messages.take() {
+                messages.close();
             }
         }
         None => {}
@@ -1160,6 +1229,15 @@ unsafe fn frame_end() {
     loading_tick();
     #[cfg(not(test))]
     crate::own_device::check_host();
+    // The messages of the host for MGE XE.
+    if let Some(messages) = state().and_then(|s| s.messages.as_mut()) {
+        for (id, bytes) in messages.take() {
+            #[cfg(not(test))]
+            crate::link_client::stream_message(id, &bytes);
+            #[cfg(test)]
+            let _ = (id, bytes);
+        }
+    }
     let Some(s) = state() else { return };
     match s.phase {
         Phase::Off => {}

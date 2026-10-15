@@ -654,6 +654,15 @@ pub trait Extension {
         Status::default()
     }
 
+    /// Messages for the part of the extension in the game process: (a number that the two
+    /// parts agree on, the data). The renderer asks at the end of each live frame and puts
+    /// them into the message memory of the stream; the plugin reads it at the end of a frame
+    /// of the game and gives each message to `MGE_StreamMessage` of the `d3d8.dll` of MGE XE.
+    /// A replay of a capture drops them.
+    fn messages(&mut self) -> Vec<(u32, Vec<u8>)> {
+        Vec::new()
+    }
+
     /// The renderer draws a capture file and not a live stream: the frames must be the
     /// same each time. The extension completes each load before a frame, with no limit on
     /// the work of a frame. The renderer calls this one time, before the first record.
@@ -5346,9 +5355,68 @@ mod live {
         }
     }
 
+    /// The message memory of a stream: shared memory with the name of the ring and
+    /// `.messages`, which the plugin makes. The head: `MESSAGES_MAGIC`, the number of data
+    /// bytes, the bytes that this program wrote (u64), the bytes that the game read (u64). Then
+    /// the data: records of the number, the length and the bytes, which can go around the
+    /// end. See `capture.rs` of the plugin.
+    const MESSAGES_MAGIC: u32 = 0x4753_4D31;
+    const MESSAGES_HEAD: usize = 32;
+
+    struct Messages {
+        base: *mut u8,
+        capacity: u64,
+        /// A message did not fit: said one time.
+        full: bool,
+    }
+
+    impl Messages {
+        fn open(name: &str) -> Option<Messages> {
+            let mut text = format!("{name}.messages").into_bytes();
+            text.push(0);
+            let mapping = unsafe { OpenFileMappingA(0xF001F, 0, text.as_ptr()) };
+            if mapping == 0 {
+                return None;
+            }
+            let base = unsafe { MapViewOfFile(mapping, 0xF001F, 0, 0, 0) };
+            if base.is_null() || unsafe { (base as *const u32).read_volatile() } != MESSAGES_MAGIC {
+                return None;
+            }
+            let capacity = unsafe { (base.add(4) as *const u32).read_volatile() } as u64;
+            Some(Messages { base, capacity, full: false })
+        }
+
+        fn counter(&self, offset: usize) -> &std::sync::atomic::AtomicU64 {
+            unsafe { &*(self.base.add(offset) as *const std::sync::atomic::AtomicU64) }
+        }
+
+        /// Puts one message into the memory, or drops it when the game has not read enough.
+        fn put(&mut self, id: u32, bytes: &[u8]) {
+            let total = 8 + bytes.len() as u64;
+            let written = self.counter(8).load(Ordering::Relaxed);
+            let read = self.counter(16).load(Ordering::Acquire);
+            if total > self.capacity - (written - read) {
+                if !self.full {
+                    self.full = true;
+                    println!("messages: no room for a message {id} of {} bytes: the game does not read; it is dropped", bytes.len());
+                }
+                return;
+            }
+            let mut at = written;
+            for part in [&id.to_le_bytes()[..], &(bytes.len() as u32).to_le_bytes()[..], bytes] {
+                for &byte in part {
+                    unsafe { self.base.add(MESSAGES_HEAD + (at % self.capacity) as usize).write(byte) };
+                    at += 1;
+                }
+            }
+            self.counter(8).store(at, Ordering::Release);
+        }
+    }
+
     struct App {
         ring: Ring,
         reply: Option<Reply>,
+        messages: Option<Messages>,
         extension: Option<Box<dyn super::Extension>>,
         backends: wgpu::Backends,
         frames_wanted: u32,
@@ -5746,6 +5814,12 @@ mod live {
                         }
                     }
                 }
+                // The messages of the extension for its part in the game process.
+                if let (Some(messages), Some(extension)) = (self.messages.as_mut(), player.extension.as_mut()) {
+                    for (id, bytes) in extension.messages() {
+                        messages.put(id, &bytes);
+                    }
+                }
                 let clock = Instant::now();
                 if let Some(frame) = frame {
                     player.renderer.queue.present(frame);
@@ -5789,6 +5863,7 @@ mod live {
         let mut app = App {
             ring,
             reply: Reply::open(name),
+            messages: Messages::open(name),
             extension,
             back_buffer: None,
             backends,
