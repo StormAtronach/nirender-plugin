@@ -1545,7 +1545,7 @@ mod cores {
 /// The bind group of the resources of the extension for a frame, and the clusters of the
 /// lights of the frame.
 fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    crate::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
         label: Some("extension frame"),
         layout,
         entries: &[
@@ -3230,6 +3230,9 @@ struct Player {
     mark_frames: u32,
     mark_draws: u32,
     mark_gpu: (f64, f64, u32),
+    /// `gpu::work()` and `gpu::errors()` at the last mark.
+    mark_work: [u64; 4],
+    mark_errors: u64,
     /// The size of the back buffer of the game, from the first record. 0 when not known.
     size: (u32, u32),
     /// The size of the picture of the frame.
@@ -3309,6 +3312,8 @@ impl Player {
             mark_frames: 0,
             mark_draws: 0,
             mark_gpu: (0.0, 0.0, 0),
+            mark_work: [0; 4],
+            mark_errors: 0,
             size: (0, 0),
             frame_size: (0, 0),
         }
@@ -3425,7 +3430,7 @@ impl Player {
             // until these commands run. A copy of it stays for the window (see
             // `shown_picture`).
             let copy = (in_frame && !std::mem::replace(&mut self.sent_in_part, true)).then(|| self.keep_picture()).flatten();
-            self.renderer.queue.submit(copy.into_iter().chain([encoder.finish()]));
+            crate::gpu::submit(&self.renderer.queue, copy.into_iter().chain([encoder.finish()]));
         }
         let result = between(self);
         if in_frame {
@@ -3469,7 +3474,7 @@ impl Player {
             let device = player.renderer.device.clone();
             let mut encoder = device.create_command_encoder(&Default::default());
             let (buffer, row) = copy_picture(&device, &mut encoder, &texture, width, height);
-            player.renderer.queue.submit([encoder.finish()]);
+            crate::gpu::submit(&player.renderer.queue, [encoder.finish()]);
             buffer.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("the read of the pixels"));
             let _ = device.poll(wgpu::PollType::wait_indefinitely());
             let mapped = buffer.slice(..).get_mapped_range().expect("the bytes of the pixels");
@@ -3732,6 +3737,21 @@ impl Player {
             let per_frame = |now: f64, before: f64| (now - before) / 1e6 / timed as f64;
             println!("  gpu: {:.3} ms in the passes, {:.3} ms the frame, for each of {timed} timed frames", per_frame(counts.gpu_passes, self.mark_gpu.0), per_frame(counts.gpu_frame, self.mark_gpu.1));
         }
+        let work = gpu::work();
+        let delta: Vec<u64> = work.iter().zip(self.mark_work).map(|(now, before)| now - before).collect();
+        println!(
+            "  work: {:.2} submits, {:.3} ms in them; {:.2} bind groups made for the frame, {:.3} ms in them; for each frame",
+            delta[0] as f64 / frames.max(1) as f64,
+            delta[1] as f64 / 1e6 / frames.max(1) as f64,
+            delta[2] as f64 / frames.max(1) as f64,
+            delta[3] as f64 / 1e6 / frames.max(1) as f64
+        );
+        let errors = gpu::errors();
+        if errors != self.mark_errors {
+            println!("  gpu errors: {}", errors - self.mark_errors);
+        }
+        self.mark_work = work;
+        self.mark_errors = errors;
         self.mark_gpu = (counts.gpu_passes, counts.gpu_frame, counts.gpu_frames);
         self.mark_times = counts.times;
         self.mark_frames = counts.frames;
@@ -3756,7 +3776,7 @@ impl Player {
             let renderer = &mut self.renderer;
             let slot = renderer.timing.as_mut().and_then(|timing| timing.end(&renderer.device, &mut encoder, &mut renderer.counts));
             renderer.flush_draw_slots();
-            renderer.queue.submit([encoder.finish()]);
+            crate::gpu::submit(&renderer.queue, [encoder.finish()]);
             if let (Some(timing), Some(slot)) = (renderer.timing.as_ref(), slot) {
                 timing.map(slot);
             }
@@ -3998,7 +4018,7 @@ impl Player {
         let clock = std::time::Instant::now();
         let buffer = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("screen draw"), contents: bytemuck::cast_slice(&list), usage: wgpu::BufferUsages::VERTEX });
         let view = renderer.textures.get(&texture).unwrap_or(&renderer.white).clone();
-        let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = crate::gpu::frame_group(&renderer.device, &wgpu::BindGroupDescriptor {
             label: Some("screen draw"),
             layout: renderer.screen_layout.as_ref().unwrap(),
             entries: &[
@@ -5362,7 +5382,7 @@ mod live {
                 wgpu::Extent3d { width: back_buffer.width().min(size.0), height: back_buffer.height().min(size.1), depth_or_array_layers: 1 },
             );
             overlay.draw(device, queue, &mut encoder, &frame.texture.create_view(&Default::default()), size, Some(self.sign_step), &[]);
-            queue.submit([encoder.finish()]);
+            crate::gpu::submit(queue, [encoder.finish()]);
             queue.present(frame);
         }
 
@@ -5598,7 +5618,7 @@ mod live {
                 if !shots.is_empty() {
                     let mut encoder = device.create_command_encoder(&Default::default());
                     let (buffer, row) = copy_picture(&device, &mut encoder, back_buffer, width, height);
-                    player.renderer.queue.submit([encoder.finish()]);
+                    crate::gpu::submit(&player.renderer.queue, [encoder.finish()]);
                     for path in &shots {
                         save_picture(&device, &buffer, row, width, height, blue_first, path);
                         buffer.unmap();

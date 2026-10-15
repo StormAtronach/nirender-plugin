@@ -1,18 +1,26 @@
-//! The errors of the GPU, for the whole program (it has one device).
+//! The errors of the GPU, and the counts of two kinds of work, for the whole program (it has
+//! one device).
 //!
 //! - wgpu ends the program at an error that no error scope takes. Here the log names the
 //!   error (with the label of the object) and the program goes on: the draw or the pass that
 //!   has the error does nothing.
 //! - A lost device (a reset of the driver) ends all drawing. The log says so, and with a
 //!   window a message box tells the player.
+//! - `submit` and `frame_group` count the submits to the queue and the bind groups that are
+//!   made for one frame, with their CPU time, for the marks of a scenario.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 static ERRORS: AtomicU64 = AtomicU64::new(0);
 static LOST: AtomicBool = AtomicBool::new(false);
 /// `test_loss` destroys the device: its loss is then handled as a loss for an unknown reason.
 static TEST_LOSS: AtomicBool = AtomicBool::new(false);
+static SUBMITS: AtomicU64 = AtomicU64::new(0);
+static SUBMIT_NANOS: AtomicU64 = AtomicU64::new(0);
+static GROUPS: AtomicU64 = AtomicU64::new(0);
+static GROUP_NANOS: AtomicU64 = AtomicU64::new(0);
 
 /// The errors that the log shows in full. After them, one line for each 1000.
 const ERRORS_SHOWN: u64 = 20;
@@ -67,6 +75,35 @@ pub fn test_loss(device: &wgpu::Device) {
     TEST_LOSS.store(true, Ordering::Relaxed);
     device.destroy();
     let _ = device.poll(wgpu::PollType::Poll);
+}
+
+/// `queue.submit`, counted.
+pub fn submit<I: IntoIterator<Item = wgpu::CommandBuffer>>(queue: &wgpu::Queue, buffers: I) -> wgpu::SubmissionIndex {
+    let start = Instant::now();
+    let index = queue.submit(buffers);
+    SUBMITS.fetch_add(1, Ordering::Relaxed);
+    SUBMIT_NANOS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    index
+}
+
+/// `device.create_bind_group`, counted: for a bind group that is made for one frame.
+pub fn frame_group(device: &wgpu::Device, descriptor: &wgpu::BindGroupDescriptor) -> wgpu::BindGroup {
+    let start = Instant::now();
+    let group = device.create_bind_group(descriptor);
+    GROUPS.fetch_add(1, Ordering::Relaxed);
+    GROUP_NANOS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    group
+}
+
+/// The counts since the start: submits and their nanoseconds, bind groups made for a frame
+/// and their nanoseconds.
+pub fn work() -> [u64; 4] {
+    [
+        SUBMITS.load(Ordering::Relaxed),
+        SUBMIT_NANOS.load(Ordering::Relaxed),
+        GROUPS.load(Ordering::Relaxed),
+        GROUP_NANOS.load(Ordering::Relaxed),
+    ]
 }
 
 #[cfg(windows)]
