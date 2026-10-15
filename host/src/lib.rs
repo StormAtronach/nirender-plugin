@@ -2149,8 +2149,10 @@ struct Renderer {
     draw_buffers: Vec<(Rc<wgpu::Buffer>, Rc<wgpu::BindGroup>)>,
     draw_slots: usize,
     /// The data of the draws of the frame, one block for each buffer of slots, written to
-    /// the GPU once before the submit (`flush_draw_slots`).
+    /// the GPU before each submit (`flush_draw_slots`), and the bytes of each block that are
+    /// written already.
     draw_staging: Vec<Vec<u8>>,
+    draw_flushed: Vec<usize>,
     /// The draws keep the order of the game: it decides the ties of the depth test (the lines
     /// of the collision boxes lie on their meshes). `MGE_XE_SORT=1` sorts the opaque draws of
     /// a run by pipeline and textures and joins them into instances, for a comparison; it
@@ -2442,6 +2444,7 @@ impl Renderer {
             draw_buffers: Vec::new(),
             draw_slots: 0,
             draw_staging: Vec::new(),
+            draw_flushed: Vec::new(),
             sort_draws: std::env::var("MGE_XE_SORT").is_ok_and(|v| v == "1"),
             light_capacity: LIGHTS_AT_FIRST,
             texture_layout,
@@ -2537,6 +2540,7 @@ impl Renderer {
         let (_, group) = &self.draw_buffers[index];
         if index == self.draw_staging.len() {
             self.draw_staging.push(Vec::with_capacity(SLOTS_IN_BUFFER * SLOT_SIZE));
+            self.draw_flushed.push(0);
         }
         let staging = &mut self.draw_staging[index];
         let at = slot * SLOT_SIZE;
@@ -2560,19 +2564,15 @@ impl Renderer {
     }
 
     /// Writes the data of the draws since the last write to the GPU: one write for each
-    /// buffer of slots. Before a submit.
+    /// buffer of slots that has new slots. Before a submit. The slots of a frame go on after
+    /// the ones written, so a write never touches a slot of an earlier submit of the frame.
     fn flush_draw_slots(&mut self) {
-        for (index, staging) in self.draw_staging.iter_mut().enumerate() {
-            if !staging.is_empty() {
-                self.queue.write_buffer(&self.draw_buffers[index].0, 0, staging);
+        for (index, staging) in self.draw_staging.iter().enumerate() {
+            let flushed = self.draw_flushed[index];
+            if staging.len() > flushed {
+                self.queue.write_buffer(&self.draw_buffers[index].0, flushed as u64, &staging[flushed..]);
+                self.draw_flushed[index] = staging.len();
             }
-        }
-        // The slots go on after the ones written: a later write of the same buffer in the
-        // frame must not undo the earlier.
-        for staging in &mut self.draw_staging {
-            let kept = staging.len();
-            staging.clear();
-            staging.resize(kept, 0);
         }
     }
 
@@ -3534,6 +3534,7 @@ impl Player {
         self.encoder = Some(encoder);
         self.renderer.draw_slots = 0;
         self.renderer.draw_staging.clear();
+        self.renderer.draw_flushed.clear();
         self.color = Some(Rc::new(color.create_view(&Default::default())));
         self.back_buffer = Some(color.clone());
         self.depth = Some(depth);
