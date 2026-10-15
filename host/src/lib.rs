@@ -408,9 +408,11 @@ struct Draw {
     geometry: u32,
     /// The first index and the number of indexes.
     range: (u32, u32),
-    /// The instances: the first in the instance buffer of the frame and the number. (0, 1)
-    /// for a draw of its own: its world matrix is in its data.
+    /// The instances: the first in the instance buffer of the frame and the number. A draw of
+    /// its own has one, with its world matrix in its record.
     instances: (u32, u32),
+    /// The record of the draw in the records of the frame.
+    record: u32,
 }
 
 impl Draw {
@@ -424,6 +426,8 @@ impl Draw {
 struct Replayer<'a> {
     renderer: &'a mut Renderer,
     kept: &'a [Rc<Draw>],
+    /// The instances of the frame: the world matrices of the kept draws' instances.
+    instances: &'a [Instance],
 }
 
 /// A plane in the space of the world of the game, in the space of a draw whose world is
@@ -495,18 +499,21 @@ impl Replay for Replayer<'_> {
                 };
             }
             let Some(pipeline) = self.renderer.pipeline(key) else { continue };
-            let (group, offset) = self.renderer.draw_slot_now(&data);
+            let (start, n) = (kept.instances.0 as usize, kept.instances.1 as usize);
+            let Some(first_instance) = self.renderer.copy_of_draw(&data, &self.instances[start..start + n]) else {
+                self.renderer.counts.no_record += 1;
+                continue;
+            };
             pass.set_pipeline(&pipeline);
             pass.set_stencil_reference(kept.stencil_reference);
             bound.set(pass, 0, &self.renderer.frame_group);
             bound.set(pass, 1, &kept.samplers);
             bound.set(pass, 2, &kept.textures);
-            pass.set_bind_group(3, &*group, &[offset]);
             pass.set_vertex_buffer(0, kept.vertices.slice(..));
             pass.set_vertex_buffer(1, self.renderer.defaults.slice(..));
-            pass.set_vertex_buffer(2, self.renderer.instance_buffer.slice(kept.instances.0 as u64 * 64..));
+            pass.set_vertex_buffer(2, self.renderer.instance_buffer.slice(..));
             let (first, count) = kept.range;
-            let instances = 0..kept.instances.1;
+            let instances = first_instance..first_instance + kept.instances.1;
             // `MGE_XE_REPLAY_DEBUG=1`: each draw that a replay issues, for a comparison of
             // the two paths of the shapes.
             if std::env::var("MGE_XE_REPLAY_DEBUG").is_ok_and(|v| v == "1") {
@@ -1475,6 +1482,9 @@ struct Counts {
     /// The runs of draws in a row with one pipeline and one stencil reference: what one
     /// indirect call could draw.
     pipeline_runs: u32,
+    /// Copies of a draw (clipped, replayed) that found no room in the records or the
+    /// instances of the frame, and were drawn as they are or not at all.
+    no_record: u32,
     other_target: u32,
     no_layout: u32,
     textures: u32,
@@ -1550,9 +1560,6 @@ struct Counts {
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 const STAGES: usize = 6;
-/// The size of a slot for the data of a draw: the size of `DrawData`, and a multiple of the
-/// 256 bytes that a uniform offset must be a multiple of.
-const SLOT_SIZE: usize = core::mem::size_of::<DrawData>().next_multiple_of(256);
 /// The lights that the light buffer of a frame holds at first.
 const LIGHTS_AT_FIRST: usize = 4096;
 
@@ -1638,7 +1645,7 @@ mod cores {
 
 /// The bind group of the frame: the resources of the extension, the clusters of the lights,
 /// and the lights and the bones of the frame.
-fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters, lights: &wgpu::Buffer, bones: &wgpu::Buffer) -> wgpu::BindGroup {
+fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters, lights: &wgpu::Buffer, bones: &wgpu::Buffer, records: &wgpu::Buffer) -> wgpu::BindGroup {
     crate::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
         label: Some("extension frame"),
         layout,
@@ -1651,6 +1658,7 @@ fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &
             wgpu::BindGroupEntry { binding: 5, resource: clusters.indexes.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 6, resource: lights.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 7, resource: bones.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 8, resource: records.as_entire_binding() },
         ],
     })
 }
@@ -2001,11 +2009,39 @@ fn light_buffer(device: &wgpu::Device, lights: usize) -> wgpu::Buffer {
 }
 const BONES_AT_FIRST: usize = 4096;
 const INSTANCES_AT_FIRST: usize = 4096;
-/// The world matrices of the instances of a frame.
+/// An instance of a draw: its world matrix (read when the draw has the instanced bit of
+/// `light_range[3]`) and the record of the draw in the records of the frame.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Instance {
+    world: [f32; 16],
+    record: [u32; 4],
+}
+const INSTANCE_SIZE: usize = core::mem::size_of::<Instance>();
+/// The size of a record of a draw: `DrawData`, as the shader's `array<Draw>` has it.
+const RECORD_SIZE: usize = core::mem::size_of::<DrawData>();
+const _: () = assert!(INSTANCE_SIZE == 80 && RECORD_SIZE % 16 == 0);
+const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+const RECORDS_AT_FIRST: usize = 4096;
+/// The records of the draws of a frame.
+fn record_buffer(device: &wgpu::Device, records: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("draw records"),
+        size: (records * RECORD_SIZE) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+/// The inputs a vertex does not have, zeros, one entry for each instance the instance buffer
+/// can hold: a draw's instances index both buffers, so this one must be as long.
+fn defaults_buffer(device: &wgpu::Device, instances: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor { label: Some("vertex defaults"), size: (instances * 64) as u64, usage: wgpu::BufferUsages::VERTEX, mapped_at_creation: false })
+}
+/// The instances of a frame.
 fn instance_buffer(device: &wgpu::Device, instances: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("instances"),
-        size: (instances * 64) as u64,
+        size: (instances * INSTANCE_SIZE) as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
@@ -2131,7 +2167,6 @@ fn bone_buffer(device: &wgpu::Device, bones: usize) -> wgpu::Buffer {
         mapped_at_creation: false,
     })
 }
-const SLOTS_IN_BUFFER: usize = 2048;
 
 struct Renderer {
     device: Rc<wgpu::Device>,
@@ -2146,16 +2181,21 @@ struct Renderer {
     wireframe: bool,
     queue: wgpu::Queue,
     shader: wgpu::ShaderModule,
-    draw_layout: wgpu::BindGroupLayout,
-    /// The buffers for the data of the draws of a frame, each with its group, and the number
-    /// of draws of the frame so far. A draw has one slot in a buffer.
-    draw_buffers: Vec<(Rc<wgpu::Buffer>, Rc<wgpu::BindGroup>)>,
-    draw_slots: usize,
-    /// The data of the draws of the frame, one block for each buffer of slots, written to
-    /// the GPU before each submit (`flush_draw_slots`), and the bytes of each block that are
-    /// written already.
-    draw_staging: Vec<Vec<u8>>,
-    draw_flushed: Vec<usize>,
+    /// The records of the draws of the frame (`DrawData` each; `draws` in the shader): the
+    /// buffer and its room, the data of the records made so far, how many of them are on
+    /// the GPU, and the copies made while the frame draws (`record_now`), which take the
+    /// room from its end, so that the records of the frame can grow between the parts of a
+    /// frame.
+    record_buffer: Rc<wgpu::Buffer>,
+    record_capacity: usize,
+    record_staging: Vec<u8>,
+    record_count: usize,
+    record_written: usize,
+    record_extras: usize,
+    /// The instances of the frame on the GPU (`upload_instances`), and the copies made while
+    /// the frame draws (`append_instances`), from the end of the room.
+    instance_len: usize,
+    instance_extras: usize,
     /// The draws keep the order of the game: it decides the ties of the depth test (the lines
     /// of the collision boxes lie on their meshes). `MGE_XE_SORT=1` sorts the opaque draws of
     /// a run by pipeline and textures and joins them into instances, for a comparison; it
@@ -2294,19 +2334,11 @@ impl Renderer {
         gpu::watch(&device, &info, surface.is_some());
 
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
+        // The text of the extension reads the record of the draw as `draw.field`; the record
+        // is in the storage buffer of the frame (`draws[record]`, see shader.wgsl).
+        let extension_shader = extension_shader.replace("draw.", "draws[record].");
         let source = format!("{}\n{extension_shader}", include_str!("shader.wgsl"));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-        let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("draw"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: None },
-                    count: None,
-                },
-            ],
-        });
         let mut entries = Vec::new();
         let mut sampler_entries = Vec::new();
         for i in 0..STAGES as u32 {
@@ -2376,13 +2408,21 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
+                // The records of the draws of the frame.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("draw"),
             // From the group that changes least to the one that changes most: the frame, the
-            // samplers, the textures, the draw.
-            bind_group_layouts: &[Some(&frame_layout), Some(&sampler_layout), Some(&texture_layout), Some(&draw_layout)],
+            // samplers, the textures. The record of a draw is in the frame group, named by the
+            // instance of the draw.
+            bind_group_layouts: &[Some(&frame_layout), Some(&sampler_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
         let white = Rc::new(device
@@ -2402,12 +2442,7 @@ impl Renderer {
                 &[255, 255, 255, 255],
             )
             .create_view(&Default::default()));
-        // The inputs a vertex does not have, for each instance of a draw.
-        let defaults = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertex defaults"),
-            contents: &vec![0u8; 64 * INSTANCES_MOST],
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let defaults = defaults_buffer(&device, INSTANCES_AT_FIRST);
         let frame_uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("extension frame"), size: 512, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let frame_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("extension frame"),
@@ -2420,7 +2455,8 @@ impl Renderer {
         let clusters = Clusters::new(&device);
         let extension_lights = ExtensionLights::new(&device);
         let (first_lights, first_bones) = (light_buffer(&device, LIGHTS_AT_FIRST), bone_buffer(&device, BONES_AT_FIRST));
-        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones));
+        let first_records = record_buffer(&device, RECORDS_AT_FIRST);
+        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones, &first_records));
         let renderer = Renderer {
             frame_layout,
             frame_uniform,
@@ -2443,11 +2479,14 @@ impl Renderer {
             wireframe,
             queue,
             shader,
-            draw_layout,
-            draw_buffers: Vec::new(),
-            draw_slots: 0,
-            draw_staging: Vec::new(),
-            draw_flushed: Vec::new(),
+            record_buffer: Rc::new(first_records),
+            record_capacity: RECORDS_AT_FIRST,
+            record_staging: Vec::new(),
+            record_count: 0,
+            record_written: 0,
+            record_extras: 0,
+            instance_len: 0,
+            instance_extras: 0,
             sort_draws: std::env::var("MGE_XE_SORT").is_ok_and(|v| v == "1"),
             light_capacity: LIGHTS_AT_FIRST,
             texture_layout,
@@ -2477,29 +2516,77 @@ impl Renderer {
         (renderer, surface)
     }
 
-    /// Puts the data of a draw into the next slot. Returns the group to bind and the offset
-    /// of the slot.
-    /// The bind group of a buffer of draw slots.
-    fn slot_group(&self, buffer: &wgpu::Buffer) -> wgpu::BindGroup {
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("draw slots"),
-            layout: &self.draw_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer, offset: 0, size: wgpu::BufferSize::new(core::mem::size_of::<DrawData>() as u64) }),
-            }],
-        })
-    }
-
-    /// Puts the world matrices of the instances of the frame into the instance buffer.
-    fn upload_instances(&mut self, instances: &[[f32; 16]]) {
-        if instances.len() > self.instance_capacity {
-            self.instance_capacity = instances.len().next_power_of_two();
+    /// Puts the instances of the frame into the instance buffer, with room after them for
+    /// `copies` instances that the frame makes while it draws (`append_instances`).
+    fn upload_instances(&mut self, instances: &[Instance], copies: usize) {
+        let needed = instances.len() + copies;
+        if needed > self.instance_capacity {
+            self.instance_capacity = needed.next_power_of_two();
             self.instance_buffer = instance_buffer(&self.device, self.instance_capacity);
+            self.defaults = defaults_buffer(&self.device, self.instance_capacity);
+            self.instance_extras = 0;
         }
+        self.instance_len = instances.len();
         if !instances.is_empty() {
             self.queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
         }
+    }
+
+    /// Instances made while the frame draws, in a row, from the end of the room: the first,
+    /// or `None` when the room is full.
+    fn append_instances(&mut self, instances: &[Instance]) -> Option<u32> {
+        if self.instance_len + self.instance_extras + instances.len() > self.instance_capacity {
+            return None;
+        }
+        self.instance_extras += instances.len();
+        let first = self.instance_capacity - self.instance_extras;
+        self.queue.write_buffer(&self.instance_buffer, (first * INSTANCE_SIZE) as u64, bytemuck::cast_slice(instances));
+        Some(first as u32)
+    }
+
+    /// The record of a draw of the frame: its data, in the records of the frame after
+    /// `upload_records`. Returns its index.
+    fn record(&mut self, data: &DrawData) -> u32 {
+        self.record_staging.extend_from_slice(bytemuck::bytes_of(data));
+        self.record_count += 1;
+        (self.record_count - 1) as u32
+    }
+
+    /// Puts the records made since the last upload on the GPU, with room after them for
+    /// `copies` records of `record_now`. Before the draws of a part of the frame.
+    fn upload_records(&mut self, copies: usize) {
+        let needed = self.record_count + copies;
+        if needed > self.record_capacity {
+            self.record_capacity = needed.next_power_of_two();
+            self.record_buffer = Rc::new(record_buffer(&self.device, self.record_capacity));
+            self.record_written = 0;
+            self.record_extras = 0;
+        }
+        if self.record_count > self.record_written {
+            self.queue.write_buffer(&self.record_buffer, (self.record_written * RECORD_SIZE) as u64, &self.record_staging[self.record_written * RECORD_SIZE..]);
+            self.record_written = self.record_count;
+        }
+    }
+
+    /// A record made while the frame draws, written at once, from the end of the room:
+    /// its index, or `None` when the room is full.
+    fn record_now(&mut self, data: &DrawData) -> Option<u32> {
+        if self.record_count + self.record_extras >= self.record_capacity {
+            return None;
+        }
+        self.record_extras += 1;
+        let index = self.record_capacity - self.record_extras;
+        self.queue.write_buffer(&self.record_buffer, (index * RECORD_SIZE) as u64, bytemuck::bytes_of(data));
+        Some(index as u32)
+    }
+
+    /// A copy of a draw for this part of the frame: a record with `data`, and instances with
+    /// the world matrices of the draw's that name it. The first instance, or `None` when the
+    /// room of the records or of the instances is full.
+    fn copy_of_draw(&mut self, data: &DrawData, instances: &[Instance]) -> Option<u32> {
+        let record = self.record_now(data)?;
+        let copies: Vec<Instance> = instances.iter().map(|instance| Instance { world: instance.world, record: [record, 0, 0, 0] }).collect();
+        self.append_instances(&copies)
     }
 
     /// Puts the bones of the skinned draws of the frame into the bone buffer, as
@@ -2524,58 +2611,6 @@ impl Renderer {
         }
         if !lights.is_empty() {
             self.queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(lights));
-        }
-    }
-
-    fn draw_slot(&mut self, data: &DrawData) -> (Rc<wgpu::BindGroup>, u32) {
-        let (index, slot) = (self.draw_slots / SLOTS_IN_BUFFER, self.draw_slots % SLOTS_IN_BUFFER);
-        self.draw_slots += 1;
-        if index == self.draw_buffers.len() {
-            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("draw slots"),
-                size: (SLOTS_IN_BUFFER * SLOT_SIZE) as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            let group = self.slot_group(&buffer);
-            self.draw_buffers.push((Rc::new(buffer), Rc::new(group)));
-        }
-        let (_, group) = &self.draw_buffers[index];
-        if index == self.draw_staging.len() {
-            self.draw_staging.push(Vec::with_capacity(SLOTS_IN_BUFFER * SLOT_SIZE));
-            self.draw_flushed.push(0);
-        }
-        let staging = &mut self.draw_staging[index];
-        let at = slot * SLOT_SIZE;
-        if staging.len() < at + SLOT_SIZE {
-            staging.resize(at + SLOT_SIZE, 0);
-        }
-        staging[at..at + core::mem::size_of::<DrawData>()].copy_from_slice(bytemuck::bytes_of(data));
-        (group.clone(), at as u32)
-    }
-
-    /// `draw_slot`, with the data written to the GPU at once: for a draw of a pass that the
-    /// extension can submit before the flush of the frame (the replay of the kept draws into
-    /// its reflection, with `FrameCommands::submit_now`). The flush comes after that submit,
-    /// so the pass would read the slot as the frame before left it: a draw that is not this
-    /// one, by chance of the slot numbers.
-    fn draw_slot_now(&mut self, data: &DrawData) -> (Rc<wgpu::BindGroup>, u32) {
-        let (group, at) = self.draw_slot(data);
-        let index = (self.draw_slots - 1) / SLOTS_IN_BUFFER;
-        self.queue.write_buffer(&self.draw_buffers[index].0, at as u64, bytemuck::bytes_of(data));
-        (group, at)
-    }
-
-    /// Writes the data of the draws since the last write to the GPU: one write for each
-    /// buffer of slots that has new slots. Before a submit. The slots of a frame go on after
-    /// the ones written, so a write never touches a slot of an earlier submit of the frame.
-    fn flush_draw_slots(&mut self) {
-        for (index, staging) in self.draw_staging.iter().enumerate() {
-            let flushed = self.draw_flushed[index];
-            if staging.len() > flushed {
-                self.queue.write_buffer(&self.draw_buffers[index].0, flushed as u64, &staging[flushed..]);
-                self.draw_flushed[index] = staging.len();
-            }
         }
     }
 
@@ -2967,13 +3002,15 @@ impl Renderer {
                 .filter(|location| !present.iter().any(|a| a.location == *location))
                 .map(|location| wgpu::VertexAttribute { format: INPUT_FORMATS[location as usize], offset: 0, shader_location: location })
                 .collect();
-            // The world matrix of an instance: four columns at the locations 9 to 12.
-            let from_instances: Vec<wgpu::VertexAttribute> =
+            // The world matrix of an instance: four columns at the locations 9 to 12; the
+            // record of the draw at 13.
+            let mut from_instances: Vec<wgpu::VertexAttribute> =
                 (0..4).map(|column| wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: column as u64 * 16, shader_location: 9 + column }).collect();
+            from_instances.push(wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 64, shader_location: 13 });
             let buffers = [
                 Some(wgpu::VertexBufferLayout { array_stride: key.stride as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &from_vertex }),
                 Some(wgpu::VertexBufferLayout { array_stride: 64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_defaults }),
-                Some(wgpu::VertexBufferLayout { array_stride: 64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_instances }),
+                Some(wgpu::VertexBufferLayout { array_stride: INSTANCE_SIZE as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_instances }),
             ];
             let blend = (key.blend[0] != 0).then(|| {
                 let component = wgpu::BlendComponent {
@@ -3279,7 +3316,7 @@ struct Player {
     frame_bones: Vec<[f32; 16]>,
     /// The world matrices of the instances of the frame; the first is an identity, for
     /// the draws of their own.
-    frame_instances: Vec<[f32; 16]>,
+    frame_instances: Vec<Instance>,
     /// The collect: the answers of the extension for the frame (`None` before the world
     /// scene), the world began, the world ended, the kind of the scene in progress (1 is the
     /// world), the sun and the ambient light of the first draw of the world, the texture
@@ -3511,7 +3548,7 @@ impl Player {
         self.renderer.extension_lights.clear();
         self.frame_bones.clear();
         self.frame_instances.clear();
-        self.frame_instances.push(core::array::from_fn(|i| if i % 5 == 0 { 1.0 } else { 0.0 }));
+        self.frame_instances.push(Instance { world: IDENTITY, record: [0; 4] });
         self.parameters = None;
         self.world_begun = false;
         self.sky_seen = false;
@@ -3537,9 +3574,11 @@ impl Player {
             timing.begin(&mut encoder);
         }
         self.encoder = Some(encoder);
-        self.renderer.draw_slots = 0;
-        self.renderer.draw_staging.clear();
-        self.renderer.draw_flushed.clear();
+        self.renderer.record_staging.clear();
+        self.renderer.record_count = 0;
+        self.renderer.record_written = 0;
+        self.renderer.record_extras = 0;
+        self.renderer.instance_extras = 0;
         self.color = Some(Rc::new(color.create_view(&Default::default())));
         self.back_buffer = Some(color.clone());
         self.depth = Some(depth);
@@ -3556,7 +3595,6 @@ impl Player {
         let in_frame = self.drawing();
         drop(self.pass.take());
         if let Some(encoder) = self.encoder.take() {
-            self.renderer.flush_draw_slots();
             // The first part of a frame: the back buffer has the last complete picture
             // until these commands run. A copy of it stays for the window (see
             // `shown_picture`).
@@ -3913,7 +3951,6 @@ impl Player {
             before_submit(&mut encoder);
             let renderer = &mut self.renderer;
             let slot = renderer.timing.as_mut().and_then(|timing| timing.end(&renderer.device, &mut encoder, &mut renderer.counts));
-            renderer.flush_draw_slots();
             crate::gpu::submit(&renderer.queue, renderer.commands.take().into_iter().chain([encoder.finish()]));
             if let (Some(timing), Some(slot)) = (renderer.timing.as_ref(), slot) {
                 timing.map(slot);
@@ -4198,7 +4235,7 @@ impl Player {
     /// buffers, range, lights and data but the world matrix become one draw with as many
     /// instances: the world matrices go to `instances`, the first at the index the draw
     /// keeps. A skinned draw and a draw with a vertex blend keep their own.
-    fn sort_items(items: &mut Vec<Item>, counts: &mut Counts, lights: &[LightData], mut instances: Option<&mut Vec<[f32; 16]>>) {
+    fn sort_items(items: &mut Vec<Item>, counts: &mut Counts, lights: &[LightData], mut instances: Option<&mut Vec<Instance>>) {
         // The depth function is a D3DCMPFUNC: 2 is "less" and 4 is "less or equal".
         let opaque = |item: &Item| {
             matches!(item, Item::Draw(draw) if draw.key.blend[0] == 0
@@ -4269,7 +4306,8 @@ impl Player {
                         let mut draw = (*first[at]).clone();
                         draw.instances = (instances.len() as u32, (end - at) as u32);
                         draw.data.light_range[3] |= 2;
-                        instances.extend(first[at..end].iter().map(|d| d.data.world[0]));
+                        let record = first[at].record;
+                        instances.extend(first[at..end].iter().map(|d| Instance { world: d.data.world[0], record: [record, 0, 0, 0] }));
                         counts.instanced_draws += (end - at - 1) as u32;
                         joined.push(Rc::new(draw));
                     }
@@ -4293,7 +4331,10 @@ impl Player {
         }
         self.renderer.upload_lights(&self.frame_lights);
         self.renderer.upload_bones(&self.frame_bones);
-        self.renderer.upload_instances(&self.frame_instances);
+        // Room for the copies that the parts of the frame make (clipped draws, replays).
+        let copies = 3 * self.renderer.record_count + 256;
+        self.renderer.upload_instances(&self.frame_instances, copies);
+        self.renderer.upload_records(copies);
         // The resources of the extension for the frame.
         let (values, texture) = self.parameters.as_ref().map_or(([[0.0f32; 4]; 32], None), |p| (p.values, p.texture.clone()));
         self.renderer.queue.write_buffer(&self.renderer.frame_uniform, 0, bytemuck::cast_slice(&values));
@@ -4305,7 +4346,7 @@ impl Player {
         let scene = items.iter().find_map(|item| if let Item::WorldStart(facts) = item { Some((facts.view, facts.projection)) } else { None });
         renderer.clusters.build(&renderer.device, &renderer.queue, &self.frame_lights, scene, self.frame_size, &mut renderer.counts);
         renderer.counts.times[TIME_CLUSTERS] += clock.elapsed();
-        renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters, &renderer.light_buffer, &renderer.bone_buffer));
+        renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters, &renderer.light_buffer, &renderer.bone_buffer, &renderer.record_buffer));
         for item in items {
             if !matches!(item, Item::Draw(_)) {
                 self.forget_bound();
@@ -4352,12 +4393,17 @@ impl Player {
             (None, None) => None,
         };
         let split = draw.world && draw.translucent() && ReplayView::WORLD & (1 << draw.class.min(31)) != 0;
-        let clipped = side.filter(|_| split).map(|plane| {
+        let mut instances = draw.instances;
+        if let Some(plane) = side.filter(|_| split) {
+            // A copy of the record with the plane, and instances that name it.
             let mut data = draw.data;
             data.clip_plane = plane_of_draw(plane, draw.origin);
-            data
-        });
-        let (draw_group, draw_offset) = renderer.draw_slot(clipped.as_ref().unwrap_or(&draw.data));
+            let (start, n) = (draw.instances.0 as usize, draw.instances.1 as usize);
+            match renderer.copy_of_draw(&data, &self.frame_instances[start..start + n]) {
+                Some(first) => instances = (first, draw.instances.1),
+                None => renderer.counts.no_record += 1,
+            }
+        }
         renderer.counts.times[TIME_DRAW_UPLOAD] += clock.elapsed();
         let clock = ticks::Clock::now();
         let Some(pipeline) = renderer.pipeline(draw.key) else {
@@ -4382,7 +4428,6 @@ impl Player {
         self.bound.set(pass, 0, &renderer.frame_group);
         self.bound.set(pass, 1, &draw.samplers);
         self.bound.set(pass, 2, &draw.textures);
-        pass.set_bind_group(3, &*draw_group, &[draw_offset]);
         if !self.pass_vertices.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices)) {
             pass.set_vertex_buffer(0, draw.vertices.slice(..));
             self.pass_vertices = Some(draw.vertices.clone());
@@ -4399,7 +4444,7 @@ impl Player {
             pass.set_index_buffer(draw.indexes.slice(..), wgpu::IndexFormat::Uint16);
             self.pass_indexes = Some(draw.indexes.clone());
         }
-        pass.draw_indexed(first..first + count, 0, draw.instances.0..draw.instances.0 + draw.instances.1);
+        pass.draw_indexed(first..first + count, 0, instances.0..instances.0 + instances.1);
         renderer.counts.times[TIME_DRAW_PASS] += clock.elapsed();
         renderer.counts.draws += 1;
     }
@@ -4481,7 +4526,7 @@ impl Player {
         let mut scene = facts.view(&device, &queue, &commands, format);
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: after the world");
             extension.after_world(&scene, pass, &mut replayer);
@@ -4554,7 +4599,7 @@ impl Player {
         scene.lights = lights.as_ref().map(|(lights, clusters, table, indexes, origin)| FrameLights { lights, clusters, table, indexes, origin: *origin });
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: held draws");
             extension.draw_held(&scene, pass, &self.taken, &mut replayer);
@@ -4579,7 +4624,7 @@ impl Player {
         scene.lights = lights.as_ref().map(|(lights, clusters, table, indexes, origin)| FrameLights { lights, clusters, table, indexes, origin: *origin });
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: a held draw in its place");
             extension.draw_held_in_place(&scene, pass, core::slice::from_ref(&held), &mut replayer);
@@ -4736,7 +4781,7 @@ impl Player {
         scene.before_depth = before_depth.as_ref();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: a class of draws");
             extension.draw_class(class, &scene, pass, &mut replayer);
@@ -4755,7 +4800,7 @@ impl Player {
     fn replay_blended(&mut self, range: impl std::slice::SliceIndex<[Rc<Draw>], Output = [Rc<Draw>]>, plane: [f64; 4], target_size: (u32, u32)) {
         let Some(pass) = self.pass.as_mut() else { return };
         let world = std::mem::take(&mut self.world_draws);
-        let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world[range] };
+        let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world[range], instances: &self.frame_instances };
         replayer.replay(
             pass,
             &ReplayView {
@@ -4783,7 +4828,7 @@ impl Player {
         let clear_depth = match self.pass.as_mut() {
             Some(pass) => {
                 let world = std::mem::take(&mut self.world_draws);
-                let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
+                let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances };
                 let clock = ticks::Clock::now();
                 pass.push_debug_group("extension: before the world");
                 let clear_depth = extension.before_world(&scene, pass, &mut replayer);
@@ -4973,6 +5018,10 @@ impl Player {
         if self.target.is_some() {
             renderer.counts.target_draws += 1;
         }
+        // The record of the draw, and the instance that names it.
+        let record = renderer.record(&draw_data);
+        let instance = self.frame_instances.len() as u32;
+        self.frame_instances.push(Instance { world: IDENTITY, record: [record, 0, 0, 0] });
         let draw = Rc::new(Draw {
             class,
             // The world scene of the game is 1, with the sky at its start; its sorted draws
@@ -4991,7 +5040,8 @@ impl Player {
             texture_handles: handles,
             geometry: shape.geometry,
             range: (first_index, indexes),
-            instances: (0, 1),
+            instances: (instance, 1),
+            record,
         });
         if draw.world {
             self.world_draws.push(draw.clone());
@@ -5051,6 +5101,7 @@ impl Player {
             c.render_textures, c.target_draws, c.target_copies, c.pixel_reads
         );
         println!("draws in screen coordinates {}, not drawn {}", c.screen_draws, c.screen_draws_lost);
+        println!("copies of a draw without room in the records of the frame {}", c.no_record);
         for (format, count) in &c.texture_formats {
             println!("texture format {format:#x} not made: {count}");
         }

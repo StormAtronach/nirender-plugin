@@ -106,9 +106,9 @@ struct Clusters {
 
 // The lights of the cluster of a pixel: the first entry in `cluster_indexes` and the
 // number, for a pixel of the picture at a depth of the view. None when the clusters are
-// off or the draw cannot use them (`draw.light_range.w`).
+// off or the draw cannot use them (`draws[record].light_range.w`).
 fn cluster_lights(pixel: vec2f, view_z: f32) -> vec2u {
-    if clusters.grid.w == 0u || draw.light_range.w == 0u {
+    if clusters.grid.w == 0u || draws[record].light_range.w == 0u {
         return vec2u(0u, 0u);
     }
     let tile = vec2u(clamp(vec2i(pixel * clusters.screen.xy), vec2i(0), vec2i(clusters.grid.xy) - 1));
@@ -116,7 +116,12 @@ fn cluster_lights(pixel: vec2f, view_z: f32) -> vec2u {
     return cluster_table[(slice * clusters.grid.y + tile.y) * clusters.grid.x + tile.x];
 }
 
-@group(3) @binding(0) var<uniform> draw: Draw;
+// The records of the draws of the frame, and the index of the record of this draw: each
+// stage takes it first from the instance of the draw, and reads the fields of the record
+// where it needs them (`draws[record].field`). A copy of the whole record into a private
+// variable made the GPU three times slower (2026-10-16).
+@group(0) @binding(8) var<storage, read> draws: array<Draw>;
+var<private> record: u32;
 @group(2) @binding(0) var texture0: texture_2d<f32>;
 @group(2) @binding(1) var texture1: texture_2d<f32>;
 @group(2) @binding(2) var texture2: texture_2d<f32>;
@@ -149,6 +154,8 @@ struct VertexIn {
     @location(10) instance1: vec4f,
     @location(11) instance2: vec4f,
     @location(12) instance3: vec4f,
+    // The record of the draw in `draws`.
+    @location(13) record: u32,
 }
 
 struct VertexOut {
@@ -167,11 +174,12 @@ struct VertexOut {
     @location(8) world_position: vec3f,
     @location(9) world_normal: vec3f,
     @location(10) vertex_color: vec4f,
+    @location(11) @interpolate(flat) record: u32,
 }
 
 // The texture coordinate of a stage, as the fixed-function pipeline makes it.
 fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view_normal: vec3f) -> vec4f {
-    let how = draw.stages[index].coordinate;
+    let how = draws[record].stages[index].coordinate;
     var sets = uvs;
     var value: vec4f;
     switch how.x {
@@ -186,23 +194,24 @@ fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view
         default: { value = vec4f(sets[how.y & 3u], 1.0, 0.0); }
     }
     if how.z != 0u {
-        value = draw.texture_transforms[index] * value;
+        value = draws[record].texture_transforms[index] * value;
     }
     return value;
 }
 
 @vertex
 fn vs(in: VertexIn) -> VertexOut {
+    record = in.record;
     var local = vec4f(in.position, 1.0);
-    if (draw.counts.w & 4u) != 0u {
+    if (draws[record].counts.w & 4u) != 0u {
         local = vec4f(extension_sky_position(in.position), 1.0);
     }
     var world_position: vec4f;
     var world_normal: vec3f;
-    let weights = draw.flags.w;
+    let weights = draws[record].flags.w;
     if weights == 0u {
-        var world0 = draw.world[0];
-        if (draw.light_range.w & 2u) != 0u {
+        var world0 = draws[record].world[0];
+        if (draws[record].light_range.w & 2u) != 0u {
             world0 = mat4x4f(in.instance0, in.instance1, in.instance2, in.instance3);
         }
         world_position = world0 * local;
@@ -210,7 +219,7 @@ fn vs(in: VertexIn) -> VertexOut {
     } else if weights == 4u {
         // A skinned draw: four bones of the palette of the frame, the fourth weight 1 less
         // the sum of the three, as the vertex blend of Direct3D.
-        let first = draw.light_range.z;
+        let first = draws[record].light_range.z;
         var last = 1.0;
         world_position = vec4f(0.0);
         world_normal = vec3f(0.0);
@@ -232,21 +241,22 @@ fn vs(in: VertexIn) -> VertexOut {
         for (var i = 0u; i < weights; i++) {
             let weight = in.weights[i];
             last -= weight;
-            world_position += weight * (draw.world[i] * local);
-            world_normal += weight * (draw.world[i] * vec4f(in.normal, 0.0)).xyz;
+            world_position += weight * (draws[record].world[i] * local);
+            world_normal += weight * (draws[record].world[i] * vec4f(in.normal, 0.0)).xyz;
         }
-        world_position += last * (draw.world[weights] * local);
-        world_normal += last * (draw.world[weights] * vec4f(in.normal, 0.0)).xyz;
+        world_position += last * (draws[record].world[weights] * local);
+        world_normal += last * (draws[record].world[weights] * vec4f(in.normal, 0.0)).xyz;
     }
-    let view_position = draw.view * vec4f(world_position.xyz, 1.0);
+    let view_position = draws[record].view * vec4f(world_position.xyz, 1.0);
 
     var out: VertexOut;
-    out.clip = draw.projection * view_position;
+    out.record = in.record;
+    out.clip = draws[record].projection * view_position;
     // Direct3D 8 has the centre of a pixel at a whole number: the picture is half a pixel to
     // the right and down from where newer APIs put it.
-    out.clip = vec4f(out.clip.xy + draw.pixel.xy * out.clip.w, out.clip.zw);
+    out.clip = vec4f(out.clip.xy + draws[record].pixel.xy * out.clip.w, out.clip.zw);
     let uvs = array<vec2f, 4>(in.uv0, in.uv1, in.uv2, in.uv3);
-    let view_normal = normalize((draw.view * vec4f(world_normal, 0.0)).xyz + vec3f(0.0, 0.0, 1e-20));
+    let view_normal = normalize((draws[record].view * vec4f(world_normal, 0.0)).xyz + vec3f(0.0, 0.0, 1e-20));
     out.coordinate0 = stage_coordinate(0u, uvs, view_position.xyz, view_normal);
     out.coordinate1 = stage_coordinate(1u, uvs, view_position.xyz, view_normal);
     out.coordinate2 = stage_coordinate(2u, uvs, view_position.xyz, view_normal);
@@ -255,47 +265,47 @@ fn vs(in: VertexIn) -> VertexOut {
     out.coordinate5 = stage_coordinate(5u, uvs, view_position.xyz, view_normal);
 
     var vertex_color = vec4f(1.0);
-    if draw.flags.z != 0u {
+    if draws[record].flags.z != 0u {
         vertex_color = in.color.bgra;
     }
     out.world_position = world_position.xyz;
     out.world_normal = world_normal;
     out.vertex_color = vertex_color;
-    if (draw.counts.w & 12u) != 0u {
+    if (draws[record].counts.w & 12u) != 0u {
         // For the sky: the direction from the camera, in the space of the world.
-        out.world_position = transpose(mat3x3f(draw.view[0].xyz, draw.view[1].xyz, draw.view[2].xyz)) * view_position.xyz;
+        out.world_position = transpose(mat3x3f(draws[record].view[0].xyz, draws[record].view[1].xyz, draws[record].view[2].xyz)) * view_position.xyz;
     }
-    if (draw.counts.w & 4u) != 0u {
+    if (draws[record].counts.w & 4u) != 0u {
         // The dome is behind all other things.
         out.clip.z = 0.999999 * out.clip.w;
     }
     // With bit 128 the extension makes the light for each pixel, and this stage makes none.
     // A draw that the extension only finishes (bit 1 alone: its fog, its shadow) keeps the
     // light of this stage.
-    if draw.flags.x == 0u || (draw.counts.w & 128u) != 0u {
+    if draws[record].flags.x == 0u || (draws[record].counts.w & 128u) != 0u {
         out.color = vertex_color;
     } else {
-        var diffuse = draw.material_diffuse;
-        if draw.more.x == 1u {
+        var diffuse = draws[record].material_diffuse;
+        if draws[record].more.x == 1u {
             diffuse = vertex_color;
         }
-        var emissive = draw.material_emissive.rgb;
-        if draw.more.y == 1u {
+        var emissive = draws[record].material_emissive.rgb;
+        if draws[record].more.y == 1u {
             emissive = vertex_color.rgb;
         }
-        var ambient = draw.material_ambient.rgb;
-        if draw.counts.z == 1u {
+        var ambient = draws[record].material_ambient.rgb;
+        if draws[record].counts.z == 1u {
             ambient = vertex_color.rgb;
         }
         // A lit draw without normals: the fixed function takes a zero normal, so the lights
         // give it their ambient light and no diffuse light.
         var normal = vec3f(0.0);
-        if draw.flags.y != 0u {
+        if draws[record].flags.y != 0u {
             normal = normalize(world_normal);
         }
-        var sum = emissive + ambient * draw.scene_ambient.rgb;
-        for (var i = 0u; i < draw.light_range.y; i++) {
-            let light = lights[draw.light_range.x + i];
+        var sum = emissive + ambient * draws[record].scene_ambient.rgb;
+        for (var i = 0u; i < draws[record].light_range.y; i++) {
+            let light = lights[draws[record].light_range.x + i];
             var direction: vec3f;
             var strength = 1.0;
             if light.position.w == 3.0 {
@@ -329,7 +339,7 @@ fn vs(in: VertexIn) -> VertexOut {
     // The fog of the game is table fog: linear on the depth, for each pixel. The fragment
     // shader makes the fog from this depth, so that a large triangle is right.
     out.fog = abs(view_position.z);
-    if draw.fog.w != 0.0 {
+    if draws[record].fog.w != 0.0 {
         out.fog = length(view_position.xyz);
     }
     return out;
@@ -342,7 +352,7 @@ fn argument(code: u32, diffuse: vec4f, current: vec4f, texel: vec4f) -> vec4f {
         case 0u: { value = diffuse; }
         case 1u: { value = current; }
         case 2u: { value = texel; }
-        case 3u: { value = draw.texture_factor; }
+        case 3u: { value = draws[record].texture_factor; }
         default: { value = vec4f(1.0); }
     }
     if (code & 16u) != 0u {
@@ -369,7 +379,7 @@ fn operation(op: u32, a1: vec4f, a2: vec4f, a0: vec4f, diffuse: vec4f, current: 
         case 11u: { return a1 + a2 - a1 * a2; }
         case 12u: { return mix(a2, a1, diffuse.a); }
         case 13u: { return mix(a2, a1, texel.a); }
-        case 14u: { return mix(a2, a1, draw.texture_factor.a); }
+        case 14u: { return mix(a2, a1, draws[record].texture_factor.a); }
         case 16u: { return mix(a2, a1, current.a); }
         // A bump stage gives what the stage before it gave.
         case 22u, 23u: { return current; }
@@ -399,7 +409,7 @@ fn compare(function: u32, value: f32, reference: f32) -> bool {
 // The two parts of a texture coordinate that the texture read uses. A projected coordinate
 // is divided by the last part that its texture transform gives.
 fn final_coordinate(index: u32, value: vec4f) -> vec2f {
-    let how = draw.stages[index].coordinate;
+    let how = draws[record].stages[index].coordinate;
     var divisor = 1.0;
     if how.w != 0u && how.z >= 2u {
         divisor = value[min(how.z, 4u) - 1u];
@@ -410,8 +420,8 @@ fn final_coordinate(index: u32, value: vec4f) -> vec2f {
 // D3DTOP_BUMPENVMAP is 22 and D3DTOP_BUMPENVMAPLUMINANCE is 23. The move that the bump stage
 // `index` gives to the coordinate of the next stage, from its texel.
 fn bump_move(index: u32, texel: vec4f) -> vec2f {
-    let stage = draw.stages[index];
-    if index >= draw.counts.y || (stage.color.x != 22u && stage.color.x != 23u) {
+    let stage = draws[record].stages[index];
+    if index >= draws[record].counts.y || (stage.color.x != 22u && stage.color.x != 23u) {
         return vec2f(0.0);
     }
     return vec2f(texel.r * stage.bump.x + texel.g * stage.bump.z, texel.r * stage.bump.y + texel.g * stage.bump.w);
@@ -427,6 +437,7 @@ fn bump_light(index: u32, bump_texel: vec4f, texel: vec4f) -> vec4f {
 
 @fragment
 fn fs(in: VertexOut) -> @location(0) vec4f {
+    record = in.record;
     // A texture read must not be in a branch, so each stage reads its texture first.
     var texels: array<vec4f, 6>;
     // A bump stage moves the coordinate of the stage after it.
@@ -437,21 +448,21 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     texels[4] = bump_light(3u, texels[3], textureSample(texture4, sampler4, final_coordinate(4u, in.coordinate4) + bump_move(3u, texels[3])));
     texels[5] = bump_light(4u, texels[4], textureSample(texture5, sampler5, final_coordinate(5u, in.coordinate5) + bump_move(4u, texels[4])));
 
-    if (draw.counts.w & 4u) != 0u {
+    if (draws[record].counts.w & 4u) != 0u {
         return vec4f(extension_sky_color(normalize(in.world_position), in.clip.xy), 1.0);
     }
     // A sky draw has a direction in `world_position`, and is above the water in any case.
-    if (draw.counts.w & 12u) == 0u && any(draw.clip_plane != vec4f(0.0)) && dot(in.world_position, draw.clip_plane.xyz) + draw.clip_plane.w < 0.0 {
+    if (draws[record].counts.w & 12u) == 0u && any(draws[record].clip_plane != vec4f(0.0)) && dot(in.world_position, draws[record].clip_plane.xyz) + draws[record].clip_plane.w < 0.0 {
         discard;
     }
-    let shaded = (draw.counts.w & 1u) != 0u;
+    let shaded = (draws[record].counts.w & 1u) != 0u;
     var diffuse = in.color;
     if shaded {
         diffuse = extension_shade(in);
     }
     var current = diffuse;
-    for (var i = 0u; i < draw.counts.y; i++) {
-        let stage = draw.stages[i];
+    for (var i = 0u; i < draws[record].counts.y; i++) {
+        let stage = draws[record].stages[i];
         let texel = texels[i];
         let color = operation(stage.color.x, argument(stage.color.y, diffuse, current, texel),
             argument(stage.color.z, diffuse, current, texel), argument(stage.color.w, diffuse, current, texel), diffuse, current, texel);
@@ -463,23 +474,23 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
         current = vec4f(color.rgb, alpha.a);
         // The fixed-function pipeline keeps a colour between 0 and 1. A draw with the light
         // for each pixel has no such limit.
-        if (draw.counts.w & 128u) == 0u {
+        if (draws[record].counts.w & 128u) == 0u {
             current = clamp(current, vec4f(0.0), vec4f(1.0));
         }
     }
 
-    if draw.more.z != 0u && !compare(draw.more.z, floor(current.a * 255.0 + 0.5), f32(draw.more.w)) {
+    if draws[record].more.z != 0u && !compare(draws[record].more.z, floor(current.a * 255.0 + 0.5), f32(draws[record].more.w)) {
         discard;
     }
     var clear = 1.0;
-    if draw.fog.z != 0.0 {
-        clear = clamp((draw.fog.y - in.fog) / max(draw.fog.y - draw.fog.x, 0.0001), 0.0, 1.0);
+    if draws[record].fog.z != 0.0 {
+        clear = clamp((draws[record].fog.y - in.fog) / max(draws[record].fog.y - draws[record].fog.x, 0.0001), 0.0, 1.0);
     }
     if shaded {
         return extension_finish(current.rgb, current.a, clear);
     }
-    if (draw.counts.w & 8u) != 0u {
+    if (draws[record].counts.w & 8u) != 0u {
         return vec4f(extension_sky_color(normalize(in.world_position), in.clip.xy), current.a);
     }
-    return vec4f(mix(draw.fog_color.rgb, current.rgb, clear), current.a);
+    return vec4f(mix(draws[record].fog_color.rgb, current.rgb, clear), current.a);
 }
