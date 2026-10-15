@@ -979,6 +979,7 @@ impl Pass {
 pub mod gpu;
 pub mod material;
 mod overlay;
+mod ticks;
 
 /// The geometry of a shape from a `GEOMETRY` record: resident buffers, keyed by the
 /// geometry data of the game. See `geometry_stream` of the plugin.
@@ -1337,7 +1338,7 @@ const TIME_PRESENT: usize = 14;
 
 /// The sum of the measured times without one of them: for a part that has other measured
 /// parts inside it, its own time is the time of the whole less the change of this sum.
-fn sum_except(times: &[std::time::Duration; TIME_COUNT], skip: usize) -> std::time::Duration {
+fn sum_except(times: &[u64; TIME_COUNT], skip: usize) -> u64 {
     times.iter().enumerate().filter(|(i, _)| *i != skip).map(|(_, t)| *t).sum()
 }
 
@@ -1478,8 +1479,8 @@ struct Counts {
     /// The copies of the picture and of the depth for the calls of the extension.
     picture_copies: u32,
     depth_copies: u32,
-    /// Where the time of the program goes, in the order of `TIME_NAMES`.
-    times: [std::time::Duration; TIME_COUNT],
+    /// Where the time of the program goes, in the order of `TIME_NAMES`, in ticks (`ticks`).
+    times: [u64; TIME_COUNT],
     /// The frames that are complete.
     frames: u32,
     /// The geometry records, their bytes, the draws from them, the records that did not
@@ -2841,7 +2842,7 @@ impl Renderer {
 
     /// A geometry record: resident buffers for the draws that name it.
     fn geometry(&mut self, data: &[u8]) {
-        let clock = std::time::Instant::now();
+        let clock = ticks::Clock::now();
         let (handle, fvf, stride, vertices, entries, strips) = (word(data, 0), word(data, 12), word(data, 16), word(data, 20), word(data, 24), word(data, 28));
         let lengths = ((strips as usize * 2) + 3) & !3;
         let (vertex_at, index_at) = (32 + lengths, 32 + lengths + vertices as usize * stride as usize);
@@ -2867,7 +2868,7 @@ impl Renderer {
     /// and `(up - right) * radius` from the position, scaled by the size of the particle.
     /// The buffer replaces the one of the last frame under the same key.
     fn particles(&mut self, handle: u32, radius: f32, right: [f32; 3], up: [f32; 3], particles: &[u8]) {
-        let clock = std::time::Instant::now();
+        let clock = ticks::Clock::now();
         const STRIDE: usize = 36;
         const NORMAL: f32 = 0.3;
         let count = particles.len() / 20;
@@ -3317,7 +3318,7 @@ struct Player {
     before_depth: Option<wgpu::Texture>,
     before_depth_kept: bool,
     /// The counts at the last mark. See `tag::MARK`.
-    mark_times: [std::time::Duration; TIME_COUNT],
+    mark_times: [u64; TIME_COUNT],
     mark_frames: u32,
     mark_draws: u32,
     mark_gpu: (f64, f64, u32),
@@ -3401,7 +3402,7 @@ impl Player {
             world_depth_kept: false,
             before_depth: None,
             before_depth_kept: false,
-            mark_times: [std::time::Duration::ZERO; TIME_COUNT],
+            mark_times: [0; TIME_COUNT],
             mark_frames: 0,
             mark_draws: 0,
             mark_gpu: (0.0, 0.0, 0),
@@ -3821,8 +3822,8 @@ impl Player {
         let counts = &self.renderer.counts;
         let frames = counts.frames - self.mark_frames;
         let draws = counts.draws - self.mark_draws;
-        let busy: std::time::Duration = counts.times.iter().zip(self.mark_times).map(|(now, before)| *now - before).sum();
-        let per_frame = |time: std::time::Duration| time.as_secs_f64() * 1000.0 / frames.max(1) as f64;
+        let busy: u64 = counts.times.iter().zip(self.mark_times).map(|(now, before)| *now - before).sum();
+        let per_frame = |time: u64| ticks::duration(time).as_secs_f64() * 1000.0 / frames.max(1) as f64;
         println!("mark {text}: {frames} frames, {:.1} draws for each frame, busy {:.3} ms for each frame:", draws as f64 / frames.max(1) as f64, per_frame(busy));
         for ((name, now), before) in TIME_NAMES.iter().zip(counts.times).zip(self.mark_times) {
             println!("  {:6.3}  {name}", per_frame(now - before));
@@ -3862,7 +3863,7 @@ impl Player {
         if let Some(extension) = self.extension.as_mut() {
             self.shots.extend(extension.pictures().into_iter().map(|request| request.path));
         }
-        let clock = std::time::Instant::now();
+        let clock = ticks::Clock::now();
         drop(self.pass.take());
         self.color = None;
         self.depth = None;
@@ -4110,7 +4111,7 @@ impl Player {
         }
         let renderer = &mut self.renderer;
         let pipeline = renderer.screen_pipeline();
-        let clock = std::time::Instant::now();
+        let clock = ticks::Clock::now();
         let buffer = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("screen draw"), contents: bytemuck::cast_slice(&list), usage: wgpu::BufferUsages::VERTEX });
         let view = renderer.textures.get(&texture).unwrap_or(&renderer.white).clone();
         let group = crate::gpu::frame_group(&renderer.device, &wgpu::BindGroupDescriptor {
@@ -4136,7 +4137,7 @@ impl Player {
         if !self.drawing() {
             return;
         }
-        let clock = std::time::Instant::now();
+        let clock = ticks::Clock::now();
         let inside_before = sum_except(&self.renderer.counts.times, TIME_ITEMS);
         self.run_items_inner(items);
         let inside_after = sum_except(&self.renderer.counts.times, TIME_ITEMS);
@@ -4256,7 +4257,7 @@ impl Player {
         self.renderer.queue.write_buffer(&self.renderer.frame_uniform, 0, bytemuck::cast_slice(&values));
         let texture = texture.unwrap_or_else(|| self.renderer.white.clone());
         let renderer = &mut self.renderer;
-        let clock = std::time::Instant::now();
+        let clock = ticks::Clock::now();
         // The view and the projection of the scene: those of the start of the world, as the
         // lights of the extension have them.
         let scene = items.iter().find_map(|item| if let Item::WorldStart(facts) = item { Some((facts.view, facts.projection)) } else { None });
@@ -4298,7 +4299,7 @@ impl Player {
     /// Puts a draw into the pass.
     fn issue(&mut self, draw: &Draw) {
         let renderer = &mut self.renderer;
-        let clock = std::time::Instant::now();
+        let clock = ticks::Clock::now();
         // A world draw that blends and writes no depth (not the sky), with the call of a
         // class with a plane in the frame: on the far side before the call, on the side of
         // the camera after it. The call draws the other side again. A draw that writes depth
@@ -4316,13 +4317,13 @@ impl Player {
         });
         let (draw_group, draw_offset) = renderer.draw_slot(clipped.as_ref().unwrap_or(&draw.data));
         renderer.counts.times[TIME_DRAW_UPLOAD] += clock.elapsed();
-        let clock = std::time::Instant::now();
+        let clock = ticks::Clock::now();
         let Some(pipeline) = renderer.pipeline(draw.key) else {
             renderer.counts.no_layout += 1;
             return;
         };
         renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
-        let clock = std::time::Instant::now();
+        let clock = ticks::Clock::now();
         let Some(pass) = self.pass.as_mut() else { return };
         pass.set_pipeline(&pipeline);
         pass.set_stencil_reference(draw.stencil_reference);
@@ -4403,7 +4404,7 @@ impl Player {
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let commands = self.renderer.commands.clone();
         let scene = facts.view(&device, &queue, &commands, format);
-        let clock = std::time::Instant::now();
+        let clock = ticks::Clock::now();
         self.parameters = Some(extension.frame(&scene));
         self.renderer.counts.times[TIME_EXT_FRAME] += clock.elapsed();
         self.extension = Some(extension);
@@ -4418,7 +4419,7 @@ impl Player {
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
-            let clock = std::time::Instant::now();
+            let clock = ticks::Clock::now();
             pass.push_debug_group("extension: after the world");
             extension.after_world(&scene, pass, &mut replayer);
             pass.pop_debug_group();
@@ -4456,7 +4457,7 @@ impl Player {
                     multiview_mask: None,
                 })
                 .forget_lifetime();
-            let clock = std::time::Instant::now();
+            let clock = ticks::Clock::now();
             extension.blend(&scene, &mut pass, &before, &depth);
             drop(pass);
             self.renderer.counts.times[TIME_EXT_AFTER] += clock.elapsed();
@@ -4491,7 +4492,7 @@ impl Player {
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
-            let clock = std::time::Instant::now();
+            let clock = ticks::Clock::now();
             pass.push_debug_group("extension: held draws");
             extension.draw_held(&scene, pass, &self.taken, &mut replayer);
             pass.pop_debug_group();
@@ -4516,7 +4517,7 @@ impl Player {
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
-            let clock = std::time::Instant::now();
+            let clock = ticks::Clock::now();
             pass.push_debug_group("extension: a held draw in its place");
             extension.draw_held_in_place(&scene, pass, core::slice::from_ref(&held), &mut replayer);
             pass.pop_debug_group();
@@ -4625,7 +4626,7 @@ impl Player {
         scene.before_depth = before_depth.as_ref();
         if let (Some(color), Some(encoder)) = (self.color.clone(), self.encoder.as_mut()) {
             drop(self.pass.take());
-            let clock = std::time::Instant::now();
+            let clock = ticks::Clock::now();
             encoder.push_debug_group("extension: post-processing");
             extension.post(&scene, encoder, &color);
             encoder.pop_debug_group();
@@ -4673,7 +4674,7 @@ impl Player {
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
-            let clock = std::time::Instant::now();
+            let clock = ticks::Clock::now();
             pass.push_debug_group("extension: a class of draws");
             extension.draw_class(class, &scene, pass, &mut replayer);
             pass.pop_debug_group();
@@ -4720,7 +4721,7 @@ impl Player {
             Some(pass) => {
                 let world = std::mem::take(&mut self.world_draws);
                 let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
-                let clock = std::time::Instant::now();
+                let clock = ticks::Clock::now();
                 pass.push_debug_group("extension: before the world");
                 let clear_depth = extension.before_world(&scene, pass, &mut replayer);
                 pass.pop_debug_group();
@@ -4818,7 +4819,7 @@ impl Player {
             return;
         };
         renderer.counts.geometry_draws += 1;
-        let clock = std::time::Instant::now();
+        let clock = ticks::Clock::now();
         // The answers of the extension: the light for each pixel and the fog distances for
         // the world in the back buffer (not for the sky, which is before the world, and not
         // for a texture that the game draws into), the sky for a sky draw in the back buffer
@@ -4868,7 +4869,7 @@ impl Player {
             draw_data.light_range[3] = 1;
         }
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
-        let clock = std::time::Instant::now();
+        let clock = ticks::Clock::now();
         let mut handles = [0u32; STAGES];
         let mut sampler_values = [[0u32; 5]; STAGES];
         for stage in 0..STAGES {
@@ -5576,7 +5577,7 @@ mod live {
             if let Some(player) = self.player.as_ref() {
                 println!("time for each frame, in ms:");
                 for (name, time) in super::TIME_NAMES.iter().zip(player.renderer.counts.times) {
-                    println!("  {:6.3}  {name}", time.as_secs_f64() * 1000.0 / self.frames.max(1) as f64);
+                    println!("  {:6.3}  {name}", super::ticks::duration(time).as_secs_f64() * 1000.0 / self.frames.max(1) as f64);
                 }
             }
             println!("records {}, {:.1} MB, {:.2} MB for each frame", self.records, self.bytes as f64 / 1e6, self.bytes as f64 / 1e6 / self.frames.max(1) as f64);
@@ -5679,7 +5680,7 @@ mod live {
                     self.player.as_mut().unwrap().begin_frame(self.back_buffer.as_ref().unwrap(), self.depth.clone().unwrap(), true);
                     self.in_frame = true;
                 }
-                let clock = Instant::now();
+                let clock = super::ticks::Clock::now();
                 let popped = self.ring.pop(&mut self.data);
                 if popped.is_some() {
                     self.player.as_mut().unwrap().renderer.counts.times[super::TIME_READ] += clock.elapsed();
@@ -5688,7 +5689,11 @@ mod live {
                     if self.ring.closed() {
                         return self.finish(event_loop, "the game closed the stream");
                     }
-                    let since = *idle_since.get_or_insert(clock);
+                    let since = *idle_since.get_or_insert_with(|| {
+                        // The last record came just before this idle time.
+                        self.last_record = Instant::now();
+                        self.last_record
+                    });
                     if waiting.elapsed() > Duration::from_millis(20) {
                         // Back to the events of the window.
                         self.waited += waiting.elapsed();
@@ -5704,11 +5709,10 @@ mod live {
                 if let Some(since) = idle_since.take() {
                     self.idle += since.elapsed();
                 }
-                self.last_record = clock;
                 self.records += 1;
                 self.bytes += 8 + self.data.len() as u64;
                 let player = self.player.as_mut().unwrap();
-                let clock = Instant::now();
+                let clock = super::ticks::Clock::now();
                 // The times of the frame in the game, and the time of this read: for the age
                 // of the picture in the debug overlay.
                 let stamps = (tag == super::tag::FRAME_END && self.data.len() >= 16).then(|| {
@@ -5736,7 +5740,7 @@ mod live {
                 if !std::mem::take(&mut self.in_frame) {
                     return;
                 }
-                let clock = Instant::now();
+                let clock = super::ticks::Clock::now();
                 let frame = acquire(self.surface.as_ref().unwrap(), &player.renderer.device, self.configuration.as_ref(), &mut self.surface_status, self.frames);
                 player.renderer.counts.times[super::TIME_ACQUIRE] += clock.elapsed();
                 self.not_shown += frame.is_none() as u32;
@@ -5834,7 +5838,7 @@ mod live {
                         messages.put(id, &bytes);
                     }
                 }
-                let clock = Instant::now();
+                let clock = super::ticks::Clock::now();
                 if let Some(frame) = frame {
                     player.renderer.queue.present(frame);
                 }
