@@ -25,6 +25,13 @@ do
     if ok then spec = result end
 end
 
+-- A test of a picture that a mod asks for before the first frame (`--early-picture` of
+-- run_own_device.py): MGE XE keeps the request until the renderer has a frame.
+if spec and spec.earlyPicture then
+    local ok, problem = pcall(mge.saveScreenshot, { path = spec.earlyPicture })
+    mwse.log("[nirender] early picture %s: %s %s", spec.earlyPicture, tostring(ok), tostring(problem or ""))
+end
+
 local early = config.early
 local startMode = config.mode
 if spec then
