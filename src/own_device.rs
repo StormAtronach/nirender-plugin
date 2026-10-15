@@ -88,13 +88,18 @@ pub unsafe fn check_host() {
 }
 
 /// The D3DCAPS8 of the device of the testing computer (MGE XE on DXVK), from
-/// `nirender.dumpDevice`. The game makes the same choices with it as it made there.
+/// `nirender.dumpDevice`. The game makes the same choices with it as it made there, but for
+/// `MaxActiveLights` (word 40, byte 0xA0): 32 in place of 8. The engine gives a draw at most
+/// that many lights of its node; with the limit of a node raised to 32
+/// (`distant_land.expanded_light_limit`), 8 lights of the device cut the list and a light of
+/// the node could be lost to the ones before it. No limit of the Direct3D 8 era is kept (gaps
+/// plan 0.5, owner 2026-10-15); the renderer takes up to 64 lights of a draw.
 const CAPS: [u32; 53] = [
     0x00000001, 0x00000000, 0x00020000, 0x200a0000, 0x00000420, 0x8000000f, 0x00000000, 0x001bbef0, 0x00000ef2, 0x00f37191,
     0x000000ff, 0x00001fff, 0x00001fff, 0x000000ff, 0x00084208, 0x0001ecc5, 0x03030700, 0x03030300, 0x03030300, 0x0000003f,
     0x0000003f, 0x0000001f, 0x00004000, 0x00004000, 0x00000800, 0x00002000, 0x00004000, 0x00000010, 0x501502f9, 0xccbebc20,
     0xccbebc20, 0x4cbebc20, 0x4cbebc20, 0x00000000, 0x000000ff, 0x00180008, 0x03feffff, 0x00000008, 0x00000008, 0x0000003b,
-    0x00000008, 0x00000008, 0x00000004, 0x00000000, 0x46000000, 0x00ffffff, 0x00ffffff, 0x00000010, 0x000000ff, 0x00000000,
+    0x00000020, 0x00000008, 0x00000004, 0x00000000, 0x46000000, 0x00ffffff, 0x00ffffff, 0x00000010, 0x000000ff, 0x00000000,
     0x00000100, 0x00000000, 0x477fe000,
 ];
 
