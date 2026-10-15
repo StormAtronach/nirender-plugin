@@ -32,6 +32,25 @@ if spec and spec.earlyPicture then
     mwse.log("[nirender] early picture %s: %s %s", spec.earlyPicture, tostring(ok), tostring(problem or ""))
 end
 
+-- A test of the first frames after a game load (`--after-load-pictures` of
+-- run_own_device.py): a picture at the event "loaded", then one every 0.1 s, 20 of them, as
+-- after-load-NN.png in the folder of the run (NN in tenths of a second).
+if spec and spec.afterLoadPictures and spec.dir then
+    event.register("loaded", function()
+        local n = 0
+        local function take()
+            mge.saveScreenshot({ path = string.format("%s/after-load-%02d.png", spec.dir, n) })
+            n = n + 1
+        end
+        take()
+        timer.start({ type = timer.real, duration = 0.1, iterations = 20, callback = take })
+        -- The work of the distant statics in the first frames: the places "not on the GPU".
+        nirender.tune("statics report at-load")
+        timer.start({ type = timer.real, duration = 0.3, callback = function() nirender.tune("statics report load+0.3s") end })
+        timer.start({ type = timer.real, duration = 2.0, callback = function() nirender.tune("statics report load+2s") end })
+    end)
+end
+
 local early = config.early
 local startMode = config.mode
 if spec then

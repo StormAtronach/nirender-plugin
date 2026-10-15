@@ -79,6 +79,8 @@ def main():
                     "for example the exe with other options of the Morrowind Code Patch")
     ap.add_argument("--early-picture", action="store_true", help="the test mod asks for a picture (mge.saveScreenshot) when its main.lua "
                     "runs, before the game has a renderer: the file early.png of the run must come with the first frames")
+    ap.add_argument("--after-load-pictures", action="store_true", help="the test mod takes a picture at the event loaded of the save, then one every "
+                    "0.1 s (after-load-NN.png): the first frames after a game load")
     ap.add_argument("--window-shots", action="store_true", help="each picture of the host program also as the window shows it, "
                     "<name>-window.png: with the status text of MGE XE and the debug overlay (wgpu only)")
     ap.add_argument("--no-build", action="store_true")
@@ -107,7 +109,8 @@ def main():
                     lua=open(args.lua_file, encoding="utf-8").read() if args.lua_file else None,
                     shaderBatch=open(args.shader_batch, encoding="utf-8").read() if args.shader_batch else None,
                     tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, captureMenu=args.capture_menu, settleSeconds=args.settle,
-                    overlay=args.overlay or None, earlyPicture=run.path("early.png").replace("\\", "/") if args.early_picture else None)
+                    overlay=args.overlay or None, earlyPicture=run.path("early.png").replace("\\", "/") if args.early_picture else None,
+                    afterLoadPictures=args.after_load_pictures or None)
     # The plugin starts the host program. It reads these from the environment of the game.
     if not args.mge_build:
         os.environ["NIRENDER_HOST_EXE"] = HOST
