@@ -305,6 +305,15 @@ impl BoundGroups {
     fn forget(&mut self) {
         *self = Self::default();
     }
+
+    /// Whether this group is the one bound at the index (`None`: no group is wanted).
+    fn is(&self, index: u32, group: Option<&Rc<wgpu::BindGroup>>) -> bool {
+        match (self.0[index as usize].as_ref(), group) {
+            (Some(bound), Some(group)) => Rc::ptr_eq(bound, group),
+            (None, None) => true,
+            _ => false,
+        }
+    }
 }
 
 /// A draw with its vertices in the record, ready for the pass.
@@ -1516,6 +1525,11 @@ struct Counts {
     /// The most textures of a frame in the arrays, and the stages that found no slot.
     most_frame_textures: u32,
     over_array_cap: u32,
+    /// The indirect calls, the draws in them, and the draws drawn one by one because the
+    /// buffer of the arguments was full.
+    indirect_calls: u32,
+    indirect_draws: u32,
+    indirect_over: u32,
     other_target: u32,
     no_layout: u32,
     textures: u32,
@@ -2077,6 +2091,39 @@ fn array_shader(text: &str) -> String {
     format!("enable wgpu_binding_array;\n{text}")
 }
 
+/// The arguments of one indexed indirect draw, as `multi_draw_indexed_indirect` reads them.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct IndirectArgs {
+    index_count: u32,
+    instance_count: u32,
+    first_index: u32,
+    base_vertex: i32,
+    first_instance: u32,
+}
+const ARGS_SIZE: usize = core::mem::size_of::<IndirectArgs>();
+const _: () = assert!(ARGS_SIZE == 20);
+
+/// The buffer of the arguments of the indirect draws of a frame.
+fn indirect_buffer(device: &wgpu::Device, draws: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor { label: Some("indirect draws"), size: (draws * ARGS_SIZE) as u64, usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+}
+
+/// Ends a run of draws: the arguments of the run go after those of the frame, and the pass
+/// gets one indirect call for them. The arguments reach the GPU before the submit
+/// (`upload_indirect`).
+fn flush_run(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Renderer, run_args: &mut Vec<IndirectArgs>, frame_args: &mut Vec<IndirectArgs>) {
+    if run_args.is_empty() {
+        return;
+    }
+    let offset = frame_args.len();
+    frame_args.extend_from_slice(run_args);
+    pass.multi_draw_indexed_indirect(&renderer.indirect_buffer, (offset * ARGS_SIZE) as u64, run_args.len() as u32);
+    renderer.counts.indirect_calls += 1;
+    renderer.counts.indirect_draws += run_args.len() as u32;
+    run_args.clear();
+}
+
 /// Whether two optional groups are the same group.
 fn same_group(a: &Option<Rc<wgpu::BindGroup>>, b: &Option<Rc<wgpu::BindGroup>>) -> bool {
     match (a, b) {
@@ -2265,8 +2312,19 @@ struct Renderer {
     runs_dump: bool,
     /// `MGE_XE_ORDER=opaque`: within each run of draws between other items, the opaque draws
     /// of the world first, in the order of their pipeline, textures and geometry, then the
-    /// rest in the order of the game (plan 0.5 entry TD, step 4). Off: the order of the game.
+    /// rest in the order of the game (plan 0.5 entry TD, step 4): the runs of one pipeline
+    /// fall from 1008 to 57 a frame at the quicksave. Off (the default): the order of the
+    /// game, which decides the ties of the depth test between coplanar draws; the opaque
+    /// order moves 0.001 to 0.08 % of the pixels of a picture at such ties.
     order_opaque_first: bool,
+    /// The draws of a run (one pipeline, one stencil reference, the buffers of one chunk) as
+    /// one indirect call (plan 0.5 entry TD, step 4). `MGE_XE_INDIRECT=0` draws them one by
+    /// one. The buffer of the arguments of the frame's draws, its room (arguments), and how
+    /// many arguments are on the GPU.
+    indirect: bool,
+    indirect_buffer: Rc<wgpu::Buffer>,
+    indirect_capacity: usize,
+    indirect_written: usize,
     /// The draws keep the order of the game: it decides the ties of the depth test (the lines
     /// of the collision boxes lie on their meshes). `MGE_XE_SORT=1` sorts the opaque draws of
     /// a run by pipeline and textures and joins them into instances, for a comparison; it
@@ -2370,6 +2428,9 @@ impl Renderer {
         descriptor.backends = backends;
         // The WGPU_* variables of the environment can change the flags, for a test (for
         // example WGPU_VALIDATION_INDIRECT_CALL=0).
+        // The arguments of the indirect draws are this program's own: no validation of them
+        // by a compute pass (`WGPU_VALIDATION_INDIRECT_CALL=1` puts it back).
+        descriptor.flags.remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
         descriptor.flags = descriptor.flags.with_env();
         // The new shader compiler of Direct3D, a part of this program: the old one is slow.
         descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::StaticDxc;
@@ -2579,6 +2640,7 @@ impl Renderer {
         let extension_lights = ExtensionLights::new(&device);
         let (first_lights, first_bones) = (light_buffer(&device, LIGHTS_AT_FIRST), bone_buffer(&device, BONES_AT_FIRST));
         let first_records = record_buffer(&device, RECORDS_AT_FIRST);
+        let first_indirect = indirect_buffer(&device, RECORDS_AT_FIRST);
         let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones, &first_records));
         let renderer = Renderer {
             frame_layout,
@@ -2604,6 +2666,10 @@ impl Renderer {
             shader,
             runs_dump: std::env::var("MGE_XE_RUNS_DUMP").is_ok_and(|v| v == "1"),
             order_opaque_first: std::env::var("MGE_XE_ORDER").is_ok_and(|v| v == "opaque"),
+            indirect: std::env::var("MGE_XE_INDIRECT").map_or(true, |v| v != "0"),
+            indirect_buffer: Rc::new(first_indirect),
+            indirect_capacity: RECORDS_AT_FIRST,
+            indirect_written: 0,
             record_buffer: Rc::new(first_records),
             record_capacity: RECORDS_AT_FIRST,
             record_staging: Vec::new(),
@@ -2753,6 +2819,26 @@ impl Renderer {
             None => self.array_group = Some(group.clone()),
         }
         group
+    }
+
+    /// Room in the buffer of the indirect draws for `draws` arguments. A new buffer when the
+    /// room is short: only between the parts of a frame (the calls of a part name the buffer
+    /// of their time, and the part is submitted before the next begins).
+    fn reserve_indirect(&mut self, draws: usize) {
+        if draws > self.indirect_capacity {
+            self.indirect_capacity = draws.next_power_of_two();
+            self.indirect_buffer = Rc::new(indirect_buffer(&self.device, self.indirect_capacity));
+            self.indirect_written = 0;
+        }
+    }
+
+    /// Puts the arguments of the indirect draws made since the last upload on the GPU.
+    /// Before a submit.
+    fn upload_indirect(&mut self, args: &[IndirectArgs]) {
+        if args.len() > self.indirect_written {
+            self.queue.write_buffer(&self.indirect_buffer, (self.indirect_written * ARGS_SIZE) as u64, bytemuck::cast_slice(&args[self.indirect_written..]));
+            self.indirect_written = args.len();
+        }
     }
 
     /// Puts the instances of the frame into the instance buffer, with room after them for
@@ -3639,6 +3725,10 @@ struct Player {
     pass_shared: bool,
     /// The arrays of the frame are bound in this pass.
     pass_arrays: bool,
+    /// The arguments of the draws of the run that is open, and of all the runs of the frame
+    /// (`flush_run`).
+    run_args: Vec<IndirectArgs>,
+    frame_args: Vec<IndirectArgs>,
     /// The size of the back buffer of the game, from the first record. 0 when not known.
     size: (u32, u32),
     /// The size of the picture of the frame.
@@ -3728,6 +3818,8 @@ impl Player {
             pass_indexes: None,
             pass_shared: false,
             pass_arrays: false,
+            run_args: Vec::new(),
+            frame_args: Vec::new(),
             size: (0, 0),
             frame_size: (0, 0),
         }
@@ -3735,6 +3827,9 @@ impl Player {
 
     /// Starts a pass on the targets of the frame: it draws on what is there, or it clears first.
     fn open_pass(&mut self, clear_color: Option<wgpu::Color>, clear_depth: Option<f32>, clear_stencil: Option<u32>) {
+        if let Some(pass) = self.pass.as_mut() {
+            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
+        }
         drop(self.pass.take());
         let rendered = self.pass_target.and_then(|handle| self.renderer.targets.get(&handle));
         let views = match rendered {
@@ -3773,6 +3868,13 @@ impl Player {
         self.apply_viewport();
     }
 
+    /// Ends the run of draws that is open in the pass, if any.
+    fn end_run(&mut self) {
+        if let Some(pass) = self.pass.as_mut() {
+            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
+        }
+    }
+
     /// The state of the pass is not known: a new pass, or one that the extension drew into.
     fn forget_bound(&mut self) {
         self.bound.forget();
@@ -3809,6 +3911,9 @@ impl Player {
         self.frame_instances.clear();
         self.frame_instances.push(Instance { world: IDENTITY, record: [0; 4] });
         self.renderer.begin_frame_arrays();
+        self.run_args.clear();
+        self.frame_args.clear();
+        self.renderer.indirect_written = 0;
         self.parameters = None;
         self.world_begun = false;
         self.sky_seen = false;
@@ -3860,12 +3965,16 @@ impl Player {
     fn flush<T>(&mut self, between: impl FnOnce(&mut Player) -> T) -> T {
         self.run_items();
         let in_frame = self.drawing();
+        if let Some(pass) = self.pass.as_mut() {
+            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
+        }
         drop(self.pass.take());
         if let Some(encoder) = self.encoder.take() {
             // The first part of a frame: the back buffer has the last complete picture
             // until these commands run. A copy of it stays for the window (see
             // `shown_picture`).
             let copy = (in_frame && !std::mem::replace(&mut self.sent_in_part, true)).then(|| self.keep_picture()).flatten();
+            self.renderer.upload_indirect(&self.frame_args);
             crate::gpu::submit(&self.renderer.queue, self.renderer.commands.take().into_iter().chain(copy).chain([encoder.finish()]));
         }
         let result = between(self);
@@ -3910,6 +4019,7 @@ impl Player {
             let device = player.renderer.device.clone();
             let mut encoder = device.create_command_encoder(&Default::default());
             let (buffer, row) = copy_picture(&device, &mut encoder, &texture, width, height);
+            player.renderer.upload_indirect(&player.frame_args);
             crate::gpu::submit(&player.renderer.queue, player.renderer.commands.take().into_iter().chain([encoder.finish()]));
             buffer.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("the read of the pixels"));
             let _ = device.poll(wgpu::PollType::wait_indefinitely());
@@ -4214,6 +4324,9 @@ impl Player {
             self.shots.extend(extension.pictures().into_iter().map(|request| request.path));
         }
         let clock = ticks::Clock::now();
+        if let Some(pass) = self.pass.as_mut() {
+            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
+        }
         drop(self.pass.take());
         self.color = None;
         self.depth = None;
@@ -4221,6 +4334,7 @@ impl Player {
             before_submit(&mut encoder);
             let renderer = &mut self.renderer;
             let slot = renderer.timing.as_mut().and_then(|timing| timing.end(&renderer.device, &mut encoder, &mut renderer.counts));
+            renderer.upload_indirect(&self.frame_args);
             crate::gpu::submit(&renderer.queue, renderer.commands.take().into_iter().chain([encoder.finish()]));
             if let (Some(timing), Some(slot)) = (renderer.timing.as_ref(), slot) {
                 timing.map(slot);
@@ -4610,6 +4724,8 @@ impl Player {
         let copies = 3 * self.renderer.record_count + 256;
         self.renderer.upload_instances(&self.frame_instances, copies);
         self.renderer.upload_records(copies);
+        let draws = items.iter().filter(|item| matches!(item, Item::Draw(_))).count();
+        self.renderer.reserve_indirect(self.frame_args.len() + draws + 64);
         // The resources of the extension for the frame.
         let (values, texture) = self.parameters.as_ref().map_or(([[0.0f32; 4]; 32], None), |p| (p.values, p.texture.clone()));
         self.renderer.queue.write_buffer(&self.renderer.frame_uniform, 0, bytemuck::cast_slice(&values));
@@ -4624,6 +4740,7 @@ impl Player {
         renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters, &renderer.light_buffer, &renderer.bone_buffer, &renderer.record_buffer));
         for item in items {
             if !matches!(item, Item::Draw(_)) {
+                self.end_run();
                 self.forget_bound();
                 if self.renderer.runs_dump {
                     let kind = match &item {
@@ -4747,6 +4864,18 @@ impl Player {
         renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
         let clock = ticks::Clock::now();
         let Some(pass) = self.pass.as_mut() else { return };
+        // A change of the state ends the run that is open.
+        let same_groups = renderer.arrays
+            || (self.bound.is(1, draw.samplers.as_ref()) && self.bound.is(2, draw.textures.as_ref()));
+        let same = self.pass_pipeline.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &pipeline))
+            && self.pass_stencil == Some(draw.stencil_reference)
+            && self.pass_vertices.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices))
+            && self.pass_indexes.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.indexes))
+            && self.bound.is(0, Some(&renderer.frame_group))
+            && same_groups;
+        if !same {
+            flush_run(pass, renderer, &mut self.run_args, &mut self.frame_args);
+        }
         let mut new_run = false;
         if !self.pass_pipeline.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &pipeline)) {
             pass.set_pipeline(&pipeline);
@@ -4807,7 +4936,16 @@ impl Player {
             pass.set_index_buffer(draw.indexes.slice(..), wgpu::IndexFormat::Uint16);
             self.pass_indexes = Some(draw.indexes.clone());
         }
-        pass.draw_indexed(first..first + count, draw.base_vertex, instances.0..instances.0 + instances.1);
+        if renderer.indirect && self.frame_args.len() + self.run_args.len() < renderer.indirect_capacity {
+            // The draw joins the run; the run becomes one indirect call at its end.
+            self.run_args.push(IndirectArgs { index_count: count, instance_count: instances.1, first_index: first, base_vertex: draw.base_vertex, first_instance: instances.0 });
+        } else {
+            if renderer.indirect {
+                renderer.counts.indirect_over += 1;
+            }
+            flush_run(pass, renderer, &mut self.run_args, &mut self.frame_args);
+            pass.draw_indexed(first..first + count, draw.base_vertex, instances.0..instances.0 + instances.1);
+        }
         renderer.counts.times[TIME_DRAW_PASS] += clock.elapsed();
         renderer.counts.draws += 1;
     }
@@ -4909,6 +5047,9 @@ impl Player {
         // of the picture when the extension reads it.
         let picture = if self.before_kept && extension.reads(ReadingCall::Blend).picture { self.copy_picture() } else { None };
         if let (true, Some(before), Some(color), Some(depth), Some(encoder)) = (self.before_kept, self.before.as_ref(), self.color.clone(), self.depth.clone(), self.encoder.as_mut()) {
+            if let Some(pass) = self.pass.as_mut() {
+                flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
+            }
             drop(self.pass.take());
             scene.picture = picture.as_ref();
             let before = before.create_view(&Default::default());
@@ -5009,6 +5150,9 @@ impl Player {
             self.before = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
         }
         // A copy is not a part of a pass.
+        if let Some(pass) = self.pass.as_mut() {
+            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
+        }
         drop(self.pass.take());
         encoder.copy_texture_to_texture(source.as_image_copy(), self.before.as_ref().unwrap().as_image_copy(), size);
         self.renderer.counts.picture_copies += 1;
@@ -5050,6 +5194,9 @@ impl Player {
         if self.picture_copy.as_ref().is_none_or(|copy| copy.size() != size) {
             self.picture_copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
         }
+        if let Some(pass) = self.pass.as_mut() {
+            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
+        }
         drop(self.pass.take());
         encoder.copy_texture_to_texture(source.as_image_copy(), self.picture_copy.as_ref().unwrap().as_image_copy(), size);
         self.renderer.counts.picture_copies += 1;
@@ -5072,6 +5219,9 @@ impl Player {
         };
         if copy.as_ref().is_none_or(|copy| copy.size() != size) {
             *copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
+        }
+        if let Some(pass) = self.pass.as_mut() {
+            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
         }
         drop(self.pass.take());
         encoder.copy_texture_to_texture(source.as_image_copy(), copy.as_ref().unwrap().as_image_copy(), size);
@@ -5096,6 +5246,9 @@ impl Player {
         scene.depth = depth.as_ref();
         scene.before_depth = before_depth.as_ref();
         if let (Some(color), Some(encoder)) = (self.color.clone(), self.encoder.as_mut()) {
+            if let Some(pass) = self.pass.as_mut() {
+                flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
+            }
             drop(self.pass.take());
             let clock = ticks::Clock::now();
             encoder.push_debug_group("extension: post-processing");
@@ -5478,6 +5631,7 @@ impl Player {
         );
         println!("draws in screen coordinates {}, not drawn {}", c.screen_draws, c.screen_draws_lost);
         println!("copies of a draw without room in the records of the frame {}", c.no_record);
+        println!("indirect calls {}, draws in them {}, draws one by one for want of room {}", c.indirect_calls, c.indirect_draws, c.indirect_over);
         println!(
             "texture arrays: {}; the most textures of a frame {}, stages over the room {} (room for {})",
             if self.renderer.arrays { "on" } else { "off" },
@@ -6304,6 +6458,7 @@ mod live {
                 if !shots.is_empty() {
                     let mut encoder = device.create_command_encoder(&Default::default());
                     let (buffer, row) = copy_picture(&device, &mut encoder, back_buffer, width, height);
+                    player.renderer.upload_indirect(&player.frame_args);
                     crate::gpu::submit(&player.renderer.queue, player.renderer.commands.take().into_iter().chain([encoder.finish()]));
                     for path in &shots {
                         save_picture(&device, &buffer, row, width, height, blue_first, path);
