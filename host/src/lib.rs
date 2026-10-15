@@ -23,12 +23,40 @@ use std::rc::Rc;
 /// The wgpu of this crate, for a program that draws with it through `Extension`.
 pub use wgpu;
 
+/// The command buffers that an extension makes for a frame (a compute pass, a pass into a
+/// texture of its own). They go to the GPU with the next submit of the program, before its
+/// own command buffers, in the order that they came: one submit for each frame, as the best
+/// practices of wgpu have it. A `queue.write_buffer` goes to the GPU before all the command
+/// buffers of that submit: a buffer that two of them read must not get two values in a frame.
+#[derive(Default)]
+pub struct FrameCommands(core::cell::RefCell<Vec<wgpu::CommandBuffer>>);
+
+impl FrameCommands {
+    /// Adds a command buffer for the next submit.
+    pub fn defer(&self, buffer: wgpu::CommandBuffer) {
+        self.0.borrow_mut().push(buffer);
+    }
+
+    /// Sends the command buffers that wait, then `buffer`, to the GPU at once: for work whose
+    /// results the caller waits for (time stamps).
+    pub fn submit_now(&self, queue: &wgpu::Queue, buffer: wgpu::CommandBuffer) {
+        crate::gpu::submit(queue, self.take().into_iter().chain([buffer]));
+    }
+
+    /// The command buffers that wait, in their order. The list is then empty.
+    fn take(&self) -> Vec<wgpu::CommandBuffer> {
+        std::mem::take(&mut *self.0.borrow_mut())
+    }
+}
+
 /// What a program that draws more than the game does gets at the start of the world of a
 /// frame. The matrices have the layout of Direct3D: 16 numbers, row after row, for a
 /// position as a row vector (`position * view * projection`).
 pub struct SceneView<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
+    /// For the command buffers of the extension: `FrameCommands::defer`.
+    pub commands: &'a FrameCommands,
     /// The formats of the targets of the pass.
     pub target_format: wgpu::TextureFormat,
     pub depth_format: wgpu::TextureFormat,
@@ -216,10 +244,11 @@ struct WorldFacts {
 }
 
 impl WorldFacts {
-    fn view<'a>(&self, device: &'a wgpu::Device, queue: &'a wgpu::Queue, target_format: wgpu::TextureFormat) -> SceneView<'a> {
+    fn view<'a>(&self, device: &'a wgpu::Device, queue: &'a wgpu::Queue, commands: &'a FrameCommands, target_format: wgpu::TextureFormat) -> SceneView<'a> {
         SceneView {
             device,
             queue,
+            commands,
             target_format,
             depth_format: DEPTH_FORMAT,
             target_size: self.target_size,
@@ -2123,6 +2152,8 @@ struct Renderer {
     screen_layout: Option<wgpu::BindGroupLayout>,
     screen_sampler: Option<wgpu::Sampler>,
     counts: Counts,
+    /// The command buffers of the extension for the next submit.
+    commands: Rc<FrameCommands>,
 }
 
 impl Renderer {
@@ -2367,6 +2398,7 @@ impl Renderer {
             screen_layout: None,
             screen_sampler: None,
             counts: Counts::default(),
+            commands: Rc::new(FrameCommands::default()),
         };
         (renderer, surface)
     }
@@ -2454,10 +2486,10 @@ impl Renderer {
     }
 
     /// `draw_slot`, with the data written to the GPU at once: for a draw of a pass that the
-    /// extension submits before the flush of the frame (the replay of the kept draws into
-    /// its reflection). The flush comes after that submit, so the pass would read the slot
-    /// as the frame before left it: a draw that is not this one, by chance of the slot
-    /// numbers.
+    /// extension can submit before the flush of the frame (the replay of the kept draws into
+    /// its reflection, with `FrameCommands::submit_now`). The flush comes after that submit,
+    /// so the pass would read the slot as the frame before left it: a draw that is not this
+    /// one, by chance of the slot numbers.
     fn draw_slot_now(&mut self, data: &DrawData) -> (Rc<wgpu::BindGroup>, u32) {
         let (group, at) = self.draw_slot(data);
         let index = (self.draw_slots - 1) / SLOTS_IN_BUFFER;
@@ -3430,7 +3462,7 @@ impl Player {
             // until these commands run. A copy of it stays for the window (see
             // `shown_picture`).
             let copy = (in_frame && !std::mem::replace(&mut self.sent_in_part, true)).then(|| self.keep_picture()).flatten();
-            crate::gpu::submit(&self.renderer.queue, copy.into_iter().chain([encoder.finish()]));
+            crate::gpu::submit(&self.renderer.queue, self.renderer.commands.take().into_iter().chain(copy).chain([encoder.finish()]));
         }
         let result = between(self);
         if in_frame {
@@ -3474,7 +3506,7 @@ impl Player {
             let device = player.renderer.device.clone();
             let mut encoder = device.create_command_encoder(&Default::default());
             let (buffer, row) = copy_picture(&device, &mut encoder, &texture, width, height);
-            crate::gpu::submit(&player.renderer.queue, [encoder.finish()]);
+            crate::gpu::submit(&player.renderer.queue, player.renderer.commands.take().into_iter().chain([encoder.finish()]));
             buffer.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("the read of the pixels"));
             let _ = device.poll(wgpu::PollType::wait_indefinitely());
             let mapped = buffer.slice(..).get_mapped_range().expect("the bytes of the pixels");
@@ -3776,7 +3808,7 @@ impl Player {
             let renderer = &mut self.renderer;
             let slot = renderer.timing.as_mut().and_then(|timing| timing.end(&renderer.device, &mut encoder, &mut renderer.counts));
             renderer.flush_draw_slots();
-            crate::gpu::submit(&renderer.queue, [encoder.finish()]);
+            crate::gpu::submit(&renderer.queue, renderer.commands.take().into_iter().chain([encoder.finish()]));
             if let (Some(timing), Some(slot)) = (renderer.timing.as_ref(), slot) {
                 timing.map(slot);
             }
@@ -4303,7 +4335,8 @@ impl Player {
         let Some(mut extension) = self.extension.take() else { return };
         let facts = self.world_facts(true);
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
-        let scene = facts.view(&device, &queue, format);
+        let commands = self.renderer.commands.clone();
+        let scene = facts.view(&device, &queue, &commands, format);
         let clock = std::time::Instant::now();
         self.parameters = Some(extension.frame(&scene));
         self.renderer.counts.times[TIME_EXT_FRAME] += clock.elapsed();
@@ -4314,7 +4347,8 @@ impl Player {
     fn end_world(&mut self, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
-        let mut scene = facts.view(&device, &queue, format);
+        let commands = self.renderer.commands.clone();
+        let mut scene = facts.view(&device, &queue, &commands, format);
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
@@ -4376,7 +4410,8 @@ impl Player {
         let Some(mut extension) = self.extension.take() else { return };
         let (picture, depth) = self.copy_for(extension.reads(ReadingCall::Held(&self.taken)), world_depth_now);
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
-        let mut scene = facts.view(&device, &queue, format);
+        let commands = self.renderer.commands.clone();
+        let mut scene = facts.view(&device, &queue, &commands, format);
         let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
@@ -4405,7 +4440,8 @@ impl Player {
         let Some(mut extension) = self.extension.take() else { return };
         let (picture, depth) = self.copy_for(extension.reads(ReadingCall::HeldInPlace(&held)), false);
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
-        let mut scene = facts.view(&device, &queue, format);
+        let commands = self.renderer.commands.clone();
+        let mut scene = facts.view(&device, &queue, &commands, format);
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
         let own = &self.renderer.extension_lights;
@@ -4515,7 +4551,8 @@ impl Player {
         let (picture, depth_now) = self.copy_for(reads, false);
         let depth = world_depth.or(depth_now);
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
-        let mut scene = facts.view(&device, &queue, format);
+        let commands = self.renderer.commands.clone();
+        let mut scene = facts.view(&device, &queue, &commands, format);
         let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
@@ -4561,7 +4598,8 @@ impl Player {
         }
         let (picture, depth) = self.copy_for(extension.reads(ReadingCall::Class(class)), false);
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
-        let mut scene = facts.view(&device, &queue, format);
+        let commands = self.renderer.commands.clone();
+        let mut scene = facts.view(&device, &queue, &commands, format);
         let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
@@ -4610,7 +4648,8 @@ impl Player {
     fn start_world(&mut self, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
-        let scene = facts.view(&device, &queue, format);
+        let commands = self.renderer.commands.clone();
+        let scene = facts.view(&device, &queue, &commands, format);
         let clear_depth = match self.pass.as_mut() {
             Some(pass) => {
                 let world = std::mem::take(&mut self.world_draws);
@@ -5618,7 +5657,7 @@ mod live {
                 if !shots.is_empty() {
                     let mut encoder = device.create_command_encoder(&Default::default());
                     let (buffer, row) = copy_picture(&device, &mut encoder, back_buffer, width, height);
-                    crate::gpu::submit(&player.renderer.queue, [encoder.finish()]);
+                    crate::gpu::submit(&player.renderer.queue, player.renderer.commands.take().into_iter().chain([encoder.finish()]));
                     for path in &shots {
                         save_picture(&device, &buffer, row, width, height, blue_first, path);
                         buffer.unmap();
