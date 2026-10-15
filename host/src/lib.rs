@@ -2164,7 +2164,7 @@ impl Renderer {
         }
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
-                label: None,
+                label: Some("nirender"),
                 // The draws of an extension from the GPU (the distant statics of MGE XE) need the
                 // first instance and the count of indirect draws; without them it draws as before.
                 required_features: wgpu::Features::TEXTURE_COMPRESSION_BC
@@ -2197,7 +2197,7 @@ impl Renderer {
         let source = format!("{}\n{extension_shader}", include_str!("shader.wgsl"));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
+            label: Some("draw"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -2239,8 +2239,8 @@ impl Renderer {
                 count: None,
             });
         }
-        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &entries });
-        let sampler_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &sampler_entries });
+        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("draw textures"), entries: &entries });
+        let sampler_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("draw samplers"), entries: &sampler_entries });
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("extension frame"),
             entries: &[
@@ -2278,7 +2278,7 @@ impl Renderer {
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
+            label: Some("draw"),
             bind_group_layouts: &[Some(&draw_layout), Some(&texture_layout), Some(&sampler_layout), Some(&frame_layout)],
             immediate_size: 0,
         });
@@ -2286,7 +2286,7 @@ impl Renderer {
             .create_texture_with_data(
                 &queue,
                 &wgpu::TextureDescriptor {
-                    label: None,
+                    label: Some("white"),
                     size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
                     mip_level_count: 1,
                     sample_count: 1,
@@ -2301,7 +2301,7 @@ impl Renderer {
             .create_view(&Default::default()));
         // The inputs a vertex does not have, for each instance of a draw.
         let defaults = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
+            label: Some("vertex defaults"),
             contents: &vec![0u8; 64 * INSTANCES_MOST],
             usage: wgpu::BufferUsages::VERTEX,
         });
@@ -2376,7 +2376,7 @@ impl Renderer {
     /// The bind group of a buffer of draw slots: the slots, and the lights of the frame.
     fn slot_group(&self, buffer: &wgpu::Buffer) -> wgpu::BindGroup {
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
+            label: Some("draw slots"),
             layout: &self.draw_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -2432,7 +2432,7 @@ impl Renderer {
         self.draw_slots += 1;
         if index == self.draw_buffers.len() {
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
+                label: Some("draw slots"),
                 size: (SLOTS_IN_BUFFER * SLOT_SIZE) as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
@@ -2529,7 +2529,7 @@ impl Renderer {
         let texture = self.device.create_texture_with_data(
             &self.queue,
             &wgpu::TextureDescriptor {
-                label: None,
+                label: Some("game texture"),
                 size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
                 mip_level_count: levels as u32,
                 sample_count: 1,
@@ -2555,7 +2555,7 @@ impl Renderer {
     fn screen_pipeline(&mut self) -> wgpu::RenderPipeline {
         if self.screen_layout.is_none() {
             self.screen_layout = Some(self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
+                label: Some("screen draw"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -2584,15 +2584,15 @@ impl Renderer {
         if let Some(pipeline) = &self.screen_pipeline {
             return pipeline.clone();
         }
-        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(SCREEN_SHADER.into()) });
+        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("screen draw"), source: wgpu::ShaderSource::Wgsl(SCREEN_SHADER.into()) });
         let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
+            label: Some("screen draw"),
             bind_group_layouts: &[self.screen_layout.as_ref()],
             immediate_size: 0,
         });
         let attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x2];
         let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
+            label: Some("screen draw"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &module,
@@ -2647,7 +2647,7 @@ impl Renderer {
         let all = 32 - width.max(height).leading_zeros();
         let levels = if levels == 0 { all } else { levels.min(all) };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
+            label: Some("game render target"),
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: levels,
             sample_count: 1,
@@ -2760,7 +2760,7 @@ impl Renderer {
             return;
         }
         let strip_lengths: Vec<u16> = (0..strips as usize).map(|i| u16::from_le_bytes([data[32 + i * 2], data[33 + i * 2]])).collect();
-        let make = |bytes: &[u8], usage: wgpu::BufferUsages| Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytes, usage }));
+        let make = |bytes: &[u8], usage: wgpu::BufferUsages| Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("game geometry"), contents: bytes, usage }));
         let vertex = make(&data[vertex_at..index_at], wgpu::BufferUsages::VERTEX);
         let index = make(&data[index_at..index_end], wgpu::BufferUsages::INDEX);
         self.counts.geometry_records += 1;
@@ -2891,7 +2891,7 @@ impl Renderer {
             };
             let depth_on = key.depth[0] != 0;
             let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: None,
+                label: Some("game draw"),
                 layout: Some(&self.pipeline_layout),
                 vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &buffers },
                 primitive: wgpu::PrimitiveState {
@@ -3328,7 +3328,7 @@ impl Player {
         let stamps = self.renderer.timing.as_mut().and_then(Timing::next_pass);
         let pass = encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
+                label: Some("game pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: color,
                     depth_slice: None,
@@ -3996,10 +3996,10 @@ impl Player {
         let renderer = &mut self.renderer;
         let pipeline = renderer.screen_pipeline();
         let clock = std::time::Instant::now();
-        let buffer = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&list), usage: wgpu::BufferUsages::VERTEX });
+        let buffer = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("screen draw"), contents: bytemuck::cast_slice(&list), usage: wgpu::BufferUsages::VERTEX });
         let view = renderer.textures.get(&texture).unwrap_or(&renderer.white).clone();
         let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
+            label: Some("screen draw"),
             layout: renderer.screen_layout.as_ref().unwrap(),
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
@@ -4299,7 +4299,9 @@ impl Player {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
             let clock = std::time::Instant::now();
+            pass.push_debug_group("extension: after the world");
             extension.after_world(&scene, pass, &mut replayer);
+            pass.pop_debug_group();
             self.renderer.counts.times[TIME_EXT_AFTER] += clock.elapsed();
             self.world_draws = world;
         }
@@ -4369,7 +4371,9 @@ impl Player {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
             let clock = std::time::Instant::now();
+            pass.push_debug_group("extension: held draws");
             extension.draw_held(&scene, pass, &self.taken, &mut replayer);
+            pass.pop_debug_group();
             self.renderer.counts.times[TIME_EXT_CLASS] += clock.elapsed();
             self.world_draws = world;
         }
@@ -4391,7 +4395,9 @@ impl Player {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
             let clock = std::time::Instant::now();
+            pass.push_debug_group("extension: a held draw in its place");
             extension.draw_held_in_place(&scene, pass, core::slice::from_ref(&held), &mut replayer);
+            pass.pop_debug_group();
             self.renderer.counts.times[TIME_EXT_CLASS] += clock.elapsed();
             self.world_draws = world;
         }
@@ -4497,7 +4503,9 @@ impl Player {
         if let (Some(color), Some(encoder)) = (self.color.clone(), self.encoder.as_mut()) {
             drop(self.pass.take());
             let clock = std::time::Instant::now();
+            encoder.push_debug_group("extension: post-processing");
             extension.post(&scene, encoder, &color);
+            encoder.pop_debug_group();
             self.renderer.counts.times[TIME_EXT_POST] += clock.elapsed();
             // The pictures that the extension wants: one without the interface of the game
             // is the picture as it is now.
@@ -4542,7 +4550,9 @@ impl Player {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
             let clock = std::time::Instant::now();
+            pass.push_debug_group("extension: a class of draws");
             extension.draw_class(class, &scene, pass, &mut replayer);
+            pass.pop_debug_group();
             self.renderer.counts.times[TIME_EXT_CLASS] += clock.elapsed();
             self.world_draws = world;
         }
@@ -4586,7 +4596,9 @@ impl Player {
                 let world = std::mem::take(&mut self.world_draws);
                 let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world };
                 let clock = std::time::Instant::now();
+                pass.push_debug_group("extension: before the world");
                 let clear_depth = extension.before_world(&scene, pass, &mut replayer);
+                pass.pop_debug_group();
                 self.renderer.counts.times[TIME_EXT_BEFORE] += clock.elapsed();
                 self.world_draws = world;
                 clear_depth
@@ -4748,7 +4760,7 @@ impl Player {
             let views: Vec<Rc<wgpu::TextureView>> = handles.iter().map(|handle| renderer.textures.get(handle).unwrap_or(&renderer.white).clone()).collect();
             let entries: Vec<wgpu::BindGroupEntry> =
                 (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(&views[stage]) }).collect();
-            let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &renderer.texture_layout, entries: &entries });
+            let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw textures"), layout: &renderer.texture_layout, entries: &entries });
             renderer.texture_groups.insert(handles, Rc::new(group));
         }
         let texture_group = renderer.texture_groups[&handles].clone();
@@ -4756,7 +4768,7 @@ impl Player {
             let samplers: Vec<Rc<wgpu::Sampler>> = sampler_values.iter().map(|values| renderer.sampler(*values)).collect();
             let entries: Vec<wgpu::BindGroupEntry> =
                 (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::Sampler(&samplers[stage]) }).collect();
-            let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &renderer.sampler_layout, entries: &entries });
+            let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw samplers"), layout: &renderer.sampler_layout, entries: &entries });
             renderer.sampler_groups.insert(sampler_values, Rc::new(group));
         }
         let sampler_group = renderer.sampler_groups[&sampler_values].clone();
@@ -4850,7 +4862,7 @@ impl Player {
 
 fn target_texture(device: &wgpu::Device, width: u32, height: u32, format: wgpu::TextureFormat, usage: wgpu::TextureUsages) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
-        label: None,
+        label: Some("render target"),
         size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         mip_level_count: 1,
         sample_count: 1,
@@ -4866,7 +4878,7 @@ fn target_texture(device: &wgpu::Device, width: u32, height: u32, format: wgpu::
 fn copy_picture(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, texture: &wgpu::Texture, width: u32, height: u32) -> (wgpu::Buffer, usize) {
     let row = (width as usize * 4).next_multiple_of(256);
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
+        label: Some("picture read"),
         size: (row * height as usize) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
