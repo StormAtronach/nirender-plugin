@@ -2196,6 +2196,8 @@ struct Renderer {
     /// the frame draws (`append_instances`), from the end of the room.
     instance_len: usize,
     instance_extras: usize,
+    /// `MGE_XE_RUNS_DUMP=1`: a line for each draw of a pass, for a study of the runs.
+    runs_dump: bool,
     /// The draws keep the order of the game: it decides the ties of the depth test (the lines
     /// of the collision boxes lie on their meshes). `MGE_XE_SORT=1` sorts the opaque draws of
     /// a run by pipeline and textures and joins them into instances, for a comparison; it
@@ -2479,6 +2481,7 @@ impl Renderer {
             wireframe,
             queue,
             shader,
+            runs_dump: std::env::var("MGE_XE_RUNS_DUMP").is_ok_and(|v| v == "1"),
             record_buffer: Rc::new(first_records),
             record_capacity: RECORDS_AT_FIRST,
             record_staging: Vec::new(),
@@ -4425,6 +4428,27 @@ impl Player {
             new_run = true;
         }
         renderer.counts.pipeline_runs += new_run as u32;
+        // `MGE_XE_RUNS_DUMP=1`: a line for each draw, for a study of the runs offline
+        // (plan 0.5 entry TD, step 4).
+        if renderer.runs_dump {
+            println!(
+                "run frame {} pipeline {:?} stencil {} world {} class {} scene {} blend {:?} depth {:?} textures {:?} samplers {:?} vertices {:?} indexes {:?} range {:?} instances {:?}",
+                renderer.counts.frames,
+                Rc::as_ptr(&pipeline),
+                draw.stencil_reference,
+                draw.world as u8,
+                draw.class,
+                self.scene_kind,
+                draw.key.blend,
+                draw.key.depth,
+                Rc::as_ptr(&draw.textures),
+                Rc::as_ptr(&draw.samplers),
+                Rc::as_ptr(&draw.vertices),
+                Rc::as_ptr(&draw.indexes),
+                draw.range,
+                instances
+            );
+        }
         self.bound.set(pass, 0, &renderer.frame_group);
         self.bound.set(pass, 1, &draw.samplers);
         self.bound.set(pass, 2, &draw.textures);
