@@ -16,7 +16,7 @@
 //! here in two ways: from the recorder when the link does not take the call, and from
 //! `link_client::intercept` when the plugin is the host and the call has no call of the link.
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 
 use crate::link::*;
 
@@ -29,6 +29,7 @@ const NOT_AVAILABLE: u32 = 0x8876_086A;
 extern "system" {
     fn EnumDisplaySettingsA(device: *const u8, mode: u32, out: *mut u8) -> i32;
     fn MonitorFromWindow(window: usize, flags: u32) -> usize;
+    fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
 }
 
 extern "system" {
@@ -48,6 +49,42 @@ extern "system" {
         information: *mut usize,
     ) -> i32;
     fn CloseHandle(handle: isize) -> i32;
+    fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
+    fn GetExitCodeProcess(process: isize, code: *mut u32) -> i32;
+}
+
+/// The process of the host program that `start_stream` started, or 0, and the name of its
+/// file.
+static HOST_PROCESS: AtomicIsize = AtomicIsize::new(0);
+static HOST_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The game showed a frame. When the host program has ended, no new picture goes into the
+/// window: the plugin says so one time, in its log and in a message box. The host program
+/// ends after the game at the end of a session, so this finds a crash or a kill only. A
+/// device that the host program lost does not end it: the host program shows its own box.
+pub unsafe fn check_host() {
+    let process = HOST_PROCESS.load(Ordering::Relaxed);
+    // WAIT_OBJECT_0: the process has ended.
+    if process == 0 || WaitForSingleObject(process, 0) != 0 {
+        return;
+    }
+    HOST_PROCESS.store(0, Ordering::Relaxed);
+    let mut code = 0u32;
+    GetExitCodeProcess(process, &mut code);
+    CloseHandle(process);
+    crate::log!("own device: the host program ended with the exit code {code:#x}; the window gets no new picture");
+    const MB_ICONERROR: u32 = 0x10;
+    const MB_SETFOREGROUND: u32 = 0x1_0000;
+    const MB_TOPMOST: u32 = 0x4_0000;
+    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let name = HOST_NAME.get().map(String::as_str).unwrap_or("the host program");
+    let text = wide(&format!(
+        "The wgpu renderer of MGE XE ({name}) has stopped (exit code {code:#x}).\n\n\
+         The game cannot show a new picture. Quit the game and start it again.\n\n\
+         The logs nirender-host.log and nirender.log in the folder of the game have the details."
+    ));
+    let caption = wide("MGE XE");
+    MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
 }
 
 /// The D3DCAPS8 of the device of the testing computer (MGE XE on DXVK), from
@@ -408,7 +445,10 @@ unsafe fn start_stream(s: &State) {
         information.as_mut_ptr(),
     );
     if started != 0 {
-        CloseHandle(information[0] as isize);
+        // The process stays open: `check_host` asks it whether it has ended.
+        HOST_PROCESS.store(information[0] as isize, Ordering::Relaxed);
+        let file = std::path::Path::new(&program).file_name().map(|name| name.to_string_lossy().into_owned());
+        let _ = HOST_NAME.set(file.unwrap_or(program.clone()));
         CloseHandle(information[1] as isize);
     }
     crate::log!("own device: host program {}: {command}", if started != 0 { "started" } else { "NOT started" });

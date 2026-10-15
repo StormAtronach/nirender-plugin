@@ -1158,6 +1158,8 @@ unsafe fn drop_buffers(renderer: usize, objects: &[(u32, u32)]) -> u32 {
 /// The game showed a frame.
 unsafe fn frame_end() {
     loading_tick();
+    #[cfg(not(test))]
+    crate::own_device::check_host();
     let Some(s) = state() else { return };
     match s.phase {
         Phase::Off => {}
