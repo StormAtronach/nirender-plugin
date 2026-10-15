@@ -28,6 +28,8 @@ D3D8 = os.path.join(D3D8_DIR, "target", "i686-pc-windows-msvc", "release", "d3d8
 MGE_MOD = session.harness.RUN_MOD_PREFIX + "MGE XE"
 CONFIG_MOD = session.harness.RUN_MOD_PREFIX + "config"
 EXE_MOD = session.harness.RUN_MOD_PREFIX + "exe"
+# The Lua bridge of mwse-mcp, as the testing instance has it (`--bridge`).
+BRIDGE_DIR = r"D:\Modlists\Morrowind75testing\mods\mwseMCP"
 
 
 def main():
@@ -83,6 +85,8 @@ def main():
                     "0.1 s (after-load-NN.png): the first frames after a game load")
     ap.add_argument("--window-shots", action="store_true", help="each picture of the host program also as the window shows it, "
                     "<name>-window.png: with the status text of MGE XE and the debug overlay (wgpu only)")
+    ap.add_argument("--bridge", action="store_true", help="the Lua bridge of mwse-mcp (the mod mwseMCP of the testing instance) for this run only, "
+                    "in the mod of the run's mgeXE.toml: live work in another instance without a change to its mods")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
 
@@ -181,6 +185,11 @@ def main():
         mods.pop(0)
     if args.exe:
         mods.append((EXE_MOD, {"Root/Morrowind.exe": args.exe}))
+    if args.bridge:
+        bridge = os.path.join(BRIDGE_DIR, "MWSE", "mods", "mwseMCP")
+        files = next(files for name, files in mods if name == CONFIG_MOD)
+        for name in os.listdir(bridge):
+            files["MWSE/mods/mwseMCP/" + name] = os.path.join(bridge, name)
     done = run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod)
 
     print()
