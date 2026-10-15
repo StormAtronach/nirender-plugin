@@ -33,6 +33,9 @@ struct Stage {
     bump: vec4f,
     // A bump stage with luminance: the scale and the offset of the luminance.
     luminance: vec4f,
+    // The texture and the sampler of the stage among the arrays of the frame (with the
+    // arrays on: see `array_shader`).
+    slots: vec4u,
 }
 
 struct Draw {

@@ -397,8 +397,10 @@ struct Draw {
     data: DrawData,
     /// The origin that the world matrices of the draw are relative to, or `None`.
     origin: Option<[f64; 3]>,
-    textures: Rc<wgpu::BindGroup>,
-    samplers: Rc<wgpu::BindGroup>,
+    /// The groups of the textures and the samplers of the draw; `None` with the arrays of
+    /// the frame on (the record names the slots).
+    textures: Option<Rc<wgpu::BindGroup>>,
+    samplers: Option<Rc<wgpu::BindGroup>>,
     vertices: Rc<wgpu::Buffer>,
     indexes: Rc<wgpu::Buffer>,
     /// The handles of the textures of the stages and of the geometry record, as the stream has
@@ -451,6 +453,7 @@ impl Replay for Replayer<'_> {
 
     fn replay(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView) {
         let mut bound = BoundGroups::default();
+        let mut arrays_bound = false;
         for kept in self.kept {
             if view.classes & (1 << kept.class.min(31)) == 0 || (view.opaque_only && (kept.key.blend[0] != 0 || kept.key.depth[1] == 0)) || (view.translucent_only && !kept.translucent()) {
                 continue;
@@ -508,8 +511,18 @@ impl Replay for Replayer<'_> {
             pass.set_pipeline(&pipeline);
             pass.set_stencil_reference(kept.stencil_reference);
             bound.set(pass, 0, &self.renderer.frame_group);
-            bound.set(pass, 1, &kept.samplers);
-            bound.set(pass, 2, &kept.textures);
+            if self.renderer.arrays {
+                if !arrays_bound {
+                    // The pass of the extension draws into a texture of its own, not into a
+                    // texture of the game.
+                    let group = self.renderer.array_group_for(None);
+                    pass.set_bind_group(1, &*group, &[]);
+                    arrays_bound = true;
+                }
+            } else if let (Some(samplers), Some(textures)) = (&kept.samplers, &kept.textures) {
+                bound.set(pass, 1, samplers);
+                bound.set(pass, 2, textures);
+            }
             pass.set_vertex_buffer(0, kept.vertices.slice(..));
             pass.set_vertex_buffer(1, self.renderer.defaults.slice(..));
             pass.set_vertex_buffer(2, self.renderer.instance_buffer.slice(..));
@@ -1073,6 +1086,8 @@ pub struct StageData {
     pub coordinate: [u32; 4],
     pub bump: [f32; 4],
     pub luminance: [f32; 4],
+    /// The texture and the sampler of the stage among the arrays of the frame.
+    pub slots: [u32; 4],
 }
 
 /// The uniform of a draw: `Draw` in `shader.wgsl`, where each field has its meaning.
@@ -1498,6 +1513,9 @@ struct Counts {
     /// Copies of a draw (clipped, replayed) that found no room in the records or the
     /// instances of the frame, and were drawn as they are or not at all.
     no_record: u32,
+    /// The most textures of a frame in the arrays, and the stages that found no slot.
+    most_frame_textures: u32,
+    over_array_cap: u32,
     other_target: u32,
     no_layout: u32,
     textures: u32,
@@ -2036,6 +2054,37 @@ const RECORD_SIZE: usize = core::mem::size_of::<DrawData>();
 const _: () = assert!(INSTANCE_SIZE == 80 && RECORD_SIZE % 16 == 0);
 const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 const RECORDS_AT_FIRST: usize = 4096;
+/// The most textures and samplers of a frame in the binding arrays.
+const ARRAY_CAP: u32 = 4096;
+const SAMPLER_CAP: u32 = 64;
+
+/// The shader text with the textures and the samplers of the game in binding arrays of the
+/// frame (group 1): the six texture and six sampler bindings of a draw go, and a stage
+/// samples by the slots of its record.
+fn array_shader(text: &str) -> String {
+    let mut text = text.to_string();
+    for i in 0..STAGES {
+        let (texture, sampler, sample) = (format!("@group(2) @binding({i}) var texture{i}: texture_2d<f32>;\n"), format!("@group(1) @binding({i}) var sampler{i}: sampler;\n"), format!("textureSample(texture{i}, sampler{i}, "));
+        assert!(text.contains(&texture) && text.contains(&sampler) && text.contains(&sample), "the shader text changed: stage {i}");
+        text = text.replace(&texture, "").replace(&sampler, "");
+        text = text.replace(&sample, &format!("textureSample(textures[draws[record].stages[{i}].slots.x], samplers[draws[record].stages[{i}].slots.y], "));
+    }
+    let anchor = "var<private> record: u32;\n";
+    assert!(text.contains(anchor));
+    let text = text.replace(anchor, &format!("{anchor}// The textures and the samplers of the frame: a stage names its slots in its record.\n@group(1) @binding(0) var textures: binding_array<texture_2d<f32>>;\n@group(1) @binding(1) var samplers: binding_array<sampler>;\n"));
+    // The binding arrays are an extension of WGSL that the shader must enable before any
+    // other item.
+    format!("enable wgpu_binding_array;\n{text}")
+}
+
+/// Whether two optional groups are the same group.
+fn same_group(a: &Option<Rc<wgpu::BindGroup>>, b: &Option<Rc<wgpu::BindGroup>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
 /// The size of a buffer of the pools of the game's geometry.
 const VERTEX_CHUNK: u64 = 64 << 20;
 const INDEX_CHUNK: u64 = 16 << 20;
@@ -2258,6 +2307,21 @@ struct Renderer {
     /// textures: the D3D12 backend has places for 2048 samplers only, and the sets of sampler
     /// values are few.
     sampler_groups: FxHashMap<[[u32; 5]; STAGES], Rc<wgpu::BindGroup>>,
+    /// The textures and the samplers of the frame in binding arrays (group 1), when the
+    /// device has them: the slot of each texture handle and sampler state of the frame, the
+    /// views and the samplers by slot (slot 0: white, a plain sampler), the group of the
+    /// frame, and its variants for a pass into a rendered texture of the frame (that
+    /// texture's slot shows white: a texture cannot be a target and a texture of one pass).
+    arrays: bool,
+    array_layout: Option<wgpu::BindGroupLayout>,
+    array_cap: usize,
+    sampler_cap: usize,
+    frame_texture_slots: FxHashMap<u32, u32>,
+    frame_texture_views: Vec<Rc<wgpu::TextureView>>,
+    frame_sampler_slots: FxHashMap<[u32; 5], u32>,
+    frame_samplers: Vec<Rc<wgpu::Sampler>>,
+    array_group: Option<Rc<wgpu::BindGroup>>,
+    array_variants: FxHashMap<u32, Rc<wgpu::BindGroup>>,
     /// The geometry records, by the geometry data of the game; their vertices and indexes
     /// in pools (`pool`), and the ranges of records replaced in this frame, given back at
     /// the start of the next.
@@ -2326,6 +2390,16 @@ impl Renderer {
             surface_usages = capabilities.usages;
             println!("window: the present modes of the surface are {:?}", capabilities.present_modes);
         }
+        // The textures and the samplers of a frame in binding arrays (plan 0.5 entry TD, step
+        // 2), when the adapter has them. `MGE_XE_ARRAYS=0` keeps the groups of a draw, for
+        // an A/B.
+        let array_features = wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
+        // The samplers of the array count in the elements of the arrays too.
+        let array_cap = adapter.limits().max_binding_array_elements_per_shader_stage.saturating_sub(SAMPLER_CAP).min(ARRAY_CAP);
+        let sampler_cap = adapter.limits().max_binding_array_sampler_elements_per_shader_stage.min(SAMPLER_CAP);
+        let arrays = adapter.features().contains(array_features) && array_cap >= 256 && sampler_cap >= 8 && std::env::var("MGE_XE_ARRAYS").map_or(true, |v| v != "0");
+        println!("texture arrays: {} (the adapter has the features: {}, room for {} textures and {} samplers)", if arrays { "on" } else { "off" }, adapter.features().contains(array_features), array_cap, sampler_cap);
+        let (array_cap, sampler_cap) = if arrays { (array_cap, sampler_cap) } else { (0, 0) };
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("nirender"),
@@ -2337,7 +2411,8 @@ impl Renderer {
                             | wgpu::Features::TIMESTAMP_QUERY
                             | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
                             | wgpu::Features::INDIRECT_FIRST_INSTANCE
-                            | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT)),
+                            | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT))
+                    | if arrays { array_features } else { wgpu::Features::empty() },
                 // The largest texture that the adapter takes, up to 16384: an atlas of the
                 // distant land of MGE XE has that size.
                 // A post shader of MGE XE reads up to 22 textures: 10 of its own, the picture,
@@ -2348,6 +2423,8 @@ impl Renderer {
                     // One buffer for the geometry of many meshes of an extension (the pool of
                     // the distant statics of MGE XE).
                     max_buffer_size: adapter.limits().max_buffer_size,
+                    max_binding_array_elements_per_shader_stage: array_cap + sampler_cap,
+                    max_binding_array_sampler_elements_per_shader_stage: sampler_cap,
                     ..wgpu::Limits::default()
                 },
                 memory_hints: wgpu::MemoryHints::default(),
@@ -2361,7 +2438,8 @@ impl Renderer {
         // The text of the extension reads the record of the draw as `draw.field`; the record
         // is in the storage buffer of the frame (`draws[record]`, see shader.wgsl).
         let extension_shader = extension_shader.replace("draw.", "draws[record].");
-        let source = format!("{}\n{extension_shader}", include_str!("shader.wgsl"));
+        let text = if arrays { array_shader(include_str!("shader.wgsl")) } else { include_str!("shader.wgsl").to_string() };
+        let source = format!("{text}\n{extension_shader}");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let mut entries = Vec::new();
         let mut sampler_entries = Vec::new();
@@ -2384,6 +2462,20 @@ impl Renderer {
             });
         }
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("draw textures"), entries: &entries });
+        let array_layout = arrays.then(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("draw texture arrays"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                        count: std::num::NonZeroU32::new(array_cap),
+                    },
+                    wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: std::num::NonZeroU32::new(sampler_cap) },
+                ],
+            })
+        });
         let sampler_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("draw samplers"), entries: &sampler_entries });
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("extension frame"),
@@ -2444,9 +2536,12 @@ impl Renderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("draw"),
             // From the group that changes least to the one that changes most: the frame, the
-            // samplers, the textures. The record of a draw is in the frame group, named by the
-            // instance of the draw.
-            bind_group_layouts: &[Some(&frame_layout), Some(&sampler_layout), Some(&texture_layout)],
+            // samplers, the textures (or the arrays of the frame). The record of a draw is in
+            // the frame group, named by the instance of the draw.
+            bind_group_layouts: &match array_layout.as_ref() {
+                Some(arrays) => vec![Some(&frame_layout), Some(arrays)],
+                None => vec![Some(&frame_layout), Some(&sampler_layout), Some(&texture_layout)],
+            },
             immediate_size: 0,
         });
         let white = Rc::new(device
@@ -2527,6 +2622,16 @@ impl Renderer {
             samplers: FxHashMap::default(),
             texture_groups: FxHashMap::default(),
             sampler_groups: FxHashMap::default(),
+            arrays,
+            array_layout,
+            array_cap: array_cap as usize,
+            sampler_cap: sampler_cap as usize,
+            frame_texture_slots: FxHashMap::default(),
+            frame_texture_views: Vec::new(),
+            frame_sampler_slots: FxHashMap::default(),
+            frame_samplers: Vec::new(),
+            array_group: None,
+            array_variants: FxHashMap::default(),
             geometries: FxHashMap::default(),
             vertex_pool: pool::Pool::new("game vertices", wgpu::BufferUsages::VERTEX, VERTEX_CHUNK),
             index_pool: pool::Pool::new("game indexes", wgpu::BufferUsages::INDEX, INDEX_CHUNK),
@@ -2543,6 +2648,106 @@ impl Renderer {
             commands: Rc::new(FrameCommands::default()),
         };
         (renderer, surface)
+    }
+
+    /// The slots of the textures and the samplers of a frame start empty: slot 0 is white
+    /// and a plain sampler.
+    fn begin_frame_arrays(&mut self) {
+        self.frame_texture_slots.clear();
+        self.frame_texture_views.clear();
+        self.frame_sampler_slots.clear();
+        self.frame_samplers.clear();
+        self.array_group = None;
+        self.array_variants.clear();
+        if self.arrays {
+            self.frame_texture_views.push(self.white.clone());
+            let plain = self.sampler(material::sampler_states(0, 0));
+            self.frame_samplers.push(plain);
+        }
+    }
+
+    /// The slot of a texture of the game in the arrays of the frame: a new one for a handle
+    /// the frame did not have. 0 (white) for no texture, an unknown handle, or a frame with
+    /// more textures than the arrays hold.
+    fn frame_texture_slot(&mut self, handle: u32) -> u32 {
+        if handle == 0 {
+            return 0;
+        }
+        if let Some(&slot) = self.frame_texture_slots.get(&handle) {
+            return slot;
+        }
+        let Some(view) = self.textures.get(&handle) else { return 0 };
+        if self.frame_texture_views.len() >= self.array_cap {
+            self.counts.over_array_cap += 1;
+            return 0;
+        }
+        let slot = self.frame_texture_views.len() as u32;
+        self.frame_texture_views.push(view.clone());
+        self.frame_texture_slots.insert(handle, slot);
+        self.counts.most_frame_textures = self.counts.most_frame_textures.max(slot + 1);
+        // The groups made so far lack this texture.
+        self.array_group = None;
+        self.array_variants.clear();
+        slot
+    }
+
+    /// The slot of a sampler state in the arrays of the frame.
+    fn frame_sampler_slot(&mut self, values: [u32; 5]) -> u32 {
+        if let Some(&slot) = self.frame_sampler_slots.get(&values) {
+            return slot;
+        }
+        if self.frame_samplers.len() >= self.sampler_cap {
+            return 0;
+        }
+        let sampler = self.sampler(values);
+        let slot = self.frame_samplers.len() as u32;
+        self.frame_samplers.push(sampler);
+        self.frame_sampler_slots.insert(values, slot);
+        self.array_group = None;
+        self.array_variants.clear();
+        slot
+    }
+
+    /// The group of the arrays of the frame for a pass into `target` (a rendered texture of
+    /// the game, or `None` for the back buffer or a target of the extension): the texture of
+    /// the target shows white in it. Made once, kept for the frame.
+    fn array_group_for(&mut self, target: Option<u32>) -> Rc<wgpu::BindGroup> {
+        let hide = target.and_then(|handle| self.frame_texture_slots.get(&handle).copied());
+        match hide {
+            Some(slot) => {
+                if let Some(group) = self.array_variants.get(&slot) {
+                    return group.clone();
+                }
+            }
+            None => {
+                if let Some(group) = self.array_group.as_ref() {
+                    return group.clone();
+                }
+            }
+        }
+        let mut views: Vec<&wgpu::TextureView> = self.frame_texture_views.iter().map(|view| &**view).collect();
+        if let Some(slot) = hide {
+            views[slot as usize] = &self.white;
+        }
+        let samplers: Vec<&wgpu::Sampler> = self.frame_samplers.iter().map(|sampler| &**sampler).collect();
+        let group = Rc::new(crate::gpu::frame_group(
+            &self.device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("draw texture arrays"),
+                layout: self.array_layout.as_ref().expect("the arrays are on"),
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureViewArray(&views) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::SamplerArray(&samplers) },
+                ],
+            },
+        ));
+        match hide {
+            Some(slot) => {
+                self.array_variants.insert(slot, group.clone());
+            }
+            None => self.array_group = Some(group.clone()),
+        }
+        group
     }
 
     /// Puts the instances of the frame into the instance buffer, with room after them for
@@ -3297,6 +3502,7 @@ impl Stream {
                     coordinate: [coordinate >> 16 & 3, coordinate & 3, transform & 7, (transform & 256 != 0) as u32],
                     bump: [stage.bump[0], stage.bump[1], stage.bump[2], stage.bump[3]],
                     luminance: [stage.bump[4], stage.bump[5], 0.0, 0.0],
+                    slots: [0; 4],
                 };
                 data.texture_transforms[stages] = stage.texture_transform;
             }
@@ -3426,6 +3632,8 @@ struct Player {
     pass_vertices: Option<Rc<wgpu::Buffer>>,
     pass_indexes: Option<Rc<wgpu::Buffer>>,
     pass_shared: bool,
+    /// The arrays of the frame are bound in this pass.
+    pass_arrays: bool,
     /// The size of the back buffer of the game, from the first record. 0 when not known.
     size: (u32, u32),
     /// The size of the picture of the frame.
@@ -3514,6 +3722,7 @@ impl Player {
             pass_vertices: None,
             pass_indexes: None,
             pass_shared: false,
+            pass_arrays: false,
             size: (0, 0),
             frame_size: (0, 0),
         }
@@ -3567,6 +3776,7 @@ impl Player {
         self.pass_vertices = None;
         self.pass_indexes = None;
         self.pass_shared = false;
+        self.pass_arrays = false;
     }
 
     /// Gives the viewport of the stream to the pass, cut to the size of the targets.
@@ -3593,6 +3803,7 @@ impl Player {
         self.frame_bones.clear();
         self.frame_instances.clear();
         self.frame_instances.push(Instance { world: IDENTITY, record: [0; 4] });
+        self.renderer.begin_frame_arrays();
         self.parameters = None;
         self.world_begun = false;
         self.sky_seen = false;
@@ -4321,8 +4532,9 @@ impl Player {
                 && a.range == b.range
                 && a.base_vertex == b.base_vertex
                 && a.origin == b.origin
-                && Rc::ptr_eq(&a.textures, &b.textures)
-                && Rc::ptr_eq(&a.samplers, &b.samplers)
+                && same_group(&a.textures, &b.textures)
+                && same_group(&a.samplers, &b.samplers)
+                && a.texture_handles == b.texture_handles
                 && Rc::ptr_eq(&a.vertices, &b.vertices)
                 && Rc::ptr_eq(&a.indexes, &b.indexes)
                 && same_lights(a, b)
@@ -4493,8 +4705,8 @@ impl Player {
                 self.scene_kind,
                 draw.key.blend,
                 draw.key.depth,
-                Rc::as_ptr(&draw.textures),
-                Rc::as_ptr(&draw.samplers),
+                draw.texture_handles,
+                draw.data.stages.map(|stage| stage.slots[1]),
                 Rc::as_ptr(&draw.vertices),
                 Rc::as_ptr(&draw.indexes),
                 draw.range,
@@ -4502,8 +4714,16 @@ impl Player {
             );
         }
         self.bound.set(pass, 0, &renderer.frame_group);
-        self.bound.set(pass, 1, &draw.samplers);
-        self.bound.set(pass, 2, &draw.textures);
+        if renderer.arrays {
+            if !self.pass_arrays {
+                let group = renderer.array_group_for(self.pass_target);
+                pass.set_bind_group(1, &*group, &[]);
+                self.pass_arrays = true;
+            }
+        } else if let (Some(samplers), Some(textures)) = (&draw.samplers, &draw.textures) {
+            self.bound.set(pass, 1, samplers);
+            self.bound.set(pass, 2, textures);
+        }
         if !self.pass_vertices.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices)) {
             pass.set_vertex_buffer(0, draw.vertices.slice(..));
             self.pass_vertices = Some(draw.vertices.clone());
@@ -5066,29 +5286,41 @@ impl Player {
                 sampler_values[stage] = pass.stages[stage].sampler;
             }
         }
-        let texture_group = match renderer.texture_groups.get(&handles) {
-            Some(group) => group.clone(),
-            None => {
-                let views: Vec<Rc<wgpu::TextureView>> = handles.iter().map(|handle| renderer.textures.get(handle).unwrap_or(&renderer.white).clone()).collect();
-                let entries: Vec<wgpu::BindGroupEntry> =
-                    (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(&views[stage]) }).collect();
-                let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw textures"), layout: &renderer.texture_layout, entries: &entries });
-                let group = Rc::new(group);
-                renderer.texture_groups.insert(handles, group.clone());
-                group
+        let (texture_group, sampler_group) = if renderer.arrays {
+            // The textures and the samplers of the draw in the arrays of the frame: the
+            // record names their slots.
+            for stage in 0..STAGES {
+                let texture = renderer.frame_texture_slot(handles[stage]);
+                let sampler = renderer.frame_sampler_slot(sampler_values[stage]);
+                draw_data.stages[stage].slots = [texture, sampler, 0, 0];
             }
-        };
-        let sampler_group = match renderer.sampler_groups.get(&sampler_values) {
-            Some(group) => group.clone(),
-            None => {
-                let samplers: Vec<Rc<wgpu::Sampler>> = sampler_values.iter().map(|values| renderer.sampler(*values)).collect();
-                let entries: Vec<wgpu::BindGroupEntry> =
-                    (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::Sampler(&samplers[stage]) }).collect();
-                let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw samplers"), layout: &renderer.sampler_layout, entries: &entries });
-                let group = Rc::new(group);
-                renderer.sampler_groups.insert(sampler_values, group.clone());
-                group
-            }
+            (None, None)
+        } else {
+            let texture_group = match renderer.texture_groups.get(&handles) {
+                Some(group) => group.clone(),
+                None => {
+                    let views: Vec<Rc<wgpu::TextureView>> = handles.iter().map(|handle| renderer.textures.get(handle).unwrap_or(&renderer.white).clone()).collect();
+                    let entries: Vec<wgpu::BindGroupEntry> =
+                        (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(&views[stage]) }).collect();
+                    let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw textures"), layout: &renderer.texture_layout, entries: &entries });
+                    let group = Rc::new(group);
+                    renderer.texture_groups.insert(handles, group.clone());
+                    group
+                }
+            };
+            let sampler_group = match renderer.sampler_groups.get(&sampler_values) {
+                Some(group) => group.clone(),
+                None => {
+                    let samplers: Vec<Rc<wgpu::Sampler>> = sampler_values.iter().map(|values| renderer.sampler(*values)).collect();
+                    let entries: Vec<wgpu::BindGroupEntry> =
+                        (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::Sampler(&samplers[stage]) }).collect();
+                    let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw samplers"), layout: &renderer.sampler_layout, entries: &entries });
+                    let group = Rc::new(group);
+                    renderer.sampler_groups.insert(sampler_values, group.clone());
+                    group
+                }
+            };
+            (Some(texture_group), Some(sampler_group))
         };
         renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
         if self.target.is_some() {
@@ -5179,6 +5411,13 @@ impl Player {
         );
         println!("draws in screen coordinates {}, not drawn {}", c.screen_draws, c.screen_draws_lost);
         println!("copies of a draw without room in the records of the frame {}", c.no_record);
+        println!(
+            "texture arrays: {}; the most textures of a frame {}, stages over the room {} (room for {})",
+            if self.renderer.arrays { "on" } else { "off" },
+            c.most_frame_textures,
+            c.over_array_cap,
+            self.renderer.array_cap
+        );
         println!(
             "geometry pools: {:.1} MB of vertices in {} buffers of {:.0} MB in all, {:.1} MB of indexes in {} buffers of {:.0} MB in all",
             self.renderer.vertex_pool.used as f64 / 1e6,
