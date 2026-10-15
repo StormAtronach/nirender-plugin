@@ -1472,6 +1472,9 @@ struct RenderTexture {
 #[derive(Default)]
 struct Counts {
     draws: u32,
+    /// The runs of draws in a row with one pipeline and one stencil reference: what one
+    /// indirect call could draw.
+    pipeline_runs: u32,
     other_target: u32,
     no_layout: u32,
     textures: u32,
@@ -3327,6 +3330,7 @@ struct Player {
     mark_times: [u64; TIME_COUNT],
     mark_frames: u32,
     mark_draws: u32,
+    mark_runs: u32,
     mark_gpu: (f64, f64, u32),
     /// `gpu::work()` and `gpu::errors()` at the last mark.
     mark_work: [u64; 4],
@@ -3419,6 +3423,7 @@ impl Player {
             mark_times: [0; TIME_COUNT],
             mark_frames: 0,
             mark_draws: 0,
+            mark_runs: 0,
             mark_gpu: (0.0, 0.0, 0),
             mark_work: [0; 4],
             mark_errors: 0,
@@ -3852,9 +3857,15 @@ impl Player {
         let counts = &self.renderer.counts;
         let frames = counts.frames - self.mark_frames;
         let draws = counts.draws - self.mark_draws;
+        let runs = counts.pipeline_runs - self.mark_runs;
         let busy: u64 = counts.times.iter().zip(self.mark_times).map(|(now, before)| *now - before).sum();
         let per_frame = |time: u64| ticks::duration(time).as_secs_f64() * 1000.0 / frames.max(1) as f64;
-        println!("mark {text}: {frames} frames, {:.1} draws for each frame, busy {:.3} ms for each frame:", draws as f64 / frames.max(1) as f64, per_frame(busy));
+        println!(
+            "mark {text}: {frames} frames, {:.1} draws in {:.1} pipeline runs for each frame, busy {:.3} ms for each frame:",
+            draws as f64 / frames.max(1) as f64,
+            runs as f64 / frames.max(1) as f64,
+            per_frame(busy)
+        );
         for ((name, now), before) in TIME_NAMES.iter().zip(counts.times).zip(self.mark_times) {
             println!("  {:6.3}  {name}", per_frame(now - before));
         }
@@ -3882,6 +3893,7 @@ impl Player {
         self.mark_times = counts.times;
         self.mark_frames = counts.frames;
         self.mark_draws = counts.draws;
+        self.mark_runs = counts.pipeline_runs;
     }
 
     /// Ends the frame and sends its commands to the GPU. `before_submit` can add commands,
@@ -4355,14 +4367,18 @@ impl Player {
         renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
         let clock = ticks::Clock::now();
         let Some(pass) = self.pass.as_mut() else { return };
+        let mut new_run = false;
         if !self.pass_pipeline.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &pipeline)) {
             pass.set_pipeline(&pipeline);
             self.pass_pipeline = Some(pipeline.clone());
+            new_run = true;
         }
         if self.pass_stencil != Some(draw.stencil_reference) {
             pass.set_stencil_reference(draw.stencil_reference);
             self.pass_stencil = Some(draw.stencil_reference);
+            new_run = true;
         }
+        renderer.counts.pipeline_runs += new_run as u32;
         self.bound.set(pass, 0, &renderer.frame_group);
         self.bound.set(pass, 1, &draw.samplers);
         self.bound.set(pass, 2, &draw.textures);
@@ -4989,7 +5005,7 @@ impl Player {
 
     fn print_counts(&self) {
         let c = &self.renderer.counts;
-        println!("draws {}, pipelines {}, textures {}, samplers {}", c.draws, self.renderer.pipelines.len(), c.textures, self.renderer.samplers.len());
+        println!("draws {} in {} pipeline runs, pipelines {}, textures {}, samplers {}", c.draws, c.pipeline_runs, self.renderer.pipelines.len(), c.textures, self.renderer.samplers.len());
         println!(
             "geometry: {} records ({:.1} MB), {} draws from them, {} records that did not parse, {} draws of more index entries than their geometry has",
             c.geometry_records,
