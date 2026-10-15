@@ -888,6 +888,7 @@ impl Pass {
     }
 }
 
+pub mod gpu;
 pub mod material;
 mod overlay;
 
@@ -2135,6 +2136,9 @@ impl Renderer {
     ) -> (Renderer, Option<wgpu::Surface<'static>>) {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = backends;
+        // The WGPU_* variables of the environment can change the flags, for a test (for
+        // example WGPU_VALIDATION_INDIRECT_CALL=0).
+        descriptor.flags = descriptor.flags.with_env();
         // The new shader compiler of Direct3D, a part of this program: the old one is slow.
         descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::StaticDxc;
         let instance = wgpu::Instance::new(descriptor);
@@ -2147,7 +2151,7 @@ impl Renderer {
         }))
         .expect("no graphics adapter for this backend");
         let info = adapter.get_info();
-        println!("adapter: {} ({:?})", info.name, info.backend);
+        println!("adapter: {} ({:?}, driver {} {})", info.name, info.backend, info.driver, info.driver_info);
         let mut surface_usages = wgpu::TextureUsages::empty();
         if let Some(surface) = surface.as_ref() {
             // The game gives colours that are ready for the screen: no sRGB format.
@@ -2187,6 +2191,7 @@ impl Renderer {
             },
         ))
         .expect("no device");
+        gpu::watch(&device, &info, surface.is_some());
 
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
         let source = format!("{}\n{extension_shader}", include_str!("shader.wgsl"));
@@ -5352,7 +5357,7 @@ mod live {
         fn finish(&mut self, event_loop: &ActiveEventLoop, why: &str) {
             self.finished = true;
             // The picture of the window that is in progress goes away before the surface.
-            if let Some(player) = self.player.as_mut() {
+            if let Some(player) = self.player.as_mut().filter(|_| !super::gpu::lost()) {
                 player.end_frame(|_| {});
             }
             self.in_frame = false;
@@ -5453,6 +5458,19 @@ mod live {
             let waiting = Instant::now();
             let mut idle_since: Option<Instant> = None;
             loop {
+                // The device is lost: nothing draws any more. The records are read and dropped,
+                // so that the game does not wait for this program.
+                if super::gpu::lost() {
+                    match self.ring.pop(&mut self.data) {
+                        Some(_) => continue,
+                        None if self.ring.closed() => return self.finish(event_loop, "the game closed the stream"),
+                        None if waiting.elapsed() > Duration::from_millis(20) => return,
+                        None => {
+                            std::thread::yield_now();
+                            continue;
+                        }
+                    }
+                }
                 // No frame before the size of the game is known: the records before that
                 // make the resources only.
                 // The frame goes into the back buffer of this program. The window is not a
