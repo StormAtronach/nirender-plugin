@@ -406,8 +406,9 @@ struct Draw {
     /// buffers, so a replay of a capture gives the same order in each build.
     texture_handles: [u32; STAGES],
     geometry: u32,
-    /// The first index and the number of indexes.
+    /// The first index in the index buffer and the number of indexes, and the base vertex.
     range: (u32, u32),
+    base_vertex: i32,
     /// The instances: the first in the instance buffer of the frame and the number. A draw of
     /// its own has one, with its world matrix in its record.
     instances: (u32, u32),
@@ -523,7 +524,7 @@ impl Replay for Replayer<'_> {
                 );
             }
             pass.set_index_buffer(kept.indexes.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(first..first + count, 0, instances);
+            pass.draw_indexed(first..first + count, kept.base_vertex, instances);
             self.renderer.counts.replayed += 1;
         }
     }
@@ -603,13 +604,16 @@ pub struct HeldMap {
 #[derive(Clone)]
 pub struct HeldDraw {
     pub facts: DrawFacts,
+    /// The buffer that holds the vertices of the shape (a pool of the renderer: other shapes
+    /// are in it too), and the first vertex of the shape in it, for `draw_indexed`.
     pub vertices: Rc<wgpu::Buffer>,
-    /// The indexes, 16 bits each.
+    pub base_vertex: i32,
+    /// The indexes, 16 bits each, in a buffer that holds other shapes too.
     pub indexes: Rc<wgpu::Buffer>,
     pub layout: VertexLayout,
     pub topology: wgpu::PrimitiveTopology,
-    /// The parts of the shape: the first index and the number of indexes of each. A strip
-    /// topology has one part for each strip.
+    /// The parts of the shape: the first index in `indexes` and the number of indexes of
+    /// each. A strip topology has one part for each strip.
     pub parts: Vec<(u32, u32)>,
     /// The uniform that the renderer made for the first pass of the shape: the world matrix,
     /// the view and the projection of the draw (see `origin`), the material, the fog and the
@@ -988,6 +992,7 @@ impl Pass {
 pub mod gpu;
 pub mod material;
 mod overlay;
+mod pool;
 mod ticks;
 
 /// The geometry of a shape from a `GEOMETRY` record: resident buffers, keyed by the
@@ -999,8 +1004,16 @@ struct Geometry {
     entries: u32,
     /// The lengths of the strips, or empty for a triangle list.
     strips: Vec<u16>,
+    /// The buffers that hold the vertices and the indexes: a chunk of a pool, or a buffer of
+    /// its own (the particles of a frame). The ranges of a pool, to give back.
     vertex: Rc<wgpu::Buffer>,
     index: Rc<wgpu::Buffer>,
+    vertex_range: Option<pool::Range>,
+    index_range: Option<pool::Range>,
+    /// The first vertex of the geometry in its buffer (the base vertex of a draw) and its
+    /// first index entry (added to the first index of a draw).
+    base_vertex: i32,
+    first_index: u32,
 }
 
 const COMMAND_TRANSFORM: u32 = 3;
@@ -2023,6 +2036,9 @@ const RECORD_SIZE: usize = core::mem::size_of::<DrawData>();
 const _: () = assert!(INSTANCE_SIZE == 80 && RECORD_SIZE % 16 == 0);
 const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 const RECORDS_AT_FIRST: usize = 4096;
+/// The size of a buffer of the pools of the game's geometry.
+const VERTEX_CHUNK: u64 = 64 << 20;
+const INDEX_CHUNK: u64 = 16 << 20;
 /// The records of the draws of a frame.
 fn record_buffer(device: &wgpu::Device, records: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
@@ -2242,8 +2258,14 @@ struct Renderer {
     /// textures: the D3D12 backend has places for 2048 samplers only, and the sets of sampler
     /// values are few.
     sampler_groups: FxHashMap<[[u32; 5]; STAGES], Rc<wgpu::BindGroup>>,
-    /// The geometry records, by the geometry data of the game.
+    /// The geometry records, by the geometry data of the game; their vertices and indexes
+    /// in pools (`pool`), and the ranges of records replaced in this frame, given back at
+    /// the start of the next.
     geometries: FxHashMap<u32, Geometry>,
+    vertex_pool: pool::Pool,
+    index_pool: pool::Pool,
+    retired: Vec<pool::Range>,
+    retired_indexes: Vec<pool::Range>,
     /// The index buffer of the quads of the particle systems, as the game keeps one: the
     /// number of quads it has, and the buffer. It grows to the largest system seen.
     quad_indexes: Option<(u32, Rc<wgpu::Buffer>)>,
@@ -2506,6 +2528,10 @@ impl Renderer {
             texture_groups: FxHashMap::default(),
             sampler_groups: FxHashMap::default(),
             geometries: FxHashMap::default(),
+            vertex_pool: pool::Pool::new("game vertices", wgpu::BufferUsages::VERTEX, VERTEX_CHUNK),
+            index_pool: pool::Pool::new("game indexes", wgpu::BufferUsages::INDEX, INDEX_CHUNK),
+            retired: Vec::new(),
+            retired_indexes: Vec::new(),
             quad_indexes: None,
             materials: FxHashMap::default(),
             derived: FxHashMap::default(),
@@ -2895,12 +2921,27 @@ impl Renderer {
             return;
         }
         let strip_lengths: Vec<u16> = (0..strips as usize).map(|i| u16::from_le_bytes([data[32 + i * 2], data[33 + i * 2]])).collect();
-        let make = |bytes: &[u8], usage: wgpu::BufferUsages| Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("game geometry"), contents: bytes, usage }));
-        let vertex = make(&data[vertex_at..index_at], wgpu::BufferUsages::VERTEX);
-        let index = make(&data[index_at..index_end], wgpu::BufferUsages::INDEX);
+        let vertex_range = self.vertex_pool.take(&self.device, &self.queue, &data[vertex_at..index_at], stride as u64);
+        let index_range = self.index_pool.take(&self.device, &self.queue, &data[index_at..index_end], 4);
         self.counts.geometry_records += 1;
         self.counts.geometry_bytes += data.len() as u64;
-        self.geometries.insert(handle, Geometry { fvf, stride, entries, strips: strip_lengths, vertex, index });
+        let geometry = Geometry {
+            fvf,
+            stride,
+            entries,
+            strips: strip_lengths,
+            vertex: vertex_range.buffer.clone(),
+            index: index_range.buffer.clone(),
+            base_vertex: (vertex_range.offset / stride as u64) as i32,
+            first_index: (index_range.offset / 2) as u32,
+            vertex_range: Some(vertex_range),
+            index_range: Some(index_range),
+        };
+        if let Some(old) = self.geometries.insert(handle, geometry) {
+            // The draws of this frame may still use the old ranges: they go back after it.
+            self.retired.extend(old.vertex_range);
+            self.retired_indexes.extend(old.index_range);
+        }
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
     }
 
@@ -2949,7 +2990,7 @@ impl Renderer {
         let vertex = Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("particles"), contents: &bytes, usage: wgpu::BufferUsages::VERTEX }));
         self.counts.shape_particles += 1;
         // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index };
+        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: 0, first_index: 0 };
         self.geometries.insert(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
     }
@@ -3577,6 +3618,13 @@ impl Player {
             timing.begin(&mut encoder);
         }
         self.encoder = Some(encoder);
+        // The ranges of the geometry replaced in the frame before: the GPU is done with it.
+        for range in std::mem::take(&mut self.renderer.retired) {
+            self.renderer.vertex_pool.give(&range);
+        }
+        for range in std::mem::take(&mut self.renderer.retired_indexes) {
+            self.renderer.index_pool.give(&range);
+        }
         self.renderer.record_staging.clear();
         self.renderer.record_count = 0;
         self.renderer.record_written = 0;
@@ -3819,7 +3867,9 @@ impl Player {
         let Some((true, fog_range)) = self.parameters.as_ref().map(|p| (p.hold, p.fog_range)) else { return false };
         let shape = &self.stream.shape;
         let Some(layout) = VertexLayout::of(shape.fvf, shape.stride) else { return false };
-        let Some((vertices, indexes)) = self.renderer.geometries.get(&shape.geometry).filter(|g| entries <= g.entries).map(|g| (g.vertex.clone(), g.index.clone())) else { return false };
+        let Some((vertices, indexes, base_vertex, geometry_first)) = self.renderer.geometries.get(&shape.geometry).filter(|g| entries <= g.entries).map(|g| (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index)) else {
+            return false;
+        };
         let pass = Pass::new(derived, 0, m, &self.renderer.textures, effects);
         let facts = DrawFacts {
             class,
@@ -3834,9 +3884,9 @@ impl Player {
             return false;
         }
         let (topology, parts) = if strips.is_empty() {
-            (wgpu::PrimitiveTopology::TriangleList, vec![(0, entries / 3 * 3)])
+            (wgpu::PrimitiveTopology::TriangleList, vec![(geometry_first, entries / 3 * 3)])
         } else {
-            let mut start = 0u32;
+            let mut start = geometry_first;
             let parts = strips
                 .iter()
                 .map(|&length| {
@@ -3871,6 +3921,7 @@ impl Player {
         let held = HeldDraw {
             facts,
             vertices,
+            base_vertex,
             indexes,
             layout,
             topology,
@@ -4268,6 +4319,7 @@ impl Player {
                 && a.key == b.key
                 && a.stencil_reference == b.stencil_reference
                 && a.range == b.range
+                && a.base_vertex == b.base_vertex
                 && a.origin == b.origin
                 && Rc::ptr_eq(&a.textures, &b.textures)
                 && Rc::ptr_eq(&a.samplers, &b.samplers)
@@ -4468,7 +4520,7 @@ impl Player {
             pass.set_index_buffer(draw.indexes.slice(..), wgpu::IndexFormat::Uint16);
             self.pass_indexes = Some(draw.indexes.clone());
         }
-        pass.draw_indexed(first..first + count, 0, instances.0..instances.0 + instances.1);
+        pass.draw_indexed(first..first + count, draw.base_vertex, instances.0..instances.0 + instances.1);
         renderer.counts.times[TIME_DRAW_PASS] += clock.elapsed();
         renderer.counts.draws += 1;
     }
@@ -4946,7 +4998,7 @@ impl Player {
         };
         let stencil_reference = stencil[2];
         // The buffers of the geometry record of the shape.
-        let Some((vertex_buffer, index_buffer)) = renderer.geometries.get(&shape.geometry).filter(|g| first_index + indexes <= g.entries).map(|g| (g.vertex.clone(), g.index.clone())) else {
+        let Some((vertex_buffer, index_buffer, base_vertex, geometry_first)) = renderer.geometries.get(&shape.geometry).filter(|g| first_index + indexes <= g.entries).map(|g| (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index)) else {
             renderer.counts.geometry_short += 1;
             return;
         };
@@ -5063,7 +5115,8 @@ impl Player {
             indexes: index_buffer,
             texture_handles: handles,
             geometry: shape.geometry,
-            range: (first_index, indexes),
+            range: (geometry_first + first_index, indexes),
+            base_vertex,
             instances: (instance, 1),
             record,
         });
@@ -5126,6 +5179,15 @@ impl Player {
         );
         println!("draws in screen coordinates {}, not drawn {}", c.screen_draws, c.screen_draws_lost);
         println!("copies of a draw without room in the records of the frame {}", c.no_record);
+        println!(
+            "geometry pools: {:.1} MB of vertices in {} buffers of {:.0} MB in all, {:.1} MB of indexes in {} buffers of {:.0} MB in all",
+            self.renderer.vertex_pool.used as f64 / 1e6,
+            self.renderer.vertex_pool.chunks(),
+            self.renderer.vertex_pool.capacity() as f64 / 1e6,
+            self.renderer.index_pool.used as f64 / 1e6,
+            self.renderer.index_pool.chunks(),
+            self.renderer.index_pool.capacity() as f64 / 1e6
+        );
         for (format, count) in &c.texture_formats {
             println!("texture format {format:#x} not made: {count}");
         }
