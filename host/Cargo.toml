@@ -26,6 +26,7 @@ egui-wgpu = { version = "0.36", default-features = false }
 jpeg-encoder = "0.7.1"
 png = "0.18"
 pollster = "0.3"
+rustc-hash = "2"
 wgpu = { version = "30", features = ["static-dxc"] }
 winit = "0.30"
 

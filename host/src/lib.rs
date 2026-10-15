@@ -22,6 +22,8 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use rustc_hash::FxHashMap;
+
 /// The wgpu of this crate, for a program that draws with it through `Extension`.
 pub use wgpu;
 
@@ -896,7 +898,7 @@ impl Pass {
     /// record (the texture pass of the game makes them from the effect and the camera of
     /// the frame); without them a stage of an effect gets the generation of its kind and no
     /// transform.
-    fn new(d: &material::Derived, pass: usize, m: &material::Material, textures: &HashMap<u32, Rc<wgpu::TextureView>>, effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>) -> Pass {
+    fn new(d: &material::Derived, pass: usize, m: &material::Material, textures: &FxHashMap<u32, Rc<wgpu::TextureView>>, effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>) -> Pass {
         const NONE: PassStage = PassStage { color: [1, 0, 0], alpha: [1, 0, 0], coordinate: 0, transform: 0, bump: [0.0; 6], texture: 0, sampler: [0; 5], texture_transform: [0.0; 16] };
         // D3DBLEND_ONE is 2 and D3DBLEND_ZERO is 1: the blend of a pass that does not blend.
         let blend = d.blends.get(pass).copied().unwrap_or([0; 3]);
@@ -2166,17 +2168,17 @@ struct Renderer {
     texture_layout: wgpu::BindGroupLayout,
     sampler_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
-    pipelines: HashMap<PipelineKey, Rc<wgpu::RenderPipeline>>,
-    textures: HashMap<u32, Rc<wgpu::TextureView>>,
+    pipelines: FxHashMap<PipelineKey, Rc<wgpu::RenderPipeline>>,
+    textures: FxHashMap<u32, Rc<wgpu::TextureView>>,
     /// The textures that the game draws into, by the handle of the texture, and the texture of
     /// each surface that the game got from a texture.
-    targets: HashMap<u32, RenderTexture>,
+    targets: FxHashMap<u32, RenderTexture>,
     surfaces: HashMap<u32, u32>,
     /// The textures with a block format that this program made the pixels of: their size is
     /// not a multiple of 4.
     decoded: std::collections::HashSet<u32>,
     /// The textures themselves, for a write of a level later.
-    texture_objects: HashMap<u32, (wgpu::Texture, u32)>,
+    texture_objects: FxHashMap<u32, (wgpu::Texture, u32)>,
     white: Rc<wgpu::TextureView>,
     /// The resources of the extension for the frame: bind group 0 of each draw.
     frame_layout: wgpu::BindGroupLayout,
@@ -2185,23 +2187,23 @@ struct Renderer {
     frame_group: Rc<wgpu::BindGroup>,
     clusters: Clusters,
     extension_lights: ExtensionLights,
-    samplers: HashMap<[u32; 5], Rc<wgpu::Sampler>>,
+    samplers: FxHashMap<[u32; 5], Rc<wgpu::Sampler>>,
     /// The textures and the samplers of a draw, by the texture handles and the sampler values
     /// of its stages. The D3D12 backend has a small number of places for samplers.
-    texture_groups: HashMap<[u32; STAGES], Rc<wgpu::BindGroup>>,
+    texture_groups: FxHashMap<[u32; STAGES], Rc<wgpu::BindGroup>>,
     /// The samplers of a draw, by the sampler values of its stages. They are apart from the
     /// textures: the D3D12 backend has places for 2048 samplers only, and the sets of sampler
     /// values are few.
-    sampler_groups: HashMap<[[u32; 5]; STAGES], Rc<wgpu::BindGroup>>,
+    sampler_groups: FxHashMap<[[u32; 5]; STAGES], Rc<wgpu::BindGroup>>,
     /// The geometry records, by the geometry data of the game.
-    geometries: HashMap<u32, Geometry>,
+    geometries: FxHashMap<u32, Geometry>,
     /// The index buffer of the quads of the particle systems, as the game keeps one: the
     /// number of quads it has, and the buffer. It grows to the largest system seen.
     quad_indexes: Option<(u32, Rc<wgpu::Buffer>)>,
     /// The material records by handle, and the states derived from them by (handle, texture
     /// sets of the geometry).
-    materials: HashMap<u32, material::Material>,
-    derived: HashMap<(u32, u32), Rc<material::Derived>>,
+    materials: FxHashMap<u32, material::Material>,
+    derived: FxHashMap<(u32, u32), Rc<material::Derived>>,
     defaults: wgpu::Buffer,
     /// The world matrices of the instances of the frame. `MGE_XE_INSTANCING=0` keeps one
     /// draw for each.
@@ -2445,20 +2447,20 @@ impl Renderer {
             texture_layout,
             sampler_layout,
             pipeline_layout,
-            pipelines: HashMap::new(),
-            textures: HashMap::new(),
-            texture_objects: HashMap::new(),
+            pipelines: FxHashMap::default(),
+            textures: FxHashMap::default(),
+            texture_objects: FxHashMap::default(),
             decoded: Default::default(),
-            targets: HashMap::new(),
+            targets: FxHashMap::default(),
             surfaces: HashMap::new(),
             white,
-            samplers: HashMap::new(),
-            texture_groups: HashMap::new(),
-            sampler_groups: HashMap::new(),
-            geometries: HashMap::new(),
+            samplers: FxHashMap::default(),
+            texture_groups: FxHashMap::default(),
+            sampler_groups: FxHashMap::default(),
+            geometries: FxHashMap::default(),
             quad_indexes: None,
-            materials: HashMap::new(),
-            derived: HashMap::new(),
+            materials: FxHashMap::default(),
+            derived: FxHashMap::default(),
             defaults,
             screen_pipeline: None,
             screen_layout: None,
@@ -2942,7 +2944,10 @@ impl Renderer {
     }
 
     fn pipeline(&mut self, key: PipelineKey) -> Option<Rc<wgpu::RenderPipeline>> {
-        if !self.pipelines.contains_key(&key) {
+        if let Some(pipeline) = self.pipelines.get(&key) {
+            return Some(pipeline.clone());
+        }
+        {
             let present = attributes(key.fvf, key.stride)?;
             let topology = match key.topology {
                 1 => wgpu::PrimitiveTopology::PointList,
@@ -3025,9 +3030,10 @@ impl Renderer {
                 multiview_mask: None,
                 cache: None,
             });
-            self.pipelines.insert(key, Rc::new(pipeline));
+            let pipeline = Rc::new(pipeline);
+            self.pipelines.insert(key, pipeline.clone());
+            Some(pipeline)
         }
-        self.pipelines.get(&key).cloned()
     }
 }
 
@@ -3327,6 +3333,14 @@ struct Player {
     mark_errors: u64,
     /// The groups that the pass of the game has now.
     bound: BoundGroups,
+    /// The state of the pass that `issue` set, so that a draw sets only what changes: the
+    /// pipeline, the stencil reference, the vertices and the indexes of the last draw, and
+    /// whether the shared vertex buffers (the defaults, the instances) are bound.
+    pass_pipeline: Option<Rc<wgpu::RenderPipeline>>,
+    pass_stencil: Option<u32>,
+    pass_vertices: Option<Rc<wgpu::Buffer>>,
+    pass_indexes: Option<Rc<wgpu::Buffer>>,
+    pass_shared: bool,
     /// The size of the back buffer of the game, from the first record. 0 when not known.
     size: (u32, u32),
     /// The size of the picture of the frame.
@@ -3409,6 +3423,11 @@ impl Player {
             mark_work: [0; 4],
             mark_errors: 0,
             bound: BoundGroups::default(),
+            pass_pipeline: None,
+            pass_stencil: None,
+            pass_vertices: None,
+            pass_indexes: None,
+            pass_shared: false,
             size: (0, 0),
             frame_size: (0, 0),
         }
@@ -3450,8 +3469,18 @@ impl Player {
             })
             .forget_lifetime();
         self.pass = Some(pass);
-        self.bound.forget();
+        self.forget_bound();
         self.apply_viewport();
+    }
+
+    /// The state of the pass is not known: a new pass, or one that the extension drew into.
+    fn forget_bound(&mut self) {
+        self.bound.forget();
+        self.pass_pipeline = None;
+        self.pass_stencil = None;
+        self.pass_vertices = None;
+        self.pass_indexes = None;
+        self.pass_shared = false;
     }
 
     /// Gives the viewport of the stream to the pass, cut to the size of the targets.
@@ -4266,7 +4295,7 @@ impl Player {
         renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters, &renderer.light_buffer, &renderer.bone_buffer));
         for item in items {
             if !matches!(item, Item::Draw(_)) {
-                self.bound.forget();
+                self.forget_bound();
             }
             match item {
                 Item::Target(target) => {
@@ -4325,18 +4354,35 @@ impl Player {
         renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
         let clock = ticks::Clock::now();
         let Some(pass) = self.pass.as_mut() else { return };
-        pass.set_pipeline(&pipeline);
-        pass.set_stencil_reference(draw.stencil_reference);
+        if !self.pass_pipeline.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &pipeline)) {
+            pass.set_pipeline(&pipeline);
+            self.pass_pipeline = Some(pipeline.clone());
+        }
+        if self.pass_stencil != Some(draw.stencil_reference) {
+            pass.set_stencil_reference(draw.stencil_reference);
+            self.pass_stencil = Some(draw.stencil_reference);
+        }
         self.bound.set(pass, 0, &renderer.frame_group);
         self.bound.set(pass, 1, &draw.samplers);
         self.bound.set(pass, 2, &draw.textures);
         pass.set_bind_group(3, &*draw_group, &[draw_offset]);
-        pass.set_vertex_buffer(0, draw.vertices.slice(..));
-        pass.set_vertex_buffer(1, renderer.defaults.slice(..));
-        pass.set_vertex_buffer(2, renderer.instance_buffer.slice(draw.instances.0 as u64 * 64..));
+        if !self.pass_vertices.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices)) {
+            pass.set_vertex_buffer(0, draw.vertices.slice(..));
+            self.pass_vertices = Some(draw.vertices.clone());
+        }
+        if !self.pass_shared {
+            // The defaults and the instances of the frame: the same buffers for every draw
+            // of the pass. A draw takes its instances by the first instance of the draw.
+            pass.set_vertex_buffer(1, renderer.defaults.slice(..));
+            pass.set_vertex_buffer(2, renderer.instance_buffer.slice(..));
+            self.pass_shared = true;
+        }
         let (first, count) = draw.range;
-        pass.set_index_buffer(draw.indexes.slice(..), wgpu::IndexFormat::Uint16);
-        pass.draw_indexed(first..first + count, 0, 0..draw.instances.1);
+        if !self.pass_indexes.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.indexes)) {
+            pass.set_index_buffer(draw.indexes.slice(..), wgpu::IndexFormat::Uint16);
+            self.pass_indexes = Some(draw.indexes.clone());
+        }
+        pass.draw_indexed(first..first + count, 0, draw.instances.0..draw.instances.0 + draw.instances.1);
         renderer.counts.times[TIME_DRAW_PASS] += clock.elapsed();
         renderer.counts.draws += 1;
     }
@@ -4882,22 +4928,30 @@ impl Player {
                 sampler_values[stage] = pass.stages[stage].sampler;
             }
         }
-        if !renderer.texture_groups.contains_key(&handles) {
-            let views: Vec<Rc<wgpu::TextureView>> = handles.iter().map(|handle| renderer.textures.get(handle).unwrap_or(&renderer.white).clone()).collect();
-            let entries: Vec<wgpu::BindGroupEntry> =
-                (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(&views[stage]) }).collect();
-            let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw textures"), layout: &renderer.texture_layout, entries: &entries });
-            renderer.texture_groups.insert(handles, Rc::new(group));
-        }
-        let texture_group = renderer.texture_groups[&handles].clone();
-        if !renderer.sampler_groups.contains_key(&sampler_values) {
-            let samplers: Vec<Rc<wgpu::Sampler>> = sampler_values.iter().map(|values| renderer.sampler(*values)).collect();
-            let entries: Vec<wgpu::BindGroupEntry> =
-                (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::Sampler(&samplers[stage]) }).collect();
-            let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw samplers"), layout: &renderer.sampler_layout, entries: &entries });
-            renderer.sampler_groups.insert(sampler_values, Rc::new(group));
-        }
-        let sampler_group = renderer.sampler_groups[&sampler_values].clone();
+        let texture_group = match renderer.texture_groups.get(&handles) {
+            Some(group) => group.clone(),
+            None => {
+                let views: Vec<Rc<wgpu::TextureView>> = handles.iter().map(|handle| renderer.textures.get(handle).unwrap_or(&renderer.white).clone()).collect();
+                let entries: Vec<wgpu::BindGroupEntry> =
+                    (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(&views[stage]) }).collect();
+                let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw textures"), layout: &renderer.texture_layout, entries: &entries });
+                let group = Rc::new(group);
+                renderer.texture_groups.insert(handles, group.clone());
+                group
+            }
+        };
+        let sampler_group = match renderer.sampler_groups.get(&sampler_values) {
+            Some(group) => group.clone(),
+            None => {
+                let samplers: Vec<Rc<wgpu::Sampler>> = sampler_values.iter().map(|values| renderer.sampler(*values)).collect();
+                let entries: Vec<wgpu::BindGroupEntry> =
+                    (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::Sampler(&samplers[stage]) }).collect();
+                let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw samplers"), layout: &renderer.sampler_layout, entries: &entries });
+                let group = Rc::new(group);
+                renderer.sampler_groups.insert(sampler_values, group.clone());
+                group
+            }
+        };
         renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
         if self.target.is_some() {
             renderer.counts.target_draws += 1;
