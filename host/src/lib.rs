@@ -271,6 +271,28 @@ impl WorldFacts {
     }
 }
 
+/// The groups 0 to 2 (frame, samplers, textures) that a pass has now: a draw sets a group only
+/// when it changes. Anything else that can set groups in the pass (a new pass, an extension, a
+/// screen draw) forgets them. Group 3, the slot of the draw, has a dynamic offset and is set
+/// for each draw.
+#[derive(Default)]
+struct BoundGroups([Option<Rc<wgpu::BindGroup>>; 3]);
+
+impl BoundGroups {
+    fn set(&mut self, pass: &mut wgpu::RenderPass<'static>, index: u32, group: &Rc<wgpu::BindGroup>) {
+        let slot = &mut self.0[index as usize];
+        if slot.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, group)) {
+            return;
+        }
+        pass.set_bind_group(index, &**group, &[]);
+        *slot = Some(group.clone());
+    }
+
+    fn forget(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// A draw with its vertices in the record, ready for the pass.
 struct ScreenDraw {
     pipeline: wgpu::RenderPipeline,
@@ -409,6 +431,7 @@ impl Replay for Replayer<'_> {
     }
 
     fn replay(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView) {
+        let mut bound = BoundGroups::default();
         for kept in self.kept {
             if view.classes & (1 << kept.class.min(31)) == 0 || (view.opaque_only && (kept.key.blend[0] != 0 || kept.key.depth[1] == 0)) || (view.translucent_only && !kept.translucent()) {
                 continue;
@@ -461,9 +484,9 @@ impl Replay for Replayer<'_> {
             let (group, offset) = self.renderer.draw_slot_now(&data);
             pass.set_pipeline(&pipeline);
             pass.set_stencil_reference(kept.stencil_reference);
-            pass.set_bind_group(0, &*self.renderer.frame_group, &[]);
-            pass.set_bind_group(1, &*kept.samplers, &[]);
-            pass.set_bind_group(2, &*kept.textures, &[]);
+            bound.set(pass, 0, &self.renderer.frame_group);
+            bound.set(pass, 1, &kept.samplers);
+            bound.set(pass, 2, &kept.textures);
             pass.set_bind_group(3, &*group, &[offset]);
             pass.set_vertex_buffer(0, kept.vertices.slice(..));
             pass.set_vertex_buffer(1, self.renderer.defaults.slice(..));
@@ -3267,6 +3290,8 @@ struct Player {
     /// `gpu::work()` and `gpu::errors()` at the last mark.
     mark_work: [u64; 4],
     mark_errors: u64,
+    /// The groups that the pass of the game has now.
+    bound: BoundGroups,
     /// The size of the back buffer of the game, from the first record. 0 when not known.
     size: (u32, u32),
     /// The size of the picture of the frame.
@@ -3348,6 +3373,7 @@ impl Player {
             mark_gpu: (0.0, 0.0, 0),
             mark_work: [0; 4],
             mark_errors: 0,
+            bound: BoundGroups::default(),
             size: (0, 0),
             frame_size: (0, 0),
         }
@@ -3389,6 +3415,7 @@ impl Player {
             })
             .forget_lifetime();
         self.pass = Some(pass);
+        self.bound.forget();
         self.apply_viewport();
     }
 
@@ -4203,6 +4230,9 @@ impl Player {
         renderer.counts.times[TIME_CLUSTERS] += clock.elapsed();
         renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters));
         for item in items {
+            if !matches!(item, Item::Draw(_)) {
+                self.bound.forget();
+            }
             match item {
                 Item::Target(target) => {
                     self.pass_target = target;
@@ -4262,9 +4292,9 @@ impl Player {
         let Some(pass) = self.pass.as_mut() else { return };
         pass.set_pipeline(&pipeline);
         pass.set_stencil_reference(draw.stencil_reference);
-        pass.set_bind_group(0, &*renderer.frame_group, &[]);
-        pass.set_bind_group(1, &*draw.samplers, &[]);
-        pass.set_bind_group(2, &*draw.textures, &[]);
+        self.bound.set(pass, 0, &renderer.frame_group);
+        self.bound.set(pass, 1, &draw.samplers);
+        self.bound.set(pass, 2, &draw.textures);
         pass.set_bind_group(3, &*draw_group, &[draw_offset]);
         pass.set_vertex_buffer(0, draw.vertices.slice(..));
         pass.set_vertex_buffer(1, renderer.defaults.slice(..));
