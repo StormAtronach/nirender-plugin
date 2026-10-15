@@ -238,9 +238,11 @@ pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u
         without(0);
         return false;
     }
-    let bones: Vec<u8> = palette.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
+    // The bones as the memory of the palette: little-endian floats, as the stream has them
+    // (`capture::words`).
+    let bones = core::slice::from_raw_parts(palette.as_ptr() as *const u8, core::mem::size_of_val(palette));
     let flags = if palette.is_empty() { 0 } else { SKINNED };
-    record(renderer, geometry, flags, world, relative, ambient, material_values, fog, palette.len() as u32, &[], &bones)
+    record(renderer, geometry, flags, world, relative, ambient, material_values, fog, palette.len() as u32, &[], bones)
 }
 
 /// Sends the record of the lines that are about to be drawn (`RenderLines`), with the flag
@@ -284,29 +286,36 @@ pub unsafe fn send_particles(
 /// The stages of the texture effects of the draw in progress (the environment map and the
 /// fog map of the effect state of the renderer), as the texture pass of the device would
 /// make them for this draw: the coordinate generation, the transform flags and the texture
-/// matrix of each, from the effect and the camera of the frame. Empty when the draw has no
+/// matrix of each, from the effect and the camera of the frame; `None` when the draw has no
 /// such effect. The material record has the effects' textures and modes; these values
 /// change with the camera, so they come with each draw, like the world matrix.
-unsafe fn effect_words(renderer: usize) -> Vec<u32> {
+unsafe fn effect_words(renderer: usize) -> Option<[u32; EFFECT_WORDS]> {
     use crate::gen::layouts::{NiDX8Renderer as R, NiDynamicEffectState as DES};
+    use crate::ports::texture_pass_b::{EFFECT_STAGE_WORDS, effect_stage_words};
     let effect_state: usize = rd(renderer, R::currentEffectState);
     if effect_state == 0 {
-        return Vec::new();
+        return None;
     }
     let environment: usize = rd(effect_state, DES::environmentMap);
     let fog_map: usize = rd(effect_state, DES::fogMap);
     if environment == 0 && fog_map == 0 {
-        return Vec::new();
+        return None;
     }
-    let mut words = Vec::with_capacity(2 * crate::ports::texture_pass_b::EFFECT_STAGE_WORDS);
-    for effect in [environment, fog_map] {
-        words.extend_from_slice(&crate::ports::texture_pass_b::effect_stage_words(renderer, effect));
-    }
+    let mut words = [0u32; EFFECT_WORDS];
+    words[..EFFECT_STAGE_WORDS].copy_from_slice(&effect_stage_words(renderer, environment));
+    words[EFFECT_STAGE_WORDS..].copy_from_slice(&effect_stage_words(renderer, fog_map));
     if words.iter().all(|&w| w == 0) {
-        return Vec::new();
+        return None;
     }
-    words
+    Some(words)
 }
+
+/// The words of the stages of the two texture effects of a draw.
+const EFFECT_WORDS: usize = 2 * crate::ports::texture_pass_b::EFFECT_STAGE_WORDS;
+
+/// The most words of the tail of a record that the stack holds: the effects, the fog, and
+/// the particle words.
+const TAIL_WORDS: usize = EFFECT_WORDS + 4 + 8;
 
 /// The record itself: the 36 words of the head, the keys of the lights, the stages of the
 /// texture effects when the draw has any, the fog when the draw has it, then `tail` and
@@ -325,17 +334,30 @@ unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], re
     }
     let lights = crate::light_stream::note(renderer);
     let count = lights.len() as u32;
-    let mut effects = effect_words(renderer);
+    let effects = effect_words(renderer);
     let flags = (relative as u32)
         | kind
-        | if effects.is_empty() { 0 } else { EFFECTS }
+        | if effects.is_none() { 0 } else { EFFECTS }
         | if fog.is_some() { FOG } else { 0 }
         | if code_patch_picture() { CODE_PATCH_PICTURE } else { 0 };
-    if let Some(fog) = fog {
-        effects.extend_from_slice(&fog);
+    // The tail of the record: the effects, the fog, then `tail`. On the stack: a draw does not
+    // allocate for it (a longer tail than the stack holds goes to the heap).
+    let parts: [&[u32]; 3] = [effects.as_ref().map_or(&[], |w| &w[..]), fog.as_ref().map_or(&[], |f| &f[..]), tail];
+    let length: usize = parts.iter().map(|p| p.len()).sum();
+    let mut stack = [0u32; TAIL_WORDS];
+    let mut heap = Vec::new();
+    let all: &mut [u32] = if length <= TAIL_WORDS {
+        &mut stack[..length]
+    } else {
+        heap.resize(length, 0);
+        &mut heap
+    };
+    let mut at = 0;
+    for part in parts {
+        all[at..at + part.len()].copy_from_slice(part);
+        at += part.len();
     }
-    effects.extend_from_slice(tail);
-    let tail = &effects[..];
+    let tail = &all[..];
     let mut words = [0u32; 36];
     words[0] = geometry;
     words[1] = material;

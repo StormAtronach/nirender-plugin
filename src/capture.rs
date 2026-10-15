@@ -389,7 +389,7 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
         reply.requests += 1;
         reply.requests
     };
-    write(tag::READ_PIXELS, &[&words(&[request, texture])]);
+    write(tag::READ_PIXELS, &[words(&[request, texture])]);
     // The write can end the stream.
     let reply = state()?.reply.as_mut()?;
     let start = ticks();
@@ -583,7 +583,7 @@ unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
     s.tee_hold = frames == 0;
     s.tee_only = true;
     let header = s.header;
-    write(tag::HEADER, &[&words(&header)]);
+    write(tag::HEADER, &[words(&header)]);
     write_kept();
     #[cfg(not(test))]
     crate::own_host::snapshot();
@@ -705,7 +705,7 @@ pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, 
     if let Some(s) = state() {
         s.header = [width, height, window];
     }
-    write(tag::HEADER, &[&words(&[width, height, window])]);
+    write(tag::HEADER, &[words(&[width, height, window])]);
     write_kept();
     crate::log!("stream: start with the device, a ring of {megabytes} MB with the name {name}");
     Ok(())
@@ -794,7 +794,7 @@ pub unsafe fn stop() {
 
 /// A draw with its vertices in the call.
 pub unsafe fn draw_up(texture: u32, vertex_format: u32, stride: u32, primitive_type: u32, primitives: u32, vertices: &[u8]) {
-    write(tag::DRAW_UP, &[&words(&[texture, vertex_format, stride, primitive_type, primitives]), vertices]);
+    write(tag::DRAW_UP, &[words(&[texture, vertex_format, stride, primitive_type, primitives]), vertices]);
 }
 
 /// The bit of the number of an extension record that marks a state, not an event: the
@@ -818,14 +818,14 @@ pub unsafe fn extension(id: u32, bytes: &[u8]) {
     } else {
         id
     };
-    write(tag::EXTENSION, &[&words(&[id]), bytes]);
+    write(tag::EXTENSION, &[words(&[id]), bytes]);
 }
 
 /// Writes the kept extension records again, after the header of a stream or of a file.
 unsafe fn write_kept() {
     let kept = (*core::ptr::addr_of!(KEPT)).clone();
     for (id, bytes) in kept {
-        write(tag::EXTENSION, &[&words(&[id]), &bytes]);
+        write(tag::EXTENSION, &[words(&[id]), &bytes]);
     }
 }
 
@@ -975,8 +975,14 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
     s.spent += ticks() - start;
 }
 
-fn words(values: &[u32]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+// The stream is little endian, as the only target of the plugin (i686) is: the memory of a
+// value is its stream bytes.
+const _: () = assert!(cfg!(target_endian = "little"), "the stream writes the memory of its values as little-endian bytes");
+
+/// The bytes of `values` in the stream: the memory of the values, without a copy.
+fn words(values: &[u32]) -> &[u8] {
+    // SAFETY: a u32 slice is valid as bytes of 4 times its length, for its lifetime.
+    unsafe { core::slice::from_raw_parts(values.as_ptr() as *const u8, core::mem::size_of_val(values)) }
 }
 
 unsafe fn bytes_of<T>(value: &T) -> &[u8] {
@@ -1000,7 +1006,7 @@ pub unsafe fn scene_end() {
 }
 
 pub unsafe fn frame_event(kind: u32, a: u32, b: u32) {
-    write(tag::FRAME_EVENT, &[&words(&[kind, a, b])]);
+    write(tag::FRAME_EVENT, &[words(&[kind, a, b])]);
 }
 
 /// The object packet of the draws that follow.
@@ -1026,9 +1032,9 @@ pub unsafe fn object(draw: &DrawV1, geometry_handle: u32, material_handle: u32) 
     }
     if geometry_handle != 0 || material_handle != 0 {
         let flags = draw.flags | if geometry_handle != 0 { OBJECT_HAS_GEOMETRY } else { 0 } | if material_handle != 0 { OBJECT_HAS_MATERIAL } else { 0 };
-        write(tag::OBJECT, &[&words(&[draw.kind, draw.object_class, flags, draw.geometry, geometry_handle, material_handle]), &name[..name.len().min(96)]]);
+        write(tag::OBJECT, &[words(&[draw.kind, draw.object_class, flags, draw.geometry, geometry_handle, material_handle]), &name[..name.len().min(96)]]);
     } else {
-        write(tag::OBJECT, &[&words(&[draw.kind, draw.object_class, draw.flags, draw.geometry]), &name[..name.len().min(96)]]);
+        write(tag::OBJECT, &[words(&[draw.kind, draw.object_class, draw.flags, draw.geometry]), &name[..name.len().min(96)]]);
     }
 }
 
@@ -1041,25 +1047,25 @@ pub const OBJECT_HAS_MATERIAL: u32 = 0x200;
 /// skinned shape, or the particle words and the particles.
 pub unsafe fn shape(head: &[u32], lights: &[u32], tail: &[u32], bytes: &[u8]) {
     let _lock = crate::sync::device_lock();
-    write(tag::SHAPE, &[&words(head), &words(lights), &words(tail), bytes]);
+    write(tag::SHAPE, &[words(head), words(lights), words(tail), bytes]);
 }
 
 /// A light record. See `tag::LIGHT`.
 pub unsafe fn light(key: u32, values: &[u32; 26]) {
     let _lock = crate::sync::device_lock();
-    write(tag::LIGHT, &[&words(&[key]), &words(values)]);
+    write(tag::LIGHT, &[words(&[key]), words(values)]);
 }
 
 /// A material record. See `tag::MATERIAL`.
 pub unsafe fn material(handle: u32, record: &[u32]) {
     let _lock = crate::sync::device_lock();
-    write(tag::MATERIAL, &[&words(&[handle]), &words(record)]);
+    write(tag::MATERIAL, &[words(&[handle]), words(record)]);
 }
 
 /// A geometry record. See `tag::GEOMETRY`.
 pub unsafe fn geometry(head: &[u32], lengths: &[u8], vertices: &[u8], indexes: &[u8]) {
     let _lock = crate::sync::device_lock();
-    write(tag::GEOMETRY, &[&words(head), lengths, vertices, indexes]);
+    write(tag::GEOMETRY, &[words(head), lengths, vertices, indexes]);
 }
 
 /// A state command of the device. Only a transform goes into the stream, with its matrix:
@@ -1070,7 +1076,7 @@ pub unsafe fn command(command: u32, a: u32, b: u32, c: u32) {
     if !recording() || command != COMMAND_TRANSFORM {
         return;
     }
-    write(tag::COMMAND, &[&words(&[command, a, b, c]), bytes_at(b, 64)]);
+    write(tag::COMMAND, &[words(&[command, a, b, c]), bytes_at(b, 64)]);
 }
 
 /// A call of the link, after the host did it.
@@ -1113,10 +1119,10 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
         let pixels = if from_image { crate::link_client::surface_pixels(args[0]) } else { None };
         if let Some((width, height, format, pixels)) = pixels {
             let texture = if args.len() > 3 { destination_texture(args[3]) } else { 0 };
-            write(tag::CALL, &[&words(&head), &words(&[width, height, format, pixels.len() as u32, texture]), &pixels]);
+            write(tag::CALL, &[words(&head), words(&[width, height, format, pixels.len() as u32, texture]), &pixels]);
         } else {
             let data: &[u8] = if index == CALL_VIEWPORT && !args.is_empty() { bytes_at(args[0], 24) } else { &[] };
-            write(tag::CALL, &[&words(&head), data]);
+            write(tag::CALL, &[words(&head), data]);
         }
     }
     if index == CALL_PRESENT {
@@ -1161,12 +1167,12 @@ pub unsafe fn texture(texture: &TextureV1, handle: usize) {
         texture.bytes_per_pixel,
     ];
     let pixels = core::slice::from_raw_parts(texture.pixels, offsets[levels] as usize);
-    write(tag::TEXTURE, &[&words(&head), &words(offsets), &words(widths), &words(heights), pixels]);
+    write(tag::TEXTURE, &[words(&head), words(offsets), words(widths), words(heights), pixels]);
 }
 
 /// The bytes that the game wrote into a level of a texture.
 pub unsafe fn texture_update(handle: usize, level: u32, width: u32, height: u32, format: u32, bytes: &[u8]) {
-    write(tag::TEXTURE_UPDATE, &[&words(&[handle as u32, level, width, height, format, bytes.len() as u32]), bytes]);
+    write(tag::TEXTURE_UPDATE, &[words(&[handle as u32, level, width, height, format, bytes.len() as u32]), bytes]);
 }
 
 /// `NiSkinInstance::skinData`, `NiSkinData::skinPartition`, and a `NiSkinPartition`.
@@ -1258,7 +1264,7 @@ unsafe fn frame_end() {
                 let renderer = crate::engine::renderer();
                 let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
                 let window: u32 = if renderer != 0 { rd(renderer, DEVICE_WINDOW) } else { 0 };
-                write(tag::HEADER, &[&words(&[size[0], size[1], window])]);
+                write(tag::HEADER, &[words(&[size[0], size[1], window])]);
                 write_kept();
                 if let Some(s) = state() {
                     purge(s);
@@ -1311,3 +1317,16 @@ unsafe fn frame_end() {
 const BACK_BUFFER_SIZE: usize = 0x23C;
 /// `NiDX8Renderer::d3dPresentParameters.hDeviceWindow`
 const DEVICE_WINDOW: usize = 0x254;
+
+#[cfg(test)]
+mod tests {
+    /// The words of a record are the same bytes as before the view without a copy: each value
+    /// as its little-endian bytes.
+    #[test]
+    fn the_words_are_their_little_endian_bytes() {
+        let values = [0u32, 1, 0x0102_0304, u32::MAX, 0xDEAD_BEEF];
+        let expected: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(super::words(&values), &expected[..]);
+        assert!(super::words(&[]).is_empty());
+    }
+}

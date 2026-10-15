@@ -467,7 +467,13 @@ pub(crate) unsafe fn shape_record(this: usize, skin: usize, transform: usize, wo
     }
     let property_state: usize = rd(this, R::currentPropertyState);
     let (light_manager, effect_state, texturing, vertex_color) = crate::shape_stream::light_state_arguments(this);
-    let mut palette = Vec::new();
+    thread_local! {
+        /// The palette of a skinned draw, kept between the draws so that a draw does not
+        /// allocate it.
+        static PALETTE: core::cell::RefCell<Vec<[f32; 16]>> = const { core::cell::RefCell::new(Vec::new()) };
+    }
+    let mut palette = PALETTE.with(|kept| core::mem::take(&mut *kept.borrow_mut()));
+    palette.clear();
     let (world, relative) = if skin != 0 {
         let relative = match crate::camera_space::skin_palette(skin, transform, true, &mut palette) {
             Ok(relative) => relative,
@@ -493,7 +499,9 @@ pub(crate) unsafe fn shape_record(this: usize, skin: usize, transform: usize, wo
         (crate::shape_stream::current_world(this), crate::link_client::world_is_relative())
     };
     let fog = crate::shape_stream::fog_values(this, property_state);
-    crate::shape_stream::send(this, world, relative, crate::shape_stream::ambient(this), crate::shape_stream::material_values(property_state), fog, &palette)
+    let sent = crate::shape_stream::send(this, world, relative, crate::shape_stream::ambient(this), crate::shape_stream::material_values(property_state), fog, &palette);
+    PALETTE.with(|kept| *kept.borrow_mut() = palette);
+    sent
 }
 
 pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
