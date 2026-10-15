@@ -79,6 +79,8 @@ def main():
                     "for example the exe with other options of the Morrowind Code Patch")
     ap.add_argument("--early-picture", action="store_true", help="the test mod asks for a picture (mge.saveScreenshot) when its main.lua "
                     "runs, before the game has a renderer: the file early.png of the run must come with the first frames")
+    ap.add_argument("--window-shots", action="store_true", help="each picture of the host program also as the window shows it, "
+                    "<name>-window.png: with the status text of MGE XE and the debug overlay (wgpu only)")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
 
@@ -116,6 +118,8 @@ def main():
     # a film (the 120th: a film starts from black): a film holds the main loop, so the scenario
     # cannot ask for it.
     os.environ["NIRENDER_HOST_ARGS"] = '--shots-at %s --shots-prefix "%s" --shot-film "%s"' % (args.start_frames, run.path("start"), run.path("host-film-frame.png"))
+    if args.window_shots:
+        os.environ["NIRENDER_HOST_ARGS"] += " --window-shots"
     # The mgeXE.toml of the run: no frame limit (vsync off), so that the frame rates of the two
     # modes compare; with the switch for the wgpu renderer when the run is with it.
     toml = os.path.join(session.harness.MO2_ROOT, "mods", args.config_mod, "Root", "mgeXE.toml")

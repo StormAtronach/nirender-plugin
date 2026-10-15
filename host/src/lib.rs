@@ -3,11 +3,13 @@
 //! ```text
 //! nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N] [--anisotropy N]
 //! nirender-host --live <name of the shared memory> [--backend vulkan|dx12] [--frames N] [--shot picture.png]
-//!               [--embed]
+//!               [--embed] [--window-shots]
 //! ```
 //!
 //! With `--embed` the window of the host is a child of the window of the game and covers it:
-//! the picture of the host is where the picture of the game was.
+//! the picture of the host is where the picture of the game was. With `--window-shots` each
+//! picture file of a live frame has a second file, `<name>-window.png`, with what the window
+//! shows: the picture with the status text and the debug overlay.
 //!
 //! The capture comes from `nirender.capture` of the plugin (`src/capture.rs` there has the
 //! format). This program reads the records in their order, keeps the textures and the buffers,
@@ -5358,6 +5360,9 @@ mod live {
         /// Frames to save a picture of, and the start of the names of the files.
         shots_at: Vec<u32>,
         shots_prefix: String,
+        /// Each picture file also as the window shows it (`--window-shots`), for a test of the
+        /// text on the window without a picture of the screen.
+        window_shots: bool,
         /// A picture of a frame with a draw of the film player, or `None`, and which such
         /// draw (the first is 1).
         shot_film: Option<String>,
@@ -5713,6 +5718,33 @@ mod live {
                         save_picture(&device, &buffer, row, width, height, blue_first, path);
                         buffer.unmap();
                     }
+                    // The same pictures as the window shows them: the overlay is drawn on a
+                    // copy of the back buffer, as on the picture of the window.
+                    if let (true, Some(overlay)) = (self.window_shots, self.overlay.as_mut()) {
+                        let copy = device.create_texture(&wgpu::TextureDescriptor {
+                            label: Some("window picture"),
+                            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format: back_buffer.format(),
+                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+                            view_formats: &[],
+                        });
+                        let mut encoder = device.create_command_encoder(&Default::default());
+                        encoder.copy_texture_to_texture(back_buffer.as_image_copy(), copy.as_image_copy(), wgpu::Extent3d { width, height, depth_or_array_layers: 1 });
+                        overlay.draw(&device, &queue, &mut encoder, &copy.create_view(&Default::default()), (width, height), None, &lines, &status);
+                        let (buffer, row) = copy_picture(&device, &mut encoder, &copy, width, height);
+                        crate::gpu::submit(&queue, [encoder.finish()]);
+                        for path in &shots {
+                            let window = match path.strip_suffix(".png") {
+                                Some(stem) => format!("{stem}-window.png"),
+                                None => format!("{path}-window.png"),
+                            };
+                            save_picture(&device, &buffer, row, width, height, blue_first, &window);
+                            buffer.unmap();
+                        }
+                    }
                 }
                 let clock = Instant::now();
                 if let Some(frame) = frame {
@@ -5767,6 +5799,7 @@ mod live {
             shot_frame: option(args, "--shot-frame").and_then(|text| text.parse().ok()).unwrap_or(60),
             shots_at: option(args, "--shots-at").map(|text| text.split(',').filter_map(|n| n.parse().ok()).collect()).unwrap_or_default(),
             shots_prefix: option(args, "--shots-prefix").unwrap_or_else(|| "frame".into()),
+            window_shots: args.iter().any(|argument| argument == "--window-shots"),
             shot_film: option(args, "--shot-film"),
             shot_film_frame: option(args, "--shot-film-frame").and_then(|text| text.parse().ok()).unwrap_or(120),
             window: None,
