@@ -139,7 +139,7 @@ def stage_capture(place, mge_build):
     return ok
 
 
-def stage_baseline(baseline, accept):
+def stage_baseline(baseline, accept, mge_build):
     """The captures of the baseline folder against their accepted pictures, in the order of
     the draws of the game, as a player has them."""
     print("baseline %s" % baseline, flush=True)
@@ -151,7 +151,7 @@ def stage_baseline(baseline, accept):
     out = accepted if accept else os.path.join(baseline, "now")
     os.makedirs(out, exist_ok=True)
     for capture in captures:
-        run([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, capture[:-7] + ".png"), "--frame", "1"], env)
+        run([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, capture[:-7] + ".png"), "--frame", "1", "--mge-build", mge_build], env)
     tour = os.path.join(baseline, "tour")
     tour_out = os.path.join(tour, "accepted" if accept else "now")
     if os.path.isdir(tour):
@@ -301,7 +301,7 @@ def main():
                 if not stage_capture(place, args.mge_build):
                     return 1
         elif stage == "baseline":
-            if not stage_baseline(args.baseline, args.accept):
+            if not stage_baseline(args.baseline, args.accept, args.mge_build):
                 return 1
         elif stage == "only":
             for place in places:
