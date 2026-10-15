@@ -2,7 +2,8 @@
 //! game and of this program, as a panel on the picture of the window. The game turns it on
 //! and off with an `OVERLAY` record, which also has the numbers of the game process. The
 //! panel is drawn into the picture of the window only: the back buffer, the picture files
-//! and the capture files do not have it. It takes no input.
+//! and the capture files do not have it. It takes no input. The status text of the
+//! extension (`Extension::status`) goes into the picture of the window in the same way.
 //!
 //! The text and the graph are egui's, drawn by its wgpu renderer.
 
@@ -260,9 +261,10 @@ impl Overlay {
     /// Draws the panel into the picture of the window, when it is on. With `sign`, it also
     /// draws the sign that the game sends no frames: one of the four characters of a line
     /// that turns, which `sign` selects. `lines` go under the numbers of the panel: the
-    /// text of the extension of the renderer.
-    pub fn draw(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, size: (u32, u32), sign: Option<u32>, lines: &[String]) {
-        if !self.on && sign.is_none() {
+    /// text of the extension of the renderer. `status` is the text of the extension for the
+    /// upper left corner; with the panel on, its message is the first line of the panel.
+    pub fn draw(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, size: (u32, u32), sign: Option<u32>, lines: &[String], status: &crate::Status) {
+        if !self.on && sign.is_none() && status.message.is_none() && !status.frame_rate {
             return;
         }
         // The text has the same part of the height of a picture of any size: 1 at 1080 lines.
@@ -282,13 +284,28 @@ impl Overlay {
                     });
                 });
             }
+            let message_colour = |warning: bool| if warning { egui::Color32::from_rgb(255, 34, 34) } else { egui::Color32::WHITE };
             if !on {
+                // As MGE XE on Direct3D 9 draws it: the message with a shadow, the frame
+                // rate under it.
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("nirender status")));
+                let font = egui::FontId::monospace(14.0);
+                if let Some((text, warning)) = &status.message {
+                    painter.text(egui::pos2(9.0, 11.0), egui::Align2::LEFT_TOP, text, font.clone(), egui::Color32::from_black_alpha(192));
+                    painter.text(egui::pos2(8.0, 10.0), egui::Align2::LEFT_TOP, text, font.clone(), message_colour(*warning));
+                }
+                if status.frame_rate {
+                    painter.text(egui::pos2(8.0, 35.0), egui::Align2::LEFT_TOP, format!("{:4.0}", shown.rate), font, egui::Color32::WHITE);
+                }
                 return;
             }
             egui::Area::new(egui::Id::new("nirender overlay")).fixed_pos(egui::pos2(8.0, 8.0)).show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).fill(egui::Color32::from_black_alpha(190)).show(ui, |ui| {
                     ui.style_mut().override_font_id = Some(egui::FontId::monospace(13.0));
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    if let Some((text, warning)) = &status.message {
+                        ui.colored_label(message_colour(*warning), text.as_str());
+                    }
                     ui.label(format!("{:6.1} frames in a second   {:6.2} ms", shown.rate, shown.mean_ms));
                     ui.label(format!("worst frame {:6.1} ms in the last half second, {:6.1} ms in the last {} frames", shown.worst_second_ms, shown.worst_ms, history.len()));
                     ui.label(format!("long frames {:3} of {} (more than {LONG} times the mean)", shown.long_frames, history.len()));

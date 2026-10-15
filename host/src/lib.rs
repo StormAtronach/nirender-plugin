@@ -110,6 +110,16 @@ pub struct PictureRequest {
     pub with_ui: bool,
 }
 
+/// The text that an extension shows in the upper left corner of the window. See
+/// `Extension::status`.
+#[derive(Default)]
+pub struct Status {
+    /// A message, and true when it is a warning or an error (red).
+    pub message: Option<(String, bool)>,
+    /// True to show the number of frames in a second that go to the window.
+    pub frame_rate: bool,
+}
+
 /// The answers of an extension for a frame. See `Extension::frame`.
 #[derive(Clone, Default)]
 pub struct FrameParameters {
@@ -632,6 +642,14 @@ pub trait Extension {
     /// each frame in which it shows.
     fn overlay_lines(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    /// The text for the upper left corner of the window: a message and the frame rate. It
+    /// goes on the picture of the window only, as the debug overlay: the back buffer, the
+    /// picture files and the capture files do not have it. The renderer asks at the end of
+    /// each frame that goes to the window.
+    fn status(&self) -> Status {
+        Status::default()
     }
 
     /// The renderer draws a capture file and not a live stream: the frames must be the
@@ -5219,7 +5237,7 @@ mod live {
     use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
     use winit::window::{Window, WindowId};
 
-    use super::{copy_picture, option, save_picture, target_texture, Player, Renderer, DEPTH_FORMAT};
+    use super::{copy_picture, option, save_picture, target_texture, Player, Renderer, Status, DEPTH_FORMAT};
 
     extern "system" {
         fn OpenFileMappingA(access: u32, inherit: i32, name: *const u8) -> isize;
@@ -5452,7 +5470,7 @@ mod live {
                 frame.texture.as_image_copy(),
                 wgpu::Extent3d { width: back_buffer.width().min(size.0), height: back_buffer.height().min(size.1), depth_or_array_layers: 1 },
             );
-            overlay.draw(device, queue, &mut encoder, &frame.texture.create_view(&Default::default()), size, Some(self.sign_step), &[]);
+            overlay.draw(device, queue, &mut encoder, &frame.texture.create_view(&Default::default()), size, Some(self.sign_step), &[], &Status::default());
             crate::gpu::submit(queue, [encoder.finish()]);
             queue.present(frame);
         }
@@ -5656,6 +5674,7 @@ mod live {
                     (Some(overlay), Some(extension)) if overlay.is_on() => extension.overlay_lines(),
                     _ => Vec::new(),
                 };
+                let status = player.extension.as_ref().map(|extension| extension.status()).unwrap_or_default();
                 let overlay = self.overlay.as_mut();
                 let mut read = None;
                 player.end_frame(|encoder| {
@@ -5669,7 +5688,7 @@ mod live {
                         // The debug overlay goes on the picture of the window, not into the
                         // back buffer: a picture file and a pixel read do not have it.
                         if let Some(overlay) = overlay {
-                            overlay.draw(&device, &queue, encoder, &frame.texture.create_view(&Default::default()), (frame.texture.width(), frame.texture.height()), None, &lines);
+                            overlay.draw(&device, &queue, encoder, &frame.texture.create_view(&Default::default()), (frame.texture.width(), frame.texture.height()), None, &lines, &status);
                         }
                     }
                     if take_shot {
