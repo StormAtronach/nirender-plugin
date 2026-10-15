@@ -663,6 +663,13 @@ pub trait Extension {
         Vec::new()
     }
 
+    /// The renderer calls this at the end of each live frame, also of a frame with no world
+    /// (a loading screen), before `messages`: for work that must go on while the game shows
+    /// no world, such as the loads and the uploads for a place where the camera will be. The
+    /// scene has the facts of the last world draw. Its writes to the queue and its deferred
+    /// commands go with the next frame.
+    fn after_frame(&mut self, _scene: &SceneView) {}
+
     /// The renderer draws a capture file and not a live stream: the frames must be the
     /// same each time. The extension completes each load before a frame, with no limit on
     /// the work of a frame. The renderer calls this one time, before the first record.
@@ -5812,6 +5819,15 @@ mod live {
                             save_picture(&device, &buffer, row, width, height, blue_first, &window);
                             buffer.unmap();
                         }
+                    }
+                }
+                // The facts of the last world draw stand for a frame with no world.
+                if player.extension.is_some() {
+                    let facts = player.world_facts(false);
+                    let commands = player.renderer.commands.clone();
+                    let scene = facts.view(&device, &queue, &commands, player.renderer.target_format);
+                    if let Some(extension) = player.extension.as_mut() {
+                        extension.after_frame(&scene);
                     }
                 }
                 // The messages of the extension for its part in the game process.
