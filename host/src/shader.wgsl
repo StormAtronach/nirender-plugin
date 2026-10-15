@@ -82,9 +82,9 @@ struct Draw {
 struct Frame {
     values: array<vec4f, 32>,
 }
-@group(3) @binding(0) var<uniform> frame: Frame;
-@group(3) @binding(1) var extension_texture: texture_2d<f32>;
-@group(3) @binding(2) var extension_sampler: sampler;
+@group(0) @binding(0) var<uniform> frame: Frame;
+@group(0) @binding(1) var extension_texture: texture_2d<f32>;
+@group(0) @binding(2) var extension_sampler: sampler;
 
 // The clusters of the lights of the frame: a grid of tiles of the screen by slices of
 // depth, each with the lights whose sphere touches it, as indexes into `lights`.
@@ -96,9 +96,9 @@ struct Clusters {
     // The slice of a depth z is scale * log(z) + bias; z is at least the third value.
     depth: vec4f,
 }
-@group(3) @binding(3) var<uniform> clusters: Clusters;
-@group(3) @binding(4) var<storage, read> cluster_table: array<vec2u>;
-@group(3) @binding(5) var<storage, read> cluster_indexes: array<u32>;
+@group(0) @binding(3) var<uniform> clusters: Clusters;
+@group(0) @binding(4) var<storage, read> cluster_table: array<vec2u>;
+@group(0) @binding(5) var<storage, read> cluster_indexes: array<u32>;
 
 // The lights of the cluster of a pixel: the first entry in `cluster_indexes` and the
 // number, for a pixel of the picture at a depth of the view. None when the clusters are
@@ -112,23 +112,23 @@ fn cluster_lights(pixel: vec2f, view_z: f32) -> vec2u {
     return cluster_table[(slice * clusters.grid.y + tile.y) * clusters.grid.x + tile.x];
 }
 
-@group(0) @binding(0) var<uniform> draw: Draw;
+@group(3) @binding(0) var<uniform> draw: Draw;
 // The lights of all draws of the frame.
-@group(0) @binding(1) var<storage, read> lights: array<Light>;
+@group(3) @binding(1) var<storage, read> lights: array<Light>;
 // The bones of all skinned draws of the frame.
-@group(0) @binding(2) var<storage, read> palette: array<mat4x4f>;
-@group(1) @binding(0) var texture0: texture_2d<f32>;
-@group(1) @binding(1) var texture1: texture_2d<f32>;
-@group(1) @binding(2) var texture2: texture_2d<f32>;
-@group(1) @binding(3) var texture3: texture_2d<f32>;
-@group(1) @binding(4) var texture4: texture_2d<f32>;
-@group(1) @binding(5) var texture5: texture_2d<f32>;
-@group(2) @binding(0) var sampler0: sampler;
-@group(2) @binding(1) var sampler1: sampler;
-@group(2) @binding(2) var sampler2: sampler;
-@group(2) @binding(3) var sampler3: sampler;
-@group(2) @binding(4) var sampler4: sampler;
-@group(2) @binding(5) var sampler5: sampler;
+@group(3) @binding(2) var<storage, read> palette: array<mat4x4f>;
+@group(2) @binding(0) var texture0: texture_2d<f32>;
+@group(2) @binding(1) var texture1: texture_2d<f32>;
+@group(2) @binding(2) var texture2: texture_2d<f32>;
+@group(2) @binding(3) var texture3: texture_2d<f32>;
+@group(2) @binding(4) var texture4: texture_2d<f32>;
+@group(2) @binding(5) var texture5: texture_2d<f32>;
+@group(1) @binding(0) var sampler0: sampler;
+@group(1) @binding(1) var sampler1: sampler;
+@group(1) @binding(2) var sampler2: sampler;
+@group(1) @binding(3) var sampler3: sampler;
+@group(1) @binding(4) var sampler4: sampler;
+@group(1) @binding(5) var sampler5: sampler;
 
 struct VertexIn {
     @location(0) position: vec3f,

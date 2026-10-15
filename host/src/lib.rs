@@ -114,7 +114,7 @@ pub struct PictureRequest {
 #[derive(Clone, Default)]
 pub struct FrameParameters {
     /// The values of the extension for the frame, for its shader functions: `frame.values`
-    /// in WGSL (bind group 3, binding 0).
+    /// in WGSL (bind group 0, binding 0).
     pub values: [[f32; 4]; 32],
     /// A texture of the extension for its shader functions: `extension_texture` with
     /// `extension_sampler` (linear, clamp) in WGSL. White without one. The view must stay
@@ -461,10 +461,10 @@ impl Replay for Replayer<'_> {
             let (group, offset) = self.renderer.draw_slot_now(&data);
             pass.set_pipeline(&pipeline);
             pass.set_stencil_reference(kept.stencil_reference);
-            pass.set_bind_group(0, &*group, &[offset]);
-            pass.set_bind_group(1, &*kept.textures, &[]);
-            pass.set_bind_group(2, &*kept.samplers, &[]);
-            pass.set_bind_group(3, &*self.renderer.frame_group, &[]);
+            pass.set_bind_group(0, &*self.renderer.frame_group, &[]);
+            pass.set_bind_group(1, &*kept.samplers, &[]);
+            pass.set_bind_group(2, &*kept.textures, &[]);
+            pass.set_bind_group(3, &*group, &[offset]);
             pass.set_vertex_buffer(0, kept.vertices.slice(..));
             pass.set_vertex_buffer(1, self.renderer.defaults.slice(..));
             pass.set_vertex_buffer(2, self.renderer.instance_buffer.slice(kept.instances.0 as u64 * 64..));
@@ -2116,7 +2116,7 @@ struct Renderer {
     /// The textures themselves, for a write of a level later.
     texture_objects: HashMap<u32, (wgpu::Texture, u32)>,
     white: Rc<wgpu::TextureView>,
-    /// The resources of the extension for the frame: bind group 3 of each draw.
+    /// The resources of the extension for the frame: bind group 0 of each draw.
     frame_layout: wgpu::BindGroupLayout,
     frame_uniform: wgpu::Buffer,
     frame_sampler: wgpu::Sampler,
@@ -2310,7 +2310,9 @@ impl Renderer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("draw"),
-            bind_group_layouts: &[Some(&draw_layout), Some(&texture_layout), Some(&sampler_layout), Some(&frame_layout)],
+            // From the group that changes least to the one that changes most: the frame, the
+            // samplers, the textures, the draw.
+            bind_group_layouts: &[Some(&frame_layout), Some(&sampler_layout), Some(&texture_layout), Some(&draw_layout)],
             immediate_size: 0,
         });
         let white = Rc::new(device
@@ -4260,10 +4262,10 @@ impl Player {
         let Some(pass) = self.pass.as_mut() else { return };
         pass.set_pipeline(&pipeline);
         pass.set_stencil_reference(draw.stencil_reference);
-        pass.set_bind_group(0, &*draw_group, &[draw_offset]);
-        pass.set_bind_group(1, &*draw.textures, &[]);
-        pass.set_bind_group(2, &*draw.samplers, &[]);
-        pass.set_bind_group(3, &*renderer.frame_group, &[]);
+        pass.set_bind_group(0, &*renderer.frame_group, &[]);
+        pass.set_bind_group(1, &*draw.samplers, &[]);
+        pass.set_bind_group(2, &*draw.textures, &[]);
+        pass.set_bind_group(3, &*draw_group, &[draw_offset]);
         pass.set_vertex_buffer(0, draw.vertices.slice(..));
         pass.set_vertex_buffer(1, renderer.defaults.slice(..));
         pass.set_vertex_buffer(2, renderer.instance_buffer.slice(draw.instances.0 as u64 * 64..));
