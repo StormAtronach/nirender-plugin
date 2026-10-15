@@ -2263,6 +2263,10 @@ struct Renderer {
     instance_extras: usize,
     /// `MGE_XE_RUNS_DUMP=1`: a line for each draw of a pass, for a study of the runs.
     runs_dump: bool,
+    /// `MGE_XE_ORDER=opaque`: within each run of draws between other items, the opaque draws
+    /// of the world first, in the order of their pipeline, textures and geometry, then the
+    /// rest in the order of the game (plan 0.5 entry TD, step 4). Off: the order of the game.
+    order_opaque_first: bool,
     /// The draws keep the order of the game: it decides the ties of the depth test (the lines
     /// of the collision boxes lie on their meshes). `MGE_XE_SORT=1` sorts the opaque draws of
     /// a run by pipeline and textures and joins them into instances, for a comparison; it
@@ -2599,6 +2603,7 @@ impl Renderer {
             queue,
             shader,
             runs_dump: std::env::var("MGE_XE_RUNS_DUMP").is_ok_and(|v| v == "1"),
+            order_opaque_first: std::env::var("MGE_XE_ORDER").is_ok_and(|v| v == "opaque"),
             record_buffer: Rc::new(first_records),
             record_capacity: RECORDS_AT_FIRST,
             record_staging: Vec::new(),
@@ -4596,6 +4601,9 @@ impl Player {
             let instancing = self.renderer.instancing;
             Self::sort_items(&mut items, &mut self.renderer.counts, &self.frame_lights, instancing.then_some(&mut self.frame_instances));
         }
+        if self.renderer.order_opaque_first {
+            Self::order_opaque_first(&mut items);
+        }
         self.renderer.upload_lights(&self.frame_lights);
         self.renderer.upload_bones(&self.frame_bones);
         // Room for the copies that the parts of the frame make (clipped draws, replays).
@@ -4617,6 +4625,21 @@ impl Player {
         for item in items {
             if !matches!(item, Item::Draw(_)) {
                 self.forget_bound();
+                if self.renderer.runs_dump {
+                    let kind = match &item {
+                        Item::Target(_) => "target",
+                        Item::Clear(..) => "clear",
+                        Item::Viewport(_) => "viewport",
+                        Item::Screen(_) => "screen",
+                        Item::WorldStart(_) => "world-start",
+                        Item::WorldEnd(_) => "world-end",
+                        Item::HeldHere(..) => "held",
+                        Item::Replace(..) => "replace",
+                        Item::Post(_) => "post",
+                        Item::Draw(_) => unreachable!(),
+                    };
+                    println!("run frame {} barrier {kind}", self.renderer.counts.frames);
+                }
             }
             match item {
                 Item::Target(target) => {
@@ -4643,6 +4666,50 @@ impl Player {
                 Item::Replace(class, facts, drawn) => self.replace_class(class, &facts, drawn),
                 Item::Post(facts) => self.post_process(&facts),
             }
+        }
+    }
+
+    /// Within each run of draws between other items, the opaque draws of the world first (a
+    /// world draw that does not blend, writes depth with a less or less-or-equal test, has no
+    /// stencil and writes all colours), in the order of their pipeline, textures and
+    /// geometry; then the other draws in the order of the game. The depth test orders the
+    /// opaque draws among themselves. Where a blended draw that writes depth came before an
+    /// opaque draw behind it, the blend now has that draw under it instead of the background.
+    fn order_opaque_first(items: &mut Vec<Item>) {
+        let opaque = |draw: &Draw| {
+            draw.world
+                && draw.key.blend[0] == 0
+                && draw.key.depth[0] != 0
+                && draw.key.depth[1] != 0
+                && matches!(draw.key.depth[2], 2 | 4)
+                && draw.key.stencil[0] == 0
+                && draw.key.color_write & 7 == 7
+        };
+        let order = |draw: &Draw| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = rustc_hash::FxHasher::default();
+            draw.key.hash(&mut hasher);
+            (hasher.finish(), draw.stencil_reference, draw.texture_handles, Rc::as_ptr(&draw.vertices) as usize, draw.base_vertex, draw.range.0)
+        };
+        let mut start = 0;
+        while start < items.len() {
+            if !matches!(items[start], Item::Draw(_)) {
+                start += 1;
+                continue;
+            }
+            let mut end = start;
+            while end < items.len() && matches!(items[end], Item::Draw(_)) {
+                end += 1;
+            }
+            let run: Vec<Rc<Draw>> = items[start..end].iter().map(|item| if let Item::Draw(d) = item { d.clone() } else { unreachable!() }).collect();
+            let mut first: Vec<Rc<Draw>> = run.iter().filter(|d| opaque(d)).cloned().collect();
+            if first.len() > 1 {
+                first.sort_by_cached_key(|d| order(d));
+                let rest = run.iter().filter(|d| !opaque(d)).cloned();
+                let ordered: Vec<Item> = first.into_iter().chain(rest).map(Item::Draw).collect();
+                items.splice(start..end, ordered);
+            }
+            start = end;
         }
     }
 
