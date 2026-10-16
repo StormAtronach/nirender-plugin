@@ -337,8 +337,11 @@ return function(nirender, spec)
         -- The tour of a test level: in each cell of spec.tourCells, in front of each object
         -- whose id starts with spec.tour, two frames into the capture file of the cell. The
         -- file holds between the stops. tools/validate_tour.py replays the stops.
+        -- With spec.tourDual, each stop gives two frames in mode gpu and two in mode off,
+        -- with the time of the game held between them: the two paths at one moment.
         { "tour", 1.0, function()
             local cells = {}
+            if spec.tourDual then say("tour: dual (mode gpu, then mode off, at each stop)") end
             for name in tostring(spec.tourCells or ""):gmatch("[^;]+") do cells[#cells + 1] = name end
             local function cell(index)
                 local name = cells[index]
@@ -360,6 +363,27 @@ return function(nirender, spec)
                         -- The animations of the object at one moment, the same in each run.
                         local held = holdAnimation(ref.sceneNode)
                         after(0.5, function()
+                            if own and spec.tourDual then
+                                -- The time of the game held: the particles stay where they
+                                -- are. Two frames in mode gpu (the helper draws the retained
+                                -- shapes), then two in mode off (the engine displays every
+                                -- shape), then mode gpu again and the time runs.
+                                tes3.worldController.simulationTimeScalar = 0
+                                nirender.captureFrames(2)
+                                say("tour: cell %d stop %d %s (%d controllers held) dual", index, stop, ref.object.id, held)
+                                after(0.4, function()
+                                    nirender.retained("off")
+                                    after(0.6, function()
+                                        nirender.captureFrames(2)
+                                        after(0.4, function()
+                                            nirender.retained("gpu")
+                                            tes3.worldController.simulationTimeScalar = 1
+                                            after(0.3, go)
+                                        end)
+                                    end)
+                                end)
+                                return
+                            end
                             if own then nirender.captureFrames(2) end
                             say("tour: cell %d stop %d %s (%d controllers held)", index, stop, ref.object.id, held)
                             if not own and mge and mge.saveScreenshot then

@@ -261,14 +261,21 @@ def weather_line(rates, index):
 
 
 def stage_tour(mge_build):
-    """A run over the test level with a capture for each cell, and its counts. The pictures
-    of the stops are compared in the baseline stage, when the run is the baseline tour."""
+    """A run over the test level in one session: at each stop two frames in mode gpu and two
+    in mode off, with the time of the game held. validate_tour.py replays and compares the
+    pairs. The counts of the run must be clean."""
     print("tour of the test level", flush=True)
-    folder = game("v-tour", ["--steps", "tour", "--tour-cells", "@nifTest_1;@nifTest_2;@nifTest_3", "--budget", "560"], mge_build)
+    folder = game("v-tour", ["--steps", "tour", "--tour-cells", "@nifTest_1;@nifTest_2;@nifTest_3", "--tour-dual", "--budget", "900"], mge_build)
     if not folder or len([f for f in os.listdir(folder) if f.endswith(".nircap")]) != 3:
         return check(False, "no three captures from the run")
     print("       " + folder, flush=True)
-    return check_counts(folder)
+    ok = check_counts(folder)
+    out = run([PY, os.path.join(HERE, "validate_tour.py"), folder, "--jobs", "4", "--mge-build", mge_build], {})
+    tail = out.strip().split("\n")
+    for line in tail[-45:]:
+        print("       " + line[:160], flush=True)
+    pairs = re.search(r"pairs: (\d+) of (\d+) equal", out)
+    return ok & check(pairs is not None and pairs.group(2) != "0", pairs.group(0) if pairs else "no pairs compared")
 
 
 def main():

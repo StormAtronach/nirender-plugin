@@ -9,6 +9,10 @@ the stops. This replays the second frame of each stop into `<out>/<cell>-<stop>-
 (`<out>` is the run folder without `--out`). With `--against`, it compares each picture with
 the one of the same name in the baseline folder and prints the mean difference, with the
 largest ones first. Make a baseline by replaying a run and copying its folder.
+
+A run made with `--tour-dual` has four frames for each stop: two in mode gpu, then two in
+mode off, with the time of the game held. Then this replays both (the off picture is
+`<cell>-<stop>-<id>-off.png`) and compares each pair: the two paths at one moment.
 """
 import argparse
 import os
@@ -22,14 +26,18 @@ PYTHON = sys.executable
 
 
 def stops_of(run):
-    """{cell index: [(stop index, object id)]} from the progress log."""
+    """{cell index: [(stop index, object id)]} from the progress log, and whether the run
+    is dual (two modes at each stop)."""
     stops = {}
+    dual = False
     pattern = re.compile(r"tour: cell (\d+) stop (\d+) (\S+)")
     for line in open(os.path.join(run, "progress.log"), encoding="utf-8", errors="replace"):
+        if "tour: dual" in line:
+            dual = True
         found = pattern.search(line)
         if found:
             stops.setdefault(int(found.group(1)), []).append((int(found.group(2)), found.group(3)))
-    return stops
+    return stops, dual
 
 
 MGE_BUILD = None
@@ -56,8 +64,9 @@ def main():
     MGE_BUILD = args.mge_build
     out = args.out or args.run
     os.makedirs(out, exist_ok=True)
-    stops = stops_of(args.run)
+    stops, dual = stops_of(args.run)
     work = []
+    pairs = []
     for cell, cell_stops in sorted(stops.items()):
         capture = os.path.join(args.run, "tour-%d.nircap" % cell)
         if not os.path.isfile(capture):
@@ -65,9 +74,17 @@ def main():
             continue
         for stop, ident in cell_stops:
             name = "%d-%02d-%s.png" % (cell, stop, re.sub(r"[^A-Za-z0-9_]", "_", ident))
-            # Two frames for each stop: the second one. The replay counts the frames from 0.
-            work.append((capture, stop * 2 - 1, os.path.join(out, name), name))
-    print("%d stops to replay" % len(work))
+            if dual:
+                # Four frames for each stop: the second of mode gpu and the second of mode
+                # off. The replay counts the frames from 0.
+                off = name[:-4] + "-off.png"
+                work.append((capture, (stop - 1) * 4 + 1, os.path.join(out, name), name))
+                work.append((capture, (stop - 1) * 4 + 3, os.path.join(out, off), off))
+                pairs.append((name, off))
+            else:
+                # Two frames for each stop: the second one.
+                work.append((capture, stop * 2 - 1, os.path.join(out, name), name))
+    print("%d stops to replay%s" % (len(work) // (2 if dual else 1), ", gpu and off at each" if dual else ""))
     failures = []
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for (capture, frame, picture, name), (ok, text) in zip(work, pool.map(lambda w: replay(w[0], w[1], w[2]), work)):
@@ -78,14 +95,35 @@ def main():
                 failures.append(name)
                 print("FAILED %s: %s" % (name, text.strip()[-200:]))
     print("%d pictures, %d failed" % (len(work) - len(failures), len(failures)))
-    if not args.against:
-        return 1 if failures else 0
     sys.path.insert(0, HERE)
     import picture_diff
+
+    if pairs:
+        rows = []
+        for gpu, off in pairs:
+            a, b = os.path.join(out, gpu), os.path.join(out, off)
+            if not (os.path.isfile(a) and os.path.isfile(b)):
+                rows.append((float("inf"), gpu, "missing"))
+                continue
+            numbers = picture_diff.compare(picture_diff.load(a), picture_diff.load(b))
+            if "problem" in numbers:
+                rows.append((float("inf"), gpu, numbers["problem"]))
+            else:
+                rows.append((numbers["mean"], gpu, "%.3f mean, %.2f %% different, %.2f %% over 8, largest %d" % (numbers["mean"], numbers["different"] * 100, numbers["over8"] * 100, numbers.get("largest", 0))))
+        rows.sort(reverse=True)
+        print("mode gpu against mode off at each stop, the largest differences first:")
+        for mean, name, text in rows[:40]:
+            print("  %-48s %s" % (name, text))
+        equal = sum(1 for mean, _, _ in rows if mean == 0)
+        print("pairs: %d of %d equal" % (equal, len(rows)))
+    if not args.against:
+        return 1 if failures else 0
 
     rows = []
     import glob
     for _, _, picture, name in work:
+        if name.endswith("-off.png"):
+            continue
         other = os.path.join(args.against, name)
         if not os.path.isfile(other):
             # The same stop with another spelling of the id (a reference run names it in Lua).
