@@ -868,8 +868,11 @@ impl RetainedSet {
 
 impl Player {
     /// Puts an instance record with the flag 0x100 into the table: a slot for each pass of
-    /// its material, with the record of the draw made as for a shape record.
+    /// its material, with the record of the draw made as for a shape record. An instance
+    /// that is in the table already (its material or geometry handle changed) keeps its
+    /// lights: the plugin sends them again only when the set of its lights changes.
     pub(super) fn retained_insert(&mut self, id: u32, r: &Retained) {
+        let keys = self.retained.keys_of.get(&id).cloned();
         self.retained.remove(id);
         let Some((fvf, stride, entries, strips, vertex, index, base_vertex, first_index)) =
             self.renderer.geometries.get(&r.geometry).map(|g| (g.fvf, g.stride, g.entries, g.strips.clone(), g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index))
@@ -996,8 +999,8 @@ impl Player {
         set.by_id.insert(id, slots);
         set.counts.instances = set.by_id.len() as u32;
         set.counts.slots = set.slots.iter().flatten().count() as u32;
-        // The lights the instance had, when the record came again.
-        if let Some(keys) = set.keys_of.get(&id).cloned() {
+        // The lights the instance had, when the record came again (`remove` dropped them).
+        if let Some(keys) = keys {
             let known = &self.renderer.lights_known;
             self.retained.set_lights(id, &keys, known);
         }
