@@ -40,12 +40,18 @@ def prepare(build=True):
             print("> " + " ".join(command), flush=True)
             if subprocess.run(command, cwd=REPO, env=env).returncode != 0:
                 raise SystemExit("build failed")
-    # The mod as it is installed: the Lua files and the DLL. The pdb is never installed.
+    # The mod as it is installed: the Lua files and the DLL. The symbol file goes beside the
+    # DLL when the build has one (the owner, 2026-10-16): a profile of the run then
+    # resolves the plugin's symbols without a search path. This is the Harness mod of a
+    # run, never an install or an archive, where no pdb goes.
     if os.path.isdir(DIST):
         shutil.rmtree(DIST)
     shutil.copytree(os.path.join(REPO, "mod"), DIST)
     os.makedirs(os.path.join(DIST, "MWSE", "lib"), exist_ok=True)
     shutil.copy2(DLL, os.path.join(DIST, "MWSE", "lib", "nirender.dll"))
+    pdb = os.path.splitext(DLL)[0] + ".pdb"
+    if os.path.isfile(pdb):
+        shutil.copy2(pdb, os.path.join(DIST, "MWSE", "lib", "nirender.pdb"))
     # The harness installs its own mod by default. These names make it install this one.
     harness.MOD_SRC = DIST
     harness.MOD_NAME = MOD_NAME

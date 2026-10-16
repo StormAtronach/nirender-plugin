@@ -636,7 +636,9 @@ return function(nirender, spec)
             local p = tes3.player and tes3.player.position
             -- The host program prints its counts of this step at the mark.
             if nirender.streamMark then nirender.streamMark("after " .. this[1]) end
-            if nirender.portTimes then say("ports %s: %s", this[1], nirender.portTimes(12)) end
+            -- Only when asked (--port-times): the first call turns the timing of every live
+            -- port call on, which a profile of the run would then carry (2026-10-16).
+            if spec.portTimes and nirender.portTimes then say("ports %s: %s", this[1], nirender.portTimes(12)) end
             -- The hour of the game at the picture: the light of the sun follows it, so two
             -- pictures compare only at the same hour.
             local hour = tes3.findGlobal("GameHour")

@@ -79,6 +79,7 @@ def main():
                     "save (menu.nircap): the loading screen is a screen polygon")
     ap.add_argument("--budget", type=int, default=200)
     ap.add_argument("--settle", type=float, default=None, help="the seconds to wait at the interior and at the exterior before the picture (6 without this)")
+    ap.add_argument("--port-times", action="store_true", help="the mod reports the port times at each step (it turns the timing of every live port call on: not for a profile)")
     ap.add_argument("--overlay", action="store_true", help="turn the debug overlay of the renderer on at the exterior step (it is on the picture of the "
                     "window only, not in the picture files)")
     ap.add_argument("--exe", help="a Morrowind.exe to put in the game folder for the run, and the one of the game back after: "
@@ -116,7 +117,7 @@ def main():
                     position=args.position, yaw=args.yaw, findWater=args.find_water, findDry=args.find_dry, hour=args.hour, weather=args.weather,
                     lua=open(args.lua_file, encoding="utf-8").read() if args.lua_file else None,
                     shaderBatch=open(args.shader_batch, encoding="utf-8").read() if args.shader_batch else None,
-                    tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, tourDual=args.tour_dual or None, tourExtra=args.tour_extra or None, captureMenu=args.capture_menu, settleSeconds=args.settle,
+                    tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, tourDual=args.tour_dual or None, tourExtra=args.tour_extra or None, captureMenu=args.capture_menu, settleSeconds=args.settle, portTimes=args.port_times or None,
                     overlay=args.overlay or None, earlyPicture=run.path("early.png").replace("\\", "/") if args.early_picture else None,
                     afterLoadPictures=args.after_load_pictures or None)
     # The plugin starts the host program. It reads these from the environment of the game.
@@ -177,6 +178,13 @@ def main():
         # switch off: Direct3D 9 with the d3d8.dll and the helper of that build (the helper as
         # the IPC host of distant land).
         mods[0] = (MGE_MOD, {"Root/d3d8.dll": os.path.join(args.mge_build, "d3d8.dll"), "Root/mgeHost64.exe": os.path.join(args.mge_build, "mgeHost64.exe")})
+        # The symbol files of the build beside the binaries, when it has them: a profile
+        # of the run resolves the helper's symbols without a search path (the owner,
+        # 2026-10-16). The Harness mod is the runner's staging, not an install.
+        for name in ("mgeHost64.pdb", "d3d8.pdb"):
+            symbols = os.path.join(args.mge_build, name)
+            if os.path.isfile(symbols):
+                mods[0][1]["Root/" + name] = symbols
         # The Lua of the build (the MGE XE Options mod: its menus and the event
         # distantLandReady), over the copy of the release in the instance.
         options = os.path.join(args.mge_build, "Data Files", "mwse", "mods", "MGE XE Options")
