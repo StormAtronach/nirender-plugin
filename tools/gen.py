@@ -22,7 +22,8 @@ LAYOUT_RE = re.compile(
     r"D3DVIEWPORT8$|D3DCAPS8$|D3DPRESENT_PARAMETERS|"
     r"NiNode$|NiSwitchNode$|NiFltAnimationNode$|NiBSPNode$|NiBillboardNode$|NiSortAdjustNode$|NiPlane$|"
     r"NiAccumulator$|NiClusterAccumulator|NiAlphaAccumulator$|NiParticles$|NiParticlesData$|NiLines$|NiLinesData$|"
-    r"NiTimeController$|NiTriShape$|NiAutoNormalParticles$|NiScreenPolygon$)")
+    r"NiTimeController$|NiTriShape$|NiAutoNormalParticles$|NiScreenPolygon$|"
+    r"BSAnimationNode$|NiLODNode$|NiLODData$|NiTriStrips$|NiTriBasedGeometry$)")
 
 
 KEYWORDS = {"type", "super", "self", "ref", "match", "loop", "move", "fn", "mod", "use", "in", "final", "box", "priv", "enum",

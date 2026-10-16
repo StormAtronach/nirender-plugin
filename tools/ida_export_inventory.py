@@ -45,6 +45,9 @@ EXTRA = [
     0x42BAD0,  # NiClusterAccumulator::$1::registerNewNode
     0x429B90,  # NiAlphaAccumulator::RegisterObject
     0x6F2660,  # NiBound::WhichSide
+    0x6F21C0,  # BSAnimationNode::Display
+    0x7412B0,  # NiLODNode::Display
+    0x742660,  # NiTriStrips::Display
 ]
 
 
@@ -119,7 +122,8 @@ STRUCT_RE = re.compile(
     r"BatchedObject|NiPackedColor|NiColor$|NiColorA$|D3DMATRIX|D3DVIEWPORT8|D3DMATERIAL8|D3DLIGHT8|"
     r"NiNode$|NiSwitchNode$|NiFltAnimationNode$|NiBSPNode$|NiBillboardNode$|NiSortAdjustNode$|NiCamera$|NiPlane$|"
     r"NiAccumulator$|NiClusterAccumulator|NiAlphaAccumulator$|NiParticles$|NiParticlesData$|NiLines$|NiLinesData$|"
-    r"NiTimeController$|NiTriShape$|NiAutoNormalParticles$|TArray|NiTArray|NiScreenPolygon$)")
+    r"NiTimeController$|NiTriShape$|NiAutoNormalParticles$|TArray|NiTArray|NiScreenPolygon$|"
+    r"BSAnimationNode$|NiLODNode$|NiLODData$|NiTriStrips$|NiTriBasedGeometry$)")
 
 til = ida_typeinf.get_idati()
 structs = {}
