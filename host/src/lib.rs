@@ -400,8 +400,6 @@ pub trait Replay {
     fn count(&self) -> usize;
 }
 
-/// The most instances of one draw: the buffer of defaults has that many.
-const INSTANCES_MOST: usize = 1024;
 
 /// One draw of the game, ready for the pass.
 #[derive(Clone)]
@@ -421,19 +419,16 @@ struct Draw {
     samplers: Option<Rc<wgpu::BindGroup>>,
     vertices: Rc<wgpu::Buffer>,
     indexes: Rc<wgpu::Buffer>,
-    /// The handles of the textures of the stages and of the geometry record, as the stream has
-    /// them. The sort of the opaque draws orders by these and not by the addresses of the
+    /// The handles of the textures of the stages, as the stream has them: the order of the
+    /// opaque draws first (`MGE_XE_ORDER=opaque`) uses these and not the addresses of the
     /// buffers, so a replay of a capture gives the same order in each build.
     texture_handles: [u32; STAGES],
-    geometry: u32,
     /// The first index in the index buffer and the number of indexes, and the base vertex.
     range: (u32, u32),
     base_vertex: i32,
     /// The instances: the first in the instance buffer of the frame and the number. A draw of
     /// its own has one, with its world matrix in its record.
     instances: (u32, u32),
-    /// The record of the draw in the records of the frame.
-    record: u32,
 }
 
 impl Draw {
@@ -1631,9 +1626,6 @@ struct Counts {
     gpu_passes: f64,
     gpu_frame: f64,
     gpu_frames: u32,
-    /// The opaque draws that were sorted, and the draws that became an instance of another.
-    sorted_draws: u32,
-    instanced_draws: u32,
     screen_draws: u32,
     screen_draws_lost: u32,
     target_copies: u32,
@@ -2185,14 +2177,6 @@ fn flush_run(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Renderer, run_
     run_args.clear();
 }
 
-/// Whether two optional groups are the same group.
-fn same_group(a: &Option<Rc<wgpu::BindGroup>>, b: &Option<Rc<wgpu::BindGroup>>) -> bool {
-    match (a, b) {
-        (Some(a), Some(b)) => Rc::ptr_eq(a, b),
-        (None, None) => true,
-        _ => false,
-    }
-}
 /// The size of a buffer of the pools of the game's geometry.
 const VERTEX_CHUNK: u64 = 64 << 20;
 const INDEX_CHUNK: u64 = 16 << 20;
@@ -2386,11 +2370,6 @@ struct Renderer {
     indirect_buffer: Rc<wgpu::Buffer>,
     indirect_capacity: usize,
     indirect_written: usize,
-    /// The draws keep the order of the game: it decides the ties of the depth test (the lines
-    /// of the collision boxes lie on their meshes). `MGE_XE_SORT=1` sorts the opaque draws of
-    /// a run by pipeline and textures and joins them into instances, for a comparison; it
-    /// saved no time of the frame in the measures of plan step 1c.6.
-    sort_draws: bool,
     /// The lights of all draws of the frame, and the number of them that the buffer holds.
     light_buffer: wgpu::Buffer,
     light_capacity: usize,
@@ -2481,11 +2460,10 @@ struct Renderer {
     materials: FxHashMap<u32, material::Material>,
     derived: FxHashMap<(u32, u32), Rc<material::Derived>>,
     defaults: wgpu::Buffer,
-    /// The world matrices of the instances of the frame. `MGE_XE_INSTANCING=0` keeps one
-    /// draw for each.
+    /// The world matrices of the instances: the segment of the retained instances, then
+    /// those of the frame (one for each draw, which names its record).
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
-    instancing: bool,
     /// For a draw in screen coordinates: the pipeline, the layout of its group, and its
     /// sampler.
     screen_pipeline: Option<wgpu::RenderPipeline>,
@@ -2756,7 +2734,6 @@ impl Renderer {
             light_buffer: first_lights,
             instance_buffer: instance_buffer(&device, RETAINED_AT_FIRST + INSTANCES_AT_FIRST),
             instance_capacity: RETAINED_AT_FIRST + INSTANCES_AT_FIRST,
-            instancing: std::env::var("MGE_XE_INSTANCING").map_or(true, |v| v != "0"),
             lights_known: HashMap::new(),
             timing: make_timing(&device, &queue),
             bone_buffer: first_bones,
@@ -2782,7 +2759,6 @@ impl Renderer {
             record_extras: 0,
             instance_len: 0,
             instance_extras: 0,
-            sort_draws: std::env::var("MGE_XE_SORT").is_ok_and(|v| v == "1"),
             light_capacity: LIGHTS_AT_FIRST,
             light_index_buffer: first_light_indexes,
             light_index_capacity: LIGHT_INDEXES_AT_FIRST,
@@ -4865,114 +4841,9 @@ impl Player {
         self.renderer.counts.times[TIME_ITEMS] += clock.elapsed().saturating_sub(inside_after - inside_before);
     }
 
-    /// Sorts each run of opaque draws that follow each other by pipeline and textures. An
-    /// opaque draw does not blend, writes the depth with the test "less" or "less or
-    /// equal", has no stencil and writes all colours: among such draws the order does not
-    /// change the picture, but for the ties of the depth test. No draw goes across a draw
-    /// of another kind: the place of that one in the order is a part of the picture. The
-    /// cursor of the game is such a draw: the last of the menu scene, with the depth
-    /// written and not tested, over 1000 draws that blend.
-    /// With `instances` (the world matrices of the instances of the frame), opaque draws
-    /// that follow each other in the sorted run with the same pipeline, textures, samplers,
-    /// buffers, range, lights and data but the world matrix become one draw with as many
-    /// instances: the world matrices go to `instances`, the first at the index the draw
-    /// keeps. A skinned draw and a draw with a vertex blend keep their own.
-    fn sort_items(items: &mut Vec<Item>, counts: &mut Counts, lights: &[LightData], mut instances: Option<&mut Vec<Instance>>) {
-        // The depth function is a D3DCMPFUNC: 2 is "less" and 4 is "less or equal".
-        let opaque = |item: &Item| {
-            matches!(item, Item::Draw(draw) if draw.key.blend[0] == 0
-                && draw.key.depth[0] != 0
-                && draw.key.depth[1] != 0
-                && matches!(draw.key.depth[2], 2 | 4)
-                && draw.key.stencil[0] == 0
-                && draw.key.color_write & 7 == 7)
-        };
-        let same_lights = |a: &Draw, b: &Draw| {
-            let (first_a, first_b, count) = (a.data.light_range[0] as usize, b.data.light_range[0] as usize, a.data.light_range[1] as usize);
-            b.data.light_range[1] as usize == count
-                && (count == 0 || lights.get(first_a..first_a + count).zip(lights.get(first_b..first_b + count)).is_some_and(|(x, y)| bytemuck::cast_slice::<LightData, u8>(x) == bytemuck::cast_slice::<LightData, u8>(y)))
-        };
-        let same_data = |a: &Draw, b: &Draw| {
-            let mut x = a.data;
-            let mut y = b.data;
-            x.world[0] = [0.0; 16];
-            y.world[0] = [0.0; 16];
-            x.light_range[0] = 0;
-            y.light_range[0] = 0;
-            bytemuck::bytes_of(&x) == bytemuck::bytes_of(&y)
-        };
-        let can_join = |a: &Draw, b: &Draw| {
-            a.data.flags[3] == 0
-                && b.data.flags[3] == 0
-                && a.key == b.key
-                && a.stencil_reference == b.stencil_reference
-                && a.range == b.range
-                && a.base_vertex == b.base_vertex
-                && a.origin == b.origin
-                && same_group(&a.textures, &b.textures)
-                && same_group(&a.samplers, &b.samplers)
-                && a.texture_handles == b.texture_handles
-                && Rc::ptr_eq(&a.vertices, &b.vertices)
-                && Rc::ptr_eq(&a.indexes, &b.indexes)
-                && same_lights(a, b)
-                && same_data(a, b)
-        };
-        let order = |draw: &Draw| {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            draw.key.hash(&mut hasher);
-            (hasher.finish(), draw.texture_handles, draw.geometry)
-        };
-        let mut start = 0;
-        while start < items.len() {
-            if !opaque(&items[start]) {
-                start += 1;
-                continue;
-            }
-            let mut end = start;
-            while end < items.len() && opaque(&items[end]) {
-                end += 1;
-            }
-            let mut first: Vec<Rc<Draw>> = items[start..end].iter().map(|item| if let Item::Draw(d) = item { d.clone() } else { unreachable!() }).collect();
-            counts.sorted_draws += first.len() as u32;
-            first.sort_by_cached_key(|d| order(d));
-            if let Some(instances) = instances.as_deref_mut() {
-                let mut joined: Vec<Rc<Draw>> = Vec::with_capacity(first.len());
-                let mut at = 0;
-                while at < first.len() {
-                    let mut end = at + 1;
-                    while end < first.len() && end - at < INSTANCES_MOST && can_join(&first[at], &first[end]) {
-                        end += 1;
-                    }
-                    if end - at < 2 {
-                        joined.push(first[at].clone());
-                    } else {
-                        let mut draw = (*first[at]).clone();
-                        draw.instances = (instances.len() as u32, (end - at) as u32);
-                        draw.data.light_range[3] |= 2;
-                        let record = first[at].record;
-                        instances.extend(first[at..end].iter().map(|d| Instance { world: d.data.world[0], record: [record, 0, 0, 0] }));
-                        counts.instanced_draws += (end - at - 1) as u32;
-                        joined.push(Rc::new(draw));
-                    }
-                    at = end;
-                }
-                first = joined;
-            }
-            let kept: Vec<Item> = first.into_iter().map(Item::Draw).collect();
-            let removed = end - start - kept.len();
-            items.splice(start..end, kept);
-            start = end - removed;
-        }
-    }
-
     fn run_items_inner(&mut self, items: Vec<Item>) {
         let mut items = items;
         self.plane_ahead = self.parameters.as_ref().and_then(|p| p.class_plane).filter(|(class, _)| items.iter().any(|item| matches!(item, Item::Replace(c, ..) if c == class))).map(|(_, plane)| plane);
-        if self.renderer.sort_draws {
-            let instancing = self.renderer.instancing;
-            Self::sort_items(&mut items, &mut self.renderer.counts, &self.frame_lights, instancing.then_some(&mut self.frame_instances));
-        }
         if self.renderer.order_opaque_first {
             Self::order_opaque_first(&mut items);
         }
@@ -5831,11 +5702,9 @@ impl Player {
             vertices: vertex_buffer,
             indexes: index_buffer,
             texture_handles: handles,
-            geometry: shape.geometry,
             range: (geometry_first + first_index, indexes),
             base_vertex,
             instances: (instance, 1),
-            record,
         });
         if draw.world {
             self.world_draws.push(draw.clone());
@@ -5867,7 +5736,7 @@ impl Player {
             r.instances, r.slots, r.buckets, r.drawn, r.culled, r.hidden, r.calls, r.views, r.moves, r.no_geometry, r.no_material
         );
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
-        println!("sorted draws {}, instanced away {}, skinned shapes {}, particle systems {}", c.sorted_draws, c.instanced_draws, c.shape_skinned, c.shape_particles);
+        println!("skinned shapes {}, particle systems {}", c.shape_skinned, c.shape_particles);
         println!("shapes held for the extension {}", c.held);
         println!("lights: {} records, {} lights of a shape without a record", c.light_records, c.light_missing);
         println!(

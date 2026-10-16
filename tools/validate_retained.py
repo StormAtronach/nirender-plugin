@@ -11,12 +11,11 @@ kept, each with the picture that was accepted for it.
 Stages (capture, baseline and only by default, in this order):
   capture  a run at each place with a capture; the counts of the helper must show no shape
            without a geometry or a material and no light without a record, and the plugin
-           no draw without a record; the capture replayed with the sort and the instances
-           (MGE_XE_SORT=1, off by default) and with one draw for each must give the same
-           picture.
+           no draw without a record; the capture replayed must give a picture and no GPU
+           error.
   baseline replays each capture of the baseline folder (--baseline, results/baseline-records by
-           default: `<name>.nircap` files, frame 1) in the order of the game, as a player
-           has them (MGE_XE_SORT=0, the default) and compares the picture
+           default: `<name>.nircap` files, frame 1) as a player has them and compares the
+           picture
            with `accepted/<name>.png` there. --accept
            writes the pictures instead: for a new baseline, or after a change that is
            meant to change them. A tour run in `tour/` of the baseline folder is replayed
@@ -125,17 +124,10 @@ def stage_capture(place, mge_build):
     ok = check_counts(folder)
     capture = os.path.join(folder, "exterior.nircap")
     a = os.path.join(folder, "replay.png")
-    out_a = run([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20"], {"MGE_XE_SORT": "1"})
-    sys.path.insert(0, HERE)
-    import picture_diff
-
-    # The instances: the picture with them against the picture of one draw for each.
-    c = os.path.join(folder, "replay-one-draw-each.png")
-    run([PY, os.path.join(HERE, "replay.py"), capture, c, "--frame", "20"], {"MGE_XE_SORT": "1", "MGE_XE_INSTANCING": "0"})
-    numbers = picture_diff.compare(picture_diff.load(a), picture_diff.load(c))
-    instanced = re.search(r"instanced away (\d+)", out_a)
-    text = "replay with the instances against one draw for each: %s, %s instanced away" % (numbers.get("problem") or "%.2f %% different, mean %.3f" % (numbers["different"] * 100, numbers["mean"]), instanced.group(1) if instanced else "?")
-    ok &= check("problem" not in numbers and numbers["mean"] < 0.01, text)
+    out = run([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--mge-build", mge_build], {})
+    # Each GPU error prints a line "gpu error N (kind, adapter ...)" (host/src/gpu.rs).
+    errors = len(re.findall(r"^gpu error \d+ \(", out, re.M))
+    ok &= check(os.path.isfile(a) and errors == 0, "replay of the capture: %s, %d gpu errors" % ("a picture" if os.path.isfile(a) else "no picture", errors))
     return ok
 
 
@@ -146,7 +138,7 @@ def stage_baseline(baseline, accept, mge_build):
     captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
     if not captures:
         return check(False, "no capture in the baseline folder")
-    env = {"MGE_XE_SORT": "0"}
+    env = {}
     accepted = os.path.join(baseline, "accepted")
     out = accepted if accept else os.path.join(baseline, "now")
     os.makedirs(out, exist_ok=True)
@@ -173,7 +165,7 @@ def stage_baseline(baseline, accept, mge_build):
             if "problem" not in numbers and numbers["different"] == 0:
                 equal += 1
             else:
-                print("       %-40s %s" % (name, numbers.get("problem") or "%.2f %% different, mean %.3f, largest %d" % (numbers["different"] * 100, numbers["mean"], numbers.get("max", 0))), flush=True)
+                print("       %-40s %s" % (name, numbers.get("problem") or "%.2f %% different, mean %.3f, largest %d" % (numbers["different"] * 100, numbers["mean"], numbers.get("largest", 0))), flush=True)
         ok &= check(names != [] and equal == len(names), "%d of %d pictures equal to the accepted ones in %s" % (equal, len(names), b))
     return ok
 
@@ -198,8 +190,8 @@ def stage_only(place, mge_build):
     ok = check(rate is not None, "frame rate %s, ports %.3f ms for each frame, helper busy %s ms, GPU %s ms in the passes, %s ms the frame" % (
         rate.group(1) if rate else "?", per_frame, busy.group(1) if busy else "?", gpu.group(1) if gpu else "?", gpu.group(2) if gpu else "?"))
     ok &= check_counts(folder)
-    skinned = re.search(r"instanced away (\d+), skinned shapes (\d+), particle systems (\d+)", host)
-    print("       instanced away %s, skinned shapes %s, particle systems %s" % (skinned.groups() if skinned else ("?", "?", "?")), flush=True)
+    skinned = re.search(r"skinned shapes (\d+), particle systems (\d+)", host)
+    print("       skinned shapes %s, particle systems %s" % (skinned.groups() if skinned else ("?", "?")), flush=True)
     return ok
 
 
@@ -211,8 +203,10 @@ def stage_clusters(place, mge_build):
         return check(False, "no capture of the place: run the capture stage first")
     a, b = os.path.join(folder, "replay-clusters.png"), os.path.join(folder, "replay-draw-lights.png")
     # The replays read the mgeXE.toml of the run (the fade of the lights is on in it).
-    out = run([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--config-root", folder], {"MGE_XE_CLUSTERS": "1"})
-    run([PY, os.path.join(HERE, "replay.py"), capture, b, "--frame", "20", "--config-root", folder], {"MGE_XE_CLUSTERS": "0"})
+    # The replays use the build under test: the default of replay.py is the folder of
+    # `cargo xtask build`, which can hold an older helper.
+    out = run([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--config-root", folder, "--mge-build", mge_build], {"MGE_XE_CLUSTERS": "1"})
+    run([PY, os.path.join(HERE, "replay.py"), capture, b, "--frame", "20", "--config-root", folder, "--mge-build", mge_build], {"MGE_XE_CLUSTERS": "0"})
     sys.path.insert(0, HERE)
     import picture_diff
 
