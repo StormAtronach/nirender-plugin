@@ -19,7 +19,10 @@ LAYOUT_RE = re.compile(
     r"THashMap$|THashMap::Node$|NiGeometryData$|NiTriBasedGeomData$|NiTriShapeData$|NiTriStripsData$|"
     r"NiSkinInstance$|NiSkinPartition|NiSourceTexture$|NiTexture$|NiPixelData$|NiPixelFormat$|NiLight$|"
     r"NiDynamicEffect$|NiAVObject$|NiGeometry$|NiCamera$|NiColor$|NiColorA$|D3DMATERIAL|D3DLIGHT8$|"
-    r"D3DVIEWPORT8$|D3DCAPS8$|D3DPRESENT_PARAMETERS)")
+    r"D3DVIEWPORT8$|D3DCAPS8$|D3DPRESENT_PARAMETERS|"
+    r"NiNode$|NiSwitchNode$|NiFltAnimationNode$|NiBSPNode$|NiBillboardNode$|NiSortAdjustNode$|NiPlane$|"
+    r"NiAccumulator$|NiClusterAccumulator|NiAlphaAccumulator$|NiParticles$|NiParticlesData$|NiLines$|NiLinesData$|"
+    r"NiTimeController$|NiTriShape$|NiAutoNormalParticles$|NiScreenPolygon$)")
 
 
 KEYWORDS = {"type", "super", "self", "ref", "match", "loop", "move", "fn", "mod", "use", "in", "final", "box", "priv", "enum",

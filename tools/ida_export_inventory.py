@@ -17,6 +17,35 @@ os.makedirs(OUT, exist_ok=True)
 # between them.
 NAME_RE = re.compile(r"NiDX8|NiD3D|NiRenderState|NiRenderer|NiGeometryBufferData|NiDX8", re.I)
 WINDOWS = [(0x6A9000, 0x6C6000), (0x65ED00, 0x65EF00)]
+# The scene traversal that the plugin takes over (plan 0.5 entry T2, 2026-10-16): the cull
+# and display of the scene graph, and the accumulators that sort the blended shapes.
+EXTRA = [
+    0x6CC7B0,  # NiCamera::Click
+    0x6EB480,  # NiAVObject::CullShow
+    0x6C9190,  # NiNode::Display
+    0x445A60,  # NiNode::IsVisualObject
+    0x6E4F90,  # NiTriShape::Display
+    0x6DD3E0,  # NiParticles::Display
+    0x6DA850,  # NiLines::Display
+    0x6D3540,  # NiAutoNormalParticles::Display
+    0x6D8320,  # NiSwitchNode::Display
+    0x6D90B0,  # NiFltAnimationNode::Display
+    0x6D6470,  # NiBSPNode::Display
+    0x6D4040,  # NiBillboardNode::Display
+    0x6D3C00,  # NiBillboardNode::RotateToCamera
+    0x6DE030,  # NiSortAdjustNode::Display
+    0x6F3F40,  # NiGeometry::pushStateToRenderer
+    0x6F5070,  # NiRenderer::RegisterObject
+    0x6F51D0,  # NiRenderer::renderFromClusterAccumulator
+    0x6F9170,  # NiAccumulator::StartAccumulating
+    0x6F9190,  # NiAccumulator::FinishAccumulating
+    0x6CF090,  # NiClusterAccumulator::StartAccumulating
+    0x6CF0E0,  # NiClusterAccumulator::FinishAccumulating
+    0x6CF200,  # NiClusterAccumulator::RegisterObject
+    0x42BAD0,  # NiClusterAccumulator::$1::registerNewNode
+    0x429B90,  # NiAlphaAccumulator::RegisterObject
+    0x6F2660,  # NiBound::WhichSide
+]
 
 
 def in_window(ea):
@@ -26,7 +55,7 @@ def in_window(ea):
 funcs = []
 for ea in idautils.Functions():
     name = idc.get_func_name(ea)
-    if not (NAME_RE.search(name) or in_window(ea)):
+    if not (NAME_RE.search(name) or in_window(ea) or ea in EXTRA):
         continue
     f = ida_funcs.get_func(ea)
     size = f.end_ea - f.start_ea
@@ -87,7 +116,10 @@ STRUCT_RE = re.compile(
     r"NiTransform$|NiBound$|NiMatrix33$|NiPoint3$|NiFrustum$|NiObject$|NiObjectNET$|NiPointer$|THashMap|"
     r"NiGeometryData$|NiTriBasedGeomData$|NiTriShapeData$|NiTriStripsData$|NiSkinInstance$|NiSkinPartition|"
     r"NiSourceTexture$|NiTexture$|NiPixelData$|NiPixelFormat$|NiLight$|NiDynamicEffect$|NiAVObject$|NiGeometry$|"
-    r"BatchedObject|NiPackedColor|NiColor$|NiColorA$|D3DMATRIX|D3DVIEWPORT8|D3DMATERIAL8|D3DLIGHT8)")
+    r"BatchedObject|NiPackedColor|NiColor$|NiColorA$|D3DMATRIX|D3DVIEWPORT8|D3DMATERIAL8|D3DLIGHT8|"
+    r"NiNode$|NiSwitchNode$|NiFltAnimationNode$|NiBSPNode$|NiBillboardNode$|NiSortAdjustNode$|NiCamera$|NiPlane$|"
+    r"NiAccumulator$|NiClusterAccumulator|NiAlphaAccumulator$|NiParticles$|NiParticlesData$|NiLines$|NiLinesData$|"
+    r"NiTimeController$|NiTriShape$|NiAutoNormalParticles$|TArray|NiTArray|NiScreenPolygon$)")
 
 til = ida_typeinf.get_idati()
 structs = {}
