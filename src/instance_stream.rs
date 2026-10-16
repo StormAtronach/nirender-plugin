@@ -60,7 +60,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::capture;
 use crate::engine::thiscall1;
-use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L};
+use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L, NiPropertyState as PS, NiZBufferProperty as ZP};
 use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_UNKNOWN, SCENE_WORLD};
 use crate::mem::{rd, wr};
 
@@ -100,11 +100,13 @@ const MAX_DEPTH: usize = 32;
 const CHECK_FRAMES: u32 = 64;
 
 /// The names of the node kinds that change what or how they draw: a shape under one of
-/// them is not retained.
-const REJECTED_KINDS: [&[u8]; 6] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"BSAnimationNode", b"BSParticleNode"];
+/// them is not retained. A sort adjust node draws its subtree in an order of its own (a
+/// cluster drawn late, or in place without the accumulator): a retained shape under one
+/// came too early and a translucent window drew over it (the NIF test level, 2026-10-16).
+const REJECTED_KINDS: [&[u8]; 7] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"NiSortAdjustNode", b"BSAnimationNode", b"BSParticleNode"];
 /// For a skinned shape (an actor) only the kinds that change which shape is drawn: the
 /// bones it follows can be animated, and the palette of each draw carries them.
-const REJECTED_KINDS_SKINNED: [&[u8]; 4] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode"];
+const REJECTED_KINDS_SKINNED: [&[u8]; 5] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"NiSortAdjustNode"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -142,7 +144,11 @@ const REASON_PROPERTY_CONTROLLER: usize = 2;
 const REASON_BLEND: usize = 3;
 const REASON_EFFECT: usize = 4;
 const REASON_LATER: usize = 5;
-const REASONS: usize = 6;
+/// The depth test of the shape is not less, less or equal, or always: the draw depends on
+/// the depth of a draw before it (a decal with "equal"), so its place in the order of the
+/// game matters.
+const REASON_DEPTH: usize = 6;
+const REASONS: usize = 7;
 
 struct Instance {
     id: u32,
@@ -478,6 +484,12 @@ unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize
         if alpha != 0 && rd::<u16>(alpha, PROPERTY_FLAGS) & 1 != 0 {
             return Some(REASON_BLEND);
         }
+        // D3DCMPFUNC: 2 less, 4 less or equal, 8 always. The NIF test level draws an info
+        // box with "equal" over a plane drawn just before it (2026-10-16).
+        let z: usize = rd(property_state, PS::propZBuffer);
+        if z != 0 && !matches!(rd::<u32>(z, ZP::testFunction), 2 | 4 | 8) {
+            return Some(REASON_DEPTH);
+        }
     }
     if effect_state != 0 && (rd::<usize>(effect_state, DES::environmentMap) != 0 || rd::<usize>(effect_state, DES::fogMap) != 0) {
         return Some(REASON_EFFECT);
@@ -806,7 +818,7 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
 
 pub unsafe fn report() -> String {
     let t = tables();
-    let reasons = ["controller", "node kind", "property controller", "blend", "effect", "at the record"];
+    let reasons = ["controller", "node kind", "property controller", "blend", "effect", "at the record", "depth function"];
     let rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
         "instances: mode {}, {} retained, {} rejected ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
