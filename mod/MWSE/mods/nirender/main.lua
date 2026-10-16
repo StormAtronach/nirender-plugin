@@ -1,4 +1,6 @@
--- nirender loads nirender.dll and installs it.
+-- The mod of the plugin akulakhan.dll (Akulakhan, the owner's name since 2026-10-17; nirender
+-- before): it loads the DLL and installs it. The Lua module is `akulakhan`; `nirender` stays an
+-- alias of it (`package.loaded`), so `include("nirender")` keeps working after this file ran.
 --
 -- MWSE/config/nirender.json:
 --   "mode":  "off", "shadow" or "live", for every port after the game started.
@@ -11,11 +13,12 @@
 -- MWSE/config/nirender_test.json, and tools/run_test.py writes it. Without a run spec this
 -- file only installs.
 
-local nirender = include("nirender")
+local nirender = include("akulakhan")
 if not nirender then
-    mwse.log("[nirender] nirender.dll not loaded. If you use a mod manager, check that it did not leave .dll files out.")
+    mwse.log("[nirender] akulakhan.dll not loaded. If you use a mod manager, check that it did not leave .dll files out.")
     return
 end
+package.loaded["nirender"] = nirender
 
 local config = mwse.loadConfig("nirender", { mode = "off", early = false, captureKey = "f11", overlayKey = "f10", offNotice = true })
 

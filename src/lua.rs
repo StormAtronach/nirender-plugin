@@ -1,4 +1,6 @@
-//! The Lua interface. `include("nirender")` returns the table that `luaopen_nirender` builds.
+//! The Lua interface. `include("akulakhan")` returns the table that `luaopen_akulakhan` builds
+//! (the DLL is akulakhan.dll since 2026-10-17); the mod's main.lua registers the table as the
+//! module `nirender` too, so `include("nirender")` keeps working after it ran.
 
 use core::ffi::{c_char, c_void};
 use core::sync::atomic::Ordering;
@@ -567,7 +569,7 @@ unsafe extern "C" fn device_callers(l: LuaState) -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
+pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     lua_createtable(l, 0, 20);
     set_fn(l, "install", install);
     set_fn(l, "refusalOptions", refusal_options);

@@ -4,13 +4,13 @@ Written for: a person or an agent who works on this repo.
 
 nirender is an MWSE plugin for Morrowind. It replaces the renderer of the game. The game
 makes no Direct3D device. The plugin writes each frame as records into a shared-memory ring.
-A 64-bit helper, `mgeHost64.exe` of MGE XE G7, reads the ring and draws the frame with wgpu.
+A 64-bit helper, `numidium.exe` of MGE XE G7, reads the ring and draws the frame with wgpu.
 
 ## The parts
 
 | Part | Path | Builds to |
 | --- | --- | --- |
-| The plugin (32-bit) | `src/` | `target/i686-pc-windows-msvc/release/nirender.dll` |
+| The plugin (32-bit) | `src/` | `target/i686-pc-windows-msvc/release/akulakhan.dll` |
 | The host crate `nirender_wgpu` (64-bit) | `host/` | a library; the helper of MGE XE G7 depends on it by path |
 | The Lua side of the plugin | `mod/MWSE/mods/nirender/` | installed with the DLL |
 | The tools | `tools/` | Python scripts (use `C:/OSGeo4W/apps/Python312/python.exe -I`) |

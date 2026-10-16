@@ -38,7 +38,7 @@ def main():
     ap.add_argument("--backend", default="vulkan")
     ap.add_argument("--anisotropy", type=int, default=None, help="the anisotropic filter of the textures the game filters (1 without this)")
     args = ap.parse_args()
-    exe = os.path.join(args.mge_build, "mgeHost64.exe")
+    exe = os.path.join(args.mge_build, "numidium.exe")
     command = [exe, "--replay", os.path.abspath(args.capture), os.path.abspath(args.picture), "--backend", args.backend]
     if args.frames_at:
         command += ["--frames-at", args.frames_at]

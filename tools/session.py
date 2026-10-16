@@ -23,7 +23,7 @@ import harness  # noqa: E402
 MOD_NAME = harness.RUN_MOD_PREFIX + "nirender"
 # The plugin of the run: the build of the repo, or another DLL for one arm of an A/B
 # (`NIRENDER_PLUGIN_DLL`; the "before" of an A/B is built from a commit).
-DLL = os.environ.get("NIRENDER_PLUGIN_DLL") or os.path.join(REPO, "target", "i686-pc-windows-msvc", "release", "nirender.dll")
+DLL = os.environ.get("NIRENDER_PLUGIN_DLL") or os.path.join(REPO, "target", "i686-pc-windows-msvc", "release", "akulakhan.dll")
 DIST = os.path.join(REPO, "target", "dist", "nirender")
 RESULTS = os.path.join(REPO, "results")
 SPEC_NAME = "nirender_test"
@@ -48,10 +48,10 @@ def prepare(build=True):
         shutil.rmtree(DIST)
     shutil.copytree(os.path.join(REPO, "mod"), DIST)
     os.makedirs(os.path.join(DIST, "MWSE", "lib"), exist_ok=True)
-    shutil.copy2(DLL, os.path.join(DIST, "MWSE", "lib", "nirender.dll"))
+    shutil.copy2(DLL, os.path.join(DIST, "MWSE", "lib", "akulakhan.dll"))
     pdb = os.path.splitext(DLL)[0] + ".pdb"
     if os.path.isfile(pdb):
-        shutil.copy2(pdb, os.path.join(DIST, "MWSE", "lib", "nirender.pdb"))
+        shutil.copy2(pdb, os.path.join(DIST, "MWSE", "lib", "akulakhan.pdb"))
     # The harness installs its own mod by default. These names make it install this one.
     harness.MOD_SRC = DIST
     harness.MOD_NAME = MOD_NAME

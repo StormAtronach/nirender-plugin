@@ -6,7 +6,7 @@ the window of the game.
     python tools/run_own_device.py --label owndevice [--backend vulkan]
 
 The files of the run are in mods of the harness that are on for the run only (session.py):
-"Harness - MGE XE" (d3d8.dll, mgeHost64.exe), "Harness - config" (mgeXE.toml of the run) and
+"Harness - MGE XE" (d3d8.dll, numidium.exe), "Harness - config" (mgeXE.toml of the run) and
 "Harness - exe" (--exe). The result is a picture of the host program after each step of the
 scenario (host-<step>.png), the text of the host program (host.txt) and the lines of the
 plugin about its device.
@@ -41,7 +41,7 @@ def main():
     ap.add_argument("--backend", default="vulkan")
     ap.add_argument("--start-frames", default="5,100,300,600,900,1040", help="the frames of the start to take a picture of")
     ap.add_argument("--mge-build", help="a folder with a build of MGE XE that has the switch runtime.renderer_wgpu (its bin/MSVC-Release): "
-                    "the run uses its d3d8.dll and its mgeHost64.exe with the switch on, and not the d3d8.dll and the host program of this repository")
+                    "the run uses its d3d8.dll and its numidium.exe with the switch on, and not the d3d8.dll and the host program of this repository")
     ap.add_argument("--config-mod", default="Configuration", help="the mod of the testing instance with mgeXE.toml")
     ap.add_argument("--reference", action="store_true", help="run the same scenario with MGE XE on Direct3D 9, for its frame rate: the "
                     "MGE XE of the instance, or of --mge-build")
@@ -177,11 +177,11 @@ def main():
         # the plugin, and its helper is the renderer. With --reference the same build with the
         # switch off: Direct3D 9 with the d3d8.dll and the helper of that build (the helper as
         # the IPC host of distant land).
-        mods[0] = (MGE_MOD, {"Root/d3d8.dll": os.path.join(args.mge_build, "d3d8.dll"), "Root/mgeHost64.exe": os.path.join(args.mge_build, "mgeHost64.exe")})
+        mods[0] = (MGE_MOD, {"Root/d3d8.dll": os.path.join(args.mge_build, "d3d8.dll"), "Root/numidium.exe": os.path.join(args.mge_build, "numidium.exe")})
         # The symbol files of the build beside the binaries, when it has them: a profile
         # of the run resolves the helper's symbols without a search path (the owner,
         # 2026-10-16). The Harness mod is the runner's staging, not an install.
-        for name in ("mgeHost64.pdb", "d3d8.pdb"):
+        for name in ("numidium.pdb", "d3d8.pdb"):
             symbols = os.path.join(args.mge_build, name)
             if os.path.isfile(symbols):
                 mods[0][1]["Root/" + name] = symbols

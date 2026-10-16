@@ -5,7 +5,7 @@ MGE XE, and puts the files of the instance back when the game ends.
 
 The testing instance at rest has the release of MGE XE and of the plugin. This tool does for a
 game by hand what the runners do for a scenario: the mod "Harness - MGE XE" with the d3d8.dll
-and the mgeHost64.exe of the build, and "Harness - config" with mgeXE.toml with the switch
+and the numidium.exe of the build, and "Harness - config" with mgeXE.toml with the switch
 `renderer_wgpu`, both on for this game only, over the mods of the instance. With --reference:
 MGE XE of the instance on Direct3D 9.
 
@@ -27,7 +27,7 @@ MGE_BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mge-build", default=MGE_BUILD, help="the folder with d3d8.dll and mgeHost64.exe of the build")
+    ap.add_argument("--mge-build", default=MGE_BUILD, help="the folder with d3d8.dll and numidium.exe of the build")
     ap.add_argument("--config-mod", default="Configuration", help="the mod of the testing instance with mgeXE.toml")
     ap.add_argument("--reference", action="store_true", help="MGE XE of the instance on Direct3D 9")
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for this game, in its section: \"[section] key = value\"")
@@ -56,7 +56,7 @@ def main():
     mods = [(harness.RUN_MOD_PREFIX + "config", {"Root/mgeXE.toml": switched})]
     if not args.reference:
         mods.append((harness.RUN_MOD_PREFIX + "MGE XE", {"Root/d3d8.dll": os.path.join(args.mge_build, "d3d8.dll"),
-                                                         "Root/mgeHost64.exe": os.path.join(args.mge_build, "mgeHost64.exe")}))
+                                                         "Root/numidium.exe": os.path.join(args.mge_build, "numidium.exe")}))
 
     deployment = harness.Deployment()
     try:
