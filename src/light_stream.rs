@@ -35,6 +35,23 @@ pub unsafe fn report() -> String {
     format!("lights: {} records, {} lights known", *core::ptr::addr_of!(RECORDS), versions().iter().filter(|v| v.is_some()).count())
 }
 
+/// Notes one light by its key and its device values: sends a record when they are new or
+/// changed. For a light of a shape the engine does not display (`instance_stream`).
+pub unsafe fn note_values(key: u32, values: &[u32; 26]) {
+    if key as usize >= MOST_INDEX {
+        return;
+    }
+    let versions = versions();
+    if versions.len() <= key as usize {
+        versions.resize(key as usize + 1, None);
+    }
+    if versions[key as usize] != Some(*values) {
+        crate::capture::light(key, values);
+        versions[key as usize] = Some(*values);
+        RECORDS += 1;
+    }
+}
+
 /// Notes the lights of the light manager of the renderer, as the state of the draw has
 /// them: sends the ones that are new or changed, and returns the keys of all of them.
 pub unsafe fn note(renderer: usize) -> &'static [u32] {

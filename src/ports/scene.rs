@@ -584,6 +584,11 @@ port_thiscall!(tri_shape_display_port, 0x6E4F90, "NiTriShape::Display",
 /// the shape's data, skin, world transform and world bound; and the counts of the frame.
 pub unsafe fn tri_shape_display(this: usize, camera: usize) {
     crate::shadow::touch(&tri_shape_display_port::STATE);
+    // A shape the helper draws from its table (plan 0.5 entry T5): the plugin notes its
+    // changes, and the engine does not display it.
+    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(this, crate::link::DRAW_SHAPE) {
+        return;
+    }
     let Some(renderer) = shape_display_start(this, camera) else { return };
     let skin = rd::<usize>(this, G::skinInstance);
     let data = rd::<usize>(this, G::spModelData);
@@ -603,6 +608,9 @@ port_thiscall!(tri_strips_display_port, 0x742660, "NiTriStrips::Display",
 /// the vertex count of the data as they are.
 pub unsafe fn tri_strips_display(this: usize, camera: usize) {
     crate::shadow::touch(&tri_strips_display_port::STATE);
+    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(this, crate::link::DRAW_STRIPS) {
+        return;
+    }
     let Some(renderer) = shape_display_start(this, camera) else { return };
     let skin = rd::<usize>(this, G::skinInstance);
     let data = rd::<usize>(this, G::spModelData);

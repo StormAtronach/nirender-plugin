@@ -43,7 +43,7 @@ const BLOCK_NEXT: usize = 0x0;
 const BLOCK_ITEMS: usize = 0x4;
 
 /// 0x74F2EC: the game does not use a light with a dimmer below this value.
-const MIN_DIMMER: u32 = 0x3C23_D70A; // 0.01
+pub(crate) const MIN_DIMMER: u32 = 0x3C23_D70A; // 0.01
 /// 0x74C08C: 1/255.
 const INV_255: u32 = 0x3B80_8081;
 /// 0x74F6E0: 1/90. The game code multiplies the cone angle in degrees by pi and by this value.
@@ -169,7 +169,7 @@ mod eng {
 
 /// `NiLight::GetType`: 0 ambient, 1 directional, 2 point, 3 spot.
 #[inline(always)]
-unsafe fn light_get_type(light: usize) -> u32 {
+pub(crate) unsafe fn light_get_type(light: usize) -> u32 {
     vcall0(light, LIGHT_VTBL_GET_TYPE)
 }
 

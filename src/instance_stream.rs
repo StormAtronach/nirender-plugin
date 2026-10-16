@@ -33,7 +33,16 @@
 //! (`INSTANCE_LIGHTS`) and its visibility (`INSTANCE_STATE`, from the draws of the engine:
 //! an instance in the view of the camera of the world that the engine did not draw is
 //! hidden, one that it drew is visible). `NIRENDER_RETAINED` sets the mode at the start
-//! (default `on`); `nirender.retained(mode)` sets it from Lua.
+//! (default `gpu` since T5); `nirender.retained(mode)` sets it from Lua.
+//!
+//! In mode gpu the engine does not display a retained shape (plan 0.5 entry T5): the shape
+//! carries the flag `RETAINED_BIT`, and the ports of its `Display` call `skipped_display`
+//! instead, which does what the draw did (the check of the handles when due, of the
+//! transform, the bound and the colours, the lights of the shape's effect state as the
+//! light manager would turn them on, the visibility) and returns. The engine's traversal
+//! still reaches the shape (its parents are displayed and its bound is tested), so the
+//! draws of the engine stay the measure of its visibility. `NIRENDER_SKIP=0` keeps the
+//! display of the engine (the draw of the stream then does the checks).
 //!
 //! The translation of an instance is the stored one of the shape's world transform (the
 //! engine's 32-bit floats: the world matrix of a draw of the own device has it, as the host
@@ -50,9 +59,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::capture;
 use crate::engine::thiscall1;
-use crate::gen::layouts::{NiCamera as C, NiDynamicEffectState as DES};
+use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L};
 use crate::link::SCENE_WORLD;
-use crate::mem::rd;
+use crate::mem::{rd, wr};
 
 /// `NiObjectNET::controllers`, `NiAVObject::parentNode`, `NiAVObject::worldTransform` and
 /// the translation in a transform.
@@ -66,6 +75,16 @@ const WORLD_BOUND: usize = 0x1c;
 const WHICH_SIDE: usize = 0x6F2660;
 /// The flag of an instance record of the mode gpu: the helper draws it from its table.
 const BLOCK: u32 = 0x100;
+/// `NiAVObject::flags` bit 12: the plugin's mark on a shape the helper draws from its table.
+pub const RETAINED_BIT: u16 = 0x1000;
+const FLAGS: usize = 0x14;
+/// `NiGeometry::spPropertyState`, `spEffectState`, `spModelData`.
+const GEOMETRY_PROPERTY_STATE: usize = 0x90;
+const GEOMETRY_EFFECT_STATE: usize = 0x94;
+const GEOMETRY_MODEL_DATA: usize = 0x98;
+/// The words of a `NiTransform`: the rotation, the translation (from word 9), the scale.
+const TRANSFORM_WORDS: usize = 13;
+const MOST_LIGHTS: usize = 64;
 /// The property pointers of a `NiPropertyState`: alpha first, 12 of them.
 const STATE_FIRST: usize = 0x8;
 const STATE_COUNT: usize = 12;
@@ -132,8 +151,9 @@ struct Instance {
     stored: [u32; 3],
     /// The colours of the material, as the shape record has them.
     colours: [u32; 14],
-    /// The world bound of the shape: the centre and the radius.
+    /// The world bound of the shape: the centre and the radius, and its world transform.
     bound: [f32; 4],
+    transform: [u32; TRANSFORM_WORDS],
     /// The keys of the lights the helper has for the instance (mode gpu).
     lights: Vec<u32>,
     /// The frame of the last draw of the engine, and whether the helper shows the instance.
@@ -164,6 +184,13 @@ struct Tables {
     world_camera: usize,
     states: u64,
     light_records: u64,
+    /// The displays the engine skipped, and the device values of the lights of the frame
+    /// (built once a frame for each light, as the light manager builds its entry).
+    skipped: u64,
+    skip: bool,
+    light_cache: HashMap<usize, (u32, [u32; 26])>,
+    scratch_entry: [u32; E::SIZE / 4],
+    scratch_lights: Vec<usize>,
     fast_draws: u64,
     records: u64,
     /// The instance records sent again: for changed handles, and for changed values of
@@ -188,6 +215,11 @@ unsafe fn tables() -> &'static mut Tables {
         world_camera: 0,
         states: 0,
         light_records: 0,
+        skipped: 0,
+        skip: std::env::var("NIRENDER_SKIP").map_or(true, |v| v != "0"),
+        light_cache: HashMap::new(),
+        scratch_entry: [0; E::SIZE / 4],
+        scratch_lights: Vec::new(),
         fast_draws: 0,
         records: 0,
         handle_updates: 0,
@@ -200,7 +232,7 @@ unsafe fn tables() -> &'static mut Tables {
 /// The mode, from `NIRENDER_RETAINED` at the first call.
 pub unsafe fn mode() -> Mode {
     let t = tables();
-    *t.mode.get_or_insert_with(|| std::env::var("NIRENDER_RETAINED").ok().and_then(|v| Mode::parse(&v)).unwrap_or(Mode::On))
+    *t.mode.get_or_insert_with(|| std::env::var("NIRENDER_RETAINED").ok().and_then(|v| Mode::parse(&v)).unwrap_or(Mode::Gpu))
 }
 
 /// Sets the mode and returns the one before. A change of the mode sends the `INSTANCE`
@@ -210,12 +242,21 @@ pub unsafe fn set_mode(mode: Mode) -> Mode {
     let t = tables();
     t.mode = Some(mode);
     if mode != before {
-        for instance in t.instances.values_mut() {
+        for (&shape, instance) in t.instances.iter_mut() {
             instance.sent = false;
             instance.lights.clear();
+            if mode != Mode::Gpu {
+                mark(shape, false);
+            }
         }
     }
     before
+}
+
+/// Sets or clears the mark of a retained shape.
+unsafe fn mark(shape: usize, on: bool) {
+    let flags: u16 = rd(shape, FLAGS);
+    wr::<u16>(shape, FLAGS, if on { flags | RETAINED_BIT } else { flags & !RETAINED_BIT });
 }
 
 /// True when the retained path is in use: a mode other than off, and the matrices of the
@@ -287,6 +328,7 @@ pub unsafe fn frame_tick() {
 pub unsafe fn forget(shape: usize) {
     let t = tables();
     t.rejected.remove(&shape);
+    t.light_cache.clear();
     if let Some(instance) = t.instances.remove(&shape) {
         if instance.sent && capture::recording() {
             capture::instance_delete(instance.id);
@@ -345,7 +387,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, class: u32, geometry: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation });
     t.pending = Some((shape, id));
 }
 
@@ -413,6 +455,7 @@ pub unsafe fn take_pending() -> Option<(usize, u32)> {
 /// a kind of draw other than a shape): it goes to the rejected set.
 pub unsafe fn reject_pending(shape: usize, reason_later: bool) {
     let t = tables();
+    mark(shape, false);
     if let Some(instance) = t.instances.remove(&shape) {
         if instance.sent && capture::recording() {
             capture::instance_delete(instance.id);
@@ -455,6 +498,7 @@ pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, col
         instance.stored = stored;
         instance.colours = *colours;
         instance.bound = bound;
+        instance.transform = rd(shape, WORLD);
         instance.filled = true;
         instance.sent = true;
         // The flag as the shape record of the draw has it: the helper takes the translation
@@ -481,7 +525,11 @@ pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, col
         t.records += 1;
     }
     if gpu {
-        // The helper draws the instance: the changes of its lights and its visibility.
+        // The helper draws the instance: the changes of its lights and its visibility. From
+        // now on the engine does not display the shape (`skipped_display`).
+        if t.skip {
+            mark(shape, true);
+        }
         if instance.lights != lights {
             instance.lights.clear();
             instance.lights.extend_from_slice(lights);
@@ -500,17 +548,175 @@ pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, col
     true
 }
 
+/// Sends the words of the `INSTANCE` record of an instance of the mode gpu.
+unsafe fn send_instance(shape: usize, instance: &Instance, exact: [f64; 3], relative: bool) {
+    let flags = if relative { crate::shape_stream::RELATIVE } else { 0 } | BLOCK;
+    let mut words = [0u32; 44];
+    words[0] = instance.id;
+    words[1] = instance.class;
+    words[2] = flags;
+    words[3] = instance.geometry;
+    words[4] = instance.material;
+    words[5..17].copy_from_slice(&instance.rotation);
+    for (i, value) in exact.iter().enumerate() {
+        let bits = value.to_bits();
+        words[17 + i * 2] = bits as u32;
+        words[18 + i * 2] = (bits >> 32) as u32;
+    }
+    words[23..26].copy_from_slice(&instance.stored);
+    words[26..40].copy_from_slice(&instance.colours);
+    words[40..44].copy_from_slice(&instance.bound.map(f32::to_bits));
+    let name_at: usize = rd(shape, 8);
+    let name: &[u8] = if name_at != 0 { core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char).to_bytes() } else { &[] };
+    capture::instance(&words, &name[..name.len().min(96)]);
+}
+
+/// The lights of an effect state as the light manager turns them on for a draw: on, bright
+/// enough, not an ambient light; in the order of the manager's list (the last of the state
+/// first).
+unsafe fn state_lights(effect_state: usize, out: &mut Vec<usize>) {
+    out.clear();
+    if effect_state == 0 {
+        return;
+    }
+    let mut iter: usize = rd(effect_state, DES::lights);
+    while iter != 0 && out.len() < MOST_LIGHTS {
+        let light: usize = rd(iter, DL::effect);
+        iter = rd(iter, DL::next);
+        if light == 0 || rd::<u8>(light, L::enabled) == 0 || rd::<f32>(light, L::dimmer) < f32::from_bits(crate::ports::light_manager::MIN_DIMMER) {
+            continue;
+        }
+        if crate::ports::light_manager::light_get_type(light) == 0 {
+            continue;
+        }
+        out.push(light);
+    }
+    out.reverse();
+}
+
+/// The device light of a light of the game, as the light manager builds its entry; once a
+/// frame for each light.
+unsafe fn light_values(t: &mut Tables, light: usize) -> [u32; 26] {
+    if let Some(&(frame, values)) = t.light_cache.get(&light) {
+        if frame == t.frame {
+            return values;
+        }
+    }
+    let entry = t.scratch_entry.as_mut_ptr() as usize;
+    core::ptr::write_bytes(entry as *mut u8, 0, E::SIZE);
+    wr::<u32>(entry, E::revisionId, !rd::<u32>(light, L::revisionID));
+    crate::ports::light_manager::light_entry_update(entry, light);
+    let values: [u32; 26] = rd(entry, E::d3dLight);
+    t.light_cache.insert(light, (t.frame, values));
+    values
+}
+
+/// The display of a retained shape by the engine (mode gpu): what the draw of the stream
+/// did for the instance, without the draw. True when the engine must not display the
+/// shape; false when the shape is not retained after all (the mark goes).
+pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
+    let t = tables();
+    if t.mode != Some(Mode::Gpu) || !t.skip || !capture::recording() {
+        return false;
+    }
+    let renderer = crate::engine::renderer();
+    let (frame, generation) = (t.frame, t.generation);
+    let Some(instance) = t.instances.get_mut(&shape) else {
+        mark(shape, false);
+        return false;
+    };
+    if !instance.filled || renderer == 0 {
+        return false;
+    }
+    let id = instance.id;
+    let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
+    let effect_state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
+    // The handles, when due: every 64th frame, after a change of the device textures, and
+    // for a record that must go again (the start of a capture).
+    let due = !instance.sent || instance.generation != generation || id.wrapping_add(frame) % CHECK_FRAMES == 0;
+    if due {
+        let geometry = crate::geometry_stream::note(kind, rd(shape, GEOMETRY_MODEL_DATA), 0);
+        let material = crate::material_stream::note(renderer, property_state, effect_state);
+        if geometry == 0 || material == 0 || !crate::material_stream::last_modelled() {
+            reject_pending(shape, true);
+            return false;
+        }
+        instance.generation = generation;
+        if instance.geometry != geometry || instance.material != material {
+            instance.geometry = geometry;
+            instance.material = material;
+            instance.sent = false;
+            t.handle_updates += 1;
+        }
+    }
+    // The transform (the rows of the world matrix come from the engine's own conversion
+    // when it moved), the bound, the colours.
+    let transform: [u32; TRANSFORM_WORDS] = rd(shape, WORLD);
+    let bound: [f32; 4] = rd(shape, WORLD_BOUND);
+    let colours = crate::shape_stream::material_values(property_state);
+    let moved = instance.transform != transform;
+    let changed = moved || instance.bound.map(f32::to_bits) != bound.map(f32::to_bits) || instance.colours != colours;
+    if changed || !instance.sent {
+        if moved {
+            crate::ports::renderer_frame::write_world_matrix(renderer, shape + WORLD);
+            let world = crate::shape_stream::current_world(renderer);
+            instance.rotation = core::array::from_fn(|i| world[i].to_bits());
+            instance.transform = transform;
+            instance.stored = [transform[9], transform[10], transform[11]];
+        }
+        instance.bound = bound;
+        instance.colours = colours;
+        let Some(exact) = crate::camera_space::exact_translation(shape, 0) else {
+            reject_pending(shape, true);
+            return false;
+        };
+        if changed {
+            t.value_updates += 1;
+        }
+        instance.sent = true;
+        send_instance(shape, instance, exact, crate::link_client::world_is_relative());
+        t.records += 1;
+    }
+    // The lights of the effect state of the shape, their device values when they changed,
+    // and the keys when the set changed.
+    let mut lights = core::mem::take(&mut t.scratch_lights);
+    state_lights(effect_state, &mut lights);
+    let mut keys: Vec<u32> = Vec::with_capacity(lights.len());
+    for &light in &lights {
+        let key: u32 = rd(light, L::index);
+        let values = light_values(t, light);
+        crate::light_stream::note_values(key, &values);
+        keys.push(key);
+    }
+    t.scratch_lights = lights;
+    let Some(instance) = t.instances.get_mut(&shape) else { return false };
+    if instance.lights != keys {
+        capture::instance_lights(id, &keys);
+        instance.lights = keys;
+        t.light_records += 1;
+    }
+    instance.drawn = frame;
+    if !instance.visible {
+        instance.visible = true;
+        capture::instance_state(id, true);
+        t.states += 1;
+    }
+    t.skipped += 1;
+    true
+}
+
 pub unsafe fn report() -> String {
     let t = tables();
     let reasons = ["controller", "node kind", "property controller", "blend", "effect", "at the record"];
     let rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
-        "instances: mode {}, {} retained, {} rejected ({}), {} fast draws, {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
+        "instances: mode {}, {} retained, {} rejected ({}), {} fast draws, {} displays skipped, {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
         mode().name(),
         t.instances.len(),
         t.rejected.len(),
         rejected.join(", "),
         t.fast_draws,
+        t.skipped,
         t.records,
         t.handle_updates,
         t.value_updates,
