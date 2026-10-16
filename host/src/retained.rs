@@ -155,6 +155,15 @@ pub struct RetainedSet {
     /// The generations of the record and instance buffers the segments were written into.
     record_generation: u32,
     instance_generation: u32,
+    /// The draws of a view in their order (`draw_retained`): the key of the bucket, the
+    /// bucket, the key of the draw in it, the slot. Kept between the views so that a view
+    /// does not allocate.
+    order: Vec<(u64, u32, u32, u32)>,
+    /// The nearest depth and the group of each bucket in the view in progress.
+    bucket_depth: Vec<(f32, u8)>,
+    /// `MGE_XE_ORDER=buckets`: the buckets in the order they were made and their draws in
+    /// the order of their slots (the order before the modern one), for an A/B.
+    bucket_order: bool,
     pub counts: RetainedCounts,
 }
 
@@ -166,6 +175,9 @@ impl RetainedSet {
             by_id: HashMap::new(),
             buckets: Vec::new(),
             bucket_of: HashMap::new(),
+            order: Vec::new(),
+            bucket_depth: Vec::new(),
+            bucket_order: std::env::var("MGE_XE_ORDER").is_ok_and(|v| v == "buckets"),
             light_slot_of: HashMap::new(),
             light_values: Vec::new(),
             light_dirty: Vec::new(),
@@ -581,28 +593,16 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
     let mut arrays_bound = false;
     let mut shared_bound = false;
     let mut frame_bound = false;
-    // The buckets that do not blend first, then those that blend: a shape draws a base pass
-    // and a blend pass that both write depth and test less-or-equal, and they land in
-    // different buckets, so the base must come first or it overwrites the blend at the same
-    // depth. The order of the game draws the two passes of one shape in a row.
-    let order: Vec<usize> = (0..set.buckets.len()).filter(|&b| set.buckets[b].key.blend[0] == 0).chain((0..set.buckets.len()).filter(|&b| set.buckets[b].key.blend[0] != 0)).collect();
-    for &b in &order {
-        let bucket = &set.buckets[b];
-        if view.classes & (1 << bucket.class.min(31)) == 0 {
-            continue;
-        }
+    set.collect_order(view);
+    let order = core::mem::take(&mut set.order);
+    let mut at = 0;
+    while at < order.len() {
+        let b = order[at].1 as usize;
         let start = args.len();
-        for &slot in &bucket.slots {
+        while at < order.len() && order[at].1 as usize == b {
+            let slot = order[at].3;
+            at += 1;
             let Some(s) = set.slots[slot as usize].as_ref() else { continue };
-            if !s.visible {
-                set.counts.hidden += 1;
-                continue;
-            }
-            if !in_view(&s.bound, &view.planes) {
-                set.counts.culled += 1;
-                continue;
-            }
-            set.counts.drawn += 1;
             for &(first, count) in &s.ranges {
                 args.push(IndirectArgs { index_count: count, instance_count: 1, first_index: first, base_vertex: s.base_vertex, first_instance: slot });
             }
@@ -611,6 +611,7 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
         if count == 0 {
             continue;
         }
+        let bucket = &set.buckets[b];
         let mut key = bucket.key;
         if view.force_depth_test {
             key.depth = [1, key.depth[1], 4];
@@ -660,6 +661,72 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             args.truncate(start);
         }
         set.counts.calls += 1;
+    }
+    set.order = order;
+}
+
+impl RetainedSet {
+    /// The draws of a view in the order they go to the GPU, into `order`: the modern order
+    /// (the owner's decision of 2026-10-16).
+    /// 1. The buckets that do not blend and have no alpha test, front to back by their
+    ///    nearest draw in view, and the draws of each front to back: the early depth test
+    ///    then rejects the pixels behind what is drawn.
+    /// 2. The buckets with an alpha test, the same way after them (a discard in the shader
+    ///    can turn the early depth test off).
+    /// 3. The buckets that blend, in the order they were made, their draws in the order of
+    ///    their slots. A shape draws a base pass and a blend pass that both write depth and
+    ///    test less-or-equal, in different buckets: the base must come first, or it
+    ///    overwrites the blend at the same depth (the game draws the two in a row).
+    /// The depth of a draw is that of the nearest point of its bound: the distance from the
+    /// near plane of the view less the radius, at least 0.
+    fn collect_order(&mut self, view: &RetainedView) {
+        self.order.clear();
+        self.bucket_depth.clear();
+        self.bucket_depth.resize(self.buckets.len(), (f32::MAX, 0));
+        let near = view.planes[4];
+        let mut sequence = 0u32;
+        for (b, bucket) in self.buckets.iter().enumerate() {
+            if view.classes & (1 << bucket.class.min(31)) == 0 {
+                continue;
+            }
+            let blends = bucket.key.blend[0] != 0;
+            for &slot in &bucket.slots {
+                let Some(s) = self.slots[slot as usize].as_ref() else { continue };
+                if !s.visible {
+                    self.counts.hidden += 1;
+                    continue;
+                }
+                if !in_view(&s.bound, &view.planes) {
+                    self.counts.culled += 1;
+                    continue;
+                }
+                self.counts.drawn += 1;
+                let depth = (near[0] * s.bound[0] + near[1] * s.bound[1] + near[2] * s.bound[2] + near[3] - s.bound[3]).max(0.0);
+                let entry = &mut self.bucket_depth[b];
+                entry.0 = entry.0.min(depth);
+                if blends {
+                    entry.1 = 2;
+                } else if s.data.more[2] != 0 {
+                    entry.1 = entry.1.max(1);
+                }
+                // A depth of at least 0 orders as its bits; a blended draw keeps its place.
+                let within = if blends || self.bucket_order { sequence } else { depth.to_bits() };
+                sequence += 1;
+                self.order.push((0, b as u32, within, slot));
+            }
+        }
+        for entry in &mut self.order {
+            let (depth, group) = self.bucket_depth[entry.1 as usize];
+            entry.0 = if self.bucket_order {
+                // The order before: the buckets that do not blend, then those that blend.
+                ((group == 2) as u64) << 32 | entry.1 as u64
+            } else if group == 2 {
+                2 << 32 | entry.1 as u64
+            } else {
+                (group as u64) << 32 | depth.to_bits() as u64
+            };
+        }
+        self.order.sort_unstable();
     }
 }
 
