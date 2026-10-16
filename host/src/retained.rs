@@ -1110,6 +1110,11 @@ impl Player {
                         scene.scene_ambient = data.scene_ambient;
                         scene.extension5 = data.extension[5];
                         scene.extension7 = data.extension[7];
+                        // The shade puts the fog of a draw on the distance from the camera
+                        // (`fog.w`): the scene's fog takes it too, or a retained shape off the
+                        // axis of the view gets less fog than the same shape on the engine's
+                        // path (the far red boxes of the NIF test level, 2026-10-16).
+                        scene.fog[3] = scene.fog[3].max(data.fog[3]);
                     } else {
                         let mut copies = self.retained.light_values.clone();
                         extension.shade(&mut data, &mut copies, &draw_facts);
