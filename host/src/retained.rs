@@ -377,7 +377,10 @@ impl RetainedSet {
     /// use it.
     pub fn light_changed(&mut self, key: u32, values: &[u8]) {
         if let Some(&slot) = self.light_slot_of.get(&key) {
-            self.light_values[slot as usize] = light_data(values, None);
+            // In the space of the set, as the slot was made (a flickering light moved to its
+            // absolute position before, 2026-10-16).
+            let origin = self.light_origin();
+            self.light_values[slot as usize] = light_data(values, origin);
             self.light_dirty.push(slot);
         }
     }
