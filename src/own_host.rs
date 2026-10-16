@@ -15,7 +15,7 @@
 //! from the back buffer into a surface, and for a lock of the back buffer, this host asks
 //! the host program of the stream for them. Without a stream such a read gives zeros.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::link::*;
 
@@ -554,7 +554,22 @@ unsafe fn method(object: u32, index: usize) -> usize {
 
 // ---- the functions of the host table
 
-unsafe extern "C" fn scene_begin(_scene: *const SceneV1) {}
+/// The origin of the scene in progress, from its packet: the bits of three f64, and whether
+/// the scene has one. `camera_space` of `camera_space.rs` asks for it at each draw.
+static SCENE_ORIGIN: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static SCENE_RELATIVE: AtomicBool = AtomicBool::new(false);
+
+unsafe extern "C" fn scene_begin(scene: *const SceneV1) {
+    if scene.is_null() {
+        SCENE_RELATIVE.store(false, Ordering::Relaxed);
+        return;
+    }
+    let scene = &*scene;
+    for i in 0..3 {
+        SCENE_ORIGIN[i].store(scene.camera_origin[i].to_bits(), Ordering::Relaxed);
+    }
+    SCENE_RELATIVE.store(scene.flags & SCENE_HAS_CAMERA_ORIGIN != 0, Ordering::Relaxed);
+}
 unsafe extern "C" fn scene_end() {}
 unsafe extern "C" fn frame_event(_kind: u32, _a: u32, _b: u32) {}
 unsafe extern "C" fn draw(_draw: *const DrawV1) {}
@@ -581,8 +596,19 @@ unsafe extern "C" fn world_space() -> u32 {
     0
 }
 
-unsafe extern "C" fn camera_space(_origin: *mut f64) -> u32 {
-    0
+/// The scene in progress is in camera space when its packet had an origin. Then the draws
+/// of the game get world matrices relative to that origin (`camera_space::own`), and the
+/// records of the stream say so.
+unsafe extern "C" fn camera_space(origin: *mut f64) -> u32 {
+    if !SCENE_RELATIVE.load(Ordering::Relaxed) {
+        return 0;
+    }
+    if !origin.is_null() {
+        for i in 0..3 {
+            *origin.add(i) = f64::from_bits(SCENE_ORIGIN[i].load(Ordering::Relaxed));
+        }
+    }
+    1
 }
 
 unsafe extern "C" fn texture_create(texture: *const TextureV1) -> u32 {

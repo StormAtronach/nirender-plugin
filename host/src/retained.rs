@@ -102,6 +102,9 @@ struct Slot {
     class: u32,
     flags: u32,
     colours: [f32; 14],
+    /// The exact translation of the instance: the record's for a relative record, the
+    /// stored one as f64 for the others. `world` has it less the origin of the set.
+    exact: [f64; 3],
     world: [f32; 16],
     bound: [f32; 4],
     bucket: u32,
@@ -127,7 +130,13 @@ pub struct RetainedCounts {
     pub no_material: u32,
     /// The instance records that moved an instance in place.
     pub moves: u64,
+    /// The times the origin of the set moved to the camera.
+    pub rebases: u32,
 }
+
+/// The origin of the set moves to the camera when the camera is farther from it than this,
+/// in units of the world. A 32-bit float has steps of 0.0005 units at 4096.
+const REBASE_DISTANCE: f64 = 4096.0;
 
 pub struct RetainedSet {
     slots: Vec<Option<Slot>>,
@@ -161,6 +170,15 @@ pub struct RetainedSet {
     order: Vec<(u64, u32, u32, u32)>,
     /// The nearest depth and the group of each bucket in the view in progress.
     bucket_depth: Vec<(f32, u8)>,
+    /// The origin of the space of the instances: the translation of a slot and the
+    /// position of a light are relative to it. With a relative scene (the packet has the
+    /// exact position of the camera) the origin follows the camera (`rebase`), so the
+    /// 32-bit translations stay small. Without one the origin is 0: the space of the world.
+    origin: [f64; 3],
+    relative: bool,
+    /// The view of the game for the world of the frame, in the space of the world: the
+    /// planes of the cull come from it.
+    pub main_view: [f32; 16],
     /// `MGE_XE_ORDER=buckets`: the buckets in the order they were made and their draws in
     /// the order of their slots (the order before the modern one), for an A/B.
     bucket_order: bool,
@@ -177,6 +195,9 @@ impl RetainedSet {
             bucket_of: HashMap::new(),
             order: Vec::new(),
             bucket_depth: Vec::new(),
+            origin: [0.0; 3],
+            relative: false,
+            main_view: [0.0; 16],
             bucket_order: std::env::var("MGE_XE_ORDER").is_ok_and(|v| v == "buckets"),
             light_slot_of: HashMap::new(),
             light_values: Vec::new(),
@@ -233,10 +254,12 @@ impl RetainedSet {
         if !same {
             return false;
         }
-        let world = r.world();
+        let world = self.world_of(r);
+        let exact = r.exact_translation();
         for &slot in slots {
             if let Some(s) = self.slots[slot as usize].as_mut() {
                 s.world = world;
+                s.exact = exact;
                 s.bound = r.bound;
                 s.data.world[0] = world;
             }
@@ -244,6 +267,100 @@ impl RetainedSet {
         }
         self.counts.moves += 1;
         true
+    }
+
+    /// The origin that the positions of the lights of the set are relative to.
+    fn light_origin(&self) -> Option<[f64; 3]> {
+        self.relative.then_some(self.origin)
+    }
+
+    /// The world matrix of a record in the space of the set.
+    pub fn world_of(&self, r: &Retained) -> [f32; 16] {
+        r.world_at(&self.origin)
+    }
+
+    /// The origin of the set follows the camera of the world: `camera` is the exact
+    /// position of the camera of a relative scene, or `None` for a scene that is not
+    /// relative. When the scene changes kind, or the camera is farther than
+    /// `REBASE_DISTANCE` from the origin, every slot and every light is made again for the
+    /// new origin, and the segments are written whole. Returns true then.
+    pub fn rebase(&mut self, camera: Option<[f64; 3]>, known: &HashMap<u32, [u8; 104]>) -> bool {
+        let (relative, target) = match camera {
+            Some(camera) => (true, camera),
+            None => (false, [0.0; 3]),
+        };
+        let distance = (0..3).map(|i| (target[i] - self.origin[i]).powi(2)).sum::<f64>().sqrt();
+        if relative == self.relative && (!relative || distance <= REBASE_DISTANCE) {
+            return false;
+        }
+        self.relative = relative;
+        self.origin = target;
+        for slot in self.slots.iter_mut().flatten() {
+            for i in 0..3 {
+                slot.world[12 + i] = (slot.exact[i] - target[i]) as f32;
+            }
+            slot.data.world[0] = slot.world;
+        }
+        let origin = self.light_origin();
+        for (key, &slot) in &self.light_slot_of {
+            if let Some(values) = known.get(key) {
+                self.light_values[slot as usize] = light_data(values, origin);
+            }
+        }
+        self.all_dirty = true;
+        self.counts.rebases += 1;
+        true
+    }
+
+    /// The view of a scene for the instances: the view of the game, with its translation
+    /// made for the origin of the set. `camera` is the exact position of the camera (the
+    /// origin of the scene), or `None` for a scene that is not relative.
+    pub fn scene_view(&self, view: &[f32; 16], camera: Option<[f64; 3]>) -> [f32; 16] {
+        let Some(camera) = camera.filter(|_| self.relative) else { return *view };
+        let d = [self.origin[0] - camera[0], self.origin[1] - camera[1], self.origin[2] - camera[2]];
+        let mut out = *view;
+        for c in 0..3 {
+            out[12 + c] = (d[0] * view[c] as f64 + d[1] * view[4 + c] as f64 + d[2] * view[8 + c] as f64) as f32;
+        }
+        out
+    }
+
+    /// The view of a replayed scene for the instances. `base` is the view of the main scene
+    /// (the space of the set); `given` is the view of the replay in the space of the world,
+    /// when it has one; `world` is a change in the space of the world (a reflection), when
+    /// there is one.
+    pub fn replay_view(&self, base: &[f32; 16], given: Option<[f32; 16]>, world: Option<[f64; 16]>) -> [f32; 16] {
+        let o = self.origin;
+        let mut v: [f64; 16] = match given {
+            Some(m) => {
+                let mut m = m.map(f64::from);
+                for c in 0..3 {
+                    m[12 + c] += o[0] * m[c] + o[1] * m[4 + c] + o[2] * m[8 + c];
+                }
+                m
+            }
+            None => base.map(f64::from),
+        };
+        if let Some(w) = world {
+            let mut to = [0.0f64; 16];
+            let mut from = [0.0f64; 16];
+            for i in 0..4 {
+                to[i * 5] = 1.0;
+                from[i * 5] = 1.0;
+            }
+            for axis in 0..3 {
+                to[12 + axis] = o[axis];
+                from[12 + axis] = -o[axis];
+            }
+            v = multiply64(&multiply64(&multiply64(&to, &w), &from), &v);
+        }
+        v.map(|x| x as f32)
+    }
+
+    /// A plane of the space of the world in the space of the set.
+    pub fn plane_of(&self, plane: [f64; 4]) -> [f32; 4] {
+        let o = self.origin;
+        [plane[0] as f32, plane[1] as f32, plane[2] as f32, (plane[3] + plane[0] * o[0] + plane[1] * o[1] + plane[2] * o[2]) as f32]
     }
 
     pub fn set_visible(&mut self, id: u32, visible: bool) {
@@ -271,7 +388,8 @@ impl RetainedSet {
         }
         let values = known.get(&key)?;
         let slot = self.light_values.len() as u32;
-        self.light_values.push(light_data(values, None));
+        let origin = self.light_origin();
+        self.light_values.push(light_data(values, origin));
         self.light_slot_of.insert(key, slot);
         self.light_dirty.push(slot);
         Some(slot)
@@ -761,7 +879,7 @@ impl Player {
             shape.geometry = r.geometry;
             shape.fvf = fvf;
             shape.stride = stride;
-            shape.world = r.world();
+            shape.world = self.retained.world_of(r);
             shape.relative = false;
             shape.material = material::d3d_material(&r.colours);
             shape.fill = derived.fill;
@@ -805,7 +923,7 @@ impl Player {
             };
             let mut dummy = Vec::new();
             let mut data = self.stream.draw_data(&derived, &p, &mut self.renderer.counts, &mut dummy);
-            data.world[0] = r.world();
+            data.world[0] = self.retained.world_of(r);
             // The kind of the pass for the shade bits of the scene: opaque, blended, additive.
             let kind = if p.blend[0] == 0 { 0 } else if p.blend[1] == 2 || p.blend[2] == 2 { 2 } else { 1 };
             data.light_range = [0, 0, kind, RETAINED_RECORD_BITS];
@@ -831,6 +949,8 @@ impl Player {
                 (Some(self.renderer.texture_group_of(&handles)), Some(self.renderer.sampler_group_of(&sampler_values)))
             };
             let bucket_key = BucketKey { class: r.class, key, stencil: stencil[2], vertices: Rc::as_ptr(&vertex) as usize, indexes: Rc::as_ptr(&index) as usize, textures: handles, samplers: sampler_values };
+            let world = self.retained.world_of(r);
+            let exact = r.exact_translation();
             let set = &mut self.retained;
             let bucket = match set.bucket_of.get(&bucket_key) {
                 Some(&b) => b,
@@ -842,7 +962,7 @@ impl Player {
                 }
             };
             let slot = set.take_slot();
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, world: r.world(), bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true });
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true });
             set.buckets[bucket as usize].slots.push(slot);
             set.dirty.push(slot);
             slots.push(slot);
@@ -867,7 +987,7 @@ impl Player {
             None => ([self.world_ambient[0], self.world_ambient[1], self.world_ambient[2], 1.0], self.stream.fog),
         };
         let mut data = SceneData {
-            view: facts.view,
+            view: self.retained.scene_view(&facts.view, facts.origin),
             projection: facts.projection,
             fog_color: color(fog[0]),
             fog: [f32::from_bits(fog[1]), f32::from_bits(fog[2]), 1.0, (fog[3] != 0) as u32 as f32],
@@ -925,6 +1045,8 @@ impl Player {
         self.renderer.upload_retained_lights(&lights);
         self.renderer.scene_main = scene;
         self.renderer.write_scene(0, &scene);
+        // The cull is in the space of the world: the bounds of the slots are the engine's.
+        self.retained.main_view = facts.view;
         let planes = frustum_planes(&multiply32(&facts.view, &facts.projection));
         let Some(pass) = self.pass.as_mut() else { return };
         let view = RetainedView { scene_slot: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target };
@@ -936,11 +1058,25 @@ impl Player {
 }
 
 impl Retained {
-    /// The world matrix of the instance: its rotation rows and its stored translation.
-    pub fn world(&self) -> [f32; 16] {
+    /// The exact translation of the record: its own for a relative record (flag 1), the
+    /// stored one of the engine as f64 for the others.
+    pub fn exact_translation(&self) -> [f64; 3] {
+        if self.flags & 1 != 0 {
+            self.exact
+        } else {
+            self.stored.map(f64::from)
+        }
+    }
+
+    /// The world matrix of the instance in a space with this origin: its rotation rows and
+    /// its exact translation less the origin.
+    pub fn world_at(&self, origin: &[f64; 3]) -> [f32; 16] {
         let mut world = [0f32; 16];
         world[..12].copy_from_slice(&self.rotation);
-        world[12..15].copy_from_slice(&self.stored);
+        let exact = self.exact_translation();
+        for i in 0..3 {
+            world[12 + i] = (exact[i] - origin[i]) as f32;
+        }
         world[15] = 1.0;
         world
     }
@@ -958,19 +1094,21 @@ impl Replayer<'_> {
         }
         self.renderer.scene_slots_used += 1;
         let mut scene = self.renderer.scene_main;
-        let mut view_matrix = view.view.unwrap_or(scene.view);
+        // The view of the replay in the space of the world, for the cull; the same view in
+        // the space of the set, for the draws.
+        let mut absolute = view.view.unwrap_or(self.retained.main_view);
         if let Some(world) = view.world {
-            let old: [f64; 16] = view_matrix.map(|v| v as f64);
-            view_matrix = multiply64(&world, &old).map(|v| v as f32);
+            let old: [f64; 16] = absolute.map(|v| v as f64);
+            absolute = multiply64(&world, &old).map(|v| v as f32);
         }
-        scene.view = view_matrix;
+        scene.view = self.retained.replay_view(&scene.view, view.view, view.world);
         if let Some(projection) = view.projection {
             scene.projection = projection;
         }
         scene.pixel = [1.0 / view.target_size.0.max(1) as f32, -1.0 / view.target_size.1.max(1) as f32, 0.0, 0.0];
-        scene.clip_plane = view.clip_plane.map_or([0.0; 4], |p| p.map(|v| v as f32));
+        scene.clip_plane = view.clip_plane.map_or([0.0; 4], |p| self.retained.plane_of(p));
         self.renderer.write_scene(slot, &scene);
-        let planes = frustum_planes(&multiply32(&scene.view, &scene.projection));
+        let planes = frustum_planes(&multiply32(&absolute, &scene.projection));
         let retained_view = RetainedView { scene_slot: slot, classes: view.classes, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None };
         draw_retained(pass, self.renderer, self.retained, self.args, &retained_view);
     }

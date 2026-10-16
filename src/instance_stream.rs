@@ -44,13 +44,14 @@
 //! draws of the engine stay the measure of its visibility. `NIRENDER_SKIP=0` keeps the
 //! display of the engine (the draw of the stream then does the checks).
 //!
-//! The translation of an instance is the stored one of the shape's world transform (the
-//! engine's 32-bit floats: the world matrix of a draw of the own device has it, as the host
-//! of the own device reports no camera space and `camera_space` makes no relative matrix
-//! there) and the exact one of the camera-relative matrices (`camera_space::exact_translation`,
-//! 64-bit from the scene graph). The helper takes the stored one for a draw whose record
-//! is not relative, and the exact one less the origin of the scene for a relative draw, as
-//! the plugin does for a draw of the stream: the picture is the same to the bit. A parent
+//! The record of an instance carries two translations: the stored one of the shape's world
+//! transform (the engine's 32-bit floats) and the exact one of the camera-relative matrices
+//! (`camera_space::exact_translation`, 64-bit from the scene graph). The own host reports
+//! the origin of each scene since 2026-10-16, so the draws of the game are relative to the
+//! camera and the records say so (flag 1). The helper takes the exact translation for a
+//! relative record and the stored one for the others. For the draws of the stream it
+//! subtracts the origin of the scene, as the plugin does: the picture is the same to the
+//! bit. For its own table it subtracts an origin of its own that follows the camera. A parent
 //! that moves by less than the step of a 32-bit float at the position of the shape leaves
 //! the stored translation as it was and is not seen: a difference under one step of a
 //! float, not checked.
@@ -753,7 +754,9 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
             t.value_updates += 1;
         }
         instance.sent = true;
-        send_instance(shape, instance, exact, crate::link_client::world_is_relative());
+        // The plugin makes the matrices of every draw relative when it owns the camera
+        // space: the record says so whether or not a draw happened this frame.
+        send_instance(shape, instance, exact, crate::camera_space::own());
         t.records += 1;
     }
     // The values of the frame for the retained draws: the ambient light of this shape's

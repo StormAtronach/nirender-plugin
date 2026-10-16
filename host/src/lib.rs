@@ -263,6 +263,8 @@ struct WorldFacts {
     fog_end: f32,
     sun: Option<([f32; 3], [f32; 3], [f32; 3])>,
     ambient: [f32; 3],
+    /// The exact position of the camera, when the scene of the world is relative to it.
+    origin: Option<[f64; 3]>,
 }
 
 impl WorldFacts {
@@ -4847,6 +4849,14 @@ impl Player {
         if self.renderer.order_opaque_first {
             Self::order_opaque_first(&mut items);
         }
+        // The origin of the instances follows the camera of the world of the frame.
+        let world_origin = items.iter().find_map(|item| match item {
+            Item::WorldStart(facts) => Some(facts.origin),
+            _ => None,
+        });
+        if let Some(origin) = world_origin {
+            self.retained.rebase(origin, &self.renderer.lights_known);
+        }
         self.renderer.retained_upload(&mut self.retained);
         self.renderer.upload_lights(&self.frame_lights);
         self.renderer.upload_bones(&self.frame_bones);
@@ -5126,6 +5136,7 @@ impl Player {
         let fog = self.stream.fog;
         WorldFacts {
             target_size: self.size_of_target(),
+            origin: self.stream.origin,
             view: self.stream.view,
             projection: self.stream.projection,
             interior: self.stream.interior,
@@ -5732,8 +5743,8 @@ impl Player {
         println!("instances: {} records, {} draws from them, {} draws of an instance not known, {} shape twins skipped", c.instance_records, c.instance_draws, c.instance_missing, c.shape_twins);
         let r = &self.retained.counts;
         println!(
-            "retained: {} instances in {} slots and {} buckets; {} drawn, {} culled, {} hidden, {} calls in {} views; {} moved in place; {} without a geometry, {} without a material",
-            r.instances, r.slots, r.buckets, r.drawn, r.culled, r.hidden, r.calls, r.views, r.moves, r.no_geometry, r.no_material
+            "retained: {} instances in {} slots and {} buckets; {} drawn, {} culled, {} hidden, {} calls in {} views; {} moved in place; {} without a geometry, {} without a material; the origin moved {} times",
+            r.instances, r.slots, r.buckets, r.drawn, r.culled, r.hidden, r.calls, r.views, r.moves, r.no_geometry, r.no_material, r.rebases
         );
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
         println!("skinned shapes {}, particle systems {}", c.shape_skinned, c.shape_particles);
