@@ -346,9 +346,10 @@ unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], re
     // A draw of a retained shape: its instance records in the place of this one (mode on),
     // or before it (mode dual).
     if let Some((shape, id)) = crate::instance_stream::take_pending() {
-        if kind != 0 || effects.is_some() || flags & CODE_PATCH_PICTURE != 0 {
+        // A shape (kind 0) or a skinned shape (its palette in `bytes`); not particles, lines.
+        if kind & !SKINNED != 0 || effects.is_some() || flags & CODE_PATCH_PICTURE != 0 {
             crate::instance_stream::reject_pending(shape, true);
-        } else if crate::instance_stream::draw(shape, id, &world, relative, &material_values, fog, ambient, lights) {
+        } else if crate::instance_stream::draw(shape, id, &world, relative, &material_values, fog, ambient, lights, if kind & SKINNED != 0 { bytes } else { &[] }, bone_count) {
             if matches!(crate::instance_stream::mode(), crate::instance_stream::Mode::On | crate::instance_stream::Mode::Gpu) {
                 return records_only();
             }

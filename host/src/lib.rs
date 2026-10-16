@@ -4275,20 +4275,41 @@ impl Player {
             }
         }
         self.stream.shape.ambient = ambient;
-        let mut world = [0f32; 16];
-        world[..12].copy_from_slice(&retained.rotation);
-        // The translation as the shape record of the draw would have it: the exact one less
-        // the origin of the scene for a relative draw, the stored one of the engine else.
-        let relative = retained.flags & 1 != 0;
-        for i in 0..3 {
-            world[12 + i] = match (relative, self.stream.origin) {
-                (true, Some(origin)) => (retained.exact[i] - origin[i]) as f32,
-                (true, None) => retained.exact[i] as f32,
-                (false, _) => retained.stored[i],
-            };
+        // A skinned instance (flag 4): the palette of its bones follows the lights, and its
+        // world is the identity, as the shape record of a skinned draw has it.
+        let skinned = flags & 4 != 0;
+        if skinned {
+            let bones_at = lights_at + light_count * 4;
+            let bone_count = if data.len() >= bones_at + 4 { word(data, bones_at) as usize } else { 0 };
+            if bone_count == 0 || data.len() < bones_at + 4 + bone_count * 64 {
+                self.renderer.counts.shape_missing += 1;
+                return;
+            }
+            let first = self.frame_bones.len() as u32;
+            for b in 0..bone_count {
+                self.frame_bones.push(floats(data, bones_at + 4 + b * 64));
+            }
+            self.renderer.counts.shape_skinned += 1;
+            self.stream.shape_bones = Some((first, bone_count as u32));
         }
-        world[15] = 1.0;
+        let mut world = IDENTITY;
+        if !skinned {
+            world[..12].copy_from_slice(&retained.rotation);
+            // The translation as the shape record of the draw would have it: the exact one
+            // less the origin of the scene for a relative draw, the stored one of the engine
+            // else.
+            let relative = retained.flags & 1 != 0;
+            for i in 0..3 {
+                world[12 + i] = match (relative, self.stream.origin) {
+                    (true, Some(origin)) => (retained.exact[i] - origin[i]) as f32,
+                    (true, None) => retained.exact[i] as f32,
+                    (false, _) => retained.stored[i],
+                };
+            }
+            world[15] = 1.0;
+        }
         self.draw_shape(retained.geometry, retained.material, retained.flags | (flags & 32), world, &retained.colours, None);
+        self.stream.shape_bones = None;
     }
 
     /// The draws of a shape from its geometry and material records: one for each pass of

@@ -1151,7 +1151,10 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     let effect_state: usize = rd(this, R::currentEffectState);
     // A retained instance (`instance_stream`): the draw needs no notes and no object
     // record, its handles are known.
-    let plain_world_shape = skin == 0 && matches!(kind, DRAW_SHAPE | DRAW_STRIPS) && flags & DRAW_FROM_SORTED_QUEUE == 0 && roots.scene_kind == SCENE_WORLD && crate::capture::recording();
+    crate::instance_stream::begin_draw();
+    // A shape of the world, skinned or not (an actor is skinned: its palette goes in its
+    // draw records each frame).
+    let plain_world_shape = matches!(kind, DRAW_SHAPE | DRAW_STRIPS) && flags & DRAW_FROM_SORTED_QUEUE == 0 && roots.scene_kind == SCENE_WORLD && crate::capture::recording();
     if plain_world_shape {
         let mut class = CLASS_UNKNOWN;
         if let Some((geometry_handle, material_handle)) = crate::instance_stream::seen(geometry, kind, &mut class) {
@@ -1191,7 +1194,7 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     let material_handle = crate::material_stream::note(this, property_state, effect_state);
     crate::shape_stream::note_handles(geometry_handle, material_handle, kind, draw.object_class, geometry_data);
     crate::capture::object(&draw, geometry_handle, material_handle);
-    crate::instance_stream::consider(geometry, plain_world_shape && crate::instance_stream::class_retained(draw.object_class), draw.object_class, geometry_handle, material_handle, property_state, effect_state);
+    crate::instance_stream::consider(geometry, plain_world_shape && crate::instance_stream::class_retained(draw.object_class, skin != 0), skin != 0, draw.object_class, geometry_handle, material_handle, property_state, effect_state);
 }
 
 /// Sends the state of the D3D8 draw call that follows. The draw ports call it. `renderer` is

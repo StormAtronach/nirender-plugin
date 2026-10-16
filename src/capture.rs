@@ -128,7 +128,8 @@ pub mod tag {
     /// name. The same id again replaces the instance.
     pub const INSTANCE: u32 = 23;
     /// A draw of a retained instance, in the place of a shape record: id, ambient, flags,
-    /// the fog (4 words) when the flags have `FOG`, the number of lights, then their keys.
+    /// the fog (4 words) when the flags have `FOG`, the number of lights, then their keys;
+    /// with the flag `SKINNED` then the number of bones and the palette (16 floats each).
     pub const INSTANCE_DRAW: u32 = 24;
     /// The instance is deleted: id.
     pub const INSTANCE_DELETE: u32 = 25;
@@ -1081,11 +1082,14 @@ pub unsafe fn instance(head: &[u32], name: &[u8]) {
 }
 
 /// A draw of an instance. See `tag::INSTANCE_DRAW`.
-pub unsafe fn instance_draw(id: u32, ambient: u32, fog: Option<[u32; 4]>, lights: &[u32]) {
+pub unsafe fn instance_draw(id: u32, ambient: u32, fog: Option<[u32; 4]>, lights: &[u32], bones: &[u8], bone_count: u32) {
     let _lock = crate::sync::device_lock();
-    let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 };
+    let skinned = bone_count != 0;
+    let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 } | if skinned { crate::shape_stream::SKINNED } else { 0 };
     let count = [lights.len() as u32];
-    write(tag::INSTANCE_DRAW, &[words(&[id, ambient, flags]), words(fog.as_ref().map_or(&[], |f| &f[..])), words(&count), words(lights)]);
+    let bone_word = [bone_count];
+    let palette: &[u8] = if skinned { bones } else { &[] };
+    write(tag::INSTANCE_DRAW, &[words(&[id, ambient, flags]), words(fog.as_ref().map_or(&[], |f| &f[..])), words(&count), words(lights), words(if skinned { &bone_word } else { &[] }), palette]);
 }
 
 /// The end of an instance. See `tag::INSTANCE_DELETE`.

@@ -60,7 +60,7 @@ use std::collections::{HashMap, HashSet};
 use crate::capture;
 use crate::engine::thiscall1;
 use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L};
-use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, SCENE_WORLD};
+use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_UNKNOWN, SCENE_WORLD};
 use crate::mem::{rd, wr};
 
 /// `NiObjectNET::controllers`, `NiAVObject::parentNode`, `NiAVObject::worldTransform` and
@@ -101,6 +101,9 @@ const CHECK_FRAMES: u32 = 64;
 /// The names of the node kinds that change what or how they draw: a shape under one of
 /// them is not retained.
 const REJECTED_KINDS: [&[u8]; 6] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"BSAnimationNode", b"BSParticleNode"];
+/// For a skinned shape (an actor) only the kinds that change which shape is drawn: the
+/// bones it follows can be animated, and the palette of each draw carries them.
+const REJECTED_KINDS_SKINNED: [&[u8]; 4] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -165,6 +168,9 @@ struct Instance {
     filled: bool,
     /// The generation of the tables at the last check of the handles.
     generation: u32,
+    /// A skinned shape (an actor): its draw carries the palette of its bones each frame, so
+    /// it stays on the draw records (never in the helper's table, never skipped).
+    skinned: bool,
 }
 
 struct Tables {
@@ -195,6 +201,9 @@ struct Tables {
     scene_mixed: u64,
     /// The landscape (class 11) is retained too (`NIRENDER_LANDSCAPE=0` keeps it out).
     landscape: bool,
+    /// The actors (a skinned shape of class 0: the actors hang under no root the classes
+    /// know) are retained too (`NIRENDER_ACTORS=0` keeps them out).
+    actors: bool,
     light_cache: HashMap<usize, (u32, [u32; 26])>,
     scratch_entry: [u32; E::SIZE / 4],
     scratch_lights: Vec<usize>,
@@ -228,6 +237,7 @@ unsafe fn tables() -> &'static mut Tables {
         scene_values: (0, None),
         scene_mixed: 0,
         landscape: std::env::var("NIRENDER_LANDSCAPE").map_or(true, |v| v != "0"),
+        actors: std::env::var("NIRENDER_ACTORS").map_or(true, |v| v != "0"),
         light_cache: HashMap::new(),
         scratch_entry: [0; E::SIZE / 4],
         scratch_lights: Vec::new(),
@@ -264,10 +274,14 @@ pub unsafe fn set_mode(mode: Mode) -> Mode {
     before
 }
 
-/// True for a class of object the plugin retains: the objects of the references, and the
-/// landscape (plan 0.5 entry T6).
-pub unsafe fn class_retained(class: u32) -> bool {
-    class == CLASS_OBJECT || (class == CLASS_LANDSCAPE && tables().landscape)
+/// True for a class of object the plugin retains: the objects of the references, the
+/// landscape, and the actors (plan 0.5 entry T6). An actor is a skinned shape of class 0:
+/// in the world scene that is an actor (the arms of the first person have a class of
+/// their own, and the picture of the character is another scene). A shape of class 0 that
+/// is not skinned (a weapon in a hand) moves each frame with the actor: not retained.
+pub unsafe fn class_retained(class: u32, skinned: bool) -> bool {
+    let t = tables();
+    class == CLASS_OBJECT || (class == CLASS_LANDSCAPE && t.landscape) || (skinned && class == CLASS_UNKNOWN && t.actors)
 }
 
 /// Sets or clears the mark of a retained shape.
@@ -334,6 +348,12 @@ pub unsafe fn textures_changed() {
     t.generation = t.generation.wrapping_add(1);
 }
 
+/// The start of a draw of the engine: a pending draw that no shape record took (a skinned
+/// shape whose palette failed, or one skinned in software) must not reach the next record.
+pub unsafe fn begin_draw() {
+    tables().pending = None;
+}
+
 /// The end of a frame.
 pub unsafe fn frame_tick() {
     let t = tables();
@@ -376,7 +396,7 @@ pub unsafe fn seen(shape: usize, kind: u32, class_out: &mut u32) -> Option<(u32,
 /// After the notes of a draw: decides if the shape is retained, and makes the draw in
 /// progress pending for `draw` when it is. `property_state` and `effect_state` are those
 /// of the renderer for the draw.
-pub unsafe fn consider(shape: usize, eligible: bool, class: u32, geometry: u32, material: u32, property_state: usize, effect_state: usize) {
+pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, geometry: u32, material: u32, property_state: usize, effect_state: usize) {
     if !eligible || geometry == 0 || material == 0 || !enabled() || !crate::material_stream::last_modelled() {
         return;
     }
@@ -396,7 +416,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, class: u32, geometry: u32, 
     if t.rejected.contains(&shape) {
         return;
     }
-    if let Some(reason) = reject_reason(shape, property_state, effect_state) {
+    if let Some(reason) = reject_reason(shape, property_state, effect_state, skinned) {
         t.rejected.insert(shape);
         t.rejected_by[reason] += 1;
         return;
@@ -404,12 +424,15 @@ pub unsafe fn consider(shape: usize, eligible: bool, class: u32, geometry: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned });
     t.pending = Some((shape, id));
 }
 
 /// Why the shape is not retained, or `None` when it is of the safe class.
-unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize) -> Option<usize> {
+unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize, skinned: bool) -> Option<usize> {
+    // A controller on the shape itself changes it (a morpher changes the vertices of a
+    // skinned head): never retained. A controller on a node above moves the shape: a
+    // skinned shape follows its bones through the palette, so it is retained anyway.
     if rd::<usize>(shape, CONTROLLERS) != 0 {
         return Some(REASON_CONTROLLER);
     }
@@ -418,10 +441,10 @@ unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize
         if node == 0 {
             break;
         }
-        if rd::<usize>(node, CONTROLLERS) != 0 {
+        if !skinned && rd::<usize>(node, CONTROLLERS) != 0 {
             return Some(REASON_CONTROLLER);
         }
-        if kind_rejected(node) {
+        if kind_rejected(node, skinned) {
             return Some(REASON_NODE_KIND);
         }
         node = rd(node, PARENT);
@@ -444,8 +467,10 @@ unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize
     None
 }
 
-/// True when the run-time type of the node, or a base of it, is one of the rejected kinds.
-unsafe fn kind_rejected(node: usize) -> bool {
+/// True when the run-time type of the node, or a base of it, is one of the rejected kinds
+/// (the narrower list for a skinned shape).
+unsafe fn kind_rejected(node: usize, skinned: bool) -> bool {
+    let kinds: &[&[u8]] = if skinned { &REJECTED_KINDS_SKINNED } else { &REJECTED_KINDS };
     let mut rtti = crate::ports::ni::get_rtti(node);
     for _ in 0..16 {
         if rtti == 0 {
@@ -454,7 +479,7 @@ unsafe fn kind_rejected(node: usize) -> bool {
         let name: usize = rd(rtti, RTTI_NAME);
         if name != 0 {
             let text = core::ffi::CStr::from_ptr(name as *const core::ffi::c_char).to_bytes();
-            if REJECTED_KINDS.iter().any(|kind| text.ends_with(kind)) {
+            if kinds.iter().any(|kind| text.ends_with(kind)) {
                 return true;
             }
         }
@@ -491,18 +516,27 @@ pub unsafe fn reject_pending(shape: usize, reason_later: bool) {
 /// record), `fog` the fog of the draw.
 /// Returns false when the shape has no exact translation (the draw then goes as a shape
 /// record, and the shape is rejected).
-pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, colours: &[u32; 14], fog: Option<[u32; 4]>, ambient: u32, lights: &[u32]) -> bool {
+pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, colours: &[u32; 14], fog: Option<[u32; 4]>, ambient: u32, lights: &[u32], bones: &[u8], bone_count: u32) -> bool {
     let t = tables();
-    let gpu = t.mode == Some(Mode::Gpu);
     let Some(instance) = t.instances.get_mut(&shape) else { return false };
+    // A skinned shape stays on the draw records in every mode: its palette changes each
+    // frame. Its world matrix is the identity (the palette has the transforms), so only its
+    // colours and its first record send the instance again.
+    let skinned = instance.skinned;
+    let gpu = t.mode == Some(Mode::Gpu) && !skinned;
     let rotation: [u32; 12] = core::array::from_fn(|i| world[i].to_bits());
-    let stored: [u32; 3] = rd(shape, WORLD_TRANSLATION);
-    let bound: [f32; 4] = rd(shape, WORLD_BOUND);
+    let stored: [u32; 3] = if skinned { [0; 3] } else { rd(shape, WORLD_TRANSLATION) };
+    let bound: [f32; 4] = if skinned { [0.0; 4] } else { rd(shape, WORLD_BOUND) };
     let changed = !instance.filled || instance.rotation != rotation || instance.stored != stored || instance.colours != *colours || instance.bound.map(f32::to_bits) != bound.map(f32::to_bits);
     if changed || !instance.sent {
-        let Some(exact) = crate::camera_space::exact_translation(shape, 0) else {
-            reject_pending(shape, true);
-            return false;
+        let exact = if skinned {
+            [0.0; 3]
+        } else {
+            let Some(exact) = crate::camera_space::exact_translation(shape, 0) else {
+                reject_pending(shape, true);
+                return false;
+            };
+            exact
         };
         if instance.filled && changed {
             t.value_updates += 1;
@@ -519,8 +553,9 @@ pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, col
         instance.filled = true;
         instance.sent = true;
         // The flag as the shape record of the draw has it: the helper takes the translation
-        // of the two the same way. In mode gpu the helper draws the instance from its table.
-        let flags = if relative { crate::shape_stream::RELATIVE } else { 0 } | if gpu { BLOCK } else { 0 };
+        // of the two the same way. In mode gpu the helper draws the instance from its table;
+        // a skinned instance has the flag `SKINNED` and an identity world.
+        let flags = if relative { crate::shape_stream::RELATIVE } else { 0 } | if gpu { BLOCK } else { 0 } | if skinned { crate::shape_stream::SKINNED } else { 0 };
         let mut words = [0u32; 44];
         words[0] = id;
         words[1] = instance.class;
@@ -561,7 +596,7 @@ pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, col
         }
         return true;
     }
-    capture::instance_draw(id, ambient, fog, lights);
+    capture::instance_draw(id, ambient, fog, lights, bones, bone_count);
     true
 }
 
