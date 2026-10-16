@@ -70,6 +70,7 @@ pub fn retained_light_buffer(device: &wgpu::Device, count: usize) -> wgpu::Buffe
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct BucketKey {
+    class: u32,
     key: PipelineKey,
     stencil: u32,
     vertices: usize,
@@ -79,6 +80,9 @@ struct BucketKey {
 }
 
 struct Bucket {
+    /// The class of the object of the instances (MGE_LINK_CLASS_*): a view draws the
+    /// classes it has.
+    class: u32,
     key: PipelineKey,
     stencil: u32,
     vertices: Rc<wgpu::Buffer>,
@@ -92,6 +96,12 @@ struct Bucket {
 struct Slot {
     #[allow(dead_code)]
     id: u32,
+    /// The handles, the class, the flags and the colours the record was made from.
+    geometry: u32,
+    material: u32,
+    class: u32,
+    flags: u32,
+    colours: [f32; 14],
     world: [f32; 16],
     bound: [f32; 4],
     bucket: u32,
@@ -115,6 +125,8 @@ pub struct RetainedCounts {
     pub views: u64,
     pub no_geometry: u32,
     pub no_material: u32,
+    /// The instance records that moved an instance in place.
+    pub moves: u64,
 }
 
 pub struct RetainedSet {
@@ -195,6 +207,28 @@ impl RetainedSet {
         self.keys_of.remove(&id);
         self.counts.instances = self.by_id.len() as u32;
         self.counts.slots = self.slots.iter().flatten().count() as u32;
+    }
+
+    /// Moves the instance: a new world matrix and bound for its slots, when its draw stays
+    /// the same (the handles, the class, the flags). False when the instance is not in the
+    /// table or its draw changed: then it is made again.
+    pub fn update_place(&mut self, id: u32, r: &Retained) -> bool {
+        let Some(slots) = self.by_id.get(&id) else { return false };
+        let same = slots.iter().all(|&slot| self.slots[slot as usize].as_ref().is_some_and(|s| s.geometry == r.geometry && s.material == r.material && s.class == r.class && s.flags == r.flags && s.colours == r.colours));
+        if !same {
+            return false;
+        }
+        let world = r.world();
+        for &slot in slots {
+            if let Some(s) = self.slots[slot as usize].as_mut() {
+                s.world = world;
+                s.bound = r.bound;
+                s.data.world[0] = world;
+            }
+            self.dirty.push(slot);
+        }
+        self.counts.moves += 1;
+        true
     }
 
     pub fn set_visible(&mut self, id: u32, visible: bool) {
@@ -336,6 +370,8 @@ pub fn light_data(l: &[u8], origin: Option<[f64; 3]>) -> LightData {
 /// How a view changes the keys and the matrices of the retained draws.
 pub struct RetainedView {
     pub scene_slot: u32,
+    /// The classes the view draws, one bit for each.
+    pub classes: u32,
     pub planes: [[f32; 4]; 6],
     pub flip_cull: bool,
     pub force_depth_test: bool,
@@ -519,8 +555,16 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
     let mut arrays_bound = false;
     let mut shared_bound = false;
     let mut frame_bound = false;
-    for b in 0..set.buckets.len() {
+    // The buckets that do not blend first, then those that blend: a shape draws a base pass
+    // and a blend pass that both write depth and test less-or-equal, and they land in
+    // different buckets, so the base must come first or it overwrites the blend at the same
+    // depth. The order of the game draws the two passes of one shape in a row.
+    let order: Vec<usize> = (0..set.buckets.len()).filter(|&b| set.buckets[b].key.blend[0] == 0).chain((0..set.buckets.len()).filter(|&b| set.buckets[b].key.blend[0] != 0)).collect();
+    for &b in &order {
         let bucket = &set.buckets[b];
+        if view.classes & (1 << bucket.class.min(31)) == 0 {
+            continue;
+        }
         let start = args.len();
         for &slot in &bucket.slots {
             let Some(s) = set.slots[slot as usize].as_ref() else { continue };
@@ -669,7 +713,9 @@ impl Player {
             let mut dummy = Vec::new();
             let mut data = self.stream.draw_data(&derived, &p, &mut self.renderer.counts, &mut dummy);
             data.world[0] = r.world();
-            data.light_range = [0, 0, 0, RETAINED_RECORD_BITS];
+            // The kind of the pass for the shade bits of the scene: opaque, blended, additive.
+            let kind = if p.blend[0] == 0 { 0 } else if p.blend[1] == 2 || p.blend[2] == 2 { 2 } else { 1 };
+            data.light_range = [0, 0, kind, RETAINED_RECORD_BITS];
             data.counts[0] = 0;
             data.fog = [0.0, 0.0, derived.fog as u32 as f32, 0.0];
             let mut handles = [0u32; STAGES];
@@ -691,19 +737,19 @@ impl Player {
             } else {
                 (Some(self.renderer.texture_group_of(&handles)), Some(self.renderer.sampler_group_of(&sampler_values)))
             };
-            let bucket_key = BucketKey { key, stencil: stencil[2], vertices: Rc::as_ptr(&vertex) as usize, indexes: Rc::as_ptr(&index) as usize, textures: handles, samplers: sampler_values };
+            let bucket_key = BucketKey { class: r.class, key, stencil: stencil[2], vertices: Rc::as_ptr(&vertex) as usize, indexes: Rc::as_ptr(&index) as usize, textures: handles, samplers: sampler_values };
             let set = &mut self.retained;
             let bucket = match set.bucket_of.get(&bucket_key) {
                 Some(&b) => b,
                 None => {
-                    set.buckets.push(Bucket { key, stencil: stencil[2], vertices: vertex.clone(), indexes: index.clone(), textures, samplers, slots: Vec::new() });
+                    set.buckets.push(Bucket { class: r.class, key, stencil: stencil[2], vertices: vertex.clone(), indexes: index.clone(), textures, samplers, slots: Vec::new() });
                     let b = (set.buckets.len() - 1) as u32;
                     set.bucket_of.insert(bucket_key, b);
                     b
                 }
             };
             let slot = set.take_slot();
-            set.slots[slot as usize] = Some(Slot { id, world: r.world(), bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true });
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, world: r.world(), bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true });
             set.buckets[bucket as usize].slots.push(slot);
             set.dirty.push(slot);
             slots.push(slot);
@@ -719,22 +765,29 @@ impl Player {
         }
     }
 
-    /// The values of the world of the frame for the retained draws, at its start.
+    /// The values of the world of the frame for the retained draws, at its start: the
+    /// ambient light and the fog from the `RETAINED_SCENE` record of the frame (the plugin
+    /// computes them for a retained shape as the engine would), else those of the stream.
     pub(super) fn retained_scene_main(&self, facts: &WorldFacts) -> SceneData {
-        let fog = self.stream.fog;
+        let (ambient, fog) = match self.retained_values {
+            Some((ambient, fog)) => (color(known(ambient, 0)), fog.unwrap_or([0; 4])),
+            None => ([self.world_ambient[0], self.world_ambient[1], self.world_ambient[2], 1.0], self.stream.fog),
+        };
         let mut data = SceneData {
             view: facts.view,
             projection: facts.projection,
             fog_color: color(fog[0]),
             fog: [f32::from_bits(fog[1]), f32::from_bits(fog[2]), 1.0, (fog[3] != 0) as u32 as f32],
-            scene_ambient: [self.world_ambient[0], self.world_ambient[1], self.world_ambient[2], 1.0],
+            scene_ambient: ambient,
             pixel: [1.0 / facts.target_size.0.max(1) as f32, -1.0 / facts.target_size.1.max(1) as f32, 0.0, 0.0],
             clip_plane: [0.0; 4],
             extension5: [0.0; 4],
             extension7: [0.0; 4],
             counts: [0; 4],
         };
-        if let (Some((start, end)), true) = (self.stream.fog_range, facts.projection[11] == 1.0) {
+        // The fog of the extension for the world, as a draw of the world gets it.
+        let fog_range = self.parameters.as_ref().and_then(|p| p.fog_range);
+        if let (Some((start, end)), true) = (fog_range, facts.projection[11] == 1.0) {
             data.fog[0] = start;
             data.fog[1] = end;
             data.fog[3] = 1.0;
@@ -754,15 +807,26 @@ impl Player {
         let mut lights = self.retained.light_values.clone();
         if self.parameters.as_ref().is_some_and(|p| p.shade) {
             if let Some(extension) = self.extension.as_mut() {
-                let mut data = DrawData::zeroed();
-                data.view = facts.view;
-                data.scene_ambient = scene.scene_ambient;
-                let draw_facts = DrawFacts { class: 12, blend_enable: false, source_blend: 0, destination_blend: 0, depth_write: true, specular_power: 0.0, emissive: [0.0; 4] };
-                extension.shade(&mut data, &mut lights, &draw_facts);
-                scene.scene_ambient = data.scene_ambient;
-                scene.extension5 = data.extension[5];
-                scene.extension7 = data.extension[7];
-                scene.counts = [data.counts[3], 0, 0, 0];
+                // The shade of an opaque draw gives the lights and the values of the scene;
+                // the shade of a blended and of an additive draw gives their bits (the lights
+                // of those calls are copies).
+                let kinds = [(false, 0u32, 0u32), (true, 5, 6), (true, 2, 2)];
+                for (k, &(blend, source, destination)) in kinds.iter().enumerate() {
+                    let mut data = DrawData::zeroed();
+                    data.view = facts.view;
+                    data.scene_ambient = scene.scene_ambient;
+                    let draw_facts = DrawFacts { class: 12, blend_enable: blend, source_blend: source, destination_blend: destination, depth_write: true, specular_power: 0.0, emissive: [0.0; 4] };
+                    if k == 0 {
+                        extension.shade(&mut data, &mut lights, &draw_facts);
+                        scene.scene_ambient = data.scene_ambient;
+                        scene.extension5 = data.extension[5];
+                        scene.extension7 = data.extension[7];
+                    } else {
+                        let mut copies = self.retained.light_values.clone();
+                        extension.shade(&mut data, &mut copies, &draw_facts);
+                    }
+                    scene.counts[k] = data.counts[3];
+                }
             }
         }
         self.renderer.upload_retained_lights(&lights);
@@ -770,7 +834,7 @@ impl Player {
         self.renderer.write_scene(0, &scene);
         let planes = frustum_planes(&multiply32(&facts.view, &facts.projection));
         let Some(pass) = self.pass.as_mut() else { return };
-        let view = RetainedView { scene_slot: 0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target };
+        let view = RetainedView { scene_slot: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target };
         pass.push_debug_group("retained instances");
         draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &view);
         pass.pop_debug_group();
@@ -792,7 +856,7 @@ impl Retained {
 impl Replayer<'_> {
     /// The retained instances in a view the extension replays, after the kept draws.
     pub(super) fn replay_retained(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView) {
-        if self.retained.by_id.is_empty() || view.classes & (1 << 12) == 0 || view.translucent_only || !self.retained_on {
+        if self.retained.by_id.is_empty() || view.translucent_only || !self.retained_on {
             return;
         }
         let slot = self.renderer.scene_slots_used;
@@ -814,7 +878,7 @@ impl Replayer<'_> {
         scene.clip_plane = view.clip_plane.map_or([0.0; 4], |p| p.map(|v| v as f32));
         self.renderer.write_scene(slot, &scene);
         let planes = frustum_planes(&multiply32(&scene.view, &scene.projection));
-        let retained_view = RetainedView { scene_slot: slot, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None };
+        let retained_view = RetainedView { scene_slot: slot, classes: view.classes, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None };
         draw_retained(pass, self.renderer, self.retained, self.args, &retained_view);
     }
 }

@@ -1191,7 +1191,7 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     let material_handle = crate::material_stream::note(this, property_state, effect_state);
     crate::shape_stream::note_handles(geometry_handle, material_handle, kind, draw.object_class, geometry_data);
     crate::capture::object(&draw, geometry_handle, material_handle);
-    crate::instance_stream::consider(geometry, plain_world_shape && draw.object_class == CLASS_OBJECT, draw.object_class, geometry_handle, material_handle, property_state, effect_state);
+    crate::instance_stream::consider(geometry, plain_world_shape && crate::instance_stream::class_retained(draw.object_class), draw.object_class, geometry_handle, material_handle, property_state, effect_state);
 }
 
 /// Sends the state of the D3D8 draw call that follows. The draw ports call it. `renderer` is

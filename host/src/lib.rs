@@ -903,6 +903,8 @@ mod tag {
     /// The lights of a retained instance (id, count, keys), and its visibility (id, 0 or 1).
     pub const INSTANCE_LIGHTS: u32 = 26;
     pub const INSTANCE_STATE: u32 = 27;
+    /// The ambient light and the fog of the frame for the retained draws.
+    pub const RETAINED_SCENE: u32 = 28;
 }
 
 /// A retained instance of the plugin (`tag::INSTANCE`): the helper draws it from this at
@@ -3703,8 +3705,10 @@ struct Player {
     /// not. `MGE_XE_RETAINED=0` turns it round: for a capture of the dual mode of the plugin,
     /// the picture from the shape records.
     retained_on: bool,
-    /// The instances the helper draws from its table (`retained.rs`).
+    /// The instances the helper draws from its table (`retained.rs`), and the ambient
+    /// light and the fog of the frame for their draws (`RETAINED_SCENE`).
     retained: RetainedSet,
+    retained_values: Option<(u32, Option<[u32; 4]>)>,
     /// The frame in progress: its commands, its pass, and its two targets.
     encoder: Option<wgpu::CommandEncoder>,
     pass: Option<wgpu::RenderPass<'static>>,
@@ -3835,6 +3839,7 @@ impl Player {
             instances: HashMap::new(),
             retained_on: std::env::var("MGE_XE_RETAINED").map_or(true, |v| v != "0"),
             retained: RetainedSet::new(),
+            retained_values: None,
             stream: Stream {
                 view: [0.0; 16],
                 projection: [0.0; 16],
@@ -4009,6 +4014,7 @@ impl Player {
         self.renderer.begin_frame_arrays();
         self.renderer.pin_into_frame();
         self.renderer.scene_slots_used = 1;
+        self.retained_values = None;
         self.run_args.clear();
         self.frame_args.clear();
         self.renderer.indirect_written = 0;
@@ -4219,7 +4225,9 @@ impl Player {
         self.instances.insert(id, retained);
         self.renderer.counts.instance_records += 1;
         if retained.flags & INSTANCE_BLOCK != 0 {
-            self.retained_insert(id, &retained);
+            if !self.retained.update_place(id, &retained) {
+                self.retained_insert(id, &retained);
+            }
         } else {
             self.retained.remove(id);
         }
@@ -4633,6 +4641,10 @@ impl Player {
                 }
             }
             tag::INSTANCE_STATE if data.len() >= 8 => self.retained.set_visible(word(data, 0), word(data, 4) != 0),
+            tag::RETAINED_SCENE if data.len() >= 8 => {
+                let fog = (word(data, 4) & 32 != 0 && data.len() >= 24).then(|| core::array::from_fn(|i| word(data, 8 + i * 4)));
+                self.retained_values = Some((word(data, 0), fog));
+            }
             tag::INSTANCE_DRAW if data.len() >= 12 => {
                 if self.retained_on {
                     self.instance_draw(data);
@@ -5814,8 +5826,8 @@ impl Player {
         println!("instances: {} records, {} draws from them, {} draws of an instance not known, {} shape twins skipped", c.instance_records, c.instance_draws, c.instance_missing, c.shape_twins);
         let r = &self.retained.counts;
         println!(
-            "retained: {} instances in {} slots and {} buckets; {} drawn, {} culled, {} hidden, {} calls in {} views; {} without a geometry, {} without a material",
-            r.instances, r.slots, r.buckets, r.drawn, r.culled, r.hidden, r.calls, r.views, r.no_geometry, r.no_material
+            "retained: {} instances in {} slots and {} buckets; {} drawn, {} culled, {} hidden, {} calls in {} views; {} moved in place; {} without a geometry, {} without a material",
+            r.instances, r.slots, r.buckets, r.drawn, r.culled, r.hidden, r.calls, r.views, r.moves, r.no_geometry, r.no_material
         );
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
         println!("sorted draws {}, instanced away {}, skinned shapes {}, particle systems {}", c.sorted_draws, c.instanced_draws, c.shape_skinned, c.shape_particles);

@@ -680,6 +680,34 @@ pub unsafe fn update_lights(this: usize, state: usize) {
     eng::critical_section_unlock(cs);
 }
 
+/// The ambient light the light manager would set for a draw with this effect state
+/// (`D3DRS_AMBIENT`): the ambient lights of the state that are on and bright enough,
+/// each channel by the dimmer, as `update_lights` makes it. For a shape the engine does not
+/// display (`instance_stream`).
+pub(crate) unsafe fn ambient_of_state(state: usize) -> u32 {
+    let mut ambient: u32 = 0xFF00_0000;
+    let ambient_ptr = core::ptr::addr_of_mut!(ambient) as usize;
+    if state == 0 {
+        return ambient;
+    }
+    let mut iter: usize = rd(state, DES::lights);
+    while iter != 0 {
+        let light: usize = rd(iter, DL::effect);
+        iter = rd(iter, DL::next);
+        if light == 0 || rd::<u8>(light, L::enabled) == 0 || rd::<f32>(light, L::dimmer) < f32::from_bits(MIN_DIMMER) || light_get_type(light) != 0 {
+            continue;
+        }
+        let dimmer: u32 = rd(light, L::dimmer);
+        let now: u32 = rd(ambient_ptr, 0);
+        eng::packed_color_set_red(ambient_ptr, x87_ambient_channel((now >> 16) & 0xFF, dimmer, rd(light, L::ambientColor_r)));
+        let now: u32 = rd(ambient_ptr, 0);
+        eng::packed_color_set_green(ambient_ptr, x87_ambient_channel((now >> 8) & 0xFF, dimmer, rd(light, L::ambientColor_g)));
+        let now: u32 = rd(ambient_ptr, 0);
+        eng::packed_color_set_blue(ambient_ptr, x87_ambient_channel(now & 0xFF, dimmer, rd(light, L::ambientColor_b)));
+    }
+    rd(ambient_ptr, 0)
+}
+
 /// 0x6BBB40 `NiDX8LightManager::ReleaseLights`. The port deletes each entry. The key of the
 /// entry stays in the map with no entry.
 pub unsafe fn release_lights(this: usize) {

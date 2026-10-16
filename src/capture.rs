@@ -138,6 +138,11 @@ pub mod tag {
     /// The visibility of such an instance: id, 1 when the engine draws it, 0 when it does
     /// not although it is in the view of the camera.
     pub const INSTANCE_STATE: u32 = 27;
+    /// The values of the frame for the draws of the instances the helper draws from its
+    /// table: the ambient light (`D3DRS_AMBIENT`), flags (32: the fog follows), the fog of
+    /// a draw (4 words, see `FOG` of the shape record). One in a frame, at the first such
+    /// shape the engine reaches.
+    pub const RETAINED_SCENE: u32 = 28;
 }
 
 // ---- the ring in shared memory
@@ -1099,6 +1104,13 @@ pub unsafe fn instance_lights(id: u32, lights: &[u32]) {
 pub unsafe fn instance_state(id: u32, visible: bool) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_STATE, &[words(&[id, visible as u32])]);
+}
+
+/// The values of the frame for the retained draws. See `tag::RETAINED_SCENE`.
+pub unsafe fn retained_scene(ambient: u32, fog: Option<[u32; 4]>) {
+    let _lock = crate::sync::device_lock();
+    let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 };
+    write(tag::RETAINED_SCENE, &[words(&[ambient, flags]), words(fog.as_ref().map_or(&[], |f| &f[..]))]);
 }
 
 /// A light record. See `tag::LIGHT`.

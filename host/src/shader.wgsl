@@ -119,7 +119,8 @@ struct Scene {
     pixel: vec4f,
     clip_plane: vec4f,
     // The sun of the view for the extension's shade (`extension[5]` and `[7]` of a draw the
-    // extension shaded), and the bits of `counts.w` that the extension set for the frame.
+    // extension shaded), and the bits of `counts.w` that the extension set for the frame:
+    // for an opaque draw, a blended one, an additive one.
     extension5: vec4f,
     extension7: vec4f,
     counts: vec4u,
@@ -159,8 +160,10 @@ fn draw_clip_plane() -> vec4f {
     if from_scene() { return scene.clip_plane; }
     return draws[record].clip_plane;
 }
+// The bits of the extension's shade for the kind of draw (`light_range.z`: 0 opaque, 1
+// blended, 2 additive), as the extension sets them for a draw of the stream.
 fn draw_counts_w() -> u32 {
-    if from_scene() { return draws[record].counts.w | scene.counts.x; }
+    if from_scene() { return draws[record].counts.w | scene.counts[draws[record].light_range.z]; }
     return draws[record].counts.w;
 }
 fn draw_extension(i: u32) -> vec4f {

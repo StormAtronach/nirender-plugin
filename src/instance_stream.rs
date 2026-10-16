@@ -8,7 +8,7 @@
 //! destructor of the geometry sends `INSTANCE_DELETE`.
 //!
 //! The safe class (the census of entry T0): a triangle shape of the world scene under the
-//! object root, not skinned, not from the sorted queue, not blended, without a texture
+//! object root or the landscape root (entry T6), not skinned, not from the sorted queue, not blended, without a texture
 //! effect, without projected lights or shadows, with no controller on it, on any node above
 //! it or on any of its properties, and with no node above it that changes what it draws
 //! (a billboard, a switch, a level of detail, a BSP node, an animation node, a particle
@@ -60,7 +60,7 @@ use std::collections::{HashMap, HashSet};
 use crate::capture;
 use crate::engine::thiscall1;
 use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L};
-use crate::link::SCENE_WORLD;
+use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, SCENE_WORLD};
 use crate::mem::{rd, wr};
 
 /// `NiObjectNET::controllers`, `NiAVObject::parentNode`, `NiAVObject::worldTransform` and
@@ -188,6 +188,13 @@ struct Tables {
     /// (built once a frame for each light, as the light manager builds its entry).
     skipped: u64,
     skip: bool,
+    /// The frame of the last `RETAINED_SCENE` record and its values; the skipped shapes
+    /// whose own ambient light or fog differed from them.
+    scene_frame: u32,
+    scene_values: (u32, Option<[u32; 4]>),
+    scene_mixed: u64,
+    /// The landscape (class 11) is retained too (`NIRENDER_LANDSCAPE=0` keeps it out).
+    landscape: bool,
     light_cache: HashMap<usize, (u32, [u32; 26])>,
     scratch_entry: [u32; E::SIZE / 4],
     scratch_lights: Vec<usize>,
@@ -217,6 +224,10 @@ unsafe fn tables() -> &'static mut Tables {
         light_records: 0,
         skipped: 0,
         skip: std::env::var("NIRENDER_SKIP").map_or(true, |v| v != "0"),
+        scene_frame: u32::MAX,
+        scene_values: (0, None),
+        scene_mixed: 0,
+        landscape: std::env::var("NIRENDER_LANDSCAPE").map_or(true, |v| v != "0"),
         light_cache: HashMap::new(),
         scratch_entry: [0; E::SIZE / 4],
         scratch_lights: Vec::new(),
@@ -251,6 +262,12 @@ pub unsafe fn set_mode(mode: Mode) -> Mode {
         }
     }
     before
+}
+
+/// True for a class of object the plugin retains: the objects of the references, and the
+/// landscape (plan 0.5 entry T6).
+pub unsafe fn class_retained(class: u32) -> bool {
+    class == CLASS_OBJECT || (class == CLASS_LANDSCAPE && tables().landscape)
 }
 
 /// Sets or clears the mark of a retained shape.
@@ -677,6 +694,18 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
         send_instance(shape, instance, exact, crate::link_client::world_is_relative());
         t.records += 1;
     }
+    // The values of the frame for the retained draws: the ambient light of this shape's
+    // effect state and its fog, as the light manager and the render state would set them.
+    // One record in a frame; a shape whose values differ is counted.
+    let ambient = crate::ports::light_manager::ambient_of_state(effect_state);
+    let fog = crate::shape_stream::fog_values(renderer, property_state);
+    if t.scene_frame != frame {
+        t.scene_frame = frame;
+        t.scene_values = (ambient, fog);
+        capture::retained_scene(ambient, fog);
+    } else if t.scene_values != (ambient, fog) {
+        t.scene_mixed += 1;
+    }
     // The lights of the effect state of the shape, their device values when they changed,
     // and the keys when the set changed.
     let mut lights = core::mem::take(&mut t.scratch_lights);
@@ -710,13 +739,14 @@ pub unsafe fn report() -> String {
     let reasons = ["controller", "node kind", "property controller", "blend", "effect", "at the record"];
     let rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
-        "instances: mode {}, {} retained, {} rejected ({}), {} fast draws, {} displays skipped, {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
+        "instances: mode {}, {} retained, {} rejected ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
         mode().name(),
         t.instances.len(),
         t.rejected.len(),
         rejected.join(", "),
         t.fast_draws,
         t.skipped,
+        t.scene_mixed,
         t.records,
         t.handle_updates,
         t.value_updates,
