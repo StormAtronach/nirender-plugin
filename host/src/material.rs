@@ -164,6 +164,9 @@ pub struct Derived {
     /// The `D3DMATERIAL8`: diffuse, ambient, specular, emissive with the alpha, then power.
     pub material: [f32; 17],
     pub fog: bool,
+    /// The fog is by the distance from the eye (RANGE_SQ), not by the depth: the engine
+    /// sets `D3DRS_RANGEFOGENABLE` for it.
+    pub range_fog: bool,
     /// The record has no effects that this model does not make (projected lights or
     /// shadows); a shape with them is drawn without them.
     pub modelled: bool,
@@ -290,6 +293,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
         [0; 7]
     };
     d.fog = m.flags & FOG != 0 && m.fog_mode < 2;
+    d.range_fog = d.fog && m.fog_mode == 1;
     // The colours come with each draw (the shape record): `d3d_material`.
 
     // The lighting and the material sources (`NiDX8LightManager::setState`).

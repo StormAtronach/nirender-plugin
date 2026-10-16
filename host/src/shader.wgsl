@@ -151,9 +151,10 @@ fn draw_fog_color() -> vec4f {
     if from_scene() { return scene.fog_color; }
     return draws[record].fog_color;
 }
-// The fog of the scene applies to a retained draw only when its material has fog (z).
+// The fog of the scene applies to a retained draw only when its material has fog (z); the
+// fog is by the distance (w) when the scene's is, or the material's (RANGE_SQ).
 fn draw_fog() -> vec4f {
-    if from_scene() { return vec4f(scene.fog.xy, draws[record].fog.z, scene.fog.w); }
+    if from_scene() { return vec4f(scene.fog.xy, draws[record].fog.z, max(scene.fog.w, draws[record].fog.w)); }
     return draws[record].fog;
 }
 fn draw_clip_plane() -> vec4f {
