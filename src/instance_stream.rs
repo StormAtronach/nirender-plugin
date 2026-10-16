@@ -363,6 +363,10 @@ pub unsafe fn scene_begin(kind: u32, camera: usize) {
 /// A scene of the game ends. At the end of the world scene in mode gpu: an instance the
 /// helper shows that the engine did not draw although it is in the view of the camera is
 /// hidden (`INSTANCE_STATE`); an instance the engine drew was made visible at its draw.
+/// An instance whose record was not sent again since a reset or a change of the mode is
+/// hidden too: the helper's table keeps it from before (a capture that holds resets the
+/// records at each release; the far level of a level-of-detail node stayed in the table
+/// at the stops of the NIF tour, 2026-10-16).
 pub unsafe fn scene_end() {
     let t = tables();
     let camera = core::mem::replace(&mut t.world_camera, 0);
@@ -374,7 +378,7 @@ pub unsafe fn scene_end() {
     let planes: Vec<usize> = (0..count).map(|i| rd(storage, i * 4)).collect();
     let frame = t.frame;
     for instance in t.instances.values_mut() {
-        if !instance.filled || !instance.sent || !instance.visible || instance.drawn == frame {
+        if !instance.filled || !instance.visible || instance.drawn == frame {
             continue;
         }
         let bound = instance.bound.as_ptr() as usize;

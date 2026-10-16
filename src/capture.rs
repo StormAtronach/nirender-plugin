@@ -675,9 +675,13 @@ pub unsafe fn tee_end() {
 
 /// A record that makes a resource, or changes one in a way that has no content: a file that
 /// holds takes these between its frames, so that the resources of a recorded frame are in
-/// the file. The content of buffers and textures comes once, at the frames.
+/// the file. The content of buffers and textures comes once, at the frames. The visibility
+/// and the deletion of a retained instance count too: the file has the instance from an
+/// earlier frame, and a release sends again only the instances the engine displays (a
+/// replay drew the far level of a level-of-detail node at the near stops of the NIF tour,
+/// 2026-10-16).
 fn resource_record(tag: u32) -> bool {
-    matches!(tag, tag::TEXTURE | tag::CALL)
+    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE)
 }
 
 /// Ends the capture file of a direct stream.
