@@ -33,6 +33,10 @@ LAYOUTS = {
     # A switch node with the levels of detail: the centre, then (near, far) for each level.
     "NiLODNode": NODE + [("index", "u32"), ("lod_center", "v3"), ("lod_levels", "lodlevels")],
     "NiSortAdjustNode": NODE + [("sorting_mode", "u32"), ("sub_sorter", "ref")],
+    # A node of two children ordered by the side of its plane the camera is on (the engine's
+    # `NiBSPNode::LoadBinary` 0x6D69C0 reads the node, then a plane: the normal and the
+    # constant).
+    "NiBSPNode": NODE + [("plane_normal", "v3"), ("plane_constant", "f")],
     "NiTriShape": AV_OBJECT + [("data", "ref"), ("skin", "ref")],
     "NiTriShapeData": [("tridata", "tridata")],
     "NiMaterialProperty": OBJECT_NET + [("flags", "u16"), ("ambient", "v3"), ("diffuse", "v3"), ("specular", "v3"), ("emissive", "v3"),

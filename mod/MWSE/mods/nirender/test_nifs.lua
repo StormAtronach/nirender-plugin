@@ -10,4 +10,8 @@ return {
     { id = "@nif_x_env_parallel", mesh = "@_nifx\\env_parallel.nif" },
     { id = "@nif_x_env_perspective", mesh = "@_nifx\\env_perspective.nif" },
     { id = "@nif_x_fog_map", mesh = "@_nifx\\fog_map.nif" },
+    { id = "@nif_x_node_billboard", mesh = "@_nifx\\node_billboard.nif" },
+    { id = "@nif_x_node_switch", mesh = "@_nifx\\node_switch.nif" },
+    { id = "@nif_x_node_lod", mesh = "@_nifx\\node_lod.nif" },
+    { id = "@nif_x_node_bsp", mesh = "@_nifx\\node_bsp.nif" },
 }

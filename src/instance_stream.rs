@@ -10,9 +10,9 @@
 //! The safe class (the census of entry T0): a triangle shape of the world scene under the
 //! object root or the landscape root (entry T6), not skinned, not from the sorted queue, not blended, without a texture
 //! effect, without projected lights or shadows, with no controller on it, on any node above
-//! it or on any of its properties, and with no node above it that changes what it draws
-//! (a billboard, a switch, a level of detail, a BSP node, an animation node, a particle
-//! node). The class of a shape is decided once and kept until the shape is deleted.
+//! it or on any of its properties, and under no sort adjust node (the other node kinds
+//! that change what or how they draw need nothing of the table: `REJECTED_KINDS`). The
+//! class of a shape is decided once and kept until the shape is deleted.
 //!
 //! The draw of a retained shape skips the notes of the geometry and the material and the
 //! object record (`link_client::send_draw`): their cost was the point. Every 64th frame of
@@ -101,14 +101,27 @@ const MAX_DEPTH: usize = 32;
 /// The frames between two checks of the handles of an instance.
 const CHECK_FRAMES: u32 = 64;
 
-/// The names of the node kinds that change what or how they draw: a shape under one of
-/// them is not retained. A sort adjust node draws its subtree in an order of its own (a
-/// cluster drawn late, or in place without the accumulator): a retained shape under one
-/// came too early and a translucent window drew over it (the NIF test level, 2026-10-16).
-const REJECTED_KINDS: [&[u8]; 7] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"NiSortAdjustNode", b"BSAnimationNode", b"BSParticleNode"];
-/// For a skinned shape (an actor) only the kinds that change which shape is drawn: the
-/// bones it follows can be animated, and the palette of each draw carries them.
-const REJECTED_KINDS_SKINNED: [&[u8]; 5] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"NiSortAdjustNode"];
+/// The node kinds that keep a shape under them on the engine's path. A sort adjust node
+/// draws its subtree in an order of its own (a cluster drawn late, or in place without
+/// the accumulator): a retained shape under one came too early and a translucent window
+/// drew over it (the NIF test level, 2026-10-16). The other kinds that change what or how
+/// they draw need nothing of the table (plan step 5, 2026-10-16), as long as the engine's
+/// traversal reaches the shape: a billboard turns its node to the camera in its display,
+/// and the display of the shape then sees the moved transform and moves the instance; a
+/// switch, a level of detail and a flipbook display one child, so the shapes of the
+/// others are never drawn and never enter the table, and one shown before is hidden at
+/// the end of the scene like any shape the engine stops drawing (`scene_end`); a BSP node
+/// orders its two children, which matters for blended shapes (not retained) and for the
+/// ties of the depth test (the open class of the order); an animation node marks itself
+/// displayed, and a particle node has no display of its own. `NIRENDER_NODE_KINDS=0`
+/// keeps all of them out (the rule before, for an A/B).
+const REJECTED_KINDS: [&[u8]; 1] = [b"NiSortAdjustNode"];
+/// The rule before plan step 5: every kind that changes what or how it draws.
+const REJECTED_KINDS_BEFORE: [&[u8]; 7] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"NiSortAdjustNode", b"BSAnimationNode", b"BSParticleNode"];
+/// The rule before, for a skinned shape (an actor): only the kinds that change which
+/// shape is drawn; the bones it follows can be animated, and the palette of each draw
+/// carries them.
+const REJECTED_KINDS_SKINNED_BEFORE: [&[u8]; 5] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"NiSortAdjustNode"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -215,6 +228,10 @@ struct Tables {
     /// A shape under an animated node, and a shape of class 0 that is not skinned, are
     /// retained too (`NIRENDER_ANIMATED=0` keeps them out: the state before, for an A/B).
     animated: bool,
+    /// A shape under a billboard, a switch, a level of detail, a BSP, an animation or a
+    /// particle node is retained too (`NIRENDER_NODE_KINDS=0` keeps them out: the rule
+    /// before, for an A/B). See `REJECTED_KINDS`.
+    node_kinds: bool,
     /// The frame each light (by its index) was noted last: its values are made and its LIGHT
     /// record sent at most once a frame, whatever number of shapes it lights.
     light_noted: Vec<u32>,
@@ -259,6 +276,7 @@ unsafe fn tables() -> &'static mut Tables {
         landscape: std::env::var("NIRENDER_LANDSCAPE").map_or(true, |v| v != "0"),
         actors: std::env::var("NIRENDER_ACTORS").map_or(true, |v| v != "0"),
         animated: std::env::var("NIRENDER_ANIMATED").map_or(true, |v| v != "0"),
+        node_kinds: std::env::var("NIRENDER_NODE_KINDS").map_or(true, |v| v != "0"),
         light_noted: Vec::new(),
         scratch_entry: [0; E::SIZE / 4],
         scratch_lights: Vec::new(),
@@ -548,9 +566,15 @@ unsafe fn effect_retained(effect: usize) -> bool {
 }
 
 /// True when the run-time type of the node, or a base of it, is one of the rejected kinds
-/// (the narrower list for a skinned shape).
+/// (with the rule before, the narrower list for a skinned shape).
 unsafe fn kind_rejected(node: usize, skinned: bool) -> bool {
-    let kinds: &[&[u8]] = if skinned { &REJECTED_KINDS_SKINNED } else { &REJECTED_KINDS };
+    let kinds: &[&[u8]] = if tables().node_kinds {
+        &REJECTED_KINDS
+    } else if skinned {
+        &REJECTED_KINDS_SKINNED_BEFORE
+    } else {
+        &REJECTED_KINDS_BEFORE
+    };
     let mut rtti = crate::ports::ni::get_rtti(node);
     for _ in 0..16 {
         if rtti == 0 {

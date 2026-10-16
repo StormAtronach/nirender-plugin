@@ -58,6 +58,8 @@ capture), `tools/run_own_device.py` (a game run with the harness mods).
 Never for a player. `NIRENDER_PORT_TIMING=1` times each live port call.
 `NIRENDER_PLUGIN_DLL=<path>` installs that DLL for a run. `NIRENDER_LANDSCAPE=0`,
 `NIRENDER_ACTORS=0` and `NIRENDER_ANIMATED=0` keep that class on the engine's path.
+`NIRENDER_NODE_KINDS=0` keeps a shape under a billboard, switch, level of detail, BSP,
+animation or particle node on the engine's path (the rule before 2026-10-16).
 `NIRENDER_SKIP=0` makes the engine display the retained shapes too.
 
 ## Where the plan is

@@ -19,6 +19,15 @@ a cylinder), a lit material, a base texture of the level, and the property under
                  spans half the texture)
     env_perspective NiTextureEffect environment map, WORLD_PERSPECTIVE coordinates
     fog_map      NiTextureEffect fog map, SPHERE_MAP coordinates, the cylinder
+    node_billboard a box under a NiBillboardNode (always facing the camera), 80 units
+                 off the node's origin, so its place turns with the node
+    node_switch  a NiSwitchNode with index 1: child 0 a cylinder (never shown), child 1
+                 the box
+    node_lod     a NiLODNode: the box up to 350 units, the cylinder beyond; the tour
+                 stands at 300 and comes from farther away, so the level changes on
+                 arrival
+    node_bsp     a NiBSPNode with the plane x = 0: the box west of it, the cylinder
+                 east
 
 The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
 write of the level's own files. The texture effect is attached as the level's exhibits do:
@@ -231,6 +240,30 @@ def make(name, geometry, extra_properties=(), effect=None, material_block=None, 
         blocks.append(light)
         blocks[0]["children"].append(at)
         blocks[0]["effects"].append(at)
+    return write_file(name, blocks)
+
+
+def make_tree(name, kind, children, fields=None, flags=8):
+    """A root with one node of `kind` (with its own `fields`) whose children are shapes,
+    one for each (geometry, translation). The blocks: 0 root, 1 the node, 2 material, 3
+    texturing, 4 texture, then a shape and its data for each child. The node kinds of the
+    retention rule are tested with these (plan step 5, 2026-10-16)."""
+    mid = node(kind, flags)
+    mid["type"] = kind
+    mid.update(fields or {})
+    blocks = [node("@_nifx " + name), mid, material(), texturing(4), source_texture(BASE_TEXTURE)]
+    blocks[0]["children"] = [1]
+    for i, (geometry, translation) in enumerate(children):
+        shape = av_object("%s %d" % (name, i), 0)
+        shape.update({"type": "NiTriShape", "data": len(blocks) + 1, "skin": -1, "properties": [2, 3], "translation": list(translation)})
+        mid["children"].append(len(blocks))
+        blocks.append(shape)
+        blocks.append(tri_shape_data(geometry))
+    return write_file(name, blocks)
+
+
+def write_file(name, blocks):
+    """Writes the blocks with the root 0, proven by a read and a write back."""
     data = nif40.write(blocks, [0])
     back, roots = nif40.read(data)
     assert nif40.write(back, roots) == data, name
@@ -300,6 +333,14 @@ def main():
         ("env_parallel", make("env_parallel", b, effect=(2, 0, [1 / 240, 0.0, 0.0, 0.0, 1 / 240, 0.0, 0.0, 0.0, 1 / 240], [0.5, 0.5, 0.5]))),
         ("env_perspective", make("env_perspective", b, effect=(2, 1, [1 / 240, 0.0, 0.0, 0.0, 1 / 240, 0.0, 0.0, 0.0, 1 / 400], [0.5, 0.5, 1.0]))),
         ("fog_map", make("fog_map", c, effect=(3, 2, SPHERE_MATRIX, SPHERE_TRANSLATION))),
+        # The node kinds of the retention rule. The billboard's mode is in bits 5 and 6 of
+        # its flags: 0, always face the camera. The levels of detail need one range for
+        # each child; the tour's stop is 300 units south and the stop before it farther,
+        # so the far level shows first and the near one on arrival.
+        ("node_billboard", make_tree("node_billboard", "NiBillboardNode", [(b, [80.0, 0.0, 0.0])])),
+        ("node_switch", make_tree("node_switch", "NiSwitchNode", [(c, ZERO3), (b, ZERO3)], {"index": 1})),
+        ("node_lod", make_tree("node_lod", "NiLODNode", [(b, ZERO3), (c, ZERO3)], {"index": 0, "lod_center": list(ZERO3), "lod_levels": [(0.0, 350.0), (350.0, 100000.0)]})),
+        ("node_bsp", make_tree("node_bsp", "NiBSPNode", [(b, [-100.0, 0.0, 0.0]), (c, [100.0, 0.0, 0.0])], {"plane_normal": [1.0, 0.0, 0.0], "plane_constant": 0.0})),
     ]
     lines = ["-- The test NIFs of the flag support, made by tools/make_test_nifs.py (do not edit).",
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",
