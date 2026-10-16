@@ -350,6 +350,9 @@ return function(nirender, spec)
                     return say("tour: done, %d cells", #cells)
                 end
                 scenario.goTo(name)
+                -- The Lua of the run (`--lua-file`) at the first cell of the tour too: a run
+                -- with the tour step alone never reaches the interior or exterior steps.
+                if index == 1 then runLua() end
                 after(spec.settleSeconds or 6, function()
                     -- With spec.tourExtra, the test NIFs of the flag support (made by
                     -- tools/make_test_nifs.py) stand in the first cell, in a row east of the
@@ -362,15 +365,42 @@ return function(nirender, spec)
                             if id:sub(1, 5) == "@nif_" and not id:find("tile", 1, true) and (not east or ref.position.x > east.position.x) then east = ref end
                         end
                         local base = east and east.position or tes3.player.position
+                        -- A steady light of the game for the entries that need light (the
+                        -- level lights almost nothing): the first light object with no
+                        -- flicker or pulse and a radius of 256 or more.
+                        local steady = nil
+                        for light in tes3.iterateObjects(tes3.objectType.light) do
+                            -- A radius up to 1024: a mod's scripted light of radius 8000 (AB_light@_Lightning) lit
+                            -- nothing on 2026-10-16.
+                            if light.radius and light.radius >= 256 and light.radius <= 1024 and not light.flickers and not light.flickersSlowly and not light.pulses
+                                and not light.pulsesSlowly and not light.isNegative and not light.isOffByDefault and not light.canCarry
+                                and light.mesh and light.mesh ~= "" then
+                                -- The game's own lights first (a mod's can be blue or scripted), then
+                                -- the largest radius.
+                                local own = light.sourceMod == "Morrowind.esm"
+                                local best = steady and steady.sourceMod == "Morrowind.esm"
+                                if not steady or (own and not best) or (own == best and light.radius > steady.radius) then
+                                    steady = light
+                                end
+                            end
+                        end
                         local placed = 0
                         for i, entry in ipairs(require("nirender.test_nifs")) do
                             local object = tes3.getObject(entry.id) or tes3.createObject({ objectType = tes3.objectType.static, id = entry.id, mesh = entry.mesh })
                             if object then
-                                tes3.createReference({ object = object, cell = tes3.player.cell,
-                                    position = tes3vector3.new(base.x + 400 * i, base.y, base.z + 80), orientation = tes3vector3.new(0, 0, 0) })
+                                local at = tes3vector3.new(base.x + 400 * i, base.y, base.z + 80)
+                                tes3.createReference({ object = object, cell = tes3.player.cell, position = at, orientation = tes3vector3.new(0, 0, 0) })
+                                if entry.light and steady then
+                                    -- In front, left and above the object, at half the light's radius (a
+                                    -- first try at 291 units was outside a radius of 256).
+                                    local r = steady.radius
+                                    tes3.createReference({ object = steady, cell = tes3.player.cell,
+                                        position = tes3vector3.new(at.x - 0.25 * r, at.y - 0.35 * r, at.z + 0.25 * r), orientation = tes3vector3.new(0, 0, 0) })
+                                end
                                 placed = placed + 1
                             end
                         end
+                        say("tour: the steady light is %s (radius %s)", steady and steady.id or "none", steady and tostring(steady.radius) or "-")
                         tes3.mobilePlayer.movementCollision = false
                         say("tour: %d test NIFs placed east of %s at %s", placed, east and east.object.id or "the player", tostring(base))
                     end

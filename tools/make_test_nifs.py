@@ -33,8 +33,9 @@ import nif40  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(REPO, "mod", "meshes", "@_nifx")
 LIST = os.path.join(REPO, "mod", "MWSE", "mods", "nirender", "test_nifs.lua")
-# The one texture of the level with a visible pattern (the others are black or white).
-BASE_TEXTURE = "textures\\@_nif\\1233.dds"
+# A white base: the shading shows on it. 1233.dds (a white triangle on black) is the one
+# texture of the level with a pattern, for the effect; as a base it made the shapes black.
+BASE_TEXTURE = "textures\\@_nif\\blankwhite.dds"
 EFFECT_TEXTURE = "textures\\@_nif\\1233.dds"
 IDENTITY = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 ZERO3 = [0.0, 0.0, 0.0]
@@ -170,9 +171,20 @@ def texture_effect(source, texture_type, coordinates):
     return b
 
 
-def make(name, geometry, extra_properties=(), effect=None, material_block=None):
+def point_light(position, diffuse=(1.0, 1.0, 1.0)):
+    """A white point light with no falloff (constant attenuation 1), as a NIF of the level
+    carries one: a child of the root and in its effects list. The level itself lights
+    almost nothing (its exhibits glow by their emissive colour), so a shading test brings
+    its own light."""
+    b = av_object("", 4)
+    b.update({"type": "NiPointLight", "translation": list(position), "affected": [0], "dimmer": 1.0, "ambient": [0.0, 0.0, 0.0],
+              "diffuse": list(diffuse), "specular": [1.0, 1.0, 1.0], "constant": 1.0, "linear": 0.0, "quadratic": 0.0})
+    return b
+
+
+def make(name, geometry, extra_properties=(), effect=None, material_block=None, light=None):
     """The blocks: 0 root, 1 shape, 2 data, 3 material, 4 texturing, 5 texture, then the
-    extra properties, then the effect and its texture."""
+    extra properties, then the effect and its texture, then the light."""
     blocks = [node("@_nifx " + name), None, tri_shape_data(geometry), material_block or material(), texturing(5), source_texture(BASE_TEXTURE)]
     shape = av_object(name, 0)
     shape.update({"type": "NiTriShape", "data": 2, "skin": -1, "properties": [3, 4]})
@@ -188,6 +200,11 @@ def make(name, geometry, extra_properties=(), effect=None, material_block=None):
         blocks.append(source_texture(EFFECT_TEXTURE, 5, 2, 3))
         blocks[0]["children"].append(source - 1)
         blocks[0]["effects"] = [source - 1]
+    if light is not None:
+        at = len(blocks)
+        blocks.append(light)
+        blocks[0]["children"].append(at)
+        blocks[0]["effects"].append(at)
     data = nif40.write(blocks, [0])
     back, roots = nif40.read(data)
     assert nif40.write(back, roots) == data, name
@@ -203,6 +220,9 @@ def main():
     files = [
         ("fog_z", make("fog_z", b, [fog(0)])),
         ("fog_range", make("fog_range", b, [fog(1)])),
+        # A NiPointLight inside the file lights nothing in Morrowind (seen 2026-10-16 on both
+        # renderers): the game takes its lights from light objects. The tour step places a
+        # steady light object beside each entry marked `light`.
         ("shade_smooth", make("shade_smooth", c, [one_flag("NiShadeProperty", 1)])),
         ("shade_flat", make("shade_flat", c, [one_flag("NiShadeProperty", 0)])),
         ("specular", make("specular", b, [one_flag("NiSpecularProperty", 1)], material_block=material([1.0, 1.0, 1.0], 40.0))),
@@ -215,7 +235,8 @@ def main():
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",
              "return {"]
     for name, path in files:
-        lines.append('    { id = "@nif_x_%s", mesh = "@_nifx\\\\%s.nif" },' % (name, name))
+        light = ", light = true" if name in ("shade_smooth", "shade_flat", "specular") else ""
+        lines.append('    { id = "@nif_x_%s", mesh = "@_nifx\\\\%s.nif"%s },' % (name, name, light))
         print("wrote", path, os.path.getsize(path), "bytes")
     lines.append("}")
     open(LIST, "w", newline="\n").write("\n".join(lines) + "\n")

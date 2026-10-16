@@ -3,9 +3,9 @@
 return {
     { id = "@nif_x_fog_z", mesh = "@_nifx\\fog_z.nif" },
     { id = "@nif_x_fog_range", mesh = "@_nifx\\fog_range.nif" },
-    { id = "@nif_x_shade_smooth", mesh = "@_nifx\\shade_smooth.nif" },
-    { id = "@nif_x_shade_flat", mesh = "@_nifx\\shade_flat.nif" },
-    { id = "@nif_x_specular", mesh = "@_nifx\\specular.nif" },
+    { id = "@nif_x_shade_smooth", mesh = "@_nifx\\shade_smooth.nif", light = true },
+    { id = "@nif_x_shade_flat", mesh = "@_nifx\\shade_flat.nif", light = true },
+    { id = "@nif_x_specular", mesh = "@_nifx\\specular.nif", light = true },
     { id = "@nif_x_env_sphere", mesh = "@_nifx\\env_sphere.nif" },
     { id = "@nif_x_env_parallel", mesh = "@_nifx\\env_parallel.nif" },
     { id = "@nif_x_env_perspective", mesh = "@_nifx\\env_perspective.nif" },

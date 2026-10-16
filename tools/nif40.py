@@ -55,6 +55,11 @@ LAYOUTS = {
                                     ("source", "ref"), ("clipping_plane", "u8"), ("plane_normal", "v3"), ("plane_constant", "f"),
                                     ("ps2_l", "i16"), ("ps2_k", "i16"), ("unknown", "u16")],
     "NiStringExtraData": [("next", "ref"), ("bytes_remaining", "u32"), ("string", "str")],
+    # A light: a dynamic effect (the affected list) with its colours, then the attenuation.
+    "NiPointLight": AV_OBJECT + [("affected", "u32list"), ("dimmer", "f"), ("ambient", "v3"), ("diffuse", "v3"), ("specular", "v3"),
+                                 ("constant", "f"), ("linear", "f"), ("quadratic", "f")],
+    "NiSpotLight": AV_OBJECT + [("affected", "u32list"), ("dimmer", "f"), ("ambient", "v3"), ("diffuse", "v3"), ("specular", "v3"),
+                                ("constant", "f"), ("linear", "f"), ("quadratic", "f"), ("cutoff", "f"), ("exponent", "f")],
 }
 
 
