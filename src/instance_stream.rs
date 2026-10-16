@@ -505,9 +505,10 @@ unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize
         // The test function of NiZBufferProperty, the enum of NetImmerse (not D3DCMPFUNC):
         // 0 always, 1 less, 2 equal, 3 less or equal, 4 greater, 5 not equal, 6 greater or
         // equal, 7 never. The first wrong form of this rule took 3 for "equal" and rejected
-        // nearly every shape (2026-10-16).
+        // nearly every shape (2026-10-16). With the test off (flags bit 0) the engine uses
+        // "always" whatever the function says, so the function counts only with the test on.
         let z: usize = rd(property_state, PS::propZBuffer);
-        if z != 0 && !matches!(rd::<u32>(z, ZP::testFunction), 0 | 1 | 3 | 7) {
+        if z != 0 && rd::<u16>(z, PROPERTY_FLAGS) & 1 != 0 && !matches!(rd::<u32>(z, ZP::testFunction), 0 | 1 | 3 | 7) {
             return Some(REASON_DEPTH);
         }
     }
