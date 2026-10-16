@@ -22,8 +22,9 @@
 
 use super::*;
 
-/// The size of a `Scene` uniform, the step of the dynamic offset.
-pub const SCENE_SIZE: usize = 256;
+/// The size of a `Scene` uniform, the step of the dynamic offset (a multiple of the
+/// alignment of a uniform offset, 256).
+pub const SCENE_SIZE: usize = 512;
 /// The scenes a frame can have: the world, and the views the extension replays.
 pub const SCENE_SLOTS: usize = 32;
 /// The room of the segments at first.
@@ -52,6 +53,10 @@ pub struct SceneData {
     pub extension5: [f32; 4],
     pub extension7: [f32; 4],
     pub counts: [u32; 4],
+    /// The origin of the set in the world: the positions of its draws are relative to it.
+    /// The stage of a texture effect that takes the position adds it (`stage_coordinate`).
+    pub origin: [f32; 4],
+    pub padding: [u32; 60],
 }
 const _: () = assert!(core::mem::size_of::<SceneData>() == SCENE_SIZE);
 
@@ -866,6 +871,43 @@ impl RetainedSet {
     }
 }
 
+/// The stages of the texture effects of a material for the table, as `Pass::new` takes them
+/// from a shape record: the generation from a vector of the world in the high word of the
+/// coordinate index (5 the normal, 6 the position, 7 the reflection, as the shader reads
+/// them), the transform flags, and the texture matrix from the effect's world projection.
+/// The engine's callbacks make the same stage for a camera by turning the vector of camera
+/// space into one of the world first: here the shader does the turn, so the stage holds for
+/// every view. The position of a retained draw is relative to the origin of the set: the
+/// shader adds `scene.origin` before the matrix. `None` for a material without effects.
+fn effect_stages(m: &material::Material) -> Option<[[u32; EFFECT_STAGE_WORDS]; 2]> {
+    if m.environment_effect.is_none() && m.fog_map_effect.is_none() {
+        return None;
+    }
+    let stage = |effect: Option<material::Effect>, mode: u32| -> [u32; EFFECT_STAGE_WORDS] {
+        let mut words = [0u32; EFFECT_STAGE_WORDS];
+        let Some(e) = effect else { return words };
+        words[0] = match mode {
+            0 | 1 => 0x60000,
+            2 | 3 => 0x70000,
+            _ => 0x50000,
+        };
+        words[1] = e.flags;
+        // The texture matrix of Direct3D, row by row: the coordinate is a row vector times
+        // the matrix, so a column of the effect's matrix is a row here, and the translation
+        // is the fourth row.
+        for row in 0..3 {
+            for column in 0..3 {
+                words[2 + row * 4 + column] = e.matrix[column * 3 + row].to_bits();
+            }
+        }
+        for column in 0..3 {
+            words[2 + 12 + column] = e.translation[column].to_bits();
+        }
+        words
+    };
+    Some([stage(m.environment_effect, m.environment_coordinates), stage(m.fog_map_effect, m.fog_map_coordinates)])
+}
+
 impl Player {
     /// Puts an instance record with the flag 0x100 into the table: a slot for each pass of
     /// its material, with the record of the draw made as for a shape record. An instance
@@ -928,9 +970,10 @@ impl Player {
         };
         let topology = if strips.is_empty() { 4 } else { 5 };
         let stencil = derived.stencil;
+        let effects = effect_stages(&m);
         let mut slots = Vec::new();
         for pass in 0..derived.passes.len() {
-            let p = Pass::new(&derived, pass, &m, &self.renderer.textures, None);
+            let p = Pass::new(&derived, pass, &m, &self.renderer.textures, effects.as_ref());
             let key = PipelineKey {
                 fvf,
                 stride,
@@ -1025,6 +1068,11 @@ impl Player {
             extension5: [0.0; 4],
             extension7: [0.0; 4],
             counts: [0; 4],
+            origin: {
+                let o = self.retained.light_origin().unwrap_or([0.0; 3]);
+                [o[0] as f32, o[1] as f32, o[2] as f32, 0.0]
+            },
+            padding: [0; 60],
         };
         // The fog of the extension for the world, as a draw of the world gets it.
         let fog_range = self.parameters.as_ref().and_then(|p| p.fog_range);

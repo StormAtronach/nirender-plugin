@@ -68,6 +68,8 @@ use crate::mem::{rd, wr};
 /// the translation in a transform.
 const CONTROLLERS: usize = 0x10;
 const PARENT: usize = 0x18;
+/// `NiTextureEffect::coordinateMode` (see `texture_pass_b`).
+const EFFECT_COORDINATE_MODE: usize = 0x118;
 const WORLD: usize = 0x40;
 const WORLD_TRANSLATION: usize = WORLD + 0x24;
 /// `NiAVObject::worldBound`: the centre and the radius.
@@ -512,10 +514,37 @@ unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize
             return Some(REASON_DEPTH);
         }
     }
-    if effect_state != 0 && (rd::<usize>(effect_state, DES::environmentMap) != 0 || rd::<usize>(effect_state, DES::fogMap) != 0) {
-        return Some(REASON_EFFECT);
+    // A texture effect is retained when the table can make its stage from the material
+    // record: a parallel, a perspective or a sphere map (modes 0 to 2; a cube map needs a
+    // cube texture) whose world projection does not change (no controller on the effect or
+    // on a node above it: the record has the projection, and a change of it would send the
+    // record again).
+    if effect_state != 0 {
+        for effect in [rd::<usize>(effect_state, DES::environmentMap), rd::<usize>(effect_state, DES::fogMap)] {
+            if effect != 0 && !effect_retained(effect) {
+                return Some(REASON_EFFECT);
+            }
+        }
     }
     None
+}
+
+/// True when the table can draw the texture effect: see `reject_reason`.
+unsafe fn effect_retained(effect: usize) -> bool {
+    if rd::<u32>(effect, EFFECT_COORDINATE_MODE) > 2 {
+        return false;
+    }
+    let mut node = effect;
+    for _ in 0..MAX_DEPTH {
+        if node == 0 {
+            return true;
+        }
+        if rd::<usize>(node, CONTROLLERS) != 0 {
+            return false;
+        }
+        node = rd(node, PARENT);
+    }
+    false
 }
 
 /// True when the run-time type of the node, or a base of it, is one of the rejected kinds
@@ -544,8 +573,22 @@ pub unsafe fn take_pending() -> Option<(usize, u32)> {
     tables().pending.take()
 }
 
-/// The shape of a pending draw turned out not retainable at the record (a texture effect,
-/// a kind of draw other than a shape): it goes to the rejected set.
+/// The causes of a rejection at the record, for the report: no geometry handle, no material
+/// handle, a material the helper does not model, no exact translation.
+static mut LATER_BY: [u32; 4] = [0; 4];
+const LATER_GEOMETRY: usize = 0;
+const LATER_MATERIAL: usize = 1;
+const LATER_NOT_MODELLED: usize = 2;
+const LATER_TRANSLATION: usize = 3;
+
+/// `reject_pending` with the cause counted.
+unsafe fn reject_at_record(shape: usize, cause: usize) {
+    (*core::ptr::addr_of_mut!(LATER_BY))[cause] += 1;
+    reject_pending(shape, true);
+}
+
+/// The shape of a pending draw turned out not retainable at the record (a kind of draw
+/// other than a shape, a picture of the Code Patch, no handle): it goes to the rejected set.
 pub unsafe fn reject_pending(shape: usize, reason_later: bool) {
     let t = tables();
     mark(shape, false);
@@ -584,7 +627,7 @@ pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, col
             [0.0; 3]
         } else {
             let Some(exact) = crate::camera_space::exact_translation(shape, 0) else {
-                reject_pending(shape, true);
+                reject_at_record(shape, LATER_TRANSLATION);
                 return false;
             };
             exact
@@ -751,7 +794,14 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
         let geometry = crate::geometry_stream::note(kind, rd(shape, GEOMETRY_MODEL_DATA), 0);
         let material = crate::material_stream::note(renderer, property_state, effect_state);
         if geometry == 0 || material == 0 || !crate::material_stream::last_modelled() {
-            reject_pending(shape, true);
+            let cause = if geometry == 0 {
+                LATER_GEOMETRY
+            } else if material == 0 {
+                LATER_MATERIAL
+            } else {
+                LATER_NOT_MODELLED
+            };
+            reject_at_record(shape, cause);
             return false;
         }
         instance.generation = generation;
@@ -780,7 +830,7 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
         instance.bound = bound;
         instance.colours = colours;
         let Some(exact) = crate::camera_space::exact_translation(shape, 0) else {
-            reject_pending(shape, true);
+            reject_at_record(shape, LATER_TRANSLATION);
             return false;
         };
         if changed {
@@ -847,7 +897,11 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
 pub unsafe fn report() -> String {
     let t = tables();
     let reasons = ["controller", "node kind", "property controller", "blend", "effect", "at the record", "depth function"];
-    let rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
+    let mut rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
+    let later = *core::ptr::addr_of!(LATER_BY);
+    if later.iter().any(|&n| n != 0) {
+        rejected.push(format!("at the record by cause: geometry {}, material {}, not modelled {}, translation {}", later[0], later[1], later[2], later[3]));
+    }
     let causes = ["not a plain world draw of a retained class", "no geometry", "no material", "path off", "not modelled"];
     let skipped: Vec<String> = causes.iter().zip(t.skipped_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(

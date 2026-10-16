@@ -9,6 +9,9 @@
 
 /// The words of a record. See `material_stream` of the plugin for the layout.
 pub const WORDS: usize = 91;
+/// The words of a record that has the static values of its texture effects after the 91
+/// (13 for each: the environment map at 91, the fog map at 104). A shorter record has none.
+pub const WORDS_WITH_EFFECTS: usize = 117;
 
 pub const BLEND: u32 = 1;
 pub const ALPHA_TEST: u32 = 2;
@@ -69,8 +72,24 @@ pub struct Material {
     pub environment: Map,
     pub environment_coordinates: u32,
     pub fog_map: Map,
+    pub fog_map_coordinates: u32,
     pub projected_lights: u32,
     pub projected_shadows: u32,
+    /// The values of the effects that do not change with the camera, when the record has
+    /// them: the table makes the stage of a retained draw from them.
+    pub environment_effect: Option<Effect>,
+    pub fog_map_effect: Option<Effect>,
+}
+
+/// The values of a texture effect that do not change with the camera: the 3x3 matrix (row
+/// by row) and the translation of its world projection, and the transform flags of its
+/// stage. The stage for any camera is the matrix applied to a vector of the world (the
+/// position, the reflection or the normal, by the coordinate mode) plus the translation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Effect {
+    pub matrix: [f32; 9],
+    pub translation: [f32; 3],
+    pub flags: u32,
 }
 
 impl Material {
@@ -81,6 +100,9 @@ impl Material {
         let w = |i: usize| u32::from_le_bytes([data[i * 4], data[i * 4 + 1], data[i * 4 + 2], data[i * 4 + 3]]);
         let f = |i: usize| f32::from_bits(w(i));
         let map = |at: usize| Map { texture: w(at), clamp: w(at + 1), filter: w(at + 2), set: w(at + 3), present: w(at + 4) != 0 };
+        let effect = |at: usize, present: bool| -> Option<Effect> {
+            (present && data.len() >= WORDS_WITH_EFFECTS * 4).then(|| Effect { matrix: core::array::from_fn(|k| f(at + k)), translation: core::array::from_fn(|k| f(at + 9 + k)), flags: w(at + 12) })
+        };
         Some(Material {
             flags: w(1),
             source_blend: w(2),
@@ -101,8 +123,11 @@ impl Material {
             environment: Map { texture: w(81), clamp: w(82), filter: w(83), set: 1, present: w(1) & ENVIRONMENT_MAP != 0 },
             environment_coordinates: w(84),
             fog_map: Map { texture: w(85), clamp: w(86), filter: w(87), set: 1, present: w(1) & FOG_MAP != 0 },
+            fog_map_coordinates: w(88),
             projected_lights: w(89),
             projected_shadows: w(90),
+            environment_effect: effect(91, w(1) & ENVIRONMENT_MAP != 0),
+            fog_map_effect: effect(104, w(1) & FOG_MAP != 0),
         })
     }
 }

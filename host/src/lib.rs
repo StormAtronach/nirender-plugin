@@ -3697,8 +3697,10 @@ impl Stream {
                 break;
             }
             if stages < STAGES {
-                // The coordinate index has the way to generate it in its high word. The
-                // transform flags are the number of parts, and 256 for a projected coordinate.
+                // The coordinate index has the way to generate it in its high word (1 to 3
+                // from a vector of camera space, as Direct3D; 5 to 7 from the same vector of
+                // the world, for the effects of the retained table). The transform flags are
+                // the number of parts, and 256 for a projected coordinate.
                 let (coordinate, transform) = (stage.coordinate, stage.transform);
                 if coordinate >> 16 != 0 || transform != 0 {
                     counts.coordinate_work += 1;
@@ -3707,7 +3709,7 @@ impl Stream {
                 data.stages[stages] = StageData {
                     color: [stage.color[0], stage.color[1], stage.color[2], 1],
                     alpha: [stage.alpha[0], stage.alpha[1], stage.alpha[2], 0],
-                    coordinate: [coordinate >> 16 & 3, coordinate & 3, transform & 7, (transform & 256 != 0) as u32],
+                    coordinate: [coordinate >> 16 & 7, coordinate & 3, transform & 7, (transform & 256 != 0) as u32],
                     bump: [stage.bump[0], stage.bump[1], stage.bump[2], stage.bump[3]],
                     luminance: [stage.bump[4], stage.bump[5], 0.0, 0.0],
                     slots: [0; 4],

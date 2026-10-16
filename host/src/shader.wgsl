@@ -124,6 +124,9 @@ struct Scene {
     extension5: vec4f,
     extension7: vec4f,
     counts: vec4u,
+    // The origin of the retained set in the world: the positions of its draws are relative
+    // to it. A stage of a texture effect that takes the position adds it.
+    origin: vec4f,
 }
 @group(0) @binding(10) var<uniform> scene: Scene;
 @group(0) @binding(11) var<storage, read> lights_retained: array<Light>;
@@ -267,7 +270,7 @@ struct VertexOut {
 }
 
 // The texture coordinate of a stage, as the fixed-function pipeline makes it.
-fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view_normal: vec3f) -> vec4f {
+fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view_normal: vec3f, world_position: vec3f, world_normal: vec3f) -> vec4f {
     let how = draws[record].stages[index].coordinate;
     var sets = uvs;
     var value: vec4f;
@@ -277,6 +280,18 @@ fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view
         case 3u: {
             let from_eye = normalize(view_position);
             value = vec4f(from_eye - 2.0 * dot(view_normal, from_eye) * view_normal, 1.0);
+        }
+        // The same vectors in the world, for the texture effects of the retained table: the
+        // engine's callbacks turn the vector of camera space into one of the world before
+        // the effect's matrix, and the table keeps only the matrix. The view matrix has no
+        // scale: its transpose turns a vector of the view into one of the world.
+        case 5u: { value = vec4f(normalize(world_normal), 1.0); }
+        case 6u: { value = vec4f(world_position + scene.origin.xyz, 1.0); }
+        case 7u: {
+            let from_eye = normalize(view_position);
+            let reflected = from_eye - 2.0 * dot(view_normal, from_eye) * view_normal;
+            let v = draw_view();
+            value = vec4f(transpose(mat3x3f(v[0].xyz, v[1].xyz, v[2].xyz)) * reflected, 1.0);
         }
         // A coordinate set with two parts: Direct3D puts 1 into the third part, so that the
         // third row of a texture transform moves the coordinate.
@@ -346,12 +361,12 @@ fn vs(in: VertexIn) -> VertexOut {
     out.clip = vec4f(out.clip.xy + draw_pixel().xy * out.clip.w, out.clip.zw);
     let uvs = array<vec2f, 4>(in.uv0, in.uv1, in.uv2, in.uv3);
     let view_normal = normalize((draw_view() * vec4f(world_normal, 0.0)).xyz + vec3f(0.0, 0.0, 1e-20));
-    out.coordinate0 = stage_coordinate(0u, uvs, view_position.xyz, view_normal);
-    out.coordinate1 = stage_coordinate(1u, uvs, view_position.xyz, view_normal);
-    out.coordinate2 = stage_coordinate(2u, uvs, view_position.xyz, view_normal);
-    out.coordinate3 = stage_coordinate(3u, uvs, view_position.xyz, view_normal);
-    out.coordinate4 = stage_coordinate(4u, uvs, view_position.xyz, view_normal);
-    out.coordinate5 = stage_coordinate(5u, uvs, view_position.xyz, view_normal);
+    out.coordinate0 = stage_coordinate(0u, uvs, view_position.xyz, view_normal, world_position.xyz, world_normal);
+    out.coordinate1 = stage_coordinate(1u, uvs, view_position.xyz, view_normal, world_position.xyz, world_normal);
+    out.coordinate2 = stage_coordinate(2u, uvs, view_position.xyz, view_normal, world_position.xyz, world_normal);
+    out.coordinate3 = stage_coordinate(3u, uvs, view_position.xyz, view_normal, world_position.xyz, world_normal);
+    out.coordinate4 = stage_coordinate(4u, uvs, view_position.xyz, view_normal, world_position.xyz, world_normal);
+    out.coordinate5 = stage_coordinate(5u, uvs, view_position.xyz, view_normal, world_position.xyz, world_normal);
 
     var vertex_color = vec4f(1.0);
     if draws[record].flags.z != 0u {

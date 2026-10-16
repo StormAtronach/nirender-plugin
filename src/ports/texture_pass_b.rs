@@ -599,6 +599,34 @@ pub unsafe fn effect_stage_words(renderer: usize, effect: usize) -> [u32; EFFECT
     words
 }
 
+/// The number of words of `effect_static_words`: the 3x3 matrix and the translation of the
+/// world projection, then the transform flags of the stage.
+pub const EFFECT_STATIC_WORDS: usize = 13;
+
+/// The values of a texture effect that do not change with the camera, for the material
+/// record: the 3x3 matrix and the translation of its world projection, then the transform
+/// flags its coordinate callback sets (2 for a parallel or a sphere map, those of the
+/// pipeline for a perspective map, 3 for a cube map). The stage of the effect for any camera
+/// is this matrix applied to a vector of the world (the position for the parallel and the
+/// perspective map, the reflection for the sphere and the specular cube map, the normal for
+/// the diffuse cube map) plus this translation: the camera matrix of the callbacks only turns
+/// the vector of camera space into one of the world. The table of the helper makes the stage
+/// of a retained draw from these words. Zeros when the effect gives no stage.
+pub unsafe fn effect_static_words(renderer: usize, effect: usize) -> [u32; EFFECT_STATIC_WORDS] {
+    let mut words = [0u32; EFFECT_STATIC_WORDS];
+    if effect == 0 || rd::<u8>(effect, EFFECT_ENABLED) == 0 || rd::<usize>(effect, EFFECT_TEXTURE) == 0 {
+        return words;
+    }
+    words[..9].copy_from_slice(&rd::<[u32; 9]>(effect, EFFECT_PROJECTION_MATRIX));
+    words[9..12].copy_from_slice(&rd::<[u32; 3]>(effect, EFFECT_PROJECTION_TRANSLATION));
+    words[12] = match rd::<u32>(effect, EFFECT_COORDINATE_MODE) {
+        0 | 2 => 2,
+        1 => rd::<u32>(rd::<usize>(renderer, REN::configurableTexturePipeline), CTP::field_310),
+        _ => 3,
+    };
+    words
+}
+
 /// 0x6B6090 `NiDX8TexturePass::texGen_SphereMap_Claude_`
 pub unsafe fn tex_gen_sphere_map(this: usize, matrix: usize, translation: usize, stage: usize) -> u32 {
     crate::shadow::touch(&tex_gen_sphere_map_port::STATE);

@@ -14,10 +14,11 @@ a cylinder), a lit material, a base texture of the level, and the property under
     shade_smooth NiShadeProperty smooth (the control of shade_flat), a cylinder
     shade_flat   NiShadeProperty flat, the same cylinder
     specular     NiSpecularProperty on, a white specular colour, glossiness 40
-    env_sphere   NiTextureEffect environment map, SPHERE_MAP coordinates
-    env_parallel NiTextureEffect environment map, WORLD_PARALLEL coordinates
+    env_sphere   NiTextureEffect environment map, SPHERE_MAP coordinates, the cylinder
+    env_parallel NiTextureEffect environment map, WORLD_PARALLEL coordinates (the box
+                 spans half the texture)
     env_perspective NiTextureEffect environment map, WORLD_PERSPECTIVE coordinates
-    fog_map      NiTextureEffect fog map, SPHERE_MAP coordinates
+    fog_map      NiTextureEffect fog map, SPHERE_MAP coordinates, the cylinder
 
 The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
 write of the level's own files. The texture effect is attached as the level's exhibits do:
@@ -36,9 +37,16 @@ LIST = os.path.join(REPO, "mod", "MWSE", "mods", "nirender", "test_nifs.lua")
 # A white base: the shading shows on it. 1233.dds (a white triangle on black) is the one
 # texture of the level with a pattern, for the effect; as a base it made the shapes black.
 BASE_TEXTURE = "textures\\@_nif\\blankwhite.dds"
-EFFECT_TEXTURE = "textures\\@_nif\\1233.dds"
+# The effect texture is a checker this script writes (`write_checker`): the one patterned
+# texture of the level (1233.dds, a white triangle on black) shows as bands on a face of the
+# box, which a position maps along one line of it.
+TEXTURES = os.path.join(REPO, "mod", "textures", "@_nifx")
+EFFECT_TEXTURE = "textures\\@_nifx\\checker.dds"
 IDENTITY = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 ZERO3 = [0.0, 0.0, 0.0]
+# The usual mapping of a reflection vector onto a sphere map: half of x and y, plus a half.
+SPHERE_MATRIX = [0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0]
+SPHERE_TRANSLATION = [0.5, 0.5, 0.0]
 
 
 def object_net(name=""):
@@ -161,11 +169,18 @@ def fog(function, depth=1.0, color=(1.0, 0.0, 0.0)):
     return b
 
 
-def texture_effect(source, texture_type, coordinates):
-    """As the exhibits of the level have it: flags 4, scale 100, the texture filtered and
-    wrapped; `affected` is a list of pointers in the file, 0 there."""
+def texture_effect(source, texture_type, coordinates, matrix=IDENTITY, translation=ZERO3):
+    """As the exhibits of the level have it: flags 4, the texture filtered and wrapped;
+    `affected` is a list of pointers in the file, 0 there. The projection (the
+    matrix row by row, then the translation) maps the vector of the world (the position for
+    a parallel or a perspective map, the reflection for a sphere map) to the texture
+    coordinate: with the identity, a position in units repeats the texture every unit and
+    the pattern averages to one colour (the first exhibits, 2026-10-16)."""
     b = av_object("", 4)
-    b.update({"type": "NiTextureEffect", "scale": 100.0, "affected": [0], "projection_matrix": list(IDENTITY), "projection_translation": list(ZERO3),
+    # The level's exhibits carry a scale of 100 on the effect node; the engine folds the
+    # node's world transform into the world projection, so the scale would divide the
+    # projection by 100 (seen 2026-10-16: the scaled projections flattened to one colour).
+    b.update({"type": "NiTextureEffect", "scale": 1.0, "affected": [0], "projection_matrix": list(matrix), "projection_translation": list(translation),
               "filtering": 2, "clamping": 3, "texture_type": texture_type, "coordinate_generation": coordinates, "source": source,
               "clipping_plane": 0, "plane_normal": [1.0, 0.0, 0.0], "plane_constant": 0.0, "ps2_l": 0, "ps2_k": -75, "unknown": 0})
     return b
@@ -194,12 +209,23 @@ def make(name, geometry, extra_properties=(), effect=None, material_block=None, 
         blocks.append(prop)
     blocks[0]["children"] = [1]
     if effect is not None:
-        texture_type, coordinates = effect
-        source = len(blocks) + 1
-        blocks.append(texture_effect(source, texture_type, coordinates))
+        texture_type, coordinates, matrix, translation = effect
+        # The shape and the effect move under a node of their own, which lists the effect:
+        # the engine keeps the effect list of a reference's root node for the lights it
+        # attaches, so an effect listed there is lost in the reference's scene (the loaded
+        # model has it, the clone does not; seen through the bridge, 2026-10-16, with the
+        # effect before and after the shape). An effect in a node of its own beside the
+        # shape is kept but applies to nothing. The node that holds both works from the
+        # file alone.
+        sub = len(blocks)
+        effect_at = sub + 1
+        source = sub + 2
+        blocks.append(node("sub"))
+        blocks[sub]["children"] = [1, effect_at]
+        blocks[sub]["effects"] = [effect_at]
+        blocks.append(texture_effect(source, texture_type, coordinates, matrix, translation))
         blocks.append(source_texture(EFFECT_TEXTURE, 5, 2, 3))
-        blocks[0]["children"].append(source - 1)
-        blocks[0]["effects"] = [source - 1]
+        blocks[0]["children"] = [sub]
     if light is not None:
         at = len(blocks)
         blocks.append(light)
@@ -213,8 +239,48 @@ def make(name, geometry, extra_properties=(), effect=None, material_block=None, 
     return path
 
 
+def write_checker(path, size=64, cell=8):
+    """An uncompressed DDS (A8R8G8B8, with its mipmaps) of a checker of white and dark blue
+    cells, with one red cell at the origin: the texture of the effect exhibits, which both
+    paths of the renderer sample through the generated coordinates. The mipmaps keep a far
+    exhibit from aliasing differently on the two paths (seen 2026-10-16 without them)."""
+    import struct
+    level = []
+    for y in range(size):
+        for x in range(size):
+            if x < cell and y < cell:
+                level.append((0, 0, 255))
+            elif (x // cell + y // cell) % 2 == 0:
+                level.append((255, 255, 255))
+            else:
+                level.append((128, 32, 16))
+    levels = [(size, level)]
+    width = size
+    while width > 1:
+        half = width // 2
+        smaller = []
+        for y in range(half):
+            for x in range(half):
+                quad = [level[(2 * y + dy) * width + 2 * x + dx] for dy in (0, 1) for dx in (0, 1)]
+                smaller.append(tuple(sum(p[k] for p in quad) // 4 for k in range(3)))
+        level, width = smaller, half
+        levels.append((width, level))
+    # DDSD_CAPS, HEIGHT, WIDTH, PITCH, PIXELFORMAT and MIPMAPCOUNT; DDSCAPS_TEXTURE, COMPLEX
+    # and MIPMAP.
+    header = struct.pack("<4s7I11I8I5I", b"DDS ", 124, 0x100F | 0x20000, size, size, size * 4, 0, len(levels), *([0] * 11),
+                         32, 0x41, 0, 32, 0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000, 0x1000 | 0x8 | 0x400000, 0, 0, 0, 0)
+    assert len(header) == 128
+    pixels = bytearray()
+    for _, pixels_of_level in levels:
+        for b, g, r in pixels_of_level:
+            pixels += bytes((b, g, r, 255))
+    open(path, "wb").write(header + pixels)
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
+    os.makedirs(TEXTURES, exist_ok=True)
+    write_checker(os.path.join(TEXTURES, "checker.dds"))
     b = box(120.0)
     c = cylinder(60.0, 140.0)
     files = [
@@ -226,10 +292,14 @@ def main():
         ("shade_smooth", make("shade_smooth", c, [one_flag("NiShadeProperty", 1)])),
         ("shade_flat", make("shade_flat", c, [one_flag("NiShadeProperty", 0)])),
         ("specular", make("specular", b, [one_flag("NiSpecularProperty", 1)], material_block=material([1.0, 1.0, 1.0], 40.0))),
-        ("env_sphere", make("env_sphere", b, effect=(2, 2))),
-        ("env_parallel", make("env_parallel", b, effect=(2, 0))),
-        ("env_perspective", make("env_perspective", b, effect=(2, 1))),
-        ("fog_map", make("fog_map", b, effect=(3, 2))),
+        # The sphere maps on the cylinder (the reflection turns around it; on a face of the
+        # box it is one value) with the usual mapping of the reflection, half and offset by a
+        # half. The parallel map scales the position so the box of 120 units spans half the
+        # texture; the perspective map divides by a third coordinate that grows along z.
+        ("env_sphere", make("env_sphere", c, effect=(2, 2, SPHERE_MATRIX, SPHERE_TRANSLATION))),
+        ("env_parallel", make("env_parallel", b, effect=(2, 0, [1 / 240, 0.0, 0.0, 0.0, 1 / 240, 0.0, 0.0, 0.0, 1 / 240], [0.5, 0.5, 0.5]))),
+        ("env_perspective", make("env_perspective", b, effect=(2, 1, [1 / 240, 0.0, 0.0, 0.0, 1 / 240, 0.0, 0.0, 0.0, 1 / 400], [0.5, 0.5, 1.0]))),
+        ("fog_map", make("fog_map", c, effect=(3, 2, SPHERE_MATRIX, SPHERE_TRANSLATION))),
     ]
     lines = ["-- The test NIFs of the flag support, made by tools/make_test_nifs.py (do not edit).",
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",

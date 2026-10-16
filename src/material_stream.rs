@@ -21,8 +21,11 @@ use crate::gen::layouts::{
 };
 use crate::mem::rd;
 
-/// The number of words of a record.
-pub const WORDS: usize = 91;
+/// The number of words of a record: 91 for the properties and the textures and modes of the
+/// effects, then 13 for each texture effect that do not change with the camera
+/// (`texture_pass_b::effect_static_words`: the environment map at 91, the fog map at 104),
+/// for the stages of the table of the helper.
+pub const WORDS: usize = 117;
 /// `NiTexture::rendererData` and `NiDX8SourceTextureData::d3dTexture`.
 const NI_TEXTURE_RENDERER_DATA: usize = 0x20;
 const SOURCE_DATA_D3D_TEXTURE: usize = 0x60;
@@ -271,7 +274,7 @@ pub unsafe fn note(renderer: usize, property_state: usize, effect_state: usize) 
 
     // The dynamic effects.
     if effect_state != 0 {
-        let effect_words = |effect: usize, at: usize, w: &mut [u32; WORDS]| -> bool {
+        let effect_words = |effect: usize, at: usize, static_at: usize, w: &mut [u32; WORDS]| -> bool {
             if effect == 0 || rd::<u8>(effect, EFFECT_ENABLED) == 0 {
                 return false;
             }
@@ -283,12 +286,15 @@ pub unsafe fn note(renderer: usize, property_state: usize, effect_state: usize) 
             w[at + 1] = rd(effect, EFFECT_CLAMP_MODE);
             w[at + 2] = rd(effect, EFFECT_FILTER_MODE);
             w[at + 3] = rd(effect, EFFECT_COORDINATE_MODE);
+            // The world projection of the effect, for the stage of a retained draw.
+            let r#static = crate::ports::texture_pass_b::effect_static_words(renderer, effect);
+            w[static_at..static_at + r#static.len()].copy_from_slice(&r#static);
             true
         };
-        if effect_words(rd(effect_state, DES::environmentMap), 81, &mut w) {
+        if effect_words(rd(effect_state, DES::environmentMap), 81, 91, &mut w) {
             flags |= ENVIRONMENT_MAP;
         }
-        if effect_words(rd(effect_state, DES::fogMap), 85, &mut w) {
+        if effect_words(rd(effect_state, DES::fogMap), 85, 104, &mut w) {
             flags |= FOG_MAP;
         }
         let count = |head: usize| {
