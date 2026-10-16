@@ -68,6 +68,8 @@ def main():
     ap.add_argument("--tour-cells", help="the cells of a test level for the step tour, with semicolons (the NIF test level: "
                     "\"@nifTest_1;@nifTest_2;@nifTest_3\")")
     ap.add_argument("--tour", default="@nif_", help="the start of the ids of the objects of the tour")
+    ap.add_argument("--tour-extra", action="store_true", help="the test NIFs of the flag support (tools/make_test_nifs.py) placed "
+                    "in the first cell of the tour, as stops")
     ap.add_argument("--tour-seconds", type=float, default=1.5, help="the time at each object of the tour")
     ap.add_argument("--tour-dual", action="store_true", help="at each stop of the tour, two frames in mode gpu and two in mode off, "
                     "with the time of the game held between them (tools/validate_tour.py compares the pair)")
@@ -114,7 +116,7 @@ def main():
                     position=args.position, yaw=args.yaw, findWater=args.find_water, findDry=args.find_dry, hour=args.hour, weather=args.weather,
                     lua=open(args.lua_file, encoding="utf-8").read() if args.lua_file else None,
                     shaderBatch=open(args.shader_batch, encoding="utf-8").read() if args.shader_batch else None,
-                    tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, tourDual=args.tour_dual or None, captureMenu=args.capture_menu, settleSeconds=args.settle,
+                    tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, tourDual=args.tour_dual or None, tourExtra=args.tour_extra or None, captureMenu=args.capture_menu, settleSeconds=args.settle,
                     overlay=args.overlay or None, earlyPicture=run.path("early.png").replace("\\", "/") if args.early_picture else None,
                     afterLoadPictures=args.after_load_pictures or None)
     # The plugin starts the host program. It reads these from the environment of the game.

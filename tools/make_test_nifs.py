@@ -1,0 +1,225 @@
+"""Makes the test NIFs of the flag support (flag inventory check, 2026-10-16): one file for
+each flag value the engine supports and the game's content does not use, so that the tour
+of the NIF test level shows the two paths of the renderer on it.
+
+    python tools/make_test_nifs.py
+
+Writes `mod/meshes/@_nifx/<name>.nif` and the list `mod/MWSE/mods/nirender/test_nifs.lua`
+(the id and the mesh of each), which the tour step of the test mod places in the first
+cell of the tour with `--tour-extra`. Each file is a root node with one tri shape (a box or
+a cylinder), a lit material, a base texture of the level, and the property under test:
+
+    fog_z        NiFogProperty on, function Z_LINEAR (the control of fog_range)
+    fog_range    NiFogProperty on, function RANGE_SQ
+    shade_smooth NiShadeProperty smooth (the control of shade_flat), a cylinder
+    shade_flat   NiShadeProperty flat, the same cylinder
+    specular     NiSpecularProperty on, a white specular colour, glossiness 40
+    env_sphere   NiTextureEffect environment map, SPHERE_MAP coordinates
+    env_parallel NiTextureEffect environment map, WORLD_PARALLEL coordinates
+    env_perspective NiTextureEffect environment map, WORLD_PERSPECTIVE coordinates
+    fog_map      NiTextureEffect fog map, SPHERE_MAP coordinates
+
+The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
+write of the level's own files. The texture effect is attached as the level's exhibits do:
+a child of the node and in its `effects` list.
+"""
+import math
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nif40  # noqa: E402
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(REPO, "mod", "meshes", "@_nifx")
+LIST = os.path.join(REPO, "mod", "MWSE", "mods", "nirender", "test_nifs.lua")
+# The one texture of the level with a visible pattern (the others are black or white).
+BASE_TEXTURE = "textures\\@_nif\\1233.dds"
+EFFECT_TEXTURE = "textures\\@_nif\\1233.dds"
+IDENTITY = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+ZERO3 = [0.0, 0.0, 0.0]
+
+
+def object_net(name=""):
+    return {"name": name, "extra_data": -1, "controller": -1}
+
+
+def av_object(name="", flags=0):
+    b = object_net(name)
+    b.update({"flags": flags, "translation": list(ZERO3), "rotation": list(IDENTITY), "scale": 1.0, "velocity": list(ZERO3), "properties": [], "bounds": None})
+    return b
+
+
+def node(name="", flags=8):
+    b = av_object(name, flags)
+    b.update({"type": "NiNode", "children": [], "effects": []})
+    return b
+
+
+def box(size):
+    """Six faces of four vertices, a normal for each face, the texture over each face."""
+    h = size / 2.0
+    faces = [
+        ([-h, -h, -h], [h, -h, -h], [h, -h, h], [-h, -h, h], [0, -1, 0]),
+        ([h, h, -h], [-h, h, -h], [-h, h, h], [h, h, h], [0, 1, 0]),
+        ([h, -h, -h], [h, h, -h], [h, h, h], [h, -h, h], [1, 0, 0]),
+        ([-h, h, -h], [-h, -h, -h], [-h, -h, h], [-h, h, h], [-1, 0, 0]),
+        ([-h, -h, h], [h, -h, h], [h, h, h], [-h, h, h], [0, 0, 1]),
+        ([-h, h, -h], [h, h, -h], [h, -h, -h], [-h, -h, -h], [0, 0, -1]),
+    ]
+    vertices, normals, uvs, triangles = [], [], [], []
+    for a, b, c, d, n in faces:
+        first = len(vertices)
+        vertices += [list(map(float, a)), list(map(float, b)), list(map(float, c)), list(map(float, d))]
+        normals += [list(map(float, n))] * 4
+        uvs += [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]
+        triangles += [[first, first + 2, first + 1], [first, first + 3, first + 2]]
+    return vertices, normals, uvs, triangles
+
+
+def cylinder(radius, height, sides=12):
+    """The side with shared vertices and radial normals (smooth), so that flat shading shows
+    its facets; the caps with their own vertices."""
+    vertices, normals, uvs, triangles = [], [], [], []
+    h = height / 2.0
+    for i in range(sides + 1):
+        a = 2.0 * math.pi * i / sides
+        x, y = math.cos(a), math.sin(a)
+        for z, v in ((-h, 1.0), (h, 0.0)):
+            vertices.append([radius * x, radius * y, z])
+            normals.append([x, y, 0.0])
+            uvs.append([i / float(sides), v])
+    for i in range(sides):
+        b = 2 * i
+        triangles += [[b, b + 1, b + 2], [b + 1, b + 3, b + 2]]
+    for z, nz in ((h, 1.0), (-h, -1.0)):
+        centre = len(vertices)
+        vertices.append([0.0, 0.0, z])
+        normals.append([0.0, 0.0, nz])
+        uvs.append([0.5, 0.5])
+        ring = len(vertices)
+        for i in range(sides):
+            a = 2.0 * math.pi * i / sides
+            vertices.append([radius * math.cos(a), radius * math.sin(a), z])
+            normals.append([0.0, 0.0, nz])
+            uvs.append([0.5 + 0.5 * math.cos(a), 0.5 + 0.5 * math.sin(a)])
+        for i in range(sides):
+            a, b = ring + i, ring + (i + 1) % sides
+            triangles.append([centre, b, a] if nz > 0 else [centre, a, b])
+    return vertices, normals, uvs, triangles
+
+
+def tri_shape_data(geometry):
+    vertices, normals, uvs, triangles = geometry
+    # The winding of the faces as the engine draws them: counter-clockwise faces are the
+    # front with the default draw mode, as the level's exhibits (the triangle order of
+    # `box` and `cylinder` is for that).
+    cx = sum(v[0] for v in vertices) / len(vertices)
+    cy = sum(v[1] for v in vertices) / len(vertices)
+    cz = sum(v[2] for v in vertices) / len(vertices)
+    radius = max(math.sqrt((v[0] - cx) ** 2 + (v[1] - cy) ** 2 + (v[2] - cz) ** 2) for v in vertices)
+    return {"type": "NiTriShapeData", "tridata": {
+        "has_vertices": 1, "vertices": vertices, "has_normals": 1, "normals": normals, "center": [cx, cy, cz], "radius": radius,
+        "has_colors": 0, "colors": [], "uv_set_count": 1, "has_uv": 1, "uv_sets": [uvs],
+        "triangle_points": 3 * len(triangles), "triangles": triangles, "match_groups": []}}
+
+
+def material(specular=None, glossiness=0.0):
+    b = object_net()
+    b.update({"type": "NiMaterialProperty", "flags": 1, "ambient": [1.0, 1.0, 1.0], "diffuse": [1.0, 1.0, 1.0],
+              "specular": specular or [0.0, 0.0, 0.0], "emissive": [0.0, 0.0, 0.0], "glossiness": glossiness, "alpha": 1.0})
+    return b
+
+
+def source_texture(file_name, pixel_layout=0, use_mipmaps=0, alpha_format=0):
+    b = object_net()
+    b.update({"type": "NiSourceTexture", "use_external": 1, "file_name": file_name, "pixel_layout": pixel_layout,
+              "use_mipmaps": use_mipmaps, "alpha_format": alpha_format, "is_static": 1})
+    return b
+
+
+def texturing(source):
+    b = object_net()
+    maps = [None] * 7
+    maps[0] = {"has": 1, "source": source, "clamp": 3, "filter": 2, "uv_set": 0, "ps2_l": 0, "ps2_k": -75, "unknown": 0}
+    b.update({"type": "NiTexturingProperty", "flags": 0, "apply_mode": 2, "textures": maps})
+    return b
+
+
+def one_flag(kind, flags):
+    b = object_net()
+    b.update({"type": kind, "flags": flags})
+    return b
+
+
+def fog(function, depth=1.0, color=(1.0, 0.0, 0.0)):
+    """Bit 1 fog on, bits 3-4 the function (0 Z_LINEAR, 1 RANGE_SQ), as the engine reads
+    the flags."""
+    b = object_net()
+    b.update({"type": "NiFogProperty", "flags": 2 | (function << 3), "depth": depth, "color": list(color)})
+    return b
+
+
+def texture_effect(source, texture_type, coordinates):
+    """As the exhibits of the level have it: flags 4, scale 100, the texture filtered and
+    wrapped; `affected` is a list of pointers in the file, 0 there."""
+    b = av_object("", 4)
+    b.update({"type": "NiTextureEffect", "scale": 100.0, "affected": [0], "projection_matrix": list(IDENTITY), "projection_translation": list(ZERO3),
+              "filtering": 2, "clamping": 3, "texture_type": texture_type, "coordinate_generation": coordinates, "source": source,
+              "clipping_plane": 0, "plane_normal": [1.0, 0.0, 0.0], "plane_constant": 0.0, "ps2_l": 0, "ps2_k": -75, "unknown": 0})
+    return b
+
+
+def make(name, geometry, extra_properties=(), effect=None, material_block=None):
+    """The blocks: 0 root, 1 shape, 2 data, 3 material, 4 texturing, 5 texture, then the
+    extra properties, then the effect and its texture."""
+    blocks = [node("@_nifx " + name), None, tri_shape_data(geometry), material_block or material(), texturing(5), source_texture(BASE_TEXTURE)]
+    shape = av_object(name, 0)
+    shape.update({"type": "NiTriShape", "data": 2, "skin": -1, "properties": [3, 4]})
+    blocks[1] = shape
+    for prop in extra_properties:
+        shape["properties"].append(len(blocks))
+        blocks.append(prop)
+    blocks[0]["children"] = [1]
+    if effect is not None:
+        texture_type, coordinates = effect
+        source = len(blocks) + 1
+        blocks.append(texture_effect(source, texture_type, coordinates))
+        blocks.append(source_texture(EFFECT_TEXTURE, 5, 2, 3))
+        blocks[0]["children"].append(source - 1)
+        blocks[0]["effects"] = [source - 1]
+    data = nif40.write(blocks, [0])
+    back, roots = nif40.read(data)
+    assert nif40.write(back, roots) == data, name
+    path = os.path.join(OUT, name + ".nif")
+    open(path, "wb").write(data)
+    return path
+
+
+def main():
+    os.makedirs(OUT, exist_ok=True)
+    b = box(120.0)
+    c = cylinder(60.0, 140.0)
+    files = [
+        ("fog_z", make("fog_z", b, [fog(0)])),
+        ("fog_range", make("fog_range", b, [fog(1)])),
+        ("shade_smooth", make("shade_smooth", c, [one_flag("NiShadeProperty", 1)])),
+        ("shade_flat", make("shade_flat", c, [one_flag("NiShadeProperty", 0)])),
+        ("specular", make("specular", b, [one_flag("NiSpecularProperty", 1)], material_block=material([1.0, 1.0, 1.0], 40.0))),
+        ("env_sphere", make("env_sphere", b, effect=(2, 2))),
+        ("env_parallel", make("env_parallel", b, effect=(2, 0))),
+        ("env_perspective", make("env_perspective", b, effect=(2, 1))),
+        ("fog_map", make("fog_map", b, effect=(3, 2))),
+    ]
+    lines = ["-- The test NIFs of the flag support, made by tools/make_test_nifs.py (do not edit).",
+             "-- The tour step places each in the first cell of the tour with spec.tourExtra.",
+             "return {"]
+    for name, path in files:
+        lines.append('    { id = "@nif_x_%s", mesh = "@_nifx\\\\%s.nif" },' % (name, name))
+        print("wrote", path, os.path.getsize(path), "bytes")
+    lines.append("}")
+    open(LIST, "w", newline="\n").write("\n".join(lines) + "\n")
+    print("wrote", LIST)
+
+
+main()

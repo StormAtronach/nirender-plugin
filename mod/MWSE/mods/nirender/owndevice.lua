@@ -351,6 +351,29 @@ return function(nirender, spec)
                 end
                 scenario.goTo(name)
                 after(spec.settleSeconds or 6, function()
+                    -- With spec.tourExtra, the test NIFs of the flag support (made by
+                    -- tools/make_test_nifs.py) stand in the first cell, in a row east of the
+                    -- easternmost exhibit, and become stops of the tour. The player passes
+                    -- through walls there: the row may leave the tiled floor.
+                    if index == 1 and spec.tourExtra then
+                        local east = nil
+                        for ref in tes3.player.cell:iterateReferences() do
+                            local id = ref.object.id:lower()
+                            if id:sub(1, 5) == "@nif_" and not id:find("tile", 1, true) and (not east or ref.position.x > east.position.x) then east = ref end
+                        end
+                        local base = east and east.position or tes3.player.position
+                        local placed = 0
+                        for i, entry in ipairs(require("nirender.test_nifs")) do
+                            local object = tes3.getObject(entry.id) or tes3.createObject({ objectType = tes3.objectType.static, id = entry.id, mesh = entry.mesh })
+                            if object then
+                                tes3.createReference({ object = object, cell = tes3.player.cell,
+                                    position = tes3vector3.new(base.x + 400 * i, base.y, base.z + 80), orientation = tes3vector3.new(0, 0, 0) })
+                                placed = placed + 1
+                            end
+                        end
+                        tes3.mobilePlayer.movementCollision = false
+                        say("tour: %d test NIFs placed east of %s at %s", placed, east and east.object.id or "the player", tostring(base))
+                    end
                     -- The capture is of the stream of the own device. The reference run with
                     -- MGE XE on Direct3D 9 has none: it takes a picture of each stop instead.
                     local own = nirender.ownDevice()
