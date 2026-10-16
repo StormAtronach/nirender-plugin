@@ -204,6 +204,9 @@ struct Tables {
     /// The actors (a skinned shape of class 0: the actors hang under no root the classes
     /// know) are retained too (`NIRENDER_ACTORS=0` keeps them out).
     actors: bool,
+    /// A shape under an animated node, and a shape of class 0 that is not skinned, are
+    /// retained too (`NIRENDER_ANIMATED=0` keeps them out: the state before, for an A/B).
+    animated: bool,
     light_cache: HashMap<usize, (u32, [u32; 26])>,
     scratch_entry: [u32; E::SIZE / 4],
     scratch_lights: Vec<usize>,
@@ -238,6 +241,7 @@ unsafe fn tables() -> &'static mut Tables {
         scene_mixed: 0,
         landscape: std::env::var("NIRENDER_LANDSCAPE").map_or(true, |v| v != "0"),
         actors: std::env::var("NIRENDER_ACTORS").map_or(true, |v| v != "0"),
+        animated: std::env::var("NIRENDER_ANIMATED").map_or(true, |v| v != "0"),
         light_cache: HashMap::new(),
         scratch_entry: [0; E::SIZE / 4],
         scratch_lights: Vec::new(),
@@ -275,13 +279,16 @@ pub unsafe fn set_mode(mode: Mode) -> Mode {
 }
 
 /// True for a class of object the plugin retains: the objects of the references, the
-/// landscape, and the actors (plan 0.5 entry T6). An actor is a skinned shape of class 0:
-/// in the world scene that is an actor (the arms of the first person have a class of
-/// their own, and the picture of the character is another scene). A shape of class 0 that
-/// is not skinned (a weapon in a hand) moves each frame with the actor: not retained.
+/// landscape, and class 0 (plan 0.5 entry T6). Class 0 is a shape of the world scene under
+/// no root the classes know: the actors and their parts, and objects hung elsewhere (the
+/// arms of the first person have a class of their own, and the picture of the character is
+/// another scene). A skinned one is an actor (its palette each frame); one that is not
+/// skinned follows the rules of any shape (a part under an animated bone has a controller
+/// above it and stays out; a still object is retained; one that moves without a controller
+/// is moved in place). `NIRENDER_ACTORS=0` keeps class 0 out.
 pub unsafe fn class_retained(class: u32, skinned: bool) -> bool {
     let t = tables();
-    class == CLASS_OBJECT || (class == CLASS_LANDSCAPE && t.landscape) || (skinned && class == CLASS_UNKNOWN && t.actors)
+    class == CLASS_OBJECT || (class == CLASS_LANDSCAPE && t.landscape) || (class == CLASS_UNKNOWN && t.actors && (skinned || t.animated))
 }
 
 /// Sets or clears the mark of a retained shape.
@@ -430,18 +437,21 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
 
 /// Why the shape is not retained, or `None` when it is of the safe class.
 unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize, skinned: bool) -> Option<usize> {
-    // A controller on the shape itself changes it (a morpher changes the vertices of a
-    // skinned head): never retained. A controller on a node above moves the shape: a
-    // skinned shape follows its bones through the palette, so it is retained anyway.
+    // A controller on the shape itself changes it (a morpher changes its vertices): never
+    // retained. A controller on a node above only moves the shape: the engine still updates
+    // the world transform of a shape it does not display, a skinned shape follows its bones
+    // through the palette, and the display of a retained shape (`skipped_display`) compares
+    // the transform each time and moves the instance in place. So it is retained.
     if rd::<usize>(shape, CONTROLLERS) != 0 {
         return Some(REASON_CONTROLLER);
     }
+    let animated = tables().animated;
     let mut node: usize = rd(shape, PARENT);
     for _ in 0..MAX_DEPTH {
         if node == 0 {
             break;
         }
-        if !skinned && rd::<usize>(node, CONTROLLERS) != 0 {
+        if !animated && !skinned && rd::<usize>(node, CONTROLLERS) != 0 {
             return Some(REASON_CONTROLLER);
         }
         if kind_rejected(node, skinned) {

@@ -147,8 +147,10 @@ pub struct RetainedSet {
     light_indexes_dirty: bool,
     /// The keys of the lights of each instance, for the runs after a compaction.
     keys_of: HashMap<u32, Vec<u32>>,
-    /// The slots whose record or instance changed, or all of them.
+    /// The slots whose record changed (and so their instance), the slots that only moved
+    /// (their instance: the shader reads the world of a retained draw from it), or all.
     dirty: Vec<u32>,
+    moved: Vec<u32>,
     all_dirty: bool,
     /// The generations of the record and instance buffers the segments were written into.
     record_generation: u32,
@@ -172,6 +174,7 @@ impl RetainedSet {
             light_indexes_dirty: false,
             keys_of: HashMap::new(),
             dirty: Vec::new(),
+            moved: Vec::new(),
             all_dirty: false,
             record_generation: 0,
             instance_generation: 0,
@@ -225,7 +228,7 @@ impl RetainedSet {
                 s.bound = r.bound;
                 s.data.world[0] = world;
             }
-            self.dirty.push(slot);
+            self.moved.push(slot);
         }
         self.counts.moves += 1;
         true
@@ -500,16 +503,39 @@ impl Renderer {
                 self.queue.write_buffer(&self.instance_buffer, 0, &instances);
             }
             set.dirty.clear();
+            set.moved.clear();
         } else {
             set.dirty.sort_unstable();
             set.dirty.dedup();
             for &i in &set.dirty {
                 if let Some(slot) = set.slots[i as usize].as_ref() {
                     self.queue.write_buffer(&self.record_buffer, (i as usize * RECORD_SIZE) as u64, bytemuck::bytes_of(&slot.data));
-                    self.queue.write_buffer(&self.instance_buffer, (i as usize * INSTANCE_SIZE) as u64, bytemuck::bytes_of(&Instance { world: slot.world, record: [i, 0, 0, 0] }));
+                }
+            }
+            // The instances of the changed and the moved slots: one write of the segment when
+            // there are many (an animated scene moves hundreds a frame), else one each.
+            set.moved.sort_unstable();
+            set.moved.dedup();
+            let instance_of = |i: usize, slot: &Slot| Instance { world: slot.world, record: [i as u32, 0, 0, 0] };
+            if set.dirty.len() + set.moved.len() > 64 {
+                let mut instances = vec![0u8; set.slots.len() * INSTANCE_SIZE];
+                for (i, slot) in set.slots.iter().enumerate() {
+                    if let Some(slot) = slot {
+                        instances[i * INSTANCE_SIZE..(i + 1) * INSTANCE_SIZE].copy_from_slice(bytemuck::bytes_of(&instance_of(i, slot)));
+                    }
+                }
+                if !instances.is_empty() {
+                    self.queue.write_buffer(&self.instance_buffer, 0, &instances);
+                }
+            } else {
+                for &i in set.dirty.iter().chain(set.moved.iter()) {
+                    if let Some(slot) = set.slots[i as usize].as_ref() {
+                        self.queue.write_buffer(&self.instance_buffer, (i as usize * INSTANCE_SIZE) as u64, bytemuck::bytes_of(&instance_of(i as usize, slot)));
+                    }
                 }
             }
             set.dirty.clear();
+            set.moved.clear();
         }
         // Room for the lights (their values go up at the start of the world, shaded by the
         // extension as the lights of a draw) and their indexes.
