@@ -122,6 +122,16 @@ pub mod tag {
     /// the ports of the renderer, in waits for the host program). Sent when the state
     /// changes, and one time in a second while the overlay is on. See `overlay`.
     pub const OVERLAY: u32 = 22;
+    /// A retained instance (`instance_stream`): id, class, flags, geometry handle, material
+    /// handle, the rows 0 to 2 of its world matrix (12 floats), the exact translation (3
+    /// doubles), the stored translation (3 floats), the 14 colours of its material; then its
+    /// name. The same id again replaces the instance.
+    pub const INSTANCE: u32 = 23;
+    /// A draw of a retained instance, in the place of a shape record: id, ambient, flags,
+    /// the fog (4 words) when the flags have `FOG`, the number of lights, then their keys.
+    pub const INSTANCE_DRAW: u32 = 24;
+    /// The instance is deleted: id.
+    pub const INSTANCE_DELETE: u32 = 25;
 }
 
 // ---- the ring in shared memory
@@ -590,6 +600,7 @@ unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
     crate::geometry_stream::reset();
     crate::material_stream::reset();
     crate::light_stream::reset();
+    crate::instance_stream::reset();
     if let Some(s) = state() {
         s.tee_only = false;
         if s.tee_hold {
@@ -634,6 +645,7 @@ pub unsafe fn tee_frames(frames: u32) -> bool {
     crate::material_stream::forget(&material);
     // The lights change in most frames: all of them again, into the frames.
     crate::light_stream::reset();
+    crate::instance_stream::reset();
     true
 }
 
@@ -782,6 +794,7 @@ pub unsafe fn stop() {
     crate::log!("{}", crate::material_stream::report());
     crate::log!("{}", crate::light_stream::report());
     crate::log!("{}", crate::shape_stream::report());
+    crate::log!("{}", crate::instance_stream::report());
     crate::log!(
         "capture: end, {} frames, {} records, {} bytes, {:.3} ms of the game thread for each frame{}",
         s.frames_done,
@@ -1050,6 +1063,26 @@ pub unsafe fn shape(head: &[u32], lights: &[u32], tail: &[u32], bytes: &[u8]) {
     write(tag::SHAPE, &[words(head), words(lights), words(tail), bytes]);
 }
 
+/// An instance record. See `tag::INSTANCE`.
+pub unsafe fn instance(head: &[u32], name: &[u8]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::INSTANCE, &[words(head), name]);
+}
+
+/// A draw of an instance. See `tag::INSTANCE_DRAW`.
+pub unsafe fn instance_draw(id: u32, ambient: u32, fog: Option<[u32; 4]>, lights: &[u32]) {
+    let _lock = crate::sync::device_lock();
+    let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 };
+    let count = [lights.len() as u32];
+    write(tag::INSTANCE_DRAW, &[words(&[id, ambient, flags]), words(fog.as_ref().map_or(&[], |f| &f[..])), words(&count), words(lights)]);
+}
+
+/// The end of an instance. See `tag::INSTANCE_DELETE`.
+pub unsafe fn instance_delete(id: u32) {
+    let _lock = crate::sync::device_lock();
+    write(tag::INSTANCE_DELETE, &[words(&[id])]);
+}
+
 /// A light record. See `tag::LIGHT`.
 pub unsafe fn light(key: u32, values: &[u32; 26]) {
     let _lock = crate::sync::device_lock();
@@ -1273,6 +1306,7 @@ unsafe fn frame_end() {
         }
         Phase::Record(left) => {
             overlay_tick();
+            crate::instance_stream::frame_tick();
             // The times of the frame, for the age of the picture in the debug overlay: the
             // start of the frame of the game (the end of the wait of the frame before) and
             // its end, in ticks of the performance counter. The host program has the same

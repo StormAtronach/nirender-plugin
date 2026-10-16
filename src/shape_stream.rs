@@ -37,6 +37,9 @@ pub const LINES: u32 = 64;
 /// Patch has its draw function there: with the blend on it draws the shape in a way of its
 /// own. See `code_patch_picture`.
 pub const CODE_PATCH_PICTURE: u32 = 128;
+/// The record is the twin of the `INSTANCE_DRAW` record before it (the dual mode of
+/// `instance_stream`): the helper draws one of the two.
+pub const RETAINED_TWIN: u32 = 0x200;
 
 /// The address of the flags of the Code Patch for the picture of the character, 1 when the
 /// game has no such patch, 0 before the first look.
@@ -335,11 +338,23 @@ unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], re
     let lights = crate::light_stream::note(renderer);
     let count = lights.len() as u32;
     let effects = effect_words(renderer);
-    let flags = (relative as u32)
+    let mut flags = (relative as u32)
         | kind
         | if effects.is_none() { 0 } else { EFFECTS }
         | if fog.is_some() { FOG } else { 0 }
         | if code_patch_picture() { CODE_PATCH_PICTURE } else { 0 };
+    // A draw of a retained shape: its instance records in the place of this one (mode on),
+    // or before it (mode dual).
+    if let Some((shape, id)) = crate::instance_stream::take_pending() {
+        if kind != 0 || effects.is_some() || flags & CODE_PATCH_PICTURE != 0 {
+            crate::instance_stream::reject_pending(shape, true);
+        } else if crate::instance_stream::draw(shape, id, &world, relative, &material_values, fog, ambient, lights) {
+            if crate::instance_stream::mode() == crate::instance_stream::Mode::On {
+                return records_only();
+            }
+            flags |= RETAINED_TWIN;
+        }
+    }
     // The tail of the record: the effects, the fog, then `tail`. On the stack: a draw does not
     // allocate for it (a longer tail than the stack holds goes to the heap).
     let parts: [&[u32]; 3] = [effects.as_ref().map_or(&[], |w| &w[..]), fog.as_ref().map_or(&[], |f| &f[..]), tail];

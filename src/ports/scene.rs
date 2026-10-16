@@ -56,7 +56,6 @@ const SLOT_RENDER_LINES: usize = 0xC8;
 /// The vtable slots of `NiAccumulator`.
 const SLOT_START_ACCUMULATING: usize = 0x2C;
 const SLOT_FINISH_ACCUMULATING: usize = 0x30;
-const SLOT_REGISTER_OBJECT: usize = 0x34;
 /// The vtable slot of `NiTimeController::OnPreDisplay`.
 const SLOT_ON_PRE_DISPLAY: usize = 0x40;
 /// The vtable slots of `NiGeometryData` and `NiTriBasedGeomData`.
@@ -679,6 +678,24 @@ pub unsafe fn lines_display(this: usize, camera: usize) {
 }
 
 // ---------------------------------------------------------------------------------------
+// The end of a geometry
+// ---------------------------------------------------------------------------------------
+
+port_thiscall!(geometry_dtor_port, 0x6F3DB0, "NiGeometry::dtor",
+    fn(this) -> (),
+    compare_eax = false,
+    regions = |set| set.skip(),
+    rust = geometry_dtor);
+
+/// The destructor of a geometry: the plugin forgets the shape (its retained instance of
+/// `instance_stream`), then the engine code runs.
+pub unsafe fn geometry_dtor(this: usize) {
+    crate::shadow::touch(&geometry_dtor_port::STATE);
+    crate::instance_stream::forget(this);
+    geometry_dtor_port::engine(this);
+}
+
+// ---------------------------------------------------------------------------------------
 // The memory that a traversal writes
 // ---------------------------------------------------------------------------------------
 
@@ -758,6 +775,7 @@ pub static PORTS: &[&crate::shadow::PortState] = &[
     &particles_display_port::STATE,
     &auto_normal_particles_display_port::STATE,
     &lines_display_port::STATE,
+    &geometry_dtor_port::STATE,
 ];
 
 #[cfg(test)]

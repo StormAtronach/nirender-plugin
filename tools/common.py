@@ -16,7 +16,8 @@ FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiP
                      r"|NiFltAnimationNode::Display$|NiBSPNode::Display$|NiBillboardNode::Display$|NiBillboardNode::RotateToCamera$"
                      r"|NiSortAdjustNode::Display$|NiGeometry::pushStateToRenderer$|NiAccumulator::|NiClusterAccumulator::"
                      r"|NiAlphaAccumulator::RegisterObject$|NiBound::WhichSide$"
-                     r"|BSAnimationNode::Display$|NiLODNode::Display$|NiTriStrips::Display$)")
+                     r"|BSAnimationNode::Display$|NiLODNode::Display$|NiTriStrips::Display$"
+                     r"|NiGeometry::dtor$)")
 FUNC_SKIP = re.compile(r"_SEH$|NiDX8Application|NiDX8SelectResolution|StdMap")
 
 # A port declaration in src/ports/*.rs: the module name, the address, the Rust function.

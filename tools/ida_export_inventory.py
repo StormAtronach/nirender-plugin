@@ -48,6 +48,7 @@ EXTRA = [
     0x6F21C0,  # BSAnimationNode::Display
     0x7412B0,  # NiLODNode::Display
     0x742660,  # NiTriStrips::Display
+    0x6F3DB0,  # NiGeometry::dtor (the end of a retained instance, entry T3)
 ]
 
 

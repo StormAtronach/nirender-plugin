@@ -885,6 +885,28 @@ mod tag {
     pub const SHAPE: u32 = 20;
     pub const LIGHT: u32 = 21;
     pub const OVERLAY: u32 = 22;
+    /// A retained instance of the plugin, a draw of one, and its end (`instance_stream`
+    /// of the plugin, plan 0.5 entry T3).
+    pub const INSTANCE: u32 = 23;
+    pub const INSTANCE_DRAW: u32 = 24;
+    pub const INSTANCE_DELETE: u32 = 25;
+}
+
+/// A retained instance of the plugin (`tag::INSTANCE`): the helper draws it from this at
+/// each `INSTANCE_DRAW` record, as it draws a shape record.
+#[derive(Clone, Copy)]
+struct Retained {
+    class: u32,
+    flags: u32,
+    geometry: u32,
+    material: u32,
+    /// The rows 0 to 2 of the world matrix.
+    rotation: [f32; 12],
+    /// The exact translation, for a relative draw: the helper subtracts the origin of the
+    /// scene. The stored one of the engine is the translation of a draw that is not.
+    exact: [f64; 3],
+    stored: [f32; 3],
+    colours: [f32; 14],
 }
 
 /// The size of a light of a shape draw: its key, then the `D3DLIGHT8` of 26 words.
@@ -1564,6 +1586,12 @@ struct Counts {
     /// The shape records with a palette of bones, and the records of particle systems.
     shape_skinned: u32,
     shape_particles: u32,
+    /// The instance records, the draws from them, the draws of an instance the helper does
+    /// not have, and the shape records skipped as twins of an instance draw.
+    instance_records: u32,
+    instance_draws: u32,
+    instance_missing: u32,
+    shape_twins: u32,
     /// The light records, and the lights of a shape that no record came for.
     light_records: u32,
     light_missing: u32,
@@ -3612,6 +3640,12 @@ impl Stream {
 struct Player {
     renderer: Renderer,
     stream: Stream,
+    /// The retained instances of the plugin, by their id.
+    instances: HashMap<u32, Retained>,
+    /// The draws of the instances are drawn, and a shape record that is the twin of one is
+    /// not. `MGE_XE_RETAINED=0` turns it round: for a capture of the dual mode of the plugin,
+    /// the picture from the shape records.
+    retained_on: bool,
     /// The frame in progress: its commands, its pass, and its two targets.
     encoder: Option<wgpu::CommandEncoder>,
     pass: Option<wgpu::RenderPass<'static>>,
@@ -3739,6 +3773,8 @@ impl Player {
     fn new(renderer: Renderer) -> Player {
         Player {
             renderer,
+            instances: HashMap::new(),
+            retained_on: std::env::var("MGE_XE_RETAINED").map_or(true, |v| v != "0"),
             stream: Stream {
                 view: [0.0; 16],
                 projection: [0.0; 16],
@@ -4101,6 +4137,87 @@ impl Player {
             let axes: [f32; 6] = core::array::from_fn(|i| float(data, tail + 8 + i * 4));
             self.renderer.particles(geometry, float(data, tail + 4), [axes[0], axes[1], axes[2]], [axes[3], axes[4], axes[5]], &data[at..at + count * 20]);
         }
+        self.draw_shape(geometry, material, flags, core::array::from_fn(|i| float(data, 20 + i * 4)), &colours, effects.as_ref());
+    }
+
+    /// An instance record: into the table, by its id.
+    fn instance(&mut self, data: &[u8]) {
+        let retained = Retained {
+            class: word(data, 4),
+            flags: word(data, 8),
+            geometry: word(data, 12),
+            material: word(data, 16),
+            rotation: core::array::from_fn(|i| float(data, 20 + i * 4)),
+            exact: core::array::from_fn(|i| double(data, 68 + i * 8)),
+            stored: core::array::from_fn(|i| float(data, 92 + i * 4)),
+            colours: core::array::from_fn(|i| float(data, 104 + i * 4)),
+        };
+        self.instances.insert(word(data, 0), retained);
+        self.renderer.counts.instance_records += 1;
+    }
+
+    /// A draw of an instance: the draws of the shape from the instance, the ambient light
+    /// and the lights of the record. The translation of the world matrix is the exact one
+    /// of the instance relative to the origin of the scene, as the plugin makes it for a
+    /// shape record.
+    fn instance_draw(&mut self, data: &[u8]) {
+        let (id, ambient, flags) = (word(data, 0), word(data, 4), word(data, 8));
+        let has_fog = flags & 32 != 0;
+        let count_at = if has_fog { 28 } else { 12 };
+        if data.len() < count_at + 4 {
+            self.renderer.counts.shape_missing += 1;
+            return;
+        }
+        let light_count = word(data, count_at) as usize;
+        let lights_at = count_at + 4;
+        if data.len() < lights_at + light_count * 4 {
+            self.renderer.counts.shape_missing += 1;
+            return;
+        }
+        let Some(retained) = self.instances.get(&id).copied() else {
+            self.renderer.counts.instance_missing += 1;
+            return;
+        };
+        self.renderer.counts.instance_draws += 1;
+        self.stream.object_class = retained.class;
+        self.stream.shape_fog = has_fog.then(|| core::array::from_fn(|i| word(data, 12 + i * 4)));
+        if let Some(fog) = self.stream.shape_fog {
+            self.stream.fog = fog;
+        }
+        self.stream.shape_bones = None;
+        let lights = &mut self.stream.shape.lights;
+        lights.clear();
+        for i in 0..light_count {
+            let key = word(data, lights_at + i * 4);
+            match self.renderer.lights_known.get(&key) {
+                Some(values) => {
+                    lights.extend_from_slice(&key.to_le_bytes());
+                    lights.extend_from_slice(values);
+                }
+                None => self.renderer.counts.light_missing += 1,
+            }
+        }
+        self.stream.shape.ambient = ambient;
+        let mut world = [0f32; 16];
+        world[..12].copy_from_slice(&retained.rotation);
+        // The translation as the shape record of the draw would have it: the exact one less
+        // the origin of the scene for a relative draw, the stored one of the engine else.
+        let relative = retained.flags & 1 != 0;
+        for i in 0..3 {
+            world[12 + i] = match (relative, self.stream.origin) {
+                (true, Some(origin)) => (retained.exact[i] - origin[i]) as f32,
+                (true, None) => retained.exact[i] as f32,
+                (false, _) => retained.stored[i],
+            };
+        }
+        world[15] = 1.0;
+        self.draw_shape(retained.geometry, retained.material, retained.flags | (flags & 32), world, &retained.colours, None);
+    }
+
+    /// The draws of a shape from its geometry and material records: one for each pass of
+    /// the state derived from its material. `world` is the world matrix of the draw, with
+    /// the flag 1 when it is relative to the origin of the scene.
+    fn draw_shape(&mut self, geometry: u32, material: u32, flags: u32, world: [f32; 16], colours: &[f32; 14], effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>) {
         let Some((fvf, stride, entries, strips)) = self.renderer.geometries.get(&geometry).map(|g| (g.fvf, g.stride, g.entries, g.strips.clone())) else {
             self.renderer.counts.shape_missing += 1;
             return;
@@ -4124,19 +4241,19 @@ impl Player {
         shape.geometry = geometry;
         shape.fvf = fvf;
         shape.stride = stride;
-        shape.world = core::array::from_fn(|i| float(data, 20 + i * 4));
+        shape.world = world;
         shape.relative = flags & 1 != 0;
-        shape.material = material::d3d_material(&colours);
+        shape.material = material::d3d_material(colours);
         shape.fill = derived.fill;
         if let Some(source) = derived.sources[2] {
             self.stream.ambient_source = source;
         }
-        if self.hold_shape(&m, &derived, flags, effects.as_ref(), entries, &strips) {
+        if self.hold_shape(&m, &derived, flags, effects, entries, &strips) {
             self.stream.shape_bones = None;
             return;
         }
         for pass in 0..derived.passes.len() {
-            let state = Pass::new(&derived, pass, &m, &self.renderer.textures, effects.as_ref());
+            let state = Pass::new(&derived, pass, &m, &self.renderer.textures, effects);
             // The flag 128: the draw goes into the picture of the character with the Code
             // Patch, which draws a pass that blends in a way of its own. The alpha of the
             // material is the last of its colours.
@@ -4430,7 +4547,23 @@ impl Player {
                 self.stream.shape_fog = None;
                 self.stream.shape_bones = None;
             }
-            tag::SHAPE if data.len() >= 144 => self.shape(data),
+            tag::SHAPE if data.len() >= 144 => {
+                // Flag 0x200: the twin of the instance draw before it.
+                if self.retained_on && word(data, 8) & 0x200 != 0 {
+                    self.renderer.counts.shape_twins += 1;
+                } else {
+                    self.shape(data);
+                }
+            }
+            tag::INSTANCE if data.len() >= 160 => self.instance(data),
+            tag::INSTANCE_DRAW if data.len() >= 12 => {
+                if self.retained_on {
+                    self.instance_draw(data);
+                }
+            }
+            tag::INSTANCE_DELETE if data.len() >= 4 => {
+                self.instances.remove(&word(data, 0));
+            }
             tag::LIGHT if data.len() >= 108 => {
                 self.renderer.lights_known.insert(word(data, 0), data[4..108].try_into().unwrap());
                 self.renderer.counts.light_records += 1;
@@ -5595,6 +5728,7 @@ impl Player {
         );
         println!("material: {} records", c.material_records);
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material", c.shape_records, c.shape_draws, c.shape_missing);
+        println!("instances: {} records, {} draws from them, {} draws of an instance not known, {} shape twins skipped", c.instance_records, c.instance_draws, c.instance_missing, c.shape_twins);
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
         println!("sorted draws {}, instanced away {}, skinned shapes {}, particle systems {}", c.sorted_draws, c.instanced_draws, c.shape_skinned, c.shape_particles);
         println!("shapes held for the extension {}", c.held);

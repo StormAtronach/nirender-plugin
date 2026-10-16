@@ -186,7 +186,7 @@ unsafe fn cache_slot(node: usize) -> *mut CacheEntry {
     core::ptr::null_mut()
 }
 
-unsafe fn exact_translation(node: usize, depth: u32) -> Option<[f64; 3]> {
+pub(crate) unsafe fn exact_translation(node: usize, depth: u32) -> Option<[f64; 3]> {
     if node == 0 || depth > MAX_CHAIN_DEPTH {
         return None;
     }
@@ -336,7 +336,7 @@ pub unsafe fn install() -> Result<(), String> {
     Ok(())
 }
 
-fn own() -> bool {
+pub(crate) fn own() -> bool {
     INSTALLED.load(Ordering::Relaxed) && crate::link_client::client_camera_space() && crate::shadow::leg() != crate::shadow::Leg::Rust
 }
 

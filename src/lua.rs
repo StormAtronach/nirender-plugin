@@ -312,6 +312,18 @@ unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.retained(mode)` sets the mode of the retained instances ("off", "dual" or
+/// "on") and returns the mode before. Without an argument it returns the mode.
+unsafe extern "C" fn retained(l: LuaState) -> i32 {
+    let before = crate::instance_stream::mode();
+    if let Some(mode) = arg_str(l, 1).and_then(|m| crate::instance_stream::Mode::parse(&m)) {
+        crate::instance_stream::set_mode(mode);
+        crate::log!("retained: {} (was {})", mode.name(), before.name());
+    }
+    push_str(l, before.name());
+    1
+}
+
 /// `nirender.recheck()` returns the number of changed functions. It does the census again,
 /// for mods that change the game code after this plugin loaded. It locks the ports of such
 /// functions.
@@ -548,6 +560,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "fault", fault);
     set_fn(l, "capture", capture);
     set_fn(l, "captureStatus", capture_status);
+    set_fn(l, "retained", retained);
     set_fn(l, "captureFrames", capture_frames);
     set_fn(l, "captureEnd", capture_end);
     set_fn(l, "stream", stream);

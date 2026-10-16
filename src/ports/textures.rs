@@ -453,6 +453,7 @@ pub unsafe fn manager_get_format_from_texture(this: usize, texture: usize) -> u3
 /// 0x6BC770 `NiDX8TextureManager::Recreate`: the first map loses its values and its nodes.
 pub unsafe fn manager_recreate(this: usize) {
     crate::shadow::touch(&manager_recreate_port::STATE);
+    crate::instance_stream::textures_changed();
     let map = this + TM::hashMap_10;
     map_destroy_values(map, eng::dx8_resource_release_thunk);
     clear_hash_map(map);
@@ -743,6 +744,7 @@ pub unsafe fn source_data_ctor(this: usize, texture: usize, renderer: usize) -> 
 /// 0x6BFE90 `NiDX8SourceTextureData::dtor`
 pub unsafe fn source_data_dtor(this: usize) {
     crate::shadow::touch(&source_data_dtor_port::STATE);
+    crate::instance_stream::textures_changed();
     wr(this, SD::vtbl_vtbl, VTBL_SOURCE_TEXTURE_DATA);
     let texture: usize = rd(this, SD::d3dTexture);
     if texture != 0 {
