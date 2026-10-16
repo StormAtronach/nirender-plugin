@@ -174,6 +174,8 @@ unsafe extern "C" fn tune(l: LuaState) -> i32 {
 /// the last call, as one text: name, calls, ms. The time of a port has the ports that it
 /// calls in it, so the numbers do not add up.
 unsafe extern "C" fn port_times(l: LuaState) -> i32 {
+    // The live port calls are timed from the first call on (the times are off by default).
+    crate::shadow::set_timing(true);
     static mut LAST_CALLS: Vec<u64> = Vec::new();
     let last = &mut *core::ptr::addr_of_mut!(LAST_CALLS);
     let ports: Vec<_> = ports::all().collect();

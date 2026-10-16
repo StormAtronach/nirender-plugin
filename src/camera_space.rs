@@ -107,7 +107,29 @@ fn invert(a: &DTransform) -> Option<DTransform> {
 // ---- the exact world translation of a node
 
 /// The step of a float of this size: `ldexp(1, exponent - 24)` with the exponent of `frexp`.
+/// Made from the exponent bits of the float: `powi` is a call of the CRT's `pow` on i686, and
+/// this runs for each translation of each frame (0.43 s in 30 s, checkpoint 1 of plan 0.5
+/// entry F). A float `1.f * 2^(E-127)` is `0.1f * 2^(E-126)`, so the step is `2^(E-150)`.
 fn float_step(magnitude: f32) -> f32 {
+    let biased = ((magnitude.to_bits() >> 23) & 0xFF) as i32;
+    if magnitude == 0.0 || !magnitude.is_finite() {
+        // frexp of 0 gives the exponent 0: the step 2^-24.
+        return f32::from_bits(0x3380_0000);
+    }
+    if biased == 0 {
+        // A subnormal: rare; the loop of the exponent.
+        return float_step_by_loop(magnitude);
+    }
+    let power = biased - 150;
+    if power >= -126 {
+        f32::from_bits(((power + 127) as u32) << 23)
+    } else {
+        f32::from_bits(1u32 << (power + 149))
+    }
+}
+
+/// `float_step` by halving and doubling: the step of a subnormal, and the reference of the test.
+fn float_step_by_loop(magnitude: f32) -> f32 {
     let exponent = if magnitude == 0.0 || !magnitude.is_finite() {
         0
     } else {
@@ -123,7 +145,7 @@ fn float_step(magnitude: f32) -> f32 {
         }
         exponent
     };
-    2f64.powi(exponent - 24) as f32
+    (2f64.powi(exponent - 24)) as f32
 }
 
 fn within_guard(computed: f32, stored: f32) -> bool {
@@ -633,6 +655,14 @@ mod tests {
         assert_eq!(float_step(1.0), 2f32.powi(-23));
         assert_eq!(float_step(100000.0), 2f32.powi(17 - 24));
         assert_eq!(float_step(0.0), 2f32.powi(-24));
+        // The bits give the step of the loop for every float of the world and beyond.
+        let mut x = 1e-30f32;
+        while x < 1e30 {
+            for v in [x, -x, x * 1.5, x * 0.75] {
+                assert_eq!(float_step(v).to_bits(), float_step_by_loop(v).to_bits(), "{v}");
+            }
+            x *= 1.37;
+        }
         assert!(within_guard(100000.0, 100000.1));
         assert!(!within_guard(100000.0, 100001.0));
     }

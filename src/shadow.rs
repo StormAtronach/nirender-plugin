@@ -441,6 +441,30 @@ pub unsafe fn run_before(before: usize, args: &[usize]) {
 /// The calls of ports in live mode that are in progress, and the time in the outermost
 /// ones. Only the main thread changes them.
 static PORT_DEPTH: AtomicU32 = AtomicU32::new(0);
+/// The time of each live port call is taken only when this is on: `NIRENDER_PORT_TIMING=1`,
+/// or the first call of `nirender.portTimes()`. Two time stamps for every call of a port
+/// that runs millions of times a second cost about 0.3 ms a frame (checkpoint 1 of plan 0.5
+/// entry F).
+static TIMING: AtomicU8 = AtomicU8::new(2);
+
+/// True when the live port calls are timed. The first call reads `NIRENDER_PORT_TIMING`.
+#[inline]
+pub fn timing() -> bool {
+    match TIMING.load(Ordering::Relaxed) {
+        0 => false,
+        1 => true,
+        _ => {
+            let on = std::env::var("NIRENDER_PORT_TIMING").is_ok_and(|v| v == "1");
+            TIMING.store(on as u8, Ordering::Relaxed);
+            on
+        }
+    }
+}
+
+/// Turns the timing of the live port calls on or off.
+pub fn set_timing(on: bool) {
+    TIMING.store(on as u8, Ordering::Relaxed);
+}
 static PORT_STAMPS: Stamps = Stamps::new();
 
 /// The time of the main thread in the ports in live mode since the start, in ms. A port
@@ -493,6 +517,9 @@ unsafe fn dispatch_inner<R: Eax>(
         Mode::Off => engine(),
         Mode::Live => {
             state.live_calls.add();
+            if !timing() {
+                return rust().to_eax();
+            }
             let depth = PORT_DEPTH.load(Ordering::Relaxed);
             let start = stamp();
             PORT_DEPTH.store(depth + 1, Ordering::Relaxed);

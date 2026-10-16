@@ -21,7 +21,9 @@ sys.path.insert(0, HARNESS_DIR)
 import harness  # noqa: E402
 
 MOD_NAME = harness.RUN_MOD_PREFIX + "nirender"
-DLL = os.path.join(REPO, "target", "i686-pc-windows-msvc", "release", "nirender.dll")
+# The plugin of the run: the build of the repo, or another DLL for one arm of an A/B
+# (`NIRENDER_PLUGIN_DLL`; the "before" of an A/B is built from a commit).
+DLL = os.environ.get("NIRENDER_PLUGIN_DLL") or os.path.join(REPO, "target", "i686-pc-windows-msvc", "release", "nirender.dll")
 DIST = os.path.join(REPO, "target", "dist", "nirender")
 RESULTS = os.path.join(REPO, "results")
 SPEC_NAME = "nirender_test"

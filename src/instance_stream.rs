@@ -207,9 +207,14 @@ struct Tables {
     /// A shape under an animated node, and a shape of class 0 that is not skinned, are
     /// retained too (`NIRENDER_ANIMATED=0` keeps them out: the state before, for an A/B).
     animated: bool,
-    light_cache: HashMap<usize, (u32, [u32; 26])>,
+    /// The frame each light (by its index) was noted last: its values are made and its LIGHT
+    /// record sent at most once a frame, whatever number of shapes it lights.
+    light_noted: Vec<u32>,
     scratch_entry: [u32; E::SIZE / 4],
     scratch_lights: Vec<usize>,
+    /// The keys of the lights of the shape in progress, kept between the shapes so that a
+    /// display does not allocate.
+    scratch_keys: Vec<u32>,
     fast_draws: u64,
     records: u64,
     /// The instance records sent again: for changed handles, and for changed values of
@@ -242,9 +247,10 @@ unsafe fn tables() -> &'static mut Tables {
         landscape: std::env::var("NIRENDER_LANDSCAPE").map_or(true, |v| v != "0"),
         actors: std::env::var("NIRENDER_ACTORS").map_or(true, |v| v != "0"),
         animated: std::env::var("NIRENDER_ANIMATED").map_or(true, |v| v != "0"),
-        light_cache: HashMap::new(),
+        light_noted: Vec::new(),
         scratch_entry: [0; E::SIZE / 4],
         scratch_lights: Vec::new(),
+        scratch_keys: Vec::new(),
         fast_draws: 0,
         records: 0,
         handle_updates: 0,
@@ -313,6 +319,8 @@ pub unsafe fn reset() {
         instance.sent = false;
         instance.lights.clear();
     }
+    // The LIGHT records go again (`light_stream::reset`): the lights are noted again too.
+    t.light_noted.clear();
 }
 
 /// A scene of the game begins: the camera of the world scene is kept for the check at its
@@ -372,7 +380,6 @@ pub unsafe fn frame_tick() {
 pub unsafe fn forget(shape: usize) {
     let t = tables();
     t.rejected.remove(&shape);
-    t.light_cache.clear();
     if let Some(instance) = t.instances.remove(&shape) {
         if instance.sent && capture::recording() {
             capture::instance_delete(instance.id);
@@ -656,21 +663,31 @@ unsafe fn state_lights(effect_state: usize, out: &mut Vec<usize>) {
     out.reverse();
 }
 
-/// The device light of a light of the game, as the light manager builds its entry; once a
-/// frame for each light.
-unsafe fn light_values(t: &mut Tables, light: usize) -> [u32; 26] {
-    if let Some(&(frame, values)) = t.light_cache.get(&light) {
-        if frame == t.frame {
-            return values;
-        }
+/// The highest light index noted (the indexes of the lights of the game are small numbers).
+const MOST_LIGHT_INDEX: usize = 1 << 20;
+
+/// Notes a light of the game once a frame: its device light as the light manager builds its
+/// entry, and its LIGHT record when the values changed (`light_stream::note_values`). Keyed
+/// by the index of the light, an array and not a hash: a frame notes each light of each
+/// retained shape.
+unsafe fn note_light_once(t: &mut Tables, light: usize, key: u32) {
+    let k = key as usize;
+    if k >= MOST_LIGHT_INDEX {
+        return;
     }
+    if t.light_noted.len() <= k {
+        t.light_noted.resize(k + 1, u32::MAX);
+    }
+    if t.light_noted[k] == t.frame {
+        return;
+    }
+    t.light_noted[k] = t.frame;
     let entry = t.scratch_entry.as_mut_ptr() as usize;
     core::ptr::write_bytes(entry as *mut u8, 0, E::SIZE);
     wr::<u32>(entry, E::revisionId, !rd::<u32>(light, L::revisionID));
     crate::ports::light_manager::light_entry_update(entry, light);
     let values: [u32; 26] = rd(entry, E::d3dLight);
-    t.light_cache.insert(light, (t.frame, values));
-    values
+    crate::light_stream::note_values(key, &values);
 }
 
 /// The display of a retained shape by the engine (mode gpu): what the draw of the stream
@@ -755,20 +772,25 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
     // and the keys when the set changed.
     let mut lights = core::mem::take(&mut t.scratch_lights);
     state_lights(effect_state, &mut lights);
-    let mut keys: Vec<u32> = Vec::with_capacity(lights.len());
+    let mut keys = core::mem::take(&mut t.scratch_keys);
+    keys.clear();
     for &light in &lights {
         let key: u32 = rd(light, L::index);
-        let values = light_values(t, light);
-        crate::light_stream::note_values(key, &values);
+        note_light_once(t, light, key);
         keys.push(key);
     }
     t.scratch_lights = lights;
-    let Some(instance) = t.instances.get_mut(&shape) else { return false };
+    let Some(instance) = t.instances.get_mut(&shape) else {
+        t.scratch_keys = keys;
+        return false;
+    };
     if instance.lights != keys {
         capture::instance_lights(id, &keys);
-        instance.lights = keys;
+        instance.lights.clear();
+        instance.lights.extend_from_slice(&keys);
         t.light_records += 1;
     }
+    t.scratch_keys = keys;
     instance.drawn = frame;
     if !instance.visible {
         instance.visible = true;
