@@ -95,6 +95,7 @@ pub mod material;
 pub mod ni;
 pub mod render_state;
 pub mod rendered;
+pub mod scene;
 pub mod renderer_frame;
 pub mod system_desc;
 #[cfg(not(test))]
@@ -115,6 +116,7 @@ static MODULES: &[&[&PortState]] = &[
     texture_pass_b::PORTS,
     system_desc::PORTS,
     rendered::PORTS,
+    scene::PORTS,
     textures::PORTS,
     #[cfg(not(test))]
     texture_link::PORTS,
