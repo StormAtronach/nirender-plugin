@@ -27,7 +27,7 @@ Stages (capture, baseline and only by default, in this order):
   tour     a run over the NIF test level with a capture for each cell; its counts. Copy
            the run folder to `tour/` of the baseline folder to make it the baseline.
   clusters the newest capture of each place replayed with the clusters of lights
-           (MGE_XE_CLUSTERS=1; they are off by default) and without, compared; then the
+           (MGE_XE_CLUSTERS=1; `distant_land.clustered_lights` otherwise) and without, compared; then the
            rate step with and without.
   weathers a run that measures the frame rate of each of the ten weathers of the game in
            turn, at each place.

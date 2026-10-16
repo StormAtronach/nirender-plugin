@@ -173,6 +173,11 @@ pub struct FrameParameters {
     /// True when the extension lights what it draws with the lights of the frame, for each
     /// pixel: `SceneView::lights` in `Extension::draw_held`.
     pub lights: bool,
+    /// True when a pixel of a draw that the extension shades takes its lights from the
+    /// clusters of the frame (`cluster_lights` in the shader), with the mask of the lights
+    /// of the draw: the same picture as the lights of the draw. `MGE_XE_CLUSTERS` (0 or 1)
+    /// overrides it, for an A/B.
+    pub clustered_lights: bool,
 }
 
 /// The lights of the world of a frame, for an extension that lights what it draws as the
@@ -1847,6 +1852,8 @@ fn storage_buffer(device: &wgpu::Device, label: &str, count: usize, item: usize)
 /// the projection of the scene (the start of the world).
 struct Clusters {
     on: bool,
+    /// `MGE_XE_CLUSTERS` (0 or 1): it overrides `FrameParameters::clustered_lights`.
+    forced: Option<bool>,
     uniform: wgpu::Buffer,
     table: wgpu::Buffer,
     indexes: wgpu::Buffer,
@@ -1872,12 +1879,18 @@ impl Clusters {
     fn new(device: &wgpu::Device) -> Clusters {
         let cells = (CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]) as usize;
         let index_capacity = 1 << 16;
+        let forced = match std::env::var("MGE_XE_CLUSTERS").as_deref() {
+            Ok("1") => Some(true),
+            Ok("0") => Some(false),
+            _ => None,
+        };
         Clusters {
-            // Off unless `MGE_XE_CLUSTERS=1`: with the masks the clusters give the picture of
-            // the lights of the draws, and at Narsis by night (13 lights for a draw at most)
-            // the GPU takes the same time either way while the binning costs the helper
-            // 0.4 ms a frame. They pay only with many more lights for each draw.
-            on: std::env::var("MGE_XE_CLUSTERS").is_ok_and(|v| v == "1"),
+            // On when the extension asks for them (`FrameParameters::clustered_lights`). With
+            // the masks the clusters give the picture of the lights of the draws; at Narsis by
+            // night (13 lights for a draw at most, before the retained instances) the GPU took
+            // the same time either way while the binning cost the helper 0.4 ms a frame.
+            on: forced.unwrap_or(false),
+            forced,
             uniform: device.create_buffer(&wgpu::BufferDescriptor { label: Some("clusters"), size: core::mem::size_of::<ClusterData>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
             table: storage_buffer(device, "cluster table", cells, 8),
             indexes: storage_buffer(device, "cluster lights", index_capacity, 4),
@@ -5262,7 +5275,10 @@ impl Player {
         let commands = self.renderer.commands.clone();
         let scene = facts.view(&device, &queue, &commands, format);
         let clock = ticks::Clock::now();
-        self.parameters = Some(extension.frame(&scene));
+        let parameters = extension.frame(&scene);
+        let clusters = &mut self.renderer.clusters;
+        clusters.on = clusters.forced.unwrap_or(parameters.clustered_lights);
+        self.parameters = Some(parameters);
         self.renderer.counts.times[TIME_EXT_FRAME] += clock.elapsed();
         self.extension = Some(extension);
     }
