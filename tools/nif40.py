@@ -55,6 +55,10 @@ LAYOUTS = {
                                     ("source", "ref"), ("clipping_plane", "u8"), ("plane_normal", "v3"), ("plane_constant", "f"),
                                     ("ps2_l", "i16"), ("ps2_k", "i16"), ("unknown", "u16")],
     "NiStringExtraData": [("next", "ref"), ("bytes_remaining", "u32"), ("string", "str")],
+    # A skinned shape: the skin data, the skeleton root and the bones; the data holds the
+    # transform of the skin, then for each bone its transform, its bound and its weights.
+    "NiSkinInstance": [("data", "ref"), ("skeleton_root", "ref"), ("bones", "refs")],
+    "NiSkinData": [("skindata", "skindata")],
     # A light: a dynamic effect (the affected list) with its colours, then the attenuation.
     "NiPointLight": AV_OBJECT + [("affected", "u32list"), ("dimmer", "f"), ("ambient", "v3"), ("diffuse", "v3"), ("specular", "v3"),
                                  ("constant", "f"), ("linear", "f"), ("quadratic", "f")],
@@ -111,6 +115,19 @@ class Reader:
         if kind == "lodlevels":
             n = self.take("<I")
             return [self.take("<2f") for _ in range(n)]
+        if kind == "skindata":
+            d = {"rotation": self.take("<9f"), "translation": self.take("<3f"), "scale": self.take("<f")}
+            n = self.take("<I")
+            # The reference of a skin partition, between the count and the bones (4.0.0.2).
+            d["skin_partition"] = self.take("<i")
+            d["bones"] = []
+            for _ in range(n):
+                bone = {"rotation": self.take("<9f"), "translation": self.take("<3f"), "scale": self.take("<f"),
+                        "center": self.take("<3f"), "radius": self.take("<f")}
+                count = self.take("<H")
+                bone["weights"] = [(self.take("<H"), self.take("<f")) for _ in range(count)]
+                d["bones"].append(bone)
+            return d
         if kind == "bounds":
             has = self.take("<I")
             if has == 0:
@@ -203,6 +220,22 @@ class Writer:
             self.put("<I", len(v))
             for near, far in v:
                 self.put("<2f", near, far)
+        elif kind == "skindata":
+            self.put("<9f", *v["rotation"])
+            self.put("<3f", *v["translation"])
+            self.put("<f", v["scale"])
+            self.put("<I", len(v["bones"]))
+            self.put("<i", v["skin_partition"])
+            for bone in v["bones"]:
+                self.put("<9f", *bone["rotation"])
+                self.put("<3f", *bone["translation"])
+                self.put("<f", bone["scale"])
+                self.put("<3f", *bone["center"])
+                self.put("<f", bone["radius"])
+                self.put("<H", len(bone["weights"]))
+                for index, weight in bone["weights"]:
+                    self.put("<H", index)
+                    self.put("<f", weight)
         elif kind == "bounds":
             if v is None:
                 self.put("<I", 0)
