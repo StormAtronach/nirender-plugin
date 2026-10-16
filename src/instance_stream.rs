@@ -144,9 +144,8 @@ const REASON_PROPERTY_CONTROLLER: usize = 2;
 const REASON_BLEND: usize = 3;
 const REASON_EFFECT: usize = 4;
 const REASON_LATER: usize = 5;
-/// The depth test of the shape is not less, less or equal, or always: the draw depends on
-/// the depth of a draw before it (a decal with "equal"), so its place in the order of the
-/// game matters.
+/// The depth test of the shape is equal, greater, not equal or greater or equal: the draw
+/// depends on the depth of a draw before it, so its place in the order of the game matters.
 const REASON_DEPTH: usize = 6;
 const REASONS: usize = 7;
 
@@ -484,10 +483,12 @@ unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize
         if alpha != 0 && rd::<u16>(alpha, PROPERTY_FLAGS) & 1 != 0 {
             return Some(REASON_BLEND);
         }
-        // D3DCMPFUNC: 2 less, 4 less or equal, 8 always. The NIF test level draws an info
-        // box with "equal" over a plane drawn just before it (2026-10-16).
+        // The test function of NiZBufferProperty, the enum of NetImmerse (not D3DCMPFUNC):
+        // 0 always, 1 less, 2 equal, 3 less or equal, 4 greater, 5 not equal, 6 greater or
+        // equal, 7 never. The first wrong form of this rule took 3 for "equal" and rejected
+        // nearly every shape (2026-10-16).
         let z: usize = rd(property_state, PS::propZBuffer);
-        if z != 0 && !matches!(rd::<u32>(z, ZP::testFunction), 2 | 4 | 8) {
+        if z != 0 && !matches!(rd::<u32>(z, ZP::testFunction), 0 | 1 | 3 | 7) {
             return Some(REASON_DEPTH);
         }
     }
