@@ -598,6 +598,16 @@ return function(nirender, spec)
                     tostring(fog.color[4]), fog.density, tostring(weather))
             end)
             if not fogOk then say("fog %s: not read: %s", this[1], tostring(fogProblem)) end
+            -- The post shaders that are on, and the lighting mode of MGE XE: two pictures
+            -- compare only with the same chain and mode (owner, 2026-10-16).
+            if mge and mge.shaders and mge.shaders.list then
+                local names = {}
+                for _, shader in ipairs(mge.shaders.list) do
+                    if shader.enabled then names[#names + 1] = shader.name end
+                end
+                say("shaders %s: %s; lighting mode %s", this[1], #names > 0 and table.concat(names, ", ") or "none",
+                    mge.getLightingMode and tostring(mge.getLightingMode()) or "?")
+            end
             if nirender.captureStatus():sub(1, 3) == "off" and mge and mge.saveScreenshot then
                 -- No stream: the run is the reference with MGE XE on Direct3D 9. The picture
                 -- is that of MGE XE.
