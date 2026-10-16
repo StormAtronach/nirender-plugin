@@ -1,6 +1,7 @@
 """Replays the stops of a tour of a test level and compares the pictures with a baseline.
 
     python tools/validate_tour.py <run dir> [--against <baseline dir>] [--out <dir>] [--jobs N]
+                                  [--mge-build DIR]
 
 The run comes from `run_own_device.py --steps tour --tour-cells "@nifTest_1;@nifTest_2;@nifTest_3"`:
 its folder has `tour-<cell>.nircap` with two frames for each stop, and `progress.log` names
@@ -31,8 +32,14 @@ def stops_of(run):
     return stops
 
 
+MGE_BUILD = None
+
+
 def replay(capture, frame, picture):
     command = [PYTHON, os.path.join(HERE, "replay.py"), capture, picture, "--frame", str(frame)]
+    # The helper of the build under test, not the default one of replay.py.
+    if MGE_BUILD:
+        command += ["--mge-build", MGE_BUILD]
     result = subprocess.run(command, capture_output=True, text=True)
     return result.returncode == 0 and os.path.isfile(picture), (result.stdout + result.stderr)[-400:]
 
@@ -43,7 +50,10 @@ def main():
     ap.add_argument("--against")
     ap.add_argument("--out")
     ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--mge-build", default=None, help="the MGE XE build whose helper replays (replay.py's default without it)")
     args = ap.parse_args()
+    global MGE_BUILD
+    MGE_BUILD = args.mge_build
     out = args.out or args.run
     os.makedirs(out, exist_ok=True)
     stops = stops_of(args.run)

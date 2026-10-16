@@ -155,7 +155,7 @@ def stage_baseline(baseline, accept, mge_build):
     tour = os.path.join(baseline, "tour")
     tour_out = os.path.join(tour, "accepted" if accept else "now")
     if os.path.isdir(tour):
-        run([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4"], env)
+        run([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env)
     if accept:
         return check(True, "%d pictures accepted%s" % (len(captures), ", and the tour" if os.path.isdir(tour) else ""))
     sys.path.insert(0, HERE)
