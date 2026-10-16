@@ -229,6 +229,10 @@ struct Tables {
     value_updates: u64,
     deletes: u64,
     rejected_by: [u64; REASONS],
+    /// The draws that `consider` did not take, by the first cause: not a plain world draw
+    /// of a retained class, no geometry handle, no material handle, the path off, the
+    /// material not modelled.
+    skipped_by: [u64; 5],
 }
 
 static mut TABLES: Option<Tables> = None;
@@ -263,6 +267,7 @@ unsafe fn tables() -> &'static mut Tables {
         value_updates: 0,
         deletes: 0,
         rejected_by: [0; REASONS],
+        skipped_by: [0; 5],
     })
 }
 
@@ -417,10 +422,24 @@ pub unsafe fn seen(shape: usize, kind: u32, class_out: &mut u32) -> Option<(u32,
 /// progress pending for `draw` when it is. `property_state` and `effect_state` are those
 /// of the renderer for the draw.
 pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, geometry: u32, material: u32, property_state: usize, effect_state: usize) {
-    if !eligible || geometry == 0 || material == 0 || !enabled() || !crate::material_stream::last_modelled() {
+    let cause = if !eligible {
+        Some(0)
+    } else if geometry == 0 {
+        Some(1)
+    } else if material == 0 {
+        Some(2)
+    } else if !enabled() {
+        Some(3)
+    } else if !crate::material_stream::last_modelled() {
+        Some(4)
+    } else {
+        None
+    };
+    let t = tables();
+    if let Some(cause) = cause {
+        t.skipped_by[cause] += 1;
         return;
     }
-    let t = tables();
     if let Some(instance) = t.instances.get_mut(&shape) {
         instance.generation = t.generation;
         if instance.geometry != geometry || instance.material != material || instance.class != class {
@@ -821,12 +840,15 @@ pub unsafe fn report() -> String {
     let t = tables();
     let reasons = ["controller", "node kind", "property controller", "blend", "effect", "at the record", "depth function"];
     let rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
+    let causes = ["not a plain world draw of a retained class", "no geometry", "no material", "path off", "not modelled"];
+    let skipped: Vec<String> = causes.iter().zip(t.skipped_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
-        "instances: mode {}, {} retained, {} rejected ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
+        "instances: mode {}, {} retained, {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
         mode().name(),
         t.instances.len(),
         t.rejected.len(),
         rejected.join(", "),
+        skipped.join(", "),
         t.fast_draws,
         t.skipped,
         t.scene_mixed,

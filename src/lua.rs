@@ -309,6 +309,13 @@ unsafe extern "C" fn capture_end(_l: LuaState) -> i32 {
 
 /// `nirender.captureStatus()` returns the phase of the capture ("off", "warmup", "record",
 /// "done"), its records and its bytes, as one text.
+/// `nirender.instances()`: the report of the retained instances, as the log gets it at the
+/// end of a run: the counts of the retained, the rejected by reason, the draws not taken.
+unsafe extern "C" fn instances_report(l: LuaState) -> i32 {
+    push_str(l, &crate::instance_stream::report());
+    1
+}
+
 unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
     push_str(l, &crate::capture::status());
     1
@@ -562,6 +569,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "fault", fault);
     set_fn(l, "capture", capture);
     set_fn(l, "captureStatus", capture_status);
+    set_fn(l, "instances", instances_report);
     set_fn(l, "retained", retained);
     set_fn(l, "captureFrames", capture_frames);
     set_fn(l, "captureEnd", capture_end);
