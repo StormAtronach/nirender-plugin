@@ -945,7 +945,7 @@ impl Player {
             data.world[0] = self.retained.world_of(r);
             // The kind of the pass for the shade bits of the scene: opaque, blended, additive.
             let kind = if p.blend[0] == 0 { 0 } else if p.blend[1] == 2 || p.blend[2] == 2 { 2 } else { 1 };
-            data.light_range = [0, 0, kind, RETAINED_RECORD_BITS];
+            data.light_range = [0, 0, kind, RETAINED_RECORD_BITS | crate::flat_shading_bit(&derived)];
             data.counts[0] = 0;
             // The slot's fog: on or off (z), and by the distance (w) for a RANGE_SQ material.
             // A shape with a fog property of its own keeps its colour and range (z 2).

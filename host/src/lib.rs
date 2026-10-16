@@ -481,7 +481,7 @@ impl Replay for Replayer<'_> {
             let mut data = kept.data;
             let origin = kept.origin.unwrap_or([0.0; 3]);
             // The clusters are those of the view of the world: not for another view.
-            data.light_range[3] = 0;
+            data.light_range[3] &= !1;
             if let Some(matrix) = view.view {
                 data.view = matrix;
             }
@@ -926,6 +926,20 @@ struct Retained {
     colours: [f32; 14],
     /// The world bound of the shape: the centre and the radius.
     bound: [f32; 4],
+}
+
+/// Bit 16 of `light_range[3]` for a material with flat shading (NiShadeProperty off): the
+/// shader takes the lit colour and the normal of the first vertex of each triangle, as
+/// Direct3D 8 did. Experimental (the owner, 2026-10-16); `NIRENDER_FLAT_SHADING=0` turns
+/// it off.
+pub(crate) fn flat_shading_bit(derived: &material::Derived) -> u32 {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *ON.get_or_init(|| std::env::var("NIRENDER_FLAT_SHADING").map_or(true, |v| v != "0"));
+    if on && derived.shade == 1 {
+        16
+    } else {
+        0
+    }
 }
 
 /// The size of a light of a shape draw: its key, then the `D3DLIGHT8` of 26 words.
@@ -3664,7 +3678,7 @@ impl Stream {
 
         let lights = shape.lights.len() / STATE_LIGHT_SIZE;
         counts.most_lights = counts.most_lights.max(lights as u32);
-        data.light_range = [frame_lights.len() as u32, lights as u32, 0, 0];
+        data.light_range = [frame_lights.len() as u32, lights as u32, 0, flat_shading_bit(derived)];
         data.counts[0] = lights as u32;
         if let Some((first, _)) = self.shape_bones {
             // A skinned shape: the vertex blend reads four bones of the palette of the frame.
@@ -5667,7 +5681,7 @@ impl Player {
             }
         }
         if masked {
-            draw_data.light_range[3] = 1;
+            draw_data.light_range[3] |= 1;
         }
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
         let clock = ticks::Clock::now();

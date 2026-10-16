@@ -309,6 +309,18 @@ unsafe extern "C" fn capture_end(_l: LuaState) -> i32 {
 
 /// `nirender.captureStatus()` returns the phase of the capture ("off", "warmup", "record",
 /// "done"), its records and its bytes, as one text.
+/// `nirender.nifShading([on])`: with a boolean, the shape's own shade, dither and specular
+/// properties (from its NIF) go into the material record instead of the engine's
+/// globals (experimental, off by default; a changed record is sent again). Returns the
+/// state.
+unsafe extern "C" fn nif_shading(l: LuaState) -> i32 {
+    if lua_gettop(l) >= 1 {
+        crate::material_stream::set_nif_shading(lua_toboolean(l, 1) != 0);
+    }
+    lua_pushboolean(l, crate::material_stream::nif_shading() as i32);
+    1
+}
+
 /// `nirender.instances()`: the report of the retained instances, as the log gets it at the
 /// end of a run: the counts of the retained, the rejected by reason, the draws not taken.
 unsafe extern "C" fn instances_report(l: LuaState) -> i32 {
@@ -570,6 +582,7 @@ pub unsafe extern "C" fn luaopen_nirender(l: LuaState) -> i32 {
     set_fn(l, "capture", capture);
     set_fn(l, "captureStatus", capture_status);
     set_fn(l, "instances", instances_report);
+    set_fn(l, "nifShading", nif_shading);
     set_fn(l, "retained", retained);
     set_fn(l, "captureFrames", capture_frames);
     set_fn(l, "captureEnd", capture_end);

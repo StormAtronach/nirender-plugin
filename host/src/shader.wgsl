@@ -192,7 +192,7 @@ fn light_of(i: u32) -> Light {
 // number, for a pixel of the picture at a depth of the view. None when the clusters are
 // off or the draw cannot use them (`draws[record].light_range.w`).
 fn cluster_lights(pixel: vec2f, view_z: f32) -> vec2u {
-    if clusters.grid.w == 0u || draws[record].light_range.w == 0u {
+    if clusters.grid.w == 0u || (draws[record].light_range.w & 1u) == 0u {
         return vec2u(0u, 0u);
     }
     let tile = vec2u(clamp(vec2i(pixel * clusters.screen.xy), vec2i(0), vec2i(clusters.grid.xy) - 1));
@@ -259,6 +259,11 @@ struct VertexOut {
     @location(9) world_normal: vec3f,
     @location(10) vertex_color: vec4f,
     @location(11) @interpolate(flat) record: u32,
+    // Flat shading (bit 16 of `light_range.w`, a material with NiShadeProperty off): the
+    // lit colour and the normal of the first vertex of the triangle, as Direct3D 8 drew it
+    // (D3DSHADE_FLAT). The same values as `color` and `world_normal`, not blended.
+    @location(12) @interpolate(flat, first) color_flat: vec4f,
+    @location(13) @interpolate(flat, first) world_normal_flat: vec3f,
 }
 
 // The texture coordinate of a stage, as the fixed-function pipeline makes it.
@@ -355,6 +360,7 @@ fn vs(in: VertexIn) -> VertexOut {
     out.world_position = world_position.xyz;
     out.world_normal = world_normal;
     out.vertex_color = vertex_color;
+    out.world_normal_flat = world_normal;
     if (draw_counts_w() & 12u) != 0u {
         // For the sky: the direction from the camera, in the space of the world.
         let v = draw_view();
@@ -421,6 +427,7 @@ fn vs(in: VertexIn) -> VertexOut {
         out.color = vec4f(clamp(sum, vec3f(0.0), vec3f(1.0)), diffuse.a);
     }
 
+    out.color_flat = out.color;
     // The fog of the game is table fog: linear on the depth, for each pixel. The fragment
     // shader makes the fog from this depth, so that a large triangle is right.
     out.fog = abs(view_position.z);
@@ -523,28 +530,33 @@ fn bump_light(index: u32, bump_texel: vec4f, texel: vec4f) -> vec4f {
 @fragment
 fn fs(in: VertexOut) -> @location(0) vec4f {
     record = in.record;
+    var inp = in;
+    if (draws[record].light_range.w & 16u) != 0u {
+        inp.color = inp.color_flat;
+        inp.world_normal = inp.world_normal_flat;
+    }
     // A texture read must not be in a branch, so each stage reads its texture first.
     var texels: array<vec4f, 6>;
     // A bump stage moves the coordinate of the stage after it.
-    texels[0] = textureSample(texture0, sampler0, final_coordinate(0u, in.coordinate0));
-    texels[1] = bump_light(0u, texels[0], textureSample(texture1, sampler1, final_coordinate(1u, in.coordinate1) + bump_move(0u, texels[0])));
-    texels[2] = bump_light(1u, texels[1], textureSample(texture2, sampler2, final_coordinate(2u, in.coordinate2) + bump_move(1u, texels[1])));
-    texels[3] = bump_light(2u, texels[2], textureSample(texture3, sampler3, final_coordinate(3u, in.coordinate3) + bump_move(2u, texels[2])));
-    texels[4] = bump_light(3u, texels[3], textureSample(texture4, sampler4, final_coordinate(4u, in.coordinate4) + bump_move(3u, texels[3])));
-    texels[5] = bump_light(4u, texels[4], textureSample(texture5, sampler5, final_coordinate(5u, in.coordinate5) + bump_move(4u, texels[4])));
+    texels[0] = textureSample(texture0, sampler0, final_coordinate(0u, inp.coordinate0));
+    texels[1] = bump_light(0u, texels[0], textureSample(texture1, sampler1, final_coordinate(1u, inp.coordinate1) + bump_move(0u, texels[0])));
+    texels[2] = bump_light(1u, texels[1], textureSample(texture2, sampler2, final_coordinate(2u, inp.coordinate2) + bump_move(1u, texels[1])));
+    texels[3] = bump_light(2u, texels[2], textureSample(texture3, sampler3, final_coordinate(3u, inp.coordinate3) + bump_move(2u, texels[2])));
+    texels[4] = bump_light(3u, texels[3], textureSample(texture4, sampler4, final_coordinate(4u, inp.coordinate4) + bump_move(3u, texels[3])));
+    texels[5] = bump_light(4u, texels[4], textureSample(texture5, sampler5, final_coordinate(5u, inp.coordinate5) + bump_move(4u, texels[4])));
 
     if (draw_counts_w() & 4u) != 0u {
-        return vec4f(extension_sky_color(normalize(in.world_position), in.clip.xy), 1.0);
+        return vec4f(extension_sky_color(normalize(inp.world_position), inp.clip.xy), 1.0);
     }
     // A sky draw has a direction in `world_position`, and is above the water in any case.
     let clip_plane = draw_clip_plane();
-    if (draw_counts_w() & 12u) == 0u && any(clip_plane != vec4f(0.0)) && dot(in.world_position, clip_plane.xyz) + clip_plane.w < 0.0 {
+    if (draw_counts_w() & 12u) == 0u && any(clip_plane != vec4f(0.0)) && dot(inp.world_position, clip_plane.xyz) + clip_plane.w < 0.0 {
         discard;
     }
     let shaded = (draw_counts_w() & 1u) != 0u;
-    var diffuse = in.color;
+    var diffuse = inp.color;
     if shaded {
-        diffuse = extension_shade(in);
+        diffuse = extension_shade(inp);
     }
     var current = diffuse;
     for (var i = 0u; i < draws[record].counts.y; i++) {
@@ -571,13 +583,13 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     var clear = 1.0;
     let fog = draw_fog();
     if fog.z != 0.0 {
-        clear = clamp((fog.y - in.fog) / max(fog.y - fog.x, 0.0001), 0.0, 1.0);
+        clear = clamp((fog.y - inp.fog) / max(fog.y - fog.x, 0.0001), 0.0, 1.0);
     }
     if shaded {
         return extension_finish(current.rgb, current.a, clear);
     }
     if (draw_counts_w() & 8u) != 0u {
-        return vec4f(extension_sky_color(normalize(in.world_position), in.clip.xy), current.a);
+        return vec4f(extension_sky_color(normalize(inp.world_position), inp.clip.xy), current.a);
     }
     return vec4f(mix(draw_fog_color().rgb, current.rgb, clear), current.a);
 }

@@ -62,6 +62,18 @@ static mut RECORDS: u64 = 0;
 /// lights and shadows.
 static mut LAST_FLAGS: u32 = 0;
 
+/// The shape's own shade, dither and specular properties from its NIF go into the record
+/// (see `note`). Off by default: the game never showed them. `nirender.nifShading(on)`.
+static NIF_SHADING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn nif_shading() -> bool {
+    NIF_SHADING.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_nif_shading(on: bool) {
+    NIF_SHADING.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
 pub unsafe fn last_modelled() -> bool {
     *core::ptr::addr_of!(LAST_FLAGS) & (PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0
 }
@@ -229,17 +241,31 @@ pub unsafe fn note(renderer: usize, property_state: usize, effect_state: usize) 
         }
     }
 
-    // Wireframe, shade, dither, specular.
+    // Wireframe, shade, dither, specular. The engine takes the last three from its global
+    // properties; the shape's own (from its NIF) sit in the slots of its property state
+    // (`setProperty` stores a property at `propAlpha + 4 * type`: dither 8, specular 9,
+    // shade 10) and nothing of the engine reads them. With `nif_shading` on, the record
+    // takes the shape's own when it has one (experimental, 2026-10-16; 8 files of the game
+    // and 2 of the installed mods ask for flat shading, 340 for specular, none of which
+    // the game ever showed).
     if flags_of(rd(property_state, PS::propWireframe)) & 1 != 0 {
         flags |= WIREFRAME;
     }
-    if flags_of(engine::property_state_global_shade_property(property_state)) & 1 != 0 {
+    let own_or_global = |slot: usize, global: usize| -> usize {
+        let own: usize = if nif_shading() { rd(property_state, slot) } else { 0 };
+        if own != 0 {
+            own
+        } else {
+            global
+        }
+    };
+    if flags_of(own_or_global(0x30, engine::property_state_global_shade_property(property_state))) & 1 != 0 {
         flags |= SMOOTH;
     }
-    if flags_of(engine::property_state_global_dither_property(property_state)) & 1 != 0 {
+    if flags_of(own_or_global(0x28, engine::property_state_global_dither_property(property_state))) & 1 != 0 {
         flags |= DITHER;
     }
-    if flags_of(engine::property_state_global_specular_property(property_state)) & 1 != 0 {
+    if flags_of(own_or_global(0x2C, engine::property_state_global_specular_property(property_state))) & 1 != 0 {
         flags |= SPECULAR;
     }
 
