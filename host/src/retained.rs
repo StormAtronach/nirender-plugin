@@ -363,6 +363,21 @@ impl RetainedSet {
         [plane[0] as f32, plane[1] as f32, plane[2] as f32, (plane[3] + plane[0] * o[0] + plane[1] * o[1] + plane[2] * o[2]) as f32]
     }
 
+    /// The lights of each slot of a geometry as the table resolves them: the run of the
+    /// slot and the shaded values behind the indexes (`MGE_XE_DRAW_DUMP`).
+    pub fn dump_lights(&self, geometry: u32, lights: &[LightData]) {
+        for slot in self.slots.iter().flatten() {
+            if slot.geometry != geometry {
+                continue;
+            }
+            let (first, count) = (slot.data.light_range[0] as usize, slot.data.light_range[1] as usize);
+            let indexes: Vec<u32> = self.light_indexes[first..(first + count).min(self.light_indexes.len())].to_vec();
+            println!("light dump retained table slot {} id {}: light_range {:?} counts {:?} indexes {:?} origin {:?} relative {}", slot.bucket, slot.id, slot.data.light_range, slot.data.counts, indexes, self.origin, self.relative);
+            let values: Vec<LightData> = indexes.iter().filter_map(|&i| lights.get(i as usize).copied()).collect();
+            crate::light_dump("retained table", &values);
+        }
+    }
+
     pub fn set_visible(&mut self, id: u32, visible: bool) {
         if let Some(slots) = self.by_id.get(&id) {
             for &slot in slots {
@@ -926,6 +941,7 @@ impl Player {
             };
             let mut dummy = Vec::new();
             let mut data = self.stream.draw_data(&derived, &p, &mut self.renderer.counts, &mut dummy);
+            crate::draw_dump("retained table, before the record bits", r.geometry, &data);
             data.world[0] = self.retained.world_of(r);
             // The kind of the pass for the shade bits of the scene: opaque, blended, additive.
             let kind = if p.blend[0] == 0 { 0 } else if p.blend[1] == 2 || p.blend[2] == 2 { 2 } else { 1 };
@@ -1044,6 +1060,9 @@ impl Player {
                     scene.counts[k] = data.counts[3];
                 }
             }
+        }
+        if crate::dump_wanted() != 0 {
+            self.retained.dump_lights(crate::dump_wanted(), &lights);
         }
         self.renderer.upload_retained_lights(&lights);
         self.renderer.scene_main = scene;

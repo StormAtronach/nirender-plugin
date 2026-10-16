@@ -2179,6 +2179,31 @@ fn flush_run(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Renderer, run_
     run_args.clear();
 }
 
+/// `MGE_XE_DRAW_DUMP=<geometry handle, hex>`: the words of the draw data of each draw of
+/// that geometry, on the path it takes, for a comparison of the two paths (2026-10-16).
+pub(crate) fn dump_wanted() -> u32 {
+    static WANTED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *WANTED.get_or_init(|| std::env::var("MGE_XE_DRAW_DUMP").ok().and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0))
+}
+
+/// The lights of a draw of the dumped geometry, one line each: the position, the diffuse,
+/// the attenuation and the range.
+pub(crate) fn light_dump(path: &str, lights: &[LightData]) {
+    for (i, l) in lights.iter().enumerate() {
+        println!("light dump {path} {i}: type {} position {:?} diffuse {:?} ambient {:?} attenuation {:?} range {} radius {}", l.position[3], &l.position[..3], &l.diffuse[..3], &l.ambient[..3], &l.attenuation[..3], l.direction[3], l.cone[2]);
+    }
+}
+
+pub(crate) fn draw_dump(path: &str, geometry: u32, data: &DrawData) {
+    let wanted = dump_wanted();
+    if wanted == 0 || geometry != wanted {
+        return;
+    }
+    let words: &[u32] = bytemuck::cast_slice(bytemuck::bytes_of(data));
+    let text: Vec<String> = words.iter().map(|w| format!("{w:08x}")).collect();
+    println!("draw dump {path} geometry {wanted:#x}: {}", text.join(" "));
+}
+
 /// The size of a buffer of the pools of the game's geometry.
 const VERTEX_CHUNK: u64 = 64 << 20;
 const INDEX_CHUNK: u64 = 16 << 20;
@@ -5602,6 +5627,11 @@ impl Player {
         self.stream.fog_range = fog_range.filter(|_| world);
         self.stream.sky = sky.filter(|_| in_back_buffer && (1..=7).contains(&self.stream.object_class));
         let mut draw_data = self.stream.draw_data(derived, pass, &mut renderer.counts, &mut self.frame_lights);
+        crate::draw_dump("record path", self.stream.shape.geometry, &draw_data);
+        if self.stream.shape.geometry == crate::dump_wanted() {
+            let (first, count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);
+            crate::light_dump("record path", &self.frame_lights[first..first + count]);
+        }
         let mut shaded = false;
         if shade && world && self.stream.projection[11] == 1.0 {
             if let Some(extension) = self.extension.as_mut() {
