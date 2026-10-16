@@ -30,6 +30,7 @@ import sys
 TAG_OBJECT, TAG_DRAW_STATE, TAG_COMMAND, TAG_CALL, TAG_FRAME_END = 6, 7, 8, 9, 10
 TAG_SCENE_BEGIN, TAG_SCENE_END, TAG_GEOMETRY, TAG_MATERIAL, TAG_SHAPE = 3, 4, 18, 19, 20
 TAG_INSTANCE, TAG_INSTANCE_DRAW, TAG_INSTANCE_DELETE = 23, 24, 25
+TAG_INSTANCE_LIGHTS, TAG_INSTANCE_STATE = 26, 27
 RENDER_STATES = {7: "ZENABLE", 8: "FILLMODE", 14: "ZWRITEENABLE", 22: "CULLMODE", 28: "FOGENABLE", 34: "FOGCOLOR",
                  35: "FOGTABLEMODE", 36: "FOGSTART", 37: "FOGEND", 38: "FOGDENSITY", 48: "RANGEFOGENABLE",
                  52: "STENCILENABLE", 53: "STENCILFAIL", 54: "STENCILZFAIL", 55: "STENCILPASS", 56: "STENCILFUNC",
@@ -105,8 +106,14 @@ def sequence(path, wanted):
             print("  SHAPE geometry %#x material %#x flags %#x lights %d%s" % (g, m, flags, lights, " twin" if flags & 0x200 else ""))
         elif tag == TAG_INSTANCE:
             i, cls, flags, g, m = words(body, 0, 5)
-            name = body[160:]
+            name = body[176:]
             print("INSTANCE %d class %d flags %#x geometry %#x material %#x %r" % (i, cls, flags, g, m, name.decode("latin-1")[:40]))
+        elif tag == TAG_INSTANCE_LIGHTS:
+            i, lights = words(body, 0, 2)
+            print("  INSTANCE_LIGHTS %d lights %d" % (i, lights))
+        elif tag == TAG_INSTANCE_STATE:
+            i, visible = words(body, 0, 2)
+            print("INSTANCE_STATE %d visible %d" % (i, visible))
         elif tag == TAG_INSTANCE_DRAW:
             i, ambient, flags = words(body, 0, 3)
             lights = words(body, 28 if flags & 32 else 12, 1)[0]

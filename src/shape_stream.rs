@@ -349,7 +349,7 @@ unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], re
         if kind != 0 || effects.is_some() || flags & CODE_PATCH_PICTURE != 0 {
             crate::instance_stream::reject_pending(shape, true);
         } else if crate::instance_stream::draw(shape, id, &world, relative, &material_values, fog, ambient, lights) {
-            if crate::instance_stream::mode() == crate::instance_stream::Mode::On {
+            if matches!(crate::instance_stream::mode(), crate::instance_stream::Mode::On | crate::instance_stream::Mode::Gpu) {
                 return records_only();
             }
             flags |= RETAINED_TWIN;

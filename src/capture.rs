@@ -132,6 +132,12 @@ pub mod tag {
     pub const INSTANCE_DRAW: u32 = 24;
     /// The instance is deleted: id.
     pub const INSTANCE_DELETE: u32 = 25;
+    /// The lights of an instance the helper draws from its table (mode gpu): id, the number
+    /// of lights, their keys. Sent when the lights of the instance change.
+    pub const INSTANCE_LIGHTS: u32 = 26;
+    /// The visibility of such an instance: id, 1 when the engine draws it, 0 when it does
+    /// not although it is in the view of the camera.
+    pub const INSTANCE_STATE: u32 = 27;
 }
 
 // ---- the ring in shared memory
@@ -1081,6 +1087,18 @@ pub unsafe fn instance_draw(id: u32, ambient: u32, fog: Option<[u32; 4]>, lights
 pub unsafe fn instance_delete(id: u32) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_DELETE, &[words(&[id])]);
+}
+
+/// The lights of an instance. See `tag::INSTANCE_LIGHTS`.
+pub unsafe fn instance_lights(id: u32, lights: &[u32]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::INSTANCE_LIGHTS, &[words(&[id, lights.len() as u32]), words(lights)]);
+}
+
+/// The visibility of an instance. See `tag::INSTANCE_STATE`.
+pub unsafe fn instance_state(id: u32, visible: bool) {
+    let _lock = crate::sync::device_lock();
+    write(tag::INSTANCE_STATE, &[words(&[id, visible as u32])]);
 }
 
 /// A light record. See `tag::LIGHT`.

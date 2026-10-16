@@ -972,12 +972,14 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     };
     (host.scene_begin)(&scene);
     crate::capture::scene_begin(&scene);
+    crate::instance_stream::scene_begin(roots.scene_kind, camera);
 }
 
 /// Runs after `EndPaint`.
 unsafe fn end_paint() {
     if let Some(host) = host() {
         (host.scene_end)();
+        crate::instance_stream::scene_end();
         crate::capture::scene_end();
     }
 }

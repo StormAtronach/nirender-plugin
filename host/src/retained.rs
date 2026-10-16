@@ -1,0 +1,869 @@
+//! The retained instances of the plugin drawn from a table of the helper (plan 0.5 entry
+//! T4). An `INSTANCE` record with the flag 0x100 goes into the table: its world matrix and
+//! its bound, and the record of its draw (`DrawData`) made once from its material and its
+//! geometry, in a segment of the record buffer and of the instance buffer of the frame
+//! that stays from frame to frame. The plugin then sends no draw for it: a change of its
+//! lights (`INSTANCE_LIGHTS`), of its visibility (`INSTANCE_STATE`), of its values (the
+//! `INSTANCE` record again) or its end (`INSTANCE_DELETE`).
+//!
+//! At the start of the world of a frame, and in each view that the extension replays (a
+//! mirror, the layers of the shadow map), the helper tests the bound of each visible
+//! instance against the planes of the view on the CPU and draws the ones in view with one
+//! indirect call for each bucket (the instances with one pipeline, one stencil reference,
+//! one pair of pool buffers, and, without the arrays of the frame, one set of textures).
+//! The values of the view (its matrices, the fog, the ambient light, the pixel step, the
+//! clip plane) are in a `Scene` uniform with a dynamic offset: the record of a retained
+//! instance has the flag 4 in `light_range.w`, and the shader takes those values from the
+//! scene instead of the record. The lights of an instance are indexes into a table of the
+//! lights the retained instances use (flag 8): a light that changes is written once.
+//!
+//! Not here yet: the cull on the GPU with a depth pyramid (the second part of T4), and
+//! instancing of the instances that share a geometry and a material.
+
+use super::*;
+
+/// The size of a `Scene` uniform, the step of the dynamic offset.
+pub const SCENE_SIZE: usize = 256;
+/// The scenes a frame can have: the world, and the views the extension replays.
+pub const SCENE_SLOTS: usize = 32;
+/// The room of the segments at first.
+pub const RETAINED_AT_FIRST: usize = 2048;
+pub const LIGHT_INDEXES_AT_FIRST: usize = 8192;
+pub const RETAINED_LIGHTS_AT_FIRST: usize = 1024;
+/// The flag of an instance record: the helper draws the instance from its table.
+pub const INSTANCE_BLOCK: u32 = 0x100;
+/// The bits of `light_range.w` of the record of a retained instance: the world matrix from
+/// the instance, the values of the view from the scene, the lights through the indexes.
+const RETAINED_RECORD_BITS: u32 = 2 | 4 | 8;
+
+/// The values of a view for the retained draws: `Scene` in the shader.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct SceneData {
+    pub view: [f32; 16],
+    pub projection: [f32; 16],
+    pub fog_color: [f32; 4],
+    pub fog: [f32; 4],
+    pub scene_ambient: [f32; 4],
+    pub pixel: [f32; 4],
+    pub clip_plane: [f32; 4],
+    /// The sun of the view for the shade of the extension, and the bits of `counts.w` the
+    /// extension sets for a draw of the frame (`Extension::shade`).
+    pub extension5: [f32; 4],
+    pub extension7: [f32; 4],
+    pub counts: [u32; 4],
+}
+const _: () = assert!(core::mem::size_of::<SceneData>() == SCENE_SIZE);
+
+/// The buffers of the retained draws: the scenes, the light indexes, the lights.
+pub fn scene_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor { label: Some("scenes"), size: (SCENE_SLOTS * SCENE_SIZE) as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+}
+
+pub fn light_index_buffer(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
+    storage_buffer(device, "retained light indexes", count, 4)
+}
+
+pub fn retained_light_buffer(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
+    storage_buffer(device, "retained lights", count, core::mem::size_of::<LightData>())
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct BucketKey {
+    key: PipelineKey,
+    stencil: u32,
+    vertices: usize,
+    indexes: usize,
+    textures: [u32; STAGES],
+    samplers: [[u32; 5]; STAGES],
+}
+
+struct Bucket {
+    key: PipelineKey,
+    stencil: u32,
+    vertices: Rc<wgpu::Buffer>,
+    indexes: Rc<wgpu::Buffer>,
+    textures: Option<Rc<wgpu::BindGroup>>,
+    samplers: Option<Rc<wgpu::BindGroup>>,
+    slots: Vec<u32>,
+}
+
+/// One pass of one instance: a record and an instance of the segments.
+struct Slot {
+    #[allow(dead_code)]
+    id: u32,
+    world: [f32; 16],
+    bound: [f32; 4],
+    bucket: u32,
+    data: DrawData,
+    /// The first index and the number of indexes of each draw of the geometry (one for a
+    /// triangle list, one for each strip).
+    ranges: Vec<(u32, u32)>,
+    base_vertex: i32,
+    visible: bool,
+}
+
+#[derive(Default)]
+pub struct RetainedCounts {
+    pub instances: u32,
+    pub slots: u32,
+    pub buckets: u32,
+    pub drawn: u64,
+    pub culled: u64,
+    pub hidden: u64,
+    pub calls: u64,
+    pub views: u64,
+    pub no_geometry: u32,
+    pub no_material: u32,
+}
+
+pub struct RetainedSet {
+    slots: Vec<Option<Slot>>,
+    free: Vec<u32>,
+    by_id: HashMap<u32, Vec<u32>>,
+    buckets: Vec<Bucket>,
+    bucket_of: HashMap<BucketKey, u32>,
+    /// The lights the instances use: the slot of each key in the retained light buffer,
+    /// their values, and the slots whose values changed.
+    light_slot_of: HashMap<u32, u32>,
+    light_values: Vec<LightData>,
+    light_dirty: Vec<u32>,
+    /// The runs of light indexes of the slots: `light_indexes[first..first + count]` are
+    /// slots of `light_values`.
+    light_indexes: Vec<u32>,
+    light_indexes_live: usize,
+    light_indexes_dirty: bool,
+    /// The keys of the lights of each instance, for the runs after a compaction.
+    keys_of: HashMap<u32, Vec<u32>>,
+    /// The slots whose record or instance changed, or all of them.
+    dirty: Vec<u32>,
+    all_dirty: bool,
+    /// The generations of the record and instance buffers the segments were written into.
+    record_generation: u32,
+    instance_generation: u32,
+    pub counts: RetainedCounts,
+}
+
+impl RetainedSet {
+    pub fn new() -> RetainedSet {
+        RetainedSet {
+            slots: Vec::new(),
+            free: Vec::new(),
+            by_id: HashMap::new(),
+            buckets: Vec::new(),
+            bucket_of: HashMap::new(),
+            light_slot_of: HashMap::new(),
+            light_values: Vec::new(),
+            light_dirty: Vec::new(),
+            light_indexes: Vec::new(),
+            light_indexes_live: 0,
+            light_indexes_dirty: false,
+            keys_of: HashMap::new(),
+            dirty: Vec::new(),
+            all_dirty: false,
+            record_generation: 0,
+            instance_generation: 0,
+            counts: RetainedCounts::default(),
+        }
+    }
+
+    /// The most indirect arguments one view of the set can take.
+    pub fn most_args(&self) -> usize {
+        self.slots.iter().flatten().map(|slot| slot.ranges.len()).sum()
+    }
+
+    fn take_slot(&mut self) -> u32 {
+        if let Some(slot) = self.free.pop() {
+            return slot;
+        }
+        self.slots.push(None);
+        (self.slots.len() - 1) as u32
+    }
+
+    /// Removes the instance: its slots go to the free list, and the GPU keeps their stale
+    /// records (no draw names them).
+    pub fn remove(&mut self, id: u32) {
+        let Some(slots) = self.by_id.remove(&id) else { return };
+        for slot in slots {
+            if let Some(taken) = self.slots[slot as usize].take() {
+                let bucket = &mut self.buckets[taken.bucket as usize];
+                bucket.slots.retain(|&s| s != slot);
+                self.light_indexes_live = self.light_indexes_live.saturating_sub(self.keys_of.get(&id).map_or(0, |keys| keys.len()));
+            }
+            self.free.push(slot);
+        }
+        self.keys_of.remove(&id);
+        self.counts.instances = self.by_id.len() as u32;
+        self.counts.slots = self.slots.iter().flatten().count() as u32;
+    }
+
+    pub fn set_visible(&mut self, id: u32, visible: bool) {
+        if let Some(slots) = self.by_id.get(&id) {
+            for &slot in slots {
+                if let Some(s) = self.slots[slot as usize].as_mut() {
+                    s.visible = visible;
+                }
+            }
+        }
+    }
+
+    /// The light of the game with this key changed: its retained value, when the instances
+    /// use it.
+    pub fn light_changed(&mut self, key: u32, values: &[u8]) {
+        if let Some(&slot) = self.light_slot_of.get(&key) {
+            self.light_values[slot as usize] = light_data(values, None);
+            self.light_dirty.push(slot);
+        }
+    }
+
+    fn light_slot(&mut self, key: u32, known: &HashMap<u32, [u8; 104]>) -> Option<u32> {
+        if let Some(&slot) = self.light_slot_of.get(&key) {
+            return Some(slot);
+        }
+        let values = known.get(&key)?;
+        let slot = self.light_values.len() as u32;
+        self.light_values.push(light_data(values, None));
+        self.light_slot_of.insert(key, slot);
+        self.light_dirty.push(slot);
+        Some(slot)
+    }
+
+    /// The lights of the instance: a run of indexes for its slots.
+    pub fn set_lights(&mut self, id: u32, keys: &[u32], known: &HashMap<u32, [u8; 104]>) {
+        if !self.by_id.contains_key(&id) {
+            return;
+        }
+        let old = self.keys_of.insert(id, keys.to_vec()).map_or(0, |keys| keys.len());
+        self.light_indexes_live = self.light_indexes_live + keys.len() - old;
+        let first = self.light_indexes.len() as u32;
+        let mut count = 0;
+        for &key in keys {
+            if let Some(slot) = self.light_slot(key, known) {
+                self.light_indexes.push(slot);
+                count += 1;
+            }
+        }
+        self.light_indexes_dirty = true;
+        let slots = self.by_id.get(&id).cloned().unwrap_or_default();
+        for slot in slots {
+            if let Some(s) = self.slots[slot as usize].as_mut() {
+                s.data.light_range[0] = first;
+                s.data.light_range[1] = count;
+                s.data.counts[0] = count;
+                self.dirty.push(slot);
+            }
+        }
+        // The runs that went away stay in the list until it is twice the live runs: then
+        // all runs are made again.
+        if self.light_indexes.len() > 2 * self.light_indexes_live + 1024 {
+            self.compact_light_runs(known);
+        }
+    }
+
+    fn compact_light_runs(&mut self, known: &HashMap<u32, [u8; 104]>) {
+        let ids: Vec<u32> = self.keys_of.keys().copied().collect();
+        self.light_indexes.clear();
+        self.light_indexes_live = 0;
+        for id in ids {
+            let keys = self.keys_of.get(&id).cloned().unwrap_or_default();
+            self.light_indexes_live += keys.len();
+            let first = self.light_indexes.len() as u32;
+            let mut count = 0;
+            for key in keys {
+                if let Some(slot) = self.light_slot(key, known) {
+                    self.light_indexes.push(slot);
+                    count += 1;
+                }
+            }
+            for slot in self.by_id.get(&id).cloned().unwrap_or_default() {
+                if let Some(s) = self.slots[slot as usize].as_mut() {
+                    s.data.light_range[0] = first;
+                    s.data.light_range[1] = count;
+                    s.data.counts[0] = count;
+                }
+            }
+        }
+        self.all_dirty = true;
+        self.light_indexes_dirty = true;
+    }
+}
+
+/// The planes of a view from its combined matrix (the layout of Direct3D, a row vector
+/// times the matrix): left, right, bottom, top, near, far, each `(n, d)` with `n` of
+/// length 1 and the inside where `n . p + d >= 0`.
+pub fn frustum_planes(m: &[f32; 16]) -> [[f32; 4]; 6] {
+    let col = |c: usize| [m[c], m[4 + c], m[8 + c], m[12 + c]];
+    let (c0, c1, c2, c3) = (col(0), col(1), col(2), col(3));
+    let add = |a: [f32; 4], b: [f32; 4], sign: f32| [a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2], a[3] + sign * b[3]];
+    let raw = [add(c3, c0, 1.0), add(c3, c0, -1.0), add(c3, c1, 1.0), add(c3, c1, -1.0), c2, add(c3, c2, -1.0)];
+    raw.map(|p| {
+        let length = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-20);
+        [p[0] / length, p[1] / length, p[2] / length, p[3] / length]
+    })
+}
+
+/// `a * b` for two matrices with the layout of Direct3D.
+pub fn multiply32(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+    core::array::from_fn(|i| (0..4).map(|k| a[i / 4 * 4 + k] * b[k * 4 + i % 4]).sum())
+}
+
+fn in_view(bound: &[f32; 4], planes: &[[f32; 4]; 6]) -> bool {
+    planes.iter().all(|p| p[0] * bound[0] + p[1] * bound[1] + p[2] * bound[2] + p[3] >= -bound[3])
+}
+
+/// A light as the shader has it, from the `D3DLIGHT8` of 26 words of its record (after
+/// the key). `origin`: the position is made relative to it.
+pub fn light_data(l: &[u8], origin: Option<[f64; 3]>) -> LightData {
+    let mut position: [f32; 3] = floats(l, 13 * 4);
+    if let Some(origin) = origin {
+        for axis in 0..3 {
+            position[axis] = (position[axis] as f64 - origin[axis]) as f32;
+        }
+    }
+    let direction: [f32; 3] = floats(l, 16 * 4);
+    let attenuation: [f32; 3] = floats(l, 21 * 4);
+    LightData {
+        diffuse: floats(l, 4),
+        ambient: floats(l, 9 * 4),
+        position: [position[0], position[1], position[2], word(l, 0) as f32],
+        direction: [direction[0], direction[1], direction[2], float(l, 19 * 4)],
+        attenuation: [attenuation[0], attenuation[1], attenuation[2], float(l, 20 * 4)],
+        // The plugin puts the radius of a light of the game into its first specular word.
+        cone: [(float(l, 24 * 4) * 0.5).cos(), (float(l, 25 * 4) * 0.5).cos(), float(l, 5 * 4), 0.0],
+    }
+}
+
+/// How a view changes the keys and the matrices of the retained draws.
+pub struct RetainedView {
+    pub scene_slot: u32,
+    pub planes: [[f32; 4]; 6],
+    pub flip_cull: bool,
+    pub force_depth_test: bool,
+    pub target: Option<u32>,
+}
+
+impl Renderer {
+    /// A slot of the arrays of the frame that a texture keeps from frame to frame, for the
+    /// records of the retained instances. 0 for no texture or a texture not known.
+    pub fn pin_texture(&mut self, handle: u32) -> u32 {
+        if handle == 0 {
+            return 0;
+        }
+        if let Some(slot) = self.pinned_textures.iter().position(|(h, _)| *h == handle) {
+            return slot as u32 + 1;
+        }
+        let Some(view) = self.textures.get(&handle) else { return 0 };
+        if self.pinned_textures.len() + 1 >= self.array_cap / 2 {
+            self.counts.over_array_cap += 1;
+            return 0;
+        }
+        self.pinned_textures.push((handle, view.clone()));
+        self.array_group = None;
+        self.array_variants.clear();
+        self.pinned_textures.len() as u32
+    }
+
+    /// A slot of the sampler array of the frame that a sampler state keeps.
+    pub fn pin_sampler(&mut self, values: [u32; 5]) -> u32 {
+        if let Some(slot) = self.pinned_samplers.iter().position(|(v, _)| *v == values) {
+            return slot as u32 + 1;
+        }
+        if self.pinned_samplers.len() + 1 >= self.sampler_cap / 2 {
+            return 0;
+        }
+        let sampler = self.sampler(values);
+        self.pinned_samplers.push((values, sampler));
+        self.array_group = None;
+        self.array_variants.clear();
+        self.pinned_samplers.len() as u32
+    }
+
+    /// The pinned textures and samplers at the start of the arrays of a frame, in their
+    /// slots. After `begin_frame_arrays` cleared the arrays.
+    pub fn pin_into_frame(&mut self) {
+        if !self.arrays {
+            return;
+        }
+        for (handle, view) in &self.pinned_textures {
+            let slot = self.frame_texture_views.len() as u32;
+            self.frame_texture_views.push(view.clone());
+            self.frame_texture_slots.insert(*handle, slot);
+        }
+        for (values, sampler) in &self.pinned_samplers {
+            let slot = self.frame_samplers.len() as u32;
+            self.frame_samplers.push(sampler.clone());
+            self.frame_sampler_slots.insert(*values, slot);
+        }
+    }
+
+    /// The group of the textures of a draw without the arrays, as `draw` makes it.
+    pub fn texture_group_of(&mut self, handles: &[u32; STAGES]) -> Rc<wgpu::BindGroup> {
+        if let Some(group) = self.texture_groups.get(handles) {
+            return group.clone();
+        }
+        let views: Vec<Rc<wgpu::TextureView>> = handles.iter().map(|handle| self.textures.get(handle).unwrap_or(&self.white).clone()).collect();
+        let entries: Vec<wgpu::BindGroupEntry> = (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(&views[stage]) }).collect();
+        let group = Rc::new(self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw textures"), layout: &self.texture_layout, entries: &entries }));
+        self.texture_groups.insert(*handles, group.clone());
+        group
+    }
+
+    pub fn sampler_group_of(&mut self, values: &[[u32; 5]; STAGES]) -> Rc<wgpu::BindGroup> {
+        if let Some(group) = self.sampler_groups.get(values) {
+            return group.clone();
+        }
+        let samplers: Vec<Rc<wgpu::Sampler>> = values.iter().map(|values| self.sampler(*values)).collect();
+        let entries: Vec<wgpu::BindGroupEntry> = (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::Sampler(&samplers[stage]) }).collect();
+        let group = Rc::new(self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw samplers"), layout: &self.sampler_layout, entries: &entries }));
+        self.sampler_groups.insert(*values, group.clone());
+        group
+    }
+
+    /// Room in the segments of the records and the instances for `slots` slots: larger
+    /// buffers when short, with the frame's part after the segment. Between frames only.
+    fn retained_room(&mut self, slots: usize) {
+        if slots <= self.retained_records {
+            return;
+        }
+        let segment = slots.next_power_of_two();
+        let frame_records = self.record_capacity - self.retained_records;
+        self.retained_records = segment;
+        self.record_capacity = segment + frame_records;
+        self.record_buffer = Rc::new(record_buffer(&self.device, self.record_capacity));
+        self.record_written = 0;
+        self.record_extras = 0;
+        self.record_generation = self.record_generation.wrapping_add(1);
+        let frame_instances = self.instance_capacity - self.retained_instances;
+        self.retained_instances = segment;
+        self.instance_capacity = segment + frame_instances;
+        self.instance_buffer = instance_buffer(&self.device, self.instance_capacity);
+        self.defaults = defaults_buffer(&self.device, self.instance_capacity);
+        self.instance_extras = 0;
+        self.instance_generation = self.instance_generation.wrapping_add(1);
+    }
+
+    /// Writes the segments of the retained instances that changed, before the uploads of
+    /// the frame. A new buffer gets the whole segment.
+    pub fn retained_upload(&mut self, set: &mut RetainedSet) {
+        self.retained_room(set.slots.len());
+        let all = set.all_dirty || self.record_generation != set.record_generation || self.instance_generation != set.instance_generation;
+        set.record_generation = self.record_generation;
+        set.instance_generation = self.instance_generation;
+        set.all_dirty = false;
+        if all {
+            let mut records = vec![0u8; set.slots.len() * RECORD_SIZE];
+            let mut instances = vec![0u8; set.slots.len() * INSTANCE_SIZE];
+            for (i, slot) in set.slots.iter().enumerate() {
+                if let Some(slot) = slot {
+                    records[i * RECORD_SIZE..(i + 1) * RECORD_SIZE].copy_from_slice(bytemuck::bytes_of(&slot.data));
+                    instances[i * INSTANCE_SIZE..(i + 1) * INSTANCE_SIZE].copy_from_slice(bytemuck::bytes_of(&Instance { world: slot.world, record: [i as u32, 0, 0, 0] }));
+                }
+            }
+            if !records.is_empty() {
+                self.queue.write_buffer(&self.record_buffer, 0, &records);
+                self.queue.write_buffer(&self.instance_buffer, 0, &instances);
+            }
+            set.dirty.clear();
+        } else {
+            set.dirty.sort_unstable();
+            set.dirty.dedup();
+            for &i in &set.dirty {
+                if let Some(slot) = set.slots[i as usize].as_ref() {
+                    self.queue.write_buffer(&self.record_buffer, (i as usize * RECORD_SIZE) as u64, bytemuck::bytes_of(&slot.data));
+                    self.queue.write_buffer(&self.instance_buffer, (i as usize * INSTANCE_SIZE) as u64, bytemuck::bytes_of(&Instance { world: slot.world, record: [i, 0, 0, 0] }));
+                }
+            }
+            set.dirty.clear();
+        }
+        // Room for the lights (their values go up at the start of the world, shaded by the
+        // extension as the lights of a draw) and their indexes.
+        if set.light_values.len() > self.retained_light_capacity {
+            self.retained_light_capacity = set.light_values.len().next_power_of_two();
+            self.retained_light_buffer = retained_light_buffer(&self.device, self.retained_light_capacity);
+        }
+        set.light_dirty.clear();
+        if set.light_indexes_dirty {
+            if set.light_indexes.len() > self.light_index_capacity {
+                self.light_index_capacity = set.light_indexes.len().next_power_of_two();
+                self.light_index_buffer = light_index_buffer(&self.device, self.light_index_capacity);
+            }
+            if !set.light_indexes.is_empty() {
+                self.queue.write_buffer(&self.light_index_buffer, 0, bytemuck::cast_slice(&set.light_indexes));
+            }
+            set.light_indexes_dirty = false;
+        }
+        set.counts.buckets = set.buckets.len() as u32;
+    }
+
+    /// Writes the lights of the retained instances, as the shade of the extension made them
+    /// for the frame.
+    pub fn upload_retained_lights(&self, lights: &[LightData]) {
+        if !lights.is_empty() && lights.len() <= self.retained_light_capacity {
+            self.queue.write_buffer(&self.retained_light_buffer, 0, bytemuck::cast_slice(lights));
+        }
+    }
+
+    /// Writes the values of a view into a scene slot.
+    pub fn write_scene(&self, slot: u32, scene: &SceneData) {
+        self.queue.write_buffer(&self.scene_buffer, (slot as usize * SCENE_SIZE) as u64, bytemuck::bytes_of(scene));
+    }
+}
+
+/// Draws the instances of the set in view, one indirect call for each bucket. The pass
+/// state is not known after it: the caller forgets its bound groups.
+pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Renderer, set: &mut RetainedSet, args: &mut Vec<IndirectArgs>, view: &RetainedView) {
+    if set.by_id.is_empty() {
+        return;
+    }
+    set.counts.views += 1;
+    let mut arrays_bound = false;
+    let mut shared_bound = false;
+    let mut frame_bound = false;
+    for b in 0..set.buckets.len() {
+        let bucket = &set.buckets[b];
+        let start = args.len();
+        for &slot in &bucket.slots {
+            let Some(s) = set.slots[slot as usize].as_ref() else { continue };
+            if !s.visible {
+                set.counts.hidden += 1;
+                continue;
+            }
+            if !in_view(&s.bound, &view.planes) {
+                set.counts.culled += 1;
+                continue;
+            }
+            set.counts.drawn += 1;
+            for &(first, count) in &s.ranges {
+                args.push(IndirectArgs { index_count: count, instance_count: 1, first_index: first, base_vertex: s.base_vertex, first_instance: slot });
+            }
+        }
+        let count = args.len() - start;
+        if count == 0 {
+            continue;
+        }
+        let mut key = bucket.key;
+        if view.force_depth_test {
+            key.depth = [1, key.depth[1], 4];
+        }
+        if view.flip_cull {
+            key.cull = match key.cull {
+                2 => 3,
+                3 => 2,
+                other => other,
+            };
+        }
+        let Some(pipeline) = renderer.pipeline(key) else {
+            args.truncate(start);
+            continue;
+        };
+        pass.set_pipeline(&pipeline);
+        pass.set_stencil_reference(bucket.stencil);
+        if !frame_bound {
+            pass.set_bind_group(0, &*renderer.frame_group, &[view.scene_slot * SCENE_SIZE as u32]);
+            frame_bound = true;
+        }
+        if renderer.arrays {
+            if !arrays_bound {
+                let group = renderer.array_group_for(view.target);
+                pass.set_bind_group(1, &*group, &[]);
+                arrays_bound = true;
+            }
+        } else if let (Some(samplers), Some(textures)) = (&bucket.samplers, &bucket.textures) {
+            pass.set_bind_group(1, &**samplers, &[]);
+            pass.set_bind_group(2, &**textures, &[]);
+        }
+        pass.set_vertex_buffer(0, bucket.vertices.slice(..));
+        if !shared_bound {
+            pass.set_vertex_buffer(1, renderer.defaults.slice(..));
+            pass.set_vertex_buffer(2, renderer.instance_buffer.slice(..));
+            shared_bound = true;
+        }
+        pass.set_index_buffer(bucket.indexes.slice(..), wgpu::IndexFormat::Uint16);
+        if renderer.indirect && args.len() <= renderer.indirect_capacity {
+            pass.multi_draw_indexed_indirect(&renderer.indirect_buffer, (start * ARGS_SIZE) as u64, count as u32);
+            renderer.counts.indirect_calls += 1;
+            renderer.counts.indirect_draws += count as u32;
+        } else {
+            for a in &args[start..] {
+                pass.draw_indexed(a.first_index..a.first_index + a.index_count, a.base_vertex, a.first_instance..a.first_instance + 1);
+            }
+            args.truncate(start);
+        }
+        set.counts.calls += 1;
+    }
+}
+
+impl Player {
+    /// Puts an instance record with the flag 0x100 into the table: a slot for each pass of
+    /// its material, with the record of the draw made as for a shape record.
+    pub(super) fn retained_insert(&mut self, id: u32, r: &Retained) {
+        self.retained.remove(id);
+        let Some((fvf, stride, entries, strips, vertex, index, base_vertex, first_index)) =
+            self.renderer.geometries.get(&r.geometry).map(|g| (g.fvf, g.stride, g.entries, g.strips.clone(), g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index))
+        else {
+            self.retained.counts.no_geometry += 1;
+            return;
+        };
+        let Some(m) = self.renderer.materials.get(&r.material).cloned() else {
+            self.retained.counts.no_material += 1;
+            return;
+        };
+        let sets = (fvf >> 8) & 0xF;
+        let derived = match self.renderer.derived.get(&(r.material, sets)) {
+            Some(d) => d.clone(),
+            None => {
+                let d = Rc::new(material::derive(&m, sets));
+                self.renderer.derived.insert((r.material, sets), d.clone());
+                d
+            }
+        };
+        // The shape in progress as the record needs it; the lights, the fog, the matrices
+        // and the ambient light come from the scene of each view.
+        {
+            let shape = &mut self.stream.shape;
+            shape.geometry = r.geometry;
+            shape.fvf = fvf;
+            shape.stride = stride;
+            shape.world = r.world();
+            shape.relative = false;
+            shape.material = material::d3d_material(&r.colours);
+            shape.fill = derived.fill;
+            shape.lights.clear();
+        }
+        self.stream.shape_fog = None;
+        self.stream.shape_bones = None;
+        self.stream.sky = None;
+        self.stream.object_class = r.class;
+        if let Some(source) = derived.sources[2] {
+            self.stream.ambient_source = source;
+        }
+        let ranges: Vec<(u32, u32)> = if strips.is_empty() {
+            vec![(first_index, entries / 3 * 3)]
+        } else {
+            let mut start = first_index;
+            strips
+                .iter()
+                .map(|&length| {
+                    let range = (start, (length as u32).max(2));
+                    start += length as u32;
+                    range
+                })
+                .collect()
+        };
+        let topology = if strips.is_empty() { 4 } else { 5 };
+        let stencil = derived.stencil;
+        let mut slots = Vec::new();
+        for pass in 0..derived.passes.len() {
+            let p = Pass::new(&derived, pass, &m, &self.renderer.textures, None);
+            let key = PipelineKey {
+                fvf,
+                stride,
+                topology,
+                blend: p.blend,
+                depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
+                cull: derived.cull,
+                fill: derived.fill,
+                color_write: p.color_write & 7,
+                stencil: if stencil[0] == 0 { [0; 7] } else { [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0] },
+            };
+            let mut dummy = Vec::new();
+            let mut data = self.stream.draw_data(&derived, &p, &mut self.renderer.counts, &mut dummy);
+            data.world[0] = r.world();
+            data.light_range = [0, 0, 0, RETAINED_RECORD_BITS];
+            data.counts[0] = 0;
+            data.fog = [0.0, 0.0, derived.fog as u32 as f32, 0.0];
+            let mut handles = [0u32; STAGES];
+            let mut sampler_values = [[0u32; 5]; STAGES];
+            for stage in 0..STAGES {
+                let handle = p.stages[stage].texture;
+                if stage < data.counts[1] as usize && handle != 0 && self.renderer.textures.contains_key(&handle) {
+                    handles[stage] = handle;
+                    sampler_values[stage] = p.stages[stage].sampler;
+                }
+            }
+            let (textures, samplers) = if self.renderer.arrays {
+                for stage in 0..STAGES {
+                    let texture = self.renderer.pin_texture(handles[stage]);
+                    let sampler = self.renderer.pin_sampler(sampler_values[stage]);
+                    data.stages[stage].slots = [texture, sampler, 0, 0];
+                }
+                (None, None)
+            } else {
+                (Some(self.renderer.texture_group_of(&handles)), Some(self.renderer.sampler_group_of(&sampler_values)))
+            };
+            let bucket_key = BucketKey { key, stencil: stencil[2], vertices: Rc::as_ptr(&vertex) as usize, indexes: Rc::as_ptr(&index) as usize, textures: handles, samplers: sampler_values };
+            let set = &mut self.retained;
+            let bucket = match set.bucket_of.get(&bucket_key) {
+                Some(&b) => b,
+                None => {
+                    set.buckets.push(Bucket { key, stencil: stencil[2], vertices: vertex.clone(), indexes: index.clone(), textures, samplers, slots: Vec::new() });
+                    let b = (set.buckets.len() - 1) as u32;
+                    set.bucket_of.insert(bucket_key, b);
+                    b
+                }
+            };
+            let slot = set.take_slot();
+            set.slots[slot as usize] = Some(Slot { id, world: r.world(), bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true });
+            set.buckets[bucket as usize].slots.push(slot);
+            set.dirty.push(slot);
+            slots.push(slot);
+        }
+        let set = &mut self.retained;
+        set.by_id.insert(id, slots);
+        set.counts.instances = set.by_id.len() as u32;
+        set.counts.slots = set.slots.iter().flatten().count() as u32;
+        // The lights the instance had, when the record came again.
+        if let Some(keys) = set.keys_of.get(&id).cloned() {
+            let known = &self.renderer.lights_known;
+            self.retained.set_lights(id, &keys, known);
+        }
+    }
+
+    /// The values of the world of the frame for the retained draws, at its start.
+    pub(super) fn retained_scene_main(&self, facts: &WorldFacts) -> SceneData {
+        let fog = self.stream.fog;
+        let mut data = SceneData {
+            view: facts.view,
+            projection: facts.projection,
+            fog_color: color(fog[0]),
+            fog: [f32::from_bits(fog[1]), f32::from_bits(fog[2]), 1.0, (fog[3] != 0) as u32 as f32],
+            scene_ambient: [self.world_ambient[0], self.world_ambient[1], self.world_ambient[2], 1.0],
+            pixel: [1.0 / facts.target_size.0.max(1) as f32, -1.0 / facts.target_size.1.max(1) as f32, 0.0, 0.0],
+            clip_plane: [0.0; 4],
+            extension5: [0.0; 4],
+            extension7: [0.0; 4],
+            counts: [0; 4],
+        };
+        if let (Some((start, end)), true) = (self.stream.fog_range, facts.projection[11] == 1.0) {
+            data.fog[0] = start;
+            data.fog[1] = end;
+            data.fog[3] = 1.0;
+        }
+        data
+    }
+
+    /// Draws the retained instances in the world of the frame: after the extension drew
+    /// before the world, before the draws of the game. The extension shades the lights of
+    /// the instances and the values of the scene as it shades a draw of the world that
+    /// writes depth and does not blend (`Extension::shade`), one time for the frame.
+    pub(super) fn draw_retained_main(&mut self, facts: &WorldFacts) {
+        if self.retained.by_id.is_empty() || !self.retained_on {
+            return;
+        }
+        let mut scene = self.retained_scene_main(facts);
+        let mut lights = self.retained.light_values.clone();
+        if self.parameters.as_ref().is_some_and(|p| p.shade) {
+            if let Some(extension) = self.extension.as_mut() {
+                let mut data = DrawData::zeroed();
+                data.view = facts.view;
+                data.scene_ambient = scene.scene_ambient;
+                let draw_facts = DrawFacts { class: 12, blend_enable: false, source_blend: 0, destination_blend: 0, depth_write: true, specular_power: 0.0, emissive: [0.0; 4] };
+                extension.shade(&mut data, &mut lights, &draw_facts);
+                scene.scene_ambient = data.scene_ambient;
+                scene.extension5 = data.extension[5];
+                scene.extension7 = data.extension[7];
+                scene.counts = [data.counts[3], 0, 0, 0];
+            }
+        }
+        self.renderer.upload_retained_lights(&lights);
+        self.renderer.scene_main = scene;
+        self.renderer.write_scene(0, &scene);
+        let planes = frustum_planes(&multiply32(&facts.view, &facts.projection));
+        let Some(pass) = self.pass.as_mut() else { return };
+        let view = RetainedView { scene_slot: 0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target };
+        pass.push_debug_group("retained instances");
+        draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &view);
+        pass.pop_debug_group();
+        self.forget_bound();
+    }
+}
+
+impl Retained {
+    /// The world matrix of the instance: its rotation rows and its stored translation.
+    pub fn world(&self) -> [f32; 16] {
+        let mut world = [0f32; 16];
+        world[..12].copy_from_slice(&self.rotation);
+        world[12..15].copy_from_slice(&self.stored);
+        world[15] = 1.0;
+        world
+    }
+}
+
+impl Replayer<'_> {
+    /// The retained instances in a view the extension replays, after the kept draws.
+    pub(super) fn replay_retained(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView) {
+        if self.retained.by_id.is_empty() || view.classes & (1 << 12) == 0 || view.translucent_only || !self.retained_on {
+            return;
+        }
+        let slot = self.renderer.scene_slots_used;
+        if slot as usize >= SCENE_SLOTS {
+            return;
+        }
+        self.renderer.scene_slots_used += 1;
+        let mut scene = self.renderer.scene_main;
+        let mut view_matrix = view.view.unwrap_or(scene.view);
+        if let Some(world) = view.world {
+            let old: [f64; 16] = view_matrix.map(|v| v as f64);
+            view_matrix = multiply64(&world, &old).map(|v| v as f32);
+        }
+        scene.view = view_matrix;
+        if let Some(projection) = view.projection {
+            scene.projection = projection;
+        }
+        scene.pixel = [1.0 / view.target_size.0.max(1) as f32, -1.0 / view.target_size.1.max(1) as f32, 0.0, 0.0];
+        scene.clip_plane = view.clip_plane.map_or([0.0; 4], |p| p.map(|v| v as f32));
+        self.renderer.write_scene(slot, &scene);
+        let planes = frustum_planes(&multiply32(&scene.view, &scene.projection));
+        let retained_view = RetainedView { scene_slot: slot, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None };
+        draw_retained(pass, self.renderer, self.retained, self.args, &retained_view);
+    }
+}
+
+/// The text of the shader of the extension with the reads of the record of the draw that a
+/// retained draw takes from its scene or its light indexes (`draw.view` is already
+/// `draws[record].view` here) sent through the functions of `shader.wgsl`.
+pub fn rewrite_extension_text(text: &str) -> String {
+    let s = text
+        .replace("draws[record].view", "draw_view()")
+        .replace("draws[record].projection", "draw_projection()")
+        .replace("draws[record].pixel", "draw_pixel()")
+        .replace("draws[record].scene_ambient", "draw_scene_ambient()")
+        .replace("draws[record].fog_color", "draw_fog_color()")
+        .replace("draws[record].fog.", "draw_fog().")
+        .replace("draws[record].clip_plane", "draw_clip_plane()")
+        .replace("draws[record].counts.w", "draw_counts_w()");
+    let s = rewrite_index(&s, "draws[record].extension[", "draw_extension(");
+    rewrite_index(&s, "lights[", "light_at(")
+}
+
+/// Replaces each `open ... ]` (the bracket that matches) with `call ... )`.
+fn rewrite_index(text: &str, open: &str, call: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(open) {
+        out.push_str(&rest[..at]);
+        out.push_str(call);
+        let start = at + open.len();
+        let bytes = rest.as_bytes();
+        let mut depth = 1;
+        let mut i = start;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        out.push_str(&rest[start..i.min(rest.len())]);
+        out.push(')');
+        rest = &rest[(i + 1).min(rest.len())..];
+    }
+    out.push_str(rest);
+    out
+}

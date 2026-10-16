@@ -106,6 +106,78 @@ struct Clusters {
 @group(0) @binding(6) var<storage, read> lights: array<Light>;
 // The bones of all skinned draws of the frame.
 @group(0) @binding(7) var<storage, read> palette: array<mat4x4f>;
+// The retained instances (`retained.rs`): the lights of a draw with bit 8 of
+// `light_range.w` are `lights_retained[light_indexes[i]]`; a draw with bit 4 takes the
+// values of its view from `scene` (bound with a dynamic offset: one scene for each view).
+@group(0) @binding(9) var<storage, read> light_indexes: array<u32>;
+struct Scene {
+    view: mat4x4f,
+    projection: mat4x4f,
+    fog_color: vec4f,
+    fog: vec4f,
+    scene_ambient: vec4f,
+    pixel: vec4f,
+    clip_plane: vec4f,
+    // The sun of the view for the extension's shade (`extension[5]` and `[7]` of a draw the
+    // extension shaded), and the bits of `counts.w` that the extension set for the frame.
+    extension5: vec4f,
+    extension7: vec4f,
+    counts: vec4u,
+}
+@group(0) @binding(10) var<uniform> scene: Scene;
+@group(0) @binding(11) var<storage, read> lights_retained: array<Light>;
+
+fn from_scene() -> bool {
+    return (draws[record].light_range.w & 4u) != 0u;
+}
+fn draw_view() -> mat4x4f {
+    if from_scene() { return scene.view; }
+    return draws[record].view;
+}
+fn draw_projection() -> mat4x4f {
+    if from_scene() { return scene.projection; }
+    return draws[record].projection;
+}
+fn draw_pixel() -> vec4f {
+    if from_scene() { return scene.pixel; }
+    return draws[record].pixel;
+}
+fn draw_scene_ambient() -> vec4f {
+    if from_scene() { return scene.scene_ambient; }
+    return draws[record].scene_ambient;
+}
+fn draw_fog_color() -> vec4f {
+    if from_scene() { return scene.fog_color; }
+    return draws[record].fog_color;
+}
+// The fog of the scene applies to a retained draw only when its material has fog (z).
+fn draw_fog() -> vec4f {
+    if from_scene() { return vec4f(scene.fog.xy, draws[record].fog.z, scene.fog.w); }
+    return draws[record].fog;
+}
+fn draw_clip_plane() -> vec4f {
+    if from_scene() { return scene.clip_plane; }
+    return draws[record].clip_plane;
+}
+fn draw_counts_w() -> u32 {
+    if from_scene() { return draws[record].counts.w | scene.counts.x; }
+    return draws[record].counts.w;
+}
+fn draw_extension(i: u32) -> vec4f {
+    if from_scene() {
+        if i == 5u { return scene.extension5; }
+        if i == 7u { return scene.extension7; }
+        return vec4f(0.0);
+    }
+    return draws[record].extension[i];
+}
+fn light_at(at: u32) -> Light {
+    if (draws[record].light_range.w & 8u) != 0u { return lights_retained[light_indexes[at]]; }
+    return lights[at];
+}
+fn light_of(i: u32) -> Light {
+    return light_at(draws[record].light_range.x + i);
+}
 
 // The lights of the cluster of a pixel: the first entry in `cluster_indexes` and the
 // number, for a pixel of the picture at a depth of the view. None when the clusters are
@@ -206,7 +278,7 @@ fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view
 fn vs(in: VertexIn) -> VertexOut {
     record = in.record;
     var local = vec4f(in.position, 1.0);
-    if (draws[record].counts.w & 4u) != 0u {
+    if (draw_counts_w() & 4u) != 0u {
         local = vec4f(extension_sky_position(in.position), 1.0);
     }
     var world_position: vec4f;
@@ -250,16 +322,16 @@ fn vs(in: VertexIn) -> VertexOut {
         world_position += last * (draws[record].world[weights] * local);
         world_normal += last * (draws[record].world[weights] * vec4f(in.normal, 0.0)).xyz;
     }
-    let view_position = draws[record].view * vec4f(world_position.xyz, 1.0);
+    let view_position = draw_view() * vec4f(world_position.xyz, 1.0);
 
     var out: VertexOut;
     out.record = in.record;
-    out.clip = draws[record].projection * view_position;
+    out.clip = draw_projection() * view_position;
     // Direct3D 8 has the centre of a pixel at a whole number: the picture is half a pixel to
     // the right and down from where newer APIs put it.
-    out.clip = vec4f(out.clip.xy + draws[record].pixel.xy * out.clip.w, out.clip.zw);
+    out.clip = vec4f(out.clip.xy + draw_pixel().xy * out.clip.w, out.clip.zw);
     let uvs = array<vec2f, 4>(in.uv0, in.uv1, in.uv2, in.uv3);
-    let view_normal = normalize((draws[record].view * vec4f(world_normal, 0.0)).xyz + vec3f(0.0, 0.0, 1e-20));
+    let view_normal = normalize((draw_view() * vec4f(world_normal, 0.0)).xyz + vec3f(0.0, 0.0, 1e-20));
     out.coordinate0 = stage_coordinate(0u, uvs, view_position.xyz, view_normal);
     out.coordinate1 = stage_coordinate(1u, uvs, view_position.xyz, view_normal);
     out.coordinate2 = stage_coordinate(2u, uvs, view_position.xyz, view_normal);
@@ -274,18 +346,19 @@ fn vs(in: VertexIn) -> VertexOut {
     out.world_position = world_position.xyz;
     out.world_normal = world_normal;
     out.vertex_color = vertex_color;
-    if (draws[record].counts.w & 12u) != 0u {
+    if (draw_counts_w() & 12u) != 0u {
         // For the sky: the direction from the camera, in the space of the world.
-        out.world_position = transpose(mat3x3f(draws[record].view[0].xyz, draws[record].view[1].xyz, draws[record].view[2].xyz)) * view_position.xyz;
+        let v = draw_view();
+        out.world_position = transpose(mat3x3f(v[0].xyz, v[1].xyz, v[2].xyz)) * view_position.xyz;
     }
-    if (draws[record].counts.w & 4u) != 0u {
+    if (draw_counts_w() & 4u) != 0u {
         // The dome is behind all other things.
         out.clip.z = 0.999999 * out.clip.w;
     }
     // With bit 128 the extension makes the light for each pixel, and this stage makes none.
     // A draw that the extension only finishes (bit 1 alone: its fog, its shadow) keeps the
     // light of this stage.
-    if draws[record].flags.x == 0u || (draws[record].counts.w & 128u) != 0u {
+    if draws[record].flags.x == 0u || (draw_counts_w() & 128u) != 0u {
         out.color = vertex_color;
     } else {
         var diffuse = draws[record].material_diffuse;
@@ -306,9 +379,9 @@ fn vs(in: VertexIn) -> VertexOut {
         if draws[record].flags.y != 0u {
             normal = normalize(world_normal);
         }
-        var sum = emissive + ambient * draws[record].scene_ambient.rgb;
+        var sum = emissive + ambient * draw_scene_ambient().rgb;
         for (var i = 0u; i < draws[record].light_range.y; i++) {
-            let light = lights[draws[record].light_range.x + i];
+            let light = light_of(i);
             var direction: vec3f;
             var strength = 1.0;
             if light.position.w == 3.0 {
@@ -342,7 +415,7 @@ fn vs(in: VertexIn) -> VertexOut {
     // The fog of the game is table fog: linear on the depth, for each pixel. The fragment
     // shader makes the fog from this depth, so that a large triangle is right.
     out.fog = abs(view_position.z);
-    if draws[record].fog.w != 0.0 {
+    if draw_fog().w != 0.0 {
         out.fog = length(view_position.xyz);
     }
     return out;
@@ -451,14 +524,15 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     texels[4] = bump_light(3u, texels[3], textureSample(texture4, sampler4, final_coordinate(4u, in.coordinate4) + bump_move(3u, texels[3])));
     texels[5] = bump_light(4u, texels[4], textureSample(texture5, sampler5, final_coordinate(5u, in.coordinate5) + bump_move(4u, texels[4])));
 
-    if (draws[record].counts.w & 4u) != 0u {
+    if (draw_counts_w() & 4u) != 0u {
         return vec4f(extension_sky_color(normalize(in.world_position), in.clip.xy), 1.0);
     }
     // A sky draw has a direction in `world_position`, and is above the water in any case.
-    if (draws[record].counts.w & 12u) == 0u && any(draws[record].clip_plane != vec4f(0.0)) && dot(in.world_position, draws[record].clip_plane.xyz) + draws[record].clip_plane.w < 0.0 {
+    let clip_plane = draw_clip_plane();
+    if (draw_counts_w() & 12u) == 0u && any(clip_plane != vec4f(0.0)) && dot(in.world_position, clip_plane.xyz) + clip_plane.w < 0.0 {
         discard;
     }
-    let shaded = (draws[record].counts.w & 1u) != 0u;
+    let shaded = (draw_counts_w() & 1u) != 0u;
     var diffuse = in.color;
     if shaded {
         diffuse = extension_shade(in);
@@ -477,7 +551,7 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
         current = vec4f(color.rgb, alpha.a);
         // The fixed-function pipeline keeps a colour between 0 and 1. A draw with the light
         // for each pixel has no such limit.
-        if (draws[record].counts.w & 128u) == 0u {
+        if (draw_counts_w() & 128u) == 0u {
             current = clamp(current, vec4f(0.0), vec4f(1.0));
         }
     }
@@ -486,14 +560,15 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
         discard;
     }
     var clear = 1.0;
-    if draws[record].fog.z != 0.0 {
-        clear = clamp((draws[record].fog.y - in.fog) / max(draws[record].fog.y - draws[record].fog.x, 0.0001), 0.0, 1.0);
+    let fog = draw_fog();
+    if fog.z != 0.0 {
+        clear = clamp((fog.y - in.fog) / max(fog.y - fog.x, 0.0001), 0.0, 1.0);
     }
     if shaded {
         return extension_finish(current.rgb, current.a, clear);
     }
-    if (draws[record].counts.w & 8u) != 0u {
+    if (draw_counts_w() & 8u) != 0u {
         return vec4f(extension_sky_color(normalize(in.world_position), in.clip.xy), current.a);
     }
-    return vec4f(mix(draws[record].fog_color.rgb, current.rgb, clear), current.a);
+    return vec4f(mix(draw_fog_color().rgb, current.rgb, clear), current.a);
 }

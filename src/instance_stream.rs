@@ -27,8 +27,13 @@
 //! The modes: `off` (no instance), `dual` (every record as before, plus the instance
 //! records with the shape record marked as the twin of an instance draw: the helper draws
 //! one of the two, `MGE_XE_RETAINED`, for the test of the two paths on one capture), `on`
-//! (the instance records in the place of the shape records). `NIRENDER_RETAINED` sets the
-//! mode at the start (default `on`); `nirender.retained(mode)` sets it from Lua.
+//! (the instance records in the place of the shape records), `gpu` (plan 0.5 entry T4:
+//! the helper draws the instance from its table, with its bound for the cull of a view;
+//! the plugin sends no draw, only the changes: the lights of the instance
+//! (`INSTANCE_LIGHTS`) and its visibility (`INSTANCE_STATE`, from the draws of the engine:
+//! an instance in the view of the camera of the world that the engine did not draw is
+//! hidden, one that it drew is visible). `NIRENDER_RETAINED` sets the mode at the start
+//! (default `on`); `nirender.retained(mode)` sets it from Lua.
 //!
 //! The translation of an instance is the stored one of the shape's world transform (the
 //! engine's 32-bit floats: the world matrix of a draw of the own device has it, as the host
@@ -44,7 +49,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::capture;
-use crate::gen::layouts::NiDynamicEffectState as DES;
+use crate::engine::thiscall1;
+use crate::gen::layouts::{NiCamera as C, NiDynamicEffectState as DES};
+use crate::link::SCENE_WORLD;
 use crate::mem::rd;
 
 /// `NiObjectNET::controllers`, `NiAVObject::parentNode`, `NiAVObject::worldTransform` and
@@ -53,6 +60,12 @@ const CONTROLLERS: usize = 0x10;
 const PARENT: usize = 0x18;
 const WORLD: usize = 0x40;
 const WORLD_TRANSLATION: usize = WORLD + 0x24;
+/// `NiAVObject::worldBound`: the centre and the radius.
+const WORLD_BOUND: usize = 0x1c;
+/// `NiBound::WhichSide(plane)`: 0 across the plane, 1 in front, 2 behind (out of the view).
+const WHICH_SIDE: usize = 0x6F2660;
+/// The flag of an instance record of the mode gpu: the helper draws it from its table.
+const BLOCK: u32 = 0x100;
 /// The property pointers of a `NiPropertyState`: alpha first, 12 of them.
 const STATE_FIRST: usize = 0x8;
 const STATE_COUNT: usize = 12;
@@ -75,6 +88,7 @@ pub enum Mode {
     Off,
     Dual,
     On,
+    Gpu,
 }
 
 impl Mode {
@@ -83,6 +97,7 @@ impl Mode {
             "off" => Some(Mode::Off),
             "dual" => Some(Mode::Dual),
             "on" => Some(Mode::On),
+            "gpu" => Some(Mode::Gpu),
             _ => None,
         }
     }
@@ -92,6 +107,7 @@ impl Mode {
             Mode::Off => "off",
             Mode::Dual => "dual",
             Mode::On => "on",
+            Mode::Gpu => "gpu",
         }
     }
 }
@@ -116,6 +132,13 @@ struct Instance {
     stored: [u32; 3],
     /// The colours of the material, as the shape record has them.
     colours: [u32; 14],
+    /// The world bound of the shape: the centre and the radius.
+    bound: [f32; 4],
+    /// The keys of the lights the helper has for the instance (mode gpu).
+    lights: Vec<u32>,
+    /// The frame of the last draw of the engine, and whether the helper shows the instance.
+    drawn: u32,
+    visible: bool,
     /// The `INSTANCE` record with these values went into the stream or the file.
     sent: bool,
     /// The values above were taken from a draw.
@@ -136,6 +159,11 @@ struct Tables {
     /// notes of the draw ran (the handles of the draw are then those of `shape_stream`).
     pending: Option<(usize, u32)>,
     mode: Option<Mode>,
+    /// The camera of the world scene in progress, for the check of the visibility at its
+    /// end (mode gpu).
+    world_camera: usize,
+    states: u64,
+    light_records: u64,
     fast_draws: u64,
     records: u64,
     /// The instance records sent again: for changed handles, and for changed values of
@@ -157,6 +185,9 @@ unsafe fn tables() -> &'static mut Tables {
         generation: 1,
         pending: None,
         mode: None,
+        world_camera: 0,
+        states: 0,
+        light_records: 0,
         fast_draws: 0,
         records: 0,
         handle_updates: 0,
@@ -172,16 +203,16 @@ pub unsafe fn mode() -> Mode {
     *t.mode.get_or_insert_with(|| std::env::var("NIRENDER_RETAINED").ok().and_then(|v| Mode::parse(&v)).unwrap_or(Mode::On))
 }
 
-/// Sets the mode and returns the one before. A change to `off` forgets the instances: the
-/// helper keeps its table, and an `INSTANCE` record comes again for each shape when the
-/// mode comes back.
+/// Sets the mode and returns the one before. A change of the mode sends the `INSTANCE`
+/// record of each shape again at its next draw: the record says which mode draws it.
 pub unsafe fn set_mode(mode: Mode) -> Mode {
     let before = self::mode();
     let t = tables();
     t.mode = Some(mode);
-    if mode == Mode::Off {
+    if mode != before {
         for instance in t.instances.values_mut() {
             instance.sent = false;
+            instance.lights.clear();
         }
     }
     before
@@ -201,6 +232,40 @@ pub unsafe fn reset() {
     t.generation = t.generation.wrapping_add(1);
     for instance in t.instances.values_mut() {
         instance.sent = false;
+        instance.lights.clear();
+    }
+}
+
+/// A scene of the game begins: the camera of the world scene is kept for the check at its
+/// end.
+pub unsafe fn scene_begin(kind: u32, camera: usize) {
+    tables().world_camera = if kind == SCENE_WORLD { camera } else { 0 };
+}
+
+/// A scene of the game ends. At the end of the world scene in mode gpu: an instance the
+/// helper shows that the engine did not draw although it is in the view of the camera is
+/// hidden (`INSTANCE_STATE`); an instance the engine drew was made visible at its draw.
+pub unsafe fn scene_end() {
+    let t = tables();
+    let camera = core::mem::replace(&mut t.world_camera, 0);
+    if camera == 0 || mode() != Mode::Gpu || !capture::recording() {
+        return;
+    }
+    let count = rd::<i32>(camera, C::countCullingPlanes).max(0) as usize;
+    let storage: usize = rd(camera, C::cullingPlanes_storage);
+    let planes: Vec<usize> = (0..count).map(|i| rd(storage, i * 4)).collect();
+    let frame = t.frame;
+    for instance in t.instances.values_mut() {
+        if !instance.filled || !instance.sent || !instance.visible || instance.drawn == frame {
+            continue;
+        }
+        let bound = instance.bound.as_ptr() as usize;
+        let in_view = planes.iter().all(|&plane| thiscall1(WHICH_SIDE, bound, plane as u32) != 2);
+        if in_view {
+            instance.visible = false;
+            capture::instance_state(instance.id, false);
+            t.states += 1;
+        }
     }
 }
 
@@ -234,7 +299,7 @@ pub unsafe fn forget(shape: usize) {
 /// retained instance whose handles need no check this frame. The handles of the draw are
 /// then those of the instance, and the draw in progress is pending for `draw`.
 pub unsafe fn seen(shape: usize, kind: u32, class_out: &mut u32) -> Option<(u32, u32)> {
-    if mode() != Mode::On {
+    if !matches!(mode(), Mode::On | Mode::Gpu) {
         return None;
     }
     let t = tables();
@@ -280,7 +345,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, class: u32, geometry: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], sent: false, filled: false, generation });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation });
     t.pending = Some((shape, id));
 }
 
@@ -368,10 +433,12 @@ pub unsafe fn reject_pending(shape: usize, reason_later: bool) {
 /// record, and the shape is rejected).
 pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, colours: &[u32; 14], fog: Option<[u32; 4]>, ambient: u32, lights: &[u32]) -> bool {
     let t = tables();
+    let gpu = t.mode == Some(Mode::Gpu);
     let Some(instance) = t.instances.get_mut(&shape) else { return false };
     let rotation: [u32; 12] = core::array::from_fn(|i| world[i].to_bits());
     let stored: [u32; 3] = rd(shape, WORLD_TRANSLATION);
-    let changed = !instance.filled || instance.rotation != rotation || instance.stored != stored || instance.colours != *colours;
+    let bound: [f32; 4] = rd(shape, WORLD_BOUND);
+    let changed = !instance.filled || instance.rotation != rotation || instance.stored != stored || instance.colours != *colours || instance.bound.map(f32::to_bits) != bound.map(f32::to_bits);
     if changed || !instance.sent {
         let Some(exact) = crate::camera_space::exact_translation(shape, 0) else {
             reject_pending(shape, true);
@@ -387,12 +454,13 @@ pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, col
         instance.rotation = rotation;
         instance.stored = stored;
         instance.colours = *colours;
+        instance.bound = bound;
         instance.filled = true;
         instance.sent = true;
         // The flag as the shape record of the draw has it: the helper takes the translation
-        // of the two the same way.
-        let flags = if relative { crate::shape_stream::RELATIVE } else { 0 };
-        let mut words = [0u32; 40];
+        // of the two the same way. In mode gpu the helper draws the instance from its table.
+        let flags = if relative { crate::shape_stream::RELATIVE } else { 0 } | if gpu { BLOCK } else { 0 };
+        let mut words = [0u32; 44];
         words[0] = id;
         words[1] = instance.class;
         words[2] = flags;
@@ -406,10 +474,27 @@ pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, col
         }
         words[23..26].copy_from_slice(&stored);
         words[26..40].copy_from_slice(colours);
+        words[40..44].copy_from_slice(&bound.map(f32::to_bits));
         let name_at: usize = rd(shape, 8);
         let name: &[u8] = if name_at != 0 { core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char).to_bytes() } else { &[] };
         capture::instance(&words, &name[..name.len().min(96)]);
         t.records += 1;
+    }
+    if gpu {
+        // The helper draws the instance: the changes of its lights and its visibility.
+        if instance.lights != lights {
+            instance.lights.clear();
+            instance.lights.extend_from_slice(lights);
+            capture::instance_lights(id, lights);
+            t.light_records += 1;
+        }
+        instance.drawn = t.frame;
+        if !instance.visible {
+            instance.visible = true;
+            capture::instance_state(id, true);
+            t.states += 1;
+        }
+        return true;
     }
     capture::instance_draw(id, ambient, fog, lights);
     true
@@ -420,7 +505,7 @@ pub unsafe fn report() -> String {
     let reasons = ["controller", "node kind", "property controller", "blend", "effect", "at the record"];
     let rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
-        "instances: mode {}, {} retained, {} rejected ({}), {} fast draws, {} instance records, {} updates of the handles, {} of the values, {} deletes",
+        "instances: mode {}, {} retained, {} rejected ({}), {} fast draws, {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
         mode().name(),
         t.instances.len(),
         t.rejected.len(),
@@ -429,6 +514,8 @@ pub unsafe fn report() -> String {
         t.records,
         t.handle_updates,
         t.value_updates,
-        t.deletes
+        t.deletes,
+        t.light_records,
+        t.states
     )
 }
