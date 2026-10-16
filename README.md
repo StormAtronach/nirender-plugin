@@ -67,4 +67,4 @@ morpher, a UV, flip, alpha or colour controller) on the engine's path (the rule 
 ## Where the plan is
 
 The plan and the record of each step are in the docs repo:
-`moreFPS/docs/plans/wgpu-renderer-gaps-and-architecture-plan-2026-10-14.md`, section 0.
+`moreFPS/docs/Numidium Project/plans/wgpu-renderer-gaps-and-architecture-plan-2026-10-14.md`, section 0.
