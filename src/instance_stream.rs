@@ -8,7 +8,7 @@
 //! destructor of the geometry sends `INSTANCE_DELETE`.
 //!
 //! The safe class (the census of entry T0): a triangle shape of the world scene under the
-//! object root or the landscape root (entry T6), not skinned, not from the sorted queue, not blended, without a texture
+//! object root or the landscape root (entry T6), not skinned, without a texture
 //! effect, without projected lights or shadows, and under no sort adjust node (the other
 //! node kinds that change what or how they draw need nothing of the table:
 //! `REJECTED_KINDS`). A controller on a node above moves the shape, and the instance moves
@@ -16,7 +16,13 @@
 //! shape (a morpher, a UV controller, a flip, alpha or colour controller): its display
 //! runs the controllers' `OnPreDisplay` as the engine's display does and notes the
 //! geometry and the material every time, so a new revision of the data goes out at once
-//! under the same handle (`NIRENDER_CONTROLLERS=0` rejects them, the rule before). The
+//! under the same handle (`NIRENDER_CONTROLLERS=0` rejects them, the rule before). A
+//! blended shape is retained too (plan step 6, 2026-10-17): the helper sorts the blends of
+//! its table back to front and draws them where the engine flushes its sorted queue; the
+//! material record carries the no-sorter bit of the alpha property, and such a blend
+//! draws with the opaque in the order of its slot. The first draw of a blended shape is
+//! the queue's, so a draw from the sorted queue of a world-camera scene is considered
+//! like a draw of the world scene (`link_client::send_draw`). The
 //! class of a shape is decided once and kept until the shape is deleted.
 //!
 //! The draw of a retained shape skips the notes of the geometry and the material and the
@@ -31,8 +37,8 @@
 //!
 //! The modes: `off` (no instance), `dual` (every record as before, plus the instance
 //! records with the shape record marked as the twin of an instance draw: the helper draws
-//! one of the two, `MGE_XE_RETAINED`, for the test of the two paths on one capture), `on`
-//! (the instance records in the place of the shape records), `gpu` (plan 0.5 entry T4:
+//! one of the two, `MGE_XE_RETAINED`, for the test of the two paths on one capture), `gpu`
+//! (plan 0.5 entry T4:
 //! the helper draws the instance from its table, with its bound for the cull of a view;
 //! the plugin sends no draw, only the changes: the lights of the instance
 //! (`INSTANCE_LIGHTS`) and its visibility (`INSTANCE_STATE`, from the draws of the engine:
@@ -135,7 +141,6 @@ const REJECTED_KINDS_SKINNED_BEFORE: [&[u8]; 5] = [b"NiBillboardNode", b"NiSwitc
 pub enum Mode {
     Off,
     Dual,
-    On,
     Gpu,
 }
 
@@ -144,7 +149,6 @@ impl Mode {
         match text {
             "off" => Some(Mode::Off),
             "dual" => Some(Mode::Dual),
-            "on" => Some(Mode::On),
             "gpu" => Some(Mode::Gpu),
             _ => None,
         }
@@ -154,7 +158,6 @@ impl Mode {
         match self {
             Mode::Off => "off",
             Mode::Dual => "dual",
-            Mode::On => "on",
             Mode::Gpu => "gpu",
         }
     }
@@ -164,13 +167,12 @@ impl Mode {
 const REASON_CONTROLLER: usize = 0;
 const REASON_NODE_KIND: usize = 1;
 const REASON_PROPERTY_CONTROLLER: usize = 2;
-const REASON_BLEND: usize = 3;
-const REASON_EFFECT: usize = 4;
-const REASON_LATER: usize = 5;
+const REASON_EFFECT: usize = 3;
+const REASON_LATER: usize = 4;
 /// The depth test of the shape is equal, greater, not equal or greater or equal: the draw
 /// depends on the depth of a draw before it, so its place in the order of the game matters.
-const REASON_DEPTH: usize = 6;
-const REASONS: usize = 7;
+const REASON_DEPTH: usize = 5;
+const REASONS: usize = 6;
 
 struct Instance {
     id: u32,
@@ -321,13 +323,25 @@ pub unsafe fn set_mode(mode: Mode) -> Mode {
     let t = tables();
     t.mode = Some(mode);
     if mode != before {
+        // Mode off is the reference: the engine draws every shape, so the helper must not
+        // draw its table too. Without the hides the table's blends doubled the engine's in
+        // every picture of mode off (the opaque doubles were invisible), 2026-10-17. The
+        // next display of a shape in mode gpu shows its instance again.
+        let hide = mode == Mode::Off && capture::recording();
+        let mut hidden = 0;
         for (&shape, instance) in t.instances.iter_mut() {
             instance.sent = false;
             instance.lights.clear();
             if mode != Mode::Gpu {
                 mark(shape, false);
             }
+            if hide && instance.filled && instance.visible {
+                instance.visible = false;
+                capture::instance_state(instance.id, false);
+                hidden += 1;
+            }
         }
+        t.states += hidden;
     }
     before
 }
@@ -444,7 +458,7 @@ pub unsafe fn forget(shape: usize) {
 /// retained instance whose handles need no check this frame. The handles of the draw are
 /// then those of the instance, and the draw in progress is pending for `draw`.
 pub unsafe fn seen(shape: usize, kind: u32, class_out: &mut u32) -> Option<(u32, u32)> {
-    if !matches!(mode(), Mode::On | Mode::Gpu) {
+    if mode() != Mode::Gpu {
         return None;
     }
     let t = tables();
@@ -550,10 +564,6 @@ unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize
                 }
                 *live = true;
             }
-        }
-        let alpha: usize = rd(property_state, STATE_FIRST);
-        if alpha != 0 && rd::<u16>(alpha, PROPERTY_FLAGS) & 1 != 0 {
-            return Some(REASON_BLEND);
         }
         // The test function of NiZBufferProperty, the enum of NetImmerse (not D3DCMPFUNC):
         // 0 always, 1 less, 2 equal, 3 less or equal, 4 greater, 5 not equal, 6 greater or
@@ -963,7 +973,7 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
 
 pub unsafe fn report() -> String {
     let t = tables();
-    let reasons = ["controller", "node kind", "property controller", "blend", "effect", "at the record", "depth function"];
+    let reasons = ["controller", "node kind", "property controller", "effect", "at the record", "depth function"];
     let mut rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     let later = *core::ptr::addr_of!(LATER_BY);
     if later.iter().any(|&n| n != 0) {

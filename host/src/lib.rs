@@ -345,6 +345,9 @@ enum Item {
     Screen(ScreenDraw),
     WorldStart(Box<WorldFacts>),
     WorldEnd(Box<WorldFacts>),
+    /// The sorted blends of the retained table, where the engine flushes its sorted queue
+    /// (plan step 6).
+    SortedBlends,
     /// The extension draws in place of the draws of this class. The number of world draws
     /// before this item: those after it are not in the picture yet.
     Replace(u32, Box<WorldFacts>, usize),
@@ -4682,6 +4685,15 @@ impl Player {
                 if world_scene && self.world_begun && !self.world_ended {
                     self.world_ended = true;
                     let facts = self.world_facts(false);
+                    // The sorted blends of the retained table, with the depth of the world and
+                    // before the extension's world end (plan step 6): where the engine flushes
+                    // its sorted queue, at the end of its world Click and before the grass and
+                    // the blend of the distant land. A blend that reads the picture under it
+                    // then sees what the engine's path saw. The first form placed them at the
+                    // first-person scene, after its depth clear, and the blends behind walls
+                    // showed; the second after the world end, and a plane with a blend of the
+                    // destination colour differed over the sky (2026-10-17).
+                    self.items.push(Item::SortedBlends);
                     self.items.push(Item::WorldEnd(Box::new(facts)));
                 }
                 self.scene_kind = 0;
@@ -4692,7 +4704,7 @@ impl Player {
                 }
             }
             // The kind and the class of the object of the shape records that follow.
-            tag::OBJECT if data.len() >= 8 => {
+            tag::OBJECT if data.len() >= 12 => {
                 self.stream.object_class = word(data, 4);
                 self.stream.shape_fog = None;
                 self.stream.shape_bones = None;
@@ -4952,6 +4964,7 @@ impl Player {
                         Item::Screen(_) => "screen",
                         Item::WorldStart(_) => "world-start",
                         Item::WorldEnd(_) => "world-end",
+                        Item::SortedBlends => "sorted-blends",
                         Item::HeldHere(..) => "held",
                         Item::Replace(..) => "replace",
                         Item::Post(_) => "post",
@@ -4981,6 +4994,7 @@ impl Player {
                 }
                 Item::WorldStart(facts) => self.start_world(&facts),
                 Item::WorldEnd(facts) => self.end_world(&facts),
+                Item::SortedBlends => self.draw_retained_sorted(),
                 Item::HeldHere(held, facts) => self.give_held_here(*held, &facts),
                 Item::Replace(class, facts, drawn) => self.replace_class(class, &facts, drawn),
                 Item::Post(facts) => self.post_process(&facts),
@@ -5645,6 +5659,9 @@ impl Player {
             stencil: if stencil[0] == 0 { [0; 7] } else { [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0] },
         };
         let stencil_reference = stencil[2];
+        if self.stream.shape.geometry == crate::dump_wanted() {
+            println!("key dump record path: fvf {} stride {} topology {} blend {:?} depth {:?} cull {} fill {} color_write {} stencil {:?} reference {} textures {:?} samplers {:?} stages {} passes {} range {}+{} base {}", key.fvf, key.stride, key.topology, key.blend, key.depth, key.cull, key.fill, key.color_write, key.stencil, stencil_reference, pass.stages.iter().map(|s| s.texture).collect::<Vec<_>>(), pass.stages.iter().map(|s| s.sampler).collect::<Vec<_>>(), pass.stages.len(), derived.passes.len(), first_index, indexes, self.stream.shape.geometry);
+        }
         // The buffers of the geometry record of the shape.
         let Some((vertex_buffer, index_buffer, base_vertex, geometry_first)) = renderer.geometries.get(&shape.geometry).filter(|g| first_index + indexes <= g.entries).map(|g| (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index)) else {
             renderer.counts.geometry_short += 1;
@@ -5682,6 +5699,7 @@ impl Player {
                     emissive: shape.material[12..16].try_into().unwrap(),
                 };
                 extension.shade(&mut draw_data, &mut self.frame_lights[first..first + count], &facts);
+                crate::draw_dump("record path, shaded", self.stream.shape.geometry, &draw_data);
                 shaded = true;
             }
         }
@@ -5809,8 +5827,8 @@ impl Player {
         println!("instances: {} records, {} draws from them, {} draws of an instance not known, {} shape twins skipped", c.instance_records, c.instance_draws, c.instance_missing, c.shape_twins);
         let r = &self.retained.counts;
         println!(
-            "retained: {} instances in {} slots and {} buckets; {} drawn, {} culled, {} hidden, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
-            r.instances, r.slots, r.buckets, r.drawn, r.culled, r.hidden, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
+            "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} hidden, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
+            r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.hidden, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
         );
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
         println!("skinned shapes {}, particle systems {}", c.shape_skinned, c.shape_particles);

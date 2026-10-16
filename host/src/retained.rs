@@ -52,11 +52,11 @@ pub struct SceneData {
     /// extension sets for a draw of the frame (`Extension::shade`).
     pub extension5: [f32; 4],
     pub extension7: [f32; 4],
-    pub counts: [u32; 4],
+    pub counts: [[u32; 4]; 2],
     /// The origin of the set in the world: the positions of its draws are relative to it.
     /// The stage of a texture effect that takes the position adds it (`stage_coordinate`).
     pub origin: [f32; 4],
-    pub padding: [u32; 60],
+    pub padding: [u32; 56],
 }
 const _: () = assert!(core::mem::size_of::<SceneData>() == SCENE_SIZE);
 
@@ -119,11 +119,16 @@ struct Slot {
     ranges: Vec<(u32, u32)>,
     base_vertex: i32,
     visible: bool,
+    /// The draw blends and the engine would sort it: the table draws it back to front with
+    /// the other sorted blends where the engine flushes its queue (plan step 6).
+    sorted: bool,
 }
 
 #[derive(Default)]
 pub struct RetainedCounts {
     pub instances: u32,
+    /// The sorted blends drawn, in all views.
+    pub sorted: u64,
     pub slots: u32,
     pub buckets: u32,
     pub drawn: u64,
@@ -177,6 +182,11 @@ pub struct RetainedSet {
     order: Vec<(u64, u32, u32, u32)>,
     /// The nearest depth and the group of each bucket in the view in progress.
     bucket_depth: Vec<(f32, u8)>,
+    /// The sorted blends of the view in progress, back to front; and those of the main view
+    /// kept for the flush of the engine's queue (`Sorted::Keep`), with the view.
+    sorted_order: Vec<(u64, u32, u32, u32)>,
+    kept_sorted: Vec<(u64, u32, u32, u32)>,
+    pub sorted_view: Option<RetainedView>,
     /// The origin of the space of the instances: the translation of a slot and the
     /// position of a light are relative to it. With a relative scene (the packet has the
     /// exact position of the camera) the origin follows the camera (`rebase`), so the
@@ -202,6 +212,9 @@ impl RetainedSet {
             bucket_of: HashMap::new(),
             order: Vec::new(),
             bucket_depth: Vec::new(),
+            sorted_order: Vec::new(),
+            kept_sorted: Vec::new(),
+            sorted_view: None,
             origin: [0.0; 3],
             relative: false,
             main_view: [0.0; 16],
@@ -525,7 +538,19 @@ pub fn light_data(l: &[u8], origin: Option<[f64; 3]>) -> LightData {
     }
 }
 
+/// What a view does with the sorted blends of the table (plan step 6).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Sorted {
+    /// Draws them after the rest, back to front: a reflection, a shadow map.
+    Together,
+    /// Draws the rest and keeps them for `Only`: the main view at the start of the world.
+    Keep,
+    /// Draws the kept blends: at the point where the engine flushes its sorted queue.
+    Only,
+}
+
 /// How a view changes the keys and the matrices of the retained draws.
+#[derive(Clone, Copy)]
 pub struct RetainedView {
     pub scene_slot: u32,
     /// The classes the view draws, one bit for each.
@@ -534,6 +559,7 @@ pub struct RetainedView {
     pub flip_cull: bool,
     pub force_depth_test: bool,
     pub target: Option<u32>,
+    pub sorted: Sorted,
 }
 
 impl Renderer {
@@ -726,8 +752,9 @@ impl Renderer {
     }
 }
 
-/// Draws the instances of the set in view, one indirect call for each bucket. The pass
-/// state is not known after it: the caller forgets its bound groups.
+/// Draws the instances of the set in view, one indirect call for each run of draws of one
+/// bucket. The pass state is not known after it: the caller forgets its bound groups. With
+/// `Sorted::Only` the view draws the sorted blends kept by the main view and nothing else.
 pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Renderer, set: &mut RetainedSet, args: &mut Vec<IndirectArgs>, view: &RetainedView) {
     if set.by_id.is_empty() {
         return;
@@ -736,8 +763,12 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
     let mut arrays_bound = false;
     let mut shared_bound = false;
     let mut frame_bound = false;
-    set.collect_order(view);
-    let order = core::mem::take(&mut set.order);
+    let order = if view.sorted == Sorted::Only {
+        core::mem::take(&mut set.kept_sorted)
+    } else {
+        set.collect_order(view);
+        core::mem::take(&mut set.order)
+    };
     let mut at = 0;
     while at < order.len() {
         let b = order[at].1 as usize;
@@ -805,7 +836,11 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
         }
         set.counts.calls += 1;
     }
-    set.order = order;
+    if view.sorted == Sorted::Only {
+        set.kept_sorted = order;
+    } else {
+        set.order = order;
+    }
 }
 
 impl RetainedSet {
@@ -816,14 +851,21 @@ impl RetainedSet {
     ///    then rejects the pixels behind what is drawn.
     /// 2. The buckets with an alpha test, the same way after them (a discard in the shader
     ///    can turn the early depth test off).
-    /// 3. The buckets that blend, in the order they were made, their draws in the order of
-    ///    their slots. A shape draws a base pass and a blend pass that both write depth and
-    ///    test less-or-equal, in different buckets: the base must come first, or it
-    ///    overwrites the blend at the same depth (the game draws the two in a row).
+    /// 3. The buckets that blend out of the sort (the no-sorter bit), in the order they were
+    ///    made, their draws in the order of their slots. A shape draws a base pass and a
+    ///    blend pass that both write depth and test less-or-equal, in different buckets: the
+    ///    base must come first, or it overwrites the blend at the same depth (the game draws
+    ///    the two in a row).
     /// The depth of a draw is that of the nearest point of its bound: the distance from the
     /// near plane of the view less the radius, at least 0.
+    /// 4. The blends the engine would sort, into `sorted_order`: back to front by the depth
+    ///    of the bound centre along the view, as the engine's accumulator sorts them, ties
+    ///    by the order of the slots (plan step 6). A view draws them after the rest
+    ///    (`Sorted::Together`) or keeps them for the flush of the engine's queue
+    ///    (`Sorted::Keep`, then `Only`).
     fn collect_order(&mut self, view: &RetainedView) {
         self.order.clear();
+        self.sorted_order.clear();
         self.bucket_depth.clear();
         self.bucket_depth.resize(self.buckets.len(), (f32::MAX, 0));
         let near = view.planes[4];
@@ -844,7 +886,17 @@ impl RetainedSet {
                     continue;
                 }
                 self.counts.drawn += 1;
-                let depth = (near[0] * s.bound[0] + near[1] * s.bound[1] + near[2] * s.bound[2] + near[3] - s.bound[3]).max(0.0);
+                let centre = near[0] * s.bound[0] + near[1] * s.bound[1] + near[2] * s.bound[2] + near[3];
+                sequence += 1;
+                if s.sorted {
+                    self.counts.sorted += 1;
+                    // The far draw first: the bits of the depth inverted; ties by the creation
+                    // order of the instances, as the engine's accumulator registered them.
+                    let key = (!centre.max(0.0).to_bits() as u64) << 32 | s.id as u64;
+                    self.sorted_order.push((key, b as u32, sequence, slot));
+                    continue;
+                }
+                let depth = (centre - s.bound[3]).max(0.0);
                 let entry = &mut self.bucket_depth[b];
                 entry.0 = entry.0.min(depth);
                 if blends {
@@ -854,7 +906,6 @@ impl RetainedSet {
                 }
                 // A depth of at least 0 orders as its bits; a blended draw keeps its place.
                 let within = if blends || self.bucket_order { sequence } else { depth.to_bits() };
-                sequence += 1;
                 self.order.push((0, b as u32, within, slot));
             }
         }
@@ -870,7 +921,34 @@ impl RetainedSet {
             };
         }
         self.order.sort_unstable();
+        self.sorted_order.sort_unstable();
+        match view.sorted {
+            Sorted::Together => self.order.append(&mut self.sorted_order),
+            Sorted::Keep => {
+                self.kept_sorted.clear();
+                self.kept_sorted.append(&mut self.sorted_order);
+                self.sorted_view = Some(*view);
+            }
+            Sorted::Only => {}
+        }
     }
+}
+
+/// The kind of a pass for the shade bits of the scene: the blend form (0 none, 1 by the alpha,
+/// 2 a source of ONE, 3 a destination of ONE: the extension's shade reads the two factors
+/// and the depth write) times 2, plus 1 with a depth write. `draw_retained_main` shades a
+/// dummy draw of each kind once a frame, and the shader takes the bits by this index.
+pub fn slot_kind(blend: [u32; 3], depth_write: bool) -> u32 {
+    let form = if blend[0] == 0 {
+        0
+    } else if blend[2] == 2 {
+        3
+    } else if blend[1] == 2 {
+        2
+    } else {
+        1
+    };
+    form * 2 + depth_write as u32
 }
 
 /// The stages of the texture effects of a material for the table, as `Pass::new` takes them
@@ -991,8 +1069,8 @@ impl Player {
             let mut data = self.stream.draw_data(&derived, &p, &mut self.renderer.counts, &mut dummy);
             crate::draw_dump("retained table, before the record bits", r.geometry, &data);
             data.world[0] = self.retained.world_of(r);
-            // The kind of the pass for the shade bits of the scene: opaque, blended, additive.
-            let kind = if p.blend[0] == 0 { 0 } else if p.blend[1] == 2 || p.blend[2] == 2 { 2 } else { 1 };
+            // The kind of the pass for the shade bits of the scene.
+            let kind = slot_kind(p.blend, derived.depth[1] != 0);
             data.light_range = [0, 0, kind, RETAINED_RECORD_BITS | crate::flat_shading_bit(&derived)];
             data.counts[0] = 0;
             // The slot's fog: on or off (z), and by the distance (w) for a RANGE_SQ material.
@@ -1002,6 +1080,7 @@ impl Player {
                 data.fog_color = color(colour);
                 data.fog = [start, end, 2.0, derived.range_fog as u32 as f32];
             }
+            crate::draw_dump("retained table, with the record bits", r.geometry, &data);
             let mut handles = [0u32; STAGES];
             let mut sampler_values = [[0u32; 5]; STAGES];
             for stage in 0..STAGES {
@@ -1010,6 +1089,9 @@ impl Player {
                     handles[stage] = handle;
                     sampler_values[stage] = p.stages[stage].sampler;
                 }
+            }
+            if r.geometry == crate::dump_wanted() {
+                println!("key dump retained table: fvf {} stride {} topology {} blend {:?} depth {:?} cull {} fill {} color_write {} stencil {:?} reference {} textures {:?} samplers {:?} stages {} passes {} ranges {:?} base {}", key.fvf, key.stride, key.topology, key.blend, key.depth, key.cull, key.fill, key.color_write, key.stencil, stencil[2], handles, sampler_values, data.counts[1], derived.passes.len(), ranges, base_vertex);
             }
             let (textures, samplers) = if self.renderer.arrays {
                 for stage in 0..STAGES {
@@ -1035,7 +1117,7 @@ impl Player {
                 }
             };
             let slot = set.take_slot();
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true });
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted: p.blend[0] != 0 && !derived.no_sorter });
             set.buckets[bucket as usize].slots.push(slot);
             set.dirty.push(slot);
             slots.push(slot);
@@ -1069,12 +1151,12 @@ impl Player {
             clip_plane: [0.0; 4],
             extension5: [0.0; 4],
             extension7: [0.0; 4],
-            counts: [0; 4],
+            counts: [[0; 4]; 2],
             origin: {
                 let o = self.retained.light_origin().unwrap_or([0.0; 3]);
                 [o[0] as f32, o[1] as f32, o[2] as f32, 0.0]
             },
-            padding: [0; 60],
+            padding: [0; 56],
         };
         // The fog of the extension for the world, as a draw of the world gets it.
         let fog_range = self.parameters.as_ref().and_then(|p| p.fog_range);
@@ -1101,13 +1183,17 @@ impl Player {
                 // The shade of an opaque draw gives the lights and the values of the scene;
                 // the shade of a blended and of an additive draw gives their bits (the lights
                 // of those calls are copies).
-                let kinds = [(false, 0u32, 0u32), (true, 5, 6), (true, 2, 2)];
-                for (k, &(blend, source, destination)) in kinds.iter().enumerate() {
+                // The kinds of a slot (`slot_kind`): the four blend forms, each without and
+                // with a depth write, as the shade reads them.
+                let forms = [(false, 0u32, 0u32), (true, 5, 6), (true, 2, 6), (true, 5, 2)];
+                for k in 0..8 {
+                    let (blend, source, destination) = forms[k / 2];
+                    let write = k % 2 == 1;
                     let mut data = DrawData::zeroed();
                     data.view = facts.view;
                     data.scene_ambient = scene.scene_ambient;
-                    let draw_facts = DrawFacts { class: 12, blend_enable: blend, source_blend: source, destination_blend: destination, depth_write: true, specular_power: 0.0, emissive: [0.0; 4] };
-                    if k == 0 {
+                    let draw_facts = DrawFacts { class: 12, blend_enable: blend, source_blend: source, destination_blend: destination, depth_write: write, specular_power: 0.0, emissive: [0.0; 4] };
+                    if k == 1 {
                         extension.shade(&mut data, &mut lights, &draw_facts);
                         scene.scene_ambient = data.scene_ambient;
                         scene.extension5 = data.extension[5];
@@ -1121,7 +1207,7 @@ impl Player {
                         let mut copies = self.retained.light_values.clone();
                         extension.shade(&mut data, &mut copies, &draw_facts);
                     }
-                    scene.counts[k] = data.counts[3];
+                    scene.counts[k / 4][k % 4] = data.counts[3];
                 }
             }
         }
@@ -1131,12 +1217,49 @@ impl Player {
         self.renderer.upload_retained_lights(&lights);
         self.renderer.scene_main = scene;
         self.renderer.write_scene(0, &scene);
+        if crate::dump_wanted() != 0 {
+            println!("scene dump: fog_color {:?} fog {:?} ambient {:?} counts {:?} extension5 {:?} extension7 {:?}", scene.fog_color, scene.fog, scene.scene_ambient, scene.counts, scene.extension5, scene.extension7);
+        }
         // The cull is in the space of the world: the bounds of the slots are the engine's.
         self.retained.main_view = facts.view;
         let planes = frustum_planes(&multiply32(&facts.view, &facts.projection));
         let Some(pass) = self.pass.as_mut() else { return };
-        let view = RetainedView { scene_slot: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target };
+        let view = RetainedView { scene_slot: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Keep };
         pass.push_debug_group("retained instances");
+        draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &view);
+        pass.pop_debug_group();
+        self.forget_bound();
+    }
+
+    /// Draws the sorted blends of the table of the main view, back to front, where the engine
+    /// flushes its sorted queue (plan step 6): the item `SortedBlends` of the frame.
+    pub(super) fn draw_retained_sorted(&mut self) {
+        let Some(mut view) = self.retained.sorted_view.take() else { return };
+        if crate::dump_wanted() != 0 {
+            println!("sorted blends: {} kept, pass open {}, frame {}", self.retained.kept_sorted.len(), self.pass.is_some(), self.renderer.counts.frames);
+            for &(key, bucket, _, slot) in &self.retained.kept_sorted {
+                if let Some(s) = self.retained.slots[slot as usize].as_ref() {
+                    println!("  kept slot {} id {} class {} bucket {} bound {:?} key {:x}", slot, s.id, s.class, bucket, s.bound, key);
+                }
+            }
+            for (slot, s) in self.retained.slots.iter().enumerate() {
+                if let Some(s) = s {
+                    if s.sorted && !self.retained.kept_sorted.iter().any(|e| e.3 == slot as u32) {
+                        println!("  sorted slot not kept {} id {} class {} visible {} bound {:?}", slot, s.id, s.class, s.visible, s.bound);
+                    }
+                }
+            }
+        }
+        if self.retained.kept_sorted.is_empty() || !self.retained_on {
+            return;
+        }
+        view.sorted = Sorted::Only;
+        view.target = self.pass_target;
+        if self.pass.is_none() {
+            self.open_pass(None, None, None);
+        }
+        let Some(pass) = self.pass.as_mut() else { return };
+        pass.push_debug_group("retained sorted blends");
         draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &view);
         pass.pop_debug_group();
         self.forget_bound();
@@ -1195,7 +1318,7 @@ impl Replayer<'_> {
         scene.clip_plane = view.clip_plane.map_or([0.0; 4], |p| self.retained.plane_of(p));
         self.renderer.write_scene(slot, &scene);
         let planes = frustum_planes(&multiply32(&absolute, &scene.projection));
-        let retained_view = RetainedView { scene_slot: slot, classes: view.classes, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None };
+        let retained_view = RetainedView { scene_slot: slot, classes: view.classes, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None, sorted: Sorted::Together };
         draw_retained(pass, self.renderer, self.retained, self.args, &retained_view);
     }
 }

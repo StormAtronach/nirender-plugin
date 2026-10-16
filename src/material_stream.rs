@@ -58,6 +58,9 @@ pub const PROJECTED_SHADOWS: u32 = 8192;
 /// The fog property of the shape is its own, not the cell's: words 78 and 79 hold its
 /// colour and its density, 54 and 55 its start and end as the render state computes them.
 pub const OWN_FOG: u32 = 16384;
+/// The alpha property has the no-sorter bit (bit 13): the engine's accumulator draws the
+/// blend at once, in the order of the scene, and the table draws it with the opaque.
+pub const NO_SORTER: u32 = 32768;
 
 static mut SENT: Option<HashSet<u32>> = None;
 static mut RECORDS: u64 = 0;
@@ -151,6 +154,9 @@ pub unsafe fn note(renderer: usize, property_state: usize, effect_state: usize) 
     }
     if (af >> 9) & 1 != 0 {
         flags |= ALPHA_TEST;
+    }
+    if (af >> 13) & 1 != 0 {
+        flags |= NO_SORTER;
     }
     w[2] = (af >> 1) & 0xF;
     w[3] = (af >> 5) & 0xF;

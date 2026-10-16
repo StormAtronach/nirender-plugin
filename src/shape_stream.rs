@@ -349,8 +349,8 @@ unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], re
         | if effects.is_none() { 0 } else { EFFECTS }
         | if fog.is_some() { FOG } else { 0 }
         | if code_patch_picture() { CODE_PATCH_PICTURE } else { 0 };
-    // A draw of a retained shape: its instance records in the place of this one (mode on),
-    // or before it (mode dual).
+    // A draw of a retained shape: its instance records in the place of this one (mode gpu:
+    // the first draw of the instance), or before it (mode dual).
     if let Some((shape, id)) = crate::instance_stream::take_pending() {
         // A shape (kind 0) or a skinned shape (its palette in `bytes`); not particles, lines.
         // A draw with texture effects stays (the table makes their stages from the material
@@ -358,7 +358,7 @@ unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], re
         if kind & !SKINNED != 0 || flags & CODE_PATCH_PICTURE != 0 {
             crate::instance_stream::reject_pending(shape, true);
         } else if crate::instance_stream::draw(shape, id, &world, relative, &material_values, fog, ambient, lights, if kind & SKINNED != 0 { bytes } else { &[] }, bone_count) {
-            if matches!(crate::instance_stream::mode(), crate::instance_stream::Mode::On | crate::instance_stream::Mode::Gpu) {
+            if crate::instance_stream::mode() == crate::instance_stream::Mode::Gpu {
                 return records_only();
             }
             flags |= RETAINED_TWIN;

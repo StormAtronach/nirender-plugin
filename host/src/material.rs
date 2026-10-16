@@ -29,6 +29,9 @@ pub const PROJECTED_SHADOWS: u32 = 8192;
 /// The shape has a fog property of its own (not the cell's): words 78 and 79 are its colour
 /// and density, 54 and 55 its start and end.
 pub const OWN_FOG: u32 = 16384;
+/// The alpha property has the no-sorter bit: the blend draws at once in the order of the
+/// scene, out of the engine's sort.
+pub const NO_SORTER: u32 = 32768;
 
 /// The maps of a texturing property, in the order of its array.
 pub const BASE: usize = 0;
@@ -198,6 +201,9 @@ pub struct Derived {
     /// The fog is by the distance from the eye (RANGE_SQ), not by the depth: the engine
     /// sets `D3DRS_RANGEFOGENABLE` for it.
     pub range_fog: bool,
+    /// The blend draws at once in the order of the scene, out of the sort (the no-sorter
+    /// bit of the alpha property): the table draws it with the opaque.
+    pub no_sorter: bool,
     /// The shape's own fog, when its fog property is not the cell's: the colour, the start
     /// and the end. The table keeps them in the slot; the scene's fog is for the others.
     pub own_fog: Option<(u32, f32, f32)>,
@@ -328,6 +334,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
     };
     d.fog = m.flags & FOG != 0 && m.fog_mode < 2;
     d.range_fog = d.fog && m.fog_mode == 1;
+    d.no_sorter = m.flags & NO_SORTER != 0;
     d.own_fog = m.own_fog;
     // The colours come with each draw (the shape record): `d3d_material`.
 

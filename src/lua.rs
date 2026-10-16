@@ -336,7 +336,7 @@ unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
 }
 
 /// `nirender.retained(mode)` sets the mode of the retained instances ("off", "dual" or
-/// "on") and returns the mode before. Without an argument it returns the mode.
+/// "gpu") and returns the mode before. Without an argument it returns the mode.
 unsafe extern "C" fn retained(l: LuaState) -> i32 {
     let before = crate::instance_stream::mode();
     if let Some(mode) = arg_str(l, 1).and_then(|m| crate::instance_stream::Mode::parse(&m)) {

@@ -119,11 +119,11 @@ struct Scene {
     pixel: vec4f,
     clip_plane: vec4f,
     // The sun of the view for the extension's shade (`extension[5]` and `[7]` of a draw the
-    // extension shaded), and the bits of `counts.w` that the extension set for the frame:
-    // for an opaque draw, a blended one, an additive one.
+    // extension shaded), and the bits of `counts.w` that the extension set for the frame
+    // for each kind of draw (`slot_kind`: the blend form times 2, plus 1 with a depth write).
     extension5: vec4f,
     extension7: vec4f,
-    counts: vec4u,
+    counts: array<vec4u, 2>,
     // The origin of the retained set in the world: the positions of its draws are relative
     // to it. A stage of a texture effect that takes the position adds it.
     origin: vec4f,
@@ -169,10 +169,13 @@ fn draw_clip_plane() -> vec4f {
     if from_scene() { return scene.clip_plane; }
     return draws[record].clip_plane;
 }
-// The bits of the extension's shade for the kind of draw (`light_range.z`: 0 opaque, 1
-// blended, 2 additive), as the extension sets them for a draw of the stream.
+// The bits of the extension's shade for the kind of draw (`light_range.z`, the index of
+// `slot_kind`), as the extension sets them for a draw of the stream.
 fn draw_counts_w() -> u32 {
-    if from_scene() { return draws[record].counts.w | scene.counts[draws[record].light_range.z]; }
+    if from_scene() {
+        let k = draws[record].light_range.z;
+        return draws[record].counts.w | scene.counts[k >> 2u][k & 3u];
+    }
     return draws[record].counts.w;
 }
 fn draw_extension(i: u32) -> vec4f {

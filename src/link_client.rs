@@ -1154,7 +1154,10 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     crate::instance_stream::begin_draw();
     // A shape of the world, skinned or not (an actor is skinned: its palette goes in its
     // draw records each frame).
-    let plain_world_shape = matches!(kind, DRAW_SHAPE | DRAW_STRIPS) && flags & DRAW_FROM_SORTED_QUEUE == 0 && roots.scene_kind == SCENE_WORLD && crate::capture::recording();
+    // A draw of the world scene, or a blended shape drawn from the sorted queue in a scene
+    // of the world camera (plan step 6: the table takes the blends; the first draw of a
+    // blended shape is the queue's).
+    let plain_world_shape = matches!(kind, DRAW_SHAPE | DRAW_STRIPS) && (roots.scene_kind == SCENE_WORLD || (world_camera && flags & DRAW_FROM_SORTED_QUEUE != 0)) && crate::capture::recording();
     if plain_world_shape {
         let mut class = CLASS_UNKNOWN;
         if let Some((geometry_handle, material_handle)) = crate::instance_stream::seen(geometry, kind, &mut class) {
