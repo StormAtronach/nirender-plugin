@@ -4241,6 +4241,19 @@ impl Player {
     }
 
     /// An instance record: into the table, by its id.
+    /// A geometry sent again under its handle (a morpher or a UV controller changed its
+    /// vertices or its texture coordinates: a new revision of the same data object): the
+    /// slots of the instances that draw it are made again, with the new ranges of the
+    /// buffers. The instances come from a scan of the records: a frame changes few
+    /// geometries.
+    fn geometry_changed(&mut self, handle: u32) {
+        let changed: Vec<(u32, Retained)> = self.instances.iter().filter(|(_, r)| r.geometry == handle && r.flags & INSTANCE_BLOCK != 0).map(|(id, r)| (*id, *r)).collect();
+        for (id, r) in changed {
+            self.retained_insert(id, &r);
+            self.retained.counts.refreshed += 1;
+        }
+    }
+
     fn instance(&mut self, data: &[u8]) {
         let retained = Retained {
             class: word(data, 4),
@@ -4619,7 +4632,14 @@ impl Player {
                     }
                 }
             }
-            tag::GEOMETRY if data.len() >= 32 => self.renderer.geometry(data),
+            tag::GEOMETRY if data.len() >= 32 => {
+                let handle = word(data, 0);
+                let known = self.renderer.geometries.contains_key(&handle);
+                self.renderer.geometry(data);
+                if known {
+                    self.geometry_changed(handle);
+                }
+            }
             tag::MATERIAL if data.len() >= 4 => {
                 if let Some(parsed) = material::Material::parse(&data[4..]) {
                     let handle = word(data, 0);
@@ -5789,8 +5809,8 @@ impl Player {
         println!("instances: {} records, {} draws from them, {} draws of an instance not known, {} shape twins skipped", c.instance_records, c.instance_draws, c.instance_missing, c.shape_twins);
         let r = &self.retained.counts;
         println!(
-            "retained: {} instances in {} slots and {} buckets; {} drawn, {} culled, {} hidden, {} calls in {} views; {} moved in place; {} without a geometry, {} without a material; the origin moved {} times",
-            r.instances, r.slots, r.buckets, r.drawn, r.culled, r.hidden, r.calls, r.views, r.moves, r.no_geometry, r.no_material, r.rebases
+            "retained: {} instances in {} slots and {} buckets; {} drawn, {} culled, {} hidden, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
+            r.instances, r.slots, r.buckets, r.drawn, r.culled, r.hidden, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
         );
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
         println!("skinned shapes {}, particle systems {}", c.shape_skinned, c.shape_particles);

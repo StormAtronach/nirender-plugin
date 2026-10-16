@@ -9,9 +9,14 @@
 //!
 //! The safe class (the census of entry T0): a triangle shape of the world scene under the
 //! object root or the landscape root (entry T6), not skinned, not from the sorted queue, not blended, without a texture
-//! effect, without projected lights or shadows, with no controller on it, on any node above
-//! it or on any of its properties, and under no sort adjust node (the other node kinds
-//! that change what or how they draw need nothing of the table: `REJECTED_KINDS`). The
+//! effect, without projected lights or shadows, and under no sort adjust node (the other
+//! node kinds that change what or how they draw need nothing of the table:
+//! `REJECTED_KINDS`). A controller on a node above moves the shape, and the instance moves
+//! in place. A controller on the shape itself or on one of its properties makes it a live
+//! shape (a morpher, a UV controller, a flip, alpha or colour controller): its display
+//! runs the controllers' `OnPreDisplay` as the engine's display does and notes the
+//! geometry and the material every time, so a new revision of the data goes out at once
+//! under the same handle (`NIRENDER_CONTROLLERS=0` rejects them, the rule before). The
 //! class of a shape is decided once and kept until the shape is deleted.
 //!
 //! The draw of a retained shape skips the notes of the geometry and the material and the
@@ -59,8 +64,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::capture;
-use crate::engine::thiscall1;
-use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L, NiPropertyState as PS, NiZBufferProperty as ZP};
+use crate::engine::{thiscall1, vcall0};
+use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L, NiPropertyState as PS, NiTimeController as TC, NiZBufferProperty as ZP};
 use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_UNKNOWN, SCENE_WORLD};
 use crate::mem::{rd, wr};
 
@@ -93,6 +98,9 @@ const STATE_FIRST: usize = 0x8;
 const STATE_COUNT: usize = 12;
 /// `NiProperty::flags` (u16); bit 0 of the alpha property is the blend.
 const PROPERTY_FLAGS: usize = 0x14;
+/// The vtable slot of `NiTimeController::OnPreDisplay`, which the display of a shape calls
+/// for each of its controllers before the draw (a morpher writes its vertices then).
+const SLOT_ON_PRE_DISPLAY: usize = 0x40;
 /// `NiRTTI`: the name, then the base.
 const RTTI_NAME: usize = 0x0;
 const RTTI_BASE: usize = 0x4;
@@ -192,6 +200,11 @@ struct Instance {
     /// A skinned shape (an actor): its draw carries the palette of its bones each frame, so
     /// it stays on the draw records (never in the helper's table, never skipped).
     skinned: bool,
+    /// A controller on the shape or on one of its properties changes its geometry or its
+    /// material (a morpher, a UV controller, a flip, alpha or colour controller): the
+    /// display runs the controllers' `OnPreDisplay` as the engine's display does, and
+    /// notes the geometry and the material every time.
+    live: bool,
 }
 
 struct Tables {
@@ -232,6 +245,9 @@ struct Tables {
     /// particle node is retained too (`NIRENDER_NODE_KINDS=0` keeps them out: the rule
     /// before, for an A/B). See `REJECTED_KINDS`.
     node_kinds: bool,
+    /// A shape with a controller on itself or on a property is retained as a live shape
+    /// (`NIRENDER_CONTROLLERS=0` rejects it: the rule before, for an A/B).
+    controllers: bool,
     /// The frame each light (by its index) was noted last: its values are made and its LIGHT
     /// record sent at most once a frame, whatever number of shapes it lights.
     light_noted: Vec<u32>,
@@ -277,6 +293,7 @@ unsafe fn tables() -> &'static mut Tables {
         actors: std::env::var("NIRENDER_ACTORS").map_or(true, |v| v != "0"),
         animated: std::env::var("NIRENDER_ANIMATED").map_or(true, |v| v != "0"),
         node_kinds: std::env::var("NIRENDER_NODE_KINDS").map_or(true, |v| v != "0"),
+        controllers: std::env::var("NIRENDER_CONTROLLERS").map_or(true, |v| v != "0"),
         light_noted: Vec::new(),
         scratch_entry: [0; E::SIZE / 4],
         scratch_lights: Vec::new(),
@@ -432,7 +449,7 @@ pub unsafe fn seen(shape: usize, kind: u32, class_out: &mut u32) -> Option<(u32,
     }
     let t = tables();
     let instance = t.instances.get(&shape)?;
-    if !instance.filled || !instance.sent || instance.generation != t.generation || instance.id.wrapping_add(t.frame) % CHECK_FRAMES == 0 {
+    if !instance.filled || !instance.sent || instance.live || instance.generation != t.generation || instance.id.wrapping_add(t.frame) % CHECK_FRAMES == 0 {
         return None;
     }
     let _ = kind;
@@ -479,7 +496,8 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     if t.rejected.contains(&shape) {
         return;
     }
-    if let Some(reason) = reject_reason(shape, property_state, effect_state, skinned) {
+    let mut live = false;
+    if let Some(reason) = reject_reason(shape, property_state, effect_state, skinned, &mut live) {
         t.rejected.insert(shape);
         t.rejected_by[reason] += 1;
         return;
@@ -487,21 +505,28 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live });
     t.pending = Some((shape, id));
 }
 
-/// Why the shape is not retained, or `None` when it is of the safe class.
-unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize, skinned: bool) -> Option<usize> {
-    // A controller on the shape itself changes it (a morpher changes its vertices): never
-    // retained. A controller on a node above only moves the shape: the engine still updates
-    // the world transform of a shape it does not display, a skinned shape follows its bones
-    // through the palette, and the display of a retained shape (`skipped_display`) compares
-    // the transform each time and moves the instance in place. So it is retained.
+/// Why the shape is not retained, or `None` when it is of the safe class. `live` is set
+/// when a controller on the shape or on a property changes it (plan step 5, the morphers).
+unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize, skinned: bool, live: &mut bool) -> Option<usize> {
+    // A controller on the shape itself changes it: a morpher writes its vertices at the
+    // display (`OnPreDisplay`), a UV controller its texture coordinates at the update, each
+    // with a new revision of the data; the display of a live shape runs the controllers
+    // and notes the geometry again. A controller on a node above only moves the shape: the
+    // engine still updates the world transform of a shape it does not display, a skinned
+    // shape follows its bones through the palette, and the display of a retained shape
+    // (`skipped_display`) compares the transform each time and moves the instance in place.
+    let t = tables();
     if rd::<usize>(shape, CONTROLLERS) != 0 {
-        return Some(REASON_CONTROLLER);
+        if !t.controllers {
+            return Some(REASON_CONTROLLER);
+        }
+        *live = true;
     }
-    let animated = tables().animated;
+    let animated = t.animated;
     let mut node: usize = rd(shape, PARENT);
     for _ in 0..MAX_DEPTH {
         if node == 0 {
@@ -519,7 +544,11 @@ unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize
         for slot in 0..STATE_COUNT {
             let property: usize = rd(property_state, STATE_FIRST + slot * 4);
             if property != 0 && rd::<usize>(property, CONTROLLERS) != 0 {
-                return Some(REASON_PROPERTY_CONTROLLER);
+                // A flip, alpha or colour controller changes the material record: live.
+                if !t.controllers {
+                    return Some(REASON_PROPERTY_CONTROLLER);
+                }
+                *live = true;
             }
         }
         let alpha: usize = rd(property_state, STATE_FIRST);
@@ -815,9 +844,19 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
     let id = instance.id;
     let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
     let effect_state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
-    // The handles, when due: every 64th frame, after a change of the device textures, and
-    // for a record that must go again (the start of a capture).
-    let due = !instance.sent || instance.generation != generation || id.wrapping_add(frame) % CHECK_FRAMES == 0;
+    // The controllers of a live shape run before its draw, as the engine's display runs
+    // them (`NiTriShape::Display`): a morpher writes its vertices then.
+    if instance.live {
+        let mut controller: usize = rd(shape, CONTROLLERS);
+        while controller != 0 {
+            vcall0(controller, SLOT_ON_PRE_DISPLAY);
+            controller = rd(controller, TC::nextController);
+        }
+    }
+    // The handles, when due: every 64th frame, after a change of the device textures, for
+    // a record that must go again (the start of a capture), and at every display of a
+    // live shape (a new revision of the data sends the geometry again under its handle).
+    let due = instance.live || !instance.sent || instance.generation != generation || id.wrapping_add(frame) % CHECK_FRAMES == 0;
     if due {
         let geometry = crate::geometry_stream::note(kind, rd(shape, GEOMETRY_MODEL_DATA), 0);
         let material = crate::material_stream::note(renderer, property_state, effect_state);
@@ -933,9 +972,10 @@ pub unsafe fn report() -> String {
     let causes = ["not a plain world draw of a retained class", "no geometry", "no material", "path off", "not modelled"];
     let skipped: Vec<String> = causes.iter().zip(t.skipped_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
-        "instances: mode {}, {} retained, {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
+        "instances: mode {}, {} retained ({} live), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
         mode().name(),
         t.instances.len(),
+        t.instances.values().filter(|i| i.live).count(),
         t.rejected.len(),
         rejected.join(", "),
         skipped.join(", "),

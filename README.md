@@ -60,6 +60,8 @@ Never for a player. `NIRENDER_PORT_TIMING=1` times each live port call.
 `NIRENDER_ACTORS=0` and `NIRENDER_ANIMATED=0` keep that class on the engine's path.
 `NIRENDER_NODE_KINDS=0` keeps a shape under a billboard, switch, level of detail, BSP,
 animation or particle node on the engine's path (the rule before 2026-10-16).
+`NIRENDER_CONTROLLERS=0` keeps a shape with a controller on itself or on a property (a
+morpher, a UV, flip, alpha or colour controller) on the engine's path (the rule before).
 `NIRENDER_SKIP=0` makes the engine display the retained shapes too.
 
 ## Where the plan is

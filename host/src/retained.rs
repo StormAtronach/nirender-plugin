@@ -137,6 +137,8 @@ pub struct RetainedCounts {
     pub moves: u64,
     /// The times the origin of the set moved to the camera.
     pub rebases: u32,
+    /// The slots made again for a geometry sent again under its handle (a live shape).
+    pub refreshed: u64,
 }
 
 /// The origin of the set moves to the camera when the camera is farther from it than this,
