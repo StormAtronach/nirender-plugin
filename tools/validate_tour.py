@@ -52,6 +52,28 @@ def replay(capture, frame, picture):
     return result.returncode == 0 and os.path.isfile(picture), (result.stdout + result.stderr)[-400:]
 
 
+def replay_many(capture, items):
+    """One run of the helper for all the frames of a capture: `items` are (frame, picture).
+    Returns the names of the pictures that were not made."""
+    prefix = os.path.join(os.path.dirname(items[0][1]), "tour-frames-%s" % os.path.basename(capture)[:-7])
+    command = [PYTHON, os.path.join(HERE, "replay.py"), capture, prefix, "--frames-at", ",".join(str(f) for f, _ in items)]
+    if MGE_BUILD:
+        command += ["--mge-build", MGE_BUILD]
+    result = subprocess.run(command, capture_output=True, text=True)
+    missing = []
+    for frame, picture in items:
+        made = "%s-%05d.png" % (prefix, frame)
+        if os.path.isfile(made):
+            if os.path.isfile(picture):
+                os.remove(picture)
+            os.replace(made, picture)
+        else:
+            missing.append(os.path.basename(picture))
+    if missing:
+        print("replay of %s: %d pictures missing: %s" % (os.path.basename(capture), len(missing), (result.stdout + result.stderr)[-300:].strip()))
+    return missing
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run")
@@ -86,13 +108,21 @@ def main():
                 work.append((capture, stop * 2 - 1, os.path.join(out, name), name))
     print("%d stops to replay%s" % (len(work) // (2 if dual else 1), ", gpu and off at each" if dual else ""))
     failures = []
+    # One run of the helper for each capture, with every frame of it (2026-10-16: 206 runs
+    # became 3). The captures run at once, up to --jobs.
+    by_capture = {}
+    for capture, frame, picture, name in work:
+        by_capture.setdefault(capture, []).append((frame, picture))
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for (capture, frame, picture, name), (ok, text) in zip(work, pool.map(lambda w: replay(w[0], w[1], w[2]), work)):
-            if not ok:
-                # A replay can fail when several run at once. Once more, alone.
-                ok, text = replay(capture, frame, picture)
-            if not ok:
-                failures.append(name)
+        for missing in pool.map(lambda kv: replay_many(kv[0], kv[1]), by_capture.items()):
+            failures.extend(missing)
+    for capture, frame, picture, name in work:
+        if name in failures:
+            # Once more, alone, one frame.
+            ok, text = replay(capture, frame, picture)
+            if ok:
+                failures.remove(name)
+            else:
                 print("FAILED %s: %s" % (name, text.strip()[-200:]))
     print("%d pictures, %d failed" % (len(work) - len(failures), len(failures)))
     sys.path.insert(0, HERE)

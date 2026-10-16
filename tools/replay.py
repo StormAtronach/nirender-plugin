@@ -2,6 +2,11 @@
 same file each time. For a check of a change of the renderer against the picture before it.
 
     python tools/replay.py <capture file> <picture.png> [--frame N] [--mge-build DIR]
+    python tools/replay.py <capture file> <prefix> --frames-at 1,3,5 [--mge-build DIR]
+
+With --frames-at, one run of the helper writes <prefix>-<frame as 5 digits>.png for each
+frame named (the frames count from 0, as --frame): one start of the helper for a capture of
+many stops, in place of one for each.
         [--config-root DIR] [--distant-land DIR] [--backend vulkan|dx12]
 
 The helper reads mgeXE.toml from --config-root (the Root folder of the Configuration mod of
@@ -25,6 +30,7 @@ def main():
     ap.add_argument("capture")
     ap.add_argument("picture")
     ap.add_argument("--frame", type=int)
+    ap.add_argument("--frames-at", help="frames to write, with commas; the picture argument is then the prefix of the files")
     ap.add_argument("--mge-build", default=MGE_BUILD)
     ap.add_argument("--config-root", default=CONFIG_ROOT)
     ap.add_argument("--distant-land", default=DISTANT_LAND)
@@ -34,7 +40,9 @@ def main():
     args = ap.parse_args()
     exe = os.path.join(args.mge_build, "mgeHost64.exe")
     command = [exe, "--replay", os.path.abspath(args.capture), os.path.abspath(args.picture), "--backend", args.backend]
-    if args.frame is not None:
+    if args.frames_at:
+        command += ["--frames-at", args.frames_at]
+    elif args.frame is not None:
         command += ["--frame", str(args.frame)]
     if args.anisotropy is not None:
         command += ["--anisotropy", str(args.anisotropy)]

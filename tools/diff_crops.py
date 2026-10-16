@@ -11,6 +11,12 @@ Prints each box with its count.
 import argparse
 
 import numpy
+import os
+
+# Pillow of OSGeo4W needs the DLLs of C:/OSGeo4W/bin. A shell of OSGeo4W gives them; a child
+# process of another script does not (2026-10-16).
+if os.name == "nt" and os.path.isdir(r"C:\OSGeo4W\bin"):
+    os.add_dll_directory(r"C:\OSGeo4W\bin")
 from PIL import Image
 
 

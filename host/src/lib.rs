@@ -5986,7 +5986,7 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
         return live::run(&name, backends, &args, extension);
     }
     if args.len() < 3 {
-        eprintln!("use: nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N]");
+        eprintln!("use: nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N | --frames-at N,M,...]");
         eprintln!("     nirender-host --live <name of the shared memory> [--backend vulkan|dx12] [--frames N] [--shot picture.png]");
         std::process::exit(2);
     }
@@ -6000,7 +6000,14 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
         at += 8 + length;
     }
     let frames = records.iter().filter(|(tag, _)| *tag == tag::FRAME_END).count();
-    let wanted = option(&args, "--frame").and_then(|text| text.parse().ok()).unwrap_or(frames.saturating_sub(1));
+    // `--frames-at`: several frames of one replay, each into `<picture>-<frame as 5 digits>.png`
+    // (the frames count from 0, as `--frame`). One start of the helper for a capture of many
+    // stops, in place of one for each.
+    let frames_at: Vec<usize> = option(&args, "--frames-at").map(|text| text.split(',').filter_map(|n| n.trim().parse().ok()).collect()).unwrap_or_default();
+    let wanted = match frames_at.iter().max() {
+        Some(&last) => last,
+        None => option(&args, "--frame").and_then(|text| text.parse().ok()).unwrap_or(frames.saturating_sub(1)),
+    };
     // The size of the back buffer: the first record, or the largest viewport of an old capture.
     let (mut width, mut height) = (0u32, 0u32);
     for (tag, data) in &records {
@@ -6042,13 +6049,16 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
         if player.feed(*tag, data) {
             if player.drawing() {
                 let mut read = None;
+                let this_one = if frames_at.is_empty() { frame == wanted } else { frames_at.contains(&frame) };
                 player.end_frame(|encoder| {
-                    if frame == wanted {
+                    if this_one {
                         read = Some(copy_picture(&device, encoder, &target, width, height));
                     }
                 });
                 if let Some((buffer, row)) = read {
-                    save_picture(&device, &buffer, row, width, height, false, &args[2]);
+                    let path = if frames_at.is_empty() { args[2].clone() } else { format!("{}-{:05}.png", args[2], frame) };
+                    save_picture(&device, &buffer, row, width, height, false, &path);
+                    buffer.unmap();
                 }
             }
             frame += 1;
