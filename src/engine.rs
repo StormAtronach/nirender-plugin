@@ -172,6 +172,18 @@ const RENDERER_NODE_RENDERER: usize = 0;
 /// The renderer that the game draws with, or 0 before it exists. At the start of the game
 /// the world controller does not have the renderer yet. The list of renderers has it from
 /// its constructor on.
+/// The fog property of the cell: `TES3::Game::fogProperty` (the game object at 0x7C6CDC,
+/// the property at 0xF0 of it, as MWSE has them). The weather writes its colour and
+/// density. 0 before the game object exists.
+pub unsafe fn game_fog_property() -> usize {
+    let game: usize = rd(0x7C6CDC, 0);
+    if game == 0 {
+        0
+    } else {
+        rd(game, 0xF0)
+    }
+}
+
 pub unsafe fn renderer() -> usize {
     let world_controller: usize = rd(WORLD_CONTROLLER, 0);
     let known: usize = if world_controller == 0 { 0 } else { rd(world_controller, WORLD_CONTROLLER_RENDERER) };

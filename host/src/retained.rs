@@ -948,7 +948,12 @@ impl Player {
             data.light_range = [0, 0, kind, RETAINED_RECORD_BITS];
             data.counts[0] = 0;
             // The slot's fog: on or off (z), and by the distance (w) for a RANGE_SQ material.
+            // A shape with a fog property of its own keeps its colour and range (z 2).
             data.fog = [0.0, 0.0, derived.fog as u32 as f32, derived.range_fog as u32 as f32];
+            if let (true, Some((colour, start, end))) = (derived.fog, derived.own_fog) {
+                data.fog_color = color(colour);
+                data.fog = [start, end, 2.0, derived.range_fog as u32 as f32];
+            }
             let mut handles = [0u32; STAGES];
             let mut sampler_values = [[0u32; 5]; STAGES];
             for stage in 0..STAGES {

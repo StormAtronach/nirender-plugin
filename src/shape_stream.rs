@@ -81,8 +81,14 @@ pub unsafe fn code_patch_picture() -> bool {
 /// its mode is not one of the two the device fog has); else the colour, the start, the end
 /// (the bits of the floats) and the range fog flag.
 pub unsafe fn fog_values(renderer: usize, property_state: usize) -> Option<[u32; 4]> {
-    use crate::gen::layouts::{NiDX8RenderState as RS, NiDX8Renderer as R, NiFogProperty, NiPropertyState as PS};
-    let fog: usize = rd(property_state, PS::propFog);
+    use crate::gen::layouts::NiPropertyState as PS;
+    fog_values_of(renderer, rd(property_state, PS::propFog))
+}
+
+/// The fog words of one fog property (the cell's, or a shape's own), with the render
+/// state of the renderer for the range.
+pub unsafe fn fog_values_of(renderer: usize, fog: usize) -> Option<[u32; 4]> {
+    use crate::gen::layouts::{NiDX8RenderState as RS, NiDX8Renderer as R, NiFogProperty};
     if fog == 0 {
         return None;
     }

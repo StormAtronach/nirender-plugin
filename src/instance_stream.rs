@@ -793,10 +793,17 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
         t.records += 1;
     }
     // The values of the frame for the retained draws: the ambient light of this shape's
-    // effect state and its fog, as the light manager and the render state would set them.
-    // One record in a frame; a shape whose values differ is counted.
+    // effect state, and the fog of the cell's property (`TES3::Game::fogProperty`, the
+    // weather's), as the light manager and the render state would set them. A shape with
+    // a fog property of its own carries that fog in its material record. One record in a
+    // frame; a shape whose values differ is counted.
     let ambient = crate::ports::light_manager::ambient_of_state(effect_state);
-    let fog = crate::shape_stream::fog_values(renderer, property_state);
+    let cell_fog = crate::engine::game_fog_property();
+    let fog = if cell_fog != 0 {
+        crate::shape_stream::fog_values_of(renderer, cell_fog)
+    } else {
+        crate::shape_stream::fog_values(renderer, property_state)
+    };
     if t.scene_frame != frame {
         t.scene_frame = frame;
         t.scene_values = (ambient, fog);

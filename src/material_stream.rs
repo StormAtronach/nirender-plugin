@@ -52,6 +52,9 @@ pub const ENVIRONMENT_MAP: u32 = 1024;
 pub const FOG_MAP: u32 = 2048;
 pub const PROJECTED_LIGHTS: u32 = 4096;
 pub const PROJECTED_SHADOWS: u32 = 8192;
+/// The fog property of the shape is its own, not the cell's: words 78 and 79 hold its
+/// colour and its density, 54 and 55 its start and end as the render state computes them.
+pub const OWN_FOG: u32 = 16384;
 
 static mut SENT: Option<HashSet<u32>> = None;
 static mut RECORDS: u64 = 0;
@@ -210,11 +213,20 @@ pub unsafe fn note(renderer: usize, property_state: usize, effect_state: usize) 
     if (ff >> 1) & 1 != 0 {
         flags |= FOG;
     }
-    // The density and the colour of the fog change with the weather at each frame: they
-    // are not in the record (the helper takes the fog from the render states). Words 78
-    // and 79 stay 0.
+    // The density and the colour of the cell's fog change with the weather at each frame:
+    // they are not in the record (the helper takes that fog from the render states). A fog
+    // property of the shape's own is static: its colour, density, start and end go in.
     if fog != 0 {
         w[80] = (ff >> 3) & 3;
+        if fog != engine::game_fog_property() {
+            if let Some(values) = crate::shape_stream::fog_values_of(renderer, fog) {
+                flags |= OWN_FOG;
+                w[78] = values[0];
+                w[79] = rd(fog, crate::gen::layouts::NiFogProperty::density);
+                w[54] = values[1];
+                w[55] = values[2];
+            }
+        }
     }
 
     // Wireframe, shade, dither, specular.

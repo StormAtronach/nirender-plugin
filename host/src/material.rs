@@ -23,6 +23,9 @@ pub const ENVIRONMENT_MAP: u32 = 1024;
 pub const FOG_MAP: u32 = 2048;
 pub const PROJECTED_LIGHTS: u32 = 4096;
 pub const PROJECTED_SHADOWS: u32 = 8192;
+/// The shape has a fog property of its own (not the cell's): words 78 and 79 are its colour
+/// and density, 54 and 55 its start and end.
+pub const OWN_FOG: u32 = 16384;
 
 /// The maps of a texturing property, in the order of its array.
 pub const BASE: usize = 0;
@@ -61,6 +64,8 @@ pub struct Material {
     pub depth_function: u32,
     pub stencil: [u32; 7],
     pub fog_mode: u32,
+    /// The colour (a D3DCOLOR), the start and the end of the shape's own fog.
+    pub own_fog: Option<(u32, f32, f32)>,
     pub environment: Map,
     pub environment_coordinates: u32,
     pub fog_map: Map,
@@ -92,6 +97,7 @@ impl Material {
             depth_function: w(70),
             stencil: core::array::from_fn(|k| w(71 + k)),
             fog_mode: w(80),
+            own_fog: (w(1) & OWN_FOG != 0).then(|| (w(78), f(54), f(55))),
             environment: Map { texture: w(81), clamp: w(82), filter: w(83), set: 1, present: w(1) & ENVIRONMENT_MAP != 0 },
             environment_coordinates: w(84),
             fog_map: Map { texture: w(85), clamp: w(86), filter: w(87), set: 1, present: w(1) & FOG_MAP != 0 },
@@ -167,6 +173,9 @@ pub struct Derived {
     /// The fog is by the distance from the eye (RANGE_SQ), not by the depth: the engine
     /// sets `D3DRS_RANGEFOGENABLE` for it.
     pub range_fog: bool,
+    /// The shape's own fog, when its fog property is not the cell's: the colour, the start
+    /// and the end. The table keeps them in the slot; the scene's fog is for the others.
+    pub own_fog: Option<(u32, f32, f32)>,
     /// The record has no effects that this model does not make (projected lights or
     /// shadows); a shape with them is drawn without them.
     pub modelled: bool,
@@ -294,6 +303,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
     };
     d.fog = m.flags & FOG != 0 && m.fog_mode < 2;
     d.range_fog = d.fog && m.fog_mode == 1;
+    d.own_fog = m.own_fog;
     // The colours come with each draw (the shape record): `d3d_material`.
 
     // The lighting and the material sources (`NiDX8LightManager::setState`).
