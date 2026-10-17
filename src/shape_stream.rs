@@ -40,6 +40,10 @@ pub const CODE_PATCH_PICTURE: u32 = 128;
 /// The record is the twin of the `INSTANCE_DRAW` record before it (the dual mode of
 /// `instance_stream`): the helper draws one of the two.
 pub const RETAINED_TWIN: u32 = 0x200;
+/// The record ends with the world bound of the shape (the centre and the radius, 16 bytes,
+/// after everything else): the helper sorts a blended draw by it among the blends of its
+/// table (plan step 6, F5). Every record of a draw has it since 2026-10-17.
+pub const BOUND: u32 = 0x400;
 
 /// The address of the flags of the Code Patch for the picture of the character, 1 when the
 /// game has no such patch, 0 before the first look.
@@ -394,7 +398,11 @@ unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], re
     // The colours of the material: ambient, diffuse, specular, emissive, shininess, alpha.
     words[21..35].copy_from_slice(&material_values);
     words[35] = bone_count;
-    capture::shape(&words, lights, tail, bytes);
+    // The world bound the renderer holds for this draw (the ports copy it before the record
+    // goes out: `RenderShape`, `RenderPoints` and `RenderLines` each set it first).
+    let bound: [u32; 4] = rd(renderer, crate::gen::layouts::NiDX8Renderer::worldBound);
+    words[2] |= BOUND;
+    capture::shape(&words, lights, tail, bytes, &bound);
     *core::ptr::addr_of_mut!(RECORDS) += 1;
     records_only()
 }

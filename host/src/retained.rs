@@ -1173,6 +1173,8 @@ impl Player {
     /// the instances and the values of the scene as it shades a draw of the world that
     /// writes depth and does not blend (`Extension::shade`), one time for the frame.
     pub(super) fn draw_retained_main(&mut self, facts: &WorldFacts) {
+        // The near plane of the world's view, for the depth of the sort of the blends.
+        self.world_near = Some(frustum_planes(&multiply32(&facts.view, &facts.projection))[4]);
         if self.retained.by_id.is_empty() || !self.retained_on {
             return;
         }
@@ -1231,38 +1233,65 @@ impl Player {
         self.forget_bound();
     }
 
-    /// Draws the sorted blends of the table of the main view, back to front, where the engine
-    /// flushes its sorted queue (plan step 6): the item `SortedBlends` of the frame.
-    pub(super) fn draw_retained_sorted(&mut self) {
-        let Some(mut view) = self.retained.sorted_view.take() else { return };
+    /// Draws the sorted blends of the frame where the engine flushes its sorted queue (plan
+    /// step 6): the kept blends of the table and the blended draws of the engine's path that
+    /// waited (`frame_sorted`), as one list back to front by the depth of the bound centre
+    /// along the view. A run of the table's entries is one `draw_retained` call; a draw of
+    /// the engine's path is issued between them.
+    pub(super) fn draw_retained_sorted(&mut self, generation: u32) {
+        let (deferred, later): (Vec<_>, Vec<_>) = core::mem::take(&mut self.frame_sorted).into_iter().partition(|e| e.3 == generation);
+        self.frame_sorted = later;
+        let view = if generation == 0 { self.retained.sorted_view.take() } else { self.retained.sorted_view };
+        let kept = if generation == 0 && self.retained_on && view.is_some() { core::mem::take(&mut self.retained.kept_sorted) } else { Vec::new() };
         if crate::dump_wanted() != 0 {
-            println!("sorted blends: {} kept, pass open {}, frame {}", self.retained.kept_sorted.len(), self.pass.is_some(), self.renderer.counts.frames);
-            for &(key, bucket, _, slot) in &self.retained.kept_sorted {
+            println!("sorted blends: {} kept, {} of the engine's path, pass open {}, frame {}", kept.len(), deferred.len(), self.pass.is_some(), self.renderer.counts.frames);
+            for &(key, bucket, _, slot) in &kept {
                 if let Some(s) = self.retained.slots[slot as usize].as_ref() {
                     println!("  kept slot {} id {} class {} bucket {} bound {:?} key {:x}", slot, s.id, s.class, bucket, s.bound, key);
                 }
             }
-            for (slot, s) in self.retained.slots.iter().enumerate() {
-                if let Some(s) = s {
-                    if s.sorted && !self.retained.kept_sorted.iter().any(|e| e.3 == slot as u32) {
-                        println!("  sorted slot not kept {} id {} class {} visible {} bound {:?}", slot, s.id, s.class, s.visible, s.bound);
-                    }
-                }
-            }
         }
-        if self.retained.kept_sorted.is_empty() || !self.retained_on {
+        if kept.is_empty() && deferred.is_empty() {
             return;
         }
-        view.sorted = Sorted::Only;
-        view.target = self.pass_target;
+        let near = self.world_near.unwrap_or([0.0; 4]);
+        let mut deferred: Vec<(u64, Rc<Draw>)> = deferred
+            .into_iter()
+            .map(|(c, sequence, draw, _)| {
+                let depth = (near[0] * c[0] + near[1] * c[1] + near[2] * c[2] + near[3]).max(0.0);
+                ((!depth.to_bits() as u64) << 32 | sequence as u64, draw)
+            })
+            .collect();
+        deferred.sort_unstable_by_key(|entry| entry.0);
+        self.renderer.counts.merged_blends += deferred.len() as u64;
         if self.pass.is_none() {
             self.open_pass(None, None, None);
         }
-        let Some(pass) = self.pass.as_mut() else { return };
-        pass.push_debug_group("retained sorted blends");
-        draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &view);
-        pass.pop_debug_group();
-        self.forget_bound();
+        let (mut i, mut j) = (0, 0);
+        while i < kept.len() || j < deferred.len() {
+            let table_next = j >= deferred.len() || (i < kept.len() && kept[i].0 <= deferred[j].0);
+            if table_next {
+                let start = i;
+                while i < kept.len() && (j >= deferred.len() || kept[i].0 <= deferred[j].0) {
+                    i += 1;
+                }
+                let Some(mut v) = view else { break };
+                v.sorted = Sorted::Only;
+                v.target = self.pass_target;
+                self.end_run();
+                self.retained.kept_sorted = kept[start..i].to_vec();
+                let Some(pass) = self.pass.as_mut() else { return };
+                pass.push_debug_group("retained sorted blends");
+                draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &v);
+                pass.pop_debug_group();
+                self.forget_bound();
+            } else {
+                let draw = deferred[j].1.clone();
+                j += 1;
+                self.issue(&draw);
+            }
+        }
+        self.retained.kept_sorted = kept;
     }
 }
 

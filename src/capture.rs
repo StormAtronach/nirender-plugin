@@ -104,7 +104,9 @@ pub mod tag {
     /// coordinate index with its generation, the transform flags and the texture matrix
     /// (18 words each; zeros for an effect the draw does not have). With the flag `FOG`,
     /// after the effects come the fog of the draw: the colour, the start, the end and the
-    /// range fog flag (4 words). A record with the flag `PARTICLES` is the draw of a
+    /// range fog flag (4 words). With the flag `BOUND` (0x400, since 2026-10-17) the last 16
+    /// bytes of the record are the world bound of the shape (the centre and the radius),
+    /// after everything else. A record with the flag `PARTICLES` is the draw of a
     /// particle system: the geometry handle is the key
     /// of the particle data, and after the bones come the count, the radius, the camera
     /// right and up axes in the model space (3 floats each), then for each particle its
@@ -1074,9 +1076,9 @@ pub const OBJECT_HAS_MATERIAL: u32 = 0x200;
 
 /// A shape record. See `tag::SHAPE`. `tail` and `bytes` follow the lights: the bones of a
 /// skinned shape, or the particle words and the particles.
-pub unsafe fn shape(head: &[u32], lights: &[u32], tail: &[u32], bytes: &[u8]) {
+pub unsafe fn shape(head: &[u32], lights: &[u32], tail: &[u32], bytes: &[u8], bound: &[u32]) {
     let _lock = crate::sync::device_lock();
-    write(tag::SHAPE, &[words(head), words(lights), words(tail), bytes]);
+    write(tag::SHAPE, &[words(head), words(lights), words(tail), bytes, words(bound)]);
 }
 
 /// An instance record. See `tag::INSTANCE`.

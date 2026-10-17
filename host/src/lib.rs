@@ -345,9 +345,9 @@ enum Item {
     Screen(ScreenDraw),
     WorldStart(Box<WorldFacts>),
     WorldEnd(Box<WorldFacts>),
-    /// The sorted blends of the retained table, where the engine flushes its sorted queue
-    /// (plan step 6).
-    SortedBlends,
+    /// The sorted blends of the retained table and the blends of the engine's path that
+    /// waited for this item (plan step 6): the generation names the item within the frame.
+    SortedBlends(u32),
     /// The extension draws in place of the draws of this class. The number of world draws
     /// before this item: those after it are not in the picture yet.
     Replace(u32, Box<WorldFacts>, usize),
@@ -1628,6 +1628,8 @@ struct Counts {
     instance_draws: u32,
     instance_missing: u32,
     shape_twins: u32,
+    /// The blended draws of the engine's path merged into the sorted list of the table.
+    merged_blends: u64,
     /// The light records, and the lights of a shape that no record came for.
     light_records: u32,
     light_missing: u32,
@@ -2399,6 +2401,9 @@ struct Renderer {
     instance_extras: usize,
     /// `MGE_XE_RUNS_DUMP=1`: a line for each draw of a pass, for a study of the runs.
     runs_dump: bool,
+    /// `MGE_XE_MERGE=0`: the blends of the engine's path stay in place instead of merging into
+    /// the sorted list of the table (the state before F5), for an A/B.
+    merge_blends: bool,
     /// `MGE_XE_ORDER=opaque`: within each run of draws between other items, the opaque draws
     /// of the world first, in the order of their pipeline, textures and geometry, then the
     /// rest in the order of the game (plan 0.5 entry TD, step 4): the runs of one pipeline
@@ -2790,6 +2795,7 @@ impl Renderer {
             queue,
             shader,
             runs_dump: std::env::var("MGE_XE_RUNS_DUMP").is_ok_and(|v| v == "1"),
+            merge_blends: std::env::var("MGE_XE_MERGE").map_or(true, |v| v != "0"),
             order_opaque_first: std::env::var("MGE_XE_ORDER").is_ok_and(|v| v == "opaque"),
             indirect: std::env::var("MGE_XE_INDIRECT").map_or(true, |v| v != "0"),
             indirect_buffer: Rc::new(first_indirect),
@@ -3610,6 +3616,9 @@ struct Stream {
     /// The bones of the skinned shape in progress in the bones of the frame: the first and
     /// the number, or `None` for a draw that is not skinned.
     shape_bones: Option<(u32, u32)>,
+    /// The world bound of the shape record in progress (flag 0x400): the centre and the
+    /// radius, for the sort of a blended draw among the blends of the table.
+    shape_bound: Option<[f32; 4]>,
 }
 
 impl Stream {
@@ -3800,6 +3809,15 @@ struct Player {
     /// A draw of a sky class went into the back buffer in the world scene of this frame.
     sky_seen: bool,
     world_ended: bool,
+    /// The blended world draws of the frame that the engine would sort: they wait for the
+    /// item `SortedBlends` and merge with the table's blends by depth (the centre of the
+    /// bound, the order of arrival, the draw).
+    frame_sorted: Vec<([f32; 3], u32, Rc<Draw>, u32)>,
+    /// The number of sorted-blends items of the frame so far: the generation of the next.
+    sorted_generation: u32,
+    /// The near plane of the world's view of the frame, in the space of the world: the
+    /// depth of the sort of the blends.
+    world_near: Option<[f32; 4]>,
     /// The classes that the extension took in this frame, one bit for each.
     replaced: u32,
     /// The plane of `FrameParameters::class_plane` when its call is in the items of the
@@ -3892,6 +3910,7 @@ impl Player {
                 fog: [0; 4],
                 ambient_source: 0,
                 shape_bones: None,
+                shape_bound: None,
             },
             encoder: None,
             pass: None,
@@ -3919,6 +3938,9 @@ impl Player {
             world_begun: false,
             sky_seen: false,
             world_ended: false,
+            frame_sorted: Vec::new(),
+            sorted_generation: 0,
+            world_near: None,
             replaced: 0,
             plane_ahead: None,
             split: None,
@@ -4059,6 +4081,9 @@ impl Player {
         self.held_draws.clear();
         self.taken.clear();
         self.world_ended = false;
+        self.frame_sorted.clear();
+        self.sorted_generation = 0;
+        self.world_near = None;
         self.replaced = 0;
         self.plane_ahead = None;
         self.split = None;
@@ -4240,6 +4265,8 @@ impl Player {
             let axes: [f32; 6] = core::array::from_fn(|i| float(data, tail + 8 + i * 4));
             self.renderer.particles(geometry, float(data, tail + 4), [axes[0], axes[1], axes[2]], [axes[3], axes[4], axes[5]], &data[at..at + count * 20]);
         }
+        // The world bound of the shape (flag 0x400): the last 16 bytes of the record.
+        self.stream.shape_bound = (flags & 0x400 != 0 && data.len() >= 16).then(|| core::array::from_fn(|i| float(data, data.len() - 16 + i * 4)));
         self.draw_shape(geometry, material, flags, core::array::from_fn(|i| float(data, 20 + i * 4)), &colours, effects.as_ref());
     }
 
@@ -4681,6 +4708,14 @@ impl Player {
                 if self.scene_kind == 1 {
                     self.items.append(&mut self.held_draws);
                 }
+                // A blend of the engine's path that came in a later scene of the world camera
+                // (the water scene, where the engine flushes its queue after the water) waits
+                // in `frame_sorted` past the first item: the item runs again at the end of
+                // that scene, with the table's part already drawn.
+                if matches!(self.scene_kind, 2 | 3) && self.target.is_none() && self.world_begun && self.frame_sorted.iter().any(|e| e.3 == self.sorted_generation) {
+                    self.items.push(Item::SortedBlends(self.sorted_generation));
+                    self.sorted_generation += 1;
+                }
                 // The end of the world scene of the game, in the back buffer.
                 if world_scene && self.world_begun && !self.world_ended {
                     self.world_ended = true;
@@ -4693,7 +4728,8 @@ impl Player {
                     // first-person scene, after its depth clear, and the blends behind walls
                     // showed; the second after the world end, and a plane with a blend of the
                     // destination colour differed over the sky (2026-10-17).
-                    self.items.push(Item::SortedBlends);
+                    self.items.push(Item::SortedBlends(self.sorted_generation));
+                    self.sorted_generation += 1;
                     self.items.push(Item::WorldEnd(Box::new(facts)));
                 }
                 self.scene_kind = 0;
@@ -4964,7 +5000,7 @@ impl Player {
                         Item::Screen(_) => "screen",
                         Item::WorldStart(_) => "world-start",
                         Item::WorldEnd(_) => "world-end",
-                        Item::SortedBlends => "sorted-blends",
+                        Item::SortedBlends(_) => "sorted-blends",
                         Item::HeldHere(..) => "held",
                         Item::Replace(..) => "replace",
                         Item::Post(_) => "post",
@@ -4994,7 +5030,7 @@ impl Player {
                 }
                 Item::WorldStart(facts) => self.start_world(&facts),
                 Item::WorldEnd(facts) => self.end_world(&facts),
-                Item::SortedBlends => self.draw_retained_sorted(),
+                Item::SortedBlends(generation) => self.draw_retained_sorted(generation),
                 Item::HeldHere(held, facts) => self.give_held_here(*held, &facts),
                 Item::Replace(class, facts, drawn) => self.replace_class(class, &facts, drawn),
                 Item::Post(facts) => self.post_process(&facts),
@@ -5806,6 +5842,22 @@ impl Player {
         }
         if hold {
             self.held_draws.push(Item::Draw(draw));
+        } else if self.renderer.merge_blends && draw.world && self.world_begun && !(1..=8).contains(&class) && derived.blends.first().is_some_and(|b| b[0] != 0) && !derived.no_sorter && self.target.is_none() {
+            // The engine sorts a shape whose alpha property blends: that is the blend of its
+            // first pass. A later pass that blends (the textures of the terrain) stays in place.
+            // A blend the engine would sort (plan step 6, F5): it waits for the sorted blends
+            // of the table, and the two lists merge by depth (`draw_retained_sorted`). The
+            // centre of its bound is the key; a record without one (a capture made before
+            // 2026-10-17) gives the translation of the draw.
+            let centre = match self.stream.shape_bound {
+                Some(b) => [b[0], b[1], b[2]],
+                None => {
+                    let (w, o) = (&draw.data.world[0], draw.origin.unwrap_or([0.0; 3]));
+                    [(w[12] as f64 + o[0]) as f32, (w[13] as f64 + o[1]) as f32, (w[14] as f64 + o[2]) as f32]
+                }
+            };
+            let sequence = self.frame_sorted.len() as u32;
+            self.frame_sorted.push((centre, sequence, draw, self.sorted_generation));
         } else {
             self.items.push(Item::Draw(draw));
         }
@@ -5824,7 +5876,7 @@ impl Player {
         );
         println!("material: {} records", c.material_records);
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material", c.shape_records, c.shape_draws, c.shape_missing);
-        println!("instances: {} records, {} draws from them, {} draws of an instance not known, {} shape twins skipped", c.instance_records, c.instance_draws, c.instance_missing, c.shape_twins);
+        println!("instances: {} records, {} draws from them, {} draws of an instance not known, {} shape twins skipped, {} blends of the engine merged into the sorted list", c.instance_records, c.instance_draws, c.instance_missing, c.shape_twins, c.merged_blends);
         let r = &self.retained.counts;
         println!(
             "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} hidden, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
