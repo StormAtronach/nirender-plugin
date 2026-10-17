@@ -353,6 +353,25 @@ unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
 
 /// `nirender.liveWalk(on)` turns the live walk of plan F8 part 2 on or off and returns the
 /// state before; without an argument it returns the state.
+/// `nirender.noteEvery(on)`: note the material of every retained shape at every display
+/// (plan 8b, step 1); returns the state before; without an argument the state.
+unsafe extern "C" fn note_every(l: LuaState) -> i32 {
+    let before = crate::instance_stream::note_every();
+    if lua_gettop(l) >= 1 {
+        crate::instance_stream::set_note_every(lua_toboolean(l, 1) != 0);
+    }
+    lua_pushboolean(l, before as i32);
+    1
+}
+
+/// `nirender.displayCost()`: the skipped displays since the last call, the notes among
+/// them and their time in ms, as text; the counters reset.
+unsafe extern "C" fn display_cost(l: LuaState) -> i32 {
+    let (calls, notes, ms) = crate::instance_stream::display_cost();
+    push_str(l, &format!("{calls} {notes} {ms:.3}"));
+    1
+}
+
 unsafe extern "C" fn live_walk(l: LuaState) -> i32 {
     let before = crate::live_walk::on();
     if lua_gettop(l) >= 1 {
@@ -616,6 +635,8 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "nifShading", nif_shading);
     set_fn(l, "animationPolicy", animation_policy);
     set_fn(l, "liveWalk", live_walk);
+    set_fn(l, "noteEvery", note_every);
+    set_fn(l, "displayCost", display_cost);
     set_fn(l, "retained", retained);
     set_fn(l, "captureFrames", capture_frames);
     set_fn(l, "captureEnd", capture_end);

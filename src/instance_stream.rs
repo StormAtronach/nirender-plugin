@@ -852,7 +852,50 @@ unsafe fn note_light_once(t: &mut Tables, light: usize, key: u32) {
 /// did for the instance, without the draw. True when the engine must not display the
 /// shape; false when the shape is not retained after all (the mark goes).
 /// Engine-rules R5 (the skill wgpu-renderer-dev).
+/// Plan 8b, step 1: note the material and the geometry of every retained shape at every
+/// display, not every 64th frame (`NIRENDER_NOTE_EVERY=1`, `nirender.noteEvery(on)`), and
+/// the cost of the skipped displays (`display_cost`).
+static NOTE_EVERY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(255);
+static COST_CALLS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static COST_NOTES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static COST_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+
+pub fn note_every() -> bool {
+    use core::sync::atomic::Ordering::Relaxed;
+    let value = NOTE_EVERY.load(Relaxed);
+    if value != 255 {
+        return value != 0;
+    }
+    let on = std::env::var("NIRENDER_NOTE_EVERY").map_or(false, |v| v != "0");
+    NOTE_EVERY.store(on as u8, Relaxed);
+    on
+}
+
+/// Sets the switch; returns the state before.
+pub fn set_note_every(on: bool) -> bool {
+    let before = note_every();
+    NOTE_EVERY.store(on as u8, core::sync::atomic::Ordering::Relaxed);
+    before
+}
+
+/// The skipped displays since the last call, the notes among them, and their time in
+/// milliseconds; the counters reset.
+pub fn display_cost() -> (u64, u64, f64) {
+    use core::sync::atomic::Ordering::Relaxed;
+    let ticks = COST_TICKS.swap(0, Relaxed);
+    (COST_CALLS.swap(0, Relaxed), COST_NOTES.swap(0, Relaxed), ticks as f64 * 1000.0 / capture::ticks_per_second() as f64)
+}
+
 pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
+    let start = capture::ticks();
+    let result = skipped_display_timed(shape, kind);
+    use core::sync::atomic::Ordering::Relaxed;
+    COST_TICKS.fetch_add(capture::ticks() - start, Relaxed);
+    COST_CALLS.fetch_add(1, Relaxed);
+    result
+}
+
+unsafe fn skipped_display_timed(shape: usize, kind: u32) -> bool {
     let t = tables();
     if t.mode != Some(Mode::Gpu) || !t.skip || !capture::recording() {
         return false;
@@ -882,8 +925,9 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
     // The handles, when due: every 64th frame, after a change of the device textures, for
     // a record that must go again (the start of a capture), and at every display of a
     // live shape (a new revision of the data sends the geometry again under its handle).
-    let due = instance.live || !instance.sent || instance.generation != generation || id.wrapping_add(frame) % CHECK_FRAMES == 0;
+    let due = note_every() || instance.live || !instance.sent || instance.generation != generation || id.wrapping_add(frame) % CHECK_FRAMES == 0;
     if due {
+        COST_NOTES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let geometry = crate::geometry_stream::note(kind, rd(shape, GEOMETRY_MODEL_DATA), 0);
         let material = crate::material_stream::note(renderer, property_state, effect_state);
         if geometry == 0 || material == 0 || !crate::material_stream::last_modelled() {
