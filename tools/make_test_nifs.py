@@ -77,7 +77,10 @@ def node(name="", flags=8):
 
 
 def box(size):
-    """Six faces of four vertices, a normal for each face, the texture over each face."""
+    """Six faces of four vertices, a normal for each face, the texture over each face. The
+    triangles are counter-clockwise seen from outside (the cross product of their edges points
+    along the face normal); written the other way round before 2026-10-17, the game showed the
+    inner faces."""
     h = size / 2.0
     faces = [
         ([-h, -h, -h], [h, -h, -h], [h, -h, h], [-h, -h, h], [0, -1, 0]),
@@ -93,7 +96,7 @@ def box(size):
         vertices += [list(map(float, a)), list(map(float, b)), list(map(float, c)), list(map(float, d))]
         normals += [list(map(float, n))] * 4
         uvs += [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]
-        triangles += [[first, first + 2, first + 1], [first, first + 3, first + 2]]
+        triangles += [[first, first + 1, first + 2], [first, first + 2, first + 3]]
     return vertices, normals, uvs, triangles
 
 
@@ -111,7 +114,7 @@ def cylinder(radius, height, sides=12):
             uvs.append([i / float(sides), v])
     for i in range(sides):
         b = 2 * i
-        triangles += [[b, b + 1, b + 2], [b + 1, b + 3, b + 2]]
+        triangles += [[b, b + 2, b + 1], [b + 1, b + 2, b + 3]]
     for z, nz in ((h, 1.0), (-h, -1.0)):
         centre = len(vertices)
         vertices.append([0.0, 0.0, z])
@@ -125,8 +128,20 @@ def cylinder(radius, height, sides=12):
             uvs.append([0.5 + 0.5 * math.cos(a), 0.5 + 0.5 * math.sin(a)])
         for i in range(sides):
             a, b = ring + i, ring + (i + 1) % sides
-            triangles.append([centre, b, a] if nz > 0 else [centre, a, b])
+            triangles.append([centre, a, b] if nz > 0 else [centre, b, a])
     return vertices, normals, uvs, triangles
+
+
+def check_winding(name, geometry):
+    """Every triangle counter-clockwise seen from outside: the cross product of its edges
+    points along the normals of its vertices."""
+    vertices, normals, _, triangles = geometry
+    for a, b, c in triangles:
+        e1 = [vertices[b][k] - vertices[a][k] for k in range(3)]
+        e2 = [vertices[c][k] - vertices[a][k] for k in range(3)]
+        n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]]
+        along = sum(n[k] * (normals[a][k] + normals[b][k] + normals[c][k]) for k in range(3))
+        assert along > 0, (name, a, b, c)
 
 
 def tri_shape_data(geometry):
@@ -318,6 +333,8 @@ def main():
     write_checker(os.path.join(TEXTURES, "checker.dds"))
     b = box(120.0)
     c = cylinder(60.0, 140.0)
+    check_winding("box", b)
+    check_winding("cylinder", c)
     files = [
         ("fog_z", make("fog_z", b, [fog(0)])),
         ("fog_range", make("fog_range", b, [fog(1)])),
