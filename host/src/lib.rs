@@ -31,6 +31,8 @@ mod lights;
 use lights::{light_buffer, storage_buffer, Clusters, ExtensionLights};
 mod switches;
 use switches::{switches, Order};
+mod engine;
+use engine::scene;
 mod retained;
 use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
 
@@ -3848,9 +3850,9 @@ impl Player {
         let world = self.extension.is_some()
             && self.stream.back_buffer
             && self.target.is_none()
-            && matches!(self.scene_kind, 1..=3)
-            && !(1..=8).contains(&class)
-            && class != 10
+            && scene::world_camera(self.scene_kind)
+            && !scene::sky_class(class)
+            && class != scene::CLASS_WATER_PLANE
             && self.stream.projection[11] == 1.0
             && flags & (8 | 64 | 128) == 0
             && self.stream.shape_bones.is_none()
@@ -3860,7 +3862,7 @@ impl Player {
         }
         // The answers of the frame, as `draw` asks for them at the first draw of the world
         // scene.
-        if self.parameters.is_none() && self.scene_kind == 1 {
+        if self.parameters.is_none() && self.scene_kind == scene::SCENE_WORLD {
             self.ask_frame();
         }
         let Some((true, fog_range)) = self.parameters.as_ref().map(|p| (p.hold, p.fog_range)) else { return false };
@@ -4069,12 +4071,12 @@ impl Player {
                 self.stream.sky_hidden = word(data, 20) & 4 != 0;
                 self.scene_kind = word(data, 4);
                 // The user interface scene of the game: the world views are done.
-                if self.scene_kind == 7 {
+                if self.scene_kind == scene::SCENE_UI {
                     self.post_item();
                 }
             }
             tag::SCENE_END => {
-                let world_scene = self.scene_kind == 1 && self.target.is_none() && self.drawing();
+                let world_scene = self.scene_kind == scene::SCENE_WORLD && self.target.is_none() && self.drawing();
                 // A world scene in which the game drew nothing of the world (the console
                 // command ToggleWorld culls the world roots; a view with nothing in it): the
                 // world starts at the end of the scene, so that the extension draws its
@@ -4089,14 +4091,14 @@ impl Player {
                     self.items.push(Item::WorldStart(Box::new(facts)));
                 }
                 // The draws held for the start of the world, when the start came only here.
-                if self.scene_kind == 1 {
+                if self.scene_kind == scene::SCENE_WORLD {
                     self.items.append(&mut self.held_draws);
                 }
                 // A blend of the engine's path that came in a later scene of the world camera
                 // (the water scene, where the engine flushes its queue after the water) waits
                 // in `frame_sorted` past the first item: the item runs again at the end of
                 // that scene, with the table's part already drawn.
-                if matches!(self.scene_kind, 2 | 3) && self.target.is_none() && self.world_begun && self.frame_sorted.iter().any(|e| e.3 == self.sorted_generation) {
+                if scene::later_world_scene(self.scene_kind) && self.target.is_none() && self.world_begun && self.frame_sorted.iter().any(|e| e.3 == self.sorted_generation) {
                     self.items.push(Item::SortedBlends(self.sorted_generation));
                     self.sorted_generation += 1;
                 }
@@ -5025,7 +5027,7 @@ impl Player {
         let in_back_buffer = self.target.is_none();
         // The first draw of the world scene (kind 1) into the back buffer: the answers of
         // the extension for the frame.
-        if self.extension.is_some() && self.parameters.is_none() && in_back_buffer && self.scene_kind == 1 {
+        if self.extension.is_some() && self.parameters.is_none() && in_back_buffer && self.scene_kind == scene::SCENE_WORLD {
             self.ask_frame();
         }
         // The world of the game starts with the first draw of its world scene into the
@@ -5037,11 +5039,11 @@ impl Player {
         // the cell borders); it is not the world. With the sky hidden (the scene packet:
         // a plain interior cell, or ToggleSky) there is no sky draw: the world starts at
         // the first draw.
-        let sky = (1..=8).contains(&self.stream.object_class);
-        if in_back_buffer && self.scene_kind == 1 && sky {
+        let sky = scene::sky_class(self.stream.object_class);
+        if in_back_buffer && self.scene_kind == scene::SCENE_WORLD && sky {
             self.sky_seen = true;
         }
-        if self.extension.is_some() && !self.world_begun && in_back_buffer && self.scene_kind == 1 && !sky && (self.sky_seen || self.stream.sky_hidden) {
+        if self.extension.is_some() && !self.world_begun && in_back_buffer && self.scene_kind == scene::SCENE_WORLD && !sky && (self.sky_seen || self.stream.sky_hidden) {
             self.world_begun = true;
             let facts = self.world_facts(true);
             self.items.push(Item::WorldStart(Box::new(facts)));
@@ -5050,7 +5052,7 @@ impl Player {
             // the start would lose its depth.
             self.items.append(&mut self.held_draws);
         }
-        let hold = self.extension.is_some() && !self.world_begun && in_back_buffer && self.scene_kind == 1 && !sky;
+        let hold = self.extension.is_some() && !self.world_begun && in_back_buffer && self.scene_kind == scene::SCENE_WORLD && !sky;
         // A draw of a class that the extension takes: the extension draws at the first one.
         let class = self.stream.object_class;
         let (watched, shade, fog_range, sky) = self.parameters.as_ref().map_or((0, false, None, None), |p| (p.watched, p.shade, p.fog_range, p.sky));
@@ -5208,7 +5210,7 @@ impl Player {
             // come in a scene of their own (2), or with the water plane in the scene of the
             // water (3). The water plane of the game (MGE_LINK_CLASS_WATER_PLANE, 10) is not
             // a thing of the world.
-            world: in_back_buffer && matches!(self.scene_kind, 1..=3) && class != 10,
+            world: in_back_buffer && scene::world_camera(self.scene_kind) && class != scene::CLASS_WATER_PLANE,
             key,
             stencil_reference,
             data: draw_data,
@@ -5227,7 +5229,7 @@ impl Player {
         }
         if hold {
             self.held_draws.push(Item::Draw(draw));
-        } else if self.renderer.merge_blends && draw.world && self.world_begun && !(1..=8).contains(&class) && derived.blends.first().is_some_and(|b| b[0] != 0) && !derived.no_sorter && self.target.is_none() {
+        } else if self.renderer.merge_blends && draw.world && self.world_begun && !scene::sky_class(class) && derived.blends.first().is_some_and(|b| b[0] != 0) && !derived.no_sorter && self.target.is_none() {
             // The engine sorts a shape whose alpha property blends: that is the blend of its
             // first pass. A later pass that blends (the textures of the terrain) stays in place.
             // A blend the engine would sort (plan step 6, F5): it waits for the sorted blends
