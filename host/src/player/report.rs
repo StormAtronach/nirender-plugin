@@ -104,8 +104,7 @@ impl Player {
         println!("copies of a draw without room in the records of the frame {}", c.no_record);
         println!("indirect calls {}, draws in them {}, draws one by one for want of room {}", c.indirect_calls, c.indirect_draws, c.indirect_over);
         println!(
-            "texture arrays: {}; the most textures of a frame {}, stages over the room {} (room for {})",
-            if self.renderer.arrays { "on" } else { "off" },
+            "texture arrays: the most textures of a frame {}, stages over the room {} (room for {})",
             c.most_frame_textures,
             c.over_array_cap,
             self.renderer.array_cap

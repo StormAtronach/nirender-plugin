@@ -428,10 +428,6 @@ struct Draw {
     data: DrawData,
     /// The origin that the world matrices of the draw are relative to, or `None`.
     origin: Option<[f64; 3]>,
-    /// The groups of the textures and the samplers of the draw; `None` with the arrays of
-    /// the frame on (the record names the slots).
-    textures: Option<Rc<wgpu::BindGroup>>,
-    samplers: Option<Rc<wgpu::BindGroup>>,
     vertices: Rc<wgpu::Buffer>,
     indexes: Rc<wgpu::Buffer>,
     /// The handles of the textures of the stages, as the stream has them: the order of the
@@ -544,17 +540,12 @@ impl Replay for Replayer<'_> {
             pass.set_pipeline(&pipeline);
             pass.set_stencil_reference(kept.stencil_reference);
             bound.set(pass, 0, &self.renderer.frame_group);
-            if self.renderer.arrays {
-                if !arrays_bound {
-                    // The pass of the extension draws into a texture of its own, not into a
-                    // texture of the game.
-                    let group = self.renderer.array_group_for(None);
-                    pass.set_bind_group(1, &*group, &[]);
-                    arrays_bound = true;
-                }
-            } else if let (Some(samplers), Some(textures)) = (&kept.samplers, &kept.textures) {
-                bound.set(pass, 1, samplers);
-                bound.set(pass, 2, textures);
+            if !arrays_bound {
+                // The pass of the extension draws into a texture of its own, not into a
+                // texture of the game.
+                let group = self.renderer.array_group_for(None);
+                pass.set_bind_group(1, &*group, &[]);
+                arrays_bound = true;
             }
             pass.set_vertex_buffer(0, kept.vertices.slice(..));
             pass.set_vertex_buffer(1, self.renderer.defaults.slice(..));
@@ -1833,8 +1824,6 @@ struct Renderer {
     lights_known: HashMap<u32, [u8; 104]>,
     /// The GPU time stamps, when the adapter has them.
     timing: Option<Timing>,
-    texture_layout: wgpu::BindGroupLayout,
-    sampler_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
     pipelines: FxHashMap<PipelineKey, Rc<wgpu::RenderPipeline>>,
     textures: FxHashMap<u32, Rc<wgpu::TextureView>>,
@@ -1856,20 +1845,12 @@ struct Renderer {
     clusters: Clusters,
     extension_lights: ExtensionLights,
     samplers: FxHashMap<[u32; 5], Rc<wgpu::Sampler>>,
-    /// The textures and the samplers of a draw, by the texture handles and the sampler values
-    /// of its stages. The D3D12 backend has a small number of places for samplers.
-    texture_groups: FxHashMap<[u32; STAGES], Rc<wgpu::BindGroup>>,
-    /// The samplers of a draw, by the sampler values of its stages. They are apart from the
-    /// textures: the D3D12 backend has places for 2048 samplers only, and the sets of sampler
-    /// values are few.
-    sampler_groups: FxHashMap<[[u32; 5]; STAGES], Rc<wgpu::BindGroup>>,
-    /// The textures and the samplers of the frame in binding arrays (group 1), when the
-    /// device has them: the slot of each texture handle and sampler state of the frame, the
+    /// The textures and the samplers of the frame in binding arrays (group 1): the slot of
+    /// each texture handle and sampler state of the frame, the
     /// views and the samplers by slot (slot 0: white, a plain sampler), the group of the
     /// frame, and its variants for a pass into a rendered texture of the frame (that
     /// texture's slot shows white: a texture cannot be a target and a texture of one pass).
-    arrays: bool,
-    array_layout: Option<wgpu::BindGroupLayout>,
+    array_layout: wgpu::BindGroupLayout,
     array_cap: usize,
     sampler_cap: usize,
     frame_texture_slots: FxHashMap<u32, u32>,
@@ -1949,15 +1930,18 @@ impl Renderer {
             println!("window: the present modes of the surface are {:?}", capabilities.present_modes);
         }
         // The textures and the samplers of a frame in binding arrays (plan 0.5 entry TD, step
-        // 2), when the adapter has them. `MGE_XE_ARRAYS=0` keeps the groups of a draw, for
-        // an A/B.
+        // 2). The adapter must have them (the owner's decision at checkpoint 3, 2026-10-17:
+        // bindless); without them this program stops here with the reason, and the game
+        // side is for Direct3D 9 (`[runtime] renderer_wgpu = false`).
         let array_features = wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
         // The samplers of the array count in the elements of the arrays too.
         let array_cap = adapter.limits().max_binding_array_elements_per_shader_stage.saturating_sub(SAMPLER_CAP).min(ARRAY_CAP);
         let sampler_cap = adapter.limits().max_binding_array_sampler_elements_per_shader_stage.min(SAMPLER_CAP);
-        let arrays = adapter.features().contains(array_features) && array_cap >= 256 && sampler_cap >= 8 && switches().arrays;
-        println!("texture arrays: {} (the adapter has the features: {}, room for {} textures and {} samplers)", if arrays { "on" } else { "off" }, adapter.features().contains(array_features), array_cap, sampler_cap);
-        let (array_cap, sampler_cap) = if arrays { (array_cap, sampler_cap) } else { (0, 0) };
+        println!("texture arrays: the adapter has the features: {}, room for {} textures and {} samplers", adapter.features().contains(array_features), array_cap, sampler_cap);
+        assert!(
+            adapter.features().contains(array_features) && array_cap >= 256 && sampler_cap >= 8,
+            "this adapter lacks the binding arrays of textures (the features TEXTURE_BINDING_ARRAY, SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING, PARTIALLY_BOUND_BINDING_ARRAY, room for 256 textures and 8 samplers): the wgpu renderer needs them; set [runtime] renderer_wgpu = false for Direct3D 9"
+        );
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("nirender"),
@@ -1970,7 +1954,7 @@ impl Renderer {
                             | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
                             | wgpu::Features::INDIRECT_FIRST_INSTANCE
                             | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT))
-                    | if arrays { array_features } else { wgpu::Features::empty() },
+                    | array_features,
                 // The largest texture that the adapter takes, up to 16384: an atlas of the
                 // distant land of MGE XE has that size.
                 // A post shader of MGE XE reads up to 22 textures: 10 of its own, the picture,
@@ -1996,45 +1980,21 @@ impl Renderer {
         // The text of the extension reads the record of the draw as `draw.field`; the record
         // is in the storage buffer of the frame (`draws[record]`, see shader.wgsl).
         let extension_shader = retained::rewrite_extension_text(&extension_shader.replace("draw.", "draws[record]."));
-        let text = if arrays { array_shader(include_str!("shader.wgsl")) } else { include_str!("shader.wgsl").to_string() };
+        let text = array_shader(include_str!("shader.wgsl"));
         let source = format!("{text}\n{extension_shader}");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-        let mut entries = Vec::new();
-        let mut sampler_entries = Vec::new();
-        for i in 0..STAGES as u32 {
-            entries.push(wgpu::BindGroupLayoutEntry {
-                binding: i,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
+        let array_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("draw texture arrays"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: std::num::NonZeroU32::new(array_cap),
                 },
-                count: None,
-            });
-            sampler_entries.push(wgpu::BindGroupLayoutEntry {
-                binding: i,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            });
-        }
-        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("draw textures"), entries: &entries });
-        let array_layout = arrays.then(|| {
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("draw texture arrays"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-                        count: std::num::NonZeroU32::new(array_cap),
-                    },
-                    wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: std::num::NonZeroU32::new(sampler_cap) },
-                ],
-            })
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: std::num::NonZeroU32::new(sampler_cap) },
+            ],
         });
-        let sampler_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("draw samplers"), entries: &sampler_entries });
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("extension frame"),
             entries: &[
@@ -2114,12 +2074,9 @@ impl Renderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("draw"),
             // From the group that changes least to the one that changes most: the frame, the
-            // samplers, the textures (or the arrays of the frame). The record of a draw is in
-            // the frame group, named by the instance of the draw.
-            bind_group_layouts: &match array_layout.as_ref() {
-                Some(arrays) => vec![Some(&frame_layout), Some(arrays)],
-                None => vec![Some(&frame_layout), Some(&sampler_layout), Some(&texture_layout)],
-            },
+            // arrays of the frame. The record of a draw is in the frame group, named by the
+            // instance of the draw.
+            bind_group_layouts: &[Some(&frame_layout), Some(&array_layout)],
             immediate_size: 0,
         });
         let white = Rc::new(device
@@ -2208,8 +2165,6 @@ impl Renderer {
             instance_generation: 0,
             pinned_textures: Vec::new(),
             pinned_samplers: Vec::new(),
-            texture_layout,
-            sampler_layout,
             pipeline_layout,
             pipelines: FxHashMap::default(),
             textures: FxHashMap::default(),
@@ -2219,9 +2174,6 @@ impl Renderer {
             surfaces: HashMap::new(),
             white,
             samplers: FxHashMap::default(),
-            texture_groups: FxHashMap::default(),
-            sampler_groups: FxHashMap::default(),
-            arrays,
             array_layout,
             array_cap: array_cap as usize,
             sampler_cap: sampler_cap as usize,
@@ -2258,11 +2210,9 @@ impl Renderer {
         self.frame_samplers.clear();
         self.array_group = None;
         self.array_variants.clear();
-        if self.arrays {
-            self.frame_texture_views.push(self.white.clone());
-            let plain = self.sampler(material::sampler_states(0, 0));
-            self.frame_samplers.push(plain);
-        }
+        self.frame_texture_views.push(self.white.clone());
+        let plain = self.sampler(material::sampler_states(0, 0));
+        self.frame_samplers.push(plain);
     }
 
     /// The slot of a texture of the game in the arrays of the frame: a new one for a handle
@@ -2333,7 +2283,7 @@ impl Renderer {
             &self.device,
             &wgpu::BindGroupDescriptor {
                 label: Some("draw texture arrays"),
-                layout: self.array_layout.as_ref().expect("the arrays are on"),
+                layout: &self.array_layout,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureViewArray(&views) },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::SamplerArray(&samplers) },
@@ -2530,8 +2480,6 @@ impl Renderer {
         );
         self.textures.insert(handle, Rc::new(texture.create_view(&Default::default())));
         self.texture_objects.insert(handle, (texture, d3d_format));
-        // A group can have the texture that had this handle before.
-        self.texture_groups.clear();
         self.counts.textures += 1;
     }
 
@@ -2645,7 +2593,6 @@ impl Renderer {
         });
         self.textures.insert(handle, Rc::new(texture.create_view(&Default::default())));
         self.texture_objects.insert(handle, (texture, d3d_format));
-        self.texture_groups.clear();
         self.counts.textures += 1;
     }
 
@@ -2658,7 +2605,6 @@ impl Renderer {
         self.textures.insert(handle, view.clone());
         self.texture_objects.remove(&handle);
         self.targets.insert(handle, RenderTexture { texture, view, depth: Rc::new(depth.create_view(&Default::default())), size: (width, height) });
-        self.texture_groups.clear();
         self.counts.render_textures += 1;
     }
 

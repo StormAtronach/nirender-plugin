@@ -92,8 +92,6 @@ struct Bucket {
     stencil: u32,
     vertices: Rc<wgpu::Buffer>,
     indexes: Rc<wgpu::Buffer>,
-    textures: Option<Rc<wgpu::BindGroup>>,
-    samplers: Option<Rc<wgpu::BindGroup>>,
     slots: Vec<u32>,
 }
 
@@ -602,9 +600,6 @@ impl Renderer {
     /// The pinned textures and samplers at the start of the arrays of a frame, in their
     /// slots. After `begin_frame_arrays` cleared the arrays.
     pub fn pin_into_frame(&mut self) {
-        if !self.arrays {
-            return;
-        }
         for (handle, view) in &self.pinned_textures {
             let slot = self.frame_texture_views.len() as u32;
             self.frame_texture_views.push(view.clone());
@@ -615,29 +610,6 @@ impl Renderer {
             self.frame_samplers.push(sampler.clone());
             self.frame_sampler_slots.insert(*values, slot);
         }
-    }
-
-    /// The group of the textures of a draw without the arrays, as `draw` makes it.
-    pub fn texture_group_of(&mut self, handles: &[u32; STAGES]) -> Rc<wgpu::BindGroup> {
-        if let Some(group) = self.texture_groups.get(handles) {
-            return group.clone();
-        }
-        let views: Vec<Rc<wgpu::TextureView>> = handles.iter().map(|handle| self.textures.get(handle).unwrap_or(&self.white).clone()).collect();
-        let entries: Vec<wgpu::BindGroupEntry> = (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(&views[stage]) }).collect();
-        let group = Rc::new(self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw textures"), layout: &self.texture_layout, entries: &entries }));
-        self.texture_groups.insert(*handles, group.clone());
-        group
-    }
-
-    pub fn sampler_group_of(&mut self, values: &[[u32; 5]; STAGES]) -> Rc<wgpu::BindGroup> {
-        if let Some(group) = self.sampler_groups.get(values) {
-            return group.clone();
-        }
-        let samplers: Vec<Rc<wgpu::Sampler>> = values.iter().map(|values| self.sampler(*values)).collect();
-        let entries: Vec<wgpu::BindGroupEntry> = (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::Sampler(&samplers[stage]) }).collect();
-        let group = Rc::new(self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw samplers"), layout: &self.sampler_layout, entries: &entries }));
-        self.sampler_groups.insert(*values, group.clone());
-        group
     }
 
     /// Room in the segments of the records and the instances for `slots` slots: larger
@@ -808,15 +780,10 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             pass.set_bind_group(0, &*renderer.frame_group, &[view.scene_slot * SCENE_SIZE as u32]);
             frame_bound = true;
         }
-        if renderer.arrays {
-            if !arrays_bound {
-                let group = renderer.array_group_for(view.target);
-                pass.set_bind_group(1, &*group, &[]);
-                arrays_bound = true;
-            }
-        } else if let (Some(samplers), Some(textures)) = (&bucket.samplers, &bucket.textures) {
-            pass.set_bind_group(1, &**samplers, &[]);
-            pass.set_bind_group(2, &**textures, &[]);
+        if !arrays_bound {
+            let group = renderer.array_group_for(view.target);
+            pass.set_bind_group(1, &*group, &[]);
+            arrays_bound = true;
         }
         pass.set_vertex_buffer(0, bucket.vertices.slice(..));
         if !shared_bound {
@@ -1098,16 +1065,11 @@ impl Player {
             if r.geometry == crate::dump_wanted() {
                 println!("key dump retained table: fvf {} stride {} topology {} blend {:?} depth {:?} cull {} fill {} color_write {} stencil {:?} reference {} textures {:?} samplers {:?} stages {} passes {} ranges {:?} base {}", key.fvf, key.stride, key.topology, key.blend, key.depth, key.cull, key.fill, key.color_write, key.stencil, stencil[2], handles, sampler_values, data.counts[1], derived.passes.len(), ranges, base_vertex);
             }
-            let (textures, samplers) = if self.renderer.arrays {
-                for stage in 0..STAGES {
-                    let texture = self.renderer.pin_texture(handles[stage]);
-                    let sampler = self.renderer.pin_sampler(sampler_values[stage]);
-                    data.stages[stage].slots = [texture, sampler, 0, 0];
-                }
-                (None, None)
-            } else {
-                (Some(self.renderer.texture_group_of(&handles)), Some(self.renderer.sampler_group_of(&sampler_values)))
-            };
+            for stage in 0..STAGES {
+                let texture = self.renderer.pin_texture(handles[stage]);
+                let sampler = self.renderer.pin_sampler(sampler_values[stage]);
+                data.stages[stage].slots = [texture, sampler, 0, 0];
+            }
             let bucket_key = BucketKey { class: r.class, key, stencil: stencil[2], vertices: Rc::as_ptr(&vertex) as usize, indexes: Rc::as_ptr(&index) as usize, textures: handles, samplers: sampler_values };
             let world = self.retained.world_of(r);
             let exact = r.exact_translation();
@@ -1115,7 +1077,7 @@ impl Player {
             let bucket = match set.bucket_of.get(&bucket_key) {
                 Some(&b) => b,
                 None => {
-                    set.buckets.push(Bucket { class: r.class, key, stencil: stencil[2], vertices: vertex.clone(), indexes: index.clone(), textures, samplers, slots: Vec::new() });
+                    set.buckets.push(Bucket { class: r.class, key, stencil: stencil[2], vertices: vertex.clone(), indexes: index.clone(), slots: Vec::new() });
                     let b = (set.buckets.len() - 1) as u32;
                     set.bucket_of.insert(bucket_key, b);
                     b

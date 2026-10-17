@@ -31,8 +31,6 @@ pub(crate) struct Switches {
     pub(crate) draw_dump: u32,
     /// `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (about 0.4 ms a frame).
     pub(crate) gpu_time: bool,
-    /// `MGE_XE_ARRAYS=0`: no binding arrays of textures, the six bindings of a draw instead.
-    pub(crate) arrays: bool,
     /// `MGE_XE_RUNS_DUMP=1`: the runs of the table of each frame.
     pub(crate) runs_dump: bool,
     /// `MGE_XE_MERGE=0`: the blends of the engine's path stay in place (the rule before F5).
@@ -61,7 +59,6 @@ impl Switches {
             },
             draw_dump: var("MGE_XE_DRAW_DUMP").and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0),
             gpu_time: is("MGE_XE_GPU_TIME", "1"),
-            arrays: on_unless_0("MGE_XE_ARRAYS"),
             runs_dump: is("MGE_XE_RUNS_DUMP", "1"),
             merge_blends: on_unless_0("MGE_XE_MERGE"),
             order: match var("MGE_XE_ORDER").as_deref() {

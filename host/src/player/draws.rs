@@ -40,14 +40,11 @@ impl Player {
         let clock = ticks::Clock::now();
         let Some(pass) = self.pass.as_mut() else { return };
         // A change of the state ends the run that is open.
-        let same_groups = renderer.arrays
-            || (self.bound.is(1, draw.samplers.as_ref()) && self.bound.is(2, draw.textures.as_ref()));
         let same = self.pass_pipeline.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &pipeline))
             && self.pass_stencil == Some(draw.stencil_reference)
             && self.pass_vertices.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices))
             && self.pass_indexes.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.indexes))
-            && self.bound.is(0, Some(&renderer.frame_group))
-            && same_groups;
+            && self.bound.is(0, Some(&renderer.frame_group));
         if !same {
             flush_run(pass, renderer, &mut self.run_args, &mut self.frame_args);
         }
@@ -85,15 +82,10 @@ impl Player {
             );
         }
         self.bound.set(pass, 0, &renderer.frame_group);
-        if renderer.arrays {
-            if !self.pass_arrays {
-                let group = renderer.array_group_for(self.pass_target);
-                pass.set_bind_group(1, &*group, &[]);
-                self.pass_arrays = true;
-            }
-        } else if let (Some(samplers), Some(textures)) = (&draw.samplers, &draw.textures) {
-            self.bound.set(pass, 1, samplers);
-            self.bound.set(pass, 2, textures);
+        if !self.pass_arrays {
+            let group = renderer.array_group_for(self.pass_target);
+            pass.set_bind_group(1, &*group, &[]);
+            self.pass_arrays = true;
         }
         if !self.pass_vertices.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices)) {
             pass.set_vertex_buffer(0, draw.vertices.slice(..));
@@ -261,42 +253,13 @@ impl Player {
                 sampler_values[stage] = pass.stages[stage].sampler;
             }
         }
-        let (texture_group, sampler_group) = if renderer.arrays {
-            // The textures and the samplers of the draw in the arrays of the frame: the
-            // record names their slots.
-            for stage in 0..STAGES {
-                let texture = renderer.frame_texture_slot(handles[stage]);
-                let sampler = renderer.frame_sampler_slot(sampler_values[stage]);
-                draw_data.stages[stage].slots = [texture, sampler, 0, 0];
-            }
-            (None, None)
-        } else {
-            let texture_group = match renderer.texture_groups.get(&handles) {
-                Some(group) => group.clone(),
-                None => {
-                    let views: Vec<Rc<wgpu::TextureView>> = handles.iter().map(|handle| renderer.textures.get(handle).unwrap_or(&renderer.white).clone()).collect();
-                    let entries: Vec<wgpu::BindGroupEntry> =
-                        (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(&views[stage]) }).collect();
-                    let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw textures"), layout: &renderer.texture_layout, entries: &entries });
-                    let group = Rc::new(group);
-                    renderer.texture_groups.insert(handles, group.clone());
-                    group
-                }
-            };
-            let sampler_group = match renderer.sampler_groups.get(&sampler_values) {
-                Some(group) => group.clone(),
-                None => {
-                    let samplers: Vec<Rc<wgpu::Sampler>> = sampler_values.iter().map(|values| renderer.sampler(*values)).collect();
-                    let entries: Vec<wgpu::BindGroupEntry> =
-                        (0..STAGES).map(|stage| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::Sampler(&samplers[stage]) }).collect();
-                    let group = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw samplers"), layout: &renderer.sampler_layout, entries: &entries });
-                    let group = Rc::new(group);
-                    renderer.sampler_groups.insert(sampler_values, group.clone());
-                    group
-                }
-            };
-            (Some(texture_group), Some(sampler_group))
-        };
+        // The textures and the samplers of the draw in the arrays of the frame: the record
+        // names their slots.
+        for stage in 0..STAGES {
+            let texture = renderer.frame_texture_slot(handles[stage]);
+            let sampler = renderer.frame_sampler_slot(sampler_values[stage]);
+            draw_data.stages[stage].slots = [texture, sampler, 0, 0];
+        }
         renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
         if self.target.is_some() {
             renderer.counts.target_draws += 1;
@@ -316,8 +279,6 @@ impl Player {
             stencil_reference,
             data: draw_data,
             origin: self.stream.origin.filter(|_| shape.relative),
-            textures: texture_group,
-            samplers: sampler_group,
             vertices: vertex_buffer,
             indexes: index_buffer,
             texture_handles: handles,
