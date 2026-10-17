@@ -14,4 +14,5 @@ return {
     { id = "@nif_x_node_switch", mesh = "@_nifx\\node_switch.nif" },
     { id = "@nif_x_node_lod", mesh = "@_nifx\\node_lod.nif" },
     { id = "@nif_x_node_bsp", mesh = "@_nifx\\node_bsp.nif" },
+    { id = "@nif_x_node_sortadjust", mesh = "@_nifx\\node_sortadjust.nif" },
 }

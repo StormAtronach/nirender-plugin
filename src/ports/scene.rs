@@ -208,6 +208,9 @@ port_thiscall!(cull_show_port, 0x6EB480, "NiAVObject::CullShow",
 /// for the subtree and unmarked after it.
 pub unsafe fn cull_show(this: usize, camera: usize) {
     crate::shadow::touch(&cull_show_port::STATE);
+    if crate::live_walk::node_served(this) {
+        return;
+    }
     if vcall0(this, SLOT_GET_APP_CULLED) & 0xFF != 0 {
         return;
     }
@@ -276,6 +279,7 @@ pub unsafe fn node_display(this: usize, camera: usize) {
             i += 1;
         }
     }
+    crate::live_walk::after_node(this);
 }
 
 port_thiscall!(bs_animation_node_display_port, 0x6F21C0, "BSAnimationNode::Display",
@@ -324,6 +328,14 @@ pub unsafe fn switch_node_display(this: usize, camera: usize) {
     if child == 0 {
         return;
     }
+    switch_prepare_child(this, index, child);
+    thiscall1(CULL_SHOW, child, camera as u32);
+}
+
+/// The lazy update of the child a switch node selects (`NiSwitchNode::Display`): a child
+/// whose revision is not the node's gets an update with the node's saved time, and the
+/// node keeps the child's revision. The live walk calls it too (plan 8b, R26).
+pub(crate) unsafe fn switch_prepare_child(this: usize, index: i32, child: usize) {
     let revision = rd::<u32>(this, SWITCH_UPDATE_REVISION);
     let storage = rd::<usize>(this, SWITCH_REVISIONS_STORAGE);
     let at = index as usize * 4;
@@ -350,7 +362,6 @@ pub unsafe fn switch_node_display(this: usize, camera: usize) {
         let controllers = rd::<u8>(this, SWITCH_UPDATE_CONTROLLERS) as u32;
         vcall3(child, SLOT_UPDATE_DOWNWARD_PASS, time, controllers, 1);
     }
-    thiscall1(CULL_SHOW, child, camera as u32);
 }
 
 port_thiscall!(flt_animation_node_display_port, 0x6D90B0, "NiFltAnimationNode::Display",

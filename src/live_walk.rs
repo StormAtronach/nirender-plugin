@@ -29,6 +29,11 @@ use crate::ports::scene::{
     ROTATE_TO_CAMERA, SLOT_DISPLAY, SLOT_FINISH_ACCUMULATING, SLOT_GET_APP_CULLED, SLOT_START_ACCUMULATING, SORTING_OFF, SORTING_SUBSORT,
     SORT_ADJUST_ACCUMULATOR, SORT_ADJUST_MODE, SWITCH_CHILD_FROM_TIMING, SWITCH_INDEX, SWITCH_SAVED_TIME, WHICH_SIDE,
 };
+use crate::ports::scene::switch_prepare_child;
+
+/// MWSE's sort adjust mode (`SORTING_ORDERED_SUBTREE_MWSE`): with an alpha accumulator its
+/// `Display` override registers the whole node as one object (R26).
+const SORTING_ORDERED_SUBTREE_MWSE: u32 = 64;
 use crate::gen::layouts::NiRenderer as R;
 use crate::mem::wr;
 
@@ -98,6 +103,26 @@ unsafe fn list() -> &'static mut HashMap<usize, Entry> {
 /// A scene of the game begins (every kind).
 pub fn scene_begin() {
     SCENE_SERIAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// True when the walk displayed the node whole in the world walk in progress: the engine's
+/// cull skips it (`ports::scene::cull_show`). Cheap when the walk is off or served nothing.
+pub unsafe fn node_served(node: usize) -> bool {
+    if WALK_ROOT.load(Ordering::Relaxed) == 0 {
+        return false;
+    }
+    (*addr_of!(NODES_SERVED)).as_ref().is_some_and(|set| set.contains(&node))
+}
+
+/// A node's display ended: at the end of the world root's display the served nodes go
+/// (the flush of the accumulator after it displays them).
+pub unsafe fn after_node(node: usize) {
+    if node != 0 && WALK_ROOT.load(Ordering::Relaxed) == node {
+        WALK_ROOT.store(0, Ordering::Relaxed);
+        if let Some(set) = (*addr_of_mut!(NODES_SERVED)).as_mut() {
+            set.clear();
+        }
+    }
 }
 
 /// True during the walk's own displays.
@@ -180,6 +205,8 @@ unsafe fn walk(root: usize, camera: usize) {
     shapes.clear();
     (*addr_of_mut!(NODE_INDEXES)).get_or_insert_with(HashMap::new).clear();
     (*addr_of_mut!(NODE_PLANES)).get_or_insert_with(HashMap::new).clear();
+    (*addr_of_mut!(NODES_SERVED)).get_or_insert_with(std::collections::HashSet::new).clear();
+    WALK_ROOT.store(root, Ordering::Relaxed);
     (*addr_of_mut!(TURNED)).get_or_insert_with(std::collections::HashSet::new).clear();
     shapes.extend(list().keys().copied());
     let ordered = &mut *addr_of_mut!(ORDERED);
@@ -202,6 +229,23 @@ unsafe fn walk(root: usize, camera: usize) {
             }
             Reach::InView(adjust) => adjust,
         };
+        // MWSE's mode 64 with an alpha accumulator: the node is the unit. The walk displays
+        // it once (MWSE's override registers it whole) and none of its shapes.
+        if adjust != 0 && rd::<u32>(adjust, SORT_ADJUST_MODE) == SORTING_ORDERED_SUBTREE_MWSE {
+            let renderer: usize = rd(camera, C::spRenderer);
+            let accumulator: usize = if renderer != 0 { rd(renderer, R::accumulator) } else { 0 };
+            if accumulator != 0 && is_kind(accumulator, b"NiAlphaAccumulator") {
+                if let Some(g) = group.take() {
+                    close_group(&g);
+                }
+                let served = (*addr_of_mut!(NODES_SERVED)).get_or_insert_with(std::collections::HashSet::new);
+                if served.insert(adjust) {
+                    vcall1(adjust, SLOT_DISPLAY, camera as u32);
+                    NODES_DISPLAYED.fetch_add(1, Ordering::Relaxed);
+                }
+                continue;
+            }
+        }
         if group.as_ref().map_or(0, |g| g.node) != adjust {
             if let Some(g) = group.take() {
                 close_group(&g);
@@ -251,6 +295,12 @@ enum Reach {
 static mut NODE_PLANES: Option<HashMap<usize, Option<u32>>> = None;
 /// The nodes of a path, the root's child first.
 static mut PATH: Vec<usize> = Vec::new();
+/// The nodes the walk displayed whole in the run (MWSE's mode 64), and the world root of
+/// the run: the engine's cull skips such a node until the root's display ends.
+static mut NODES_SERVED: Option<std::collections::HashSet<usize>> = None;
+static WALK_ROOT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static NODES_DISPLAYED: AtomicU64 = AtomicU64::new(0);
+static CHILDREN_PREPARED: AtomicU64 = AtomicU64::new(0);
 /// The billboard nodes turned to the camera in the run.
 static mut TURNED: Option<std::collections::HashSet<usize>> = None;
 /// The side `WhichSide` returns for a bound wholly in front of a plane.
@@ -327,6 +377,24 @@ unsafe fn reachable(shape: usize, root: usize, planes: &[usize]) -> Reach {
                 }
                 if node != shape {
                     verdicts.insert(node, after);
+                    // A switch, a level of detail or a flt animation node in view does its
+                    // display's work: the level writes its index, and the selected child
+                    // gets the lazy update before its own bound is tested (R26).
+                    if after.is_some() {
+                        if let Some(switch) = switch_kind(node) {
+                            let index = switch_index(node, switch, planes_camera());
+                            if matches!(switch, Switch::LevelOfDetail) {
+                                wr(node, SWITCH_INDEX, index);
+                            }
+                            if index >= 0 && index < rd::<i32>(node, N::kChildren_endIndex) {
+                                let child: usize = rd(rd::<usize>(node, N::kChildren_storage), index as usize * 4);
+                                if child != 0 {
+                                    switch_prepare_child(node, index, child);
+                                    CHILDREN_PREPARED.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
                     if after.is_some() && is_kind(node, b"NiBillboardNode") {
                         let turned = (*addr_of_mut!(TURNED)).get_or_insert_with(std::collections::HashSet::new);
                         if turned.insert(node) {
@@ -555,7 +623,7 @@ pub unsafe fn report() -> String {
         }
     }
     format!(
-        "live walk: {}; listed {} (shapes {}, strips {}, particles {}, lines {}), forgotten {}; runs {}, displayed {}, out of view {}, unreachable {}; displays of the engine skipped as served {}",
+        "live walk: {}; listed {} (shapes {}, strips {}, particles {}, lines {}), forgotten {}; runs {}, displayed {}, out of view {}, unreachable {}; displays of the engine skipped as served {}; switch children prepared {}, nodes displayed whole {}",
         if on() { "on" } else { "off" },
         by_kind.iter().sum::<usize>(),
         by_kind[0],
@@ -568,6 +636,8 @@ pub unsafe fn report() -> String {
         OUT_OF_VIEW.load(Ordering::Relaxed),
         UNREACHABLE.load(Ordering::Relaxed),
         SKIPPED_AS_SERVED.load(Ordering::Relaxed),
+        CHILDREN_PREPARED.load(Ordering::Relaxed),
+        NODES_DISPLAYED.load(Ordering::Relaxed),
     )
 }
 

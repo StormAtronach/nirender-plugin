@@ -28,6 +28,8 @@ a cylinder), a lit material, a base texture of the level, and the property under
                  arrival
     node_bsp     a NiBSPNode with the plane x = 0: the box west of it, the cylinder
                  east
+    node_sortadjust a NiSortAdjustNode with the mode 0 (inherit) over two boxes side by
+                 side; a batch sets MWSE's mode 64 (ordered subtree) at run time
 
 The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
 write of the level's own files. The texture effect is attached as the level's exhibits do:
@@ -341,6 +343,7 @@ def main():
         ("node_switch", make_tree("node_switch", "NiSwitchNode", [(c, ZERO3), (b, ZERO3)], {"index": 1})),
         ("node_lod", make_tree("node_lod", "NiLODNode", [(b, ZERO3), (c, ZERO3)], {"index": 0, "lod_center": list(ZERO3), "lod_levels": [(0.0, 350.0), (350.0, 100000.0)]})),
         ("node_bsp", make_tree("node_bsp", "NiBSPNode", [(b, [-100.0, 0.0, 0.0]), (c, [100.0, 0.0, 0.0])], {"plane_normal": [1.0, 0.0, 0.0], "plane_constant": 0.0})),
+        ("node_sortadjust", make_tree("node_sortadjust", "NiSortAdjustNode", [(b, [-80.0, 0.0, 0.0]), (b, [80.0, 0.0, 0.0])], {"sorting_mode": 0, "sub_sorter": -1})),
     ]
     lines = ["-- The test NIFs of the flag support, made by tools/make_test_nifs.py (do not edit).",
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",
