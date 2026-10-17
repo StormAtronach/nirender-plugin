@@ -188,6 +188,10 @@ pub struct FrameParameters {
     /// of the draw: the same picture as the lights of the draw. `MGE_XE_CLUSTERS` (0 or 1)
     /// overrides it, for an A/B.
     pub clustered_lights: bool,
+    /// The reach of the extension's shadow map in units of the world, 0 without shadows:
+    /// the plugin animates what the map reaches, so that a shadow moves while its caster
+    /// is out of view (the animation policy, plan F8).
+    pub shadow_reach: f32,
 }
 
 /// The lights of the world of a frame, for an extension that lights what it draws as the
@@ -3160,6 +3164,9 @@ struct Player {
     /// plugin: the water plane while the extension draws the water (plan step 7, F6 C).
     /// The live loop writes it into the head of the ring after each record.
     pub(crate) takes: u32,
+    /// The reach of the extension's shadow map (`FrameParameters::shadow_reach`), for the
+    /// plugin's animation policy, written into the head of the ring with `takes`.
+    pub(crate) shadow_reach: f32,
     /// The plane of `FrameParameters::class_plane` when its call is in the items of the
     /// frame: before the call the world draws that blend and write no depth are drawn only
     /// on its far side, and after it (`split`) only on the side of the camera.
@@ -3279,6 +3286,7 @@ impl Player {
             world_near: None,
             replaced: 0,
             takes: 0,
+            shadow_reach: 0.0,
             plane_ahead: None,
             split: None,
             posted: false,
@@ -3873,6 +3881,8 @@ mod live {
     /// 1 while this program waits for a record: the plugin sets the event of the ring
     /// after a write only then.
     const RING_WAITING: usize = 36;
+    /// The reach of the shadow map for the plugin's animation policy (the bits of an f32).
+    const RING_SHADOW_REACH: usize = 40;
 
     struct Ring {
         base: *mut u8,
@@ -3907,9 +3917,13 @@ mod live {
             }
         }
 
-        /// Tells the plugin the classes of the game that the helper draws itself.
-        fn set_takes(&self, classes: u32) {
-            unsafe { (*(self.base.add(RING_TAKES) as *const std::sync::atomic::AtomicU32)).store(classes, Ordering::Release) }
+        /// Tells the plugin the classes of the game that the helper draws itself, and the
+        /// reach of the shadow map.
+        fn set_takes(&self, classes: u32, shadow_reach: f32) {
+            unsafe {
+                (*(self.base.add(RING_TAKES) as *const std::sync::atomic::AtomicU32)).store(classes, Ordering::Release);
+                (*(self.base.add(RING_SHADOW_REACH) as *const std::sync::atomic::AtomicU32)).store(shadow_reach.to_bits(), Ordering::Release);
+            }
         }
 
         fn counter(&self, offset: usize) -> &AtomicU64 {
@@ -4371,7 +4385,7 @@ mod live {
                 });
                 let inside_before = super::sum_except(&player.renderer.counts.times, super::TIME_RECORDS);
                 let frame_end = player.feed(tag, &self.data);
-                self.ring.set_takes(player.takes);
+                self.ring.set_takes(player.takes, player.shadow_reach);
                 let inside_after = super::sum_except(&player.renderer.counts.times, super::TIME_RECORDS);
                 // The time of a record without the parts that are measured on their own.
                 player.renderer.counts.times[super::TIME_RECORDS] += clock.elapsed().saturating_sub(inside_after - inside_before);

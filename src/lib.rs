@@ -29,6 +29,7 @@ pub mod frame;
 pub mod geometry_stream;
 pub mod hook;
 pub mod install;
+pub mod animation;
 pub mod instance_stream;
 pub mod link;
 pub mod link_client;

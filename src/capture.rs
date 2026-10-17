@@ -242,6 +242,9 @@ pub const RING_TAKES: usize = 32;
 /// The helper waits for a record (1 while it does): the game sets the event of the ring
 /// after a write only then (plan M5).
 const RING_WAITING: usize = 36;
+/// The reach of the helper's shadow map in units of the world (the bits of an f32; 0
+/// without shadows), for the animation policy of the plugin (`animation`).
+pub const RING_SHADOW_REACH: usize = 40;
 /// The game waits this long for room in the ring. Then it ends the stream: the host is gone.
 const RING_WAIT_SECONDS: i64 = 10;
 
@@ -911,6 +914,16 @@ pub unsafe fn helper_takes() -> u32 {
     match s.out.as_ref() {
         Some(Sink::Ring(ring)) => (*(ring.base.add(RING_TAKES) as *const core::sync::atomic::AtomicU32)).load(Ordering::Relaxed),
         _ => 0,
+    }
+}
+
+/// The reach of the helper's shadow map, as the helper wrote it into the head of the ring
+/// at its last frame; 0 without a ring or without shadows.
+pub unsafe fn helper_shadow_reach() -> f32 {
+    let Some(s) = state() else { return 0.0 };
+    match s.out.as_ref() {
+        Some(Sink::Ring(ring)) => f32::from_bits((*(ring.base.add(RING_SHADOW_REACH) as *const core::sync::atomic::AtomicU32)).load(Ordering::Relaxed)),
+        _ => 0.0,
     }
 }
 

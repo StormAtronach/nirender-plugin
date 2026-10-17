@@ -390,6 +390,9 @@ pub unsafe fn reset() {
 /// end.
 pub unsafe fn scene_begin(kind: u32, camera: usize) {
     tables().world_camera = if kind == SCENE_WORLD { camera } else { 0 };
+    if kind == SCENE_WORLD && camera != 0 {
+        crate::animation::note_camera(camera);
+    }
 }
 
 /// A scene of the game ends. At the end of the world scene in mode gpu: an instance the
@@ -1001,5 +1004,6 @@ pub unsafe fn report() -> String {
         t.deletes,
         t.light_records,
         t.states
-    )
+    ) + "\n"
+        + &crate::animation::report()
 }

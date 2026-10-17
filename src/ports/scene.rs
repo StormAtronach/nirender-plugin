@@ -65,10 +65,10 @@ const SLOT_GET_ACTIVE_TRIANGLE_COUNT: usize = 0x3C;
 /// Bit 3 of the flags of a node: the node contains renderable geometry.
 const NODE_HAS_GEOMETRY_BIT: u32 = 3;
 /// Bit 4: the node was displayed in this frame.
-const NODE_DISPLAYED: u16 = 0x10;
+pub(crate) const NODE_DISPLAYED: u16 = 0x10;
 /// `BSAnimFlags_Displayed` in the byte at 0xB0 of a `BSAnimationNode`.
-const ANIM_FLAGS: usize = 0xB0;
-const ANIM_DISPLAYED: u8 = 8;
+pub(crate) const ANIM_FLAGS: usize = 0xB0;
+pub(crate) const ANIM_DISPLAYED: u8 = 8;
 /// `NiSwitchNode`: the index of the child shown, the saved time, the revision of the update,
 /// the array of the revision of each child (a TArray: storage, storage count, end index,
 /// filled count), and whether the controllers update.

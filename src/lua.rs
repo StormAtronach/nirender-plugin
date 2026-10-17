@@ -323,6 +323,22 @@ unsafe extern "C" fn nif_shading(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.animationPolicy([name])`: with a name (`view`, `shadows`, `all`) sets the
+/// policy of what animates when the plugin's table draws the world (plan F8). Returns
+/// the name of the policy in force.
+unsafe extern "C" fn animation_policy(l: LuaState) -> i32 {
+    if lua_gettop(l) >= 1 {
+        let mut length = 0usize;
+        let text = lua_tolstring(l, 1, &mut length);
+        if !text.is_null() {
+            let name = core::str::from_utf8_unchecked(core::slice::from_raw_parts(text as *const u8, length));
+            crate::animation::set_policy_name(name);
+        }
+    }
+    push_str(l, crate::animation::policy_name());
+    1
+}
+
 /// `nirender.instances()`: the report of the retained instances, as the log gets it at the
 /// end of a run: the counts of the retained, the rejected by reason, the draws not taken.
 unsafe extern "C" fn instances_report(l: LuaState) -> i32 {
@@ -585,6 +601,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "captureStatus", capture_status);
     set_fn(l, "instances", instances_report);
     set_fn(l, "nifShading", nif_shading);
+    set_fn(l, "animationPolicy", animation_policy);
     set_fn(l, "retained", retained);
     set_fn(l, "captureFrames", capture_frames);
     set_fn(l, "captureEnd", capture_end);

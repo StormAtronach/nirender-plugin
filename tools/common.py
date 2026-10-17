@@ -17,6 +17,8 @@ FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiP
                      r"|NiSortAdjustNode::Display$|NiGeometry::pushStateToRenderer$|NiAccumulator::|NiClusterAccumulator::"
                      r"|NiAlphaAccumulator::RegisterObject$|NiBound::WhichSide$"
                      r"|BSAnimationNode::Display$|NiLODNode::Display$|NiTriStrips::Display$"
+                     # The readers of the display flag (plan F8, part 1, 2026-10-17).
+                     r"|BSAnimationManager::Update$|BSAnimationNode::UpdateControllers$"
                      r"|NiGeometry::dtor$)")
 FUNC_SKIP = re.compile(r"_SEH$|NiDX8Application|NiDX8SelectResolution|StdMap")
 
