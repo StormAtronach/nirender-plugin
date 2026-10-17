@@ -29,6 +29,8 @@ use d3d::{address, attributes, blend_factor, color, compare, decode_dxt, expand_
 pub use d3d::{d3d_compare, d3d_stencil_operation};
 mod lights;
 use lights::{light_buffer, storage_buffer, Clusters, ExtensionLights};
+mod switches;
+use switches::{switches, Order};
 mod retained;
 use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
 
@@ -558,7 +560,7 @@ impl Replay for Replayer<'_> {
             let instances = first_instance..first_instance + kept.instances.1;
             // `MGE_XE_REPLAY_DEBUG=1`: each draw that a replay issues, for a comparison of
             // the two paths of the shapes.
-            if std::env::var("MGE_XE_REPLAY_DEBUG").is_ok_and(|v| v == "1") {
+            if switches().replay_debug {
                 println!(
                     "replay class {} blend {:?} depth {:?} cull {} fill {} origin {:?} range {:?} instances {:?} world {:?} view {:?} flags {:?} light_range {:?}",
                     kept.class, key.blend, key.depth, key.cull, key.fill, kept.origin, kept.range, kept.instances, data.world[0], &data.view[12..16], data.flags, data.light_range
@@ -941,8 +943,7 @@ struct Retained {
 /// Direct3D 8 did. Experimental (the owner, 2026-10-16); `NIRENDER_FLAT_SHADING=0` turns
 /// it off.
 pub(crate) fn flat_shading_bit(derived: &material::Derived) -> u32 {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let on = *ON.get_or_init(|| std::env::var("NIRENDER_FLAT_SHADING").map_or(true, |v| v != "0"));
+    let on = switches().flat_shading;
     if on && derived.shade == 1 {
         16
     } else {
@@ -1447,7 +1448,7 @@ mod cores {
 
     /// Returns one line for the log with what was done.
     pub fn prefer_performance_cores() -> String {
-        if std::env::var("MGE_XE_CORES").is_ok_and(|v| v == "0") {
+        if crate::switches().cores_to_scheduler {
             return "cores: left to the scheduler (MGE_XE_CORES=0)".into();
         }
         // SAFETY: calls of the Windows API with valid arguments; the buffer is sized by the
@@ -1583,8 +1584,7 @@ fn flush_run(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Renderer, run_
 /// `MGE_XE_DRAW_DUMP=<geometry handle, hex>`: the words of the draw data of each draw of
 /// that geometry, on the path it takes, for a comparison of the two paths (2026-10-16).
 pub(crate) fn dump_wanted() -> u32 {
-    static WANTED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *WANTED.get_or_init(|| std::env::var("MGE_XE_DRAW_DUMP").ok().and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0))
+    switches().draw_dump
 }
 
 /// The lights of a draw of the dumped geometry, one line each: the position, the diffuse,
@@ -1661,7 +1661,7 @@ struct Timing {
 
 /// With `MGE_XE_GPU_TIME=1`: the stamps cost about 0.4 ms a frame at the end of the frame.
 fn make_timing(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Timing> {
-    if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) || std::env::var("MGE_XE_GPU_TIME").map_or(true, |v| v != "1") {
+    if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) || !switches().gpu_time {
         return None;
     }
     let size = TIMING_QUERIES as u64 * 8;
@@ -1952,7 +1952,7 @@ impl Renderer {
         // The samplers of the array count in the elements of the arrays too.
         let array_cap = adapter.limits().max_binding_array_elements_per_shader_stage.saturating_sub(SAMPLER_CAP).min(ARRAY_CAP);
         let sampler_cap = adapter.limits().max_binding_array_sampler_elements_per_shader_stage.min(SAMPLER_CAP);
-        let arrays = adapter.features().contains(array_features) && array_cap >= 256 && sampler_cap >= 8 && std::env::var("MGE_XE_ARRAYS").map_or(true, |v| v != "0");
+        let arrays = adapter.features().contains(array_features) && array_cap >= 256 && sampler_cap >= 8 && switches().arrays;
         println!("texture arrays: {} (the adapter has the features: {}, room for {} textures and {} samplers)", if arrays { "on" } else { "off" }, adapter.features().contains(array_features), array_cap, sampler_cap);
         let (array_cap, sampler_cap) = if arrays { (array_cap, sampler_cap) } else { (0, 0) };
         let (device, queue) = pollster::block_on(adapter.request_device(
@@ -2176,10 +2176,10 @@ impl Renderer {
             wireframe,
             queue,
             shader,
-            runs_dump: std::env::var("MGE_XE_RUNS_DUMP").is_ok_and(|v| v == "1"),
-            merge_blends: std::env::var("MGE_XE_MERGE").map_or(true, |v| v != "0"),
-            order_opaque_first: std::env::var("MGE_XE_ORDER").is_ok_and(|v| v == "opaque"),
-            indirect: std::env::var("MGE_XE_INDIRECT").map_or(true, |v| v != "0"),
+            runs_dump: switches().runs_dump,
+            merge_blends: switches().merge_blends,
+            order_opaque_first: switches().order == Order::Opaque,
+            indirect: switches().indirect,
             indirect_buffer: Rc::new(first_indirect),
             indirect_capacity: RECORDS_AT_FIRST,
             indirect_written: 0,
@@ -3272,7 +3272,7 @@ impl Player {
         Player {
             renderer,
             instances: HashMap::new(),
-            retained_on: std::env::var("MGE_XE_RETAINED").map_or(true, |v| v != "0"),
+            retained_on: switches().retained,
             retained: RetainedSet::new(),
             retained_values: None,
             stream: Stream {
@@ -4619,7 +4619,7 @@ impl Player {
                 (direction.map(|v| v / length), diffuse, light_ambient)
             });
             let ambient = color(known(shape.ambient, 0));
-            if std::env::var("MGE_XE_REPLAY_DEBUG").is_ok_and(|v| v == "1") {
+            if switches().replay_debug {
                 println!("world start: lights {} sun {:?} ambient {:?}", shape.lights.len() / STATE_LIGHT_SIZE, sun, ambient);
             }
             self.world_sun = sun;

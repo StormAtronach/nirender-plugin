@@ -127,11 +127,7 @@ impl Clusters {
     pub(crate) fn new(device: &wgpu::Device) -> Clusters {
         let cells = (CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]) as usize;
         let index_capacity = 1 << 16;
-        let forced = match std::env::var("MGE_XE_CLUSTERS").as_deref() {
-            Ok("1") => Some(true),
-            Ok("0") => Some(false),
-            _ => None,
-        };
+        let forced = crate::switches().clusters;
         Clusters {
             // On when the extension asks for them (`FrameParameters::clustered_lights`). With
             // the masks the clusters give the picture of the lights of the draws; at Narsis by

@@ -218,7 +218,7 @@ impl RetainedSet {
             origin: [0.0; 3],
             relative: false,
             main_view: [0.0; 16],
-            bucket_order: std::env::var("MGE_XE_ORDER").is_ok_and(|v| v == "buckets"),
+            bucket_order: switches().order == Order::Buckets,
             light_slot_of: HashMap::new(),
             light_values: Vec::new(),
             light_dirty: Vec::new(),
