@@ -454,6 +454,7 @@ pub unsafe fn begin_draw() {
 
 /// The end of a frame.
 pub unsafe fn frame_tick() {
+    apply_changes();
     let t = tables();
     t.frame = t.frame.wrapping_add(1);
 }
@@ -860,11 +861,60 @@ unsafe fn note_light_once(t: &mut Tables, light: usize, key: u32) {
 pub enum Recheck {
     Properties = 0,
     Effects = 1,
+    /// A Lua mod changed the shape or a property of it (`nirender.changed`, plan C17).
+    Notified = 2,
 }
 
-/// The rechecks asked for (by cause), the rechecks done, the instances they rejected, and
-/// the instances whose live state changed.
-static mut RECHECKS: [u64; 5] = [0; 5];
+/// The rechecks asked for (by cause: 0 a property state, 1 an effect state, 2 a Lua
+/// change), the rechecks done (3), the instances they rejected (4), and the instances whose
+/// live state changed (5).
+static mut RECHECKS: [u64; 6] = [0; 6];
+
+/// TEMPORARY, plan C17 (until MWSE notifies the changes of its Lua bindings): the objects
+/// a Lua mod changed (`nirender.changed`, from `mod/MWSE/mods/nirender/notifier.lua`), and
+/// the notes received and the scans of the table they caused.
+static mut CHANGED: Option<HashSet<usize>> = None;
+static mut CHANGE_NOTES: [u64; 3] = [0; 3];
+
+/// A Lua mod changed the object at `address` (a shape, a property, a controller's target).
+pub unsafe fn note_change(address: usize) {
+    if address == 0 {
+        return;
+    }
+    (*core::ptr::addr_of_mut!(CHANGED)).get_or_insert_with(HashSet::new).insert(address);
+    (*core::ptr::addr_of_mut!(CHANGE_NOTES))[0] += 1;
+}
+
+/// Once a frame: each retained shape that is a changed object, or whose property state holds
+/// one, is checked again at its next display. One pass over the table, only in a frame
+/// with changes.
+unsafe fn apply_changes() {
+    let Some(changed) = (*core::ptr::addr_of_mut!(CHANGED)).as_mut() else { return };
+    if changed.is_empty() {
+        return;
+    }
+    let notes = &mut *core::ptr::addr_of_mut!(CHANGE_NOTES);
+    notes[1] += 1;
+    let t = tables();
+    for (&shape, instance) in t.instances.iter_mut() {
+        let mut hit = changed.contains(&shape);
+        if !hit {
+            let state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
+            if state != 0 {
+                hit = (PS::propAlpha..=PS::field_30).step_by(4).any(|at| {
+                    let property: usize = rd(state, at);
+                    property != 0 && changed.contains(&property)
+                });
+            }
+        }
+        if hit && !instance.recheck {
+            instance.recheck = true;
+            (*core::ptr::addr_of_mut!(RECHECKS))[Recheck::Notified as usize] += 1;
+            notes[2] += 1;
+        }
+    }
+    changed.clear();
+}
 
 /// A shape got a new property state or effect state (`ports::state_update`): its retained
 /// instance, if it has one, is classified again and noted at its next display.
@@ -932,17 +982,17 @@ unsafe fn skipped_display_timed(shape: usize, kind: u32) -> bool {
         (i.skinned, i.live)
     }) {
         let rechecks = &mut *core::ptr::addr_of_mut!(RECHECKS);
-        rechecks[2] += 1;
+        rechecks[3] += 1;
         let mut live = false;
         if reject_reason(shape, rd(shape, GEOMETRY_PROPERTY_STATE), rd(shape, GEOMETRY_EFFECT_STATE), skinned, &mut live).is_some() {
-            rechecks[3] += 1;
+            rechecks[4] += 1;
             reject_pending(shape, true);
             return false;
         }
         let t = tables();
         if let Some(instance) = t.instances.get_mut(&shape) {
             if instance.live != live {
-                rechecks[4] += 1;
+                rechecks[5] += 1;
             }
             instance.live = live || was_live;
             instance.generation = instance.generation.wrapping_sub(1);
@@ -1110,8 +1160,8 @@ pub unsafe fn report() -> String {
         t.states
     ) + "\n"
         + &format!(
-            "rechecks (plan 8b): asked by a new property state {}, by a new effect state {}; done {}, rejected {}, live changed {}\n",
-            RECHECKS[0], RECHECKS[1], RECHECKS[2], RECHECKS[3], RECHECKS[4]
+            "rechecks (plan 8b): asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes (C17, temporary) {}, scans {}, shapes hit {}\n",
+            RECHECKS[0], RECHECKS[1], RECHECKS[2], RECHECKS[3], RECHECKS[4], RECHECKS[5], CHANGE_NOTES[0], CHANGE_NOTES[1], CHANGE_NOTES[2]
         )
         + &crate::animation::report()
         + "\n"

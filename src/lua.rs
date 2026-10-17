@@ -353,6 +353,13 @@ unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
 
 /// `nirender.liveWalk(on)` turns the live walk of plan F8 part 2 on or off and returns the
 /// state before; without an argument it returns the state.
+/// `nirender.changed(address)`: TEMPORARY, plan C17 (until MWSE notifies the changes of its
+/// Lua bindings): `notifier.lua` reports the address of an object a Lua mod changed.
+unsafe extern "C" fn changed(l: LuaState) -> i32 {
+    crate::instance_stream::note_change(lua_tonumber(l, 1) as u32 as usize);
+    0
+}
+
 /// `nirender.noteEvery(on)`: note the material of every retained shape at every display
 /// (plan 8b, step 1); returns the state before; without an argument the state.
 unsafe extern "C" fn note_every(l: LuaState) -> i32 {
@@ -636,6 +643,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "animationPolicy", animation_policy);
     set_fn(l, "liveWalk", live_walk);
     set_fn(l, "noteEvery", note_every);
+    set_fn(l, "changed", changed);
     set_fn(l, "displayCost", display_cost);
     set_fn(l, "retained", retained);
     set_fn(l, "captureFrames", capture_frames);
