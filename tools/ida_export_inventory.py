@@ -30,6 +30,9 @@ EXTRA = [
     0x6D3540,  # NiAutoNormalParticles::Display
     # The readers of the display flag (plan F8, part 1, 2026-10-17).
     0x6EE690,  # BSAnimationManager::Update
+    # The new property and effect states of a shape (plan 8b, 2026-10-17).
+    0x6F41B0,  # NiGeometry::UpdatePropertiesDownward
+    0x6F4270,  # NiGeometry::UpdateEffectsDownward
     0x6F2180,  # BSAnimationNode::UpdateControllers
     0x6D8320,  # NiSwitchNode::Display
     0x6D90B0,  # NiFltAnimationNode::Display

@@ -207,6 +207,9 @@ struct Instance {
     /// display runs the controllers' `OnPreDisplay` as the engine's display does, and
     /// notes the geometry and the material every time.
     live: bool,
+    /// The shape got a new property or effect state since its classification (plan 8b):
+    /// its next display classifies it again and notes it.
+    recheck: bool,
 }
 
 struct Tables {
@@ -533,7 +536,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false });
     t.pending = Some((shape, id));
 }
 
@@ -852,6 +855,27 @@ unsafe fn note_light_once(t: &mut Tables, light: usize, key: u32) {
 /// did for the instance, without the draw. True when the engine must not display the
 /// shape; false when the shape is not retained after all (the mark goes).
 /// Engine-rules R5 (the skill wgpu-renderer-dev).
+/// Why an instance is checked again (plan 8b, step 2).
+#[derive(Clone, Copy)]
+pub enum Recheck {
+    Properties = 0,
+    Effects = 1,
+}
+
+/// The rechecks asked for (by cause), the rechecks done, the instances they rejected, and
+/// the instances whose live state changed.
+static mut RECHECKS: [u64; 5] = [0; 5];
+
+/// A shape got a new property state or effect state (`ports::state_update`): its retained
+/// instance, if it has one, is classified again and noted at its next display.
+pub unsafe fn recheck(shape: usize, cause: Recheck) {
+    let t = tables();
+    if let Some(instance) = t.instances.get_mut(&shape) {
+        instance.recheck = true;
+        (*core::ptr::addr_of_mut!(RECHECKS))[cause as usize] += 1;
+    }
+}
+
 /// Plan 8b, step 1: note the material and the geometry of every retained shape at every
 /// display, not every 64th frame (`NIRENDER_NOTE_EVERY=1`, `nirender.noteEvery(on)`), and
 /// the cost of the skipped displays (`display_cost`).
@@ -902,6 +926,29 @@ unsafe fn skipped_display_timed(shape: usize, kind: u32) -> bool {
     }
     let renderer = crate::engine::renderer();
     let (frame, generation) = (t.frame, t.generation);
+    // A new property or effect state since the classification (plan 8b): classify again.
+    if let Some((skinned, was_live)) = t.instances.get_mut(&shape).filter(|i| i.recheck).map(|i| {
+        i.recheck = false;
+        (i.skinned, i.live)
+    }) {
+        let rechecks = &mut *core::ptr::addr_of_mut!(RECHECKS);
+        rechecks[2] += 1;
+        let mut live = false;
+        if reject_reason(shape, rd(shape, GEOMETRY_PROPERTY_STATE), rd(shape, GEOMETRY_EFFECT_STATE), skinned, &mut live).is_some() {
+            rechecks[3] += 1;
+            reject_pending(shape, true);
+            return false;
+        }
+        let t = tables();
+        if let Some(instance) = t.instances.get_mut(&shape) {
+            if instance.live != live {
+                rechecks[4] += 1;
+            }
+            instance.live = live || was_live;
+            instance.generation = instance.generation.wrapping_sub(1);
+        }
+    }
+    let t = tables();
     let Some(instance) = t.instances.get_mut(&shape) else {
         mark(shape, false);
         return false;
@@ -1062,6 +1109,10 @@ pub unsafe fn report() -> String {
         t.light_records,
         t.states
     ) + "\n"
+        + &format!(
+            "rechecks (plan 8b): asked by a new property state {}, by a new effect state {}; done {}, rejected {}, live changed {}\n",
+            RECHECKS[0], RECHECKS[1], RECHECKS[2], RECHECKS[3], RECHECKS[4]
+        )
         + &crate::animation::report()
         + "\n"
         + &crate::live_walk::report()
