@@ -32,7 +32,7 @@ use lights::{light_buffer, storage_buffer, Clusters, ExtensionLights};
 mod switches;
 use switches::{switches, Order};
 mod engine;
-use engine::scene;
+use engine::{plan, scene};
 mod retained;
 use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
 
@@ -3184,21 +3184,16 @@ struct Player {
     /// the draws of their own.
     frame_instances: Vec<Instance>,
     /// The collect: the answers of the extension for the frame (`None` before the world
-    /// scene), the world began, the world ended, the kind of the scene in progress (1 is the
-    /// world), the sun and the ambient light of the first draw of the world, the texture
+    /// scene), the plan of the items (`plan::Plan`: the world begun and ended, the scene in
+    /// progress), the sun and the ambient light of the first draw of the world, the texture
     /// that the game draws into (`None` for the back buffer), and whether the game named a
     /// rendered texture as its target.
     parameters: Option<FrameParameters>,
-    world_begun: bool,
-    /// A draw of a sky class went into the back buffer in the world scene of this frame.
-    sky_seen: bool,
-    world_ended: bool,
+    plan: plan::Plan,
     /// The blended world draws of the frame that the engine would sort: they wait for the
     /// item `SortedBlends` and merge with the table's blends by depth (the centre of the
     /// bound, the order of arrival, the draw).
     frame_sorted: Vec<([f32; 3], u32, Rc<Draw>, u32)>,
-    /// The number of sorted-blends items of the frame so far: the generation of the next.
-    sorted_generation: u32,
     /// The near plane of the world's view of the frame, in the space of the world: the
     /// depth of the sort of the blends.
     world_near: Option<[f32; 4]>,
@@ -3215,7 +3210,6 @@ struct Player {
     /// the world for a call after the world views, when the stream has those of the user
     /// interface.
     world_matrices: Option<([f32; 16], [f32; 16])>,
-    scene_kind: u32,
     world_sun: Option<([f32; 3], [f32; 3], [f32; 3])>,
     world_ambient: [f32; 3],
     target: Option<u32>,
@@ -3319,18 +3313,14 @@ impl Player {
             frame_bones: Vec::new(),
             frame_instances: Vec::new(),
             parameters: None,
-            world_begun: false,
-            sky_seen: false,
-            world_ended: false,
+            plan: plan::Plan::default(),
             frame_sorted: Vec::new(),
-            sorted_generation: 0,
             world_near: None,
             replaced: 0,
             plane_ahead: None,
             split: None,
             posted: false,
             world_matrices: None,
-            scene_kind: 0,
             world_sun: None,
             world_ambient: [0.0; 3],
             target: None,
@@ -3460,13 +3450,10 @@ impl Player {
         self.frame_args.clear();
         self.renderer.indirect_written = 0;
         self.parameters = None;
-        self.world_begun = false;
-        self.sky_seen = false;
+        self.plan.frame_start();
         self.held_draws.clear();
         self.taken.clear();
-        self.world_ended = false;
         self.frame_sorted.clear();
-        self.sorted_generation = 0;
         self.world_near = None;
         self.replaced = 0;
         self.plane_ahead = None;
@@ -3850,7 +3837,7 @@ impl Player {
         let world = self.extension.is_some()
             && self.stream.back_buffer
             && self.target.is_none()
-            && scene::world_camera(self.scene_kind)
+            && scene::world_camera(self.plan.scene_kind)
             && !scene::sky_class(class)
             && class != scene::CLASS_WATER_PLANE
             && self.stream.projection[11] == 1.0
@@ -3862,7 +3849,7 @@ impl Player {
         }
         // The answers of the frame, as `draw` asks for them at the first draw of the world
         // scene.
-        if self.parameters.is_none() && self.scene_kind == scene::SCENE_WORLD {
+        if self.parameters.is_none() && self.plan.scene_kind == scene::SCENE_WORLD {
             self.ask_frame();
         }
         let Some((true, fog_range)) = self.parameters.as_ref().map(|p| (p.hold, p.fog_range)) else { return false };
@@ -4069,56 +4056,15 @@ impl Player {
                 self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
                 self.stream.interior = word(data, 20) & 2 != 0;
                 self.stream.sky_hidden = word(data, 20) & 4 != 0;
-                self.scene_kind = word(data, 4);
-                // The user interface scene of the game: the world views are done.
-                if self.scene_kind == scene::SCENE_UI {
-                    self.post_item();
+                if let Some(step) = self.plan.scene_begin(word(data, 4)) {
+                    self.plan_step(step);
                 }
             }
             tag::SCENE_END => {
-                let world_scene = self.scene_kind == scene::SCENE_WORLD && self.target.is_none() && self.drawing();
-                // A world scene in which the game drew nothing of the world (the console
-                // command ToggleWorld culls the world roots; a view with nothing in it): the
-                // world starts at the end of the scene, so that the extension draws its
-                // distant land under the sky. MGE XE on Direct3D 9 does the same: its stage
-                // 0 runs from `EndScene` when no draw started it (mged3d8device.cpp 466).
-                if self.extension.is_some() && world_scene && !self.world_begun {
-                    if self.parameters.is_none() {
-                        self.ask_frame();
-                    }
-                    self.world_begun = true;
-                    let facts = self.world_facts(true);
-                    self.items.push(Item::WorldStart(Box::new(facts)));
+                let steps = self.plan.scene_end(self.extension.is_some(), self.target.is_none(), self.drawing());
+                for step in steps {
+                    self.plan_step(step);
                 }
-                // The draws held for the start of the world, when the start came only here.
-                if self.scene_kind == scene::SCENE_WORLD {
-                    self.items.append(&mut self.held_draws);
-                }
-                // A blend of the engine's path that came in a later scene of the world camera
-                // (the water scene, where the engine flushes its queue after the water) waits
-                // in `frame_sorted` past the first item: the item runs again at the end of
-                // that scene, with the table's part already drawn.
-                if scene::later_world_scene(self.scene_kind) && self.target.is_none() && self.world_begun && self.frame_sorted.iter().any(|e| e.3 == self.sorted_generation) {
-                    self.items.push(Item::SortedBlends(self.sorted_generation));
-                    self.sorted_generation += 1;
-                }
-                // The end of the world scene of the game, in the back buffer.
-                if world_scene && self.world_begun && !self.world_ended {
-                    self.world_ended = true;
-                    let facts = self.world_facts(false);
-                    // The sorted blends of the retained table, with the depth of the world and
-                    // before the extension's world end (plan step 6): where the engine flushes
-                    // its sorted queue, at the end of its world Click and before the grass and
-                    // the blend of the distant land. A blend that reads the picture under it
-                    // then sees what the engine's path saw. The first form placed them at the
-                    // first-person scene, after its depth clear, and the blends behind walls
-                    // showed; the second after the world end, and a plane with a blend of the
-                    // destination colour differed over the sky (2026-10-17).
-                    self.items.push(Item::SortedBlends(self.sorted_generation));
-                    self.sorted_generation += 1;
-                    self.items.push(Item::WorldEnd(Box::new(facts)));
-                }
-                self.scene_kind = 0;
             }
             tag::FRAME_EVENT => {
                 if word(data, 0) == EVENT_SET_TARGET {
@@ -4537,7 +4483,7 @@ impl Player {
                 draw.stencil_reference,
                 draw.world as u8,
                 draw.class,
-                self.scene_kind,
+                self.plan.scene_kind,
                 draw.key.blend,
                 draw.key.depth,
                 draw.texture_handles,
@@ -4589,9 +4535,29 @@ impl Player {
         renderer.counts.draws += 1;
     }
 
+    /// Does a step of the plan of the items (`plan::Plan`).
+    fn plan_step(&mut self, step: plan::Step) {
+        match step {
+            plan::Step::StartWorld => {
+                if self.parameters.is_none() {
+                    self.ask_frame();
+                }
+                let facts = self.world_facts(true);
+                self.items.push(Item::WorldStart(Box::new(facts)));
+            }
+            plan::Step::ReleaseHeld => self.items.append(&mut self.held_draws),
+            plan::Step::SortedBlends(generation) => self.items.push(Item::SortedBlends(generation)),
+            plan::Step::EndWorld => {
+                let facts = self.world_facts(false);
+                self.items.push(Item::WorldEnd(Box::new(facts)));
+            }
+            plan::Step::Post => self.post_item(),
+        }
+    }
+
     /// The post-processing item, one time in a frame, after the world began.
     fn post_item(&mut self) {
-        if self.posted || !self.world_begun || !self.drawing() || !self.parameters.as_ref().is_some_and(|p| p.post) {
+        if self.posted || !self.plan.world_begun || !self.drawing() || !self.parameters.as_ref().is_some_and(|p| p.post) {
             return;
         }
         self.posted = true;
@@ -5027,7 +4993,7 @@ impl Player {
         let in_back_buffer = self.target.is_none();
         // The first draw of the world scene (kind 1) into the back buffer: the answers of
         // the extension for the frame.
-        if self.extension.is_some() && self.parameters.is_none() && in_back_buffer && self.scene_kind == scene::SCENE_WORLD {
+        if self.extension.is_some() && self.parameters.is_none() && in_back_buffer && self.plan.scene_kind == scene::SCENE_WORLD {
             self.ask_frame();
         }
         // The world of the game starts with the first draw of its world scene into the
@@ -5040,19 +5006,10 @@ impl Player {
         // a plain interior cell, or ToggleSky) there is no sky draw: the world starts at
         // the first draw.
         let sky = scene::sky_class(self.stream.object_class);
-        if in_back_buffer && self.scene_kind == scene::SCENE_WORLD && sky {
-            self.sky_seen = true;
+        let (steps, hold) = self.plan.world_draw(self.extension.is_some(), in_back_buffer, sky, self.stream.sky_hidden);
+        for step in steps {
+            self.plan_step(step);
         }
-        if self.extension.is_some() && !self.world_begun && in_back_buffer && self.scene_kind == scene::SCENE_WORLD && !sky && (self.sky_seen || self.stream.sky_hidden) {
-            self.world_begun = true;
-            let facts = self.world_facts(true);
-            self.items.push(Item::WorldStart(Box::new(facts)));
-            // The draws from before the sky, in their order: the extension draws its
-            // distant land under them and starts the depth of the world, so a draw before
-            // the start would lose its depth.
-            self.items.append(&mut self.held_draws);
-        }
-        let hold = self.extension.is_some() && !self.world_begun && in_back_buffer && self.scene_kind == scene::SCENE_WORLD && !sky;
         // A draw of a class that the extension takes: the extension draws at the first one.
         let class = self.stream.object_class;
         let (watched, shade, fog_range, sky) = self.parameters.as_ref().map_or((0, false, None, None), |p| (p.watched, p.shade, p.fog_range, p.sky));
@@ -5096,7 +5053,7 @@ impl Player {
         // the world in the back buffer (not for the sky, which is before the world, and not
         // for a texture that the game draws into), the sky for a sky draw in the back buffer
         // (MGE_LINK_CLASS_SKY_DOME is 1 and MGE_LINK_CLASS_SKY_OTHER is 7).
-        let world = self.world_begun && in_back_buffer;
+        let world = self.plan.world_begun && in_back_buffer;
         if world && self.stream.projection[11] == 1.0 {
             self.world_matrices = Some((self.stream.view, self.stream.projection));
         }
@@ -5210,7 +5167,7 @@ impl Player {
             // come in a scene of their own (2), or with the water plane in the scene of the
             // water (3). The water plane of the game (MGE_LINK_CLASS_WATER_PLANE, 10) is not
             // a thing of the world.
-            world: in_back_buffer && scene::world_camera(self.scene_kind) && class != scene::CLASS_WATER_PLANE,
+            world: in_back_buffer && scene::world_camera(self.plan.scene_kind) && class != scene::CLASS_WATER_PLANE,
             key,
             stencil_reference,
             data: draw_data,
@@ -5229,7 +5186,7 @@ impl Player {
         }
         if hold {
             self.held_draws.push(Item::Draw(draw));
-        } else if self.renderer.merge_blends && draw.world && self.world_begun && engine::alpha::sorted_by_engine(class, &derived.blends, derived.no_sorter) && self.target.is_none() {
+        } else if self.renderer.merge_blends && draw.world && self.plan.world_begun && engine::alpha::sorted_by_engine(class, &derived.blends, derived.no_sorter) && self.target.is_none() {
             // A blend the engine would sort (plan step 6, F5): it waits for the sorted blends
             // of the table, and the two lists merge by depth (`draw_retained_sorted`). The
             // centre of its bound is the key; a record without one (a capture made before
@@ -5242,7 +5199,7 @@ impl Player {
                 }
             };
             let sequence = self.frame_sorted.len() as u32;
-            self.frame_sorted.push((centre, sequence, draw, self.sorted_generation));
+            self.frame_sorted.push((centre, sequence, draw, self.plan.defer()));
         } else {
             self.items.push(Item::Draw(draw));
         }

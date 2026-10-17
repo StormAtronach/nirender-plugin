@@ -2,4 +2,5 @@
 //! The facts behind each rule are in the skill wgpu-renderer-dev, engine-rules.
 
 pub(crate) mod alpha;
+pub(crate) mod plan;
 pub(crate) mod scene;
