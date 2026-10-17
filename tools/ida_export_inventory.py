@@ -55,6 +55,9 @@ EXTRA = [
     0x7412B0,  # NiLODNode::Display
     0x742660,  # NiTriStrips::Display
     0x6F3DB0,  # NiGeometry::dtor (the end of a retained instance, entry T3)
+    # The events of the table walk (entry 13, 2026-10-17).
+    0x6F4140,  # NiGeometry::UpdateWorldData
+    0x442B10,  # NiAVObject::SetAppCulled
 ]
 
 

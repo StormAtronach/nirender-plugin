@@ -1378,6 +1378,53 @@ unsafe fn table_frame_lights(states: &HashSet<usize>) {
     t.scratch_lights = lights;
 }
 
+/// The events of entry 13, counted (no change of behaviour yet): the calls of
+/// `NiGeometry::UpdateWorldData` and the distinct retained shapes among them, the real
+/// app-cull changes; per frame, summed. [calls, retained distinct, app-cull changes, frames,
+/// largest retained distinct in a frame]
+static mut EVENT_COUNTS: [u64; 5] = [0; 5];
+static mut EVENT_FRAME: u32 = u32::MAX;
+static mut EVENT_SEEN: Option<HashSet<usize>> = None;
+
+unsafe fn event_frame() -> &'static mut HashSet<usize> {
+    let seen = (*core::ptr::addr_of_mut!(EVENT_SEEN)).get_or_insert_with(HashSet::new);
+    let counts = &mut *core::ptr::addr_of_mut!(EVENT_COUNTS);
+    let frame = tables().frame;
+    if *core::ptr::addr_of!(EVENT_FRAME) != frame {
+        EVENT_FRAME = frame;
+        counts[3] += 1;
+        counts[4] = counts[4].max(seen.len() as u64);
+        seen.clear();
+    }
+    seen
+}
+
+/// A shape's world transform was updated (`ports::state_update::update_world_data`).
+pub unsafe fn note_world_data(shape: usize) {
+    let seen = event_frame();
+    let counts = &mut *core::ptr::addr_of_mut!(EVENT_COUNTS);
+    counts[0] += 1;
+    if rd::<u16>(shape, FLAGS) & RETAINED_BIT != 0 && seen.insert(shape) {
+        counts[1] += 1;
+    }
+}
+
+/// An object's app-cull flag changed (`ports::state_update::set_app_culled`).
+pub unsafe fn note_app_culled(_object: usize) {
+    event_frame();
+    (*core::ptr::addr_of_mut!(EVENT_COUNTS))[2] += 1;
+}
+
+/// The events' line of the report.
+pub unsafe fn event_report() -> String {
+    let c = *core::ptr::addr_of!(EVENT_COUNTS);
+    let frames = c[3].max(1) as f64;
+    format!(
+        "events (entry 13): frames {}; shape world updates {} ({:.1} a frame), retained shapes updated {:.1} a frame (largest {}), app-cull changes {}",
+        c[3], c[0], c[0] as f64 / frames, c[1] as f64 / frames, c[4], c[2]
+    )
+}
+
 /// The table walk's line of the report.
 pub unsafe fn table_walk_report() -> String {
     let counts = *core::ptr::addr_of!(TABLE_COUNTS);
@@ -1429,6 +1476,7 @@ pub unsafe fn report() -> String {
         + &crate::animation::report()
         + "\n"
         + &table_walk_report()
+        + "\n" + &event_report()
         + "\n"
         + &crate::live_walk::report()
 }

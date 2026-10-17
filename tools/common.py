@@ -21,6 +21,8 @@ FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiP
                      r"|BSAnimationManager::Update$|BSAnimationNode::UpdateControllers$"
                      # The new property and effect states of a shape (plan 8b, 2026-10-17).
                      r"|NiGeometry::UpdatePropertiesDownward$|NiGeometry::UpdateEffectsDownward$"
+                     # The events of the table walk (entry 13, 2026-10-17).
+                     r"|NiGeometry::UpdateWorldData$|NiAVObject::SetAppCulled$"
                      r"|NiGeometry::dtor$)")
 FUNC_SKIP = re.compile(r"_SEH$|NiDX8Application|NiDX8SelectResolution|StdMap")
 

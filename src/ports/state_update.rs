@@ -44,7 +44,42 @@ pub unsafe fn update_effects_downward(this: usize, state: usize) {
     }
 }
 
+port_thiscall!(update_world_data_port, 0x6F4140, "NiGeometry::UpdateWorldData",
+    fn(this) -> (),
+    compare_eax = false,
+    regions = |set| set.skip(),
+    rust = update_world_data);
+
+/// The engine's update of a shape's world transform (entry 13): every update pass reaches a
+/// shape through this function (the vtables of NiTriShape, NiTriStrips and the particles).
+/// The shape is noted for the table walk.
+pub unsafe fn update_world_data(this: usize) {
+    crate::shadow::touch(&update_world_data_port::STATE);
+    update_world_data_port::engine(this);
+    crate::instance_stream::note_world_data(this);
+}
+
+port_thiscall!(set_app_culled_port, 0x442B10, "NiAVObject::SetAppCulled",
+    fn(this, flag: u32) -> (),
+    compare_eax = false,
+    regions = |set| set.skip(),
+    rust = set_app_culled);
+
+/// The engine's set of the app-cull flag (entry 13): the visibility controller, MWSE's
+/// `appCulled` and the engine call it through the vtables. A real change is noted for the
+/// table walk.
+pub unsafe fn set_app_culled(this: usize, flag: u32) {
+    crate::shadow::touch(&set_app_culled_port::STATE);
+    let before = rd::<u16>(this, 0x14) & 1;
+    set_app_culled_port::engine(this, flag);
+    if rd::<u16>(this, 0x14) & 1 != before {
+        crate::instance_stream::note_app_culled(this);
+    }
+}
+
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &update_properties_downward_port::STATE,
     &update_effects_downward_port::STATE,
+    &update_world_data_port::STATE,
+    &set_app_culled_port::STATE,
 ];
