@@ -146,9 +146,9 @@ if overlayKey then
 end
 mwse.log("[nirender] keys: capture %s, overlay %s", tostring(captureKey or "none"), tostring(overlayKey or "none"))
 
--- TEMPORARY, plan C17: the stand-in change notifier for Lua writes (remove with notifier.lua
--- when MWSE notifies the changes of its bindings itself).
-if ownDevice and installed then
+-- Plan C17: the stand-in change notifier for Lua writes, until the plugin's own notifier (the
+-- optimization phase). NIRENDER_NOTIFIER=0 leaves it out (an A/B of its cost).
+if ownDevice and installed and os.getenv("NIRENDER_NOTIFIER") ~= "0" then
     event.register("initialized", function()
         dofile("Data Files\\MWSE\\mods\\nirender\\notifier.lua")
     end)

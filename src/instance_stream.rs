@@ -67,7 +67,8 @@
 //! the stored translation as it was and is not seen: a difference under one step of a
 //! float, not checked.
 
-use std::collections::{HashMap, HashSet};
+// The tables are keyed by engine pointers: the pointer hasher, not SipHash (`ptr_hash`).
+use crate::ptr_hash::{HashMap, HashSet};
 
 use crate::capture;
 use crate::engine::{thiscall1, vcall0};
@@ -299,8 +300,8 @@ static mut TABLES: Option<Tables> = None;
 
 unsafe fn tables() -> &'static mut Tables {
     (*core::ptr::addr_of_mut!(TABLES)).get_or_insert_with(|| Tables {
-        instances: HashMap::new(),
-        rejected: HashSet::new(),
+        instances: HashMap::default(),
+        rejected: HashSet::default(),
         next_id: 1,
         frame: 0,
         generation: 1,
@@ -905,7 +906,7 @@ pub unsafe fn note_change(address: usize) {
     if address == 0 {
         return;
     }
-    (*core::ptr::addr_of_mut!(CHANGED)).get_or_insert_with(HashSet::new).insert(address);
+    (*core::ptr::addr_of_mut!(CHANGED)).get_or_insert_with(HashSet::default).insert(address);
     (*core::ptr::addr_of_mut!(CHANGE_NOTES))[0] += 1;
     // A Lua mod can write `flags` (the app-cull bit) with no call the plugin sees: the
     // table walk checks the reach of the object's shapes again.
@@ -991,14 +992,23 @@ pub fn set_note_every(on: bool) -> bool {
 /// milliseconds; the counters reset.
 pub fn display_cost() -> (u64, u64, f64) {
     use core::sync::atomic::Ordering::Relaxed;
+    COST_ON.store(true, Relaxed);
     let ticks = COST_TICKS.swap(0, Relaxed);
     (COST_CALLS.swap(0, Relaxed), COST_NOTES.swap(0, Relaxed), ticks as f64 * 1000.0 / capture::ticks_per_second() as f64)
 }
 
+/// The cost of the display hook is timed only after the first `display_cost` call (the
+/// measuring batch calls it once to reset): two counter reads at every display cost about
+/// 0.06 ms a frame in the profile of the quicksave (2026-10-17).
+static COST_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
+    use core::sync::atomic::Ordering::Relaxed;
+    if !COST_ON.load(Relaxed) {
+        return skipped_display_timed(shape, kind);
+    }
     let start = capture::ticks();
     let result = skipped_display_timed(shape, kind);
-    use core::sync::atomic::Ordering::Relaxed;
     COST_TICKS.fetch_add(capture::ticks() - start, Relaxed);
     COST_CALLS.fetch_add(1, Relaxed);
     result
@@ -1369,11 +1379,11 @@ static mut TABLE_CHAIN: Vec<(usize, u8)> = Vec::new();
 static mut TABLE_TOUCHED: Option<HashSet<usize>> = None;
 
 unsafe fn table_below() -> &'static mut HashMap<usize, HashSet<usize>> {
-    (*core::ptr::addr_of_mut!(TABLE_BELOW)).get_or_insert_with(HashMap::new)
+    (*core::ptr::addr_of_mut!(TABLE_BELOW)).get_or_insert_with(HashMap::default)
 }
 
 unsafe fn table_sources() -> &'static mut HashMap<usize, HashSet<usize>> {
-    (*core::ptr::addr_of_mut!(TABLE_SOURCES)).get_or_insert_with(HashMap::new)
+    (*core::ptr::addr_of_mut!(TABLE_SOURCES)).get_or_insert_with(HashMap::default)
 }
 
 /// Files the shape under the properties of its property state and the texture effects of its
@@ -1423,11 +1433,11 @@ unsafe fn set_sources(shape: usize, again: bool) {
 }
 
 unsafe fn table_dynamic() -> &'static mut HashSet<usize> {
-    (*core::ptr::addr_of_mut!(TABLE_DYNAMIC)).get_or_insert_with(HashSet::new)
+    (*core::ptr::addr_of_mut!(TABLE_DYNAMIC)).get_or_insert_with(HashSet::default)
 }
 
 unsafe fn table_state_counts() -> &'static mut HashMap<usize, u32> {
-    (*core::ptr::addr_of_mut!(TABLE_STATE_COUNTS)).get_or_insert_with(HashMap::new)
+    (*core::ptr::addr_of_mut!(TABLE_STATE_COUNTS)).get_or_insert_with(HashMap::default)
 }
 
 /// One effect state more or less in the counts.
@@ -1814,7 +1824,7 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     counts[TW_ITEMS] += work.len() as u64;
     TABLE_LIST_TICKS.fetch_add(capture::ticks() - start, core::sync::atomic::Ordering::Relaxed);
 
-    let touched = (*core::ptr::addr_of_mut!(TABLE_TOUCHED)).get_or_insert_with(HashSet::new);
+    let touched = (*core::ptr::addr_of_mut!(TABLE_TOUCHED)).get_or_insert_with(HashSet::default);
     touched.clear();
     let chain = &mut *core::ptr::addr_of_mut!(TABLE_CHAIN);
     table_frame_values();
@@ -1969,7 +1979,7 @@ static mut EVENT_FRAME: u32 = u32::MAX;
 static mut EVENT_SEEN: Option<HashSet<usize>> = None;
 
 unsafe fn event_frame() -> &'static mut HashSet<usize> {
-    let seen = (*core::ptr::addr_of_mut!(EVENT_SEEN)).get_or_insert_with(HashSet::new);
+    let seen = (*core::ptr::addr_of_mut!(EVENT_SEEN)).get_or_insert_with(HashSet::default);
     let counts = &mut *core::ptr::addr_of_mut!(EVENT_COUNTS);
     let frame = tables().frame;
     if *core::ptr::addr_of!(EVENT_FRAME) != frame {

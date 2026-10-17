@@ -39,6 +39,7 @@ pub mod material_stream;
 pub mod mem;
 pub mod overlay;
 pub mod perf;
+pub mod ptr_hash;
 pub mod ports;
 pub mod resource;
 pub mod shadow;
