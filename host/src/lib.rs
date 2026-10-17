@@ -3902,6 +3902,8 @@ mod live {
         fn OpenFileMappingA(access: u32, inherit: i32, name: *const u8) -> isize;
         fn MapViewOfFile(mapping: isize, access: u32, offset_high: u32, offset_low: u32, bytes: usize) -> *mut u8;
         fn IsWindow(window: isize) -> i32;
+        fn OpenEventA(access: u32, inherit: i32, name: *const u8) -> isize;
+        fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
     }
 
     /// The head of the shared memory. See `capture.rs` of the plugin.
@@ -3912,10 +3914,16 @@ mod live {
     const RING_CLOSED: usize = 24;
     /// The classes of the game that the helper draws itself, for the plugin (`Player::takes`).
     const RING_TAKES: usize = 32;
+    /// 1 while this program waits for a record: the plugin sets the event of the ring
+    /// after a write only then.
+    const RING_WAITING: usize = 36;
 
     struct Ring {
         base: *mut u8,
         capacity: u64,
+        /// The event the plugin sets when it writes while this program waits; 0 with a
+        /// plugin that has none (this program then yields instead).
+        event: isize,
     }
 
     impl Ring {
@@ -3932,7 +3940,11 @@ mod live {
                     assert!(!base.is_null(), "the shared memory does not map");
                     assert_eq!(unsafe { (base as *const u32).read() }, RING_MAGIC, "not a ring of the plugin");
                     let capacity = unsafe { (base.add(4) as *const u32).read() } as u64;
-                    return Ring { base, capacity };
+                    // EVENT_ALL_ACCESS.
+                    let mut event_name = format!("{name}-records").into_bytes();
+                    event_name.push(0);
+                    let event = unsafe { OpenEventA(0x1F0003, 0, event_name.as_ptr()) };
+                    return Ring { base, capacity, event };
                 }
                 assert!(start.elapsed() < Duration::from_secs(60), "no shared memory with the name {name}");
                 std::thread::sleep(Duration::from_millis(50));
@@ -3950,6 +3962,25 @@ mod live {
 
         fn closed(&self) -> bool {
             unsafe { (self.base.add(RING_CLOSED) as *const u32).read_volatile() != 0 }
+        }
+
+        /// Waits for a record, 1 ms at most: says so in the head of the ring, looks once
+        /// more (a write between the look and the wait would be missed otherwise), then
+        /// waits on the event, which the plugin sets after a write while the word is set.
+        /// The store of the word and the load of the count are SeqCst, as the plugin's
+        /// store of the count and load of the word are. Without the event it yields.
+        fn wait_for_record(&self) {
+            if self.event == 0 {
+                std::thread::yield_now();
+                return;
+            }
+            let waiting = unsafe { &*(self.base.add(RING_WAITING) as *const std::sync::atomic::AtomicU32) };
+            waiting.store(1, Ordering::SeqCst);
+            let read = self.counter(RING_READ).load(Ordering::Relaxed);
+            if self.counter(RING_WRITTEN).load(Ordering::SeqCst) - read < 8 {
+                unsafe { WaitForSingleObject(self.event, 1) };
+            }
+            waiting.store(0, Ordering::SeqCst);
         }
 
         fn copy_out(&self, at: u64, to: &mut [u8]) {
@@ -4308,8 +4339,11 @@ mod live {
             let mut idle_since: Option<Instant> = None;
             // The clock is read once in 256 spins: a read costs about 25 ns and the spin
             // for a record ran it every time (0.83 s of the helper's 8 s in the CP3
-            // profile, plan M5).
+            // profile, plan M5). The first 256 looks for a record yield; after them this
+            // program blocks on the event, so that the game wakes it only at a real gap
+            // (between the frames), not after every record.
             let mut spins: u32 = 0;
+            let mut looks: u32 = 0;
             loop {
                 // The device is lost: nothing draws any more. The records are read and dropped,
                 // so that the game does not wait for this program.
@@ -4357,9 +4391,15 @@ mod live {
                         }
                         return;
                     }
-                    std::thread::yield_now();
+                    looks += 1;
+                    if looks < 256 {
+                        std::thread::yield_now();
+                    } else {
+                        self.ring.wait_for_record();
+                    }
                     continue;
                 };
+                looks = 0;
                 if let Some(since) = idle_since.take() {
                     self.idle += since.elapsed();
                 }

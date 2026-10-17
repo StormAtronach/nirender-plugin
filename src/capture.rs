@@ -155,6 +155,8 @@ extern "system" {
     fn MapViewOfFile(mapping: isize, access: u32, offset_high: u32, offset_low: u32, bytes: usize) -> *mut u8;
     fn UnmapViewOfFile(address: *const u8) -> i32;
     fn CloseHandle(handle: isize) -> i32;
+    fn CreateEventA(security: *const u8, manual: i32, initial: i32, name: *const u8) -> isize;
+    fn SetEvent(event: isize) -> i32;
     fn QueryPerformanceCounter(count: *mut i64) -> i32;
     fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
     fn Sleep(milliseconds: u32);
@@ -237,6 +239,9 @@ const RING_CLOSED: usize = 24;
 /// The classes of the game that the helper draws itself (one bit for each `CLASS_*`),
 /// written by the helper at each frame, read by the plugin (`helper_takes`).
 pub const RING_TAKES: usize = 32;
+/// The helper waits for a record (1 while it does): the game sets the event of the ring
+/// after a write only then (plan M5).
+const RING_WAITING: usize = 36;
 /// The game waits this long for room in the ring. Then it ends the stream: the host is gone.
 const RING_WAIT_SECONDS: i64 = 10;
 
@@ -244,6 +249,10 @@ struct Ring {
     mapping: isize,
     base: *mut u8,
     capacity: u64,
+    /// The event the helper waits on for a record: `<name>-records`, set after a write
+    /// while the helper says it waits (`RING_WAITING`); the times it was set.
+    event: isize,
+    wakes: u64,
     /// The time that the game waited for room, in ticks.
     waited: i64,
     /// The bytes that the game wrote up to the end of the frame before the last one, and the
@@ -276,7 +285,11 @@ impl Ring {
         core::ptr::write_bytes(base, 0, RING_HEAD);
         (base as *mut u32).write(RING_MAGIC);
         (base.add(4) as *mut u32).write(capacity as u32);
-        Ok(Ring { mapping, base, capacity, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false })
+        // An event that resets itself: one wait takes one set.
+        let mut event_name = format!("{name}-records").into_bytes();
+        event_name.push(0);
+        let event = CreateEventA(core::ptr::null(), 0, 0, event_name.as_ptr());
+        Ok(Ring { mapping, base, capacity, event, wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false })
     }
 
     unsafe fn counter(&self, offset: usize) -> &core::sync::atomic::AtomicU64 {
@@ -317,7 +330,14 @@ impl Ring {
             self.copy_in(at, part);
             at += part.len() as u64;
         }
-        self.counter(RING_WRITTEN).store(at, Ordering::Release);
+        self.counter(RING_WRITTEN).store(at, Ordering::SeqCst);
+        // The helper waits for a record: wake it. The store above and this load are
+        // SeqCst, as the helper's store of the word and its load of the count are, so
+        // that one of the two sides sees the other's store.
+        if self.event != 0 && (*(self.base.add(RING_WAITING) as *const core::sync::atomic::AtomicU32)).load(Ordering::SeqCst) != 0 {
+            SetEvent(self.event);
+            self.wakes += 1;
+        }
         true
     }
 
@@ -790,9 +810,10 @@ pub unsafe fn stop() {
         Some(Sink::File(mut out)) => s.failed |= out.flush().is_err(),
         Some(Sink::Ring(mut ring)) => {
             crate::log!(
-                "stream: the game waited {:.1} ms in all for room in the ring, and {:.1} ms in all for the host program at the ends of the frames",
+                "stream: the game waited {:.1} ms in all for room in the ring, and {:.1} ms in all for the host program at the ends of the frames; it woke the host program {} times",
                 ring.waited as f64 * 1000.0 / ticks_per_second() as f64,
-                ring.paced as f64 * 1000.0 / ticks_per_second() as f64
+                ring.paced as f64 * 1000.0 / ticks_per_second() as f64,
+                ring.wakes
             );
             ring.close();
             if let Some(mut reply) = s.reply.take() {
