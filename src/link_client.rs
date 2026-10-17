@@ -240,6 +240,11 @@ static mut TEXTURES_KNOWN: u32 = 0;
 static mut BUFFERS: [u32; 5] = [0; 5];
 /// The renderer of the last state packet.
 static RENDERER: AtomicUsize = AtomicUsize::new(0);
+/// The displays of the water plane in the scene in progress, those seen in all, and those
+/// skipped in all.
+static WATER_PLANE_DISPLAYS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static WATER_PLANE_SEEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static WATER_PLANE_SKIPPED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 /// The device kinds that the host takes from the packets: bits of `FACT_DEVICE_*`. The Rust
 /// code makes no D3D8 call for them.
 static SUPPRESS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
@@ -927,6 +932,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     let masser = ptr_at(weather, W_MASSER);
     let secunda = ptr_at(weather, W_SECUNDA);
 
+    WATER_PLANE_DISPLAYS.store(0, Ordering::Relaxed);
     let roots = &mut *addr_of_mut!(ROOTS);
     *roots = Roots {
         scene_kind: scene_kind(camera, world_controller, water_controller),
@@ -1012,6 +1018,25 @@ unsafe fn swap_buffers(_args: &[usize]) {
 
 /// The class of a geometry: a compare of the geometry and of each parent with the known
 /// objects. The scene kind gives the class when the walk finds none.
+/// A display of the water plane of the game that the engine skips (plan step 7, F6 C): a
+/// shape under the water plane's root, displayed in the water scene, while the helper
+/// draws the water itself. A draw of the sorted queue in that scene has another root.
+/// The first display of a scene goes through, so that the helper's item for the water
+/// comes where it came before; the others make no record and no draw. (The water Click
+/// runs without the sorter, so the sorter does not tell the two apart.)
+pub unsafe fn water_plane_display_skipped(shape: usize) -> bool {
+    let roots = &*addr_of!(ROOTS);
+    if roots.scene_kind != SCENE_WATER || object_class(shape, roots) != CLASS_WATER_PLANE {
+        return false;
+    }
+    WATER_PLANE_SEEN.fetch_add(1, Ordering::Relaxed);
+    if WATER_PLANE_DISPLAYS.fetch_add(1, Ordering::Relaxed) == 0 || crate::capture::helper_takes() & (1 << CLASS_WATER_PLANE) == 0 {
+        return false;
+    }
+    WATER_PLANE_SKIPPED.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
 unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
     match roots.scene_kind {
         SCENE_UI | SCENE_SPLASH | SCENE_RACE_MENU_HEAD => return CLASS_UI,
@@ -1536,6 +1561,7 @@ pub unsafe fn counters_text(reset: bool) -> String {
         text.push_str(&format!(" {count}"));
     }
     text.push('\n');
+    text.push_str(&format!("water plane displays: {} seen, {} skipped\n", WATER_PLANE_SEEN.load(Ordering::Relaxed), WATER_PLANE_SKIPPED.load(Ordering::Relaxed)));
     if reset {
         *counts = [0; CLASS_COUNT];
     }

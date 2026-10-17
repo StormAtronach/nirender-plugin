@@ -234,6 +234,9 @@ pub const RING_HEAD: usize = 64;
 const RING_WRITTEN: usize = 8;
 const RING_READ: usize = 16;
 const RING_CLOSED: usize = 24;
+/// The classes of the game that the helper draws itself (one bit for each `CLASS_*`),
+/// written by the helper at each frame, read by the plugin (`helper_takes`).
+pub const RING_TAKES: usize = 32;
 /// The game waits this long for room in the ring. Then it ends the stream: the host is gone.
 const RING_WAIT_SECONDS: i64 = 10;
 
@@ -877,6 +880,17 @@ pub unsafe fn overlay(value: Option<bool>) -> bool {
     let now = crate::overlay::set(value);
     overlay_record();
     now
+}
+
+/// The classes of the game that the helper draws itself (one bit for each `CLASS_*`), as
+/// the helper wrote them into the head of the ring at its last frame. 0 without a ring
+/// (a file capture, no stream): the engine then draws every class.
+pub unsafe fn helper_takes() -> u32 {
+    let Some(s) = state() else { return 0 };
+    match s.out.as_ref() {
+        Some(Sink::Ring(ring)) => (*(ring.base.add(RING_TAKES) as *const core::sync::atomic::AtomicU32)).load(Ordering::Relaxed),
+        _ => 0,
+    }
 }
 
 /// Writes an `OVERLAY` record with the numbers since the last one.

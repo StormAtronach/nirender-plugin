@@ -589,6 +589,9 @@ pub unsafe fn tri_shape_display(this: usize, camera: usize) {
     if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(this, crate::link::DRAW_SHAPE) {
         return;
     }
+    if crate::link_client::water_plane_display_skipped(this) {
+        return;
+    }
     let Some(renderer) = shape_display_start(this, camera) else { return };
     let skin = rd::<usize>(this, G::skinInstance);
     let data = rd::<usize>(this, G::spModelData);
@@ -609,6 +612,9 @@ port_thiscall!(tri_strips_display_port, 0x742660, "NiTriStrips::Display",
 pub unsafe fn tri_strips_display(this: usize, camera: usize) {
     crate::shadow::touch(&tri_strips_display_port::STATE);
     if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(this, crate::link::DRAW_STRIPS) {
+        return;
+    }
+    if crate::link_client::water_plane_display_skipped(this) {
         return;
     }
     let Some(renderer) = shape_display_start(this, camera) else { return };

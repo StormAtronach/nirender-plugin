@@ -236,6 +236,7 @@ impl Player {
         let clusters = &mut self.renderer.clusters;
         clusters.on = clusters.forced.unwrap_or(parameters.clustered_lights);
         self.parameters = Some(parameters);
+        self.takes = self.parameters.as_ref().map_or(0, |p| p.watched & (1 << scene::CLASS_WATER_PLANE));
         self.renderer.counts.times[TIME_EXT_FRAME] += clock.elapsed();
         self.extension = Some(extension);
     }
