@@ -80,7 +80,6 @@ use crate::mem::{rd, wr};
 const CONTROLLERS: usize = 0x10;
 const PARENT: usize = 0x18;
 /// `NiTextureEffect::coordinateMode` (see `texture_pass_b`).
-const EFFECT_COORDINATE_MODE: usize = 0x118;
 const WORLD: usize = 0x40;
 const WORLD_TRANSLATION: usize = WORLD + 0x24;
 /// `NiAVObject::worldBound`: the centre and the radius.
@@ -580,8 +579,10 @@ unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize
         }
     }
     // A texture effect is retained when the table can make its stage from the material
-    // record: a parallel, a perspective or a sphere map (modes 0 to 2; a cube map needs a
-    // cube texture) whose world projection does not change (no controller on the effect or
+    // record, whatever its coordinate mode (the cube map modes 3 and 4 generate the
+    // coordinate from the reflection or the normal on a flat texture: Morrowind has no
+    // cube map a file could carry, engine-rules R24), whose world projection does not
+    // change (no controller on the effect or
     // on a node above it: the record has the projection, and a change of it would send the
     // record again).
     if effect_state != 0 {
@@ -596,9 +597,6 @@ unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize
 
 /// True when the table can draw the texture effect: see `reject_reason`.
 unsafe fn effect_retained(effect: usize) -> bool {
-    if rd::<u32>(effect, EFFECT_COORDINATE_MODE) > 2 {
-        return false;
-    }
     let mut node = effect;
     for _ in 0..MAX_DEPTH {
         if node == 0 {
