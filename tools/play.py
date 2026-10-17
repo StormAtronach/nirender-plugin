@@ -2,12 +2,20 @@
 MGE XE, and puts the files of the instance back when the game ends.
 
     python tools/play.py [--mge-build DIR] [--reference] [--set "[section] key = value"]
+                         [--plugin] [--livecoding FILE]
 
 The testing instance at rest has the release of MGE XE and of the plugin. This tool does for a
 game by hand what the runners do for a scenario: the mod "Harness - MGE XE" with the d3d8.dll
 and the numidium.exe of the build, and "Harness - config" with mgeXE.toml with the switch
 `renderer_wgpu`, both on for this game only, over the mods of the instance. With --reference:
 MGE XE of the instance on Direct3D 9.
+
+--plugin puts the plugin build of this repo (target/.../release/akulakhan.dll and the Lua of
+mod/) into "Harness - nirender" for the game, over the release of the instance.
+--livecoding FILE adds the Livecoding mod to "Harness - nirender": its main.lua, read from
+the instance's own Livecoding mod, and FILE as its livecoding.lua (Alt+X in the game loads
+it). The staged copy of FILE is in the Harness mod: an edit there during the game shows at
+the next Alt+X.
 
 Close Mod Organizer of the testing instance first. Leave the game by its menu: the tool
 waits for that, then stops its Mod Organizer and puts the mod list back.
@@ -31,6 +39,8 @@ def main():
     ap.add_argument("--config-mod", default="Configuration", help="the mod of the testing instance with mgeXE.toml")
     ap.add_argument("--reference", action="store_true", help="MGE XE of the instance on Direct3D 9")
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for this game, in its section: \"[section] key = value\"")
+    ap.add_argument("--plugin", action="store_true", help="the plugin build of this repo, over the release of the instance")
+    ap.add_argument("--livecoding", help="a Lua file to run as the livecoding.lua of the Livecoding mod (Alt+X)")
     args = ap.parse_args()
 
     harness.refuse_if_busy()
@@ -58,6 +68,25 @@ def main():
         mods.append((harness.RUN_MOD_PREFIX + "MGE XE", {"Root/d3d8.dll": os.path.join(args.mge_build, "d3d8.dll"),
                                                          "Root/numidium.exe": os.path.join(args.mge_build, "numidium.exe")}))
 
+    if args.plugin or args.livecoding:
+        files = {}
+        if args.plugin:
+            mod = os.path.join(session.REPO, "mod")
+            for folder, _, names in os.walk(mod):
+                for name in names:
+                    source = os.path.join(folder, name)
+                    files[os.path.relpath(source, mod).replace(os.sep, "/")] = source
+            files["MWSE/lib/akulakhan.dll"] = session.DLL
+            # The symbol file of the build: the Harness mod is the staging of a game, never
+            # an install or an archive.
+            pdb = os.path.splitext(session.DLL)[0] + ".pdb"
+            if os.path.isfile(pdb):
+                files["MWSE/lib/akulakhan.pdb"] = pdb
+        if args.livecoding:
+            main = os.path.join(harness.MO2_ROOT, "mods", "Livecoding", "MWSE", "mods", "livecoding", "main.lua")
+            files["MWSE/mods/livecoding/main.lua"] = main
+            files["MWSE/mods/livecoding/livecoding.lua"] = os.path.abspath(args.livecoding)
+        mods.append((session.MOD_NAME, files))
     deployment = harness.Deployment()
     try:
         for name, files in mods:
