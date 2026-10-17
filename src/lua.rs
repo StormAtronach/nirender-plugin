@@ -353,6 +353,17 @@ unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
 
 /// `nirender.liveWalk(on)` turns the live walk of plan F8 part 2 on or off and returns the
 /// state before; without an argument it returns the state.
+/// `nirender.tableWalk(on)`: the table walk of entry 13 (option B) on or off; returns the
+/// state before; without an argument the state.
+unsafe extern "C" fn table_walk(l: LuaState) -> i32 {
+    let before = crate::instance_stream::table_walk_on();
+    if lua_gettop(l) >= 1 {
+        crate::instance_stream::set_table_walk(lua_toboolean(l, 1) != 0);
+    }
+    lua_pushboolean(l, before as i32);
+    1
+}
+
 /// `nirender.changed(address)`: TEMPORARY, plan C17 (until MWSE notifies the changes of its
 /// Lua bindings): `notifier.lua` reports the address of an object a Lua mod changed.
 unsafe extern "C" fn changed(l: LuaState) -> i32 {
@@ -644,6 +655,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "liveWalk", live_walk);
     set_fn(l, "noteEvery", note_every);
     set_fn(l, "changed", changed);
+    set_fn(l, "tableWalk", table_walk);
     set_fn(l, "displayCost", display_cost);
     set_fn(l, "retained", retained);
     set_fn(l, "captureFrames", capture_frames);

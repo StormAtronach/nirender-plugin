@@ -183,7 +183,11 @@ pub unsafe fn served(shape: usize) -> bool {
 /// `NiNode::Display` displayed a child: after the sky root, under the world root, the walk
 /// runs (mode gpu, a stream going).
 pub unsafe fn after_child(parent: usize, child: usize, camera: usize) {
-    if !on() || child == 0 || child != crate::link_client::sky_root() {
+    if child == 0 || child != crate::link_client::sky_root() {
+        return;
+    }
+    crate::instance_stream::table_walk(camera);
+    if !on() {
         return;
     }
     if crate::instance_stream::mode() != crate::instance_stream::Mode::Gpu || !crate::capture::recording() {
@@ -414,7 +418,7 @@ unsafe fn reachable(shape: usize, root: usize, planes: &[usize]) -> Reach {
 }
 
 /// True when the run-time type of the node is `name` or comes from it.
-unsafe fn is_kind(node: usize, name: &[u8]) -> bool {
+pub(crate) unsafe fn is_kind(node: usize, name: &[u8]) -> bool {
     let mut rtti = crate::ports::ni::get_rtti(node);
     for _ in 0..16 {
         if rtti == 0 {
@@ -550,6 +554,31 @@ enum Switch {
     Plain,
     LevelOfDetail,
     FltAnimation,
+}
+
+/// The kinds of a switch node, for the table walk (`instance_stream`).
+#[derive(Clone, Copy)]
+pub enum SwitchKind {
+    Plain,
+    LevelOfDetail,
+    FltAnimation,
+}
+
+pub unsafe fn switch_kind_of(node: usize) -> Option<SwitchKind> {
+    switch_kind(node).map(|s| match s {
+        Switch::Plain => SwitchKind::Plain,
+        Switch::LevelOfDetail => SwitchKind::LevelOfDetail,
+        Switch::FltAnimation => SwitchKind::FltAnimation,
+    })
+}
+
+pub unsafe fn switch_index_of(node: usize, kind: SwitchKind, camera: usize) -> i32 {
+    let switch = match kind {
+        SwitchKind::Plain => Switch::Plain,
+        SwitchKind::LevelOfDetail => Switch::LevelOfDetail,
+        SwitchKind::FltAnimation => Switch::FltAnimation,
+    };
+    switch_index(node, switch, camera)
 }
 
 /// The most derived switch kind of the node's run-time type, or `None` for a node that

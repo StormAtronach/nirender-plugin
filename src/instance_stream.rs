@@ -210,6 +210,15 @@ struct Instance {
     /// The shape got a new property or effect state since its classification (plan 8b):
     /// its next display classifies it again and notes it.
     recheck: bool,
+    /// The kind of its draw (`link::DRAW_SHAPE` or `DRAW_STRIPS`), 0 until known.
+    kind: u32,
+    /// The table walk (entry 13): the ancestors from the shape's parent up, each with its
+    /// kind (`CHAIN_*`), and the frame it was built.
+    chain: Vec<(usize, u8)>,
+    chain_frame: u32,
+    /// The effect state its lights were read from (the table walk reads them again only
+    /// when it changes).
+    effect_state: usize,
 }
 
 struct Tables {
@@ -410,7 +419,7 @@ pub unsafe fn scene_begin(kind: u32, camera: usize) {
 pub unsafe fn scene_end() {
     let t = tables();
     let camera = core::mem::replace(&mut t.world_camera, 0);
-    if camera == 0 || mode() != Mode::Gpu || !capture::recording() {
+    if camera == 0 || mode() != Mode::Gpu || !capture::recording() || table_walk_on() {
         return;
     }
     let count = rd::<i32>(camera, C::countCullingPlanes).max(0) as usize;
@@ -537,7 +546,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, chain: Vec::new(), chain_frame: 0, effect_state: 0 });
     t.pending = Some((shape, id));
 }
 
@@ -974,6 +983,26 @@ unsafe fn skipped_display_timed(shape: usize, kind: u32) -> bool {
     if t.mode != Some(Mode::Gpu) || !t.skip || !capture::recording() {
         return false;
     }
+    if let Some(instance) = t.instances.get_mut(&shape) {
+        if instance.kind == 0 {
+            instance.kind = kind;
+        }
+        // The table walk keeps a filled instance current (entry 13): its display does nothing.
+        if table_walk_on() && instance.filled {
+            return true;
+        }
+    }
+    display_work(shape, kind, false)
+}
+
+/// The work of a display of a retained shape: the recheck, the live controllers, the notes
+/// when due, the transform, the scene values, the lights, the visible flag. From the
+/// engine's display (`skipped_display`) or from the table walk.
+/// `table`: from the table walk, which does the work of a still frame by events (entry 13):
+/// the colours only when due, rechecked or live, the lights only when the effect state
+/// changed, the scene values once a frame (`table_walk`).
+unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
+    let t = tables();
     let renderer = crate::engine::renderer();
     let (frame, generation) = (t.frame, t.generation);
     // A new property or effect state since the classification (plan 8b): classify again.
@@ -1050,7 +1079,7 @@ unsafe fn skipped_display_timed(shape: usize, kind: u32) -> bool {
     // when it moved), the bound, the colours.
     let transform: [u32; TRANSFORM_WORDS] = rd(shape, WORLD);
     let bound: [f32; 4] = rd(shape, WORLD_BOUND);
-    let colours = crate::shape_stream::material_values(property_state);
+    let colours = if table && !due { instance.colours } else { crate::shape_stream::material_values(property_state) };
     let moved = instance.transform != transform;
     let changed = moved || instance.bound.map(f32::to_bits) != bound.map(f32::to_bits) || instance.colours != colours;
     if changed || !instance.sent {
@@ -1081,6 +1110,20 @@ unsafe fn skipped_display_timed(shape: usize, kind: u32) -> bool {
     // weather's), as the light manager and the render state would set them. A shape with
     // a fog property of its own carries that fog in its material record. One record in a
     // frame; a shape whose values differ is counted.
+    if table {
+        let Some(instance) = t.instances.get_mut(&shape) else { return false };
+        if instance.effect_state == effect_state && !due {
+            instance.drawn = frame;
+            if !instance.visible {
+                instance.visible = true;
+                capture::instance_state(id, true);
+                t.states += 1;
+            }
+            t.skipped += 1;
+            return true;
+        }
+        instance.effect_state = effect_state;
+    }
     let ambient = crate::ports::light_manager::ambient_of_state(effect_state);
     let cell_fog = crate::engine::game_fog_property();
     let fog = if cell_fog != 0 {
@@ -1091,7 +1134,7 @@ unsafe fn skipped_display_timed(shape: usize, kind: u32) -> bool {
     // The live walk's displays (plan F8, part 2) leave the record to the engine's walk
     // while that walk runs: the order of the list is not the scene's. Part 4 gives the
     // values a source of their own (the cell's ambient light and fog).
-    if t.scene_frame != frame && !crate::live_walk::in_walk() {
+    if t.scene_frame != frame && !crate::live_walk::in_walk() && !table {
         t.scene_frame = frame;
         t.scene_values = (ambient, fog);
         capture::retained_scene(ambient, fog);
@@ -1131,6 +1174,226 @@ unsafe fn skipped_display_timed(shape: usize, kind: u32) -> bool {
     true
 }
 
+/// The table walk (F8 parts 3 and 4, option B, entry 13): `NIRENDER_TABLE_WALK=1`,
+/// `nirender.tableWalk(on)`. Off by default in its first step.
+static TABLE_WALK: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(255);
+/// The runs, the instances worked and hidden, the chains built, and the time.
+static mut TABLE_COUNTS: [u64; 5] = [0; 5];
+static TABLE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+/// The kinds of a chain's node.
+const CHAIN_PLAIN: u8 = 0;
+const CHAIN_SWITCH: u8 = 1;
+const CHAIN_LOD: u8 = 2;
+const CHAIN_FLT: u8 = 3;
+const CHAIN_BILLBOARD: u8 = 4;
+/// The app-cull bit of `NiAVObject::flags` (`SetAppCulled`, the controller inventory).
+const APP_CULLED: u16 = 0x1;
+/// The most ancestors of a chain.
+const CHAIN_DEPTH: usize = 64;
+
+pub fn table_walk_on() -> bool {
+    use core::sync::atomic::Ordering::Relaxed;
+    let value = TABLE_WALK.load(Relaxed);
+    if value != 255 {
+        return value != 0;
+    }
+    let on = std::env::var("NIRENDER_TABLE_WALK").map_or(false, |v| v != "0");
+    TABLE_WALK.store(on as u8, Relaxed);
+    on
+}
+
+/// Sets the table walk; returns the state before.
+pub fn set_table_walk(on: bool) -> bool {
+    let before = table_walk_on();
+    TABLE_WALK.store(on as u8, core::sync::atomic::Ordering::Relaxed);
+    before
+}
+
+static mut TABLE_SHAPES: Vec<usize> = Vec::new();
+/// The distinct effect states of the frame's reachable instances (`table_frame_lights`).
+static mut TABLE_STATES: Option<HashSet<usize>> = None;
+static mut TABLE_CHAIN: Vec<(usize, u8)> = Vec::new();
+static mut TABLE_TOUCHED: Option<HashSet<usize>> = None;
+
+/// The ancestors of a shape from its parent up to the node without a parent, each with its
+/// kind.
+unsafe fn build_chain(shape: usize, out: &mut Vec<(usize, u8)>) {
+    out.clear();
+    let mut node: usize = rd(shape, PARENT);
+    while node != 0 && out.len() < CHAIN_DEPTH {
+        let kind = match crate::live_walk::switch_kind_of(node) {
+            Some(crate::live_walk::SwitchKind::Plain) => CHAIN_SWITCH,
+            Some(crate::live_walk::SwitchKind::LevelOfDetail) => CHAIN_LOD,
+            Some(crate::live_walk::SwitchKind::FltAnimation) => CHAIN_FLT,
+            None if crate::live_walk::is_kind(node, b"NiBillboardNode") => CHAIN_BILLBOARD,
+            None => CHAIN_PLAIN,
+        };
+        out.push((node, kind));
+        node = rd(node, PARENT);
+    }
+}
+
+/// True when the engine's walk would reach the shape: no node of its chain (nor the shape)
+/// app-culled, and each switch, level and flt node selects the chain's child. Top down, as
+/// the walk goes: a switch's selected child gets the lazy update, a level writes its index,
+/// a billboard turns (once a frame each).
+unsafe fn table_reachable(shape: usize, chain: &[(usize, u8)], camera: usize, touched: &mut HashSet<usize>) -> bool {
+    if rd::<u16>(shape, FLAGS) & APP_CULLED != 0 {
+        return false;
+    }
+    for (at, &(node, kind)) in chain.iter().enumerate().rev() {
+        if rd::<u16>(node, FLAGS) & APP_CULLED != 0 {
+            return false;
+        }
+        let child = if at == 0 { shape } else { chain[at - 1].0 };
+        match kind {
+            CHAIN_SWITCH | CHAIN_LOD | CHAIN_FLT => {
+                let switch = match kind {
+                    CHAIN_SWITCH => crate::live_walk::SwitchKind::Plain,
+                    CHAIN_LOD => crate::live_walk::SwitchKind::LevelOfDetail,
+                    _ => crate::live_walk::SwitchKind::FltAnimation,
+                };
+                let first = touched.insert(node);
+                let index = crate::live_walk::switch_index_of(node, switch, camera);
+                if first && kind == CHAIN_LOD {
+                    crate::mem::wr(node, crate::ports::scene::SWITCH_INDEX, index);
+                }
+                if index < 0 || index >= rd::<i32>(node, crate::gen::layouts::NiNode::kChildren_endIndex) {
+                    return false;
+                }
+                let selected: usize = rd(rd::<usize>(node, crate::gen::layouts::NiNode::kChildren_storage), index as usize * 4);
+                if selected != child {
+                    return false;
+                }
+                if first {
+                    crate::ports::scene::switch_prepare_child(node, index, selected);
+                }
+            }
+            CHAIN_BILLBOARD => {
+                if touched.insert(node) {
+                    crate::engine::thiscall1(crate::ports::scene::ROTATE_TO_CAMERA, node, camera as u32);
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+/// The table walk of a frame (entry 13): called at the world scene, after the sky root.
+pub unsafe fn table_walk(camera: usize) {
+    if !table_walk_on() || mode() != Mode::Gpu || !capture::recording() {
+        return;
+    }
+    let start = capture::ticks();
+    let counts = &mut *core::ptr::addr_of_mut!(TABLE_COUNTS);
+    counts[0] += 1;
+    let shapes = &mut *core::ptr::addr_of_mut!(TABLE_SHAPES);
+    shapes.clear();
+    shapes.extend(tables().instances.keys().copied());
+    let touched = (*core::ptr::addr_of_mut!(TABLE_TOUCHED)).get_or_insert_with(HashSet::new);
+    touched.clear();
+    let chain = &mut *core::ptr::addr_of_mut!(TABLE_CHAIN);
+    let states = (*core::ptr::addr_of_mut!(TABLE_STATES)).get_or_insert_with(HashSet::new);
+    states.clear();
+    table_frame_values();
+    for &shape in shapes.iter() {
+        // Only the shapes the engine path skips (marked for the helper): a skinned shape
+        // is never marked and stays the engine's draw.
+        if rd::<u16>(shape, FLAGS) & RETAINED_BIT == 0 {
+            continue;
+        }
+        // The chain: kept, built again every 64th frame (a shape moved under another parent).
+        let frame = tables().frame;
+        let (filled, kind) = {
+            let Some(instance) = tables().instances.get_mut(&shape) else { continue };
+            if instance.chain.is_empty() || frame.wrapping_sub(instance.chain_frame) >= CHECK_FRAMES {
+                build_chain(shape, &mut instance.chain);
+                instance.chain_frame = frame;
+                counts[3] += 1;
+            }
+            chain.clear();
+            chain.extend_from_slice(&instance.chain);
+            if instance.kind == 0 {
+                instance.kind = if crate::live_walk::is_kind(shape, b"NiTriStrips") { crate::link::DRAW_STRIPS } else { crate::link::DRAW_SHAPE };
+            }
+            (instance.filled, instance.kind)
+        };
+        if !filled {
+            continue;
+        }
+        if table_reachable(shape, chain, camera, touched) {
+            states.insert(rd::<usize>(shape, GEOMETRY_EFFECT_STATE));
+            display_work(shape, kind, true);
+            counts[1] += 1;
+        } else if let Some(instance) = tables().instances.get_mut(&shape) {
+            if instance.visible {
+                instance.visible = false;
+                capture::instance_state(instance.id, false);
+                tables().states += 1;
+                counts[2] += 1;
+            }
+        }
+    }
+    table_frame_lights(states);
+    TABLE_TICKS.fetch_add(capture::ticks() - start, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Once a frame before the instances: the scene values (the ambient light of the effect
+/// state and the weather's fog, as the first shape gave them before; the values are the same
+/// for every shape in a frame: `scene_mixed` counted 0 in every run).
+unsafe fn table_frame_values() {
+    let t = tables();
+    let renderer = crate::engine::renderer();
+    if renderer == 0 || t.scene_frame == t.frame {
+        return;
+    }
+    let Some(shape) = t.instances.keys().copied().find(|&s| rd::<u16>(s, FLAGS) & RETAINED_BIT != 0) else { return };
+    let effect_state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
+    let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
+    let ambient = crate::ports::light_manager::ambient_of_state(effect_state);
+    let cell_fog = crate::engine::game_fog_property();
+    let fog = if cell_fog != 0 {
+        crate::shape_stream::fog_values_of(renderer, cell_fog)
+    } else {
+        crate::shape_stream::fog_values(renderer, property_state)
+    };
+    t.scene_frame = t.frame;
+    t.scene_values = (ambient, fog);
+    capture::retained_scene(ambient, fog);
+}
+
+/// After the instances: the note of each light of the frame's distinct effect states, once a
+/// frame each (`note_light_once`).
+unsafe fn table_frame_lights(states: &HashSet<usize>) {
+    let t = tables();
+    let mut lights = core::mem::take(&mut t.scratch_lights);
+    for &state in states.iter() {
+        state_lights(state, &mut lights);
+        for &light in lights.iter() {
+            let key: u32 = rd(light, L::index);
+            note_light_once(t, light, key);
+        }
+    }
+    t.scratch_lights = lights;
+}
+
+/// The table walk's line of the report.
+pub unsafe fn table_walk_report() -> String {
+    let counts = *core::ptr::addr_of!(TABLE_COUNTS);
+    let ms = TABLE_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
+    format!(
+        "table walk (entry 13): {}; runs {}, instances worked {}, hidden {}, chains built {}; time {:.3} ms ({:.4} ms a run)",
+        if table_walk_on() { "on" } else { "off" },
+        counts[0],
+        counts[1],
+        counts[2],
+        counts[3],
+        ms,
+        ms / counts[0].max(1) as f64
+    )
+}
+
 pub unsafe fn report() -> String {
     let t = tables();
     let reasons = ["controller", "node kind", "property controller", "effect", "at the record", "depth function"];
@@ -1164,6 +1427,8 @@ pub unsafe fn report() -> String {
             RECHECKS[0], RECHECKS[1], RECHECKS[2], RECHECKS[3], RECHECKS[4], RECHECKS[5], CHANGE_NOTES[0], CHANGE_NOTES[1], CHANGE_NOTES[2]
         )
         + &crate::animation::report()
+        + "\n"
+        + &table_walk_report()
         + "\n"
         + &crate::live_walk::report()
 }
