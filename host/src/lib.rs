@@ -4306,6 +4306,10 @@ mod live {
             self.configure(now.width, now.height);
             let waiting = Instant::now();
             let mut idle_since: Option<Instant> = None;
+            // The clock is read once in 256 spins: a read costs about 25 ns and the spin
+            // for a record ran it every time (0.83 s of the helper's 8 s in the CP3
+            // profile, plan M5).
+            let mut spins: u32 = 0;
             loop {
                 // The device is lost: nothing draws any more. The records are read and dropped,
                 // so that the game does not wait for this program.
@@ -4343,7 +4347,8 @@ mod live {
                         self.last_record = Instant::now();
                         self.last_record
                     });
-                    if waiting.elapsed() > Duration::from_millis(20) {
+                    spins = spins.wrapping_add(1);
+                    if spins % 256 == 0 && waiting.elapsed() > Duration::from_millis(20) {
                         // Back to the events of the window.
                         self.waited += waiting.elapsed();
                         self.idle += since.elapsed();
