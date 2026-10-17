@@ -57,9 +57,11 @@ pub const PROJECTED_LIGHTS: u32 = 4096;
 pub const PROJECTED_SHADOWS: u32 = 8192;
 /// The fog property of the shape is its own, not the cell's: words 78 and 79 hold its
 /// colour and its density, 54 and 55 its start and end as the render state computes them.
+/// Engine-rules R11 (the skill wgpu-renderer-dev).
 pub const OWN_FOG: u32 = 16384;
 /// The alpha property has the no-sorter bit (bit 13): the engine's accumulator draws the
 /// blend at once, in the order of the scene, and the table draws it with the opaque.
+/// Engine-rules R2 (the skill wgpu-renderer-dev).
 pub const NO_SORTER: u32 = 32768;
 
 static mut SENT: Option<HashSet<u32>> = None;
@@ -72,6 +74,7 @@ static mut LAST_FLAGS: u32 = 0;
 /// (see `note`). Off by default: the game never showed them. `nirender.nifShading(on)`.
 static NIF_SHADING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// Engine-rules R8 (the skill wgpu-renderer-dev).
 pub fn nif_shading() -> bool {
     NIF_SHADING.load(core::sync::atomic::Ordering::Relaxed)
 }

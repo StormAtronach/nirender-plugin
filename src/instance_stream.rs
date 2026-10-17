@@ -129,6 +129,7 @@ const CHECK_FRAMES: u32 = 64;
 /// ties of the depth test (the open class of the order); an animation node marks itself
 /// displayed, and a particle node has no display of its own. `NIRENDER_NODE_KINDS=0`
 /// keeps all of them out (the rule before, for an A/B).
+/// Engine-rules R5 (the skill wgpu-renderer-dev).
 const REJECTED_KINDS: [&[u8]; 1] = [b"NiSortAdjustNode"];
 /// The rule before plan step 5: every kind that changes what or how it draws.
 const REJECTED_KINDS_BEFORE: [&[u8]; 7] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"NiSortAdjustNode", b"BSAnimationNode", b"BSParticleNode"];
@@ -318,6 +319,7 @@ pub unsafe fn mode() -> Mode {
 
 /// Sets the mode and returns the one before. A change of the mode sends the `INSTANCE`
 /// record of each shape again at its next draw: the record says which mode draws it.
+/// Engine-rules R18 (the skill wgpu-renderer-dev).
 pub unsafe fn set_mode(mode: Mode) -> Mode {
     let before = self::mode();
     let t = tables();
@@ -398,6 +400,7 @@ pub unsafe fn scene_begin(kind: u32, camera: usize) {
 /// hidden too: the helper's table keeps it from before (a capture that holds resets the
 /// records at each release; the far level of a level-of-detail node stayed in the table
 /// at the stops of the NIF tour, 2026-10-16).
+/// Engine-rules R14, R16 (the skill wgpu-renderer-dev).
 pub unsafe fn scene_end() {
     let t = tables();
     let camera = core::mem::replace(&mut t.world_camera, 0);
@@ -525,6 +528,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
 
 /// Why the shape is not retained, or `None` when it is of the safe class. `live` is set
 /// when a controller on the shape or on a property changes it (plan step 5, the morphers).
+/// Engine-rules R1, R6, R7 (the skill wgpu-renderer-dev).
 unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize, skinned: bool, live: &mut bool) -> Option<usize> {
     // A controller on the shape itself changes it: a morpher writes its vertices at the
     // display (`OnPreDisplay`), a UV controller its texture coordinates at the update, each
@@ -837,6 +841,7 @@ unsafe fn note_light_once(t: &mut Tables, light: usize, key: u32) {
 /// The display of a retained shape by the engine (mode gpu): what the draw of the stream
 /// did for the instance, without the draw. True when the engine must not display the
 /// shape; false when the shape is not retained after all (the mark goes).
+/// Engine-rules R5 (the skill wgpu-renderer-dev).
 pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
     let t = tables();
     if t.mode != Some(Mode::Gpu) || !t.skip || !capture::recording() {

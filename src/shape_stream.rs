@@ -43,6 +43,7 @@ pub const RETAINED_TWIN: u32 = 0x200;
 /// The record ends with the world bound of the shape (the centre and the radius, 16 bytes,
 /// after everything else): the helper sorts a blended draw by it among the blends of its
 /// table (plan step 6, F5). Every record of a draw has it since 2026-10-17.
+/// Engine-rules R21 (the skill wgpu-renderer-dev).
 pub const BOUND: u32 = 0x400;
 
 /// The address of the flags of the Code Patch for the picture of the character, 1 when the

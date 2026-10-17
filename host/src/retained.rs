@@ -518,6 +518,7 @@ fn in_view(bound: &[f32; 4], planes: &[[f32; 4]; 6]) -> bool {
 
 /// A light as the shader has it, from the `D3DLIGHT8` of 26 words of its record (after
 /// the key). `origin`: the position is made relative to it.
+/// Engine-rules R12 (the skill wgpu-renderer-dev).
 pub fn light_data(l: &[u8], origin: Option<[f64; 3]>) -> LightData {
     let mut position: [f32; 3] = floats(l, 13 * 4);
     if let Some(origin) = origin {
@@ -863,6 +864,7 @@ impl RetainedSet {
     ///    by the order of the slots (plan step 6). A view draws them after the rest
     ///    (`Sorted::Together`) or keeps them for the flush of the engine's queue
     ///    (`Sorted::Keep`, then `Only`).
+    /// Engine-rules R3, R4, R20 (the skill wgpu-renderer-dev).
     fn collect_order(&mut self, view: &RetainedView) {
         self.order.clear();
         self.sorted_order.clear();
@@ -938,6 +940,7 @@ impl RetainedSet {
 /// 2 a source of ONE, 3 a destination of ONE: the extension's shade reads the two factors
 /// and the depth write) times 2, plus 1 with a depth write. `draw_retained_main` shades a
 /// dummy draw of each kind once a frame, and the shader takes the bits by this index.
+/// Engine-rules R20 (the skill wgpu-renderer-dev).
 pub fn slot_kind(blend: [u32; 3], depth_write: bool) -> u32 {
     let form = if blend[0] == 0 {
         0
@@ -959,6 +962,7 @@ pub fn slot_kind(blend: [u32; 3], depth_write: bool) -> u32 {
 /// space into one of the world first: here the shader does the turn, so the stage holds for
 /// every view. The position of a retained draw is relative to the origin of the set: the
 /// shader adds `scene.origin` before the matrix. `None` for a material without effects.
+/// Engine-rules R7 (the skill wgpu-renderer-dev).
 fn effect_stages(m: &material::Material) -> Option<[[u32; EFFECT_STAGE_WORDS]; 2]> {
     if m.environment_effect.is_none() && m.fog_map_effect.is_none() {
         return None;
@@ -993,6 +997,7 @@ impl Player {
     /// its material, with the record of the draw made as for a shape record. An instance
     /// that is in the table already (its material or geometry handle changed) keeps its
     /// lights: the plugin sends them again only when the set of its lights changes.
+    /// Engine-rules R13 (the skill wgpu-renderer-dev).
     pub(super) fn retained_insert(&mut self, id: u32, r: &Retained) {
         let keys = self.retained.keys_of.get(&id).cloned();
         self.retained.remove(id);
@@ -1172,6 +1177,7 @@ impl Player {
     /// before the world, before the draws of the game. The extension shades the lights of
     /// the instances and the values of the scene as it shades a draw of the world that
     /// writes depth and does not blend (`Extension::shade`), one time for the frame.
+    /// Engine-rules R10, R20 (the skill wgpu-renderer-dev).
     pub(super) fn draw_retained_main(&mut self, facts: &WorldFacts) {
         // The near plane of the world's view, for the depth of the sort of the blends.
         self.world_near = Some(frustum_planes(&multiply32(&facts.view, &facts.projection))[4]);
@@ -1238,6 +1244,7 @@ impl Player {
     /// waited (`frame_sorted`), as one list back to front by the depth of the bound centre
     /// along the view. A run of the table's entries is one `draw_retained` call; a draw of
     /// the engine's path is issued between them.
+    /// Engine-rules R21, R22 (the skill wgpu-renderer-dev).
     pub(super) fn draw_retained_sorted(&mut self, generation: u32) {
         let (deferred, later): (Vec<_>, Vec<_>) = core::mem::take(&mut self.frame_sorted).into_iter().partition(|e| e.3 == generation);
         self.frame_sorted = later;

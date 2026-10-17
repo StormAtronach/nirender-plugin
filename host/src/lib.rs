@@ -4276,6 +4276,7 @@ impl Player {
     /// slots of the instances that draw it are made again, with the new ranges of the
     /// buffers. The instances come from a scan of the records: a frame changes few
     /// geometries.
+    /// Engine-rules R6 (the skill wgpu-renderer-dev).
     fn geometry_changed(&mut self, handle: u32) {
         let changed: Vec<(u32, Retained)> = self.instances.iter().filter(|(_, r)| r.geometry == handle && r.flags & INSTANCE_BLOCK != 0).map(|(id, r)| (*id, *r)).collect();
         for (id, r) in changed {
@@ -4638,6 +4639,7 @@ impl Player {
     }
 
     /// Does one record. Returns true for the record that ends a frame.
+    /// Engine-rules R19, R22 (the skill wgpu-renderer-dev).
     fn feed(&mut self, tag: u32, data: &[u8]) -> bool {
         match tag {
             tag::HEADER => self.size = (word(data, 0), word(data, 4)),
@@ -5632,6 +5634,7 @@ impl Player {
     /// Collects one draw of a pass of the shape in progress: `topology` is the primitive
     /// type of Direct3D (2 a line list, 4 a triangle list, 5 a triangle strip), over
     /// `indexes` entries of the index list of the geometry from `first_index`.
+    /// Engine-rules R21 (the skill wgpu-renderer-dev).
     fn draw(&mut self, derived: &material::Derived, pass: &Pass, topology: u32, first_index: u32, indexes: u32) {
         if !self.stream.back_buffer {
             self.renderer.counts.other_target += 1;

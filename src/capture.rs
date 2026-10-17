@@ -682,6 +682,7 @@ pub unsafe fn tee_end() {
 /// earlier frame, and a release sends again only the instances the engine displays (a
 /// replay drew the far level of a level-of-detail node at the near stops of the NIF tour,
 /// 2026-10-16).
+/// Engine-rules R14 (the skill wgpu-renderer-dev).
 fn resource_record(tag: u32) -> bool {
     matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE)
 }

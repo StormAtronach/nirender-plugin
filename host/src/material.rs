@@ -28,6 +28,7 @@ pub const PROJECTED_LIGHTS: u32 = 4096;
 pub const PROJECTED_SHADOWS: u32 = 8192;
 /// The shape has a fog property of its own (not the cell's): words 78 and 79 are its colour
 /// and density, 54 and 55 its start and end.
+/// Engine-rules R11 (the skill wgpu-renderer-dev).
 pub const OWN_FOG: u32 = 16384;
 /// The alpha property has the no-sorter bit: the blend draws at once in the order of the
 /// scene, out of the engine's sort.
@@ -203,6 +204,7 @@ pub struct Derived {
     pub range_fog: bool,
     /// The blend draws at once in the order of the scene, out of the sort (the no-sorter
     /// bit of the alpha property): the table draws it with the opaque.
+    /// Engine-rules R2 (the skill wgpu-renderer-dev).
     pub no_sorter: bool,
     /// The shape's own fog, when its fog property is not the cell's: the colour, the start
     /// and the end. The table keeps them in the slot; the scene's fog is for the others.
