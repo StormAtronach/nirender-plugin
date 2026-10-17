@@ -5229,9 +5229,7 @@ impl Player {
         }
         if hold {
             self.held_draws.push(Item::Draw(draw));
-        } else if self.renderer.merge_blends && draw.world && self.world_begun && !scene::sky_class(class) && derived.blends.first().is_some_and(|b| b[0] != 0) && !derived.no_sorter && self.target.is_none() {
-            // The engine sorts a shape whose alpha property blends: that is the blend of its
-            // first pass. A later pass that blends (the textures of the terrain) stays in place.
+        } else if self.renderer.merge_blends && draw.world && self.world_begun && engine::alpha::sorted_by_engine(class, &derived.blends, derived.no_sorter) && self.target.is_none() {
             // A blend the engine would sort (plan step 6, F5): it waits for the sorted blends
             // of the table, and the two lists merge by depth (`draw_retained_sorted`). The
             // centre of its bound is the key; a record without one (a capture made before
