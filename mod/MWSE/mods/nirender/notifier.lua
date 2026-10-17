@@ -41,9 +41,11 @@ local function notify(object)
     end
 end
 
--- The writes of a shape or a node that the plugin does not read at every display.
+-- The writes of a shape or a node that the plugin does not read at every display. `flags`
+-- holds the app-cull bit: MWSE writes the field with no call, and the table walk (entry 13)
+-- reads the reach of a shape only when an event marks it.
 local AV_KEYS = {
-    data = true, skinInstance = true,
+    data = true, skinInstance = true, flags = true,
     alphaProperty = true, fogProperty = true, materialProperty = true, stencilProperty = true,
     texturingProperty = true, vertexColorProperty = true, zBufferProperty = true,
 }

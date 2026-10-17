@@ -58,6 +58,17 @@ EXTRA = [
     # The events of the table walk (entry 13, 2026-10-17).
     0x6F4140,  # NiGeometry::UpdateWorldData
     0x442B10,  # NiAVObject::SetAppCulled
+    0x6C8410,  # NiNode::AttachChild
+    0x6C8680,  # NiNode::DetachChild
+    0x6C8590,  # NiNode::DetachChildAt
+    0x6C8780,  # NiNode::SetChildAt
+    0x542030,  # ActorAnimController::setOpacity
+    # The time-varying writers of a material or geometry data (entry 13).
+    0x715A50,  # NiFlipController::Update
+    0x7130A0,  # NiAlphaController::Update
+    0x71A6E0,  # NiMaterialColorController::Update
+    0x7220E0,  # NiUVController::Update
+    0x410960,  # WorldController::updateEnchantedItemEffect
 ]
 
 

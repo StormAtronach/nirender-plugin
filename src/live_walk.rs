@@ -186,7 +186,7 @@ pub unsafe fn after_child(parent: usize, child: usize, camera: usize) {
     if child == 0 || child != crate::link_client::sky_root() {
         return;
     }
-    crate::instance_stream::table_walk(camera);
+    crate::instance_stream::table_walk(parent, camera);
     if !on() {
         return;
     }

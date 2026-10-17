@@ -213,9 +213,20 @@ struct Instance {
     /// The kind of its draw (`link::DRAW_SHAPE` or `DRAW_STRIPS`), 0 until known.
     kind: u32,
     /// The table walk (entry 13): the ancestors from the shape's parent up, each with its
-    /// kind (`CHAIN_*`), and the frame it was built.
+    /// kind (`CHAIN_*`).
     chain: Vec<(usize, u8)>,
-    chain_frame: u32,
+    /// The table walk: the frame (plus one) it last worked the instance, so that it works it
+    /// once a frame; the instance is in its sweep bucket; the effect state counted for the
+    /// lights of the frame (`TABLE_STATE_COUNTS`).
+    walk_frame: u32,
+    bucketed: bool,
+    counted_state: usize,
+    /// The table walk: the property and effect states whose properties and texture effects
+    /// list this shape in `TABLE_SOURCES`, and those keys; a source mark of one of them sets
+    /// `renote`: the next work notes the material and the colours (`display_work`).
+    source_states: (usize, usize),
+    source_keys: Vec<usize>,
+    renote: bool,
     /// The effect state its lights were read from (the table walk reads them again only
     /// when it changes).
     effect_state: usize,
@@ -336,6 +347,7 @@ pub unsafe fn set_mode(mode: Mode) -> Mode {
     let t = tables();
     t.mode = Some(mode);
     if mode != before {
+        TABLE_FULL = true;
         // Mode off is the reference: the engine draws every shape, so the helper must not
         // draw its table too. Without the hides the table's blends doubled the engine's in
         // every picture of mode off (the opaque doubles were invisible), 2026-10-17. The
@@ -474,6 +486,7 @@ pub unsafe fn forget(shape: usize) {
     let t = tables();
     t.rejected.remove(&shape);
     if let Some(instance) = t.instances.remove(&shape) {
+        table_forget(shape, &instance);
         if instance.sent && capture::recording() {
             capture::instance_delete(instance.id);
         }
@@ -546,7 +559,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, chain: Vec::new(), chain_frame: 0, effect_state: 0 });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, chain: Vec::new(), walk_frame: 0, bucketed: false, counted_state: 0, source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
     t.pending = Some((shape, id));
 }
 
@@ -687,6 +700,7 @@ pub unsafe fn reject_pending(shape: usize, reason_later: bool) {
     let t = tables();
     mark(shape, false);
     if let Some(instance) = t.instances.remove(&shape) {
+        table_forget(shape, &instance);
         if instance.sent && capture::recording() {
             capture::instance_delete(instance.id);
         }
@@ -769,6 +783,7 @@ pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, col
         // now on the engine does not display the shape (`skipped_display`).
         if t.skip {
             mark(shape, true);
+            note_new(shape);
         }
         if instance.lights != lights {
             instance.lights.clear();
@@ -892,6 +907,11 @@ pub unsafe fn note_change(address: usize) {
     }
     (*core::ptr::addr_of_mut!(CHANGED)).get_or_insert_with(HashSet::new).insert(address);
     (*core::ptr::addr_of_mut!(CHANGE_NOTES))[0] += 1;
+    // A Lua mod can write `flags` (the app-cull bit) with no call the plugin sees: the
+    // table walk checks the reach of the object's shapes again.
+    if table_walk_on() {
+        (*core::ptr::addr_of_mut!(CULL_MARKS)).push(address);
+    }
 }
 
 /// Once a frame: each retained shape that is a changed object, or whose property state holds
@@ -920,6 +940,9 @@ unsafe fn apply_changes() {
             instance.recheck = true;
             (*core::ptr::addr_of_mut!(RECHECKS))[Recheck::Notified as usize] += 1;
             notes[2] += 1;
+            if table_walk_on() {
+                (*core::ptr::addr_of_mut!(SHAPE_MARKS)).push(shape);
+            }
         }
     }
     changed.clear();
@@ -932,6 +955,9 @@ pub unsafe fn recheck(shape: usize, cause: Recheck) {
     if let Some(instance) = t.instances.get_mut(&shape) {
         instance.recheck = true;
         (*core::ptr::addr_of_mut!(RECHECKS))[cause as usize] += 1;
+        if table_walk_on() {
+            (*core::ptr::addr_of_mut!(SHAPE_MARKS)).push(shape);
+        }
     }
 }
 
@@ -1051,7 +1077,8 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
     // The handles, when due: every 64th frame, after a change of the device textures, for
     // a record that must go again (the start of a capture), and at every display of a
     // live shape (a new revision of the data sends the geometry again under its handle).
-    let due = note_every() || instance.live || !instance.sent || instance.generation != generation || id.wrapping_add(frame) % CHECK_FRAMES == 0;
+    let due = note_every() || instance.live || instance.renote || !instance.sent || instance.generation != generation || id.wrapping_add(frame) % CHECK_FRAMES == 0;
+    instance.renote = false;
     if due {
         COST_NOTES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let geometry = crate::geometry_stream::note(kind, rd(shape, GEOMETRY_MODEL_DATA), 0);
@@ -1177,9 +1204,28 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
 /// The table walk (F8 parts 3 and 4, option B, entry 13): `NIRENDER_TABLE_WALK=1`,
 /// `nirender.tableWalk(on)`. Off by default in its first step.
 static TABLE_WALK: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(255);
-/// The runs, the instances worked and hidden, the chains built, and the time.
-static mut TABLE_COUNTS: [u64; 5] = [0; 5];
+/// The table walk's counters (`TW_*`) and its time.
+static mut TABLE_COUNTS: [u64; 15] = [0; 15];
+const TW_RUNS: usize = 0;
+const TW_WORKED: usize = 1;
+const TW_HIDDEN: usize = 2;
+const TW_CHAINS: usize = 3;
+const TW_FULL: usize = 4;
+const TW_ITEMS: usize = 5;
+const TW_SWEPT: usize = 6;
+const TW_SWEEP_FINDS: usize = 7;
+const TW_OFF_ROOT: usize = 8;
+const TW_LOST: usize = 9;
+const TW_CULL_SHAPES: usize = 10;
+const TW_TREE_SHAPES: usize = 11;
+const TW_MATERIAL_SHAPES: usize = 12;
+const TW_REACH_ONLY: usize = 13;
+const TW_SOURCE_SHAPES: usize = 14;
 static TABLE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+/// The part of `TABLE_TICKS` spent on the lists (the marks, the per-frame set, the sweep).
+static TABLE_LIST_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+/// The sweep finds logged so far (the first 16 are).
+static mut SWEEP_LOGGED: u32 = 0;
 /// The kinds of a chain's node.
 const CHAIN_PLAIN: u8 = 0;
 const CHAIN_SWITCH: u8 = 1;
@@ -1202,18 +1248,301 @@ pub fn table_walk_on() -> bool {
     on
 }
 
-/// Sets the table walk; returns the state before.
+/// Sets the table walk; returns the state before. Turned on, its next run is a full pass
+/// (no marks were kept while it was off).
 pub fn set_table_walk(on: bool) -> bool {
     let before = table_walk_on();
     TABLE_WALK.store(on as u8, core::sync::atomic::Ordering::Relaxed);
+    if on && !before {
+        unsafe { TABLE_FULL = true };
+    }
     before
 }
 
-static mut TABLE_SHAPES: Vec<usize> = Vec::new();
-/// The distinct effect states of the frame's reachable instances (`table_frame_lights`).
-static mut TABLE_STATES: Option<HashSet<usize>> = None;
+/// The table walk works only the marked instances (entry 13). `NIRENDER_TABLE_MARKS=0` or
+/// `nirender.tableMarks(false)`: it works every instance each frame (the walk of step 1), for
+/// an A/B.
+static TABLE_MARKS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(255);
+
+pub fn table_marks_on() -> bool {
+    use core::sync::atomic::Ordering::Relaxed;
+    let value = TABLE_MARKS.load(Relaxed);
+    if value != 255 {
+        return value != 0;
+    }
+    let on = std::env::var("NIRENDER_TABLE_MARKS").map_or(true, |v| v != "0");
+    TABLE_MARKS.store(on as u8, Relaxed);
+    on
+}
+
+/// Sets the marks; returns the state before. The next run is a full pass.
+pub fn set_table_marks(on: bool) -> bool {
+    let before = table_marks_on();
+    TABLE_MARKS.store(on as u8, core::sync::atomic::Ordering::Relaxed);
+    unsafe { TABLE_FULL = true };
+    before
+}
+
+/// The dirty marks of the table walk (entry 13; the owner, 2026-10-17: events over tracking
+/// where the engine offers them). The engine's functions store a pointer here and read
+/// nothing more: a probe that read a node's children inside the app-cull hook crashed the
+/// game at the night sky's load and at a cell change. The walk reads at display time, and
+/// it uses a marked node only as a key (the node can be gone by then). A fixed array, so a
+/// hook never allocates; a full array sets `overflow`, and the next walk is a full pass.
+const MARK_CAPACITY: usize = 4096;
+
+struct Marks {
+    items: [usize; MARK_CAPACITY],
+    len: usize,
+    overflow: bool,
+    count: u64,
+}
+
+impl Marks {
+    const fn new() -> Marks {
+        Marks { items: [0; MARK_CAPACITY], len: 0, overflow: false, count: 0 }
+    }
+
+    fn push(&mut self, at: usize) {
+        self.count += 1;
+        if self.len < MARK_CAPACITY {
+            self.items[self.len] = at;
+            self.len += 1;
+        } else {
+            self.overflow = true;
+        }
+    }
+
+    /// Moves the marks into `out`; true when some were lost (the array was full).
+    fn drain(&mut self, out: &mut Vec<usize>) -> bool {
+        out.clear();
+        out.extend_from_slice(&self.items[..self.len]);
+        self.len = 0;
+        core::mem::replace(&mut self.overflow, false)
+    }
+}
+
+/// A retained shape's world data was updated (`NiGeometry::UpdateWorldData`), or its instance
+/// must be checked again (`recheck`, a Lua change).
+static mut SHAPE_MARKS: Marks = Marks::new();
+/// An object's app-cull flag changed (`NiAVObject::SetAppCulled`), or a Lua mod changed the
+/// object (the notifier; `flags` is written with no call).
+static mut CULL_MARKS: Marks = Marks::new();
+/// A node's children changed, or an object was attached (the four tree functions of NiNode;
+/// the destructor of a node detaches its children through one of them).
+static mut TREE_MARKS: Marks = Marks::new();
+/// A shape joined the table (its first draw marked it for the helper).
+static mut NEW_MARKS: Marks = Marks::new();
+/// A property, a texture effect or a shape's data changed by a time-varying writer
+/// (`ports::controller_events`): the shapes that use it note their material and colours.
+static mut SOURCE_MARKS: Marks = Marks::new();
+/// The properties of a subtree changed in place (`ActorAnimController::setOpacity`): the
+/// shapes below are checked again (their material and colours noted).
+static mut MATERIAL_MARKS: Marks = Marks::new();
+/// The next walk works every instance: the first run, the switch turned on, a change of the
+/// mode or of the marks switch, a lost mark.
+static mut TABLE_FULL: bool = true;
+/// The generation of the tables at the last walk: a new one (a reset, a change of the device
+/// textures) asks every instance for a check of its handles, so the walk is a full pass.
+static mut TABLE_GENERATION: u32 = 0;
+
+/// The retained shapes below each node of their chains: a node's app-cull or tree mark
+/// reaches its shapes through this map, without reading the node.
+static mut TABLE_BELOW: Option<HashMap<usize, HashSet<usize>>> = None;
+/// The shapes worked every frame: those under a switch, a level, an flt or a billboard node
+/// (the choice and the turn follow the camera or the time), and the live ones (their
+/// controllers run at the display).
+static mut TABLE_DYNAMIC: Option<HashSet<usize>> = None;
+/// The instances by `id % 64`: the slow sweep works one bucket a frame, the bucket whose
+/// instances have their 64th-frame check of the handles in that frame. It is the net for a
+/// change that no event marked; its finds are counted.
+static mut TABLE_BUCKETS: Vec<Vec<usize>> = Vec::new();
+/// The shapes that use each property and texture effect (from their property and effect
+/// states): a source mark reaches its shapes through this map.
+static mut TABLE_SOURCES: Option<HashMap<usize, HashSet<usize>>> = None;
+/// The effect states of the instances, counted: the lights of each are noted once a frame.
+static mut TABLE_STATE_COUNTS: Option<HashMap<usize, u32>> = None;
+static mut TABLE_WORK: Vec<usize> = Vec::new();
+static mut TABLE_DRAINED: Vec<usize> = Vec::new();
+static mut TABLE_SCRATCH: Vec<usize> = Vec::new();
 static mut TABLE_CHAIN: Vec<(usize, u8)> = Vec::new();
 static mut TABLE_TOUCHED: Option<HashSet<usize>> = None;
+
+unsafe fn table_below() -> &'static mut HashMap<usize, HashSet<usize>> {
+    (*core::ptr::addr_of_mut!(TABLE_BELOW)).get_or_insert_with(HashMap::new)
+}
+
+unsafe fn table_sources() -> &'static mut HashMap<usize, HashSet<usize>> {
+    (*core::ptr::addr_of_mut!(TABLE_SOURCES)).get_or_insert_with(HashMap::new)
+}
+
+/// Files the shape under the properties of its property state and the texture effects of its
+/// effect state (`TABLE_SOURCES`), when the states changed or `again` (the sweep: a property
+/// attached in place to the same state).
+unsafe fn set_sources(shape: usize, again: bool) {
+    let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
+    let effect_state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
+    let Some(instance) = tables().instances.get_mut(&shape) else { return };
+    if instance.source_states == (property_state, effect_state) && !again {
+        return;
+    }
+    let mut keys: Vec<usize> = Vec::new();
+    if property_state != 0 {
+        for at in (PS::propAlpha..=PS::field_30).step_by(4) {
+            let property: usize = rd(property_state, at);
+            if property != 0 && !keys.contains(&property) {
+                keys.push(property);
+            }
+        }
+    }
+    if effect_state != 0 {
+        for at in [crate::gen::layouts::NiDynamicEffectState::environmentMap, crate::gen::layouts::NiDynamicEffectState::fogMap] {
+            let effect: usize = rd(effect_state, at);
+            if effect != 0 && !keys.contains(&effect) {
+                keys.push(effect);
+            }
+        }
+    }
+    instance.source_states = (property_state, effect_state);
+    if keys == instance.source_keys {
+        return;
+    }
+    let sources = table_sources();
+    for key in instance.source_keys.iter() {
+        if let Some(set) = sources.get_mut(key) {
+            set.remove(&shape);
+            if set.is_empty() {
+                sources.remove(key);
+            }
+        }
+    }
+    for &key in keys.iter() {
+        sources.entry(key).or_default().insert(shape);
+    }
+    instance.source_keys = keys;
+}
+
+unsafe fn table_dynamic() -> &'static mut HashSet<usize> {
+    (*core::ptr::addr_of_mut!(TABLE_DYNAMIC)).get_or_insert_with(HashSet::new)
+}
+
+unsafe fn table_state_counts() -> &'static mut HashMap<usize, u32> {
+    (*core::ptr::addr_of_mut!(TABLE_STATE_COUNTS)).get_or_insert_with(HashMap::new)
+}
+
+/// One effect state more or less in the counts.
+unsafe fn count_state(state: usize, up: bool) {
+    if state == 0 {
+        return;
+    }
+    let counts = table_state_counts();
+    if up {
+        *counts.entry(state).or_insert(0) += 1;
+    } else if let Some(n) = counts.get_mut(&state) {
+        *n -= 1;
+        if *n == 0 {
+            counts.remove(&state);
+        }
+    }
+}
+
+/// An instance goes (`forget`, `reject_pending`): the walk's tables forget it. The sweep's
+/// bucket drops it at its next turn.
+unsafe fn table_forget(shape: usize, instance: &Instance) {
+    let below = table_below();
+    for &(node, _) in instance.chain.iter() {
+        if let Some(set) = below.get_mut(&node) {
+            set.remove(&shape);
+            if set.is_empty() {
+                below.remove(&node);
+            }
+        }
+    }
+    table_dynamic().remove(&shape);
+    count_state(instance.counted_state, false);
+    let sources = table_sources();
+    for key in instance.source_keys.iter() {
+        if let Some(set) = sources.get_mut(key) {
+            set.remove(&shape);
+            if set.is_empty() {
+                sources.remove(key);
+            }
+        }
+    }
+}
+
+/// The fields of an instance a sweep find compares, as hashes: the transform, the bound, the
+/// colours, the geometry and material handles, the visibility.
+fn fields_of(instance: &Instance) -> [u64; 6] {
+    let hash = |words: &[u32]| words.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &w| (h ^ w as u64).wrapping_mul(0x100_0000_01b3));
+    [
+        hash(&instance.transform),
+        hash(&instance.bound.map(f32::to_bits)),
+        hash(&instance.colours),
+        instance.geometry as u64,
+        instance.material as u64,
+        instance.visible as u64,
+    ]
+}
+
+/// A change that no event marked, found by the slow sweep: the first 16 go to the log with
+/// the shape's name and what changed (the net of entry 13; each such find is a missing event).
+unsafe fn log_sweep_find(shape: usize, what: &str) {
+    let logged = &mut *core::ptr::addr_of_mut!(SWEEP_LOGGED);
+    if *logged >= 16 {
+        return;
+    }
+    *logged += 1;
+    let name_at: usize = rd(shape, 8);
+    let name = if name_at != 0 { core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+    let parent: usize = rd(shape, PARENT);
+    let parent_at: usize = if parent != 0 { rd(parent, 8) } else { 0 };
+    let parent_name = if parent_at != 0 { core::ffi::CStr::from_ptr(parent_at as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+    let id = tables().instances.get(&shape).map_or(0, |i| i.id);
+    let effect_state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
+    let (environment, fog): (usize, usize) = if effect_state != 0 {
+        (rd(effect_state, crate::gen::layouts::NiDynamicEffectState::environmentMap), rd(effect_state, crate::gen::layouts::NiDynamicEffectState::fogMap))
+    } else {
+        (0, 0)
+    };
+    let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
+    let texturing: usize = if property_state != 0 { rd(property_state, PS::propTexturing) } else { 0 };
+    let controller: usize = if texturing != 0 { rd(texturing, crate::gen::layouts::NiObjectNET::controllers) } else { 0 };
+    let filed = table_sources().get(&texturing).map_or(0, |s| s.len());
+    let filed_here = table_sources().get(&texturing).map_or(false, |s| s.contains(&shape));
+    let (live, renote, keys) = tables().instances.get(&shape).map_or((false, false, 0), |i| (i.live, i.renote, i.source_keys.len()));
+    crate::log!("table walk: the sweep found {what} of instance {id} ('{name}' under '{parent_name}', shape 0x{shape:x}) changed with no event; effect state 0x{effect_state:x}, environment map 0x{environment:x}, fog map 0x{fog:x}; texturing 0x{texturing:x} (controller 0x{controller:x}), shapes filed under it {filed} (this one {filed_here}), its keys {keys}, live {live}, renote {renote}");
+}
+
+/// Builds the shape's chain again. When it differs from the kept one, the map of the shapes
+/// below each node and the per-frame set follow. True when it differed.
+unsafe fn set_chain(shape: usize) -> bool {
+    let fresh = &mut *core::ptr::addr_of_mut!(TABLE_CHAIN);
+    build_chain(shape, fresh);
+    let Some(instance) = tables().instances.get_mut(&shape) else { return false };
+    if instance.chain == *fresh {
+        return false;
+    }
+    let below = table_below();
+    for &(node, _) in instance.chain.iter() {
+        if let Some(set) = below.get_mut(&node) {
+            set.remove(&shape);
+            if set.is_empty() {
+                below.remove(&node);
+            }
+        }
+    }
+    for &(node, _) in fresh.iter() {
+        below.entry(node).or_default().insert(shape);
+    }
+    core::mem::swap(&mut instance.chain, fresh);
+    if instance.live || instance.chain.iter().any(|&(_, kind)| kind != CHAIN_PLAIN) {
+        table_dynamic().insert(shape);
+    } else {
+        table_dynamic().remove(&shape);
+    }
+    true
+}
 
 /// The ancestors of a shape from its parent up to the node without a parent, each with its
 /// kind.
@@ -1280,37 +1609,246 @@ unsafe fn table_reachable(shape: usize, chain: &[(usize, u8)], camera: usize, to
     true
 }
 
-/// The table walk of a frame (entry 13): called at the world scene, after the sky root.
-pub unsafe fn table_walk(camera: usize) {
+/// The table walk of a frame (entry 13): called at the world scene, after the sky root
+/// (`root` is the world's root, the node the engine's walk starts from). It works the
+/// instances the events marked, the per-frame ones, and one bucket of the slow sweep; a full
+/// pass works every instance. A worked instance is reached (its chain ends at `root` and the
+/// engine's reach rules let it through) and then gets the work of the engine path, or it is
+/// hidden.
+pub unsafe fn table_walk(root: usize, camera: usize) {
     if !table_walk_on() || mode() != Mode::Gpu || !capture::recording() {
         return;
     }
     let start = capture::ticks();
     let counts = &mut *core::ptr::addr_of_mut!(TABLE_COUNTS);
-    counts[0] += 1;
-    let shapes = &mut *core::ptr::addr_of_mut!(TABLE_SHAPES);
-    shapes.clear();
-    shapes.extend(tables().instances.keys().copied());
+    counts[TW_RUNS] += 1;
+    let (frame, generation) = {
+        let t = tables();
+        (t.frame, t.generation)
+    };
+    let stamp = frame.wrapping_add(1);
+    let work = &mut *core::ptr::addr_of_mut!(TABLE_WORK);
+    let drained = &mut *core::ptr::addr_of_mut!(TABLE_DRAINED);
+    let scratch = &mut *core::ptr::addr_of_mut!(TABLE_SCRATCH);
+    let buckets = &mut *core::ptr::addr_of_mut!(TABLE_BUCKETS);
+    if buckets.len() != CHECK_FRAMES as usize {
+        buckets.clear();
+        buckets.resize_with(CHECK_FRAMES as usize, Vec::new);
+    }
+    work.clear();
+    // The instance once a frame into the work list.
+    let take = |shape: usize, work: &mut Vec<usize>| {
+        if let Some(instance) = tables().instances.get_mut(&shape) {
+            if instance.walk_frame != stamp {
+                instance.walk_frame = stamp;
+                work.push(shape);
+            }
+        }
+    };
+    let bucket_of = |id: u32| (id % CHECK_FRAMES) as usize;
+
+    let mut lost = false;
+    let mut tree = Vec::new();
+    lost |= (*core::ptr::addr_of_mut!(TREE_MARKS)).drain(&mut tree);
+    let mut fresh = Vec::new();
+    lost |= (*core::ptr::addr_of_mut!(NEW_MARKS)).drain(&mut fresh);
+    let mut culls = Vec::new();
+    lost |= (*core::ptr::addr_of_mut!(CULL_MARKS)).drain(&mut culls);
+    let mut materials = Vec::new();
+    lost |= (*core::ptr::addr_of_mut!(MATERIAL_MARKS)).drain(&mut materials);
+    let mut sources = Vec::new();
+    lost |= (*core::ptr::addr_of_mut!(SOURCE_MARKS)).drain(&mut sources);
+    // The source marks set `renote` on the shapes of each key (a key that is a shape: the
+    // shape), in a full pass too (it works every instance, but notes only the due ones).
+    for &key in sources.iter() {
+        if let Some(instance) = tables().instances.get_mut(&key) {
+            instance.renote = true;
+            counts[TW_SOURCE_SHAPES] += 1;
+        }
+        if let Some(set) = table_sources().get(&key) {
+            counts[TW_SOURCE_SHAPES] += set.len() as u64;
+            for shape in set.iter() {
+                if let Some(instance) = tables().instances.get_mut(shape) {
+                    instance.renote = true;
+                }
+            }
+        }
+    }
+    lost |= (*core::ptr::addr_of_mut!(SHAPE_MARKS)).drain(drained);
+    if lost {
+        counts[TW_LOST] += 1;
+    }
+    let full = lost || !table_marks_on() || note_every() || TABLE_FULL || TABLE_GENERATION != generation;
+    TABLE_FULL = false;
+    TABLE_GENERATION = generation;
+    let mut sweep_from = usize::MAX;
+    let mut dynamic_from = usize::MAX;
+    if full {
+        counts[TW_FULL] += 1;
+        scratch.clear();
+        scratch.extend(tables().instances.keys().copied());
+        for &shape in scratch.iter() {
+            if set_chain(shape) {
+                counts[TW_CHAINS] += 1;
+            }
+            if let Some(instance) = tables().instances.get_mut(&shape) {
+                if !instance.bucketed {
+                    instance.bucketed = true;
+                    buckets[bucket_of(instance.id)].push(shape);
+                }
+            }
+            take(shape, work);
+        }
+    } else {
+        // 1. The tree first: the chains below a marked node are built again before any reach
+        //    reads them, so no walk reads a node that was detached and destroyed.
+        for &at in tree.iter() {
+            if tables().instances.contains_key(&at) {
+                if set_chain(at) {
+                    counts[TW_CHAINS] += 1;
+                }
+                take(at, work);
+            }
+            if let Some(set) = table_below().get(&at) {
+                scratch.clear();
+                scratch.extend(set.iter().copied());
+                counts[TW_TREE_SHAPES] += scratch.len() as u64;
+                for &shape in scratch.iter() {
+                    if set_chain(shape) {
+                        counts[TW_CHAINS] += 1;
+                    }
+                    take(shape, work);
+                }
+            }
+        }
+        // 2. The shapes that joined the table.
+        for &shape in fresh.iter() {
+            if set_chain(shape) {
+                counts[TW_CHAINS] += 1;
+            }
+            if let Some(instance) = tables().instances.get_mut(&shape) {
+                if !instance.bucketed {
+                    instance.bucketed = true;
+                    buckets[bucket_of(instance.id)].push(shape);
+                }
+            }
+            take(shape, work);
+        }
+        // 3. App-cull: the object itself, and the shapes below it. A node with no retained
+        //    shape below (the HUD, the water, the effect roots) costs one look-up.
+        for &at in culls.iter() {
+            take(at, work);
+            if let Some(set) = table_below().get(&at) {
+                counts[TW_CULL_SHAPES] += set.len() as u64;
+                scratch.clear();
+                scratch.extend(set.iter().copied());
+                for &shape in scratch.iter() {
+                    take(shape, work);
+                }
+            }
+        }
+        // 3b. Properties changed in place below a node: the shapes are checked again.
+        for &at in materials.iter() {
+            let recheck = |shape: usize, work: &mut Vec<usize>| {
+                if let Some(instance) = tables().instances.get_mut(&shape) {
+                    instance.recheck = true;
+                }
+                take(shape, work);
+            };
+            recheck(at, work);
+            if let Some(set) = table_below().get(&at) {
+                counts[TW_MATERIAL_SHAPES] += set.len() as u64;
+                scratch.clear();
+                scratch.extend(set.iter().copied());
+                for &shape in scratch.iter() {
+                    recheck(shape, work);
+                }
+            }
+        }
+        // 4. The shapes that moved or must be checked again.
+        for &shape in drained.iter() {
+            take(shape, work);
+        }
+        // 4b. The shapes of the source marks (their `renote` is set above).
+        for &key in sources.iter() {
+            take(key, work);
+            if let Some(set) = table_sources().get(&key) {
+                scratch.clear();
+                scratch.extend(set.iter().copied());
+                for &shape in scratch.iter() {
+                    take(shape, work);
+                }
+            }
+        }
+        // 5. The per-frame shapes.
+        dynamic_from = work.len();
+        scratch.clear();
+        scratch.extend(table_dynamic().iter().copied());
+        for &shape in scratch.iter() {
+            take(shape, work);
+        }
+        // 6. The slow sweep: the bucket whose instances have their 64th-frame check now.
+        sweep_from = work.len();
+        let bucket = &mut buckets[((CHECK_FRAMES - frame % CHECK_FRAMES) % CHECK_FRAMES) as usize];
+        let want = ((CHECK_FRAMES - frame % CHECK_FRAMES) % CHECK_FRAMES) as usize;
+        let mut i = 0;
+        while i < bucket.len() {
+            let shape = bucket[i];
+            match tables().instances.get(&shape) {
+                Some(instance) if bucket_of(instance.id) == want => {
+                    if set_chain(shape) {
+                        counts[TW_CHAINS] += 1;
+                        counts[TW_SWEEP_FINDS] += 1;
+                        log_sweep_find(shape, "the chain");
+                    }
+                    take(shape, work);
+                    i += 1;
+                }
+                _ => {
+                    bucket.swap_remove(i);
+                }
+            }
+        }
+        counts[TW_SWEPT] += (work.len() - sweep_from) as u64;
+    }
+    counts[TW_ITEMS] += work.len() as u64;
+    TABLE_LIST_TICKS.fetch_add(capture::ticks() - start, core::sync::atomic::Ordering::Relaxed);
+
     let touched = (*core::ptr::addr_of_mut!(TABLE_TOUCHED)).get_or_insert_with(HashSet::new);
     touched.clear();
     let chain = &mut *core::ptr::addr_of_mut!(TABLE_CHAIN);
-    let states = (*core::ptr::addr_of_mut!(TABLE_STATES)).get_or_insert_with(HashSet::new);
-    states.clear();
     table_frame_values();
-    for &shape in shapes.iter() {
-        // Only the shapes the engine path skips (marked for the helper): a skinned shape
-        // is never marked and stays the engine's draw.
+    for at in 0..work.len() {
+        let shape = work[at];
+        // The lights of the frame come from the counted effect states: the count follows the
+        // shape's state first, marked for the helper or not, reached or not. A state no shape
+        // holds can be freed, and the lights read every counted state (the fault of dm17: in
+        // mode off the marks are cleared, and the full pass at the return skipped the unmarked
+        // shapes before their counts followed). The sources follow too (again at the sweep
+        // and at a recheck: a state updated in place keeps its pointer).
+        let state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
+        {
+            let Some(instance) = tables().instances.get_mut(&shape) else { continue };
+            if instance.counted_state != state {
+                count_state(instance.counted_state, false);
+                count_state(state, true);
+                instance.counted_state = state;
+            }
+        }
+        let again = at >= sweep_from || tables().instances.get(&shape).map_or(false, |i| i.recheck);
+        set_sources(shape, again);
+        // Only the shapes the engine path skips (marked for the helper): a skinned shape is
+        // never marked and stays the engine's draw.
         if rd::<u16>(shape, FLAGS) & RETAINED_BIT == 0 {
             continue;
         }
-        // The chain: kept, built again every 64th frame (a shape moved under another parent).
-        let frame = tables().frame;
+        if tables().instances.get(&shape).map_or(false, |i| i.chain.is_empty()) && set_chain(shape) {
+            counts[TW_CHAINS] += 1;
+        }
         let (filled, kind) = {
             let Some(instance) = tables().instances.get_mut(&shape) else { continue };
-            if instance.chain.is_empty() || frame.wrapping_sub(instance.chain_frame) >= CHECK_FRAMES {
-                build_chain(shape, &mut instance.chain);
-                instance.chain_frame = frame;
-                counts[3] += 1;
+            if instance.live {
+                table_dynamic().insert(shape);
             }
             chain.clear();
             chain.extend_from_slice(&instance.chain);
@@ -1322,20 +1860,64 @@ pub unsafe fn table_walk(camera: usize) {
         if !filled {
             continue;
         }
-        if table_reachable(shape, chain, camera, touched) {
-            states.insert(rd::<usize>(shape, GEOMETRY_EFFECT_STATE));
-            display_work(shape, kind, true);
-            counts[1] += 1;
+        let under_root = chain.last().map_or(false, |&(top, _)| top == root) || chain.len() >= CHAIN_DEPTH;
+        if !under_root {
+            // Off the world (a cell left behind, a detached object): hidden, and out of the
+            // per-frame set; attached again, the tree mark of the attach brings it back.
+            counts[TW_OFF_ROOT] += 1;
+            table_dynamic().remove(&shape);
+        }
+        let before = {
+            let t = tables();
+            (t.records, t.states)
+        };
+        let fields_before = if at >= sweep_from { tables().instances.get(&shape).map(fields_of) } else { None };
+        if under_root && table_reachable(shape, chain, camera, touched) {
+            // Taken only for the per-frame set (no mark): the reach was the frame's work. The
+            // full work only when the instance is hidden, due, live, rechecked, not sent, or
+            // under a billboard (the turn in the reach moved it in this frame).
+            let reach_only = at >= dynamic_from && at < sweep_from && tables().instances.get(&shape).map_or(false, |i| {
+                i.visible && i.sent && !i.live && !i.recheck && !i.renote && i.generation == generation && i.id.wrapping_add(frame) % CHECK_FRAMES != 0
+            }) && !chain.iter().any(|&(_, kind)| kind == CHAIN_BILLBOARD);
+            if reach_only {
+                if let Some(instance) = tables().instances.get_mut(&shape) {
+                    instance.drawn = frame;
+                }
+                counts[TW_REACH_ONLY] += 1;
+            } else {
+                display_work(shape, kind, true);
+                counts[TW_WORKED] += 1;
+            }
         } else if let Some(instance) = tables().instances.get_mut(&shape) {
             if instance.visible {
                 instance.visible = false;
                 capture::instance_state(instance.id, false);
                 tables().states += 1;
-                counts[2] += 1;
+                counts[TW_HIDDEN] += 1;
+            }
+        }
+        if at >= sweep_from {
+            let t = tables();
+            if (t.records, t.states) != before {
+                counts[TW_SWEEP_FINDS] += 1;
+                let after = tables().instances.get(&shape).map(fields_of);
+                let what = match (fields_before, after) {
+                    (Some(a), Some(b)) => {
+                        let names = ["the transform", "the bound", "the colours", "the geometry", "the material", "the visibility"];
+                        let changed: Vec<&str> = (0..6).filter(|&i| a[i] != b[i]).map(|i| names[i]).collect();
+                        if changed.is_empty() { "a record (no field)".to_string() } else { changed.join(", ") }
+                    }
+                    _ => "a record".to_string(),
+                };
+                let what = match (fields_before, after) {
+                    (Some(a), Some(b)) if a[4] != b[4] => format!("{what} (words {})", crate::material_stream::words_changed(a[4] as u32, b[4] as u32)),
+                    _ => what,
+                };
+                log_sweep_find(shape, &what);
             }
         }
     }
-    table_frame_lights(states);
+    table_frame_lights(table_state_counts());
     TABLE_TICKS.fetch_add(capture::ticks() - start, core::sync::atomic::Ordering::Relaxed);
 }
 
@@ -1363,12 +1945,12 @@ unsafe fn table_frame_values() {
     capture::retained_scene(ambient, fog);
 }
 
-/// After the instances: the note of each light of the frame's distinct effect states, once a
-/// frame each (`note_light_once`).
-unsafe fn table_frame_lights(states: &HashSet<usize>) {
+/// After the instances: the note of each light of the instances' effect states, once a frame
+/// each (`note_light_once`).
+unsafe fn table_frame_lights(states: &HashMap<usize, u32>) {
     let t = tables();
     let mut lights = core::mem::take(&mut t.scratch_lights);
-    for &state in states.iter() {
+    for &state in states.keys() {
         state_lights(state, &mut lights);
         for &light in lights.iter() {
             let key: u32 = rd(light, L::index);
@@ -1399,20 +1981,66 @@ unsafe fn event_frame() -> &'static mut HashSet<usize> {
     seen
 }
 
-/// A shape's world transform was updated (`ports::state_update::update_world_data`).
+/// A shape's world transform was updated (`ports::state_update::update_world_data`): a
+/// retained shape is marked for the table walk.
 pub unsafe fn note_world_data(shape: usize) {
     let seen = event_frame();
     let counts = &mut *core::ptr::addr_of_mut!(EVENT_COUNTS);
     counts[0] += 1;
-    if rd::<u16>(shape, FLAGS) & RETAINED_BIT != 0 && seen.insert(shape) {
-        counts[1] += 1;
+    if rd::<u16>(shape, FLAGS) & RETAINED_BIT != 0 {
+        if seen.insert(shape) {
+            counts[1] += 1;
+        }
+        if table_walk_on() {
+            (*core::ptr::addr_of_mut!(SHAPE_MARKS)).push(shape);
+        }
     }
 }
 
-/// An object's app-cull flag changed (`ports::state_update::set_app_culled`).
-pub unsafe fn note_app_culled(_object: usize) {
+/// An object's app-cull flag changed (`ports::state_update::set_app_culled`): it is marked
+/// for the table walk.
+pub unsafe fn note_app_culled(object: usize) {
     event_frame();
     (*core::ptr::addr_of_mut!(EVENT_COUNTS))[2] += 1;
+    if table_walk_on() {
+        (*core::ptr::addr_of_mut!(CULL_MARKS)).push(object);
+    }
+}
+
+/// A node's children changed (the tree ports of `ports::state_update`): the node, and the
+/// attached child when there is one, are marked for the table walk.
+pub unsafe fn note_tree(node: usize, child: usize) {
+    if !table_walk_on() {
+        return;
+    }
+    let marks = &mut *core::ptr::addr_of_mut!(TREE_MARKS);
+    marks.push(node);
+    if child != 0 {
+        marks.push(child);
+    }
+}
+
+/// The properties of the subtree below `node` changed in place
+/// (`ports::state_update::set_opacity`): it is marked for the table walk.
+pub unsafe fn note_material_subtree(node: usize) {
+    if table_walk_on() && node != 0 {
+        (*core::ptr::addr_of_mut!(MATERIAL_MARKS)).push(node);
+    }
+}
+
+/// A property, a texture effect or a shape's data changed (`ports::controller_events`): it is
+/// marked for the table walk.
+pub unsafe fn note_source(key: usize) {
+    if table_walk_on() && key != 0 {
+        (*core::ptr::addr_of_mut!(SOURCE_MARKS)).push(key);
+    }
+}
+
+/// A shape joined the table (its first draw marked it for the helper).
+unsafe fn note_new(shape: usize) {
+    if table_walk_on() {
+        (*core::ptr::addr_of_mut!(NEW_MARKS)).push(shape);
+    }
 }
 
 /// The events' line of the report.
@@ -1427,17 +2055,43 @@ pub unsafe fn event_report() -> String {
 
 /// The table walk's line of the report.
 pub unsafe fn table_walk_report() -> String {
-    let counts = *core::ptr::addr_of!(TABLE_COUNTS);
+    let c = *core::ptr::addr_of!(TABLE_COUNTS);
     let ms = TABLE_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
+    let runs = c[TW_RUNS].max(1) as f64;
+    let list_ms = TABLE_LIST_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
+    // The per-frame set by kind: live, then the first non-plain kind of the chain.
+    let mut kinds = [0u32; 5];
+    for shape in table_dynamic().iter() {
+        let Some(instance) = tables().instances.get(shape) else { continue };
+        if instance.live {
+            kinds[0] += 1;
+        } else if let Some(&(_, kind)) = instance.chain.iter().find(|&&(_, kind)| kind != CHAIN_PLAIN) {
+            kinds[match kind {
+                CHAIN_SWITCH => 1,
+                CHAIN_LOD => 2,
+                CHAIN_FLT => 3,
+                _ => 4,
+            }] += 1;
+        }
+    }
+    let marks = [
+        (*core::ptr::addr_of!(SHAPE_MARKS)).count,
+        (*core::ptr::addr_of!(CULL_MARKS)).count,
+        (*core::ptr::addr_of!(TREE_MARKS)).count,
+        (*core::ptr::addr_of!(NEW_MARKS)).count,
+        (*core::ptr::addr_of!(MATERIAL_MARKS)).count,
+        (*core::ptr::addr_of!(SOURCE_MARKS)).count,
+    ];
     format!(
-        "table walk (entry 13): {}; runs {}, instances worked {}, hidden {}, chains built {}; time {:.3} ms ({:.4} ms a run)",
+        "table walk (entry 13): {}, marks {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, hidden {}, not under the root {}; chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, switch {}, level {}, flt {}, billboard {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4})",
         if table_walk_on() { "on" } else { "off" },
-        counts[0],
-        counts[1],
-        counts[2],
-        counts[3],
-        ms,
-        ms / counts[0].max(1) as f64
+        if table_marks_on() { "on" } else { "off" },
+        c[TW_RUNS], c[TW_FULL], c[TW_LOST],
+        c[TW_ITEMS] as f64 / runs, c[TW_SWEPT] as f64 / runs, c[TW_WORKED] as f64 / runs, c[TW_REACH_ONLY] as f64 / runs, c[TW_HIDDEN], c[TW_OFF_ROOT],
+        c[TW_CHAINS], c[TW_SWEEP_FINDS],
+        marks[0], marks[1], c[TW_CULL_SHAPES], marks[2], c[TW_TREE_SHAPES], marks[4], c[TW_MATERIAL_SHAPES], marks[5], c[TW_SOURCE_SHAPES], marks[3],
+        table_dynamic().len(), kinds[0], kinds[1], kinds[2], kinds[3], kinds[4], table_below().len(), table_sources().len(), table_state_counts().len(),
+        ms, ms / runs, list_ms / runs
     )
 }
 
@@ -1476,6 +2130,8 @@ pub unsafe fn report() -> String {
         + &crate::animation::report()
         + "\n"
         + &table_walk_report()
+        + "\n"
+        + &crate::ports::controller_events::report()
         + "\n" + &event_report()
         + "\n"
         + &crate::live_walk::report()

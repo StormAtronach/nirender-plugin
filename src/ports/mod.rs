@@ -97,6 +97,7 @@ pub mod render_state;
 pub mod rendered;
 pub mod animation;
 pub mod state_update;
+pub mod controller_events;
 pub mod scene;
 pub mod renderer_frame;
 pub mod system_desc;
@@ -121,6 +122,7 @@ static MODULES: &[&[&PortState]] = &[
     scene::PORTS,
     animation::PORTS,
     state_update::PORTS,
+    controller_events::PORTS,
     textures::PORTS,
     #[cfg(not(test))]
     texture_link::PORTS,
@@ -278,6 +280,16 @@ pub fn follows(addr: usize, read: impl Fn(usize) -> u8) -> bool {
     })
 }
 
+/// The ports whose Rust runs the whole engine function and only notes what it changed (the
+/// events of entry 13). The game code past their stolen bytes runs as it is in memory, so a
+/// change there by another mod (MWSE's fix in `NiFlipController::Update`) is kept.
+static WRAPPING: &[&[&PortState]] = &[state_update::PORTS, controller_events::PORTS];
+
+/// True when the port at `addr` runs the whole engine function (`WRAPPING`).
+pub fn wraps_engine(addr: usize) -> bool {
+    WRAPPING.iter().any(|module| module.iter().any(|port| port.addr == addr))
+}
+
 /// Every port.
 pub fn all() -> impl Iterator<Item = &'static PortState> {
     MODULES.iter().flat_map(|module| module.iter().copied())
@@ -304,6 +316,13 @@ mod tests {
         assert!(follows(0x6B42AD, |addr| call[addr - 0x6B42AC]));
         assert!(!follows(0x6B42AD, database));
         assert!(!follows(0x400000, database));
+    }
+
+    #[test]
+    fn a_port_that_runs_the_engine_function_is_known() {
+        assert!(wraps_engine(0x715A50), "NiFlipController::Update");
+        assert!(wraps_engine(0x442B10), "NiAVObject::SetAppCulled");
+        assert!(!wraps_engine(0x6E4F90), "NiTriShape::Display is a port of Rust");
     }
 
     #[test]

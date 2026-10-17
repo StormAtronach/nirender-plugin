@@ -40,6 +40,10 @@ unsafe fn port_follows(change: &census::Change) -> bool {
 /// True when a port follows the run of `len` changed bytes at `offset` of `func`. `live` is
 /// the function in memory, and `read` gives the byte in memory at an address.
 fn follows_change(func: &crate::gen::funcs::Func, live: &[u8], offset: usize, len: usize, read: impl Fn(usize) -> u8) -> bool {
+    // A port that runs the whole engine function keeps a change past its stolen bytes.
+    if ports::wraps_engine(func.ea) && offset >= func.steal {
+        return true;
+    }
     if let site::Kind::RedirectedCall(at) = site::classify(func, live, offset, len) {
         return ports::serves_site(at);
     }

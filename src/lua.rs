@@ -364,6 +364,18 @@ unsafe extern "C" fn table_walk(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.tableMarks(on)`: the table walk works only the marked instances (entry 13; on
+/// by default) or every instance each frame (off, the walk of step 1); returns the state
+/// before; without an argument the state.
+unsafe extern "C" fn table_marks(l: LuaState) -> i32 {
+    let before = crate::instance_stream::table_marks_on();
+    if lua_gettop(l) >= 1 {
+        crate::instance_stream::set_table_marks(lua_toboolean(l, 1) != 0);
+    }
+    lua_pushboolean(l, before as i32);
+    1
+}
+
 /// `nirender.changed(address)`: TEMPORARY, plan C17 (until MWSE notifies the changes of its
 /// Lua bindings): `notifier.lua` reports the address of an object a Lua mod changed.
 unsafe extern "C" fn changed(l: LuaState) -> i32 {
@@ -656,6 +668,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "noteEvery", note_every);
     set_fn(l, "changed", changed);
     set_fn(l, "tableWalk", table_walk);
+    set_fn(l, "tableMarks", table_marks);
     set_fn(l, "displayCost", display_cost);
     set_fn(l, "retained", retained);
     set_fn(l, "captureFrames", capture_frames);

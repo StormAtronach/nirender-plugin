@@ -23,6 +23,10 @@ FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiP
                      r"|NiGeometry::UpdatePropertiesDownward$|NiGeometry::UpdateEffectsDownward$"
                      # The events of the table walk (entry 13, 2026-10-17).
                      r"|NiGeometry::UpdateWorldData$|NiAVObject::SetAppCulled$"
+                     r"|NiNode::AttachChild$|NiNode::DetachChild$|NiNode::DetachChildAt$|NiNode::SetChildAt$"
+                     r"|ActorAnimController::setOpacity$"
+                     r"|NiFlipController::Update$|NiAlphaController::Update$|NiMaterialColorController::Update$"
+                     r"|NiUVController::Update$|WorldController::updateEnchantedItemEffect$"
                      r"|NiGeometry::dtor$)")
 FUNC_SKIP = re.compile(r"_SEH$|NiDX8Application|NiDX8SelectResolution|StdMap")
 
