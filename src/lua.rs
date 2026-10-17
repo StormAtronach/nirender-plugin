@@ -351,6 +351,19 @@ unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.liveWalk(on)` turns the live walk of plan F8 part 2 on or off and returns the
+/// state before; without an argument it returns the state.
+unsafe extern "C" fn live_walk(l: LuaState) -> i32 {
+    let before = crate::live_walk::on();
+    if lua_gettop(l) >= 1 {
+        let on = lua_toboolean(l, 1) != 0;
+        crate::live_walk::set_on(on);
+        crate::log!("live walk: {} (was {})", on, before);
+    }
+    lua_pushboolean(l, before as i32);
+    1
+}
+
 /// `nirender.retained(mode)` sets the mode of the retained instances ("off", "dual" or
 /// "gpu") and returns the mode before. Without an argument it returns the mode.
 unsafe extern "C" fn retained(l: LuaState) -> i32 {
@@ -602,6 +615,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "instances", instances_report);
     set_fn(l, "nifShading", nif_shading);
     set_fn(l, "animationPolicy", animation_policy);
+    set_fn(l, "liveWalk", live_walk);
     set_fn(l, "retained", retained);
     set_fn(l, "captureFrames", capture_frames);
     set_fn(l, "captureEnd", capture_end);

@@ -389,6 +389,7 @@ pub unsafe fn reset() {
 /// A scene of the game begins: the camera of the world scene is kept for the check at its
 /// end.
 pub unsafe fn scene_begin(kind: u32, camera: usize) {
+    crate::live_walk::scene_begin();
     tables().world_camera = if kind == SCENE_WORLD { camera } else { 0 };
     if kind == SCENE_WORLD && camera != 0 {
         crate::animation::note_camera(camera);
@@ -425,6 +426,14 @@ pub unsafe fn scene_end() {
             t.states += 1;
         }
     }
+}
+
+/// True when the engine serves the shape's display as a rule (plan F8, part 2): the shape
+/// is not a retained instance (rejected, or never considered), or it is a live one (its
+/// display runs its controllers and notes it), or a skinned one (its draw carries the
+/// palette of its bones each frame). An instance the table draws is not the engine's.
+pub unsafe fn engine_serves(shape: usize) -> bool {
+    tables().instances.get(&shape).map_or(true, |instance| instance.live || instance.skinned)
 }
 
 /// A device texture went away: the material handle of an instance can be stale. The next
@@ -863,6 +872,7 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
     // The controllers of a live shape run before its draw, as the engine's display runs
     // them (`NiTriShape::Display`): a morpher writes its vertices then.
     if instance.live {
+        crate::link_client::note_world_shape(shape, crate::live_walk::Kind::of_draw(kind));
         let mut controller: usize = rd(shape, CONTROLLERS);
         while controller != 0 {
             vcall0(controller, SLOT_ON_PRE_DISPLAY);
@@ -937,11 +947,14 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
     } else {
         crate::shape_stream::fog_values(renderer, property_state)
     };
-    if t.scene_frame != frame {
+    // The live walk's displays (plan F8, part 2) leave the record to the engine's walk
+    // while that walk runs: the order of the list is not the scene's. Part 4 gives the
+    // values a source of their own (the cell's ambient light and fog).
+    if t.scene_frame != frame && !crate::live_walk::in_walk() {
         t.scene_frame = frame;
         t.scene_values = (ambient, fog);
         capture::retained_scene(ambient, fog);
-    } else if t.scene_values != (ambient, fog) {
+    } else if t.scene_frame == frame && t.scene_values != (ambient, fog) {
         t.scene_mixed += 1;
     }
     // The lights of the effect state of the shape, their device values when they changed,
@@ -1006,4 +1019,6 @@ pub unsafe fn report() -> String {
         t.states
     ) + "\n"
         + &crate::animation::report()
+        + "\n"
+        + &crate::live_walk::report()
 }
