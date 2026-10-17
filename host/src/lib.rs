@@ -1309,6 +1309,8 @@ struct Counts {
     /// Copies of a draw (clipped, replayed) that found no room in the records or the
     /// instances of the frame, and were drawn as they are or not at all.
     no_record: u32,
+    /// The textures that came again for a handle with a slot of the arrays.
+    textures_replaced: u32,
     /// The most textures of a frame in the arrays, and the stages that found no slot.
     most_frame_textures: u32,
     over_array_cap: u32,
@@ -2196,6 +2198,33 @@ impl Renderer {
         self.frame_samplers.push(plain);
     }
 
+    /// The texture of a handle. A handle is the address of an object of the game's side:
+    /// a released handle comes back for a later texture. A pinned slot of the arrays, and a
+    /// slot of the frame, that holds the handle takes the new view (the draws of the handle
+    /// showed the earlier texture after a capture, whose purge makes the game make every
+    /// source texture again; found 2026-10-17).
+    fn set_texture(&mut self, handle: u32, view: Rc<wgpu::TextureView>) {
+        let mut changed = false;
+        if let Some(pinned) = self.pinned_textures.iter_mut().find(|(h, _)| *h == handle) {
+            if !Rc::ptr_eq(&pinned.1, &view) {
+                pinned.1 = view.clone();
+                changed = true;
+            }
+        }
+        if let Some(&slot) = self.frame_texture_slots.get(&handle) {
+            if !Rc::ptr_eq(&self.frame_texture_views[slot as usize], &view) {
+                self.frame_texture_views[slot as usize] = view.clone();
+                changed = true;
+            }
+        }
+        if changed {
+            self.array_group = None;
+            self.array_variants.clear();
+            self.counts.textures_replaced += 1;
+        }
+        self.textures.insert(handle, view);
+    }
+
     /// The slot of a texture of the game in the arrays of the frame: a new one for a handle
     /// the frame did not have. 0 (white) for no texture, an unknown handle, or a frame with
     /// more textures than the arrays hold.
@@ -2459,7 +2488,7 @@ impl Renderer {
             wgpu::util::TextureDataOrder::MipMajor,
             &bytes,
         );
-        self.textures.insert(handle, Rc::new(texture.create_view(&Default::default())));
+        self.set_texture(handle, Rc::new(texture.create_view(&Default::default())));
         self.texture_objects.insert(handle, (texture, d3d_format));
         self.counts.textures += 1;
     }
@@ -2572,7 +2601,7 @@ impl Renderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        self.textures.insert(handle, Rc::new(texture.create_view(&Default::default())));
+        self.set_texture(handle, Rc::new(texture.create_view(&Default::default())));
         self.texture_objects.insert(handle, (texture, d3d_format));
         self.counts.textures += 1;
     }
@@ -2583,7 +2612,7 @@ impl Renderer {
         let texture = target_texture(&self.device, width, height, self.target_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC);
         let depth = target_texture(&self.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
         let view = Rc::new(texture.create_view(&Default::default()));
-        self.textures.insert(handle, view.clone());
+        self.set_texture(handle, view.clone());
         self.texture_objects.remove(&handle);
         self.targets.insert(handle, RenderTexture { texture, view, depth: Rc::new(depth.create_view(&Default::default())), size: (width, height) });
         self.counts.render_textures += 1;
