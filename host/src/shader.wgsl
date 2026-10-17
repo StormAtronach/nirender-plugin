@@ -1,3 +1,7 @@
+// The binding arrays are an extension of WGSL that the shader must enable before any
+// other item.
+enable wgpu_binding_array;
+
 // The work of the fixed-function pipeline of Direct3D 8 for one draw of the game: transform,
 // lighting for each vertex, the texture stages, the alpha test and the fog. One shader does
 // all draws: each choice of a draw is a value in `Draw`.
@@ -212,18 +216,10 @@ fn cluster_lights(pixel: vec2f, view_z: f32) -> vec2u {
 // variable made the GPU three times slower (2026-10-16).
 @group(0) @binding(8) var<storage, read> draws: array<Draw>;
 var<private> record: u32;
-@group(2) @binding(0) var texture0: texture_2d<f32>;
-@group(2) @binding(1) var texture1: texture_2d<f32>;
-@group(2) @binding(2) var texture2: texture_2d<f32>;
-@group(2) @binding(3) var texture3: texture_2d<f32>;
-@group(2) @binding(4) var texture4: texture_2d<f32>;
-@group(2) @binding(5) var texture5: texture_2d<f32>;
-@group(1) @binding(0) var sampler0: sampler;
-@group(1) @binding(1) var sampler1: sampler;
-@group(1) @binding(2) var sampler2: sampler;
-@group(1) @binding(3) var sampler3: sampler;
-@group(1) @binding(4) var sampler4: sampler;
-@group(1) @binding(5) var sampler5: sampler;
+// The textures and the samplers of the frame in binding arrays: a stage names its slots
+// in its record (x the texture, y the sampler; the slot 0 is white and plain).
+@group(1) @binding(0) var textures: binding_array<texture_2d<f32>>;
+@group(1) @binding(1) var samplers: binding_array<sampler>;
 
 struct VertexIn {
     @location(0) position: vec3f,
@@ -556,12 +552,12 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     // A texture read must not be in a branch, so each stage reads its texture first.
     var texels: array<vec4f, 6>;
     // A bump stage moves the coordinate of the stage after it.
-    texels[0] = textureSample(texture0, sampler0, final_coordinate(0u, inp.coordinate0));
-    texels[1] = bump_light(0u, texels[0], textureSample(texture1, sampler1, final_coordinate(1u, inp.coordinate1) + bump_move(0u, texels[0])));
-    texels[2] = bump_light(1u, texels[1], textureSample(texture2, sampler2, final_coordinate(2u, inp.coordinate2) + bump_move(1u, texels[1])));
-    texels[3] = bump_light(2u, texels[2], textureSample(texture3, sampler3, final_coordinate(3u, inp.coordinate3) + bump_move(2u, texels[2])));
-    texels[4] = bump_light(3u, texels[3], textureSample(texture4, sampler4, final_coordinate(4u, inp.coordinate4) + bump_move(3u, texels[3])));
-    texels[5] = bump_light(4u, texels[4], textureSample(texture5, sampler5, final_coordinate(5u, inp.coordinate5) + bump_move(4u, texels[4])));
+    texels[0] = textureSample(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], final_coordinate(0u, inp.coordinate0));
+    texels[1] = bump_light(0u, texels[0], textureSample(textures[draws[record].stages[1].slots.x], samplers[draws[record].stages[1].slots.y], final_coordinate(1u, inp.coordinate1) + bump_move(0u, texels[0])));
+    texels[2] = bump_light(1u, texels[1], textureSample(textures[draws[record].stages[2].slots.x], samplers[draws[record].stages[2].slots.y], final_coordinate(2u, inp.coordinate2) + bump_move(1u, texels[1])));
+    texels[3] = bump_light(2u, texels[2], textureSample(textures[draws[record].stages[3].slots.x], samplers[draws[record].stages[3].slots.y], final_coordinate(3u, inp.coordinate3) + bump_move(2u, texels[2])));
+    texels[4] = bump_light(3u, texels[3], textureSample(textures[draws[record].stages[4].slots.x], samplers[draws[record].stages[4].slots.y], final_coordinate(4u, inp.coordinate4) + bump_move(3u, texels[3])));
+    texels[5] = bump_light(4u, texels[4], textureSample(textures[draws[record].stages[5].slots.x], samplers[draws[record].stages[5].slots.y], final_coordinate(5u, inp.coordinate5) + bump_move(4u, texels[4])));
 
     if (draw_counts_w() & 4u) != 0u {
         return vec4f(extension_sky_color(normalize(inp.world_position), inp.clip.xy), 1.0);

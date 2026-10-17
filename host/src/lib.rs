@@ -1523,25 +1523,6 @@ const RECORDS_AT_FIRST: usize = 4096;
 const ARRAY_CAP: u32 = 4096;
 const SAMPLER_CAP: u32 = 64;
 
-/// The shader text with the textures and the samplers of the game in binding arrays of the
-/// frame (group 1): the six texture and six sampler bindings of a draw go, and a stage
-/// samples by the slots of its record.
-fn array_shader(text: &str) -> String {
-    let mut text = text.to_string();
-    for i in 0..STAGES {
-        let (texture, sampler, sample) = (format!("@group(2) @binding({i}) var texture{i}: texture_2d<f32>;\n"), format!("@group(1) @binding({i}) var sampler{i}: sampler;\n"), format!("textureSample(texture{i}, sampler{i}, "));
-        assert!(text.contains(&texture) && text.contains(&sampler) && text.contains(&sample), "the shader text changed: stage {i}");
-        text = text.replace(&texture, "").replace(&sampler, "");
-        text = text.replace(&sample, &format!("textureSample(textures[draws[record].stages[{i}].slots.x], samplers[draws[record].stages[{i}].slots.y], "));
-    }
-    let anchor = "var<private> record: u32;\n";
-    assert!(text.contains(anchor));
-    let text = text.replace(anchor, &format!("{anchor}// The textures and the samplers of the frame: a stage names its slots in its record.\n@group(1) @binding(0) var textures: binding_array<texture_2d<f32>>;\n@group(1) @binding(1) var samplers: binding_array<sampler>;\n"));
-    // The binding arrays are an extension of WGSL that the shader must enable before any
-    // other item.
-    format!("enable wgpu_binding_array;\n{text}")
-}
-
 /// The arguments of one indexed indirect draw, as `multi_draw_indexed_indirect` reads them.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -1980,7 +1961,7 @@ impl Renderer {
         // The text of the extension reads the record of the draw as `draw.field`; the record
         // is in the storage buffer of the frame (`draws[record]`, see shader.wgsl).
         let extension_shader = retained::rewrite_extension_text(&extension_shader.replace("draw.", "draws[record]."));
-        let text = array_shader(include_str!("shader.wgsl"));
+        let text = include_str!("shader.wgsl").to_string();
         let source = format!("{text}\n{extension_shader}");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let array_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
