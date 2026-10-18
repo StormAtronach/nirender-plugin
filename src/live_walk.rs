@@ -201,9 +201,11 @@ pub unsafe fn note(shape: usize, kind: Kind) {
     }
 }
 
-/// The destructor of a geometry: the shape leaves the list and the candidates.
-pub unsafe fn forget(shape: usize) {
-    if list().remove(&shape).is_some() {
+/// The destructor of a geometry: the shape leaves the list and the candidates. True when it
+/// was in the list.
+pub unsafe fn forget(shape: usize) -> bool {
+    let listed = list().remove(&shape).is_some();
+    if listed {
         FORGOTTEN.fetch_add(1, Ordering::Relaxed);
         ORDER_DIRTY.store(true, Ordering::Relaxed);
     }
@@ -218,6 +220,7 @@ pub unsafe fn forget(shape: usize) {
     if let Some(force) = (*addr_of_mut!(FORCE)).as_mut() {
         force.remove(&shape);
     }
+    listed
 }
 
 /// True when the walk displayed the shape in the run in progress: the engine's walk, which

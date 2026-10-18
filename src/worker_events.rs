@@ -64,6 +64,21 @@ static QUEUE: Mutex<Vec<Event>> = Mutex::new(Vec::new());
 static WAITING: AtomicBool = AtomicBool::new(false);
 static QUEUED: [AtomicU64; KINDS] = [const { AtomicU64::new(0) }; KINDS];
 static APPLIED: [AtomicU64; KINDS] = [const { AtomicU64::new(0) }; KINDS];
+/// Of the shapes the worker destroyed: those the table had as instances, and those in the
+/// live walk's list, when the main thread applied the event. A count above 0 means the worker
+/// frees objects the plugin models, and the window between the free and the drain is real.
+static DESTROYED_INSTANCES: AtomicU64 = AtomicU64::new(0);
+static DESTROYED_LISTED: AtomicU64 = AtomicU64::new(0);
+/// Notes on the first worker-side destructors of shapes that carry the table's mark (the
+/// shapes the helper draws): the shape's name, its ancestors' names, and the engine addresses
+/// found on the worker's stack (a scan: the engine omits frame pointers, so the frame chain
+/// gives nothing). The audit's fact that the worker frees only through
+/// `RecordsHandler::unloadCell` was contradicted by 22952 worker-side destructors in one
+/// glide with every `unloadCell` deferred, 30 of them table instances (2026-10-18, runs
+/// 20261018-202328-cross-rules and 20261018-203207-cross-census).
+const NOTES_KEPT: usize = 16;
+static NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static NOTES_LOGGED: AtomicU64 = AtomicU64::new(0);
 
 /// Writes an event when the call came from another thread (on the main thread the port's own
 /// code does the work at once).
@@ -81,9 +96,55 @@ fn push(event: Event) {
 // The `any_thread` hooks, with the arguments of each port's call.
 
 unsafe fn on_geometry_dtor(args: &[usize]) {
+    if crate::shadow::on_main_thread() {
+        return;
+    }
     if let Some(&shape) = args.first() {
         push(Event::Destroyed(shape));
+        // The shape is alive here (its destructor runs): its mark, name and ancestors can be
+        // read. Only the marked ones are noted.
+        if rd::<u16>(shape, FLAGS) & crate::instance_stream::RETAINED_BIT != 0 {
+            if let Ok(mut notes) = NOTES.try_lock() {
+                if notes.len() < NOTES_KEPT {
+                    notes.push(note_of(shape));
+                }
+            }
+        }
     }
+}
+
+const FLAGS: usize = 0x14;
+const PARENT: usize = 0x18;
+const NAME: usize = 0x8;
+
+unsafe fn name_of(object: usize) -> String {
+    let at: usize = rd(object, NAME);
+    if at == 0 {
+        return String::from("-");
+    }
+    core::ffi::CStr::from_ptr(at as *const core::ffi::c_char).to_string_lossy().into_owned()
+}
+
+/// The shape's name, its ancestors' names from the parent up (at most 8), and the engine
+/// addresses among the 192 words above the stack pointer.
+unsafe fn note_of(shape: usize) -> String {
+    let mut names = vec![name_of(shape)];
+    let mut node: usize = rd(shape, PARENT);
+    while node != 0 && names.len() < 9 {
+        names.push(name_of(node));
+        node = rd(node, PARENT);
+    }
+    let esp: usize;
+    core::arch::asm!("mov {}, esp", out(reg) esp, options(nomem, nostack, preserves_flags));
+    let mut addresses = Vec::new();
+    for i in 0..192 {
+        let word: usize = rd(esp, i * 4);
+        if (0x401000..0x7A0000).contains(&word) && !addresses.contains(&word) {
+            addresses.push(word);
+        }
+    }
+    let addresses: Vec<String> = addresses.iter().map(|a| format!("{a:#x}")).collect();
+    format!("shape 0x{shape:x} '{}' under {}; stack words in the engine: {}", names[0], names[1..].join(" < "), addresses.join(" "))
 }
 
 /// `AttachChild(this, child, firstAvailable)`.
@@ -153,7 +214,13 @@ pub fn install() {
 
 /// The main thread applies the events written since the last drain, in their order.
 pub unsafe fn drain() {
-    if !WAITING.load(Ordering::Acquire) || !crate::shadow::on_main_thread() {
+    if !crate::shadow::on_main_thread() {
+        return;
+    }
+    // The destructions another thread deferred first: they run as the main thread's ports and
+    // apply their events at once (`deferred_destroy`).
+    crate::deferred_destroy::run();
+    if !WAITING.load(Ordering::Acquire) {
         return;
     }
     let events = match QUEUE.lock() {
@@ -166,8 +233,12 @@ pub unsafe fn drain() {
     for &event in &events {
         match event {
             Event::Destroyed(shape) => {
-                crate::instance_stream::forget(shape);
-                crate::live_walk::forget(shape);
+                if crate::instance_stream::forget(shape) {
+                    DESTROYED_INSTANCES.fetch_add(1, Ordering::Relaxed);
+                }
+                if crate::live_walk::forget(shape) {
+                    DESTROYED_LISTED.fetch_add(1, Ordering::Relaxed);
+                }
             }
             Event::Tree(node, child) => crate::instance_stream::note_tree(node, child),
             Event::EffectPurged(effect, index) => crate::light_set::purge_with_index(effect, index),
@@ -177,11 +248,29 @@ pub unsafe fn drain() {
             crate::log!("worker events: the first of the {} applied on the main thread", KIND_NAMES[event.kind()]);
         }
     }
+    log_notes();
+}
+
+/// Writes the notes on the worker's destructors of marked shapes to the log as they come (at
+/// most `NOTES_KEPT`).
+unsafe fn log_notes() {
+    let Ok(mut notes) = NOTES.try_lock() else { return };
+    for note in notes.drain(..) {
+        let n = NOTES_LOGGED.fetch_add(1, Ordering::Relaxed);
+        if n < NOTES_KEPT as u64 {
+            crate::log!("worker events: marked shape destroyed on the cell worker ({n}): {note}");
+        }
+    }
 }
 
 pub fn report() -> String {
     let parts: Vec<String> = (0..KINDS)
         .map(|k| format!("{} {} queued, {} applied", KIND_NAMES[k], QUEUED[k].load(Ordering::Relaxed), APPLIED[k].load(Ordering::Relaxed)))
         .collect();
-    format!("worker events (C26, C27): {}", parts.join("; "))
+    format!(
+        "worker events (C26, C27): {}; of the shapes destroyed, {} were instances of the table and {} were in the live walk's list",
+        parts.join("; "),
+        DESTROYED_INSTANCES.load(Ordering::Relaxed),
+        DESTROYED_LISTED.load(Ordering::Relaxed)
+    )
 }

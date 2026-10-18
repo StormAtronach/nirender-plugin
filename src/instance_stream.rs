@@ -600,8 +600,8 @@ pub unsafe fn frame_tick() {
 }
 
 /// The shape is deleted (the destructor of `NiGeometry`): its instance goes, with a record
-/// for the helper when the helper had it.
-pub unsafe fn forget(shape: usize) {
+/// for the helper when the helper had it. True when the shape was an instance.
+pub unsafe fn forget(shape: usize) -> bool {
     let t = tables();
     t.rejected.remove(&shape);
     if let Some(instance) = t.instances.remove(&shape) {
@@ -610,7 +610,9 @@ pub unsafe fn forget(shape: usize) {
             capture::instance_delete(instance.id);
         }
         t.deletes += 1;
+        return true;
     }
+    false
 }
 
 /// The fast path of a draw, before the notes of the draw: true when the shape is a
@@ -2791,6 +2793,7 @@ pub unsafe fn report() -> String {
         + "\n" + &crate::click_time::report()
         + "\n" + &crate::worker_events::report()
         + "\n" + &crate::deferred_unload::report()
+        + "\n" + &crate::deferred_destroy::report()
         + "\n" + &crate::live_walk::class_report()
         + "\n" + &crate::camera_space::skin_report()
         + "\n" + &event_report()

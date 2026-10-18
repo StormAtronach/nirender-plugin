@@ -16,6 +16,9 @@ extern "system" {
     pub fn GetModuleFileNameW(module: *mut c_void, name: *mut u16, size: u32) -> u32;
     pub fn GetModuleHandleW(name: *const u16) -> *mut c_void;
     pub fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+    /// The return addresses of the calling thread's stack (the frame chain), `skip` frames
+    /// from the top left out; returns the count written into `frames`.
+    pub fn RtlCaptureStackBackTrace(skip: u32, count: u32, frames: *mut *mut c_void, hash: *mut u32) -> u16;
 }
 
 /// Writes `bytes` over code at `addr`.
