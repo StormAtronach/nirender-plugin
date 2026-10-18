@@ -34,6 +34,7 @@ EXTRA = [
     0x6F41B0,  # NiGeometry::UpdatePropertiesDownward
     0x6F4270,  # NiGeometry::UpdateEffectsDownward
     0x6F2180,  # BSAnimationNode::UpdateControllers
+    0x6F2060,  # BSAnimationNode::UpdateDownwardPass (the fourth reader, 2026-10-18)
     0x6D8320,  # NiSwitchNode::Display
     0x6D90B0,  # NiFltAnimationNode::Display
     0x6D6470,  # NiBSPNode::Display

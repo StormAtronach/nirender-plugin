@@ -19,6 +19,7 @@ FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiP
                      r"|BSAnimationNode::Display$|NiLODNode::Display$|NiTriStrips::Display$"
                      # The readers of the display flag (plan F8, part 1, 2026-10-17).
                      r"|BSAnimationManager::Update$|BSAnimationNode::UpdateControllers$"
+                     r"|BSAnimationNode::UpdateDownwardPass$"
                      # The new property and effect states of a shape (plan 8b, 2026-10-17).
                      r"|NiGeometry::UpdatePropertiesDownward$|NiGeometry::UpdateEffectsDownward$"
                      # The events of the table walk (entry 13, 2026-10-17).

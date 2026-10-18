@@ -1,10 +1,12 @@
 //! The readers of the display flag of the engine (plan F8, part 1): before each of them
 //! runs, the flag it reads is set on the nodes the policy selects (`crate::animation`), and
-//! the engine function then runs as it is. The three readers (engine-rules R15, entry A of
+//! the engine function then runs as it is. The four readers (engine-rules R15, entry A of
 //! the journal): `BSAnimationManager::Update` gives a managed node with the flag the full
 //! update, and a node without it the controllers only when it is beyond the far plane;
-//! `BSAnimationNode::UpdateControllers` runs the controllers only with its own displayed
-//! bit (or AlwaysUpdate). The third reader, `Reference::animIdleUpdate` (the pose of an
+//! `BSAnimationNode::UpdateControllers` and `BSAnimationNode::UpdateDownwardPass` run the
+//! controllers only with the node's own displayed bit (or AlwaysUpdate, which only a
+//! keyframe or visibility controller in the subtree sets: an animated texture effect does
+//! not, 2026-10-18). The fourth reader, `Reference::animIdleUpdate` (the pose of an
 //! actor only with the flag on its scene node), cannot be a port: MWSE patches it (a call
 //! into MWSE.dll at +0x64) and the census locks such a port and refuses the renderer
 //! (2026-10-17). The actors get their flag another way before the walk goes (plan F8,
@@ -63,7 +65,24 @@ pub unsafe fn animation_node_update_controllers(this: usize, time: f32) {
     animation_node_update_controllers_port::engine(this, time);
 }
 
+port_thiscall!(animation_node_update_downward_pass_port, 0x6F2060, "BSAnimationNode::UpdateDownwardPass",
+    fn(this, time: f32, update_controllers: u8, update_children: u8) -> (),
+    compare_eax = false,
+    regions = |set| set.skip(),
+    rust = animation_node_update_downward_pass);
+
+/// The displayed bit of the animation node when the policy selects it, then the engine's
+/// downward pass, which runs the controllers only with that bit (or AlwaysUpdate).
+pub unsafe fn animation_node_update_downward_pass(this: usize, time: f32, update_controllers: u8, update_children: u8) {
+    crate::shadow::touch(&animation_node_update_downward_pass_port::STATE);
+    if update_controllers != 0 && crate::animation::active() && crate::animation::displayed(this) {
+        wr::<u8>(this, ANIM_FLAGS, rd::<u8>(this, ANIM_FLAGS) | ANIM_DISPLAYED);
+    }
+    animation_node_update_downward_pass_port::engine(this, time, update_controllers, update_children);
+}
+
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &animation_manager_update_port::STATE,
     &animation_node_update_controllers_port::STATE,
+    &animation_node_update_downward_pass_port::STATE,
 ];
