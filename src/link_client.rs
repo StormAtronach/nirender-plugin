@@ -459,8 +459,12 @@ unsafe fn kind_call(kind: u32, call: u32, args: &[u32]) -> Option<u32> {
     if kind == KIND_FRAME {
         *addr_of_mut!(FRAME_CALLS) += 1;
         if call == CALL_PRESENT {
-            // This Present does not go through the device, where the frame timer is.
+            // This Present does not go through the device, where the frame timer and the
+            // frame hook are: the frame's work of the plugin runs here.
             crate::perf::on_present();
+            // One deferred cell unload a frame (plan C27, L1), inside the frame: its
+            // records go before the frame's end.
+            crate::deferred_unload::run();
         }
     }
     let result = (host.call)(call, args.as_ptr());

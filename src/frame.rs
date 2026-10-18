@@ -103,6 +103,8 @@ pub fn compare(first: &[u32], second: &[u32], first_name: &str, second_name: &st
 
 /// Runs at each Present of the game, before the call goes to the device.
 pub unsafe fn on_present() {
+    // One deferred cell unload a frame, after the frame's work (plan C27, L1).
+    crate::deferred_unload::run();
     let work = &mut *core::ptr::addr_of_mut!(WORK);
     match PHASE.load(Ordering::Relaxed) {
         ARMED if DUMP_PATH.lock().unwrap().is_some() => {

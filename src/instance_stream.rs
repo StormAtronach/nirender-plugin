@@ -2764,6 +2764,7 @@ pub unsafe fn report() -> String {
         + "\n" + &crate::script_names::report()
         + "\n" + &crate::click_time::report()
         + "\n" + &crate::worker_events::report()
+        + "\n" + &crate::deferred_unload::report()
         + "\n" + &crate::live_walk::class_report()
         + "\n" + &crate::camera_space::skin_report()
         + "\n" + &event_report()
