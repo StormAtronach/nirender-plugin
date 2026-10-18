@@ -224,7 +224,27 @@ def main():
                 if line.startswith(("own device", "stream:", "capture: end", "own host", "install:", "link:")):
                     print("plugin: " + line.strip()[:240])
     print("pictures in " + run.dir)
+    # The size of the run and of every run kept (the owner, 2026-10-18: the results folder
+    # had grown to hundreds of GB unnoticed). The runner deletes nothing; the line says when
+    # it is time to.
+    print("size: this run %s; all runs in %s %s" % (folder_size(run.dir), os.path.dirname(run.dir), folder_size(os.path.dirname(run.dir))))
     return 0 if done else 1
+
+
+def folder_size(path):
+    """The size of a folder as text, counted file by file."""
+    total = 0
+    for root, _, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if total < 1024 or unit == "TB":
+            return "%.1f %s" % (total, unit)
+        total /= 1024.0
+    return "?"
 
 
 if __name__ == "__main__":
