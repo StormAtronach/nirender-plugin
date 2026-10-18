@@ -177,6 +177,7 @@ pub unsafe fn install() -> Result<String, String> {
     // The cells the cell worker evicts are unloaded on the main thread (plan C27, L1).
     crate::deferred_unload::install();
     crate::deferred_destroy::install();
+    crate::freed_fill::install();
 
     let mut failed = 0;
     for port in ports::all() {

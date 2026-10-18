@@ -727,7 +727,7 @@ unsafe fn walk_timed(root: usize, camera: usize) {
     IN_WALK.store(true, Ordering::Relaxed);
     let mut group: Option<Group> = None;
     for &(_, shape) in ordered.iter() {
-        if !list().contains_key(&shape) {
+        if !list().contains_key(&shape) || !crate::pointer_check::shape(shape, "the live walk") {
             continue;
         }
         let adjust = match reachable(shape, root, planes) {

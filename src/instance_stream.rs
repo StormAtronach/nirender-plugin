@@ -1854,6 +1854,9 @@ unsafe fn table_reachable(shape: usize, chain: &[(usize, u8)], camera: usize, to
         return false;
     }
     for (at, &(node, kind)) in chain.iter().enumerate().rev() {
+        if !crate::pointer_check::node(node, "the table walk's reach") {
+            return false;
+        }
         if rd::<u16>(node, FLAGS) & APP_CULLED != 0 {
             return false;
         }
@@ -2126,6 +2129,9 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     SCENE_SHAPE = 0;
     for at in 0..work.len() {
         let shape = work[at];
+        if !crate::pointer_check::shape(shape, "the table walk") {
+            continue;
+        }
         // The lights of the frame come from the counted effect states: the count follows the
         // shape's state first, marked for the helper or not, reached or not. A state no shape
         // holds can be freed, and the lights read every counted state (the fault of dm17: in
@@ -2520,6 +2526,9 @@ unsafe fn table_frame_lights() {
     counts[LC_PASSES] += 1;
     counts[LC_PASS_LIGHTS] += crate::light_set::len() as u64;
     for light in crate::light_set::lights() {
+        if !crate::pointer_check::light(light, "the frame's lights") {
+            continue;
+        }
         let key: u32 = rd(light, L::index);
         note_light_once(t, light, key);
     }
@@ -2794,6 +2803,8 @@ pub unsafe fn report() -> String {
         + "\n" + &crate::worker_events::report()
         + "\n" + &crate::deferred_unload::report()
         + "\n" + &crate::deferred_destroy::report()
+        + "\n" + &crate::freed_fill::report()
+        + "\n" + &crate::pointer_check::report()
         + "\n" + &crate::live_walk::class_report()
         + "\n" + &crate::camera_space::skin_report()
         + "\n" + &event_report()

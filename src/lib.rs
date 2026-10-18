@@ -25,6 +25,8 @@ pub mod click_time;
 pub mod d3d;
 pub mod deferred_destroy;
 pub mod deferred_unload;
+pub mod freed_fill;
+pub mod pointer_check;
 pub mod worker_events;
 pub mod device;
 pub mod dump;
