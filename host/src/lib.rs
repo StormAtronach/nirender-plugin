@@ -35,7 +35,7 @@ mod engine;
 mod player;
 use engine::{plan, scene};
 mod retained;
-use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
+use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_BONES_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
 
 /// The wgpu of this crate, for a program that draws with it through `Extension`.
 pub use wgpu;
@@ -923,6 +923,9 @@ mod tag {
     pub const INSTANCE_STATE: u32 = 27;
     /// The ambient light and the fog of the frame for the retained draws.
     pub const RETAINED_SCENE: u32 = 28;
+    /// The bones of a skinned retained instance: id, count, bound, then each bone (9 floats,
+    /// 3 doubles: `retained::BONE_BYTES`).
+    pub const INSTANCE_BONES: u32 = 29;
 }
 
 /// A retained instance of the plugin (`tag::INSTANCE`): the helper draws it from this at
@@ -1508,8 +1511,8 @@ mod cores {
 }
 
 /// The bind group of the frame: the resources of the extension, the clusters of the lights,
-/// and the lights and the bones of the frame.
-fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters, lights: &wgpu::Buffer, bones: &wgpu::Buffer, records: &wgpu::Buffer, light_indexes: &wgpu::Buffer, scenes: &wgpu::Buffer, retained_lights: &wgpu::Buffer) -> wgpu::BindGroup {
+/// the lights and the bones of the frame, and the buffers of the retained instances.
+fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters, lights: &wgpu::Buffer, bones: &wgpu::Buffer, records: &wgpu::Buffer, light_indexes: &wgpu::Buffer, scenes: &wgpu::Buffer, retained_lights: &wgpu::Buffer, retained_bones: &wgpu::Buffer) -> wgpu::BindGroup {
     crate::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
         label: Some("extension frame"),
         layout,
@@ -1526,6 +1529,7 @@ fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &
             wgpu::BindGroupEntry { binding: 9, resource: light_indexes.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: scenes, offset: 0, size: core::num::NonZeroU64::new(SCENE_SIZE as u64) }) },
             wgpu::BindGroupEntry { binding: 11, resource: retained_lights.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 12, resource: retained_bones.as_entire_binding() },
         ],
     })
 }
@@ -1838,6 +1842,9 @@ struct Renderer {
     pinned_samplers_in_frame: usize,
     bone_buffer: wgpu::Buffer,
     bone_capacity: usize,
+    /// The bones of the skinned retained instances (`Renderer::retained_upload`), in matrices.
+    retained_bone_buffer: wgpu::Buffer,
+    retained_bone_capacity: usize,
     /// The lights that came as records, by key: a `D3DLIGHT8`.
     lights_known: HashMap<u32, [u8; 104]>,
     /// The GPU time stamps, when the adapter has them.
@@ -2095,6 +2102,14 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
+                // The bones of the skinned retained instances. The vertex stage reads 8
+                // storage buffers with it: the default limit of a stage.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -2142,7 +2157,8 @@ impl Renderer {
         let first_scenes = scene_buffer(&device);
         let first_retained_lights = retained_light_buffer(&device, RETAINED_LIGHTS_AT_FIRST);
         let first_indirect = indirect_buffer(&device, RECORDS_AT_FIRST);
-        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones, &first_records, &first_light_indexes, &first_scenes, &first_retained_lights));
+        let first_retained_bones = bone_buffer(&device, RETAINED_BONES_AT_FIRST);
+        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones, &first_records, &first_light_indexes, &first_scenes, &first_retained_lights, &first_retained_bones));
         let renderer = Renderer {
             frame_layout,
             frame_uniform,
@@ -2157,6 +2173,8 @@ impl Renderer {
             timing: make_timing(&device, &queue),
             bone_buffer: first_bones,
             bone_capacity: BONES_AT_FIRST,
+            retained_bone_buffer: first_retained_bones,
+            retained_bone_capacity: RETAINED_BONES_AT_FIRST,
             device: Rc::new(device),
             target_format,
             surface_usages,
@@ -2893,7 +2911,7 @@ impl Renderer {
             // record of the draw at 13.
             let mut from_instances: Vec<wgpu::VertexAttribute> =
                 (0..4).map(|column| wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: column as u64 * 16, shader_location: 9 + column }).collect();
-            from_instances.push(wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 64, shader_location: 13 });
+            from_instances.push(wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32x2, offset: 64, shader_location: 13 });
             let buffers = [
                 Some(wgpu::VertexBufferLayout { array_stride: key.stride as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &from_vertex }),
                 Some(wgpu::VertexBufferLayout { array_stride: 64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_defaults }),

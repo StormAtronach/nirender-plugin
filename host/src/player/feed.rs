@@ -89,6 +89,10 @@ impl Player {
                 }
             }
             tag::INSTANCE_STATE if data.len() >= 8 => self.retained.set_visible(word(data, 0), word(data, 4) != 0),
+            tag::INSTANCE_BONES if data.len() >= 24 => {
+                let bound = core::array::from_fn(|i| float(data, 8 + i * 4));
+                self.retained.set_bones(word(data, 0), word(data, 4), bound, &data[24..]);
+            }
             tag::RETAINED_SCENE if data.len() >= 8 => {
                 let fog = (word(data, 4) & 32 != 0 && data.len() >= 24).then(|| core::array::from_fn(|i| word(data, 8 + i * 4)));
                 self.retained_values = Some((word(data, 0), fog));

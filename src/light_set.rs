@@ -83,9 +83,16 @@ pub unsafe fn uncount(lights: &[(usize, u32)]) {
 /// A light is destroyed: it leaves the set, and its record gets zero colours (an instance
 /// that still has its key until its next work gets no light from it).
 pub unsafe fn purge(light: usize) {
+    purge_with_index(light, rd(light, L::index));
+}
+
+/// `purge` with the light's index read before: for a light destroyed on the engine's cell
+/// worker, whose block can be freed when the main thread applies the event
+/// (`worker_events`).
+pub unsafe fn purge_with_index(light: usize, index: u32) {
     if set().remove(&light).is_some() {
         (*core::ptr::addr_of_mut!(COUNTS))[4] += 1;
-        crate::light_stream::darken(rd(light, L::index));
+        crate::light_stream::darken(index);
     }
 }
 

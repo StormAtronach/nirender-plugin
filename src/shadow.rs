@@ -130,6 +130,10 @@ pub struct PortState {
     /// A function to call before each call of the port, in every mode, with the arguments
     /// of the call. 0 means none. See `run_before`.
     pub before: AtomicUsize,
+    /// A function to call before each call of the port on ANY thread, with the arguments of
+    /// the call (the other ones run on the main thread only). 0 means none. It must be safe
+    /// on another thread: the geometry's destructor queues its pointer (`destroyed::note`).
+    pub any_thread: AtomicUsize,
     /// Calls that ran the Rust function for real.
     pub live_calls: Counter,
     /// The time of the main thread in those calls, with the ports they call, in time
@@ -157,6 +161,7 @@ impl PortState {
             locked: AtomicBool::new(false),
             after: AtomicUsize::new(0),
             before: AtomicUsize::new(0),
+            any_thread: AtomicUsize::new(0),
             live_calls: Counter::new(),
             live_stamps: Stamps::new(),
             rust_runs: Counter::new(),
@@ -436,6 +441,11 @@ pub unsafe fn run_before(before: usize, args: &[usize]) {
     if on_main_thread() && LEG.load(Ordering::Relaxed) != Leg::Rust as u8 {
         core::mem::transmute::<usize, BeforeFn>(before)(args);
     }
+}
+
+/// Calls the `any_thread` function of a port, on whatever thread the call came from.
+pub unsafe fn run_any_thread(function: usize, args: &[usize]) {
+    core::mem::transmute::<usize, BeforeFn>(function)(args);
 }
 
 /// The calls of ports in live mode that are in progress, and the time in the outermost

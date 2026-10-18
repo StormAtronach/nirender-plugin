@@ -146,6 +146,12 @@ pub mod tag {
     /// a draw (4 words, see `FOG` of the shape record). One in a frame, at the first such
     /// shape the engine reaches.
     pub const RETAINED_SCENE: u32 = 28;
+    /// The bones of a skinned instance the helper draws from its table (mode gpu), in each
+    /// frame that the table walk works it in the view: id, the number of bones, the world
+    /// bound of the shape (the centre and the radius), then for each bone the matrix of its
+    /// rotation and scale (9 floats, by columns) and its exact translation in the world (3
+    /// doubles), as `camera_space::skin_bones` makes them.
+    pub const INSTANCE_BONES: u32 = 29;
 }
 
 // ---- the ring in shared memory
@@ -1157,6 +1163,13 @@ pub unsafe fn instance_delete(id: u32) {
 pub unsafe fn instance_lights(id: u32, lights: &[u32]) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_LIGHTS, &[words(&[id, lights.len() as u32]), words(lights)]);
+}
+
+/// The bones of an instance: `bones` holds `count` bones of `camera_space::BONE_BYTES`. See
+/// `tag::INSTANCE_BONES`.
+pub unsafe fn instance_bones(id: u32, count: u32, bound: &[f32; 4], bones: &[u8]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::INSTANCE_BONES, &[words(&[id, count]), words(&bound.map(f32::to_bits)), bones]);
 }
 
 /// The visibility of an instance. See `tag::INSTANCE_STATE`.

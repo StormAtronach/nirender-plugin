@@ -92,10 +92,11 @@ const BLOCK: u32 = 0x100;
 /// `NiAVObject::flags` bit 12: the plugin's mark on a shape the helper draws from its table.
 pub const RETAINED_BIT: u16 = 0x1000;
 const FLAGS: usize = 0x14;
-/// `NiGeometry::spPropertyState`, `spEffectState`, `spModelData`.
+/// `NiGeometry::spPropertyState`, `spEffectState`, `spModelData`, `skinInstance`.
 const GEOMETRY_PROPERTY_STATE: usize = 0x90;
 const GEOMETRY_EFFECT_STATE: usize = 0x94;
 const GEOMETRY_MODEL_DATA: usize = 0x98;
+const GEOMETRY_SKIN: usize = 0x9C;
 /// The words of a `NiTransform`: the rotation, the translation (from word 9), the scale.
 const TRANSFORM_WORDS: usize = 13;
 const MOST_LIGHTS: usize = 64;
@@ -200,9 +201,13 @@ struct Instance {
     filled: bool,
     /// The generation of the tables at the last check of the handles.
     generation: u32,
-    /// A skinned shape (an actor): its draw carries the palette of its bones each frame, so
-    /// it stays on the draw records (never in the helper's table, never skipped).
+    /// A skinned shape (an actor). In mode gpu the helper draws it from its table, and the
+    /// table walk sends its bones in each frame it works it (`send_bones`); with
+    /// `NIRENDER_SKIN_TABLE=0` its draw carries the palette of its bones each frame, so it
+    /// stays on the draw records (never in the helper's table, never skipped).
     skinned: bool,
+    /// The frame of the last `INSTANCE_BONES` record of a skinned instance (for the audit).
+    bones_frame: u32,
     /// A controller on the shape or on one of its properties changes its geometry or its
     /// material (a morpher, a UV controller, a flip, alpha or colour controller): the
     /// display runs the controllers' `OnPreDisplay` as the engine's display does, and
@@ -276,6 +281,19 @@ struct Tables {
     /// A shape with a controller on itself or on a property is retained as a live shape
     /// (`NIRENDER_CONTROLLERS=0` rejects it: the rule before, for an A/B).
     controllers: bool,
+    /// In mode gpu the helper draws the skinned instances from its table (the takeover's
+    /// step 1, 2026-10-18); `NIRENDER_SKIN_TABLE=0` keeps them on the engine's display with
+    /// a palette in each draw (the path before, for an A/B and as the fallback).
+    skin_table: bool,
+    /// The bones of the instance in progress (`send_bones`), kept between the instances; the
+    /// `INSTANCE_BONES` records, and the skinned instances hidden because their bones could
+    /// not be made.
+    scratch_bones: Vec<u8>,
+    bone_records: u64,
+    bone_failures: u64,
+    /// The works of skinned instances whose own ambient light or fog differed from the
+    /// scene's values (the table draws them with the scene's).
+    skin_scene_mixed: u64,
     /// The frame each light (by its index) was noted last: its values are made and its LIGHT
     /// record sent at most once a frame, whatever number of shapes it lights.
     light_noted: Vec<u32>,
@@ -322,6 +340,11 @@ unsafe fn tables() -> &'static mut Tables {
         animated: std::env::var("NIRENDER_ANIMATED").map_or(true, |v| v != "0"),
         node_kinds: std::env::var("NIRENDER_NODE_KINDS").map_or(true, |v| v != "0"),
         controllers: std::env::var("NIRENDER_CONTROLLERS").map_or(true, |v| v != "0"),
+        skin_table: std::env::var("NIRENDER_SKIN_TABLE").map_or(true, |v| v != "0"),
+        scratch_bones: Vec::new(),
+        bone_records: 0,
+        bone_failures: 0,
+        skin_scene_mixed: 0,
         light_noted: Vec::new(),
         scratch_entry: [0; E::SIZE / 4],
         scratch_lights: Vec::new(),
@@ -368,7 +391,7 @@ pub unsafe fn set_mode(mode: Mode) -> Mode {
             instance.lights.clear();
             if mode != Mode::Gpu {
                 mark(shape, false);
-            } else if remark && instance.filled && !instance.skinned {
+            } else if remark && instance.filled && (!instance.skinned || t.skin_table) {
                 mark(shape, true);
             }
             if hide && instance.filled && instance.visible {
@@ -424,6 +447,8 @@ pub unsafe fn reset() {
 /// A scene of the game begins: the camera of the world scene is kept for the check at its
 /// end.
 pub unsafe fn scene_begin(kind: u32, camera: usize) {
+    // The shapes destroyed on another thread leave the tables before any walk of the scene.
+    crate::worker_events::drain();
     crate::live_walk::scene_begin();
     tables().world_camera = if kind == SCENE_WORLD { camera } else { 0 };
     if kind == SCENE_WORLD && camera != 0 {
@@ -465,10 +490,86 @@ pub unsafe fn scene_end() {
 
 /// True when the engine serves the shape's display as a rule (plan F8, part 2): the shape
 /// is not a retained instance (rejected, or never considered), or it is a live one (its
-/// display runs its controllers and notes it), or a skinned one (its draw carries the
-/// palette of its bones each frame). An instance the table draws is not the engine's.
+/// display runs its controllers and notes it), or a skinned one that the table does not
+/// draws (`table_draws_skins`). An instance the table draws is not the engine's.
 pub unsafe fn engine_serves(shape: usize) -> bool {
-    tables().instances.get(&shape).map_or(true, |instance| instance.live || instance.skinned)
+    let t = tables();
+    t.instances.get(&shape).map_or(true, |instance| instance.live || (instance.skinned && !table_draws_skins(t)))
+}
+
+/// The helper draws the skinned instances from its table: mode gpu, and the switch on.
+unsafe fn table_draws_skins(t: &Tables) -> bool {
+    t.mode == Some(Mode::Gpu) && t.skin_table
+}
+
+/// Whether the table draws the skinned instances (`NIRENDER_SKIN_TABLE`, `nirender.skinTable`).
+pub unsafe fn skin_table() -> bool {
+    tables().skin_table
+}
+
+/// Sets whether the table draws the skinned instances (`nirender.skinTable`, for the owner's
+/// comparison of the two paths in one session) and returns the state before. Each skinned
+/// instance sends its record again: on, it is marked and the table's full pass works it; off,
+/// it is unmarked, and the engine's display of it in the live walk's discovery frame sends the
+/// record without the table's flag, which takes it out of the helper's table.
+pub unsafe fn set_skin_table(on: bool) -> bool {
+    let t = tables();
+    let before = t.skin_table;
+    if on == before {
+        return before;
+    }
+    t.skin_table = on;
+    TABLE_FULL = true;
+    crate::live_walk::rediscover();
+    let remark = on && t.mode == Some(Mode::Gpu) && t.skip;
+    for (&shape, instance) in t.instances.iter_mut() {
+        if !instance.skinned {
+            continue;
+        }
+        instance.sent = false;
+        instance.lights.clear();
+        if remark && instance.filled {
+            mark(shape, true);
+        } else if !on {
+            mark(shape, false);
+        }
+    }
+    before
+}
+
+/// Sends the bones of a skinned instance (`INSTANCE_BONES`) with the shape's world bound.
+/// Returns false when the bones cannot be made: the instance is hidden then, and counted.
+unsafe fn send_bones(shape: usize, id: u32) -> bool {
+    let t = tables();
+    let mut bones = core::mem::take(&mut t.scratch_bones);
+    let result = crate::camera_space::skin_bones(shape, rd(shape, GEOMETRY_SKIN), &mut bones);
+    let t = tables();
+    let sent = match result {
+        Ok(count) => {
+            capture::instance_bones(id, count, &rd(shape, WORLD_BOUND), &bones);
+            t.bone_records += 1;
+            if let Some(instance) = t.instances.get_mut(&shape) {
+                instance.bones_frame = t.frame;
+            }
+            true
+        }
+        Err(why) => {
+            t.bone_failures += 1;
+            if t.bone_failures <= 4 {
+                crate::log!("instances: no bones for the skinned instance {id} (shape 0x{shape:x}): {why}; it is hidden");
+            }
+            if let Some(instance) = t.instances.get_mut(&shape) {
+                if instance.visible {
+                    instance.visible = false;
+                    capture::instance_state(id, false);
+                    t.states += 1;
+                }
+            }
+            false
+        }
+    };
+    t.scratch_bones = bones;
+    sent
 }
 
 /// A device texture went away: the material handle of an instance can be stale. The next
@@ -486,6 +587,7 @@ pub unsafe fn begin_draw() {
 
 /// The end of a frame.
 pub unsafe fn frame_tick() {
+    crate::worker_events::drain();
     apply_changes();
     let t = tables();
     t.frame = t.frame.wrapping_add(1);
@@ -570,7 +672,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, chain: Vec::new(), walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, bones_frame: 0, live, recheck: false, kind: 0, chain: Vec::new(), walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
     t.pending = Some((shape, id));
 }
 
@@ -732,11 +834,12 @@ pub unsafe fn reject_pending(shape: usize, reason_later: bool) {
 pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, colours: &[u32; 14], fog: Option<[u32; 4]>, ambient: u32, lights: &[u32], bones: &[u8], bone_count: u32) -> bool {
     let t = tables();
     let Some(instance) = t.instances.get_mut(&shape) else { return false };
-    // A skinned shape stays on the draw records in every mode: its palette changes each
-    // frame. Its world matrix is the identity (the palette has the transforms), so only its
-    // colours and its first record send the instance again.
+    // A skinned shape's world matrix is the identity (the palette has the transforms), so
+    // only its colours and its first record send the instance again. In mode gpu the table
+    // draws it with the bones of `send_bones`; with `NIRENDER_SKIN_TABLE=0` it stays on the
+    // draw records, with its palette in each draw.
     let skinned = instance.skinned;
-    let gpu = t.mode == Some(Mode::Gpu) && !skinned;
+    let gpu = t.mode == Some(Mode::Gpu) && (!skinned || t.skin_table);
     let rotation: [u32; 12] = core::array::from_fn(|i| world[i].to_bits());
     let stored: [u32; 3] = if skinned { [0; 3] } else { rd(shape, WORLD_TRANSLATION) };
     let bound: [f32; 4] = if skinned { [0.0; 4] } else { rd(shape, WORLD_BOUND) };
@@ -808,6 +911,9 @@ pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, col
             capture::instance_state(id, true);
             t.states += 1;
         }
+        if skinned {
+            send_bones(shape, id);
+        }
         return true;
     }
     capture::instance_draw(id, ambient, fog, lights, bones, bone_count);
@@ -816,7 +922,7 @@ pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, col
 
 /// Sends the words of the `INSTANCE` record of an instance of the mode gpu.
 unsafe fn send_instance(shape: usize, instance: &Instance, exact: [f64; 3], relative: bool) {
-    let flags = if relative { crate::shape_stream::RELATIVE } else { 0 } | BLOCK;
+    let flags = if relative { crate::shape_stream::RELATIVE } else { 0 } | BLOCK | if instance.skinned { crate::shape_stream::SKINNED } else { 0 };
     let mut words = [0u32; 44];
     words[0] = instance.id;
     words[1] = instance.class;
@@ -1227,7 +1333,9 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
     instance.renote = false;
     if due {
         COST_NOTES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        let geometry = crate::geometry_stream::note(kind, rd(shape, GEOMETRY_MODEL_DATA), 0);
+        // A skinned geometry is packed with the bone influences of its skin.
+        let skin = if instance.skinned { rd(shape, GEOMETRY_SKIN) } else { 0 };
+        let geometry = crate::geometry_stream::note(kind, rd(shape, GEOMETRY_MODEL_DATA), skin);
         let material = crate::material_stream::note(renderer, property_state, effect_state);
         if geometry == 0 || material == 0 || !crate::material_stream::last_modelled() {
             let cause = if geometry == 0 {
@@ -1249,9 +1357,10 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
         }
     }
     // The transform (the rows of the world matrix come from the engine's own conversion
-    // when it moved), the bound, the colours.
-    let transform: [u32; TRANSFORM_WORDS] = rd(shape, WORLD);
-    let bound: [f32; 4] = rd(shape, WORLD_BOUND);
+    // when it moved), the bound, the colours. A skinned instance keeps the identity and no
+    // bound in its record: its bones and its bound go in `INSTANCE_BONES` below.
+    let skinned = instance.skinned;
+    let (transform, bound): ([u32; TRANSFORM_WORDS], [f32; 4]) = if skinned { (instance.transform, instance.bound) } else { (rd(shape, WORLD), rd(shape, WORLD_BOUND)) };
     let colours = if table && !due { instance.colours } else { crate::shape_stream::material_values(property_state) };
     let moved = instance.transform != transform;
     let bound_changed = instance.bound.map(f32::to_bits) != bound.map(f32::to_bits);
@@ -1271,9 +1380,14 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
         instance.bound = bound;
         instance.colours = colours;
         let matrix_end = capture::ticks();
-        let Some(exact) = crate::camera_space::exact_translation(shape, 0) else {
-            reject_at_record(shape, LATER_TRANSLATION);
-            return false;
+        let exact = if skinned {
+            [0.0; 3]
+        } else {
+            let Some(exact) = crate::camera_space::exact_translation(shape, 0) else {
+                reject_at_record(shape, LATER_TRANSLATION);
+                return false;
+            };
+            exact
         };
         if changed {
             t.value_updates += 1;
@@ -1288,6 +1402,24 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
         record_ticks[0] += matrix_end - record_start;
         record_ticks[1] += exact_end - matrix_end;
         record_ticks[2] += send_end - exact_end;
+    }
+    // The bones of a skinned instance, in each frame its work runs (the table walk works it
+    // each frame it is in the view).
+    if skinned && !send_bones(shape, id) {
+        return false;
+    }
+    // The table draws a skinned part with the scene's ambient light and fog: count the parts
+    // whose own values differ (the engine's light manager and render state would set those).
+    if skinned && table && t.scene_frame == frame {
+        let ambient = crate::ports::light_manager::ambient_of_state(effect_state);
+        let cell_fog = crate::engine::game_fog_property();
+        let fog = if cell_fog != 0 { crate::shape_stream::fog_values_of(renderer, cell_fog) } else { crate::shape_stream::fog_values(renderer, property_state) };
+        if (ambient, fog) != t.scene_values {
+            t.skin_scene_mixed += 1;
+            if t.skin_scene_mixed <= 4 {
+                crate::log!("instances: the skinned instance {id} (shape 0x{shape:x}) has other scene values: ambient {ambient:#x} fog {fog:?}, the scene's ambient {:#x} fog {:?}", t.scene_values.0, t.scene_values.1);
+            }
+        }
     }
     // The values of the frame for the retained draws: the ambient light of this shape's
     // effect state, and the fog of the cell's property (`TES3::Game::fogProperty`, the
@@ -1364,7 +1496,7 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
 }
 
 /// The table walk's counters (`TW_*`) and its time.
-static mut TABLE_COUNTS: [u64; 16] = [0; 16];
+static mut TABLE_COUNTS: [u64; 18] = [0; 18];
 const TW_RUNS: usize = 0;
 const TW_WORKED: usize = 1;
 const TW_HIDDEN: usize = 2;
@@ -1381,11 +1513,17 @@ const TW_MATERIAL_SHAPES: usize = 12;
 const TW_REACH_ONLY: usize = 13;
 const TW_SOURCE_SHAPES: usize = 14;
 const TW_DEFERRED: usize = 15;
+/// The deferred instances hidden because they moved, or are skinned.
+const TW_DEFER_HIDDEN: usize = 16;
+/// The instances off the root whose effect state counts were taken away unread.
+const TW_OFF_ROOT_UNCOUNTED: usize = 17;
 static TABLE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 /// The part of `TABLE_TICKS` spent on the lists (the marks, the per-frame set, the sweep).
 static TABLE_LIST_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 /// The sweep finds logged so far (the first 16 are).
 static mut SWEEP_LOGGED: u32 = 0;
+/// The long runs of the table walk logged so far (the first 32 are).
+static mut LONG_RUNS_LOGGED: u32 = 0;
 /// The kinds of a chain's node.
 const CHAIN_PLAIN: u8 = 0;
 const CHAIN_SWITCH: u8 = 1;
@@ -1746,6 +1884,7 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     if !table_walk_on() || mode() != Mode::Gpu || !capture::recording() {
         return;
     }
+    crate::worker_events::drain();
     let start = capture::ticks();
     let counts = &mut *core::ptr::addr_of_mut!(TABLE_COUNTS);
     counts[TW_RUNS] += 1;
@@ -1975,21 +2114,41 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         // mode off the marks are cleared, and the full pass at the return skipped the unmarked
         // shapes before their counts followed). The sources follow too (again at the sweep
         // and at a recheck: a state updated in place keeps its pointer).
-        let state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
-        {
-            let Some(instance) = tables().instances.get_mut(&shape) else { continue };
-            if instance.counted_state != state {
+        //
+        // A shape off the world root (a cell that the engine's cell worker detached and
+        // unloads) is read no further: its effect state can list lights the worker destroyed
+        // already, and the engine never reads it, because it never draws the subtree. Its
+        // counts go without a read of the light (`light_set::uncount` reads the set only). The
+        // crash of the manual review, 2026-10-18 17:41: the count read a freed light.
+        if tables().instances.get(&shape).is_some_and(|i| i.chain.is_empty()) && set_chain(shape) {
+            counts[TW_CHAINS] += 1;
+        }
+        let on_root = tables().instances.get(&shape).is_some_and(|i| i.chain.last().is_some_and(|&(top, _)| top == root) || i.chain.len() >= CHAIN_DEPTH);
+        if on_root {
+            let state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
+            {
+                let Some(instance) = tables().instances.get_mut(&shape) else { continue };
+                if instance.counted_state != state {
+                    count_state(instance.counted_state, false);
+                    count_state(state, true);
+                    instance.counted_state = state;
+                    crate::light_set::uncount(&instance.counted_lights);
+                    crate::light_set::count(state, &mut instance.counted_lights);
+                }
+            }
+            let again = in_sweep(at) || tables().instances.get(&shape).map_or(false, |i| i.recheck);
+            set_sources(shape, again);
+        } else if let Some(instance) = tables().instances.get_mut(&shape) {
+            if instance.counted_state != 0 {
                 count_state(instance.counted_state, false);
-                count_state(state, true);
-                instance.counted_state = state;
+                instance.counted_state = 0;
                 crate::light_set::uncount(&instance.counted_lights);
-                crate::light_set::count(state, &mut instance.counted_lights);
+                instance.counted_lights.clear();
+                counts[TW_OFF_ROOT_UNCOUNTED] += 1;
             }
         }
-        let again = in_sweep(at) || tables().instances.get(&shape).map_or(false, |i| i.recheck);
-        set_sources(shape, again);
         // Only the shapes the engine path skips (marked for the helper): a skinned shape is
-        // never marked and stays the engine's draw.
+        // marked only when the table draws the skins (`table_draws_skins`).
         if rd::<u16>(shape, FLAGS) & RETAINED_BIT == 0 {
             continue;
         }
@@ -1999,6 +2158,18 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         if gate && tables().instances.get(&shape).is_some_and(|i| i.filled) && out_of_view(shape, &*core::ptr::addr_of!(VIEW_PLANES)) {
             table_deferred().insert(shape);
             counts[TW_DEFERRED] += 1;
+            // The helper draws a waiting instance where its last record put it. One that moved
+            // since, or a skinned one (its bones change each frame), is hidden until it comes
+            // back into the view: else a part that leaves the view at its edge stays there.
+            let t = tables();
+            if let Some(instance) = t.instances.get_mut(&shape) {
+                if instance.visible && (instance.skinned || rd::<[u32; TRANSFORM_WORDS]>(shape, WORLD) != instance.transform) {
+                    instance.visible = false;
+                    capture::instance_state(instance.id, false);
+                    t.states += 1;
+                    counts[TW_DEFER_HIDDEN] += 1;
+                }
+            }
             continue;
         }
         if tables().instances.get(&shape).map_or(false, |i| i.chain.is_empty()) && set_chain(shape) {
@@ -2006,7 +2177,8 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         }
         let (filled, kind) = {
             let Some(instance) = tables().instances.get_mut(&shape) else { continue };
-            if instance.live {
+            // A live instance, and a skinned one (its bones), get their work each frame.
+            if instance.live || instance.skinned {
                 table_dynamic().insert(shape);
             }
             chain.clear();
@@ -2036,7 +2208,7 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
             // full work only when the instance is hidden, due, live, rechecked, not sent, or
             // under a billboard (the turn in the reach moved it in this frame).
             let reach_only = at >= dynamic_from && at < sweep_from && tables().instances.get(&shape).map_or(false, |i| {
-                i.visible && i.sent && !i.live && !i.recheck && !i.renote && i.generation == generation && i.id.wrapping_add(frame) % CHECK_FRAMES != 0
+                i.visible && i.sent && !i.live && !i.skinned && !i.recheck && !i.renote && i.generation == generation && i.id.wrapping_add(frame) % CHECK_FRAMES != 0
             }) && !chain.iter().any(|&(_, kind)| kind == CHAIN_BILLBOARD)
                 // A waiting instance can have moved while out of the view: it gets the work.
                 && !(gate && table_deferred().contains(&shape));
@@ -2085,7 +2257,25 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         }
     }
     table_frame_lights();
-    TABLE_TICKS.fetch_add(capture::ticks() - start, core::sync::atomic::Ordering::Relaxed);
+    let run_ticks = capture::ticks() - start;
+    TABLE_TICKS.fetch_add(run_ticks, core::sync::atomic::Ordering::Relaxed);
+    // A long run, with its causes (the owner, 2026-10-18: a hitch at the crossings of exterior
+    // cells again, after the worker events): the first 32 go to the log.
+    let run_ms = run_ticks as f64 * 1000.0 / capture::ticks_per_second() as f64;
+    let logged = &mut *core::ptr::addr_of_mut!(LONG_RUNS_LOGGED);
+    if run_ms > 2.0 && *logged < 32 {
+        *logged += 1;
+        crate::log!(
+            "table walk: a long run of {run_ms:.2} ms at frame {frame}: full pass {full} (marks lost {lost}), items {}, tree marks {}, new {}, app-cull {}, material {}, moved {}, sources {}",
+            work.len(),
+            tree.len(),
+            fresh.len(),
+            culls.len(),
+            materials.len(),
+            drained.len(),
+            sources.len()
+        );
+    }
     if audit_on() {
         table_audit(root, camera);
     }
@@ -2195,7 +2385,13 @@ unsafe fn table_audit(root: usize, camera: usize) {
             counts[if shown { AU_HIDDEN_SHOWN } else { AU_VISIBILITY }] += 1;
             what.push(if shown { "hidden but reached" } else { "shown but not reached" });
         }
-        if shown {
+        if shown && instance.skinned {
+            // A skinned instance's transform and bound go with its bones, each frame.
+            if instance.bones_frame != tables().frame {
+                counts[AU_TRANSFORM] += 1;
+                what.push("the bones");
+            }
+        } else if shown {
             if rd::<[u32; TRANSFORM_WORDS]>(shape, WORLD) != instance.transform {
                 counts[AU_TRANSFORM] += 1;
                 what.push("the transform");
@@ -2269,7 +2465,10 @@ unsafe fn table_frame_values() {
     if renderer == 0 || t.scene_frame == t.frame {
         return;
     }
-    let Some(shape) = t.instances.keys().copied().find(|&s| rd::<u16>(s, FLAGS) & RETAINED_BIT != 0) else { return };
+    // A shape of the world, not an actor's part: the property state of a skinned part has
+    // fog values of its own (the f14 pass, 2026-10-18: the scene took an actor's, and the
+    // table drew the far cliffs with almost no fog).
+    let Some(shape) = t.instances.iter().find(|(&s, i)| !i.skinned && rd::<u16>(s, FLAGS) & RETAINED_BIT != 0).map(|(&s, _)| s) else { return };
     let effect_state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
     let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
     let ambient = crate::ports::light_manager::ambient_of_state(effect_state);
@@ -2502,11 +2701,11 @@ pub unsafe fn table_walk_report() -> String {
         (*core::ptr::addr_of!(SOURCE_MARKS)).count,
     ];
     format!(
-        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now), hidden {}, not under the root {}; chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, switch {}, level {}, flt {}, billboard {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4})",
+        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, switch {}, level {}, flt {}, billboard {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4})",
         if table_walk_on() { "on" } else { "off" },
         c[TW_RUNS], c[TW_FULL], c[TW_LOST],
         c[TW_ITEMS] as f64 / runs, c[TW_SWEPT] as f64 / runs, c[TW_WORKED] as f64 / runs, c[TW_REACH_ONLY] as f64 / runs, c[TW_DEFERRED] as f64 / runs,
-        if view_gate_on() { "on" } else { "off" }, table_deferred().len(), c[TW_HIDDEN], c[TW_OFF_ROOT],
+        if view_gate_on() { "on" } else { "off" }, table_deferred().len(), c[TW_DEFER_HIDDEN], c[TW_HIDDEN], c[TW_OFF_ROOT], c[TW_OFF_ROOT_UNCOUNTED],
         c[TW_CHAINS], c[TW_SWEEP_FINDS],
         marks[0], marks[1], c[TW_CULL_SHAPES], marks[2], c[TW_TREE_SHAPES], marks[4], c[TW_MATERIAL_SHAPES], marks[5], c[TW_SOURCE_SHAPES], marks[3],
         table_dynamic().len(), kinds[0], kinds[1], kinds[2], kinds[3], kinds[4], table_below().len(), table_sources().len(), table_state_counts().len(),
@@ -2525,10 +2724,15 @@ pub unsafe fn report() -> String {
     let causes = ["not a plain world draw of a retained class", "no geometry", "no material", "path off", "not modelled"];
     let skipped: Vec<String> = causes.iter().zip(t.skipped_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
-        "instances: mode {}, {} retained ({} live), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
+        "instances: mode {}, {} retained ({} live, {} skinned: the table draws them {}, {} bone records, {} hidden with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
         mode().name(),
         t.instances.len(),
         t.instances.values().filter(|i| i.live).count(),
+        t.instances.values().filter(|i| i.skinned).count(),
+        if table_draws_skins(t) { "yes" } else { "no" },
+        t.bone_records,
+        t.bone_failures,
+        t.skin_scene_mixed,
         t.rejected.len(),
         rejected.join(", "),
         skipped.join(", "),
@@ -2559,6 +2763,7 @@ pub unsafe fn report() -> String {
         + &crate::ports::controller_events::report()
         + "\n" + &crate::script_names::report()
         + "\n" + &crate::click_time::report()
+        + "\n" + &crate::worker_events::report()
         + "\n" + &crate::live_walk::class_report()
         + "\n" + &crate::camera_space::skin_report()
         + "\n" + &event_report()

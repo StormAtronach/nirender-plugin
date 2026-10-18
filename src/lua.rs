@@ -391,6 +391,20 @@ unsafe extern "C" fn engine_walk(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.skinTable(on)`: the table draws the skinned shapes (the actors, the default) or
+/// the engine's display does (the path before the takeover's step 1); returns the state
+/// before; without an argument the state.
+unsafe extern "C" fn skin_table(l: LuaState) -> i32 {
+    let before = crate::instance_stream::skin_table();
+    if lua_gettop(l) >= 1 {
+        let on = lua_toboolean(l, 1) != 0;
+        crate::instance_stream::set_skin_table(on);
+        crate::log!("skin table: {} (was {})", on, before);
+    }
+    lua_pushboolean(l, before as i32);
+    1
+}
+
 /// `nirender.retained(mode)` sets the mode of the retained instances ("off", "dual" or
 /// "gpu") and returns the mode before. Without an argument it returns the mode.
 unsafe extern "C" fn retained(l: LuaState) -> i32 {
@@ -643,6 +657,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "nifShading", nif_shading);
     set_fn(l, "animationPolicy", animation_policy);
     set_fn(l, "engineWalk", engine_walk);
+    set_fn(l, "skinTable", skin_table);
     set_fn(l, "noteEvery", note_every);
     set_fn(l, "changed", changed);
     set_fn(l, "displayCost", display_cost);

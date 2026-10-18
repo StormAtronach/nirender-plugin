@@ -33,6 +33,16 @@ pub const LIGHT_INDEXES_AT_FIRST: usize = 8192;
 pub const RETAINED_LIGHTS_AT_FIRST: usize = 1024;
 /// The flag of an instance record: the helper draws the instance from its table.
 pub const INSTANCE_BLOCK: u32 = 0x100;
+/// The flag of a skinned instance (the shape record's `SKINNED`): its world is the identity,
+/// and its bones come in `INSTANCE_BONES` records (`RetainedSet::set_bones`).
+const INSTANCE_SKINNED: u32 = 4;
+/// The bytes of one bone of an `INSTANCE_BONES` record: the matrix of the rotation and the
+/// scale (9 floats, by columns) and the exact translation in the world (3 doubles).
+pub const BONE_BYTES: usize = 9 * 4 + 3 * 8;
+/// The room of the bones of the skinned instances at first, in matrices.
+pub const RETAINED_BONES_AT_FIRST: usize = 1024;
+/// The first bone of a slot whose bones have not come yet: the slot is not drawn.
+const NO_BONES: u32 = u32::MAX;
 /// The bits of `light_range.w` of the record of a retained instance: the world matrix from
 /// the instance, the values of the view from the scene, the lights through the indexes.
 const RETAINED_RECORD_BITS: u32 = 2 | 4 | 8;
@@ -123,6 +133,9 @@ struct Slot {
     /// The texture handles the slot pinned (`Renderer::pin_texture`), one use each: their
     /// uses go when the slot goes.
     pinned: [u32; STAGES],
+    /// A skinned slot: the first of the bones of its instance in the table's palette (its
+    /// instance carries it to the shader), or `NO_BONES`.
+    bones_first: u32,
 }
 
 #[derive(Default)]
@@ -145,6 +158,10 @@ pub struct RetainedCounts {
     pub rebases: u32,
     /// The slots made again for a geometry sent again under its handle (a live shape).
     pub refreshed: u64,
+    /// The `INSTANCE_BONES` records taken, and the skinned slots not drawn because their
+    /// bones had not come.
+    pub bone_records: u64,
+    pub without_bones: u64,
 }
 
 /// The origin of the set moves to the camera when the camera is farther from it than this,
@@ -201,6 +218,14 @@ pub struct RetainedSet {
     /// The view of the game for the world of the frame, in the space of the world: the
     /// planes of the cull come from it.
     pub main_view: [f32; 16],
+    /// The bones of the skinned instances, as their records give them (the matrix of the
+    /// rotation and the scale, the exact translation): `bones_of` has the range of each
+    /// instance, `bone_free` the free ranges. The GPU's palette is made from them for the
+    /// origin of the set when they changed (`Renderer::retained_upload`).
+    bones: Vec<([f32; 9], [f64; 3])>,
+    bones_of: HashMap<u32, (u32, u32)>,
+    bone_free: Vec<(u32, u32)>,
+    bones_dirty: bool,
     pub counts: RetainedCounts,
 }
 
@@ -220,6 +245,10 @@ impl RetainedSet {
             origin: [0.0; 3],
             relative: false,
             main_view: [0.0; 16],
+            bones: Vec::new(),
+            bones_of: HashMap::new(),
+            bone_free: Vec::new(),
+            bones_dirty: false,
             light_slot_of: HashMap::new(),
             light_values: Vec::new(),
             light_dirty: Vec::new(),
@@ -287,7 +316,10 @@ impl RetainedSet {
             if let Some(s) = self.slots[slot as usize].as_mut() {
                 s.world = world;
                 s.exact = exact;
-                s.bound = r.bound;
+                // A skinned slot's bound comes with its bones.
+                if s.flags & INSTANCE_SKINNED == 0 {
+                    s.bound = r.bound;
+                }
                 s.data.world[0] = world;
             }
             self.moved.push(slot);
@@ -301,9 +333,74 @@ impl RetainedSet {
         self.relative.then_some(self.origin)
     }
 
-    /// The world matrix of a record in the space of the set.
+    /// The world matrix of a record in the space of the set. A skinned instance has the
+    /// identity: its bones place it.
     pub fn world_of(&self, r: &Retained) -> [f32; 16] {
+        if r.flags & INSTANCE_SKINNED != 0 {
+            return IDENTITY;
+        }
         r.world_at(&self.origin)
+    }
+
+    /// The bones of a skinned instance (`INSTANCE_BONES`): `count` bones of `BONE_BYTES` in
+    /// `data`, and the world bound of the shape for the cull. The instance keeps its range of
+    /// the palette while its number of bones stays the same; its slots take the range and the
+    /// bound.
+    pub fn set_bones(&mut self, id: u32, count: u32, bound: [f32; 4], data: &[u8]) {
+        if count == 0 || data.len() < count as usize * BONE_BYTES {
+            return;
+        }
+        let first = match self.bones_of.get(&id) {
+            Some(&(first, kept)) if kept == count => first,
+            _ => {
+                self.forget_bones(id);
+                let first = self.take_bones(count);
+                self.bones_of.insert(id, (first, count));
+                first
+            }
+        };
+        for b in 0..count as usize {
+            let at = b * BONE_BYTES;
+            let rotation: [f32; 9] = core::array::from_fn(|i| f32::from_le_bytes(data[at + i * 4..at + i * 4 + 4].try_into().unwrap()));
+            let exact: [f64; 3] = core::array::from_fn(|i| f64::from_le_bytes(data[at + 36 + i * 8..at + 44 + i * 8].try_into().unwrap()));
+            self.bones[first as usize + b] = (rotation, exact);
+        }
+        self.bones_dirty = true;
+        self.counts.bone_records += 1;
+        if let Some(slots) = self.by_id.get(&id) {
+            for &slot in slots {
+                if let Some(s) = self.slots[slot as usize].as_mut() {
+                    s.bound = bound;
+                    if s.bones_first != first {
+                        s.bones_first = first;
+                        self.moved.push(slot);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A range of `count` bones: a free range of that size, else a new one at the end.
+    fn take_bones(&mut self, count: u32) -> u32 {
+        if let Some(at) = self.bone_free.iter().position(|&(_, n)| n == count) {
+            return self.bone_free.swap_remove(at).0;
+        }
+        let first = self.bones.len() as u32;
+        self.bones.resize(self.bones.len() + count as usize, ([0.0; 9], [0.0; 3]));
+        first
+    }
+
+    /// The instance's range of bones goes to the free ranges: the instance is gone, or its
+    /// number of bones changed.
+    pub fn forget_bones(&mut self, id: u32) {
+        if let Some(range) = self.bones_of.remove(&id) {
+            self.bone_free.push(range);
+        }
+    }
+
+    /// The first bone of a slot of the instance, for a slot made again.
+    fn bones_first_of(&self, id: u32) -> u32 {
+        self.bones_of.get(&id).map_or(NO_BONES, |&(first, _)| first)
     }
 
     /// The origin of the set follows the camera of the world: `camera` is the exact
@@ -322,7 +419,13 @@ impl RetainedSet {
         }
         self.relative = relative;
         self.origin = target;
+        // The bones are made again for the new origin at the upload; a skinned slot keeps the
+        // identity.
+        self.bones_dirty = true;
         for slot in self.slots.iter_mut().flatten() {
+            if slot.flags & INSTANCE_SKINNED != 0 {
+                continue;
+            }
             for i in 0..3 {
                 slot.world[12 + i] = (slot.exact[i] - target[i]) as f32;
             }
@@ -761,7 +864,7 @@ impl Renderer {
             for (i, slot) in set.slots.iter().take(room).enumerate() {
                 if let Some(slot) = slot {
                     records[i * RECORD_SIZE..(i + 1) * RECORD_SIZE].copy_from_slice(bytemuck::bytes_of(&slot.data));
-                    instances[i * INSTANCE_SIZE..(i + 1) * INSTANCE_SIZE].copy_from_slice(bytemuck::bytes_of(&Instance { world: slot.world, record: [i as u32, 0, 0, 0] }));
+                    instances[i * INSTANCE_SIZE..(i + 1) * INSTANCE_SIZE].copy_from_slice(bytemuck::bytes_of(&slot_instance(i, slot)));
                 }
             }
             if !records.is_empty() {
@@ -782,7 +885,7 @@ impl Renderer {
             // there are many (an animated scene moves hundreds a frame), else one each.
             set.moved.sort_unstable();
             set.moved.dedup();
-            let instance_of = |i: usize, slot: &Slot| Instance { world: slot.world, record: [i as u32, 0, 0, 0] };
+            let instance_of = |i: usize, slot: &Slot| slot_instance(i, slot);
             if set.dirty.len() + set.moved.len() > 64 {
                 let mut instances = vec![0u8; room * INSTANCE_SIZE];
                 for (i, slot) in set.slots.iter().take(room).enumerate() {
@@ -820,6 +923,32 @@ impl Renderer {
             }
             set.light_indexes_dirty = false;
         }
+        // The bones of the skinned instances, in the space of the set: all of them in one
+        // write when one changed (the actors in view send theirs each frame).
+        if set.bones_dirty {
+            set.bones_dirty = false;
+            if set.bones.len() > self.retained_bone_capacity {
+                self.retained_bone_capacity = set.bones.len().next_power_of_two();
+                self.retained_bone_buffer = bone_buffer(&self.device, self.retained_bone_capacity);
+            }
+            let origin = set.light_origin().unwrap_or([0.0; 3]);
+            let matrices: Vec<[f32; 16]> = set
+                .bones
+                .iter()
+                .map(|(rotation, exact)| {
+                    let mut m = [0f32; 16];
+                    for c in 0..3 {
+                        m[c * 4..c * 4 + 3].copy_from_slice(&rotation[c * 3..c * 3 + 3]);
+                        m[12 + c] = (exact[c] - origin[c]) as f32;
+                    }
+                    m[15] = 1.0;
+                    m
+                })
+                .collect();
+            if !matrices.is_empty() {
+                self.queue.write_buffer(&self.retained_bone_buffer, 0, bytemuck::cast_slice(&matrices));
+            }
+        }
         set.counts.buckets = set.buckets.len() as u32;
     }
 
@@ -835,6 +964,13 @@ impl Renderer {
     pub fn write_scene(&self, slot: u32, scene: &SceneData) {
         self.queue.write_buffer(&self.scene_buffer, (slot as usize * SCENE_SIZE) as u64, bytemuck::bytes_of(scene));
     }
+}
+
+/// The instance of a slot: its world, its record, and the first of its bones for a skinned
+/// slot.
+fn slot_instance(i: usize, slot: &Slot) -> Instance {
+    let bones = if slot.bones_first == NO_BONES { 0 } else { slot.bones_first };
+    Instance { world: slot.world, record: [i as u32, bones, 0, 0] }
 }
 
 /// Draws the instances of the set in view, one indirect call for each run of draws of one
@@ -966,6 +1102,10 @@ impl RetainedSet {
                     self.counts.hidden += 1;
                     continue;
                 }
+                if s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES {
+                    self.counts.without_bones += 1;
+                    continue;
+                }
                 if !in_view(&s.bound, &view.planes) {
                     self.counts.culled += 1;
                     continue;
@@ -1073,11 +1213,11 @@ fn effect_stages(m: &material::Material) -> Option<[[u32; EFFECT_STAGE_WORDS]; 2
 }
 
 impl Player {
-    /// Removes an instance from the table, and the uses of the textures its slots pinned.
+    /// Removes an instance from the table, and the uses of the textures its slots pinned,
+    /// and its bones.
     pub(super) fn retained_remove(&mut self, id: u32) {
-        for handle in self.retained.remove(id) {
-            self.renderer.unpin_texture(handle);
-        }
+        self.retained_remove_slots(id);
+        self.retained.forget_bones(id);
     }
 
     /// The slots that drew a stage from a slot of the frame (its pinned texture or sampler
@@ -1095,6 +1235,14 @@ impl Player {
         }
     }
 
+    /// Removes the slots of an instance and the uses of their textures; its bones stay (the
+    /// instance is made again).
+    fn retained_remove_slots(&mut self, id: u32) {
+        for handle in self.retained.remove(id) {
+            self.renderer.unpin_texture(handle);
+        }
+    }
+
     /// Puts an instance record with the flag 0x100 into the table: a slot for each pass of
     /// its material, with the record of the draw made as for a shape record. An instance
     /// that is in the table already (its material or geometry handle changed) keeps its
@@ -1102,7 +1250,7 @@ impl Player {
     /// Engine-rules R13 (the skill wgpu-renderer-dev).
     pub(super) fn retained_insert(&mut self, id: u32, r: &Retained) {
         let keys = self.retained.keys_of.get(&id).cloned();
-        self.retained_remove(id);
+        self.retained_remove_slots(id);
         let Some((fvf, stride, entries, strips, vertex, index, base_vertex, first_index)) =
             self.renderer.geometries.get(&r.geometry).map(|g| (g.fvf, g.stride, g.entries, g.strips.clone(), g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index))
         else {
@@ -1176,6 +1324,10 @@ impl Player {
             let mut data = self.stream.draw_data(&derived, &p, &mut self.renderer.counts, &mut dummy);
             crate::draw_dump("retained table, before the record bits", r.geometry, &data);
             data.world[0] = self.retained.world_of(r);
+            // A skinned instance blends four bones of its instance for each vertex.
+            if r.flags & INSTANCE_SKINNED != 0 {
+                data.flags[3] = 4;
+            }
             // The kind of the pass for the shade bits of the scene.
             let kind = slot_kind(p.blend, derived.depth[1] != 0);
             data.light_range = [0, 0, kind, RETAINED_RECORD_BITS | crate::flat_shading_bit(&derived)];
@@ -1244,7 +1396,10 @@ impl Player {
             if late {
                 set.late.push((slot, pinned_slots));
             }
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted: p.blend[0] != 0 && !derived.no_sorter, pinned });
+            // A skinned instance keeps its range of bones when it is made again; its bound
+            // comes with the bones that the plugin sends after the instance record.
+            let bones_first = if r.flags & INSTANCE_SKINNED != 0 { set.bones_first_of(id) } else { NO_BONES };
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted: p.blend[0] != 0 && !derived.no_sorter, pinned, bones_first });
             set.buckets[bucket as usize].slots.push(slot);
             set.dirty.push(slot);
             slots.push(slot);

@@ -172,6 +172,8 @@ pub unsafe fn install() -> Result<String, String> {
     crate::script_names::install();
     // The time of the draw of each camera (plan 8e: the engine's walk against the cut).
     crate::click_time::install();
+    // The shapes the engine destroys on another thread (plan C26).
+    crate::worker_events::install();
 
     let mut failed = 0;
     for port in ports::all() {

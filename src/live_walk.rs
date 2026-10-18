@@ -214,6 +214,10 @@ pub unsafe fn forget(shape: usize) {
     if let Some(far) = (*addr_of_mut!(FAR)).as_mut() {
         far.remove(&shape);
     }
+    // A shape waiting for its forced display (plan C26: it was kept after the destructor).
+    if let Some(force) = (*addr_of_mut!(FORCE)).as_mut() {
+        force.remove(&shape);
+    }
 }
 
 /// True when the walk displayed the shape in the run in progress: the engine's walk, which

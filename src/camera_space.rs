@@ -595,7 +595,60 @@ pub unsafe fn skin_report() -> String {
 
 unsafe fn build_skin_palette(skin: usize, transform: usize, geometry_site: bool, out: &mut Vec<[f32; 16]>) -> Result<bool, &'static str> {
     out.clear();
-    if skin == 0 || transform == 0 {
+    if transform == 0 {
+        return Err("no skin instance or no transform");
+    }
+    let origin = if own() { active_origin() } else { None };
+    let relative = origin.is_some();
+    let origin = origin.unwrap_or([0.0; 3]);
+    let shape = if geometry_site && transform == *addr_of!(GEOMETRY_TRANSFORM) { exact_transform(transform - AV_WORLD) } else { from_ni(transform) };
+    skin_transforms(skin, &shape, |palette| {
+        let scale = palette.s as f32;
+        let mut matrix = [0f32; 16];
+        for c in 0..3 {
+            for r in 0..3 {
+                matrix[c * 4 + r] = (palette.r[r][c] as f32) * scale;
+            }
+            matrix[12 + c] = (palette.t[c] - origin[c]) as f32;
+        }
+        matrix[15] = 1.0;
+        out.push(matrix);
+    })?;
+    Ok(relative)
+}
+
+/// The bytes of one bone of `skin_bones`: 9 floats and 3 doubles.
+pub const BONE_BYTES: usize = 9 * 4 + 3 * 8;
+
+/// The bones of a skinned shape for the record `INSTANCE_BONES`: for each bone of the skin
+/// the matrix of its rotation and scale (9 floats, by columns, as the palette has them) and
+/// its exact translation in the world (3 doubles), from the shape's exact transform. Returns
+/// the number of bones, or what is missing when the data of the skin is not complete.
+pub unsafe fn skin_bones(shape: usize, skin: usize, out: &mut Vec<u8>) -> Result<u32, &'static str> {
+    let start = crate::capture::ticks();
+    out.clear();
+    let mut count = 0u32;
+    skin_transforms(skin, &exact_transform(shape), |palette| {
+        let scale = palette.s as f32;
+        for c in 0..3 {
+            for r in 0..3 {
+                out.extend_from_slice(&((palette.r[r][c] as f32) * scale).to_le_bytes());
+            }
+        }
+        for c in 0..3 {
+            out.extend_from_slice(&palette.t[c].to_le_bytes());
+        }
+        count += 1;
+    })?;
+    note_skin(skin, count as usize, crate::capture::ticks() - start);
+    Ok(count)
+}
+
+/// The world transform of each bone of a skin for a draw of its shape, whose world transform
+/// is `shape`: the skin's transform to its root parent, the bone, the bone's transform from
+/// the skin. Or what is missing when the data of the skin is not complete.
+unsafe fn skin_transforms(skin: usize, shape: &DTransform, mut each: impl FnMut(&DTransform)) -> Result<(), &'static str> {
+    if skin == 0 {
         return Err("no skin instance or no transform");
     }
     let data: usize = rd(skin, SKIN_DATA);
@@ -620,27 +673,13 @@ unsafe fn build_skin_palette(skin: usize, transform: usize, geometry_site: bool,
             return Err("a bone of the skin instance is null");
         }
     }
-    let origin = if own() { active_origin() } else { None };
-    let relative = origin.is_some();
-    let origin = origin.unwrap_or([0.0; 3]);
-    let shape = if geometry_site && transform == *addr_of!(GEOMETRY_TRANSFORM) { exact_transform(transform - AV_WORLD) } else { from_ni(transform) };
     let inverse_root_parent = invert(&exact_transform(root_parent)).ok_or("the transform of the root parent has no inverse")?;
-    let skin_to_root = combine(&combine(&shape, &from_ni(data + DATA_TRANSFORM)), &inverse_root_parent);
+    let skin_to_root = combine(&combine(shape, &from_ni(data + DATA_TRANSFORM)), &inverse_root_parent);
     for i in 0..bone_count as usize {
         let bone = exact_transform(rd(bones, i * 4));
-        let palette = combine(&combine(&skin_to_root, &bone), &from_ni(bone_records + i * BONE_RECORD_SIZE));
-        let scale = palette.s as f32;
-        let mut matrix = [0f32; 16];
-        for c in 0..3 {
-            for r in 0..3 {
-                matrix[c * 4 + r] = (palette.r[r][c] as f32) * scale;
-            }
-            matrix[12 + c] = (palette.t[c] - origin[c]) as f32;
-        }
-        matrix[15] = 1.0;
-        out.push(matrix);
+        each(&combine(&combine(&skin_to_root, &bone), &from_ni(bone_records + i * BONE_RECORD_SIZE)));
     }
-    Ok(relative)
+    Ok(())
 }
 
 /// Called in place of the call of `SetSkinnedModelTransforms` at a draw site. Returns true

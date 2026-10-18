@@ -110,6 +110,9 @@ struct Clusters {
 @group(0) @binding(6) var<storage, read> lights: array<Light>;
 // The bones of all skinned draws of the frame.
 @group(0) @binding(7) var<storage, read> palette: array<mat4x4f>;
+// The bones of the skinned instances of the table (`retained.rs`), in the space of the set:
+// a retained skinned draw reads them from the first bone of its instance.
+@group(0) @binding(12) var<storage, read> retained_palette: array<mat4x4f>;
 // The retained instances (`retained.rs`): the lights of a draw with bit 8 of
 // `light_range.w` are `lights_retained[light_indexes[i]]`; a draw with bit 4 takes the
 // values of its view from `scene` (bound with a dynamic offset: one scene for each view).
@@ -240,8 +243,9 @@ struct VertexIn {
     @location(10) instance1: vec4f,
     @location(11) instance2: vec4f,
     @location(12) instance3: vec4f,
-    // The record of the draw in `draws`.
-    @location(13) record: u32,
+    // The record of the draw in `draws`, and for a retained skinned instance the first of its
+    // bones in `retained_palette`.
+    @location(13) record: vec2u,
 }
 
 struct VertexOut {
@@ -304,7 +308,7 @@ fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view
 
 @vertex
 fn vs(in: VertexIn) -> VertexOut {
-    record = in.record;
+    record = in.record.x;
     var local = vec4f(in.position, 1.0);
     if (draw_counts_w() & 4u) != 0u {
         local = vec4f(extension_sky_position(in.position), 1.0);
@@ -319,7 +323,7 @@ fn vs(in: VertexIn) -> VertexOut {
         }
         world_position = world0 * local;
         world_normal = (world0 * vec4f(in.normal, 0.0)).xyz;
-    } else if weights == 4u {
+    } else if weights == 4u && !from_scene() {
         // A skinned draw: four bones of the palette of the frame, the fourth weight 1 less
         // the sum of the three, as the vertex blend of Direct3D.
         let first = draws[record].light_range.z;
@@ -334,6 +338,23 @@ fn vs(in: VertexIn) -> VertexOut {
             world_normal += weight * (bone * vec4f(in.normal, 0.0)).xyz;
         }
         let bone = palette[first + in.bones[3]];
+        world_position += last * (bone * local);
+        world_normal += last * (bone * vec4f(in.normal, 0.0)).xyz;
+    } else if weights == 4u {
+        // A retained skinned draw: the same blend with the bones of its instance in the
+        // table's palette, from the first bone its instance carries.
+        let first = in.record.y;
+        var last = 1.0;
+        world_position = vec4f(0.0);
+        world_normal = vec3f(0.0);
+        for (var i = 0u; i < 3u; i++) {
+            let weight = in.weights[i];
+            last -= weight;
+            let bone = retained_palette[first + in.bones[i]];
+            world_position += weight * (bone * local);
+            world_normal += weight * (bone * vec4f(in.normal, 0.0)).xyz;
+        }
+        let bone = retained_palette[first + in.bones[3]];
         world_position += last * (bone * local);
         world_normal += last * (bone * vec4f(in.normal, 0.0)).xyz;
     } else {
@@ -353,7 +374,7 @@ fn vs(in: VertexIn) -> VertexOut {
     let view_position = draw_view() * vec4f(world_position.xyz, 1.0);
 
     var out: VertexOut;
-    out.record = in.record;
+    out.record = in.record.x;
     out.clip = draw_projection() * view_position;
     // Direct3D 8 has the centre of a pixel at a whole number: the picture is half a pixel to
     // the right and down from where newer APIs put it.
