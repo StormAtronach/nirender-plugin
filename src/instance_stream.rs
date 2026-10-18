@@ -1363,10 +1363,6 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
     true
 }
 
-/// The table walk (F8 parts 3 and 4, option B, entry 13): on by default since the cut;
-/// `NIRENDER_TABLE_WALK=0` or `nirender.tableWalk(false)` turns it off alone (an A/B until
-/// CP4); the engine's walk (`live_walk::engine_walk_on`) turns it off with the other walks.
-static TABLE_WALK: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(255);
 /// The table walk's counters (`TW_*`) and its time.
 static mut TABLE_COUNTS: [u64; 16] = [0; 16];
 const TW_RUNS: usize = 0;
@@ -1401,58 +1397,16 @@ const APP_CULLED: u16 = 0x1;
 /// The most ancestors of a chain.
 const CHAIN_DEPTH: usize = 64;
 
+/// The table walk (F8 parts 3 and 4, option B, entry 13): on, but with the engine's walk
+/// (`live_walk::engine_walk_on`, the permanent debug switch). Its own switch retired at the
+/// owner's review of CP4 (2026-10-18).
 pub fn table_walk_on() -> bool {
-    use core::sync::atomic::Ordering::Relaxed;
-    if crate::live_walk::engine_walk_on() {
-        return false;
-    }
-    let value = TABLE_WALK.load(Relaxed);
-    if value != 255 {
-        return value != 0;
-    }
-    let on = std::env::var("NIRENDER_TABLE_WALK").map_or(true, |v| v != "0");
-    TABLE_WALK.store(on as u8, Relaxed);
-    on
-}
-
-/// Sets the table walk; returns the state before. Turned on, its next run is a full pass
-/// (no marks were kept while it was off).
-pub fn set_table_walk(on: bool) -> bool {
-    let before = table_walk_on();
-    TABLE_WALK.store(on as u8, core::sync::atomic::Ordering::Relaxed);
-    if on && !before {
-        unsafe { TABLE_FULL = true };
-    }
-    before
+    !crate::live_walk::engine_walk_on()
 }
 
 /// The next table walk works every instance (`live_walk::set_engine_walk`).
 pub fn table_full() {
     unsafe { TABLE_FULL = true };
-}
-
-/// The table walk works only the marked instances (entry 13). `NIRENDER_TABLE_MARKS=0` or
-/// `nirender.tableMarks(false)`: it works every instance each frame (the walk of step 1), for
-/// an A/B.
-static TABLE_MARKS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(255);
-
-pub fn table_marks_on() -> bool {
-    use core::sync::atomic::Ordering::Relaxed;
-    let value = TABLE_MARKS.load(Relaxed);
-    if value != 255 {
-        return value != 0;
-    }
-    let on = std::env::var("NIRENDER_TABLE_MARKS").map_or(true, |v| v != "0");
-    TABLE_MARKS.store(on as u8, Relaxed);
-    on
-}
-
-/// Sets the marks; returns the state before. The next run is a full pass.
-pub fn set_table_marks(on: bool) -> bool {
-    let before = table_marks_on();
-    TABLE_MARKS.store(on as u8, core::sync::atomic::Ordering::Relaxed);
-    unsafe { TABLE_FULL = true };
-    before
 }
 
 /// The dirty marks of the table walk (entry 13; the owner, 2026-10-17: events over tracking
@@ -1855,7 +1809,7 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     if lost {
         counts[TW_LOST] += 1;
     }
-    let full = lost || !table_marks_on() || note_every() || TABLE_FULL || TABLE_GENERATION != generation;
+    let full = lost || note_every() || TABLE_FULL || TABLE_GENERATION != generation;
     TABLE_FULL = false;
     TABLE_GENERATION = generation;
     let mut sweep_from = usize::MAX;
@@ -1993,7 +1947,6 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     // after the sweep in the list, and are not sweep items.
     let sweep_end = work.len();
     let gate = view_gate_on() && read_view_planes(camera);
-    let gate_early = gate && view_gate() == 1;
     if gate {
         let planes = &*core::ptr::addr_of!(VIEW_PLANES);
         table_deferred().retain(|&shape| {
@@ -2010,15 +1963,6 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     counts[TW_ITEMS] += work.len() as u64;
     TABLE_LIST_TICKS.fetch_add(capture::ticks() - start, core::sync::atomic::Ordering::Relaxed);
 
-    if places_on() {
-        if !gate {
-            read_view_planes(camera);
-        }
-        let places = &mut *core::ptr::addr_of_mut!(PLACES);
-        // `NiAVObject::worldTransform.translation` of the camera.
-        places.camera = rd(camera, 0x64);
-        places.reach = capture::helper_shadow_reach();
-    }
     let touched = (*core::ptr::addr_of_mut!(TABLE_TOUCHED)).get_or_insert_with(HashSet::default);
     touched.clear();
     let chain = &mut *core::ptr::addr_of_mut!(TABLE_CHAIN);
@@ -2052,7 +1996,7 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         // The gate of the view, early: an instance out of the view waits before the chain and
         // the reach (the reach's work on the switches, the levels and the billboards then
         // happens in the view only, as in the engine's walk).
-        if gate_early && tables().instances.get(&shape).is_some_and(|i| i.filled) && out_of_view(shape, &*core::ptr::addr_of!(VIEW_PLANES)) {
+        if gate && tables().instances.get(&shape).is_some_and(|i| i.filled) && out_of_view(shape, &*core::ptr::addr_of!(VIEW_PLANES)) {
             table_deferred().insert(shape);
             counts[TW_DEFERRED] += 1;
             continue;
@@ -2101,25 +2045,6 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
                     instance.drawn = frame;
                 }
                 counts[TW_REACH_ONLY] += 1;
-            } else if gate && !gate_early && out_of_view(shape, &*core::ptr::addr_of!(VIEW_PLANES)) {
-                // The helper does not draw it: its work waits until the view reaches it.
-                table_deferred().insert(shape);
-                counts[TW_DEFERRED] += 1;
-            } else if places_on() {
-                if gate {
-                    table_deferred().remove(&shape);
-                }
-                let source = if in_sweep(at) { 2 } else if at >= dynamic_from { 1 } else { 0 };
-                let records = tables().records;
-                let begin = capture::ticks();
-                display_work(shape, kind, true);
-                let place = place_of(shape, &*core::ptr::addr_of!(VIEW_PLANES));
-                let places = &mut *core::ptr::addr_of_mut!(PLACES);
-                places.worked[source][place] += 1;
-                places.ticks[source][place] += capture::ticks() - begin;
-                places.records[source][place] += (tables().records != records) as u64;
-                places.live[place] += tables().instances.get(&shape).is_some_and(|i| i.live) as u64;
-                counts[TW_WORKED] += 1;
             } else {
                 if gate {
                     table_deferred().remove(&shape);
@@ -2156,21 +2081,6 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
                     _ => what,
                 };
                 log_sweep_find(shape, &what);
-            }
-        }
-    }
-    // The check of the gate (with the measure of the places): an instance the helper shows in
-    // the view must have the shape's transform of this frame.
-    if places_on() && !(*core::ptr::addr_of!(VIEW_PLANES)).is_empty() {
-        let planes = &*core::ptr::addr_of!(VIEW_PLANES);
-        let places = &mut *core::ptr::addr_of_mut!(PLACES);
-        for (&shape, instance) in tables().instances.iter() {
-            if !instance.filled || !instance.visible || rd::<u16>(shape, FLAGS) & RETAINED_BIT == 0 || !bound_in_view(rd(shape, AV_WORLD_BOUND), planes) {
-                continue;
-            }
-            places.checked += 1;
-            if rd::<[u32; TRANSFORM_WORDS]>(shape, WORLD) != instance.transform {
-                places.stale += 1;
             }
         }
     }
@@ -2491,26 +2401,6 @@ pub unsafe fn event_report() -> String {
     )
 }
 
-/// The places of the worked instances (`NIRENDER_TABLE_PLACES=1`, a measure of 2026-10-18):
-/// for each source of the work (a mark or a full pass, the per-frame set, the sweep) and
-/// each place of the shape after the work (in the camera's view; out of it within the reach
-/// of the helper's shadow map; neither), the instances worked, the time of their work and
-/// the INSTANCE records they sent; and the live ones by place.
-struct Places {
-    worked: [[u64; 3]; 3],
-    ticks: [[i64; 3]; 3],
-    records: [[u64; 3]; 3],
-    live: [u64; 3],
-    camera: [f32; 3],
-    reach: f32,
-    /// The instances shown in the view after the walk, and those whose transform was not the
-    /// shape's (the check of the gate).
-    checked: u64,
-    stale: u64,
-}
-static mut PLACES: Places = Places { worked: [[0; 3]; 3], ticks: [[0; 3]; 3], records: [[0; 3]; 3], live: [0; 3], camera: [0.0; 3], reach: 0.0, checked: 0, stale: 0 };
-static PLACES_ON: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(255);
-
 /// `NiAVObject::worldBound`: the centre and the radius.
 const AV_WORLD_BOUND: usize = crate::gen::layouts::NiAVObject::worldBound;
 
@@ -2526,24 +2416,16 @@ static VIEW_GATE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::n
 static mut VIEW_PLANES: Vec<[f64; 4]> = Vec::new();
 static mut TABLE_DEFERRED: Option<HashSet<usize>> = None;
 
-/// The place of the gate: 0 off, 1 early (before the chain and the reach: the default), 2 late
-/// (after the reach; the first form, for the A/B). `NIRENDER_TABLE_VIEW=0` / `late`.
-fn view_gate() -> u8 {
+/// The gate is before the chain and the reach (its later form after the reach retired at the
+/// owner's review of CP4, 2026-10-18).
+fn view_gate_on() -> bool {
     let value = VIEW_GATE.load(core::sync::atomic::Ordering::Relaxed);
     if value != 255 {
-        return value;
+        return value != 0;
     }
-    let gate = match std::env::var("NIRENDER_TABLE_VIEW").as_deref() {
-        Ok("0") => 0,
-        Ok("late") => 2,
-        _ => 1,
-    };
-    VIEW_GATE.store(gate, core::sync::atomic::Ordering::Relaxed);
-    gate
-}
-
-fn view_gate_on() -> bool {
-    view_gate() != 0
+    let on = std::env::var("NIRENDER_TABLE_VIEW").map_or(true, |v| v != "0");
+    VIEW_GATE.store(on as u8, core::sync::atomic::Ordering::Relaxed);
+    on
 }
 
 unsafe fn table_deferred() -> &'static mut HashSet<usize> {
@@ -2585,67 +2467,6 @@ unsafe fn out_of_view(shape: usize, planes: &[[f64; 4]]) -> bool {
     tables().instances.get(&shape).map_or(true, |i| !i.visible || !bound_in_view(i.bound, planes))
 }
 
-fn places_on() -> bool {
-    let value = PLACES_ON.load(core::sync::atomic::Ordering::Relaxed);
-    if value != 255 {
-        return value != 0;
-    }
-    let on = std::env::var("NIRENDER_TABLE_PLACES").is_ok_and(|v| v == "1");
-    PLACES_ON.store(on as u8, core::sync::atomic::Ordering::Relaxed);
-    on
-}
-
-/// 0 in the camera's view (the shape's world bound against the culling planes, as
-/// `CullShow` tests it), 1 out of it within the shadow map's reach, 2 neither.
-unsafe fn place_of(shape: usize, planes: &[[f64; 4]]) -> usize {
-    let bound: [f32; 4] = rd(shape, AV_WORLD_BOUND);
-    if !planes.is_empty() && bound_in_view(bound, planes) {
-        return 0;
-    }
-    let places = &*core::ptr::addr_of!(PLACES);
-    let centre = [bound[0], bound[1], bound[2]];
-    let radius = bound[3];
-    let d: [f32; 3] = core::array::from_fn(|i| centre[i] - places.camera[i]);
-    if places.reach > 0.0 && (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - radius <= places.reach {
-        1
-    } else {
-        2
-    }
-}
-
-/// The line of the places, or an empty text when the measure is off.
-pub unsafe fn places_report() -> String {
-    if !places_on() {
-        return String::new();
-    }
-    let p = &*core::ptr::addr_of!(PLACES);
-    let runs = (*core::ptr::addr_of!(TABLE_COUNTS))[TW_RUNS].max(1) as f64;
-    let per_second = capture::ticks_per_second() as f64;
-    let sources = ["marks", "per-frame", "sweep"];
-    let places = ["in view", "shadow reach", "neither"];
-    let mut parts = Vec::new();
-    for (s, source) in sources.iter().enumerate() {
-        for (q, place) in places.iter().enumerate() {
-            parts.push(format!(
-                "{source}/{place} {:.1} ({:.4} ms, records {:.1})",
-                p.worked[s][q] as f64 / runs,
-                p.ticks[s][q] as f64 * 1000.0 / per_second / runs,
-                p.records[s][q] as f64 / runs
-            ));
-        }
-    }
-    format!(
-        "table walk places (a run): {}; live in view {:.1}, shadow reach {:.1}, neither {:.1}; shadow reach {:.0}; the check: shown in the view {}, with a stale transform {}\n",
-        parts.join(", "),
-        p.live[0] as f64 / runs,
-        p.live[1] as f64 / runs,
-        p.live[2] as f64 / runs,
-        p.reach,
-        p.checked,
-        p.stale
-    )
-}
-
 /// The table walk's line of the report.
 pub unsafe fn table_walk_report() -> String {
     let c = *core::ptr::addr_of!(TABLE_COUNTS);
@@ -2676,12 +2497,11 @@ pub unsafe fn table_walk_report() -> String {
         (*core::ptr::addr_of!(SOURCE_MARKS)).count,
     ];
     format!(
-        "table walk (entry 13): {}, marks {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now), hidden {}, not under the root {}; chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, switch {}, level {}, flt {}, billboard {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4})",
+        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now), hidden {}, not under the root {}; chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, switch {}, level {}, flt {}, billboard {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4})",
         if table_walk_on() { "on" } else { "off" },
-        if table_marks_on() { "on" } else { "off" },
         c[TW_RUNS], c[TW_FULL], c[TW_LOST],
         c[TW_ITEMS] as f64 / runs, c[TW_SWEPT] as f64 / runs, c[TW_WORKED] as f64 / runs, c[TW_REACH_ONLY] as f64 / runs, c[TW_DEFERRED] as f64 / runs,
-        ["off", "early", "late"][view_gate().min(2) as usize], table_deferred().len(), c[TW_HIDDEN], c[TW_OFF_ROOT],
+        if view_gate_on() { "on" } else { "off" }, table_deferred().len(), c[TW_HIDDEN], c[TW_OFF_ROOT],
         c[TW_CHAINS], c[TW_SWEEP_FINDS],
         marks[0], marks[1], c[TW_CULL_SHAPES], marks[2], c[TW_TREE_SHAPES], marks[4], c[TW_MATERIAL_SHAPES], marks[5], c[TW_SOURCE_SHAPES], marks[3],
         table_dynamic().len(), kinds[0], kinds[1], kinds[2], kinds[3], kinds[4], table_below().len(), table_sources().len(), table_state_counts().len(),
@@ -2731,7 +2551,6 @@ pub unsafe fn report() -> String {
         + "\n"
         + &audit_report()
         + "\n"
-        + &places_report()
         + &crate::ports::controller_events::report()
         + "\n" + &crate::script_names::report()
         + "\n" + &crate::click_time::report()

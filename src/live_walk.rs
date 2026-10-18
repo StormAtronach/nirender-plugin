@@ -16,8 +16,8 @@
 //! On by default since the cut (F8 part 4, entry 13), with the table walk and the sky-only
 //! walk: the engine's walk of the world stops after the sky root. `NIRENDER_ENGINE_WALK=1` or
 //! `nirender.engineWalk(true)` gives the engine's walk back (the permanent debug switch, the
-//! owner's decision of 2026-10-17); `NIRENDER_LIVE_WALK=0` turns this walk off alone (an A/B
-//! until CP4).
+//! owner's decision of 2026-10-17). The switches of the single walks retired at the owner's
+//! review of CP4 (2026-10-18).
 
 use core::ptr::{addr_of, addr_of_mut};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
@@ -81,8 +81,6 @@ static mut PLANES: Vec<usize> = Vec::new();
 static mut NODE_INDEXES: Option<HashMap<usize, u32>> = None;
 /// The shapes of the run with their paths from the root, sorted: the engine's order.
 static mut ORDERED: Vec<(Vec<u32>, usize)> = Vec::new();
-/// 255: not read yet (the environment is read at the first call).
-static ON: AtomicU8 = AtomicU8::new(255);
 static IN_WALK: AtomicBool = AtomicBool::new(false);
 /// The camera of the run in progress.
 static CAMERA: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
@@ -132,17 +130,9 @@ pub fn in_walk() -> bool {
     IN_WALK.load(Ordering::Relaxed)
 }
 
+/// The live walk: on, but with the engine's walk.
 pub fn on() -> bool {
-    if engine_walk_on() {
-        return false;
-    }
-    let value = ON.load(Ordering::Relaxed);
-    if value != 255 {
-        return value != 0;
-    }
-    let on = std::env::var("NIRENDER_LIVE_WALK").map_or(true, |v| v != "0");
-    ON.store(on as u8, Ordering::Relaxed);
-    on
+    !engine_walk_on()
 }
 
 /// The engine's walk of the world (the permanent debug switch, entry 13): on, the table walk,
@@ -170,13 +160,6 @@ pub fn set_engine_walk(on: bool) -> bool {
         DISCOVERED.store(false, Ordering::Relaxed);
         crate::instance_stream::table_full();
     }
-    before
-}
-
-/// Turns the walk on or off; returns the state before.
-pub fn set_on(on: bool) -> bool {
-    let before = self::on();
-    ON.store(on as u8, Ordering::Relaxed);
     before
 }
 
@@ -258,10 +241,9 @@ pub unsafe fn after_child(parent: usize, child: usize, camera: usize) -> bool {
     true
 }
 
-/// The sky-only walk (F8 part 3, entry 13): `NIRENDER_SKY_ONLY=1`, `nirender.skyOnly(on)`. It
-/// cuts the world root's display after the sky root when the table walk and the live walk
-/// are on in mode gpu. On by default since the cut (part 4); off with the engine's walk.
-static SKY_ONLY: AtomicU8 = AtomicU8::new(255);
+/// The sky-only walk (F8 part 3, entry 13) cuts the world root's display after the sky root
+/// when the table walk and the live walk are on in mode gpu. On since the cut (part 4); off
+/// with the engine's walk.
 /// False until the first frame of the switch (or of a mode) ran uncut.
 static DISCOVERED: AtomicBool = AtomicBool::new(false);
 static LOGGED_ROOT: AtomicBool = AtomicBool::new(false);
@@ -565,27 +547,7 @@ unsafe fn admit(shape: usize, camera: usize) {
 }
 
 pub fn sky_only_on() -> bool {
-    if engine_walk_on() {
-        return false;
-    }
-    let value = SKY_ONLY.load(Ordering::Relaxed);
-    if value != 255 {
-        return value != 0;
-    }
-    let on = std::env::var("NIRENDER_SKY_ONLY").map_or(true, |v| v != "0");
-    SKY_ONLY.store(on as u8, Ordering::Relaxed);
-    on
-}
-
-/// Sets the sky-only walk; returns the state before. Turned on, its next frame is a
-/// discovery frame.
-pub fn set_sky_only(on: bool) -> bool {
-    let before = sky_only_on();
-    SKY_ONLY.store(on as u8, Ordering::Relaxed);
-    if on && !before {
-        DISCOVERED.store(false, Ordering::Relaxed);
-    }
-    before
+    !engine_walk_on()
 }
 
 /// The mode of the table changed: the next frame of the sky-only walk is a discovery frame.

@@ -351,31 +351,6 @@ unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.liveWalk(on)` turns the live walk of plan F8 part 2 on or off and returns the
-/// state before; without an argument it returns the state.
-/// `nirender.tableWalk(on)`: the table walk of entry 13 (option B) on or off; returns the
-/// state before; without an argument the state.
-unsafe extern "C" fn table_walk(l: LuaState) -> i32 {
-    let before = crate::instance_stream::table_walk_on();
-    if lua_gettop(l) >= 1 {
-        crate::instance_stream::set_table_walk(lua_toboolean(l, 1) != 0);
-    }
-    lua_pushboolean(l, before as i32);
-    1
-}
-
-/// `nirender.tableMarks(on)`: the table walk works only the marked instances (entry 13; on
-/// by default) or every instance each frame (off, the walk of step 1); returns the state
-/// before; without an argument the state.
-unsafe extern "C" fn table_marks(l: LuaState) -> i32 {
-    let before = crate::instance_stream::table_marks_on();
-    if lua_gettop(l) >= 1 {
-        crate::instance_stream::set_table_marks(lua_toboolean(l, 1) != 0);
-    }
-    lua_pushboolean(l, before as i32);
-    1
-}
-
 /// `nirender.changed(address)`: TEMPORARY, plan C17 (until MWSE notifies the changes of its
 /// Lua bindings): `notifier.lua` reports the address of an object a Lua mod changed.
 unsafe extern "C" fn changed(l: LuaState) -> i32 {
@@ -411,30 +386,6 @@ unsafe extern "C" fn engine_walk(l: LuaState) -> i32 {
         let on = lua_toboolean(l, 1) != 0;
         crate::live_walk::set_engine_walk(on);
         crate::log!("engine walk: {} (was {})", on, before);
-    }
-    lua_pushboolean(l, before as i32);
-    1
-}
-
-/// `nirender.skyOnly(on)`: the sky-only walk of F8 part 3 on or off (it needs the table walk
-/// and the live walk on); returns the state before; without an argument the state.
-unsafe extern "C" fn sky_only(l: LuaState) -> i32 {
-    let before = crate::live_walk::sky_only_on();
-    if lua_gettop(l) >= 1 {
-        let on = lua_toboolean(l, 1) != 0;
-        crate::live_walk::set_sky_only(on);
-        crate::log!("sky-only walk: {} (was {})", on, before);
-    }
-    lua_pushboolean(l, before as i32);
-    1
-}
-
-unsafe extern "C" fn live_walk(l: LuaState) -> i32 {
-    let before = crate::live_walk::on();
-    if lua_gettop(l) >= 1 {
-        let on = lua_toboolean(l, 1) != 0;
-        crate::live_walk::set_on(on);
-        crate::log!("live walk: {} (was {})", on, before);
     }
     lua_pushboolean(l, before as i32);
     1
@@ -691,13 +642,9 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "instances", instances_report);
     set_fn(l, "nifShading", nif_shading);
     set_fn(l, "animationPolicy", animation_policy);
-    set_fn(l, "liveWalk", live_walk);
-    set_fn(l, "skyOnly", sky_only);
     set_fn(l, "engineWalk", engine_walk);
     set_fn(l, "noteEvery", note_every);
     set_fn(l, "changed", changed);
-    set_fn(l, "tableWalk", table_walk);
-    set_fn(l, "tableMarks", table_marks);
     set_fn(l, "displayCost", display_cost);
     set_fn(l, "retained", retained);
     set_fn(l, "captureFrames", capture_frames);
