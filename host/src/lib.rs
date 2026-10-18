@@ -690,6 +690,14 @@ pub trait Extension {
         1
     }
 
+    /// The room of the texture arrays from the settings of the extension: 0 is automatic
+    /// (the adapter's room, at most `AUTO_TEXTURE_SLOTS`), another number the most slots
+    /// (at least `MIN_TEXTURE_SLOTS`, at most the adapter's room). The renderer asks one time,
+    /// when it makes the device.
+    fn texture_slots(&self) -> u32 {
+        0
+    }
+
     /// Data that the part of this program in the game process put into the stream, with the
     /// number that names its kind.
     fn data(&mut self, _id: u32, _bytes: &[u8]) {}
@@ -1326,6 +1334,9 @@ struct Counts {
     over_array_cap: u32,
     /// The textures of the retained instances that found no pinned slot (white).
     pinned_over: u32,
+    /// The most pinned slots at a time, and the free slots dropped from the end of the room.
+    pinned_most: u32,
+    pinned_dropped: u32,
     /// The indirect calls, the draws in them, and the draws drawn one by one because the
     /// buffer of the arguments was full.
     indirect_calls: u32,
@@ -1533,8 +1544,16 @@ const RECORD_SIZE: usize = core::mem::size_of::<DrawData>();
 const _: () = assert!(INSTANCE_SIZE == 80 && RECORD_SIZE % 16 == 0);
 const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 const RECORDS_AT_FIRST: usize = 4096;
-/// The most textures and samplers of a frame in the binding arrays.
-const ARRAY_CAP: u32 = 4096;
+/// The automatic room of the texture arrays (the extension's `texture_slots` 0): at most the
+/// adapter's room. Measured at the quicksave hold (2026-10-18): a room of 16384 cost the same
+/// as 4096; the adapter's 1000000 cost 0.05 ms more in the bind groups and 0.12 to 0.16 ms
+/// more of the renderer's busy time a frame.
+const AUTO_TEXTURE_SLOTS: u32 = 16384;
+/// The least room of the texture arrays (the renderer needs it to start).
+const MIN_TEXTURE_SLOTS: u32 = 256;
+/// The slots that the textures of the retained instances leave to the frame's own draws (the
+/// UI, the sky, the particles, the actors): the pinned slots and the frame's share one room.
+const FRAME_RESERVE: usize = 256;
 const SAMPLER_CAP: u32 = 64;
 
 /// The arguments of one indexed indirect draw, as `multi_draw_indexed_indirect` reads them.
@@ -1816,7 +1835,10 @@ struct Renderer {
     /// the instances that use it; at 0 it is free (handle 0, the white view) and a later
     /// texture takes it, so the room does not fill with the textures of instances that went.
     pinned_textures: Vec<PinnedTexture>,
+    /// The free slots, from the highest to the lowest (`pin_texture` takes the lowest).
     pinned_free: Vec<usize>,
+    /// The slot of each pinned texture's handle.
+    pinned_index: FxHashMap<u32, usize>,
     /// The pinned entries at the start of the arrays of the frame in progress.
     pinned_in_frame: usize,
     pinned_samplers: Vec<([u32; 5], Rc<wgpu::Sampler>)>,
@@ -1899,6 +1921,7 @@ impl Renderer {
         window: Option<std::sync::Arc<winit::window::Window>>,
         mut target_format: wgpu::TextureFormat,
         extension_shader: String,
+        texture_slots: u32,
     ) -> (Renderer, Option<wgpu::Surface<'static>>) {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = backends;
@@ -1937,11 +1960,14 @@ impl Renderer {
         // side is for Direct3D 9 (`[runtime] renderer_wgpu = false`).
         let array_features = wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
         // The samplers of the array count in the elements of the arrays too.
-        let array_cap = adapter.limits().max_binding_array_elements_per_shader_stage.saturating_sub(SAMPLER_CAP).min(switches::switches().array_cap.unwrap_or(ARRAY_CAP));
+        // The room of the texture arrays: the setting of the extension (0 automatic), the test
+        // switch MGE_XE_ARRAY_CAP over it, at most the adapter's room.
+        let wanted = switches::switches().array_cap.unwrap_or(if texture_slots == 0 { AUTO_TEXTURE_SLOTS } else { texture_slots.max(MIN_TEXTURE_SLOTS) });
+        let array_cap = adapter.limits().max_binding_array_elements_per_shader_stage.saturating_sub(SAMPLER_CAP).min(wanted);
         let sampler_cap = adapter.limits().max_binding_array_sampler_elements_per_shader_stage.min(SAMPLER_CAP);
         println!("texture arrays: the adapter has the features: {}, room for {} textures and {} samplers", adapter.features().contains(array_features), array_cap, sampler_cap);
         assert!(
-            adapter.features().contains(array_features) && array_cap >= 256 && sampler_cap >= 8,
+            adapter.features().contains(array_features) && array_cap >= MIN_TEXTURE_SLOTS && sampler_cap >= 8,
             "this adapter lacks the binding arrays of textures (the features TEXTURE_BINDING_ARRAY, SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING, PARTIALLY_BOUND_BINDING_ARRAY, room for 256 textures and 8 samplers): the wgpu renderer needs them; set [runtime] renderer_wgpu = false for Direct3D 9"
         );
         let (device, queue) = pollster::block_on(adapter.request_device(
@@ -2174,6 +2200,7 @@ impl Renderer {
             instance_generation: 0,
             pinned_textures: Vec::new(),
             pinned_free: Vec::new(),
+            pinned_index: FxHashMap::default(),
             pinned_in_frame: 0,
             pinned_samplers: Vec::new(),
             pipeline_layout,
@@ -2265,6 +2292,9 @@ impl Renderer {
         }
         let Some(view) = self.textures.get(&handle) else { return 0 };
         if self.frame_texture_views.len() >= self.array_cap {
+            if self.counts.over_array_cap == self.counts.pinned_over {
+                println!("texture slots: the room of {} is full in a frame; textures past it draw white: raise [runtime] renderer_texture_slots of mgeXE.toml", self.array_cap);
+            }
             self.counts.over_array_cap += 1;
             return 0;
         }
@@ -3839,7 +3869,7 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     }
     println!("{} records, {frames} frames, frame {wanted} into {width} x {height}", records.len());
 
-    let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, extension_shaders(extension.as_deref())).0);
+    let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, extension_shaders(extension.as_deref()), extension.as_ref().map_or(0, |extension| extension.texture_slots())).0);
     // The filter of the extension's settings, as in the live mode; the argument is for a test.
     player.renderer.anisotropy =
         option(&args, "--anisotropy").and_then(|text| text.parse().ok()).or(extension.as_ref().map(|extension| extension.anisotropy())).unwrap_or(1);
@@ -4289,7 +4319,7 @@ mod live {
                 // A window that is not enabled takes no mouse and no keys: they go to the game.
                 window.set_enable(false);
             }
-            let (renderer, surface) = Renderer::new(self.backends, Some(window.clone()), wgpu::TextureFormat::Bgra8Unorm, crate::extension_shaders(self.extension.as_deref()));
+            let (renderer, surface) = Renderer::new(self.backends, Some(window.clone()), wgpu::TextureFormat::Bgra8Unorm, crate::extension_shaders(self.extension.as_deref()), self.extension.as_ref().map_or(0, |extension| extension.texture_slots()));
             let surface = surface.expect("a surface");
             let size = window.inner_size();
             self.configuration = Some(wgpu::SurfaceConfiguration {
@@ -4451,10 +4481,25 @@ mod live {
                 let device = player.renderer.device.clone();
                 let queue = player.renderer.queue.clone();
                 // The lines of the extension for the debug overlay, when it shows.
-                let lines = match (self.overlay.as_ref(), player.extension.as_ref()) {
+                let mut lines = match (self.overlay.as_ref(), player.extension.as_ref()) {
                     (Some(overlay), Some(extension)) if overlay.is_on() => extension.overlay_lines(),
                     _ => Vec::new(),
                 };
+                // The room of the texture arrays (`runtime.renderer_texture_slots`).
+                if self.overlay.as_ref().is_some_and(|overlay| overlay.is_on()) {
+                    let r = &player.renderer;
+                    lines.insert(
+                        0,
+                        format!(
+                            "textures    {} slots in the frame of a room of {}, {} kept ({} free); {} found no slot",
+                            r.frame_texture_views.len(),
+                            r.array_cap,
+                            r.pinned_textures.len() - r.pinned_free.len(),
+                            r.pinned_free.len(),
+                            r.counts.over_array_cap
+                        ),
+                    );
+                }
                 let status = player.extension.as_ref().map(|extension| extension.status()).unwrap_or_default();
                 let overlay = self.overlay.as_mut();
                 let mut read = None;

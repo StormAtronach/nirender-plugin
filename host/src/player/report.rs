@@ -108,16 +108,18 @@ impl Player {
         );
         println!("indirect calls {}, draws in them {}, draws one by one for want of room {}", c.indirect_calls, c.indirect_draws, c.indirect_over);
         println!(
-            "texture arrays: the most textures of a frame {}, stages over the room {} (of them retained textures with no pinned slot {}; room for {}, pinned at most {}), textures that came again for a handle with a slot {}, pinned slots freed {} (pinned now {}, free {})",
+            "texture arrays: the most textures of a frame {}, stages over the room {} (of them retained textures with no pinned slot {}; room for {}, pinned at most {}), textures that came again for a handle with a slot {}, pinned slots freed {}, dropped from the end {} (pinned now {}, free {}, the most {})",
             c.most_frame_textures,
             c.over_array_cap,
             c.pinned_over,
             self.renderer.array_cap,
-            self.renderer.array_cap / 2 - 1,
+            self.renderer.array_cap.saturating_sub(crate::FRAME_RESERVE + 1),
             c.textures_replaced,
             c.textures_unpinned,
+            c.pinned_dropped,
             self.renderer.pinned_textures.len(),
-            self.renderer.pinned_free.len()
+            self.renderer.pinned_free.len(),
+            c.pinned_most
         );
         println!(
             "geometry pools: {:.1} MB of vertices in {} buffers of {:.0} MB in all, {:.1} MB of indexes in {} buffers of {:.0} MB in all",

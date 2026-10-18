@@ -581,49 +581,62 @@ pub struct PinnedTexture {
 impl Renderer {
     /// A slot of the arrays of the frame that a texture keeps from frame to frame, for the
     /// records of the retained instances: one more use of it. 0 for no texture, a texture
-    /// not known, or no room. A free slot is taken before the room grows.
+    /// not known, or no room. The lowest free slot is taken before the room grows, so that
+    /// the free slots gather at the end, where `unpin_texture` drops them. The pinned slots
+    /// and the frame's own textures share the room; `FRAME_RESERVE` slots stay the frame's.
     pub fn pin_texture(&mut self, handle: u32) -> u32 {
         if handle == 0 {
             return 0;
         }
-        if let Some(index) = self.pinned_textures.iter().position(|p| p.handle == handle) {
+        if let Some(&index) = self.pinned_index.get(&handle) {
             self.pinned_textures[index].uses += 1;
             return index as u32 + 1;
         }
         let Some(view) = self.textures.get(&handle).cloned() else { return 0 };
+        // `pinned_free` goes from the highest slot to the lowest: `pop` takes the lowest.
         let index = if let Some(index) = self.pinned_free.pop() {
             self.pinned_textures[index] = PinnedTexture { handle, view: view.clone(), uses: 1 };
-            // The arrays of the frame in progress hold the pinned slots of its start at their
-            // start: a free slot taken again gets its new view there too. (A slot pinned
-            // after the start is in the arrays from the next frame on, as before.)
-            let slot = index + 1;
-            if index < self.pinned_in_frame && slot < self.frame_texture_views.len() {
-                self.frame_texture_views[slot] = view;
-                self.frame_texture_slots.entry(handle).or_insert(slot as u32);
-            }
             index
         } else {
-            if self.pinned_textures.len() + 1 >= self.array_cap / 2 {
+            if self.pinned_textures.len() + 1 >= self.array_cap.saturating_sub(crate::FRAME_RESERVE) {
+                if self.counts.pinned_over == 0 {
+                    println!(
+                        "texture slots: the room of {} is full ({} kept, {} for the frame's own draws); textures past it draw white: raise [runtime] renderer_texture_slots of mgeXE.toml",
+                        self.array_cap,
+                        self.pinned_textures.len(),
+                        crate::FRAME_RESERVE
+                    );
+                }
                 self.counts.over_array_cap += 1;
                 self.counts.pinned_over += 1;
                 return 0;
             }
-            self.pinned_textures.push(PinnedTexture { handle, view, uses: 1 });
+            self.pinned_textures.push(PinnedTexture { handle, view: view.clone(), uses: 1 });
             self.pinned_textures.len() - 1
         };
-        let slot = index as u32 + 1;
+        // The arrays of the frame in progress hold the pinned slots of its start at their
+        // start: a slot among them taken again gets its new view there too. (A slot past them
+        // is in the arrays from the next frame on.)
+        let slot = index + 1;
+        if index < self.pinned_in_frame && slot < self.frame_texture_views.len() {
+            self.frame_texture_views[slot] = view;
+            self.frame_texture_slots.entry(handle).or_insert(slot as u32);
+        }
+        self.pinned_index.insert(handle, index);
+        self.counts.pinned_most = self.counts.pinned_most.max(self.pinned_textures.len() as u32);
         self.array_group = None;
         self.array_variants.clear();
-        slot
+        slot as u32
     }
 
     /// One use less of a pinned texture (a retained slot that named it went). At no use the
-    /// slot is free: the white view in its place, and no handle names it.
+    /// slot is free: the white view in its place, and no handle names it. The free slots at
+    /// the end of the room go: the room shrinks.
     pub fn unpin_texture(&mut self, handle: u32) {
         if handle == 0 {
             return;
         }
-        let Some(index) = self.pinned_textures.iter().position(|p| p.handle == handle) else { return };
+        let Some(&index) = self.pinned_index.get(&handle) else { return };
         let pinned = &mut self.pinned_textures[index];
         pinned.uses = pinned.uses.saturating_sub(1);
         if pinned.uses != 0 {
@@ -631,11 +644,22 @@ impl Renderer {
         }
         pinned.handle = 0;
         pinned.view = self.white.clone();
-        self.pinned_free.push(index);
+        self.pinned_index.remove(&handle);
+        let at = self.pinned_free.partition_point(|&free| free > index);
+        self.pinned_free.insert(at, index);
         if self.frame_texture_slots.get(&handle) == Some(&(index as u32 + 1)) {
             self.frame_texture_slots.remove(&handle);
         }
         self.counts.textures_unpinned += 1;
+        while self.pinned_textures.last().is_some_and(|p| p.handle == 0) {
+            let last = self.pinned_textures.len() - 1;
+            self.pinned_textures.pop();
+            // The highest free slot is the first of the list.
+            if self.pinned_free.first() == Some(&last) {
+                self.pinned_free.remove(0);
+            }
+            self.counts.pinned_dropped += 1;
+        }
     }
 
     /// A slot of the sampler array of the frame that a sampler state keeps.
