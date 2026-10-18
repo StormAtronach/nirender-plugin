@@ -42,6 +42,7 @@ pub mod perf;
 pub mod ptr_hash;
 pub mod ports;
 pub mod resource;
+pub mod script_names;
 pub mod shadow;
 pub mod shape_stream;
 pub mod site;

@@ -2408,6 +2408,7 @@ pub unsafe fn report() -> String {
         + "\n"
         + &places_report()
         + &crate::ports::controller_events::report()
+        + "\n" + &crate::script_names::report()
         + "\n" + &event_report()
         + "\n"
         + &crate::live_walk::report()

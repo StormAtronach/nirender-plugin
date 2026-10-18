@@ -168,6 +168,8 @@ pub unsafe fn install() -> Result<String, String> {
         Err(error) => crate::log!("no allocator hooks ({error}): calls that allocate are not compared"),
     }
     device::set_frame_hook(frame::on_present);
+    // A fault of the game's script loader that the addresses of the records decide (plan 8g).
+    crate::script_names::install();
 
     let mut failed = 0;
     for port in ports::all() {
