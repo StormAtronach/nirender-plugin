@@ -2345,6 +2345,11 @@ pub unsafe fn is_instance(shape: usize) -> bool {
     tables().instances.contains_key(&shape)
 }
 
+/// The shape is a skinned instance (displayed by the live walk with its bones each frame).
+pub unsafe fn is_skinned_instance(shape: usize) -> bool {
+    tables().instances.get(&shape).is_some_and(|i| i.skinned)
+}
+
 /// An object's app-cull flag changed (`ports::state_update::set_app_culled`): it is marked
 /// for the table walk.
 pub unsafe fn note_app_culled(object: usize) {
@@ -2554,6 +2559,8 @@ pub unsafe fn report() -> String {
         + &crate::ports::controller_events::report()
         + "\n" + &crate::script_names::report()
         + "\n" + &crate::click_time::report()
+        + "\n" + &crate::live_walk::class_report()
+        + "\n" + &crate::camera_space::skin_report()
         + "\n" + &event_report()
         + "\n"
         + &crate::live_walk::report()

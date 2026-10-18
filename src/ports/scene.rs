@@ -273,7 +273,12 @@ pub unsafe fn node_display(this: usize, camera: usize) {
         while i < rd::<u32>(this, N::kChildren_endIndex) as usize {
             let child = rd::<usize>(rd::<usize>(this, N::kChildren_storage), i * 4);
             if child != 0 {
+                // The time of the sky's display (the measure per class, plan section 2).
+                let sky_start = if child == crate::link_client::sky_root() { crate::capture::ticks() } else { 0 };
                 thiscall1(CULL_SHOW, child, camera as u32);
+                if sky_start != 0 {
+                    crate::live_walk::note_sky_ticks(crate::capture::ticks() - sky_start);
+                }
                 // The sky-only walk (F8 part 3): after the sky root the table walk and the
                 // live walk serve the world, and the rest of the world root is not walked.
                 if crate::live_walk::after_child(this, child, camera) {

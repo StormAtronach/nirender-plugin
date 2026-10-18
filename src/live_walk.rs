@@ -47,6 +47,32 @@ const MAX_DEPTH: usize = 64;
 /// The side `WhichSide` returns for a bound wholly on the negative side of a plane.
 const OUTSIDE: u32 = 2;
 
+/// The measure per class (plan section 2, the scope of the world's takeover): the displays of
+/// the live walk by what they display (`DC_*`), each [count, ticks], and the time of the
+/// sky's display under the world root.
+static mut DISPLAY_CLASSES: [[i64; 2]; 4] = [[0; 2]; 4];
+const DC_SKINNED: usize = 0;
+const DC_PARTICLES: usize = 1;
+const DC_LINES: usize = 2;
+const DC_OTHER: usize = 3;
+static mut SKY_TICKS: [i64; 2] = [0; 2];
+
+/// The sky root's display took these ticks (`ports::scene::node_display`).
+pub unsafe fn note_sky_ticks(ticks: i64) {
+    let sky = &mut *addr_of_mut!(SKY_TICKS);
+    sky[0] += 1;
+    sky[1] += ticks;
+}
+
+pub unsafe fn class_report() -> String {
+    let ms = |t: i64| t as f64 * 1000.0 / crate::capture::ticks_per_second() as f64;
+    let c = *addr_of!(DISPLAY_CLASSES);
+    let sky = *addr_of!(SKY_TICKS);
+    let names = ["skinned", "particles", "lines", "other"];
+    let parts: Vec<String> = (0..4).map(|i| format!("{} {} ({:.3} ms)", names[i], c[i][0], ms(c[i][1]))).collect();
+    format!("classes (the takeover's measure): live walk displays {}; the sky's display {} ({:.3} ms)", parts.join(", "), sky[0], ms(sky[1]))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Shape = 0,
@@ -738,10 +764,23 @@ unsafe fn walk_timed(root: usize, camera: usize) {
                 group = Some(open_group(adjust, camera));
             }
         }
-        if let Some(entry) = list().get_mut(&shape) {
-            entry.served = run;
-        }
+        let class = match list().get_mut(&shape) {
+            Some(entry) => {
+                entry.served = run;
+                match entry.kind {
+                    Kind::Particles => DC_PARTICLES,
+                    Kind::Lines => DC_LINES,
+                    _ if crate::instance_stream::is_skinned_instance(shape) => DC_SKINNED,
+                    _ => DC_OTHER,
+                }
+            }
+            None => DC_OTHER,
+        };
+        let display_start = crate::capture::ticks();
         vcall1(shape, SLOT_DISPLAY, camera as u32);
+        let classes = &mut *addr_of_mut!(DISPLAY_CLASSES);
+        classes[class][0] += 1;
+        classes[class][1] += crate::capture::ticks() - display_start;
         DISPLAYED.fetch_add(1, Ordering::Relaxed);
         // A candidate the display classified as a retained instance is the table's now.
         if !crate::instance_stream::engine_serves(shape) && list().remove(&shape).is_some() {

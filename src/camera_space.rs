@@ -542,6 +542,58 @@ unsafe fn skinned_relative(
 /// when this module owns the matrices. Returns whether the matrices are relative, or what
 /// is missing when the data of the skin is not complete.
 pub unsafe fn skin_palette(skin: usize, transform: usize, geometry_site: bool, out: &mut Vec<[f32; 16]>) -> Result<bool, &'static str> {
+    let start = crate::capture::ticks();
+    let result = build_skin_palette(skin, transform, geometry_site, out);
+    if result.is_ok() {
+        note_skin(skin, out.len(), crate::capture::ticks() - start);
+    }
+    result
+}
+
+/// The measure of the skinned parts (plan section 2, the takeover's step 1: bones per
+/// skeleton or per part): the parts, the bone matrices built, the bones and the skeletons
+/// (root parents) that are new in their frame, and the ticks of the palettes.
+#[derive(Default)]
+struct SkinMeasure {
+    parts: u64,
+    matrices: u64,
+    bones: u64,
+    skeletons: u64,
+    ticks: i64,
+    seen: Option<crate::ptr_hash::HashMap<usize, u32>>,
+}
+
+static mut SKIN_MEASURE: SkinMeasure = SkinMeasure { parts: 0, matrices: 0, bones: 0, skeletons: 0, ticks: 0, seen: None };
+
+unsafe fn note_skin(skin: usize, matrices: usize, ticks: i64) {
+    let measure = &mut *addr_of_mut!(SKIN_MEASURE);
+    let frame = *addr_of!(FRAME);
+    measure.parts += 1;
+    measure.matrices += matrices as u64;
+    measure.ticks += ticks;
+    let seen = measure.seen.get_or_insert_with(Default::default);
+    let root_parent: usize = rd(skin, SKIN_ROOT_PARENT);
+    if seen.insert(root_parent | 1, frame) != Some(frame) {
+        measure.skeletons += 1;
+    }
+    let bones: usize = rd(skin, SKIN_BONES);
+    for i in 0..matrices {
+        if seen.insert(rd::<usize>(bones, i * 4), frame) != Some(frame) {
+            measure.bones += 1;
+        }
+    }
+}
+
+pub unsafe fn skin_report() -> String {
+    let measure = &*addr_of!(SKIN_MEASURE);
+    let ms = measure.ticks as f64 * 1000.0 / crate::capture::ticks_per_second() as f64;
+    format!(
+        "skins (the takeover's step 1): {} parts, {} bone matrices, {} bones and {} skeletons new in their frame, the palettes {:.3} ms",
+        measure.parts, measure.matrices, measure.bones, measure.skeletons, ms
+    )
+}
+
+unsafe fn build_skin_palette(skin: usize, transform: usize, geometry_site: bool, out: &mut Vec<[f32; 16]>) -> Result<bool, &'static str> {
     out.clear();
     if skin == 0 || transform == 0 {
         return Err("no skin instance or no transform");
