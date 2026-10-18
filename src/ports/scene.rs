@@ -274,7 +274,11 @@ pub unsafe fn node_display(this: usize, camera: usize) {
             let child = rd::<usize>(rd::<usize>(this, N::kChildren_storage), i * 4);
             if child != 0 {
                 thiscall1(CULL_SHOW, child, camera as u32);
-                crate::live_walk::after_child(this, child, camera);
+                // The sky-only walk (F8 part 3): after the sky root the table walk and the
+                // live walk serve the world, and the rest of the world root is not walked.
+                if crate::live_walk::after_child(this, child, camera) {
+                    break;
+                }
             }
             i += 1;
         }

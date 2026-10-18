@@ -349,17 +349,25 @@ pub unsafe fn set_mode(mode: Mode) -> Mode {
     t.mode = Some(mode);
     if mode != before {
         TABLE_FULL = true;
+        crate::live_walk::rediscover();
         // Mode off is the reference: the engine draws every shape, so the helper must not
         // draw its table too. Without the hides the table's blends doubled the engine's in
         // every picture of mode off (the opaque doubles were invisible), 2026-10-17. The
         // next display of a shape in mode gpu shows its instance again.
         let hide = mode == Mode::Off && capture::recording();
+        // Back in mode gpu the instances the helper draws are marked again at once (the
+        // condition of `draw`): with the sky-only walk the engine displays no shape after the
+        // discovery frame, and the table walk works only marked shapes. The full pass then
+        // shows each reached one (the tour's stop 2-26 lost a whole object, 2026-10-18).
+        let remark = mode == Mode::Gpu && t.skip;
         let mut hidden = 0;
         for (&shape, instance) in t.instances.iter_mut() {
             instance.sent = false;
             instance.lights.clear();
             if mode != Mode::Gpu {
                 mark(shape, false);
+            } else if remark && instance.filled && !instance.skinned {
+                mark(shape, true);
             }
             if hide && instance.filled && instance.visible {
                 instance.visible = false;
@@ -1211,8 +1219,9 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
     true
 }
 
-/// The table walk (F8 parts 3 and 4, option B, entry 13): `NIRENDER_TABLE_WALK=1`,
-/// `nirender.tableWalk(on)`. Off by default in its first step.
+/// The table walk (F8 parts 3 and 4, option B, entry 13): on by default since the cut;
+/// `NIRENDER_TABLE_WALK=0` or `nirender.tableWalk(false)` turns it off alone (an A/B until
+/// CP4); the engine's walk (`live_walk::engine_walk_on`) turns it off with the other walks.
 static TABLE_WALK: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(255);
 /// The table walk's counters (`TW_*`) and its time.
 static mut TABLE_COUNTS: [u64; 15] = [0; 15];
@@ -1249,11 +1258,14 @@ const CHAIN_DEPTH: usize = 64;
 
 pub fn table_walk_on() -> bool {
     use core::sync::atomic::Ordering::Relaxed;
+    if crate::live_walk::engine_walk_on() {
+        return false;
+    }
     let value = TABLE_WALK.load(Relaxed);
     if value != 255 {
         return value != 0;
     }
-    let on = std::env::var("NIRENDER_TABLE_WALK").map_or(false, |v| v != "0");
+    let on = std::env::var("NIRENDER_TABLE_WALK").map_or(true, |v| v != "0");
     TABLE_WALK.store(on as u8, Relaxed);
     on
 }
@@ -1267,6 +1279,11 @@ pub fn set_table_walk(on: bool) -> bool {
         unsafe { TABLE_FULL = true };
     }
     before
+}
+
+/// The next table walk works every instance (`live_walk::set_engine_walk`).
+pub fn table_full() {
+    unsafe { TABLE_FULL = true };
 }
 
 /// The table walk works only the marked instances (entry 13). `NIRENDER_TABLE_MARKS=0` or
@@ -1685,6 +1702,10 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         }
     }
     lost |= (*core::ptr::addr_of_mut!(SHAPE_MARKS)).drain(drained);
+    // The live walk's pending shapes below a node of an app-cull or tree mark (F8 part 3).
+    crate::live_walk::release_pending(&culls, root);
+    crate::live_walk::release_pending(&tree, root);
+    crate::live_walk::note_tree_marks(&tree);
     if lost {
         counts[TW_LOST] += 1;
     }
@@ -2004,7 +2025,16 @@ pub unsafe fn note_world_data(shape: usize) {
         if table_walk_on() {
             (*core::ptr::addr_of_mut!(SHAPE_MARKS)).push(shape);
         }
+    } else if crate::live_walk::sky_only_on() && !tables().instances.contains_key(&shape) {
+        // A shape the table does not know: with the sky-only walk, the live walk finds it
+        // (F8 part 3: a shape made at run time registers through the update pass).
+        crate::live_walk::note_update(shape);
     }
+}
+
+/// True when the shape is a retained instance of the table.
+pub unsafe fn is_instance(shape: usize) -> bool {
+    tables().instances.contains_key(&shape)
 }
 
 /// An object's app-cull flag changed (`ports::state_update::set_app_culled`): it is marked

@@ -402,6 +402,33 @@ unsafe extern "C" fn display_cost(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.engineWalk(on)`: the engine's walk of the world on (the table walk, the live walk
+/// and the sky-only walk off, the world displayed as before the cut) or off (the default);
+/// returns the state before; without an argument the state. The permanent debug switch.
+unsafe extern "C" fn engine_walk(l: LuaState) -> i32 {
+    let before = crate::live_walk::engine_walk_on();
+    if lua_gettop(l) >= 1 {
+        let on = lua_toboolean(l, 1) != 0;
+        crate::live_walk::set_engine_walk(on);
+        crate::log!("engine walk: {} (was {})", on, before);
+    }
+    lua_pushboolean(l, before as i32);
+    1
+}
+
+/// `nirender.skyOnly(on)`: the sky-only walk of F8 part 3 on or off (it needs the table walk
+/// and the live walk on); returns the state before; without an argument the state.
+unsafe extern "C" fn sky_only(l: LuaState) -> i32 {
+    let before = crate::live_walk::sky_only_on();
+    if lua_gettop(l) >= 1 {
+        let on = lua_toboolean(l, 1) != 0;
+        crate::live_walk::set_sky_only(on);
+        crate::log!("sky-only walk: {} (was {})", on, before);
+    }
+    lua_pushboolean(l, before as i32);
+    1
+}
+
 unsafe extern "C" fn live_walk(l: LuaState) -> i32 {
     let before = crate::live_walk::on();
     if lua_gettop(l) >= 1 {
@@ -665,6 +692,8 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "nifShading", nif_shading);
     set_fn(l, "animationPolicy", animation_policy);
     set_fn(l, "liveWalk", live_walk);
+    set_fn(l, "skyOnly", sky_only);
+    set_fn(l, "engineWalk", engine_walk);
     set_fn(l, "noteEvery", note_every);
     set_fn(l, "changed", changed);
     set_fn(l, "tableWalk", table_walk);
