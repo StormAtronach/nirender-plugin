@@ -31,6 +31,7 @@ TAG_OBJECT, TAG_DRAW_STATE, TAG_COMMAND, TAG_CALL, TAG_FRAME_END = 6, 7, 8, 9, 1
 TAG_SCENE_BEGIN, TAG_SCENE_END, TAG_GEOMETRY, TAG_MATERIAL, TAG_SHAPE = 3, 4, 18, 19, 20
 TAG_INSTANCE, TAG_INSTANCE_DRAW, TAG_INSTANCE_DELETE = 23, 24, 25
 TAG_INSTANCE_LIGHTS, TAG_INSTANCE_STATE, TAG_RETAINED_SCENE = 26, 27, 28
+TAG_LIGHT = 21
 RENDER_STATES = {7: "ZENABLE", 8: "FILLMODE", 14: "ZWRITEENABLE", 22: "CULLMODE", 28: "FOGENABLE", 34: "FOGCOLOR",
                  35: "FOGTABLEMODE", 36: "FOGSTART", 37: "FOGEND", 38: "FOGDENSITY", 48: "RANGEFOGENABLE",
                  52: "STENCILENABLE", 53: "STENCILFAIL", 54: "STENCILZFAIL", 55: "STENCILPASS", 56: "STENCILFUNC",
@@ -123,6 +124,10 @@ def sequence(path, wanted):
             print("  INSTANCE_DRAW %d flags %#x lights %d" % (i, flags, lights))
         elif tag == TAG_INSTANCE_DELETE:
             print("INSTANCE_DELETE %d" % words(body, 0, 1)[0])
+        elif tag == TAG_LIGHT:
+            key = words(body, 0, 1)[0]
+            values = words(body, 4, 26)
+            print("LIGHT %d values %08x" % (key, hash(values) & 0xFFFFFFFF))
         elif tag == TAG_COMMAND:
             command, a, b, c = words(body, 0, 4)
             if command == 1 and a in RENDER_STATES:
