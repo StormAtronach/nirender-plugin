@@ -162,8 +162,18 @@ impl Player {
             // the first directional light (type 3), with the values of this frame.
             if let Some((scene_ambient, _)) = self.retained_values {
                 ambient = color(known(scene_ambient, 0));
-                let directional = |kind: u32| self.renderer.lights_known.values().find(|l| word(&l[..], 0) == kind);
-                if let Some(l) = directional(4).or_else(|| directional(3)) {
+            }
+            // The sun: the weather's sky light as the engine gives it to the device, sent by
+            // the plugin in the scene record (flag 64). A guess among the light records picked
+            // a constant white light instead (2026-10-18); the owner pointed at the world
+            // controller. Without the record (a plugin from before it) the sun stays that of
+            // the engine's last world draw.
+            {
+                if self.world_sun_logged < 4 {
+                    self.world_sun_logged += 1;
+                    println!("world sun: the scene record {} the sun; the draw's sun {:?}", if self.retained_sun.is_some() { "carries" } else { "lacks" }, sun);
+                }
+                if let Some(l) = self.retained_sun.as_ref() {
                     let l = &l[..];
                     let diffuse: [f32; 3] = floats(l, 4);
                     let light_ambient: [f32; 3] = floats(l, 9 * 4);

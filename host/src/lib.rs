@@ -3254,6 +3254,11 @@ struct Player {
     /// interface.
     world_matrices: Option<([f32; 16], [f32; 16])>,
     world_sun: Option<([f32; 3], [f32; 3], [f32; 3])>,
+    /// The sun of the frame from the `RETAINED_SCENE` record (flag 64): the 26 words of the
+    /// weather's sky light as the engine gives them to the device (`world_facts`).
+    retained_sun: Option<[u8; 104]>,
+    /// The first uses of the frame's sun go to the log (`world_facts`).
+    world_sun_logged: u32,
     world_ambient: [f32; 3],
     target: Option<u32>,
     wants_texture: bool,
@@ -3367,6 +3372,8 @@ impl Player {
             posted: false,
             world_matrices: None,
             world_sun: None,
+            retained_sun: None,
+            world_sun_logged: 0,
             world_ambient: [0.0; 3],
             target: None,
             wants_texture: false,
@@ -3491,7 +3498,10 @@ impl Player {
         self.renderer.pin_into_frame();
         self.retained_settle_late();
         self.renderer.scene_slots_used = 1;
-        self.retained_values = None;
+        // The scene record of the last frame stays until the next one comes: the world's
+        // facts are taken at the world's start, before the walk's record of the frame, and
+        // a clear here gave the distant land and the glows the stale sun of the engine's last
+        // draw every frame (2026-10-18). A stream without the record keeps None.
         self.run_args.clear();
         self.frame_args.clear();
         self.renderer.indirect_written = 0;

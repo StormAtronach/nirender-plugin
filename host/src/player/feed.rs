@@ -94,8 +94,13 @@ impl Player {
                 self.retained.set_bones(word(data, 0), word(data, 4), bound, &data[24..]);
             }
             tag::RETAINED_SCENE if data.len() >= 8 => {
-                let fog = (word(data, 4) & 32 != 0 && data.len() >= 24).then(|| core::array::from_fn(|i| word(data, 8 + i * 4)));
+                let flags = word(data, 4);
+                let fog = (flags & 32 != 0 && data.len() >= 24).then(|| core::array::from_fn(|i| word(data, 8 + i * 4)));
                 self.retained_values = Some((word(data, 0), fog));
+                // Flag 64: the sun of the frame, the 26 words of the weather's sky light as
+                // the engine gives them to the device, after the fog.
+                let at = if fog.is_some() { 24 } else { 8 };
+                self.retained_sun = (flags & 64 != 0 && data.len() >= at + 104).then(|| data[at..at + 104].try_into().unwrap());
             }
             tag::INSTANCE_DRAW if data.len() >= 12 => {
                 if self.retained_on {

@@ -1191,10 +1191,14 @@ pub unsafe fn instance_state(id: u32, visible: bool) {
 }
 
 /// The values of the frame for the retained draws. See `tag::RETAINED_SCENE`.
-pub unsafe fn retained_scene(ambient: u32, fog: Option<[u32; 4]>) {
+/// The flag of a `RETAINED_SCENE` record that carries the sun: the 26 words of the weather's
+/// sky light as the engine gives them to the device (`D3DLIGHT8`), after the fog.
+pub const SCENE_SUN: u32 = 64;
+
+pub unsafe fn retained_scene(ambient: u32, fog: Option<[u32; 4]>, sun: Option<&[u32; 26]>) {
     let _lock = crate::sync::device_lock();
-    let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 };
-    write(tag::RETAINED_SCENE, &[words(&[ambient, flags]), words(fog.as_ref().map_or(&[], |f| &f[..]))]);
+    let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 } | if sun.is_some() { SCENE_SUN } else { 0 };
+    write(tag::RETAINED_SCENE, &[words(&[ambient, flags]), words(fog.as_ref().map_or(&[], |f| &f[..])), words(sun.map_or(&[], |s| &s[..]))]);
 }
 
 /// A light record. See `tag::LIGHT`.

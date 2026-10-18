@@ -1461,7 +1461,8 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
     if t.scene_frame != frame && !crate::live_walk::in_walk() && !table {
         t.scene_frame = frame;
         t.scene_values = (ambient, fog);
-        capture::retained_scene(ambient, fog);
+        let sun = scene_sun(t);
+        capture::retained_scene(ambient, fog, sun.as_ref());
     } else if t.scene_frame == frame && t.scene_values != (ambient, fog) {
         t.scene_mixed += 1;
     }
@@ -2514,7 +2515,77 @@ unsafe fn table_frame_values() {
     };
     t.scene_frame = t.frame;
     t.scene_values = (ambient, fog);
-    capture::retained_scene(ambient, fog);
+    let sun = scene_sun(t);
+    capture::retained_scene(ambient, fog, sun.as_ref());
+}
+
+/// `WorldController` (0x7C67DC) -> `weatherController` (+0x58) -> `sgSkyLight` (+0xAC):
+/// the weather's directional light, the sun of the hour (MWSE `TES3WeatherController.h`).
+const WORLD_CONTROLLER: usize = 0x7C67DC;
+const WEATHER_CONTROLLER: usize = 0x58;
+const SKY_LIGHT: usize = 0xAC;
+
+/// The sun of the frame for the helper's own draws (the distant land, the shadows): the
+/// weather controller's sky light, converted as the engine converts a light for the device
+/// (`light_entry_update`, the 26 words of a `D3DLIGHT8`). The engine sets this light on the
+/// device at its world draws; with the cut it draws no world, so the helper took the sun
+/// from a stale draw, then from a guess among the light records (a constant white light won
+/// the guess, 2026-10-18). The owner pointed at the world controller. None when the light
+/// is off or dim, as `note_light_once`.
+unsafe fn scene_sun(t: &mut Tables) -> Option<[u32; 26]> {
+    static LOGGED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    static mut LAST_DIFFUSE: [u32; 3] = [0; 3];
+    let log_once = |what: String| {
+        if LOGGED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 24 {
+            crate::log!("scene sun: {what}");
+        }
+    };
+    let world: usize = rd(WORLD_CONTROLLER, 0);
+    if world == 0 {
+        log_once(String::from("no world controller"));
+        return None;
+    }
+    let weather: usize = rd(world, WEATHER_CONTROLLER);
+    if weather == 0 {
+        log_once(String::from("no weather controller"));
+        return None;
+    }
+    let light: usize = rd(weather, SKY_LIGHT);
+    if light == 0 {
+        log_once(String::from("no sky light"));
+        return None;
+    }
+    let enabled: u8 = rd(light, L::enabled);
+    let dimmer: f32 = rd(light, L::dimmer);
+    if enabled == 0 || dimmer < f32::from_bits(crate::ports::light_manager::MIN_DIMMER) {
+        log_once(format!("the sky light 0x{light:x} is off or dim: enabled {enabled}, dimmer {dimmer}"));
+        return None;
+    }
+    let entry = t.scratch_entry.as_mut_ptr() as usize;
+    core::ptr::write_bytes(entry as *mut u8, 0, E::SIZE);
+    crate::ports::light_manager::light_entry_update(entry, light);
+    let values: [u32; 26] = rd(entry, E::d3dLight);
+    // The values go to the log when the diffuse colour changes (the hour moves it).
+    let diffuse = [values[1], values[2], values[3]];
+    if diffuse == *core::ptr::addr_of!(LAST_DIFFUSE) {
+        return Some(values);
+    }
+    LAST_DIFFUSE = diffuse;
+    log_once(format!(
+        "frame {}: the sky light 0x{light:x} goes into the scene record: type {}, diffuse {:.3} {:.3} {:.3}, ambient {:.3} {:.3} {:.3}, direction {:.3} {:.3} {:.3}",
+        t.frame,
+        values[0],
+        f32::from_bits(values[1]),
+        f32::from_bits(values[2]),
+        f32::from_bits(values[3]),
+        f32::from_bits(values[9]),
+        f32::from_bits(values[10]),
+        f32::from_bits(values[11]),
+        f32::from_bits(values[16]),
+        f32::from_bits(values[17]),
+        f32::from_bits(values[18])
+    ));
+    Some(values)
 }
 
 /// After the instances: the note of each light of the light set (the lights of the
