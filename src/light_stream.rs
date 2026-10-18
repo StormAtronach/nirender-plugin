@@ -36,10 +36,11 @@ pub unsafe fn report() -> String {
 }
 
 /// Notes one light by its key and its device values: sends a record when they are new or
-/// changed. For a light of a shape the engine does not display (`instance_stream`).
-pub unsafe fn note_values(key: u32, values: &[u32; 26]) {
+/// changed. For a light of a shape the engine does not display (`instance_stream`). True
+/// when a record went.
+pub unsafe fn note_values(key: u32, values: &[u32; 26]) -> bool {
     if key as usize >= MOST_INDEX {
-        return;
+        return false;
     }
     let versions = versions();
     if versions.len() <= key as usize {
@@ -49,7 +50,9 @@ pub unsafe fn note_values(key: u32, values: &[u32; 26]) {
         crate::capture::light(key, values);
         versions[key as usize] = Some(*values);
         RECORDS += 1;
+        return true;
     }
+    false
 }
 
 /// Notes the lights of the light manager of the renderer, as the state of the draw has

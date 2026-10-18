@@ -866,6 +866,8 @@ const MOST_LIGHT_INDEX: usize = 1 << 20;
 /// by the index of the light, an array and not a hash: a frame notes each light of each
 /// retained shape.
 unsafe fn note_light_once(t: &mut Tables, light: usize, key: u32) {
+    let counts = &mut *core::ptr::addr_of_mut!(LIGHT_COUNTS);
+    counts[LC_NOTES] += 1;
     let k = key as usize;
     if k >= MOST_LIGHT_INDEX {
         return;
@@ -877,12 +879,74 @@ unsafe fn note_light_once(t: &mut Tables, light: usize, key: u32) {
         return;
     }
     t.light_noted[k] = t.frame;
+    counts[LC_BUILT] += 1;
+    let revision: u32 = rd(light, L::revisionID);
+    let revisions = &mut *core::ptr::addr_of_mut!(LIGHT_REVISIONS);
+    if revisions.len() <= k {
+        revisions.resize(k + 1, None);
+    }
+    let same = revisions[k] == Some(revision);
+    revisions[k] = Some(revision);
+    if same {
+        counts[LC_BUILT_SAME] += 1;
+    }
     let entry = t.scratch_entry.as_mut_ptr() as usize;
     core::ptr::write_bytes(entry as *mut u8, 0, E::SIZE);
-    wr::<u32>(entry, E::revisionId, !rd::<u32>(light, L::revisionID));
+    wr::<u32>(entry, E::revisionId, !revision);
     crate::ports::light_manager::light_entry_update(entry, light);
     let values: [u32; 26] = rd(entry, E::d3dLight);
-    crate::light_stream::note_values(key, &values);
+    if crate::light_stream::note_values(key, &values) {
+        counts[LC_SENT] += 1;
+        if same {
+            counts[LC_SENT_SAME] += 1;
+        }
+    }
+}
+
+/// The measure of the lights (plan 8e, step 1), by `LC_*`: the light loops of the displays
+/// and their lights; the frame passes, their effect states and their lights; the notes of a
+/// light, the entries built (one a light a frame), those built with the revision of the
+/// light's last build, the records sent, and those sent with the revision of the last build
+/// (a change the revision does not show).
+static mut LIGHT_COUNTS: [u64; 10] = [0; 10];
+const LC_LOOPS: usize = 0;
+const LC_LOOP_LIGHTS: usize = 1;
+const LC_PASSES: usize = 2;
+const LC_PASS_STATES: usize = 3;
+const LC_PASS_LIGHTS: usize = 4;
+const LC_NOTES: usize = 5;
+const LC_BUILT: usize = 6;
+const LC_BUILT_SAME: usize = 7;
+const LC_SENT: usize = 8;
+const LC_SENT_SAME: usize = 9;
+/// The time of the light loops of the displays, and of the frame passes.
+static mut LIGHT_TICKS: [i64; 2] = [0; 2];
+/// The revision of each light at its last build, by its index.
+static mut LIGHT_REVISIONS: Vec<Option<u32>> = Vec::new();
+
+pub unsafe fn light_report() -> String {
+    let c = *core::ptr::addr_of!(LIGHT_COUNTS);
+    let ticks = *core::ptr::addr_of!(LIGHT_TICKS);
+    let ms = |t: i64| t as f64 * 1000.0 / capture::ticks_per_second() as f64;
+    let per = |a: u64, b: u64| a as f64 / b.max(1) as f64;
+    format!(
+        "lights (plan 8e): display loops {} ({:.2} lights each, {:.3} ms, {:.2} us each); frame passes {} ({:.1} effect states, {:.1} lights each, {:.3} ms, {:.4} ms each); notes {}, entries built {} ({:.1} a pass; {} with the revision of the last build), records sent {} ({} with the revision of the last build)",
+        c[LC_LOOPS],
+        per(c[LC_LOOP_LIGHTS], c[LC_LOOPS]),
+        ms(ticks[0]),
+        ms(ticks[0]) * 1000.0 / c[LC_LOOPS].max(1) as f64,
+        c[LC_PASSES],
+        per(c[LC_PASS_STATES], c[LC_PASSES]),
+        per(c[LC_PASS_LIGHTS], c[LC_PASSES]),
+        ms(ticks[1]),
+        ms(ticks[1]) / c[LC_PASSES].max(1) as f64,
+        c[LC_NOTES],
+        c[LC_BUILT],
+        per(c[LC_BUILT], c[LC_PASSES]),
+        c[LC_BUILT_SAME],
+        c[LC_SENT],
+        c[LC_SENT_SAME]
+    )
 }
 
 /// The display of a retained shape by the engine (mode gpu): what the draw of the stream
@@ -1188,6 +1252,7 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
     }
     // The lights of the effect state of the shape, their device values when they changed,
     // and the keys when the set changed.
+    let light_start = capture::ticks();
     let mut lights = core::mem::take(&mut t.scratch_lights);
     state_lights(effect_state, &mut lights);
     let mut keys = core::mem::take(&mut t.scratch_keys);
@@ -1197,6 +1262,10 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
         note_light_once(t, light, key);
         keys.push(key);
     }
+    let counts = &mut *core::ptr::addr_of_mut!(LIGHT_COUNTS);
+    counts[LC_LOOPS] += 1;
+    counts[LC_LOOP_LIGHTS] += lights.len() as u64;
+    (*core::ptr::addr_of_mut!(LIGHT_TICKS))[0] += capture::ticks() - light_start;
     t.scratch_lights = lights;
     let Some(instance) = t.instances.get_mut(&shape) else {
         t.scratch_keys = keys;
@@ -2058,16 +2127,22 @@ unsafe fn table_frame_values() {
 /// After the instances: the note of each light of the instances' effect states, once a frame
 /// each (`note_light_once`).
 unsafe fn table_frame_lights(states: &HashMap<usize, u32>) {
+    let start = capture::ticks();
     let t = tables();
+    let counts = &mut *core::ptr::addr_of_mut!(LIGHT_COUNTS);
+    counts[LC_PASSES] += 1;
+    counts[LC_PASS_STATES] += states.len() as u64;
     let mut lights = core::mem::take(&mut t.scratch_lights);
     for &state in states.keys() {
         state_lights(state, &mut lights);
+        counts[LC_PASS_LIGHTS] += lights.len() as u64;
         for &light in lights.iter() {
             let key: u32 = rd(light, L::index);
             note_light_once(t, light, key);
         }
     }
     t.scratch_lights = lights;
+    (*core::ptr::addr_of_mut!(LIGHT_TICKS))[1] += capture::ticks() - start;
 }
 
 /// The events of entry 13, counted (no change of behaviour yet): the calls of
@@ -2405,6 +2480,8 @@ pub unsafe fn report() -> String {
         + &crate::animation::report()
         + "\n"
         + &table_walk_report()
+        + "\n"
+        + &light_report()
         + "\n"
         + &places_report()
         + &crate::ports::controller_events::report()
