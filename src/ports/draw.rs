@@ -817,6 +817,23 @@ pub(crate) unsafe fn ensure_skin_partitions(this: usize, geom_data: usize, skin:
         eax = site_thiscall!(SP_SKIN_PARTITION_CTOR, eax) as usize;
         new_partition = eax;
     }
+    // A skin the engine's builder cannot take: a bone with vertex weights counted but no
+    // weight array. `NiSkinPartition::CreateVertexInteractions` (0x6C6B60) reads the array
+    // of every bone with a count and crashed on a null one (the hour-long walk of
+    // 2026-10-19, 01:49, C:/tmp/crash-20261019-0149: 118 vertices, a null array). Such a
+    // skin gets the empty partition, as the engine's own failure path gives it: the shape
+    // draws nothing on the hardware path. The first ones go to the log with their names.
+    if skin_data != 0 && !skin_data_complete(skin_data) {
+        static REFUSED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        if REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 8 {
+            let root: usize = rd(skin, NiSkinInstance::rootParent);
+            crate::log!(
+                "skin partitions: the skin data 0x{skin_data:x} of a shape under '{}' has a bone with vertex weights counted and no weight array; the shape gets no partition (the engine's builder would crash on it)",
+                object_name(root)
+            );
+        }
+        return new_partition;
+    }
     // `mov al, countHWBones; push eax; push eax`: the high bytes keep the value EAX had.
     let bones = (eax as u32 & 0xFFFF_FF00) | rd::<u8>(this, R::countHWBones) as u32;
     if site_thiscall!(SP_MAKE_PARTITIONS, new_partition, geom_data, skin_data, bones, bones) as u8 != 0 {
@@ -824,6 +841,42 @@ pub(crate) unsafe fn ensure_skin_partitions(this: usize, geom_data: usize, skin:
         ni::pointer_assign(slot, new_partition);
     }
     new_partition
+}
+
+/// `NiSkinData` (NetImmerse 4.0.0.2, as `camera_space` reads it): the bone count at 0x40, the
+/// bone records at 0x44, 0x4C bytes each: the skin-to-bone transform, the bound, the vertex
+/// count (u16, +0x44) and the vertex weight array (+0x48). True when every bone with a count
+/// has its array: the engine's partition builder reads the array of each such bone.
+unsafe fn skin_data_complete(skin_data: usize) -> bool {
+    const BONE_COUNT: usize = 0x40;
+    const BONES: usize = 0x44;
+    const BONE_SIZE: usize = 0x4C;
+    const BONE_VERTICES: usize = 0x44;
+    const BONE_WEIGHTS: usize = 0x48;
+    let count: u32 = rd(skin_data, BONE_COUNT);
+    let bones: usize = rd(skin_data, BONES);
+    if count == 0 {
+        return true;
+    }
+    if bones == 0 || count > 4096 {
+        return false;
+    }
+    (0..count as usize).all(|i| {
+        let bone = bones + i * BONE_SIZE;
+        rd::<u16>(bone, BONE_VERTICES) == 0 || rd::<usize>(bone, BONE_WEIGHTS) != 0
+    })
+}
+
+/// The name of an object (`NiObjectNET::name` at +8), or "-".
+unsafe fn object_name(object: usize) -> String {
+    if object == 0 {
+        return String::from("-");
+    }
+    let at: usize = rd(object, 8);
+    if at == 0 {
+        return String::from("-");
+    }
+    core::ffi::CStr::from_ptr(at as *const core::ffi::c_char).to_string_lossy().into_owned()
 }
 
 /// 0x6ADE70 `NiDX8Renderer::DrawSkinnedPrimitive`. The port makes the skin partitions when
@@ -2185,7 +2238,9 @@ mod tests {
         let mut skin_partition = vec![0u32; NiSkinPartition::SIZE / 4];
         skin_partition[NiSkinPartition::partitionCount / 4] = count as u32;
         skin_partition[NiSkinPartition::partitions / 4] = partitions.as_mut_ptr() as u32;
-        let mut data = vec![0u32; 4];
+        // The skin data up to its bone count at 0x40 (0 bones: complete for the guard of
+        // `ensure_skin_partitions`).
+        let mut data = vec![0u32; 0x48 / 4];
         data[SKIN_DATA_SKIN_PARTITION / 4] = skin_partition.as_mut_ptr() as u32;
         let mut instance = vec![0u32; NiSkinInstance::SIZE / 4];
         instance[NiSkinInstance::skinData / 4] = data.as_mut_ptr() as u32;
