@@ -2176,6 +2176,178 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     }
     table_frame_lights();
     TABLE_TICKS.fetch_add(capture::ticks() - start, core::sync::atomic::Ordering::Relaxed);
+    if audit_on() {
+        table_audit(root, camera);
+    }
+}
+
+/// The audit of the table walk (the owner, 2026-10-18: a debug tool to hone the walk by
+/// events, not a second walk): `NIRENDER_TABLE_AUDIT=1`. After the walk of each frame it
+/// takes every retained instance in the view (or that the helper shows in the view), works
+/// out from the scene graph alone what the helper must show, and counts each difference
+/// from what the walk sent: the visibility, the transform, the bound, the colours, the
+/// chain. It writes nothing to the scene and sends nothing. The first finds go to the log.
+static AUDIT_ON: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(255);
+/// By `AU_*`: the frames, the instances checked, and the differences.
+static mut AUDIT_COUNTS: [u64; 8] = [0; 8];
+const AU_FRAMES: usize = 0;
+const AU_CHECKED: usize = 1;
+const AU_VISIBILITY: usize = 2;
+const AU_TRANSFORM: usize = 3;
+const AU_BOUND: usize = 4;
+const AU_COLOURS: usize = 5;
+const AU_CHAIN: usize = 6;
+const AU_HIDDEN_SHOWN: usize = 7;
+static mut AUDIT_TICKS: i64 = 0;
+static mut AUDIT_FOUND: Option<HashSet<usize>> = None;
+static mut AUDIT_LOGGED: u32 = 0;
+static mut AUDIT_CHAIN: Vec<(usize, u8)> = Vec::new();
+
+/// The test of the audit: `NIRENDER_TABLE_AUDIT=drop` turns the audit on and drops the
+/// marks of the moves, a fault of the walk that the audit must find (a null test that can
+/// show the effect).
+fn audit_drops_moves() -> bool {
+    audit_on() && AUDIT_DROP.load(core::sync::atomic::Ordering::Relaxed)
+}
+static AUDIT_DROP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn audit_on() -> bool {
+    let value = AUDIT_ON.load(core::sync::atomic::Ordering::Relaxed);
+    if value != 255 {
+        return value != 0;
+    }
+    let value = std::env::var("NIRENDER_TABLE_AUDIT").unwrap_or_default();
+    let on = value == "1" || value == "drop";
+    AUDIT_DROP.store(value == "drop", core::sync::atomic::Ordering::Relaxed);
+    AUDIT_ON.store(on as u8, core::sync::atomic::Ordering::Relaxed);
+    on
+}
+
+/// `table_reachable` without its writes (the level's index, the switch child's update, the
+/// billboard's turn): the walk did them in this frame.
+unsafe fn audit_reachable(shape: usize, chain: &[(usize, u8)], camera: usize) -> bool {
+    if rd::<u16>(shape, FLAGS) & APP_CULLED != 0 {
+        return false;
+    }
+    for (at, &(node, kind)) in chain.iter().enumerate().rev() {
+        if rd::<u16>(node, FLAGS) & APP_CULLED != 0 {
+            return false;
+        }
+        let switch = match kind {
+            CHAIN_SWITCH => crate::live_walk::SwitchKind::Plain,
+            CHAIN_LOD => crate::live_walk::SwitchKind::LevelOfDetail,
+            CHAIN_FLT => crate::live_walk::SwitchKind::FltAnimation,
+            _ => continue,
+        };
+        let child = if at == 0 { shape } else { chain[at - 1].0 };
+        let index = crate::live_walk::switch_index_of(node, switch, camera);
+        if index < 0 || index >= rd::<i32>(node, crate::gen::layouts::NiNode::kChildren_endIndex) {
+            return false;
+        }
+        let selected: usize = rd(rd::<usize>(node, crate::gen::layouts::NiNode::kChildren_storage), index as usize * 4);
+        if selected != child {
+            return false;
+        }
+    }
+    true
+}
+
+unsafe fn table_audit(root: usize, camera: usize) {
+    let start = capture::ticks();
+    let counts = &mut *core::ptr::addr_of_mut!(AUDIT_COUNTS);
+    counts[AU_FRAMES] += 1;
+    // The planes of this frame's camera (the walk reads the same ones when its gate is on).
+    if !read_view_planes(camera) {
+        return;
+    }
+    let planes = &*core::ptr::addr_of!(VIEW_PLANES);
+    let fresh = &mut *core::ptr::addr_of_mut!(AUDIT_CHAIN);
+    let found = (*core::ptr::addr_of_mut!(AUDIT_FOUND)).get_or_insert_with(HashSet::default);
+    let renderer = crate::engine::renderer();
+    for (&shape, instance) in tables().instances.iter() {
+        if !instance.filled || rd::<u16>(shape, FLAGS) & RETAINED_BIT == 0 {
+            continue;
+        }
+        let in_view = bound_in_view(rd(shape, AV_WORLD_BOUND), planes) || (instance.visible && bound_in_view(instance.bound, planes));
+        if !in_view {
+            continue;
+        }
+        counts[AU_CHECKED] += 1;
+        build_chain(shape, fresh);
+        let mut what: Vec<&str> = Vec::new();
+        if *fresh != instance.chain {
+            counts[AU_CHAIN] += 1;
+            what.push("the chain");
+        }
+        let under_root = fresh.last().map_or(false, |&(top, _)| top == root) || fresh.len() >= CHAIN_DEPTH;
+        let shown = under_root && audit_reachable(shape, fresh, camera);
+        if shown != instance.visible {
+            counts[if shown { AU_HIDDEN_SHOWN } else { AU_VISIBILITY }] += 1;
+            what.push(if shown { "hidden but reached" } else { "shown but not reached" });
+        }
+        if shown {
+            if rd::<[u32; TRANSFORM_WORDS]>(shape, WORLD) != instance.transform {
+                counts[AU_TRANSFORM] += 1;
+                what.push("the transform");
+            }
+            if rd::<[f32; 4]>(shape, WORLD_BOUND).map(f32::to_bits) != instance.bound.map(f32::to_bits) {
+                counts[AU_BOUND] += 1;
+                what.push("the bound");
+            }
+            if renderer != 0 && crate::shape_stream::material_values(rd(shape, GEOMETRY_PROPERTY_STATE)) != instance.colours {
+                counts[AU_COLOURS] += 1;
+                what.push("the colours");
+            }
+        }
+        if what.is_empty() {
+            continue;
+        }
+        found.insert(shape);
+        let logged = &mut *core::ptr::addr_of_mut!(AUDIT_LOGGED);
+        if *logged < 24 {
+            *logged += 1;
+            let name_of = |object: usize| -> String {
+                let at: usize = if object != 0 { rd(object, 8) } else { 0 };
+                if at != 0 { core::ffi::CStr::from_ptr(at as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() }
+            };
+            let kinds: String = fresh.iter().map(|&(_, kind)| (b"PSLFB"[kind.min(4) as usize]) as char).collect();
+            crate::log!(
+                "table audit: frame {}: instance {} ('{}' under '{}', shape 0x{shape:x}): {}; live {}, visible {}, chain {} (P plain, S switch, L level, F flt, B billboard), worked at frame {}",
+                tables().frame,
+                instance.id,
+                name_of(shape),
+                name_of(rd(shape, PARENT)),
+                what.join(", "),
+                instance.live,
+                instance.visible,
+                kinds,
+                instance.walk_frame.wrapping_sub(1)
+            );
+        }
+    }
+    *core::ptr::addr_of_mut!(AUDIT_TICKS) += capture::ticks() - start;
+}
+
+pub unsafe fn audit_report() -> String {
+    if !audit_on() {
+        return "table audit: off".to_string();
+    }
+    let c = *core::ptr::addr_of!(AUDIT_COUNTS);
+    let ms = *core::ptr::addr_of!(AUDIT_TICKS) as f64 * 1000.0 / capture::ticks_per_second() as f64;
+    format!(
+        "table audit: {} frames, {:.1} instances checked a frame, {:.3} ms ({:.4} ms a frame); differences: shown but not reached {}, hidden but reached {}, the transform {}, the bound {}, the colours {}, the chain {}; distinct instances {}",
+        c[AU_FRAMES],
+        c[AU_CHECKED] as f64 / c[AU_FRAMES].max(1) as f64,
+        ms,
+        ms / c[AU_FRAMES].max(1) as f64,
+        c[AU_VISIBILITY],
+        c[AU_HIDDEN_SHOWN],
+        c[AU_TRANSFORM],
+        c[AU_BOUND],
+        c[AU_COLOURS],
+        c[AU_CHAIN],
+        (*core::ptr::addr_of!(AUDIT_FOUND)).as_ref().map_or(0, |f| f.len())
+    )
 }
 
 /// Once a frame before the instances: the scene values (the ambient light of the effect
@@ -2248,7 +2420,7 @@ pub unsafe fn note_world_data(shape: usize) {
         if seen.insert(shape) {
             counts[1] += 1;
         }
-        if table_walk_on() {
+        if table_walk_on() && !audit_drops_moves() {
             (*core::ptr::addr_of_mut!(SHAPE_MARKS)).push(shape);
         }
     } else if crate::live_walk::sky_only_on() && !tables().instances.contains_key(&shape) {
@@ -2556,6 +2728,8 @@ pub unsafe fn report() -> String {
         + &light_report()
         + "\n"
         + &record_report()
+        + "\n"
+        + &audit_report()
         + "\n"
         + &places_report()
         + &crate::ports::controller_events::report()
