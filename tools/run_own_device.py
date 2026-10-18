@@ -79,6 +79,8 @@ def main():
                     "save (menu.nircap): the loading screen is a screen polygon")
     ap.add_argument("--budget", type=int, default=200)
     ap.add_argument("--settle", type=float, default=None, help="the seconds to wait at the interior and at the exterior before the picture (6 without this)")
+    ap.add_argument("--keep-fade", action="store_true", help="keep the fade-in of the distant statics and the grass (the tunable statics.fade); "
+                    "without this the mod sets it to 0 at the start, so that a picture does not depend on the moment of an arrival")
     ap.add_argument("--port-times", action="store_true", help="the mod reports the port times at each step (it turns the timing of every live port call on: not for a profile)")
     ap.add_argument("--overlay", action="store_true", help="turn the debug overlay of the renderer on at the exterior step (it is on the picture of the "
                     "window only, not in the picture files)")
@@ -119,7 +121,7 @@ def main():
                     shaderBatch=open(args.shader_batch, encoding="utf-8").read() if args.shader_batch else None,
                     tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, tourDual=args.tour_dual or None, tourExtra=args.tour_extra or None, captureMenu=args.capture_menu, settleSeconds=args.settle, portTimes=args.port_times or None,
                     overlay=args.overlay or None, earlyPicture=run.path("early.png").replace("\\", "/") if args.early_picture else None,
-                    afterLoadPictures=args.after_load_pictures or None)
+                    afterLoadPictures=args.after_load_pictures or None, keepFade=args.keep_fade or None)
     # The plugin starts the host program. It reads these from the environment of the game.
     if not args.mge_build:
         os.environ["NIRENDER_HOST_EXE"] = HOST

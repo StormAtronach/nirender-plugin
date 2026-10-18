@@ -615,6 +615,14 @@ return function(nirender, spec)
         say("steps: %s (%d)", tostring(spec.steps), #steps)
     end
 
+    -- The fade-in of the distant statics and the grass after their arrival depends on the
+    -- moment of the arrival: a picture of a run would depend on it. A replay has no fade. The
+    -- runner's --keep-fade keeps it (a test of the fade itself).
+    if not spec.keepFade then
+        local ok = pcall(nirender.tune, "set statics.fade 0")
+        say("fade-in of the distant statics off for the run: %s", tostring(ok))
+    end
+
     local function step(index)
         local this = steps[index]
         if not this then
