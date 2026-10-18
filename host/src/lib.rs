@@ -1313,6 +1313,10 @@ struct Counts {
     /// Copies of a draw (clipped, replayed) that found no room in the records or the
     /// instances of the frame, and were drawn as they are or not at all.
     no_record: u32,
+    /// The draws of the frame not drawn because the records reached the device's limit of a
+    /// storage binding (`record_limit`), and the retained slots past it.
+    records_over_limit: u32,
+    retained_over_limit: u32,
     /// The textures that came again for a handle with a slot of the arrays.
     textures_replaced: u32,
     /// The pinned textures whose last use went (their slot is free for another).
@@ -1320,6 +1324,8 @@ struct Counts {
     /// The most textures of a frame in the arrays, and the stages that found no slot.
     most_frame_textures: u32,
     over_array_cap: u32,
+    /// The textures of the retained instances that found no pinned slot (white).
+    pinned_over: u32,
     /// The indirect calls, the draws in them, and the draws drawn one by one because the
     /// buffer of the arguments was full.
     indirect_calls: u32,
@@ -1756,6 +1762,8 @@ struct Renderer {
     /// frame.
     record_buffer: Rc<wgpu::Buffer>,
     record_capacity: usize,
+    /// The most records the buffer may hold: the device's limit of a storage binding.
+    record_limit: usize,
     record_staging: Vec<u8>,
     record_count: usize,
     record_written: usize,
@@ -1929,7 +1937,7 @@ impl Renderer {
         // side is for Direct3D 9 (`[runtime] renderer_wgpu = false`).
         let array_features = wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
         // The samplers of the array count in the elements of the arrays too.
-        let array_cap = adapter.limits().max_binding_array_elements_per_shader_stage.saturating_sub(SAMPLER_CAP).min(ARRAY_CAP);
+        let array_cap = adapter.limits().max_binding_array_elements_per_shader_stage.saturating_sub(SAMPLER_CAP).min(switches::switches().array_cap.unwrap_or(ARRAY_CAP));
         let sampler_cap = adapter.limits().max_binding_array_sampler_elements_per_shader_stage.min(SAMPLER_CAP);
         println!("texture arrays: the adapter has the features: {}, room for {} textures and {} samplers", adapter.features().contains(array_features), array_cap, sampler_cap);
         assert!(
@@ -1959,6 +1967,10 @@ impl Renderer {
                     // One buffer for the geometry of many meshes of an extension (the pool of
                     // the distant statics of MGE XE).
                     max_buffer_size: adapter.limits().max_buffer_size,
+                    // The records of the draws are one storage binding: the adapter's room, not
+                    // the default of 128 MiB (a frame with very many draws blanked the view
+                    // once; the owner's review of CP4, point 5). `record_limit` guards it.
+                    max_storage_buffer_binding_size: adapter.limits().max_storage_buffer_binding_size,
                     max_binding_array_elements_per_shader_stage: array_cap + sampler_cap,
                     max_binding_array_sampler_elements_per_shader_stage: sampler_cap,
                     ..wgpu::Limits::default()
@@ -2104,6 +2116,8 @@ impl Renderer {
         let extension_lights = ExtensionLights::new(&device);
         let (first_lights, first_bones) = (light_buffer(&device, LIGHTS_AT_FIRST), bone_buffer(&device, BONES_AT_FIRST));
         let first_records = record_buffer(&device, RETAINED_AT_FIRST + RECORDS_AT_FIRST);
+        let record_limit = ((device.limits().max_storage_buffer_binding_size as u64).min(device.limits().max_buffer_size) as usize / RECORD_SIZE).min(switches::switches().record_limit.unwrap_or(usize::MAX));
+        println!("draw records: room for {record_limit} in one binding ({} MB)", record_limit * RECORD_SIZE / (1 << 20));
         let first_light_indexes = light_index_buffer(&device, LIGHT_INDEXES_AT_FIRST);
         let first_scenes = scene_buffer(&device);
         let first_retained_lights = retained_light_buffer(&device, RETAINED_LIGHTS_AT_FIRST);
@@ -2139,6 +2153,7 @@ impl Renderer {
             indirect_written: 0,
             record_buffer: Rc::new(first_records),
             record_capacity: RETAINED_AT_FIRST + RECORDS_AT_FIRST,
+            record_limit,
             record_staging: Vec::new(),
             record_count: 0,
             record_written: 0,
@@ -2372,19 +2387,29 @@ impl Renderer {
     }
 
     /// The record of a draw of the frame: its data, in the records of the frame after
-    /// `upload_records`. Returns its index.
-    fn record(&mut self, data: &DrawData) -> u32 {
+    /// `upload_records`. Returns its index, or `None` when the records reached the device's
+    /// limit of a storage binding: the draw is then not drawn (counted, and said once), and
+    /// the rest of the frame draws.
+    fn record(&mut self, data: &DrawData) -> Option<u32> {
+        if self.retained_records + self.record_count >= self.record_limit {
+            if self.counts.records_over_limit == 0 {
+                println!("draw records: the frame reached the limit of {} records; draws past it are not drawn", self.record_limit);
+            }
+            self.counts.records_over_limit += 1;
+            return None;
+        }
         self.record_staging.extend_from_slice(bytemuck::bytes_of(data));
         self.record_count += 1;
-        (self.retained_records + self.record_count - 1) as u32
+        Some((self.retained_records + self.record_count - 1) as u32)
     }
 
     /// Puts the records made since the last upload on the GPU, with room after them for
     /// `copies` records of `record_now`. Before the draws of a part of the frame.
     fn upload_records(&mut self, copies: usize) {
-        let needed = self.retained_records + self.record_count + copies;
+        // At most the device's limit: the copies past it find no room (`record_now`).
+        let needed = (self.retained_records + self.record_count + copies).min(self.record_limit);
         if needed > self.record_capacity {
-            self.record_capacity = needed.next_power_of_two();
+            self.record_capacity = needed.next_power_of_two().min(self.record_limit);
             self.record_buffer = Rc::new(record_buffer(&self.device, self.record_capacity));
             self.record_written = 0;
             self.record_extras = 0;

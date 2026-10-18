@@ -605,6 +605,7 @@ impl Renderer {
         } else {
             if self.pinned_textures.len() + 1 >= self.array_cap / 2 {
                 self.counts.over_array_cap += 1;
+                self.counts.pinned_over += 1;
                 return 0;
             }
             self.pinned_textures.push(PinnedTexture { handle, view, uses: 1 });
@@ -676,8 +677,19 @@ impl Renderer {
         if slots <= self.retained_records {
             return;
         }
-        let segment = slots.next_power_of_two();
         let frame_records = self.record_capacity - self.retained_records;
+        // At most the device's limit of a storage binding with the frame's part: the slots
+        // past it are not uploaded nor drawn (counted, and said once).
+        let segment = slots.next_power_of_two().min(self.record_limit.saturating_sub(frame_records));
+        if slots > segment {
+            if self.counts.retained_over_limit == 0 {
+                println!("draw records: {slots} retained slots, room for {segment}; the slots past it are not drawn");
+            }
+            self.counts.retained_over_limit = (slots - segment) as u32;
+        }
+        if segment <= self.retained_records {
+            return;
+        }
         self.retained_records = segment;
         self.record_capacity = segment + frame_records;
         self.record_buffer = Rc::new(record_buffer(&self.device, self.record_capacity));
@@ -701,10 +713,14 @@ impl Renderer {
         set.record_generation = self.record_generation;
         set.instance_generation = self.instance_generation;
         set.all_dirty = false;
+        // The slots that have room (all of them but past the device's limit).
+        let room = set.slots.len().min(self.retained_records);
+        set.dirty.retain(|&i| (i as usize) < room);
+        set.moved.retain(|&i| (i as usize) < room);
         if all {
-            let mut records = vec![0u8; set.slots.len() * RECORD_SIZE];
-            let mut instances = vec![0u8; set.slots.len() * INSTANCE_SIZE];
-            for (i, slot) in set.slots.iter().enumerate() {
+            let mut records = vec![0u8; room * RECORD_SIZE];
+            let mut instances = vec![0u8; room * INSTANCE_SIZE];
+            for (i, slot) in set.slots.iter().take(room).enumerate() {
                 if let Some(slot) = slot {
                     records[i * RECORD_SIZE..(i + 1) * RECORD_SIZE].copy_from_slice(bytemuck::bytes_of(&slot.data));
                     instances[i * INSTANCE_SIZE..(i + 1) * INSTANCE_SIZE].copy_from_slice(bytemuck::bytes_of(&Instance { world: slot.world, record: [i as u32, 0, 0, 0] }));
@@ -730,8 +746,8 @@ impl Renderer {
             set.moved.dedup();
             let instance_of = |i: usize, slot: &Slot| Instance { world: slot.world, record: [i as u32, 0, 0, 0] };
             if set.dirty.len() + set.moved.len() > 64 {
-                let mut instances = vec![0u8; set.slots.len() * INSTANCE_SIZE];
-                for (i, slot) in set.slots.iter().enumerate() {
+                let mut instances = vec![0u8; room * INSTANCE_SIZE];
+                for (i, slot) in set.slots.iter().take(room).enumerate() {
                     if let Some(slot) = slot {
                         instances[i * INSTANCE_SIZE..(i + 1) * INSTANCE_SIZE].copy_from_slice(bytemuck::bytes_of(&instance_of(i, slot)));
                     }
@@ -807,6 +823,10 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
         while at < order.len() && order[at].1 as usize == b {
             let slot = order[at].3;
             at += 1;
+            // A slot past the device's limit has no record (`retained_room`).
+            if slot as usize >= renderer.retained_records {
+                continue;
+            }
             let Some(s) = set.slots[slot as usize].as_ref() else { continue };
             for &(first, count) in &s.ranges {
                 args.push(IndirectArgs { index_count: count, instance_count: 1, first_index: first, base_vertex: s.base_vertex, first_instance: slot });

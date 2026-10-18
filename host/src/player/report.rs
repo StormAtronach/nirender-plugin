@@ -102,12 +102,18 @@ impl Player {
         );
         println!("draws in screen coordinates {}, not drawn {}", c.screen_draws, c.screen_draws_lost);
         println!("copies of a draw without room in the records of the frame {}", c.no_record);
+        println!(
+            "draw records: room for {} in one binding; draws not drawn past it {}, retained slots past it {}",
+            self.renderer.record_limit, c.records_over_limit, c.retained_over_limit
+        );
         println!("indirect calls {}, draws in them {}, draws one by one for want of room {}", c.indirect_calls, c.indirect_draws, c.indirect_over);
         println!(
-            "texture arrays: the most textures of a frame {}, stages over the room {} (room for {}), textures that came again for a handle with a slot {}, pinned slots freed {} (pinned now {}, free {})",
+            "texture arrays: the most textures of a frame {}, stages over the room {} (of them retained textures with no pinned slot {}; room for {}, pinned at most {}), textures that came again for a handle with a slot {}, pinned slots freed {} (pinned now {}, free {})",
             c.most_frame_textures,
             c.over_array_cap,
+            c.pinned_over,
             self.renderer.array_cap,
+            self.renderer.array_cap / 2 - 1,
             c.textures_replaced,
             c.textures_unpinned,
             self.renderer.pinned_textures.len(),

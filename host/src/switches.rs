@@ -41,6 +41,12 @@ pub(crate) struct Switches {
     pub(crate) indirect: bool,
     /// `MGE_XE_RETAINED=0`: the table draws nothing (the engine's path draws everything).
     pub(crate) retained: bool,
+    /// `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n (at least 256), for
+    /// the test of a full room (the owner's review of CP4, point 3). Not a setting.
+    pub(crate) array_cap: Option<u32>,
+    /// `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
+    /// guard of the device's limit (the owner's review of CP4, point 5). Not a setting.
+    pub(crate) record_limit: Option<usize>,
 }
 
 impl Switches {
@@ -68,6 +74,8 @@ impl Switches {
             },
             indirect: on_unless_0("MGE_XE_INDIRECT"),
             retained: on_unless_0("MGE_XE_RETAINED"),
+            array_cap: var("MGE_XE_ARRAY_CAP").and_then(|v| v.parse::<u32>().ok()).map(|n| n.max(256)),
+            record_limit: var("MGE_XE_RECORD_LIMIT").and_then(|v| v.parse::<usize>().ok()).map(|n| n.max(1024)),
         }
     }
 }

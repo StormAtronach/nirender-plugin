@@ -265,7 +265,7 @@ impl Player {
             renderer.counts.target_draws += 1;
         }
         // The record of the draw, and the instance that names it.
-        let record = renderer.record(&draw_data);
+        let Some(record) = renderer.record(&draw_data) else { return };
         let instance = self.frame_instances.len() as u32;
         self.frame_instances.push(Instance { world: IDENTITY, record: [record, 0, 0, 0] });
         let draw = Rc::new(Draw {
