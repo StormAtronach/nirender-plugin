@@ -174,6 +174,10 @@ pub struct RetainedSet {
     dirty: Vec<u32>,
     moved: Vec<u32>,
     all_dirty: bool,
+    /// The slots that draw a stage from a slot of the frame in the frame they were made,
+    /// with the pinned texture and sampler slots of each stage for the next frame
+    /// (`Player::retained_settle_late`).
+    late: Vec<(u32, [[u32; 2]; STAGES])>,
     /// The generations of the record and instance buffers the segments were written into.
     record_generation: u32,
     instance_generation: u32,
@@ -226,6 +230,7 @@ impl RetainedSet {
             dirty: Vec::new(),
             moved: Vec::new(),
             all_dirty: false,
+            late: Vec::new(),
             record_generation: 0,
             instance_generation: 0,
             counts: RetainedCounts::default(),
@@ -611,8 +616,9 @@ impl Renderer {
             self.pinned_textures.len() - 1
         };
         // The arrays of the frame in progress hold the pinned slots of its start at their
-        // start: a slot among them taken again gets its new view there too. (A slot past them
-        // is in the arrays from the next frame on.)
+        // start: a slot among them taken again gets its new view there too. A slot past them
+        // is in the arrays from the next frame on: in this frame the frame's own textures
+        // hold that place (`texture_slot_in_frame`, `Player::retained_settle_late`).
         let slot = index + 1;
         if index < self.pinned_in_frame && slot < self.frame_texture_views.len() {
             self.frame_texture_views[slot] = view;
@@ -673,10 +679,22 @@ impl Renderer {
         self.pinned_samplers.len() as u32
     }
 
+    /// A slot of `pin_texture` is in the arrays of the frame in progress. A slot that grew
+    /// the room after `pin_into_frame` is not.
+    pub fn texture_slot_in_frame(&self, slot: u32) -> bool {
+        (slot as usize) <= self.pinned_in_frame
+    }
+
+    /// A slot of `pin_sampler` is in the sampler array of the frame in progress.
+    pub fn sampler_slot_in_frame(&self, slot: u32) -> bool {
+        (slot as usize) <= self.pinned_samplers_in_frame
+    }
+
     /// The pinned textures and samplers at the start of the arrays of a frame, in their
     /// slots. After `begin_frame_arrays` cleared the arrays.
     pub fn pin_into_frame(&mut self) {
         self.pinned_in_frame = self.pinned_textures.len();
+        self.pinned_samplers_in_frame = self.pinned_samplers.len();
         for pinned in &self.pinned_textures {
             let slot = self.frame_texture_views.len() as u32;
             self.frame_texture_views.push(pinned.view.clone());
@@ -1062,6 +1080,21 @@ impl Player {
         }
     }
 
+    /// The slots that drew a stage from a slot of the frame (its pinned texture or sampler
+    /// came after `pin_into_frame`) get their pinned slots, which this frame's arrays now
+    /// hold. After `pin_into_frame`.
+    pub(super) fn retained_settle_late(&mut self) {
+        let set = &mut self.retained;
+        for (slot, pinned_slots) in set.late.drain(..) {
+            let Some(s) = set.slots.get_mut(slot as usize).and_then(Option::as_mut) else { continue };
+            for stage in 0..STAGES {
+                s.data.stages[stage].slots[0] = pinned_slots[stage][0];
+                s.data.stages[stage].slots[1] = pinned_slots[stage][1];
+            }
+            set.dirty.push(slot);
+        }
+    }
+
     /// Puts an instance record with the flag 0x100 into the table: a slot for each pass of
     /// its material, with the record of the draw made as for a shape record. An instance
     /// that is in the table already (its material or geometry handle changed) keeps its
@@ -1168,12 +1201,28 @@ impl Player {
                 println!("key dump retained table: fvf {} stride {} topology {} blend {:?} depth {:?} cull {} fill {} color_write {} stencil {:?} reference {} textures {:?} samplers {:?} stages {} passes {} ranges {:?} base {}", key.fvf, key.stride, key.topology, key.blend, key.depth, key.cull, key.fill, key.color_write, key.stencil, stencil[2], handles, sampler_values, data.counts[1], derived.passes.len(), ranges, base_vertex);
             }
             let mut pinned = [0u32; STAGES];
+            // The pinned slots of the stages, and whether one of them is not in the arrays of
+            // the frame yet: then this frame draws the stage from a slot of the frame, and
+            // the next frame puts the pinned slots back (`retained_settle_late`).
+            let mut pinned_slots = [[0u32; 2]; STAGES];
+            let mut late = false;
             for stage in 0..STAGES {
-                let texture = self.renderer.pin_texture(handles[stage]);
+                let mut texture = self.renderer.pin_texture(handles[stage]);
                 if texture != 0 {
                     pinned[stage] = handles[stage];
                 }
-                let sampler = self.renderer.pin_sampler(sampler_values[stage]);
+                let mut sampler = self.renderer.pin_sampler(sampler_values[stage]);
+                pinned_slots[stage] = [texture, sampler];
+                if !self.renderer.texture_slot_in_frame(texture) {
+                    texture = self.renderer.frame_texture_slot(handles[stage]);
+                    late = true;
+                    self.renderer.counts.pinned_late += 1;
+                }
+                if !self.renderer.sampler_slot_in_frame(sampler) {
+                    sampler = self.renderer.frame_sampler_slot(sampler_values[stage]);
+                    late = true;
+                    self.renderer.counts.pinned_late += 1;
+                }
                 data.stages[stage].slots = [texture, sampler, 0, 0];
             }
             let bucket_key = BucketKey { class: r.class, key, stencil: stencil[2], vertices: Rc::as_ptr(&vertex) as usize, indexes: Rc::as_ptr(&index) as usize, textures: handles, samplers: sampler_values };
@@ -1190,6 +1239,11 @@ impl Player {
                 }
             };
             let slot = set.take_slot();
+            // A late entry of an earlier instance in this slot has no meaning now.
+            set.late.retain(|&(s, _)| s != slot);
+            if late {
+                set.late.push((slot, pinned_slots));
+            }
             set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted: p.blend[0] != 0 && !derived.no_sorter, pinned });
             set.buckets[bucket as usize].slots.push(slot);
             set.dirty.push(slot);

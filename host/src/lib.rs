@@ -1336,6 +1336,9 @@ struct Counts {
     /// The most pinned slots at a time, and the free slots dropped from the end of the room.
     pinned_most: u32,
     pinned_dropped: u32,
+    /// The stages of the retained slots whose pinned texture or sampler was not in the
+    /// arrays of the frame yet: they drew from a slot of the frame for one frame.
+    pinned_late: u32,
     /// The indirect calls, the draws in them, and the draws drawn one by one because the
     /// buffer of the arguments was full.
     indirect_calls: u32,
@@ -1831,6 +1834,8 @@ struct Renderer {
     /// The pinned entries at the start of the arrays of the frame in progress.
     pinned_in_frame: usize,
     pinned_samplers: Vec<([u32; 5], Rc<wgpu::Sampler>)>,
+    /// The pinned samplers at the start of the sampler array of the frame in progress.
+    pinned_samplers_in_frame: usize,
     bone_buffer: wgpu::Buffer,
     bone_capacity: usize,
     /// The lights that came as records, by key: a `D3DLIGHT8`.
@@ -2190,6 +2195,7 @@ impl Renderer {
             pinned_index: FxHashMap::default(),
             pinned_in_frame: 0,
             pinned_samplers: Vec::new(),
+            pinned_samplers_in_frame: 0,
             pipeline_layout,
             pipelines: FxHashMap::default(),
             textures: FxHashMap::default(),
@@ -3465,6 +3471,7 @@ impl Player {
         self.frame_instances.push(Instance { world: IDENTITY, record: [0; 4] });
         self.renderer.begin_frame_arrays();
         self.renderer.pin_into_frame();
+        self.retained_settle_late();
         self.renderer.scene_slots_used = 1;
         self.retained_values = None;
         self.run_args.clear();
