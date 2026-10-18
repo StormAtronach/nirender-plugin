@@ -34,6 +34,7 @@ pub mod live_walk;
 pub mod instance_stream;
 pub mod link;
 pub mod link_client;
+pub mod light_set;
 pub mod light_stream;
 pub mod material_stream;
 pub mod mem;

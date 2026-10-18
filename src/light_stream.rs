@@ -55,6 +55,18 @@ pub unsafe fn note_values(key: u32, values: &[u32; 26]) -> bool {
     false
 }
 
+/// The words of the colours in the device values (`D3DLIGHT8`: diffuse, specular, ambient).
+pub const COLOUR_WORDS: core::ops::Range<usize> = 1..13;
+
+/// A light that gives no light (destroyed, off, or too dim): its record again with zero
+/// colours, when one was sent.
+pub unsafe fn darken(key: u32) {
+    let Some(Some(values)) = versions().get(key as usize).copied() else { return };
+    let mut dark = values;
+    dark[COLOUR_WORDS].fill(0);
+    note_values(key, &dark);
+}
+
 /// Notes the lights of the light manager of the renderer, as the state of the draw has
 /// them: sends the ones that are new or changed, and returns the keys of all of them.
 pub unsafe fn note(renderer: usize) -> &'static [u32] {

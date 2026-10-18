@@ -218,10 +218,12 @@ struct Instance {
     chain: Vec<(usize, u8)>,
     /// The table walk: the frame (plus one) it last worked the instance, so that it works it
     /// once a frame; the instance is in its sweep bucket; the effect state counted for the
-    /// lights of the frame (`TABLE_STATE_COUNTS`).
+    /// lights of the frame (`TABLE_STATE_COUNTS`), and the lights of that state that the
+    /// instance counted in the light set (`light_set::count`).
     walk_frame: u32,
     bucketed: bool,
     counted_state: usize,
+    counted_lights: Vec<(usize, u32)>,
     /// The table walk: the property and effect states whose properties and texture effects
     /// list this shape in `TABLE_SOURCES`, and those keys; a source mark of one of them sets
     /// `renote`: the next work notes the material and the colours (`display_work`).
@@ -568,7 +570,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, chain: Vec::new(), walk_frame: 0, bucketed: false, counted_state: 0, source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, chain: Vec::new(), walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
     t.pending = Some((shape, id));
 }
 
@@ -835,9 +837,11 @@ unsafe fn send_instance(shape: usize, instance: &Instance, exact: [f64; 3], rela
     capture::instance(&words, &name[..name.len().min(96)]);
 }
 
-/// The lights of an effect state as the light manager turns them on for a draw: on, bright
-/// enough, not an ambient light; in the order of the manager's list (the last of the state
-/// first).
+/// The lights of an effect state that the light manager can turn on for a draw: not an
+/// ambient light; in the order of the manager's list (the last of the state first). A light
+/// that is off or too dim stays in the list: its record has zero colours
+/// (`note_light_once`), so that it gives light again when it is turned on, with no new work
+/// of the instance.
 unsafe fn state_lights(effect_state: usize, out: &mut Vec<usize>) {
     out.clear();
     if effect_state == 0 {
@@ -847,7 +851,7 @@ unsafe fn state_lights(effect_state: usize, out: &mut Vec<usize>) {
     while iter != 0 && out.len() < MOST_LIGHTS {
         let light: usize = rd(iter, DL::effect);
         iter = rd(iter, DL::next);
-        if light == 0 || rd::<u8>(light, L::enabled) == 0 || rd::<f32>(light, L::dimmer) < f32::from_bits(crate::ports::light_manager::MIN_DIMMER) {
+        if light == 0 {
             continue;
         }
         if crate::ports::light_manager::light_get_type(light) == 0 {
@@ -880,49 +884,37 @@ unsafe fn note_light_once(t: &mut Tables, light: usize, key: u32) {
     }
     t.light_noted[k] = t.frame;
     counts[LC_BUILT] += 1;
-    let revision: u32 = rd(light, L::revisionID);
-    let revisions = &mut *core::ptr::addr_of_mut!(LIGHT_REVISIONS);
-    if revisions.len() <= k {
-        revisions.resize(k + 1, None);
-    }
-    let same = revisions[k] == Some(revision);
-    revisions[k] = Some(revision);
-    if same {
-        counts[LC_BUILT_SAME] += 1;
-    }
     let entry = t.scratch_entry.as_mut_ptr() as usize;
     core::ptr::write_bytes(entry as *mut u8, 0, E::SIZE);
-    wr::<u32>(entry, E::revisionId, !revision);
+    wr::<u32>(entry, E::revisionId, !rd::<u32>(light, L::revisionID));
     crate::ports::light_manager::light_entry_update(entry, light);
-    let values: [u32; 26] = rd(entry, E::d3dLight);
+    let mut values: [u32; 26] = rd(entry, E::d3dLight);
+    // A light that is off or too dim gives no light, as the light manager does not turn it on
+    // for a draw: the instances keep its key, and the record has zero colours.
+    if rd::<u8>(light, L::enabled) == 0 || rd::<f32>(light, L::dimmer) < f32::from_bits(crate::ports::light_manager::MIN_DIMMER) {
+        values[crate::light_stream::COLOUR_WORDS].fill(0);
+        counts[LC_DARK] += 1;
+    }
     if crate::light_stream::note_values(key, &values) {
         counts[LC_SENT] += 1;
-        if same {
-            counts[LC_SENT_SAME] += 1;
-        }
     }
 }
 
-/// The measure of the lights (plan 8e, step 1), by `LC_*`: the light loops of the displays
-/// and their lights; the frame passes, their effect states and their lights; the notes of a
-/// light, the entries built (one a light a frame), those built with the revision of the
-/// light's last build, the records sent, and those sent with the revision of the last build
-/// (a change the revision does not show).
-static mut LIGHT_COUNTS: [u64; 10] = [0; 10];
+/// The measure of the lights (plan 8e), by `LC_*`: the light loops of the displays and their
+/// lights; the frame passes over the light set and their lights; the notes of a light, the
+/// entries built (one a light a frame), those with zero colours (off or too dim), and the
+/// records sent.
+static mut LIGHT_COUNTS: [u64; 8] = [0; 8];
 const LC_LOOPS: usize = 0;
 const LC_LOOP_LIGHTS: usize = 1;
 const LC_PASSES: usize = 2;
-const LC_PASS_STATES: usize = 3;
-const LC_PASS_LIGHTS: usize = 4;
-const LC_NOTES: usize = 5;
-const LC_BUILT: usize = 6;
-const LC_BUILT_SAME: usize = 7;
-const LC_SENT: usize = 8;
-const LC_SENT_SAME: usize = 9;
+const LC_PASS_LIGHTS: usize = 3;
+const LC_NOTES: usize = 4;
+const LC_BUILT: usize = 5;
+const LC_DARK: usize = 6;
+const LC_SENT: usize = 7;
 /// The time of the light loops of the displays, and of the frame passes.
 static mut LIGHT_TICKS: [i64; 2] = [0; 2];
-/// The revision of each light at its last build, by its index.
-static mut LIGHT_REVISIONS: Vec<Option<u32>> = Vec::new();
 
 pub unsafe fn light_report() -> String {
     let c = *core::ptr::addr_of!(LIGHT_COUNTS);
@@ -930,22 +922,21 @@ pub unsafe fn light_report() -> String {
     let ms = |t: i64| t as f64 * 1000.0 / capture::ticks_per_second() as f64;
     let per = |a: u64, b: u64| a as f64 / b.max(1) as f64;
     format!(
-        "lights (plan 8e): display loops {} ({:.2} lights each, {:.3} ms, {:.2} us each); frame passes {} ({:.1} effect states, {:.1} lights each, {:.3} ms, {:.4} ms each); notes {}, entries built {} ({:.1} a pass; {} with the revision of the last build), records sent {} ({} with the revision of the last build)",
+        "lights (plan 8e): display loops {} ({:.2} lights each, {:.3} ms, {:.2} us each); frame passes {} ({:.1} lights each, {:.3} ms, {:.4} ms each); notes {}, entries built {} ({:.1} a pass; {} with zero colours), records sent {}; {}",
         c[LC_LOOPS],
         per(c[LC_LOOP_LIGHTS], c[LC_LOOPS]),
         ms(ticks[0]),
         ms(ticks[0]) * 1000.0 / c[LC_LOOPS].max(1) as f64,
         c[LC_PASSES],
-        per(c[LC_PASS_STATES], c[LC_PASSES]),
         per(c[LC_PASS_LIGHTS], c[LC_PASSES]),
         ms(ticks[1]),
         ms(ticks[1]) / c[LC_PASSES].max(1) as f64,
         c[LC_NOTES],
         c[LC_BUILT],
         per(c[LC_BUILT], c[LC_PASSES]),
-        c[LC_BUILT_SAME],
+        c[LC_DARK],
         c[LC_SENT],
-        c[LC_SENT_SAME]
+        crate::light_set::report()
     )
 }
 
@@ -1557,6 +1548,7 @@ unsafe fn table_forget(shape: usize, instance: &Instance) {
     }
     table_dynamic().remove(&shape);
     count_state(instance.counted_state, false);
+    crate::light_set::uncount(&instance.counted_lights);
     let sources = table_sources();
     for key in instance.source_keys.iter() {
         if let Some(set) = sources.get_mut(key) {
@@ -1962,6 +1954,8 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
                 count_state(instance.counted_state, false);
                 count_state(state, true);
                 instance.counted_state = state;
+                crate::light_set::uncount(&instance.counted_lights);
+                crate::light_set::count(state, &mut instance.counted_lights);
             }
         }
         let again = in_sweep(at) || tables().instances.get(&shape).map_or(false, |i| i.recheck);
@@ -2096,7 +2090,7 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
             }
         }
     }
-    table_frame_lights(table_state_counts());
+    table_frame_lights();
     TABLE_TICKS.fetch_add(capture::ticks() - start, core::sync::atomic::Ordering::Relaxed);
 }
 
@@ -2124,24 +2118,18 @@ unsafe fn table_frame_values() {
     capture::retained_scene(ambient, fog);
 }
 
-/// After the instances: the note of each light of the instances' effect states, once a frame
-/// each (`note_light_once`).
-unsafe fn table_frame_lights(states: &HashMap<usize, u32>) {
+/// After the instances: the note of each light of the light set (the lights of the
+/// instances' effect states), once a frame each (`note_light_once`).
+unsafe fn table_frame_lights() {
     let start = capture::ticks();
     let t = tables();
     let counts = &mut *core::ptr::addr_of_mut!(LIGHT_COUNTS);
     counts[LC_PASSES] += 1;
-    counts[LC_PASS_STATES] += states.len() as u64;
-    let mut lights = core::mem::take(&mut t.scratch_lights);
-    for &state in states.keys() {
-        state_lights(state, &mut lights);
-        counts[LC_PASS_LIGHTS] += lights.len() as u64;
-        for &light in lights.iter() {
-            let key: u32 = rd(light, L::index);
-            note_light_once(t, light, key);
-        }
+    counts[LC_PASS_LIGHTS] += crate::light_set::len() as u64;
+    for light in crate::light_set::lights() {
+        let key: u32 = rd(light, L::index);
+        note_light_once(t, light, key);
     }
-    t.scratch_lights = lights;
     (*core::ptr::addr_of_mut!(LIGHT_TICKS))[1] += capture::ticks() - start;
 }
 
