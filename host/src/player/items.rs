@@ -150,7 +150,28 @@ impl Player {
                 let length = direction.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
                 (direction.map(|v| v / length), diffuse, light_ambient)
             });
-            let ambient = color(known(shape.ambient, 0));
+            let mut ambient = color(known(shape.ambient, 0));
+            let mut sun = sun;
+            // Since the cut (2026-10-17) the engine draws no shape of the world, so the shape
+            // record above is the last one the engine ever sent, with the sun and the ambient
+            // of that moment: the distant land kept the light of the hour of the load while
+            // the table's draws followed the day (the owner, 2026-10-18, the first batch with
+            // the hour running free). With the table on, the frame's `RETAINED_SCENE` record
+            // gives the ambient the plugin computed for this frame, and the light records
+            // give the sun: the directional light the plugin names as the sun (type 4), else
+            // the first directional light (type 3), with the values of this frame.
+            if let Some((scene_ambient, _)) = self.retained_values {
+                ambient = color(known(scene_ambient, 0));
+                let directional = |kind: u32| self.renderer.lights_known.values().find(|l| word(&l[..], 0) == kind);
+                if let Some(l) = directional(4).or_else(|| directional(3)) {
+                    let l = &l[..];
+                    let diffuse: [f32; 3] = floats(l, 4);
+                    let light_ambient: [f32; 3] = floats(l, 9 * 4);
+                    let direction: [f32; 3] = floats(l, 16 * 4);
+                    let length = direction.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
+                    sun = Some((direction.map(|v| v / length), diffuse, light_ambient));
+                }
+            }
             if switches().replay_debug {
                 println!("world start: lights {} sun {:?} ambient {:?}", shape.lights.len() / STATE_LIGHT_SIZE, sun, ambient);
             }
