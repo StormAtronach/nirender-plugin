@@ -30,7 +30,7 @@ pub use d3d::{d3d_compare, d3d_stencil_operation};
 mod lights;
 use lights::{light_buffer, storage_buffer, Clusters, ExtensionLights};
 mod switches;
-use switches::{switches, Order};
+use switches::switches;
 mod engine;
 mod player;
 use engine::{plan, scene};
@@ -946,11 +946,10 @@ struct Retained {
 
 /// Bit 16 of `light_range[3]` for a material with flat shading (NiShadeProperty off): the
 /// shader takes the lit colour and the normal of the first vertex of each triangle, as
-/// Direct3D 8 did. Experimental (the owner, 2026-10-16); `NIRENDER_FLAT_SHADING=0` turns
-/// it off.
+/// Direct3D 8 did (the owner, 2026-10-16). The plugin sends the shade of a shape only with
+/// `nirender.nifShading(true)` (off by default).
 pub(crate) fn flat_shading_bit(derived: &material::Derived) -> u32 {
-    let on = switches().flat_shading;
-    if on && derived.shade == 1 {
+    if derived.shade == 1 {
         16
     } else {
         0
@@ -1793,16 +1792,6 @@ struct Renderer {
     instance_extras: usize,
     /// `MGE_XE_RUNS_DUMP=1`: a line for each draw of a pass, for a study of the runs.
     runs_dump: bool,
-    /// `MGE_XE_MERGE=0`: the blends of the engine's path stay in place instead of merging into
-    /// the sorted list of the table (the state before F5), for an A/B.
-    merge_blends: bool,
-    /// `MGE_XE_ORDER=opaque`: within each run of draws between other items, the opaque draws
-    /// of the world first, in the order of their pipeline, textures and geometry, then the
-    /// rest in the order of the game (plan 0.5 entry TD, step 4): the runs of one pipeline
-    /// fall from 1008 to 57 a frame at the quicksave. Off (the default): the order of the
-    /// game, which decides the ties of the depth test between coplanar draws; the opaque
-    /// order moves 0.001 to 0.08 % of the pixels of a picture at such ties.
-    order_opaque_first: bool,
     /// The draws of a run (one pipeline, one stencil reference, the buffers of one chunk) as
     /// one indirect call (plan 0.5 entry TD, step 4). `MGE_XE_INDIRECT=0` draws them one by
     /// one. The buffer of the arguments of the frame's draws, its room (arguments), and how
@@ -2171,8 +2160,6 @@ impl Renderer {
             queue,
             shader,
             runs_dump: switches().runs_dump,
-            merge_blends: switches().merge_blends,
-            order_opaque_first: switches().order == Order::Opaque,
             indirect: switches().indirect,
             indirect_buffer: Rc::new(first_indirect),
             indirect_capacity: RECORDS_AT_FIRST,

@@ -197,9 +197,6 @@ pub struct RetainedSet {
     /// The view of the game for the world of the frame, in the space of the world: the
     /// planes of the cull come from it.
     pub main_view: [f32; 16],
-    /// `MGE_XE_ORDER=buckets`: the buckets in the order they were made and their draws in
-    /// the order of their slots (the order before the modern one), for an A/B.
-    bucket_order: bool,
     pub counts: RetainedCounts,
 }
 
@@ -219,7 +216,6 @@ impl RetainedSet {
             origin: [0.0; 3],
             relative: false,
             main_view: [0.0; 16],
-            bucket_order: switches().order == Order::Buckets,
             light_slot_of: HashMap::new(),
             light_values: Vec::new(),
             light_dirty: Vec::new(),
@@ -976,16 +972,13 @@ impl RetainedSet {
                     entry.1 = entry.1.max(1);
                 }
                 // A depth of at least 0 orders as its bits; a blended draw keeps its place.
-                let within = if blends || self.bucket_order { sequence } else { depth.to_bits() };
+                let within = if blends { sequence } else { depth.to_bits() };
                 self.order.push((0, b as u32, within, slot));
             }
         }
         for entry in &mut self.order {
             let (depth, group) = self.bucket_depth[entry.1 as usize];
-            entry.0 = if self.bucket_order {
-                // The order before: the buckets that do not blend, then those that blend.
-                ((group == 2) as u64) << 32 | entry.1 as u64
-            } else if group == 2 {
+            entry.0 = if group == 2 {
                 2 << 32 | entry.1 as u64
             } else {
                 (group as u64) << 32 | depth.to_bits() as u64

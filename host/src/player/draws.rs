@@ -291,7 +291,7 @@ impl Player {
         }
         if hold {
             self.held_draws.push(Item::Draw(draw));
-        } else if self.renderer.merge_blends && draw.world && self.plan.world_begun && engine::alpha::sorted_by_engine(class, &derived.blends, derived.no_sorter) && self.target.is_none() {
+        } else if draw.world && self.plan.world_begun && engine::alpha::sorted_by_engine(class, &derived.blends, derived.no_sorter) && self.target.is_none() {
             // A blend the engine would sort (plan step 6, F5): it waits for the sorted blends
             // of the table, and the two lists merge by depth (`draw_retained_sorted`). The
             // centre of its bound is the key; a record without one (a capture made before
