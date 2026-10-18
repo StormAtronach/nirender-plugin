@@ -37,9 +37,11 @@ fn is_shape(vtable: usize) -> bool {
     matches!(vtable, 0x7508B0 | 0x750A00 | 0x74FCE8 | 0x74FDE8 | 0x7504A0 | 0x750220)
 }
 
-/// A node of any kind the engine makes (NiNode and its subclasses, the collision nodes).
+/// A node of any kind the engine makes (NiNode and its subclasses, the collision nodes, the
+/// animation manager that roots a cell's statics: 0x750BD8, 12 million misses in the first
+/// run without it).
 fn is_node(vtable: usize) -> bool {
-    matches!(vtable, 0x74F9C8 | 0x750D68 | 0x751130 | 0x74768C | 0x746B00 | 0x74FF30 | 0x750080 | 0x7502C0 | 0x750130 | 0x750580 | 0x74F370 | 0x74A6CC | 0x74F418)
+    matches!(vtable, 0x74F9C8 | 0x750D68 | 0x751130 | 0x74768C | 0x746B00 | 0x74FF30 | 0x750080 | 0x7502C0 | 0x750130 | 0x750580 | 0x74F370 | 0x74A6CC | 0x74F418 | 0x750BD8)
 }
 
 /// A light or a texture effect.

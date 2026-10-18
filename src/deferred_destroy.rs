@@ -33,8 +33,9 @@ use std::sync::Mutex;
 use crate::mem::rd;
 
 /// The virtual tables of the concrete scene-object classes (MWSE's `NI::VirtualTableAddress`).
-const CLASSES: [(&str, usize); 26] = [
+const CLASSES: [(&str, usize); 27] = [
     ("NiNode", 0x74F9C8),
+    ("NiBSAnimationManager", 0x750BD8),
     ("NiBSAnimationNode", 0x750D68),
     ("NiBSParticleNode", 0x751130),
     ("BSMirroredNode", 0x74768C),
