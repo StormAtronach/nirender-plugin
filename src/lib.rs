@@ -21,6 +21,7 @@ pub mod camera_space;
 pub mod cores;
 pub mod log;
 pub mod census;
+pub mod click_time;
 pub mod d3d;
 pub mod device;
 pub mod dump;
