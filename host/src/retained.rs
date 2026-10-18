@@ -120,6 +120,9 @@ struct Slot {
     /// The draw blends and the engine would sort it: the table draws it back to front with
     /// the other sorted blends where the engine flushes its queue (plan step 6).
     sorted: bool,
+    /// The texture handles the slot pinned (`Renderer::pin_texture`), one use each: their
+    /// uses go when the slot goes.
+    pinned: [u32; STAGES],
 }
 
 #[derive(Default)]
@@ -247,20 +250,25 @@ impl RetainedSet {
     }
 
     /// Removes the instance: its slots go to the free list, and the GPU keeps their stale
-    /// records (no draw names them).
-    pub fn remove(&mut self, id: u32) {
-        let Some(slots) = self.by_id.remove(&id) else { return };
+    /// records (no draw names them). Returns the texture handles its slots pinned, for
+    /// `Renderer::unpin_texture` (`Player::retained_remove`).
+    #[must_use]
+    pub fn remove(&mut self, id: u32) -> Vec<u32> {
+        let mut pinned = Vec::new();
+        let Some(slots) = self.by_id.remove(&id) else { return pinned };
         for slot in slots {
             if let Some(taken) = self.slots[slot as usize].take() {
                 let bucket = &mut self.buckets[taken.bucket as usize];
                 bucket.slots.retain(|&s| s != slot);
                 self.light_indexes_live = self.light_indexes_live.saturating_sub(self.keys_of.get(&id).map_or(0, |keys| keys.len()));
+                pinned.extend(taken.pinned.iter().copied().filter(|&h| h != 0));
             }
             self.free.push(slot);
         }
         self.keys_of.remove(&id);
         self.counts.instances = self.by_id.len() as u32;
         self.counts.slots = self.slots.iter().flatten().count() as u32;
+        pinned
     }
 
     /// Moves the instance: a new world matrix and bound for its slots, when its draw stays
@@ -561,25 +569,72 @@ pub struct RetainedView {
     pub sorted: Sorted,
 }
 
+/// A texture with a slot of the arrays that stays from frame to frame (`Renderer::pin_texture`):
+/// its slot is its index plus 1. `uses` counts the stages of the retained slots that name it;
+/// a free entry has the handle 0 and the white view.
+pub struct PinnedTexture {
+    pub handle: u32,
+    pub view: Rc<wgpu::TextureView>,
+    pub uses: u32,
+}
+
 impl Renderer {
     /// A slot of the arrays of the frame that a texture keeps from frame to frame, for the
-    /// records of the retained instances. 0 for no texture or a texture not known.
+    /// records of the retained instances: one more use of it. 0 for no texture, a texture
+    /// not known, or no room. A free slot is taken before the room grows.
     pub fn pin_texture(&mut self, handle: u32) -> u32 {
         if handle == 0 {
             return 0;
         }
-        if let Some(slot) = self.pinned_textures.iter().position(|(h, _)| *h == handle) {
-            return slot as u32 + 1;
+        if let Some(index) = self.pinned_textures.iter().position(|p| p.handle == handle) {
+            self.pinned_textures[index].uses += 1;
+            return index as u32 + 1;
         }
-        let Some(view) = self.textures.get(&handle) else { return 0 };
-        if self.pinned_textures.len() + 1 >= self.array_cap / 2 {
-            self.counts.over_array_cap += 1;
-            return 0;
-        }
-        self.pinned_textures.push((handle, view.clone()));
+        let Some(view) = self.textures.get(&handle).cloned() else { return 0 };
+        let index = if let Some(index) = self.pinned_free.pop() {
+            self.pinned_textures[index] = PinnedTexture { handle, view: view.clone(), uses: 1 };
+            // The arrays of the frame in progress hold the pinned slots of its start at their
+            // start: a free slot taken again gets its new view there too. (A slot pinned
+            // after the start is in the arrays from the next frame on, as before.)
+            let slot = index + 1;
+            if index < self.pinned_in_frame && slot < self.frame_texture_views.len() {
+                self.frame_texture_views[slot] = view;
+                self.frame_texture_slots.entry(handle).or_insert(slot as u32);
+            }
+            index
+        } else {
+            if self.pinned_textures.len() + 1 >= self.array_cap / 2 {
+                self.counts.over_array_cap += 1;
+                return 0;
+            }
+            self.pinned_textures.push(PinnedTexture { handle, view, uses: 1 });
+            self.pinned_textures.len() - 1
+        };
+        let slot = index as u32 + 1;
         self.array_group = None;
         self.array_variants.clear();
-        self.pinned_textures.len() as u32
+        slot
+    }
+
+    /// One use less of a pinned texture (a retained slot that named it went). At no use the
+    /// slot is free: the white view in its place, and no handle names it.
+    pub fn unpin_texture(&mut self, handle: u32) {
+        if handle == 0 {
+            return;
+        }
+        let Some(index) = self.pinned_textures.iter().position(|p| p.handle == handle) else { return };
+        let pinned = &mut self.pinned_textures[index];
+        pinned.uses = pinned.uses.saturating_sub(1);
+        if pinned.uses != 0 {
+            return;
+        }
+        pinned.handle = 0;
+        pinned.view = self.white.clone();
+        self.pinned_free.push(index);
+        if self.frame_texture_slots.get(&handle) == Some(&(index as u32 + 1)) {
+            self.frame_texture_slots.remove(&handle);
+        }
+        self.counts.textures_unpinned += 1;
     }
 
     /// A slot of the sampler array of the frame that a sampler state keeps.
@@ -600,10 +655,13 @@ impl Renderer {
     /// The pinned textures and samplers at the start of the arrays of a frame, in their
     /// slots. After `begin_frame_arrays` cleared the arrays.
     pub fn pin_into_frame(&mut self) {
-        for (handle, view) in &self.pinned_textures {
+        self.pinned_in_frame = self.pinned_textures.len();
+        for pinned in &self.pinned_textures {
             let slot = self.frame_texture_views.len() as u32;
-            self.frame_texture_views.push(view.clone());
-            self.frame_texture_slots.insert(*handle, slot);
+            self.frame_texture_views.push(pinned.view.clone());
+            if pinned.handle != 0 {
+                self.frame_texture_slots.insert(pinned.handle, slot);
+            }
         }
         for (values, sampler) in &self.pinned_samplers {
             let slot = self.frame_samplers.len() as u32;
@@ -960,6 +1018,13 @@ fn effect_stages(m: &material::Material) -> Option<[[u32; EFFECT_STAGE_WORDS]; 2
 }
 
 impl Player {
+    /// Removes an instance from the table, and the uses of the textures its slots pinned.
+    pub(super) fn retained_remove(&mut self, id: u32) {
+        for handle in self.retained.remove(id) {
+            self.renderer.unpin_texture(handle);
+        }
+    }
+
     /// Puts an instance record with the flag 0x100 into the table: a slot for each pass of
     /// its material, with the record of the draw made as for a shape record. An instance
     /// that is in the table already (its material or geometry handle changed) keeps its
@@ -967,7 +1032,7 @@ impl Player {
     /// Engine-rules R13 (the skill wgpu-renderer-dev).
     pub(super) fn retained_insert(&mut self, id: u32, r: &Retained) {
         let keys = self.retained.keys_of.get(&id).cloned();
-        self.retained.remove(id);
+        self.retained_remove(id);
         let Some((fvf, stride, entries, strips, vertex, index, base_vertex, first_index)) =
             self.renderer.geometries.get(&r.geometry).map(|g| (g.fvf, g.stride, g.entries, g.strips.clone(), g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index))
         else {
@@ -1065,8 +1130,12 @@ impl Player {
             if r.geometry == crate::dump_wanted() {
                 println!("key dump retained table: fvf {} stride {} topology {} blend {:?} depth {:?} cull {} fill {} color_write {} stencil {:?} reference {} textures {:?} samplers {:?} stages {} passes {} ranges {:?} base {}", key.fvf, key.stride, key.topology, key.blend, key.depth, key.cull, key.fill, key.color_write, key.stencil, stencil[2], handles, sampler_values, data.counts[1], derived.passes.len(), ranges, base_vertex);
             }
+            let mut pinned = [0u32; STAGES];
             for stage in 0..STAGES {
                 let texture = self.renderer.pin_texture(handles[stage]);
+                if texture != 0 {
+                    pinned[stage] = handles[stage];
+                }
                 let sampler = self.renderer.pin_sampler(sampler_values[stage]);
                 data.stages[stage].slots = [texture, sampler, 0, 0];
             }
@@ -1084,7 +1153,7 @@ impl Player {
                 }
             };
             let slot = set.take_slot();
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted: p.blend[0] != 0 && !derived.no_sorter });
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted: p.blend[0] != 0 && !derived.no_sorter, pinned });
             set.buckets[bucket as usize].slots.push(slot);
             set.dirty.push(slot);
             slots.push(slot);

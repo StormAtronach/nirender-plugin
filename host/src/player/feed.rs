@@ -100,7 +100,7 @@ impl Player {
             }
             tag::INSTANCE_DELETE if data.len() >= 4 => {
                 self.instances.remove(&word(data, 0));
-                self.retained.remove(word(data, 0));
+                self.retained_remove(word(data, 0));
             }
             tag::LIGHT if data.len() >= 108 => {
                 self.renderer.lights_known.insert(word(data, 0), data[4..108].try_into().unwrap());
@@ -365,7 +365,7 @@ impl Player {
                 self.retained_insert(id, &retained);
             }
         } else {
-            self.retained.remove(id);
+            self.retained_remove(id);
         }
     }
 

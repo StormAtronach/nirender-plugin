@@ -35,7 +35,7 @@ mod engine;
 mod player;
 use engine::{plan, scene};
 mod retained;
-use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
+use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
 
 /// The wgpu of this crate, for a program that draws with it through `Extension`.
 pub use wgpu;
@@ -1315,6 +1315,8 @@ struct Counts {
     no_record: u32,
     /// The textures that came again for a handle with a slot of the arrays.
     textures_replaced: u32,
+    /// The pinned textures whose last use went (their slot is free for another).
+    textures_unpinned: u32,
     /// The most textures of a frame in the arrays, and the stages that found no slot.
     most_frame_textures: u32,
     over_array_cap: u32,
@@ -1802,8 +1804,13 @@ struct Renderer {
     record_generation: u32,
     instance_generation: u32,
     /// The textures and the samplers with a slot of the arrays that stays from frame to
-    /// frame, for the records of the retained instances.
-    pinned_textures: Vec<(u32, Rc<wgpu::TextureView>)>,
+    /// frame, for the records of the retained instances. A texture slot counts the stages of
+    /// the instances that use it; at 0 it is free (handle 0, the white view) and a later
+    /// texture takes it, so the room does not fill with the textures of instances that went.
+    pinned_textures: Vec<PinnedTexture>,
+    pinned_free: Vec<usize>,
+    /// The pinned entries at the start of the arrays of the frame in progress.
+    pinned_in_frame: usize,
     pinned_samplers: Vec<([u32; 5], Rc<wgpu::Sampler>)>,
     bone_buffer: wgpu::Buffer,
     bone_capacity: usize,
@@ -2151,6 +2158,8 @@ impl Renderer {
             record_generation: 0,
             instance_generation: 0,
             pinned_textures: Vec::new(),
+            pinned_free: Vec::new(),
+            pinned_in_frame: 0,
             pinned_samplers: Vec::new(),
             pipeline_layout,
             pipelines: FxHashMap::default(),
@@ -2209,9 +2218,9 @@ impl Renderer {
     /// source texture again; found 2026-10-17).
     fn set_texture(&mut self, handle: u32, view: Rc<wgpu::TextureView>) {
         let mut changed = false;
-        if let Some(pinned) = self.pinned_textures.iter_mut().find(|(h, _)| *h == handle) {
-            if !Rc::ptr_eq(&pinned.1, &view) {
-                pinned.1 = view.clone();
+        if let Some(pinned) = self.pinned_textures.iter_mut().find(|p| p.handle == handle) {
+            if !Rc::ptr_eq(&pinned.view, &view) {
+                pinned.view = view.clone();
                 changed = true;
             }
         }
