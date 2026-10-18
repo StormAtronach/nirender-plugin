@@ -48,6 +48,26 @@ impl Drop for DeviceLock {
     }
 }
 
+/// An engine critical section held: the lock is free again when this value goes away.
+pub struct EngineLock(*mut CriticalSection);
+
+/// Holds the engine's critical section at `section` (a `CRITICAL_SECTION` inside an engine
+/// object, initialized by the engine) while the value lives. The engine's own code takes the
+/// same lock around the structure the plugin reads (the light manager's list and map,
+/// `NiDX8LightManager+0x50`), so a walk under it cannot see a half-changed structure (the
+/// audit of the cell worker, Tier 1 finding 6).
+pub unsafe fn engine_lock(section: usize) -> EngineLock {
+    let section = section as *mut CriticalSection;
+    EnterCriticalSection(section);
+    EngineLock(section)
+}
+
+impl Drop for EngineLock {
+    fn drop(&mut self) {
+        unsafe { LeaveCriticalSection(self.0) };
+    }
+}
+
 static CENSUS: Mutex<BTreeMap<(&'static str, &'static str), u32>> = Mutex::new(BTreeMap::new());
 
 /// Counts a call when it is not on the main thread. `group` is the kind of the entry

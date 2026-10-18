@@ -804,6 +804,10 @@ unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
     ACTIVE.store(true, Ordering::Relaxed);
 }
 
+/// A writer on another thread found the ring full for `RING_WAIT_SECONDS`: the main thread
+/// ends the stream at the end of its frame (`frame_end`).
+static STOP_ASKED: AtomicBool = AtomicBool::new(false);
+
 /// Ends the capture or the stream.
 pub unsafe fn stop() {
     let _lock = crate::sync::device_lock();
@@ -1050,7 +1054,15 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
             if !ring.push(tag, parts) {
                 crate::log!("stream: the host did not read for {RING_WAIT_SECONDS} s; the stream ends");
                 s.failed = true;
-                stop();
+                // Only the main thread ends the stream: `stop` walks the tables the main
+                // thread owns and unmaps the ring it reads. A writer on another thread (the
+                // engine's cell worker makes textures) asks, and the main thread stops at the
+                // end of its frame (the audit of the cell worker, Tier 1 finding 7).
+                if crate::shadow::on_main_thread() {
+                    stop();
+                } else {
+                    STOP_ASKED.store(true, Ordering::Release);
+                }
                 return;
             }
         }
@@ -1310,13 +1322,6 @@ pub unsafe fn texture_update(handle: usize, level: u32, width: u32, height: u32,
     write(tag::TEXTURE_UPDATE, &[words(&[handle as u32, level, width, height, format, bytes.len() as u32]), bytes]);
 }
 
-/// `NiSkinInstance::skinData`, `NiSkinData::skinPartition`, and a `NiSkinPartition`.
-const SKIN_INSTANCE_DATA: usize = 0x8;
-const SKIN_DATA_PARTITION: usize = 0x8;
-const PARTITION_COUNT: usize = 0x8;
-const PARTITIONS: usize = 0xC;
-const PARTITION_SIZE: usize = 0x2C;
-
 /// Makes the renderer drop its textures and the buffers of the geometry of the warm-up.
 unsafe fn purge(s: &mut State) {
     let renderer = crate::engine::renderer();
@@ -1327,47 +1332,23 @@ unsafe fn purge(s: &mut State) {
     let rendered = crate::ports::rendered::remake_rendered_textures(renderer);
     // All the buffers, not only those of the objects in view: the game can draw an object
     // into a rendered texture one time and not again.
+    // Every buffer the renderer has, by the renderer's own maps. The objects kept from the
+    // warm-up (`s.geometry`) are not read: a kept pointer can be freed by now (the audit of
+    // the cell worker, Tier 1 finding 5).
     let (shapes, partitions) = crate::ports::geometry::purge_all_geometry(renderer);
-    let objects: Vec<(u32, u32)> = s.geometry.iter().copied().collect();
-    let skins = drop_buffers(renderer, &objects);
-    crate::log!(
-        "capture: the renderer dropped {textures} source textures, the buffers of {shapes} shapes and {partitions} skin partitions (and of {} objects in view, {skins} with a skin), and made {rendered} rendered textures again",
-        objects.len()
-    );
+    crate::log!("capture: the renderer dropped {textures} source textures, the buffers of {shapes} shapes and {partitions} skin partitions ({} objects were in view), and made {rendered} rendered textures again", s.geometry.len());
     if kept != 0 {
         crate::log!("capture: {kept} source textures kept their data: the game cannot make them again (no file name, no pixel data); a capture file does not have them");
     }
 }
 
-/// Makes the renderer drop the buffers of these objects: geometry data and skin instance.
-/// Returns the number of skins.
-unsafe fn drop_buffers(renderer: usize, objects: &[(u32, u32)]) -> u32 {
-    let mut skins = 0;
-    for &(geometry_data, skin_instance) in objects {
-        if geometry_data != 0 {
-            crate::ports::geometry::purge_geometry_data(renderer, geometry_data as usize);
-        }
-        if skin_instance == 0 {
-            continue;
-        }
-        let skin_data: usize = rd(skin_instance as usize, SKIN_INSTANCE_DATA);
-        let partition: usize = if skin_data != 0 { rd(skin_data, SKIN_DATA_PARTITION) } else { 0 };
-        if partition == 0 {
-            continue;
-        }
-        let count: u32 = rd(partition, PARTITION_COUNT);
-        let partitions: usize = rd(partition, PARTITIONS);
-        for i in 0..count as usize {
-            crate::ports::geometry::purge_skin_partition(renderer, partitions + i * PARTITION_SIZE);
-        }
-        skins += 1;
-    }
-    skins
-}
-
 /// The game showed a frame.
 unsafe fn frame_end() {
     loading_tick();
+    if STOP_ASKED.swap(false, Ordering::AcqRel) {
+        stop();
+        return;
+    }
     #[cfg(not(test))]
     crate::own_device::check_host();
     // The messages of the host for MGE XE.

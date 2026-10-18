@@ -370,6 +370,9 @@ pub unsafe fn mode() -> Mode {
 /// Engine-rules R18 (the skill wgpu-renderer-dev).
 pub unsafe fn set_mode(mode: Mode) -> Mode {
     let before = self::mode();
+    // The events of the cell worker first: a shape it destroyed since the last drain leaves
+    // the table before the marks below write into its flags (Tier 1 finding 3).
+    crate::worker_events::drain();
     let t = tables();
     t.mode = Some(mode);
     if mode != before {
@@ -518,6 +521,9 @@ pub unsafe fn set_skin_table(on: bool) -> bool {
     if on == before {
         return before;
     }
+    // The events of the cell worker first (as `set_mode`; Tier 1 finding 3).
+    crate::worker_events::drain();
+    let t = tables();
     t.skin_table = on;
     TABLE_FULL = true;
     crate::live_walk::rediscover();
@@ -1631,6 +1637,10 @@ static mut TABLE_DRAINED: Vec<usize> = Vec::new();
 static mut TABLE_SCRATCH: Vec<usize> = Vec::new();
 static mut TABLE_CHAIN: Vec<(usize, u8)> = Vec::new();
 static mut TABLE_TOUCHED: Option<HashSet<usize>> = None;
+/// The shape of the world the frame's scene values are read from: the first instance the
+/// walk reached under the root and worked in this frame, not an actor's part. It is read
+/// right after the walk, while the frame's reach holds (`table_frame_values`).
+static mut SCENE_SHAPE: usize = 0;
 
 unsafe fn table_below() -> &'static mut HashMap<usize, HashSet<usize>> {
     (*core::ptr::addr_of_mut!(TABLE_BELOW)).get_or_insert_with(HashMap::default)
@@ -1782,6 +1792,12 @@ unsafe fn log_sweep_find(shape: usize, what: &str) {
 /// Builds the shape's chain again. When it differs from the kept one, the map of the shapes
 /// below each node and the per-frame set follow. True when it differed.
 unsafe fn set_chain(shape: usize) -> bool {
+    // The instance first, the shape's memory after: a mark can name a shape that was
+    // destroyed since (a projectile, an effect), and its destructor forgot the instance
+    // (the audit of the cell worker, Tier 1 finding 2).
+    if !tables().instances.contains_key(&shape) {
+        return false;
+    }
     let fresh = &mut *core::ptr::addr_of_mut!(TABLE_CHAIN);
     build_chain(shape, fresh);
     let Some(instance) = tables().instances.get_mut(&shape) else { return false };
@@ -2105,7 +2121,7 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     let touched = (*core::ptr::addr_of_mut!(TABLE_TOUCHED)).get_or_insert_with(HashSet::default);
     touched.clear();
     let chain = &mut *core::ptr::addr_of_mut!(TABLE_CHAIN);
-    table_frame_values();
+    SCENE_SHAPE = 0;
     for at in 0..work.len() {
         let shape = work[at];
         // The lights of the frame come from the counted effect states: the count follows the
@@ -2224,6 +2240,9 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
                 display_work(shape, kind, true);
                 counts[TW_WORKED] += 1;
             }
+            if *core::ptr::addr_of!(SCENE_SHAPE) == 0 && tables().instances.get(&shape).is_some_and(|i| !i.skinned) {
+                SCENE_SHAPE = shape;
+            }
         } else if let Some(instance) = tables().instances.get_mut(&shape) {
             if gate {
                 table_deferred().remove(&shape);
@@ -2256,6 +2275,7 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
             }
         }
     }
+    table_frame_values();
     table_frame_lights();
     let run_ticks = capture::ticks() - start;
     TABLE_TICKS.fetch_add(run_ticks, core::sync::atomic::Ordering::Relaxed);
@@ -2456,19 +2476,25 @@ pub unsafe fn audit_report() -> String {
     )
 }
 
-/// Once a frame before the instances: the scene values (the ambient light of the effect
-/// state and the weather's fog, as the first shape gave them before; the values are the same
-/// for every shape in a frame: `scene_mixed` counted 0 in every run).
+/// Once a frame, right after the walk's instances: the scene values (the ambient light of the
+/// effect state and the weather's fog; the values are the same for every shape in a frame:
+/// `scene_mixed` counted 0 in every run). They are read from `SCENE_SHAPE`, the first shape
+/// the walk reached under the root and worked in this frame: a shape of the world the engine
+/// would draw now, so its effect state and its lights are the engine's live ones. Before
+/// 2026-10-18 the values came from the first marked instance in the hash order, every
+/// frame, which could be a shape of a cell the cell worker had detached, with destroyed
+/// lights in its effect state (the audit of the cell worker, Tier 1 finding 1). A frame
+/// whose walk reached no shape keeps the values of the frame before.
 unsafe fn table_frame_values() {
     let t = tables();
     let renderer = crate::engine::renderer();
-    if renderer == 0 || t.scene_frame == t.frame {
+    let shape = *core::ptr::addr_of!(SCENE_SHAPE);
+    if renderer == 0 || t.scene_frame == t.frame || shape == 0 {
         return;
     }
     // A shape of the world, not an actor's part: the property state of a skinned part has
     // fog values of its own (the f14 pass, 2026-10-18: the scene took an actor's, and the
-    // table drew the far cliffs with almost no fog).
-    let Some(shape) = t.instances.iter().find(|(&s, i)| !i.skinned && rd::<u16>(s, FLAGS) & RETAINED_BIT != 0).map(|(&s, _)| s) else { return };
+    // table drew the far cliffs with almost no fog). `SCENE_SHAPE` is never a skinned one.
     let effect_state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
     let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
     let ambient = crate::ports::light_manager::ambient_of_state(effect_state);

@@ -73,6 +73,9 @@ pub unsafe fn note(renderer: usize) -> &'static [u32] {
     let keys = &mut *core::ptr::addr_of_mut!(KEYS);
     let mut count = 0;
     let manager: usize = rd(renderer, R::lightManager);
+    // The list and the map under the manager's own lock, as the engine's `updateLights` walks
+    // them (the audit of the cell worker, Tier 1 finding 6).
+    let _lock = crate::sync::engine_lock(manager + LM::criticalSection);
     let mut item: usize = rd(manager, LM::deviceLights_head);
     while item != 0 && count < MAX_LIGHTS {
         let light: usize = rd(item, ITEM_DATA);

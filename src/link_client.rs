@@ -776,6 +776,7 @@ unsafe fn resync(kinds: u32) {
         let manager: usize = rd(renderer, R::lightManager);
         let mut entries = [0usize; MAX_STATE_LIGHTS];
         let mut count = 0;
+        let _lock = crate::sync::engine_lock(manager + LM::criticalSection);
         let mut item: usize = rd(manager, LM::deviceLights_head);
         while item != 0 && count < MAX_STATE_LIGHTS {
             let light: usize = rd(item, ITEM_DATA);
@@ -1308,6 +1309,7 @@ pub unsafe fn draw_state(
     let lights = &mut *addr_of_mut!(STATE_LIGHTS);
     let mut light_count = 0;
     let manager: usize = rd(renderer, R::lightManager);
+    let _lock = crate::sync::engine_lock(manager + LM::criticalSection);
     let mut item: usize = rd(manager, LM::deviceLights_head);
     while item != 0 && light_count < MAX_STATE_LIGHTS {
         let light: usize = rd(item, ITEM_DATA);
@@ -1377,6 +1379,7 @@ pub unsafe fn state_lights(renderer: usize) -> &'static [u8] {
     let lights = &mut *addr_of_mut!(STATE_LIGHTS);
     let mut light_count = 0;
     let manager: usize = rd(renderer, R::lightManager);
+    let _lock = crate::sync::engine_lock(manager + LM::criticalSection);
     let mut item: usize = rd(manager, LM::deviceLights_head);
     while item != 0 && light_count < MAX_STATE_LIGHTS {
         let light: usize = rd(item, ITEM_DATA);
