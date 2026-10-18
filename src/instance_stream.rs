@@ -834,6 +834,7 @@ unsafe fn send_instance(shape: usize, instance: &Instance, exact: [f64; 3], rela
     words[40..44].copy_from_slice(&instance.bound.map(f32::to_bits));
     let name_at: usize = rd(shape, 8);
     let name: &[u8] = if name_at != 0 { core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char).to_bytes() } else { &[] };
+    (*core::ptr::addr_of_mut!(RECORD_COUNTS))[RC_NAME_BYTES] += name.len().min(96) as u64;
     capture::instance(&words, &name[..name.len().min(96)]);
 }
 
@@ -898,6 +899,78 @@ unsafe fn note_light_once(t: &mut Tables, light: usize, key: u32) {
     if crate::light_stream::note_values(key, &values) {
         counts[LC_SENT] += 1;
     }
+}
+
+/// The measure of the instance records (plan 8f), by `RC_*`: why a record went (the first
+/// send or a new handle; a move of the transform; the bound alone; the colours alone; a move
+/// and the colours), and for a moved instance what its chain holds (a live shape, plain
+/// nodes only, a switch, a level of detail, an flt node, a billboard); the bytes of the
+/// names.
+static mut RECORD_COUNTS: [u64; 12] = [0; 12];
+const RC_FIRST: usize = 0;
+const RC_MOVED: usize = 1;
+const RC_BOUND: usize = 2;
+const RC_COLOURS: usize = 3;
+const RC_MOVED_COLOURS: usize = 4;
+const RC_LIVE: usize = 5;
+const RC_PLAIN: usize = 6;
+const RC_NAME_BYTES: usize = 11;
+/// The time from the decision to send a record to its end, on the main thread: the matrix
+/// (the engine's conversion of the world transform), the exact translation, the record.
+static mut RECORD_TICKS: [i64; 3] = [0; 3];
+
+unsafe fn note_record_cause(instance: &Instance, moved: bool, bound: bool, colours: bool) {
+    let c = &mut *core::ptr::addr_of_mut!(RECORD_COUNTS);
+    let cause = match (instance.sent, moved, bound, colours) {
+        (false, ..) => RC_FIRST,
+        (true, true, _, false) => RC_MOVED,
+        (true, true, _, true) => RC_MOVED_COLOURS,
+        (true, false, true, false) => RC_BOUND,
+        _ => RC_COLOURS,
+    };
+    c[cause] += 1;
+    if instance.sent && moved {
+        let kind = if instance.live {
+            RC_LIVE
+        } else {
+            match instance.chain.iter().find(|&&(_, kind)| kind != CHAIN_PLAIN).map(|&(_, kind)| kind) {
+                None => RC_PLAIN,
+                Some(CHAIN_SWITCH) => RC_PLAIN + 1,
+                Some(CHAIN_LOD) => RC_PLAIN + 2,
+                Some(CHAIN_FLT) => RC_PLAIN + 3,
+                Some(_) => RC_PLAIN + 4,
+            }
+        };
+        c[kind] += 1;
+    }
+}
+
+pub unsafe fn record_report() -> String {
+    let c = *core::ptr::addr_of!(RECORD_COUNTS);
+    let parts = (*core::ptr::addr_of!(RECORD_TICKS)).map(|t| t as f64 * 1000.0 / capture::ticks_per_second() as f64);
+    let ms: f64 = parts.iter().sum();
+    let total: u64 = c[RC_FIRST..=RC_MOVED_COLOURS].iter().sum();
+    format!(
+        "instance records (plan 8f): {} ({:.3} ms, {:.2} us each: the matrix {:.3} ms, the exact translation {:.3}, the record {:.3}); first or new handle {}, moved {}, bound alone {}, colours alone {}, moved and colours {}; the moved by their chain: live {}, plain {}, switch {}, level {}, flt {}, billboard {}; name bytes {}",
+        total,
+        ms,
+        ms * 1000.0 / total.max(1) as f64,
+        parts[0],
+        parts[1],
+        parts[2],
+        c[RC_FIRST],
+        c[RC_MOVED],
+        c[RC_BOUND],
+        c[RC_COLOURS],
+        c[RC_MOVED_COLOURS],
+        c[RC_LIVE],
+        c[RC_PLAIN],
+        c[RC_PLAIN + 1],
+        c[RC_PLAIN + 2],
+        c[RC_PLAIN + 3],
+        c[RC_PLAIN + 4],
+        c[RC_NAME_BYTES]
+    )
 }
 
 /// The measure of the lights (plan 8e), by `LC_*`: the light loops of the displays and their
@@ -1181,8 +1254,13 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
     let bound: [f32; 4] = rd(shape, WORLD_BOUND);
     let colours = if table && !due { instance.colours } else { crate::shape_stream::material_values(property_state) };
     let moved = instance.transform != transform;
-    let changed = moved || instance.bound.map(f32::to_bits) != bound.map(f32::to_bits) || instance.colours != colours;
+    let bound_changed = instance.bound.map(f32::to_bits) != bound.map(f32::to_bits);
+    let colours_changed = instance.colours != colours;
+    let changed = moved || bound_changed || colours_changed;
     if changed || !instance.sent {
+        let record_ticks = &mut *core::ptr::addr_of_mut!(RECORD_TICKS);
+        let record_start = capture::ticks();
+        note_record_cause(instance, moved, bound_changed, colours_changed);
         if moved {
             crate::ports::renderer_frame::write_world_matrix(renderer, shape + WORLD);
             let world = crate::shape_stream::current_world(renderer);
@@ -1192,6 +1270,7 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
         }
         instance.bound = bound;
         instance.colours = colours;
+        let matrix_end = capture::ticks();
         let Some(exact) = crate::camera_space::exact_translation(shape, 0) else {
             reject_at_record(shape, LATER_TRANSLATION);
             return false;
@@ -1200,10 +1279,15 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
             t.value_updates += 1;
         }
         instance.sent = true;
+        let exact_end = capture::ticks();
         // The plugin makes the matrices of every draw relative when it owns the camera
         // space: the record says so whether or not a draw happened this frame.
         send_instance(shape, instance, exact, crate::camera_space::own());
         t.records += 1;
+        let send_end = capture::ticks();
+        record_ticks[0] += matrix_end - record_start;
+        record_ticks[1] += exact_end - matrix_end;
+        record_ticks[2] += send_end - exact_end;
     }
     // The values of the frame for the retained draws: the ambient light of this shape's
     // effect state, and the fog of the cell's property (`TES3::Game::fogProperty`, the
@@ -2470,6 +2554,8 @@ pub unsafe fn report() -> String {
         + &table_walk_report()
         + "\n"
         + &light_report()
+        + "\n"
+        + &record_report()
         + "\n"
         + &places_report()
         + &crate::ports::controller_events::report()
