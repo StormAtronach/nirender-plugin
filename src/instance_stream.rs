@@ -223,6 +223,11 @@ struct Instance {
     /// The table walk (entry 13): the ancestors from the shape's parent up, each with its
     /// kind (`CHAIN_*`).
     chain: Vec<(usize, u8)>,
+    /// D6: the listed root last found in the chain (0 for none), and the generation of the
+    /// lists it was found under: `under_listed_root` scans the chain again only when the
+    /// lists changed since.
+    mob_root: usize,
+    mob_checked: u64,
     /// The table walk: the frame (plus one) it last worked the instance, so that it works it
     /// once a frame; the instance is in its sweep bucket; the effect state counted for the
     /// lights of the frame (`TABLE_STATE_COUNTS`), and the lights of that state that the
@@ -682,7 +687,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, bones_frame: 0, live, recheck: false, kind: 0, chain: Vec::new(), walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, bones_frame: 0, live, recheck: false, kind: 0, chain: Vec::new(), mob_root: 0, mob_checked: 0, walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
     t.pending = Some((shape, id));
 }
 
@@ -1515,7 +1520,7 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
 }
 
 /// The table walk's counters (`TW_*`) and its time.
-static mut TABLE_COUNTS: [u64; 23] = [0; 23];
+static mut TABLE_COUNTS: [u64; 28] = [0; 28];
 const TW_RUNS: usize = 0;
 const TW_WORKED: usize = 1;
 const TW_HIDDEN: usize = 2;
@@ -1540,16 +1545,29 @@ const TW_OFF_ROOT_UNCOUNTED: usize = 17;
 /// taken into the frame's work.
 const TW_NODE_CHANGES: usize = 18;
 const TW_NODE_SHAPES: usize = 19;
-/// Design D6, step 1 (the mob manager's lists, `mob_set`): the roots the lists held, summed
-/// over the runs; the waiting items whose chain holds a root; the worked items under one.
+/// Design D6 (the mob manager's lists, `mob_set`): the roots the lists held, summed over
+/// the runs (21 and 22 were the step-1 shares, measured in entry 26 and removed).
 const TW_MOB_ROOTS: usize = 20;
-const TW_DEFER_MOBILE: usize = 21;
-const TW_WORK_MOBILE: usize = 22;
+/// D6, step 2: the listed roots in the view a run, the shapes taken from their subtrees,
+/// the shapes hidden at a root's transition out of the view, the marked and per-frame
+/// items skipped because a listed root serves them.
+const TW_MOB_IN_VIEW: usize = 23;
+const TW_MOB_TAKEN: usize = 24;
+const TW_MOB_HIDDEN: usize = 25;
+const TW_MOB_SKIPPED: usize = 26;
+/// The shapes given one work pass because the lists lost their root.
+const TW_MOB_RELEASED: usize = 27;
 static TABLE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 /// The part of `TABLE_TICKS` spent on the node rules.
 static TABLE_NODE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 /// The part of `TABLE_TICKS` spent on the lists (the marks, the per-frame set, the sweep).
 static TABLE_LIST_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+/// The part of the lists' time spent on the movers' roots (D6, step 2).
+static TABLE_ROOT_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+/// The listed roots in the view in the last run (a diagnostic of the audit's log line).
+static mut MOB_IN_VIEW_THIS_FRAME: u64 = 0;
+/// The chain scans of `under_listed_root` (one per instance per generation of the lists).
+static MOB_RESCANS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 /// The sweep finds logged so far (the first 16 are).
 static mut SWEEP_LOGGED: u32 = 0;
 /// The long runs of the table walk logged so far (the first 32 are).
@@ -1678,6 +1696,33 @@ static mut TABLE_DRAINED: Vec<usize> = Vec::new();
 static mut TABLE_SCRATCH: Vec<usize> = Vec::new();
 static mut TABLE_CHAIN: Vec<(usize, u8)> = Vec::new();
 static mut TABLE_TOUCHED: Option<HashSet<usize>> = None;
+
+/// D6: whether a listed root (`mob_set`) is in the instance's chain. The root found last
+/// time is tried first (one look-up); the chain is scanned only when it is not listed now.
+fn under_listed_root(instance: &mut Instance) -> bool {
+    let r = crate::mob_set::roots();
+    if r.roots.is_empty() {
+        return false;
+    }
+    // The answer of this generation of the lists stands (a chain rebuilt since sets
+    // `mob_checked` to 0): the arrival's 1700 skinned shapes of unlisted actors scanned
+    // their whole chain every frame before, 1.0 ms a run (2026-10-19).
+    if instance.mob_checked == r.generation {
+        return instance.mob_root != 0;
+    }
+    instance.mob_checked = r.generation;
+    MOB_RESCANS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    match instance.chain.iter().rev().find(|&&(node, _)| r.roots.contains(&node)) {
+        Some(&(node, _)) => {
+            instance.mob_root = node;
+            true
+        }
+        None => {
+            instance.mob_root = 0;
+            false
+        }
+    }
+}
 
 unsafe fn table_below() -> &'static mut HashMap<usize, HashSet<usize>> {
     (*core::ptr::addr_of_mut!(TABLE_BELOW)).get_or_insert_with(HashMap::default)
@@ -1922,6 +1967,8 @@ unsafe fn set_chain(shape: usize) -> bool {
         }
     }
     core::mem::swap(&mut instance.chain, fresh);
+    // The listed-root answer (D6) was about the old chain.
+    instance.mob_checked = 0;
     if instance.live || instance.chain.iter().any(|&(_, kind)| kind == CHAIN_BILLBOARD) {
         table_dynamic().insert(shape);
     } else {
@@ -2074,6 +2121,97 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     TABLE_GENERATION = generation;
     // The node rules first: the reach of every item below reads the indexes of this frame.
     table_node_rules(camera, work, &take);
+    // Design D6, step 1: the engine's lists of what moves, read for this run; the step-1
+    // counters say how much of the per-frame set lies under their roots.
+    crate::mob_set::refresh();
+    counts[TW_MOB_ROOTS] += crate::mob_set::roots().roots.len() as u64;
+    // The gate of the view (its planes), read here because the movers' roots need them.
+    let gate = view_gate_on() && read_view_planes(camera);
+    // D6, step 2: the engine's lists of what moves as the per-frame set of the movers. The
+    // rule (the owner, 2026-10-19): the renderer keeps only what the helper has been told,
+    // and asks the engine for everything else at the frame it needs it. A listed root in
+    // the view: its subtree in the engine's own tree is walked and its shapes taken, so they
+    // get the frame's work; a root out of the view: nothing, except once at the transition,
+    // when its visible shapes are hidden (what the helper was told). The roots' shapes are
+    // taken before the marks and the per-frame set, so that the marks' entries of the same
+    // shapes are the ones the stamp drops; the marks and the per-frame shapes under a
+    // listed root that remain (out of the view) are skipped in the loop below. The sweep
+    // keeps them as its safety net.
+    let mob_on = crate::mob_set::on() && gate;
+    let roots_start = capture::ticks();
+    *core::ptr::addr_of_mut!(MOB_IN_VIEW_THIS_FRAME) = 0;
+    if mob_on {
+        crate::mob_set::prune_states();
+        // A root the lists lost: the shapes under it get one work pass now, since their
+        // marks were suppressed up to the moment it left (the engine's update of this frame
+        // ran against the lists of the run before).
+        if !crate::mob_set::roots().removed.is_empty() {
+            let removed = crate::mob_set::roots().removed.clone();
+            scratch.clear();
+            scratch.extend(tables().instances.iter().filter(|(_, i)| i.mob_root != 0 && removed.contains(&i.mob_root)).map(|(&shape, _)| shape));
+            for &shape in scratch.iter() {
+                if let Some(instance) = tables().instances.get_mut(&shape) {
+                    instance.mob_checked = 0;
+                }
+                take(shape, work);
+            }
+            counts[TW_MOB_RELEASED] += scratch.len() as u64;
+        }
+        let planes = &*core::ptr::addr_of!(VIEW_PLANES);
+        let roots: Vec<usize> = crate::mob_set::roots().roots.iter().copied().collect();
+        for root in roots {
+            let bound = vcall0(root, SLOT_GET_WORLD_BOUND) as usize;
+            let in_view = bound == 0 || bound_in_view(rd(bound, 0), planes);
+            let state = crate::mob_set::state(root);
+            let was = *state;
+            state.seen = true;
+            state.in_view = in_view;
+            if in_view {
+                counts[TW_MOB_IN_VIEW] += 1;
+                *core::ptr::addr_of_mut!(MOB_IN_VIEW_THIS_FRAME) += 1;
+                let mut taken = 0u64;
+                crate::mob_set::subtree(root, &mut |shape| {
+                    if tables().instances.contains_key(&shape) {
+                        take(shape, work);
+                        taken += 1;
+                    }
+                });
+                counts[TW_MOB_TAKEN] += taken;
+            } else if !was.seen || was.in_view {
+                let mut hidden = 0u64;
+                crate::mob_set::subtree(root, &mut |shape| {
+                    let t = tables();
+                    if let Some(instance) = t.instances.get_mut(&shape) {
+                        if instance.visible {
+                            instance.visible = false;
+                            capture::instance_state(instance.id, false);
+                            t.states += 1;
+                            hidden += 1;
+                        }
+                    }
+                });
+                counts[TW_MOB_HIDDEN] += hidden;
+            }
+        }
+    }
+    let roots_end = work.len();
+    TABLE_ROOT_TICKS.fetch_add(capture::ticks() - roots_start, core::sync::atomic::Ordering::Relaxed);
+    // D6, step 2: a moved or per-frame shape under a listed root is the root's. In the view
+    // its root took it already (the stamp says so); out of the view it is not taken at all,
+    // so it never enters the work list (the loop's per-item costs made a skip there worth
+    // 0.08 ms for 1870 items at the hold, 2026-10-19).
+    let mut skipped_at_take = 0u64;
+    let mut take_free = |shape: usize, work: &mut Vec<usize>| {
+        if mob_on {
+            if let Some(instance) = tables().instances.get_mut(&shape) {
+                if instance.walk_frame != stamp && under_listed_root(instance) {
+                    skipped_at_take += 1;
+                    return;
+                }
+            }
+        }
+        take(shape, work);
+    };
     let mut sweep_from = usize::MAX;
     let mut dynamic_from = usize::MAX;
     if full {
@@ -2160,7 +2298,7 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         }
         // 4. The shapes that moved or must be checked again.
         for &shape in drained.iter() {
-            take(shape, work);
+            take_free(shape, work);
         }
         // 4b. The shapes of the source marks (their `renote` is set above).
         for &key in sources.iter() {
@@ -2178,8 +2316,9 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         scratch.clear();
         scratch.extend(table_dynamic().iter().copied());
         for &shape in scratch.iter() {
-            take(shape, work);
+            take_free(shape, work);
         }
+        counts[TW_MOB_SKIPPED] += skipped_at_take;
         // 6. The slow sweep: the bucket whose instances have their 64th-frame check now.
         sweep_from = work.len();
         let bucket = &mut buckets[((CHECK_FRAMES - frame % CHECK_FRAMES) % CHECK_FRAMES) as usize];
@@ -2208,15 +2347,13 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     // one that waits is taken in the frame it comes into the view. The deferred ones come
     // after the sweep in the list, and are not sweep items.
     let sweep_end = work.len();
-    let gate = view_gate_on() && read_view_planes(camera);
-    // Design D6, step 1: the engine's lists of what moves, read for this run; the counters
-    // below say how much of the per-frame set lies under their roots.
-    crate::mob_set::refresh();
-    counts[TW_MOB_ROOTS] += crate::mob_set::roots().roots.len() as u64;
     if gate {
         let planes = &*core::ptr::addr_of!(VIEW_PLANES);
         table_deferred().retain(|&shape| {
-            if !tables().instances.contains_key(&shape) {
+            let Some(instance) = tables().instances.get_mut(&shape) else { return false };
+            // A waiting shape under a listed root is the root's: its root in the view
+            // takes it, its root out of the view hid it.
+            if mob_on && under_listed_root(instance) {
                 return false;
             }
             if bound_in_view(rd(shape, AV_WORLD_BOUND), planes) {
@@ -2281,6 +2418,15 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         if rd::<u16>(shape, FLAGS) & RETAINED_BIT == 0 {
             continue;
         }
+        // D6, step 2: a marked or per-frame item under a listed root is the root's, before
+        // the gate's test and its bookkeeping: its root in the view took it already (the
+        // entry before `roots_end`, and the stamp dropped this one), its root out of the
+        // view hid it. The sweep's items and a full pass are not skipped: the safety net.
+        // The chain of a filled instance is known from an earlier frame.
+        if mob_on && !full && at >= roots_end && at < sweep_from && tables().instances.get_mut(&shape).is_some_and(|i| under_listed_root(i)) {
+            counts[TW_MOB_SKIPPED] += 1;
+            continue;
+        }
         // The gate of the view, early: an instance out of the view waits before the chain and
         // the reach (the reach's work on the switches, the levels and the billboards then
         // happens in the view only, as in the engine's walk).
@@ -2292,9 +2438,6 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
             // back into the view: else a part that leaves the view at its edge stays there.
             let t = tables();
             if let Some(instance) = t.instances.get_mut(&shape) {
-                if crate::mob_set::under_root(&instance.chain) {
-                    counts[TW_DEFER_MOBILE] += 1;
-                }
                 if instance.visible && (instance.skinned || rd::<[u32; TRANSFORM_WORDS]>(shape, WORLD) != instance.transform) {
                     instance.visible = false;
                     capture::instance_state(instance.id, false);
@@ -2309,7 +2452,10 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         }
         let (filled, kind) = {
             let Some(instance) = tables().instances.get_mut(&shape) else { continue };
-            // A live instance, and a skinned one (its bones), get their work each frame.
+            // A live instance, and a skinned one (its bones), get their work each frame. A
+            // skinned one under a listed root stays in the set: the take skips it while its
+            // root is listed, and the set takes it again when the root is not (the player's
+            // first-person arms change their chain every frame, 2026-10-19).
             if instance.live || instance.skinned {
                 table_dynamic().insert(shape);
             }
@@ -2355,9 +2501,6 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
                 }
                 display_work(shape, kind, true);
                 counts[TW_WORKED] += 1;
-                if crate::mob_set::under_root(chain) {
-                    counts[TW_WORK_MOBILE] += 1;
-                }
             }
         } else if let Some(instance) = tables().instances.get_mut(&shape) {
             if gate {
@@ -2553,8 +2696,11 @@ unsafe fn table_audit(root: usize, camera: usize) {
                 if at != 0 { core::ffi::CStr::from_ptr(at as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() }
             };
             let kinds: String = fresh.iter().map(|&(_, kind)| (b"PSLFB"[kind.min(4) as usize]) as char).collect();
+            // D6 diagnostic: the geometry flag (bit 3) of each chain node, 'g' set, '.' clear;
+            // and whether a listed root is in the chain.
+            let geometry: String = fresh.iter().map(|&(node, _)| if rd::<u16>(node, FLAGS) & 0x8 != 0 { 'g' } else { '.' }).collect();
             crate::log!(
-                "table audit: frame {}: instance {} ('{}' under '{}', shape 0x{shape:x}): {}; live {}, visible {}, chain {} (P plain, S switch, L level, F flt, B billboard), worked at frame {}",
+                "table audit: frame {}: instance {} ('{}' under '{}', shape 0x{shape:x}): {}; live {}, visible {}, chain {} (P plain, S switch, L level, F flt, B billboard), worked at frame {}; geometry flags {}, under a listed root {}, roots in view this frame {}",
                 tables().frame,
                 instance.id,
                 name_of(shape),
@@ -2563,7 +2709,10 @@ unsafe fn table_audit(root: usize, camera: usize) {
                 instance.live,
                 instance.visible,
                 kinds,
-                instance.walk_frame.wrapping_sub(1)
+                instance.walk_frame.wrapping_sub(1),
+                geometry,
+                crate::mob_set::under_root(fresh),
+                *core::ptr::addr_of!(MOB_IN_VIEW_THIS_FRAME)
             );
         }
     }
@@ -2753,6 +2902,12 @@ pub unsafe fn note_world_data(shape: usize) {
         if seen.insert(shape) {
             counts[1] += 1;
         }
+        // D6, step 2: a shape under a listed root is the root's: no mark (one look-up of
+        // the instance and the answer cached by the generation of the lists).
+        if crate::mob_set::on() && tables().instances.get_mut(&shape).is_some_and(|instance| under_listed_root(instance)) {
+            crate::mob_set::MARKS_SUPPRESSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            return;
+        }
         if table_walk_on() && !audit_drops_moves() {
             (*core::ptr::addr_of_mut!(SHAPE_MARKS)).push(shape);
         }
@@ -2831,6 +2986,8 @@ pub unsafe fn event_report() -> String {
 
 /// `NiAVObject::worldBound`: the centre and the radius.
 const AV_WORLD_BOUND: usize = crate::gen::layouts::NiAVObject::worldBound;
+/// The vtable slot of `NiAVObject::GetWorldBound` (as `ports/scene.rs`).
+const SLOT_GET_WORLD_BOUND: usize = 0x34;
 
 /// The gate of the view (entry 13, 2026-10-18): the table walk works an instance only when the
 /// helper can draw it, that is in the camera's view (the helper draws the retained instances
@@ -2935,8 +3092,9 @@ pub unsafe fn table_walk_report() -> String {
     }
     let node_ms = TABLE_NODE_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
     let mobs = crate::mob_set::roots();
+    let root_ms = TABLE_ROOT_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
     format!(
-        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, billboard {}), node rules {} (switch {}, level {}, time-switch {}; index changes {}, shapes taken {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4}, the node rules {:.4}); mobiles (D6 step 1): roots {:.1} a run (actors {}, projectiles {}, props {} now), waiting items under them {:.1} a run, worked under them {:.1}",
+        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, billboard {}), node rules {} (switch {}, level {}, time-switch {}; index changes {}, shapes taken {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4}, the node rules {:.4}, the roots {:.4}); mobiles (D6): roots {:.1} a run (actors {}, projectiles {}, props {} now); step 2 {}: roots in view {:.1} a run, shapes taken from their subtrees {:.1}, hidden at a transition {}, marked and per-frame items skipped {:.1} a run, marks not made under a listed root {:.1} a run, list generations {}, chain scans {:.1} a run, shapes released at a list change {}",
         if table_walk_on() { "on" } else { "off" },
         c[TW_RUNS], c[TW_FULL], c[TW_LOST],
         c[TW_ITEMS] as f64 / runs, c[TW_SWEPT] as f64 / runs, c[TW_WORKED] as f64 / runs, c[TW_REACH_ONLY] as f64 / runs, c[TW_DEFERRED] as f64 / runs,
@@ -2946,8 +3104,11 @@ pub unsafe fn table_walk_report() -> String {
         table_dynamic().len(), kinds[0], kinds[4],
         table_nodes().len(), node_kinds[0], node_kinds[1], node_kinds[2], c[TW_NODE_CHANGES], c[TW_NODE_SHAPES],
         table_below().len(), table_sources().len(), table_state_counts().len(),
-        ms, ms / runs, list_ms / runs, node_ms / runs,
-        c[TW_MOB_ROOTS] as f64 / runs, mobs.actors, mobs.projectiles, mobs.props, c[TW_DEFER_MOBILE] as f64 / runs, c[TW_WORK_MOBILE] as f64 / runs
+        ms, ms / runs, list_ms / runs, node_ms / runs, root_ms / runs,
+        c[TW_MOB_ROOTS] as f64 / runs, mobs.actors, mobs.projectiles, mobs.props,
+        if crate::mob_set::on() { "on" } else { "off" }, c[TW_MOB_IN_VIEW] as f64 / runs, c[TW_MOB_TAKEN] as f64 / runs, c[TW_MOB_HIDDEN], c[TW_MOB_SKIPPED] as f64 / runs,
+        crate::mob_set::MARKS_SUPPRESSED.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs,
+        mobs.generation, MOB_RESCANS.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs, c[TW_MOB_RELEASED]
     )
 }
 

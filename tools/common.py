@@ -20,6 +20,9 @@ FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiP
                      # The readers of the display flag (plan F8, part 1, 2026-10-17).
                      r"|BSAnimationManager::Update$|BSAnimationNode::UpdateControllers$"
                      r"|BSAnimationNode::UpdateDownwardPass$"
+                     # The update of a subtree from its root (D6 step 2, 2026-10-19; MWSE hooks
+                     # its entry, so it is in the table but never a port).
+                     r"|NiAVObject::Update$"
                      # The new property and effect states of a shape (plan 8b, 2026-10-17).
                      r"|NiGeometry::UpdatePropertiesDownward$|NiGeometry::UpdateEffectsDownward$"
                      # The events of the table walk (entry 13, 2026-10-17).
