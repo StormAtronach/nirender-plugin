@@ -233,6 +233,9 @@ struct Instance {
     /// (`WAITING_ROOTS`) instead of in the per-shape waiting set.
     ref_root: usize,
     root_waiting: bool,
+    /// The walk interval (`MARK_SERIAL`) of the instance's last moved mark: one mark per
+    /// shape per walk.
+    marked: u32,
     /// The table walk: the frame (plus one) it last worked the instance, so that it works it
     /// once a frame; the instance is in its sweep bucket; the effect state counted for the
     /// lights of the frame (`TABLE_STATE_COUNTS`), and the lights of that state that the
@@ -692,7 +695,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, bones_frame: 0, live, recheck: false, kind: 0, chain: Vec::new(), mob_root: 0, mob_checked: 0, ref_root: 0, root_waiting: false, walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, bones_frame: 0, live, recheck: false, kind: 0, chain: Vec::new(), mob_root: 0, mob_checked: 0, ref_root: 0, root_waiting: false, marked: 0, walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
     t.pending = Some((shape, id));
 }
 
@@ -1204,7 +1207,8 @@ unsafe fn apply_changes() {
             instance.recheck = true;
             (*core::ptr::addr_of_mut!(RECHECKS))[Recheck::Notified as usize] += 1;
             notes[2] += 1;
-            if table_walk_on() {
+            if table_walk_on() && first_move_mark(instance) {
+                (*core::ptr::addr_of_mut!(MOVE_COUNTS))[MV_PUSHED] += 1;
                 (*core::ptr::addr_of_mut!(SHAPE_MARKS)).push(shape);
             }
         }
@@ -1219,7 +1223,8 @@ pub unsafe fn recheck(shape: usize, cause: Recheck) {
     if let Some(instance) = t.instances.get_mut(&shape) {
         instance.recheck = true;
         (*core::ptr::addr_of_mut!(RECHECKS))[cause as usize] += 1;
-        if table_walk_on() {
+        if table_walk_on() && first_move_mark(instance) {
+            (*core::ptr::addr_of_mut!(MOVE_COUNTS))[MV_PUSHED] += 1;
             (*core::ptr::addr_of_mut!(SHAPE_MARKS)).push(shape);
         }
     }
@@ -1623,22 +1628,32 @@ pub fn table_full() {
 /// it uses a marked node only as a key (the node can be gone by then). A fixed array, so a
 /// hook never allocates; a full array sets `overflow`, and the next walk is a full pass.
 const MARK_CAPACITY: usize = 4096;
+/// The moved list's array (2026-10-19): with one mark per shape per walk the list holds at
+/// most the shapes that moved, and the arrival's town moved 5334 distinct shapes in one
+/// frame; the table there holds about 9000.
+const MOVED_CAPACITY: usize = 16384;
 
-struct Marks {
-    items: [usize; MARK_CAPACITY],
+struct Marks<const N: usize> {
+    items: [usize; N],
     len: usize,
+    /// The marks a walk takes at most (0: the whole array). The moved list keeps the old cap
+    /// of 4096 when one mark per shape is off (`NIRENDER_MARK_ONCE=0`, the A/B).
+    limit: usize,
     overflow: bool,
     count: u64,
+    /// The walks that lost marks of this list.
+    lost_runs: u64,
 }
 
-impl Marks {
-    const fn new() -> Marks {
-        Marks { items: [0; MARK_CAPACITY], len: 0, overflow: false, count: 0 }
+impl<const N: usize> Marks<N> {
+    const fn new() -> Marks<N> {
+        Marks { items: [0; N], len: 0, limit: 0, overflow: false, count: 0, lost_runs: 0 }
     }
 
     fn push(&mut self, at: usize) {
         self.count += 1;
-        if self.len < MARK_CAPACITY {
+        let limit = if self.limit == 0 { N } else { self.limit.min(N) };
+        if self.len < limit {
             self.items[self.len] = at;
             self.len += 1;
         } else {
@@ -1651,27 +1666,135 @@ impl Marks {
         out.clear();
         out.extend_from_slice(&self.items[..self.len]);
         self.len = 0;
-        core::mem::replace(&mut self.overflow, false)
+        let lost = core::mem::replace(&mut self.overflow, false);
+        if lost {
+            self.lost_runs += 1;
+        }
+        lost
     }
 }
 
 /// A retained shape's world data was updated (`NiGeometry::UpdateWorldData`), or its instance
 /// must be checked again (`recheck`, a Lua change).
-static mut SHAPE_MARKS: Marks = Marks::new();
+static mut SHAPE_MARKS: Marks<MOVED_CAPACITY> = Marks::new();
+/// One moved mark per shape per walk (2026-10-19): the instance keeps the serial of the walk
+/// interval it was marked in (`Instance::marked`), and a second mark in the same interval is
+/// not pushed. The moved list filled its 4096 on the crossing with at most about 3100
+/// distinct shapes a frame, and each overflow made the next walk a full pass of 4 to 5 ms.
+/// `NIRENDER_MARK_ONCE=0` is the A/B switch (the old cap and the duplicates).
+static mut MARK_SERIAL: u32 = 1;
+pub fn mark_once_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("NIRENDER_MARK_ONCE").map_or(true, |v| v != "0"))
+}
+/// The moved marks: pushed, duplicates of a shape already marked in the walk interval
+/// (pushed when the switch is off, not pushed when on), the most pushed and the most distinct
+/// in one interval, and the marked shapes whose world transform at the walk equals the one
+/// the helper holds (a mark with no move).
+static mut MOVE_COUNTS: [u64; 5] = [0; 5];
+const MV_PUSHED: usize = 0;
+const MV_DUPLICATES: usize = 1;
+const MV_MOST: usize = 2;
+const MV_MOST_DISTINCT: usize = 3;
+const MV_UNCHANGED: usize = 4;
+static mut MOVES_THIS_INTERVAL: [u64; 2] = [0; 2];
+/// The walks with more than `MASS_MOVES` moved marks logged so far (the first 16 are).
+static mut MASS_LOGGED: u32 = 0;
+const MASS_MOVES: usize = 2000;
+
+/// The mass moves' callers logged so far (the first 8 are).
+static mut MASS_CALLERS_LOGGED: u32 = 0;
+
+/// A diagnostic (2026-10-19): who updates the whole world in a frame. At the `MASS_MOVES`th
+/// moved mark of a walk interval, the stack above this function is scanned for return
+/// addresses (a value inside a module whose bytes before it are a call), and the first 48 go
+/// to the log with their modules. The scan stops at the thread's stack base (the thread
+/// block's word at fs:[4]).
+#[cfg(target_arch = "x86")]
+unsafe fn log_mass_caller() {
+    // Only with `NIRENDER_MASS_PROBE=1`; after the save's load (its frames are about 3400 to
+    // 3750 in the scenarios); the first 12. It named `VFXManager::update` (0x469C30) on
+    // 2026-10-19.
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var("NIRENDER_MASS_PROBE").is_ok_and(|v| v == "1")) {
+        return;
+    }
+    let logged = &mut *core::ptr::addr_of_mut!(MASS_CALLERS_LOGGED);
+    if *logged >= 12 || tables().frame < 4000 {
+        return;
+    }
+    *logged += 1;
+    let marker = 0usize;
+    let mut at = core::ptr::addr_of!(marker) as usize;
+    let base: usize;
+    core::arch::asm!("mov {}, fs:[4]", out(reg) base, options(nostack, readonly, preserves_flags));
+    let mut found: Vec<String> = Vec::new();
+    while at + 4 <= base && found.len() < 48 {
+        let value = *(at as *const usize);
+        at += 4;
+        if value < 0x10000 {
+            continue;
+        }
+        // A return address lies at least a page above its module's base, so the bytes before
+        // it are in the image (a value equal to Morrowind.exe's base, 0x400000, made the read
+        // below fault: the crash of 16:03, 2026-10-19).
+        let mut module_base = 0usize;
+        if GetModuleHandleExA(4 | 2, value as *const core::ffi::c_void, &mut module_base) == 0 || module_base == 0 || value < module_base + 0x1000 {
+            continue;
+        }
+        let module = crate::census::module_of(value);
+        let byte = |back: usize| *((value - back) as *const u8);
+        let is_call = byte(5) == 0xE8
+            || (byte(6) == 0xFF && (byte(5) == 0x15 || byte(5) & 0xF8 == 0x90))
+            || (byte(2) == 0xFF && byte(1) & 0xF8 == 0xD0)
+            || (byte(3) == 0xFF && byte(2) & 0xF8 == 0x50);
+        if is_call {
+            found.push(format!("{module}:{value:#x}"));
+        }
+    }
+    crate::log!("marks: the {MASS_MOVES}th moved mark of a walk at frame {}: return addresses on the stack: {}", tables().frame, found.join(" "));
+}
+
+#[cfg(not(target_arch = "x86"))]
+unsafe fn log_mass_caller() {}
+
+#[cfg(target_arch = "x86")]
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetModuleHandleExA(flags: u32, address: *const core::ffi::c_void, module: *mut usize) -> i32;
+}
+
+/// One moved mark for a shape: false when the shape was marked in this walk interval already
+/// and the duplicates are not pushed.
+unsafe fn first_move_mark(instance: &mut Instance) -> bool {
+    let counts = &mut *core::ptr::addr_of_mut!(MOVE_COUNTS);
+    let interval = &mut *core::ptr::addr_of_mut!(MOVES_THIS_INTERVAL);
+    interval[0] += 1;
+    if interval[0] == MASS_MOVES as u64 {
+        log_mass_caller();
+    }
+    if instance.marked == MARK_SERIAL {
+        counts[MV_DUPLICATES] += 1;
+        return !mark_once_on();
+    }
+    instance.marked = MARK_SERIAL;
+    interval[1] += 1;
+    true
+}
 /// An object's app-cull flag changed (`NiAVObject::SetAppCulled`), or a Lua mod changed the
 /// object (the notifier; `flags` is written with no call).
-static mut CULL_MARKS: Marks = Marks::new();
+static mut CULL_MARKS: Marks<MARK_CAPACITY> = Marks::new();
 /// A node's children changed, or an object was attached (the four tree functions of NiNode;
 /// the destructor of a node detaches its children through one of them).
-static mut TREE_MARKS: Marks = Marks::new();
+static mut TREE_MARKS: Marks<MARK_CAPACITY> = Marks::new();
 /// A shape joined the table (its first draw marked it for the helper).
-static mut NEW_MARKS: Marks = Marks::new();
+static mut NEW_MARKS: Marks<MARK_CAPACITY> = Marks::new();
 /// A property, a texture effect or a shape's data changed by a time-varying writer
 /// (`ports::controller_events`): the shapes that use it note their material and colours.
-static mut SOURCE_MARKS: Marks = Marks::new();
+static mut SOURCE_MARKS: Marks<MARK_CAPACITY> = Marks::new();
 /// The properties of a subtree changed in place (`ActorAnimController::setOpacity`): the
 /// shapes below are checked again (their material and colours noted).
-static mut MATERIAL_MARKS: Marks = Marks::new();
+static mut MATERIAL_MARKS: Marks<MARK_CAPACITY> = Marks::new();
 /// The next walk works every instance: the first run, the switch turned on, a change of the
 /// mode or of the marks switch, a lost mark.
 static mut TABLE_FULL: bool = true;
@@ -1927,6 +2050,65 @@ fn fields_of(instance: &Instance) -> [u64; 6] {
     ]
 }
 
+/// The name of a node (`NiObjectNET::name`), or an empty string.
+unsafe fn node_name(node: usize) -> String {
+    if node == 0 {
+        return String::new();
+    }
+    let at: usize = rd(node, 8);
+    if at == 0 {
+        return String::new();
+    }
+    core::ffi::CStr::from_ptr(at as *const core::ffi::c_char).to_string_lossy().into_owned()
+}
+
+/// A walk with more than `MASS_MOVES` moved marks, or one that lost moved marks: the first 16
+/// go to the log with the marks pushed and distinct in the interval, the shapes whose
+/// transform did not change, and the nodes most of the shapes are under (the reference's node
+/// and the third node from the top of the chain, the cell's level). The nodes are read only
+/// while a shape of the table is below them (`TABLE_BELOW`).
+unsafe fn log_mass_moves(drained: &[usize], pushed: u64, distinct: u64, unchanged: u64, lost: bool) {
+    let logged = &mut *core::ptr::addr_of_mut!(MASS_LOGGED);
+    if *logged >= 16 {
+        return;
+    }
+    *logged += 1;
+    let mut by_root: HashMap<usize, u32> = HashMap::default();
+    let mut by_level: HashMap<usize, u32> = HashMap::default();
+    let mut no_root = 0u32;
+    for &shape in drained {
+        let Some(instance) = tables().instances.get(&shape) else { continue };
+        if instance.ref_root != 0 {
+            *by_root.entry(instance.ref_root).or_default() += 1;
+        } else {
+            no_root += 1;
+        }
+        if instance.chain.len() >= 3 {
+            *by_level.entry(instance.chain[instance.chain.len() - 3].0).or_default() += 1;
+        }
+    }
+    let top = |map: &HashMap<usize, u32>, n: usize| -> String {
+        let mut rows: Vec<(usize, u32)> = map.iter().map(|(&k, &v)| (k, v)).collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        rows.iter()
+            .take(n)
+            .map(|&(node, count)| {
+                let name = if table_below().contains_key(&node) { node_name(node) } else { String::from("(gone)") };
+                format!("'{name}' {count}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    crate::log!(
+        "marks: a mass of moves at frame {}: drained {}, pushed {pushed} (distinct {distinct}), lost {lost}, transform unchanged {unchanged}; reference nodes {} (shapes with none {no_root}), the most: {}; the cell level: {}",
+        tables().frame,
+        drained.len(),
+        by_root.len(),
+        top(&by_root, 6),
+        top(&by_level, 4)
+    );
+}
+
 /// A change that no event marked, found by the slow sweep: the first 16 go to the log with
 /// the shape's name and what changed (the net of entry 13; each such find is a missing event).
 unsafe fn log_sweep_find(shape: usize, what: &str) {
@@ -2160,7 +2342,34 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
             }
         }
     }
-    lost |= (*core::ptr::addr_of_mut!(SHAPE_MARKS)).drain(drained);
+    let moves_lost = (*core::ptr::addr_of_mut!(SHAPE_MARKS)).drain(drained);
+    lost |= moves_lost;
+    {
+        // A new walk interval for one mark per shape; the interval's counts.
+        let marks = &mut *core::ptr::addr_of_mut!(SHAPE_MARKS);
+        marks.limit = if mark_once_on() { 0 } else { MARK_CAPACITY };
+        let serial = &mut *core::ptr::addr_of_mut!(MARK_SERIAL);
+        *serial = serial.wrapping_add(1).max(1);
+        let interval = &mut *core::ptr::addr_of_mut!(MOVES_THIS_INTERVAL);
+        let moves = &mut *core::ptr::addr_of_mut!(MOVE_COUNTS);
+        moves[MV_MOST] = moves[MV_MOST].max(interval[0]);
+        moves[MV_MOST_DISTINCT] = moves[MV_MOST_DISTINCT].max(interval[1]);
+        let (pushed_here, distinct_here) = (interval[0], interval[1]);
+        *interval = [0; 2];
+        // The moved shapes whose world transform equals the one the helper holds.
+        let mut unchanged = 0u64;
+        for &shape in drained.iter() {
+            if let Some(instance) = tables().instances.get(&shape) {
+                if instance.filled && rd::<[u32; TRANSFORM_WORDS]>(shape, WORLD) == instance.transform {
+                    unchanged += 1;
+                }
+            }
+        }
+        moves[MV_UNCHANGED] += unchanged;
+        if drained.len() > MASS_MOVES || moves_lost {
+            log_mass_moves(drained, pushed_here, distinct_here, unchanged, moves_lost);
+        }
+    }
     // The live walk's pending shapes below a node of an app-cull or tree mark (F8 part 3).
     crate::live_walk::release_pending(&culls, root);
     crate::live_walk::release_pending(&tree, root);
@@ -3057,8 +3266,12 @@ pub unsafe fn note_world_data(shape: usize) {
                 ROOT_MARKS_SUPPRESSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 return;
             }
+            if table_walk_on() && !first_move_mark(instance) {
+                return;
+            }
         }
         if table_walk_on() && !audit_drops_moves() {
+            (*core::ptr::addr_of_mut!(MOVE_COUNTS))[MV_PUSHED] += 1;
             (*core::ptr::addr_of_mut!(SHAPE_MARKS)).push(shape);
         }
     } else if crate::live_walk::sky_only_on() && !tables().instances.contains_key(&shape) {
@@ -3276,8 +3489,9 @@ pub unsafe fn table_walk_report() -> String {
     let mobs = crate::mob_set::roots();
     let root_ms = TABLE_ROOT_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
     let wait_ms = TABLE_WAIT_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
+    let moves = *core::ptr::addr_of!(MOVE_COUNTS);
     format!(
-        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, billboard {}), node rules {} (switch {}, level {}, time-switch {}; index changes {}, shapes taken {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4}, the node rules {:.4}, the roots {:.4}); mobiles (D6): roots {:.1} a run (actors {}, projectiles {}, props {} now); step 2 {}: roots in view {:.1} a run, shapes taken from their subtrees {:.1}, hidden at a transition {}, marked and per-frame items skipped {:.1} a run, marks not made under a listed root {:.1} a run, list generations {}, chain scans {:.1} a run, shapes released at a list change {}; the hierarchical gate (D6 step 3) {}: root tests {:.1} a run, waiting roots {} now (shapes below them {} now), shapes put to wait under a root {:.1} a run, moved there from the per-shape set {}, taken from a root that came into the view {:.1} a run, marks and per-frame items refused for a waiting root {:.1} a run; the waiting sets {:.4} ms a run; the listed roots' shapes the gate then found out of the view {:.1} a run",
+        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, billboard {}), node rules {} (switch {}, level {}, time-switch {}; index changes {}, shapes taken {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4}, the node rules {:.4}, the roots {:.4}); mobiles (D6): roots {:.1} a run (actors {}, projectiles {}, props {} now); step 2 {}: roots in view {:.1} a run, shapes taken from their subtrees {:.1}, hidden at a transition {}, marked and per-frame items skipped {:.1} a run, marks not made under a listed root {:.1} a run, list generations {}, chain scans {:.1} a run, shapes released at a list change {}; the hierarchical gate (D6 step 3) {}: root tests {:.1} a run, waiting roots {} now (shapes below them {} now), shapes put to wait under a root {:.1} a run, moved there from the per-shape set {}, taken from a root that came into the view {:.1} a run, marks and per-frame items refused for a waiting root {:.1} a run; the waiting sets {:.4} ms a run; the listed roots' shapes the gate then found out of the view {:.1} a run; the moved marks (one a shape a walk {}): pushed {:.1} a run, duplicates {:.1} a run, the most in a walk {} (distinct {}), transform unchanged {:.1} a run, new states with the same content (no recheck): effects {}, properties {}; walks that lost marks: moved {}, tree {}, new {}, app-cull {}, source {}, material {}",
         if table_walk_on() { "on" } else { "off" },
         c[TW_RUNS], c[TW_FULL], c[TW_LOST],
         c[TW_ITEMS] as f64 / runs, c[TW_SWEPT] as f64 / runs, c[TW_WORKED] as f64 / runs, c[TW_REACH_ONLY] as f64 / runs, c[TW_DEFERRED] as f64 / runs,
@@ -3293,7 +3507,10 @@ pub unsafe fn table_walk_report() -> String {
         crate::mob_set::MARKS_SUPPRESSED.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs,
         mobs.generation, MOB_RESCANS.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs, c[TW_MOB_RELEASED],
         if root_gate_on() { "on" } else { "off" }, ROOT_TESTS.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs, waiting_roots().len(), tables().instances.values().filter(|i| i.root_waiting).count(),
-        c[TW_ROOT_WAITS] as f64 / runs, c[TW_ROOT_MOVED], c[TW_ROOT_TAKEN] as f64 / runs, ROOT_MARKS_SUPPRESSED.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs, wait_ms / runs, c[TW_MOB_DEFERRED] as f64 / runs
+        c[TW_ROOT_WAITS] as f64 / runs, c[TW_ROOT_MOVED], c[TW_ROOT_TAKEN] as f64 / runs, ROOT_MARKS_SUPPRESSED.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs, wait_ms / runs, c[TW_MOB_DEFERRED] as f64 / runs,
+        if mark_once_on() { "on" } else { "off" }, moves[MV_PUSHED] as f64 / runs, moves[MV_DUPLICATES] as f64 / runs, moves[MV_MOST], moves[MV_MOST_DISTINCT], moves[MV_UNCHANGED] as f64 / runs,
+        crate::ports::state_update::POINTER_ONLY[0].load(core::sync::atomic::Ordering::Relaxed), crate::ports::state_update::POINTER_ONLY[1].load(core::sync::atomic::Ordering::Relaxed),
+        (*core::ptr::addr_of!(SHAPE_MARKS)).lost_runs, (*core::ptr::addr_of!(TREE_MARKS)).lost_runs, (*core::ptr::addr_of!(NEW_MARKS)).lost_runs, (*core::ptr::addr_of!(CULL_MARKS)).lost_runs, (*core::ptr::addr_of!(SOURCE_MARKS)).lost_runs, (*core::ptr::addr_of!(MATERIAL_MARKS)).lost_runs
     )
 }
 

@@ -10,30 +10,69 @@
 use crate::gen::layouts::{NiDynamicEffectState as DES, NiGeometry as G, NiPropertyState as PS};
 use crate::mem::rd;
 
-/// The shape's property state: the pointer and its slots (the engine can update a state in
-/// place, keeping the pointer: a property attached by a mod after the first display, entry 13).
+/// The prints describe what a state holds, not where it lives (2026-10-19). The engine makes
+/// a new state for every shape below a node at each `UpdateEffects` or `UpdateProperties` of
+/// it, most of them equal to the old ones: the visual effects manager updates the effects of
+/// the whole scene each time an effect starts or ends (`VFXManager::update` 0x4697E0, the
+/// parent of its root), and each of those updates rechecked about 6400 shapes, overflowed the
+/// moved marks and made the next walk a full pass of 4 to 5 ms. Nothing reads a state through
+/// its pointer later (the instance's state is a key of the counts; the lights are counted by
+/// the lights themselves), so a new pointer with the same content needs no recheck: the
+/// shape's next work takes the new pointer. `NIRENDER_MARK_ONCE=0` restores the pointer in the
+/// prints (the A/B).
+const PRINT_START: u64 = 0xcbf2_9ce4_8422_2325;
+
+fn mix(print: &mut u64, value: u32) {
+    *print = (*print ^ value as u64).wrapping_mul(0x100_0000_01b3);
+}
+
+/// The shape's property state: its slots (the engine can update a state in place, keeping
+/// the pointer: a property attached by a mod after the first display, entry 13).
 unsafe fn property_state_print(shape: usize) -> u64 {
     let state: usize = rd(shape, G::spPropertyState);
-    let mut print = state as u64;
-    if state != 0 {
-        for at in (PS::propAlpha..=PS::field_30).step_by(4) {
-            print = (print ^ rd::<u32>(state, at) as u64).wrapping_mul(0x100_0000_01b3);
-        }
+    if state == 0 {
+        return 0;
+    }
+    let mut print = if crate::instance_stream::mark_once_on() { PRINT_START } else { state as u64 };
+    for at in (PS::propAlpha..=PS::field_30).step_by(4) {
+        mix(&mut print, rd::<u32>(state, at));
     }
     print
 }
 
-/// The shape's effect state: the pointer and its texture effects (environment and fog maps).
+/// The shape's effect state: its lights, its projected lights and shadows, in their order,
+/// and its texture effects (environment and fog maps).
 unsafe fn effect_state_print(shape: usize) -> u64 {
     let state: usize = rd(shape, G::spEffectState);
-    let mut print = state as u64;
-    if state != 0 {
+    if state == 0 {
+        return 0;
+    }
+    if !crate::instance_stream::mark_once_on() {
+        let mut print = state as u64;
         for at in [DES::environmentMap, DES::fogMap] {
-            print = (print ^ rd::<u32>(state, at) as u64).wrapping_mul(0x100_0000_01b3);
+            mix(&mut print, rd::<u32>(state, at));
         }
+        return print;
+    }
+    let mut print = PRINT_START;
+    for list in [DES::lights, DES::projLights, DES::projShadows] {
+        let mut iter: usize = rd(state, list);
+        let mut seen = 0;
+        while iter != 0 && seen < 256 {
+            mix(&mut print, rd::<u32>(iter, crate::gen::layouts::NiDynamicEffectState_InternalList::effect));
+            iter = rd(iter, crate::gen::layouts::NiDynamicEffectState_InternalList::next);
+            seen += 1;
+        }
+        mix(&mut print, u32::MAX);
+    }
+    for at in [DES::environmentMap, DES::fogMap] {
+        mix(&mut print, rd::<u32>(state, at));
     }
     print
 }
+
+/// The new states with the same content as the old ones (no recheck): effects, properties.
+pub static POINTER_ONLY: [core::sync::atomic::AtomicU64; 2] = [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
 
 port_thiscall!(update_properties_downward_port, 0x6F41B0, "NiGeometry::UpdatePropertiesDownward",
     fn(this, state: usize) -> (),
@@ -45,9 +84,12 @@ port_thiscall!(update_properties_downward_port, 0x6F41B0, "NiGeometry::UpdatePro
 pub unsafe fn update_properties_downward(this: usize, state: usize) {
     crate::shadow::touch(&update_properties_downward_port::STATE);
     let before = property_state_print(this);
+    let pointer_before: usize = rd(this, G::spPropertyState);
     update_properties_downward_port::engine(this, state);
     if property_state_print(this) != before {
         crate::instance_stream::recheck(this, crate::instance_stream::Recheck::Properties);
+    } else if rd::<usize>(this, G::spPropertyState) != pointer_before {
+        POINTER_ONLY[1].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -63,9 +105,12 @@ port_thiscall!(update_effects_downward_port, 0x6F4270, "NiGeometry::UpdateEffect
 pub unsafe fn update_effects_downward(this: usize, state: usize) {
     crate::shadow::touch(&update_effects_downward_port::STATE);
     let before = effect_state_print(this);
+    let pointer_before: usize = rd(this, G::spEffectState);
     update_effects_downward_port::engine(this, state);
     if effect_state_print(this) != before {
         crate::instance_stream::recheck(this, crate::instance_stream::Recheck::Effects);
+    } else if rd::<usize>(this, G::spEffectState) != pointer_before {
+        POINTER_ONLY[0].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
