@@ -26,6 +26,40 @@ thread_local! {
     static DEPTH: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
 
+/// D7 step 3 (2026-10-19): the root mark. On the main thread, with the mark on, each root
+/// of a subtree update goes into this list, which the table walk drains once a frame: the
+/// walk descends from a root in the view and defers the shapes of one out of the view, as
+/// it does for the actors' roots of D6. A per-shape move mark made inside a pass is then
+/// not needed (`in_pass`); one made at depth 0, an update that starts at a shape, stays.
+/// The list is a fixed array (the detour never allocates); a full array sets `lost`, and the
+/// next walk is a full pass. `NIRENDER_ROOT_MARK=1` turns the mark on; off by default since
+/// 2026-10-19 (the owner: the default walk is the engine's, decisions.md; the mark stays a
+/// switch for the comparison). Off, the detour only counts.
+const MARK_CAPACITY: usize = 16384;
+static mut MARKS: [usize; MARK_CAPACITY] = [0; MARK_CAPACITY];
+static mut MARK_LEN: usize = 0;
+static MARK_LOST: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static MARKS_PUSHED: AtomicU64 = AtomicU64::new(0);
+static MARKS_LOST_RUNS: AtomicU64 = AtomicU64::new(0);
+/// The per-shape move marks not made because the shape's update ran inside a pass.
+static SHAPE_MARKS_SKIPPED: AtomicU64 = AtomicU64::new(0);
+
+pub fn mark_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| on() && std::env::var("NIRENDER_ROOT_MARK").is_ok_and(|v| v == "1"))
+}
+
+/// True inside a downward pass on this thread: a per-shape update seen now is below a root
+/// that is marked.
+#[inline]
+pub fn in_pass() -> bool {
+    DEPTH.with(|d| d.get() > 0)
+}
+
+pub fn note_shape_mark_skipped() {
+    SHAPE_MARKS_SKIPPED.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Enters a downward pass on this thread; at depth 0 the node is a subtree update's root.
 #[inline]
 pub unsafe fn enter(node: usize) {
@@ -36,8 +70,20 @@ pub unsafe fn enter(node: usize) {
     });
     if depth == 0 {
         ROOTS.fetch_add(1, Ordering::Relaxed);
-        if crate::mark_census::on() && crate::shadow::on_main_thread() {
-            crate::mark_census::note_update_root(node);
+        if crate::shadow::on_main_thread() {
+            if mark_on() {
+                MARKS_PUSHED.fetch_add(1, Ordering::Relaxed);
+                let len = *core::ptr::addr_of!(MARK_LEN);
+                if len < MARK_CAPACITY {
+                    (*core::ptr::addr_of_mut!(MARKS))[len] = node;
+                    *core::ptr::addr_of_mut!(MARK_LEN) = len + 1;
+                } else {
+                    MARK_LOST.store(true, Ordering::Relaxed);
+                }
+            }
+            if crate::mark_census::on() {
+                crate::mark_census::note_update_root(node);
+            }
         }
     }
 }
@@ -45,6 +91,20 @@ pub unsafe fn enter(node: usize) {
 #[inline]
 pub fn leave() {
     DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+}
+
+/// Moves the roots marked since the last drain into `out` (with repeats: a root updated
+/// several times a frame appears as often); true when some were lost. Main thread only.
+pub unsafe fn drain(out: &mut Vec<usize>) -> bool {
+    out.clear();
+    let len = *core::ptr::addr_of!(MARK_LEN);
+    out.extend_from_slice(core::slice::from_raw_parts(core::ptr::addr_of!(MARKS) as *const usize, len));
+    *core::ptr::addr_of_mut!(MARK_LEN) = 0;
+    let lost = MARK_LOST.swap(false, Ordering::Relaxed);
+    if lost {
+        MARKS_LOST_RUNS.fetch_add(1, Ordering::Relaxed);
+    }
+    lost
 }
 
 unsafe extern "thiscall" fn detour(this: usize, time: f32, update_controllers: u8, update_children: u8) {
@@ -76,5 +136,12 @@ pub fn report() -> String {
     if !on() {
         return String::from("update root: off");
     }
-    format!("update root: {} root calls of the downward pass", ROOTS.load(Ordering::Relaxed))
+    format!(
+        "update root: {} root calls of the downward pass; the root mark {}: roots marked {}, walks that lost marks {}, per-shape marks not made inside a pass {}",
+        ROOTS.load(Ordering::Relaxed),
+        if mark_on() { "on" } else { "off" },
+        MARKS_PUSHED.load(Ordering::Relaxed),
+        MARKS_LOST_RUNS.load(Ordering::Relaxed),
+        SHAPE_MARKS_SKIPPED.load(Ordering::Relaxed)
+    )
 }

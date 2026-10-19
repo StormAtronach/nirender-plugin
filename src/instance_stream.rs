@@ -1530,7 +1530,7 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
 }
 
 /// The table walk's counters (`TW_*`) and its time.
-static mut TABLE_COUNTS: [u64; 32] = [0; 32];
+static mut TABLE_COUNTS: [u64; 38] = [0; 38];
 const TW_RUNS: usize = 0;
 const TW_WORKED: usize = 1;
 const TW_HIDDEN: usize = 2;
@@ -1576,6 +1576,16 @@ const TW_ROOT_TAKEN: usize = 30;
 /// The shapes taken from the listed roots in the view that the loop's gate then found out of
 /// the view: the most a bound test per node in the descent of a listed root could save.
 const TW_MOB_DEFERRED: usize = 31;
+/// D7 step 3, the root mark (`update_root`): the distinct marked roots a run, those in the
+/// view, the shapes taken from them, the shapes deferred under one out of the view, the
+/// shapes hidden there (moved or skinned), the roots skipped (listed by D6, or without a
+/// shape of the table below).
+const TW_RM_ROOTS: usize = 32;
+const TW_RM_IN_VIEW: usize = 33;
+const TW_RM_TAKEN: usize = 34;
+const TW_RM_DEFERRED: usize = 35;
+const TW_RM_HIDDEN: usize = 36;
+const TW_RM_SKIPPED: usize = 37;
 /// The bound tests of reference nodes (`root_in_view`, one per node a run at most).
 static ROOT_TESTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 /// The marks not made, and the per-frame items not taken, because the shape waits under its
@@ -2403,6 +2413,11 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     if lost {
         counts[TW_LOST] += 1;
     }
+    // D7 step 3: the roots of this frame's subtree updates (`update_root`); a lost root is a
+    // full pass, as a lost mark is.
+    let mut root_marks = Vec::new();
+    let root_marks_lost = crate::update_root::drain(&mut root_marks);
+    lost |= root_marks_lost;
     let full = lost || note_every() || TABLE_FULL || TABLE_GENERATION != generation;
     TABLE_FULL = false;
     TABLE_GENERATION = generation;
@@ -2486,6 +2501,75 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
                     }
                 });
                 counts[TW_MOB_HIDDEN] += hidden;
+            }
+        }
+    }
+    // D7 step 3: the marked roots of this frame, after the listed roots. A root the lists
+    // hold was handled above; a root with no shape of the table below it has nothing to do
+    // and is not read (the proof of life of the node rules). In the view: its shapes taken
+    // by the descent, as a listed root's; out of the view: its shapes deferred, and hidden
+    // when they moved or are skinned (the gate's own rule), with no per-shape mark and no
+    // per-shape test. A root updated several times a frame is handled once.
+    if crate::update_root::mark_on() && !root_marks.is_empty() {
+        let seen = (*core::ptr::addr_of_mut!(ROOT_MARK_SEEN)).get_or_insert_with(HashSet::default);
+        seen.clear();
+        let planes = &*core::ptr::addr_of!(VIEW_PLANES);
+        for &root in root_marks.iter() {
+            if !seen.insert(root) {
+                continue;
+            }
+            counts[TW_RM_ROOTS] += 1;
+            if (mob_on && crate::mob_set::roots().roots.contains(&root)) || !table_below().contains_key(&root) {
+                counts[TW_RM_SKIPPED] += 1;
+                continue;
+            }
+            let in_view = !gate || {
+                let bound = vcall0(root, SLOT_GET_WORLD_BOUND) as usize;
+                bound == 0 || bound_in_view(rd(bound, 0), planes)
+            };
+            if in_view {
+                counts[TW_RM_IN_VIEW] += 1;
+                let mut taken = 0u64;
+                crate::mob_set::subtree(root, &mut |shape| {
+                    if tables().instances.contains_key(&shape) {
+                        take(shape, work);
+                        taken += 1;
+                    }
+                });
+                counts[TW_RM_TAKEN] += taken;
+            } else {
+                let (mut deferred, mut hidden, mut taken) = (0u64, 0u64, 0u64);
+                crate::mob_set::subtree(root, &mut |shape| {
+                    let t = tables();
+                    if let Some(instance) = t.instances.get_mut(&shape) {
+                        if !instance.filled {
+                            return;
+                        }
+                        // The root's bound is the engine's merged bound of its children at
+                        // the update; the walk's own turn of a billboard moves a child after
+                        // it. A shape whose own bound is in the view gets the work (the first
+                        // crossing audit of the mark: three water scums under a billboard at
+                        // the view's edge, hidden on their root's bound, 2026-10-19).
+                        if bound_in_view(rd(shape, AV_WORLD_BOUND), planes) {
+                            take(shape, work);
+                            taken += 1;
+                            return;
+                        }
+                        if !instance.root_waiting {
+                            table_deferred().insert(shape);
+                        }
+                        deferred += 1;
+                        if instance.visible && (instance.skinned || rd::<[u32; TRANSFORM_WORDS]>(shape, WORLD) != instance.transform) {
+                            instance.visible = false;
+                            capture::instance_state(instance.id, false);
+                            t.states += 1;
+                            hidden += 1;
+                        }
+                    }
+                });
+                counts[TW_RM_DEFERRED] += deferred;
+                counts[TW_RM_HIDDEN] += hidden;
+                counts[TW_RM_TAKEN] += taken;
             }
         }
     }
@@ -3356,6 +3440,13 @@ pub unsafe fn note_world_data(shape: usize) {
                 }
             }
         }
+        // D7 step 3: a shape updated inside a downward pass is below a marked root, which
+        // the walk descends from or defers; its own mark is not needed. An update that
+        // starts at the shape (depth 0, the actors' heads) keeps its mark.
+        if crate::update_root::mark_on() && crate::update_root::in_pass() {
+            crate::update_root::note_shape_mark_skipped();
+            return;
+        }
         // D6, step 2: a shape under a listed root is the root's: no mark (one look-up of
         // the instance and the answer cached by the generation of the lists).
         if let Some(instance) = tables().instances.get_mut(&shape) {
@@ -3468,6 +3559,9 @@ static VIEW_GATE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::n
 /// (`NiPlane`, as `NiBound::WhichSide` reads it).
 static mut VIEW_PLANES: Vec<[f64; 4]> = Vec::new();
 static mut TABLE_DEFERRED: Option<HashSet<usize>> = None;
+/// D7 step 3: the marked roots handled in this run (a root updated several times a frame
+/// is in the list as often).
+static mut ROOT_MARK_SEEN: Option<HashSet<usize>> = None;
 
 /// The gate is before the chain and the reach (its later form after the reach retired at the
 /// owner's review of CP4, 2026-10-18).
@@ -3596,7 +3690,7 @@ pub unsafe fn table_walk_report() -> String {
     let wait_ms = TABLE_WAIT_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
     let moves = *core::ptr::addr_of!(MOVE_COUNTS);
     format!(
-        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, billboard {}), node rules {} (switch {}, level {}, time-switch {}; index changes {}, shapes taken {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4}, the node rules {:.4}, the roots {:.4}); mobiles (D6): roots {:.1} a run (actors {}, projectiles {}, props {} now); step 2 {}: roots in view {:.1} a run, shapes taken from their subtrees {:.1}, hidden at a transition {}, marked and per-frame items skipped {:.1} a run, marks not made under a listed root {:.1} a run, list generations {}, chain scans {:.1} a run, shapes released at a list change {}; the hierarchical gate (D6 step 3) {}: root tests {:.1} a run, waiting roots {} now (shapes below them {} now), shapes put to wait under a root {:.1} a run, moved there from the per-shape set {}, taken from a root that came into the view {:.1} a run, marks and per-frame items refused for a waiting root {:.1} a run; the waiting sets {:.4} ms a run; the listed roots' shapes the gate then found out of the view {:.1} a run; the moved marks (one a shape a walk {}): pushed {:.1} a run, duplicates {:.1} a run, the most in a walk {} (distinct {}), transform unchanged {:.1} a run, new states with the same content (no recheck): effects {}, properties {}; walks that lost marks: moved {}, tree {}, new {}, app-cull {}, source {}, material {}",
+        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, billboard {}), node rules {} (switch {}, level {}, time-switch {}; index changes {}, shapes taken {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4}, the node rules {:.4}, the roots {:.4}); mobiles (D6): roots {:.1} a run (actors {}, projectiles {}, props {} now); step 2 {}: roots in view {:.1} a run, shapes taken from their subtrees {:.1}, hidden at a transition {}, marked and per-frame items skipped {:.1} a run, marks not made under a listed root {:.1} a run, list generations {}, chain scans {:.1} a run, shapes released at a list change {}; the hierarchical gate (D6 step 3) {}: root tests {:.1} a run, waiting roots {} now (shapes below them {} now), shapes put to wait under a root {:.1} a run, moved there from the per-shape set {}, taken from a root that came into the view {:.1} a run, marks and per-frame items refused for a waiting root {:.1} a run; the waiting sets {:.4} ms a run; the listed roots' shapes the gate then found out of the view {:.1} a run; the moved marks (one a shape a walk {}): pushed {:.1} a run, duplicates {:.1} a run, the most in a walk {} (distinct {}), transform unchanged {:.1} a run, new states with the same content (no recheck): effects {}, properties {}; walks that lost marks: moved {}, tree {}, new {}, app-cull {}, source {}, material {}; the root mark (D7 step 3) {}: roots {:.1} a run (in the view {:.1}, skipped {:.1}), shapes taken {:.1}, deferred {:.1}, hidden {}",
         if table_walk_on() { "on" } else { "off" },
         c[TW_RUNS], c[TW_FULL], c[TW_LOST],
         c[TW_ITEMS] as f64 / runs, c[TW_SWEPT] as f64 / runs, c[TW_WORKED] as f64 / runs, c[TW_REACH_ONLY] as f64 / runs, c[TW_DEFERRED] as f64 / runs,
@@ -3615,7 +3709,8 @@ pub unsafe fn table_walk_report() -> String {
         c[TW_ROOT_WAITS] as f64 / runs, c[TW_ROOT_MOVED], c[TW_ROOT_TAKEN] as f64 / runs, ROOT_MARKS_SUPPRESSED.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs, wait_ms / runs, c[TW_MOB_DEFERRED] as f64 / runs,
         if mark_once_on() { "on" } else { "off" }, moves[MV_PUSHED] as f64 / runs, moves[MV_DUPLICATES] as f64 / runs, moves[MV_MOST], moves[MV_MOST_DISTINCT], moves[MV_UNCHANGED] as f64 / runs,
         crate::ports::state_update::POINTER_ONLY[0].load(core::sync::atomic::Ordering::Relaxed), crate::ports::state_update::POINTER_ONLY[1].load(core::sync::atomic::Ordering::Relaxed),
-        (*core::ptr::addr_of!(SHAPE_MARKS)).lost_runs, (*core::ptr::addr_of!(TREE_MARKS)).lost_runs, (*core::ptr::addr_of!(NEW_MARKS)).lost_runs, (*core::ptr::addr_of!(CULL_MARKS)).lost_runs, (*core::ptr::addr_of!(SOURCE_MARKS)).lost_runs, (*core::ptr::addr_of!(MATERIAL_MARKS)).lost_runs
+        (*core::ptr::addr_of!(SHAPE_MARKS)).lost_runs, (*core::ptr::addr_of!(TREE_MARKS)).lost_runs, (*core::ptr::addr_of!(NEW_MARKS)).lost_runs, (*core::ptr::addr_of!(CULL_MARKS)).lost_runs, (*core::ptr::addr_of!(SOURCE_MARKS)).lost_runs, (*core::ptr::addr_of!(MATERIAL_MARKS)).lost_runs,
+        if crate::update_root::mark_on() { "on" } else { "off" }, c[TW_RM_ROOTS] as f64 / runs, c[TW_RM_IN_VIEW] as f64 / runs, c[TW_RM_SKIPPED] as f64 / runs, c[TW_RM_TAKEN] as f64 / runs, c[TW_RM_DEFERRED] as f64 / runs, c[TW_RM_HIDDEN]
     )
 }
 
