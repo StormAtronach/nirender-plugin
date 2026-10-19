@@ -136,7 +136,10 @@ pub mod tag {
     /// The instance is deleted: id.
     pub const INSTANCE_DELETE: u32 = 25;
     /// The lights of an instance the helper draws from its table (mode gpu): id, the number
-    /// of lights, their keys. Sent when the lights of the instance change.
+    /// of lights, their keys, then the ambient light of the instance's own effect state
+    /// (`D3DRS_AMBIENT` as the engine's light manager sets it for the shape: the sum of the
+    /// ambient lights of the state; a spell's effect carries a white one of its own). Sent
+    /// when the lights or the ambient of the instance change.
     pub const INSTANCE_LIGHTS: u32 = 26;
     /// The visibility of such an instance: id, 1 when the engine draws it, 0 when it does
     /// not although it is in the view of the camera.
@@ -1172,9 +1175,9 @@ pub unsafe fn instance_delete(id: u32) {
 }
 
 /// The lights of an instance. See `tag::INSTANCE_LIGHTS`.
-pub unsafe fn instance_lights(id: u32, lights: &[u32]) {
+pub unsafe fn instance_lights(id: u32, lights: &[u32], ambient: u32) {
     let _lock = crate::sync::device_lock();
-    write(tag::INSTANCE_LIGHTS, &[words(&[id, lights.len() as u32]), words(lights)]);
+    write(tag::INSTANCE_LIGHTS, &[words(&[id, lights.len() as u32]), words(lights), words(&[ambient])]);
 }
 
 /// The bones of an instance: `bones` holds `count` bones of `camera_space::BONE_BYTES`. See

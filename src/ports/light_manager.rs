@@ -708,6 +708,24 @@ pub(crate) unsafe fn ambient_of_state(state: usize) -> u32 {
     rd(ambient_ptr, 0)
 }
 
+/// The ambient lights of an effect state that `ambient_of_state` would count: on and bright
+/// enough. The table's scene takes its ambient from the shape with the fewest.
+pub(crate) unsafe fn ambient_light_count(state: usize) -> u32 {
+    let mut count = 0;
+    if state == 0 {
+        return count;
+    }
+    let mut iter: usize = rd(state, DES::lights);
+    while iter != 0 {
+        let light: usize = rd(iter, DL::effect);
+        iter = rd(iter, DL::next);
+        if light != 0 && rd::<u8>(light, L::enabled) != 0 && rd::<f32>(light, L::dimmer) >= f32::from_bits(MIN_DIMMER) && light_get_type(light) == 0 {
+            count += 1;
+        }
+    }
+    count
+}
+
 /// 0x6BBB40 `NiDX8LightManager::ReleaseLights`. The port deletes each entry. The key of the
 /// entry stays in the map with no entry.
 pub unsafe fn release_lights(this: usize) {

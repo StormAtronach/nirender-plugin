@@ -66,7 +66,11 @@ pub struct SceneData {
     /// The origin of the set in the world: the positions of its draws are relative to it.
     /// The stage of a texture effect that takes the position adds it (`stage_coordinate`).
     pub origin: [f32; 4],
-    pub padding: [u32; 56],
+    /// What the extension's shade makes of an ambient light: the factor it applied to a
+    /// probe, so each retained draw's own ambient (`DrawData::scene_ambient`, from the
+    /// instance's lights record) is scaled as the scene's would be.
+    pub ambient_scale: [f32; 4],
+    pub padding: [u32; 52],
 }
 const _: () = assert!(core::mem::size_of::<SceneData>() == SCENE_SIZE);
 
@@ -186,6 +190,10 @@ pub struct RetainedSet {
     light_indexes_dirty: bool,
     /// The keys of the lights of each instance, for the runs after a compaction.
     keys_of: HashMap<u32, Vec<u32>>,
+    /// The ambient light of each instance's own effect state (the lights record), the
+    /// `D3DRS_AMBIENT` of its draws: the shader multiplies it by the scene's `ambient_scale`.
+    /// An instance without one takes the scene's ambient at its insert.
+    ambient_of: HashMap<u32, u32>,
     /// The slots whose record changed (and so their instance), the slots that only moved
     /// (their instance: the shader reads the world of a retained draw from it), or all.
     dirty: Vec<u32>,
@@ -256,6 +264,7 @@ impl RetainedSet {
             light_indexes_live: 0,
             light_indexes_dirty: false,
             keys_of: HashMap::new(),
+            ambient_of: HashMap::new(),
             dirty: Vec::new(),
             moved: Vec::new(),
             all_dirty: false,
@@ -544,7 +553,10 @@ impl RetainedSet {
     }
 
     /// The lights of the instance: a run of indexes for its slots.
-    pub fn set_lights(&mut self, id: u32, keys: &[u32], known: &HashMap<u32, [u8; 104]>) {
+    pub fn set_lights(&mut self, id: u32, keys: &[u32], ambient: Option<u32>, known: &HashMap<u32, [u8; 104]>) {
+        if let Some(ambient) = ambient {
+            self.ambient_of.insert(id, ambient);
+        }
         if !self.by_id.contains_key(&id) {
             return;
         }
@@ -565,6 +577,9 @@ impl RetainedSet {
                 s.data.light_range[0] = first;
                 s.data.light_range[1] = count;
                 s.data.counts[0] = count;
+                if let Some(ambient) = ambient {
+                    s.data.scene_ambient = crate::d3d::color(ambient);
+                }
                 self.dirty.push(slot);
             }
         }
@@ -1270,10 +1285,12 @@ impl Player {
                 d
             }
         };
-        // The shape in progress as the record needs it; the lights, the fog, the matrices
-        // and the ambient light come from the scene of each view.
+        // The shape in progress as the record needs it; the lights, the fog and the matrices
+        // come from the scene of each view. The ambient light is the instance's own (its
+        // lights record), the scene's until that record comes.
         {
             let shape = &mut self.stream.shape;
+            shape.ambient = self.retained.ambient_of.get(&id).copied().unwrap_or_else(|| self.retained_values.map_or(0xFF00_0000, |v| v.0));
             shape.geometry = r.geometry;
             shape.fvf = fvf;
             shape.stride = stride;
@@ -1411,7 +1428,8 @@ impl Player {
         // The lights the instance had, when the record came again (`remove` dropped them).
         if let Some(keys) = keys {
             let known = &self.renderer.lights_known;
-            self.retained.set_lights(id, &keys, known);
+            let ambient = self.retained.ambient_of.get(&id).copied();
+            self.retained.set_lights(id, &keys, ambient, known);
         }
     }
 
@@ -1438,7 +1456,8 @@ impl Player {
                 let o = self.retained.light_origin().unwrap_or([0.0; 3]);
                 [o[0] as f32, o[1] as f32, o[2] as f32, 0.0]
             },
-            padding: [0; 56],
+            ambient_scale: [1.0; 4],
+            padding: [0; 52],
         };
         // The fog of the extension for the world, as a draw of the world gets it.
         let fog_range = self.parameters.as_ref().and_then(|p| p.fog_range);
@@ -1494,6 +1513,16 @@ impl Player {
                     }
                     scene.counts[k / 4][k % 4] = data.counts[3];
                 }
+                // The factor the shade applies to an ambient light, from a probe of 0.5
+                // (1.0 is its white special case): each retained draw's own ambient is
+                // multiplied by it in the shader.
+                let mut probe = DrawData::zeroed();
+                probe.view = facts.view;
+                probe.scene_ambient = [0.5, 0.5, 0.5, 1.0];
+                let mut copies = self.retained.light_values.clone();
+                let probe_facts = DrawFacts { class: 12, blend_enable: false, source_blend: 0, destination_blend: 0, depth_write: true, specular_power: 0.0, emissive: [0.0; 4] };
+                extension.shade(&mut probe, &mut copies, &probe_facts);
+                scene.ambient_scale = [probe.scene_ambient[0] / 0.5, probe.scene_ambient[1] / 0.5, probe.scene_ambient[2] / 0.5, 1.0];
             }
         }
         if crate::dump_wanted() != 0 {

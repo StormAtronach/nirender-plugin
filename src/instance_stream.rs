@@ -190,8 +190,10 @@ struct Instance {
     /// The world bound of the shape: the centre and the radius, and its world transform.
     bound: [f32; 4],
     transform: [u32; TRANSFORM_WORDS],
-    /// The keys of the lights the helper has for the instance (mode gpu).
+    /// The keys of the lights the helper has for the instance (mode gpu), and the ambient
+    /// light of its own effect state at the last lights record.
     lights: Vec<u32>,
+    ambient: u32,
     /// The frame of the last draw of the engine, and whether the helper shows the instance.
     drawn: u32,
     visible: bool,
@@ -680,7 +682,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, bones_frame: 0, live, recheck: false, kind: 0, chain: Vec::new(), walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, bones_frame: 0, live, recheck: false, kind: 0, chain: Vec::new(), walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
     t.pending = Some((shape, id));
 }
 
@@ -907,10 +909,11 @@ pub unsafe fn draw(shape: usize, id: u32, world: &[f32; 16], relative: bool, col
             mark(shape, true);
             note_new(shape);
         }
-        if instance.lights != lights {
+        if instance.lights != lights || instance.ambient != ambient {
             instance.lights.clear();
             instance.lights.extend_from_slice(lights);
-            capture::instance_lights(id, lights);
+            instance.ambient = ambient;
+            capture::instance_lights(id, lights, ambient);
             t.light_records += 1;
         }
         instance.drawn = t.frame;
@@ -1487,10 +1490,17 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
         t.scratch_keys = keys;
         return false;
     };
-    if instance.lights != keys {
-        capture::instance_lights(id, &keys);
+    // The ambient light of the instance's own effect state goes with its lights: the helper
+    // lights each instance with its own, as the engine's light manager sets it for each
+    // draw (a spell's effect has a white ambient light of its own; the owner's mark 2 of
+    // 2026-10-19 had the whole town lit by it while the scene took the effect as its
+    // reference).
+    let ambient = crate::ports::light_manager::ambient_of_state(effect_state);
+    if instance.lights != keys || instance.ambient != ambient {
+        capture::instance_lights(id, &keys, ambient);
         instance.lights.clear();
         instance.lights.extend_from_slice(&keys);
+        instance.ambient = ambient;
         t.light_records += 1;
     }
     t.scratch_keys = keys;
@@ -1667,6 +1677,9 @@ static mut TABLE_TOUCHED: Option<HashSet<usize>> = None;
 /// walk reached under the root and worked in this frame, not an actor's part. It is read
 /// right after the walk, while the frame's reach holds (`table_frame_values`).
 static mut SCENE_SHAPE: usize = 0;
+/// The ambient lights of `SCENE_SHAPE`'s own effect state: the shape with the fewest is the
+/// scene's reference (0 for a static of an exterior).
+static mut SCENE_SHAPE_AMBIENT_LIGHTS: u32 = 0;
 
 unsafe fn table_below() -> &'static mut HashMap<usize, HashSet<usize>> {
     (*core::ptr::addr_of_mut!(TABLE_BELOW)).get_or_insert_with(HashMap::default)
@@ -2339,8 +2352,20 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
                 display_work(shape, kind, true);
                 counts[TW_WORKED] += 1;
             }
-            if *core::ptr::addr_of!(SCENE_SHAPE) == 0 && tables().instances.get(&shape).is_some_and(|i| !i.skinned) {
-                SCENE_SHAPE = shape;
+            // The scene's reference shape: a shape of the world with the fewest ambient
+            // lights of its own in its effect state. A spell's effect carries a white
+            // ambient light, and a frame that took the effect as its reference lit the whole
+            // town white (the owner's mark 2, Narsis at night, 2026-10-19). An exterior
+            // static has none; an interior's shapes share the cell's one.
+            if tables().instances.get(&shape).is_some_and(|i| !i.skinned) {
+                let best = *core::ptr::addr_of!(SCENE_SHAPE_AMBIENT_LIGHTS);
+                if *core::ptr::addr_of!(SCENE_SHAPE) == 0 || best > 0 {
+                    let count = crate::ports::light_manager::ambient_light_count(rd(shape, GEOMETRY_EFFECT_STATE));
+                    if *core::ptr::addr_of!(SCENE_SHAPE) == 0 || count < best {
+                        SCENE_SHAPE = shape;
+                        SCENE_SHAPE_AMBIENT_LIGHTS = count;
+                    }
+                }
             }
         } else if let Some(instance) = tables().instances.get_mut(&shape) {
             if gate {

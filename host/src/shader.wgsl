@@ -134,6 +134,9 @@ struct Scene {
     // The origin of the retained set in the world: the positions of its draws are relative
     // to it. A stage of a texture effect that takes the position adds it.
     origin: vec4f,
+    // The factor the extension's shade applies to an ambient light: a retained draw's own
+    // ambient (its instance's lights record) times this is the scaled value.
+    ambient_scale: vec4f,
 }
 @group(0) @binding(10) var<uniform> scene: Scene;
 @group(0) @binding(11) var<storage, read> lights_retained: array<Light>;
@@ -154,7 +157,10 @@ fn draw_pixel() -> vec4f {
     return draws[record].pixel;
 }
 fn draw_scene_ambient() -> vec4f {
-    if from_scene() { return scene.scene_ambient; }
+    // A retained draw lights with the ambient of its own instance (the engine sets the
+    // ambient render state from each shape's own effect state), scaled as the extension
+    // scaled the scene's.
+    if from_scene() { return draws[record].scene_ambient * scene.ambient_scale; }
     return draws[record].scene_ambient;
 }
 fn draw_fog_color() -> vec4f {

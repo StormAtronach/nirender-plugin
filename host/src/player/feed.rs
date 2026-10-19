@@ -85,7 +85,10 @@ impl Player {
                 let (id, count) = (word(data, 0), word(data, 4) as usize);
                 if data.len() >= 8 + count * 4 {
                     let keys: Vec<u32> = (0..count).map(|i| word(data, 8 + i * 4)).collect();
-                    self.retained.set_lights(id, &keys, &self.renderer.lights_known);
+                    // The ambient light of the instance's own effect state follows the keys
+                    // (a plugin from before it sends none: the instance keeps the scene's).
+                    let ambient = (data.len() >= 12 + count * 4).then(|| word(data, 8 + count * 4));
+                    self.retained.set_lights(id, &keys, ambient, &self.renderer.lights_known);
                 }
             }
             tag::INSTANCE_STATE if data.len() >= 8 => self.retained.set_visible(word(data, 0), word(data, 4) != 0),
