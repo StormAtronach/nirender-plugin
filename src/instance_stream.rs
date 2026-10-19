@@ -1515,7 +1515,7 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
 }
 
 /// The table walk's counters (`TW_*`) and its time.
-static mut TABLE_COUNTS: [u64; 20] = [0; 20];
+static mut TABLE_COUNTS: [u64; 23] = [0; 23];
 const TW_RUNS: usize = 0;
 const TW_WORKED: usize = 1;
 const TW_HIDDEN: usize = 2;
@@ -1540,6 +1540,11 @@ const TW_OFF_ROOT_UNCOUNTED: usize = 17;
 /// taken into the frame's work.
 const TW_NODE_CHANGES: usize = 18;
 const TW_NODE_SHAPES: usize = 19;
+/// Design D6, step 1 (the mob manager's lists, `mob_set`): the roots the lists held, summed
+/// over the runs; the waiting items whose chain holds a root; the worked items under one.
+const TW_MOB_ROOTS: usize = 20;
+const TW_DEFER_MOBILE: usize = 21;
+const TW_WORK_MOBILE: usize = 22;
 static TABLE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 /// The part of `TABLE_TICKS` spent on the node rules.
 static TABLE_NODE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
@@ -2204,6 +2209,10 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     // after the sweep in the list, and are not sweep items.
     let sweep_end = work.len();
     let gate = view_gate_on() && read_view_planes(camera);
+    // Design D6, step 1: the engine's lists of what moves, read for this run; the counters
+    // below say how much of the per-frame set lies under their roots.
+    crate::mob_set::refresh();
+    counts[TW_MOB_ROOTS] += crate::mob_set::roots().roots.len() as u64;
     if gate {
         let planes = &*core::ptr::addr_of!(VIEW_PLANES);
         table_deferred().retain(|&shape| {
@@ -2283,6 +2292,9 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
             // back into the view: else a part that leaves the view at its edge stays there.
             let t = tables();
             if let Some(instance) = t.instances.get_mut(&shape) {
+                if crate::mob_set::under_root(&instance.chain) {
+                    counts[TW_DEFER_MOBILE] += 1;
+                }
                 if instance.visible && (instance.skinned || rd::<[u32; TRANSFORM_WORDS]>(shape, WORLD) != instance.transform) {
                     instance.visible = false;
                     capture::instance_state(instance.id, false);
@@ -2343,6 +2355,9 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
                 }
                 display_work(shape, kind, true);
                 counts[TW_WORKED] += 1;
+                if crate::mob_set::under_root(chain) {
+                    counts[TW_WORK_MOBILE] += 1;
+                }
             }
         } else if let Some(instance) = tables().instances.get_mut(&shape) {
             if gate {
@@ -2919,8 +2934,9 @@ pub unsafe fn table_walk_report() -> String {
         }] += 1;
     }
     let node_ms = TABLE_NODE_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
+    let mobs = crate::mob_set::roots();
     format!(
-        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, billboard {}), node rules {} (switch {}, level {}, time-switch {}; index changes {}, shapes taken {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4}, the node rules {:.4})",
+        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, billboard {}), node rules {} (switch {}, level {}, time-switch {}; index changes {}, shapes taken {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4}, the node rules {:.4}); mobiles (D6 step 1): roots {:.1} a run (actors {}, projectiles {}, props {} now), waiting items under them {:.1} a run, worked under them {:.1}",
         if table_walk_on() { "on" } else { "off" },
         c[TW_RUNS], c[TW_FULL], c[TW_LOST],
         c[TW_ITEMS] as f64 / runs, c[TW_SWEPT] as f64 / runs, c[TW_WORKED] as f64 / runs, c[TW_REACH_ONLY] as f64 / runs, c[TW_DEFERRED] as f64 / runs,
@@ -2930,7 +2946,8 @@ pub unsafe fn table_walk_report() -> String {
         table_dynamic().len(), kinds[0], kinds[4],
         table_nodes().len(), node_kinds[0], node_kinds[1], node_kinds[2], c[TW_NODE_CHANGES], c[TW_NODE_SHAPES],
         table_below().len(), table_sources().len(), table_state_counts().len(),
-        ms, ms / runs, list_ms / runs, node_ms / runs
+        ms, ms / runs, list_ms / runs, node_ms / runs,
+        c[TW_MOB_ROOTS] as f64 / runs, mobs.actors, mobs.projectiles, mobs.props, c[TW_DEFER_MOBILE] as f64 / runs, c[TW_WORK_MOBILE] as f64 / runs
     )
 }
 

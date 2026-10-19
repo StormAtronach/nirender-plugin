@@ -37,6 +37,7 @@ pub mod hook;
 pub mod install;
 pub mod animation;
 pub mod live_walk;
+pub mod mob_set;
 pub mod instance_stream;
 pub mod link;
 pub mod link_client;
