@@ -13,11 +13,12 @@
 //! in the same run. Part 4 cuts the engine's walk; the list walk is then the only walk of
 //! the world, and a shape made at run time registers through the update pass.
 //!
-//! On by default since the cut (F8 part 4, entry 13), with the table walk and the sky-only
-//! walk: the engine's walk of the world stops after the sky root. `NIRENDER_ENGINE_WALK=1` or
-//! `nirender.engineWalk(true)` gives the engine's walk back (the permanent debug switch, the
-//! owner's decision of 2026-10-17). The switches of the single walks retired at the owner's
-//! review of CP4 (2026-10-18).
+//! On by default from the cut (F8 part 4, entry 13) to 2026-10-19, with the table walk and
+//! the sky-only walk: the engine's walk of the world stops after the sky root. Off by default
+//! since 2026-10-19 (the owner's decision B, records entry 37: the engine traverses the
+//! world, the helper draws from its table); `NIRENDER_ENGINE_WALK=0` or
+//! `nirender.engineWalk(false)` gives the cut back. The switches of the single walks retired
+//! at the owner's review of CP4 (2026-10-18).
 
 use core::ptr::{addr_of, addr_of_mut};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
@@ -161,10 +162,10 @@ pub fn on() -> bool {
     !engine_walk_on()
 }
 
-/// The engine's walk of the world (the permanent debug switch, entry 13): on, the table walk,
-/// this walk and the sky-only walk are off, and the engine displays the world as before the
-/// cut. `NIRENDER_ENGINE_WALK=1`, `nirender.engineWalk(on)`. Mode `off` stays the picture
-/// reference.
+/// The engine's walk of the world (entry 13; the default since 2026-10-19, entry 37): on, the
+/// table walk, this walk and the sky-only walk are off, and the engine displays the world as
+/// before the cut. `NIRENDER_ENGINE_WALK=0` or `nirender.engineWalk(false)` gives the cut.
+/// Mode `off` stays the picture reference.
 static ENGINE_WALK: AtomicU8 = AtomicU8::new(255);
 
 pub fn engine_walk_on() -> bool {
@@ -172,7 +173,7 @@ pub fn engine_walk_on() -> bool {
     if value != 255 {
         return value != 0;
     }
-    let on = std::env::var("NIRENDER_ENGINE_WALK").map_or(false, |v| v != "0");
+    let on = std::env::var("NIRENDER_ENGINE_WALK").map_or(true, |v| v != "0");
     ENGINE_WALK.store(on as u8, Ordering::Relaxed);
     on
 }

@@ -377,9 +377,9 @@ unsafe extern "C" fn display_cost(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.engineWalk(on)`: the engine's walk of the world on (the table walk, the live walk
-/// and the sky-only walk off, the world displayed as before the cut) or off (the default);
-/// returns the state before; without an argument the state. The permanent debug switch.
+/// `nirender.engineWalk(on)`: the engine's walk of the world on (the default since
+/// 2026-10-19; the table walk, the live walk and the sky-only walk off) or off (the cut);
+/// returns the state before; without an argument the state.
 unsafe extern "C" fn engine_walk(l: LuaState) -> i32 {
     let before = crate::live_walk::engine_walk_on();
     if lua_gettop(l) >= 1 {
