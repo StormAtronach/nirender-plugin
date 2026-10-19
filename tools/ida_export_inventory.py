@@ -35,6 +35,7 @@ EXTRA = [
     0x6F4270,  # NiGeometry::UpdateEffectsDownward
     0x6F2180,  # BSAnimationNode::UpdateControllers
     0x6F2060,  # BSAnimationNode::UpdateDownwardPass (the fourth reader, 2026-10-18)
+    0x6C8B40,  # NiNode::UpdateDownwardPass (the downward pass of a node, recursive; D7 step 3 measurement, 2026-10-19: the outermost call is the root of a subtree update; MWSE does not patch it)
     0x6EB000,  # NiAVObject::Update (the update of a subtree from its root; D6 step 2, 2026-10-19: MWSE hooks its entry, so it cannot be a port; kept in the table as the record of that)
     0x6D8320,  # NiSwitchNode::Display
     0x6D90B0,  # NiFltAnimationNode::Display

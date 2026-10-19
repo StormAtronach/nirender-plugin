@@ -93,6 +93,7 @@ pub unsafe fn refresh() {
     }
     RUNS.fetch_add(1, Ordering::Relaxed);
     UNLISTED_THIS_RUN.store(0, Ordering::Relaxed);
+    reset_update_roots();
 }
 
 unsafe fn is_animation_node(object: usize) -> bool {
@@ -213,6 +214,38 @@ pub unsafe fn log_unlisted(describe: &dyn Fn(usize) -> Option<String>) {
     }
 }
 
+/// D7 step 3's measurement (2026-10-19): the roots of the subtree updates of a run, noted
+/// by the port on `NiNode::UpdateDownwardPass` at its outermost call on the main thread
+/// (the engine's `NiAVObject::Update`, and MWSE's replacement of it, start the downward
+/// pass of the root through the virtual table; the pass recurses through that function).
+/// The world updates of the run are then tested against the roots: a world update whose
+/// chain holds a root of the run would be covered by a mark per update root.
+static mut UPDATE_ROOTS: Option<std::collections::HashSet<usize>> = None;
+/// The roots noted a run; the listed ones among them (D6); the distinct roots a run; the
+/// world updates under a root of the run; the world updates under none.
+static ROOT_COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+
+pub unsafe fn note_update_root(node: usize) {
+    let roots = (*core::ptr::addr_of_mut!(UPDATE_ROOTS)).get_or_insert_with(Default::default);
+    roots.insert(node);
+    ROOT_COUNTS[0].fetch_add(1, Ordering::Relaxed);
+    if crate::mob_set::roots().roots.contains(&node) {
+        ROOT_COUNTS[1].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub unsafe fn note_world_update(chain: &[(usize, u8)]) {
+    let roots = (*core::ptr::addr_of_mut!(UPDATE_ROOTS)).get_or_insert_with(Default::default);
+    let covered = chain.iter().any(|&(node, _)| roots.contains(&node));
+    ROOT_COUNTS[if covered { 3 } else { 4 }].fetch_add(1, Ordering::Relaxed);
+}
+
+unsafe fn reset_update_roots() {
+    let roots = (*core::ptr::addr_of_mut!(UPDATE_ROOTS)).get_or_insert_with(Default::default);
+    ROOT_COUNTS[2].fetch_add(roots.len() as u64, Ordering::Relaxed);
+    roots.clear();
+}
+
 pub fn count_moved(source: usize) {
     MOVED[source].fetch_add(1, Ordering::Relaxed);
 }
@@ -228,10 +261,12 @@ pub fn report() -> String {
     let runs = RUNS.load(Ordering::Relaxed).max(1) as f64;
     let moved: Vec<String> = (0..SOURCES).map(|i| format!("{} {:.1}", NAMES[i], MOVED[i].load(Ordering::Relaxed) as f64 / runs)).collect();
     let dynamic: Vec<String> = (0..SOURCES).map(|i| format!("{} {:.1}", NAMES[i], DYNAMIC[i].load(Ordering::Relaxed) as f64 / runs)).collect();
+    let r: Vec<f64> = (0..5).map(|i| ROOT_COUNTS[i].load(Ordering::Relaxed) as f64 / runs).collect();
     format!(
-        "mark census (D7 step 1): runs {}; moved shapes a run by source: {}; the per-frame set a run by source: {}",
+        "mark census (D7 step 1): runs {}; moved shapes a run by source: {}; the per-frame set a run by source: {}; update roots (D7 step 3 measure): {:.1} a run ({:.1} distinct, {:.1} listed), world updates under a root of the run {:.1} a run, under none {:.1} a run",
         RUNS.load(Ordering::Relaxed),
         moved.join(", "),
-        dynamic.join(", ")
+        dynamic.join(", "),
+        r[0], r[2], r[1], r[3], r[4]
     )
 }
