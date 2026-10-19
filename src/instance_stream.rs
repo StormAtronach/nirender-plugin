@@ -2062,6 +2062,20 @@ unsafe fn node_name(node: usize) -> String {
     core::ffi::CStr::from_ptr(at as *const core::ffi::c_char).to_string_lossy().into_owned()
 }
 
+/// The census's description of an instance: its name, flags, kinds, its reference's node and
+/// the names along its chain (a node named only with a shape of the table below it).
+unsafe fn describe_instance(shape: usize, instance: &Instance) -> String {
+    let alive = |node: usize| table_below().contains_key(&node);
+    let names: Vec<String> = instance.chain.iter().take(10).map(|&(node, _)| if alive(node) { node_name(node) } else { String::from("(gone)") }).collect();
+    let top_parent: usize = instance.chain.last().map_or(0, |&(top, _)| if alive(top) { rd(top, PARENT) } else { usize::MAX });
+    format!(
+        "'{}' (id {}, flags {:#x}) live {} skinned {} visible {} under the reference's node '{}', chain {} (the top's parent 0x{top_parent:x}): {}",
+        node_name(shape), instance.id, rd::<u16>(shape, FLAGS), instance.live, instance.skinned, instance.visible,
+        if instance.ref_root != 0 && alive(instance.ref_root) { node_name(instance.ref_root) } else { String::from("(none)") },
+        instance.chain.len(), names.join(" < ")
+    )
+}
+
 /// A walk with more than `MASS_MOVES` moved marks, or one that lost moved marks: the first 16
 /// go to the log with the marks pushed and distinct in the interval, the shapes whose
 /// transform did not change, and the nodes most of the shapes are under (the reference's node
@@ -3314,7 +3328,11 @@ pub unsafe fn note_world_data(shape: usize) {
             if crate::mark_census::on() {
                 let alive = |node: usize| table_below().contains_key(&node);
                 if let Some(instance) = tables().instances.get(&shape) {
-                    crate::mark_census::count_moved(crate::mark_census::classify(&instance.chain, instance.ref_root, &alive));
+                    let source = crate::mark_census::classify(&instance.chain, instance.ref_root, &alive);
+                    crate::mark_census::count_moved(source);
+                    if crate::mark_census::is_unlisted(source) {
+                        crate::mark_census::note_unlisted(shape);
+                    }
                 }
             }
         }
@@ -3634,7 +3652,10 @@ pub unsafe fn report() -> String {
         + "\n" + &crate::worker_events::report()
         + "\n" + &crate::deferred_unload::report()
         + "\n" + &crate::deferred_destroy::report()
-        + "\n" + &crate::mark_census::report()
+        + "\n" + &{
+            crate::mark_census::log_unlisted(&|shape| tables().instances.get(&shape).map(|instance| describe_instance(shape, instance)));
+            crate::mark_census::report()
+        }
         + "\n" + &crate::freed_fill::report()
         + "\n" + &crate::pointer_check::report()
         + "\n" + &crate::live_walk::class_report()

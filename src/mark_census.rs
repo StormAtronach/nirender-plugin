@@ -164,6 +164,44 @@ pub unsafe fn name_once(shape: usize, describe: &dyn Fn() -> String) {
     crate::log!("mark census: a per-frame shape under no reference's node ({}): {}", named.len(), describe());
 }
 
+/// The moved shapes of the two unexplained classes (a reference's node that no list names,
+/// no reference's node), each with its description at first sight and its count of marks
+/// over the run (the owner, 2026-10-19: what are the 26 a frame at the hold?). `report`
+/// logs the top of the list once.
+static mut UNLISTED: Option<HashMap<usize, u64>> = None;
+static UNLISTED_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const UNLISTED_AT_MOST: usize = 8192;
+
+pub fn is_unlisted(source: usize) -> bool {
+    source == REFERENCE || source == NONE
+}
+
+pub unsafe fn note_unlisted(shape: usize) {
+    let map = (*core::ptr::addr_of_mut!(UNLISTED)).get_or_insert_with(Default::default);
+    if let Some(count) = map.get_mut(&shape) {
+        *count += 1;
+    } else if map.len() < UNLISTED_AT_MOST {
+        map.insert(shape, 1);
+    }
+}
+
+/// Logs the top 40 once, each shape described now (its chain as it is at the report; a
+/// shape's first sight comes before its chain is built, so a description then was empty),
+/// or "(gone)" for a shape the table no longer holds.
+pub unsafe fn log_unlisted(describe: &dyn Fn(usize) -> Option<String>) {
+    if !on() || UNLISTED_LOGGED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let Some(map) = (*core::ptr::addr_of!(UNLISTED)).as_ref() else { return };
+    let mut rows: Vec<(usize, u64)> = map.iter().map(|(&s, &n)| (s, n)).collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    let runs = RUNS.load(Ordering::Relaxed).max(1) as f64;
+    crate::log!("mark census: {} distinct moved shapes under a reference's node that no list names or under none; the top 40 by marks over the run (marks, a run):", rows.len());
+    for (shape, count) in rows.iter().take(40) {
+        crate::log!("mark census:   {count} ({:.2} a run) {}", *count as f64 / runs, describe(*shape).unwrap_or_else(|| format!("(gone) shape 0x{shape:x}")));
+    }
+}
+
 pub fn count_moved(source: usize) {
     MOVED[source].fetch_add(1, Ordering::Relaxed);
 }
