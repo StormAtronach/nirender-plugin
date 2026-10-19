@@ -3344,6 +3344,11 @@ pub unsafe fn note_world_data(shape: usize) {
                     crate::mark_census::count_moved(source);
                     if crate::mark_census::is_unlisted(source) {
                         crate::mark_census::note_unlisted(shape);
+                        // The probe on the unlisted world updates (the rechecks of a relight
+                        // come first in a frame and took the probe's firings, 2026-10-19).
+                        if crate::mark_census::unlisted_this_run() == mass_probe_threshold() {
+                            log_mass_caller();
+                        }
                     }
                 }
             }

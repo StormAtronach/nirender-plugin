@@ -92,6 +92,7 @@ pub unsafe fn refresh() {
         roots[2] = rd(data_handler, LANDSCAPE_ROOT);
     }
     RUNS.fetch_add(1, Ordering::Relaxed);
+    UNLISTED_THIS_RUN.store(0, Ordering::Relaxed);
 }
 
 unsafe fn is_animation_node(object: usize) -> bool {
@@ -176,7 +177,17 @@ pub fn is_unlisted(source: usize) -> bool {
     source == REFERENCE || source == NONE
 }
 
+/// The unlisted world updates of this run (reset by `refresh`): the probe of the walk fires
+/// at its threshold on this count too, to read the stack of the world updates and not only
+/// of the rechecks, which come first in a frame.
+static UNLISTED_THIS_RUN: AtomicU64 = AtomicU64::new(0);
+
+pub fn unlisted_this_run() -> u64 {
+    UNLISTED_THIS_RUN.load(Ordering::Relaxed)
+}
+
 pub unsafe fn note_unlisted(shape: usize) {
+    UNLISTED_THIS_RUN.fetch_add(1, Ordering::Relaxed);
     let map = (*core::ptr::addr_of_mut!(UNLISTED)).get_or_insert_with(Default::default);
     if let Some(count) = map.get_mut(&shape) {
         *count += 1;
