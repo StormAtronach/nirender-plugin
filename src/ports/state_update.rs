@@ -129,48 +129,10 @@ pub unsafe fn update_world_data(this: usize) {
     crate::instance_stream::note_world_data(this);
 }
 
-port_thiscall!(node_update_downward_pass_port, 0x6C8B40, "NiNode::UpdateDownwardPass",
-    fn(this, time: f32, update_controllers: u8, update_children: u8) -> (),
-    compare_eax = false,
-    regions = |set| set.skip(),
-    rust = node_update_downward_pass);
-
-thread_local! {
-    /// The depth of the downward pass on this thread: 0 outside a pass, so the call at 0 is
-    /// the root of a subtree update.
-    static DOWNWARD_DEPTH: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
-}
-
-/// D7 step 3's measurement (2026-10-19): the root of each subtree update. The engine's
-/// `NiAVObject::Update` (0x6EB000, which MWSE replaces whole, so it cannot be a port) and
-/// MWSE's replacement both start with the root's downward pass through the virtual table,
-/// and the pass recurses through this function for every node below: the outermost call
-/// on the thread is the update's root. With the census on, the root is noted
-/// (`mark_census::note_update_root`); the engine's function runs as it is.
-pub unsafe fn node_update_downward_pass(this: usize, time: f32, update_controllers: u8, update_children: u8) {
-    crate::shadow::touch(&node_update_downward_pass_port::STATE);
-    downward_enter(this);
-    node_update_downward_pass_port::engine(this, time, update_controllers, update_children);
-    downward_leave();
-}
-
-/// Enters a downward pass on this thread: at depth 0 the node is the root of a subtree
-/// update, noted for the census. The animation node's own pass (`ports/animation.rs`) enters
-/// the same way, since an update can start at one.
-pub unsafe fn downward_enter(node: usize) {
-    let depth = DOWNWARD_DEPTH.with(|d| {
-        let v = d.get();
-        d.set(v + 1);
-        v
-    });
-    if depth == 0 && crate::mark_census::on() {
-        crate::mark_census::note_update_root(node);
-    }
-}
-
-pub fn downward_leave() {
-    DOWNWARD_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
-}
+// The root of each subtree update was a port on `NiNode::UpdateDownwardPass` here
+// (2026-10-19); it cost 0.24 ms a frame at the hold, the port's dispatch on a function
+// called for every node of every updated subtree, and became the light detour of
+// `update_root.rs` (entry 36).
 
 port_thiscall!(set_app_culled_port, 0x442B10, "NiAVObject::SetAppCulled",
     fn(this, flag: u32) -> (),
@@ -296,7 +258,6 @@ pub static PORTS: &[&crate::shadow::PortState] = &[
     &update_properties_downward_port::STATE,
     &update_effects_downward_port::STATE,
     &update_world_data_port::STATE,
-    &node_update_downward_pass_port::STATE,
     &set_app_culled_port::STATE,
     &attach_child_port::STATE,
     &detach_child_port::STATE,

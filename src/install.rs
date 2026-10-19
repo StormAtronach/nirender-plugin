@@ -178,6 +178,7 @@ pub unsafe fn install() -> Result<String, String> {
     crate::deferred_unload::install();
     crate::deferred_destroy::install();
     crate::freed_fill::install();
+    crate::update_root::install();
 
     let mut failed = 0;
     // A port left uninstalled for an A/B of its own cost (`NIRENDER_SKIP_PORT=<name>`,

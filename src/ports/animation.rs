@@ -78,10 +78,10 @@ pub unsafe fn animation_node_update_downward_pass(this: usize, time: f32, update
     if update_controllers != 0 && crate::animation::active() && crate::animation::displayed(this) {
         wr::<u8>(this, ANIM_FLAGS, rd::<u8>(this, ANIM_FLAGS) | ANIM_DISPLAYED);
     }
-    // The root of a subtree update can be an animation node (D7 step 3's measurement).
-    crate::ports::state_update::downward_enter(this);
+    // The root of a subtree update can be an animation node (D7 step 3, `update_root`).
+    crate::update_root::enter(this);
     animation_node_update_downward_pass_port::engine(this, time, update_controllers, update_children);
-    crate::ports::state_update::downward_leave();
+    crate::update_root::leave();
 }
 
 pub static PORTS: &[&crate::shadow::PortState] = &[

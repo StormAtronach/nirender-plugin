@@ -3676,6 +3676,7 @@ pub unsafe fn report() -> String {
             crate::mark_census::log_unlisted(&|shape| tables().instances.get(&shape).map(|instance| describe_instance(shape, instance)));
             crate::mark_census::report()
         }
+        + "\n" + &crate::update_root::report()
         + "\n" + &crate::freed_fill::report()
         + "\n" + &crate::pointer_check::report()
         + "\n" + &crate::live_walk::class_report()
