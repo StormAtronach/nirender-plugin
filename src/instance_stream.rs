@@ -1673,13 +1673,6 @@ static mut TABLE_DRAINED: Vec<usize> = Vec::new();
 static mut TABLE_SCRATCH: Vec<usize> = Vec::new();
 static mut TABLE_CHAIN: Vec<(usize, u8)> = Vec::new();
 static mut TABLE_TOUCHED: Option<HashSet<usize>> = None;
-/// The shape of the world the frame's scene values are read from: the first instance the
-/// walk reached under the root and worked in this frame, not an actor's part. It is read
-/// right after the walk, while the frame's reach holds (`table_frame_values`).
-static mut SCENE_SHAPE: usize = 0;
-/// The ambient lights of `SCENE_SHAPE`'s own effect state: the shape with the fewest is the
-/// scene's reference (0 for a static of an exterior).
-static mut SCENE_SHAPE_AMBIENT_LIGHTS: u32 = 0;
 
 unsafe fn table_below() -> &'static mut HashMap<usize, HashSet<usize>> {
     (*core::ptr::addr_of_mut!(TABLE_BELOW)).get_or_insert_with(HashMap::default)
@@ -2230,7 +2223,6 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     let touched = (*core::ptr::addr_of_mut!(TABLE_TOUCHED)).get_or_insert_with(HashSet::default);
     touched.clear();
     let chain = &mut *core::ptr::addr_of_mut!(TABLE_CHAIN);
-    SCENE_SHAPE = 0;
     for at in 0..work.len() {
         let shape = work[at];
         if !crate::pointer_check::shape(shape, "the table walk") {
@@ -2351,21 +2343,6 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
                 }
                 display_work(shape, kind, true);
                 counts[TW_WORKED] += 1;
-            }
-            // The scene's reference shape: a shape of the world with the fewest ambient
-            // lights of its own in its effect state. A spell's effect carries a white
-            // ambient light, and a frame that took the effect as its reference lit the whole
-            // town white (the owner's mark 2, Narsis at night, 2026-10-19). An exterior
-            // static has none; an interior's shapes share the cell's one.
-            if tables().instances.get(&shape).is_some_and(|i| !i.skinned) {
-                let best = *core::ptr::addr_of!(SCENE_SHAPE_AMBIENT_LIGHTS);
-                if *core::ptr::addr_of!(SCENE_SHAPE) == 0 || best > 0 {
-                    let count = crate::ports::light_manager::ambient_light_count(rd(shape, GEOMETRY_EFFECT_STATE));
-                    if *core::ptr::addr_of!(SCENE_SHAPE) == 0 || count < best {
-                        SCENE_SHAPE = shape;
-                        SCENE_SHAPE_AMBIENT_LIGHTS = count;
-                    }
-                }
             }
         } else if let Some(instance) = tables().instances.get_mut(&shape) {
             if gate {
@@ -2600,38 +2577,47 @@ pub unsafe fn audit_report() -> String {
     )
 }
 
-/// Once a frame, right after the walk's instances: the scene values (the ambient light of the
-/// effect state and the weather's fog; the values are the same for every shape in a frame:
-/// `scene_mixed` counted 0 in every run). They are read from `SCENE_SHAPE`, the first shape
-/// the walk reached under the root and worked in this frame: a shape of the world the engine
-/// would draw now, so its effect state and its lights are the engine's live ones. Before
-/// 2026-10-18 the values came from the first marked instance in the hash order, every
-/// frame, which could be a shape of a cell the cell worker had detached, with destroyed
-/// lights in its effect state (the audit of the cell worker, Tier 1 finding 1). A frame
-/// whose walk reached no shape keeps the values of the frame before.
+/// Once a frame, right after the walk's instances: the scene values for the helper's
+/// facts, from where the engine takes them and from no shape (design D4, step 2,
+/// 2026-10-19): the ambient light of the cell (`Cell::getAmbientColour`: an interior's own
+/// colour, black outside, the underwater blend on both), the fog of the game's fog property
+/// (the cell's), and the weather's sky light as the sun. Each retained draw lights with
+/// the ambient and the fog of its own records; these values are the frame's. Before, the
+/// values came from a reference shape, the first the walk worked in the frame, and a spell's
+/// effect with a white ambient light of its own lit the town white (entry 22).
 unsafe fn table_frame_values() {
     let t = tables();
     let renderer = crate::engine::renderer();
-    let shape = *core::ptr::addr_of!(SCENE_SHAPE);
-    if renderer == 0 || t.scene_frame == t.frame || shape == 0 {
+    if renderer == 0 || t.scene_frame == t.frame {
         return;
     }
-    // A shape of the world, not an actor's part: the property state of a skinned part has
-    // fog values of its own (the f14 pass, 2026-10-18: the scene took an actor's, and the
-    // table drew the far cliffs with almost no fog). `SCENE_SHAPE` is never a skinned one.
-    let effect_state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
-    let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
-    let ambient = crate::ports::light_manager::ambient_of_state(effect_state);
-    let cell_fog = crate::engine::game_fog_property();
-    let fog = if cell_fog != 0 {
-        crate::shape_stream::fog_values_of(renderer, cell_fog)
-    } else {
-        crate::shape_stream::fog_values(renderer, property_state)
-    };
+    let ambient = cell_ambient();
+    let fog = crate::shape_stream::fog_values_of(renderer, crate::engine::game_fog_property());
     t.scene_frame = t.frame;
     t.scene_values = (ambient, fog);
     let sun = scene_sun(t);
     capture::retained_scene(ambient, fog, sun.as_ref());
+}
+
+/// `DataHandler` (0x7C67E0) -> `currentCell` (+0xB540) (MWSE `TES3DataHandler.h`), and
+/// `Cell::getAmbientColour` (0x4E2030): the colour of an interior cell's ambient light, black
+/// for an exterior, blended for a camera under water.
+const DATA_HANDLER: usize = 0x7C67E0;
+const CURRENT_CELL: usize = 0xB540;
+const CELL_GET_AMBIENT_COLOUR: usize = 0x4E2030;
+
+/// The ambient render state of a shape of the current cell that has no ambient light of its
+/// own: the cell's ambient colour as a packed colour, alpha 255.
+unsafe fn cell_ambient() -> u32 {
+    let handler: usize = rd(DATA_HANDLER, 0);
+    let cell: usize = if handler != 0 { rd(handler, CURRENT_CELL) } else { 0 };
+    if cell == 0 {
+        return 0xFF00_0000;
+    }
+    let mut colour = [0f32; 3];
+    crate::engine::thiscall1(CELL_GET_AMBIENT_COLOUR, cell, colour.as_mut_ptr() as u32);
+    let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+    0xFF00_0000 | (channel(colour[0]) << 16) | (channel(colour[1]) << 8) | channel(colour[2])
 }
 
 /// `WorldController` (0x7C67DC) -> `weatherController` (+0x58) -> `sgSkyLight` (+0xAC):
