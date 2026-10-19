@@ -188,10 +188,12 @@ impl Player {
             self.world_sun = sun;
             self.world_ambient = [ambient[0], ambient[1], ambient[2]];
         }
-        // The fog and the fill mode as the device of the game has them now: the fog states
-        // of the last draw with fog, and the fill mode of the last draw (D3DFILL_WIREFRAME
-        // is 2).
-        let fog = self.stream.fog;
+        // The fog of the world: the scene record's, which the plugin reads from the game's
+        // own fog property each frame (design D5, step 2, 2026-10-19); the fog states of the
+        // last draw with fog only without the record (a shape with a fog property of its
+        // own, drawn last, gave the post chain its fog). The fill mode is the last draw's
+        // (D3DFILL_WIREFRAME is 2).
+        let fog = self.retained_values.and_then(|(_, fog)| fog).unwrap_or(self.stream.fog);
         WorldFacts {
             target_size: self.size_of_target(),
             origin: self.stream.origin,
