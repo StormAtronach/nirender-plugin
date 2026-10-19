@@ -2386,6 +2386,11 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     // counters say how much of the per-frame set lies under their roots.
     crate::mob_set::refresh();
     counts[TW_MOB_ROOTS] += crate::mob_set::roots().roots.len() as u64;
+    // D7 step 1: the census's roots for this run (the engine's globals only; the per-frame
+    // set is classified after the lists are built, when the chains are fresh).
+    if crate::mark_census::on() {
+        crate::mark_census::refresh();
+    }
     // The gate of the view (its planes), read here because the movers' roots need them.
     let gate = view_gate_on() && read_view_planes(camera);
     // D6, step 2: the engine's lists of what moves as the per-frame set of the movers. The
@@ -2684,6 +2689,19 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         counts[TW_ROOT_TAKEN] += root_taken;
         counts[TW_ROOT_MOVED] += root_moved;
         TABLE_WAIT_TICKS.fetch_add(capture::ticks() - wait_start, core::sync::atomic::Ordering::Relaxed);
+    }
+    // D7 step 1: the census of the per-frame set by its source, once a run, after the tree
+    // marks and a full pass rebuilt the chains (a chain node is read only with a shape of
+    // the table below it).
+    if crate::mark_census::on() {
+        let alive = |node: usize| table_below().contains_key(&node);
+        scratch.clear();
+        scratch.extend(table_dynamic().iter().copied());
+        for &shape in scratch.iter() {
+            if let Some(instance) = tables().instances.get(&shape) {
+                crate::mark_census::count_dynamic(crate::mark_census::classify(&instance.chain, instance.ref_root, &alive));
+            }
+        }
     }
     let in_sweep = |at: usize| at >= sweep_from && at < sweep_end;
     counts[TW_ITEMS] += work.len() as u64;
@@ -3250,6 +3268,14 @@ pub unsafe fn note_world_data(shape: usize) {
     if rd::<u16>(shape, FLAGS) & RETAINED_BIT != 0 {
         if seen.insert(shape) {
             counts[1] += 1;
+            // D7 step 1: the census of the moved shapes by their source (once a frame a shape,
+            // before D6's filter, so the listed roots' share shows too).
+            if crate::mark_census::on() {
+                let alive = |node: usize| table_below().contains_key(&node);
+                if let Some(instance) = tables().instances.get(&shape) {
+                    crate::mark_census::count_moved(crate::mark_census::classify(&instance.chain, instance.ref_root, &alive));
+                }
+            }
         }
         // D6, step 2: a shape under a listed root is the root's: no mark (one look-up of
         // the instance and the answer cached by the generation of the lists).
@@ -3567,6 +3593,7 @@ pub unsafe fn report() -> String {
         + "\n" + &crate::worker_events::report()
         + "\n" + &crate::deferred_unload::report()
         + "\n" + &crate::deferred_destroy::report()
+        + "\n" + &crate::mark_census::report()
         + "\n" + &crate::freed_fill::report()
         + "\n" + &crate::pointer_check::report()
         + "\n" + &crate::live_walk::class_report()

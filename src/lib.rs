@@ -38,6 +38,7 @@ pub mod install;
 pub mod animation;
 pub mod live_walk;
 pub mod mob_set;
+pub mod mark_census;
 pub mod instance_stream;
 pub mod link;
 pub mod link_client;
