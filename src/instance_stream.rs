@@ -1702,8 +1702,21 @@ static mut MOVES_THIS_INTERVAL: [u64; 2] = [0; 2];
 static mut MASS_LOGGED: u32 = 0;
 const MASS_MOVES: usize = 2000;
 
-/// The mass moves' callers logged so far (the first 8 are).
+/// The mass moves' callers logged so far (the first 12 are).
 static mut MASS_CALLERS_LOGGED: u32 = 0;
+
+/// The moved mark of a walk interval at which the probe reads the stack:
+/// `NIRENDER_MASS_PROBE=1` means the 2000th (`MASS_MOVES`); another value is the count
+/// itself (300 caught the burst of one cell's pick root every 18 frames at the hold,
+/// 2026-10-19). 0 when the probe is off.
+fn mass_probe_threshold() -> u64 {
+    static AT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *AT.get_or_init(|| match std::env::var("NIRENDER_MASS_PROBE") {
+        Ok(v) if v == "1" => MASS_MOVES as u64,
+        Ok(v) => v.parse().unwrap_or(0),
+        Err(_) => 0,
+    })
+}
 
 /// A diagnostic (2026-10-19): who updates the whole world in a frame. At the `MASS_MOVES`th
 /// moved mark of a walk interval, the stack above this function is scanned for return
@@ -1715,8 +1728,7 @@ unsafe fn log_mass_caller() {
     // Only with `NIRENDER_MASS_PROBE=1`; after the save's load (its frames are about 3400 to
     // 3750 in the scenarios); the first 12. It named `VFXManager::update` (0x469C30) on
     // 2026-10-19.
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var("NIRENDER_MASS_PROBE").is_ok_and(|v| v == "1")) {
+    if mass_probe_threshold() == 0 {
         return;
     }
     let logged = &mut *core::ptr::addr_of_mut!(MASS_CALLERS_LOGGED);
@@ -1770,7 +1782,7 @@ unsafe fn first_move_mark(instance: &mut Instance) -> bool {
     let counts = &mut *core::ptr::addr_of_mut!(MOVE_COUNTS);
     let interval = &mut *core::ptr::addr_of_mut!(MOVES_THIS_INTERVAL);
     interval[0] += 1;
-    if interval[0] == MASS_MOVES as u64 {
+    if interval[0] == mass_probe_threshold() {
         log_mass_caller();
     }
     if instance.marked == MARK_SERIAL {
