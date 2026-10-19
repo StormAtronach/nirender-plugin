@@ -228,6 +228,11 @@ struct Instance {
     /// lists changed since.
     mob_root: usize,
     mob_checked: u64,
+    /// D6 step 3: the node of the shape's reference (`reference_node`, 0 for none), found
+    /// again when the chain changes; and whether the shape waits out of the view under it
+    /// (`WAITING_ROOTS`) instead of in the per-shape waiting set.
+    ref_root: usize,
+    root_waiting: bool,
     /// The table walk: the frame (plus one) it last worked the instance, so that it works it
     /// once a frame; the instance is in its sweep bucket; the effect state counted for the
     /// lights of the frame (`TABLE_STATE_COUNTS`), and the lights of that state that the
@@ -687,7 +692,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, bones_frame: 0, live, recheck: false, kind: 0, chain: Vec::new(), mob_root: 0, mob_checked: 0, walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, bones_frame: 0, live, recheck: false, kind: 0, chain: Vec::new(), mob_root: 0, mob_checked: 0, ref_root: 0, root_waiting: false, walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
     t.pending = Some((shape, id));
 }
 
@@ -1520,7 +1525,7 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
 }
 
 /// The table walk's counters (`TW_*`) and its time.
-static mut TABLE_COUNTS: [u64; 28] = [0; 28];
+static mut TABLE_COUNTS: [u64; 32] = [0; 32];
 const TW_RUNS: usize = 0;
 const TW_WORKED: usize = 1;
 const TW_HIDDEN: usize = 2;
@@ -1557,7 +1562,23 @@ const TW_MOB_HIDDEN: usize = 25;
 const TW_MOB_SKIPPED: usize = 26;
 /// The shapes given one work pass because the lists lost their root.
 const TW_MOB_RELEASED: usize = 27;
+/// D6 step 3, the hierarchical gate: the shapes put to wait under their reference's node by
+/// the loop, and those moved there from the per-shape waiting set; the shapes taken from a
+/// waiting root that came into the view (the bound tests of the nodes: `ROOT_TESTS`).
+const TW_ROOT_WAITS: usize = 28;
+const TW_ROOT_MOVED: usize = 29;
+const TW_ROOT_TAKEN: usize = 30;
+/// The shapes taken from the listed roots in the view that the loop's gate then found out of
+/// the view: the most a bound test per node in the descent of a listed root could save.
+const TW_MOB_DEFERRED: usize = 31;
+/// The bound tests of reference nodes (`root_in_view`, one per node a run at most).
+static ROOT_TESTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// The marks not made, and the per-frame items not taken, because the shape waits under its
+/// reference's node.
+static ROOT_MARKS_SUPPRESSED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static TABLE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+/// The part of the lists' time spent on the waiting sets (the roots and the shapes).
+static TABLE_WAIT_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 /// The part of `TABLE_TICKS` spent on the node rules.
 static TABLE_NODE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 /// The part of `TABLE_TICKS` spent on the lists (the marks, the per-frame set, the sweep).
@@ -1969,12 +1990,43 @@ unsafe fn set_chain(shape: usize) -> bool {
     core::mem::swap(&mut instance.chain, fresh);
     // The listed-root answer (D6) was about the old chain.
     instance.mob_checked = 0;
+    // The reference's node (D6 step 3) of the new chain. A shape that waited under the old
+    // one is taken by the caller of this function (every caller takes the shape), and the
+    // loop's gate decides again.
+    instance.ref_root = reference_node(&instance.chain);
+    instance.root_waiting = false;
     if instance.live || instance.chain.iter().any(|&(_, kind)| kind == CHAIN_BILLBOARD) {
         table_dynamic().insert(shape);
     } else {
         table_dynamic().remove(&shape);
     }
     true
+}
+
+/// The run-time type of the engine's object extra data (`TES3ObjectExtraData`, MWSE's
+/// `NIRTTIDefines.Morrowind.h`): the reference's own scene node carries it (MWSE's
+/// `ObjectNET::getTes3Reference`).
+const RTTI_TES3_OBJECT_EXTRA_DATA: usize = 0x7CE280;
+/// `NiExtraData::next`.
+const EXTRA_DATA_NEXT: usize = 0x10;
+
+/// D6 step 3: the node of the shape's reference, the nearest node of the chain that carries
+/// the engine's object extra data. 0 when the chain has none (the land, the sky, an effect).
+/// The node's world bound holds the bounds of every shape below it (the engine's update
+/// writes the bounds up the tree): out of the view, every shape below it is out too.
+unsafe fn reference_node(chain: &[(usize, u8)]) -> usize {
+    for &(node, _) in chain {
+        let mut extra: usize = rd(node, crate::gen::layouts::NiObjectNET::extraData);
+        let mut seen = 0;
+        while extra != 0 && seen < 16 {
+            if crate::ports::ni::get_rtti(extra) == RTTI_TES3_OBJECT_EXTRA_DATA {
+                return node;
+            }
+            extra = rd(extra, EXTRA_DATA_NEXT);
+            seen += 1;
+        }
+    }
+    0
 }
 
 /// The ancestors of a shape from its parent up to the node without a parent, each with its
@@ -2140,6 +2192,8 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     let mob_on = crate::mob_set::on() && gate;
     let roots_start = capture::ticks();
     *core::ptr::addr_of_mut!(MOB_IN_VIEW_THIS_FRAME) = 0;
+    // Where the listed roots' shapes start in the work list (D6 step 3's descent measure).
+    let mut mob_from = usize::MAX;
     if mob_on {
         crate::mob_set::prune_states();
         // A root the lists lost: the shapes under it get one work pass now, since their
@@ -2158,6 +2212,7 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
             counts[TW_MOB_RELEASED] += scratch.len() as u64;
         }
         let planes = &*core::ptr::addr_of!(VIEW_PLANES);
+        mob_from = work.len();
         let roots: Vec<usize> = crate::mob_set::roots().roots.iter().copied().collect();
         for root in roots {
             let bound = vcall0(root, SLOT_GET_WORLD_BOUND) as usize;
@@ -2202,12 +2257,16 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     // 0.08 ms for 1870 items at the hold, 2026-10-19).
     let mut skipped_at_take = 0u64;
     let mut take_free = |shape: usize, work: &mut Vec<usize>| {
-        if mob_on {
-            if let Some(instance) = tables().instances.get_mut(&shape) {
-                if instance.walk_frame != stamp && under_listed_root(instance) {
-                    skipped_at_take += 1;
-                    return;
-                }
+        if let Some(instance) = tables().instances.get_mut(&shape) {
+            if mob_on && instance.walk_frame != stamp && under_listed_root(instance) {
+                skipped_at_take += 1;
+                return;
+            }
+            // D6 step 3: a shape waiting under its reference's node is the node's (the
+            // waiting roots' pass below takes it when the node comes into the view).
+            if instance.root_waiting {
+                ROOT_MARKS_SUPPRESSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                return;
             }
         }
         take(shape, work);
@@ -2265,16 +2324,28 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
             }
             take(shape, work);
         }
+        // D6 step 3: an app-cull or a source mark of a shape that waits under its
+        // reference's node is not taken: when the node comes into the view, the waiting
+        // roots' pass takes the shape, and its work then reads the app-cull flag and notes
+        // the sources (`renote` stays set). At the hold about 70 such items a frame went
+        // through the loop only to wait again (2026-10-19).
+        let take_unless_waiting = |shape: usize, work: &mut Vec<usize>| {
+            if tables().instances.get(&shape).is_some_and(|i| i.root_waiting) {
+                ROOT_MARKS_SUPPRESSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+            take(shape, work);
+        };
         // 3. App-cull: the object itself, and the shapes below it. A node with no retained
         //    shape below (the HUD, the water, the effect roots) costs one look-up.
         for &at in culls.iter() {
-            take(at, work);
+            take_unless_waiting(at, work);
             if let Some(set) = table_below().get(&at) {
                 counts[TW_CULL_SHAPES] += set.len() as u64;
                 scratch.clear();
                 scratch.extend(set.iter().copied());
                 for &shape in scratch.iter() {
-                    take(shape, work);
+                    take_unless_waiting(shape, work);
                 }
             }
         }
@@ -2302,12 +2373,12 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         }
         // 4b. The shapes of the source marks (their `renote` is set above).
         for &key in sources.iter() {
-            take(key, work);
+            take_unless_waiting(key, work);
             if let Some(set) = table_sources().get(&key) {
                 scratch.clear();
                 scratch.extend(set.iter().copied());
                 for &shape in scratch.iter() {
-                    take(shape, work);
+                    take_unless_waiting(shape, work);
                 }
             }
         }
@@ -2347,8 +2418,39 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     // one that waits is taken in the frame it comes into the view. The deferred ones come
     // after the sweep in the list, and are not sweep items.
     let sweep_end = work.len();
+    // D6 step 3, the hierarchical gate (`NIRENDER_ROOT_GATE=0` turns it off; the A/B
+    // switch): a shape out of the view waits under its reference's node, and the node's
+    // bound is tested once a frame for all of them; when the node comes into the view, its
+    // waiting shapes are taken, and the loop's gate tests each one's own bound. A shape
+    // without a reference's node, or whose node is in the view, waits in the per-shape set
+    // as before.
+    let root_gate = gate && root_gate_on();
+    (*core::ptr::addr_of_mut!(ROOT_VIEW)).get_or_insert_with(HashMap::default).clear();
     if gate {
+        let wait_start = capture::ticks();
         let planes = &*core::ptr::addr_of!(VIEW_PLANES);
+        let mut root_taken = 0u64;
+        let mut root_moved = 0u64;
+        if root_gate {
+            // The waiting roots first. A root with no shape of the table below it any more
+            // leaves unread: the engine can have freed it (the node rules' rule).
+            waiting_roots().retain(|&root| {
+                let Some(below) = table_below().get(&root) else { return false };
+                if !root_in_view(root, planes) {
+                    return true;
+                }
+                for &shape in below.iter() {
+                    if let Some(instance) = tables().instances.get_mut(&shape) {
+                        if instance.root_waiting {
+                            instance.root_waiting = false;
+                            take(shape, work);
+                            root_taken += 1;
+                        }
+                    }
+                }
+                false
+            });
+        }
         table_deferred().retain(|&shape| {
             let Some(instance) = tables().instances.get_mut(&shape) else { return false };
             // A waiting shape under a listed root is the root's: its root in the view
@@ -2356,11 +2458,23 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
             if mob_on && under_listed_root(instance) {
                 return false;
             }
+            // A waiting shape whose reference's node is out of the view goes to wait under
+            // the node.
+            let root = instance.ref_root;
+            if root_gate && root != 0 && table_below().contains_key(&root) && !root_in_view(root, planes) {
+                instance.root_waiting = true;
+                waiting_roots().insert(root);
+                root_moved += 1;
+                return false;
+            }
             if bound_in_view(rd(shape, AV_WORLD_BOUND), planes) {
                 take(shape, work);
             }
             true
         });
+        counts[TW_ROOT_TAKEN] += root_taken;
+        counts[TW_ROOT_MOVED] += root_moved;
+        TABLE_WAIT_TICKS.fetch_add(capture::ticks() - wait_start, core::sync::atomic::Ordering::Relaxed);
     }
     let in_sweep = |at: usize| at >= sweep_from && at < sweep_end;
     counts[TW_ITEMS] += work.len() as u64;
@@ -2430,9 +2544,31 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         // The gate of the view, early: an instance out of the view waits before the chain and
         // the reach (the reach's work on the switches, the levels and the billboards then
         // happens in the view only, as in the engine's walk).
-        if gate && tables().instances.get(&shape).is_some_and(|i| i.filled) && out_of_view(shape, &*core::ptr::addr_of!(VIEW_PLANES)) {
-            table_deferred().insert(shape);
+        // D6 step 3: the reference's node first. Out of the view, every shape below it is
+        // out too, and the record the helper holds decides, as in `out_of_view`; the shape
+        // then waits under the node.
+        let planes = &*core::ptr::addr_of!(VIEW_PLANES);
+        let root_out = root_gate && tables().instances.get(&shape).is_some_and(|i| i.filled && i.ref_root != 0 && table_below().contains_key(&i.ref_root) && !root_in_view(i.ref_root, planes));
+        let waits = if root_out {
+            tables().instances.get(&shape).map_or(true, |i| !i.visible || !bound_in_view(i.bound, planes))
+        } else {
+            gate && tables().instances.get(&shape).is_some_and(|i| i.filled) && out_of_view(shape, planes)
+        };
+        if waits {
+            if root_out {
+                if let Some(instance) = tables().instances.get_mut(&shape) {
+                    instance.root_waiting = true;
+                    waiting_roots().insert(instance.ref_root);
+                }
+                table_deferred().remove(&shape);
+                counts[TW_ROOT_WAITS] += 1;
+            } else {
+                table_deferred().insert(shape);
+            }
             counts[TW_DEFERRED] += 1;
+            if at >= mob_from && at < roots_end {
+                counts[TW_MOB_DEFERRED] += 1;
+            }
             // The helper draws a waiting instance where its last record put it. One that moved
             // since, or a skinned one (its bones change each frame), is hidden until it comes
             // back into the view: else a part that leaves the view at its edge stays there.
@@ -2489,7 +2625,7 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
                 i.visible && i.sent && !i.live && !i.skinned && !i.recheck && !i.renote && i.generation == generation && i.id.wrapping_add(frame) % CHECK_FRAMES != 0
             }) && !chain.iter().any(|&(_, kind)| kind == CHAIN_BILLBOARD)
                 // A waiting instance can have moved while out of the view: it gets the work.
-                && !(gate && table_deferred().contains(&shape));
+                && !(gate && (table_deferred().contains(&shape) || tables().instances.get(&shape).is_some_and(|i| i.root_waiting)));
             if reach_only {
                 if let Some(instance) = tables().instances.get_mut(&shape) {
                     instance.drawn = frame;
@@ -2498,6 +2634,9 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
             } else {
                 if gate {
                     table_deferred().remove(&shape);
+                    if let Some(instance) = tables().instances.get_mut(&shape) {
+                        instance.root_waiting = false;
+                    }
                 }
                 display_work(shape, kind, true);
                 counts[TW_WORKED] += 1;
@@ -2505,6 +2644,7 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         } else if let Some(instance) = tables().instances.get_mut(&shape) {
             if gate {
                 table_deferred().remove(&shape);
+                instance.root_waiting = false;
             }
             if instance.visible {
                 instance.visible = false;
@@ -2904,9 +3044,19 @@ pub unsafe fn note_world_data(shape: usize) {
         }
         // D6, step 2: a shape under a listed root is the root's: no mark (one look-up of
         // the instance and the answer cached by the generation of the lists).
-        if crate::mob_set::on() && tables().instances.get_mut(&shape).is_some_and(|instance| under_listed_root(instance)) {
-            crate::mob_set::MARKS_SUPPRESSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            return;
+        if let Some(instance) = tables().instances.get_mut(&shape) {
+            if crate::mob_set::on() && under_listed_root(instance) {
+                crate::mob_set::MARKS_SUPPRESSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+            // D6 step 3: a shape that waits under its reference's node is the node's: when
+            // the node comes into the view, the waiting roots' pass takes the shape (at
+            // the hold about 90 such marks a frame went through the loop only to wait again,
+            // 2026-10-19).
+            if instance.root_waiting {
+                ROOT_MARKS_SUPPRESSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                return;
+            }
         }
         if table_walk_on() && !audit_drops_moves() {
             (*core::ptr::addr_of_mut!(SHAPE_MARKS)).push(shape);
@@ -3017,6 +3167,38 @@ unsafe fn table_deferred() -> &'static mut HashSet<usize> {
     (*core::ptr::addr_of_mut!(TABLE_DEFERRED)).get_or_insert_with(HashSet::default)
 }
 
+/// D6 step 3: the reference nodes with shapes waiting below them (`Instance::root_waiting`).
+/// A node stays while the table has a shape below it (`TABLE_BELOW`), the proof that the
+/// engine has not freed it; the shapes are found below it in that map when it comes into
+/// the view.
+static mut WAITING_ROOTS: Option<HashSet<usize>> = None;
+/// The answers of `root_in_view` in this run.
+static mut ROOT_VIEW: Option<HashMap<usize, bool>> = None;
+
+unsafe fn waiting_roots() -> &'static mut HashSet<usize> {
+    (*core::ptr::addr_of_mut!(WAITING_ROOTS)).get_or_insert_with(HashSet::default)
+}
+
+/// The hierarchical gate (D6 step 3). On by default; `NIRENDER_ROOT_GATE=0` is off (the A/B).
+fn root_gate_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("NIRENDER_ROOT_GATE").map_or(true, |v| v != "0"))
+}
+
+/// Whether a reference's node is in the view, tested once a run. The caller knows the node
+/// is alive (a shape of the table below it). A node the pointer check refuses counts as in
+/// the view: its shapes are then tested one by one.
+unsafe fn root_in_view(root: usize, planes: &[[f64; 4]]) -> bool {
+    let answers = (*core::ptr::addr_of_mut!(ROOT_VIEW)).get_or_insert_with(HashMap::default);
+    if let Some(&answer) = answers.get(&root) {
+        return answer;
+    }
+    let answer = !crate::pointer_check::node(root, "the hierarchical gate") || bound_in_view(rd(root, AV_WORLD_BOUND), planes);
+    answers.insert(root, answer);
+    ROOT_TESTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    answer
+}
+
 /// Reads the culling planes of the camera into `VIEW_PLANES`. False without planes (no gate).
 unsafe fn read_view_planes(camera: usize) -> bool {
     let planes = &mut *core::ptr::addr_of_mut!(VIEW_PLANES);
@@ -3093,8 +3275,9 @@ pub unsafe fn table_walk_report() -> String {
     let node_ms = TABLE_NODE_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
     let mobs = crate::mob_set::roots();
     let root_ms = TABLE_ROOT_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
+    let wait_ms = TABLE_WAIT_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
     format!(
-        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, billboard {}), node rules {} (switch {}, level {}, time-switch {}; index changes {}, shapes taken {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4}, the node rules {:.4}, the roots {:.4}); mobiles (D6): roots {:.1} a run (actors {}, projectiles {}, props {} now); step 2 {}: roots in view {:.1} a run, shapes taken from their subtrees {:.1}, hidden at a transition {}, marked and per-frame items skipped {:.1} a run, marks not made under a listed root {:.1} a run, list generations {}, chain scans {:.1} a run, shapes released at a list change {}",
+        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, billboard {}), node rules {} (switch {}, level {}, time-switch {}; index changes {}, shapes taken {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4}, the node rules {:.4}, the roots {:.4}); mobiles (D6): roots {:.1} a run (actors {}, projectiles {}, props {} now); step 2 {}: roots in view {:.1} a run, shapes taken from their subtrees {:.1}, hidden at a transition {}, marked and per-frame items skipped {:.1} a run, marks not made under a listed root {:.1} a run, list generations {}, chain scans {:.1} a run, shapes released at a list change {}; the hierarchical gate (D6 step 3) {}: root tests {:.1} a run, waiting roots {} now (shapes below them {} now), shapes put to wait under a root {:.1} a run, moved there from the per-shape set {}, taken from a root that came into the view {:.1} a run, marks and per-frame items refused for a waiting root {:.1} a run; the waiting sets {:.4} ms a run; the listed roots' shapes the gate then found out of the view {:.1} a run",
         if table_walk_on() { "on" } else { "off" },
         c[TW_RUNS], c[TW_FULL], c[TW_LOST],
         c[TW_ITEMS] as f64 / runs, c[TW_SWEPT] as f64 / runs, c[TW_WORKED] as f64 / runs, c[TW_REACH_ONLY] as f64 / runs, c[TW_DEFERRED] as f64 / runs,
@@ -3108,7 +3291,9 @@ pub unsafe fn table_walk_report() -> String {
         c[TW_MOB_ROOTS] as f64 / runs, mobs.actors, mobs.projectiles, mobs.props,
         if crate::mob_set::on() { "on" } else { "off" }, c[TW_MOB_IN_VIEW] as f64 / runs, c[TW_MOB_TAKEN] as f64 / runs, c[TW_MOB_HIDDEN], c[TW_MOB_SKIPPED] as f64 / runs,
         crate::mob_set::MARKS_SUPPRESSED.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs,
-        mobs.generation, MOB_RESCANS.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs, c[TW_MOB_RELEASED]
+        mobs.generation, MOB_RESCANS.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs, c[TW_MOB_RELEASED],
+        if root_gate_on() { "on" } else { "off" }, ROOT_TESTS.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs, waiting_roots().len(), tables().instances.values().filter(|i| i.root_waiting).count(),
+        c[TW_ROOT_WAITS] as f64 / runs, c[TW_ROOT_MOVED], c[TW_ROOT_TAKEN] as f64 / runs, ROOT_MARKS_SUPPRESSED.load(core::sync::atomic::Ordering::Relaxed) as f64 / runs, wait_ms / runs, c[TW_MOB_DEFERRED] as f64 / runs
     )
 }
 
