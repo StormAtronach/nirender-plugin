@@ -2699,7 +2699,19 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         scratch.extend(table_dynamic().iter().copied());
         for &shape in scratch.iter() {
             if let Some(instance) = tables().instances.get(&shape) {
-                crate::mark_census::count_dynamic(crate::mark_census::classify(&instance.chain, instance.ref_root, &alive));
+                let source = crate::mark_census::classify(&instance.chain, instance.ref_root, &alive);
+                crate::mark_census::count_dynamic(source);
+                if crate::mark_census::is_unnamed(source) {
+                    // The shape's name and the names along its chain (a node named only
+                    // with a shape of the table below it), its flags and its kind.
+                    let names: Vec<String> = instance.chain.iter().take(12).map(|&(node, _)| if alive(node) { node_name(node) } else { String::from("(gone)") }).collect();
+                    let top_parent: usize = instance.chain.last().map_or(0, |&(top, _)| if alive(top) { rd(top, PARENT) } else { usize::MAX });
+                    let line = format!(
+                        "'{}' (shape 0x{shape:x}, id {}, flags {:#x}) live {} skinned {} visible {} filled {} chain {} (the top's parent 0x{top_parent:x}): {}",
+                        node_name(shape), instance.id, rd::<u16>(shape, FLAGS), instance.live, instance.skinned, instance.visible, instance.filled, instance.chain.len(), names.join(" < ")
+                    );
+                    crate::mark_census::name_once(shape, &|| line.clone());
+                }
             }
         }
     }
@@ -2757,6 +2769,11 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         // Only the shapes the engine path skips (marked for the helper): a skinned shape is
         // marked only when the table draws the skins (`table_draws_skins`).
         if rd::<u16>(shape, FLAGS) & RETAINED_BIT == 0 {
+            // A live shape without the bit stayed in the per-frame set for good, taken each
+            // run and dropped here (the census of 2026-10-19: 42 shapes a run on the crossing,
+            // the detached creature and body-part models under a parentless "Root Bone" or
+            // "Head"). Out of the set; a tree mark or the sweep brings it back.
+            table_dynamic().remove(&shape);
             continue;
         }
         // D6, step 2: a marked or per-frame item under a listed root is the root's, before
@@ -2771,6 +2788,30 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
         // The gate of the view, early: an instance out of the view waits before the chain and
         // the reach (the reach's work on the switches, the levels and the billboards then
         // happens in the view only, as in the engine's walk).
+        // Off the world root (a detached model: the engine's head templates, the fish and
+        // netch bodies under a parentless "Root Bone"; the census of 2026-10-19, 45 shapes
+        // a run on the crossing): out of the per-frame set and the waiting sets, hidden,
+        // before the gate's test, which otherwise kept such a shape waiting for good (the
+        // off-root step at the loop's end was never reached). A tree mark or the sweep
+        // brings it back when it is attached.
+        if !on_root {
+            counts[TW_OFF_ROOT] += 1;
+            table_dynamic().remove(&shape);
+            if gate {
+                table_deferred().remove(&shape);
+            }
+            let t = tables();
+            if let Some(instance) = t.instances.get_mut(&shape) {
+                instance.root_waiting = false;
+                if instance.visible {
+                    instance.visible = false;
+                    capture::instance_state(instance.id, false);
+                    t.states += 1;
+                    counts[TW_HIDDEN] += 1;
+                }
+            }
+            continue;
+        }
         // D6 step 3: the reference's node first. Out of the view, every shape below it is
         // out too, and the record the helper holds decides, as in `out_of_view`; the shape
         // then waits under the node.

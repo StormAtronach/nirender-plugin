@@ -145,6 +145,25 @@ pub unsafe fn classify(chain: &[(usize, u8)], ref_root: usize, alive: &dyn Fn(us
     }
 }
 
+/// True for the class the lists and the references do not explain (the owner, 2026-10-19:
+/// the 42 shapes a run of the crossing's per-frame set with no reference's node are a
+/// mystery to solve): the caller names each such shape once.
+pub fn is_unnamed(source: usize) -> bool {
+    source == NONE
+}
+
+static mut NAMED: Option<std::collections::HashSet<usize>> = None;
+const NAMED_AT_MOST: usize = 64;
+
+/// Logs the description of a shape of the unnamed class once per shape, the first 64.
+pub unsafe fn name_once(shape: usize, describe: &dyn Fn() -> String) {
+    let named = (*core::ptr::addr_of_mut!(NAMED)).get_or_insert_with(Default::default);
+    if named.len() >= NAMED_AT_MOST || !named.insert(shape) {
+        return;
+    }
+    crate::log!("mark census: a per-frame shape under no reference's node ({}): {}", named.len(), describe());
+}
+
 pub fn count_moved(source: usize) {
     MOVED[source].fetch_add(1, Ordering::Relaxed);
 }
