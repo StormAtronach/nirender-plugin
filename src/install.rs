@@ -180,7 +180,17 @@ pub unsafe fn install() -> Result<String, String> {
     crate::freed_fill::install();
 
     let mut failed = 0;
+    // A port left uninstalled for an A/B of its own cost (`NIRENDER_SKIP_PORT=<name>`,
+    // 2026-10-19: the port on `NiNode::UpdateDownwardPass`, a hot recursive function,
+    // looked like 0.4 to 0.7 ms a frame at the hold). Only a port whose function is not
+    // the renderer's (the engine's own code draws nothing through it) can be skipped
+    // without refusing the renderer.
+    let skipped = std::env::var("NIRENDER_SKIP_PORT").ok();
     for port in ports::all() {
+        if skipped.as_deref() == Some(port.name) {
+            crate::log!("port {} left uninstalled (NIRENDER_SKIP_PORT)", port.name);
+            continue;
+        }
         match hook::install(port.addr, (port.detour)(), port.stack_args, port.cleanup) {
             Ok(trampoline) => port.orig.store(trampoline, Ordering::Relaxed),
             Err(error) => {
@@ -194,7 +204,7 @@ pub unsafe fn install() -> Result<String, String> {
     // mod changed in a way the port does not follow, or a detour that failed, refuses the
     // renderer for the session, and MGE XE goes on with Direct3D 9.
     if crate::link_client::own_d3d8() {
-        let cannot: Vec<&str> = ports::all().filter(|p| p.locked() || !p.installed()).map(|p| p.name).collect();
+        let cannot: Vec<&str> = ports::all().filter(|p| (p.locked() || !p.installed()) && skipped.as_deref() != Some(p.name)).map(|p| p.name).collect();
         if !cannot.is_empty() {
             REFUSED.store(true, Ordering::Relaxed);
             crate::log!("{} of {} ports cannot run as Rust: {}", cannot.len(), ports::all().count(), cannot.join(", "));
