@@ -1505,7 +1505,7 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
 }
 
 /// The table walk's counters (`TW_*`) and its time.
-static mut TABLE_COUNTS: [u64; 18] = [0; 18];
+static mut TABLE_COUNTS: [u64; 20] = [0; 20];
 const TW_RUNS: usize = 0;
 const TW_WORKED: usize = 1;
 const TW_HIDDEN: usize = 2;
@@ -1526,7 +1526,13 @@ const TW_DEFERRED: usize = 15;
 const TW_DEFER_HIDDEN: usize = 16;
 /// The instances off the root whose effect state counts were taken away unread.
 const TW_OFF_ROOT_UNCOUNTED: usize = 17;
+/// The node rules: the changes of a node's index, and the shapes below the changed nodes
+/// taken into the frame's work.
+const TW_NODE_CHANGES: usize = 18;
+const TW_NODE_SHAPES: usize = 19;
 static TABLE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+/// The part of `TABLE_TICKS` spent on the node rules.
+static TABLE_NODE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 /// The part of `TABLE_TICKS` spent on the lists (the marks, the per-frame set, the sweep).
 static TABLE_LIST_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 /// The sweep finds logged so far (the first 16 are).
@@ -1622,10 +1628,27 @@ static mut TABLE_GENERATION: u32 = 0;
 /// The retained shapes below each node of their chains: a node's app-cull or tree mark
 /// reaches its shapes through this map, without reading the node.
 static mut TABLE_BELOW: Option<HashMap<usize, HashSet<usize>>> = None;
-/// The shapes worked every frame: those under a switch, a level, an flt or a billboard node
-/// (the choice and the turn follow the camera or the time), and the live ones (their
-/// controllers run at the display).
+/// The shapes worked every frame: those under a billboard node (the turn follows the
+/// camera), and the live ones (their controllers run at the display). The shapes under a
+/// switch, a level or a time-switch node are not here: their node is in `TABLE_NODES`.
 static mut TABLE_DYNAMIC: Option<HashSet<usize>> = None;
+/// The node rules (design D3, option A, 2026-10-19): the switch, level and time-switch nodes
+/// above the retained shapes, each with the index it selected at its last evaluation. The
+/// walk evaluates each node once a frame (`table_node_rules`): a level node from the camera's
+/// distance, a time-switch node from the game time, a plain switch by reading its index. When
+/// a node's index changes, the shapes below it (`TABLE_BELOW`) are the frame's work, and the
+/// reach then shows the selected ones and hides the others. The engine's pick, collisions,
+/// downward update, bound and controllers read the index of a node, so the level rule writes
+/// its index into the node as the engine's display did, and a changed index gives the
+/// selected child its lazy update (`switch_prepare_child`).
+static mut TABLE_NODES: Option<HashMap<usize, NodeRule>> = None;
+
+struct NodeRule {
+    /// `CHAIN_SWITCH`, `CHAIN_LOD` or `CHAIN_FLT`.
+    kind: u8,
+    /// The index at the last evaluation; `i32::MIN` before the first.
+    index: i32,
+}
 /// The instances by `id % 64`: the slow sweep works one bucket a frame, the bucket whose
 /// instances have their 64th-frame check of the handles in that frame. It is the net for a
 /// change that no event marked; its finds are counted.
@@ -1703,6 +1726,66 @@ unsafe fn table_dynamic() -> &'static mut HashSet<usize> {
     (*core::ptr::addr_of_mut!(TABLE_DYNAMIC)).get_or_insert_with(HashSet::default)
 }
 
+unsafe fn table_nodes() -> &'static mut HashMap<usize, NodeRule> {
+    (*core::ptr::addr_of_mut!(TABLE_NODES)).get_or_insert_with(HashMap::default)
+}
+
+/// The index a switch, level or time-switch node selects now, as the engine's display reads
+/// or computes it; a level node gets it written, as the engine's display writes it, because
+/// the engine's pick, collisions and update read it.
+unsafe fn node_index(node: usize, kind: u8, camera: usize) -> i32 {
+    let switch = match kind {
+        CHAIN_SWITCH => crate::live_walk::SwitchKind::Plain,
+        CHAIN_LOD => crate::live_walk::SwitchKind::LevelOfDetail,
+        _ => crate::live_walk::SwitchKind::FltAnimation,
+    };
+    let index = crate::live_walk::switch_index_of(node, switch, camera);
+    if kind == CHAIN_LOD {
+        crate::mem::wr(node, crate::ports::scene::SWITCH_INDEX, index);
+    }
+    index
+}
+
+/// The selected child of a node for an index, or 0.
+unsafe fn selected_child(node: usize, index: i32) -> usize {
+    if index < 0 || index >= rd::<i32>(node, crate::gen::layouts::NiNode::kChildren_endIndex) {
+        return 0;
+    }
+    rd(rd::<usize>(node, crate::gen::layouts::NiNode::kChildren_storage), index as usize * 4)
+}
+
+/// The node rules of a frame: each node of `TABLE_NODES` evaluated once. A changed index
+/// gives the selected child its lazy update, as the engine's display does when it selects a
+/// child the update pass skipped, and puts the shapes below the node into the frame's work.
+unsafe fn table_node_rules(camera: usize, work: &mut Vec<usize>, take: &dyn Fn(usize, &mut Vec<usize>)) {
+    let start = capture::ticks();
+    let counts = &mut *core::ptr::addr_of_mut!(TABLE_COUNTS);
+    let mut changed: Vec<usize> = Vec::new();
+    for (&node, rule) in table_nodes().iter_mut() {
+        if !crate::pointer_check::node(node, "the node rules") {
+            continue;
+        }
+        let index = node_index(node, rule.kind, camera);
+        if index == rule.index {
+            continue;
+        }
+        rule.index = index;
+        counts[TW_NODE_CHANGES] += 1;
+        let selected = selected_child(node, index);
+        if selected != 0 {
+            crate::ports::scene::switch_prepare_child(node, index, selected);
+        }
+        if let Some(set) = table_below().get(&node) {
+            counts[TW_NODE_SHAPES] += set.len() as u64;
+            changed.extend(set.iter().copied());
+        }
+    }
+    for shape in changed {
+        take(shape, work);
+    }
+    TABLE_NODE_TICKS.fetch_add(capture::ticks() - start, core::sync::atomic::Ordering::Relaxed);
+}
+
 unsafe fn table_state_counts() -> &'static mut HashMap<usize, u32> {
     (*core::ptr::addr_of_mut!(TABLE_STATE_COUNTS)).get_or_insert_with(HashMap::default)
 }
@@ -1732,6 +1815,10 @@ unsafe fn table_forget(shape: usize, instance: &Instance) {
             set.remove(&shape);
             if set.is_empty() {
                 below.remove(&node);
+                // A node with no retained shape below leaves the node rules, or the rules
+                // read it after the engine frees it (the crash of the arrival glide,
+                // 2026-10-19 07:16: an access violation in the plugin after a cell unload).
+                table_nodes().remove(&node);
             }
         }
     }
@@ -1813,14 +1900,18 @@ unsafe fn set_chain(shape: usize) -> bool {
             set.remove(&shape);
             if set.is_empty() {
                 below.remove(&node);
+                table_nodes().remove(&node);
             }
         }
     }
-    for &(node, _) in fresh.iter() {
+    for &(node, kind) in fresh.iter() {
         below.entry(node).or_default().insert(shape);
+        if matches!(kind, CHAIN_SWITCH | CHAIN_LOD | CHAIN_FLT) {
+            table_nodes().entry(node).or_insert(NodeRule { kind, index: i32::MIN });
+        }
     }
     core::mem::swap(&mut instance.chain, fresh);
-    if instance.live || instance.chain.iter().any(|&(_, kind)| kind != CHAIN_PLAIN) {
+    if instance.live || instance.chain.iter().any(|&(_, kind)| kind == CHAIN_BILLBOARD) {
         table_dynamic().insert(shape);
     } else {
         table_dynamic().remove(&shape);
@@ -1847,9 +1938,9 @@ unsafe fn build_chain(shape: usize, out: &mut Vec<(usize, u8)>) {
 }
 
 /// True when the engine's walk would reach the shape: no node of its chain (nor the shape)
-/// app-culled, and each switch, level and flt node selects the chain's child. Top down, as
-/// the walk goes: a switch's selected child gets the lazy update, a level writes its index,
-/// a billboard turns (once a frame each).
+/// app-culled, and each switch, level and time-switch node selects the chain's child (the
+/// index of the node rules, evaluated once a frame; a node that joined the chains after the
+/// rules ran is evaluated here). A billboard turns, once a frame.
 unsafe fn table_reachable(shape: usize, chain: &[(usize, u8)], camera: usize, touched: &mut HashSet<usize>) -> bool {
     if rd::<u16>(shape, FLAGS) & APP_CULLED != 0 {
         return false;
@@ -1864,25 +1955,22 @@ unsafe fn table_reachable(shape: usize, chain: &[(usize, u8)], camera: usize, to
         let child = if at == 0 { shape } else { chain[at - 1].0 };
         match kind {
             CHAIN_SWITCH | CHAIN_LOD | CHAIN_FLT => {
-                let switch = match kind {
-                    CHAIN_SWITCH => crate::live_walk::SwitchKind::Plain,
-                    CHAIN_LOD => crate::live_walk::SwitchKind::LevelOfDetail,
-                    _ => crate::live_walk::SwitchKind::FltAnimation,
+                let index = match table_nodes().get_mut(&node) {
+                    Some(rule) if rule.index != i32::MIN => rule.index,
+                    rule => {
+                        let index = node_index(node, kind, camera);
+                        if let Some(rule) = rule {
+                            rule.index = index;
+                        }
+                        let selected = selected_child(node, index);
+                        if selected != 0 {
+                            crate::ports::scene::switch_prepare_child(node, index, selected);
+                        }
+                        index
+                    }
                 };
-                let first = touched.insert(node);
-                let index = crate::live_walk::switch_index_of(node, switch, camera);
-                if first && kind == CHAIN_LOD {
-                    crate::mem::wr(node, crate::ports::scene::SWITCH_INDEX, index);
-                }
-                if index < 0 || index >= rd::<i32>(node, crate::gen::layouts::NiNode::kChildren_endIndex) {
+                if selected_child(node, index) != child {
                     return false;
-                }
-                let selected: usize = rd(rd::<usize>(node, crate::gen::layouts::NiNode::kChildren_storage), index as usize * 4);
-                if selected != child {
-                    return false;
-                }
-                if first {
-                    crate::ports::scene::switch_prepare_child(node, index, selected);
                 }
             }
             CHAIN_BILLBOARD => {
@@ -1973,6 +2061,8 @@ pub unsafe fn table_walk(root: usize, camera: usize) {
     let full = lost || note_every() || TABLE_FULL || TABLE_GENERATION != generation;
     TABLE_FULL = false;
     TABLE_GENERATION = generation;
+    // The node rules first: the reach of every item below reads the indexes of this frame.
+    table_node_rules(camera, work, &take);
     let mut sweep_from = usize::MAX;
     let mut dynamic_from = usize::MAX;
     if full {
@@ -2808,16 +2898,28 @@ pub unsafe fn table_walk_report() -> String {
         (*core::ptr::addr_of!(MATERIAL_MARKS)).count,
         (*core::ptr::addr_of!(SOURCE_MARKS)).count,
     ];
+    // The node rules by kind: switch, level, time-switch.
+    let mut node_kinds = [0u32; 3];
+    for rule in table_nodes().values() {
+        node_kinds[match rule.kind {
+            CHAIN_SWITCH => 0,
+            CHAIN_LOD => 1,
+            _ => 2,
+        }] += 1;
+    }
+    let node_ms = TABLE_NODE_TICKS.load(core::sync::atomic::Ordering::Relaxed) as f64 * 1000.0 / capture::ticks_per_second() as f64;
     format!(
-        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, switch {}, level {}, flt {}, billboard {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4})",
+        "table walk (entry 13): {}; runs {}, full passes {} (marks lost in {}); items {:.1} a run (swept {:.1}), worked {:.1}, reach only {:.1}, waiting out of the view {:.1} (gate {}, {} now, hidden as they waited {}), hidden {}, not under the root {} (counts taken away unread {}); chains changed {}, sweep finds {}; marks: shape {}, app-cull {} (shapes reached {}), tree {} (shapes reached {}), material {} (shapes reached {}), source {} (shapes reached {}), new {}; per-frame shapes {} (live {}, billboard {}), node rules {} (switch {}, level {}, time-switch {}; index changes {}, shapes taken {}), nodes with shapes below {}, sources {}, effect states {}; time {:.3} ms ({:.4} ms a run, the lists {:.4}, the node rules {:.4})",
         if table_walk_on() { "on" } else { "off" },
         c[TW_RUNS], c[TW_FULL], c[TW_LOST],
         c[TW_ITEMS] as f64 / runs, c[TW_SWEPT] as f64 / runs, c[TW_WORKED] as f64 / runs, c[TW_REACH_ONLY] as f64 / runs, c[TW_DEFERRED] as f64 / runs,
         if view_gate_on() { "on" } else { "off" }, table_deferred().len(), c[TW_DEFER_HIDDEN], c[TW_HIDDEN], c[TW_OFF_ROOT], c[TW_OFF_ROOT_UNCOUNTED],
         c[TW_CHAINS], c[TW_SWEEP_FINDS],
         marks[0], marks[1], c[TW_CULL_SHAPES], marks[2], c[TW_TREE_SHAPES], marks[4], c[TW_MATERIAL_SHAPES], marks[5], c[TW_SOURCE_SHAPES], marks[3],
-        table_dynamic().len(), kinds[0], kinds[1], kinds[2], kinds[3], kinds[4], table_below().len(), table_sources().len(), table_state_counts().len(),
-        ms, ms / runs, list_ms / runs
+        table_dynamic().len(), kinds[0], kinds[4],
+        table_nodes().len(), node_kinds[0], node_kinds[1], node_kinds[2], c[TW_NODE_CHANGES], c[TW_NODE_SHAPES],
+        table_below().len(), table_sources().len(), table_state_counts().len(),
+        ms, ms / runs, list_ms / runs, node_ms / runs
     )
 }
 
