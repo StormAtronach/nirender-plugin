@@ -3342,7 +3342,9 @@ pub unsafe fn note_world_data(shape: usize) {
                 if let Some(instance) = tables().instances.get(&shape) {
                     let source = crate::mark_census::classify(&instance.chain, instance.ref_root, &alive);
                     crate::mark_census::count_moved(source);
-                    crate::mark_census::note_world_update(&instance.chain);
+                    if !crate::mark_census::note_world_update(&instance.chain) {
+                        crate::mark_census::name_uncovered(shape);
+                    }
                     if crate::mark_census::is_unlisted(source) {
                         crate::mark_census::note_unlisted(shape);
                         // The probe on the unlisted world updates (the rechecks of a relight

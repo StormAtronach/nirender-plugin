@@ -212,6 +212,14 @@ pub unsafe fn log_unlisted(describe: &dyn Fn(usize) -> Option<String>) {
     for (shape, count) in rows.iter().take(40) {
         crate::log!("mark census:   {count} ({:.2} a run) {}", *count as f64 / runs, describe(*shape).unwrap_or_else(|| format!("(gone) shape 0x{shape:x}")));
     }
+    if let Some(map) = (*core::ptr::addr_of!(UNCOVERED)).as_ref() {
+        let mut rows: Vec<(usize, u64)> = map.iter().map(|(&s, &n)| (s, n)).collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        crate::log!("mark census: {} distinct shapes with a world update under no root of the run; the top 40 by count (marks, a run):", rows.len());
+        for (shape, count) in rows.iter().take(40) {
+            crate::log!("mark census:   {count} ({:.2} a run) {}", *count as f64 / runs, describe(*shape).unwrap_or_else(|| format!("(gone) shape 0x{shape:x}")));
+        }
+    }
 }
 
 /// D7 step 3's measurement (2026-10-19): the roots of the subtree updates of a run, noted
@@ -234,10 +242,27 @@ pub unsafe fn note_update_root(node: usize) {
     }
 }
 
-pub unsafe fn note_world_update(chain: &[(usize, u8)]) {
+/// True when the chain holds a root of this run's subtree updates.
+pub unsafe fn note_world_update(chain: &[(usize, u8)]) -> bool {
     let roots = (*core::ptr::addr_of_mut!(UPDATE_ROOTS)).get_or_insert_with(Default::default);
     let covered = chain.iter().any(|&(node, _)| roots.contains(&node));
     ROOT_COUNTS[if covered { 3 } else { 4 }].fetch_add(1, Ordering::Relaxed);
+    covered
+}
+
+/// The world updates under no root of the run, counted per shape; `log_unlisted` logs the
+/// top 40 at the report, each described then (a shape's first sight comes before its chain
+/// is built, so the first ones logged by sight were all new shapes with no chain; the hold:
+/// 50 a frame with the animation nodes' roots noted too, 2026-10-19).
+static mut UNCOVERED: Option<HashMap<usize, u64>> = None;
+
+pub unsafe fn name_uncovered(shape: usize) {
+    let map = (*core::ptr::addr_of_mut!(UNCOVERED)).get_or_insert_with(Default::default);
+    if let Some(count) = map.get_mut(&shape) {
+        *count += 1;
+    } else if map.len() < UNLISTED_AT_MOST {
+        map.insert(shape, 1);
+    }
 }
 
 unsafe fn reset_update_roots() {
