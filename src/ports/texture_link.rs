@@ -133,15 +133,59 @@ fn power_of_two(value: u32) -> bool {
 
 /// 0x6BFA50 `NiDX8SourceTextureData_static::Create` (cdecl). Returns the new
 /// `NiDX8SourceTextureData`.
+/// The source textures whose `create` is in progress on the main thread, innermost last.
+static mut IN_PROGRESS: Vec<usize> = Vec::new();
+/// The nested calls that took the default texture without a read, for the log.
+static NESTED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Marks a source texture as in progress while it lives.
+struct InProgress(usize);
+
+impl InProgress {
+    /// Marks the texture, and tells whether a `create` of it was already in progress.
+    unsafe fn enter(texture: usize) -> (InProgress, bool) {
+        let list = &mut *core::ptr::addr_of_mut!(IN_PROGRESS);
+        let nested = list.contains(&texture);
+        list.push(texture);
+        (InProgress(texture), nested)
+    }
+}
+
+impl Drop for InProgress {
+    fn drop(&mut self) {
+        unsafe {
+            let list = &mut *core::ptr::addr_of_mut!(IN_PROGRESS);
+            if let Some(at) = list.iter().rposition(|&t| t == self.0) {
+                list.remove(at);
+            }
+        }
+    }
+}
+
 pub unsafe fn create(texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&create_port::STATE);
+    // A file that cannot be read makes the engine's error menu (`game_logAndShowError`), which
+    // draws frames until the player answers. A frame draws the same shape again, and its
+    // texture has no renderer data until this call returns, so the frame calls `create` for
+    // the same texture: a new read, a new error menu inside the first, until the stack is
+    // gone (the NIF test level's exhibit 060, 2026-10-20: 141 nested menus). A nested call
+    // for a texture in progress takes the default texture and reads no file.
+    let (_in_progress, nested) = InProgress::enter(texture);
     let link = crate::link_client::link_textures();
     let this = operator_new(SD::SIZE);
     textures::source_data_ctor(this, texture, renderer);
 
     let filename: usize = rd(texture, ST::filenameOnPC);
-    let mut pixel_data: usize =
-        if filename != 0 { textures::converter_read_file(get_image_converter(), filename, 0) } else { rd(texture, ST::pixelData) };
+    let mut pixel_data: usize = if nested {
+        if NESTED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 4 {
+            crate::log!("texture link: a nested create of the source texture 0x{texture:x} during its own create (an error menu draws frames): the default texture, no read");
+        }
+        0
+    } else if filename != 0 {
+        textures::converter_read_file(get_image_converter(), filename, 0)
+    } else {
+        rd(texture, ST::pixelData)
+    };
     let prefs = texture + T::formatPrefs;
     // The pixel data that this function holds a reference to.
     let mut held = pixel_data;
