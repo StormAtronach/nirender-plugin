@@ -15,7 +15,7 @@ A 64-bit helper, `numidium.exe` of MGE XE G7, reads the ring and draws the frame
 | The host crate `nirender_wgpu` (64-bit) | `host/` | a library; the helper of MGE XE G7 depends on it by path. The same crate is the program `nirender-host` (`host/src/main.rs`), which draws a capture file without the game |
 | The contract of the render link | `contract/mge_render_link.h` | the C side of `src/link.rs`; `tools/check_contract.py` compares the two |
 | The Lua side of the plugin | `mod/MWSE/mods/nirender/` | installed with the DLL; `mod/meshes/` has the NIF test level |
-| The tools | `tools/` | Python scripts (use `C:/OSGeo4W/apps/Python312/python.exe`) |
+| The tools | `tools/` | Python scripts (Python 3.12 with Pillow; the batch files take the interpreter from `local.bat`) |
 | The spike | `spikes/wgpu32/` | the test of 2026-10-10 that wgpu runs in a 32-bit process; kept for its numbers |
 
 The helper is in the sibling repo `MGE-XE-G7-render-link`. A change of `host/` changes the
@@ -92,6 +92,13 @@ The run:
   run without it. For a background run the runner stages a copy of the instance's MWSE.json
   with MWSE's setting `RunInBackground = true` into the run mod; the mod patches nothing.
 - `NIRENDER_NOTIFIER=0`: the mod does not load the stand-in Lua change notifier.
+
+The places of this machine (the harness, the mwse-mcp package, the OBS recorder, the video
+folder, the Code Patch files of the unit test) are in `local.json` at the repo root, and the
+places of the batch files (the Python interpreter, the MGE XE build, the Outlander-test
+instance) in `local.bat`. Neither is tracked; `local.example.json` and `local.example.bat`
+name the keys. A key that is not there takes the tool's default: a place next to this repo or
+under the home folder.
 
 The A/B:
 

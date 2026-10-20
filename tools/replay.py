@@ -19,10 +19,13 @@ import os
 import subprocess
 import sys
 
-MGE_BUILD = "C:/Users/ivan_/source/repos/MGE-XE-G7-render-link/bin/MSVC-Release"
-CONFIG_ROOT = "D:/Modlists/Morrowind75testing/mods/Configuration/Root"
-DISTANT_LAND = "D:/Modlists/Morrowind75testing/overwrite/distantland"
-GAME_DIR = "D:/GOG/Morrowind/Morrowind"
+import session
+from common import SIBLINGS, local
+
+MGE_BUILD = local("mge_build", os.path.join(SIBLINGS, "MGE-XE-G7-render-link", "bin", "MSVC-Release"))
+CONFIG_ROOT = local("config_root", os.path.join(session.harness.MO2_ROOT, "mods", "Configuration", "Root"))
+DISTANT_LAND = local("distant_land", os.path.join(session.harness.MO2_ROOT, "overwrite", "distantland"))
+GAME_DIR = local("game_dir", session.harness.GAME_DIR)
 
 
 def main():

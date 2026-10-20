@@ -12,9 +12,8 @@ and the numidium.exe of the build, and "Harness - config" with mgeXE.toml with t
 MGE XE of the instance on Direct3D 9.
 
 --instance runs the game in another Mod Organizer instance, with --game-dir its game folder,
---profile its profile and --config-mod the mod that holds its mgeXE.toml. Outlander-test:
-`--instance D:/Modlists/Outlander-test --game-dir "D:/Modlists/Outlander-test/Stock Game Folder"
---profile Outlander --config-mod "MGE XE G7"` (play-manual-check-outlander.bat has them).
+--profile its profile and --config-mod the mod that holds its mgeXE.toml. For Outlander-test
+play-manual-check-outlander.bat has them (the instance's folder comes from local.bat).
 --stage-only puts the mods in place, prints them, and takes them out again without a game: a
 check of the staging in an instance.
 

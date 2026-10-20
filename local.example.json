@@ -1,0 +1,12 @@
+{
+  "harness": "C:/path/to/moreFPS/docs/scripts/test-harness-2026-10-03",
+  "mwse_mcp": "C:/path/to/mwse-mcp/mwse-mcp",
+  "obs_record": "C:/path/to/moreFPS/docs/scripts/obs-record",
+  "video_folder": "C:/path/to/nirender videos",
+  "mge_build": "C:/path/to/MGE-XE-G7-render-link/bin/MSVC-Release",
+  "config_root": "D:/path/to/testing-instance/mods/Configuration/Root",
+  "distant_land": "D:/path/to/testing-instance/overwrite/distantland",
+  "game_dir": "D:/path/to/Morrowind",
+  "mcpatch_root": "D:/path/to/testing-instance/mods/Morrowind Code Patch/Root",
+  "vanilla_exe": "D:/path/to/testing-instance/overwrite/Root/Morrowind.Original.exe"
+}

@@ -2,10 +2,13 @@
 
 Written for: a person or an agent who runs or changes a tool of this repo.
 
-Run a tool from the repo root with `C:/OSGeo4W/apps/Python312/python.exe tools/<name>.py`.
-Each tool answers `--help` or has its command in its docstring. A tool in `tools/` finds the
-shared modules (`common.py`, `session.py`) by its own folder; a tool in a subfolder adds
-`tools/` to its path itself.
+Run a tool from the repo root with `python tools/<name>.py` (Python 3.12 with Pillow; the
+batch files at the repo root take the interpreter from `local.bat`). Each tool answers
+`--help` or has its command in its docstring. A tool in `tools/` finds the shared modules
+(`common.py`, `session.py`) by its own folder; a tool in a subfolder adds `tools/` to its path
+itself. The places of this machine that a tool needs come from `local.json` at the repo root
+(`common.local`; `local.example.json` names the keys), with a default next to this repo or
+under the home folder.
 
 ## The shared modules
 

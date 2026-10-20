@@ -347,11 +347,18 @@ mod tests {
         }
     }
 
-    /// Where the testing instance keeps the `mcpatch` folder of the Morrowind Code Patch (the
-    /// Root folder of its mod) and `Morrowind.Original.exe` (the Root folder of overwrite). Root
-    /// Builder copies them into the game folder only while the game runs.
-    const MCPATCH_ROOT: &str = "D:/Modlists/Morrowind75testing/mods/Morrowind Code Patch/Root";
-    const VANILLA_EXE: &str = "D:/Modlists/Morrowind75testing/overwrite/Root/Morrowind.Original.exe";
+    /// A place of this machine from `local.json` at the repo root (not tracked;
+    /// `local.example.json` names the keys): the string value of `key`, or None. The test
+    /// below reads `mcpatch_root`, where the testing instance keeps the `mcpatch` folder of the
+    /// Morrowind Code Patch (the Root folder of its mod), and `vanilla_exe`, its
+    /// `Morrowind.Original.exe` (the Root folder of overwrite). Root Builder copies them into
+    /// the game folder only while the game runs.
+    fn local(key: &str) -> Option<String> {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/local.json")).ok()?;
+        let rest = &text[text.find(&format!("\"{key}\""))? + key.len() + 2..];
+        let rest = &rest[rest.find('"')? + 1..];
+        Some(rest[..rest.find('"')?].to_string())
+    }
     /// The `Morrowind.exe` that the database is made from (sha256): the Code Patch has a
     /// folder of its patch file for each exe that it knows.
     const DATABASE_EXE: &str = "6fb89bbe8932b7de718c86dd4387fd59e04b9a33b011b61bc78254ded32f5456";
@@ -372,15 +379,22 @@ mod tests {
 
     /// A new version of the Morrowind Code Patch that writes inside a ported function fails
     /// here, on the machine of a developer, and not in the session of a player. Each record of each patch file in `NIRENDER_MCPATCH` (folders with a folder
-    /// `mcpatch`, with `;` between them; `MCPATCH_ROOT` without it) that writes inside a ported
-    /// function must be in `ports::CODE_PATCH_RECORDS`, and the census must follow it with the
-    /// option on (the bytes of the record) and off (the bytes of `NIRENDER_VANILLA_EXE`, or
-    /// `VANILLA_EXE`). Skipped without the files: the patch file is not ours to ship.
+    /// `mcpatch`, with `;` between them; `mcpatch_root` of `local.json` without it) that writes
+    /// inside a ported function must be in `ports::CODE_PATCH_RECORDS`, and the census must
+    /// follow it with the option on (the bytes of the record) and off (the bytes of
+    /// `NIRENDER_VANILLA_EXE`, or `vanilla_exe` of `local.json`). Skipped without the places
+    /// or the files: the patch file is not ours to ship.
     #[test]
     fn every_code_patch_record_in_a_port_is_followed() {
-        let roots: Vec<String> =
-            std::env::var("NIRENDER_MCPATCH").map(|roots| roots.split(';').map(str::to_string).collect()).unwrap_or_else(|_| vec![MCPATCH_ROOT.to_string()]);
-        let vanilla_path = std::env::var("NIRENDER_VANILLA_EXE").unwrap_or_else(|_| VANILLA_EXE.to_string());
+        let Some(roots) = std::env::var("NIRENDER_MCPATCH").ok().or_else(|| local("mcpatch_root")) else {
+            eprintln!("skipped: no NIRENDER_MCPATCH and no mcpatch_root in local.json");
+            return;
+        };
+        let roots: Vec<String> = roots.split(';').map(str::to_string).collect();
+        let Some(vanilla_path) = std::env::var("NIRENDER_VANILLA_EXE").ok().or_else(|| local("vanilla_exe")) else {
+            eprintln!("skipped: no NIRENDER_VANILLA_EXE and no vanilla_exe in local.json");
+            return;
+        };
         let Ok(vanilla) = std::fs::read(&vanilla_path) else {
             eprintln!("skipped: no {vanilla_path}");
             return;

@@ -30,7 +30,8 @@ ALL_FACTS = 4261413630
 ALL_KINDS = 15
 HOST_DIR = os.path.join(REPO, "host")
 HOST = os.path.join(HOST_DIR, "target", "x86_64-pc-windows-msvc", "release", "nirender-host.exe")
-MGE_CONFIGS = (r"D:\GOG\Morrowind\Morrowind\mgeXE.toml", r"D:\Modlists\Morrowind75testing\mods\Configuration\Root\mgeXE.toml")
+MGE_CONFIGS = (os.path.join(session.harness.GAME_DIR, "mgeXE.toml"),
+               os.path.join(session.harness.MO2_ROOT, "mods", "Configuration", "Root", "mgeXE.toml"))
 
 
 # The settings of MGE XE that a run changes, each with the value for a plain reference.

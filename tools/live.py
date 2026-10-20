@@ -24,8 +24,9 @@ import time
 
 import session  # noqa: F401  (puts the harness on the path)
 import harness
+from common import local
 
-PACKAGE = r"C:\Users\ivan_\tools\mwse-mcp\mwse-mcp"
+PACKAGE = local("mwse_mcp", os.path.join(os.path.expanduser("~"), "tools", "mwse-mcp", "mwse-mcp"))
 MOD_NAME = "mwseMCP"
 HOST, PORT = "127.0.0.1", 31415
 

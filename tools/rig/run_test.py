@@ -1,6 +1,6 @@
 """Builds nirender, installs it into the testing instance and runs the in-game test.
 
-The game starts through the Mod Organizer of D:\\Modlists\\Morrowind75testing and loads a save.
+The game starts through the Mod Organizer of the testing instance and loads a save.
 Then every port runs in shadow mode, and then the frame comparisons run. The result is the
 port table and the frame test lines. The exit code is 0 only when nothing differed.
 

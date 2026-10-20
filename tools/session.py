@@ -15,9 +15,9 @@ import subprocess
 import sys
 import time
 
-from common import REPO
+from common import REPO, SIBLINGS, local
 
-HARNESS_DIR = r"C:\Users\ivan_\source\repos\moreFPS\docs\scripts\test-harness-2026-10-03"
+HARNESS_DIR = local("harness", os.path.join(SIBLINGS, "moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
 sys.path.insert(0, HARNESS_DIR)
 import harness  # noqa: E402
 

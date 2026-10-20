@@ -8,7 +8,7 @@ import ida_lines
 import idautils
 import idc
 
-OUT = r"c:\Users\ivan_\source\repos\nirender-plugin\tools\out"
+OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out")  # tools/out; IDA sets __file__ for a script file
 os.makedirs(os.path.join(OUT, "dump"), exist_ok=True)
 n = 0
 for line in open(os.path.join(OUT, "dump_request.txt")):

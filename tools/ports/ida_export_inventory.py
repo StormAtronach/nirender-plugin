@@ -10,7 +10,7 @@ import ida_typeinf
 import idautils
 import idc
 
-OUT = r"c:\Users\ivan_\source\repos\nirender-plugin\tools\out"
+OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out")  # tools/out; IDA sets __file__ for a script file
 os.makedirs(OUT, exist_ok=True)
 
 # The renderer subsystem by name. The address window also finds the helpers without a name

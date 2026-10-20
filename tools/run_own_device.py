@@ -29,7 +29,7 @@ MGE_MOD = session.harness.RUN_MOD_PREFIX + "MGE XE"
 CONFIG_MOD = session.harness.RUN_MOD_PREFIX + "config"
 EXE_MOD = session.harness.RUN_MOD_PREFIX + "exe"
 # The Lua bridge of mwse-mcp, as the testing instance has it (`--bridge`).
-BRIDGE_DIR = r"D:\Modlists\Morrowind75testing\mods\mwseMCP"
+BRIDGE_DIR = os.path.join(session.harness.MO2_ROOT, "mods", "mwseMCP")
 
 
 def main():

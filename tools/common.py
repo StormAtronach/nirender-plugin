@@ -2,11 +2,26 @@
 
 The game side of a run is in `session.py`.
 """
+import json
 import os
 import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+# The folder of the sibling repos (MGE-XE-G7-render-link, moreFPS), next to this one.
+SIBLINGS = os.path.dirname(REPO)
+
+
+def local(key, default):
+    """A place of this machine that a tool needs and the repo does not hold: the key of
+    `local.json` at the repo root (not tracked; `local.example.json` names the keys), else
+    `default`, a place next to this repo or under the home folder."""
+    path = os.path.join(REPO, "local.json")
+    if os.path.isfile(path):
+        values = json.load(open(path, encoding="utf-8"))
+        if key in values:
+            return values[key]
+    return default
 
 # The functions of the renderer subsystem, by their name in the IDA database.
 FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiPropertyState"

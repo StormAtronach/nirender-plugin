@@ -14,12 +14,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the shared tools in tools/
 import session
+from common import SIBLINGS, local
 
-sys.path.insert(0, r"C:\Users\ivan_\source\repos\moreFPS\docs\scripts\obs-record")
+sys.path.insert(0, local("obs_record", os.path.join(SIBLINGS, "moreFPS", "docs", "scripts", "obs-record")))
 import obs_record  # noqa: E402
 
 TAG = "[nirender.video] "
-FOLDER = r"C:\Users\ivan_\OneDrive\Morrowind modding\nirender videos"
+FOLDER = local("video_folder", os.path.join(os.path.expanduser("~"), "Videos", "nirender"))
 # The mode of the game for each clip, and the name of the clip.
 CLIPS = (("off", "game code"), ("live", "rust plugin"))
 
