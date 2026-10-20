@@ -725,7 +725,8 @@ pub unsafe fn note_indices(buffer: usize, base_vertex: u32) {
     buffers[4] = base_vertex;
 }
 
-/// The render states of the game's record that the plugin reads.
+/// The number of render-state settings in the game's record (`NiDX8RenderState`, 0x1F8 to
+/// 0x9F8). The pixel and vertex shader settings follow them.
 const RENDER_STATES_IN_RECORD: u32 = 256;
 
 /// Sends to the device the state that the game believes the device has, for the kinds in

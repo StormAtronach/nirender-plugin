@@ -170,8 +170,6 @@ struct Instance {
     /// `NIRENDER_SKIN_TABLE=0` its draw carries the palette of its bones each frame, so it
     /// stays on the draw records (never in the helper's table, never skipped).
     skinned: bool,
-    /// The frame of the last `INSTANCE_BONES` record of a skinned instance (for the audit).
-    bones_frame: u32,
     /// A controller on the shape or on one of its properties changes its geometry or its
     /// material (a morpher, a UV controller, a flip, alpha or colour controller): the
     /// display runs the controllers' `OnPreDisplay` as the engine's display does, and
@@ -469,9 +467,6 @@ unsafe fn send_bones(shape: usize, id: u32) -> bool {
         Ok(count) => {
             capture::instance_bones(id, count, &rd(shape, WORLD_BOUND), &bones);
             t.bone_records += 1;
-            if let Some(instance) = t.instances.get_mut(&shape) {
-                instance.bones_frame = t.frame;
-            }
             true
         }
         Err(why) => {
@@ -600,7 +595,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, bones_frame: 0, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS] });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS] });
     t.pending = Some((shape, id));
 }
 
@@ -962,7 +957,7 @@ pub unsafe fn record_report() -> String {
     let ms: f64 = parts.iter().sum();
     let total: u64 = c[RC_FIRST..=RC_MOVED_COLOURS].iter().sum();
     format!(
-        "instance records (plan 8f): {} ({:.3} ms, {:.2} us each: the matrix {:.3} ms, the exact translation {:.3}, the record {:.3}); first or new handle {}, moved {}, bound alone {}, colours alone {}, moved and colours {}; the moved: live {}, not live {}; name bytes {}",
+        "instance records: {} ({:.3} ms, {:.2} us each: the matrix {:.3} ms, the exact translation {:.3}, the record {:.3}); first or new handle {}, moved {}, bound alone {}, colours alone {}, moved and colours {}; the moved: live {}, not live {}; name bytes {}",
         total,
         ms,
         ms * 1000.0 / total.max(1) as f64,
@@ -997,7 +992,7 @@ pub unsafe fn light_report() -> String {
     let c = *core::ptr::addr_of!(LIGHT_COUNTS);
     let ms = *core::ptr::addr_of!(LIGHT_TICKS) as f64 * 1000.0 / capture::ticks_per_second() as f64;
     format!(
-        "lights (plan 8e): display loops {} ({:.2} lights each, {:.3} ms, {:.2} us each); notes {}, entries built {} ({} with zero colours), records sent {}",
+        "lights: display loops {} ({:.2} lights each, {:.3} ms, {:.2} us each); notes {}, entries built {} ({} with zero colours), records sent {}",
         c[LC_LOOPS],
         c[LC_LOOP_LIGHTS] as f64 / c[LC_LOOPS].max(1) as f64,
         ms,
@@ -1471,7 +1466,7 @@ pub unsafe fn report() -> String {
         t.states
     ) + "\n"
         + &format!(
-            "rechecks (plan 8b): asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes (C17, temporary) {}, scans {}, shapes hit {}\n",
+            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {}, shapes hit {}\n",
             RECHECKS[0], RECHECKS[1], RECHECKS[2], RECHECKS[3], RECHECKS[4], RECHECKS[5], CHANGE_NOTES[0], CHANGE_NOTES[1], CHANGE_NOTES[2]
         )
         + &crate::animation::report()

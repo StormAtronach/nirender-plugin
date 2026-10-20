@@ -582,7 +582,7 @@ pub unsafe fn skin_report() -> String {
     let measure = &*addr_of!(SKIN_MEASURE);
     let ms = measure.ticks as f64 * 1000.0 / crate::capture::ticks_per_second() as f64;
     format!(
-        "skins (the takeover's step 1): {} parts, {} bone matrices, {} bones and {} skeletons new in their frame, the palettes {:.3} ms",
+        "skins: {} parts, {} bone matrices, {} bones and {} skeletons new in their frame, the palettes {:.3} ms",
         measure.parts, measure.matrices, measure.bones, measure.skeletons, ms
     )
 }

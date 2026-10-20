@@ -606,7 +606,7 @@ unsafe extern "C" fn link_counters(l: LuaState) -> i32 {
 unsafe extern "C" fn link_use_facts(l: LuaState) -> i32 {
     match crate::link_client::use_facts(lua_tonumber(l, 1) as u32) {
         Some(used) => {
-            crate::log!("link: MGE XE uses the facts of mask {used:#x}");
+            crate::log!("link: the host uses the facts of mask {used:#x}");
             lua_pushnumber(l, used as f64);
         }
         None => lua_pushnil(l),
