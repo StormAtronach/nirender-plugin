@@ -19,6 +19,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use crate::sync::{DeviceLock, LockCell};
 use crate::link::*;
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -89,13 +90,13 @@ fn level_size(format: u32, width: u32, height: u32) -> (usize, u32) {
 }
 
 /// The resources that are alive, for a snapshot. Under the device lock.
-static mut LIVE: Vec<usize> = Vec::new();
+static LIVE: LockCell<Vec<usize>> = LockCell::new(Vec::new());
 
 /// True when `handle` is an object of this host that is still alive: a handle the plugin
 /// kept can have been released since.
 pub unsafe fn is_live(handle: usize) -> bool {
-    let _lock = crate::sync::device_lock();
-    handle != 0 && (*core::ptr::addr_of!(LIVE)).contains(&handle)
+    let lock = crate::sync::device_lock();
+    handle != 0 && LIVE.get(&lock).contains(&handle)
 }
 
 /// Writes each resource that is alive into the capture: its creation and its bytes. For a
@@ -104,7 +105,8 @@ pub unsafe fn is_live(handle: usize) -> bool {
 /// memory here and is not written: the caller makes the game load it again. A rendered
 /// texture is not written: the caller makes the game make it again.
 pub unsafe fn snapshot() {
-    let live: Vec<usize> = (*core::ptr::addr_of!(LIVE)).clone();
+    let lock = crate::sync::device_lock();
+    let live: Vec<usize> = LIVE.get(&lock).clone();
     let (back, depth) = (BACK_BUFFER.load(Ordering::Relaxed) as usize, DEPTH_BUFFER.load(Ordering::Relaxed) as usize);
     // The textures before their level surfaces.
     let order = |kind: &Kind| match kind {
@@ -156,7 +158,8 @@ pub unsafe fn snapshot() {
 /// Writes the content of one buffer or texture that is alive into the capture, as it is
 /// now. For a capture file that holds between its frames.
 pub unsafe fn write_resource(handle: usize) {
-    if !(*core::ptr::addr_of!(LIVE)).contains(&handle) {
+    let lock = crate::sync::device_lock();
+    if !LIVE.get(&lock).contains(&handle) {
         return;
     }
     let o = &*(handle as *const Object);
@@ -174,7 +177,7 @@ pub unsafe fn write_resource(handle: usize) {
     }
 }
 
-unsafe fn new_object(kind: Kind, table: &'static Table) -> *mut Object {
+unsafe fn new_object(lock: &DeviceLock, kind: Kind, table: &'static Table) -> *mut Object {
     let object = Box::into_raw(Box::new(Object {
         table: table.methods(),
         references: 1,
@@ -191,7 +194,7 @@ unsafe fn new_object(kind: Kind, table: &'static Table) -> *mut Object {
         memory: Vec::new(),
         level_memory: Vec::new(),
     }));
-    (*core::ptr::addr_of_mut!(LIVE)).push(object as usize);
+    LIVE.get(&lock).push(object as usize);
     object
 }
 
@@ -212,13 +215,13 @@ unsafe extern "system" fn add_reference(this: *mut Object) -> u32 {
 }
 
 unsafe extern "system" fn release(this: *mut Object) -> u32 {
-    let _lock = crate::sync::device_lock();
+    let lock = crate::sync::device_lock();
     crate::sync::off_thread("resource", "Release");
     (*this).references -= 1;
     let left = (*this).references;
     if left == 0 {
         let owner = (*this).owner;
-        let live = &mut *core::ptr::addr_of_mut!(LIVE);
+        let live = &mut *LIVE.get(&lock);
         if let Some(at) = live.iter().position(|&o| o == this as usize) {
             live.swap_remove(at);
         }
@@ -295,12 +298,12 @@ unsafe extern "system" fn texture_level_description(this: *mut Object, level: u3
 }
 
 unsafe extern "system" fn texture_surface_level(this: *mut Object, level: u32, out: *mut usize) -> u32 {
-    let _lock = crate::sync::device_lock();
+    let lock = crate::sync::device_lock();
     crate::sync::off_thread("resource", "texture GetSurfaceLevel");
     if level >= (*this).levels || out.is_null() {
         return FAIL;
     }
-    let surface = new_object(Kind::LevelSurface, &SURFACE_TABLE);
+    let surface = new_object(&lock, Kind::LevelSurface, &SURFACE_TABLE);
     (*surface).owner = this;
     (*surface).level = level;
     (*surface).width = ((*this).width >> level).max(1);
@@ -411,7 +414,7 @@ unsafe fn pixel_memory(surface: &mut Object) -> Option<&'static mut Vec<u8>> {
 
 /// Gets the pixels of a target from the host program of the stream into the memory of a
 /// surface of the same size.
-unsafe fn read_target(target: u32, into: &mut Object) -> bool {
+unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool {
     let (into_width, into_height) = (into.width, into.height);
     let Some(memory) = pixel_memory(into) else { return false };
     let Some((width, height, pixels)) = crate::capture::read_pixels(target) else { return false };
@@ -419,16 +422,16 @@ unsafe fn read_target(target: u32, into: &mut Object) -> bool {
         return false;
     }
     memory.copy_from_slice(pixels);
-    *core::ptr::addr_of_mut!(PIXEL_READS) += 1;
+    *PIXEL_READS.get(&lock) += 1;
     true
 }
 
 /// `IDirect3DDevice8::CopyRects` for all of a surface.
-unsafe fn copy_pixels(source: u32, destination: u32) -> u32 {
+unsafe fn copy_pixels(lock: &DeviceLock, source: u32, destination: u32) -> u32 {
     let (Some(source), Some(destination)) = (own(source), own(destination)) else { return OK };
     if let Some(target) = target_of(source) {
         // Out of a target: the pixels come from the host program.
-        read_target(target, destination);
+        read_target(&lock, target, destination);
     } else if target_of(destination).is_none() && (source.width, source.height, source.format) == (destination.width, destination.height, destination.format) {
         // Between two surfaces with memory here.
         if let (Some(from), Some(to)) = (pixel_memory(source), pixel_memory(destination)) {
@@ -439,10 +442,10 @@ unsafe fn copy_pixels(source: u32, destination: u32) -> u32 {
     OK
 }
 
-static mut PIXEL_READS: u32 = 0;
+static PIXEL_READS: LockCell<u32> = LockCell::new(0);
 
 unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, _rectangle: usize, _flags: u32) -> u32 {
-    let _lock = crate::sync::device_lock();
+    let lock = crate::sync::device_lock();
     crate::sync::off_thread("resource", "surface LockRect");
     let object = &mut *this;
     if object.kind == Kind::LevelSurface {
@@ -453,7 +456,7 @@ unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, _rec
     }
     if this as u32 == BACK_BUFFER.load(Ordering::Relaxed) {
         // The game reads the picture of the last frame: a screenshot.
-        read_target(0, object);
+        read_target(&lock, 0, object);
     }
     let (size, row) = level_size(object.format, object.width, object.height);
     if object.memory.len() != size {
@@ -621,10 +624,10 @@ unsafe extern "C" fn camera_space(origin: *mut f64) -> u32 {
 }
 
 unsafe extern "C" fn texture_create(texture: *const TextureV1) -> u32 {
-    let _lock = crate::sync::device_lock();
+    let lock = crate::sync::device_lock();
     crate::sync::off_thread("resource", "host texture_create");
     let texture = &*texture;
-    let object = new_object(Kind::Texture, &TEXTURE_TABLE);
+    let object = new_object(&lock, Kind::Texture, &TEXTURE_TABLE);
     (*object).width = texture.width;
     (*object).height = texture.height;
     (*object).levels = texture.levels.max(1);
@@ -638,9 +641,10 @@ static DEPTH_BUFFER: AtomicU32 = AtomicU32::new(0);
 /// The surface that stands for the back buffer or for its depth buffer, with one more
 /// reference.
 unsafe fn target_surface(slot: &AtomicU32, format: u32) -> u32 {
+    let lock = crate::sync::device_lock();
     let mut surface = slot.load(Ordering::Relaxed);
     if surface == 0 {
-        let object = new_object(Kind::Surface, &SURFACE_TABLE);
+        let object = new_object(&lock, Kind::Surface, &SURFACE_TABLE);
         let renderer = crate::engine::renderer();
         let size: [u32; 2] = if crate::own_device::present() {
             let (width, height) = crate::own_device::size();
@@ -669,14 +673,14 @@ unsafe fn put(out: u32, value: u32) -> u32 {
 }
 
 unsafe extern "C" fn call(index: u32, arguments: *const u32) -> u32 {
-    let _lock = crate::sync::device_lock();
+    let lock = crate::sync::device_lock();
     crate::sync::off_thread("resource", "host call");
     let a = |i: usize| *arguments.add(i);
     match index {
         CALL_CREATE_VERTEX_BUFFER | CALL_CREATE_INDEX_BUFFER => {
             // Length, usage, vertex format or index format, pool, address for the handle.
             let vertex = index == CALL_CREATE_VERTEX_BUFFER;
-            let object = new_object(if vertex { Kind::VertexBuffer } else { Kind::IndexBuffer }, &BUFFER_TABLE);
+            let object = new_object(&lock, if vertex { Kind::VertexBuffer } else { Kind::IndexBuffer }, &BUFFER_TABLE);
             (*object).length = a(0);
             (*object).usage = a(1);
             (*object).format = a(2);
@@ -686,7 +690,7 @@ unsafe extern "C" fn call(index: u32, arguments: *const u32) -> u32 {
         }
         CALL_CREATE_TEXTURE => {
             // Width, height, levels, usage, format, pool, address for the handle.
-            let object = new_object(Kind::Texture, &TEXTURE_TABLE);
+            let object = new_object(&lock, Kind::Texture, &TEXTURE_TABLE);
             (*object).width = a(0);
             (*object).height = a(1);
             (*object).levels = a(2).max(1);
@@ -698,7 +702,7 @@ unsafe extern "C" fn call(index: u32, arguments: *const u32) -> u32 {
         CALL_CREATE_DEPTH_BUFFER | CALL_CREATE_IMAGE_SURFACE => {
             // Width, height, format, then the address for the handle: after one more word
             // for a depth buffer.
-            let object = new_object(Kind::Surface, &SURFACE_TABLE);
+            let object = new_object(&lock, Kind::Surface, &SURFACE_TABLE);
             (*object).width = a(0);
             (*object).height = a(1);
             (*object).format = a(2);
@@ -723,7 +727,7 @@ unsafe extern "C" fn call(index: u32, arguments: *const u32) -> u32 {
         CALL_SURFACE_UNLOCK => core::mem::transmute::<usize, unsafe extern "system" fn(u32) -> u32>(method(a(0), 10))(a(0)),
         CALL_CUBE_FACE => FAIL,
         // Source surface, rectangles, their number, destination surface, points.
-        CALL_COPY_PIXELS => copy_pixels(a(0), a(3)),
+        CALL_COPY_PIXELS => copy_pixels(&lock, a(0), a(3)),
         // The colour surface and the depth surface.
         CALL_RENDER_TARGET => {
             CURRENT_TARGET.store(a(0), Ordering::Relaxed);
@@ -755,12 +759,13 @@ static TABLE: HostV1 = HostV1 {
 };
 
 /// The device calls of other code that this host took and did not do, by the method.
-static mut TAKEN: [u32; 100] = [0; 100];
+static TAKEN: LockCell<[u32; 100]> = LockCell::new([0; 100]);
 
 /// A device call of other code that has no call of the link. It must not get to the device
 /// of MGE XE: it can have an object of this host as an argument.
 pub unsafe fn take(slot: usize) {
-    if let Some(count) = (*core::ptr::addr_of_mut!(TAKEN)).get_mut(slot) {
+    let lock = crate::sync::device_lock();
+    if let Some(count) = TAKEN.get(&lock).get_mut(slot) {
         *count += 1;
     }
 }
@@ -803,7 +808,8 @@ pub unsafe fn take_over() {
 
 /// One line with the device methods that this host took, for the log.
 pub unsafe fn report() -> String {
-    let taken = &*core::ptr::addr_of!(TAKEN);
+    let lock = crate::sync::device_lock();
+    let taken = &*TAKEN.get(&lock);
     let mut text = String::new();
     for (slot, count) in taken.iter().enumerate() {
         if *count != 0 {
@@ -813,5 +819,5 @@ pub unsafe fn report() -> String {
     if text.is_empty() {
         text.push_str(" none");
     }
-    format!("own host: {} pixel reads from the host program; device calls without a call of the link, taken and not done:{text}", *core::ptr::addr_of!(PIXEL_READS))
+    format!("own host: {} pixel reads from the host program; device calls without a call of the link, taken and not done:{text}", *PIXEL_READS.get(&lock))
 }

@@ -14,6 +14,7 @@
 //! the first texture that it makes, and the second run of a comparison would get it.
 
 use super::{ni, textures};
+use crate::main_thread::{MainCell, MainThread};
 use crate::engine::{cdecl1, critical_section_lock, critical_section_unlock, get_image_converter, operator_new, pixel_format_copy, CREATE_CRITICAL_SECTION};
 use crate::gen::layouts::{NiDX8PixelFormat as PF, NiDX8Renderer as R, NiDX8SourceTextureData as SD, NiPixelData as PD, NiSourceTexture as ST, NiTexture as T};
 use crate::link::{TextureV1, TEXTURE_DYNAMIC};
@@ -130,7 +131,7 @@ fn power_of_two(value: u32) -> bool {
 }
 
 /// The source textures whose `create` is in progress on the main thread, innermost last.
-static mut IN_PROGRESS: Vec<usize> = Vec::new();
+static IN_PROGRESS: MainCell<Vec<usize>> = MainCell::new(Vec::new());
 /// The nested calls that took the default texture without a read, for the log.
 static NESTED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
@@ -139,8 +140,8 @@ struct InProgress(usize);
 
 impl InProgress {
     /// Marks the texture, and tells whether a `create` of it was already in progress.
-    unsafe fn enter(texture: usize) -> (InProgress, bool) {
-        let list = &mut *core::ptr::addr_of_mut!(IN_PROGRESS);
+    unsafe fn enter(t: &MainThread, texture: usize) -> (InProgress, bool) {
+        let list = IN_PROGRESS.get(t);
         let nested = list.contains(&texture);
         list.push(texture);
         (InProgress(texture), nested)
@@ -149,23 +150,23 @@ impl InProgress {
 
 impl Drop for InProgress {
     fn drop(&mut self) {
-        unsafe {
-            let list = &mut *core::ptr::addr_of_mut!(IN_PROGRESS);
-            if let Some(at) = list.iter().rposition(|&t| t == self.0) {
-                list.remove(at);
-            }
+        // The mark goes at the end of the `create` that made it, on the main thread.
+        let Some(t) = MainThread::here() else { return };
+        let list = IN_PROGRESS.get(&t);
+        if let Some(at) = list.iter().rposition(|&texture| texture == self.0) {
+            list.remove(at);
         }
     }
 }
 
 /// 0x6BFA50 `NiDX8SourceTextureData_static::Create` (cdecl). Returns the new
 /// `NiDX8SourceTextureData`.
-pub unsafe fn create(texture: usize, renderer: usize) -> usize {
+pub unsafe fn create(t: &MainThread, texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&create_port::STATE);
     // The engine's error menu for a file that cannot be read draws frames, and a frame can
     // call `create` for the same texture again. A nested call for a texture in progress
     // takes the default texture and reads no file.
-    let (_in_progress, nested) = InProgress::enter(texture);
+    let (_in_progress, nested) = InProgress::enter(t, texture);
     let link = crate::link_client::link_textures();
     let this = operator_new(SD::SIZE);
     textures::source_data_ctor(this, texture, renderer);
@@ -302,6 +303,6 @@ port_cdecl!(create_port, 0x6BFA50, "NiDX8SourceTextureData_static::Create",
     fn(texture: usize, renderer: usize) -> usize,
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = create);
+    rust_main = create);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[&create_port::STATE];
