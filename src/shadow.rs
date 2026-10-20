@@ -9,6 +9,7 @@
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use crate::hook::Cleanup;
+use crate::main_thread::MainThread;
 use crate::win;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -511,12 +512,12 @@ pub fn port_ms() -> f64 {
 /// Runs a call of a port in the mode of the port.
 ///
 /// `rust` and `engine` return what the function leaves in EAX. `compare_eax` tells if that
-/// value has a meaning.
+/// value has a meaning. `rust` gets the proof of the main thread: it runs only there.
 pub unsafe fn dispatch<R: Eax>(
     state: &PortState,
     compare_eax: bool,
     regions: impl FnOnce(&mut Regions),
-    rust: impl FnOnce() -> R,
+    rust: impl FnOnce(&MainThread) -> R,
     engine: impl FnOnce() -> u32,
 ) -> u32 {
     let eax = dispatch_inner(state, compare_eax, regions, rust, engine);
@@ -532,19 +533,21 @@ unsafe fn dispatch_inner<R: Eax>(
     state: &PortState,
     compare_eax: bool,
     regions: impl FnOnce(&mut Regions),
-    rust: impl FnOnce() -> R,
+    rust: impl FnOnce(&MainThread) -> R,
     engine: impl FnOnce() -> u32,
 ) -> u32 {
     if !on_main_thread() {
         crate::sync::off_thread("port", state.name);
         return engine();
     }
+    // The thread is the main thread: the proof for the Rust function.
+    let token = MainThread::claim();
     let mode = state.mode();
     match LEG.load(Ordering::Relaxed) {
         // Inside the Rust run of a comparison every function that has a port runs as Rust. A
         // port that is locked or in mode off is the exception.
         x if x == Leg::Rust as u8 => {
-            return if mode == Mode::Off { engine() } else { rust().to_eax() };
+            return if mode == Mode::Off { engine() } else { rust(&token).to_eax() };
         }
         x if x == Leg::Engine as u8 => return engine(),
         _ => {}
@@ -554,12 +557,12 @@ unsafe fn dispatch_inner<R: Eax>(
         Mode::Live => {
             state.live_calls.add();
             if !timing() {
-                return rust().to_eax();
+                return rust(&token).to_eax();
             }
             let depth = PORT_DEPTH.load(Ordering::Relaxed);
             let start = stamp();
             PORT_DEPTH.store(depth + 1, Ordering::Relaxed);
-            let eax = rust().to_eax();
+            let eax = rust(&token).to_eax();
             PORT_DEPTH.store(depth, Ordering::Relaxed);
             let spent = stamp().wrapping_sub(start);
             state.live_stamps.add(spent);
@@ -569,7 +572,7 @@ unsafe fn dispatch_inner<R: Eax>(
             eax
         }
         #[cfg(feature = "rig")]
-        Mode::Shadow => compare(state, compare_eax, regions, rust, engine),
+        Mode::Shadow => compare(state, compare_eax, regions, rust, engine, &token),
     }
 }
 
@@ -580,8 +583,9 @@ unsafe fn compare<R: Eax>(
     state: &PortState,
     compare_eax: bool,
     regions: impl FnOnce(&mut Regions),
-    rust: impl FnOnce() -> R,
+    rust: impl FnOnce(&MainThread) -> R,
     engine: impl FnOnce() -> u32,
+    token: &MainThread,
 ) -> u32 {
     use crate::device;
     if SUSPENDED.load(Ordering::Relaxed) || device::recording() {
@@ -606,7 +610,7 @@ unsafe fn compare<R: Eax>(
     }
     set_leg(Leg::Rust);
     device::begin_rust_run();
-    let eax_rust = rust().to_eax();
+    let eax_rust = rust(token).to_eax();
     device::end(&mut scratch.log_rust);
     save(regions, &mut scratch.after_rust);
     restore(regions, &scratch.before);

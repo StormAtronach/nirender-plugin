@@ -41,6 +41,7 @@ pub mod capture;
 pub mod camera_space;
 pub mod cores;
 pub mod log;
+pub mod main_thread;
 pub mod census;
 pub mod d3d;
 pub mod freed_fill;

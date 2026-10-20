@@ -12,6 +12,7 @@
 //! (a call into MWSE.dll at +0x64). The actors get their flag another way.
 
 use crate::gen::layouts::NiAVObject as AV;
+use crate::main_thread::MainThread;
 use crate::mem::{rd, wr};
 
 use super::scene::{ANIM_DISPLAYED, ANIM_FLAGS, NODE_DISPLAYED};
@@ -29,12 +30,12 @@ port_thiscall!(animation_manager_update_port, 0x6EE690, "BSAnimationManager::Upd
     fn(this, time: f32, camera: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = animation_manager_update);
+    rust_main = animation_manager_update);
 
 /// The flag on each managed node the policy selects, then the engine's update.
-pub unsafe fn animation_manager_update(this: usize, time: f32, camera: usize) {
+pub unsafe fn animation_manager_update(t: &MainThread, this: usize, time: f32, camera: usize) {
     crate::shadow::touch(&animation_manager_update_port::STATE);
-    if crate::animation::active() {
+    if crate::animation::active(t) {
         let count = rd::<i32>(this, MANAGED_FILLED).max(0) as usize;
         let storage: usize = rd(this, MANAGED_STORAGE);
         for i in 0..count {
@@ -51,13 +52,13 @@ port_thiscall!(animation_node_update_controllers_port, 0x6F2180, "BSAnimationNod
     fn(this, time: f32) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = animation_node_update_controllers);
+    rust_main = animation_node_update_controllers);
 
 /// The displayed bit of the animation node when the policy selects it, then the engine's
 /// update of its controllers.
-pub unsafe fn animation_node_update_controllers(this: usize, time: f32) {
+pub unsafe fn animation_node_update_controllers(t: &MainThread, this: usize, time: f32) {
     crate::shadow::touch(&animation_node_update_controllers_port::STATE);
-    if crate::animation::active() && crate::animation::displayed(this) {
+    if crate::animation::active(t) && crate::animation::displayed(this) {
         wr::<u8>(this, ANIM_FLAGS, rd::<u8>(this, ANIM_FLAGS) | ANIM_DISPLAYED);
     }
     animation_node_update_controllers_port::engine(this, time);
@@ -67,13 +68,13 @@ port_thiscall!(animation_node_update_downward_pass_port, 0x6F2060, "BSAnimationN
     fn(this, time: f32, update_controllers: u8, update_children: u8) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = animation_node_update_downward_pass);
+    rust_main = animation_node_update_downward_pass);
 
 /// The displayed bit of the animation node when the policy selects it, then the engine's
 /// downward pass, which runs the controllers only with that bit (or AlwaysUpdate).
-pub unsafe fn animation_node_update_downward_pass(this: usize, time: f32, update_controllers: u8, update_children: u8) {
+pub unsafe fn animation_node_update_downward_pass(t: &MainThread, this: usize, time: f32, update_controllers: u8, update_children: u8) {
     crate::shadow::touch(&animation_node_update_downward_pass_port::STATE);
-    if update_controllers != 0 && crate::animation::active() && crate::animation::displayed(this) {
+    if update_controllers != 0 && crate::animation::active(t) && crate::animation::displayed(this) {
         wr::<u8>(this, ANIM_FLAGS, rd::<u8>(this, ANIM_FLAGS) | ANIM_DISPLAYED);
     }
     animation_node_update_downward_pass_port::engine(this, time, update_controllers, update_children);

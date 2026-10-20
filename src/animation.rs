@@ -16,6 +16,7 @@ use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 use crate::engine::vcall0;
 use crate::gen::layouts::NiCamera as C;
+use crate::main_thread::MainThread;
 use crate::mem::rd;
 
 /// The vtable slot of `NiAVObject::GetWorldBound` (as `ports/scene.rs`).
@@ -88,8 +89,8 @@ pub fn policy_name() -> &'static str {
 
 /// True while the policy answers for the flag: the plugin's table draws the world (mode gpu)
 /// and the stream is live. In the other modes the engine's walk sets the flags itself.
-pub unsafe fn active() -> bool {
-    crate::instance_stream::mode() == crate::instance_stream::Mode::Gpu && crate::capture::recording()
+pub unsafe fn active(t: &MainThread) -> bool {
+    crate::instance_stream::mode(t) == crate::instance_stream::Mode::Gpu && crate::capture::recording()
 }
 
 /// The world camera of the scene that begins: its planes and its position, for the tests

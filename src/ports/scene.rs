@@ -6,6 +6,7 @@
 
 use crate::engine::{thiscall1, thiscall3, thiscall4, vcall0, vcall1, virtual_at};
 use crate::gen::layouts::{NiAVObject as AV, NiCamera as C, NiGeometry as G, NiGeometryData as GD, NiRenderer as R, NiTimeController as TC};
+use crate::main_thread::MainThread;
 use crate::mem::{rd, wr};
 use crate::shadow::Regions;
 
@@ -132,15 +133,15 @@ port_thiscall!(tri_shape_display_port, 0x6E4F90, "NiTriShape::Display",
     fn(this, camera: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = tri_shape_display);
+    rust_main = tri_shape_display);
 
 /// The states, the accumulator, the controllers, then `RenderShape` of the renderer with
 /// the shape's data, skin, world transform and world bound; and the counts of the frame.
-pub unsafe fn tri_shape_display(this: usize, camera: usize) {
+pub unsafe fn tri_shape_display(t: &MainThread, this: usize, camera: usize) {
     crate::shadow::touch(&tri_shape_display_port::STATE);
     // A shape the helper draws from its table: the plugin notes its changes, and the engine
     // does not display it.
-    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(this, crate::link::DRAW_SHAPE) {
+    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(t, this, crate::link::DRAW_SHAPE) {
         return;
     }
     if crate::link_client::water_plane_display_skipped(this) {
@@ -159,13 +160,13 @@ port_thiscall!(tri_strips_display_port, 0x742660, "NiTriStrips::Display",
     fn(this, camera: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = tri_strips_display);
+    rust_main = tri_strips_display);
 
 /// As `NiTriShape::Display`, with `RenderTristrips`; the counts take the triangle count and
 /// the vertex count of the data as they are.
-pub unsafe fn tri_strips_display(this: usize, camera: usize) {
+pub unsafe fn tri_strips_display(t: &MainThread, this: usize, camera: usize) {
     crate::shadow::touch(&tri_strips_display_port::STATE);
-    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(this, crate::link::DRAW_STRIPS) {
+    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(t, this, crate::link::DRAW_STRIPS) {
         return;
     }
     if crate::link_client::water_plane_display_skipped(this) {
@@ -253,13 +254,13 @@ port_thiscall!(geometry_dtor_port, 0x6F3DB0, "NiGeometry::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = geometry_dtor);
+    rust_main = geometry_dtor);
 
 /// The destructor of a geometry: the plugin forgets the shape (its retained instance of
 /// `instance_stream`), then the engine code runs.
-pub unsafe fn geometry_dtor(this: usize) {
+pub unsafe fn geometry_dtor(t: &MainThread, this: usize) {
     crate::shadow::touch(&geometry_dtor_port::STATE);
-    crate::instance_stream::forget(this);
+    crate::instance_stream::forget(t, this);
     geometry_dtor_port::engine(this);
 }
 

@@ -7,6 +7,7 @@ use core::ffi::{c_char, c_void};
 use core::sync::atomic::Ordering;
 use std::ffi::CString;
 
+use crate::main_thread::MainThread;
 use crate::ports;
 use crate::shadow::Mode;
 use crate::{engine, install, x87};
@@ -67,6 +68,8 @@ const UPVALUE_NAME: i32 = -10002 - 2;
 /// nothing and returns no value (the first call of each name is logged).
 unsafe extern "C" fn main_thread_gate(l: LuaState) -> i32 {
     let f: LuaFn = core::mem::transmute(lua_touserdata(l, UPVALUE_FUNCTION));
+    // Behind this check a function claims the proof of the main thread
+    // (`MainThread::claim`) when it opens a table.
     if crate::shadow::on_main_thread() {
         return f(l);
     }
@@ -137,7 +140,7 @@ unsafe extern "C" fn refusal_options(l: LuaState) -> i32 {
 /// into a file. See `capture`. Returns true, or false and the problem.
 unsafe extern "C" fn capture(l: LuaState) -> i32 {
     let path = arg_str(l, 1).unwrap_or_default();
-    match crate::capture::start(&path, lua_tonumber(l, 2) as u32, lua_tonumber(l, 3) as u32) {
+    match crate::capture::start(&MainThread::claim(), &path, lua_tonumber(l, 2) as u32, lua_tonumber(l, 3) as u32) {
         Ok(()) => {
             lua_pushboolean(l, 1);
             1
@@ -335,7 +338,7 @@ unsafe extern "C" fn capture_stop(_l: LuaState) -> i32 {
 /// `nirender.captureFrames(n)` asks a capture file that holds (`nirender.capture(path, 0, 0)`
 /// on a stream) for `n` frames more. Returns true when there is such a file.
 unsafe extern "C" fn capture_frames(l: LuaState) -> i32 {
-    lua_pushboolean(l, crate::capture::tee_frames(lua_tonumber(l, 1) as u32) as i32);
+    lua_pushboolean(l, crate::capture::tee_frames(&MainThread::claim(), lua_tonumber(l, 1) as u32) as i32);
     1
 }
 
@@ -376,7 +379,8 @@ unsafe extern "C" fn animation_policy(l: LuaState) -> i32 {
 /// `nirender.instances()`: the report of the retained instances, as the log gets it at the
 /// end of a run: the counts of the retained, the rejected by reason, the draws not taken.
 unsafe extern "C" fn instances_report(l: LuaState) -> i32 {
-    push_str(l, &crate::instance_stream::report());
+    let t = &MainThread::claim();
+    push_str(l, &crate::instance_stream::report(t));
     1
 }
 
@@ -416,10 +420,11 @@ unsafe extern "C" fn display_cost(l: LuaState) -> i32 {
 /// `nirender.skinTable(on)`: the table draws the skinned shapes (the actors, the default) or
 /// the engine's display does; returns the state before; without an argument the state.
 unsafe extern "C" fn skin_table(l: LuaState) -> i32 {
-    let before = crate::instance_stream::skin_table();
+    let t = &MainThread::claim();
+    let before = crate::instance_stream::skin_table(t);
     if lua_gettop(l) >= 1 {
         let on = lua_toboolean(l, 1) != 0;
-        crate::instance_stream::set_skin_table(on);
+        crate::instance_stream::set_skin_table(t, on);
         crate::log!("skin table: {} (was {})", on, before);
     }
     lua_pushboolean(l, before as i32);
@@ -429,9 +434,10 @@ unsafe extern "C" fn skin_table(l: LuaState) -> i32 {
 /// `nirender.retained(mode)` sets the mode of the retained instances ("off", "dual" or
 /// "gpu") and returns the mode before. Without an argument it returns the mode.
 unsafe extern "C" fn retained(l: LuaState) -> i32 {
-    let before = crate::instance_stream::mode();
+    let t = &MainThread::claim();
+    let before = crate::instance_stream::mode(t);
     if let Some(mode) = arg_str(l, 1).and_then(|m| crate::instance_stream::Mode::parse(&m)) {
-        crate::instance_stream::set_mode(mode);
+        crate::instance_stream::set_mode(t, mode);
         crate::log!("retained: {} (was {})", mode.name(), before.name());
     }
     push_str(l, before.name());

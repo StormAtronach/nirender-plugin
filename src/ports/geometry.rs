@@ -4,6 +4,7 @@
 
 use core::mem::transmute;
 
+use crate::main_thread::MainThread;
 use crate::d3d::{
     com_release, device_set_transform, D3DFVF_DIFFUSE, D3DFVF_TEX1, D3DFVF_XYZ, D3DPOOL_MANAGED, D3DPT_TRIANGLEFAN,
     D3DPT_TRIANGLELIST, D3DPT_TRIANGLESTRIP, D3DTS_PROJECTION, D3DTS_VIEW,
@@ -746,7 +747,7 @@ unsafe fn identity_transform(transform: &mut [u32; NiTransform::SIZE / 4]) -> us
 /// fixed-function pass never sets. Then the record with the identity world. The view and the
 /// projection of the screen polygons stay as the port sets them on the device: the helper
 /// draws the record under them. Returns true when the pipeline of the device must not run.
-unsafe fn screen_polygon_record(this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize, transform: usize, bound: usize) -> bool {
+unsafe fn screen_polygon_record(t: &MainThread, this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize, transform: usize, bound: usize) -> bool {
     if !crate::shape_stream::on() {
         return false;
     }
@@ -755,11 +756,11 @@ unsafe fn screen_polygon_record(this: usize, count: u32, vertices: usize, tex_co
         return false;
     }
     crate::shape_stream::note_geometry(handle);
-    crate::ports::draw::shape_record(this, 0, transform, bound)
+    crate::ports::draw::shape_record(t, this, 0, transform, bound)
 }
 
 /// 0x6ADD20 `NiDX8Renderer::RenderScreenPoly`
-pub unsafe fn render_screen_poly(this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize) {
+pub unsafe fn render_screen_poly(t: &MainThread, this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize) {
     crate::shadow::touch(&render_screen_poly_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 || count == 0 {
         return;
@@ -771,7 +772,7 @@ pub unsafe fn render_screen_poly(this: usize, count: u32, vertices: usize, tex_c
     let mut bound = [0u32; 4];
     let at = identity_transform(&mut transform);
     ni_bound_ctor(bound.as_mut_ptr() as usize);
-    if !screen_polygon_record(this, count, vertices, tex_coords, colour, at, bound.as_mut_ptr() as usize) {
+    if !screen_polygon_record(t, this, count, vertices, tex_coords, colour, at, bound.as_mut_ptr() as usize) {
         let buffer = pack_screen_poly_geom_buffer(this, count, vertices, tex_coords, colour, rd(this, R::frustumNear), rd(this, R::frustumDistance));
         if buffer != 0 {
             renderer_draw_primitive(this, 0, 0, at, bound.as_mut_ptr() as usize, buffer, 0);
@@ -1269,7 +1270,7 @@ port_thiscall!(render_screen_poly_port, 0x6ADD20, "NiDX8Renderer::RenderScreenPo
     fn(this, count: u32, vertices: usize, tex_coords: usize, colour: usize) -> (),
     compare_eax = false,
     regions = |set| render_screen_poly_regions(set, this, count),
-    rust = render_screen_poly);
+    rust_main = render_screen_poly);
 
 port_thiscall!(batch_render_shape_port, 0x6AE600, "NiDX8Renderer::BatchRenderShape",
     fn(this, geom_data: usize, skin: usize, transform: usize, bound: usize) -> (),
@@ -1533,9 +1534,9 @@ mod tests {
         unsafe {
             batch_render_shape(base, 1, 0, 0, 0);
             batch_render_strips(base, 1, 0, 0, 0);
-            render_screen_poly(base, 4, 0, 0, 0);
+            render_screen_poly(&MainThread::for_test(), base, 4, 0, 0, 0);
             wr::<u8>(base, R::bSceneOpen, 1);
-            render_screen_poly(base, 0, 0, 0, 0);
+            render_screen_poly(&MainThread::for_test(), base, 0, 0, 0, 0);
             wr::<u8>(base, R::bSceneOpen, 0);
         }
         assert_eq!(this, before);

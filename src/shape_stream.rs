@@ -9,6 +9,7 @@
 //! the game.
 
 use crate::capture;
+use crate::main_thread::MainThread;
 use crate::mem::rd;
 
 /// The flags of a record. `RELATIVE`: the world matrix is relative to the camera. Do not use
@@ -251,7 +252,7 @@ unsafe fn without(reason: usize) {
 /// draw was set, with the camera-relative mask of the plugin; for a skinned shape `palette`
 /// has the matrix of each bone of the skin instead. Returns true when the ports of the
 /// pipeline must not run for this draw.
-pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>, palette: &[[f32; 16]]) -> bool {
+pub unsafe fn send(t: &MainThread, renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>, palette: &[[f32; 16]]) -> bool {
     let (geometry, _) = *core::ptr::addr_of!(HANDLES);
     if geometry == 0 {
         without(0);
@@ -261,26 +262,26 @@ pub unsafe fn send(renderer: usize, world: [f32; 16], relative: bool, ambient: u
     // (`capture::words`).
     let bones = core::slice::from_raw_parts(palette.as_ptr() as *const u8, core::mem::size_of_val(palette));
     let flags = if palette.is_empty() { 0 } else { SKINNED };
-    record(renderer, geometry, flags, world, relative, ambient, material_values, fog, palette.len() as u32, &[], bones)
+    record(t, renderer, geometry, flags, world, relative, ambient, material_values, fog, palette.len() as u32, &[], bones)
 }
 
 /// Sends the record of the lines that are about to be drawn (`RenderLines`), with the flag
 /// `LINES`; the geometry is the lines data, noted by the link. Returns true when the
 /// pipeline of the device must not run for the draw.
-pub unsafe fn send_lines(renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>) -> bool {
+pub unsafe fn send_lines(t: &MainThread, renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>) -> bool {
     let (geometry, _) = *core::ptr::addr_of!(HANDLES);
     if geometry == 0 {
         without(0);
         return false;
     }
-    record(renderer, geometry, LINES, world, relative, ambient, material_values, fog, 0, &[], &[])
+    record(t, renderer, geometry, LINES, world, relative, ambient, material_values, fog, 0, &[], &[])
 }
 
 /// Sends the record of a particle system that is about to be drawn (`RenderPoints`), with
 /// the flag `PARTICLES`. `key` is the particle data of the game; `right` and `up` are the
 /// axes of the camera in the model space of the draw; `particles` has `PARTICLE_BYTES` for
 /// each particle. Returns true when the pipeline of the device must not run for the draw.
-pub unsafe fn send_particles(
+pub unsafe fn send_particles(t: &MainThread, 
     renderer: usize,
     key: u32,
     world: [f32; 16],
@@ -299,7 +300,7 @@ pub unsafe fn send_particles(
         return false;
     }
     let tail = [count, radius.to_bits(), right[0].to_bits(), right[1].to_bits(), right[2].to_bits(), up[0].to_bits(), up[1].to_bits(), up[2].to_bits()];
-    record(renderer, key, PARTICLES, world, relative, ambient, material_values, fog, 0, &tail, particles)
+    record(t, renderer, key, PARTICLES, world, relative, ambient, material_values, fog, 0, &tail, particles)
 }
 
 /// The stages of the texture effects of the draw in progress (the environment map and the
@@ -339,7 +340,7 @@ const TAIL_WORDS: usize = EFFECT_WORDS + 4 + 8;
 /// The record itself: the 36 words of the head, the keys of the lights, the stages of the
 /// texture effects when the draw has any, the fog when the draw has it, then `tail` and
 /// `bytes` (the bones, or the particle words and the particles).
-unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>, bone_count: u32, tail: &[u32], bytes: &[u8]) -> bool {
+unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>, bone_count: u32, tail: &[u32], bytes: &[u8]) -> bool {
     let (_, material) = *core::ptr::addr_of!(HANDLES);
     if !on() {
         return false;
@@ -362,14 +363,14 @@ unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], re
         | if crate::ports::base::in_main_flush() { QUEUED } else { 0 };
     // A draw of a retained shape: its instance records in the place of this one (mode gpu:
     // the first draw of the instance), or before it (mode dual).
-    if let Some((shape, id)) = crate::instance_stream::take_pending() {
+    if let Some((shape, id)) = crate::instance_stream::take_pending(t) {
         // A shape (kind 0) or a skinned shape (its palette in `bytes`); not particles, lines.
         // A draw with texture effects stays (the table makes their stages from the material
         // record; `reject_reason` keeps the kinds the table cannot draw).
         if kind & !SKINNED != 0 || flags & CODE_PATCH_PICTURE != 0 {
-            crate::instance_stream::reject_pending(shape, true);
-        } else if crate::instance_stream::draw(shape, id, &world, relative, &material_values, fog, ambient, lights, if kind & SKINNED != 0 { bytes } else { &[] }, bone_count) {
-            if crate::instance_stream::mode() == crate::instance_stream::Mode::Gpu {
+            crate::instance_stream::reject_pending(t, shape, true);
+        } else if crate::instance_stream::draw(t, shape, id, &world, relative, &material_values, fog, ambient, lights, if kind & SKINNED != 0 { bytes } else { &[] }, bone_count) {
+            if crate::instance_stream::mode(t) == crate::instance_stream::Mode::Gpu {
                 return records_only();
             }
             flags |= RETAINED_TWIN;

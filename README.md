@@ -37,7 +37,10 @@ helper build. Build the plugin before `cargo xtask build` of that repo.
 - The modes: `NIRENDER_RETAINED=off|dual|gpu`, default `gpu`. `off` is the reference: the
   engine's own path. `nirender.retained(mode)` changes the mode in a live game.
 - The threads: a port runs its Rust code on the main thread only. The cell worker's calls
-  run the engine function and reach the plugin as events (`src/worker_events.rs`).
+  run the engine function and reach the plugin as events (`src/worker_events.rs`). A table
+  of the main thread opens only for a proof that the caller is on it
+  (`src/main_thread.rs`): the dispatch of a port gives the proof to a port declared with
+  `rust_main`, and the Lua gate and the frame hook claim it.
 - The comparison rig (the cargo feature `rig`, not in a player's build): a port can also
   run in the mode shadow, which runs the Rust and the engine function both and compares
   them call by call (`src/shadow.rs`), and the frame comparison compares the device calls

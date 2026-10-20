@@ -8,6 +8,7 @@
 use core::arch::asm;
 use core::mem::transmute;
 
+use crate::main_thread::MainThread;
 use crate::d3d::{
     device_draw_indexed_primitive, device_draw_primitive, device_set_indices, device_set_stream_source, D3DFVF_NORMAL,
     D3DPT_TRIANGLELIST, D3DPT_TRIANGLESTRIP, D3DRS_VERTEXBLEND, DEVICE_DRAW_INDEXED_PRIMITIVE, DEVICE_DRAW_PRIMITIVE,
@@ -461,7 +462,7 @@ unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize)
 /// them. It gets the palette of the skin in place of the transform. Returns true when the
 /// pipeline of the device must not run for the draw. `RenderScreenPoly` uses it too, with
 /// the identity transform that it gives `DrawPrimitive`.
-pub(crate) unsafe fn shape_record(this: usize, skin: usize, transform: usize, world_bound: usize) -> bool {
+pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, transform: usize, world_bound: usize) -> bool {
     if !crate::shape_stream::on() {
         return false;
     }
@@ -499,7 +500,7 @@ pub(crate) unsafe fn shape_record(this: usize, skin: usize, transform: usize, wo
         (crate::shape_stream::current_world(this), crate::link_client::world_is_relative())
     };
     let fog = crate::shape_stream::fog_values(this, property_state);
-    let sent = crate::shape_stream::send(this, world, relative, crate::shape_stream::ambient(this), crate::shape_stream::material_values(property_state), fog, &palette);
+    let sent = crate::shape_stream::send(t, this, world, relative, crate::shape_stream::ambient(this), crate::shape_stream::material_values(property_state), fog, &palette);
     PALETTE.with(|kept| *kept.borrow_mut() = palette);
     sent
 }
@@ -507,7 +508,7 @@ pub(crate) unsafe fn shape_record(this: usize, skin: usize, transform: usize, wo
 /// 0x6ACEF0 `NiDX8Renderer::RenderShape`. The port uses the skinning check that MWSE puts at
 /// +0x2F when the memory has that check. Unlike the engine, the port sends the shape record
 /// first and does not draw when `shape_record` returns true.
-pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
+pub unsafe fn render_shape(t: &MainThread, this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_shape_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
@@ -516,7 +517,7 @@ pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform
         return;
     }
     if skin != 0 && !software_skinning(skinning_check(&skinning_check_bytes()), this, geom_data) {
-        if shape_record(this, skin, transform, world_bound) {
+        if shape_record(t, this, skin, transform, world_bound) {
             return;
         }
         site_thiscall!(RS_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
@@ -529,7 +530,7 @@ pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform
             SkinningCheck::GeometryFlag => "the flag of MWSE on the geometry",
         });
     }
-    if skin == 0 && shape_record(this, 0, transform, world_bound) {
+    if skin == 0 && shape_record(t, this, 0, transform, world_bound) {
         return;
     }
     let mut geom_buffer: usize = 0;
@@ -548,7 +549,7 @@ pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform
 
 /// 0x6ACFC0 `NiDX8Renderer::RenderTriStrips`. Unlike the engine, the port sends the shape
 /// record first and does not draw when `shape_record` returns true.
-pub unsafe fn render_tri_strips(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
+pub unsafe fn render_tri_strips(t: &MainThread, this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_tri_strips_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
@@ -557,7 +558,7 @@ pub unsafe fn render_tri_strips(this: usize, geom_data: usize, skin: usize, tran
         return;
     }
     if skin != 0 && rd::<u32>(this, R::countHWBones) >= 4 {
-        if shape_record(this, skin, transform, world_bound) {
+        if shape_record(t, this, skin, transform, world_bound) {
             return;
         }
         site_thiscall!(RT_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
@@ -566,7 +567,7 @@ pub unsafe fn render_tri_strips(this: usize, geom_data: usize, skin: usize, tran
     if skin != 0 {
         crate::shape_stream::software_skinned("strips, less than 4 bones of the device");
     }
-    if skin == 0 && shape_record(this, 0, transform, world_bound) {
+    if skin == 0 && shape_record(t, this, 0, transform, world_bound) {
         return;
     }
     let mut geom_buffer: usize = 0;
@@ -1340,13 +1341,13 @@ port_thiscall!(render_shape_port, 0x6ACEF0, "NiDX8Renderer::RenderShape",
     fn(this, geom_data: usize, skin: usize, transform: usize, world_bound: usize) -> (),
     compare_eax = false,
     regions = |set| render_regions(set, this, geom_data),
-    rust = render_shape);
+    rust_main = render_shape);
 
 port_thiscall!(render_tri_strips_port, 0x6ACFC0, "NiDX8Renderer::RenderTriStrips",
     fn(this, geom_data: usize, skin: usize, transform: usize, world_bound: usize) -> (),
     compare_eax = false,
     regions = |set| render_regions(set, this, geom_data),
-    rust = render_tri_strips);
+    rust_main = render_tri_strips);
 
 port_thiscall!(draw_skinned_primitive_port, 0x6ADE70, "NiDX8Renderer::DrawSkinnedPrimitive",
     fn(this, geom_data: usize, skin: usize, transform: usize, world_bound: usize) -> (),
@@ -1923,7 +1924,7 @@ mod tests {
         unsafe {
             // The scene is not open: the port makes no call.
             wr::<u8>(r, R::bSceneOpen, 0);
-            render_shape(r, g, 0, 0x10, 0x20);
+            render_shape(&MainThread::for_test(), r, g, 0, 0x10, 0x20);
             assert_eq!(calls(), vec![]);
             let mut set = Regions::new();
             render_regions(&mut set, r, g);
@@ -1933,7 +1934,7 @@ mod tests {
             // No vertices: the port makes no call after it gets the vertex count.
             wr::<u8>(r, R::bSceneOpen, 1);
             returns(GEOM_VERTEX_COUNT, &[0x1_0000]);
-            render_shape(r, g, 0, 0x10, 0x20);
+            render_shape(&MainThread::for_test(), r, g, 0, 0x10, 0x20);
             assert_eq!(calls(), vec![(GEOM_VERTEX_COUNT, vec![g as u32])]);
 
             // A new buffer: the port fills it as a triangle list.
@@ -1945,7 +1946,7 @@ mod tests {
             // A skin, and a device without hardware bones: the port does not use the skinned
             // path.
             wr::<u32>(r, R::countHWBones, 3);
-            render_shape(r, g, 0x30, 0x10, 0x20);
+            render_shape(&MainThread::for_test(), r, g, 0x30, 0x10, 0x20);
             let log = calls();
             assert_eq!(log[0].0, GEOM_VERTEX_COUNT);
             assert_eq!(log[1].0, RS_CREATE_GEOMETRY_BUFFER_DATA);
@@ -1964,7 +1965,7 @@ mod tests {
             // change.
             poke(RS_CREATE_GEOMETRY_BUFFER_DATA, 1, 0x8888);
             returns(GEOM_VERTEX_COUNT, &[9]);
-            render_shape(r, g, 0, 0x10, 0x20);
+            render_shape(&MainThread::for_test(), r, g, 0, 0x10, 0x20);
             let log = calls();
             assert_eq!(log.len(), 3);
             assert_eq!(log[2], (RS_DRAW_PRIMITIVE, vec![r as u32, g as u32, 0, 0x10, 0x20, 0x8888, 0]));
@@ -1972,7 +1973,7 @@ mod tests {
             // A skin and hardware bones.
             wr::<u32>(r, R::countHWBones, 4);
             returns(GEOM_VERTEX_COUNT, &[9]);
-            render_shape(r, g, 0x30, 0x10, 0x20);
+            render_shape(&MainThread::for_test(), r, g, 0x30, 0x10, 0x20);
             assert_eq!(calls()[1], (RS_DRAW_SKINNED_PRIMITIVE, vec![r as u32, g as u32, 0x30, 0x10, 0x20]));
 
             // With the check of MWSE in memory, the port reads the flag of the geometry data
@@ -1981,12 +1982,12 @@ mod tests {
             SKINNING_CHECK_BYTES.with(|bytes| bytes.set(SKINNING_CHECK_MWSE));
             wr::<u32>(r, R::countHWBones, 3);
             returns(GEOM_VERTEX_COUNT, &[9]);
-            render_shape(r, g, 0x30, 0x10, 0x20);
+            render_shape(&MainThread::for_test(), r, g, 0x30, 0x10, 0x20);
             assert_eq!(calls()[1].0, RS_DRAW_SKINNED_PRIMITIVE);
             wr::<u32>(r, R::countHWBones, 4);
             wr::<u16>(g, GEOM_DATA_PATCH_RENDER_FLAGS, 0x200);
             returns(GEOM_VERTEX_COUNT, &[9]);
-            render_shape(r, g, 0x30, 0x10, 0x20);
+            render_shape(&MainThread::for_test(), r, g, 0x30, 0x10, 0x20);
             let log = calls();
             assert_eq!(log[1].0, RS_CREATE_GEOMETRY_BUFFER_DATA);
             assert_eq!(log[2].0, RS_DRAW_PRIMITIVE);
@@ -2010,7 +2011,7 @@ mod tests {
             returns(RT_CREATE_GEOMETRY_BUFFER_DATA, &[1]);
             poke(RT_CREATE_GEOMETRY_BUFFER_DATA, 1, gb as u32);
             returns(RT_GET_STRIP_LENGTH_SUM, &[0x0001_0014]);
-            render_tri_strips(r, g, 0, 0x10, 0x20);
+            render_tri_strips(&MainThread::for_test(), r, g, 0, 0x10, 0x20);
             let log = calls();
             assert_eq!(log[2], (RT_GET_STRIP_LENGTH_SUM, vec![g as u32]));
             assert_eq!(log[3], (RT_DRAW_PRIMITIVE, vec![r as u32, g as u32, 0, 0x10, 0x20, gb as u32, 0]));
@@ -2023,7 +2024,7 @@ mod tests {
 
             wr::<u32>(r, R::countHWBones, 8);
             returns(GEOM_VERTEX_COUNT, &[9]);
-            render_tri_strips(r, g, 0x30, 0x10, 0x20);
+            render_tri_strips(&MainThread::for_test(), r, g, 0x30, 0x10, 0x20);
             assert_eq!(calls()[1], (RT_DRAW_SKINNED_PRIMITIVE, vec![r as u32, g as u32, 0x30, 0x10, 0x20]));
         }
     }

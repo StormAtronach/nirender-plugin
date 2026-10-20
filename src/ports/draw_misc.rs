@@ -10,6 +10,7 @@
 use core::arch::asm;
 use core::mem::transmute;
 
+use crate::main_thread::MainThread;
 use crate::d3d::{
     buffer_lock, buffer_unlock, device_set_indices, device_set_pixel_shader, device_set_stream_source, device_set_vertex_shader,
     D3DRS_VERTEXBLEND,
@@ -257,7 +258,7 @@ unsafe fn write_point_quads(mut to: usize, count: u32, mut vertices: usize, mut 
 /// of the draw as `RenderPoints` sets them, then the record with the position, the size
 /// and the colour of each active particle. The helper makes the quads. Returns true when
 /// the pipeline of the device must not run for the draw.
-unsafe fn particles_record(this: usize, geometry_data: usize, count: u32, radius: f32, vertices: usize, sizes: usize, colors: usize) -> bool {
+unsafe fn particles_record(t: &MainThread, this: usize, geometry_data: usize, count: u32, radius: f32, vertices: usize, sizes: usize, colors: usize) -> bool {
     if !crate::shape_stream::on() {
         return false;
     }
@@ -272,7 +273,7 @@ unsafe fn particles_record(this: usize, geometry_data: usize, count: u32, radius
         particles.extend_from_slice(&rd::<[u8; 4]>(sizes, i * 4));
         particles.extend_from_slice(&if colors != 0 { rd::<[u8; 4]>(colors, i * 4) } else { [0xFF; 4] });
     }
-    crate::shape_stream::send_particles(
+    crate::shape_stream::send_particles(t, 
         this,
         geometry_data as u32,
         crate::shape_stream::current_world(this),
@@ -290,7 +291,7 @@ unsafe fn particles_record(this: usize, geometry_data: usize, count: u32, radius
 /// 0x6AD0A0 `NiDX8Renderer::RenderPoints`: draws the particles as quads that face the camera.
 /// With the shape records on, the record of the particles goes out after the transform and
 /// the bound are set, and the pipeline of the device does not run (see `particles_record`).
-pub unsafe fn render_points(this: usize, geometry_data: usize, world_transform: usize, world_bound: usize) {
+pub unsafe fn render_points(t: &MainThread, this: usize, geometry_data: usize, world_transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_points_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
@@ -310,7 +311,7 @@ pub unsafe fn render_points(this: usize, geometry_data: usize, world_transform: 
     let count = active as u32;
     let vertex_count = count * 4;
     let vertices: usize = rd(geometry_data, GD::vertices);
-    if particles_record(this, geometry_data, count, radius, vertices, sizes, colors) {
+    if particles_record(t, this, geometry_data, count, radius, vertices, sizes, colors) {
         return;
     }
 
@@ -431,14 +432,14 @@ unsafe fn write_line_vertices(mut to: usize, count: u32, mut vertices: usize, mu
 /// draw as `RenderLines` sets them, then the record. The geometry of the record is the
 /// lines data, noted by the link before the port. Returns true when the pipeline of the
 /// device must not run for the draw.
-unsafe fn lines_record(this: usize) -> bool {
+unsafe fn lines_record(t: &MainThread, this: usize) -> bool {
     if !crate::shape_stream::on() {
         return false;
     }
     let property_state: usize = rd(this, R::currentPropertyState);
     let (light_manager, effect_state, texturing, vertex_color) = crate::shape_stream::light_state_arguments(this);
     site_thiscall!(0x6ADBE8, light_manager, effect_state, texturing, vertex_color);
-    crate::shape_stream::send_lines(
+    crate::shape_stream::send_lines(t, 
         this,
         crate::shape_stream::current_world(this),
         crate::link_client::world_is_relative(),
@@ -451,7 +452,7 @@ unsafe fn lines_record(this: usize) -> bool {
 /// 0x6AD890 `NiDX8Renderer::RenderLines`. No caller reads EAX. With the shape records on,
 /// the record of the lines goes out after the transform and the bound are set, and the
 /// pipeline of the device does not run (see `lines_record`).
-pub unsafe fn render_lines(this: usize, lines_data: usize, transform: usize, world_bound: usize) {
+pub unsafe fn render_lines(t: &MainThread, this: usize, lines_data: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_lines_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
@@ -461,7 +462,7 @@ pub unsafe fn render_lines(this: usize, lines_data: usize, transform: usize, wor
     }
     site_thiscall!(0x6AD8C2, this, transform);
     site_thiscall!(0x6AD8D2, this + R::worldBound, world_bound);
-    if lines_record(this) {
+    if lines_record(t, this) {
         return;
     }
     let count = rd::<u16>(lines_data, GD::vertexCount) as u32;
@@ -591,13 +592,13 @@ port_thiscall!(render_points_port, 0x6AD0A0, "NiDX8Renderer::RenderPoints",
     fn(this, geometry_data: usize, world_transform: usize, world_bound: usize) -> (),
     compare_eax = false,
     regions = |set| render_points_regions(set, this, geometry_data),
-    rust = render_points);
+    rust_main = render_points);
 
 port_thiscall!(render_lines_port, 0x6AD890, "NiDX8Renderer::RenderLines",
     fn(this, lines_data: usize, transform: usize, world_bound: usize) -> (),
     compare_eax = false,
     regions = |set| render_lines_regions(set, this, lines_data),
-    rust = render_lines);
+    rust_main = render_lines);
 
 // The game runs the constructor one time. With "early" in the config of the mod, the plugin
 // installs before the game creates its renderer, and the port then runs in the mode of the

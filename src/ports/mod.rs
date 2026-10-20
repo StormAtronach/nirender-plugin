@@ -3,11 +3,12 @@
 use crate::shadow::PortState;
 
 /// The body of `port_thiscall!` and `port_cdecl!`. It makes a module with `STATE`, the detour,
-/// and `engine(...)` to call the game code.
+/// and `engine(...)` to call the game code. `$call` is the closure that runs the Rust
+/// function; it gets the proof of the main thread (`main_thread::MainThread`).
 macro_rules! port_impl {
     (
         $modname:ident, $addr:literal, $ename:literal, $abi:literal, $cleanup:ident, $stack_args:expr,
-        ($($p:ident : $pt:ty),*) -> $r:ty, $cmp:literal, |$set:ident| $regbody:expr, $rust:path
+        ($($p:ident : $pt:ty),*) -> $r:ty, $cmp:literal, |$set:ident| $regbody:expr, $call:expr
     ) => {
         pub mod $modname {
             #[allow(unused_imports)]
@@ -43,7 +44,7 @@ macro_rules! port_impl {
                     $cmp,
                     #[allow(unused_variables)]
                     |$set: &mut $crate::shadow::Regions| $regbody,
-                    || -> $r { $rust($($p),*) },
+                    $call,
                     || engine($($p),*),
                 )
             }
@@ -55,7 +56,9 @@ macro_rules! port_impl {
 /// arguments.
 ///
 /// `regions` adds the memory that the function can write for a call. `compare_eax` tells if
-/// the value in EAX is a result.
+/// the value in EAX is a result. `rust` names the Rust function; `rust_main` names one that
+/// takes the proof of the main thread as its first argument (a port that reaches a table
+/// of the plugin).
 macro_rules! port_thiscall {
     (
         $modname:ident, $addr:literal, $ename:literal,
@@ -66,7 +69,21 @@ macro_rules! port_thiscall {
     ) => {
         port_impl!(
             $modname, $addr, $ename, "thiscall", Callee, 0 $(+ { let _ = stringify!($a); 1 })*,
-            ($this: usize $(, $a: $t)*) -> $r, $cmp, |$set| $regbody, $rust
+            ($this: usize $(, $a: $t)*) -> $r, $cmp, |$set| $regbody,
+            |_proof: &$crate::main_thread::MainThread| -> $r { $rust($this $(, $a)*) }
+        );
+    };
+    (
+        $modname:ident, $addr:literal, $ename:literal,
+        fn($this:ident $(, $a:ident : $t:ty)*) -> $r:ty,
+        compare_eax = $cmp:literal,
+        regions = |$set:ident| $regbody:expr,
+        rust_main = $rust:path
+    ) => {
+        port_impl!(
+            $modname, $addr, $ename, "thiscall", Callee, 0 $(+ { let _ = stringify!($a); 1 })*,
+            ($this: usize $(, $a: $t)*) -> $r, $cmp, |$set| $regbody,
+            |proof: &$crate::main_thread::MainThread| -> $r { $rust(proof, $this $(, $a)*) }
         );
     };
 }
@@ -114,7 +131,7 @@ macro_rules! port_thiscall_float {
                     $cmp,
                     #[allow(unused_variables)]
                     |$set: &mut $crate::shadow::Regions| $regbody,
-                    || -> f32 { $rust($this) },
+                    |_proof: &$crate::main_thread::MainThread| -> f32 { $rust($this) },
                     || engine($this).to_bits(),
                 ))
             }
@@ -123,6 +140,7 @@ macro_rules! port_thiscall_float {
 }
 
 /// Declares the port of a `__cdecl` engine function. The caller removes the arguments.
+/// `rust_main` as in `port_thiscall!`.
 macro_rules! port_cdecl {
     (
         $modname:ident, $addr:literal, $ename:literal,
@@ -133,7 +151,21 @@ macro_rules! port_cdecl {
     ) => {
         port_impl!(
             $modname, $addr, $ename, "C", Caller, 0 $(+ { let _ = stringify!($a); 1 })*,
-            ($($a: $t),*) -> $r, $cmp, |$set| $regbody, $rust
+            ($($a: $t),*) -> $r, $cmp, |$set| $regbody,
+            |_proof: &$crate::main_thread::MainThread| -> $r { $rust($($a),*) }
+        );
+    };
+    (
+        $modname:ident, $addr:literal, $ename:literal,
+        fn($($a:ident : $t:ty),*) -> $r:ty,
+        compare_eax = $cmp:literal,
+        regions = |$set:ident| $regbody:expr,
+        rust_main = $rust:path
+    ) => {
+        port_impl!(
+            $modname, $addr, $ename, "C", Caller, 0 $(+ { let _ = stringify!($a); 1 })*,
+            ($($a: $t),*) -> $r, $cmp, |$set| $regbody,
+            |proof: &$crate::main_thread::MainThread| -> $r { $rust(proof $(, $a)*) }
         );
     };
 }

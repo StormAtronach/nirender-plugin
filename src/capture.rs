@@ -31,6 +31,7 @@ use crate::link::{
     CALL_CREATE_TEXTURE, CALL_CREATE_VERTEX_BUFFER, CALL_CUBE_FACE, CALL_GET_DEPTH_BUFFER, CALL_GET_RENDER_TARGET, CALL_PRESENT,
     CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_TRANSFORM,
 };
+use crate::main_thread::MainThread;
 use crate::mem::rd;
 
 pub const MAGIC: &[u8; 8] = b"NIRCAP01";
@@ -606,10 +607,10 @@ pub fn recording() -> bool {
 }
 
 /// Starts a capture into `path`: `warmup` frames, then `frames` frames of record.
-pub unsafe fn start(path: &str, warmup: u32, frames: u32) -> Result<(), String> {
+pub unsafe fn start(t: &MainThread, path: &str, warmup: u32, frames: u32) -> Result<(), String> {
     let _lock = crate::sync::device_lock();
     if active() && state().is_some_and(|s| s.direct && s.tee.is_none()) {
-        return tee(path, frames);
+        return tee(t, path, frames);
     }
     if active() {
         return Err("a capture is in progress".into());
@@ -630,7 +631,7 @@ pub unsafe fn start(path: &str, warmup: u32, frames: u32) -> Result<(), String> 
 /// until `tee_frames` asks for frames, and it ends with `tee_end`. A tour of a test level
 /// records two frames at each stop into one file, and the textures and the geometry that
 /// the game makes between the stops are in the file once.
-unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
+unsafe fn tee(t: &MainThread, path: &str, frames: u32) -> Result<(), String> {
     let file = File::create(path).map_err(|error| format!("{path}: {error}"))?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     out.write_all(MAGIC).map_err(|error| error.to_string())?;
@@ -646,7 +647,7 @@ unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
     crate::geometry_stream::reset();
     crate::material_stream::reset();
     crate::light_stream::reset();
-    crate::instance_stream::reset();
+    crate::instance_stream::reset(t);
     if let Some(s) = state() {
         s.tee_only = false;
         if s.tee_hold {
@@ -667,7 +668,7 @@ unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
 /// Asks a file from the stream that holds for `frames` frames more. The render states go
 /// into the file first, as they are now: a frame that was not recorded can have changed
 /// them. Returns false without such a file.
-pub unsafe fn tee_frames(frames: u32) -> bool {
+pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
     let _lock = crate::sync::device_lock();
     let Some(s) = state() else { return false };
     if !s.tee_hold || s.tee.is_none() {
@@ -693,7 +694,7 @@ pub unsafe fn tee_frames(frames: u32) -> bool {
     crate::material_stream::forget(&material);
     // The lights change in most frames: all of them again, into the frames.
     crate::light_stream::reset();
-    crate::instance_stream::reset();
+    crate::instance_stream::reset(t);
     true
 }
 
@@ -812,6 +813,9 @@ static STOP_ASKED: AtomicBool = AtomicBool::new(false);
 /// Ends the capture or the stream.
 pub unsafe fn stop() {
     let _lock = crate::sync::device_lock();
+    // The main thread ends the stream (`call` asks it from another thread); the proof is for
+    // the report of the table, which only the main thread opens.
+    let proof = MainThread::here();
     let Some(s) = state() else { return };
     if s.phase == Phase::Off {
         return;
@@ -851,7 +855,9 @@ pub unsafe fn stop() {
     crate::log!("{}", crate::material_stream::report());
     crate::log!("{}", crate::light_stream::report());
     crate::log!("{}", crate::shape_stream::report());
-    crate::log!("{}", crate::instance_stream::report());
+    if let Some(t) = proof.as_ref() {
+        crate::log!("{}", crate::instance_stream::report(t));
+    }
     crate::log!(
         "capture: end, {} frames, {} records, {} bytes, {:.3} ms of the game thread for each frame{}",
         s.frames_done,
@@ -1434,7 +1440,10 @@ unsafe fn frame_end() {
         }
         Phase::Record(left) => {
             overlay_tick();
-            crate::instance_stream::frame_tick();
+            // The frame ends on the main thread, where the ports present; the proof says so.
+            if let Some(t) = MainThread::here() {
+                crate::instance_stream::frame_tick(&t);
+            }
             // The times of the frame, for the age of the picture in the debug overlay: the
             // start of the frame of the game (the end of the wait of the frame before) and
             // its end, in ticks of the performance counter. The host program has the same

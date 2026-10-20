@@ -163,6 +163,8 @@ pub unsafe fn drain() {
     if !crate::shadow::on_main_thread() {
         return;
     }
+    // The check above: this is the main thread, and the events open its table.
+    let t = &crate::main_thread::MainThread::claim();
     if !WAITING.load(Ordering::Acquire) {
         return;
     }
@@ -176,7 +178,7 @@ pub unsafe fn drain() {
     for &event in &events {
         match event {
             Event::Destroyed(shape) => {
-                if crate::instance_stream::forget(shape) {
+                if crate::instance_stream::forget(t, shape) {
                     DESTROYED_INSTANCES.fetch_add(1, Ordering::Relaxed);
                 }
             }

@@ -54,19 +54,21 @@ unsafe fn effect_state_print(shape: usize) -> u64 {
     print
 }
 
+use crate::main_thread::MainThread;
+
 port_thiscall!(update_properties_downward_port, 0x6F41B0, "NiGeometry::UpdatePropertiesDownward",
     fn(this, state: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = update_properties_downward);
+    rust_main = update_properties_downward);
 
 /// The engine's update of the shape's property state; a new content asks for a recheck.
-pub unsafe fn update_properties_downward(this: usize, state: usize) {
+pub unsafe fn update_properties_downward(t: &MainThread, this: usize, state: usize) {
     crate::shadow::touch(&update_properties_downward_port::STATE);
     let before = property_state_print(this);
     update_properties_downward_port::engine(this, state);
     if property_state_print(this) != before {
-        crate::instance_stream::recheck(this, crate::instance_stream::Recheck::Properties);
+        crate::instance_stream::recheck(t, this, crate::instance_stream::Recheck::Properties);
     }
 }
 
@@ -74,17 +76,17 @@ port_thiscall!(update_effects_downward_port, 0x6F4270, "NiGeometry::UpdateEffect
     fn(this, state: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = update_effects_downward);
+    rust_main = update_effects_downward);
 
 /// The engine's update of the shape's effect state; a new content asks for a recheck. The
 /// engine shares an equal state between shapes (`IsEqual` with the last state), so a new
 /// pointer can hold the same effects.
-pub unsafe fn update_effects_downward(this: usize, state: usize) {
+pub unsafe fn update_effects_downward(t: &MainThread, this: usize, state: usize) {
     crate::shadow::touch(&update_effects_downward_port::STATE);
     let before = effect_state_print(this);
     update_effects_downward_port::engine(this, state);
     if effect_state_print(this) != before {
-        crate::instance_stream::recheck(this, crate::instance_stream::Recheck::Effects);
+        crate::instance_stream::recheck(t, this, crate::instance_stream::Recheck::Effects);
     }
 }
 

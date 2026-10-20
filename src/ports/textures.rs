@@ -11,6 +11,7 @@ use crate::gen::layouts::{
     NiDX8PixelFormat as PF, NiDX8Renderer as R, NiDX8SourceTextureData as SD, NiDX8TextureData as TD, NiDX8TextureManager as TM,
     NiPixelData as PD, NiSourceTexture as ST, NiTexture as T, THashMap as HM, THashMap_Node as HN,
 };
+use crate::main_thread::MainThread;
 use crate::mem::{rd, wr};
 use crate::ports::ni::REF_COUNT;
 use crate::shadow::Regions;
@@ -451,9 +452,9 @@ pub unsafe fn manager_get_format_from_texture(this: usize, texture: usize) -> u3
 }
 
 /// 0x6BC770 `NiDX8TextureManager::Recreate`: the first map loses its values and its nodes.
-pub unsafe fn manager_recreate(this: usize) {
+pub unsafe fn manager_recreate(t: &MainThread, this: usize) {
     crate::shadow::touch(&manager_recreate_port::STATE);
-    crate::instance_stream::textures_changed();
+    crate::instance_stream::textures_changed(t);
     let map = this + TM::hashMap_10;
     map_destroy_values(map, eng::dx8_resource_release_thunk);
     clear_hash_map(map);
@@ -774,9 +775,9 @@ pub unsafe fn source_data_ctor(this: usize, texture: usize, renderer: usize) -> 
 }
 
 /// 0x6BFE90 `NiDX8SourceTextureData::dtor`
-pub unsafe fn source_data_dtor(this: usize) {
+pub unsafe fn source_data_dtor(t: &MainThread, this: usize) {
     crate::shadow::touch(&source_data_dtor_port::STATE);
-    crate::instance_stream::textures_changed();
+    crate::instance_stream::textures_changed(t);
     forget_unreadable(this);
     wr(this, SD::vtbl_vtbl, VTBL_SOURCE_TEXTURE_DATA);
     let texture: usize = rd(this, SD::d3dTexture);
@@ -794,9 +795,9 @@ pub unsafe fn source_data_dtor(this: usize) {
 }
 
 /// 0x6BFE70 `NiDX8SourceTextureData::deleting_dtor`
-pub unsafe fn source_data_deleting_dtor(this: usize, flags: u32) -> usize {
+pub unsafe fn source_data_deleting_dtor(t: &MainThread, this: usize, flags: u32) -> usize {
     crate::shadow::touch(&source_data_deleting_dtor_port::STATE);
-    source_data_dtor(this);
+    source_data_dtor(t, this);
     if flags & 1 != 0 {
         eng::operator_delete(this);
     }
@@ -1381,7 +1382,7 @@ port_thiscall!(manager_recreate_port, 0x6BC770, "NiDX8TextureManager::Recreate",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| manager_recreate_regions(set, this),
-    rust = manager_recreate);
+    rust_main = manager_recreate);
 
 port_thiscall!(hash_map_dtor_port, 0x6BC840, "NiDX8TextureManager::HashMap::dtor",
     fn(this) -> (),
@@ -1459,13 +1460,13 @@ port_thiscall!(source_data_deleting_dtor_port, 0x6BFE70, "NiDX8SourceTextureData
     fn(this, flags: u32) -> usize,
     compare_eax = true,
     regions = |set| source_data_dtor_regions(set, this, flags & 1 != 0),
-    rust = source_data_deleting_dtor);
+    rust_main = source_data_deleting_dtor);
 
 port_thiscall!(source_data_dtor_port, 0x6BFE90, "NiDX8SourceTextureData::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| source_data_dtor_regions(set, this, false),
-    rust = source_data_dtor);
+    rust_main = source_data_dtor);
 
 port_thiscall!(source_data_get_d3d_texture_port, 0x6BFF20, "NiDX8SourceTextureData::GetD3DTexture",
     fn(this) -> usize,
@@ -1899,7 +1900,7 @@ pub(crate) mod tests {
             assert!(set.as_slice().is_empty(), "a value is destroyed: the call is skipped");
 
             notes();
-            manager_recreate(manager);
+            manager_recreate(&MainThread::for_test(), manager);
             assert_eq!(
                 notes(),
                 vec![
