@@ -268,6 +268,14 @@ pub fn set_main_thread() {
     MAIN_THREAD.store(unsafe { win::GetCurrentThreadId() }, Ordering::Relaxed);
 }
 
+/// The calling thread becomes the main thread when no thread is known yet. MWSE opens the
+/// plugin's Lua table during its mod initialization, on the game's main thread, before any
+/// call of the table: the Lua thread gate (`lua::main_thread_gate`) needs the main thread
+/// from the first call (`nirender.install` sets it again).
+pub fn note_main_thread_if_unknown() {
+    let _ = MAIN_THREAD.compare_exchange(0, unsafe { win::GetCurrentThreadId() }, Ordering::Relaxed, Ordering::Relaxed);
+}
+
 pub fn on_main_thread() -> bool {
     unsafe { win::GetCurrentThreadId() == MAIN_THREAD.load(Ordering::Relaxed) }
 }
