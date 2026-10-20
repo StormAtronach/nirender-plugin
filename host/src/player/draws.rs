@@ -175,7 +175,9 @@ impl Player {
             color_write: if in_back_buffer { pass.color_write & 7 } else { pass.color_write },
             // On, fail, depth fail, pass, function, mask, write mask.
             stencil: if stencil[0] == 0 { [0; 7] } else { [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0] },
-            samples: self.pass_samples,
+            // The samples of the targets that the draw goes into, known now: the pass that
+            // draws it opens later, when the items run.
+            samples: if in_back_buffer { renderer.samples } else { 1 },
         };
         let stencil_reference = stencil[2];
         if self.stream.shape.geometry == crate::dump_wanted() {

@@ -266,7 +266,9 @@ impl Player {
             return;
         }
         let renderer = &mut self.renderer;
-        let pipeline = renderer.screen_pipeline(self.pass_samples);
+        // The samples of the targets of the draw: the pass that draws it opens later.
+        let samples = if self.target.is_none() { renderer.samples } else { 1 };
+        let pipeline = renderer.screen_pipeline(samples);
         let clock = ticks::Clock::now();
         let buffer = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("screen draw"), contents: bytemuck::cast_slice(&list), usage: wgpu::BufferUsages::VERTEX });
         let view = renderer.textures.get(&texture).unwrap_or(&renderer.white).clone();
