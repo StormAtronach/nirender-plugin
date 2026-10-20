@@ -3,9 +3,9 @@
 -- alias of it (`package.loaded`), so `include("nirender")` keeps working after this file ran.
 --
 -- MWSE/config/nirender.json:
---   "mode":  "off", "shadow" or "live", for every port after the game started.
---            "off" keeps the game code. "shadow" runs the two functions and compares them.
---            "live" runs the Rust code.
+--   "mode":  "off" or "live", for every port after the game started; "shadow" with a build
+--            of the comparison rig (cargo --features rig). "off" keeps the game code.
+--            "shadow" runs the two functions and compares them. "live" runs the Rust code.
 --   "early": true installs when this file loads, before the game creates its renderer.
 --            It applies "mode" immediately, so the start of the game also runs in that mode.
 --            false is the default. It installs at the "initialized" event.

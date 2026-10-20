@@ -1,23 +1,32 @@
-//! The recorder on the `IDirect3DDevice8` the engine draws with.
+//! The wrappers on the `IDirect3DDevice8` the engine draws with, and the recorder of the
+//! comparison rig (the feature `rig`).
 //!
 //! `attach` replaces the vtable pointer of the device object with a table of wrappers. A
-//! wrapper can record the call and can skip it. A recording that skips calls is "dry". The
+//! wrapper takes the device lock, gives the call to the render link (`link_client`) when the
+//! link takes it, and puts the recorder on a buffer the game binds. With the rig a wrapper
+//! can also record the call and can skip it. A recording that skips calls is "dry". The
 //! Rust function runs dry for a comparison, so it draws nothing.
 //!
 //! A record in the log has the slot, the argument count, the arguments, the payload length in
 //! words and the payload. The payload is the bytes behind a pointer argument. Two logs are
 //! equal when the words are equal.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+#[cfg(feature = "rig")]
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 pub const SLOTS: usize = 97;
 /// The copy goes past the interface, because the device class can have more virtual functions.
 const TABLE_LEN: usize = 160;
 
 pub const SLOT_PRESENT: usize = 15;
+#[cfg(feature = "rig")]
 const SLOT_CREATE_VERTEX_BUFFER: usize = 23;
+#[cfg(feature = "rig")]
 const SLOT_CREATE_INDEX_BUFFER: usize = 24;
+#[cfg(feature = "rig")]
 const SLOT_SET_STREAM_SOURCE: usize = 83;
+#[cfg(feature = "rig")]
 const SLOT_SET_INDICES: usize = 85;
 
 /// The number of stack arguments of each method, without `this`.
@@ -59,6 +68,7 @@ pub const NAMES: [&str; SLOTS] = [
 
 /// A dry run does not pass these calls on. They change device state or draw, and they return
 /// no data.
+#[cfg(feature = "rig")]
 pub fn dry_skips(slot: usize) -> bool {
     matches!(
         slot,
@@ -81,6 +91,7 @@ pub fn vertex_count(primitive_type: u32, primitives: u32) -> u32 {
 
 /// The bytes behind the pointer argument of a call, as (address, length). The result is
 /// (0, 0) when the call has none.
+#[cfg(feature = "rig")]
 pub fn payload(slot: usize, a: &[u32]) -> (usize, usize) {
     let (ptr, len) = match slot {
         18 => (a[1], 0x600),                                // SetGammaRamp: D3DGAMMARAMP
@@ -104,6 +115,7 @@ pub fn payload(slot: usize, a: &[u32]) -> (usize, usize) {
 /// The arguments that are addresses of the storage of the caller. Such an address is the
 /// place for a result or the place of the payload data. Bit n is argument n. The log holds 0
 /// for them. The Rust function and the engine function keep such storage in different places.
+#[cfg(feature = "rig")]
 pub fn address_args(slot: usize) -> u32 {
     match slot {
         0 | 13 | 44 | 45 | 47 | 49 | 51 | 57 | 60 | 65 | 67 | 80 | 87 | 92 => 0b10,
@@ -122,16 +134,19 @@ pub fn address_args(slot: usize) -> u32 {
     }
 }
 
+#[cfg(feature = "rig")]
 fn makes_buffer(slot: usize) -> bool {
     slot == SLOT_CREATE_VERTEX_BUFFER || slot == SLOT_CREATE_INDEX_BUFFER
 }
 
 /// The methods that make a device resource and return it through their last argument.
+#[cfg(feature = "rig")]
 pub fn creates(slot: usize) -> bool {
     (20..=27).contains(&slot)
 }
 
 /// A resource that the Rust run of a comparison made.
+#[cfg(feature = "rig")]
 struct Created {
     slot: usize,
     args: [u32; 8],
@@ -139,6 +154,7 @@ struct Created {
     object: usize,
 }
 
+#[cfg(feature = "rig")]
 struct Replay {
     /// The engine run takes the resources of the Rust run and does not make its own.
     on: bool,
@@ -147,10 +163,12 @@ struct Replay {
     mismatch: bool,
 }
 
+#[cfg(feature = "rig")]
 static mut REPLAY: Replay = Replay { on: false, created: Vec::new(), taken: 0, mismatch: false };
 
 /// Starts the engine run of a comparison. The run is recorded and real. It gets the
 /// resources that the Rust run made, in the same order.
+#[cfg(feature = "rig")]
 pub unsafe fn begin_engine_run() {
     (*core::ptr::addr_of_mut!(LOG)).clear();
     let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
@@ -163,6 +181,7 @@ pub unsafe fn begin_engine_run() {
 
 /// Ends a comparison. Returns the differences in the resources made, as text. The text is
 /// empty when the engine run made the same resources as the Rust run.
+#[cfg(feature = "rig")]
 pub unsafe fn end_engine_run() -> String {
     let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
     replay.on = false;
@@ -189,14 +208,33 @@ pub unsafe fn end_engine_run() -> String {
 static mut ORIG: [usize; TABLE_LEN + 1] = [0; TABLE_LEN + 1];
 static mut OURS: [usize; TABLE_LEN + 1] = [0; TABLE_LEN + 1];
 
+#[cfg(feature = "rig")]
 static RECORDING: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "rig")]
 static DRY: AtomicBool = AtomicBool::new(false);
 /// The calls that the device makes on itself during a call are not calls of the game.
 static DEPTH: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "rig")]
 static mut LOG: Vec<u32> = Vec::new();
+#[cfg(feature = "rig")]
 static mut FRAME_HOOK: Option<unsafe fn()> = None;
 
+/// True in the Rust run of a comparison: the calls that set state or draw do not reach the
+/// device. Never without the rig.
+#[inline(always)]
+fn dry() -> bool {
+    #[cfg(feature = "rig")]
+    {
+        DRY.load(Ordering::Relaxed)
+    }
+    #[cfg(not(feature = "rig"))]
+    {
+        false
+    }
+}
+
 /// Starts the recording of a frame. Every call goes to the device.
+#[cfg(feature = "rig")]
 pub unsafe fn begin_frame() {
     (*core::ptr::addr_of_mut!(LOG)).clear();
     DRY.store(false, Ordering::Relaxed);
@@ -205,6 +243,7 @@ pub unsafe fn begin_frame() {
 
 /// Starts the Rust run of a comparison. The run is dry: the calls that set state or draw do
 /// not reach the device.
+#[cfg(feature = "rig")]
 pub unsafe fn begin_rust_run() {
     (*core::ptr::addr_of_mut!(LOG)).clear();
     let replay = &mut *core::ptr::addr_of_mut!(REPLAY);
@@ -215,6 +254,7 @@ pub unsafe fn begin_rust_run() {
 }
 
 /// Ends the recording and moves the log into `into`.
+#[cfg(feature = "rig")]
 pub unsafe fn end(into: &mut Vec<u32>) {
     RECORDING.store(false, Ordering::Relaxed);
     DRY.store(false, Ordering::Relaxed);
@@ -225,21 +265,32 @@ pub unsafe fn end(into: &mut Vec<u32>) {
 /// A record that is not a device call. It holds the data of a buffer at Unlock. The log gets
 /// only the calls that the game makes. It does not get what the device does inside one of
 /// its own calls.
+#[cfg(feature = "rig")]
 pub unsafe fn log_extra(slot: usize, args: &[u32], payload_bytes: &[u8]) {
     if RECORDING.load(Ordering::Relaxed) && DEPTH.load(Ordering::Relaxed) == 0 {
         append_record(&mut *core::ptr::addr_of_mut!(LOG), slot, args, payload_bytes);
     }
 }
 
+/// True while the recorder records the device calls. Never without the rig.
 pub fn recording() -> bool {
-    RECORDING.load(Ordering::Relaxed)
+    #[cfg(feature = "rig")]
+    {
+        RECORDING.load(Ordering::Relaxed)
+    }
+    #[cfg(not(feature = "rig"))]
+    {
+        false
+    }
 }
 
 /// The recorder calls `hook` at each Present that the game makes, before the call goes on.
+#[cfg(feature = "rig")]
 pub unsafe fn set_frame_hook(hook: unsafe fn()) {
     FRAME_HOOK = Some(hook);
 }
 
+#[cfg(feature = "rig")]
 pub fn append_record(log: &mut Vec<u32>, slot: usize, args: &[u32], payload_bytes: &[u8]) {
     log.push(slot as u32);
     log.push(args.len() as u32);
@@ -255,12 +306,14 @@ pub fn append_record(log: &mut Vec<u32>, slot: usize, args: &[u32], payload_byte
 }
 
 /// One record of a log. The result is `None` at the end or when the log is not complete.
+#[cfg(feature = "rig")]
 pub struct Record<'a> {
     pub slot: usize,
     pub args: &'a [u32],
     pub payload: &'a [u32],
 }
 
+#[cfg(feature = "rig")]
 pub fn read_record(log: &[u32], at: usize) -> Option<(Record<'_>, usize)> {
     let slot = *log.get(at)? as usize;
     let argc = *log.get(at + 1)? as usize;
@@ -270,6 +323,7 @@ pub fn read_record(log: &[u32], at: usize) -> Option<(Record<'_>, usize)> {
     Some((Record { slot, args, payload }, at + 3 + argc + words))
 }
 
+#[cfg(feature = "rig")]
 pub fn count_records(log: &[u32]) -> usize {
     let (mut at, mut n) = (0, 0);
     while let Some((_, next)) = read_record(log, at) {
@@ -280,6 +334,7 @@ pub fn count_records(log: &[u32]) -> usize {
 }
 
 /// The name of a log slot: a device method, or the record of a buffer at Unlock.
+#[cfg(feature = "rig")]
 pub fn slot_name(slot: usize) -> &'static str {
     match slot {
         crate::resource::SLOT_BUFFER_UNLOCK => "Buffer::Unlock",
@@ -287,6 +342,7 @@ pub fn slot_name(slot: usize) -> &'static str {
     }
 }
 
+#[cfg(feature = "rig")]
 pub fn describe(record: &Record<'_>) -> String {
     let name = slot_name(record.slot);
     let args: Vec<String> = record.args.iter().map(|a| format!("{a:#x}")).collect();
@@ -299,6 +355,7 @@ pub fn describe(record: &Record<'_>) -> String {
 }
 
 /// The first place two logs differ, as text, or `None` when they are equal.
+#[cfg(feature = "rig")]
 pub fn first_difference(a: &[u32], b: &[u32]) -> Option<String> {
     if a == b {
         return None;
@@ -352,6 +409,7 @@ unsafe fn forward(slot: usize, this: usize, args: &[u32]) -> u32 {
 
 /// Puts a call of the game into the log. Returns the result when the call does not go to the
 /// device from here: a dry run skips it, or the call makes a resource of a comparison.
+#[cfg(feature = "rig")]
 unsafe fn record(slot: usize, this: usize, args: &[u32]) -> Option<u32> {
     let (ptr, len) = payload(slot, args);
     let bytes: &[u8] = if len == 0 { &[] } else { core::slice::from_raw_parts(ptr as *const u8, len) };
@@ -396,8 +454,10 @@ unsafe fn record(slot: usize, this: usize, args: &[u32]) -> Option<u32> {
     }
 }
 
+#[cfg(feature = "rig")]
 const SLOT_TEST_COOPERATIVE_LEVEL: usize = crate::d3d::DEVICE_TEST_COOPERATIVE_LEVEL / 4;
 /// A test asked for a reset of the device. See `device_call`.
+#[cfg(feature = "rig")]
 pub static FORCE_RESET: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
@@ -409,38 +469,44 @@ unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
     }
     // A test asked for a reset: the next `TestCooperativeLevel` of the game says that the
     // device was lost and can be reset. `BeginPaint` then calls `Recreate`.
-    if slot == SLOT_TEST_COOPERATIVE_LEVEL && !DRY.load(Ordering::Relaxed) && FORCE_RESET.swap(false, Ordering::Relaxed) {
+    #[cfg(feature = "rig")]
+    if slot == SLOT_TEST_COOPERATIVE_LEVEL && !dry() && FORCE_RESET.swap(false, Ordering::Relaxed) {
         crate::log!("TestCooperativeLevel: D3DERR_DEVICENOTRESET on purpose");
         return crate::d3d::D3DERR_DEVICENOTRESET;
     }
     // A call that the host of the render link takes does not go to the device.
-    if !DRY.load(Ordering::Relaxed) {
+    if !dry() {
         if let Some(result) = crate::link_client::intercept(slot, args) {
             return result;
         }
     }
-    if CALLER_CENSUS.load(Ordering::Relaxed) {
-        crate::callers::count(slot, CALLER.load(Ordering::Relaxed) as usize);
-    }
-    // The Present of a dry run is not a frame of the game.
-    if slot == SLOT_PRESENT && !DRY.load(Ordering::Relaxed) {
-        crate::perf::on_present();
-        if let Some(hook) = FRAME_HOOK {
-            hook();
+    #[cfg(feature = "rig")]
+    {
+        if CALLER_CENSUS.load(Ordering::Relaxed) {
+            crate::callers::count(slot, CALLER.load(Ordering::Relaxed) as usize);
         }
-    }
-    if RECORDING.load(Ordering::Relaxed) {
-        if let Some(result) = record(slot, this, args) {
-            return result;
+        // The Present of a dry run is not a frame of the game.
+        if slot == SLOT_PRESENT && !dry() {
+            crate::perf::on_present();
+            if let Some(hook) = FRAME_HOOK {
+                hook();
+            }
+        }
+        if RECORDING.load(Ordering::Relaxed) {
+            if let Some(result) = record(slot, this, args) {
+                return result;
+            }
         }
     }
     // A buffer that the game binds gets the recorder. The time of its creation is not important.
+    #[cfg(feature = "rig")]
     match slot {
         SLOT_SET_STREAM_SOURCE => crate::resource::wrap(args[1] as usize),
         SLOT_SET_INDICES => crate::resource::wrap(args[0] as usize),
         _ => {}
     }
     let result = forward(slot, this, args);
+    #[cfg(feature = "rig")]
     if makes_buffer(slot) && (result as i32) >= 0 {
         crate::resource::wrap(*(args[args.len() - 1] as *const usize));
     }
@@ -486,8 +552,10 @@ wrappers! {
 /// writes it. See `entry_code`.
 static CALLER: AtomicU32 = AtomicU32::new(0);
 /// The wrappers count the callers of the device. See `callers.rs`.
+#[cfg(feature = "rig")]
 static CALLER_CENSUS: AtomicBool = AtomicBool::new(false);
 
+#[cfg(feature = "rig")]
 pub fn set_caller_census(on: bool) {
     CALLER_CENSUS.store(on, Ordering::Relaxed);
 }
@@ -603,6 +671,7 @@ mod tests {
         assert_eq!(NAMES[96], "DeletePatch");
     }
 
+    #[cfg(feature = "rig")]
     #[test]
     fn records_round_trip_and_compare() {
         let mut a = Vec::new();
@@ -625,6 +694,7 @@ mod tests {
         assert!(first_difference(&a, &b).unwrap().contains("engine has no more calls"));
     }
 
+    #[cfg(feature = "rig")]
     #[test]
     fn payload_sizes() {
         assert_eq!(payload(37, &[256, 0x1000]), (0x1000, 64));
@@ -634,6 +704,7 @@ mod tests {
         assert_eq!(payload(50, &[7, 1]), (0, 0));
     }
 
+    #[cfg(feature = "rig")]
     #[test]
     fn address_arguments_are_real_arguments() {
         for slot in 0..SLOTS {

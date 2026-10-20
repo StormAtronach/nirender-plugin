@@ -55,7 +55,7 @@ def main():
 
     obs_record.LONGEST = args.seconds
     obs_record.DRIVE = args.folder
-    session.prepare(build=not args.no_build)
+    session.prepare(build=not args.no_build, features=("rig",))
     run = session.Run("video")
     # The recorder waits 3 s for the capture to become stable, and needs a margin after the clip.
     spec = run.spec("video", save=args.save, cell=args.cell, modes=[mode for mode, _ in CLIPS],

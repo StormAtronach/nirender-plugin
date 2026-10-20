@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::gen::funcs::FUNCS;
 use crate::gen::layouts::NiDX8Renderer;
 use crate::shadow::{self, Mode};
-use crate::{census, device, engine, frame, hook, ports, site, x87};
+use crate::{census, device, engine, hook, ports, site, x87};
 
 /// `NiDX8Renderer::BeginPaint`. The game calls it before the first device call of a frame.
 const BEGIN_PAINT: usize = 0x6AC520;
@@ -160,11 +160,14 @@ pub unsafe fn install() -> Result<String, String> {
     // The census runs before the detours, because the detours change the entry bytes.
     let changed = census(false);
 
-    match crate::alloc::install() {
-        Ok(()) => crate::log!("allocator hooks on: calls that allocate are compared"),
-        Err(error) => crate::log!("no allocator hooks ({error}): calls that allocate are not compared"),
+    #[cfg(feature = "rig")]
+    {
+        match crate::alloc::install() {
+            Ok(()) => crate::log!("allocator hooks on: calls that allocate are compared"),
+            Err(error) => crate::log!("no allocator hooks ({error}): calls that allocate are not compared"),
+        }
+        device::set_frame_hook(crate::frame::on_present);
     }
-    device::set_frame_hook(frame::on_present);
     // A fault of the game's script loader that the addresses of the records decide.
     crate::script_names::install();
     // The shapes the engine destroys on another thread.
@@ -225,6 +228,7 @@ static ATTACHED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool
 /// Puts the recorder on the device when the game has a device and the recorder is not on
 /// it. A comparison calls this first: without the recorder its Rust run makes its device
 /// calls on the device of the game.
+#[cfg(feature = "rig")]
 pub unsafe fn attach_device_early() {
     if !ATTACHED.load(Ordering::Relaxed) {
         if let Ok(Some(text)) = attach_device() {

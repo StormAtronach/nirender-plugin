@@ -87,7 +87,7 @@ def main():
         subprocess.run([cargo, "build", "--release", "--quiet"], cwd=HOST_DIR, check=True)
     if args.again:
         return again(args)
-    session.prepare(build=not args.no_build)
+    session.prepare(build=not args.no_build, features=("rig",))
     run = session.Run(args.label)
     places = []
     for text in args.places:

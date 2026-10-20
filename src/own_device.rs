@@ -713,6 +713,7 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
             // SetStreamSource(stream, buffer, stride)
             if a[0] == 0 {
                 s.stream = (a[1], a[2]);
+                #[cfg(feature = "rig")]
                 crate::resource::wrap(a[1] as usize);
             }
             OK
@@ -725,6 +726,7 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
         }
         85 => {
             s.indices = (a[0], a[1]);
+            #[cfg(feature = "rig")]
             crate::resource::wrap(a[0] as usize);
             OK
         }

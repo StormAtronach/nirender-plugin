@@ -3,12 +3,13 @@
 //! `nirender` too, so `include("nirender")` works after it ran.
 
 use core::ffi::{c_char, c_void};
+#[cfg(feature = "rig")]
 use core::sync::atomic::Ordering;
 use std::ffi::CString;
 
 use crate::ports;
 use crate::shadow::Mode;
-use crate::{engine, frame, install, x87};
+use crate::{engine, install, x87};
 
 type LuaState = *mut c_void;
 type LuaFn = unsafe extern "C" fn(LuaState) -> i32;
@@ -449,6 +450,7 @@ unsafe extern "C" fn recheck(l: LuaState) -> i32 {
 
 /// `nirender.dumpState(path)` returns ok. It writes the renderer objects, for the comparison
 /// of two runs.
+#[cfg(feature = "rig")]
 unsafe extern "C" fn dump_state(l: LuaState) -> i32 {
     let ok = match arg_str(l, 1) {
         Some(path) => crate::dump::state(&path).is_ok(),
@@ -460,9 +462,10 @@ unsafe extern "C" fn dump_state(l: LuaState) -> i32 {
 
 /// `nirender.dumpFrame(path)` returns started. The device calls of the next frame go to the
 /// file. `frameTestResult()` tells when the file is complete.
+#[cfg(feature = "rig")]
 unsafe extern "C" fn dump_frame(l: LuaState) -> i32 {
     let started = match arg_str(l, 1) {
-        Some(path) => frame::request_dump(path),
+        Some(path) => crate::frame::request_dump(path),
         None => false,
     };
     lua_pushboolean(l, started as i32);
@@ -470,7 +473,7 @@ unsafe extern "C" fn dump_frame(l: LuaState) -> i32 {
 }
 
 /// `nirender.setMode(pattern, mode)` returns the number of ports set. `pattern` is "*" or a
-/// part of the engine name. `mode` is "off", "shadow" or "live".
+/// part of the engine name. `mode` is "off" or "live", and "shadow" with the feature `rig`.
 unsafe extern "C" fn set_mode(l: LuaState) -> i32 {
     let pattern = arg_str(l, 1).unwrap_or_default();
     let mode = arg_str(l, 2).and_then(|m| Mode::parse(&m));
@@ -497,7 +500,9 @@ unsafe extern "C" fn report_lua(l: LuaState) -> i32 {
 }
 
 /// `nirender.frameTest(kind)` returns started. `kind` is "control" or "live".
+#[cfg(feature = "rig")]
 unsafe extern "C" fn frame_test(l: LuaState) -> i32 {
+    use crate::frame;
     let kind = match arg_str(l, 1).as_deref() {
         Some("live") => frame::Kind::Live,
         _ => frame::Kind::Control,
@@ -507,8 +512,9 @@ unsafe extern "C" fn frame_test(l: LuaState) -> i32 {
 }
 
 /// `nirender.frameTestResult()` returns the result line, or nil while the test runs.
+#[cfg(feature = "rig")]
 unsafe extern "C" fn frame_test_result(l: LuaState) -> i32 {
-    match frame::take_result() {
+    match crate::frame::take_result() {
         Some(text) => push_str(l, &text),
         None => lua_pushnil(l),
     }
@@ -517,6 +523,7 @@ unsafe extern "C" fn frame_test_result(l: LuaState) -> i32 {
 
 /// `nirender.recordBuffers(on)` also records the data that the game writes into vertex and
 /// index buffers.
+#[cfg(feature = "rig")]
 unsafe extern "C" fn record_buffers(l: LuaState) -> i32 {
     let on = lua_toboolean(l, 1) != 0;
     crate::resource::enable(on);
@@ -525,6 +532,7 @@ unsafe extern "C" fn record_buffers(l: LuaState) -> i32 {
 }
 
 /// `nirender.fault(n)` puts fault `n` into the Rust code. See `engine::FAULT`. 0 removes it.
+#[cfg(feature = "rig")]
 unsafe extern "C" fn fault(l: LuaState) -> i32 {
     let n = lua_tonumber(l, 1) as u32;
     engine::FAULT.store(n, Ordering::Relaxed);
@@ -534,6 +542,7 @@ unsafe extern "C" fn fault(l: LuaState) -> i32 {
 
 /// `nirender.forceReset()` makes the next `TestCooperativeLevel` of the game say that the
 /// device can be reset. The game then makes its renderer again: `NiDX8Renderer::Recreate`.
+#[cfg(feature = "rig")]
 unsafe extern "C" fn force_reset(_l: LuaState) -> i32 {
     crate::device::FORCE_RESET.store(true, Ordering::Relaxed);
     0
@@ -548,6 +557,7 @@ unsafe extern "C" fn renderer(l: LuaState) -> i32 {
 
 /// `nirender.timing(true)` starts a measurement of frame times. `nirender.timing(false)`
 /// ends it and returns the frame times in microseconds as one string, separated by commas.
+#[cfg(feature = "rig")]
 unsafe extern "C" fn timing(l: LuaState) -> i32 {
     if lua_toboolean(l, 1) != 0 {
         crate::perf::start();
@@ -566,6 +576,7 @@ unsafe extern "C" fn timing(l: LuaState) -> i32 {
 }
 
 /// `nirender.liveCalls()` returns the number of calls that ran as Rust in mode "live".
+#[cfg(feature = "rig")]
 unsafe extern "C" fn live_calls(l: LuaState) -> i32 {
     lua_pushnumber(l, ports::all().map(|p| p.live_calls.get()).sum::<u64>() as f64);
     1
@@ -645,6 +656,7 @@ unsafe extern "C" fn link_use_kinds(l: LuaState) -> i32 {
 
 /// `nirender.deviceCallers(true)` starts the census of the callers of the device.
 /// `nirender.deviceCallers(false)` stops it and returns the counts as text. See `callers.rs`.
+#[cfg(feature = "rig")]
 unsafe extern "C" fn device_callers(l: LuaState) -> i32 {
     if lua_toboolean(l, 1) != 0 {
         crate::callers::set(true);
@@ -666,11 +678,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "skinSource", skin_source);
     set_fn(l, "setMode", set_mode);
     set_fn(l, "report", report_lua);
-    set_fn(l, "frameTest", frame_test);
-    set_fn(l, "frameTestResult", frame_test_result);
     set_fn(l, "fpuControlWord", fpu_control_word);
-    set_fn(l, "recordBuffers", record_buffers);
-    set_fn(l, "fault", fault);
     set_fn(l, "capture", capture);
     set_fn(l, "captureStatus", capture_status);
     set_fn(l, "instances", instances_report);
@@ -695,20 +703,28 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "ownDevice", own_device);
     set_fn(l, "threadCensus", thread_census);
     set_fn(l, "gameScreenshot", game_screenshot);
-    set_fn(l, "forceReset", force_reset);
     set_fn(l, "renderer", renderer);
-    set_fn(l, "liveCalls", live_calls);
-    set_fn(l, "timing", timing);
     set_fn(l, "recheck", recheck);
-    set_fn(l, "dumpState", dump_state);
-    set_fn(l, "dumpFrame", dump_frame);
     set_fn(l, "link", link);
     set_fn(l, "linkCounters", link_counters);
     set_fn(l, "linkUseFacts", link_use_facts);
     set_fn(l, "linkTextures", link_textures);
     set_fn(l, "linkUseKinds", link_use_kinds);
     set_fn(l, "cameraSpaceCompare", camera_space_compare);
-    set_fn(l, "deviceCallers", device_callers);
+    // The functions of the comparison rig.
+    #[cfg(feature = "rig")]
+    {
+        set_fn(l, "frameTest", frame_test);
+        set_fn(l, "frameTestResult", frame_test_result);
+        set_fn(l, "recordBuffers", record_buffers);
+        set_fn(l, "fault", fault);
+        set_fn(l, "forceReset", force_reset);
+        set_fn(l, "liveCalls", live_calls);
+        set_fn(l, "timing", timing);
+        set_fn(l, "dumpState", dump_state);
+        set_fn(l, "dumpFrame", dump_frame);
+        set_fn(l, "deviceCallers", device_callers);
+    }
     push_str(l, env!("CARGO_PKG_VERSION"));
     lua_setfield(l, -2, b"version\0".as_ptr() as *const c_char);
     lua_pushnumber(l, ports::all().count() as f64);

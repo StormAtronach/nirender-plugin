@@ -135,8 +135,8 @@ run and fail the run when MGE XE installed no hooks or could not compile its sha
 
 ## Checks
 
-    cargo test
-    cargo build --release
+    cargo test --features rig
+    cargo build --release --features rig
     python tools/rig/run_test.py --label <name>      # starts the game; one run at a time
 
 A port is complete when the run prints calls compared and 0 different for it, and the frame

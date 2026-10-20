@@ -31,12 +31,15 @@ SPEC_NAME = "nirender_test"
 MGE_LOGS = (os.path.join(harness.GAME_DIR, "mgeXE.log"), os.path.join(harness.MO2_ROOT, "overwrite", "Root", "mgeXE.log"))
 
 
-def prepare(build=True):
-    """Builds the plugin, runs the offline tests and installs the mod into the testing instance."""
+def prepare(build=True, features=()):
+    """Builds the plugin, runs the offline tests and installs the mod into the testing instance.
+
+    `features` are cargo features of the build: ("rig",) for a run of the comparison rig."""
     if build:
         env = dict(os.environ)
         env["PATH"] = os.path.join(os.path.expanduser("~"), ".cargo", "bin") + os.pathsep + env["PATH"]
-        for command in (["cargo", "test", "--quiet"], ["cargo", "build", "--release", "--quiet"]):
+        with_features = ["--features", ",".join(features)] if features else []
+        for command in (["cargo", "test", "--quiet"] + with_features, ["cargo", "build", "--release", "--quiet"] + with_features):
             print("> " + " ".join(command), flush=True)
             if subprocess.run(command, cwd=REPO, env=env).returncode != 0:
                 raise SystemExit("build failed")

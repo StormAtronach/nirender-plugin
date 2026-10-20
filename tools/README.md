@@ -80,8 +80,8 @@ The tools of `PORTING.md`. Three of them run inside IDA Pro (`ida_*.py`).
 ## `rig/`: the comparison rig
 
 The runs that compare the Rust code with the game code on a real Direct3D 8 device (the
-mode shadow and the frame comparison). Not used since 2026-10-11; they stay for a comparison
-run of a port.
+mode shadow and the frame comparison). They build the plugin with the cargo feature `rig`.
+Not used since 2026-10-11; they stay for a comparison run of a port.
 
 | Tool | What it is |
 | --- | --- |

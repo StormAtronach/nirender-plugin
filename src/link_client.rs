@@ -459,9 +459,9 @@ unsafe fn kind_call(kind: u32, call: u32, args: &[u32]) -> Option<u32> {
     let host = host()?;
     if kind == KIND_FRAME {
         *addr_of_mut!(FRAME_CALLS) += 1;
+        // This Present does not go through the device, where the frame timer of the rig is.
+        #[cfg(feature = "rig")]
         if call == CALL_PRESENT {
-            // This Present does not go through the device, where the frame timer and the
-            // frame hook are: the frame's work of the plugin runs here.
             crate::perf::on_present();
         }
     }

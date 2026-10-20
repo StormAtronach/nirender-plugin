@@ -19,10 +19,10 @@
 //! memory with the database before the install and refuses the renderer when another mod
 //! changed a port's bytes.
 //!
-//! The comparison rig: a port also runs in the mode shadow (the Rust and the engine
-//! function both, compared call by call, `shadow`) and the frame comparison (`frame`,
-//! `dump`, `perf`, the device recorder `device` and `resource`). The rig is for a test run
-//! with a real Direct3D 8 device, never for a player.
+//! The comparison rig (the cargo feature `rig`): a port also runs in the mode shadow (the
+//! Rust and the engine function both, compared call by call, `shadow`) and the frame
+//! comparison (`frame`, `dump`, `perf`, the recorder in `device` and `resource`). The rig
+//! is for a test run with a real Direct3D 8 device, never for a player.
 
 // The plugin is 32-bit only, because it runs inside Morrowind.exe.
 #[cfg(not(target_pointer_width = "32"))]
@@ -33,7 +33,9 @@ pub mod gen {
     pub mod layouts;
 }
 
+#[cfg(feature = "rig")]
 pub mod alloc;
+#[cfg(feature = "rig")]
 pub mod callers;
 pub mod capture;
 pub mod camera_space;
@@ -44,8 +46,10 @@ pub mod d3d;
 pub mod freed_fill;
 pub mod worker_events;
 pub mod device;
+#[cfg(feature = "rig")]
 pub mod dump;
 pub mod engine;
+#[cfg(feature = "rig")]
 pub mod frame;
 pub mod geometry_stream;
 pub mod hook;
@@ -58,9 +62,11 @@ pub mod light_stream;
 pub mod material_stream;
 pub mod mem;
 pub mod overlay;
+#[cfg(feature = "rig")]
 pub mod perf;
 pub mod ptr_hash;
 pub mod ports;
+#[cfg(feature = "rig")]
 pub mod resource;
 pub mod script_names;
 pub mod shadow;

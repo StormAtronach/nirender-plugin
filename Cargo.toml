@@ -11,6 +11,13 @@ description = "Rust replica of the NiDX8Renderer subsystem of Morrowind.exe, wit
 name = "akulakhan"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# The comparison rig: the mode shadow (the Rust and the engine function run both and are
+# compared call by call), the frame comparison, the dumps, the frame times, the census of the
+# device's callers and the allocator hooks. It needs a real Direct3D 8 device: a test run,
+# never a player's build. `cargo build --release --features rig`.
+rig = []
+
 [profile.release]
 opt-level = 2
 debug = 1

@@ -48,7 +48,7 @@ def main():
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
 
-    session.prepare(build=not args.no_build)
+    session.prepare(build=not args.no_build, features=("rig",))
     run = session.Run(args.label)
     result_file = run.path("frames.json")
     modes = (("off", "game"), ("live", "rust"))

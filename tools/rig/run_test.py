@@ -45,7 +45,7 @@ def main():
     ap.add_argument("--no-buffers", action="store_true", help="do not record the contents of locked buffers")
     args = ap.parse_args()
 
-    session.prepare(build=not args.no_build)
+    session.prepare(build=not args.no_build, features=("rig",))
     run = session.Run(args.label)
     cells = [c for c in args.cells.split(";") if c]
     spec = run.spec(

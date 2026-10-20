@@ -1,4 +1,5 @@
-//! Modes of a port and the shadow comparison.
+//! Modes of a port, the dispatch of a port call, and the shadow comparison (the feature
+//! `rig`).
 //!
 //! In shadow mode a call runs two times from the same start state. The Rust function runs
 //! first on a dry device. Then the engine function runs for real. The device calls, the
@@ -7,7 +8,6 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
-use crate::device;
 use crate::hook::Cleanup;
 use crate::win;
 
@@ -15,6 +15,7 @@ use crate::win;
 #[repr(u8)]
 pub enum Mode {
     Off = 0,
+    #[cfg(feature = "rig")]
     Shadow = 1,
     Live = 2,
 }
@@ -23,6 +24,7 @@ impl Mode {
     pub fn parse(text: &str) -> Option<Mode> {
         match text {
             "off" => Some(Mode::Off),
+            #[cfg(feature = "rig")]
             "shadow" => Some(Mode::Shadow),
             "live" => Some(Mode::Live),
             _ => None,
@@ -173,6 +175,7 @@ impl PortState {
 
     pub fn mode(&self) -> Mode {
         match self.mode.load(Ordering::Relaxed) {
+            #[cfg(feature = "rig")]
             x if x == Mode::Shadow as u8 => Mode::Shadow,
             x if x == Mode::Live as u8 => Mode::Live,
             _ => Mode::Off,
@@ -262,6 +265,7 @@ pub enum Leg {
 static LEG: AtomicU8 = AtomicU8::new(Leg::None as u8);
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 /// True while a frame comparison runs. Shadow mode does not compare calls then.
+#[cfg(feature = "rig")]
 static SUSPENDED: AtomicBool = AtomicBool::new(false);
 
 pub fn set_main_thread() {
@@ -290,10 +294,12 @@ pub fn leg() -> Leg {
     }
 }
 
+#[cfg(feature = "rig")]
 fn set_leg(leg: Leg) {
     LEG.store(leg as u8, Ordering::Relaxed);
 }
 
+#[cfg(feature = "rig")]
 pub fn suspend_shadow(on: bool) {
     SUSPENDED.store(on, Ordering::Relaxed);
 }
@@ -318,7 +324,12 @@ impl Regions {
     /// This call allocates or frees memory. The shadow test can compare it only with the
     /// allocator hooks.
     pub fn allocates(&mut self) {
+        #[cfg(feature = "rig")]
         if !crate::alloc::active() {
+            self.skip = true;
+        }
+        #[cfg(not(feature = "rig"))]
+        {
             self.skip = true;
         }
     }
@@ -332,6 +343,7 @@ impl Regions {
     }
 }
 
+#[cfg(feature = "rig")]
 struct Scratch {
     before: Vec<u8>,
     after_rust: Vec<u8>,
@@ -342,6 +354,7 @@ struct Scratch {
     regions: Vec<(usize, usize)>,
 }
 
+#[cfg(feature = "rig")]
 static mut SCRATCH: Scratch = Scratch {
     before: Vec::new(),
     after_rust: Vec::new(),
@@ -352,8 +365,10 @@ static mut SCRATCH: Scratch = Scratch {
 };
 
 /// The number of mismatches of one port that go into the log with their details.
+#[cfg(feature = "rig")]
 const REPORTED_MISMATCHES: u64 = 8;
 
+#[cfg(feature = "rig")]
 unsafe fn save(regions: &[(usize, usize)], into: &mut Vec<u8>) {
     into.clear();
     for &(addr, size) in regions {
@@ -361,6 +376,7 @@ unsafe fn save(regions: &[(usize, usize)], into: &mut Vec<u8>) {
     }
 }
 
+#[cfg(feature = "rig")]
 unsafe fn restore(regions: &[(usize, usize)], from: &[u8]) {
     let mut at = 0;
     for &(addr, size) in regions {
@@ -370,6 +386,7 @@ unsafe fn restore(regions: &[(usize, usize)], from: &[u8]) {
 }
 
 /// True when the memory now is not the same as the saved bytes.
+#[cfg(feature = "rig")]
 unsafe fn regions_differ(regions: &[(usize, usize)], rust: &[u8]) -> bool {
     let mut at = 0;
     for &(addr, size) in regions {
@@ -383,6 +400,7 @@ unsafe fn regions_differ(regions: &[(usize, usize)], rust: &[u8]) -> bool {
 
 /// The differences between the saved bytes and the memory now, as text. The text is empty
 /// when they are equal.
+#[cfg(feature = "rig")]
 unsafe fn memory_differences(regions: &[(usize, usize)], rust: &[u8]) -> String {
     let mut text = String::new();
     let mut at = 0;
@@ -509,6 +527,7 @@ pub unsafe fn dispatch<R: Eax>(
     eax
 }
 
+#[cfg_attr(not(feature = "rig"), allow(unused_variables))]
 unsafe fn dispatch_inner<R: Eax>(
     state: &PortState,
     compare_eax: bool,
@@ -549,11 +568,13 @@ unsafe fn dispatch_inner<R: Eax>(
             }
             eax
         }
+        #[cfg(feature = "rig")]
         Mode::Shadow => compare(state, compare_eax, regions, rust, engine),
     }
 }
 
 /// One call in shadow mode: the Rust run, the engine run, and the comparison of the two.
+#[cfg(feature = "rig")]
 #[inline(never)]
 unsafe fn compare<R: Eax>(
     state: &PortState,
@@ -562,6 +583,7 @@ unsafe fn compare<R: Eax>(
     rust: impl FnOnce() -> R,
     engine: impl FnOnce() -> u32,
 ) -> u32 {
+    use crate::device;
     if SUSPENDED.load(Ordering::Relaxed) || device::recording() {
         return engine();
     }

@@ -38,17 +38,19 @@ helper build. Build the plugin before `cargo xtask build` of that repo.
   engine's own path. `nirender.retained(mode)` changes the mode in a live game.
 - The threads: a port runs its Rust code on the main thread only. The cell worker's calls
   run the engine function and reach the plugin as events (`src/worker_events.rs`).
-- The comparison rig: a port can also run in the mode shadow, which runs the Rust and the
-  engine function both and compares them call by call (`src/shadow.rs`), and the frame
-  comparison compares the device calls of two frames (`src/frame.rs`). The rig needs a real
-  Direct3D 8 device: a test run, never a player's game.
+- The comparison rig (the cargo feature `rig`, not in a player's build): a port can also
+  run in the mode shadow, which runs the Rust and the engine function both and compares
+  them call by call (`src/shadow.rs`), and the frame comparison compares the device calls
+  of two frames (`src/frame.rs`). The rig needs a real Direct3D 8 device: a test run with
+  `tools/rig/`, never a player's game.
 
 ## Build and test
 
 ```text
-cargo build --release          the plugin
-cargo test --release           the tests of the plugin
-cd host && cargo test --release    the tests of the host crate (its own workspace)
+cargo build --release                   the plugin
+cargo test --release                    the tests of the plugin
+cargo test --release --features rig     the tests of the plugin with the comparison rig
+cd host && cargo test --release         the tests of the host crate (its own workspace)
 ```
 
 The gate of a change: `tools/validate_retained.py --mge-build <folder>`. Pass the folder of

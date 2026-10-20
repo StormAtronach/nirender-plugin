@@ -42,7 +42,7 @@ def main():
     if not args.no_build:
         cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
         subprocess.run([cargo, "build", "--release", "--quiet"], cwd=HOST_DIR, check=True)
-    session.prepare(build=not args.no_build)
+    session.prepare(build=not args.no_build, features=("rig",))
     run = session.Run(args.label)
     backends = [b for b in args.backends.split(",") if b]
     if args.own_host:

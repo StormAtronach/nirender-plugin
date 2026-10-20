@@ -799,7 +799,8 @@ unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
         spent: 0,
         failed: false,
     });
-    // The recorder on the buffers gives their bytes at each unlock.
+    // With the rig, the recorder on the buffers notes each lock of a buffer.
+    #[cfg(feature = "rig")]
     crate::resource::enable(true);
     ACTIVE.store(true, Ordering::Relaxed);
 }
@@ -1251,6 +1252,7 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
             handle = rd(args[i] as usize, 0);
         }
     }
+    #[cfg(feature = "rig")]
     if index == CALL_CREATE_VERTEX_BUFFER || index == CALL_CREATE_INDEX_BUFFER {
         crate::resource::wrap(handle as usize);
     }
