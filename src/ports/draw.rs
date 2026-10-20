@@ -190,7 +190,12 @@ unsafe fn site_draw_indexed_primitive(
     primitives: u32,
 ) -> u32 {
     let args = [device as u32, primitive_type, 0, vertices, start_index, primitives];
-    let vtable = crate::link_client::draw_vtable(vtable);
+    // A call site of the engine: the main thread when the port's Rust runs; the device's
+    // own vtable for a call of another thread.
+    let vtable = match MainThread::here() {
+        Some(t) => crate::link_client::draw_vtable(&t, vtable),
+        None => vtable,
+    };
     if !crate::site::is_call(site) {
         // The Code Patch option "Show transparent clothes in the inventory" is off: the game
         // calls `DrawIndexedPrimitive` of the device here, with the same arguments.
@@ -221,7 +226,12 @@ unsafe fn site_draw_indexed_primitive(
 /// `IDirect3DDevice8::DrawPrimitive` are on the stack, and the callee removes them.
 unsafe fn site_draw_primitive(site: usize, device: usize, vtable: usize, primitive_type: u32, primitives: u32) -> u32 {
     let args = [device as u32, primitive_type, 0, primitives];
-    let vtable = crate::link_client::draw_vtable(vtable);
+    // A call site of the engine: the main thread when the port's Rust runs; the device's
+    // own vtable for a call of another thread.
+    let vtable = match MainThread::here() {
+        Some(t) => crate::link_client::draw_vtable(&t, vtable),
+        None => vtable,
+    };
     if !crate::site::is_call(site) {
         // The Code Patch option "Show transparent clothes in the inventory" is off: the game
         // calls `DrawPrimitive` of the device here, with the same arguments.
@@ -497,7 +507,7 @@ pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, tran
         }
         site_thiscall!(DP_BOUND_COPY, this + R::worldBound, world_bound);
         site_thiscall!(DP_LIGHT_SET_STATE, light_manager, effect_state, texturing, vertex_color);
-        (crate::shape_stream::current_world(this), crate::link_client::world_is_relative())
+        (crate::shape_stream::current_world(this), crate::link_client::world_is_relative(t))
     };
     let fog = crate::shape_stream::fog_values(this, property_state);
     let sent = crate::shape_stream::send(t, this, world, relative, crate::shape_stream::ambient(this), crate::shape_stream::material_values(property_state), fog, &palette);
@@ -600,6 +610,7 @@ unsafe fn render_regions(set: &mut Regions, this: usize, geom_data: usize) {
 
 /// 0x6AEB80 `NiDX8Renderer::DrawPrimitive`
 pub unsafe fn draw_primitive(
+    t: &MainThread,
     this: usize,
     geom_data: usize,
     skin: usize,
@@ -734,7 +745,7 @@ pub unsafe fn draw_primitive(
                             let primitive_type: u32 = rd(geom_buffer, GB::primitiveType);
                             let device: usize = rd(this, R::d3dDevice);
                             let vtable: usize = rd(device, 0);
-                            crate::link_client::draw_state(this, primitive_type, vertices, start_index, primitives, false, passes > 1);
+                            crate::link_client::draw_state(t, this, primitive_type, vertices, start_index, primitives, false, passes > 1);
                             // ECX has the primitive type at this call.
                             site_draw_indexed_primitive(
                                 DP_DRAW_INDEXED_PRIMITIVE,
@@ -756,7 +767,7 @@ pub unsafe fn draw_primitive(
                 } else {
                     let primitives: u32 = rd(geom_buffer, GB::trianglesCount);
                     let device: usize = rd(this, R::d3dDevice);
-                    crate::link_client::draw_state(this, rd(geom_buffer, GB::primitiveType), 0, 0, primitives, false, passes > 1);
+                    crate::link_client::draw_state(t, this, rd(geom_buffer, GB::primitiveType), 0, 0, primitives, false, passes > 1);
                     device_draw_primitive(device, rd(geom_buffer, GB::primitiveType), 0, primitives);
                 }
             }
@@ -935,6 +946,7 @@ pub unsafe fn draw_skinned_primitive(this: usize, geom_data: usize, skin: usize,
 /// code does not read the last two arguments.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_skinned_primitive_2(
+    t: &MainThread,
     this: usize,
     primitive_type: u32,
     geom_data: usize,
@@ -1065,11 +1077,11 @@ pub unsafe fn draw_skinned_primitive_2(
                     let vtable: usize = rd(device, 0);
                     if index_buffer != 0 {
                         let vertices = rd::<u16>(partition, P::numVertices) as u32;
-                        crate::link_client::draw_state(this, primitive_type, vertices, 0, primitives, true, later_pass);
+                        crate::link_client::draw_state(t, this, primitive_type, vertices, 0, primitives, true, later_pass);
                         // ECX has the vtable at this call, as EDX does.
                         site_draw_indexed_primitive(S2_DRAW_INDEXED_PRIMITIVE, device, vtable, vtable as u32, primitive_type, vertices, 0, primitives);
                     } else {
-                        crate::link_client::draw_state(this, primitive_type, 0, 0, primitives, true, later_pass);
+                        crate::link_client::draw_state(t, this, primitive_type, 0, 0, primitives, true, later_pass);
                         site_draw_primitive(S2_DRAW_PRIMITIVE, device, vtable, primitive_type, primitives);
                     }
                     index = index.wrapping_add(1);
@@ -1121,7 +1133,7 @@ unsafe fn adopt_current_state(slot: usize, current: usize) {
 
 /// The draw calls of one batched object in `EndBatch` (0x6AE4D3 to 0x6AE55D). Here the game
 /// code calls the device directly. The Code Patch did not change these two calls.
-unsafe fn end_batch_draw(this: usize, geom_buffer: usize) {
+unsafe fn end_batch_draw(t: &MainThread, this: usize, geom_buffer: usize) {
     if rd::<usize>(geom_buffer, GB::indexBuffer) != 0 {
         let mut strip: u32 = 0;
         let mut start_index: u32 = 0;
@@ -1131,7 +1143,7 @@ unsafe fn end_batch_draw(this: usize, geom_buffer: usize) {
                 let device: usize = rd(this, R::d3dDevice);
                 let vertices: u32 = rd(geom_buffer, GB::verticesCount);
                 let primitive_type: u32 = rd(geom_buffer, GB::primitiveType);
-                crate::link_client::draw_state(this, primitive_type, vertices, start_index, primitives, false, false);
+                crate::link_client::draw_state(t, this, primitive_type, vertices, start_index, primitives, false, false);
                 device_draw_indexed_primitive(device, primitive_type, 0, vertices, start_index, primitives);
                 start_index = start_index.wrapping_add(primitives).wrapping_add(2);
                 strip = strip.wrapping_add(1);
@@ -1143,14 +1155,14 @@ unsafe fn end_batch_draw(this: usize, geom_buffer: usize) {
     } else {
         let primitives: u32 = rd(geom_buffer, GB::trianglesCount);
         let primitive_type: u32 = rd(geom_buffer, GB::primitiveType);
-        crate::link_client::draw_state(this, primitive_type, 0, 0, primitives, false, false);
+        crate::link_client::draw_state(t, this, primitive_type, 0, 0, primitives, false, false);
         device_draw_primitive(rd(this, R::d3dDevice), primitive_type, 0, primitives);
     }
 }
 
 /// 0x6AE090 `NiDX8Renderer::EndBatch`: draws the batched objects with one set-up of the
 /// pass, then frees the list.
-pub unsafe fn end_batch(this: usize) {
+pub unsafe fn end_batch(t: &MainThread, this: usize) {
     crate::shadow::touch(&end_batch_port::STATE);
     let head: usize = rd(this, R::batchedObjectListHead);
     if head == 0 {
@@ -1280,7 +1292,7 @@ pub unsafe fn end_batch(this: usize) {
                             prop2,
                         );
                     }
-                    end_batch_draw(this, geom_buffer);
+                    end_batch_draw(t, this, geom_buffer);
                     batch = rd(batch, B::nextBatch);
                     if batch == 0 {
                         break;
@@ -1361,19 +1373,19 @@ port_thiscall!(end_batch_port, 0x6AE090, "NiDX8Renderer::EndBatch",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| end_batch_regions(set, this),
-    rust = end_batch);
+    rust_main = end_batch);
 
 port_thiscall!(draw_primitive_port, 0x6AEB80, "NiDX8Renderer::DrawPrimitive",
     fn(this, geom_data: usize, skin: usize, transform: usize, world_bound: usize, geom_buffer: usize, partition: usize) -> (),
     compare_eax = false,
     regions = |set| draw_primitive_regions(set, this, geom_data, geom_buffer),
-    rust = draw_primitive);
+    rust_main = draw_primitive);
 
 port_thiscall!(draw_skinned_primitive_2_port, 0x6AEF90, "NiDX8Renderer::DrawSkinnedPrimitive2",
     fn(this, primitive_type: u32, geom_data: usize, skin: usize, transform: usize, world_bound: usize, unused_1: u32, unused_2: u32) -> (),
     compare_eax = false,
     regions = |set| draw_skinned_primitive_2_regions(set, this, skin),
-    rust = draw_skinned_primitive_2);
+    rust_main = draw_skinned_primitive_2);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &render_shape_port::STATE,
@@ -1884,20 +1896,20 @@ mod tests {
             wr::<u32>(gb, GB::trianglesCount, 11);
             wr::<u32>(gb, GB::verticesCount, 40);
             // No index buffer: the port makes one DrawPrimitive call.
-            end_batch_draw(r, gb);
+            end_batch_draw(&MainThread::for_test(), r, gb);
             assert_eq!(calls(), vec![(DEV_DRAW_PRIMITIVE, vec![w.dev(), 5, 0, 11])]);
             // An index buffer and no strips: the port makes no call.
             wr::<u32>(gb, GB::indexBuffer, 0x300);
-            end_batch_draw(r, gb);
+            end_batch_draw(&MainThread::for_test(), r, gb);
             assert_eq!(calls(), vec![]);
             // One "strip" without lengths: the port draws the triangle count.
             wr::<u32>(gb, GB::stripCount, 1);
-            end_batch_draw(r, gb);
+            end_batch_draw(&MainThread::for_test(), r, gb);
             assert_eq!(calls(), vec![(DEV_DRAW_INDEXED_PRIMITIVE, vec![w.dev(), 5, 0, 40, 0, 11])]);
             // Three strips.
             wr::<u32>(gb, GB::stripCount, 3);
             wr(gb, GB::stripVertexCounts, lengths.as_ptr() as usize);
-            end_batch_draw(r, gb);
+            end_batch_draw(&MainThread::for_test(), r, gb);
             assert_eq!(
                 calls(),
                 vec![
@@ -2040,7 +2052,7 @@ mod tests {
         let mut b = buffer();
         let gb = b.as_mut_ptr() as usize;
         unsafe {
-            draw_primitive(r, 0, 0, 0x10, 0x20, gb, 0);
+            draw_primitive(&MainThread::for_test(), r, 0, 0, 0x10, 0x20, gb, 0);
             assert_eq!(calls(), vec![]);
             let mut set = Regions::new();
             draw_primitive_regions(&mut set, r, 0, gb);
@@ -2075,7 +2087,7 @@ mod tests {
             // Two passes: the first pass returns "more passes follow".
             returns(DP_LOAD_BINARY, &[1, 0]);
 
-            draw_primitive(r, g, 0, t as usize, wb as usize, gb, 0);
+            draw_primitive(&MainThread::for_test(), r, g, 0, t as usize, wb as usize, gb, 0);
             let state = [ps, EFFECT_STATE as u32];
             let pass = |textures: u32| vec![pl, state[0], state[1], 1, textures, gu, 0, t, wb];
             let one_pass = |first: bool| {
@@ -2141,7 +2153,7 @@ mod tests {
             let keep_all = PASS_KEEP_PIXEL_SHADER | PASS_KEEP_STREAMS | PASS_KEEP_VERTEX_SHADER | PASS_KEEP_PARTITION_PASS;
             returns(DP_LOAD_BINARY, &[PASS_NO_DRAW | 1, keep_all]);
             poke(DP_CREATE_PARTITION_GEOM_BUFFER, 1, gb2 as u32);
-            draw_primitive(r, 0, 0x30, 0x10, 0x20, gb, p);
+            draw_primitive(&MainThread::for_test(), r, 0, 0x30, 0x10, 0x20, gb, p);
             let log = calls();
             let ids: Vec<usize> = log.iter().map(|call| call.0).collect();
             assert_eq!(
@@ -2168,7 +2180,7 @@ mod tests {
 
             // The pass does not draw.
             returns(DP_BUILD_PASS, &[BUILD_NO_DRAW | BUILD_KEEP_VERTEX_BLEND]);
-            draw_primitive(r, 0, 0x30, 0x10, 0x20, gb, p);
+            draw_primitive(&MainThread::for_test(), r, 0, 0x30, 0x10, 0x20, gb, p);
             let ids: Vec<usize> = calls().iter().map(|call| call.0).collect();
             assert_eq!(
                 ids,
@@ -2207,7 +2219,7 @@ mod tests {
             wr::<u32>(gb, GB::d3dVertexBuffer, 0x800);
             returns(DP_GET_RENDERER_SPECIFIC, &[property.as_ptr() as u32]);
             returns(RENDER_DATA_TYPE, &[7]);
-            draw_primitive(r, 0x40, 0, 0x10, 0x20, gb, 0);
+            draw_primitive(&MainThread::for_test(), r, 0x40, 0, 0x10, 0x20, gb, 0);
             let log = calls();
             assert_eq!(log[1], (RENDER_DATA_TYPE, vec![data.address() as u32]));
             let pack = log.iter().find(|call| call.0 == DP_PACK_GEOMETRY_BUFFERS).unwrap();
@@ -2219,7 +2231,7 @@ mod tests {
             // The port does not use render data of another renderer.
             returns(DP_GET_RENDERER_SPECIFIC, &[property.as_ptr() as u32]);
             returns(RENDER_DATA_TYPE, &[6]);
-            draw_primitive(r, 0x40, 0, 0x10, 0x20, gb, 0);
+            draw_primitive(&MainThread::for_test(), r, 0x40, 0, 0x10, 0x20, gb, 0);
             let log = calls();
             assert!(log.iter().any(|call| call.0 == DP_BUILD_SKIN_PARTITION_PASS));
             assert!(log.iter().all(|call| call.0 != PROP_CALLBACK));
@@ -2363,7 +2375,7 @@ mod tests {
         let (gb0, gb1) = (b0.as_mut_ptr() as usize, b1.as_mut_ptr() as usize);
         unsafe {
             // No skin: the port makes no call.
-            draw_skinned_primitive_2(r, 5, g, 0, 0x10, 0x20, 0, 0);
+            draw_skinned_primitive_2(&MainThread::for_test(), r, 5, g, 0, 0x10, 0x20, 0, 0);
             assert_eq!(calls(), vec![]);
 
             wr::<u16>(g, GD::textureSets, 11);
@@ -2380,7 +2392,7 @@ mod tests {
                 wr(gb, GB::trianglesCount, triangles);
                 wr::<u32>(gb, GB::fvf, 0x1116);
             }
-            draw_skinned_primitive_2(r, 5, g, si, 0x10, 0x20, 0, 0);
+            draw_skinned_primitive_2(&MainThread::for_test(), r, 5, g, si, 0x10, 0x20, 0, 0);
             let state = [ps, EFFECT_STATE as u32];
             let (gu, su) = (g as u32, si as u32);
             // The buffer has no "filled" flag. The geometry data gives 11 texture sets, and
@@ -2418,7 +2430,7 @@ mod tests {
             wr::<usize>(p1, P::bufferData, 0);
             returns(S2_BUILD_PASS, &[BUILD_KEEP_VERTEX_BLEND | BUILD_KEEP_TRANSFORM | BUILD_KEEP_LIGHTS]);
             returns(S2_LOAD_BINARY, &[keep_everything()]);
-            draw_skinned_primitive_2(r, 4, g, si, 0x10, 0x20, 0, 0);
+            draw_skinned_primitive_2(&MainThread::for_test(), r, 4, g, si, 0x10, 0x20, 0, 0);
             let ids: Vec<usize> = calls().iter().map(|call| call.0).collect();
             assert_eq!(
                 ids,
@@ -2444,7 +2456,7 @@ mod tests {
         let mut w = world();
         let r = w.r();
         unsafe {
-            end_batch(r);
+            end_batch(&MainThread::for_test(), r);
             assert_eq!(calls(), vec![]);
             let mut set = Regions::new();
             end_batch_regions(&mut set, r);
@@ -2494,7 +2506,7 @@ mod tests {
             // Two passes. The port fills the buffers in the first pass.
             returns(EB_LOAD_BINARY, &[1, 0]);
 
-            end_batch(r);
+            end_batch(&MainThread::for_test(), r);
             let pass = |textures: u32, tail: [u32; 4]| vec![pl, bp, es, 0, textures, tail[0], tail[1], tail[2], tail[3]];
             let head = [g as u32, 0, 0x10, 0x20];
             let one_pass = |first_pass: bool| {
@@ -2581,7 +2593,7 @@ mod tests {
             // The property state of the renderer has 3 references.
             wr::<u32>(ps as usize, NiRefObject::refCount, 3);
             returns(EB_BUILD_PASS, &[BUILD_NO_DRAW | BUILD_KEEP_LIGHTS]);
-            end_batch(r);
+            end_batch(&MainThread::for_test(), r);
             let log = calls();
             let ids: Vec<usize> = log.iter().map(|call| call.0).collect();
             assert_eq!(
@@ -2605,7 +2617,7 @@ mod tests {
             // list.
             wr::<u32>(gb, GB::flags, 0);
             wr(r, R::batchedObjectListHead, only.as_mut_ptr() as usize);
-            end_batch(r);
+            end_batch(&MainThread::for_test(), r);
             assert_eq!(calls(), vec![]);
             assert_eq!(rd::<usize>(r, R::batchedObjectListHead), only.as_mut_ptr() as usize);
         }

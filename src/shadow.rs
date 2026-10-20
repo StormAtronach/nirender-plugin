@@ -10,7 +10,6 @@ use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicU8, 
 
 use crate::hook::Cleanup;
 use crate::main_thread::MainThread;
-use crate::win;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -269,8 +268,18 @@ static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "rig")]
 static SUSPENDED: AtomicBool = AtomicBool::new(false);
 
+/// The id of the calling thread, from the thread environment block (`ClientId.UniqueThread`
+/// at `fs:[0x24]` on 32-bit Windows): the value `GetCurrentThreadId` returns, without the
+/// call. The ports ask on every call.
+#[inline(always)]
+pub fn current_thread_id() -> u32 {
+    let id: u32;
+    unsafe { core::arch::asm!("mov {0:e}, fs:[0x24]", out(reg) id, options(nomem, nostack, preserves_flags)) };
+    id
+}
+
 pub fn set_main_thread() {
-    MAIN_THREAD.store(unsafe { win::GetCurrentThreadId() }, Ordering::Relaxed);
+    MAIN_THREAD.store(current_thread_id(), Ordering::Relaxed);
 }
 
 /// The calling thread becomes the main thread when no thread is known yet. MWSE opens the
@@ -278,11 +287,11 @@ pub fn set_main_thread() {
 /// thread gate (`lua::main_thread_gate`) needs the main thread from the first call.
 /// `nirender.install` sets it again.
 pub fn note_main_thread_if_unknown() {
-    let _ = MAIN_THREAD.compare_exchange(0, unsafe { win::GetCurrentThreadId() }, Ordering::Relaxed, Ordering::Relaxed);
+    let _ = MAIN_THREAD.compare_exchange(0, current_thread_id(), Ordering::Relaxed, Ordering::Relaxed);
 }
 
 pub fn on_main_thread() -> bool {
-    unsafe { win::GetCurrentThreadId() == MAIN_THREAD.load(Ordering::Relaxed) }
+    current_thread_id() == MAIN_THREAD.load(Ordering::Relaxed)
 }
 
 /// The run of a comparison that the calling thread is in. A comparison runs on the main
@@ -650,4 +659,16 @@ unsafe fn compare<R: Eax>(
     }
     scratch.regions = set.list;
     eax_engine
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_thread_id_of_the_block_is_the_one_windows_gives() {
+        assert_eq!(current_thread_id(), unsafe { crate::win::GetCurrentThreadId() });
+        let other = std::thread::spawn(current_thread_id).join().unwrap();
+        assert_ne!(other, current_thread_id());
+    }
 }

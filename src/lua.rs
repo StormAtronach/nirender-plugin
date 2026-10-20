@@ -621,7 +621,7 @@ unsafe extern "C" fn link_counters(l: LuaState) -> i32 {
 /// cannot use facts. Bit n of `mask` is fact n of the contract. The host takes these facts
 /// from the packets and not from its inference.
 unsafe extern "C" fn link_use_facts(l: LuaState) -> i32 {
-    match crate::link_client::use_facts(lua_tonumber(l, 1) as u32) {
+    match crate::link_client::use_facts(&MainThread::claim(), lua_tonumber(l, 1) as u32) {
         Some(used) => {
             crate::log!("link: the host uses the facts of mask {used:#x}");
             lua_pushnumber(l, used as f64);

@@ -84,7 +84,12 @@ unsafe fn site_draw_indexed_primitive(
     start_index: u32,
     primitive_count: u32,
 ) -> u32 {
-    let vtable = crate::link_client::draw_vtable(vtable);
+    // A call site of the engine: the main thread when the port's Rust runs; the device's
+    // own vtable for a call of another thread.
+    let vtable = match MainThread::here() {
+        Some(t) => crate::link_client::draw_vtable(&t, vtable),
+        None => vtable,
+    };
     if !crate::site::is_call(site) {
         // The Code Patch option "Show transparent clothes in the inventory" is off: the game
         // calls `DrawIndexedPrimitive` of the device here. The function of the Code Patch
@@ -277,7 +282,7 @@ unsafe fn particles_record(t: &MainThread, this: usize, geometry_data: usize, co
         this,
         geometry_data as u32,
         crate::shape_stream::current_world(this),
-        crate::link_client::world_is_relative(),
+        crate::link_client::world_is_relative(t),
         crate::shape_stream::ambient(this),
         crate::shape_stream::material_values(property_state),
         crate::shape_stream::fog_values(this, property_state),
@@ -359,7 +364,7 @@ pub unsafe fn render_points(t: &MainThread, this: usize, geometry_data: usize, w
     device_set_indices(rd(this, R::d3dDevice), index_buffer, 0);
     set_fixed_function_shaders(this, FVF_POINTS);
     let device: usize = rd(this, R::d3dDevice);
-    crate::link_client::draw_state(this, 4, vertex_count, 0, count + count, false, false);
+    crate::link_client::draw_state(t, this, 4, vertex_count, 0, count + count, false, false);
     site_draw_indexed_primitive(0x6AD84B, device, rd(device, 0), 4, 0, vertex_count, 0, count + count);
     site_thiscall!(0x6AD874, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, world_transform, world_bound);
 }
@@ -442,7 +447,7 @@ unsafe fn lines_record(t: &MainThread, this: usize) -> bool {
     crate::shape_stream::send_lines(t, 
         this,
         crate::shape_stream::current_world(this),
-        crate::link_client::world_is_relative(),
+        crate::link_client::world_is_relative(t),
         crate::shape_stream::ambient(this),
         crate::shape_stream::material_values(property_state),
         crate::shape_stream::fog_values(this, property_state),
@@ -520,7 +525,7 @@ pub unsafe fn render_lines(t: &MainThread, this: usize, lines_data: usize, trans
     device_set_stream_source(rd(this, R::d3dDevice), 0, vertex_buffer, stride);
     set_fixed_function_shaders(this, fvf);
     let device: usize = rd(this, R::d3dDevice);
-    crate::link_client::draw_state(this, 2, count, 0, index_count >> 1, false, false);
+    crate::link_client::draw_state(t, this, 2, count, 0, index_count >> 1, false, false);
     site_draw_indexed_primitive(0x6ADC92, device, rd(device, 0), 2, 0, count, 0, index_count >> 1);
     site_thiscall!(0x6ADCBB, pipeline(), property_state(), effect_state(), 0, texture_sets, lines_data, 0, transform, world_bound);
 }

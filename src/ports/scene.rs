@@ -144,7 +144,7 @@ pub unsafe fn tri_shape_display(t: &MainThread, this: usize, camera: usize) {
     if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(t, this, crate::link::DRAW_SHAPE) {
         return;
     }
-    if crate::link_client::water_plane_display_skipped(this) {
+    if crate::link_client::water_plane_display_skipped(t, this) {
         return;
     }
     let Some(renderer) = shape_display_start(this, camera) else { return };
@@ -169,7 +169,7 @@ pub unsafe fn tri_strips_display(t: &MainThread, this: usize, camera: usize) {
     if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(t, this, crate::link::DRAW_STRIPS) {
         return;
     }
-    if crate::link_client::water_plane_display_skipped(this) {
+    if crate::link_client::water_plane_display_skipped(t, this) {
         return;
     }
     let Some(renderer) = shape_display_start(this, camera) else { return };

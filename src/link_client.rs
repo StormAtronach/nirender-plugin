@@ -9,7 +9,6 @@
 
 use core::ffi::c_void;
 use core::mem::size_of;
-use core::ptr::{addr_of, addr_of_mut};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::engine::{vcall0, WORLD_CONTROLLER};
@@ -25,7 +24,7 @@ use crate::gen::layouts::{
 };
 use crate::d3d::{D3DTS_TEXTURE0, D3DTS_WORLDMATRIX0};
 use crate::link::*;
-use crate::main_thread::MainThread;
+use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 use crate::shadow::BeforeFn;
 use crate::{ports, win};
@@ -165,57 +164,119 @@ const NO_ROOTS: Roots = Roots {
 static HOST: AtomicUsize = AtomicUsize::new(0);
 /// The camera of the scene packet that `set_camera_data` sent, until `begin_paint` sees it.
 static SCENE_SENT_FOR: AtomicUsize = AtomicUsize::new(0);
-// Only the render thread reads and writes these two.
-static mut ROOTS: Roots = NO_ROOTS;
+/// The state of the link that the ports' Rust writes on the main thread: the roots of the
+/// scene, the lights of the packets, and the copies of what the Rust code sent to the device
+/// last (the renderer of the game keeps no record of them). It opens only for the proof of
+/// the main thread (`main_thread::MainThread`); a device call of another thread is counted
+/// and does not open it.
+struct LinkState {
+    roots: Roots,
+    /// The lights of the state packet in progress.
+    state_lights: [StateLightV1; MAX_STATE_LIGHTS],
+    /// The lights of the draw packet in progress.
+    lights: [LightV1; MAX_LIGHTS],
+    worlds: [[f32; 16]; 4],
+    /// The transforms that the copies have: bit n is world matrix n, bit 8 + n is the
+    /// texture transform of stage n.
+    transforms_known: u32,
+    textures: [u32; STATE_STAGES as usize],
+    texture_transforms: [[f32; 16]; STATE_STAGES as usize],
+    /// The space of the world matrices in `worlds`: bit n is 1 when matrix n is relative
+    /// to the camera.
+    world_relative: u32,
+    /// The stages whose texture is in `textures`: bit n is stage n.
+    textures_known: u32,
+    /// The buffers that the Rust code sent to the device last: vertex buffer, stride,
+    /// vertex format, index buffer, base vertex index.
+    buffers: [u32; 5],
+    /// The lights that `game_dynamicLightTest` got, with the radius that it got for each:
+    /// the address of the light and the radius. The slot comes from the address.
+    game_lights: [(u32, f32); GAME_LIGHT_SLOTS],
+    /// The copy of the device's vtable with the draw functions of the link (`draw_vtable`).
+    draw_vtable: [usize; DEVICE_METHODS],
+}
+
+static STATE: MainCell<LinkState> = MainCell::new(LinkState {
+    roots: NO_ROOTS,
+    state_lights: [StateLightV1 { device_index: 0, d3d_light: [0; 26] }; MAX_STATE_LIGHTS],
+    lights: [LightV1 { light: 0, device_index: 0, light_type: 0, radius: 0.0 }; MAX_LIGHTS],
+    worlds: [[0.0; 16]; 4],
+    transforms_known: 0,
+    textures: [0; STATE_STAGES as usize],
+    texture_transforms: [[0.0; 16]; STATE_STAGES as usize],
+    world_relative: 0,
+    textures_known: 0,
+    buffers: [0; 5],
+    game_lights: [(0, 0.0); GAME_LIGHT_SLOTS],
+    draw_vtable: [0; DEVICE_METHODS],
+});
+
+/// The state, for a holder of the proof of the main thread.
+#[inline(always)]
+fn state(t: &MainThread) -> &mut LinkState {
+    STATE.get(t)
+}
+
+/// A count that only the main thread adds to, without a bus lock (as `shadow::Counter`),
+/// and that a report reads and resets.
+struct Count(core::sync::atomic::AtomicU32);
+
+impl Count {
+    const fn new() -> Count {
+        Count(core::sync::atomic::AtomicU32::new(0))
+    }
+    #[inline(always)]
+    fn add(&self) {
+        self.0.store(self.0.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
+    }
+    fn get(&self) -> u32 {
+        self.0.load(Ordering::Relaxed)
+    }
+    fn reset(&self) {
+        self.0.store(0, Ordering::Relaxed);
+    }
+}
+
 /// The number of draw packets of each class since the last read of the counters.
-static mut CLASS_COUNTS: [u32; CLASS_COUNT] = [0; CLASS_COUNT];
+static CLASS_COUNTS: [Count; CLASS_COUNT] = [const { Count::new() }; CLASS_COUNT];
 const CLASS_COUNT: usize = 18;
-/// The lights of the state packet in progress. Only the render thread uses it.
-static mut STATE_LIGHTS: [StateLightV1; MAX_STATE_LIGHTS] = [StateLightV1 { device_index: 0, d3d_light: [0; 26] }; MAX_STATE_LIGHTS];
 const MAX_STATE_LIGHTS: usize = 64;
-/// The world matrices, the stage textures and the texture transforms that the Rust code sent
-/// to the device last. The renderer of the game keeps no record of them. Only the render
-/// thread uses them.
-static mut WORLDS: [[f32; 16]; 4] = [[0.0; 16]; 4];
-/// The transforms that the copies have: bit n is world matrix n, bit 8 + n is the texture
-/// transform of stage n.
-static mut TRANSFORMS_KNOWN: u32 = 0;
-static mut TEXTURES: [u32; STATE_STAGES as usize] = [0; STATE_STAGES as usize];
-static mut TEXTURE_TRANSFORMS: [[f32; 16]; STATE_STAGES as usize] = [[0.0; 16]; STATE_STAGES as usize];
 
 /// Keeps a world matrix or a texture transform that goes to the device.
 #[inline]
 pub unsafe fn note_transform(state: u32, matrix: usize) {
+    // The device wrapper of a port: the main thread, or a call of another thread that the
+    // census counts and the state does not take.
+    let Some(t) = MainThread::here() else {
+        crate::sync::off_thread("link", "transform");
+        return;
+    };
+    let s = self::state(&t);
     let to = if (D3DTS_WORLDMATRIX0..D3DTS_WORLDMATRIX0 + 4).contains(&state) {
-        *addr_of_mut!(TRANSFORMS_KNOWN) |= 1 << (state - D3DTS_WORLDMATRIX0);
+        s.transforms_known |= 1 << (state - D3DTS_WORLDMATRIX0);
         // The host knows the space of this matrix only now, during the call of the game.
         let bit = 1 << (state - D3DTS_WORLDMATRIX0);
         let relative = crate::camera_space::pending()
             || host().is_some_and(|host| host.capabilities & CAP_WORLD_SPACE != 0 && (host.world_space)() != 0);
-        let mask = &mut *addr_of_mut!(WORLD_RELATIVE);
-        *mask = if relative { *mask | bit } else { *mask & !bit };
-        addr_of_mut!(WORLDS[(state - D3DTS_WORLDMATRIX0) as usize])
+        s.world_relative = if relative { s.world_relative | bit } else { s.world_relative & !bit };
+        &mut s.worlds[(state - D3DTS_WORLDMATRIX0) as usize]
     } else if (D3DTS_TEXTURE0..D3DTS_TEXTURE0 + STATE_STAGES).contains(&state) {
-        *addr_of_mut!(TRANSFORMS_KNOWN) |= 0x100 << (state - D3DTS_TEXTURE0);
-        addr_of_mut!(TEXTURE_TRANSFORMS[(state - D3DTS_TEXTURE0) as usize])
+        s.transforms_known |= 0x100 << (state - D3DTS_TEXTURE0);
+        &mut s.texture_transforms[(state - D3DTS_TEXTURE0) as usize]
     } else {
         return;
     };
-    core::ptr::copy_nonoverlapping(matrix as *const f32, to as *mut f32, 16);
+    core::ptr::copy_nonoverlapping(matrix as *const f32, to.as_mut_ptr(), 16);
 }
 
-/// The space of the world matrices in `WORLDS`: bit n is 1 when matrix n is relative to the
-/// camera.
-static mut WORLD_RELATIVE: u32 = 0;
-
 /// True when the copy of world matrix `index` is relative to the camera.
-pub unsafe fn world_relative(index: u32) -> bool {
-    *addr_of!(WORLD_RELATIVE) >> index & 1 != 0
+pub fn world_relative(t: &MainThread, index: u32) -> bool {
+    state(t).world_relative >> index & 1 != 0
 }
 
 /// The copy of world matrix `index`, as bit patterns.
-pub unsafe fn world_matrix(index: u32) -> [u32; 16] {
-    (*addr_of!(WORLDS))[index as usize].map(f32::to_bits)
+pub fn world_matrix(t: &MainThread, index: u32) -> [u32; 16] {
+    state(t).worlds[index as usize].map(f32::to_bits)
 }
 
 /// The facts that the host takes from the packets: the answer of the last `use_facts`.
@@ -235,11 +296,6 @@ pub unsafe fn host_camera_space(origin: &mut [f64; 3]) -> bool {
     }
 }
 
-/// The stages whose texture is in `TEXTURES`: bit n is stage n.
-static mut TEXTURES_KNOWN: u32 = 0;
-/// The buffers that the Rust code sent to the device last: vertex buffer, stride, vertex
-/// format, index buffer, base vertex index.
-static mut BUFFERS: [u32; 5] = [0; 5];
 /// The renderer of the last state packet.
 static RENDERER: AtomicUsize = AtomicUsize::new(0);
 /// The displays of the water plane in the scene in progress, those seen in all, and those
@@ -263,14 +319,14 @@ const SAMPLER_STATES: [u32; STATE_SAMPLER_STATES as usize] = [13, 14, 16, 17, 18
 
 /// The D3D8 calls that the Rust code did not make, for each device kind: render states,
 /// stage states, textures, buffers, transforms, lights.
-static mut SKIPPED: [u32; 6] = [0; 6];
+static SKIPPED: [Count; 6] = [const { Count::new() }; 6];
 
 /// True when the host has this device kind. It counts the call that the caller then skips.
 #[inline]
 fn skip(fact: u32, in_packet: bool) -> bool {
     let skipped = in_packet && SUPPRESS.load(Ordering::Relaxed) >> fact & 1 != 0;
     if skipped {
-        unsafe { (*addr_of_mut!(SKIPPED))[(fact - FACT_DEVICE_RENDER_STATES) as usize] += 1 };
+        SKIPPED[(fact - FACT_DEVICE_RENDER_STATES) as usize].add();
     }
     skipped
 }
@@ -360,7 +416,7 @@ unsafe fn command(command: u32, a: u32, b: u32, c: u32) -> bool {
 
 /// The calls of the Rust code on D3D8 objects that are not the device: reference counts,
 /// buffers, textures, surfaces. The index is the place in `OBJECT_CALL_NAMES`.
-static mut OBJECT_CALLS: [u32; 10] = [0; 10];
+static OBJECT_CALLS: [core::sync::atomic::AtomicU32; 10] = [const { core::sync::atomic::AtomicU32::new(0) }; 10];
 const OBJECT_CALL_NAMES: [&str; 10] = [
     "AddRef",
     "Release",
@@ -381,7 +437,7 @@ const OBJECT_CALL_NAMES: [&str; 10] = [
 pub unsafe fn object_call(index: usize, args: &[u32]) -> Option<u32> {
     let result = kind_call(KIND_OBJECTS, CALL_ADD_REF + index as u32, args);
     if result.is_none() {
-        (*addr_of_mut!(OBJECT_CALLS))[index] += 1;
+        OBJECT_CALLS[index].fetch_add(1, Ordering::Relaxed);
     }
     result
 }
@@ -389,7 +445,7 @@ pub unsafe fn object_call(index: usize, args: &[u32]) -> Option<u32> {
 /// The kinds `KIND_*` that the host has: the answer of the last `use_kinds`.
 static KINDS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 /// The frame and scene calls that went to the host and not to the device.
-static mut FRAME_CALLS: u32 = 0;
+static FRAME_CALLS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Tells the host which kinds `KIND_*` it has. Returns the mask that it uses, or `None`
 /// when the host has no such kinds.
@@ -459,7 +515,7 @@ unsafe fn kind_call(kind: u32, call: u32, args: &[u32]) -> Option<u32> {
     }
     let host = host()?;
     if kind == KIND_FRAME {
-        *addr_of_mut!(FRAME_CALLS) += 1;
+        FRAME_CALLS.fetch_add(1, Ordering::Relaxed);
         // This Present does not go through the device, where the frame timer of the rig is.
         #[cfg(feature = "rig")]
         if call == CALL_PRESENT {
@@ -551,15 +607,14 @@ unsafe extern "system" fn vtable_set_stage_state(device: usize, stage: u32, stat
 
 /// The number of methods of `IDirect3DDevice8`.
 const DEVICE_METHODS: usize = 97;
-static mut DRAW_VTABLE: [usize; DEVICE_METHODS] = [0; DEVICE_METHODS];
 
 /// The vtable to give to a draw function of the Code Patch: `vtable`, the one of the device,
 /// or a copy with the four entries above when the host draws.
-pub unsafe fn draw_vtable(vtable: usize) -> usize {
+pub unsafe fn draw_vtable(t: &MainThread, vtable: usize) -> usize {
     if !commands_for(FACT_DEVICE_BUFFERS) {
         return vtable;
     }
-    let copy = &mut *addr_of_mut!(DRAW_VTABLE);
+    let copy = &mut state(t).draw_vtable;
     core::ptr::copy_nonoverlapping(vtable as *const usize, copy.as_mut_ptr(), DEVICE_METHODS);
     copy[crate::d3d::DEVICE_DRAW_INDEXED_PRIMITIVE / 4] = vtable_draw_indexed as *const () as usize;
     copy[crate::d3d::DEVICE_DRAW_PRIMITIVE / 4] = vtable_draw as *const () as usize;
@@ -710,19 +765,31 @@ pub fn skip_buffers() -> bool {
 
 #[inline]
 pub unsafe fn note_stream_source(buffer: usize, stride: u32) {
-    let buffers = &mut *addr_of_mut!(BUFFERS);
+    let Some(t) = MainThread::here() else {
+        crate::sync::off_thread("link", "stream source");
+        return;
+    };
+    let buffers = &mut state(&t).buffers;
     buffers[0] = buffer as u32;
     buffers[1] = stride;
 }
 
 #[inline]
 pub unsafe fn note_vertex_shader(handle: u32) {
-    (*addr_of_mut!(BUFFERS))[2] = handle;
+    let Some(t) = MainThread::here() else {
+        crate::sync::off_thread("link", "vertex shader");
+        return;
+    };
+    state(&t).buffers[2] = handle;
 }
 
 #[inline]
 pub unsafe fn note_indices(buffer: usize, base_vertex: u32) {
-    let buffers = &mut *addr_of_mut!(BUFFERS);
+    let Some(t) = MainThread::here() else {
+        crate::sync::off_thread("link", "indices");
+        return;
+    };
+    let buffers = &mut state(&t).buffers;
     buffers[3] = buffer as u32;
     buffers[4] = base_vertex;
 }
@@ -733,7 +800,8 @@ const RENDER_STATES_IN_RECORD: u32 = 256;
 
 /// Sends to the device the state that the game believes the device has, for the kinds in
 /// `kinds`. The Rust code made no call for them while the host had them.
-unsafe fn resync(kinds: u32) {
+unsafe fn resync(t: &MainThread, kinds: u32) {
+    let s = state(t);
     let renderer = RENDERER.load(Ordering::Relaxed);
     if renderer == 0 {
         return;
@@ -765,22 +833,22 @@ unsafe fn resync(kinds: u32) {
     let live = |handle: u32| crate::own_host::active() && crate::own_host::is_live(handle as usize);
     if kinds >> FACT_DEVICE_TEXTURES & 1 != 0 {
         for stage in 0..STATE_STAGES {
-            if *addr_of!(TEXTURES_KNOWN) >> stage & 1 != 0 {
-                let texture = (*addr_of!(TEXTURES))[stage as usize];
+            if s.textures_known >> stage & 1 != 0 {
+                let texture = s.textures[stage as usize];
                 if live(texture) {
                     crate::d3d::device_set_texture(device, stage, texture as usize);
                 } else {
-                    *addr_of_mut!(TEXTURES_KNOWN) &= !(1 << stage);
+                    s.textures_known &= !(1 << stage);
                 }
             }
         }
     }
     if kinds >> FACT_DEVICE_TRANSFORMS & 1 != 0 {
         // Not the world matrices: the game sends them again for each draw.
-        let known = *addr_of!(TRANSFORMS_KNOWN);
+        let known = s.transforms_known;
         for stage in 0..STATE_STAGES {
             if known >> (8 + stage) & 1 != 0 {
-                crate::d3d::device_set_transform(device, D3DTS_TEXTURE0 + stage, addr_of!(TEXTURE_TRANSFORMS[stage as usize]) as usize);
+                crate::d3d::device_set_transform(device, D3DTS_TEXTURE0 + stage, s.texture_transforms[stage as usize].as_ptr() as usize);
             }
         }
     }
@@ -808,37 +876,37 @@ unsafe fn resync(kinds: u32) {
         }
     }
     if kinds >> FACT_DEVICE_BUFFERS & 1 != 0 {
-        let buffers = *addr_of!(BUFFERS);
+        let buffers = s.buffers;
         if buffers[0] != 0 && live(buffers[0]) {
             crate::d3d::device_set_stream_source(device, 0, buffers[0] as usize, buffers[1]);
             crate::d3d::device_set_vertex_shader(device, rd(render_state, RS::currentVertexShader));
         } else {
-            (*addr_of_mut!(BUFFERS))[0] = 0;
+            s.buffers[0] = 0;
         }
         if buffers[3] != 0 && live(buffers[3]) {
             crate::d3d::device_set_indices(device, buffers[3] as usize, buffers[4]);
         } else {
-            (*addr_of_mut!(BUFFERS))[3] = 0;
+            s.buffers[3] = 0;
         }
     }
 }
 
 /// The number of `SetRenderState` and `SetTextureStageState` calls of the Rust code, for
 /// each state. It shows which states the game changes during a frame.
-static mut RENDER_STATE_SETS: [u32; 256] = [0; 256];
-static mut STAGE_STATE_SETS: [u32; 32] = [0; 32];
+static RENDER_STATE_SETS: [Count; 256] = [const { Count::new() }; 256];
+static STAGE_STATE_SETS: [Count; 32] = [const { Count::new() }; 32];
 
 #[inline]
-pub unsafe fn note_render_state(state: u32) {
+pub fn note_render_state(state: u32) {
     if state < 256 {
-        *addr_of_mut!(RENDER_STATE_SETS[state as usize]) += 1;
+        RENDER_STATE_SETS[state as usize].add();
     }
 }
 
 #[inline]
-pub unsafe fn note_stage_state(state: u32) {
+pub fn note_stage_state(state: u32) {
     if state < 32 {
-        *addr_of_mut!(STAGE_STATE_SETS[state as usize]) += 1;
+        STAGE_STATE_SETS[state as usize].add();
     }
 }
 
@@ -846,8 +914,13 @@ pub unsafe fn note_stage_state(state: u32) {
 #[inline]
 pub unsafe fn note_texture(stage: u32, texture: usize) {
     if stage < STATE_STAGES {
-        *addr_of_mut!(TEXTURES[stage as usize]) = texture as u32;
-        *addr_of_mut!(TEXTURES_KNOWN) |= 1 << stage;
+        let Some(t) = MainThread::here() else {
+            crate::sync::off_thread("link", "texture");
+            return;
+        };
+        let s = state(&t);
+        s.textures[stage as usize] = texture as u32;
+        s.textures_known |= 1 << stage;
     }
 }
 /// The texture stage states of a state packet, in the order of the contract: `D3DTSS_*`.
@@ -855,7 +928,6 @@ const STAGE_STATES: [u32; STATE_STAGE_STATES as usize] = [1, 2, 3, 4, 5, 6, 26, 
 /// A list item of the game: data, next, previous.
 const ITEM_DATA: usize = 0x0;
 const ITEM_NEXT: usize = 0x4;
-static mut LIGHTS: [LightV1; MAX_LIGHTS] = [LightV1 { light: 0, device_index: 0, light_type: 0, radius: 0.0 }; MAX_LIGHTS];
 
 /// Makes `table` the host of the link. `own_host` uses this: the plugin answers the calls.
 pub unsafe fn set_host(table: &'static HostV1) {
@@ -964,7 +1036,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     let secunda = ptr_at(weather, W_SECUNDA);
 
     WATER_PLANE_DISPLAYS.store(0, Ordering::Relaxed);
-    let roots = &mut *addr_of_mut!(ROOTS);
+    let roots = &mut state(t).roots;
     *roots = Roots {
         scene_kind: scene_kind(camera, world_controller, water_controller),
         render_target: roots.render_target,
@@ -1033,7 +1105,8 @@ unsafe fn clear_buffer(args: &[usize]) {
 
 /// `SetRenderTarget(this, texture)`
 unsafe fn set_render_target(args: &[usize]) {
-    (*addr_of_mut!(ROOTS)).render_target = args[1] as u32;
+    // A `before` function of a port: the main thread (`shadow::run_before`).
+    state(&MainThread::claim()).roots.render_target = args[1] as u32;
     if let Some(host) = host() {
         (host.frame_event)(EVENT_SET_TARGET, args[1] as u32, 0);
         crate::capture::frame_event(EVENT_SET_TARGET, args[1] as u32, 0);
@@ -1058,8 +1131,8 @@ unsafe fn swap_buffers(_args: &[usize]) {
 /// plane has the no-sorter bit (0x51C597) and draws in place; on the plain path, with the
 /// eye below the plane, it is a sorted blend (0x51C5EB). [I] This rule was not checked
 /// against the second case.
-pub unsafe fn water_plane_display_skipped(shape: usize) -> bool {
-    let roots = &*addr_of!(ROOTS);
+pub unsafe fn water_plane_display_skipped(t: &MainThread, shape: usize) -> bool {
+    let roots = &state(t).roots;
     if roots.scene_kind != SCENE_WATER || object_class(shape, roots) != CLASS_WATER_PLANE {
         return false;
     }
@@ -1133,11 +1206,9 @@ unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
 /// 0x4D2F40 `game_dynamicLightTest`, cdecl with 6 arguments, and its first instruction.
 const DYNAMIC_LIGHT_TEST: usize = 0x4D2F40;
 const DYNAMIC_LIGHT_TEST_HEAD: [u8; 6] = [0x64, 0xA1, 0x00, 0x00, 0x00, 0x00];
-static mut DYNAMIC_LIGHT_TEST_ORIGINAL: usize = 0;
-/// The lights that `game_dynamicLightTest` got, with the radius that it got for each: the
-/// address of the light and the radius. The slot comes from the address.
+static DYNAMIC_LIGHT_TEST_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+/// The slots of `LinkState::game_lights`.
 const GAME_LIGHT_SLOTS: usize = 2048;
-static mut GAME_LIGHTS: [(u32, f32); GAME_LIGHT_SLOTS] = [(0, 0.0); GAME_LIGHT_SLOTS];
 
 fn game_light_slot(light: usize) -> usize {
     (light >> 4) % GAME_LIGHT_SLOTS
@@ -1145,10 +1216,13 @@ fn game_light_slot(light: usize) -> usize {
 
 /// The detour of `game_dynamicLightTest`: a note of the light, then the game function.
 unsafe extern "C" fn dynamic_light_test_detour(light: usize, node: usize, radius: u32, flags: u32, is_land: u32, high_priority: u32) {
-    if light != 0 {
-        (*addr_of_mut!(GAME_LIGHTS))[game_light_slot(light)] = (light as u32, radius as f32);
+    // The game tests its lights on the main thread; a call of another thread is counted.
+    match MainThread::here() {
+        Some(t) if light != 0 => state(&t).game_lights[game_light_slot(light)] = (light as u32, radius as f32),
+        Some(_) => {}
+        None => crate::sync::off_thread("link", "dynamic light test"),
     }
-    let original: unsafe extern "C" fn(usize, usize, u32, u32, u32, u32) = core::mem::transmute(*addr_of!(DYNAMIC_LIGHT_TEST_ORIGINAL));
+    let original: unsafe extern "C" fn(usize, usize, u32, u32, u32, u32) = core::mem::transmute(DYNAMIC_LIGHT_TEST_ORIGINAL.load(Ordering::Relaxed));
     original(light, node, radius, flags, is_land, high_priority)
 }
 
@@ -1158,8 +1232,8 @@ unsafe extern "C" fn dynamic_light_test_detour(light: usize, node: usize, radius
 /// A light that is part of a mesh does not go through that function, and its specular
 /// colour is a colour. Thus the value counts only for a light that the function got, and
 /// only while the colour is the radius that the function got.
-unsafe fn game_light_radius(light: usize) -> f32 {
-    let (noted, radius) = (*addr_of!(GAME_LIGHTS))[game_light_slot(light)];
+unsafe fn game_light_radius(t: &MainThread, light: usize) -> f32 {
+    let (noted, radius) = state(t).game_lights[game_light_slot(light)];
     let specular: [f32; 3] = rd(light, L::specularColor_r);
     if noted == light as u32 && specular == [radius; 3] {
         radius
@@ -1170,8 +1244,8 @@ unsafe fn game_light_radius(light: usize) -> f32 {
 
 /// Fills `LIGHTS` with the lights of an effect state that the light manager sends to the
 /// device. Returns the number of lights.
-unsafe fn collect_lights(effect_state: usize) -> usize {
-    let lights = &mut *addr_of_mut!(LIGHTS);
+unsafe fn collect_lights(t: &MainThread, effect_state: usize) -> usize {
+    let lights = &mut state(t).lights;
     let data_handler: usize = rd(DATA_HANDLER, 0);
     let sun_light: usize = if data_handler != 0 { rd(data_handler, DATA_HANDLER_SUN_LIGHT) } else { 0 };
     let mut count = 0;
@@ -1190,7 +1264,7 @@ unsafe fn collect_lights(effect_state: usize) -> usize {
             light: light as u32,
             device_index: rd(light, L::index),
             light_type,
-            radius: if light_type == LIGHT_POINT { game_light_radius(light) } else { 0.0 },
+            radius: if light_type == LIGHT_POINT { game_light_radius(t, light) } else { 0.0 },
         };
         count += 1;
     }
@@ -1206,7 +1280,8 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     };
     let t = &t;
     let Some(host) = host() else { return };
-    let roots = &*addr_of!(ROOTS);
+    let roots = state(t).roots;
+    let roots = &roots;
     let mut flags = 0;
     if skin != 0 {
         flags |= DRAW_SKINNED;
@@ -1234,7 +1309,7 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
         }
     }
     let material = ptr_at(property_state, PS::propMaterial);
-    let light_count = collect_lights(effect_state);
+    let light_count = collect_lights(t, effect_state);
     let draw = DrawV1 {
         struct_size: size_of::<DrawV1>() as u32,
         kind,
@@ -1247,11 +1322,10 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
         effect_state: effect_state as u32,
         material_shininess: if material != 0 { rd(material, MP::shininess) } else { 0.0 },
         light_count: light_count as u32,
-        lights: addr_of!(LIGHTS) as *const LightV1,
+        lights: state(t).lights.as_ptr(),
     };
-    let counts = &mut *addr_of_mut!(CLASS_COUNTS);
-    if let Some(count) = counts.get_mut(draw.object_class as usize) {
-        *count += 1;
+    if let Some(count) = CLASS_COUNTS.get(draw.object_class as usize) {
+        count.add();
     }
     (host.draw)(&draw);
     // The record of a skinned shape has the bone influences from the skin data. When it takes
@@ -1274,6 +1348,7 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
 /// The packet goes out only when the Rust code draws for real: not in the Rust run of a
 /// comparison, where the device is dry and the game code makes the draw after it.
 pub unsafe fn draw_state(
+    t: &MainThread,
     renderer: usize,
     primitive_type: u32,
     vertex_count: u32,
@@ -1291,7 +1366,8 @@ pub unsafe fn draw_state(
     RENDERER.store(renderer, Ordering::Relaxed);
     let render_state: usize = rd(renderer, R::renderState);
     let rs = |state: u32| -> u32 { rd(render_state, RS::renderStateSettings + state as usize * 8) };
-    let buffers = *addr_of!(BUFFERS);
+    let s = state(t);
+    let buffers = s.buffers;
     let mut samplers = [[0u32; STATE_SAMPLER_STATES as usize]; STATE_STAGES as usize];
     for (stage, values) in samplers.iter_mut().enumerate() {
         for (value, state) in values.iter_mut().zip(SAMPLER_STATES) {
@@ -1312,7 +1388,7 @@ pub unsafe fn draw_state(
     }
     // The light manager has a list of the lights that are on, and an entry with the
     // D3DLIGHT8 for each light that it sent.
-    let lights = &mut *addr_of_mut!(STATE_LIGHTS);
+    let lights = &mut s.state_lights;
     let mut light_count = 0;
     let manager: usize = rd(renderer, R::lightManager);
     let _lock = crate::sync::engine_lock(manager + LM::criticalSection);
@@ -1330,7 +1406,7 @@ pub unsafe fn draw_state(
     }
     let mut state = DrawStateV1 {
         light_count: light_count as u32,
-        lights: addr_of!(STATE_LIGHTS) as *const StateLightV1,
+        lights: s.state_lights.as_ptr(),
         stages,
         depth_write: rs(D3DRS_ZWRITEENABLE),
         cull_mode: rs(D3DRS_CULLMODE),
@@ -1364,11 +1440,11 @@ pub unsafe fn draw_state(
         depth_function: rs(23),
         stencil: [rs(52), rs(53), rs(54), rs(55), rs(56), rs(57), rs(58), rs(59)],
         samplers,
-        world_relative_mask: *addr_of!(WORLD_RELATIVE),
-        world: *addr_of!(WORLDS[0]),
-        blend_worlds: [*addr_of!(WORLDS[1]), *addr_of!(WORLDS[2]), *addr_of!(WORLDS[3])],
-        textures: *addr_of!(TEXTURES),
-        texture_transforms: *addr_of!(TEXTURE_TRANSFORMS),
+        world_relative_mask: s.world_relative,
+        world: s.worlds[0],
+        blend_worlds: [s.worlds[1], s.worlds[2], s.worlds[3]],
+        textures: s.textures,
+        texture_transforms: s.texture_transforms,
     };
     if !skinned {
         core::ptr::copy_nonoverlapping((renderer + R::currentWorldMatrix) as *const f32, state.world.as_mut_ptr(), 16);
@@ -1381,8 +1457,8 @@ pub const STATE_LIGHT_SIZE: usize = size_of::<StateLightV1>();
 
 /// The lights of the light manager of the renderer as state lights, as `draw_state` reads
 /// them: the bytes of the records.
-pub unsafe fn state_lights(renderer: usize) -> &'static [u8] {
-    let lights = &mut *addr_of_mut!(STATE_LIGHTS);
+pub unsafe fn state_lights<'a>(t: &'a MainThread, renderer: usize) -> &'a [u8] {
+    let lights = &mut state(t).state_lights;
     let mut light_count = 0;
     let manager: usize = rd(renderer, R::lightManager);
     let _lock = crate::sync::engine_lock(manager + LM::criticalSection);
@@ -1398,12 +1474,12 @@ pub unsafe fn state_lights(renderer: usize) -> &'static [u8] {
         core::ptr::copy_nonoverlapping((entry + LE::d3dLight) as *const u32, lights[light_count].d3d_light.as_mut_ptr(), 26);
         light_count += 1;
     }
-    core::slice::from_raw_parts(addr_of!(STATE_LIGHTS) as *const u8, light_count * STATE_LIGHT_SIZE)
+    core::slice::from_raw_parts(state(t).state_lights.as_ptr() as *const u8, light_count * STATE_LIGHT_SIZE)
 }
 
 /// True when the world matrix of the renderer is relative to the camera.
-pub unsafe fn world_is_relative() -> bool {
-    *addr_of!(WORLD_RELATIVE) & 1 != 0
+pub fn world_is_relative(t: &MainThread) -> bool {
+    state(t).world_relative & 1 != 0
 }
 
 /// `RenderShape(this, geometryData, skinInstance, transform, bound)`
@@ -1479,10 +1555,10 @@ pub unsafe fn connect() -> Result<String, String> {
     let Some(host) = table.as_ref() else {
         return Err(format!("the host refused version {VERSION}"));
     };
-    if *addr_of!(DYNAMIC_LIGHT_TEST_ORIGINAL) == 0 {
+    if DYNAMIC_LIGHT_TEST_ORIGINAL.load(Ordering::Relaxed) == 0 {
         let detour = dynamic_light_test_detour as *const () as usize;
-        *addr_of_mut!(DYNAMIC_LIGHT_TEST_ORIGINAL) =
-            crate::hook::install_raw(DYNAMIC_LIGHT_TEST, &DYNAMIC_LIGHT_TEST_HEAD, &[], detour, 6, crate::hook::Cleanup::Caller)?;
+        let original = crate::hook::install_raw(DYNAMIC_LIGHT_TEST, &DYNAMIC_LIGHT_TEST_HEAD, &[], detour, 6, crate::hook::Cleanup::Caller)?;
+        DYNAMIC_LIGHT_TEST_ORIGINAL.store(original, Ordering::Relaxed);
     }
     // The members up to `read_counters` are in each version of the table.
     if (host.struct_size as usize) < core::mem::offset_of!(HostV1, use_facts) {
@@ -1526,7 +1602,7 @@ pub unsafe fn connect() -> Result<String, String> {
 
 /// Tells the host which facts to take from the packets. Bit n of `mask` is the fact `FACT_`
 /// n. Returns the mask that the host uses, or `None` when the host cannot use facts.
-pub unsafe fn use_facts(mask: u32) -> Option<u32> {
+pub unsafe fn use_facts(t: &MainThread, mask: u32) -> Option<u32> {
     let host = host()?;
     if host.capabilities & CAP_USE_FACTS == 0 || (host.struct_size as usize) < size_of::<HostV1>() {
         return None;
@@ -1540,7 +1616,7 @@ pub unsafe fn use_facts(mask: u32) -> Option<u32> {
     }
     let before = SUPPRESS.swap(used & DEVICE_FACTS, Ordering::Relaxed);
     if before & !used != 0 {
-        resync(before & !used);
+        resync(t, before & !used);
     }
     Some(used)
 }
@@ -1600,54 +1676,48 @@ pub unsafe fn counters_text(reset: bool) -> String {
         ));
     }
     // The index is `CLASS_*` of the contract.
-    let counts = &mut *addr_of_mut!(CLASS_COUNTS);
     text.push_str("classes:");
-    for count in counts.iter() {
-        text.push_str(&format!(" {count}"));
+    for count in CLASS_COUNTS.iter() {
+        text.push_str(&format!(" {}", count.get()));
+        if reset {
+            count.reset();
+        }
     }
     text.push('\n');
     text.push_str(&format!("water plane displays: {} seen, {} skipped\n", WATER_PLANE_SEEN.load(Ordering::Relaxed), WATER_PLANE_SKIPPED.load(Ordering::Relaxed)));
-    if reset {
-        *counts = [0; CLASS_COUNT];
-    }
     text.push_str("object_calls:");
-    for (name, count) in OBJECT_CALL_NAMES.iter().zip((*addr_of_mut!(OBJECT_CALLS)).iter_mut()) {
-        if *count != 0 {
-            text.push_str(&format!(" {name}={count}"));
-        }
-        if reset {
-            *count = 0;
+    for (name, count) in OBJECT_CALL_NAMES.iter().zip(OBJECT_CALLS.iter()) {
+        let value = if reset { count.swap(0, Ordering::Relaxed) } else { count.load(Ordering::Relaxed) };
+        if value != 0 {
+            text.push_str(&format!(" {name}={value}"));
         }
     }
     text.push(0xA as char);
-    text.push_str(&format!("frame_calls_to_host: {}", *addr_of!(FRAME_CALLS)));
+    let frame_calls = if reset { FRAME_CALLS.swap(0, Ordering::Relaxed) } else { FRAME_CALLS.load(Ordering::Relaxed) };
+    text.push_str(&format!("frame_calls_to_host: {frame_calls}"));
     text.push(0xA as char);
-    if reset {
-        *addr_of_mut!(FRAME_CALLS) = 0;
-    }
-    let skipped = &mut *addr_of_mut!(SKIPPED);
+    let skipped: Vec<u32> = SKIPPED.iter().map(Count::get).collect();
     text.push_str(&format!(
         "calls_not_made: render_states {} stage_states {} textures {} buffers {} transforms {} lights {}",
         skipped[0], skipped[1], skipped[2], skipped[3], skipped[4], skipped[5]
     ));
     text.push(0xA as char);
     if reset {
-        *skipped = [0; 6];
+        SKIPPED.iter().for_each(Count::reset);
     }
     // The states that the Rust code asked for, as `state=calls`.
     text.push_str(&crate::camera_space::report(reset));
     text.push(0xA as char);
-    let render: &mut [u32] = &mut *addr_of_mut!(RENDER_STATE_SETS);
-    let stage: &mut [u32] = &mut *addr_of_mut!(STAGE_STATE_SETS);
-    let sets = [("render_states:", render), ("stage_states:", stage)];
+    let sets: [(&str, &[Count]); 2] = [("render_states:", &RENDER_STATE_SETS), ("stage_states:", &STAGE_STATE_SETS)];
     for (label, sets) in sets {
         text.push_str(label);
-        for (state, count) in sets.iter_mut().enumerate() {
-            if *count != 0 {
-                text.push_str(&format!(" {state}={count}"));
+        for (state, count) in sets.iter().enumerate() {
+            let value = count.get();
+            if value != 0 {
+                text.push_str(&format!(" {state}={value}"));
             }
             if reset {
-                *count = 0;
+                count.reset();
             }
         }
         text.push(0xA as char);

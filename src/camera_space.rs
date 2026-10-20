@@ -16,6 +16,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::engine::{thiscall0, WORLD_CONTROLLER};
 use crate::gen::layouts::NiDX8Renderer as R;
 use crate::hook::{self, Cleanup};
+use crate::main_thread::MainThread;
 use crate::mem::rd;
 use crate::ports::renderer_frame;
 
@@ -462,7 +463,8 @@ pub unsafe fn check_model_transform(this: usize, transform: usize, geometry_site
     } else {
         None
     };
-    let host_relative = crate::link_client::world_relative(0);
+    let Some(t) = MainThread::here() else { return };
+    let host_relative = crate::link_client::world_relative(&t, 0);
     let equal = match mine {
         Some(relative) => {
             // The translation is the last row of the world matrix.
@@ -708,12 +710,12 @@ pub unsafe fn check_skinned_transforms(skin: usize, partition: usize, transform:
             // `write_world_matrix` writes only the world matrix of a renderer.
             let mut matrix = [0u32; 16];
             renderer_frame::write_world_matrix((matrix.as_mut_ptr() as usize).wrapping_sub(R::currentWorldMatrix), relative.as_ptr() as usize);
-            equal = equal && crate::link_client::world_relative(index) && crate::link_client::world_matrix(index) == matrix;
+            equal = equal && MainThread::here().is_some_and(|t| crate::link_client::world_relative(&t, index) && crate::link_client::world_matrix(&t, index) == matrix);
         }
     });
     if !made {
         // The host must have used the matrices of the game.
-        equal = !crate::link_client::world_relative(0);
+        equal = MainThread::here().is_some_and(|t| !crate::link_client::world_relative(&t, 0));
     }
     count(if equal { 4 } else { 5 });
 }
