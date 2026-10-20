@@ -136,8 +136,15 @@ unsafe fn note_of(shape: usize) -> String {
     }
     let esp: usize;
     core::arch::asm!("mov {}, esp", out(reg) esp, options(nomem, nostack, preserves_flags));
+    // The top of this thread's stack (the thread information block, `fs:[4]`): the scan
+    // stops there. Unbounded, it read past the cell worker's stack when the worker destroyed
+    // a retained shape near the top of its stack, and the worker crashed (risk 26, records
+    // entry 42: the land walk at an exterior cell buffer of 10 without the deferred unload).
+    let top: usize;
+    core::arch::asm!("mov {}, fs:[4]", out(reg) top, options(nostack, readonly, preserves_flags));
+    let words = top.saturating_sub(esp) / 4;
     let mut addresses = Vec::new();
-    for i in 0..192 {
+    for i in 0..192.min(words) {
         let word: usize = rd(esp, i * 4);
         if (0x401000..0x7A0000).contains(&word) && !addresses.contains(&word) {
             addresses.push(word);

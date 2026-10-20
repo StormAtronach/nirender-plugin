@@ -253,7 +253,15 @@ struct Instance {
     /// The effect state its lights were read from (the table walk reads them again only
     /// when it changes).
     effect_state: usize,
+    /// The properties of the shape's property state at its last display, when the shape is
+    /// alive: `apply_changes` compares a changed property with this copy and reads no engine
+    /// memory. It read the property state of every instance, and the cell worker had freed
+    /// some of the shapes (risk 26, records entry 42).
+    properties: [usize; PROPERTY_SLOTS],
 }
+
+/// The property slots of `NiPropertyState` from `propAlpha` (+0x08) to `field_30` (+0x30).
+const PROPERTY_SLOTS: usize = 11;
 
 struct Tables {
     instances: HashMap<usize, Instance>,
@@ -695,7 +703,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, bones_frame: 0, live, recheck: false, kind: 0, chain: Vec::new(), mob_root: 0, mob_checked: 0, ref_root: 0, root_waiting: false, marked: 0, walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0 });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, bones_frame: 0, live, recheck: false, kind: 0, chain: Vec::new(), mob_root: 0, mob_checked: 0, ref_root: 0, root_waiting: false, marked: 0, walk_frame: 0, bucketed: false, counted_state: 0, counted_lights: Vec::new(), source_states: (0, 0), source_keys: Vec::new(), renote: false, effect_state: 0, properties: [0; PROPERTY_SLOTS] });
     t.pending = Some((shape, id));
 }
 
@@ -1193,16 +1201,9 @@ unsafe fn apply_changes() {
     notes[1] += 1;
     let t = tables();
     for (&shape, instance) in t.instances.iter_mut() {
-        let mut hit = changed.contains(&shape);
-        if !hit {
-            let state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
-            if state != 0 {
-                hit = (PS::propAlpha..=PS::field_30).step_by(4).any(|at| {
-                    let property: usize = rd(state, at);
-                    property != 0 && changed.contains(&property)
-                });
-            }
-        }
+        // Only the table's own copy of the properties: the cell worker can have freed the
+        // shape since the last drain of its events (risk 26).
+        let hit = changed.contains(&shape) || instance.properties.iter().any(|&property| property != 0 && changed.contains(&property));
         if hit && !instance.recheck {
             instance.recheck = true;
             (*core::ptr::addr_of_mut!(RECHECKS))[Recheck::Notified as usize] += 1;
@@ -1342,6 +1343,8 @@ unsafe fn display_work(shape: usize, kind: u32, table: bool) -> bool {
     let id = instance.id;
     let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
     let effect_state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
+    // The copy of the properties for `apply_changes` (the shape is alive here).
+    instance.properties = if property_state != 0 { core::array::from_fn(|i| rd(property_state, PS::propAlpha + i * 4)) } else { [0; PROPERTY_SLOTS] };
     // The controllers of a live shape run before its draw, as the engine's display runs
     // them (`NiTriShape::Display`): a morpher writes its vertices then.
     if instance.live {
