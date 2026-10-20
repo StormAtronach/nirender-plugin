@@ -1,4 +1,10 @@
-//! Draws a capture of the render link stream with wgpu, without the game.
+//! The crate `nirender_wgpu`: the renderer of the records of the nirender plugin, on wgpu.
+//!
+//! The helper of MGE XE G7 (numidium.exe) has this crate as a part: it reads the ring that
+//! the plugin writes in the game process and draws each frame into the window of the game,
+//! and adds its own draws (the distant land, the shadows, the water, the post shaders)
+//! through the `Extension` trait. The same crate is the program `nirender-host`, which
+//! draws a capture file without the game, or the ring in a window of its own:
 //!
 //! ```text
 //! nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N] [--anisotropy N]
