@@ -67,6 +67,13 @@ def main():
     if not args.reference:
         mods.append((harness.RUN_MOD_PREFIX + "MGE XE", {"Root/d3d8.dll": os.path.join(args.mge_build, "d3d8.dll"),
                                                          "Root/numidium.exe": os.path.join(args.mge_build, "numidium.exe")}))
+        # The Lua of the build (the MGE XE Options mod: its menus and the event
+        # distantLandReady) over the release's copy in the instance, as the runner stages it.
+        options = os.path.join(args.mge_build, "Data Files", "mwse", "mods", "MGE XE Options")
+        for folder, _, names in os.walk(options):
+            for name in names:
+                source = os.path.join(folder, name)
+                mods[-1][1]["MWSE/mods/MGE XE Options/" + os.path.relpath(source, options).replace(os.sep, "/")] = source
 
     if args.plugin or args.livecoding:
         files = {}
