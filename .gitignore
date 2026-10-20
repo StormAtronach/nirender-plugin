@@ -6,3 +6,4 @@ __pycache__/
 spikes/*/target/
 /host/target
 /d3d8/target
+/nirender.log
