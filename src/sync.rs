@@ -48,6 +48,16 @@ impl Drop for DeviceLock {
     }
 }
 
+/// True when this thread holds the device lock now (`CRITICAL_SECTION::OwningThread`, the
+/// fourth word, is the owner's thread id; the section is made at its first use).
+pub fn device_lock_held_here() -> bool {
+    if !SECTION_MADE.is_completed() {
+        return false;
+    }
+    let owner = unsafe { (*core::ptr::addr_of!(SECTION)).0[3] };
+    owner != 0 && owner == unsafe { crate::win::GetCurrentThreadId() } as usize
+}
+
 /// An engine critical section held: the lock is free again when this value goes away.
 pub struct EngineLock(*mut CriticalSection);
 

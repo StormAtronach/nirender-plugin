@@ -658,8 +658,10 @@ unsafe fn tee(path: &str, frames: u32) -> Result<(), String> {
             }
         }
         // The source textures, the rendered textures and the geometry of the game go into
-        // the file as the game makes them again.
-        purge(s);
+        // the file as the game makes them again: the purge runs at the next Present, outside
+        // the device lock and with the cell worker stalled (`run_pending_purge`).
+        let _ = s;
+        PURGE_PENDING.store(true, Ordering::Release);
     }
     crate::log!("capture: a file from the stream, {frames} frames, into {path}");
     Ok(())
@@ -1329,7 +1331,45 @@ pub unsafe fn texture_update(handle: usize, level: u32, width: u32, height: u32,
     write(tag::TEXTURE_UPDATE, &[words(&[handle as u32, level, width, height, format, bytes.len() as u32]), bytes]);
 }
 
+/// A purge is due (`purge`): the capture asked for it under the device lock.
+static PURGE_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// The engine's stall of the cell worker (`DataHandler::waitForBackgroundThread`, the save
+/// game's own handshake): the worker acknowledges between two references of the cell it
+/// loads and spins until the release; an idle worker returns at once, and only the main
+/// thread resumes it. The release clears the request.
+const DATA_HANDLER: usize = 0x7C67E0;
+const WAIT_FOR_BACKGROUND_THREAD: usize = 0x48EB10;
+const RELEASE_BACKGROUND_THREAD: usize = 0x48EB60;
+
+/// The main thread runs a pending purge at a Present, outside the device lock and with the
+/// cell worker stalled. The purge walks the engine's texture list and the renderer's maps of
+/// geometry and skin partitions and frees through them; the worker appends to and frees from
+/// the same structures with no lock (the audit of 2026-10-20, item 2), and the worker can
+/// need the device lock before its stall point (item 3: the purge under the device lock and
+/// the stall would deadlock). Called by the link client after the Present's capture call.
+pub unsafe fn run_pending_purge() {
+    if !PURGE_PENDING.load(Ordering::Acquire) || !crate::shadow::on_main_thread() || crate::sync::device_lock_held_here() {
+        return;
+    }
+    PURGE_PENDING.store(false, Ordering::Release);
+    let data_handler: usize = rd(DATA_HANDLER, 0);
+    if data_handler != 0 {
+        crate::engine::thiscall0(WAIT_FOR_BACKGROUND_THREAD, data_handler);
+    }
+    {
+        let _lock = crate::sync::device_lock();
+        if let Some(s) = state() {
+            purge(s);
+        }
+    }
+    if data_handler != 0 {
+        crate::engine::thiscall0(RELEASE_BACKGROUND_THREAD, data_handler);
+    }
+}
+
 /// Makes the renderer drop its textures and the buffers of the geometry of the warm-up.
+/// Only through `run_pending_purge`: the cell worker stalled.
 unsafe fn purge(s: &mut State) {
     let renderer = crate::engine::renderer();
     if renderer == 0 {
@@ -1389,9 +1429,9 @@ unsafe fn frame_end() {
                 let window: u32 = if renderer != 0 { rd(renderer, DEVICE_WINDOW) } else { 0 };
                 write(tag::HEADER, &[words(&[size[0], size[1], window])]);
                 write_kept();
-                if let Some(s) = state() {
-                    purge(s);
-                }
+                // The purge at the next Present, outside the device lock, with the cell
+                // worker stalled (`run_pending_purge`).
+                PURGE_PENDING.store(true, Ordering::Release);
             }
         }
         Phase::Record(left) => {

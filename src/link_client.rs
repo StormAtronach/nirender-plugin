@@ -469,6 +469,10 @@ unsafe fn kind_call(kind: u32, call: u32, args: &[u32]) -> Option<u32> {
     }
     let result = (host.call)(call, args.as_ptr());
     crate::capture::call(call, args, result);
+    if kind == KIND_FRAME && call == CALL_PRESENT {
+        // A capture's purge, outside the device lock, with the cell worker stalled.
+        crate::capture::run_pending_purge();
+    }
     Some(result)
 }
 
