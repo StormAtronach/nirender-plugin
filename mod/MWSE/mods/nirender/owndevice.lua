@@ -439,12 +439,15 @@ return function(nirender, spec)
                             end
                             if own then nirender.captureFrames(2) end
                             say("tour: cell %d stop %d %s (%d controllers held)", index, stop, ref.object.id, held)
-                            if not own and mge and mge.saveScreenshot then
-                                -- The reference with MGE XE on Direct3D 9: a picture of each stop, with
-                                -- the name that tools/validate_tour.py gives the replayed picture.
+                            if mge and mge.saveScreenshot then
+                                -- A picture of each stop, with the name that tools/validate_tour.py
+                                -- gives the replayed picture: in ref/ with MGE XE on Direct3D 9 (the
+                                -- reference), in live/ on wgpu (the helper's live frame, beside the
+                                -- capture).
                                 local name = string.format("%d-%02d-%s.png", index, stop, ref.object.id:gsub("[^%w_]", "_"))
-                                lfs.mkdir(spec.dir .. "/ref")
-                                mge.saveScreenshot({ path = spec.dir .. "/ref/" .. name, captureWithUI = true })
+                                local folder = own and "/live" or "/ref"
+                                lfs.mkdir(spec.dir .. folder)
+                                mge.saveScreenshot({ path = spec.dir .. folder .. "/" .. name, captureWithUI = true })
                             end
                             after(0.3, go)
                         end)
