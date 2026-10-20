@@ -14,7 +14,7 @@ if not exist local.bat (
     pause
     exit /b 1
 )
-call local.bat
+call "%~dp0local.bat"
 if not defined LIVECODING set "LIVECODING=%~dp0..\moreFPS\docs\Numidium Project\scripts\wgpu-scene-audit\livecoding-mark.lua"
 "%PYTHON%" tools\play.py --mge-build "%MGE_BUILD%" --plugin --livecoding "%LIVECODING%"
 echo.

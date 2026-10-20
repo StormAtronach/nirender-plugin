@@ -17,7 +17,7 @@ if not exist local.bat (
     pause
     exit /b 1
 )
-call local.bat
+call "%~dp0local.bat"
 if not defined LIVECODING set "LIVECODING=%~dp0..\moreFPS\docs\Numidium Project\scripts\wgpu-scene-audit\livecoding-mark.lua"
 "%PYTHON%" tools\play.py --mge-build "%MGE_BUILD%" --plugin --livecoding "%LIVECODING%" --instance "%OUTLANDER_INSTANCE%" --game-dir "%OUTLANDER_INSTANCE%\Stock Game Folder" --profile Outlander --config-mod "MGE XE G7"
 echo.
