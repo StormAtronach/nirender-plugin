@@ -71,6 +71,59 @@ macro_rules! port_thiscall {
     };
 }
 
+/// Declares the port of a `__thiscall` engine function that returns a `float`: the value is
+/// on the x87 stack (ST(0)), not in EAX. The detour and the call of the engine function have
+/// the float type, so the compiler loads and pops ST(0); the comparison uses the bits. The
+/// general macro returned the bits in EAX, and its call of the engine function left the
+/// engine's float on the x87 stack (the audit of 2026-10-20, item 10).
+macro_rules! port_thiscall_float {
+    (
+        $modname:ident, $addr:literal, $ename:literal,
+        fn($this:ident) -> f32,
+        compare_eax = $cmp:literal,
+        regions = |$set:ident| $regbody:expr,
+        rust = $rust:path
+    ) => {
+        pub mod $modname {
+            #[allow(unused_imports)]
+            use super::*;
+            use core::sync::atomic::Ordering;
+
+            fn detour_addr() -> usize {
+                detour as *const () as usize
+            }
+
+            pub static STATE: $crate::shadow::PortState =
+                $crate::shadow::PortState::new($ename, $addr, 0, $crate::hook::Cleanup::Callee, detour_addr);
+
+            /// The engine function.
+            pub unsafe fn engine($this: usize) -> f32 {
+                let f: unsafe extern "thiscall" fn(usize) -> f32 = core::mem::transmute(STATE.orig.load(Ordering::Relaxed));
+                f($this)
+            }
+
+            unsafe extern "thiscall" fn detour($this: usize) -> f32 {
+                let any_thread = STATE.any_thread.load(Ordering::Relaxed);
+                if any_thread != 0 {
+                    $crate::shadow::run_any_thread(any_thread, &[$this]);
+                }
+                let before = STATE.before.load(Ordering::Relaxed);
+                if before != 0 {
+                    $crate::shadow::run_before(before, &[$this]);
+                }
+                f32::from_bits($crate::shadow::dispatch(
+                    &STATE,
+                    $cmp,
+                    #[allow(unused_variables)]
+                    |$set: &mut $crate::shadow::Regions| $regbody,
+                    || -> f32 { $rust($this) },
+                    || engine($this).to_bits(),
+                ))
+            }
+        }
+    };
+}
+
 /// Declares the port of a `__cdecl` engine function. The caller removes the arguments.
 macro_rules! port_cdecl {
     (

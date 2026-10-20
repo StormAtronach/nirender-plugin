@@ -980,13 +980,13 @@ port_thiscall!(get_left_right_swap_port, 0x6ABFB0, "NiDX8Renderer::GetLeftRightS
     regions = |set| set.add(this, R::SIZE),
     rust = get_left_right_swap);
 
-port_thiscall!(get_max_fog_value_port, 0x6AC310, "NiDX8Renderer::GetMaxFogValue",
+port_thiscall_float!(get_max_fog_value_port, 0x6AC310, "NiDX8Renderer::GetMaxFogValue",
     fn(this) -> f32,
     compare_eax = true,
     regions = |set| set.add(rd(this, R::renderState), RS::SIZE),
     rust = get_max_fog_value);
 
-port_thiscall!(base_get_max_fog_value_port, 0x6F5670, "NiRenderer::GetMaxFogValue",
+port_thiscall_float!(base_get_max_fog_value_port, 0x6F5670, "NiRenderer::GetMaxFogValue",
     fn(this) -> f32,
     compare_eax = true,
     regions = |set| set.add(this, 4),
