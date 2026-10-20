@@ -1600,6 +1600,14 @@ impl Player {
             }
         }
         self.retained.kept_sorted = kept;
+        // An item after the world end (the engine flushed its queue in a later scene): the
+        // post-processing reads the copy of the world depth, so the depth of these blends
+        // goes into it. The depth target still has the world, so a new copy is the nearer of
+        // the two, as `renderStage2` of the Direct3D 9 path merges its later scenes.
+        if self.world_depth_kept {
+            self.copy_depth(1);
+            self.open_pass(None, None, None);
+        }
     }
 }
 

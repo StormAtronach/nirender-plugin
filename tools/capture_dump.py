@@ -98,7 +98,9 @@ def sequence(path, wanted):
             kind, flags = words(body, 4, 1)[0], words(body, 20, 1)[0]
             print("SCENE_BEGIN kind %d flags %#x%s" % (kind, flags, " sky hidden" if flags & 4 else ""))
         elif tag == TAG_SCENE_END:
-            print("SCENE_END")
+            # Flag 1: the engine's sorted queue stays open after the scene. An older capture has no word.
+            flags = words(body, 0, 1)[0] if len(body) >= 4 else 0
+            print("SCENE_END%s" % (" queue open" if flags & 1 else ""))
         elif tag == TAG_OBJECT:
             kind, cls, flags = words(body, 0, 3)
             print("OBJECT kind %d class %d flags %#x %r" % (kind, cls, flags, object_name(body)[:40]))

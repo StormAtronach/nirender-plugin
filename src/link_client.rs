@@ -1095,7 +1095,8 @@ unsafe fn end_paint() {
         // An `after` function of a port: the main thread (`shadow::dispatch`).
         let t = &MainThread::claim();
         crate::instance_stream::scene_end(t);
-        crate::capture::scene_end();
+        let flags = if crate::ports::base::main_queue_open(t) { SCENE_END_QUEUE_OPEN } else { 0 };
+        crate::capture::scene_end(flags);
     }
 }
 

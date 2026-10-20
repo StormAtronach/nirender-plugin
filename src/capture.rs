@@ -52,6 +52,7 @@ pub mod tag {
     pub const BUFFER_DATA: u32 = 2;
     /// A `MgeLinkSceneV1`.
     pub const SCENE_BEGIN: u32 = 3;
+    /// flags (`SCENE_END_*` of `link.rs`). An older capture file has no word.
     pub const SCENE_END: u32 = 4;
     /// kind, a, b
     pub const FRAME_EVENT: u32 = 5;
@@ -1109,8 +1110,8 @@ pub unsafe fn scene_begin(scene: &SceneV1) {
     write(tag::SCENE_BEGIN, &[bytes_of(scene)]);
 }
 
-pub unsafe fn scene_end() {
-    write(tag::SCENE_END, &[]);
+pub unsafe fn scene_end(flags: u32) {
+    write(tag::SCENE_END, &[words(&[flags])]);
 }
 
 pub unsafe fn frame_event(kind: u32, a: u32, b: u32) {

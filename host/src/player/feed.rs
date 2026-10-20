@@ -60,12 +60,15 @@ impl Player {
                 self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
                 self.stream.interior = word(data, 20) & 2 != 0;
                 self.stream.sky_hidden = word(data, 20) & 4 != 0;
-                if let Some(step) = self.plan.scene_begin(word(data, 4)) {
+                for step in self.plan.scene_begin(word(data, 4)) {
                     self.plan_step(step);
                 }
             }
             tag::SCENE_END => {
-                let steps = self.plan.scene_end(self.extension.is_some(), self.target.is_none(), self.drawing());
+                // Flag 1: the engine's sorted queue stays open after the scene. An older
+                // capture has no word.
+                let queue_open = data.len() >= 4 && word(data, 0) & 1 != 0;
+                let steps = self.plan.scene_end(self.extension.is_some(), self.target.is_none(), self.drawing(), queue_open);
                 for step in steps {
                     self.plan_step(step);
                 }

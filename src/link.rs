@@ -59,6 +59,10 @@ pub const SCENE_HAS_CAMERA_ORIGIN: u32 = 0x1;
 pub const SCENE_INTERIOR: u32 = 0x2;
 pub const SCENE_SKY_HIDDEN: u32 = 0x4;
 
+/// The engine's sorted queue stays open after the scene: a later scene of the same camera
+/// flushes it (`ports::base::main_queue_open`).
+pub const SCENE_END_QUEUE_OPEN: u32 = 0x1;
+
 pub const TEXTURE_DYNAMIC: u32 = 0x1;
 
 pub const SCENE_OTHER: u32 = 0;

@@ -8,7 +8,7 @@ use crate::main_thread::{MainCell, MainThread};
 use crate::d3d;
 use crate::engine::{vcall0, vcall1, NI_REF_OBJECT_COUNT, VTBL_NI_ALPHA_PROPERTY, VTBL_NI_REF_OBJECT};
 use crate::gen::layouts::{
-    NiDX8ConfigurableTexturePipeline as CTP, NiDX8MaterialManager as MM, NiDX8RenderState as RS,
+    NiAccumulator as ACC, NiDX8ConfigurableTexturePipeline as CTP, NiDX8MaterialManager as MM, NiDX8RenderState as RS,
     NiDX8TexturePass as TP, NiDX8TextureStage as TS, NiMaterialProperty as MP, NiRenderer as R,
     NiRendererSpecificProperty as RSP, NiRendererSpecificProperty_RenderData7 as RD7, THashMap as HM,
     THashMap_Node as HN, D3DCAPS8,
@@ -557,6 +557,17 @@ static IN_MAIN_FLUSH: MainCell<bool> = MainCell::new(false);
 /// Notes the renderer's accumulator at the start of a camera's `Click` (`SetCameraData`).
 pub unsafe fn note_main_accumulator(t: &MainThread, renderer: usize) {
     *MAIN_ACCUMULATOR.get(t) = if renderer != 0 { rd(renderer, R::accumulator) } else { 0 };
+}
+
+/// True when the queue of the Click stays open after it, for a later Click of the same
+/// camera. Read after `EndPaint`. The Click flushes the queue unless its argument
+/// `flagDontFinishAccumulating` is set (0x6CC88C); the flush clears the camera of the
+/// accumulator (`NiAccumulator::FinishAccumulating` 0x6F9190). The world Click sets the
+/// argument when the shadow manager is on (0x41C5AA) or the water is shown (0x41C654), and
+/// `renderWater` (0x51C550) then flushes the queue in a Click of its own.
+pub unsafe fn main_queue_open(t: &MainThread) -> bool {
+    let accumulator = *MAIN_ACCUMULATOR.get(t);
+    accumulator != 0 && rd::<usize>(accumulator, ACC::camera) != 0
 }
 
 /// True while the engine draws an object of its main sorted queue: the flush of the Click.
