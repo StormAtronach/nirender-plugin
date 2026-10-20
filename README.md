@@ -89,7 +89,8 @@ The run:
 - `NIRENDER_RING_MB=<n>`: the size of the ring, default 64.
 - `NIRENDER_PLUGIN_DLL=<path>`: the tools install that DLL for a run (one arm of an A/B).
 - `NIRENDER_FOREGROUND=1`: the tools run the game in the foreground; a run is a background
-  run without it.
+  run without it. For a background run the runner stages a copy of the instance's MWSE.json
+  with MWSE's setting `RunInBackground = true` into the run mod; the mod patches nothing.
 - `NIRENDER_NOTIFIER=0`: the mod does not load the stand-in Lua change notifier.
 
 The A/B:

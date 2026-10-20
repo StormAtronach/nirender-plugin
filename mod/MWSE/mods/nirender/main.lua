@@ -28,48 +28,16 @@ do
     if ok then spec = result end
 end
 
--- A test run in the background (`background` in the run spec). Only for a run spec of the
--- harness, never in a game a player plays. Three places of the game need the window's focus:
--- - `WinMain` runs a frame only while the window has the focus or the data handler's flag of
---   cell testing is set: the jump at 0x417225 (`74 0b`) skips the frame. Two no-operations.
--- - `mainWndProc` pauses a playing video at WM_KILLFOCUS and resumes it only at WM_SETFOCUS,
---   and `TES3Game::mainLoop` returns at once while a video plays or is paused out of the
---   menus. The jump at 0x416C74 (`75 14`, past the pause unless the state is "playing") is
---   made a jump always (`eb 14`).
--- - `TES3Game::mainLoop` returns at once when `GetActiveWindow` is not the game's window and
---   the flag of cell testing is clear: the jump at 0x41AB9F (`0f 84 dc 12 00 00`). Six
---   no-operations. MWSE removes this check only with its setting `RunInBackground`.
-local BACKGROUND_PATCHES = {
-    { address = 0x417225, original = { 0x74, 0x0B }, patched = { 0x90, 0x90 }, what = "the focus check of WinMain",
-      apply = function(at) mwse.memory.writeNoOperation({ address = at, length = 2 }) end },
-    { address = 0x416C74, original = { 0x75, 0x14 }, patched = { 0xEB, 0x14 }, what = "the pause of a video at the loss of the focus",
-      apply = function(at) mwse.memory.writeByte({ address = at, byte = 0xEB }) end },
-    { address = 0x41AB9F, original = { 0x0F, 0x84, 0xDC, 0x12, 0x00, 0x00 }, patched = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 },
-      what = "the focus check of the main loop",
-      apply = function(at) mwse.memory.writeNoOperation({ address = at, length = 6 }) end },
-}
-
---- True when the bytes at `address` are `expected`.
-local function bytesAre(address, expected)
-    for i, byte in ipairs(expected) do
-        local ok, value = pcall(mwse.memory.readValue, { address = address + i - 1, as = "byte" })
-        if not ok or value ~= byte then
-            return false
-        end
-    end
-    return true
-end
-
+-- A test run in the background (`background` in the run spec). The runner stages MWSE.json
+-- with `RunInBackground = true` for such a run (tools/session.py). With that setting MWSE keeps
+-- the game's focus flag set and makes the main loop see the game's window as the active one.
+-- Without it the game runs a few frames a minute out of the foreground, and the run stalls.
 if spec and spec.background then
-    for _, patch in ipairs(BACKGROUND_PATCHES) do
-        if bytesAre(patch.address, patch.original) then
-            patch.apply(patch.address)
-            mwse.log("[nirender] background run: %s at 0x%X is off", patch.what, patch.address)
-        elseif bytesAre(patch.address, patch.patched) then
-            mwse.log("[nirender] background run: %s at 0x%X was off already", patch.what, patch.address)
-        else
-            mwse.log("[nirender] background run: unexpected bytes at 0x%X; %s stays", patch.address, patch.what)
-        end
+    ---@diagnostic disable-next-line: undefined-field  (MWSE's core/initialize.lua defines it)
+    if mwse.getConfig("RunInBackground") then
+        mwse.log("[nirender] background run: MWSE's RunInBackground is on")
+    else
+        mwse.log("[nirender] background run: MWSE's RunInBackground is OFF; the game idles out of the foreground")
     end
 end
 

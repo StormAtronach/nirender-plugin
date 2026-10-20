@@ -8,6 +8,7 @@ mods of the instance (its own "nirender" is the release); after the run the mod 
 was. The mods of the instance and the game folder are not written: Root Builder copies the Root
 folders of the run's mods into the game folder at the start and takes them out at the end.
 """
+import json
 import os
 import shutil
 import subprocess
@@ -46,6 +47,37 @@ def use_instance(instance, game_dir=None, profile="Default"):
     harness.WARNINGS = (os.path.join(instance, "overwrite", "Root", "Warnings.txt"), os.path.join(harness.GAME_DIR, "Warnings.txt"))
     harness.ROOT_BUILDER_DATA = os.path.join(instance, "plugins", "data", "RootBuilder")
     MGE_LOGS = (os.path.join(harness.GAME_DIR, "mgeXE.log"), os.path.join(instance, "overwrite", "Root", "mgeXE.log"))
+
+
+def mwse_config_source():
+    """The MWSE.json that the game reads in this instance: the one in overwrite, else the one of
+    the enabled mod with the highest priority that has it, else None."""
+    rel = os.path.join("MWSE", "config", "MWSE.json")
+    candidates = [os.path.join(harness.MO2_ROOT, "overwrite", rel)]
+    lines, _ = harness.read_modlist()
+    candidates += [os.path.join(harness.MO2_ROOT, "mods", line[1:], rel) for line in lines if line.startswith("+")]
+    return next((path for path in candidates if os.path.isfile(path)), None)
+
+
+def stage_background_config(deployment):
+    """MWSE's setting RunInBackground on for the run (the owner, 2026-10-20: MWSE has the setting,
+    the mod patches nothing). A copy of the instance's MWSE.json with the key true goes into the
+    run mod, over the instance's copy. MWSE writes the file back at its start, into the same
+    place; restore() removes it. A copy in overwrite would win over the run mod's: the runner
+    stops and says so, the owner moves it."""
+    path = os.path.join(harness.SPEC_DIR, "MWSE.json")
+    if os.path.exists(path):
+        raise SystemExit("refusing to overwrite existing %s: a run is going, or one left it behind" % path)
+    source = mwse_config_source()
+    if source and source.startswith(os.path.join(harness.MO2_ROOT, "overwrite")):
+        raise SystemExit("%s is in overwrite and would win over the run's copy: move it into a mod" % source)
+    values = json.load(open(source, encoding="utf-8")) if source else {}
+    values["RunInBackground"] = True
+    os.makedirs(harness.SPEC_DIR, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(values, fh, indent=2)
+    deployment.create(path)
+    print("  MWSE.json with RunInBackground = true <- %s" % (source or "the defaults (no MWSE.json in the instance)"))
 
 
 def prepare(build=True, features=()):
@@ -116,9 +148,9 @@ class Run:
         for the run. The mod list is as it was after the run.
 
         A run is a background run unless NIRENDER_FOREGROUND=1 (the owner, 2026-10-20): the
-        spec asks the nirender mod to turn the game's focus check off, and the runner does not
-        bring the game window forward. A run with real clicks or OBS window capture needs the
-        foreground.
+        runner stages MWSE.json with RunInBackground = true (stage_background_config) and does
+        not bring the game window forward. A run with real clicks or OBS window capture needs
+        the foreground.
 
         Returns True when the scenario finished within `timeout` seconds."""
         foreground = os.environ.get("NIRENDER_FOREGROUND", "0") == "1"
@@ -128,6 +160,8 @@ class Run:
         print("launching (budget %ds, results in %s)" % (timeout, self.dir), flush=True)
         try:
             deployment.write_spec(SPEC_NAME, spec)
+            if not foreground:
+                stage_background_config(deployment)
             deployment.enable_mod(MOD_NAME)
             for name, files in mods:
                 deployment.use_mod(name, files)
