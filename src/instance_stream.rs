@@ -406,20 +406,15 @@ pub unsafe fn set_mode(mode: Mode) -> Mode {
         // every picture of mode off (the opaque doubles were invisible), 2026-10-17. The
         // next display of a shape in mode gpu shows its instance again.
         let hide = mode == Mode::Off && capture::recording();
-        // Back in mode gpu the instances the helper draws are marked again at once (the
-        // condition of `draw`): with the sky-only walk the engine displays no shape after the
-        // discovery frame, and the table walk works only marked shapes. The full pass then
-        // shows each reached one (the tour's stop 2-26 lost a whole object, 2026-10-18).
-        let remark = mode == Mode::Gpu && t.skip;
+        // No mark is written here: a kept shape can be freed by the cell worker at any time,
+        // and a write into it corrupts the memory that reused it (the audit of 2026-10-20,
+        // item 5). The engine's walk displays every shape: in mode gpu `draw` marks a shape
+        // again at its next draw, and outside it the display clears a stale mark on the
+        // shape it displays (`skipped_display_timed`).
         let mut hidden = 0;
-        for (&shape, instance) in t.instances.iter_mut() {
+        for instance in t.instances.values_mut() {
             instance.sent = false;
             instance.lights.clear();
-            if mode != Mode::Gpu {
-                mark(shape, false);
-            } else if remark && instance.filled && (!instance.skinned || t.skin_table) {
-                mark(shape, true);
-            }
             if hide && instance.filled && instance.visible {
                 instance.visible = false;
                 capture::instance_state(instance.id, false);
@@ -550,18 +545,14 @@ pub unsafe fn set_skin_table(on: bool) -> bool {
     t.skin_table = on;
     TABLE_FULL = true;
     crate::live_walk::rediscover();
-    let remark = on && t.mode == Some(Mode::Gpu) && t.skip;
-    for (&shape, instance) in t.instances.iter_mut() {
+    // No mark is written here (as in `set_mode`): `draw` marks a skinned shape again at its
+    // next draw, and the display clears a stale mark when the table does not draw skins.
+    for instance in t.instances.values_mut() {
         if !instance.skinned {
             continue;
         }
         instance.sent = false;
         instance.lights.clear();
-        if remark && instance.filled {
-            mark(shape, true);
-        } else if !on {
-            mark(shape, false);
-        }
     }
     before
 }
@@ -1304,10 +1295,21 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
 
 unsafe fn skipped_display_timed(shape: usize, kind: u32) -> bool {
     let t = tables();
-    if t.mode != Some(Mode::Gpu) || !t.skip || !capture::recording() {
+    // A stale mark (the mode or the table's skins switched since the shape was marked) is
+    // cleared here, on the shape the engine displays: the switches write no mark into kept
+    // shapes (the audit of 2026-10-20, item 5).
+    if t.mode != Some(Mode::Gpu) {
+        mark(shape, false);
+        return false;
+    }
+    if !t.skip || !capture::recording() {
         return false;
     }
     if let Some(instance) = t.instances.get_mut(&shape) {
+        if instance.skinned && !t.skin_table {
+            mark(shape, false);
+            return false;
+        }
         if instance.kind == 0 {
             instance.kind = kind;
         }
