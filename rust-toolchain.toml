@@ -1,3 +1,7 @@
 [toolchain]
-channel = "nightly-2026-08-15"
+# The released compiler. The plugin uses no nightly feature: on 2026-10-20 stable 1.99.1
+# built and tested the plugin, the host crate and the d3d8 crate, and the game gate passed
+# on the DLL it made. MGE XE G7 keeps its own pin, a dated nightly for its dependencies; the
+# host crate builds under that pin when the helper is built there.
+channel = "stable"
 targets = ["i686-pc-windows-msvc"]
