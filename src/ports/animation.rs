@@ -40,7 +40,7 @@ pub unsafe fn animation_manager_update(t: &MainThread, this: usize, time: f32, c
         let storage: usize = rd(this, MANAGED_STORAGE);
         for i in 0..count {
             let node: usize = rd(storage, i * 4);
-            if node != 0 && crate::animation::displayed(node) {
+            if node != 0 && crate::animation::displayed(t, node) {
                 flag_node(node);
             }
         }
@@ -58,7 +58,7 @@ port_thiscall!(animation_node_update_controllers_port, 0x6F2180, "BSAnimationNod
 /// update of its controllers.
 pub unsafe fn animation_node_update_controllers(t: &MainThread, this: usize, time: f32) {
     crate::shadow::touch(&animation_node_update_controllers_port::STATE);
-    if crate::animation::active(t) && crate::animation::displayed(this) {
+    if crate::animation::active(t) && crate::animation::displayed(t, this) {
         wr::<u8>(this, ANIM_FLAGS, rd::<u8>(this, ANIM_FLAGS) | ANIM_DISPLAYED);
     }
     animation_node_update_controllers_port::engine(this, time);
@@ -74,7 +74,7 @@ port_thiscall!(animation_node_update_downward_pass_port, 0x6F2060, "BSAnimationN
 /// downward pass, which runs the controllers only with that bit (or AlwaysUpdate).
 pub unsafe fn animation_node_update_downward_pass(t: &MainThread, this: usize, time: f32, update_controllers: u8, update_children: u8) {
     crate::shadow::touch(&animation_node_update_downward_pass_port::STATE);
-    if update_controllers != 0 && crate::animation::active(t) && crate::animation::displayed(this) {
+    if update_controllers != 0 && crate::animation::active(t) && crate::animation::displayed(t, this) {
         wr::<u8>(this, ANIM_FLAGS, rd::<u8>(this, ANIM_FLAGS) | ANIM_DISPLAYED);
     }
     animation_node_update_downward_pass_port::engine(this, time, update_controllers, update_children);

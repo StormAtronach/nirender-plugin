@@ -4,6 +4,7 @@
 
 use core::arch::asm;
 
+use crate::main_thread::{MainCell, MainThread};
 use crate::d3d;
 use crate::engine::{vcall0, vcall1, NI_REF_OBJECT_COUNT, VTBL_NI_ALPHA_PROPERTY, VTBL_NI_REF_OBJECT};
 use crate::gen::layouts::{
@@ -548,19 +549,19 @@ unsafe fn map_one() -> u32 {
 /// The renderer's accumulator when the camera's `Click` starts (`note_main_accumulator`): the
 /// queue of the Click. A sort adjust node puts its own accumulator in its place only during
 /// the walk. Main thread only.
-static mut MAIN_ACCUMULATOR: usize = 0;
+static MAIN_ACCUMULATOR: MainCell<usize> = MainCell::new(0);
 /// True while the flush of the main accumulator displays its objects, with every object it
 /// displays inside (a sort adjust node's own flush included).
-static mut IN_MAIN_FLUSH: bool = false;
+static IN_MAIN_FLUSH: MainCell<bool> = MainCell::new(false);
 
 /// Notes the renderer's accumulator at the start of a camera's `Click` (`SetCameraData`).
-pub unsafe fn note_main_accumulator(renderer: usize) {
-    MAIN_ACCUMULATOR = if renderer != 0 { rd(renderer, R::accumulator) } else { 0 };
+pub unsafe fn note_main_accumulator(t: &MainThread, renderer: usize) {
+    *MAIN_ACCUMULATOR.get(t) = if renderer != 0 { rd(renderer, R::accumulator) } else { 0 };
 }
 
 /// True while the engine draws an object of its main sorted queue: the flush of the Click.
-pub fn in_main_flush() -> bool {
-    unsafe { IN_MAIN_FLUSH }
+pub fn in_main_flush(t: &MainThread) -> bool {
+    *IN_MAIN_FLUSH.get(t)
 }
 
 /// 0x6F51D0 `NiRenderer::renderFromClusterAccumulator`. The port displays a scene object
@@ -568,11 +569,11 @@ pub fn in_main_flush() -> bool {
 /// Then the port puts the accumulator and the states back. `FinishAccumulating` 0x6CF0E0
 /// calls it for each object in the order of its sort; a call for the Click's accumulator
 /// marks the draws of the object as draws of the main queue (`in_main_flush`).
-pub unsafe fn renderer_render_from_cluster_accumulator(this: usize, camera: usize, scene_object: usize) {
+pub unsafe fn renderer_render_from_cluster_accumulator(t: &MainThread, this: usize, camera: usize, scene_object: usize) {
     crate::shadow::touch(&renderer_render_from_cluster_accumulator_port::STATE);
     let saved_accumulator: usize = rd(this, R::accumulator);
-    let outer_flush = IN_MAIN_FLUSH;
-    IN_MAIN_FLUSH = outer_flush || (saved_accumulator != 0 && saved_accumulator == MAIN_ACCUMULATOR);
+    let outer_flush = *IN_MAIN_FLUSH.get(t);
+    *IN_MAIN_FLUSH.get(t) = outer_flush || (saved_accumulator != 0 && saved_accumulator == *MAIN_ACCUMULATOR.get(t));
     if saved_accumulator != 0 {
         ni::add_reference(saved_accumulator);
     }
@@ -628,7 +629,7 @@ pub unsafe fn renderer_render_from_cluster_accumulator(this: usize, camera: usiz
             ni::release(object);
         }
     }
-    IN_MAIN_FLUSH = outer_flush;
+    *IN_MAIN_FLUSH.get(t) = outer_flush;
 }
 
 /// 0x6F5380 `NiRenderer::BeginBatch`. The states of the batch become the current states.
@@ -1510,7 +1511,7 @@ port_thiscall!(renderer_render_from_cluster_accumulator_port, 0x6F51D0, "NiRende
     fn(this, camera: usize, scene_object: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = renderer_render_from_cluster_accumulator);
+    rust_main = renderer_render_from_cluster_accumulator);
 
 port_thiscall!(renderer_begin_batch_port, 0x6F5380, "NiRenderer::BeginBatch",
     fn(this, property_state: usize, effect_state: usize) -> (),

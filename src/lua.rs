@@ -7,7 +7,7 @@ use core::ffi::{c_char, c_void};
 use core::sync::atomic::Ordering;
 use std::ffi::CString;
 
-use crate::main_thread::MainThread;
+use crate::main_thread::{MainCell, MainThread};
 use crate::ports;
 use crate::shadow::Mode;
 use crate::{engine, install, x87};
@@ -217,8 +217,9 @@ unsafe extern "C" fn tune(l: LuaState) -> i32 {
 unsafe extern "C" fn port_times(l: LuaState) -> i32 {
     // The live port calls are timed from the first call on (the times are off by default).
     crate::shadow::set_timing(true);
-    static mut LAST_CALLS: Vec<u64> = Vec::new();
-    let last = &mut *core::ptr::addr_of_mut!(LAST_CALLS);
+    let t = &MainThread::claim();
+    static LAST_CALLS: MainCell<Vec<u64>> = MainCell::new(Vec::new());
+    let last = LAST_CALLS.get(t);
     let ports: Vec<_> = ports::all().collect();
     last.resize(ports.len(), 0);
     let mut rows: Vec<(f64, u64, &str)> = ports
@@ -394,7 +395,7 @@ unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
 /// `nirender.changed(address)`: `notifier.lua` reports the address of an object a Lua mod
 /// changed. See `instance_stream::note_change`.
 unsafe extern "C" fn changed(l: LuaState) -> i32 {
-    crate::instance_stream::note_change(lua_tonumber(l, 1) as u32 as usize);
+    crate::instance_stream::note_change(&MainThread::claim(), lua_tonumber(l, 1) as u32 as usize);
     0
 }
 

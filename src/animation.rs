@@ -11,12 +11,11 @@
 //! in the camera's view; `shadows` (the default) also what the shadow map reaches, so that a
 //! shadow moves while its caster is out of view; `all` animates everything loaded.
 
-use core::ptr::addr_of;
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 use crate::engine::vcall0;
 use crate::gen::layouts::NiCamera as C;
-use crate::main_thread::MainThread;
+use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 
 /// The vtable slot of `NiAVObject::GetWorldBound` (as `ports/scene.rs`).
@@ -47,7 +46,7 @@ struct Camera {
     planes: Vec<[f64; 4]>,
     position: [f32; 3],
 }
-static mut CAMERA: Camera = Camera { planes: Vec::new(), position: [0.0; 3] };
+static CAMERA: MainCell<Camera> = MainCell::new(Camera { planes: Vec::new(), position: [0.0; 3] });
 
 fn policy_of(name: &str) -> Option<Policy> {
     match name {
@@ -95,10 +94,10 @@ pub unsafe fn active(t: &MainThread) -> bool {
 
 /// The world camera of the scene that begins: its planes and its position, for the tests
 /// of this frame. From `instance_stream::scene_begin`.
-pub unsafe fn note_camera(camera: usize) {
+pub unsafe fn note_camera(t: &MainThread, camera: usize) {
     let count = rd::<i32>(camera, C::countCullingPlanes).max(0) as usize;
     let storage: usize = rd(camera, C::cullingPlanes_storage);
-    let this = &mut *core::ptr::addr_of_mut!(CAMERA);
+    let this = &mut *CAMERA.get(t);
     this.planes = (0..count)
         .map(|i| {
             let plane: [f32; 4] = rd(rd::<usize>(storage, i * 4), 0);
@@ -111,7 +110,7 @@ pub unsafe fn note_camera(camera: usize) {
 /// Whether the node animates this frame by the policy: its world bound within the planes of
 /// the world camera, or within the reach of the shadow map (policy `shadows`), or always
 /// (policy `all`). A node without a bound animates.
-pub unsafe fn displayed(node: usize) -> bool {
+pub unsafe fn displayed(t: &MainThread, node: usize) -> bool {
     let policy = policy();
     if policy == Policy::All {
         BY_ALL.fetch_add(1, Ordering::Relaxed);
@@ -121,7 +120,7 @@ pub unsafe fn displayed(node: usize) -> bool {
     if bound == 0 {
         return true;
     }
-    let camera = &*addr_of!(CAMERA);
+    let camera = &*CAMERA.get(t);
     // The rule of `NiBound::WhichSide` (0x6F2660) [I: transcribed, not compared]: outside a
     // plane when the signed distance of the centre is at most minus the radius.
     let [x, y, z, radius] = rd::<[f32; 4]>(bound, 0).map(f64::from);

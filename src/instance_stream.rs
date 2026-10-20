@@ -391,7 +391,7 @@ pub unsafe fn scene_begin(mt: &MainThread, kind: u32, camera: usize) {
     crate::worker_events::drain();
     tables(mt).world_camera = if kind == SCENE_WORLD { camera } else { 0 };
     if kind == SCENE_WORLD && camera != 0 {
-        crate::animation::note_camera(camera);
+        crate::animation::note_camera(mt, camera);
     }
 }
 
@@ -518,7 +518,7 @@ pub unsafe fn frame_tick(mt: &MainThread) {
     // worker): the main thread applies them here.
     let queued = OFF_THREAD_CHANGES.lock().map(|mut q| core::mem::take(&mut *q)).unwrap_or_default();
     for address in queued {
-        note_change(address);
+        note_change(mt, address);
     }
     apply_changes(mt);
     let t = tables(mt);
@@ -719,7 +719,7 @@ pub unsafe fn take_pending(mt: &MainThread) -> Option<(usize, u32)> {
 
 /// The causes of a rejection at the record, for the report: no geometry handle, no material
 /// handle, a material the helper does not model, no exact translation.
-static mut LATER_BY: [u32; 4] = [0; 4];
+static LATER_BY: MainCell<[u32; 4]> = MainCell::new([0; 4]);
 const LATER_GEOMETRY: usize = 0;
 const LATER_MATERIAL: usize = 1;
 const LATER_NOT_MODELLED: usize = 2;
@@ -727,7 +727,7 @@ const LATER_TRANSLATION: usize = 3;
 
 /// `reject_pending` with the cause counted.
 unsafe fn reject_at_record(mt: &MainThread, shape: usize, cause: usize) {
-    (*core::ptr::addr_of_mut!(LATER_BY))[cause] += 1;
+    (*LATER_BY.get(mt))[cause] += 1;
     reject_pending(mt, shape, true);
 }
 
@@ -844,7 +844,7 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
 }
 
 /// Sends the words of the `INSTANCE` record of an instance of the mode gpu.
-unsafe fn send_instance(shape: usize, instance: &Instance, exact: [f64; 3], relative: bool) {
+unsafe fn send_instance(mt: &MainThread, shape: usize, instance: &Instance, exact: [f64; 3], relative: bool) {
     let flags = if relative { crate::shape_stream::RELATIVE } else { 0 } | BLOCK | if instance.skinned { crate::shape_stream::SKINNED } else { 0 };
     let mut words = [0u32; 44];
     words[0] = instance.id;
@@ -863,7 +863,7 @@ unsafe fn send_instance(shape: usize, instance: &Instance, exact: [f64; 3], rela
     words[40..44].copy_from_slice(&instance.bound.map(f32::to_bits));
     let name_at: usize = rd(shape, 8);
     let name: &[u8] = if name_at != 0 { core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char).to_bytes() } else { &[] };
-    (*core::ptr::addr_of_mut!(RECORD_COUNTS))[RC_NAME_BYTES] += name.len().min(96) as u64;
+    (*RECORD_COUNTS.get(mt))[RC_NAME_BYTES] += name.len().min(96) as u64;
     capture::instance(&words, &name[..name.len().min(96)]);
 }
 
@@ -902,7 +902,7 @@ const MOST_LIGHT_INDEX: usize = 1 << 20;
 /// by the index of the light, an array and not a hash: a frame notes each light of each
 /// retained shape.
 unsafe fn note_light_once(mt: &MainThread, t: &mut Tables, light: usize, key: u32) {
-    let counts = &mut *core::ptr::addr_of_mut!(LIGHT_COUNTS);
+    let counts = &mut *LIGHT_COUNTS.get(mt);
     counts[LC_NOTES] += 1;
     let k = key as usize;
     if k >= MOST_LIGHT_INDEX {
@@ -935,7 +935,7 @@ unsafe fn note_light_once(mt: &MainThread, t: &mut Tables, light: usize, key: u3
 /// The counts of the instance records, by `RC_*`: why a record went (the first
 /// send or a new handle; a move of the transform; the bound alone; the colours alone; a move
 /// and the colours), whether a moved instance is live or not; the bytes of the names.
-static mut RECORD_COUNTS: [u64; 8] = [0; 8];
+static RECORD_COUNTS: MainCell<[u64; 8]> = MainCell::new([0; 8]);
 const RC_FIRST: usize = 0;
 const RC_MOVED: usize = 1;
 const RC_BOUND: usize = 2;
@@ -946,10 +946,10 @@ const RC_STILL: usize = 6;
 const RC_NAME_BYTES: usize = 7;
 /// The time from the decision to send a record to its end, on the main thread: the matrix
 /// (the engine's conversion of the world transform), the exact translation, the record.
-static mut RECORD_TICKS: [i64; 3] = [0; 3];
+static RECORD_TICKS: MainCell<[i64; 3]> = MainCell::new([0; 3]);
 
-unsafe fn note_record_cause(instance: &Instance, moved: bool, bound: bool, colours: bool) {
-    let c = &mut *core::ptr::addr_of_mut!(RECORD_COUNTS);
+unsafe fn note_record_cause(mt: &MainThread, instance: &Instance, moved: bool, bound: bool, colours: bool) {
+    let c = &mut *RECORD_COUNTS.get(mt);
     let cause = match (instance.sent, moved, bound, colours) {
         (false, ..) => RC_FIRST,
         (true, true, _, false) => RC_MOVED,
@@ -963,9 +963,9 @@ unsafe fn note_record_cause(instance: &Instance, moved: bool, bound: bool, colou
     }
 }
 
-pub unsafe fn record_report() -> String {
-    let c = *core::ptr::addr_of!(RECORD_COUNTS);
-    let parts = (*core::ptr::addr_of!(RECORD_TICKS)).map(|t| t as f64 * 1000.0 / capture::ticks_per_second() as f64);
+pub unsafe fn record_report(mt: &MainThread) -> String {
+    let c = *RECORD_COUNTS.get(mt);
+    let parts = (*RECORD_TICKS.get(mt)).map(|t| t as f64 * 1000.0 / capture::ticks_per_second() as f64);
     let ms: f64 = parts.iter().sum();
     let total: u64 = c[RC_FIRST..=RC_MOVED_COLOURS].iter().sum();
     format!(
@@ -990,7 +990,7 @@ pub unsafe fn record_report() -> String {
 /// The counts of the lights, by `LC_*`: the light loops of the displays and their
 /// lights; the notes of a light, the entries built (one a light a frame), those with zero
 /// colours (off or too dim), and the records sent.
-static mut LIGHT_COUNTS: [u64; 6] = [0; 6];
+static LIGHT_COUNTS: MainCell<[u64; 6]> = MainCell::new([0; 6]);
 const LC_LOOPS: usize = 0;
 const LC_LOOP_LIGHTS: usize = 1;
 const LC_NOTES: usize = 2;
@@ -998,11 +998,11 @@ const LC_BUILT: usize = 3;
 const LC_DARK: usize = 4;
 const LC_SENT: usize = 5;
 /// The time of the light loops of the displays.
-static mut LIGHT_TICKS: i64 = 0;
+static LIGHT_TICKS: MainCell<i64> = MainCell::new(0);
 
-pub unsafe fn light_report() -> String {
-    let c = *core::ptr::addr_of!(LIGHT_COUNTS);
-    let ms = *core::ptr::addr_of!(LIGHT_TICKS) as f64 * 1000.0 / capture::ticks_per_second() as f64;
+pub unsafe fn light_report(mt: &MainThread) -> String {
+    let c = *LIGHT_COUNTS.get(mt);
+    let ms = *LIGHT_TICKS.get(mt) as f64 * 1000.0 / capture::ticks_per_second() as f64;
     format!(
         "lights: display loops {} ({:.2} lights each, {:.3} ms, {:.2} us each); notes {}, entries built {} ({} with zero colours), records sent {}",
         c[LC_LOOPS],
@@ -1028,13 +1028,13 @@ pub enum Recheck {
 /// The rechecks asked for (by cause: 0 a property state, 1 an effect state, 2 a Lua
 /// change), the rechecks done (3), the instances they rejected (4), and the instances whose
 /// live state changed (5).
-static mut RECHECKS: [u64; 6] = [0; 6];
+static RECHECKS: MainCell<[u64; 6]> = MainCell::new([0; 6]);
 
 /// The objects a Lua mod changed (`nirender.changed`, from
 /// `mod/MWSE/mods/nirender/notifier.lua`), and the counts of the notes received, of the
 /// scans of the table and of the shapes hit.
-static mut CHANGED: Option<HashSet<usize>> = None;
-static mut CHANGE_NOTES: [u64; 3] = [0; 3];
+static CHANGED: MainCell<Option<HashSet<usize>>> = MainCell::new(None);
+static CHANGE_NOTES: MainCell<[u64; 3]> = MainCell::new([0; 3]);
 /// The change notes made on another thread, for the main thread's next `frame_tick`.
 static OFF_THREAD_CHANGES: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
@@ -1050,23 +1050,23 @@ pub fn queue_change(address: usize) {
 
 /// A Lua mod changed the object at `address` (a shape, a property, a controller's target).
 /// The main thread only: other threads use `queue_change`.
-pub unsafe fn note_change(address: usize) {
+pub unsafe fn note_change(mt: &MainThread, address: usize) {
     if address == 0 {
         return;
     }
-    (*core::ptr::addr_of_mut!(CHANGED)).get_or_insert_with(HashSet::default).insert(address);
-    (*core::ptr::addr_of_mut!(CHANGE_NOTES))[0] += 1;
+    (*CHANGED.get(mt)).get_or_insert_with(HashSet::default).insert(address);
+    (*CHANGE_NOTES.get(mt))[0] += 1;
 }
 
 /// Once a frame: each retained shape that is a changed object, or whose property state holds
 /// one, is checked again at its next display. One pass over the table, only in a frame
 /// with changes.
 unsafe fn apply_changes(mt: &MainThread) {
-    let Some(changed) = (*core::ptr::addr_of_mut!(CHANGED)).as_mut() else { return };
+    let Some(changed) = (*CHANGED.get(mt)).as_mut() else { return };
     if changed.is_empty() {
         return;
     }
-    let notes = &mut *core::ptr::addr_of_mut!(CHANGE_NOTES);
+    let notes = &mut *CHANGE_NOTES.get(mt);
     notes[1] += 1;
     let t = tables(mt);
     for (&shape, instance) in t.instances.iter_mut() {
@@ -1075,7 +1075,7 @@ unsafe fn apply_changes(mt: &MainThread) {
         let hit = changed.contains(&shape) || instance.properties.iter().any(|&property| property != 0 && changed.contains(&property));
         if hit && !instance.recheck {
             instance.recheck = true;
-            (*core::ptr::addr_of_mut!(RECHECKS))[Recheck::Notified as usize] += 1;
+            (*RECHECKS.get(mt))[Recheck::Notified as usize] += 1;
             notes[2] += 1;
         }
     }
@@ -1088,7 +1088,7 @@ pub unsafe fn recheck(mt: &MainThread, shape: usize, cause: Recheck) {
     let t = tables(mt);
     if let Some(instance) = t.instances.get_mut(&shape) {
         instance.recheck = true;
-        (*core::ptr::addr_of_mut!(RECHECKS))[cause as usize] += 1;
+        (*RECHECKS.get(mt))[cause as usize] += 1;
     }
 }
 
@@ -1183,7 +1183,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         i.recheck = false;
         (i.skinned, i.live)
     }) {
-        let rechecks = &mut *core::ptr::addr_of_mut!(RECHECKS);
+        let rechecks = &mut *RECHECKS.get(mt);
         rechecks[3] += 1;
         let mut live = false;
         if reject_reason(mt, shape, rd(shape, GEOMETRY_PROPERTY_STATE), rd(shape, GEOMETRY_EFFECT_STATE), skinned, &mut live).is_some() {
@@ -1262,9 +1262,9 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     let colours_changed = instance.colours != colours;
     let changed = moved || bound_changed || colours_changed;
     if changed || !instance.sent {
-        let record_ticks = &mut *core::ptr::addr_of_mut!(RECORD_TICKS);
+        let record_ticks = &mut *RECORD_TICKS.get(mt);
         let record_start = capture::ticks();
-        note_record_cause(instance, moved, bound_changed, colours_changed);
+        note_record_cause(mt, instance, moved, bound_changed, colours_changed);
         if moved {
             crate::ports::renderer_frame::write_world_matrix(renderer, shape + WORLD);
             let world = crate::shape_stream::current_world(renderer);
@@ -1291,7 +1291,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         let exact_end = capture::ticks();
         // The plugin makes the matrices of every draw relative when it owns the camera
         // space: the record says so whether or not a draw happened this frame.
-        send_instance(shape, instance, exact, crate::camera_space::own());
+        send_instance(mt, shape, instance, exact, crate::camera_space::own());
         t.records += 1;
         let send_end = capture::ticks();
         record_ticks[0] += matrix_end - record_start;
@@ -1330,7 +1330,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     if t.scene_frame != frame {
         t.scene_frame = frame;
         t.scene_values = (ambient, fog);
-        let sun = scene_sun(t);
+        let sun = scene_sun(mt, t);
         capture::retained_scene(ambient, fog, sun.as_ref());
     } else if t.scene_frame == frame && t.scene_values != (ambient, fog) {
         t.scene_mixed += 1;
@@ -1347,10 +1347,10 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         note_light_once(mt, t, light, key);
         keys.push(key);
     }
-    let counts = &mut *core::ptr::addr_of_mut!(LIGHT_COUNTS);
+    let counts = &mut *LIGHT_COUNTS.get(mt);
     counts[LC_LOOPS] += 1;
     counts[LC_LOOP_LIGHTS] += lights.len() as u64;
-    *core::ptr::addr_of_mut!(LIGHT_TICKS) += capture::ticks() - light_start;
+    *LIGHT_TICKS.get(mt) += capture::ticks() - light_start;
     t.scratch_lights = lights;
     let Some(instance) = t.instances.get_mut(&shape) else {
         t.scratch_keys = keys;
@@ -1389,9 +1389,9 @@ const SKY_LIGHT: usize = 0xAC;
 /// (`light_entry_update`, the 26 words of a `D3DLIGHT8`). The helper draws the retained
 /// shapes with no draw of the engine, so it needs the sun from here. None when the light is
 /// off or dim, as `note_light_once`.
-unsafe fn scene_sun(t: &mut Tables) -> Option<[u32; 26]> {
+unsafe fn scene_sun(mt: &MainThread, t: &mut Tables) -> Option<[u32; 26]> {
     static LOGGED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-    static mut LAST_DIFFUSE: [u32; 3] = [0; 3];
+    static LAST_DIFFUSE: MainCell<[u32; 3]> = MainCell::new([0; 3]);
     let log_once = |what: String| {
         if LOGGED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 24 {
             crate::log!("scene sun: {what}");
@@ -1424,10 +1424,10 @@ unsafe fn scene_sun(t: &mut Tables) -> Option<[u32; 26]> {
     let values: [u32; 26] = rd(entry, E::d3dLight);
     // The values go to the log when the diffuse colour changes (the hour moves it).
     let diffuse = [values[1], values[2], values[3]];
-    if diffuse == *core::ptr::addr_of!(LAST_DIFFUSE) {
+    if diffuse == *LAST_DIFFUSE.get(mt) {
         return Some(values);
     }
-    LAST_DIFFUSE = diffuse;
+    *LAST_DIFFUSE.get(mt) = diffuse;
     log_once(format!(
         "frame {}: the sky light 0x{light:x} goes into the scene record: type {}, diffuse {:.3} {:.3} {:.3}, ambient {:.3} {:.3} {:.3}, direction {:.3} {:.3} {:.3}",
         t.frame,
@@ -1449,7 +1449,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
     let t = tables(mt);
     let reasons = ["controller", "node kind", "property controller", "effect", "at the record", "depth function"];
     let mut rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
-    let later = *core::ptr::addr_of!(LATER_BY);
+    let later = *LATER_BY.get(mt);
     if later.iter().any(|&n| n != 0) {
         rejected.push(format!("at the record by cause: geometry {}, material {}, not modelled {}, translation {}", later[0], later[1], later[2], later[3]));
     }
@@ -1480,13 +1480,13 @@ pub unsafe fn report(mt: &MainThread) -> String {
     ) + "\n"
         + &format!(
             "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {}, shapes hit {}\n",
-            RECHECKS[0], RECHECKS[1], RECHECKS[2], RECHECKS[3], RECHECKS[4], RECHECKS[5], CHANGE_NOTES[0], CHANGE_NOTES[1], CHANGE_NOTES[2]
+            RECHECKS.get(mt)[0], RECHECKS.get(mt)[1], RECHECKS.get(mt)[2], RECHECKS.get(mt)[3], RECHECKS.get(mt)[4], RECHECKS.get(mt)[5], CHANGE_NOTES.get(mt)[0], CHANGE_NOTES.get(mt)[1], CHANGE_NOTES.get(mt)[2]
         )
         + &crate::animation::report()
         + "\n"
-        + &light_report()
+        + &light_report(mt)
         + "\n"
-        + &record_report()
+        + &record_report(mt)
         + "\n" + &crate::script_names::report()
         + "\n" + &crate::worker_events::report()
         + "\n" + &crate::freed_fill::report()

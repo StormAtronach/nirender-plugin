@@ -360,7 +360,7 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
         | if effects.is_none() { 0 } else { EFFECTS }
         | if fog.is_some() { FOG } else { 0 }
         | if code_patch_picture() { CODE_PATCH_PICTURE } else { 0 }
-        | if crate::ports::base::in_main_flush() { QUEUED } else { 0 };
+        | if crate::ports::base::in_main_flush(t) { QUEUED } else { 0 };
     // A draw of a retained shape: its instance records in the place of this one (mode gpu:
     // the first draw of the instance), or before it (mode dual).
     if let Some((shape, id)) = crate::instance_stream::take_pending(t) {

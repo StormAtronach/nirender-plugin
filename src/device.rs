@@ -205,8 +205,11 @@ pub unsafe fn end_engine_run() -> String {
     text
 }
 
-static mut ORIG: [usize; TABLE_LEN + 1] = [0; TABLE_LEN + 1];
-static mut OURS: [usize; TABLE_LEN + 1] = [0; TABLE_LEN + 1];
+/// The vtable of the device and the table of the wrappers, with the word before each table
+/// (the type information pointer). Written once by `attach`, read by every wrapper on any
+/// thread: atomics, so that the reads and the one write are ordered.
+static ORIG: [core::sync::atomic::AtomicUsize; TABLE_LEN + 1] = [const { core::sync::atomic::AtomicUsize::new(0) }; TABLE_LEN + 1];
+static OURS: [core::sync::atomic::AtomicUsize; TABLE_LEN + 1] = [const { core::sync::atomic::AtomicUsize::new(0) }; TABLE_LEN + 1];
 
 #[cfg(feature = "rig")]
 static RECORDING: AtomicBool = AtomicBool::new(false);
@@ -380,7 +383,7 @@ pub fn first_difference(a: &[u32], b: &[u32]) -> Option<String> {
 
 unsafe fn call_original(slot: usize, this: usize, a: &[u32]) -> u32 {
     use core::mem::transmute as t;
-    let f = ORIG[slot + 1];
+    let f = ORIG[slot + 1].load(Ordering::Relaxed);
     match a.len() {
         0 => t::<usize, unsafe extern "system" fn(usize) -> u32>(f)(this),
         1 => t::<usize, unsafe extern "system" fn(usize, u32) -> u32>(f)(this, a[0]),
@@ -603,8 +606,9 @@ pub unsafe fn attach(device: usize) -> Result<(), String> {
     if device == 0 {
         return Err("no device".into());
     }
-    let ours = core::ptr::addr_of_mut!(OURS) as *mut usize;
-    let orig = core::ptr::addr_of_mut!(ORIG) as *mut usize;
+    // The atomics have the layout of their words: the tables are copied as words.
+    let ours = OURS.as_ptr() as *mut usize;
+    let orig = ORIG.as_ptr() as *mut usize;
     let vtable = *(device as *const usize);
     if vtable == ours.add(1) as usize {
         return Ok(());

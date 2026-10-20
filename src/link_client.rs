@@ -1006,7 +1006,7 @@ unsafe fn scene_kind(camera: usize, world_controller: usize, water_controller: u
 unsafe fn set_camera_data(args: &[usize]) {
     // A `before` function of a port: the main thread (`shadow::run_before`).
     let t = &MainThread::claim();
-    crate::ports::base::note_main_accumulator(args[0]);
+    crate::ports::base::note_main_accumulator(t, args[0]);
     let camera = args[1] - AV_WORLD_TRANSLATION;
     send_scene(camera, crate::camera_space::scene_begin(t, args[1]));
     SCENE_SENT_FOR.store(camera, Ordering::Relaxed);
@@ -1295,7 +1295,7 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     // A draw of the flush of the Click's sorted queue. A draw with no accumulator outside that
     // flush is a draw in place (a sort adjust node in the modes off and sub-sort).
     let world_camera = matches!(roots.scene_kind, SCENE_WORLD | SCENE_SORTED_ALPHA | SCENE_WATER);
-    if world_camera && crate::ports::base::in_main_flush() {
+    if world_camera && crate::ports::base::in_main_flush(t) {
         flags |= DRAW_FROM_SORTED_QUEUE;
     }
     let property_state: usize = rd(this, R::currentPropertyState);
