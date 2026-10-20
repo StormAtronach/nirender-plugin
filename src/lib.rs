@@ -23,7 +23,6 @@ pub mod log;
 pub mod census;
 pub mod click_time;
 pub mod d3d;
-pub mod deferred_unload;
 pub mod freed_fill;
 pub mod pointer_check;
 pub mod worker_events;

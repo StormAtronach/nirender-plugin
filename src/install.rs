@@ -174,8 +174,6 @@ pub unsafe fn install() -> Result<String, String> {
     crate::click_time::install();
     // The shapes the engine destroys on another thread (plan C26).
     crate::worker_events::install();
-    // The cells the cell worker evicts are unloaded on the main thread (plan C27, L1).
-    crate::deferred_unload::install();
     crate::freed_fill::install();
     crate::update_root::install();
 

@@ -3789,7 +3789,6 @@ pub unsafe fn report() -> String {
         + "\n" + &crate::script_names::report()
         + "\n" + &crate::click_time::report()
         + "\n" + &crate::worker_events::report()
-        + "\n" + &crate::deferred_unload::report()
         + "\n" + &{
             crate::mark_census::log_unlisted(&|shape| tables().instances.get(&shape).map(|instance| describe_instance(shape, instance)));
             crate::mark_census::report()
