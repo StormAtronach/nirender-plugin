@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the shared tools in tools/
 import picture_diff
 import session
 from common import REPO

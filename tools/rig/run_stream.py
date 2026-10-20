@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the shared tools in tools/
 import session
 from common import REPO
 

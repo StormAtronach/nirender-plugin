@@ -12,8 +12,10 @@ the function does not have the line. Run it after you add ports.
 """
 import glob
 import os
+import sys
 import re
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the shared tools in tools/
 from common import PORT_RE
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

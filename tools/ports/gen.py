@@ -4,8 +4,10 @@ Run it after tools/ida_export_inventory.py. The output is in git, so a build nee
 """
 import json
 import os
+import sys
 import re
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the shared tools in tools/
 from common import is_renderer_function
 
 HERE = os.path.dirname(os.path.abspath(__file__))

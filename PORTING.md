@@ -12,7 +12,7 @@ other game to replicate.
 ## Sources
 
 - `tools/out/dump/<address>.txt`: the Hex-Rays pseudocode and the disassembly of each
-  function of the renderer subsystem. `tools/ida_dump_funcs.py` makes these files. They are
+  function of the renderer subsystem. `tools/ports/ida_dump_funcs.py` makes these files. They are
   not in git.
 - `src/gen/layouts.rs`: the offsets of the struct members, from the IDA database.
 - `src/gen/funcs.rs`: every function with its size, its stack argument bytes and its bytes.
@@ -70,7 +70,7 @@ Use these before you write a helper. Do not make a private copy of something the
    and restores these blocks only. A write to other memory is not restored and breaks the
    state of the game in shadow mode. The list has no limit.
 10. Put `crate::shadow::touch(&<port module>::STATE);` on the first line of the port
-    function. `tools/add_touch.py` adds the line to every port that does not have it.
+    function. `tools/ports/add_touch.py` adds the line to every port that does not have it.
 11. Declare the port with `port_thiscall!` or `port_cdecl!` and add it to the `PORTS` list
     of the module. A new module also goes into `MODULES` in `src/ports/mod.rs`.
 12. Add a unit test for logic that needs no game. Build the structs in byte arrays, as
@@ -137,7 +137,7 @@ run and fail the run when MGE XE installed no hooks or could not compile its sha
 
     cargo test
     cargo build --release
-    python tools/run_test.py --label <name>      # starts the game; one run at a time
+    python tools/rig/run_test.py --label <name>      # starts the game; one run at a time
 
 A port is complete when the run prints calls compared and 0 different for it, and the frame
 tests in menu mode pass.
