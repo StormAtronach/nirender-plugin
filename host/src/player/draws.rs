@@ -126,6 +126,9 @@ impl Player {
             return;
         }
         let in_back_buffer = self.target.is_none();
+        if in_back_buffer && self.plan.scene_kind == scene::SCENE_FIRST_PERSON {
+            self.first_person_drawn = true;
+        }
         // The first draw of the world scene (kind 1) into the back buffer: the answers of
         // the extension for the frame.
         if self.extension.is_some() && self.parameters.is_none() && in_back_buffer && self.plan.scene_kind == scene::SCENE_WORLD {

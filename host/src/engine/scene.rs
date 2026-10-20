@@ -11,6 +11,9 @@ pub(crate) const SCENE_SORTED_ALPHA: u32 = 2;
 /// The water scene: the water plane and the flush of the engine's queue, after the plane
 /// with the camera above the water, before it below.
 pub(crate) const SCENE_WATER: u32 = 3;
+/// The first-person scene: the arms and the weapon, after the world views and a clear of
+/// the depth, with the depth test on.
+pub(crate) const SCENE_FIRST_PERSON: u32 = 6;
 /// The user interface scene: the world views are done.
 pub(crate) const SCENE_UI: u32 = 7;
 

@@ -35,6 +35,7 @@ use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 
+mod depth_merge;
 mod live;
 mod multisample;
 mod picture;
@@ -175,6 +176,9 @@ enum Item {
     Replace(u32, Box<WorldFacts>, usize),
     /// The post-processing of the extension, after the world views.
     Post(Box<WorldFacts>),
+    /// The depth of the first-person scene goes into the depth of the world for the
+    /// post-processing, with the projection of the first person.
+    FirstPersonDepth([f32; 16]),
     /// A held shape that the extension draws in its place in the order of the game
     /// (`Extension::draw_held_in_place`), with the facts of the world there.
     HeldHere(Box<HeldDraw>, Box<WorldFacts>),
@@ -437,6 +441,9 @@ struct Renderer {
     /// what the adapter has), and the pipelines of the resolves with more than one.
     samples: u32,
     multisample: Option<multisample::Multisample>,
+    /// The pipeline that merges the depth of the first person into the depth of the world,
+    /// made at its first use.
+    depth_merge: Option<depth_merge::DepthMerge>,
     /// The device can draw the edges of triangles only.
     wireframe: bool,
     queue: wgpu::Queue,
@@ -697,9 +704,13 @@ struct Player {
     picture_copy: Option<wgpu::Texture>,
     depth_copy: Option<wgpu::Texture>,
     /// The depth of the game at the end of its world scene, for `Extension::post`: the game
-    /// clears its depth before its later scenes.
+    /// clears its depth before its later scenes. The projection of the world at that time,
+    /// and true when a draw of the first-person scene went into the back buffer in this
+    /// frame (its depth goes into the copy at the end of that scene).
     world_depth: Option<wgpu::Texture>,
     world_depth_kept: bool,
+    world_depth_projection: Option<[f32; 16]>,
+    first_person_drawn: bool,
     /// The depth of the draws of `Extension::before_world`, for `Extension::post`: the
     /// renderer clears the depth after them.
     before_depth: Option<wgpu::Texture>,

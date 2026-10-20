@@ -22,6 +22,9 @@ pub(crate) enum Step {
     EndWorld,
     /// The post-processing is due (the player does it once, after the world began).
     Post,
+    /// The first-person scene ends: its depth goes into the depth of the world that the
+    /// post-processing reads, before the game clears the depth for its next scene.
+    FirstPersonEnd,
 }
 
 /// The state of the plan within a frame.
@@ -83,6 +86,11 @@ impl Plan {
             steps.push(self.sorted_blends());
             steps.push(Step::EndWorld);
         }
+        // The end of the first-person scene after the world: the depth of the arms is in the
+        // depth target until the game clears it for its next scene.
+        if kind == scene::SCENE_FIRST_PERSON && in_back_buffer && drawing && self.world_ended {
+            steps.push(Step::FirstPersonEnd);
+        }
         self.scene_kind = 0;
         steps
     }
@@ -126,7 +134,7 @@ impl Plan {
 
 #[cfg(test)]
 mod tests {
-    use super::scene::{SCENE_SORTED_ALPHA, SCENE_UI, SCENE_WATER, SCENE_WORLD};
+    use super::scene::{SCENE_FIRST_PERSON, SCENE_SORTED_ALPHA, SCENE_UI, SCENE_WATER, SCENE_WORLD};
     use super::{Plan, Step};
 
     /// A world scene with the sky first, then the world.
@@ -203,6 +211,20 @@ mod tests {
         assert_eq!(plan.world_draw(false, true, false, true), (vec![], false));
         assert_eq!(plan.scene_end(false, true, true), vec![Step::ReleaseHeld]);
         assert!(!plan.world_begun);
+    }
+
+    #[test]
+    fn the_first_person_scene_after_the_world_gives_its_depth() {
+        let mut plan = Plan::default();
+        // Before the world ended (a menu frame), no step.
+        plan.scene_begin(SCENE_FIRST_PERSON);
+        assert_eq!(plan.scene_end(true, true, true), vec![]);
+        world_scene(&mut plan);
+        plan.scene_begin(SCENE_FIRST_PERSON);
+        assert_eq!(plan.scene_end(true, true, true), vec![Step::FirstPersonEnd]);
+        // Into a rendered texture, no step.
+        plan.scene_begin(SCENE_FIRST_PERSON);
+        assert_eq!(plan.scene_end(true, false, true), vec![]);
     }
 
     #[test]

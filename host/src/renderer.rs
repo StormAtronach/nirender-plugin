@@ -501,6 +501,7 @@ impl Renderer {
             anisotropy: 1,
             samples,
             multisample,
+            depth_merge: None,
             wireframe,
             queue,
             shader,

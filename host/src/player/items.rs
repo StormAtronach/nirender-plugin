@@ -65,6 +65,7 @@ impl Player {
                         Item::HeldHere(..) => "held",
                         Item::Replace(..) => "replace",
                         Item::Post(_) => "post",
+                        Item::FirstPersonDepth(_) => "first-person-depth",
                         Item::Draw(_) => unreachable!(),
                     };
                     println!("run frame {} barrier {kind}", self.renderer.counts.frames);
@@ -95,6 +96,7 @@ impl Player {
                 Item::HeldHere(held, facts) => self.give_held_here(*held, &facts),
                 Item::Replace(class, facts, drawn) => self.replace_class(class, &facts, drawn),
                 Item::Post(facts) => self.post_process(&facts),
+                Item::FirstPersonDepth(projection) => self.merge_first_person_depth(&projection),
             }
         }
     }
@@ -116,6 +118,11 @@ impl Player {
                 self.items.push(Item::WorldEnd(Box::new(facts)));
             }
             plan::Step::Post => self.post_item(),
+            plan::Step::FirstPersonEnd => {
+                if self.first_person_drawn && self.parameters.as_ref().is_some_and(|p| p.post) {
+                    self.items.push(Item::FirstPersonDepth(self.stream.projection));
+                }
+            }
         }
     }
 
@@ -279,6 +286,7 @@ impl Player {
         if self.parameters.as_ref().is_some_and(|p| p.post) {
             world_depth_now = self.copy_depth(1).is_some();
             self.world_depth_kept = world_depth_now;
+            self.world_depth_projection = Some(facts.projection);
             self.open_pass(None, None, None);
         }
         // The blend: a pass on the picture only, so that a shader can read the depth. A copy
@@ -466,7 +474,9 @@ impl Player {
             _ => &mut self.depth_copy,
         };
         if copy.as_ref().is_none_or(|copy| copy.size() != size) {
-            let usage = wgpu::TextureUsages::TEXTURE_BINDING | if resolve { wgpu::TextureUsages::RENDER_ATTACHMENT } else { wgpu::TextureUsages::COPY_DST };
+            // A target too: the resolve writes it, and the depth of the first person goes into
+            // the copy of the world (`merge_first_person_depth`).
+            let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST;
             *copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), usage));
         }
         if resolve {
@@ -478,6 +488,25 @@ impl Player {
         }
         self.renderer.counts.depth_copies += 1;
         copy.as_ref().map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }))
+    }
+
+    /// Puts the depth of the first-person scene into the copy of the world depth that the
+    /// post-processing reads, as the nearer of the two in each pixel: the game draws the
+    /// arms after a clear of the depth, so the copy of the world has the depth behind them.
+    /// The Direct3D 9 path of MGE XE merges the depth of its later scenes the same way
+    /// (`renderStage2`, the nearest of the two). `projection` is that of the first person.
+    pub(crate) fn merge_first_person_depth(&mut self, projection: &[f32; 16]) {
+        let Some(world_projection) = self.world_depth_projection.filter(|_| self.world_depth_kept) else { return };
+        let Some(arms) = self.copy_depth(0) else {
+            self.open_pass(None, None, None);
+            return;
+        };
+        if let (Some(target), Some(encoder)) = (self.world_depth.as_ref(), self.encoder.as_mut()) {
+            let merge = self.renderer.depth_merge.get_or_insert_with(|| depth_merge::DepthMerge::new(&self.renderer.device));
+            merge.merge(&self.renderer.device, encoder, &arms, &target.create_view(&Default::default()), projection, &world_projection);
+            self.renderer.counts.depth_copies += 1;
+        }
+        self.open_pass(None, None, None);
     }
 
     /// Gives the extension its post-processing call. See `Extension::post`.

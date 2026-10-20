@@ -84,6 +84,8 @@ impl Player {
             depth_copy: None,
             world_depth: None,
             world_depth_kept: false,
+            world_depth_projection: None,
+            first_person_drawn: false,
             before_depth: None,
             before_depth_kept: false,
             mark_times: [0; TIME_COUNT],
@@ -233,6 +235,8 @@ impl Player {
         self.posted = false;
         self.world_matrices = None;
         self.world_depth_kept = false;
+        self.world_depth_projection = None;
+        self.first_person_drawn = false;
         self.before_depth_kept = false;
         self.target = None;
         self.pass_target = None;
