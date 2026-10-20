@@ -10,7 +10,8 @@
 //! This device draws nothing itself. The picture comes from the ports: they send state
 //! packets through the render link, the plugin is the host of the link, and the stream goes
 //! to the host program, which `CreateDevice` starts. A state call or a draw call that does
-//! not come from a port goes into the stream as a command.
+//! not come from a port does not reach the helper. Only `SetTransform` (the view and the
+//! projection) and `DrawPrimitiveUP` (the films) go into the stream.
 //!
 //! The device has the recorder of `device` on it, as a device of Direct3D has. A call comes
 //! here in two ways: from the recorder when the link does not take the call, and from
@@ -89,8 +90,10 @@ pub unsafe fn check_host() {
 
 /// The D3DCAPS8 of the device of the testing computer (MGE XE on DXVK), from
 /// `nirender.dumpDevice`, so that the game makes the same choices as there. One change:
-/// `MaxActiveLights` (word 40, byte 0xA0) is 32, not 8. The engine gives a draw at most that
-/// many lights of its node, and a node can have 32 (`distant_land.expanded_light_limit`).
+/// `MaxActiveLights` (word 40, byte 0xA0) is 32, not 8. The engine's renderer does not read
+/// this word. `updateLights` (0x6BB6C0) enables every light of the effect state. The only cap
+/// is 7 lights of a node's own list (`NiNode::PushLocalEffects` 0x6C8F00), 32 with
+/// `distant_land.expanded_light_limit`.
 const CAPS: [u32; 53] = [
     0x00000001, 0x00000000, 0x00020000, 0x200a0000, 0x00000420, 0x8000000f, 0x00000000, 0x001bbef0, 0x00000ef2, 0x00f37191,
     0x000000ff, 0x00001fff, 0x00001fff, 0x000000ff, 0x00084208, 0x0001ecc5, 0x03030700, 0x03030300, 0x03030300, 0x0000003f,

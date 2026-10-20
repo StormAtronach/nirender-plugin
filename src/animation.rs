@@ -1,10 +1,11 @@
-//! What animates when the engine's world walk does not set the display flag. The engine
-//! lets an actor or an animated node compute its pose only when a Click displayed it in the
-//! frame before: `NiNode::Display` sets the flag 0x10 of a node, `BSAnimationNode::Display`
-//! the bit 8 of an animation node, and three readers consume them. Without the walk the
-//! readers ask here (`ports/animation.rs`). The answer is a test of the node's world bound
-//! against the planes of the world camera and, by the policy, the reach of the shadow map
-//! that the helper reports (`capture::helper_shadow_reach`).
+//! What animates in mode gpu while the stream records (`active`). The engine lets an actor
+//! or an animated node compute its pose only when a Click displayed it in the frame before:
+//! `NiNode::Display` (0x6C9190) sets the flag 0x10 of a node, `BSAnimationNode::Display` the
+//! bit 8 of an animation node, and three readers consume them. The engine's walk sets these
+//! flags itself. In mode gpu the readers' ports (`ports/animation.rs`) also set the flag on
+//! the nodes that the policy selects here. The test is the node's world bound against the
+//! planes of the world camera and, by the policy, the reach of the shadow map that the
+//! helper reports (`capture::helper_shadow_reach`).
 //!
 //! The policy (`NIRENDER_ANIMATION`, `nirender.animationPolicy`): `view` animates what is
 //! in the camera's view; `shadows` (the default) also what the shadow map reaches, so that a
@@ -120,8 +121,8 @@ pub unsafe fn displayed(node: usize) -> bool {
         return true;
     }
     let camera = &*addr_of!(CAMERA);
-    // `NiBound::WhichSide`'s rule: outside a plane when the signed distance of the centre is
-    // at most minus the radius.
+    // The rule of `NiBound::WhichSide` (0x6F2660) [I: transcribed, not compared]: outside a
+    // plane when the signed distance of the centre is at most minus the radius.
     let [x, y, z, radius] = rd::<[f32; 4]>(bound, 0).map(f64::from);
     if !camera.planes.is_empty() && camera.planes.iter().all(|p| p[0] * x + p[1] * y + p[2] * z - p[3] > -radius) {
         BY_VIEW.fetch_add(1, Ordering::Relaxed);

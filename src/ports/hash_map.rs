@@ -3,7 +3,8 @@
 //! A map is a vtable, a count, a bucket count and an array of bucket heads. A node is a key, a
 //! value and the next node of the bucket. The map calls four virtual functions for the keys
 //! and the nodes. Each function here makes the same reads, writes and virtual calls as the
-//! inline game code, in the same order.
+//! inline game code, in the same order [I: transcribed from the inline game code; there is
+//! no single function to compare with].
 //!
 //! A function that allocates or frees a node has two forms. The plain form calls
 //! `operator new` (0x727692) or `operator delete` (0x727530) of the game. The `_with` form

@@ -1,10 +1,11 @@
 //! The material of a draw, from the `MATERIAL` record of the plugin: the facts of the properties of the shape, and the derivation of the state of
-//! the draw from them, as the fixed-function pipeline of the engine makes it. The helper
-//! draws a shape with the derived state (`Pass` in lib.rs).
+//! the draw from them, as the ports of the engine's pipeline make it, where a rule names its
+//! function. The helper draws a shape with the derived state (`Pass` in lib.rs).
 //!
 //! The rules come from the ports of `NiDX8TexturePass::setCTPipelineState`,
 //! `NiDX8ConfigurableTexturePipeline::initAlphaStateTemplates`, `NiDX8RenderState` and
-//! `NiDX8LightManager::setState` in the plugin.
+//! `NiDX8LightManager::setState` in the plugin. Rules with no engine function read [I]: the
+//! cull from the stencil draw mode, and the default sources (lib.rs).
 
 /// The words of a record. See `material_stream` of the plugin for the layout.
 pub const WORDS: usize = 91;
@@ -333,6 +334,8 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
     } else {
         [0; 7]
     };
+    // As `NiDX8RenderState::updateFogStates` (0x6B8A00): the fog function 0 is linear fog,
+    // 1 is range fog, any other value has no fog.
     d.fog = m.flags & FOG != 0 && m.fog_mode < 2;
     d.range_fog = d.fog && m.fog_mode == 1;
     d.no_sorter = m.flags & NO_SORTER != 0;

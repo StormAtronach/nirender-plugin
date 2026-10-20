@@ -741,7 +741,9 @@ unsafe fn identity_transform(transform: &mut [u32; NiTransform::SIZE / 4]) -> us
 
 /// The shape record of a screen polygon: its geometry for this draw (see
 /// `geometry_stream::note_screen_polygon`), then the transform, the bound and the lights
-/// as `DrawPrimitive` sets them, and the record with the identity world. The view and the
+/// in the order of `DrawPrimitive` 0x6AEB80, but always: `DrawPrimitive` skips the
+/// transform on BUILD_KEEP_TRANSFORM and the lights on BUILD_KEEP_LIGHTS, which the
+/// fixed-function pass never sets. Then the record with the identity world. The view and the
 /// projection of the screen polygons stay as the port sets them on the device: the helper
 /// draws the record under them. Returns true when the pipeline of the device must not run.
 unsafe fn screen_polygon_record(this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize, transform: usize, bound: usize) -> bool {

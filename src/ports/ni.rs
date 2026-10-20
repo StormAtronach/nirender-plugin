@@ -1,7 +1,8 @@
 //! NetImmerse idioms that the game code has inline and that several ports replicate.
 //!
 //! The compiler put this code inline at each place of use, thus there is no game function to
-//! call. A function here makes the same reads, writes and virtual calls in the same order.
+//! call. A function here makes the same reads, writes and virtual calls in the same order
+//! [I: transcribed from the inline game code; there is no single function to compare with].
 //! The forms that call a game function (`NiObject::release` at 0x404630, `NiPointer::set` at
 //! 0x471B00 and the others) are in `engine`. Do not use one form in place of the other: a
 //! port does what the game code does at that place.

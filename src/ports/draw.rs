@@ -454,7 +454,9 @@ unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize)
 }
 
 /// The shape record of a draw (see `shape_stream`): the transform, the bound and the
-/// lights of the draw as `DrawPrimitive` sets them, then the record. A skinned shape (`skin`
+/// lights of the draw in the order of `DrawPrimitive` 0x6AEB80 (the port below), but
+/// always: `DrawPrimitive` skips the transform on BUILD_KEEP_TRANSFORM and the lights on
+/// BUILD_KEEP_LIGHTS, which the fixed-function pass never sets. Then the record. A skinned shape (`skin`
 /// not 0, hardware skinning) gets the lights and the bound as `DrawSkinnedPrimitive2` sets
 /// them. It gets the palette of the skin in place of the transform. Returns true when the
 /// pipeline of the device must not run for the draw. `RenderScreenPoly` uses it too, with

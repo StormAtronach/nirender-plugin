@@ -4,7 +4,8 @@
 //! normals, colours, the texture sets, then the triangle list or the strip lists). It sends
 //! it once as a `GEOMETRY` record keyed by the geometry data. The key has the unique id, the
 //! revision and the active counts of the data: the engine packs a geometry again only when
-//! the revision changes (`packGeometryBuffers`), so these are its version.
+//! the revision changes (`packGeometryBuffers` 0x6AF610, by its port in `ports/geometry.rs`),
+//! so these are its version.
 //!
 //! A skinned shape is packed with the weights and the bone indexes of each vertex for the
 //! whole skin, so one draw with the palette of the skin replaces the draws of the
@@ -174,7 +175,8 @@ unsafe fn has_bone_weights(skin_data: usize) -> bool {
 }
 
 /// The weights of the bones of each vertex from the skin data, as the skin partition code of
-/// Gamebryo collects them (`CreateVertexInteractions`): the sum of the weights of a vertex is
+/// Gamebryo collects them (`NiSkinPartition::CreateVertexInteractions` 0x6C6B60) [I: from the
+/// Gamebryo 1.2 source, not compared with the binary]: the sum of the weights of a vertex is
 /// made 1. `None` when the data is not complete.
 unsafe fn skin_data_weights(skin_data: usize, vertices: usize) -> Option<Vec<Vec<(u8, f32)>>> {
     if !has_bone_weights(skin_data) {
@@ -582,7 +584,8 @@ pub unsafe fn note_screen_polygon(count: u32, vertices: usize, tex_coords: usize
 /// The fourth weight is 1 less the sum of the three, as the vertex blend of the device has
 /// it. A partition has `numBonesPerVertex` weights for each vertex. Without a bone palette
 /// that is all its bones, and weight `k` is for bone `k` of the partition, as the stock
-/// packer (`PackSkinnedVB`) has it; with a palette (a partition with more bones than a
+/// packer (`PackSkinnedVB` 0x6BE2B0) has it [I: from the Gamebryo 1.2 source, not read in
+/// the binary]; with a palette (a partition with more bones than a
 /// vertex has weights), the palette gives for each weight of a vertex the bone of the
 /// partition. The last bone of a vertex goes to the fourth place, so the arithmetic is the
 /// same. `None` when the skin has no partitions yet, or the data does not fit the format.

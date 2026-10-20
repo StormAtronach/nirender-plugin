@@ -157,9 +157,10 @@ fn draw_pixel() -> vec4f {
     return draws[record].pixel;
 }
 fn draw_scene_ambient() -> vec4f {
-    // A retained draw lights with the ambient of its own instance (the engine sets the
-    // ambient render state from each shape's own effect state), scaled as the extension
-    // scaled the scene's.
+    // A retained draw lights with the ambient of its own instance, scaled as the extension
+    // scaled the scene's. The engine sums the ambient lights of the shape's own effect state
+    // only when `useAmbientDiffuse` is set (`updateLights` 0x6BB6C0); `setState` (0x6BB200)
+    // can turn the lighting off or give a black ambient. The plugin's sum has neither gate.
     if from_scene() { return draws[record].scene_ambient * scene.ambient_scale; }
     return draws[record].scene_ambient;
 }

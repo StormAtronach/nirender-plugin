@@ -861,7 +861,9 @@ unsafe fn send_instance(shape: usize, instance: &Instance, exact: [f64; 3], rela
 /// ambient light; in the order of the manager's list (the last of the state first). A light
 /// that is off or too dim stays in the list: its record has zero colours
 /// (`note_light_once`), so that it gives light again when it is turned on, with no new work
-/// of the instance.
+/// of the instance. [I] The light manager also gates the lights and the ambient
+/// (`updateLights` 0x6BB6C0 with `useAmbientDiffuse`, `setState` 0x6BB200: the replace mode
+/// of the base map and the lighting mode); this code does not.
 unsafe fn state_lights(effect_state: usize, out: &mut Vec<usize>) {
     out.clear();
     if effect_state == 0 {
@@ -1345,7 +1347,8 @@ unsafe fn display_work(shape: usize, kind: u32) -> bool {
         return false;
     };
     // The ambient light of the instance's own effect state goes with its lights: the helper
-    // lights each instance with its own, as the engine's light manager does for each draw.
+    // lights each instance with its own, as the engine's light manager does for each draw,
+    // without its gates (see `state_lights`).
     let ambient = crate::ports::light_manager::ambient_of_state(effect_state);
     if instance.lights != keys || instance.ambient != ambient {
         capture::instance_lights(id, &keys, ambient);
