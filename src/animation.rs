@@ -14,18 +14,15 @@
 use core::ptr::addr_of;
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
-use crate::engine::{thiscall1, vcall0};
+use crate::engine::vcall0;
 use crate::gen::layouts::NiCamera as C;
 use crate::mem::rd;
 
-/// `NiBound::WhichSide` and the vtable slot of `NiAVObject::GetWorldBound` (as `ports/scene.rs`).
-const WHICH_SIDE: usize = 0x6F2660;
+/// The vtable slot of `NiAVObject::GetWorldBound` (as `ports/scene.rs`).
 const SLOT_GET_WORLD_BOUND: usize = 0x34;
 /// `NiAVObject::worldTransform.translation` and `NiBound::radius`.
 const WORLD_TRANSLATION: usize = 0x64;
 const BOUND_RADIUS: usize = 0xC;
-/// The side `WhichSide` returns for a bound wholly on the negative side of a plane.
-const OUTSIDE: u32 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
@@ -42,10 +39,12 @@ static BY_SHADOWS: AtomicU64 = AtomicU64::new(0);
 static BY_ALL: AtomicU64 = AtomicU64::new(0);
 static NEITHER: AtomicU64 = AtomicU64::new(0);
 
-/// The world camera of the frame: the pointers to its culling planes (into the camera,
-/// engine-rules R16) and its position.
+/// The world camera of the frame: the values of its culling planes (the normal and the
+/// constant of each) and its position. Values, not the planes' addresses: the tests run in
+/// the next frame's update, after the scene that noted them (the audit of 2026-10-20,
+/// item 6).
 struct Camera {
-    planes: Vec<usize>,
+    planes: Vec<[f64; 4]>,
     position: [f32; 3],
 }
 static mut CAMERA: Camera = Camera { planes: Vec::new(), position: [0.0; 3] };
@@ -100,7 +99,12 @@ pub unsafe fn note_camera(camera: usize) {
     let count = rd::<i32>(camera, C::countCullingPlanes).max(0) as usize;
     let storage: usize = rd(camera, C::cullingPlanes_storage);
     let this = &mut *core::ptr::addr_of_mut!(CAMERA);
-    this.planes = (0..count).map(|i| rd(storage, i * 4)).collect();
+    this.planes = (0..count)
+        .map(|i| {
+            let plane: [f32; 4] = rd(rd::<usize>(storage, i * 4), 0);
+            plane.map(f64::from)
+        })
+        .collect();
     this.position = rd(camera, WORLD_TRANSLATION);
 }
 
@@ -118,7 +122,10 @@ pub unsafe fn displayed(node: usize) -> bool {
         return true;
     }
     let camera = &*addr_of!(CAMERA);
-    if !camera.planes.is_empty() && camera.planes.iter().all(|&plane| thiscall1(WHICH_SIDE, bound, plane as u32) != OUTSIDE) {
+    // `NiBound::WhichSide`'s rule: outside a plane when the signed distance of the centre is
+    // at most minus the radius.
+    let [x, y, z, radius] = rd::<[f32; 4]>(bound, 0).map(f64::from);
+    if !camera.planes.is_empty() && camera.planes.iter().all(|p| p[0] * x + p[1] * y + p[2] * z - p[3] > -radius) {
         BY_VIEW.fetch_add(1, Ordering::Relaxed);
         return true;
     }
