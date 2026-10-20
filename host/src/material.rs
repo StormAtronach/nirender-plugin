@@ -450,12 +450,16 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
         }
         pass.push(stage(GLOW, 0, pass.is_empty()));
     }
+    // The stage of the fog map has blend slot 1 (the pass constructor writes it into the
+    // stage, `applyStageBlendOps` 0x6B56B0 reads it): after another stage it blends the
+    // texture by its alpha; as the first stage it takes the texture alone (0x6B55F7 clears
+    // the stage's apply flag).
     if m.fog_map.present {
         if pass.len() >= 8 {
             passes.push((core::mem::take(&mut pass), pass_slot));
-            pass_slot = 2;
+            pass_slot = 1;
         }
-        let (color, alpha) = ops(2, pass.is_empty(), false, true);
+        let (color, alpha) = ops(1, pass.is_empty(), false, true);
         pass.push(Stage { texture: m.fog_map.texture, color, alpha, set: 1, source: 9, clamp: m.fog_map.clamp, filter: m.fog_map.filter });
     }
     if !pass.is_empty() {
@@ -486,4 +490,40 @@ pub fn d3d_material(values: &[f32; 14]) -> [f32; 17] {
     }
     material[16] = values[12];
     material
+}
+
+#[cfg(test)]
+mod fog_map_tests {
+    use super::*;
+
+    /// A material record with a fog map, and a base map when `base` is set.
+    fn material(base: bool) -> Material {
+        let mut words = [0u32; WORDS];
+        words[1] = FOG_MAP;
+        words[6] = 2;
+        if base {
+            words[8] = 0x100;
+            words[12] = 1;
+        }
+        words[85] = 0x200;
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        Material::parse(&bytes).unwrap()
+    }
+
+    #[test]
+    fn the_fog_map_after_a_stage_blends_by_its_alpha() {
+        let d = derive(&material(true), 1);
+        let fog = d.passes[0].iter().find(|s| s.source == 9).unwrap();
+        // Slot 1 of the later-stage table: BLENDTEXTUREALPHA (0xD) of the texture and the
+        // current colour.
+        assert_eq!(fog.color, [0xD, 2, 1]);
+    }
+
+    #[test]
+    fn without_a_base_map_the_fog_map_follows_the_stage_with_no_texture() {
+        let d = derive(&material(false), 1);
+        assert_eq!(d.passes[0][0].source, 10);
+        let fog = d.passes[0].iter().find(|s| s.source == 9).unwrap();
+        assert_eq!(fog.color, [0xD, 2, 1]);
+    }
 }
