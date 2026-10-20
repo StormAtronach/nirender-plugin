@@ -230,6 +230,7 @@ impl Renderer {
         mut target_format: wgpu::TextureFormat,
         extension_shader: String,
         texture_slots: u32,
+        samples: u32,
     ) -> (Renderer, Option<wgpu::Surface<'static>>) {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = backends;
@@ -262,6 +263,19 @@ impl Renderer {
             surface_usages = capabilities.usages;
             println!("window: the present modes of the surface are {:?}", capabilities.present_modes);
         }
+        // The samples for each pixel of the targets of the frame: the largest count up to the
+        // wanted one that the adapter has for the colour format, with a resolve, and for the
+        // depth format.
+        let mut samples = samples.clamp(1, 8).next_power_of_two();
+        while samples > 1 {
+            let color = adapter.get_texture_format_features(target_format).flags;
+            let depth = adapter.get_texture_format_features(DEPTH_FORMAT).flags;
+            if color.sample_count_supported(samples) && color.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE) && depth.sample_count_supported(samples) {
+                break;
+            }
+            samples /= 2;
+        }
+        println!("multisampling: {samples} samples for each pixel of the frame");
         // The textures and the samplers of a frame are in binding arrays. The adapter must
         // have them; without them this program stops here with the reason, and the game
         // side is for Direct3D 9 (`[runtime] renderer_wgpu = false`).
@@ -314,6 +328,7 @@ impl Renderer {
         .expect("no device");
         gpu::watch(&device, &info, surface.is_some());
 
+        let multisample = (samples > 1).then(|| multisample::Multisample::new(&device, target_format, samples));
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
         // The text of the extension reads the record of the draw as `draw.field`; the record
         // is in the storage buffer of the frame (`draws[record]`, see shader.wgsl).
@@ -484,6 +499,8 @@ impl Renderer {
             target_format,
             surface_usages,
             anisotropy: 1,
+            samples,
+            multisample,
             wireframe,
             queue,
             shader,
@@ -546,7 +563,7 @@ impl Renderer {
             materials: FxHashMap::default(),
             derived: FxHashMap::default(),
             defaults,
-            screen_pipeline: None,
+            screen_pipelines: HashMap::new(),
             screen_layout: None,
             screen_sampler: None,
             counts: Counts::default(),
@@ -878,8 +895,9 @@ impl Renderer {
     /// The pipeline for a draw in screen coordinates: a frame of a film. It does not blend:
     /// the film player of the game is the only caller of `DrawPrimitiveUP`
     /// (`CutscenePlayer_static::drawRect`), and it sets `D3DRS_ALPHABLENDENABLE` to 0 before
-    /// its draws (`CutscenePlayer_static::setupD3DState` 0x64ECD0).
-    pub(crate) fn screen_pipeline(&mut self) -> wgpu::RenderPipeline {
+    /// its draws (`CutscenePlayer_static::setupD3DState` 0x64ECD0). `samples` is that of the
+    /// pass that the draw goes into.
+    pub(crate) fn screen_pipeline(&mut self, samples: u32) -> wgpu::RenderPipeline {
         if self.screen_layout.is_none() {
             self.screen_layout = Some(self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("screen draw"),
@@ -908,7 +926,7 @@ impl Renderer {
                 ..Default::default()
             }));
         }
-        if let Some(pipeline) = &self.screen_pipeline {
+        if let Some(pipeline) = self.screen_pipelines.get(&samples) {
             return pipeline.clone();
         }
         let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("screen draw"), source: wgpu::ShaderSource::Wgsl(SCREEN_SHADER.into()) });
@@ -935,7 +953,7 @@ impl Renderer {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: Default::default(),
+            multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some("fs"),
@@ -949,7 +967,7 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        self.screen_pipeline = Some(pipeline.clone());
+        self.screen_pipelines.insert(samples, pipeline.clone());
         pipeline
     }
 
@@ -1266,7 +1284,7 @@ impl Renderer {
                     },
                     bias: Default::default(),
                 }),
-                multisample: Default::default(),
+                multisample: wgpu::MultisampleState { count: key.samples, ..Default::default() },
                 fragment: Some(wgpu::FragmentState {
                     module: &self.shader,
                     entry_point: Some("fs"),

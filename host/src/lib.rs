@@ -36,6 +36,7 @@ use std::rc::Rc;
 use rustc_hash::FxHashMap;
 
 mod live;
+mod multisample;
 mod picture;
 use picture::*;
 mod cli;
@@ -83,6 +84,8 @@ struct WorldFacts {
     ambient: [f32; 3],
     /// The exact position of the camera, when the scene of the world is relative to it.
     origin: Option<[f64; 3]>,
+    /// The samples for each pixel of the targets of the frame (`Renderer::samples`).
+    samples: u32,
 }
 
 impl WorldFacts {
@@ -94,6 +97,7 @@ impl WorldFacts {
             target_format,
             depth_format: DEPTH_FORMAT,
             target_size: self.target_size,
+            samples: self.samples,
             view: self.view,
             projection: self.projection,
             interior: self.interior,
@@ -429,6 +433,10 @@ struct Renderer {
     /// The anisotropic filter that MGE XE forces, for a comparison with its picture. 1 for the
     /// filters that the game asks for.
     anisotropy: u16,
+    /// The samples for each pixel of the targets of the frame (`Extension::samples`, cut to
+    /// what the adapter has), and the pipelines of the resolves with more than one.
+    samples: u32,
+    multisample: Option<multisample::Multisample>,
     /// The device can draw the edges of triangles only.
     wireframe: bool,
     queue: wgpu::Queue,
@@ -557,9 +565,9 @@ struct Renderer {
     /// those of the frame (one for each draw, which names its record).
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
-    /// For a draw in screen coordinates: the pipeline, the layout of its group, and its
-    /// sampler.
-    screen_pipeline: Option<wgpu::RenderPipeline>,
+    /// For a draw in screen coordinates: the pipeline for each sample count, the layout of
+    /// its group, and its sampler.
+    screen_pipelines: HashMap<u32, wgpu::RenderPipeline>,
     screen_layout: Option<wgpu::BindGroupLayout>,
     screen_sampler: Option<wgpu::Sampler>,
     counts: Counts,
@@ -588,6 +596,14 @@ struct Player {
     depth: Option<Rc<wgpu::TextureView>>,
     /// The texture of `color`, for a read of its pixels. It stays after the frame.
     back_buffer: Option<wgpu::Texture>,
+    /// With more than one sample: the view of the back buffer, which the pass resolves its
+    /// colour into, and the multisampled colour and depth targets that `color` and `depth`
+    /// view. `None` with one sample. See `multisample.rs`.
+    back_view: Option<Rc<wgpu::TextureView>>,
+    ms_color: Option<wgpu::Texture>,
+    ms_depth: Option<wgpu::Texture>,
+    /// The samples for each pixel of the targets of the pass that is open, for the pipelines.
+    pass_samples: u32,
     /// A part of the frame in progress went to the GPU before its end, so the back buffer
     /// has a picture that is not complete. `last_picture` then has the last complete one.
     sent_in_part: bool,

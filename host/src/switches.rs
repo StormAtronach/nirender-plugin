@@ -32,6 +32,9 @@ pub(crate) struct Switches {
     /// `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
     /// guard of the device's limit.
     pub(crate) record_limit: Option<usize>,
+    /// `MGE_XE_SAMPLES=<n>`: the samples for each pixel of the targets of the frame (1, 2, 4
+    /// or 8), over the setting of the extension: for an A/B of the multisampling.
+    pub(crate) samples: Option<u32>,
 }
 
 impl Switches {
@@ -54,6 +57,7 @@ impl Switches {
             retained: on_unless_0("MGE_XE_RETAINED"),
             array_cap: var("MGE_XE_ARRAY_CAP").and_then(|v| v.parse::<u32>().ok()).map(|n| n.max(256)),
             record_limit: var("MGE_XE_RECORD_LIMIT").and_then(|v| v.parse::<usize>().ok()).map(|n| n.max(1024)),
+            samples: var("MGE_XE_SAMPLES").and_then(|v| v.parse::<u32>().ok()).map(|n| n.clamp(1, 8)),
         }
     }
 }

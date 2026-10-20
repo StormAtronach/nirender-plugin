@@ -37,6 +37,10 @@ impl Player {
             color: None,
             depth: None,
             back_buffer: None,
+            back_view: None,
+            ms_color: None,
+            ms_depth: None,
+            pass_samples: 1,
             sent_in_part: false,
             last_picture: None,
             reply: None,
@@ -110,12 +114,15 @@ impl Player {
         }
         drop(self.pass.take());
         let rendered = self.pass_target.and_then(|handle| self.renderer.targets.get(&handle));
+        // A texture that the game draws into has one sample; the targets of the frame have
+        // `Renderer::samples`, and the pass resolves its colour into the back buffer.
         let views = match rendered {
-            Some(texture) => Some((texture.view.clone(), texture.depth.clone(), texture.size)),
-            None => self.color.clone().zip(self.depth.clone()).map(|(color, depth)| (color, depth, self.frame_size)),
+            Some(texture) => Some((texture.view.clone(), texture.depth.clone(), texture.size, None, 1)),
+            None => self.color.clone().zip(self.depth.clone()).map(|(color, depth)| (color, depth, self.frame_size, self.back_view.clone(), self.renderer.samples)),
         };
-        let (Some(encoder), Some((color, depth, size))) = (self.encoder.as_mut(), views) else { return };
+        let (Some(encoder), Some((color, depth, size, resolve, samples))) = (self.encoder.as_mut(), views) else { return };
         self.target_size = size;
+        self.pass_samples = samples;
         let (color, depth) = (&*color, &*depth);
         let stamps = self.renderer.timing.as_mut().and_then(Timing::next_pass);
         let pass = encoder
@@ -124,7 +131,7 @@ impl Player {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: color,
                     depth_slice: None,
-                    resolve_target: None,
+                    resolve_target: resolve.as_deref(),
                     ops: wgpu::Operations { load: clear_color.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -144,6 +151,22 @@ impl Player {
         self.pass = Some(pass);
         self.forget_bound();
         self.apply_viewport();
+    }
+
+    /// With more than one sample: writes the back buffer into the multisampled colour target,
+    /// after a write of the back buffer outside the pass (`Extension::post`). The pass stays
+    /// closed. Nothing with one sample.
+    pub(crate) fn load_color(&mut self) {
+        if self.back_view.is_none() {
+            return;
+        }
+        if let Some(pass) = self.pass.as_mut() {
+            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
+        }
+        drop(self.pass.take());
+        let (Some(multisample), Some(source), Some(target), Some(encoder)) = (self.renderer.multisample.as_ref(), self.back_view.as_ref(), self.color.as_ref(), self.encoder.as_mut()) else { return };
+        multisample.load_color(&self.renderer.device, encoder, source, target);
+        self.renderer.counts.picture_copies += 1;
     }
 
     /// Ends the run of draws that is open in the pass, if any.
@@ -235,9 +258,25 @@ impl Player {
         self.renderer.record_written = 0;
         self.renderer.record_extras = 0;
         self.renderer.instance_extras = 0;
-        self.color = Some(Rc::new(color.create_view(&Default::default())));
+        let back_view = Rc::new(color.create_view(&Default::default()));
         self.back_buffer = Some(color.clone());
-        self.depth = Some(depth);
+        if self.renderer.samples > 1 {
+            // The draws go into the multisampled targets; the colour resolves into the back
+            // buffer at the end of each pass. The multisampled colour keeps the last frame
+            // between the frames, so a frame that keeps the picture starts from it.
+            let (width, height) = (color.width(), color.height());
+            if self.ms_color.as_ref().is_none_or(|ms| (ms.width(), ms.height(), ms.format()) != (width, height, color.format())) {
+                self.ms_color = Some(multisampled_texture(&self.renderer.device, width, height, color.format(), wgpu::TextureUsages::RENDER_ATTACHMENT, self.renderer.samples));
+                self.ms_depth = Some(multisampled_texture(&self.renderer.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, self.renderer.samples));
+            }
+            self.color = Some(Rc::new(self.ms_color.as_ref().unwrap().create_view(&Default::default())));
+            self.depth = Some(Rc::new(self.ms_depth.as_ref().unwrap().create_view(&Default::default())));
+            self.back_view = Some(back_view);
+        } else {
+            self.color = Some(back_view);
+            self.depth = Some(depth);
+            self.back_view = None;
+        }
         if keep {
             self.open_pass(None, None, None);
         } else {
@@ -342,6 +381,7 @@ impl Player {
         drop(self.pass.take());
         self.color = None;
         self.depth = None;
+        self.back_view = None;
         if let Some(mut encoder) = self.encoder.take() {
             before_submit(&mut encoder);
             let renderer = &mut self.renderer;

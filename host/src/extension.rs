@@ -41,6 +41,10 @@ pub struct SceneView<'a> {
     pub target_format: wgpu::TextureFormat,
     pub depth_format: wgpu::TextureFormat,
     pub target_size: (u32, u32),
+    /// The samples for each pixel of the targets of the frame (`Extension::samples`, cut to
+    /// what the adapter has): a pipeline that draws into the pass of the game takes
+    /// `multisample`. A pass on a texture of the extension has 1.
+    pub samples: u32,
     /// From the world space of the game to the camera, and the projection of the game.
     pub view: [f32; 16],
     pub projection: [f32; 16],
@@ -77,6 +81,16 @@ pub struct SceneView<'a> {
     /// For `Extension::draw_held`: the lights of the frame, when the extension asked for them
     /// (`FrameParameters::lights`) and the frame has a view of the world with lights.
     pub lights: Option<FrameLights<'a>>,
+}
+
+impl SceneView<'_> {
+    /// The multisample state of a pipeline that draws into the pass of the game. With
+    /// `alpha_to_coverage`, the alpha that the fragment shader writes becomes the coverage of
+    /// the pixel's samples (for a draw with an alpha test, as the transparency antialiasing
+    /// of Direct3D 9 does); it needs more than one sample.
+    pub fn multisample(&self, alpha_to_coverage: bool) -> wgpu::MultisampleState {
+        wgpu::MultisampleState { count: self.samples, mask: !0, alpha_to_coverage_enabled: alpha_to_coverage && self.samples > 1 }
+    }
 }
 
 /// A picture file that an extension wants of a frame. See `Extension::pictures`.
@@ -351,6 +365,16 @@ pub trait Extension {
     /// when it makes the device.
     fn texture_slots(&self) -> u32 {
         0
+    }
+
+    /// The samples for each pixel of the targets of the frame, from the settings of the
+    /// extension: 1, 2, 4 or 8. The renderer asks one time, when it makes the device, and
+    /// takes the largest count that the adapter has for its formats, up to this one. With
+    /// more than 1, the draws of the game and of the extension into the pass of the game
+    /// go into multisampled targets; the picture and the depth that the extension reads are
+    /// resolved (the colour as the average of the samples, the depth as the nearest sample).
+    fn samples(&self) -> u32 {
+        1
     }
 
     /// Data that the part of this program in the game process put into the stream, with the

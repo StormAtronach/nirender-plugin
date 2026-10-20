@@ -14,7 +14,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use super::{copy_picture, option, save_picture, target_texture, Player, Renderer, Status, DEPTH_FORMAT};
+use super::{copy_picture, option, save_picture, switches, target_texture, Player, Renderer, Status, DEPTH_FORMAT};
 
 extern "system" {
     fn OpenFileMappingA(access: u32, inherit: i32, name: *const u8) -> isize;
@@ -329,7 +329,10 @@ impl App {
         surface.configure(&player.renderer.device, configuration);
         // The back buffer has the size of the picture of the game.
         let (width, height) = self.size;
-        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+        // With multisampling, the back buffer is the resolve target of the frame, and the
+        // player reads it back into the multisampled colour target after a write outside
+        // the pass (`Player::load_color`).
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING;
         self.back_buffer = Some(target_texture(&player.renderer.device, width, height, player.renderer.target_format, usage));
         // An extension can read the depth in a pass that does not have it as a target.
         let depth = target_texture(&player.renderer.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
@@ -409,7 +412,14 @@ impl ApplicationHandler for App {
             // A window that is not enabled takes no mouse and no keys: they go to the game.
             window.set_enable(false);
         }
-        let (renderer, surface) = Renderer::new(self.backends, Some(window.clone()), wgpu::TextureFormat::Bgra8Unorm, crate::extension_shaders(self.extension.as_deref()), self.extension.as_ref().map_or(0, |extension| extension.texture_slots()));
+        let (renderer, surface) = Renderer::new(
+            self.backends,
+            Some(window.clone()),
+            wgpu::TextureFormat::Bgra8Unorm,
+            crate::extension_shaders(self.extension.as_deref()),
+            self.extension.as_ref().map_or(0, |extension| extension.texture_slots()),
+            switches().samples.unwrap_or_else(|| self.extension.as_ref().map_or(1, |extension| extension.samples())),
+        );
         let surface = surface.expect("a surface");
         let size = window.inner_size();
         self.configuration = Some(wgpu::SurfaceConfiguration {

@@ -682,6 +682,8 @@ pub struct RetainedView {
     pub force_depth_test: bool,
     pub target: Option<u32>,
     pub sorted: Sorted,
+    /// The samples for each pixel of the targets of the pass (`PipelineKey::samples`).
+    pub samples: u32,
 }
 
 /// A texture with a slot of the arrays that stays from frame to frame (`Renderer::pin_texture`):
@@ -1023,6 +1025,7 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
         }
         let bucket = &set.buckets[b];
         let mut key = bucket.key;
+        key.samples = view.samples;
         if view.force_depth_test {
             key.depth = [1, key.depth[1], 4];
         }
@@ -1325,6 +1328,9 @@ impl Player {
                 fill: derived.fill,
                 color_write: p.color_write & 7,
                 stencil: if stencil[0] == 0 { [0; 7] } else { [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0] },
+                // A draw of the table goes into the pass of the game; a replay into another
+                // pass sets the samples of that pass (`draw_retained` with a `ReplayView`).
+                samples: self.renderer.samples,
             };
             let mut dummy = Vec::new();
             let mut data = self.stream.draw_data(&derived, &p, &mut self.renderer.counts, &mut dummy);
@@ -1527,7 +1533,7 @@ impl Player {
         self.retained.main_view = facts.view;
         let planes = frustum_planes(&multiply32(&facts.view, &facts.projection));
         let Some(pass) = self.pass.as_mut() else { return };
-        let view = RetainedView { scene_slot: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Keep };
+        let view = RetainedView { scene_slot: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Keep, samples: self.pass_samples };
         pass.push_debug_group("retained instances");
         draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &view);
         pass.pop_debug_group();
@@ -1895,7 +1901,7 @@ impl Replayer<'_> {
         scene.clip_plane = view.clip_plane.map_or([0.0; 4], |p| self.retained.plane_of(p));
         self.renderer.write_scene(slot, &scene);
         let planes = frustum_planes(&multiply32(&absolute, &scene.projection));
-        let retained_view = RetainedView { scene_slot: slot, classes: view.classes, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None, sorted: Sorted::Together };
+        let retained_view = RetainedView { scene_slot: slot, classes: view.classes, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None, sorted: Sorted::Together, samples: view.samples };
         draw_retained(pass, self.renderer, self.retained, self.args, &retained_view);
     }
 }

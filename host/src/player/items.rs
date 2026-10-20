@@ -188,6 +188,7 @@ impl Player {
         let fog = self.retained_values.and_then(|(_, fog)| fog).unwrap_or(self.stream.fog);
         WorldFacts {
             target_size: self.size_of_target(),
+            samples: self.renderer.samples,
             origin: self.stream.origin,
             view: self.stream.view,
             projection: self.stream.projection,
@@ -281,8 +282,10 @@ impl Player {
             self.open_pass(None, None, None);
         }
         // The blend: a pass on the picture only, so that a shader can read the depth. A copy
-        // of the picture when the extension reads it.
+        // of the picture when the extension reads it. A multisampled depth goes to the shader
+        // resolved: the copy of the world depth when it was made now, else a resolve now.
         let picture = if self.before_kept && extension.reads(ReadingCall::Blend).picture { self.copy_picture() } else { None };
+        let resolved = if self.before_kept && self.renderer.samples > 1 { if world_depth_now { self.world_depth_view() } else { self.copy_depth(0) } } else { None };
         if let (true, Some(before), Some(color), Some(depth), Some(encoder)) = (self.before_kept, self.before.as_ref(), self.color.clone(), self.depth.clone(), self.encoder.as_mut()) {
             if let Some(pass) = self.pass.as_mut() {
                 flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
@@ -290,14 +293,14 @@ impl Player {
             drop(self.pass.take());
             scene.picture = picture.as_ref();
             let before = before.create_view(&Default::default());
-            let depth = depth.texture().create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() });
+            let depth = resolved.unwrap_or_else(|| depth.texture().create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
             let mut pass = encoder
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("blend"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &color,
                         depth_slice: None,
-                        resolve_target: None,
+                        resolve_target: self.back_view.as_deref(),
                         ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
                     })],
                     depth_stencil_attachment: None,
@@ -444,10 +447,18 @@ impl Player {
     /// the copy of the world (1, for `Extension::post`) or the copy of the draws of
     /// `Extension::before_world` (2). The caller opens the pass again.
     pub(crate) fn copy_depth(&mut self, which: u32) -> Option<wgpu::TextureView> {
-        let (Some(source), Some(encoder)) = (self.depth.as_ref().map(|depth| depth.texture().clone()), self.encoder.as_mut()) else { return None };
-        if !source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+        let source = self.depth.as_ref().map(|depth| depth.texture().clone())?;
+        // A multisampled depth cannot be copied: the resolve pass writes the nearest sample
+        // of each pixel (`multisample.rs`).
+        let resolve = source.sample_count() > 1;
+        if !resolve && !source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
             return None;
         }
+        if let Some(pass) = self.pass.as_mut() {
+            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
+        }
+        drop(self.pass.take());
+        let encoder = self.encoder.as_mut()?;
         let size = source.size();
         let copy = match which {
             1 => &mut self.world_depth,
@@ -455,13 +466,16 @@ impl Player {
             _ => &mut self.depth_copy,
         };
         if copy.as_ref().is_none_or(|copy| copy.size() != size) {
-            *copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
+            let usage = wgpu::TextureUsages::TEXTURE_BINDING | if resolve { wgpu::TextureUsages::RENDER_ATTACHMENT } else { wgpu::TextureUsages::COPY_DST };
+            *copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), usage));
         }
-        if let Some(pass) = self.pass.as_mut() {
-            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
+        if resolve {
+            let multisample = self.renderer.multisample.as_ref()?;
+            let samples = source.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() });
+            multisample.resolve_depth(&self.renderer.device, encoder, &samples, &copy.as_ref().unwrap().create_view(&Default::default()));
+        } else {
+            encoder.copy_texture_to_texture(source.as_image_copy(), copy.as_ref().unwrap().as_image_copy(), size);
         }
-        drop(self.pass.take());
-        encoder.copy_texture_to_texture(source.as_image_copy(), copy.as_ref().unwrap().as_image_copy(), size);
         self.renderer.counts.depth_copies += 1;
         copy.as_ref().map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }))
     }
@@ -482,7 +496,10 @@ impl Player {
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
         scene.before_depth = before_depth.as_ref();
-        if let (Some(color), Some(encoder)) = (self.color.clone(), self.encoder.as_mut()) {
+        // The extension writes the picture with one sample: the back buffer, which the pass
+        // resolved into, with more than one sample; `color` is it with one.
+        let picture_target = self.back_view.clone().or_else(|| self.color.clone());
+        if let (Some(color), Some(encoder)) = (picture_target, self.encoder.as_mut()) {
             if let Some(pass) = self.pass.as_mut() {
                 flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
             }
@@ -505,6 +522,9 @@ impl Player {
             }
         }
         self.extension = Some(extension);
+        // The draws after the post-processing (the interface of the game) go into the
+        // multisampled target: it gets the picture of the back buffer first.
+        self.load_color();
         self.open_pass(None, None, None);
     }
 
@@ -553,6 +573,7 @@ impl Player {
     pub(crate) fn replay_blended(&mut self, range: impl std::slice::SliceIndex<[Rc<Draw>], Output = [Rc<Draw>]>, plane: [f64; 4], target_size: (u32, u32)) {
         let Some(pass) = self.pass.as_mut() else { return };
         let world = std::mem::take(&mut self.world_draws);
+        let samples = self.pass_samples;
         let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world[range], instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
         replayer.replay(
             pass,
@@ -561,6 +582,7 @@ impl Player {
                 view: None,
                 projection: None,
                 target_size,
+                samples,
                 flip_cull: false,
                 clip_plane: Some(plane),
                 opaque_only: false,

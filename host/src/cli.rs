@@ -93,7 +93,9 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     }
     println!("{} records, {frames} frames, frame {wanted} into {width} x {height}", records.len());
 
-    let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, extension_shaders(extension.as_deref()), extension.as_ref().map_or(0, |extension| extension.texture_slots())).0);
+    // The samples of the extension's settings, as in the live mode; `MGE_XE_SAMPLES` is for a test.
+    let samples = switches().samples.or(extension.as_ref().map(|extension| extension.samples())).unwrap_or(1);
+    let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, extension_shaders(extension.as_deref()), extension.as_ref().map_or(0, |extension| extension.texture_slots()), samples).0);
     // The filter of the extension's settings, as in the live mode; the argument is for a test.
     player.renderer.anisotropy =
         option(&args, "--anisotropy").and_then(|text| text.parse().ok()).or(extension.as_ref().map(|extension| extension.anisotropy())).unwrap_or(1);
@@ -102,7 +104,7 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
         player.extension = Some(extension);
     }
     let device = player.renderer.device.clone();
-    let target = target_texture(&device, width, height, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+    let target = target_texture(&device, width, height, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING);
     let depth = target_texture(&device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
     let mut frame = 0;
     for (tag, data) in &records {

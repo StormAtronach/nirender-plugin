@@ -15,6 +15,9 @@ pub struct ReplayView {
     pub projection: Option<[f32; 16]>,
     /// The size of the target of the pass.
     pub target_size: (u32, u32),
+    /// The samples for each pixel of the targets of the pass: `SceneView::samples` for the
+    /// pass of the game, 1 for a texture of the extension.
+    pub samples: u32,
     /// True for a mirror: the front side of a triangle is its other side.
     pub flip_cull: bool,
     /// `[a, b, c, d]` in the space of the world of the game: only where
@@ -153,6 +156,7 @@ impl Replay for Replayer<'_> {
                 data.clip_plane = plane_of_draw(plane, kept.origin);
             }
             let mut key = kept.key;
+            key.samples = view.samples;
             if view.force_depth_test {
                 // D3DCMP_LESSEQUAL is 4.
                 key.depth = [1, key.depth[1], 4];

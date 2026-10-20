@@ -4,11 +4,16 @@
 use super::*;
 
 pub(crate) fn target_texture(device: &wgpu::Device, width: u32, height: u32, format: wgpu::TextureFormat, usage: wgpu::TextureUsages) -> wgpu::Texture {
+    multisampled_texture(device, width, height, format, usage, 1)
+}
+
+/// A target with `samples` samples for each pixel.
+pub(crate) fn multisampled_texture(device: &wgpu::Device, width: u32, height: u32, format: wgpu::TextureFormat, usage: wgpu::TextureUsages, samples: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("render target"),
+        label: Some(if samples > 1 { "multisampled render target" } else { "render target" }),
         size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         mip_level_count: 1,
-        sample_count: 1,
+        sample_count: samples,
         dimension: wgpu::TextureDimension::D2,
         format,
         usage,

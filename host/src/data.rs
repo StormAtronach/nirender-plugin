@@ -233,6 +233,9 @@ pub(crate) struct PipelineKey {
     pub(crate) stencil: [u32; 7],
     /// D3DRS_COLORWRITEENABLE: red 1, green 2, blue 4, alpha 8.
     pub(crate) color_write: u32,
+    /// The samples for each pixel of the targets of the pass: `Renderer::samples` for the
+    /// targets of the frame, 1 for a texture that the game or an extension draws into.
+    pub(crate) samples: u32,
 }
 
 /// A texture that the game draws into.
