@@ -1,5 +1,4 @@
-//! The material of a draw, from the `MATERIAL` record of the plugin (step R2 of the retained
-//! pipeline): the facts of the properties of the shape, and the derivation of the state of
+//! The material of a draw, from the `MATERIAL` record of the plugin: the facts of the properties of the shape, and the derivation of the state of
 //! the draw from them, as the fixed-function pipeline of the engine makes it. The helper
 //! draws a shape with the derived state (`Pass` in lib.rs).
 //!
@@ -270,7 +269,7 @@ fn template_alpha_test(slot: u32) -> [u32; 3] {
 /// reads them: the mode is a field of 4 bits that indexes the table of 11 blend values
 /// without a bound, and the table of the alpha test functions follows it in the render
 /// state (`alphaMapping` at 0xE4, `alphaTestMapping` at 0x110). A mode of 11 to 15 thus
-/// gives an alpha test function as the blend value; the test level has a mesh with mode 13.
+/// gives an alpha test function as the blend value.
 pub fn blend_mode(value: u32) -> u32 {
     [2, 1, 3, 4, 9, 10, 5, 6, 7, 8, 11, 8, 2, 3, 4, 5][(value & 0xF) as usize]
 }
@@ -403,8 +402,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
     // Each decal in a pass of its own: `setCTPipelineState` (0x6B41B0) first acquires the
     // sub-pass for a pixel shader (0x6B3EE0), which moves to a new sub-pass when the one
     // in progress already has its pixel shader, as it has after its base stage; only then
-    // does it take a sub-pass with capacity for the stage (0x6B3B30). The device replay
-    // shows the second draw with the decal and its blend.
+    // does it take a sub-pass with capacity for the stage (0x6B3B30).
     for i in 0..m.decals as usize {
         let map = DECAL0 + i;
         if map < 8 && has(map) {

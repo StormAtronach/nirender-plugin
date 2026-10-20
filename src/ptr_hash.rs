@@ -1,9 +1,8 @@
-//! A hasher for the tables keyed by an engine pointer (`instance_stream`). The standard
-//! `RandomState` (SipHash) cost about 0.05 ms a frame in the lookups of the display hook
-//! (the VTune profile of the quicksave, 2026-10-17). The keys are addresses the
-//! game allocates, not input an attacker chooses, so a multiply suffices; the high half of the
-//! product is folded into the low half, so that the bucket index (low bits) and the control
-//! byte (high bits) both mix every bit of an aligned pointer.
+//! A hasher for the tables keyed by an engine pointer (`instance_stream`), faster than the
+//! standard SipHash. The keys are addresses the game allocates, not input an attacker
+//! chooses, so a multiply is sufficient. The high half of the product is folded into the low
+//! half, so that the bucket index (low bits) and the control byte (high bits) both mix every
+//! bit of an aligned pointer.
 
 use core::hash::{BuildHasherDefault, Hasher};
 

@@ -1,9 +1,8 @@
 //! The census of the callers of the device: which code calls each method of the
 //! `IDirect3DDevice8` of the game.
 //!
-//! The goal of the project is a game that makes no D3D8 call. The plugin has the functions of
-//! the renderer subsystem. This census finds the other code that calls the device: video,
-//! screenshots, gamma, code of other mods.
+//! The plugin has the functions of the renderer subsystem. This census finds the other code
+//! that calls the device: video, screenshots, gamma, code of other mods.
 //!
 //! The wrappers of `device.rs` call `count` with the return address of each device call.
 

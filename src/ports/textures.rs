@@ -693,10 +693,9 @@ pub unsafe fn textures_with_data(table: u32) -> Vec<usize> {
 ///
 /// A source texture that the game cannot make again keeps its data.
 /// `NiDX8SourceTextureData_static::Create` (0x6BFA50) reads the file of the texture when it
-/// has a file name, else it takes the pixel data of the texture, and with neither it takes
+/// has a file name. If not, it takes the pixel data of the texture. With neither, it takes
 /// the default texture of the renderer. A static texture made from pixel data has neither
-/// after its first use: without its renderer data it is the default texture until the game
-/// ends (the buttons of the main menu, after a capture in the game).
+/// after its first use. Without its renderer data it stays the default texture.
 ///
 /// Returns the number of textures that lost their data, and the number that kept it.
 pub unsafe fn purge_source_textures() -> (u32, u32) {

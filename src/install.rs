@@ -13,12 +13,9 @@ const BEGIN_PAINT: usize = 0x6AC520;
 /// Runs before each call of `BeginPaint` until the recorder is on the device. `args[0]` is
 /// the renderer: the world controller does not have it yet at the first frames.
 ///
-/// The recorder must be there before the first frame. Without it, the Rust run of a
-/// comparison makes its device calls on the device of the game: the scene opens two times,
-/// the second `BeginScene` fails, and the game draws nothing more.
-///
-/// The recorder does not go on the device when the game creates it. A wrapper on
-/// `IDirect3D8::CreateDevice` did that before, and MGE XE then did not install its own hooks.
+/// The recorder must be on the device before the first frame, or a comparison draws on the
+/// device of the game. Do not attach it in `IDirect3D8::CreateDevice`: MGE XE then does not
+/// install its own hooks.
 unsafe fn before_begin_paint(args: &[usize]) {
     let device_ptr: usize = crate::mem::rd(args[0], NiDX8Renderer::d3dDevice);
     if device_ptr != 0 && device::attach(device_ptr).is_ok() {
@@ -168,18 +165,16 @@ pub unsafe fn install() -> Result<String, String> {
         Err(error) => crate::log!("no allocator hooks ({error}): calls that allocate are not compared"),
     }
     device::set_frame_hook(frame::on_present);
-    // A fault of the game's script loader that the addresses of the records decide (plan 8g).
+    // A fault of the game's script loader that the addresses of the records decide.
     crate::script_names::install();
-    // The shapes the engine destroys on another thread (plan C26).
+    // The shapes the engine destroys on another thread.
     crate::worker_events::install();
     crate::freed_fill::install();
 
     let mut failed = 0;
-    // A port left uninstalled for an A/B of its own cost (`NIRENDER_SKIP_PORT=<name>`,
-    // 2026-10-19: the port on `NiNode::UpdateDownwardPass`, a hot recursive function,
-    // looked like 0.4 to 0.7 ms a frame at the hold). Only a port whose function is not
-    // the renderer's (the engine's own code draws nothing through it) can be skipped
-    // without refusing the renderer.
+    // A port left uninstalled to measure its own cost (`NIRENDER_SKIP_PORT=<name>`). Only a
+    // port whose function is not the renderer's can be skipped without refusing the
+    // renderer.
     let skipped = std::env::var("NIRENDER_SKIP_PORT").ok();
     for port in ports::all() {
         if skipped.as_deref() == Some(port.name) {
@@ -371,9 +366,8 @@ mod tests {
         records
     }
 
-    /// Step 0b.4 of the wgpu plan: a new version of the Morrowind Code Patch that writes inside
-    /// a ported function fails here, on the machine of a developer, and not in the session of
-    /// a player. Each record of each patch file in `NIRENDER_MCPATCH` (folders with a folder
+    /// A new version of the Morrowind Code Patch that writes inside a ported function fails
+    /// here, on the machine of a developer, and not in the session of a player. Each record of each patch file in `NIRENDER_MCPATCH` (folders with a folder
     /// `mcpatch`, with `;` between them; `MCPATCH_ROOT` without it) that writes inside a ported
     /// function must be in `ports::CODE_PATCH_RECORDS`, and the census must follow it with the
     /// option on (the bytes of the record) and off (the bytes of `NIRENDER_VANILLA_EXE`, or

@@ -1,30 +1,23 @@
-//! The two functions through which a shape gets a new property state or effect state (plan
-//! 8b, step 2; engine-rules R27): `NiGeometry::UpdatePropertiesDownward` (0x6F41B0) and
-//! `NiGeometry::UpdateEffectsDownward` (0x6F4270). The engine draws a shape from these cached
-//! states, so a property attached or removed (by a Lua mod, then `updateProperties`) reaches
-//! the engine only through them, and so it reaches the plugin here: when the content of the
-//! state changes, the shape's retained instance is checked again at its next display
-//! (`instance_stream::recheck`). The engine function runs as it is. MWSE wraps one call site
-//! of `UpdateProperties` (the map tiles) and patches neither function's body.
+//! The two functions through which a shape gets a new property state or effect state:
+//! `NiGeometry::UpdatePropertiesDownward` (0x6F41B0) and `NiGeometry::UpdateEffectsDownward`
+//! (0x6F4270). The engine draws a shape from these cached states, so a property change
+//! reaches the plugin here. When the content of a state changes, the port asks for a recheck
+//! of the shape's retained instance at its next display (`instance_stream::recheck`). The
+//! engine function runs as it is.
 
 use crate::gen::layouts::{NiDynamicEffectState as DES, NiGeometry as G, NiPropertyState as PS};
 use crate::mem::rd;
 
-/// The prints describe what a state holds, not where it lives (2026-10-19). The engine makes
-/// a new state for every shape below a node at each `UpdateEffects` or `UpdateProperties` of
-/// it, most of them equal to the old ones: the visual effects manager updates the effects of
-/// the whole scene each time an effect starts or ends (`VFXManager::update` 0x4697E0, the
-/// parent of its root), about 6400 shapes. Nothing reads a state through its pointer later
-/// (the display reads the shape's state again), so a new pointer with the same content needs
-/// no recheck.
+/// The prints describe what a state holds, not where it lives. The engine often makes a new
+/// state with the same content, and a new pointer with the same content needs no recheck.
 const PRINT_START: u64 = 0xcbf2_9ce4_8422_2325;
 
 fn mix(print: &mut u64, value: u32) {
     *print = (*print ^ value as u64).wrapping_mul(0x100_0000_01b3);
 }
 
-/// The shape's property state: its slots (the engine can update a state in place, keeping
-/// the pointer: a property attached by a mod after the first display, entry 13).
+/// The shape's property state: its slots. The engine can update a state in place and keep the
+/// pointer.
 unsafe fn property_state_print(shape: usize) -> u64 {
     let state: usize = rd(shape, G::spPropertyState);
     if state == 0 {

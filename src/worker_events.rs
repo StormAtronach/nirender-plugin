@@ -1,13 +1,13 @@
-//! The events of the engine's cell worker (plan C26 and C27, 2026-10-18). The engine loads and
-//! unloads cells on a second thread (engine facts LD3, LD4): it attaches, detaches, updates,
-//! destroys and purges there. A port runs its Rust code on the main thread only: on another
-//! thread it calls the engine and nothing else (`shadow::dispatch_inner`), so the plugin's side
-//! effects of those calls were lost, and its model of the scene drifted from the engine's.
+//! The events of the engine's cell worker. The engine loads and unloads cells on a second
+//! thread: it attaches, detaches, updates, destroys and purges there. A port runs its Rust
+//! code on the main thread only: on another thread it calls the engine and nothing else
+//! (`shadow::dispatch_inner`). This module brings those calls to the plugin's model of the
+//! scene.
 //!
-//! Here a port's `any_thread` hook writes an event when the call comes from another thread:
-//! the call's kind and arguments. It touches no table of the plugin. The main thread drains the
+//! A port's `any_thread` hook writes an event when the call comes from another thread: the
+//! call's kind and arguments. It touches no table of the plugin. The main thread drains the
 //! queue at fixed points, before it reads the pointers it keeps (the start of each scene, a
-//! change of the mode, the end of the frame), and applies each event as the port does on the
+//! change of the mode, the end of the frame). It applies each event as the port does on the
 //! main thread. Applying an event reads nothing of the object: it can be freed by then. A
 //! block freed and used again before the drain makes the plugin forget the new object too: it
 //! is found again at its next draw.
@@ -15,10 +15,9 @@
 //! The events:
 //! - `NiGeometry::dtor`: the shape leaves the table.
 //! - `NiDX8SourceTextureData::dtor`: counted only. On the main thread the destructor makes
-//!   every instance note its handles again (a new generation), for a purge that gives a live
-//!   texture new data. On the worker the data goes with its texture, which a live shape would
-//!   hold a reference to, so no live instance names it [I]; a new generation for each texture
-//!   of an unloaded cell made a frame hitch at each crossing (the owner, 2026-10-18).
+//!   every instance note its handles again (a new generation). On the worker it does not:
+//!   the data goes with its texture, so no live instance names it (an inference). A new
+//!   generation for each texture of an unloaded cell makes a frame hitch.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -56,10 +55,7 @@ static DESTROYED_INSTANCES: AtomicU64 = AtomicU64::new(0);
 /// Notes on the first worker-side destructors of shapes that carry the table's mark (the
 /// shapes the helper draws): the shape's name, its ancestors' names, and the engine addresses
 /// found on the worker's stack (a scan: the engine omits frame pointers, so the frame chain
-/// gives nothing). The audit's fact that the worker frees only through
-/// `RecordsHandler::unloadCell` was contradicted by 22952 worker-side destructors in one
-/// glide with every `unloadCell` deferred, 30 of them table instances (2026-10-18, runs
-/// 20261018-202328-cross-rules and 20261018-203207-cross-census).
+/// gives nothing). The worker frees shapes outside `RecordsHandler::unloadCell` too.
 const NOTES_KEPT: usize = 16;
 static NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static NOTES_LOGGED: AtomicU64 = AtomicU64::new(0);
@@ -121,9 +117,7 @@ unsafe fn note_of(shape: usize) -> String {
     let esp: usize;
     core::arch::asm!("mov {}, esp", out(reg) esp, options(nomem, nostack, preserves_flags));
     // The top of this thread's stack (the thread information block, `fs:[4]`): the scan
-    // stops there. Unbounded, it read past the cell worker's stack when the worker destroyed
-    // a retained shape near the top of its stack, and the worker crashed (risk 26, records
-    // entry 42: the land walk at an exterior cell buffer of 10 without the deferred unload).
+    // must stop there, or it reads past the worker's stack and the worker crashes.
     let top: usize;
     core::arch::asm!("mov {}, fs:[4]", out(reg) top, options(nostack, readonly, preserves_flags));
     let words = top.saturating_sub(esp) / 4;

@@ -64,8 +64,7 @@ pub struct EngineLock(*mut CriticalSection);
 /// Holds the engine's critical section at `section` (a `CRITICAL_SECTION` inside an engine
 /// object, initialized by the engine) while the value lives. The engine's own code takes the
 /// same lock around the structure the plugin reads (the light manager's list and map,
-/// `NiDX8LightManager+0x50`), so a walk under it cannot see a half-changed structure (the
-/// audit of the cell worker, Tier 1 finding 6).
+/// `NiDX8LightManager+0x50`), so a walk under it cannot see a half-changed structure.
 pub unsafe fn engine_lock(section: usize) -> EngineLock {
     let section = section as *mut CriticalSection;
     EnterCriticalSection(section);

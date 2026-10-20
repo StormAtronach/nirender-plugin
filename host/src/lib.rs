@@ -17,7 +17,7 @@
 //! records come from a ring in shared memory while the game runs, and each frame goes into a
 //! window.
 //!
-//! It is a spike. What it does not do is in the counts that it prints at the end.
+//! The counts that it prints at the end show what it does not do.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -86,8 +86,7 @@ pub struct SceneView<'a> {
     /// The fill mode of the device of the game is wireframe at this call: the draw of the
     /// game that is current, or the last one, has the wireframe property (the console
     /// command ToggleWireframe puts the shared wireframe property of the engine on every
-    /// mesh). MGE XE on Direct3D 9 draws with the render state the engine left, so its
-    /// distant land, statics, grass and water are lines then.
+    /// mesh). An extension then draws lines too, as MGE XE on Direct3D 9 does.
     pub wireframe: bool,
     /// The fog of the game: its colour, and the distances of its start and its end.
     pub fog_color: [f32; 4],
@@ -186,11 +185,11 @@ pub struct FrameParameters {
     /// True when a pixel of a draw that the extension shades takes its lights from the
     /// clusters of the frame (`cluster_lights` in the shader), with the mask of the lights
     /// of the draw: the same picture as the lights of the draw. `MGE_XE_CLUSTERS` (0 or 1)
-    /// overrides it, for an A/B.
+    /// overrides it.
     pub clustered_lights: bool,
     /// The reach of the extension's shadow map in units of the world, 0 without shadows:
     /// the plugin animates what the map reaches, so that a shadow moves while its caster
-    /// is out of view (the animation policy, plan F8).
+    /// is out of view.
     pub shadow_reach: f32,
 }
 
@@ -360,7 +359,7 @@ enum Item {
     WorldStart(Box<WorldFacts>),
     WorldEnd(Box<WorldFacts>),
     /// The sorted blends of the retained table and the blends of the engine's path that
-    /// waited for this item (plan step 6): the generation names the item within the frame.
+    /// waited for this item: the generation names the item within the frame.
     SortedBlends(u32),
     /// The extension draws in place of the draws of this class. The number of world draws
     /// before this item: those after it are not in the picture yet.
@@ -892,8 +891,7 @@ use wgpu::util::DeviceExt;
 
 mod tag {
     pub const TEXTURE: u32 = 1;
-    // 2 was the bytes of a buffer of the device, and 7 the state packet of a draw of the
-    // device: a capture from before the retained pipeline has them, and they do nothing.
+    // Tags 2 and 7 are retired: the reader skips them.
     pub const SCENE_BEGIN: u32 = 3;
     pub const SCENE_END: u32 = 4;
     pub const FRAME_EVENT: u32 = 5;
@@ -914,7 +912,7 @@ mod tag {
     pub const LIGHT: u32 = 21;
     pub const OVERLAY: u32 = 22;
     /// A retained instance of the plugin, a draw of one, and its end (`instance_stream`
-    /// of the plugin, plan 0.5 entry T3).
+    /// of the plugin).
     pub const INSTANCE: u32 = 23;
     pub const INSTANCE_DRAW: u32 = 24;
     pub const INSTANCE_DELETE: u32 = 25;
@@ -949,7 +947,7 @@ struct Retained {
 
 /// Bit 16 of `light_range[3]` for a material with flat shading (NiShadeProperty off): the
 /// shader takes the lit colour and the normal of the first vertex of each triangle, as
-/// Direct3D 8 did (the owner, 2026-10-16). The plugin sends the shade of a shape only with
+/// Direct3D 8 does. The plugin sends the shade of a shape only with
 /// `nirender.nifShading(true)` (off by default).
 pub(crate) fn flat_shading_bit(derived: &material::Derived) -> u32 {
     if derived.shade == 1 {
@@ -1430,10 +1428,9 @@ const STAGES: usize = 6;
 /// The lights that the light buffer of a frame holds at first.
 const LIGHTS_AT_FIRST: usize = 4096;
 
-/// The scheduling of this program on Windows: it draws for the game from the background,
-/// and a hybrid processor gave it an efficiency core in some runs, so that a frame took
-/// twice its time. The thread of the frames goes to the cores of the highest efficiency
-/// class, and the process out of the power throttling of a background process. A
+/// The scheduling of this program on Windows. The thread of the frames goes to the cores of
+/// the highest efficiency class, and the process out of the power throttling of a background
+/// process. A
 /// processor with one class of cores gets no change of its cores. The priority of the
 /// process stays as it is. `MGE_XE_CORES=0` leaves the scheduler alone.
 #[cfg(windows)]
@@ -1551,9 +1548,7 @@ const _: () = assert!(INSTANCE_SIZE == 80 && RECORD_SIZE % 16 == 0);
 const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 const RECORDS_AT_FIRST: usize = 4096;
 /// The automatic room of the texture arrays (the extension's `texture_slots` 0): at most the
-/// adapter's room. Measured at the quicksave hold (2026-10-18): a room of 16384 cost the same
-/// as 4096; the adapter's 1000000 cost 0.05 ms more in the bind groups and 0.12 to 0.16 ms
-/// more of the renderer's busy time a frame.
+/// adapter's room. A larger room costs time in the bind groups of each frame.
 const AUTO_TEXTURE_SLOTS: u32 = 16384;
 /// The least room of the texture arrays (the renderer needs it to start).
 const MIN_TEXTURE_SLOTS: u32 = 256;
@@ -1596,7 +1591,7 @@ fn flush_run(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Renderer, run_
 }
 
 /// `MGE_XE_DRAW_DUMP=<geometry handle, hex>`: the words of the draw data of each draw of
-/// that geometry, on the path it takes, for a comparison of the two paths (2026-10-16).
+/// that geometry, on the path it takes, for a comparison of the two paths.
 pub(crate) fn dump_wanted() -> u32 {
     switches().draw_dump
 }
@@ -1673,7 +1668,7 @@ struct Timing {
     frame_stamps: bool,
 }
 
-/// With `MGE_XE_GPU_TIME=1`: the stamps cost about 0.4 ms a frame at the end of the frame.
+/// Only with `MGE_XE_GPU_TIME=1`: the stamps cost time at the end of each frame.
 fn make_timing(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Timing> {
     if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) || !switches().gpu_time {
         return None;
@@ -1800,7 +1795,7 @@ struct Renderer {
     /// `MGE_XE_RUNS_DUMP=1`: a line for each draw of a pass, for a study of the runs.
     runs_dump: bool,
     /// The draws of a run (one pipeline, one stencil reference, the buffers of one chunk) as
-    /// one indirect call (plan 0.5 entry TD, step 4). `MGE_XE_INDIRECT=0` draws them one by
+    /// one indirect call. `MGE_XE_INDIRECT=0` draws them one by
     /// one. The buffer of the arguments of the frame's draws, its room (arguments), and how
     /// many arguments are on the GPU.
     indirect: bool,
@@ -1955,9 +1950,8 @@ impl Renderer {
             surface_usages = capabilities.usages;
             println!("window: the present modes of the surface are {:?}", capabilities.present_modes);
         }
-        // The textures and the samplers of a frame in binding arrays (plan 0.5 entry TD, step
-        // 2). The adapter must have them (the owner's decision at checkpoint 3, 2026-10-17:
-        // bindless); without them this program stops here with the reason, and the game
+        // The textures and the samplers of a frame are in binding arrays. The adapter must
+        // have them; without them this program stops here with the reason, and the game
         // side is for Direct3D 9 (`[runtime] renderer_wgpu = false`).
         let array_features = wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
         // The samplers of the array count in the elements of the arrays too.
@@ -1975,7 +1969,7 @@ impl Renderer {
             &wgpu::DeviceDescriptor {
                 label: Some("nirender"),
                 // The draws of an extension from the GPU (the distant statics of MGE XE) need the
-                // first instance and the count of indirect draws; without them it draws as before.
+                // first instance and the count of indirect draws, when the adapter has them.
                 required_features: wgpu::Features::TEXTURE_COMPRESSION_BC
                     | (adapter.features()
                         & (wgpu::Features::POLYGON_MODE_LINE
@@ -1995,8 +1989,7 @@ impl Renderer {
                     // the distant statics of MGE XE).
                     max_buffer_size: adapter.limits().max_buffer_size,
                     // The records of the draws are one storage binding: the adapter's room, not
-                    // the default of 128 MiB (a frame with very many draws blanked the view
-                    // once; the owner's review of CP4, point 5). `record_limit` guards it.
+                    // the default of 128 MiB. `record_limit` guards it.
                     max_storage_buffer_binding_size: adapter.limits().max_storage_buffer_binding_size,
                     max_binding_array_elements_per_shader_stage: array_cap + sampler_cap,
                     max_binding_array_sampler_elements_per_shader_stage: sampler_cap,
@@ -2266,9 +2259,7 @@ impl Renderer {
 
     /// The texture of a handle. A handle is the address of an object of the game's side:
     /// a released handle comes back for a later texture. A pinned slot of the arrays, and a
-    /// slot of the frame, that holds the handle takes the new view (the draws of the handle
-    /// showed the earlier texture after a capture, whose purge makes the game make every
-    /// source texture again; found 2026-10-17).
+    /// slot of the frame, that holds the handle takes the new view.
     fn set_texture(&mut self, handle: u32, view: Rc<wgpu::TextureView>) {
         let mut changed = false;
         if let Some(pinned) = self.pinned_textures.iter_mut().find(|p| p.handle == handle) {
@@ -3236,7 +3227,7 @@ struct Player {
     /// The classes that the extension took in this frame, one bit for each.
     replaced: u32,
     /// The classes of the game that the helper draws itself, one bit for each, for the
-    /// plugin: the water plane while the extension draws the water (plan step 7, F6 C).
+    /// plugin: the water plane while the extension draws the water.
     /// The live loop writes it into the head of the ring after each record.
     pub(crate) takes: u32,
     /// The reach of the extension's shadow map (`FrameParameters::shadow_reach`), for the
@@ -3499,9 +3490,8 @@ impl Player {
         self.retained_settle_late();
         self.renderer.scene_slots_used = 1;
         // The scene record of the last frame stays until the next one comes: the world's
-        // facts are taken at the world's start, before the walk's record of the frame, and
-        // a clear here gave the distant land and the glows the stale sun of the engine's last
-        // draw every frame (2026-10-18). A stream without the record keeps None.
+        // facts are taken at the world's start, before the walk's record of the frame. Do not
+        // clear it here. A stream without the record keeps None.
         self.run_args.clear();
         self.frame_args.clear();
         self.renderer.indirect_written = 0;
@@ -4393,9 +4383,8 @@ mod live {
             self.configure(now.width, now.height);
             let waiting = Instant::now();
             let mut idle_since: Option<Instant> = None;
-            // The clock is read once in 256 spins: a read costs about 25 ns and the spin
-            // for a record ran it every time (0.83 s of the helper's 8 s in the CP3
-            // profile, plan M5). The first 256 looks for a record yield; after them this
+            // The clock is read once in 256 spins: a read in each spin is too costly. The
+            // first 256 looks for a record yield; after them this
             // program blocks on the event, so that the game wakes it only at a real gap
             // (between the frames), not after every record.
             let mut spins: u32 = 0;

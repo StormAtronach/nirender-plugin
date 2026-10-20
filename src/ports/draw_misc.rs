@@ -427,7 +427,7 @@ unsafe fn write_line_vertices(mut to: usize, count: u32, mut vertices: usize, mu
     texture_coords
 }
 
-/// The shape record of lines (see `shape_stream::send_lines`, step R7b): the lights of the
+/// The shape record of lines (see `shape_stream::send_lines`): the lights of the
 /// draw as `RenderLines` sets them, then the record. The geometry of the record is the
 /// lines data, noted by the link before the port. Returns true when the pipeline of the
 /// device must not run for the draw.

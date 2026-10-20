@@ -1,23 +1,23 @@
-//! The draw of a shape as a record of facts, for the retained pipeline (step R3): the
-//! geometry handle, the material handle, the world matrix and the lights of the draw. The
-//! helper makes the state of the draw from the geometry and material records.
+//! The draw of a shape as a record of facts, for the retained pipeline: the geometry handle,
+//! the material handle, the world matrix and the lights of the draw. The helper makes the
+//! state of the draw from the geometry and material records.
 //!
 //! The draw functions of the renderer send the record for a draw that has both handles and a
 //! material the helper models. The helper draws from the records only. When the device is
 //! the one of the plugin (`own_host`), the pipeline of the device does not run for such a
-//! draw; with a Direct3D device behind the link (a capture file of a game that the device
-//! draws) the pipeline runs too, for the picture of the game.
+//! draw. With a Direct3D device behind the link, the pipeline runs too, for the picture of
+//! the game.
 
 use crate::capture;
 use crate::mem::rd;
 
-/// The flags of a record. The flag 2 said that a draw of the device follows the record (the
-/// dual mode of the steps before R7b); a capture from then has it.
+/// The flags of a record. `RELATIVE`: the world matrix is relative to the camera. Do not use
+/// the flag 2 again: old capture files have it.
 pub const RELATIVE: u32 = 1;
 /// The shape is skinned: the record has the palette of its bones after the lights.
 pub const SKINNED: u32 = 4;
-/// The record is a particle system (step R7): the particles follow the lights, and the
-/// geometry handle is the key of the particle data. See `tag::SHAPE`.
+/// The record is a particle system: the particles follow the lights, and the geometry
+/// handle is the key of the particle data. See `tag::SHAPE`.
 pub const PARTICLES: u32 = 8;
 /// Bytes of one particle in the record: the position, the size, the colour.
 pub const PARTICLE_BYTES: usize = 20;
@@ -30,7 +30,7 @@ pub const EFFECTS: u32 = 16;
 /// words). The density and the colour of a fog property change with the weather, so they
 /// come with each draw and not in the material record. See `fog_values`.
 pub const FOG: u32 = 32;
-/// The record is the draw of lines (`RenderLines`, step R7b): its geometry has the vertices
+/// The record is the draw of lines (`RenderLines`): its geometry has the vertices
 /// and the index list of the segments, and the helper draws it as a line list.
 pub const LINES: u32 = 64;
 /// The draw goes into the picture of the character of the inventory, and the Morrowind Code
@@ -42,8 +42,7 @@ pub const CODE_PATCH_PICTURE: u32 = 128;
 pub const RETAINED_TWIN: u32 = 0x200;
 /// The record ends with the world bound of the shape (the centre and the radius, 16 bytes,
 /// after everything else): the helper sorts a blended draw by it among the blends of its
-/// table (plan step 6, F5). Every record of a draw has it since 2026-10-17.
-/// Engine-rules R21 (the skill wgpu-renderer-dev).
+/// table. Every record of a draw has it.
 pub const BOUND: u32 = 0x400;
 
 /// The address of the flags of the Code Patch for the picture of the character, 1 when the
@@ -52,16 +51,17 @@ static CODE_PATCH_FLAGS: core::sync::atomic::AtomicUsize = core::sync::atomic::A
 
 /// True while the game draws the picture of the character of the inventory with the Code
 /// Patch. `ui_updateCharacterImage` calls `WorldControllerRenderTarget::draw` 0x42DE10 at
-/// 0x5CD38C; the Code Patch puts a function of its own there, which sets a byte to 1, makes
-/// the call and sets the byte to 0 (`C6 05 address 01`, then the call). Its function at
-/// the draw call of the device (`patchDrawIndexedPrimitive`) reads the byte: for a draw
-/// with the blend on, it draws with the alpha of the texture (the blend SRCALPHA and
-/// INVSRCALPHA, the alpha test "greater than 0", the alpha of stage 0 from its first
-/// argument) and then, for a material with an alpha that is not 1, into the alpha channel
-/// only (the blend ONE and ZERO, the alpha of stage 0 modulated): the game puts the number
-/// of the equipment slot into the alpha of the material of each part, and reads the alpha
-/// of the picture back to find the part under the pointer. The helper makes the same draws
-/// for a record with `CODE_PATCH_PICTURE`.
+/// 0x5CD38C. The Code Patch puts a function of its own there. That function sets a byte to
+/// 1, makes the call and sets the byte to 0 (`C6 05 address 01`, then the call).
+///
+/// The Code Patch's `patchDrawIndexedPrimitive` reads the byte. For a draw with the blend
+/// on, it draws with the alpha of the texture (the blend SRCALPHA and INVSRCALPHA, the alpha
+/// test "greater than 0", the alpha of stage 0 from its first argument). Then, for a
+/// material with an alpha that is not 1, it draws into the alpha channel only (the blend ONE
+/// and ZERO, the alpha of stage 0 modulated). The game puts the number of the equipment slot
+/// into the alpha of the material of each part. It reads the alpha of the picture back to
+/// find the part under the pointer. The helper makes the same draws for a record with
+/// `CODE_PATCH_PICTURE`.
 pub unsafe fn code_patch_picture() -> bool {
     use core::sync::atomic::Ordering;
     const CALL: usize = 0x5CD38C;

@@ -62,7 +62,6 @@ impl Plan {
         // A world scene in which the game drew nothing of the world (the console command
         // ToggleWorld culls the world roots; a view with nothing in it): the world starts at
         // the end of the scene, so that the extension draws its distant land under the sky.
-        // MGE XE on Direct3D 9 does the same (mged3d8device.cpp, stage 0 from `EndScene`).
         if extension && world_scene && !self.world_begun {
             self.world_begun = true;
             steps.push(Step::StartWorld);

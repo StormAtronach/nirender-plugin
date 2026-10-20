@@ -1,15 +1,14 @@
 //! A test instrument: every block the engine frees is filled with a pattern first
 //! (`NIRENDER_FILL_FREED=1`; off by default). A read of freed memory then fails at the read,
 //! with the pattern in the registers, instead of working by chance until the block is used
-//! again. It is the proof the lifetime rules ask for (the cell worker audit, 2026-10-18): a
-//! crossing glide with the fill on and no crash means no kept pointer was read after its
+//! again. A run with the fill on and no crash shows that no kept pointer was read after its
 //! object died, on either thread.
 //!
 //! The engine's `free` (0x727732) and `operator delete` (0x727530, which calls `free`) both
-//! go through one import slot, `msvcrt!free` at 0x746278 (MWSE's `stdafx.h` names the
-//! functions; the IDA database the slot). The slot is pointed at `fill_free`, which asks the
-//! same CRT for the block's size (`_msize`), writes the pattern, and calls the original.
-//! Every thread's frees pass through; the function keeps no state but counters.
+//! go through one import slot, `msvcrt!free` at 0x746278. The slot is pointed at
+//! `fill_free`, which asks the same CRT for the block's size (`_msize`), writes the pattern,
+//! and calls the original. Every thread's frees pass through; the function keeps no state but
+//! counters.
 //!
 //! The pattern is 0xDD: a pointer read from a freed block is 0xDDDDDDDD, outside every mapped
 //! page of a 32-bit game, so the next read faults.

@@ -169,9 +169,6 @@ pub unsafe fn vcall3(object: usize, slot_offset: usize, a: u32, b: u32, c: u32) 
 const RENDERER_LIST_HEAD: usize = 0x7DEA58;
 const RENDERER_NODE_RENDERER: usize = 0;
 
-/// The renderer that the game draws with, or 0 before it exists. At the start of the game
-/// the world controller does not have the renderer yet. The list of renderers has it from
-/// its constructor on.
 /// The fog property of the cell: `TES3::Game::fogProperty` (the game object at 0x7C6CDC,
 /// the property at 0xF0 of it, as MWSE has them). The weather writes its colour and
 /// density. 0 before the game object exists.
@@ -184,7 +181,9 @@ pub unsafe fn game_fog_property() -> usize {
     }
 }
 
-
+/// The renderer that the game draws with, or 0 before it exists. At the start of the game
+/// the world controller does not have the renderer yet. The list of renderers has it from
+/// its constructor on.
 pub unsafe fn renderer() -> usize {
     let world_controller: usize = rd(WORLD_CONTROLLER, 0);
     let known: usize = if world_controller == 0 { 0 } else { rd(world_controller, WORLD_CONTROLLER_RENDERER) };
@@ -232,7 +231,7 @@ pub fn fault() -> u32 {
     FAULT.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-// The two device calls that were here are in `d3d`. These names stay for the callers.
+// The device calls are in `d3d`; these names are for the callers.
 pub use crate::d3d::{device_set_render_state, device_set_texture_stage_state};
 
 // ---- C runtime

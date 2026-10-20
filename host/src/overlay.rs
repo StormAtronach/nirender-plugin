@@ -110,9 +110,8 @@ fn process_memory() -> (u64, u64) {
 /// The frames that a log line about the age of the pictures takes.
 const MARK_FRAMES: usize = 100_000;
 
-/// The median of each of the four numbers. A mean is not of use here: one long step of the
-/// game or of this program makes some pictures late by much, and the mean then says
-/// nothing about a usual picture.
+/// The median of each of the four numbers. Not the mean: one long step makes some pictures
+/// very late, and the mean then says nothing about a usual picture.
 fn medians(ages: &mut [[f32; 4]]) -> Option<[f32; 4]> {
     if ages.is_empty() {
         return None;
@@ -198,7 +197,7 @@ impl Overlay {
         }
     }
 
-    /// One line for the log with the mean age of the pictures since the last call, or
+    /// One line for the log with the median age of the pictures since the last call, or
     /// `None` without a picture with the times of the game.
     pub fn age_line(&mut self) -> Option<String> {
         let mut ages = std::mem::take(&mut self.mark_age);

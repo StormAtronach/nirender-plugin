@@ -453,12 +453,10 @@ unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize)
     }
 }
 
-/// 0x6ACEF0 `NiDX8Renderer::RenderShape`. The port uses the skinning check that MWSE puts at
-/// +0x2F when the memory has that check.
 /// The shape record of a draw (see `shape_stream`): the transform, the bound and the
-/// lights of the draw as `DrawPrimitive` sets them, then the record. For a skinned shape
-/// (`skin` not 0, hardware skinning) the lights and the bound as `DrawSkinnedPrimitive2`
-/// sets them, and the palette of the skin in place of the transform. Returns true when the
+/// lights of the draw as `DrawPrimitive` sets them, then the record. A skinned shape (`skin`
+/// not 0, hardware skinning) gets the lights and the bound as `DrawSkinnedPrimitive2` sets
+/// them. It gets the palette of the skin in place of the transform. Returns true when the
 /// pipeline of the device must not run for the draw. `RenderScreenPoly` uses it too, with
 /// the identity transform that it gives `DrawPrimitive`.
 pub(crate) unsafe fn shape_record(this: usize, skin: usize, transform: usize, world_bound: usize) -> bool {
@@ -504,6 +502,9 @@ pub(crate) unsafe fn shape_record(this: usize, skin: usize, transform: usize, wo
     sent
 }
 
+/// 0x6ACEF0 `NiDX8Renderer::RenderShape`. The port uses the skinning check that MWSE puts at
+/// +0x2F when the memory has that check. Unlike the engine, the port sends the shape record
+/// first and does not draw when `shape_record` returns true.
 pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_shape_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -543,7 +544,8 @@ pub unsafe fn render_shape(this: usize, geom_data: usize, skin: usize, transform
     site_thiscall!(RS_DRAW_PRIMITIVE, this, geom_data, skin, transform, world_bound, geom_buffer, 0);
 }
 
-/// 0x6ACFC0 `NiDX8Renderer::RenderTriStrips`
+/// 0x6ACFC0 `NiDX8Renderer::RenderTriStrips`. Unlike the engine, the port sends the shape
+/// record first and does not draw when `shape_record` returns true.
 pub unsafe fn render_tri_strips(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_tri_strips_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -800,11 +802,11 @@ unsafe fn draw_primitive_regions(set: &mut Regions, this: usize, geom_data: usiz
 // ---------------------------------------------------------------------------------------
 
 /// The skin partitions of a skinned shape, made as `DrawSkinnedPrimitive` makes them (6ADE70
-/// to 6ADF0B) when the skin data has none: a `NiSkinPartition` with `MakePartitions` for the
-/// bones of the device. Returns the skin partition, or the one that `MakePartitions` did not
-/// fill when it failed (as the game goes on with it). The record of a skinned shape needs the
-/// partitions before the draw function runs: the game makes them at the first draw of a skin,
-/// and the inventory draws a new copy of the character for each picture.
+/// to 6ADF0B) when the skin data has none. That is a `NiSkinPartition` with `MakePartitions`
+/// for the bones of the device. Returns the skin partition, or the one that `MakePartitions`
+/// did not fill when it failed (as the game goes on with it). The record of a skinned shape
+/// needs the partitions before the draw function runs. The game makes them at the first draw
+/// of a skin, and the inventory draws a new copy of the character for each picture.
 pub(crate) unsafe fn ensure_skin_partitions(this: usize, geom_data: usize, skin: usize) -> usize {
     let skin_data: usize = rd(skin, NiSkinInstance::skinData);
     let skin_partition: usize = if skin_data != 0 { rd(skin_data, SKIN_DATA_SKIN_PARTITION) } else { 0 };
@@ -817,12 +819,11 @@ pub(crate) unsafe fn ensure_skin_partitions(this: usize, geom_data: usize, skin:
         eax = site_thiscall!(SP_SKIN_PARTITION_CTOR, eax) as usize;
         new_partition = eax;
     }
-    // A skin the engine's builder cannot take: a bone with vertex weights counted but no
-    // weight array. `NiSkinPartition::CreateVertexInteractions` (0x6C6B60) reads the array
-    // of every bone with a count and crashed on a null one (the hour-long walk of
-    // 2026-10-19, 01:49, C:/tmp/crash-20261019-0149: 118 vertices, a null array). Such a
-    // skin gets the empty partition, as the engine's own failure path gives it: the shape
-    // draws nothing on the hardware path. The first ones go to the log with their names.
+    // Unlike the engine: a bone with a vertex count and no weight array gets no partitions.
+    // `NiSkinPartition::CreateVertexInteractions` (0x6C6B60) reads the array of each bone
+    // with a count and faults on a null one. Such a skin gets the empty partition, as the
+    // engine's failure path gives it. The shape draws nothing on the hardware path. The
+    // first 8 go to the log with their names.
     if skin_data != 0 && !skin_data_complete(skin_data) {
         static REFUSED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
         if REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 8 {
@@ -843,10 +844,11 @@ pub(crate) unsafe fn ensure_skin_partitions(this: usize, geom_data: usize, skin:
     new_partition
 }
 
-/// `NiSkinData` (NetImmerse 4.0.0.2, as `camera_space` reads it): the bone count at 0x40, the
-/// bone records at 0x44, 0x4C bytes each: the skin-to-bone transform, the bound, the vertex
-/// count (u16, +0x44) and the vertex weight array (+0x48). True when every bone with a count
-/// has its array: the engine's partition builder reads the array of each such bone.
+/// `NiSkinData` (NetImmerse 4.0.0.2, as `camera_space` reads it): the bone count is at 0x40.
+/// The bone records are at 0x44, 0x4C bytes each. A bone record has the skin-to-bone
+/// transform, the bound, the vertex count (u16, +0x44) and the vertex weight array (+0x48).
+/// True when every bone with a count has its array: the engine's partition builder reads the
+/// array of each such bone.
 unsafe fn skin_data_complete(skin_data: usize) -> bool {
     const BONE_COUNT: usize = 0x40;
     const BONES: usize = 0x44;

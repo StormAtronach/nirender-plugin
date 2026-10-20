@@ -269,9 +269,9 @@ pub fn set_main_thread() {
 }
 
 /// The calling thread becomes the main thread when no thread is known yet. MWSE opens the
-/// plugin's Lua table during its mod initialization, on the game's main thread, before any
-/// call of the table: the Lua thread gate (`lua::main_thread_gate`) needs the main thread
-/// from the first call (`nirender.install` sets it again).
+/// plugin's Lua table on the game's main thread, before any call of the table. The Lua
+/// thread gate (`lua::main_thread_gate`) needs the main thread from the first call.
+/// `nirender.install` sets it again.
 pub fn note_main_thread_if_unknown() {
     let _ = MAIN_THREAD.compare_exchange(0, unsafe { win::GetCurrentThreadId() }, Ordering::Relaxed, Ordering::Relaxed);
 }
@@ -460,9 +460,8 @@ pub unsafe fn run_any_thread(function: usize, args: &[usize]) {
 /// ones. Only the main thread changes them.
 static PORT_DEPTH: AtomicU32 = AtomicU32::new(0);
 /// The time of each live port call is taken only when this is on: `NIRENDER_PORT_TIMING=1`,
-/// or the first call of `nirender.portTimes()`. Two time stamps for every call of a port
-/// that runs millions of times a second cost about 0.3 ms a frame (checkpoint 1 of plan 0.5
-/// entry F).
+/// or the first call of `nirender.portTimes()`. It is off by default because the time
+/// stamps of each call cost frame time.
 static TIMING: AtomicU8 = AtomicU8::new(2);
 
 /// True when the live port calls are timed. The first call reads `NIRENDER_PORT_TIMING`.

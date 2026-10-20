@@ -452,7 +452,7 @@ pub unsafe fn device_set_material(device: usize, material: usize) -> u32 {
 /// `IDirect3DDevice8::SetRenderState` through the vtable of the device, as the game code calls it.
 #[inline(always)]
 pub unsafe fn device_set_render_state(device: usize, state: u32, value: u32) -> u32 {
-    // For D3DRS_ZFUNC, D3DCMP_LESSEQUAL (4) becomes D3DCMP_LESS (2).
+    // With the deliberate fault 1, D3DCMP_LESSEQUAL (4) of D3DRS_ZFUNC becomes D3DCMP_LESS (2).
     let value = if state == 23 && value == 4 && fault() == 1 { 2 } else { value };
     crate::link_client::note_render_state(state);
     if crate::link_client::skip_render_state(state, value) {
@@ -635,227 +635,123 @@ pub unsafe fn surface_unlock_rect(surface: usize) -> u32 {
 // ---- constants of d3d8types.h and d3d8.h that the ports use
 
 // D3DRS: the render states.
-/// `D3DRS_ZENABLE`
 pub const D3DRS_ZENABLE: u32 = 7;
-/// `D3DRS_FILLMODE`
 pub const D3DRS_FILLMODE: u32 = 8;
-/// `D3DRS_SHADEMODE`
 pub const D3DRS_SHADEMODE: u32 = 9;
-/// `D3DRS_ZWRITEENABLE`
 pub const D3DRS_ZWRITEENABLE: u32 = 14;
-/// `D3DRS_ALPHATESTENABLE`
 pub const D3DRS_ALPHATESTENABLE: u32 = 15;
-/// `D3DRS_SRCBLEND`
 pub const D3DRS_SRCBLEND: u32 = 19;
-/// `D3DRS_DESTBLEND`
 pub const D3DRS_DESTBLEND: u32 = 20;
-/// `D3DRS_CULLMODE`
 pub const D3DRS_CULLMODE: u32 = 22;
-/// `D3DRS_ZFUNC`
 pub const D3DRS_ZFUNC: u32 = 23;
-/// `D3DRS_ALPHAREF`
 pub const D3DRS_ALPHAREF: u32 = 24;
-/// `D3DRS_ALPHAFUNC`
 pub const D3DRS_ALPHAFUNC: u32 = 25;
-/// `D3DRS_DITHERENABLE`
 pub const D3DRS_DITHERENABLE: u32 = 26;
-/// `D3DRS_ALPHABLENDENABLE`
 pub const D3DRS_ALPHABLENDENABLE: u32 = 27;
-/// `D3DRS_FOGENABLE`
 pub const D3DRS_FOGENABLE: u32 = 28;
-/// `D3DRS_SPECULARENABLE`
 pub const D3DRS_SPECULARENABLE: u32 = 29;
-/// `D3DRS_FOGCOLOR`
 pub const D3DRS_FOGCOLOR: u32 = 34;
-/// `D3DRS_FOGTABLEMODE`
 pub const D3DRS_FOGTABLEMODE: u32 = 35;
-/// `D3DRS_FOGSTART`
 pub const D3DRS_FOGSTART: u32 = 36;
-/// `D3DRS_FOGEND`
 pub const D3DRS_FOGEND: u32 = 37;
-/// `D3DRS_RANGEFOGENABLE`
 pub const D3DRS_RANGEFOGENABLE: u32 = 48;
-/// `D3DRS_STENCILENABLE`
 pub const D3DRS_STENCILENABLE: u32 = 52;
-/// `D3DRS_STENCILFAIL`
 pub const D3DRS_STENCILFAIL: u32 = 53;
-/// `D3DRS_STENCILZFAIL`
 pub const D3DRS_STENCILZFAIL: u32 = 54;
-/// `D3DRS_STENCILPASS`
 pub const D3DRS_STENCILPASS: u32 = 55;
-/// `D3DRS_STENCILFUNC`
 pub const D3DRS_STENCILFUNC: u32 = 56;
-/// `D3DRS_STENCILREF`
 pub const D3DRS_STENCILREF: u32 = 57;
-/// `D3DRS_STENCILMASK`
 pub const D3DRS_STENCILMASK: u32 = 58;
-/// `D3DRS_TEXTUREFACTOR`
 pub const D3DRS_TEXTUREFACTOR: u32 = 60;
-/// `D3DRS_WRAP0`
 pub const D3DRS_WRAP0: u32 = 128;
-/// `D3DRS_WRAP1`
 pub const D3DRS_WRAP1: u32 = 129;
-/// `D3DRS_LIGHTING`
 pub const D3DRS_LIGHTING: u32 = 137;
-/// `D3DRS_AMBIENT`
 pub const D3DRS_AMBIENT: u32 = 139;
-/// `D3DRS_FOGVERTEXMODE`
 pub const D3DRS_FOGVERTEXMODE: u32 = 140;
-/// `D3DRS_DIFFUSEMATERIALSOURCE`
 pub const D3DRS_DIFFUSEMATERIALSOURCE: u32 = 145;
-/// `D3DRS_AMBIENTMATERIALSOURCE`
 pub const D3DRS_AMBIENTMATERIALSOURCE: u32 = 147;
-/// `D3DRS_EMISSIVEMATERIALSOURCE`
 pub const D3DRS_EMISSIVEMATERIALSOURCE: u32 = 148;
-/// `D3DRS_VERTEXBLEND`
 pub const D3DRS_VERTEXBLEND: u32 = 151;
-/// `D3DRS_MULTISAMPLEANTIALIAS`
 pub const D3DRS_MULTISAMPLEANTIALIAS: u32 = 161;
 
 // D3DTSS: the texture stage states.
-/// `D3DTSS_COLOROP`
 pub const D3DTSS_COLOROP: u32 = 1;
-/// `D3DTSS_COLORARG1`
 pub const D3DTSS_COLORARG1: u32 = 2;
-/// `D3DTSS_COLORARG2`
 pub const D3DTSS_COLORARG2: u32 = 3;
-/// `D3DTSS_ALPHAOP`
 pub const D3DTSS_ALPHAOP: u32 = 4;
-/// `D3DTSS_ALPHAARG1`
 pub const D3DTSS_ALPHAARG1: u32 = 5;
-/// `D3DTSS_ALPHAARG2`
 pub const D3DTSS_ALPHAARG2: u32 = 6;
-/// `D3DTSS_BUMPENVMAT00`
 pub const D3DTSS_BUMPENVMAT00: u32 = 7;
-/// `D3DTSS_BUMPENVMAT01`
 pub const D3DTSS_BUMPENVMAT01: u32 = 8;
-/// `D3DTSS_BUMPENVMAT10`
 pub const D3DTSS_BUMPENVMAT10: u32 = 9;
-/// `D3DTSS_BUMPENVMAT11`
 pub const D3DTSS_BUMPENVMAT11: u32 = 10;
-/// `D3DTSS_TEXCOORDINDEX`
 pub const D3DTSS_TEXCOORDINDEX: u32 = 11;
-/// `D3DTSS_ADDRESSU`
 pub const D3DTSS_ADDRESSU: u32 = 13;
-/// `D3DTSS_ADDRESSV`
 pub const D3DTSS_ADDRESSV: u32 = 14;
-/// `D3DTSS_MAGFILTER`
 pub const D3DTSS_MAGFILTER: u32 = 16;
-/// `D3DTSS_MINFILTER`
 pub const D3DTSS_MINFILTER: u32 = 17;
-/// `D3DTSS_MIPFILTER`
 pub const D3DTSS_MIPFILTER: u32 = 18;
-/// `D3DTSS_BUMPENVLSCALE`
 pub const D3DTSS_BUMPENVLSCALE: u32 = 22;
-/// `D3DTSS_BUMPENVLOFFSET`
 pub const D3DTSS_BUMPENVLOFFSET: u32 = 23;
-/// `D3DTSS_TEXTURETRANSFORMFLAGS`
 pub const D3DTSS_TEXTURETRANSFORMFLAGS: u32 = 24;
-/// `D3DTSS_TCI_CAMERASPACEPOSITION`
 pub const D3DTSS_TCI_CAMERASPACEPOSITION: u32 = 0x20000;
 
 // D3DTS: the transform states.
-/// `D3DTS_VIEW`
 pub const D3DTS_VIEW: u32 = 2;
-/// `D3DTS_PROJECTION`
 pub const D3DTS_PROJECTION: u32 = 3;
-/// `D3DTS_TEXTURE0`
 pub const D3DTS_TEXTURE0: u32 = 16;
-/// `D3DTS_WORLDMATRIX0`
 pub const D3DTS_WORLDMATRIX0: u32 = 256;
 
 // D3DPT: the primitive types.
-/// `D3DPT_TRIANGLELIST`
 pub const D3DPT_TRIANGLELIST: u32 = 4;
-/// `D3DPT_TRIANGLESTRIP`
 pub const D3DPT_TRIANGLESTRIP: u32 = 5;
-/// `D3DPT_TRIANGLEFAN`
 pub const D3DPT_TRIANGLEFAN: u32 = 6;
 
 // D3DFVF: the bits of a flexible vertex format.
-/// `D3DFVF_XYZ`
 pub const D3DFVF_XYZ: u32 = 0x002;
-/// `D3DFVF_NORMAL`
 pub const D3DFVF_NORMAL: u32 = 0x010;
-/// `D3DFVF_DIFFUSE`
 pub const D3DFVF_DIFFUSE: u32 = 0x040;
-/// `D3DFVF_TEX1`
 pub const D3DFVF_TEX1: u32 = 0x100;
 
 // D3DFMT: the formats. A DXT format is its FOURCC.
-/// `D3DFMT_R8G8B8`
 pub const D3DFMT_R8G8B8: u32 = 20;
-/// `D3DFMT_A8R8G8B8`
 pub const D3DFMT_A8R8G8B8: u32 = 21;
-/// `D3DFMT_X8R8G8B8`
 pub const D3DFMT_X8R8G8B8: u32 = 22;
-/// `D3DFMT_R5G6B5`
 pub const D3DFMT_R5G6B5: u32 = 23;
-/// `D3DFMT_X1R5G5B5`
 pub const D3DFMT_X1R5G5B5: u32 = 24;
-/// `D3DFMT_A1R5G5B5`
 pub const D3DFMT_A1R5G5B5: u32 = 25;
-/// `D3DFMT_A4R4G4B4`
 pub const D3DFMT_A4R4G4B4: u32 = 26;
-/// `D3DFMT_P8`
 pub const D3DFMT_P8: u32 = 41;
-/// `D3DFMT_V8U8`
 pub const D3DFMT_V8U8: u32 = 60;
-/// `D3DFMT_L6V5U5`
 pub const D3DFMT_L6V5U5: u32 = 61;
-/// `D3DFMT_X8L8V8U8`
 pub const D3DFMT_X8L8V8U8: u32 = 62;
-/// `D3DFMT_D15S1`
 pub const D3DFMT_D15S1: u32 = 73;
-/// `D3DFMT_D24S8`
 pub const D3DFMT_D24S8: u32 = 75;
-/// `D3DFMT_D24X4S4`
 pub const D3DFMT_D24X4S4: u32 = 79;
-/// `D3DFMT_VERTEXDATA`
 pub const D3DFMT_VERTEXDATA: u32 = 100;
-/// `D3DFMT_INDEX16`
 pub const D3DFMT_INDEX16: u32 = 101;
-/// `D3DFMT_DXT1`
 pub const D3DFMT_DXT1: u32 = 0x3154_5844;
-/// `D3DFMT_DXT2`
 pub const D3DFMT_DXT2: u32 = 0x3254_5844;
-/// `D3DFMT_DXT3`
 pub const D3DFMT_DXT3: u32 = 0x3354_5844;
-/// `D3DFMT_DXT4`
 pub const D3DFMT_DXT4: u32 = 0x3454_5844;
-/// `D3DFMT_DXT5`
 pub const D3DFMT_DXT5: u32 = 0x3554_5844;
-/// `D3DFMT_YUY2`
 pub const D3DFMT_YUY2: u32 = 0x3259_5559;
-/// `D3DFMT_UYVY`
 pub const D3DFMT_UYVY: u32 = 0x5956_5955;
 
 // D3DERR: the results that the ports test.
-/// `D3DERR_DEVICELOST`
 pub const D3DERR_DEVICELOST: u32 = 0x8876_0868;
-/// `D3DERR_DEVICENOTRESET`
 pub const D3DERR_DEVICENOTRESET: u32 = 0x8876_0869;
 
 // Other enumerations.
-/// `D3DPOOL_DEFAULT`
 pub const D3DPOOL_DEFAULT: u32 = 0;
-/// `D3DPOOL_MANAGED`
 pub const D3DPOOL_MANAGED: u32 = 1;
-/// `D3DUSAGE_RENDERTARGET`
 pub const D3DUSAGE_RENDERTARGET: u32 = 1;
-/// `D3DLOCK_READONLY`
 pub const D3DLOCK_READONLY: u32 = 0x10;
-/// `D3DDEVTYPE_HAL`
 pub const D3DDEVTYPE_HAL: u32 = 1;
-/// `D3DDEVTYPE_REF`
 pub const D3DDEVTYPE_REF: u32 = 2;
-/// `D3DCREATE_MULTITHREADED`
 pub const D3DCREATE_MULTITHREADED: u32 = 4;
-/// `D3DRTYPE_INDEXBUFFER`
 pub const D3DRTYPE_INDEXBUFFER: u32 = 7;
-/// `D3DCMP_ALWAYS`
 pub const D3DCMP_ALWAYS: u32 = 8;
-/// `D3DFOG_LINEAR`
 pub const D3DFOG_LINEAR: u32 = 3;
 
 #[cfg(test)]

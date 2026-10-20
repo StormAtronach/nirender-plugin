@@ -1,6 +1,6 @@
 //! Pools of GPU buffers for the geometry of the game: the vertices of all meshes in a few
 //! large buffers, the indexes in others, so that a draw binds no vertex or index buffer of
-//! its own (plan 0.5 entry TD, step 3; the draw names its base vertex and first index). A
+//! its own (the draw names its base vertex and first index). A
 //! range goes back to its pool when the geometry record that took it is replaced, one frame
 //! later, when the GPU is done with the draws that used it.
 

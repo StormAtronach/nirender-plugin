@@ -73,9 +73,7 @@ macro_rules! port_thiscall {
 
 /// Declares the port of a `__thiscall` engine function that returns a `float`: the value is
 /// on the x87 stack (ST(0)), not in EAX. The detour and the call of the engine function have
-/// the float type, so the compiler loads and pops ST(0); the comparison uses the bits. The
-/// general macro returned the bits in EAX, and its call of the engine function left the
-/// engine's float on the x87 stack (the audit of 2026-10-20, item 10).
+/// the float type, so the compiler loads and pops ST(0); the comparison uses the bits.
 macro_rules! port_thiscall_float {
     (
         $modname:ident, $addr:literal, $ename:literal,

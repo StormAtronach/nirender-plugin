@@ -266,7 +266,6 @@ unsafe fn update_d3d_state_regions(set: &mut crate::shadow::Regions, this: usize
     set.add(material_property, NiMaterialProperty::SIZE);
     let entry: usize = rd(material_property, NiMaterialProperty::rendererData);
     if entry == 0 {
-        // This call makes the entry.
         set.allocates();
     }
     set.add(entry, material::ENTRY_SIZE);

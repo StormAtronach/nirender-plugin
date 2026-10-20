@@ -739,7 +739,7 @@ unsafe fn identity_transform(transform: &mut [u32; NiTransform::SIZE / 4]) -> us
     at
 }
 
-/// The shape record of a screen polygon (step R7b): its geometry for this draw (see
+/// The shape record of a screen polygon: its geometry for this draw (see
 /// `geometry_stream::note_screen_polygon`), then the transform, the bound and the lights
 /// as `DrawPrimitive` sets them, and the record with the identity world. The view and the
 /// projection of the screen polygons stay as the port sets them on the device: the helper
@@ -806,7 +806,7 @@ pub unsafe fn precache_geometry_data(this: usize, geom_data: usize, indices: u32
     if node != 0 && rd::<u32>(node, THashMap_Node::data) != 0 {
         return 1;
     }
-    // With the records only, no draw of the device reads these buffers (step R7b).
+    // With the records only, no draw of the device reads these buffers.
     if crate::shape_stream::records_only() {
         return 1;
     }
@@ -915,7 +915,7 @@ pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
         ni::pointer_assign(rd::<usize>(skin, NiSkinInstance::skinData) + SKIN_DATA_SKIN_PARTITION, object);
     }
     // With the records only, the partitions are what the records need; no draw of the
-    // device reads the buffers (step R7b).
+    // device reads the buffers.
     if crate::shape_stream::records_only() {
         return 1;
     }

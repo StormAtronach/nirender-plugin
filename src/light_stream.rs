@@ -1,7 +1,6 @@
-//! The lights of a draw as records of their own, for the retained pipeline (step R6): a
-//! `LIGHT` record for a light the first time a draw has it and when its values change,
-//! keyed by the index of the light, and the keys of the lights of a draw in its shape
-//! record. A light with each draw was 108 bytes; its key is 4.
+//! The lights of a draw as records of their own, for the retained pipeline: a `LIGHT`
+//! record for a light the first time a draw has it and when its values change, keyed by the
+//! index of the light, and the keys of the lights of a draw in its shape record.
 
 use crate::gen::layouts::{NiDX8LightManager as LM, NiDX8LightManager_LightEntry as LE, NiDX8Renderer as R, NiLight as L};
 use crate::mem::rd;
@@ -66,7 +65,7 @@ pub unsafe fn note(renderer: usize) -> &'static [u32] {
     let mut count = 0;
     let manager: usize = rd(renderer, R::lightManager);
     // The list and the map under the manager's own lock, as the engine's `updateLights` walks
-    // them (the audit of the cell worker, Tier 1 finding 6).
+    // them.
     let _lock = crate::sync::engine_lock(manager + LM::criticalSection);
     let mut item: usize = rd(manager, LM::deviceLights_head);
     while item != 0 && count < MAX_LIGHTS {

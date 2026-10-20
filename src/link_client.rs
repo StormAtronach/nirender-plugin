@@ -290,9 +290,9 @@ unsafe fn sky_hidden(sky_root: usize) -> bool {
 }
 
 /// The two functions of the `d3d8.dll` of MGE XE for a game without a Direct3D device
-/// (`MGE_StreamPresent`, `MGE_StreamTransform`), or 0. MGE XE runs its logic of a frame that
-/// is not drawing in them: zoom, field of view, screen shake, crosshair. Its proxy device
-/// ran that logic at `Present` and at `SetTransform`.
+/// (`MGE_StreamPresent`, `MGE_StreamTransform`), or 0. MGE XE runs in them the logic of a
+/// frame that does not draw: zoom, field of view, screen shake, crosshair. With a Direct3D
+/// device, its proxy device runs that logic at `Present` and at `SetTransform`.
 static STREAM_PRESENT: AtomicUsize = AtomicUsize::new(0);
 static STREAM_TRANSFORM: AtomicUsize = AtomicUsize::new(0);
 /// `MGE_StreamMessage` of MGE XE: a message of the extension in the host program for MGE XE
@@ -725,11 +725,11 @@ pub unsafe fn note_indices(buffer: usize, base_vertex: u32) {
     buffers[4] = base_vertex;
 }
 
-/// Sends to the device the state that the game believes the device has, for the kinds in
-/// `kinds`. The Rust code made no call for them while the host had them.
-/// The record of the game has 258 render states.
+/// The render states of the game's record that the plugin reads.
 const RENDER_STATES_IN_RECORD: u32 = 256;
 
+/// Sends to the device the state that the game believes the device has, for the kinds in
+/// `kinds`. The Rust code made no call for them while the host had them.
 unsafe fn resync(kinds: u32) {
     let renderer = RENDERER.load(Ordering::Relaxed);
     if renderer == 0 {
@@ -757,8 +757,8 @@ unsafe fn resync(kinds: u32) {
     }
     // The kept texture and buffer handles go to the device again only when the own host
     // still has them alive: while the host took these kinds nothing held them, and the game
-    // or the cell worker can have released them (the audit of 2026-10-20, item 7). A handle
-    // that is gone is forgotten; the game's next draw sets what it needs.
+    // or the cell worker can have released them. A handle that is gone is forgotten; the
+    // game's next draw sets what it needs.
     let live = |handle: u32| crate::own_host::active() && crate::own_host::is_live(handle as usize);
     if kinds >> FACT_DEVICE_TEXTURES & 1 != 0 {
         for stage in 0..STATE_STAGES {
@@ -1036,14 +1036,12 @@ unsafe fn swap_buffers(_args: &[usize]) {
     }
 }
 
-/// The class of a geometry: a compare of the geometry and of each parent with the known
-/// objects. The scene kind gives the class when the walk finds none.
-/// A display of the water plane of the game that the engine skips (plan step 7, F6 C): a
-/// shape under the water plane's root, displayed in the water scene, while the helper
-/// draws the water itself. A draw of the sorted queue in that scene has another root.
-/// The first display of a scene goes through, so that the helper's item for the water
-/// comes where it came before; the others make no record and no draw. (The water Click
-/// runs without the sorter, so the sorter does not tell the two apart.)
+/// A display of the game's water plane that the engine skips: a shape under the water
+/// plane's root, displayed in the water scene, while the helper draws the water itself. A
+/// draw of the sorted queue in that scene has another root. The first display of a scene
+/// goes through, so that the helper's item for the water keeps its place; the others make
+/// no record and no draw. The water `Click` runs without the sorter, so the sorter does not
+/// tell the two apart.
 pub unsafe fn water_plane_display_skipped(shape: usize) -> bool {
     let roots = &*addr_of!(ROOTS);
     if roots.scene_kind != SCENE_WATER || object_class(shape, roots) != CLASS_WATER_PLANE {
@@ -1058,6 +1056,8 @@ pub unsafe fn water_plane_display_skipped(shape: usize) -> bool {
 }
 
 
+/// The class of a geometry: a compare of the geometry and of each parent with the known
+/// objects. The scene kind gives the class when the walk finds none.
 unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
     match roots.scene_kind {
         SCENE_UI | SCENE_SPLASH | SCENE_RACE_MENU_HEAD => return CLASS_UI,
@@ -1198,11 +1198,9 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     // A retained instance (`instance_stream`): the draw needs no notes and no object
     // record, its handles are known.
     crate::instance_stream::begin_draw();
-    // A shape of the world, skinned or not (an actor is skinned: its palette goes in its
-    // draw records each frame).
-    // A draw of the world scene, or a blended shape drawn from the sorted queue in a scene
-    // of the world camera (plan step 6: the table takes the blends; the first draw of a
-    // blended shape is the queue's).
+    // A shape of the world, skinned or not: a draw of the world scene, or a blended shape
+    // drawn from the sorted queue in a scene of the world camera. The table takes the
+    // blends, and the first draw of a blended shape is the queue's.
     let plain_world_shape = matches!(kind, DRAW_SHAPE | DRAW_STRIPS) && (roots.scene_kind == SCENE_WORLD || (world_camera && flags & DRAW_FROM_SORTED_QUEUE != 0)) && crate::capture::recording();
     if plain_world_shape {
         let mut class = CLASS_UNKNOWN;

@@ -1,17 +1,15 @@
-//! The readers of the display flag of the engine (plan F8, part 1): before each of them
-//! runs, the flag it reads is set on the nodes the policy selects (`crate::animation`), and
-//! the engine function then runs as it is. The four readers (engine-rules R15, entry A of
-//! the journal): `BSAnimationManager::Update` gives a managed node with the flag the full
-//! update, and a node without it the controllers only when it is beyond the far plane;
+//! The readers of the engine's display flag. Before each reader runs, the port sets the flag
+//! it reads on the nodes that the policy selects (`crate::animation`). Then the engine
+//! function runs as it is.
+//!
+//! `BSAnimationManager::Update` gives a managed node with the flag the full update. A node
+//! without it gets the controllers only when it is beyond the far plane.
 //! `BSAnimationNode::UpdateControllers` and `BSAnimationNode::UpdateDownwardPass` run the
-//! controllers only with the node's own displayed bit (or AlwaysUpdate, which only a
-//! keyframe or visibility controller in the subtree sets: an animated texture effect does
-//! not, 2026-10-18). The fourth reader, `Reference::animIdleUpdate` (the pose of an
-//! actor only with the flag on its scene node), cannot be a port: MWSE patches it (a call
-//! into MWSE.dll at +0x64) and the census locks such a port and refuses the renderer
-//! (2026-10-17). The actors get their flag another way before the walk goes (plan F8,
-//! part 4). The stencil shadow manager keeps its rule as it is (an actor within 256
-//! units, or the flag).
+//! controllers only with the node's own displayed bit (or AlwaysUpdate). Only a keyframe or
+//! visibility controller in the subtree sets AlwaysUpdate; an animated texture effect does not.
+//!
+//! `Reference::animIdleUpdate` also reads the flag, but it cannot be a port: MWSE patches it
+//! (a call into MWSE.dll at +0x64). The actors get their flag another way.
 
 use crate::gen::layouts::NiAVObject as AV;
 use crate::mem::{rd, wr};

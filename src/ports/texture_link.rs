@@ -2,18 +2,16 @@
 //!
 //! With the textures of the render link in use, `create` makes no call on the D3D8 device and
 //! no call on a D3D8 texture: it gives the pixel data to the host of the link and keeps the
-//! handle that the host returns. In this version the handle is a D3D8 texture pointer, thus
-//! the other code of the renderer can use it as before.
+//! handle that the host returns. The handle is a D3D8 texture pointer, so the other code of
+//! the renderer can use it.
 //!
 //! Without the link, `create` makes the texture on the device as the game function does.
 //! MGE XE changes the game function in memory in two places: it puts a call of its own
 //! function in the place of `CreateTexture`, and a second call before the end. The port
 //! calls those two functions of MGE XE when the calls are in the game code.
 //!
-//! A comparison with the game function is not possible. With MGE XE the function releases
-//! the first texture that it makes, and the second run of a comparison would get that
-//! texture. The tests of this file are the start of the game on the Rust code, the frame
-//! tests after it, and the picture test of the link.
+//! A comparison with the game function is not possible: with MGE XE the function releases
+//! the first texture that it makes, and the second run of a comparison would get it.
 
 use super::{ni, textures};
 use crate::engine::{cdecl1, critical_section_lock, critical_section_unlock, get_image_converter, operator_new, pixel_format_copy, CREATE_CRITICAL_SECTION};
@@ -131,8 +129,6 @@ fn power_of_two(value: u32) -> bool {
     value != 0 && value & value.wrapping_sub(1) == 0
 }
 
-/// 0x6BFA50 `NiDX8SourceTextureData_static::Create` (cdecl). Returns the new
-/// `NiDX8SourceTextureData`.
 /// The source textures whose `create` is in progress on the main thread, innermost last.
 static mut IN_PROGRESS: Vec<usize> = Vec::new();
 /// The nested calls that took the default texture without a read, for the log.
@@ -162,14 +158,13 @@ impl Drop for InProgress {
     }
 }
 
+/// 0x6BFA50 `NiDX8SourceTextureData_static::Create` (cdecl). Returns the new
+/// `NiDX8SourceTextureData`.
 pub unsafe fn create(texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&create_port::STATE);
-    // A file that cannot be read makes the engine's error menu (`game_logAndShowError`), which
-    // draws frames until the player answers. A frame draws the same shape again, and its
-    // texture has no renderer data until this call returns, so the frame calls `create` for
-    // the same texture: a new read, a new error menu inside the first, until the stack is
-    // gone (the NIF test level's exhibit 060, 2026-10-20: 141 nested menus). A nested call
-    // for a texture in progress takes the default texture and reads no file.
+    // The engine's error menu for a file that cannot be read draws frames, and a frame can
+    // call `create` for the same texture again. A nested call for a texture in progress
+    // takes the default texture and reads no file.
     let (_in_progress, nested) = InProgress::enter(texture);
     let link = crate::link_client::link_textures();
     let this = operator_new(SD::SIZE);

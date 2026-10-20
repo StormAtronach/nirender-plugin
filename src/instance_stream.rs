@@ -1,71 +1,46 @@
-//! The retained instances of the plugin (plan 0.5 entry T3): a shape of the safe class gets
-//! an `INSTANCE` record once (its handles, its world transform with an exact translation,
-//! the colours of its material), and then an `INSTANCE_DRAW` record at each draw (its id,
-//! the ambient light, the fog of the draw and the keys of its lights) in the place of the
-//! shape record.
-//! The helper draws the instance from its table. A change of the instance (its transform,
-//! its colours, its handles) sends the `INSTANCE` record again with the same id; the
-//! destructor of the geometry sends `INSTANCE_DELETE`.
+//! The retained instances of the plugin. A shape of the safe class gets an `INSTANCE`
+//! record once: its handles, its world transform with an exact translation, and the
+//! colours of its material. The helper then draws the instance from its table. A change of
+//! the transform, the colours or the handles sends the `INSTANCE` record again with the
+//! same id. The destructor of the geometry sends `INSTANCE_DELETE`.
 //!
-//! The safe class (the census of entry T0): a triangle shape of the world scene under the
-//! object root or the landscape root (entry T6), not skinned, without a texture
-//! effect, without projected lights or shadows, and under no sort adjust node (the other
-//! node kinds that change what or how they draw need nothing of the table:
-//! `REJECTED_KINDS`). A controller on a node above moves the shape, and the instance moves
-//! in place. A controller on the shape itself or on one of its properties makes it a live
-//! shape (a morpher, a UV controller, a flip, alpha or colour controller): its display
-//! runs the controllers' `OnPreDisplay` as the engine's display does and notes the
-//! geometry and the material every time, so a new revision of the data goes out at once
-//! under the same handle (`NIRENDER_CONTROLLERS=0` rejects them, the rule before). A
-//! blended shape is retained too (plan step 6, 2026-10-17): the helper sorts the blends of
-//! its table back to front and draws them where the engine flushes its sorted queue; the
-//! material record carries the no-sorter bit of the alpha property, and such a blend
-//! draws with the opaque in the order of its slot. The first draw of a blended shape is
-//! the queue's, so a draw from the sorted queue of a world-camera scene is considered
-//! like a draw of the world scene (`link_client::send_draw`). The
-//! class of a shape is decided once and kept until the shape is deleted.
+//! The safe class (`reject_reason`): a shape of the world scene of a retained class
+//! (`class_retained`), with no depth test that depends on an earlier draw, no texture
+//! effect that moves, and no rejected node kind above it (`REJECTED_KINDS`). A controller
+//! on a node above moves the instance in place. A controller on the shape or on one of its
+//! properties makes it a live shape: its display runs the controllers' `OnPreDisplay` and
+//! notes the geometry and the material each time. A blended shape is retained: the helper
+//! sorts the blends of its table back to front. The class of a shape is decided once and
+//! kept until the shape is deleted.
 //!
-//! The draw of a retained shape skips the notes of the geometry and the material and the
-//! object record (`link_client::send_draw`): their cost was the point. Every 64th frame of
-//! an instance the notes run and their handles are compared with the retained ones, so a
-//! changed material or geometry shows within a second. When a device texture goes away
-//! (the destructor of a source texture's renderer data, the recreation of the texture
-//! manager; a capture starts with such a purge) every instance takes the full path at its
-//! next draw: the material handle has the device texture, and the game makes a new one.
-//! The world transform and the colours are compared at each draw: they are words of the
-//! shape, cheap to read.
+//! The modes (`Mode`):
+//! - `off`: no instance.
+//! - `dual`: every record as before, plus the instance records. The shape record is the
+//!   twin of an instance draw, and the helper draws one of the two (`MGE_XE_RETAINED`).
+//! - `gpu`: the helper draws the instance from its table and culls it with its bound. The
+//!   plugin sends no draw, only the changes of the lights (`INSTANCE_LIGHTS`) and of the
+//!   visibility (`INSTANCE_STATE`).
 //!
-//! The modes: `off` (no instance), `dual` (every record as before, plus the instance
-//! records with the shape record marked as the twin of an instance draw: the helper draws
-//! one of the two, `MGE_XE_RETAINED`, for the test of the two paths on one capture), `gpu`
-//! (plan 0.5 entry T4:
-//! the helper draws the instance from its table, with its bound for the cull of a view;
-//! the plugin sends no draw, only the changes: the lights of the instance
-//! (`INSTANCE_LIGHTS`) and its visibility (`INSTANCE_STATE`, from the draws of the engine:
-//! an instance in the view of the camera of the world that the engine did not draw is
-//! hidden, one that it drew is visible). `NIRENDER_RETAINED` sets the mode at the start
-//! (default `gpu` since T5); `nirender.retained(mode)` sets it from Lua.
+//! `NIRENDER_RETAINED` sets the mode at the start (default `gpu`); `nirender.retained(mode)`
+//! sets it from Lua.
 //!
-//! In mode gpu the engine does not display a retained shape (plan 0.5 entry T5): the shape
-//! carries the flag `RETAINED_BIT`, and the ports of its `Display` call `skipped_display`
-//! instead, which does what the draw did (the check of the handles when due, of the
-//! transform, the bound and the colours, the lights of the shape's effect state as the
-//! light manager would turn them on, the visibility) and returns. The engine's traversal
-//! still reaches the shape (its parents are displayed and its bound is tested), so the
-//! draws of the engine stay the measure of its visibility. `NIRENDER_SKIP=0` keeps the
-//! display of the engine (the draw of the stream then does the checks).
+//! In mode gpu the engine does not display a retained shape. The shape carries
+//! `RETAINED_BIT`, and the ports of its `Display` call `skipped_display`, which does the
+//! checks of a draw and returns. The engine's traversal still reaches the shape, so the
+//! engine's draws stay the measure of its visibility. `NIRENDER_SKIP=0` keeps the engine's
+//! display.
 //!
-//! The record of an instance carries two translations: the stored one of the shape's world
-//! transform (the engine's 32-bit floats) and the exact one of the camera-relative matrices
-//! (`camera_space::exact_translation`, 64-bit from the scene graph). The own host reports
-//! the origin of each scene since 2026-10-16, so the draws of the game are relative to the
-//! camera and the records say so (flag 1). The helper takes the exact translation for a
-//! relative record and the stored one for the others. For the draws of the stream it
-//! subtracts the origin of the scene, as the plugin does: the picture is the same to the
-//! bit. For its own table it subtracts an origin of its own that follows the camera. A parent
-//! that moves by less than the step of a 32-bit float at the position of the shape leaves
-//! the stored translation as it was and is not seen: a difference under one step of a
-//! float, not checked.
+//! The handles of an instance get a check every `CHECK_FRAMES` frames, and at its next draw
+//! after a device texture goes away (`textures_changed`, `reset`). The transform and the
+//! colours get a check at each draw.
+//!
+//! An `INSTANCE` record carries two translations: the stored one of the world transform
+//! (32-bit floats) and the exact one (`camera_space::exact_translation`, 64-bit). The helper
+//! takes the exact one for a record with the flag `RELATIVE`, else the stored one. A parent
+//! move smaller than one float step at the shape's position is not seen.
+//!
+//! The tables are not synchronized: all functions run on the main thread, except
+//! `queue_change`.
 
 // The tables are keyed by engine pointers: the pointer hasher, not SipHash (`ptr_hash`).
 use crate::ptr_hash::{HashMap, HashSet};
@@ -80,7 +55,6 @@ use crate::mem::{rd, wr};
 /// the translation in a transform.
 const CONTROLLERS: usize = 0x10;
 const PARENT: usize = 0x18;
-/// `NiTextureEffect::coordinateMode` (see `texture_pass_b`).
 const WORLD: usize = 0x40;
 const WORLD_TRANSLATION: usize = WORLD + 0x24;
 /// `NiAVObject::worldBound`: the centre and the radius.
@@ -117,26 +91,14 @@ const MAX_DEPTH: usize = 32;
 const CHECK_FRAMES: u32 = 64;
 
 /// The node kinds that keep a shape under them on the engine's path. A sort adjust node
-/// draws its subtree in an order of its own (a cluster drawn late, or in place without
-/// the accumulator): a retained shape under one came too early and a translucent window
-/// drew over it (the NIF test level, 2026-10-16). The other kinds that change what or how
-/// they draw need nothing of the table (plan step 5, 2026-10-16), as long as the engine's
-/// traversal reaches the shape: a billboard turns its node to the camera in its display,
-/// and the display of the shape then sees the moved transform and moves the instance; a
-/// switch, a level of detail and a flipbook display one child, so the shapes of the
-/// others are never drawn and never enter the table, and one shown before is hidden at
-/// the end of the scene like any shape the engine stops drawing (`scene_end`); a BSP node
-/// orders its two children, which matters for blended shapes (not retained) and for the
-/// ties of the depth test (the open class of the order); an animation node marks itself
-/// displayed, and a particle node has no display of its own. `NIRENDER_NODE_KINDS=0`
-/// keeps all of them out (the rule before, for an A/B).
-/// Engine-rules R5 (the skill wgpu-renderer-dev).
+/// draws its subtree in an order of its own, which the table does not follow. The other
+/// kinds that change what or how they draw need nothing of the table, as long as the
+/// engine's traversal reaches the shape. Engine-rules R5 (the skill wgpu-renderer-dev).
 const REJECTED_KINDS: [&[u8]; 1] = [b"NiSortAdjustNode"];
-/// The rule before plan step 5: every kind that changes what or how it draws.
+/// The list of `NIRENDER_NODE_KINDS=0`: every kind that changes what or how it draws.
 const REJECTED_KINDS_BEFORE: [&[u8]; 7] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"NiSortAdjustNode", b"BSAnimationNode", b"BSParticleNode"];
-/// The rule before, for a skinned shape (an actor): only the kinds that change which
-/// shape is drawn; the bones it follows can be animated, and the palette of each draw
-/// carries them.
+/// The list of `NIRENDER_NODE_KINDS=0` for a skinned shape: only the kinds that change
+/// which shape draws. The palette of each draw carries the animated bones.
 const REJECTED_KINDS_SKINNED_BEFORE: [&[u8]; 5] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"NiSortAdjustNode"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -215,15 +177,13 @@ struct Instance {
     /// display runs the controllers' `OnPreDisplay` as the engine's display does, and
     /// notes the geometry and the material every time.
     live: bool,
-    /// The shape got a new property or effect state since its classification (plan 8b):
-    /// its next display classifies it again and notes it.
+    /// The shape got a new property or effect state since its classification: its next
+    /// display classifies it again and notes it.
     recheck: bool,
     /// The kind of its draw (`link::DRAW_SHAPE` or `DRAW_STRIPS`), 0 until known.
     kind: u32,
-    /// The properties of the shape's property state at its last display, when the shape is
-    /// alive: `apply_changes` compares a changed property with this copy and reads no engine
-    /// memory. It read the property state of every instance, and the cell worker had freed
-    /// some of the shapes (risk 26, records entry 42).
+    /// A copy of the shape's property pointers at its last display. `apply_changes` reads
+    /// only this copy, never engine memory: the cell worker can free a shape at any time.
     properties: [usize; PROPERTY_SLOTS],
 }
 
@@ -238,8 +198,7 @@ struct Tables {
     /// Grows when the handles of every instance need a check: the next draw of each takes
     /// the full path once.
     generation: u32,
-    /// The draw in progress is of a retained shape: the shape, its id, and whether the
-    /// notes of the draw ran (the handles of the draw are then those of `shape_stream`).
+    /// The draw in progress is of a retained shape: the shape and its id.
     pending: Option<(usize, u32)>,
     mode: Option<Mode>,
     /// The camera of the world scene in progress, for the check of the visibility at its
@@ -262,18 +221,17 @@ struct Tables {
     /// know) are retained too (`NIRENDER_ACTORS=0` keeps them out).
     actors: bool,
     /// A shape under an animated node, and a shape of class 0 that is not skinned, are
-    /// retained too (`NIRENDER_ANIMATED=0` keeps them out: the state before, for an A/B).
+    /// retained too (`NIRENDER_ANIMATED=0` keeps them out).
     animated: bool,
     /// A shape under a billboard, a switch, a level of detail, a BSP, an animation or a
-    /// particle node is retained too (`NIRENDER_NODE_KINDS=0` keeps them out: the rule
-    /// before, for an A/B). See `REJECTED_KINDS`.
+    /// particle node is retained too (`NIRENDER_NODE_KINDS=0` keeps them out). See
+    /// `REJECTED_KINDS`.
     node_kinds: bool,
     /// A shape with a controller on itself or on a property is retained as a live shape
-    /// (`NIRENDER_CONTROLLERS=0` rejects it: the rule before, for an A/B).
+    /// (`NIRENDER_CONTROLLERS=0` rejects it).
     controllers: bool,
-    /// In mode gpu the helper draws the skinned instances from its table (the takeover's
-    /// step 1, 2026-10-18); `NIRENDER_SKIN_TABLE=0` keeps them on the engine's display with
-    /// a palette in each draw (the path before, for an A/B and as the fallback).
+    /// In mode gpu the helper draws the skinned instances from its table.
+    /// `NIRENDER_SKIN_TABLE=0` keeps them on the engine's display with a palette in each draw.
     skin_table: bool,
     /// The bones of the instance in progress (`send_bones`), kept between the instances; the
     /// `INSTANCE_BONES` records, and the skinned instances hidden because their bones could
@@ -281,7 +239,7 @@ struct Tables {
     scratch_bones: Vec<u8>,
     bone_records: u64,
     bone_failures: u64,
-    /// The works of skinned instances whose own ambient light or fog differed from the
+    /// The displays of skinned instances whose own ambient light or fog differed from the
     /// scene's values (the table draws them with the scene's).
     skin_scene_mixed: u64,
     /// The frame each light (by its index) was noted last: its values are made and its LIGHT
@@ -360,22 +318,17 @@ pub unsafe fn mode() -> Mode {
 /// Engine-rules R18 (the skill wgpu-renderer-dev).
 pub unsafe fn set_mode(mode: Mode) -> Mode {
     let before = self::mode();
-    // The events of the cell worker first: a shape it destroyed since the last drain leaves
-    // the table before the marks below write into its flags (Tier 1 finding 3).
+    // Drain the cell worker's events first: a shape it destroyed leaves the table.
     crate::worker_events::drain();
     let t = tables();
     t.mode = Some(mode);
     if mode != before {
-        // Mode off is the reference: the engine draws every shape, so the helper must not
-        // draw its table too. Without the hides the table's blends doubled the engine's in
-        // every picture of mode off (the opaque doubles were invisible), 2026-10-17. The
+        // In mode off the engine draws every shape, so the helper must hide its table. The
         // next display of a shape in mode gpu shows its instance again.
         let hide = mode == Mode::Off && capture::recording();
-        // No mark is written here: a kept shape can be freed by the cell worker at any time,
-        // and a write into it corrupts the memory that reused it (the audit of 2026-10-20,
-        // item 5). The engine's walk displays every shape: in mode gpu `draw` marks a shape
-        // again at its next draw, and outside it the display clears a stale mark on the
-        // shape it displays (`skipped_display_timed`).
+        // Write no mark here: the cell worker can free a kept shape at any time. In mode
+        // gpu `draw` marks a shape again at its next draw; in another mode the display
+        // clears a stale mark (`skipped_display_timed`).
         let mut hidden = 0;
         for instance in t.instances.values_mut() {
             instance.sent = false;
@@ -392,13 +345,10 @@ pub unsafe fn set_mode(mode: Mode) -> Mode {
 }
 
 /// True for a class of object the plugin retains: the objects of the references, the
-/// landscape, and class 0 (plan 0.5 entry T6). Class 0 is a shape of the world scene under
-/// no root the classes know: the actors and their parts, and objects hung elsewhere (the
-/// arms of the first person have a class of their own, and the picture of the character is
-/// another scene). A skinned one is an actor (its palette each frame); one that is not
-/// skinned follows the rules of any shape (a part under an animated bone has a controller
-/// above it and stays out; a still object is retained; one that moves without a controller
-/// is moved in place). `NIRENDER_ACTORS=0` keeps class 0 out.
+/// landscape, and class 0. Class 0 is a shape of the world scene under no root the classes
+/// know: the actors and their parts, and objects hung elsewhere. A skinned one is an actor;
+/// one that is not skinned follows the rules of any shape. `NIRENDER_ACTORS=0` keeps class
+/// 0 out; `NIRENDER_ANIMATED=0` keeps out the class 0 shapes that are not skinned.
 pub unsafe fn class_retained(class: u32, skinned: bool) -> bool {
     let t = tables();
     class == CLASS_OBJECT || (class == CLASS_LANDSCAPE && t.landscape) || (class == CLASS_UNKNOWN && t.actors && (skinned || t.animated))
@@ -444,10 +394,8 @@ pub unsafe fn scene_begin(kind: u32, camera: usize) {
 /// A scene of the game ends. At the end of the world scene in mode gpu: an instance the
 /// helper shows that the engine did not draw although it is in the view of the camera is
 /// hidden (`INSTANCE_STATE`); an instance the engine drew was made visible at its draw.
-/// An instance whose record was not sent again since a reset or a change of the mode is
-/// hidden too: the helper's table keeps it from before (a capture that holds resets the
-/// records at each release; the far level of a level-of-detail node stayed in the table
-/// at the stops of the NIF tour, 2026-10-16).
+/// An instance whose record did not go again since a reset or a change of the mode is
+/// hidden too: the helper's table keeps it from before.
 /// Engine-rules R14, R16 (the skill wgpu-renderer-dev).
 pub unsafe fn scene_end() {
     let t = tables();
@@ -484,23 +432,22 @@ pub unsafe fn skin_table() -> bool {
     tables().skin_table
 }
 
-/// Sets whether the table draws the skinned instances (`nirender.skinTable`, for the owner's
-/// comparison of the two paths in one session) and returns the state before. Each skinned
-/// instance sends its record again at its next draw: on, `draw` marks it; off, its display
-/// clears the mark, and its draw sends the record without the table's flag, which takes it out
-/// of the helper's table.
+/// Sets whether the table draws the skinned instances (`nirender.skinTable`) and returns
+/// the state before. Each skinned instance sends its record again at its next draw: on,
+/// `draw` marks it; off, its display clears the mark, and its draw sends the record without
+/// the table's flag, which takes it out of the helper's table.
 pub unsafe fn set_skin_table(on: bool) -> bool {
     let t = tables();
     let before = t.skin_table;
     if on == before {
         return before;
     }
-    // The events of the cell worker first (as `set_mode`; Tier 1 finding 3).
+    // Drain the cell worker's events first, as `set_mode` does.
     crate::worker_events::drain();
     let t = tables();
     t.skin_table = on;
-    // No mark is written here (as in `set_mode`): `draw` marks a skinned shape again at its
-    // next draw, and the display clears a stale mark when the table does not draw skins.
+    // Write no mark here, as in `set_mode`: `draw` marks a skinned shape again at its next
+    // draw, and the display clears a stale mark when the table does not draw skins.
     for instance in t.instances.values_mut() {
         if !instance.skinned {
             continue;
@@ -658,16 +605,12 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
 }
 
 /// Why the shape is not retained, or `None` when it is of the safe class. `live` is set
-/// when a controller on the shape or on a property changes it (plan step 5, the morphers).
+/// when a controller on the shape or on a property changes it.
 /// Engine-rules R1, R6, R7 (the skill wgpu-renderer-dev).
 unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize, skinned: bool, live: &mut bool) -> Option<usize> {
-    // A controller on the shape itself changes it: a morpher writes its vertices at the
-    // display (`OnPreDisplay`), a UV controller its texture coordinates at the update, each
-    // with a new revision of the data; the display of a live shape runs the controllers
-    // and notes the geometry again. A controller on a node above only moves the shape: the
-    // engine still updates the world transform of a shape it does not display, a skinned
-    // shape follows its bones through the palette, and the display of a retained shape
-    // (`skipped_display`) compares the transform each time and moves the instance in place.
+    // A controller on the shape changes its data (a morpher, a UV controller): the shape is
+    // live. A controller on a node above only moves the shape, and `skipped_display` moves
+    // the instance in place.
     let t = tables();
     if rd::<usize>(shape, CONTROLLERS) != 0 {
         if !t.controllers {
@@ -700,23 +643,18 @@ unsafe fn reject_reason(shape: usize, property_state: usize, effect_state: usize
                 *live = true;
             }
         }
-        // The test function of NiZBufferProperty, the enum of NetImmerse (not D3DCMPFUNC):
+        // The test function of NiZBufferProperty is the NetImmerse enum, not D3DCMPFUNC:
         // 0 always, 1 less, 2 equal, 3 less or equal, 4 greater, 5 not equal, 6 greater or
-        // equal, 7 never. With the test off (flags bit 0) the engine uses "always" whatever
-        // the function says, so the function counts only with the test on (the skill
-        // wgpu-renderer-dev, engine-rules R1).
+        // equal, 7 never. With the test off (flags bit 0) the engine uses "always", so the
+        // function counts only with the test on (engine-rules R1).
         let z: usize = rd(property_state, PS::propZBuffer);
         if z != 0 && rd::<u16>(z, PROPERTY_FLAGS) & 1 != 0 && !matches!(rd::<u32>(z, ZP::testFunction), 0 | 1 | 3 | 7) {
             return Some(REASON_DEPTH);
         }
     }
-    // A texture effect is retained when the table can make its stage from the material
-    // record, whatever its coordinate mode (the cube map modes 3 and 4 generate the
-    // coordinate from the reflection or the normal on a flat texture: Morrowind has no
-    // cube map a file could carry, engine-rules R24), whose world projection does not
-    // change (no controller on the effect or
-    // on a node above it: the record has the projection, and a change of it would send the
-    // record again).
+    // A texture effect is retained in any coordinate mode (engine-rules R24) when its
+    // projection does not move: no controller on the effect or on a node above it
+    // (`effect_retained`). The material record holds the projection.
     if effect_state != 0 {
         for effect in [rd::<usize>(effect_state, DES::environmentMap), rd::<usize>(effect_state, DES::fogMap)] {
             if effect != 0 && !effect_retained(effect) {
@@ -743,7 +681,7 @@ unsafe fn effect_retained(effect: usize) -> bool {
 }
 
 /// True when the run-time type of the node, or a base of it, is one of the rejected kinds
-/// (with the rule before, the narrower list for a skinned shape).
+/// (with `NIRENDER_NODE_KINDS=0`, the `*_BEFORE` lists: the narrower one for a skinned shape).
 unsafe fn kind_rejected(node: usize, skinned: bool) -> bool {
     let kinds: &[&[u8]] = if tables().node_kinds {
         &REJECTED_KINDS
@@ -987,7 +925,7 @@ unsafe fn note_light_once(t: &mut Tables, light: usize, key: u32) {
     }
 }
 
-/// The measure of the instance records (plan 8f), by `RC_*`: why a record went (the first
+/// The counts of the instance records, by `RC_*`: why a record went (the first
 /// send or a new handle; a move of the transform; the bound alone; the colours alone; a move
 /// and the colours), whether a moved instance is live or not; the bytes of the names.
 static mut RECORD_COUNTS: [u64; 8] = [0; 8];
@@ -1042,7 +980,7 @@ pub unsafe fn record_report() -> String {
     )
 }
 
-/// The measure of the lights (plan 8e), by `LC_*`: the light loops of the displays and their
+/// The counts of the lights, by `LC_*`: the light loops of the displays and their
 /// lights; the notes of a light, the entries built (one a light a frame), those with zero
 /// colours (off or too dim), and the records sent.
 static mut LIGHT_COUNTS: [u64; 6] = [0; 6];
@@ -1071,16 +1009,12 @@ pub unsafe fn light_report() -> String {
     )
 }
 
-/// The display of a retained shape by the engine (mode gpu): what the draw of the stream
-/// did for the instance, without the draw. True when the engine must not display the
-/// shape; false when the shape is not retained after all (the mark goes).
-/// Engine-rules R5 (the skill wgpu-renderer-dev).
-/// Why an instance is checked again (plan 8b, step 2).
+/// Why an instance is checked again.
 #[derive(Clone, Copy)]
 pub enum Recheck {
     Properties = 0,
     Effects = 1,
-    /// A Lua mod changed the shape or a property of it (`nirender.changed`, plan C17).
+    /// A Lua mod changed the shape or a property of it (`nirender.changed`).
     Notified = 2,
 }
 
@@ -1089,9 +1023,9 @@ pub enum Recheck {
 /// live state changed (5).
 static mut RECHECKS: [u64; 6] = [0; 6];
 
-/// TEMPORARY, plan C17 (until MWSE notifies the changes of its Lua bindings): the objects
-/// a Lua mod changed (`nirender.changed`, from `mod/MWSE/mods/nirender/notifier.lua`), and
-/// the notes received and the scans of the table they caused.
+/// The objects a Lua mod changed (`nirender.changed`, from
+/// `mod/MWSE/mods/nirender/notifier.lua`), and the counts of the notes received, of the
+/// scans of the table and of the shapes hit.
 static mut CHANGED: Option<HashSet<usize>> = None;
 static mut CHANGE_NOTES: [u64; 3] = [0; 3];
 /// The change notes made on another thread, for the main thread's next `frame_tick`.
@@ -1130,7 +1064,7 @@ unsafe fn apply_changes() {
     let t = tables();
     for (&shape, instance) in t.instances.iter_mut() {
         // Only the table's own copy of the properties: the cell worker can have freed the
-        // shape since the last drain of its events (risk 26).
+        // shape since the last drain of its events.
         let hit = changed.contains(&shape) || instance.properties.iter().any(|&property| property != 0 && changed.contains(&property));
         if hit && !instance.recheck {
             instance.recheck = true;
@@ -1151,9 +1085,10 @@ pub unsafe fn recheck(shape: usize, cause: Recheck) {
     }
 }
 
-/// Plan 8b, step 1: note the material and the geometry of every retained shape at every
-/// display, not every 64th frame (`NIRENDER_NOTE_EVERY=1`, `nirender.noteEvery(on)`), and
-/// the cost of the skipped displays (`display_cost`).
+/// The switch that notes the material and the geometry of every retained shape at every
+/// display, not every `CHECK_FRAMES` frames (`NIRENDER_NOTE_EVERY=1`,
+/// `nirender.noteEvery(on)`); 255 means not read yet. Then the counters of the cost of the
+/// skipped displays (`display_cost`).
 static NOTE_EVERY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(255);
 static COST_CALLS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static COST_NOTES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -1186,11 +1121,14 @@ pub fn display_cost() -> (u64, u64, f64) {
     (COST_CALLS.swap(0, Relaxed), COST_NOTES.swap(0, Relaxed), ticks as f64 * 1000.0 / capture::ticks_per_second() as f64)
 }
 
-/// The cost of the display hook is timed only after the first `display_cost` call (the
-/// measuring batch calls it once to reset): two counter reads at every display cost about
-/// 0.06 ms a frame in the profile of the quicksave (2026-10-17).
+/// The cost of the display hook is timed only after the first `display_cost` call: the
+/// timer reads at every display have a cost of their own.
 static COST_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// The display of a retained shape by the engine (mode gpu): what the draw of the stream
+/// did for the instance, without the draw. True when the engine must not display the
+/// shape; false when the shape is not retained after all (the mark goes).
+/// Engine-rules R5 (the skill wgpu-renderer-dev).
 pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
     use core::sync::atomic::Ordering::Relaxed;
     if !COST_ON.load(Relaxed) {
@@ -1205,9 +1143,8 @@ pub unsafe fn skipped_display(shape: usize, kind: u32) -> bool {
 
 unsafe fn skipped_display_timed(shape: usize, kind: u32) -> bool {
     let t = tables();
-    // A stale mark (the mode or the table's skins switched since the shape was marked) is
-    // cleared here, on the shape the engine displays: the switches write no mark into kept
-    // shapes (the audit of 2026-10-20, item 5).
+    // Clear a stale mark here, on the shape the engine displays: `set_mode` and
+    // `set_skin_table` write no mark into kept shapes.
     if t.mode != Some(Mode::Gpu) {
         mark(shape, false);
         return false;
@@ -1234,7 +1171,7 @@ unsafe fn display_work(shape: usize, kind: u32) -> bool {
     let t = tables();
     let renderer = crate::engine::renderer();
     let (frame, generation) = (t.frame, t.generation);
-    // A new property or effect state since the classification (plan 8b): classify again.
+    // A new property or effect state since the classification: classify again.
     if let Some((skinned, was_live)) = t.instances.get_mut(&shape).filter(|i| i.recheck).map(|i| {
         i.recheck = false;
         (i.skinned, i.live)
@@ -1413,10 +1350,7 @@ unsafe fn display_work(shape: usize, kind: u32) -> bool {
         return false;
     };
     // The ambient light of the instance's own effect state goes with its lights: the helper
-    // lights each instance with its own, as the engine's light manager sets it for each
-    // draw (a spell's effect has a white ambient light of its own; the owner's mark 2 of
-    // 2026-10-19 had the whole town lit by it while the scene took the effect as its
-    // reference).
+    // lights each instance with its own, as the engine's light manager does for each draw.
     let ambient = crate::ports::light_manager::ambient_of_state(effect_state);
     if instance.lights != keys || instance.ambient != ambient {
         capture::instance_lights(id, &keys, ambient);
@@ -1444,11 +1378,9 @@ const SKY_LIGHT: usize = 0xAC;
 
 /// The sun of the frame for the helper's own draws (the distant land, the shadows): the
 /// weather controller's sky light, converted as the engine converts a light for the device
-/// (`light_entry_update`, the 26 words of a `D3DLIGHT8`). The engine sets this light on the
-/// device at its world draws, but the helper draws the retained shapes from its table and
-/// needs the sun with no draw. A guess among the light records took a constant white light
-/// once (2026-10-18). The owner pointed at the world controller. None when the light is off
-/// or dim, as `note_light_once`.
+/// (`light_entry_update`, the 26 words of a `D3DLIGHT8`). The helper draws the retained
+/// shapes with no draw of the engine, so it needs the sun from here. None when the light is
+/// off or dim, as `note_light_once`.
 unsafe fn scene_sun(t: &mut Tables) -> Option<[u32; 26]> {
     static LOGGED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     static mut LAST_DIFFUSE: [u32; 3] = [0; 3];

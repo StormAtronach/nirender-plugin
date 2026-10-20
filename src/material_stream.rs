@@ -1,10 +1,9 @@
-//! The material of a draw as a record of facts, for the retained pipeline (step R2).
+//! The material of a draw as a record of facts, for the retained pipeline.
 //!
 //! The record has the values of the properties of the shape (texturing with its maps, alpha,
 //! material, vertex colour, z-buffer, stencil, fog, wireframe, shade, dither, specular) and
 //! of its dynamic effects (the environment map, the fog map, the counts of projected lights
-//! and shadows). The helper derives the state of the draw from these facts; until step R3
-//! it only compares that with the state packet of the draw.
+//! and shadows). The helper derives the state of the draw from these facts.
 //!
 //! A record goes out once for each distinct content (a hash of the words). The texture of a
 //! map is the device texture that the texture manager gives for it, the same handle that
@@ -57,11 +56,9 @@ pub const PROJECTED_LIGHTS: u32 = 4096;
 pub const PROJECTED_SHADOWS: u32 = 8192;
 /// The fog property of the shape is its own, not the cell's: words 78 and 79 hold its
 /// colour and its density, 54 and 55 its start and end as the render state computes them.
-/// Engine-rules R11 (the skill wgpu-renderer-dev).
 pub const OWN_FOG: u32 = 16384;
 /// The alpha property has the no-sorter bit (bit 13): the engine's accumulator draws the
 /// blend at once, in the order of the scene, and the table draws it with the opaque.
-/// Engine-rules R2 (the skill wgpu-renderer-dev).
 pub const NO_SORTER: u32 = 32768;
 
 static mut SENT: Option<HashSet<u32>> = None;
@@ -74,7 +71,7 @@ static mut LAST_FLAGS: u32 = 0;
 /// (see `note`). Off by default: the game never showed them. `nirender.nifShading(on)`.
 static NIF_SHADING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-/// Engine-rules R8 (the skill wgpu-renderer-dev).
+/// True when the record takes the shape's own shade, dither and specular properties.
 pub fn nif_shading() -> bool {
     NIF_SHADING.load(core::sync::atomic::Ordering::Relaxed)
 }
@@ -257,9 +254,7 @@ pub unsafe fn note(renderer: usize, property_state: usize, effect_state: usize) 
     // properties; the shape's own (from its NIF) sit in the slots of its property state
     // (`setProperty` stores a property at `propAlpha + 4 * type`: dither 8, specular 9,
     // shade 10) and nothing of the engine reads them. With `nif_shading` on, the record
-    // takes the shape's own when it has one (experimental, 2026-10-16; 8 files of the game
-    // and 2 of the installed mods ask for flat shading, 340 for specular, none of which
-    // the game ever showed).
+    // takes the shape's own when it has one.
     if flags_of(rd(property_state, PS::propWireframe)) & 1 != 0 {
         flags |= WIREFRAME;
     }

@@ -1,21 +1,16 @@
-//! The geometry of a draw as a record of its own, for the retained pipeline (step R1).
+//! The geometry of a draw as a record of its own, for the retained pipeline.
 //!
 //! This module packs the geometry data of a shape as the engine packs it (positions,
-//! normals, colours, the texture sets, then the triangle list or the strip lists), and
-//! sends it once as a `GEOMETRY` record keyed by the geometry data. The key has the unique
-//! id, the revision and the active counts of the data: the engine packs a geometry again
-//! only when the revision changes (`packGeometryBuffers`), so these are its version.
+//! normals, colours, the texture sets, then the triangle list or the strip lists). It sends
+//! it once as a `GEOMETRY` record keyed by the geometry data. The key has the unique id, the
+//! revision and the active counts of the data: the engine packs a geometry again only when
+//! the revision changes (`packGeometryBuffers`), so these are its version.
 //!
-//! The helper draws from these buffers when it has them. The buffers of the device are
-//! still made by the ports (step R3 stops that), and the helper compares the two once for
-//! each version, so a difference of the pack shows as a count.
-//!
-//! A skinned shape (step R5) is packed with the weights and the bone indexes of each vertex
-//! for the whole skin, from the partitions of its skin data, so one draw with the palette
-//! of the skin replaces the draws of the partitions. The particles of a system come in the
-//! shape record itself (step R7a). Lines are packed as `RenderLines` packs them, with the
-//! index list of their segments, and a screen polygon as `PackScreenPolyVB` packs it, at
-//! each draw (step R7b).
+//! A skinned shape is packed with the weights and the bone indexes of each vertex for the
+//! whole skin, so one draw with the palette of the skin replaces the draws of the
+//! partitions. The particles of a system come in the shape record itself. Lines are packed
+//! as `RenderLines` packs them, and a screen polygon as `PackScreenPolyVB` packs it, at each
+//! draw.
 
 use std::collections::HashMap;
 
@@ -104,12 +99,10 @@ pub unsafe fn report() -> String {
     )
 }
 
-/// Where the bone influences of a skinned geometry come from: the weights of the bones in the
-/// skin data (`NiSkinData`, the weights of the model), or the skin partitions that the game
-/// makes for the 4 blend matrices of Direct3D 8. The partitions change the weights: a triangle
-/// gets at most 4 bones, and a vertex loses its smallest weights. The helper draws a whole skin
-/// with one palette, so it needs no partitions. A skin data without its weights (freed after
-/// the partitions were made) takes the partitions.
+/// Where the bone influences of a skinned geometry come from: false for the weights of the
+/// bones in the skin data (`NiSkinData`), true for the skin partitions of the game. A skin
+/// data without its weights (freed after the partitions were made) always takes the
+/// partitions.
 static SKIN_FROM_PARTITIONS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Sets the source of the bone influences (true: the skin partitions) and forgets the
@@ -549,12 +542,11 @@ unsafe fn note_lines(geom_data: usize) -> u32 {
 /// with `d = distance * z + near` (the polygon is at that depth under the screen projection
 /// of the renderer), then its colour and its texture coordinate when the polygon has them.
 /// The fan of the polygon is a triangle list in the record. The record goes out at each
-/// draw: the vertices of a polygon can change, and the record is small. Returns the handle,
-/// the vertex array of the polygon, or 0 for a polygon with fewer than three vertices.
+/// draw: the vertices of a polygon can change. Returns the handle, the vertex array of the
+/// polygon, or 0 for a polygon with fewer than three vertices.
 ///
-/// The game keeps `d` on the x87 stack with 64 bits of mantissa and rounds at each store;
-/// this code keeps it as an `f64` (53 bits) and rounds at each store. The two differ only
-/// when the extra bits change a rounding (inference: not measured).
+/// The game keeps `d` on the x87 stack (64-bit mantissa); this code uses an `f64`, so a
+/// rounding can differ.
 pub unsafe fn note_screen_polygon(count: u32, vertices: usize, tex_coords: usize, colour: usize, near: f32, distance: f32) -> u32 {
     if !crate::capture::recording() || vertices == 0 || count < 3 {
         return 0;

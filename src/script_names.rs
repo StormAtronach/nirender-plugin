@@ -1,15 +1,13 @@
-//! The search for the next token in `ScriptRecord::resolveGlobalIDs` (plan 8g, 2026-10-18).
+//! The search for the next token in `ScriptRecord::resolveGlobalIDs`.
 //!
 //! The engine resolves the names of a script expression in place: a name token (a lower case
 //! letter, a length byte, the name) becomes the upper case letter, the length, the record's
 //! pointer at +2 and the fill 0x40 over the rest of the name. After a token the function finds
 //! the next one with `strchr(at, ' ')` (the call at 0x4FF2A0). On an expression resolved
-//! before, `at` is the letter of a resolved token, and the search crosses its length and its
-//! pointer byte by byte: a 0x20 there, followed by a token letter, is taken for a new token.
-//! The function then copies a "name" whose length byte it reads as a signed char (a byte of
-//! 0x80 or more copies about 4 GB: the crash of the save load in the g1 pass), or looks up a
-//! false name and writes over the real token (the "Unable to find ... "@@@@" warnings).
-//! Which bytes a pointer holds depends on the addresses of the records.
+//! before, the search crosses the length and the pointer byte by byte. A 0x20 there, followed
+//! by a token letter, is taken for a new token. The function then copies a "name" whose length
+//! byte it reads as a signed char (a byte of 0x80 or more copies about 4 GB), or writes over
+//! the real token. Which bytes a pointer holds depends on the addresses of the records.
 //!
 //! The fix replaces that one call: at the letter of a token that is resolved (the letter after
 //! a space, its length, and the fill after the pointer), the search starts after the token.

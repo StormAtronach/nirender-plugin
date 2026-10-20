@@ -1,11 +1,10 @@
-//! What animates when the engine's world walk no longer sets the display flag (plan F8,
-//! part 1; entry A of the journal). The engine lets an actor or an animated node compute
-//! its pose only when a Click displayed it in the frame before: `NiNode::Display` sets the
-//! flag 0x10 of a node, `BSAnimationNode::Display` the bit 8 of an animation node, and three
-//! readers consume them (engine-rules R15). With the walk gone the readers ask here
-//! (`ports/animation.rs`), and the answer is a test of the node's world bound against the
-//! planes of the world camera and, by the policy, the reach of the shadow map that the
-//! helper reports (`capture::helper_shadow_reach`).
+//! What animates when the engine's world walk does not set the display flag. The engine
+//! lets an actor or an animated node compute its pose only when a Click displayed it in the
+//! frame before: `NiNode::Display` sets the flag 0x10 of a node, `BSAnimationNode::Display`
+//! the bit 8 of an animation node, and three readers consume them. Without the walk the
+//! readers ask here (`ports/animation.rs`). The answer is a test of the node's world bound
+//! against the planes of the world camera and, by the policy, the reach of the shadow map
+//! that the helper reports (`capture::helper_shadow_reach`).
 //!
 //! The policy (`NIRENDER_ANIMATION`, `nirender.animationPolicy`): `view` animates what is
 //! in the camera's view; `shadows` (the default) also what the shadow map reaches, so that a
@@ -40,9 +39,8 @@ static BY_ALL: AtomicU64 = AtomicU64::new(0);
 static NEITHER: AtomicU64 = AtomicU64::new(0);
 
 /// The world camera of the frame: the values of its culling planes (the normal and the
-/// constant of each) and its position. Values, not the planes' addresses: the tests run in
-/// the next frame's update, after the scene that noted them (the audit of 2026-10-20,
-/// item 6).
+/// constant of each) and its position. Keep values, not the planes' addresses: the tests run
+/// in the next frame's update, after the scene that noted them.
 struct Camera {
     planes: Vec<[f64; 4]>,
     position: [f32; 3],

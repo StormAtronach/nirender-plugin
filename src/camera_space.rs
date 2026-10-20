@@ -1,13 +1,9 @@
-//! World matrices relative to the camera.
+//! World matrices relative to the camera, made with 64-bit arithmetic from the scene graph.
 //!
-//! Far from the origin of the world, a 32-bit float has steps of some game units, and the
-//! picture shakes. The remedy is to give the device world matrices whose translation is
-//! relative to the camera, made with 64-bit arithmetic from the scene graph.
+//! This is a port of `camerarelative.cpp` of MGE XE. Keep the same steps in the same order:
+//! the results must be equal bit for bit. It has two modes:
 //!
-//! This is a port of `camerarelative.cpp` of MGE XE: the same steps in the same order, so the
-//! results are equal bit for bit. It has two uses:
-//!
-//! - Compare: the hooks of MGE XE make the matrices, and this module makes them too and counts
+//! - Compare: the hooks of MGE XE make the matrices. This module makes them too and counts
 //!   the differences.
 //! - Own: this module makes the matrices and MGE XE does not. The fact
 //!   `FACT_CLIENT_CAMERA_SPACE` of the render link turns it on.
@@ -107,9 +103,8 @@ fn invert(a: &DTransform) -> Option<DTransform> {
 // ---- the exact world translation of a node
 
 /// The step of a float of this size: `ldexp(1, exponent - 24)` with the exponent of `frexp`.
-/// Made from the exponent bits of the float: `powi` is a call of the CRT's `pow` on i686, and
-/// this runs for each translation of each frame (0.43 s in 30 s, checkpoint 1 of plan 0.5
-/// entry F). A float `1.f * 2^(E-127)` is `0.1f * 2^(E-126)`, so the step is `2^(E-150)`.
+/// Made from the exponent bits: `powi` calls the CRT's `pow` on i686, which is too slow here.
+/// A float `1.f * 2^(E-127)` is `0.1f * 2^(E-126)`, so the step is `2^(E-150)`.
 fn float_step(magnitude: f32) -> f32 {
     let biased = ((magnitude.to_bits() >> 23) & 0xFF) as i32;
     if magnitude == 0.0 || !magnitude.is_finite() {
@@ -550,9 +545,8 @@ pub unsafe fn skin_palette(skin: usize, transform: usize, geometry_site: bool, o
     result
 }
 
-/// The measure of the skinned parts (plan section 2, the takeover's step 1: bones per
-/// skeleton or per part): the parts, the bone matrices built, the bones and the skeletons
-/// (root parents) that are new in their frame, and the ticks of the palettes.
+/// The measure of the skinned parts: the parts, the bone matrices built, the bones and the
+/// skeletons (root parents) that are new in their frame, and the ticks of the palettes.
 #[derive(Default)]
 struct SkinMeasure {
     parts: u64,

@@ -1,7 +1,5 @@
 //! The diagnostic and test switches of the helper, read from the environment once: none of
-//! them is a setting. The A/B switches that kept the rule before a change (the draw order of
-//! step 3, the blends before F5, the flat shading) retired at the owner's review of
-//! checkpoint 4 (2026-10-18).
+//! them is a setting.
 
 use std::sync::OnceLock;
 
@@ -17,7 +15,7 @@ pub(crate) struct Switches {
     pub(crate) clusters: Option<bool>,
     /// `MGE_XE_DRAW_DUMP=<geometry handle, hex>`: the words of each draw of that geometry.
     pub(crate) draw_dump: u32,
-    /// `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (about 0.4 ms a frame).
+    /// `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
     pub(crate) gpu_time: bool,
     /// `MGE_XE_RUNS_DUMP=1`: the runs of the table of each frame.
     pub(crate) runs_dump: bool,
@@ -29,10 +27,10 @@ pub(crate) struct Switches {
     /// reference of a debug toggle.
     pub(crate) retained: bool,
     /// `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n (at least 256), for
-    /// the test of a full room (the owner's review of CP4, point 3).
+    /// the test of a full room.
     pub(crate) array_cap: Option<u32>,
     /// `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
-    /// guard of the device's limit (the owner's review of CP4, point 5).
+    /// guard of the device's limit.
     pub(crate) record_limit: Option<usize>,
 }
 

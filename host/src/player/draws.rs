@@ -60,8 +60,7 @@ impl Player {
             new_run = true;
         }
         renderer.counts.pipeline_runs += new_run as u32;
-        // `MGE_XE_RUNS_DUMP=1`: a line for each draw, for a study of the runs offline
-        // (plan 0.5 entry TD, step 4).
+        // `MGE_XE_RUNS_DUMP=1`: a line for each draw, for a study of the runs offline.
         if renderer.runs_dump {
             println!(
                 "run frame {} pipeline {:?} stencil {} world {} class {} scene {} blend {:?} depth {:?} textures {:?} samplers {:?} vertices {:?} indexes {:?} range {:?} instances {:?}",
@@ -292,10 +291,10 @@ impl Player {
         if hold {
             self.held_draws.push(Item::Draw(draw));
         } else if draw.world && self.plan.world_begun && engine::alpha::sorted_by_engine(class, &derived.blends, derived.no_sorter) && self.target.is_none() {
-            // A blend the engine would sort (plan step 6, F5): it waits for the sorted blends
-            // of the table, and the two lists merge by depth (`draw_retained_sorted`). The
-            // centre of its bound is the key; a record without one (a capture made before
-            // 2026-10-17) gives the translation of the draw.
+            // A blend the engine would sort: it waits for the sorted blends of the table, and
+            // the two lists merge by depth (`draw_retained_sorted`). The centre of its bound
+            // is the key; a record without one (an older capture) gives the translation of
+            // the draw.
             let centre = match self.stream.shape_bound {
                 Some(b) => [b[0], b[1], b[2]],
                 None => {

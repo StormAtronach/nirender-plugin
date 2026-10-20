@@ -1,5 +1,5 @@
-//! The retained instances of the plugin drawn from a table of the helper (plan 0.5 entry
-//! T4). An `INSTANCE` record with the flag 0x100 goes into the table: its world matrix and
+//! The retained instances of the plugin drawn from a table of the helper. An `INSTANCE`
+//! record with the flag 0x100 goes into the table: its world matrix and
 //! its bound, and the record of its draw (`DrawData`) made once from its material and its
 //! geometry, in a segment of the record buffer and of the instance buffer of the frame
 //! that stays from frame to frame. The plugin then sends no draw for it: a change of its
@@ -16,9 +16,6 @@
 //! instance has the flag 4 in `light_range.w`, and the shader takes those values from the
 //! scene instead of the record. The lights of an instance are indexes into a table of the
 //! lights the retained instances use (flag 8): a light that changes is written once.
-//!
-//! Not here yet: the cull on the GPU with a depth pyramid (the second part of T4), and
-//! instancing of the instances that share a geometry and a material.
 
 use super::*;
 
@@ -132,7 +129,7 @@ struct Slot {
     base_vertex: i32,
     visible: bool,
     /// The draw blends and the engine would sort it: the table draws it back to front with
-    /// the other sorted blends where the engine flushes its queue (plan step 6).
+    /// the other sorted blends where the engine flushes its queue.
     sorted: bool,
     /// The texture handles the slot pinned (`Renderer::pin_texture`), one use each: their
     /// uses go when the slot goes.
@@ -531,8 +528,7 @@ impl RetainedSet {
     /// use it.
     pub fn light_changed(&mut self, key: u32, values: &[u8]) {
         if let Some(&slot) = self.light_slot_of.get(&key) {
-            // In the space of the set, as the slot was made (a flickering light moved to its
-            // absolute position before, 2026-10-16).
+            // In the space of the set, as the slot was made.
             let origin = self.light_origin();
             self.light_values[slot as usize] = light_data(values, origin);
             self.light_dirty.push(slot);
@@ -664,7 +660,7 @@ pub fn light_data(l: &[u8], origin: Option<[f64; 3]>) -> LightData {
     }
 }
 
-/// What a view does with the sorted blends of the table (plan step 6).
+/// What a view does with the sorted blends of the table.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Sorted {
     /// Draws them after the rest, back to front: a reflection, a shadow map.
@@ -1079,8 +1075,7 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
 }
 
 impl RetainedSet {
-    /// The draws of a view in the order they go to the GPU, into `order`: the modern order
-    /// (the owner's decision of 2026-10-16).
+    /// The draws of a view in the order they go to the GPU, into `order`:
     /// 1. The buckets that do not blend and have no alpha test, front to back by their
     ///    nearest draw in view, and the draws of each front to back: the early depth test
     ///    then rejects the pixels behind what is drawn.
@@ -1095,7 +1090,7 @@ impl RetainedSet {
     /// near plane of the view less the radius, at least 0.
     /// 4. The blends the engine would sort, into `sorted_order`: back to front by the depth
     ///    of the bound centre along the view, as the engine's accumulator sorts them, ties
-    ///    by the order of the slots (plan step 6). A view draws them after the rest
+    ///    by the order of the slots. A view draws them after the rest
     ///    (`Sorted::Together`) or keeps them for the flush of the engine's queue
     ///    (`Sorted::Keep`, then `Only`).
     /// Engine-rules R3, R4, R20 (the skill wgpu-renderer-dev).
@@ -1505,7 +1500,7 @@ impl Player {
                         // The shade puts the fog of a draw on the distance from the camera
                         // (`fog.w`): the scene's fog takes it too, or a retained shape off the
                         // axis of the view gets less fog than the same shape on the engine's
-                        // path (the far red boxes of the NIF test level, 2026-10-16).
+                        // path.
                         scene.fog[3] = scene.fog[3].max(data.fog[3]);
                     } else {
                         let mut copies = self.retained.light_values.clone();
@@ -1545,8 +1540,8 @@ impl Player {
         self.forget_bound();
     }
 
-    /// Draws the sorted blends of the frame where the engine flushes its sorted queue (plan
-    /// step 6): the kept blends of the table and the blended draws of the engine's path that
+    /// Draws the sorted blends of the frame where the engine flushes its sorted queue: the
+    /// kept blends of the table and the blended draws of the engine's path that
     /// waited (`frame_sorted`), as one list back to front by the depth of the bound centre
     /// along the view. A run of the table's entries is one `draw_retained` call; a draw of
     /// the engine's path is issued between them.

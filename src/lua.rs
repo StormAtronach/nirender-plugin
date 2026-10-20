@@ -1,6 +1,6 @@
 //! The Lua interface. `include("akulakhan")` returns the table that `luaopen_akulakhan` builds
-//! (the DLL is akulakhan.dll since 2026-10-17); the mod's main.lua registers the table as the
-//! module `nirender` too, so `include("nirender")` keeps working after it ran.
+//! (the DLL is akulakhan.dll). The mod's main.lua registers the table as the module
+//! `nirender` too, so `include("nirender")` works after it ran.
 
 use core::ffi::{c_char, c_void};
 use core::sync::atomic::Ordering;
@@ -61,7 +61,7 @@ const UPVALUE_NAME: i32 = -10002 - 2;
 
 /// Every `nirender.*` function runs on the main thread only. MWSE fires some Lua events on the
 /// cell worker (`referenceSceneNodeCreated`), so a mod can call this table there; the plugin's
-/// state is the main thread's (the audit of 2026-10-20, item 1). Off the main thread
+/// state is the main thread's. Off the main thread
 /// `changed` is queued for the main thread's next frame, and every other function does
 /// nothing and returns no value (the first call of each name is logged).
 unsafe extern "C" fn main_thread_gate(l: LuaState) -> i32 {
@@ -344,8 +344,6 @@ unsafe extern "C" fn capture_end(_l: LuaState) -> i32 {
     0
 }
 
-/// `nirender.captureStatus()` returns the phase of the capture ("off", "warmup", "record",
-/// "done"), its records and its bytes, as one text.
 /// `nirender.nifShading([on])`: with a boolean, the shape's own shade, dither and specular
 /// properties (from its NIF) go into the material record instead of the engine's
 /// globals (experimental, off by default; a changed record is sent again). Returns the
@@ -359,7 +357,7 @@ unsafe extern "C" fn nif_shading(l: LuaState) -> i32 {
 }
 
 /// `nirender.animationPolicy([name])`: with a name (`view`, `shadows`, `all`) sets the
-/// policy of what animates when the plugin's table draws the world (plan F8). Returns
+/// policy of what animates when the plugin's table draws the world. Returns
 /// the name of the policy in force.
 unsafe extern "C" fn animation_policy(l: LuaState) -> i32 {
     if lua_gettop(l) >= 1 {
@@ -381,20 +379,22 @@ unsafe extern "C" fn instances_report(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.captureStatus()` returns the phase of the capture ("off", "warmup", "record",
+/// "done"), its records and its bytes, as one text.
 unsafe extern "C" fn capture_status(l: LuaState) -> i32 {
     push_str(l, &crate::capture::status());
     1
 }
 
-/// `nirender.changed(address)`: TEMPORARY, plan C17 (until MWSE notifies the changes of its
-/// Lua bindings): `notifier.lua` reports the address of an object a Lua mod changed.
+/// `nirender.changed(address)`: `notifier.lua` reports the address of an object a Lua mod
+/// changed. See `instance_stream::note_change`.
 unsafe extern "C" fn changed(l: LuaState) -> i32 {
     crate::instance_stream::note_change(lua_tonumber(l, 1) as u32 as usize);
     0
 }
 
-/// `nirender.noteEvery(on)`: note the material of every retained shape at every display
-/// (plan 8b, step 1); returns the state before; without an argument the state.
+/// `nirender.noteEvery(on)`: note the material of every retained shape at every display;
+/// returns the state before; without an argument the state.
 unsafe extern "C" fn note_every(l: LuaState) -> i32 {
     let before = crate::instance_stream::note_every();
     if lua_gettop(l) >= 1 {
@@ -413,8 +413,7 @@ unsafe extern "C" fn display_cost(l: LuaState) -> i32 {
 }
 
 /// `nirender.skinTable(on)`: the table draws the skinned shapes (the actors, the default) or
-/// the engine's display does (the path before the takeover's step 1); returns the state
-/// before; without an argument the state.
+/// the engine's display does; returns the state before; without an argument the state.
 unsafe extern "C" fn skin_table(l: LuaState) -> i32 {
     let before = crate::instance_stream::skin_table();
     if lua_gettop(l) >= 1 {
@@ -579,9 +578,8 @@ unsafe extern "C" fn fpu_control_word(l: LuaState) -> i32 {
 }
 
 /// `nirender.link()` returns ok and a message. It connects the ports to the host of the render
-/// link in the plugin.
-/// After that the plugin tells MGE XE the scene and the object of the device calls. Call
-/// `install` first.
+/// link in the plugin (`own_host`). After that the ports tell the host the scene and the
+/// object of the device calls. Call `install` first.
 unsafe extern "C" fn link(l: LuaState) -> i32 {
     let (ok, message) = match crate::link_client::connect() {
         Ok(message) => (true, message),
@@ -593,8 +591,8 @@ unsafe extern "C" fn link(l: LuaState) -> i32 {
     2
 }
 
-/// `nirender.linkCounters([reset])` returns the counters of MGE XE as text: for each fact,
-/// how many times the packet and the inference of MGE XE were equal or different.
+/// `nirender.linkCounters([reset])` returns the counters of the host as text: for each fact,
+/// how many times the packet and the inference of the host were equal or different.
 unsafe extern "C" fn link_counters(l: LuaState) -> i32 {
     let text = crate::link_client::counters_text(lua_toboolean(l, 1) != 0);
     crate::log!("link counters:\n{}", text);
@@ -602,9 +600,9 @@ unsafe extern "C" fn link_counters(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.linkUseFacts(mask)` returns the mask that MGE XE uses, or nil when MGE XE cannot
-/// use facts. Bit n of `mask` is fact n of the contract. MGE XE takes these facts from the
-/// packets and not from its inference.
+/// `nirender.linkUseFacts(mask)` returns the mask that the host uses, or nil when the host
+/// cannot use facts. Bit n of `mask` is fact n of the contract. The host takes these facts
+/// from the packets and not from its inference.
 unsafe extern "C" fn link_use_facts(l: LuaState) -> i32 {
     match crate::link_client::use_facts(lua_tonumber(l, 1) as u32) {
         Some(used) => {
@@ -617,7 +615,7 @@ unsafe extern "C" fn link_use_facts(l: LuaState) -> i32 {
 }
 
 /// `nirender.linkTextures(on)` sets the use of the link for new source textures. Returns
-/// false when MGE XE cannot make textures.
+/// false when the host cannot make textures.
 unsafe extern "C" fn link_textures(l: LuaState) -> i32 {
     let able = crate::link_client::set_link_textures(lua_toboolean(l, 1) != 0);
     lua_pushboolean(l, able as i32);
@@ -635,8 +633,8 @@ unsafe extern "C" fn camera_space_compare(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.linkUseKinds(mask)` tells MGE XE which more device kinds it has. Bit 0 is the
-/// frame and scene calls. Returns the mask that MGE XE uses, or nil.
+/// `nirender.linkUseKinds(mask)` tells the host which more device kinds it has. Bit 0 is the
+/// frame and scene calls. Returns the mask that the host uses, or nil.
 unsafe extern "C" fn link_use_kinds(l: LuaState) -> i32 {
     match crate::link_client::use_kinds(lua_tonumber(l, 1) as u32) {
         Some(used) => lua_pushnumber(l, used as f64),

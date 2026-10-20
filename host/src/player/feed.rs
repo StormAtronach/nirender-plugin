@@ -86,7 +86,7 @@ impl Player {
                 if data.len() >= 8 + count * 4 {
                     let keys: Vec<u32> = (0..count).map(|i| word(data, 8 + i * 4)).collect();
                     // The ambient light of the instance's own effect state follows the keys
-                    // (a plugin from before it sends none: the instance keeps the scene's).
+                    // (an older plugin sends none: the instance keeps the scene's).
                     let ambient = (data.len() >= 12 + count * 4).then(|| word(data, 8 + count * 4));
                     self.retained.set_lights(id, &keys, ambient, &self.renderer.lights_known);
                 }
@@ -199,7 +199,7 @@ impl Player {
             // The view and the projection of the camera (D3DTS_VIEW is 2 and
             // D3DTS_PROJECTION is 3). The draws of the game come as shape records and as
             // draws with their vertices, each with its own state; a command of another
-            // kind, in a capture from before, does nothing.
+            // kind, in an older capture, does nothing.
             tag::COMMAND => match word(data, 0) {
                 COMMAND_TRANSFORM if data.len() >= 16 + 64 => match word(data, 4) {
                     2 => self.stream.view = floats(data, 16),
@@ -342,7 +342,6 @@ impl Player {
         self.draw_shape(geometry, material, flags, core::array::from_fn(|i| float(data, 20 + i * 4)), &colours, effects.as_ref());
     }
 
-    /// An instance record: into the table, by its id.
     /// A geometry sent again under its handle (a morpher or a UV controller changed its
     /// vertices or its texture coordinates: a new revision of the same data object): the
     /// slots of the instances that draw it are made again, with the new ranges of the
@@ -357,6 +356,7 @@ impl Player {
         }
     }
 
+    /// An instance record: into the table, by its id.
     pub(crate) fn instance(&mut self, data: &[u8]) {
         let retained = Retained {
             class: word(data, 4),

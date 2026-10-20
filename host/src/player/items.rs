@@ -152,22 +152,16 @@ impl Player {
             });
             let mut ambient = color(known(shape.ambient, 0));
             let mut sun = sun;
-            // Since the cut (2026-10-17) the engine draws no shape of the world, so the shape
-            // record above is the last one the engine ever sent, with the sun and the ambient
-            // of that moment: the distant land kept the light of the hour of the load while
-            // the table's draws followed the day (the owner, 2026-10-18, the first batch with
-            // the hour running free). With the table on, the frame's `RETAINED_SCENE` record
-            // gives the ambient the plugin computed for this frame, and the light records
-            // give the sun: the directional light the plugin names as the sun (type 4), else
-            // the first directional light (type 3), with the values of this frame.
+            // With the table on, the engine draws no shape of the world, so the shape record
+            // above can be the last one it sent, with the sun and the ambient of that moment.
+            // The frame's `RETAINED_SCENE` record gives the ambient of this frame.
             if let Some((scene_ambient, _)) = self.retained_values {
                 ambient = color(known(scene_ambient, 0));
             }
             // The sun: the weather's sky light as the engine gives it to the device, sent by
-            // the plugin in the scene record (flag 64). A guess among the light records picked
-            // a constant white light instead (2026-10-18); the owner pointed at the world
-            // controller. Without the record (a plugin from before it) the sun stays that of
-            // the engine's last world draw.
+            // the plugin in the scene record (flag 64). Do not guess it from the light records.
+            // Without the record (an older plugin) the sun stays that of the engine's last
+            // world draw.
             {
                 if self.world_sun_logged < 4 {
                     self.world_sun_logged += 1;
@@ -189,10 +183,8 @@ impl Player {
             self.world_ambient = [ambient[0], ambient[1], ambient[2]];
         }
         // The fog of the world: the scene record's, which the plugin reads from the game's
-        // own fog property each frame (design D5, step 2, 2026-10-19); the fog states of the
-        // last draw with fog only without the record (a shape with a fog property of its
-        // own, drawn last, gave the post chain its fog). The fill mode is the last draw's
-        // (D3DFILL_WIREFRAME is 2).
+        // own fog property each frame. Only without the record: the fog states of the last
+        // draw with fog. The fill mode is the last draw's (D3DFILL_WIREFRAME is 2).
         let fog = self.retained_values.and_then(|(_, fog)| fog).unwrap_or(self.stream.fog);
         WorldFacts {
             target_size: self.size_of_target(),

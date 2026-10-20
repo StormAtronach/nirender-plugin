@@ -2,8 +2,7 @@
 //!
 //! The file has each command that the plugin sends to the host of the render link, and the
 //! bytes of each resource: the pixels of a texture and the contents of a vertex or index
-//! buffer. A renderer without the game can draw the frames of the file again. The file is
-//! the first draft of a stream between the game and a renderer in another process.
+//! buffer. A renderer without the game can draw the frames of the file again.
 //!
 //! A capture has two parts. In the first part, the warm-up, the module notes the geometry
 //! that the game draws. At the end of the warm-up it makes the renderer drop its textures
@@ -43,8 +42,7 @@ pub mod tag {
     /// the pixels.
     pub const TEXTURE: u32 = 1;
     /// handle, offset, size; then the bytes that the game wrote into a buffer of the device.
-    /// Not written since the helper draws from the records (step R7b); a capture from
-    /// before has it.
+    /// The plugin does not write it; an old capture file can hold it.
     pub const BUFFER_DATA: u32 = 2;
     /// A `MgeLinkSceneV1`.
     pub const SCENE_BEGIN: u32 = 3;
@@ -53,8 +51,8 @@ pub mod tag {
     pub const FRAME_EVENT: u32 = 5;
     /// The object of the draws that follow: kind, class, flags, geometry, then its name.
     pub const OBJECT: u32 = 6;
-    /// 7 was a `MgeLinkDrawStateV1` with its lights, the state of a draw of the device. Not
-    /// written since step R7b; a capture from before has it.
+    /// Tag 7 (a `MgeLinkDrawStateV1` with its lights) is not written; an old capture file
+    /// can hold it.
     ///
     /// command, a, b, c; then the data at an address: 16 floats for a transform. Only a
     /// transform is written (see `command`).
@@ -104,7 +102,7 @@ pub mod tag {
     /// coordinate index with its generation, the transform flags and the texture matrix
     /// (18 words each; zeros for an effect the draw does not have). With the flag `FOG`,
     /// after the effects come the fog of the draw: the colour, the start, the end and the
-    /// range fog flag (4 words). With the flag `BOUND` (0x400, since 2026-10-17) the last 16
+    /// range fog flag (4 words). With the flag `BOUND` (0x400) the last 16
     /// bytes of the record are the world bound of the shape (the centre and the radius),
     /// after everything else. A record with the flag `PARTICLES` is the draw of a
     /// particle system: the geometry handle is the key
@@ -179,11 +177,9 @@ extern "system" {
 /// One step of a wait for the host program. The thread answers the window messages that
 /// other threads sent to its windows, and then gives its time away.
 ///
-/// The host program makes its window inside the window of the game, and Windows then sends
-/// messages to the thread of the game and waits for the answers. A game thread that only
-/// sleeps while it waits for the host program stops the host program: each one then waits
-/// for the other. `PeekMessage` answers the sent messages; with these flags it takes no
-/// message out of the queue of the game.
+/// The host's window is a child of the game's window, so Windows sends messages to the game
+/// thread and waits for the answers. A wait that only sleeps makes a deadlock. With these
+/// flags `PeekMessage` answers the sent messages and takes no message out of the queue.
 unsafe fn wait_step() {
     // PM_NOREMOVE with PM_QS_SENDMESSAGE: QS_SENDMESSAGE (0x40) in the high word.
     let mut message = [0u32; 7];
@@ -249,7 +245,7 @@ const RING_CLOSED: usize = 24;
 /// written by the helper at each frame, read by the plugin (`helper_takes`).
 pub const RING_TAKES: usize = 32;
 /// The helper waits for a record (1 while it does): the game sets the event of the ring
-/// after a write only then (plan M5).
+/// after a write only then.
 const RING_WAITING: usize = 36;
 /// The reach of the helper's shadow map in units of the world (the bits of an f32; 0
 /// without shadows), for the animation policy of the plugin (`animation`).
@@ -354,15 +350,11 @@ impl Ring {
     }
 
     /// The end of a frame. The game waits here until the host program has read the frame
-    /// before this one: without the wait the game runs ahead when it is faster than the host
-    /// program, the ring fills with frames, and the picture is late by all of them. The mouse
-    /// pointer of a menu then follows the hand late.
+    /// before this one, so that the ring does not fill with frames and the picture is not late.
     ///
-    /// The wait ends only when the host program does not read at all for a short time: it
-    /// is not there yet, it is gone, or it is in one long step. The game then runs without
-    /// a wait until the host program reads again. A host program that reads, also a slow
-    /// one, keeps the game at its rate: after a long step the game waits until the host
-    /// program has read the frames that the game made in that time.
+    /// The wait ends early only when the host program does not read at all for 50 ms. The
+    /// game then runs without a wait until the host program reads again. A host program that
+    /// reads, also a slow one, keeps the game at its rate.
     unsafe fn pace(&mut self) {
         let start = ticks();
         let limit = ticks_per_second() / 20;
@@ -716,9 +708,7 @@ pub unsafe fn tee_end() {
 /// holds takes these between its frames, so that the resources of a recorded frame are in
 /// the file. The content of buffers and textures comes once, at the frames. The visibility
 /// and the deletion of a retained instance count too: the file has the instance from an
-/// earlier frame, and a release sends again only the instances the engine displays (a
-/// replay drew the far level of a level-of-detail node at the near stops of the NIF tour,
-/// 2026-10-16).
+/// earlier frame, and a release sends again only the instances the engine displays.
 /// Engine-rules R14 (the skill wgpu-renderer-dev).
 fn resource_record(tag: u32) -> bool {
     matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE)
@@ -1062,7 +1052,7 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
                 // Only the main thread ends the stream: `stop` walks the tables the main
                 // thread owns and unmaps the ring it reads. A writer on another thread (the
                 // engine's cell worker makes textures) asks, and the main thread stops at the
-                // end of its frame (the audit of the cell worker, Tier 1 finding 7).
+                // end of its frame.
                 if crate::shadow::on_main_thread() {
                     stop();
                 } else {
@@ -1195,11 +1185,11 @@ pub unsafe fn instance_state(id: u32, visible: bool) {
     write(tag::INSTANCE_STATE, &[words(&[id, visible as u32])]);
 }
 
-/// The values of the frame for the retained draws. See `tag::RETAINED_SCENE`.
 /// The flag of a `RETAINED_SCENE` record that carries the sun: the 26 words of the weather's
 /// sky light as the engine gives them to the device (`D3DLIGHT8`), after the fog.
 pub const SCENE_SUN: u32 = 64;
 
+/// The values of the frame for the retained draws. See `tag::RETAINED_SCENE`.
 pub unsafe fn retained_scene(ambient: u32, fog: Option<[u32; 4]>, sun: Option<&[u32; 26]>) {
     let _lock = crate::sync::device_lock();
     let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 } | if sun.is_some() { SCENE_SUN } else { 0 };
@@ -1343,11 +1333,11 @@ const WAIT_FOR_BACKGROUND_THREAD: usize = 0x48EB10;
 const RELEASE_BACKGROUND_THREAD: usize = 0x48EB60;
 
 /// The main thread runs a pending purge at a Present, outside the device lock and with the
-/// cell worker stalled. The purge walks the engine's texture list and the renderer's maps of
-/// geometry and skin partitions and frees through them; the worker appends to and frees from
-/// the same structures with no lock (the audit of 2026-10-20, item 2), and the worker can
-/// need the device lock before its stall point (item 3: the purge under the device lock and
-/// the stall would deadlock). Called by the link client after the Present's capture call.
+/// cell worker stalled. The purge frees through the engine's texture list and the
+/// renderer's maps of geometry and skin partitions, and the worker changes them with no
+/// lock. The worker can need the device lock before its stall point, so a stall taken under
+/// the device lock makes a deadlock. Called by the link client after the Present's capture
+/// call.
 pub unsafe fn run_pending_purge() {
     if !PURGE_PENDING.load(Ordering::Acquire) || !crate::shadow::on_main_thread() || crate::sync::device_lock_held_here() {
         return;
@@ -1377,11 +1367,9 @@ unsafe fn purge(s: &mut State) {
     }
     let (textures, kept) = crate::ports::textures::purge_source_textures();
     let rendered = crate::ports::rendered::remake_rendered_textures(renderer);
-    // All the buffers, not only those of the objects in view: the game can draw an object
-    // into a rendered texture one time and not again.
-    // Every buffer the renderer has, by the renderer's own maps. The objects kept from the
-    // warm-up (`s.geometry`) are not read: a kept pointer can be freed by now (the audit of
-    // the cell worker, Tier 1 finding 5).
+    // Every buffer the renderer has, by the renderer's own maps: the game can draw an object
+    // into a rendered texture one time and not again. Do not read the objects kept from the
+    // warm-up (`s.geometry`): the cell worker can have freed them.
     let (shapes, partitions) = crate::ports::geometry::purge_all_geometry(renderer);
     crate::log!("capture: the renderer dropped {textures} source textures, the buffers of {shapes} shapes and {partitions} skin partitions ({} objects were in view), and made {rendered} rendered textures again", s.geometry.len());
     if kept != 0 {

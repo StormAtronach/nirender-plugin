@@ -1,7 +1,5 @@
 //! The scheduling of the game on a hybrid processor: its main thread goes to the cores of
-//! the highest efficiency class. In some runs the scheduler gave the thread an efficiency
-//! core and the ports took twice their time. A processor with one class of cores gets no
-//! change. The priority of the process stays as the user or Windows set it.
+//! the highest efficiency class. A processor with one class of cores gets no change. The priority of the process stays as the user or Windows set it.
 //! `MGE_XE_CORES=0` in the environment leaves the scheduler alone. The helper program does
 //! the same for itself (`cores` in the renderer crate).
 

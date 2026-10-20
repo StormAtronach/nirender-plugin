@@ -1,14 +1,8 @@
-//! The display of the shapes, taken over 1:1 from the engine (plan 0.5 entry T2): the states,
-//! the accumulator, the controllers and the render call of the renderer for each kind of
-//! shape, and the destructor of a geometry. The display of a retained shape is skipped
-//! (`instance_stream::skipped_display`). The accumulators themselves (the register of a
-//! blended shape, the sort and the draw at the end) stay engine code: the ports call them.
-//!
-//! The traversal of the nodes is the engine's own code since 2026-10-20 (records entry 42):
-//! the ports of `NiAVObject::CullShow`, `NiNode::Display` and each kind of node,
-//! `NiBound::WhichSide` and `NiNode::IsVisualObject` were 1:1 copies kept for the cut of the
-//! engine's walk, and the cut is gone. They cost a dispatch on every node of every frame and
-//! more stack than the engine's code (the stack overflow of exhibit 060 ran out in them).
+//! The display of the shapes, ported 1:1 from the engine: the states, the accumulator, the
+//! controllers and the render call of the renderer for each kind of shape, and the destructor
+//! of a geometry. The display of a retained shape is skipped
+//! (`instance_stream::skipped_display`). The accumulators themselves stay engine code: the
+//! ports call them. The traversal of the nodes is the engine's own code.
 
 use crate::engine::{thiscall1, thiscall3, thiscall4, vcall0, vcall1, virtual_at};
 use crate::gen::layouts::{NiAVObject as AV, NiCamera as C, NiGeometry as G, NiGeometryData as GD, NiRenderer as R, NiTimeController as TC};
@@ -144,8 +138,8 @@ port_thiscall!(tri_shape_display_port, 0x6E4F90, "NiTriShape::Display",
 /// the shape's data, skin, world transform and world bound; and the counts of the frame.
 pub unsafe fn tri_shape_display(this: usize, camera: usize) {
     crate::shadow::touch(&tri_shape_display_port::STATE);
-    // A shape the helper draws from its table (plan 0.5 entry T5): the plugin notes its
-    // changes, and the engine does not display it.
+    // A shape the helper draws from its table: the plugin notes its changes, and the engine
+    // does not display it.
     if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(this, crate::link::DRAW_SHAPE) {
         return;
     }

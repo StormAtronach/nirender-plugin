@@ -2,14 +2,16 @@
 //!
 //! The plugin is the host of the render link: each call of the link ends here, and not on a
 //! Direct3D device. The game makes no call that gets to a D3D device: the commands go only
-//! into the stream of `capture`, and a renderer in another process draws them. (The
-//! `d3d8.dll` of MGE XE was the host on Direct3D 9 before; that host is gone.)
+//! into the stream of `capture`, and a renderer in another process draws them.
 //!
 //! The game holds pointers to its buffers, textures and surfaces and calls their methods.
 //! Other code in the process does that too, for example the skinning code of MGE XE. So each
 //! resource that this host makes is an object with a table of methods in the layout of
 //! Direct3D 8, and with memory of its own for a lock. A call of the link on a resource goes
-//! through the table of the object: an object that MGE XE made before the change works too.
+//! through the table of the object, so an object that Direct3D made before `take_over`
+//! works too.
+//!
+//! The objects and their counts change only under the device lock (`crate::sync`).
 //!
 //! The pixels of a target are in the other process. For a copy from a rendered texture or
 //! from the back buffer into a surface, and for a lock of the back buffer, this host asks
@@ -90,7 +92,7 @@ fn level_size(format: u32, width: u32, height: u32) -> (usize, u32) {
 static mut LIVE: Vec<usize> = Vec::new();
 
 /// True when `handle` is an object of this host that is still alive: a handle the plugin
-/// kept can have been released since (the audit of 2026-10-20, item 7).
+/// kept can have been released since.
 pub unsafe fn is_live(handle: usize) -> bool {
     let _lock = crate::sync::device_lock();
     handle != 0 && (*core::ptr::addr_of!(LIVE)).contains(&handle)
@@ -552,8 +554,8 @@ static BUFFER_TABLE: Table = Table::new(fill_buffer);
 static TEXTURE_TABLE: Table = Table::new(fill_texture);
 static SURFACE_TABLE: Table = Table::new(fill_surface);
 
-/// Calls method `index` of an object through its table. The object can be of this host or
-/// of Direct3D.
+/// The address of method `index` of an object, from its table. The object can be of this
+/// host or of Direct3D.
 unsafe fn method(object: u32, index: usize) -> usize {
     let table: usize = *(object as usize as *const usize);
     *((table + index * 4) as *const usize)

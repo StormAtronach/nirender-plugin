@@ -130,9 +130,8 @@ impl Clusters {
         let forced = crate::switches().clusters;
         Clusters {
             // On when the extension asks for them (`FrameParameters::clustered_lights`). With
-            // the masks the clusters give the picture of the lights of the draws; at Narsis by
-            // night (13 lights for a draw at most, before the retained instances) the GPU took
-            // the same time either way while the binning cost the helper 0.4 ms a frame.
+            // the masks the clusters give the picture of the lights of the draws. Off by
+            // default: the binning costs CPU time.
             on: forced.unwrap_or(false),
             forced,
             uniform: device.create_buffer(&wgpu::BufferDescriptor { label: Some("clusters"), size: core::mem::size_of::<ClusterData>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),

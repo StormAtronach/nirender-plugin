@@ -91,8 +91,8 @@ unsafe fn set_alpha_target() -> usize {
 }
 
 /// The call at `SET_ALPHA_SITE`. With the Code Patch option on, the target is
-/// `patchSetEffectState`: it takes the property from EDX and drops the stack argument, so the
-/// call gives it both, as the call site does. Without the option the target is
+/// `patchSetEffectState`. It takes the property from EDX and drops the stack argument. Thus
+/// the call gives it both, as the call site does. Without the option the target is
 /// `NiDX8RenderState::updateAlphaStates` (0x6B8480, a port too), a `__thiscall` with the
 /// property on the stack.
 unsafe fn set_alpha_state(render_state: usize, alpha_property: usize) {
@@ -566,11 +566,12 @@ unsafe fn direction(pipeline: usize, matrix: usize, translation: usize, stage: u
 pub const EFFECT_STAGE_WORDS: usize = 18;
 
 /// The stage of a texture effect as its coordinate callback makes it, for the shape record
-/// of the retained pipeline: the texture coordinate index with its generation, the transform
-/// flags, then the texture matrix. The callback writes into a stage of zeros, as a stage is
-/// after its constructor, with the pipeline of the renderer and its camera of the frame: the
-/// same values the pass of the device would set for the draw. Returns zeros when the effect
-/// gives no stage (off, or without a texture).
+/// of the retained pipeline. The words are the texture coordinate index with its generation,
+/// the transform flags, then the texture matrix. Not an engine function. The callback writes
+/// into a stage of zeros, as a stage is after its constructor. It uses the pipeline of the
+/// renderer and its camera of the frame. Thus the values are those that the pass of the
+/// device sets for the draw. Returns zeros when the effect gives no stage (off, or without a
+/// texture).
 pub unsafe fn effect_stage_words(renderer: usize, effect: usize) -> [u32; EFFECT_STAGE_WORDS] {
     let mut words = [0u32; EFFECT_STAGE_WORDS];
     if effect == 0 || rd::<u8>(effect, EFFECT_ENABLED) == 0 || rd::<usize>(effect, EFFECT_TEXTURE) == 0 {
@@ -604,14 +605,16 @@ pub unsafe fn effect_stage_words(renderer: usize, effect: usize) -> [u32; EFFECT
 pub const EFFECT_STATIC_WORDS: usize = 13;
 
 /// The values of a texture effect that do not change with the camera, for the material
-/// record: the 3x3 matrix and the translation of its world projection, then the transform
-/// flags its coordinate callback sets (2 for a parallel or a sphere map, those of the
-/// pipeline for a perspective map, 3 for a cube map). The stage of the effect for any camera
-/// is this matrix applied to a vector of the world (the position for the parallel and the
-/// perspective map, the reflection for the sphere and the specular cube map, the normal for
-/// the diffuse cube map) plus this translation: the camera matrix of the callbacks only turns
-/// the vector of camera space into one of the world. The table of the helper makes the stage
-/// of a retained draw from these words. Zeros when the effect gives no stage.
+/// record. Not an engine function. The words are the 3x3 matrix and the translation of the
+/// world projection, then the transform flags that the coordinate callback sets. The flags
+/// are 2 for a parallel or a sphere map, those of the pipeline for a perspective map, and 3
+/// for a cube map.
+///
+/// For any camera, the stage of the effect is this matrix times a world vector, plus this
+/// translation. The vector is the position (parallel and perspective map), the reflection
+/// (sphere and specular cube map) or the normal (diffuse cube map). The camera matrix of the
+/// callbacks only turns the camera-space vector into a world vector. The table of the helper
+/// makes the stage of a retained draw from these words. Zeros when the effect gives no stage.
 pub unsafe fn effect_static_words(renderer: usize, effect: usize) -> [u32; EFFECT_STATIC_WORDS] {
     let mut words = [0u32; EFFECT_STATIC_WORDS];
     if effect == 0 || rd::<u8>(effect, EFFECT_ENABLED) == 0 || rd::<usize>(effect, EFFECT_TEXTURE) == 0 {

@@ -1,11 +1,10 @@
 //! The time of the parts of the work, in ticks of the processor's counter.
 //!
-//! The accounting reads the time about 9 times for each draw and 4 times for each record
-//! (`Counts::times`). `Instant::now` costs about 25 ns on Windows: 0.9 ms of a 9 ms frame at
-//! 2500 draws (the profile of 2026-10-16, plan 0.5 entry TP). `rdtsc` costs a few ns, and
-//! the counter runs at a constant rate on the processors of the last fifteen years. The rate
-//! is not asked of the system: it is the ratio of the ticks to `Instant` since the first
-//! read, so a report made seconds later has it to better than 1 in 10000.
+//! The accounting reads the time many times for each draw and each record
+//! (`Counts::times`), so it uses `rdtsc` and not `Instant::now`, which costs much more. The
+//! counter runs at a constant rate on current processors. The rate is not asked of the
+//! system: it is the ratio of the ticks to `Instant` since the first read, so a report made
+//! seconds later has it to better than 1 in 10000.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};

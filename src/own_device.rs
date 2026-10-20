@@ -88,12 +88,9 @@ pub unsafe fn check_host() {
 }
 
 /// The D3DCAPS8 of the device of the testing computer (MGE XE on DXVK), from
-/// `nirender.dumpDevice`. The game makes the same choices with it as it made there, but for
-/// `MaxActiveLights` (word 40, byte 0xA0): 32 in place of 8. The engine gives a draw at most
-/// that many lights of its node; with the limit of a node raised to 32
-/// (`distant_land.expanded_light_limit`), 8 lights of the device cut the list and a light of
-/// the node could be lost to the ones before it. No limit of the Direct3D 8 era is kept (gaps
-/// plan 0.5, owner 2026-10-15); the renderer takes up to 64 lights of a draw.
+/// `nirender.dumpDevice`, so that the game makes the same choices as there. One change:
+/// `MaxActiveLights` (word 40, byte 0xA0) is 32, not 8. The engine gives a draw at most that
+/// many lights of its node, and a node can have 32 (`distant_land.expanded_light_limit`).
 const CAPS: [u32; 53] = [
     0x00000001, 0x00000000, 0x00020000, 0x200a0000, 0x00000420, 0x8000000f, 0x00000000, 0x001bbef0, 0x00000ef2, 0x00f37191,
     0x000000ff, 0x00001fff, 0x00001fff, 0x000000ff, 0x00084208, 0x0001ecc5, 0x03030700, 0x03030300, 0x03030300, 0x0000003f,
@@ -512,8 +509,8 @@ pub unsafe extern "C" fn nirender_direct3d_create8(_sdk_version: u32) -> usize {
 
 /// A handle this device keeps from a Set call, as a getter returns it: the handle while the
 /// own host has it alive, else 0. The device holds no count on what it keeps (unlike
-/// Direct3D 8), so the resource can have been released since; a count added through a
-/// released handle writes into freed memory (the audit of 2026-10-20, item 8).
+/// Direct3D 8), so the resource can have been released since. A count added through a
+/// released handle writes into freed memory.
 unsafe fn held(object: u32) -> u32 {
     if object != 0 && crate::own_host::is_live(object as usize) {
         object
@@ -522,7 +519,7 @@ unsafe fn held(object: u32) -> u32 {
     }
 }
 
-/// A call on a resource through its method table.
+/// Adds a reference to a resource through its method table (`AddRef`, slot 1).
 unsafe fn resource_add_reference(object: u32) {
     if object != 0 {
         let table: usize = *(object as usize as *const usize);
