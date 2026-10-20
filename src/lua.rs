@@ -27,6 +27,8 @@ extern "C" {
     fn lua_gettop(l: LuaState) -> i32;
     fn lua_tolstring(l: LuaState, index: i32, len: *mut usize) -> *const c_char;
     fn lua_rawseti(l: LuaState, index: i32, n: i32);
+    fn lua_pushlightuserdata(l: LuaState, p: *mut c_void);
+    fn lua_touserdata(l: LuaState, index: i32) -> *mut c_void;
 }
 
 unsafe fn push_str(l: LuaState, text: &str) {
@@ -43,10 +45,43 @@ unsafe fn arg_str(l: LuaState, index: i32) -> Option<String> {
     }
 }
 
+/// Registers `f` behind `main_thread_gate`: the function and its name are the closure's two
+/// upvalues.
 unsafe fn set_fn(l: LuaState, name: &str, f: LuaFn) {
     let key = CString::new(name).unwrap();
-    lua_pushcclosure(l, f, 0);
+    lua_pushlightuserdata(l, f as *mut c_void);
+    push_str(l, name);
+    lua_pushcclosure(l, main_thread_gate, 2);
     lua_setfield(l, -2, key.as_ptr());
+}
+
+/// The pseudo-indexes of a C closure's upvalues (LuaJIT: `LUA_GLOBALSINDEX - i`).
+const UPVALUE_FUNCTION: i32 = -10002 - 1;
+const UPVALUE_NAME: i32 = -10002 - 2;
+
+/// Every `nirender.*` function runs on the main thread only. MWSE fires some Lua events on the
+/// cell worker (`referenceSceneNodeCreated`), so a mod can call this table there; the plugin's
+/// state is the main thread's (the audit of 2026-10-20, item 1). Off the main thread
+/// `changed` is queued for the main thread's next frame, and every other function does
+/// nothing and returns no value (the first call of each name is logged).
+unsafe extern "C" fn main_thread_gate(l: LuaState) -> i32 {
+    let f: LuaFn = core::mem::transmute(lua_touserdata(l, UPVALUE_FUNCTION));
+    if crate::shadow::on_main_thread() {
+        return f(l);
+    }
+    if f as usize == changed as LuaFn as usize {
+        crate::instance_stream::queue_change(lua_tonumber(l, 1) as u32 as usize);
+        return 0;
+    }
+    let name = arg_str(l, UPVALUE_NAME).unwrap_or_default();
+    static REFUSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    if let Ok(mut refused) = REFUSED.lock() {
+        if !refused.contains(&name) {
+            crate::log!("lua: nirender.{name} called on thread {} (not the main thread): refused", crate::win::GetCurrentThreadId());
+            refused.push(name);
+        }
+    }
+    0
 }
 
 /// `nirender.install([logPath])` returns ok and a message. It puts the recorder on the device

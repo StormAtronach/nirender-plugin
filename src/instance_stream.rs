@@ -617,6 +617,12 @@ pub unsafe fn begin_draw() {
 /// The end of a frame.
 pub unsafe fn frame_tick() {
     crate::worker_events::drain();
+    // The change notes that Lua made on another thread (MWSE fires some events on the cell
+    // worker): the main thread applies them here.
+    let queued = OFF_THREAD_CHANGES.lock().map(|mut q| core::mem::take(&mut *q)).unwrap_or_default();
+    for address in queued {
+        note_change(address);
+    }
     apply_changes();
     let t = tables();
     t.frame = t.frame.wrapping_add(1);
@@ -1174,8 +1180,21 @@ static mut RECHECKS: [u64; 6] = [0; 6];
 /// the notes received and the scans of the table they caused.
 static mut CHANGED: Option<HashSet<usize>> = None;
 static mut CHANGE_NOTES: [u64; 3] = [0; 3];
+/// The change notes made on another thread, for the main thread's next `frame_tick`.
+static OFF_THREAD_CHANGES: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// A change note from a thread that is not the main thread (a Lua handler of an event that
+/// MWSE fires on the cell worker): queued, never applied here.
+pub fn queue_change(address: usize) {
+    if address != 0 {
+        if let Ok(mut queue) = OFF_THREAD_CHANGES.lock() {
+            queue.push(address);
+        }
+    }
+}
 
 /// A Lua mod changed the object at `address` (a shape, a property, a controller's target).
+/// The main thread only: other threads use `queue_change`.
 pub unsafe fn note_change(address: usize) {
     if address == 0 {
         return;
