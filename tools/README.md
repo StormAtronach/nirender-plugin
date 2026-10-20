@@ -21,7 +21,7 @@ shared modules (`common.py`, `session.py`) by its own folder; a tool in a subfol
 | `run_own_device.py` | The game without a Direct3D device: the `d3d8.dll` of this repo takes the place of MGE XE's, and the host program draws the frames. The runner of every test of the wgpu renderer. |
 | `run_capture.py` | A capture of the render link stream in the game. |
 | `run_life.py` | The game with the plugin as the host of its own link, and the things that need more than draws: the character image, the screenshot, a save with its picture, changes of cell, a load. |
-| `play.py` | A game of the testing instance to play by hand, with the wgpu renderer of a build of MGE XE; the files of the instance go back when the game ends. |
+| `play.py` | A game to play by hand, with the wgpu renderer of a build of MGE XE; the files of the instance go back when the game ends. The testing instance, or another with `--instance`, `--game-dir`, `--profile` and `--config-mod` (`play-manual-check-outlander.bat` at the repo root plays in Outlander-test). `--stage-only` checks the staging without a game. |
 | `live.py` | A live game of the testing instance, started and stopped for work through the mwse-mcp tools. |
 | `own_device.py` | The testing instance put into the mode without a Direct3D device, for a game by hand, and taken out again. |
 | `release.py` | A test build release on GitHub (the archive of `cargo xtask dist` of MGE XE G7), and the removal of the releases before it. |

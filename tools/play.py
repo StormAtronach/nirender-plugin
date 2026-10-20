@@ -2,13 +2,21 @@
 MGE XE, and puts the files of the instance back when the game ends.
 
     python tools/play.py [--mge-build DIR] [--reference] [--set "[section] key = value"]
-                         [--plugin] [--livecoding FILE]
+                         [--plugin] [--livecoding FILE] [--stage-only]
+                         [--instance DIR --game-dir DIR --profile NAME --config-mod NAME]
 
 The testing instance at rest has the release of MGE XE and of the plugin. This tool does for a
 game by hand what the runners do for a scenario: the mod "Harness - MGE XE" with the d3d8.dll
 and the numidium.exe of the build, and "Harness - config" with mgeXE.toml with the switch
 `renderer_wgpu`, both on for this game only, over the mods of the instance. With --reference:
 MGE XE of the instance on Direct3D 9.
+
+--instance runs the game in another Mod Organizer instance, with --game-dir its game folder,
+--profile its profile and --config-mod the mod that holds its mgeXE.toml. Outlander-test:
+`--instance D:/Modlists/Outlander-test --game-dir "D:/Modlists/Outlander-test/Stock Game Folder"
+--profile Outlander --config-mod "MGE XE G7"` (play-manual-check-outlander.bat has them).
+--stage-only puts the mods in place, prints them, and takes them out again without a game: a
+check of the staging in an instance.
 
 --plugin puts the plugin build of this repo (target/.../release/akulakhan.dll and the Lua of
 mod/) into "Harness - nirender" for the game, over the release of the instance.
@@ -31,6 +39,8 @@ import session  # noqa: F401  (puts the harness on the path)
 import harness
 
 MGE_BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "MGE-XE-G7-render-link", "bin", "MSVC-Release")
+# The testing instance, for files that another instance lacks (the Livecoding mod).
+TESTING_INSTANCE = harness.MO2_ROOT
 
 
 def main():
@@ -41,8 +51,14 @@ def main():
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for this game, in its section: \"[section] key = value\"")
     ap.add_argument("--plugin", action="store_true", help="the plugin build of this repo, over the release of the instance")
     ap.add_argument("--livecoding", help="a Lua file to run as the livecoding.lua of the Livecoding mod (Alt+X)")
+    ap.add_argument("--instance", help="the folder of another Mod Organizer instance to play in, and not the testing instance")
+    ap.add_argument("--game-dir", help="with --instance: the game folder of that instance")
+    ap.add_argument("--profile", default="Default", help="with --instance: its profile")
+    ap.add_argument("--stage-only", action="store_true", help="stage the mods, print them, take them out again; no game")
     args = ap.parse_args()
 
+    if args.instance:
+        session.use_instance(args.instance, args.game_dir, args.profile)
     harness.refuse_if_busy()
     toml = os.path.join(harness.MO2_ROOT, "mods", args.config_mod, "Root", "mgeXE.toml")
     lines = [line for line in open(toml, encoding="utf-8").read().splitlines() if not line.strip().startswith("renderer_wgpu")]
@@ -90,7 +106,12 @@ def main():
             if os.path.isfile(pdb):
                 files["MWSE/lib/akulakhan.pdb"] = pdb
         if args.livecoding:
+            # The main.lua of the Livecoding mod: the instance's own, or the testing
+            # instance's copy for an instance without the mod (Outlander-test has none).
             main = os.path.join(harness.MO2_ROOT, "mods", "Livecoding", "MWSE", "mods", "livecoding", "main.lua")
+            if not os.path.isfile(main):
+                main = os.path.join(TESTING_INSTANCE, "mods", "Livecoding", "MWSE", "mods", "livecoding", "main.lua")
+                print("the instance has no Livecoding mod: its main.lua comes from the testing instance")
             files["MWSE/mods/livecoding/main.lua"] = main
             files["MWSE/mods/livecoding/livecoding.lua"] = os.path.abspath(args.livecoding)
         mods.append((session.MOD_NAME, files))
@@ -98,6 +119,9 @@ def main():
     try:
         for name, files in mods:
             deployment.use_mod(name, files)
+        if args.stage_only:
+            print("staged in %s for the profile %s; no game (--stage-only)" % (harness.MO2_ROOT, os.path.basename(harness.PROFILE)))
+            return 0
         subprocess.Popen(harness.launch_command(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print("starting the game", flush=True)
         deadline = time.time() + 180
@@ -116,7 +140,7 @@ def main():
         if os.path.isfile(switched):
             os.remove(switched)
         os.rmdir(os.path.dirname(switched))
-        print("the mod list of the testing instance is back")
+        print("the mod list of the instance is back")
     return 0
 
 

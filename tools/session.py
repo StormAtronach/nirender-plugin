@@ -31,6 +31,23 @@ SPEC_NAME = "nirender_test"
 MGE_LOGS = (os.path.join(harness.GAME_DIR, "mgeXE.log"), os.path.join(harness.MO2_ROOT, "overwrite", "Root", "mgeXE.log"))
 
 
+def use_instance(instance, game_dir=None, profile="Default"):
+    """Points the harness at another Mod Organizer instance for this process: its folder, its
+    game folder and its profile. The harness has the places of the testing instance built in;
+    they become those of this one. A runner calls this before it touches the instance."""
+    global MGE_LOGS
+    harness.MO2_ROOT = instance
+    harness.MO2_EXE = os.path.join(instance, "ModOrganizer.exe")
+    harness.PROFILE = os.path.join(instance, "profiles", profile)
+    harness.MOD_DIR = os.path.join(instance, "mods", harness.MOD_NAME)
+    harness.SPEC_DIR = os.path.join(harness.MOD_DIR, "MWSE", "config")
+    harness.GAME_DIR = game_dir or harness.GAME_DIR
+    harness.MWSE_LOGS = (os.path.join(instance, "overwrite", "Root", "MWSE.log"), os.path.join(harness.GAME_DIR, "MWSE.log"))
+    harness.WARNINGS = (os.path.join(instance, "overwrite", "Root", "Warnings.txt"), os.path.join(harness.GAME_DIR, "Warnings.txt"))
+    harness.ROOT_BUILDER_DATA = os.path.join(instance, "plugins", "data", "RootBuilder")
+    MGE_LOGS = (os.path.join(harness.GAME_DIR, "mgeXE.log"), os.path.join(instance, "overwrite", "Root", "mgeXE.log"))
+
+
 def prepare(build=True, features=()):
     """Builds the plugin, runs the offline tests and installs the mod into the testing instance.
 
