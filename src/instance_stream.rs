@@ -150,7 +150,11 @@ struct Instance {
     /// The colours of the material, as the shape record has them.
     colours: [u32; 14],
     /// The world bound of the shape: the centre and the radius, and its world transform.
+    /// Zero for a skinned instance: its bound changes with each pose.
     bound: [f32; 4],
+    /// The posed world bound of a skinned instance at its last bones (`send_bones`): the
+    /// bound the engine culls the shape by (0x6F4160, 0x6D1250). `scene_end` tests it.
+    posed_bound: [f32; 4],
     transform: [u32; TRANSFORM_WORDS],
     /// The keys of the lights the helper has for the instance (mode gpu), and the ambient
     /// light of its own effect state at the last lights record.
@@ -409,7 +413,7 @@ pub unsafe fn scene_end() {
         if !instance.filled || !instance.visible || instance.drawn == frame {
             continue;
         }
-        let bound = instance.bound.as_ptr() as usize;
+        let bound = if instance.skinned { instance.posed_bound.as_ptr() } else { instance.bound.as_ptr() } as usize;
         let in_view = planes.iter().all(|&plane| thiscall1(WHICH_SIDE, bound, plane as u32) != 2);
         if in_view {
             instance.visible = false;
@@ -465,8 +469,12 @@ unsafe fn send_bones(shape: usize, id: u32) -> bool {
     let t = tables();
     let sent = match result {
         Ok(count) => {
-            capture::instance_bones(id, count, &rd(shape, WORLD_BOUND), &bones);
+            let posed: [f32; 4] = rd(shape, WORLD_BOUND);
+            capture::instance_bones(id, count, &posed, &bones);
             t.bone_records += 1;
+            if let Some(instance) = t.instances.get_mut(&shape) {
+                instance.posed_bound = posed;
+            }
             true
         }
         Err(why) => {
@@ -595,7 +603,7 @@ pub unsafe fn consider(shape: usize, eligible: bool, skinned: bool, class: u32, 
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS] });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS] });
     t.pending = Some((shape, id));
 }
 
