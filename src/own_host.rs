@@ -89,6 +89,13 @@ fn level_size(format: u32, width: u32, height: u32) -> (usize, u32) {
 /// The resources that are alive, for a snapshot. Under the device lock.
 static mut LIVE: Vec<usize> = Vec::new();
 
+/// True when `handle` is an object of this host that is still alive: a handle the plugin
+/// kept can have been released since (the audit of 2026-10-20, item 7).
+pub unsafe fn is_live(handle: usize) -> bool {
+    let _lock = crate::sync::device_lock();
+    handle != 0 && (*core::ptr::addr_of!(LIVE)).contains(&handle)
+}
+
 /// Writes each resource that is alive into the capture: its creation and its bytes. For a
 /// capture file that starts in the middle of a stream. A texture whose pixels came from the
 /// pixel data of the game (the port of the texture loader writes them, with no lock) has no

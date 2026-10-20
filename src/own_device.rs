@@ -510,6 +510,18 @@ pub unsafe extern "C" fn nirender_direct3d_create8(_sdk_version: u32) -> usize {
 
 // ---- IDirect3DDevice8
 
+/// A handle this device keeps from a Set call, as a getter returns it: the handle while the
+/// own host has it alive, else 0. The device holds no count on what it keeps (unlike
+/// Direct3D 8), so the resource can have been released since; a count added through a
+/// released handle writes into freed memory (the audit of 2026-10-20, item 8).
+unsafe fn held(object: u32) -> u32 {
+    if object != 0 && crate::own_host::is_live(object as usize) {
+        object
+    } else {
+        0
+    }
+}
+
 /// A call on a resource through its method table.
 unsafe fn resource_add_reference(object: u32) {
     if object != 0 {
@@ -580,9 +592,10 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
         }
         32 => {
             // GetRenderTarget
-            if s.render_target != 0 {
-                resource_add_reference(s.render_target);
-                put(a[0], &[s.render_target])
+            let target = held(s.render_target);
+            if target != 0 {
+                resource_add_reference(target);
+                put(a[0], &[target])
             } else {
                 call(CALL_GET_RENDER_TARGET, a)
             }
@@ -645,7 +658,7 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
         59 => put(a[0], &[0, 0]),
         60 => {
             // GetTexture(stage, address)
-            let texture = s.textures.get(a[0] as usize).copied().unwrap_or(0);
+            let texture = held(s.textures.get(a[0] as usize).copied().unwrap_or(0));
             resource_add_reference(texture);
             put(a[1], &[texture])
         }
@@ -705,8 +718,9 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
             OK
         }
         84 => {
-            resource_add_reference(s.stream.0);
-            put(a[1], &[s.stream.0]);
+            let stream = held(s.stream.0);
+            resource_add_reference(stream);
+            put(a[1], &[stream]);
             put(a[2], &[s.stream.1])
         }
         85 => {
@@ -715,8 +729,9 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
             OK
         }
         86 => {
-            resource_add_reference(s.indices.0);
-            put(a[0], &[s.indices.0]);
+            let indices = held(s.indices.0);
+            resource_add_reference(indices);
+            put(a[0], &[indices]);
             put(a[1], &[s.indices.1])
         }
         89 => put(a[0], &[0]),

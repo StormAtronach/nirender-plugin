@@ -758,10 +758,20 @@ unsafe fn resync(kinds: u32) {
             }
         }
     }
+    // The kept texture and buffer handles go to the device again only when the own host
+    // still has them alive: while the host took these kinds nothing held them, and the game
+    // or the cell worker can have released them (the audit of 2026-10-20, item 7). A handle
+    // that is gone is forgotten; the game's next draw sets what it needs.
+    let live = |handle: u32| crate::own_host::active() && crate::own_host::is_live(handle as usize);
     if kinds >> FACT_DEVICE_TEXTURES & 1 != 0 {
         for stage in 0..STATE_STAGES {
             if *addr_of!(TEXTURES_KNOWN) >> stage & 1 != 0 {
-                crate::d3d::device_set_texture(device, stage, (*addr_of!(TEXTURES))[stage as usize] as usize);
+                let texture = (*addr_of!(TEXTURES))[stage as usize];
+                if live(texture) {
+                    crate::d3d::device_set_texture(device, stage, texture as usize);
+                } else {
+                    *addr_of_mut!(TEXTURES_KNOWN) &= !(1 << stage);
+                }
             }
         }
     }
@@ -799,12 +809,16 @@ unsafe fn resync(kinds: u32) {
     }
     if kinds >> FACT_DEVICE_BUFFERS & 1 != 0 {
         let buffers = *addr_of!(BUFFERS);
-        if buffers[0] != 0 {
+        if buffers[0] != 0 && live(buffers[0]) {
             crate::d3d::device_set_stream_source(device, 0, buffers[0] as usize, buffers[1]);
             crate::d3d::device_set_vertex_shader(device, rd(render_state, RS::currentVertexShader));
+        } else {
+            (*addr_of_mut!(BUFFERS))[0] = 0;
         }
-        if buffers[3] != 0 {
+        if buffers[3] != 0 && live(buffers[3]) {
             crate::d3d::device_set_indices(device, buffers[3] as usize, buffers[4]);
+        } else {
+            (*addr_of_mut!(BUFFERS))[3] = 0;
         }
     }
 }
