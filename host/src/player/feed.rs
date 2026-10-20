@@ -7,6 +7,12 @@ impl Player {
     /// Does one record. Returns true for the record that ends a frame.
     /// Engine-rules R19, R22 (the skill wgpu-renderer-dev).
     pub(crate) fn feed(&mut self, tag: u32, data: &[u8]) -> bool {
+        // A record shorter than its fixed part is not read past its end: it is skipped and
+        // counted. The reads below of a record's variable part have their own checks.
+        if data.len() < tag::least_length(tag) {
+            self.renderer.counts.short_records += 1;
+            return false;
+        }
         match tag {
             tag::HEADER => {
                 self.size = (word(data, 0), word(data, 4));

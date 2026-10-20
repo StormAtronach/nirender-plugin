@@ -1126,10 +1126,7 @@ impl RetainedSet {
                 sequence += 1;
                 if s.sorted {
                     self.counts.sorted += 1;
-                    // The far draw first: the bits of the depth inverted; ties by the creation
-                    // order of the instances, as the engine's accumulator registered them.
-                    let key = (!centre.max(0.0).to_bits() as u64) << 32 | s.id as u64;
-                    self.sorted_order.push((key, b as u32, sequence, slot));
+                    self.sorted_order.push((sorted_key(centre, s.id), b as u32, sequence, slot));
                     continue;
                 }
                 let depth = (centre - s.bound[3]).max(0.0);
@@ -1147,11 +1144,7 @@ impl RetainedSet {
         }
         for entry in &mut self.order {
             let (depth, group) = self.bucket_depth[entry.1 as usize];
-            entry.0 = if group == 2 {
-                2 << 32 | entry.1 as u64
-            } else {
-                (group as u64) << 32 | depth.to_bits() as u64
-            };
+            entry.0 = bucket_key(group, entry.1, depth);
         }
         self.order.sort_unstable();
         self.sorted_order.sort_unstable();
@@ -1604,6 +1597,24 @@ impl Player {
     }
 }
 
+/// The key of a sorted blend of the table: the far draw first (the bits of the depth of the
+/// bound centre inverted; a depth below 0 counts as 0), ties by the id of the instance, the
+/// order in which the engine's accumulator registered them.
+fn sorted_key(centre: f32, id: u32) -> u64 {
+    (!centre.max(0.0).to_bits() as u64) << 32 | id as u64
+}
+
+/// The key of a bucket of the other draws: the groups in order (0 no blend and no alpha test,
+/// 1 an alpha test, 2 a blend out of the sort), the first two front to back by the depth of
+/// their nearest draw, the blends in the order of their buckets.
+fn bucket_key(group: u8, bucket: u32, depth: f32) -> u64 {
+    if group == 2 {
+        2 << 32 | bucket as u64
+    } else {
+        (group as u64) << 32 | depth.to_bits() as u64
+    }
+}
+
 /// One step of the sorted blends: a run of the table's entries, or one draw of the engine's
 /// path.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1676,6 +1687,159 @@ mod merge_tests {
                 Pick::Engine(3)
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    #[test]
+    fn a_farther_sorted_blend_has_the_smaller_key() {
+        assert!(sorted_key(100.0, 1) < sorted_key(10.0, 1));
+        assert!(sorted_key(10.0, 1) < sorted_key(0.0, 1));
+        // A depth below 0 counts as 0.
+        assert_eq!(sorted_key(-5.0, 1), sorted_key(0.0, 1));
+    }
+
+    #[test]
+    fn sorted_blends_at_one_depth_keep_the_order_of_their_ids() {
+        assert!(sorted_key(10.0, 1) < sorted_key(10.0, 2));
+        assert!(sorted_key(10.0, 2) < sorted_key(10.0, 300));
+    }
+
+    #[test]
+    fn the_groups_of_the_buckets_come_in_order() {
+        let opaque = bucket_key(0, 5, 1000.0);
+        let alpha_test = bucket_key(1, 3, 1.0);
+        let blend = bucket_key(2, 0, 0.0);
+        assert!(opaque < alpha_test && alpha_test < blend);
+    }
+
+    #[test]
+    fn the_opaque_buckets_go_front_to_back_and_the_blends_by_bucket() {
+        assert!(bucket_key(0, 9, 1.0) < bucket_key(0, 2, 50.0));
+        assert!(bucket_key(1, 9, 1.0) < bucket_key(1, 2, 50.0));
+        assert!(bucket_key(2, 2, 50.0) < bucket_key(2, 9, 1.0));
+    }
+
+    const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+
+    #[test]
+    fn the_identity_view_is_the_unit_box_in_front_of_the_near_plane() {
+        // The planes of the identity: x and y from -1 to 1, z from 0 to 1.
+        let planes = frustum_planes(&IDENTITY);
+        assert!(in_view(&[0.0, 0.0, 0.5, 0.1], &planes));
+        assert!(!in_view(&[3.0, 0.0, 0.5, 0.1], &planes));
+        assert!(!in_view(&[0.0, 0.0, -0.5, 0.1], &planes));
+        assert!(!in_view(&[0.0, 0.0, 1.5, 0.1], &planes));
+    }
+
+    #[test]
+    fn a_bound_that_crosses_a_plane_is_in_view() {
+        let planes = frustum_planes(&IDENTITY);
+        assert!(in_view(&[1.05, 0.0, 0.5, 0.1], &planes));
+        assert!(in_view(&[0.0, 0.0, -0.05, 0.1], &planes));
+        assert!(!in_view(&[1.2, 0.0, 0.5, 0.1], &planes));
+    }
+
+    #[test]
+    fn the_planes_have_unit_normals() {
+        let projection = [1.5, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.001, 1.0, 0.0, 0.0, -1.001, 0.0];
+        for plane in frustum_planes(&projection) {
+            let length = (plane[0] * plane[0] + plane[1] * plane[1] + plane[2] * plane[2]).sqrt();
+            assert!((length - 1.0).abs() < 1e-5, "{plane:?}");
+        }
+    }
+
+    #[test]
+    fn the_kind_of_a_slot_names_its_blend_form_and_its_depth_write() {
+        assert_eq!(slot_kind([0, 0, 0], false), 0);
+        assert_eq!(slot_kind([0, 5, 6], true), 1);
+        assert_eq!(slot_kind([1, 5, 6], false), 2);
+        assert_eq!(slot_kind([1, 5, 6], true), 3);
+        assert_eq!(slot_kind([1, 2, 6], false), 4);
+        assert_eq!(slot_kind([1, 2, 2], true), 7);
+        assert_eq!(slot_kind([1, 5, 2], false), 6);
+    }
+
+    fn light_words() -> Vec<u8> {
+        // A `D3DLIGHT8`: the type, the diffuse, the specular, the ambient, the position, the
+        // direction, the range, the falloff, the attenuation, theta, phi.
+        let mut words = [0u32; 26];
+        words[0] = 1;
+        for (i, value) in [0.5f32, 0.25, 0.125, 1.0].iter().enumerate() {
+            words[1 + i] = value.to_bits();
+        }
+        words[5] = 256.0f32.to_bits();
+        for (i, value) in [0.1f32, 0.2, 0.3, 1.0].iter().enumerate() {
+            words[9 + i] = value.to_bits();
+        }
+        for (i, value) in [10.0f32, 20.0, 30.0].iter().enumerate() {
+            words[13 + i] = value.to_bits();
+        }
+        for (i, value) in [0.0f32, 0.0, -1.0].iter().enumerate() {
+            words[16 + i] = value.to_bits();
+        }
+        words[19] = 512.0f32.to_bits();
+        words[20] = 2.0f32.to_bits();
+        for (i, value) in [1.0f32, 0.01, 0.0].iter().enumerate() {
+            words[21 + i] = value.to_bits();
+        }
+        words[24] = 1.0f32.to_bits();
+        words[25] = 2.0f32.to_bits();
+        words.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn a_light_record_becomes_the_light_of_the_shader() {
+        let light = light_data(&light_words(), None);
+        assert_eq!(light.diffuse, [0.5, 0.25, 0.125, 1.0]);
+        assert_eq!(light.ambient, [0.1, 0.2, 0.3, 1.0]);
+        assert_eq!(light.position, [10.0, 20.0, 30.0, 1.0]);
+        assert_eq!(light.direction, [0.0, 0.0, -1.0, 512.0]);
+        assert_eq!(light.attenuation, [1.0, 0.01, 0.0, 2.0]);
+        assert!((light.cone[0] - 0.5f32.cos()).abs() < 1e-6 && (light.cone[1] - 1.0f32.cos()).abs() < 1e-6);
+        assert_eq!(light.cone[2], 256.0);
+    }
+
+    #[test]
+    fn the_position_of_a_light_is_relative_to_the_origin() {
+        let light = light_data(&light_words(), Some([1.0, 2.0, 3.0]));
+        assert_eq!(light.position, [9.0, 18.0, 27.0, 1.0]);
+    }
+
+    fn retained(flags: u32) -> Retained {
+        Retained {
+            class: 0,
+            flags,
+            geometry: 0,
+            material: 0,
+            rotation: [1.0, 2.0, 3.0, 0.0, 4.0, 5.0, 6.0, 0.0, 7.0, 8.0, 9.0, 0.0],
+            exact: [100.5, 200.25, 300.125],
+            stored: [100.0, 200.0, 300.0],
+            colours: [0.0; 14],
+            bound: [0.0; 4],
+        }
+    }
+
+    #[test]
+    fn a_relative_instance_takes_its_exact_translation_less_the_origin() {
+        let world = retained(1).world_at(&[100.0, 200.0, 300.0]);
+        assert_eq!(&world[..12], &[1.0, 2.0, 3.0, 0.0, 4.0, 5.0, 6.0, 0.0, 7.0, 8.0, 9.0, 0.0]);
+        assert_eq!(&world[12..], &[0.5, 0.25, 0.125, 1.0]);
+    }
+
+    #[test]
+    fn an_instance_that_is_not_relative_takes_the_stored_translation() {
+        assert_eq!(retained(0).exact_translation(), [100.0, 200.0, 300.0]);
+        assert_eq!(&retained(0).world_at(&[0.0, 0.0, 0.0])[12..15], &[100.0, 200.0, 300.0]);
+    }
+
+    #[test]
+    fn the_extension_text_reads_its_lights_and_its_values_through_functions() {
+        let text = "let a = lights[idx[i]].diffuse + draws[record].extension[k].x; let v = draws[record].view;";
+        assert_eq!(rewrite_extension_text(text), "let a = light_at(idx[i]).diffuse + draw_extension(k).x; let v = draw_view();");
     }
 }
 

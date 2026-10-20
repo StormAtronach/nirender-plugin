@@ -297,6 +297,8 @@ pub(crate) struct Counts {
     pub(crate) geometry_bad: u32,
     pub(crate) geometry_short: u32,
     pub(crate) material_records: u32,
+    /// The records shorter than the fixed part of their tag (`tag::least_length`), skipped.
+    pub(crate) short_records: u32,
     /// The shape records, the draws made from them, and the records without a geometry or
     /// a material.
     pub(crate) shape_records: u32,

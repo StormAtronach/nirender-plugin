@@ -34,3 +34,60 @@ pub const RETAINED_SCENE: u32 = 28;
 /// The bones of a skinned retained instance: id, count, bound, then each bone (9 floats,
 /// 3 doubles: `retained::BONE_BYTES`).
 pub const INSTANCE_BONES: u32 = 29;
+
+/// The least length of a record of the tag that the player reads without a check of its
+/// own: a shorter record is skipped and counted (`Counts::short_records`), not read past
+/// its end. The lengths are those of the fixed parts the plugin writes (`src/capture.rs`
+/// of the plugin). 0 for a tag the player does not read, or reads with its own check.
+pub fn least_length(tag: u32) -> usize {
+    match tag {
+        HEADER => 8,
+        // `SceneV1` of the link: 48 bytes, with the origin at 24.
+        SCENE_BEGIN => 48,
+        FRAME_EVENT => 8,
+        READ_PIXELS => 8,
+        // The head of a call: kind, result, handle, the index of the data.
+        CALL => 16,
+        COMMAND => 16,
+        OBJECT => 12,
+        EXTENSION => 4,
+        DRAW_UP => 20,
+        GEOMETRY => 32,
+        MATERIAL => 4,
+        SHAPE => 144,
+        LIGHT => 108,
+        INSTANCE => 176,
+        INSTANCE_DRAW => 12,
+        INSTANCE_DELETE => 4,
+        INSTANCE_LIGHTS => 8,
+        INSTANCE_STATE => 8,
+        RETAINED_SCENE => 8,
+        INSTANCE_BONES => 24,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_record_with_a_fixed_head_has_a_least_length() {
+        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES] {
+            assert!(least_length(tag) > 0, "tag {tag} has no least length");
+        }
+    }
+
+    #[test]
+    fn the_records_without_a_head_have_none() {
+        for tag in [SCENE_END, FRAME_END, SHOT, MARK, OVERLAY, TEXTURE, TEXTURE_UPDATE, 0, 2, 7, 99] {
+            assert_eq!(least_length(tag), 0, "tag {tag}");
+        }
+    }
+
+    #[test]
+    fn the_scene_record_is_the_packet_of_the_link() {
+        // `SceneV1` of `src/link.rs` of the plugin is 48 bytes; the origin is read at 24.
+        assert_eq!(least_length(SCENE_BEGIN), 48);
+    }
+}
