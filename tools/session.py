@@ -95,7 +95,14 @@ class Run:
         names start with harness.RUN_MOD_PREFIX. `disable` are mods of the instance that are off
         for the run. The mod list is as it was after the run.
 
+        A run is a background run unless NIRENDER_FOREGROUND=1 (the owner, 2026-10-20): the
+        spec asks the nirender mod to turn the game's focus check off, and the runner does not
+        bring the game window forward. A run with real clicks or OBS window capture needs the
+        foreground.
+
         Returns True when the scenario finished within `timeout` seconds."""
+        foreground = os.environ.get("NIRENDER_FOREGROUND", "0") == "1"
+        spec = dict(spec, background=not foreground)
         deployment = harness.Deployment()
         self.started = time.time()
         print("launching (budget %ds, results in %s)" % (timeout, self.dir), flush=True)
@@ -106,7 +113,7 @@ class Run:
                 deployment.use_mod(name, files)
             for name in disable:
                 deployment.disable_mod(name)
-            done = harness.run_game(self.progress, timeout, tag, deployment, self.started)
+            done = harness.run_game(self.progress, timeout, tag, deployment, self.started, foreground=foreground)
         finally:
             # run_game also restores. This restore is for a failure before run_game gets to
             # that point.

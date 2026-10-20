@@ -28,6 +28,37 @@ do
     if ok then spec = result end
 end
 
+-- A test run in the background (`background` in the run spec; the owner, 2026-10-20: the
+-- runs took the computer over). Only for a run spec of the harness, never in a game a player
+-- plays. Two places of the game need the window's focus:
+-- - `WinMain` runs a frame only while the window has the focus or the data handler's flag of
+--   cell testing is set: the jump at 0x417225 (`74 0b`) skips the frame. Two no-operations.
+-- - `mainWndProc` pauses a playing video at WM_KILLFOCUS and resumes it only at WM_SETFOCUS,
+--   and `TES3Game::mainLoop` returns at once while a video plays or is paused out of the
+--   menus: the intro video stayed paused, and the game never reached its main menu. The jump
+--   at 0x416C74 (`75 14`, past the pause unless the state is "playing") is made a jump always
+--   (`eb 14`).
+local BACKGROUND_PATCHES = {
+    { address = 0x417225, original = 0x0B74, patched = 0x9090, what = "the focus check of WinMain",
+      apply = function(at) mwse.memory.writeNoOperation({ address = at, length = 2 }) end },
+    { address = 0x416C74, original = 0x1475, patched = 0x14EB, what = "the pause of a video at the loss of the focus",
+      apply = function(at) mwse.memory.writeByte({ address = at, byte = 0xEB }) end },
+}
+if spec and spec.background then
+    for _, patch in ipairs(BACKGROUND_PATCHES) do
+        local ok, word = pcall(mwse.memory.readValue, { address = patch.address, as = "int" })
+        local bytes = ok and bit.band(word, 0xFFFF) or -1
+        if bytes == patch.original then
+            patch.apply(patch.address)
+            mwse.log("[nirender] background run: %s at 0x%X is off", patch.what, patch.address)
+        elseif bytes == patch.patched then
+            mwse.log("[nirender] background run: %s at 0x%X was off already", patch.what, patch.address)
+        else
+            mwse.log("[nirender] background run: unexpected bytes 0x%04X at 0x%X; %s stays", bytes, patch.address, patch.what)
+        end
+    end
+end
+
 -- A test of a picture that a mod asks for before the first frame (`--early-picture` of
 -- run_own_device.py): MGE XE keeps the request until the renderer has a frame.
 if spec and spec.earlyPicture then
