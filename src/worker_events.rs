@@ -217,9 +217,6 @@ pub unsafe fn drain() {
     if !crate::shadow::on_main_thread() {
         return;
     }
-    // The destructions another thread deferred first: they run as the main thread's ports and
-    // apply their events at once (`deferred_destroy`).
-    crate::deferred_destroy::run();
     if !WAITING.load(Ordering::Acquire) {
         return;
     }

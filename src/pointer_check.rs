@@ -1,7 +1,7 @@
 //! A test instrument: a kept engine pointer is checked by its virtual table before its first
 //! read in a walk (`NIRENDER_CHECK_VTABLES=1`; off by default). The check is one read of the
 //! object's first word and a match against the virtual tables of the scene-object classes
-//! (MWSE's `NIVirtualTableDefines.Morrowind.h`, as `deferred_destroy` uses them). It cannot
+//! (MWSE's `NIVirtualTableDefines.Morrowind.h`). It cannot
 //! see a freed block (the read itself is the fault, which `freed_fill` makes certain); it sees
 //! a block that holds another object now, and names it. A mismatch is counted and the first
 //! ones go to the log; the caller skips the item.
