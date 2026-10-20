@@ -44,6 +44,11 @@ pub const RETAINED_TWIN: u32 = 0x200;
 /// after everything else): the helper sorts a blended draw by it among the blends of its
 /// table. Every record of a draw has it.
 pub const BOUND: u32 = 0x400;
+/// The draw is a draw of the flush of the engine's main sorted queue (`ports::base::
+/// in_main_flush`): the engine sorted it among its blends. A blend without the flag draws
+/// in place. The head of the stream says that the records carry the flag
+/// (`capture::HEADER_QUEUE_MARKED`); an older capture has no such word.
+pub const QUEUED: u32 = 0x800;
 
 /// The address of the flags of the Code Patch for the picture of the character, 1 when the
 /// game has no such patch, 0 before the first look.
@@ -353,7 +358,8 @@ unsafe fn record(renderer: usize, geometry: u32, kind: u32, world: [f32; 16], re
         | kind
         | if effects.is_none() { 0 } else { EFFECTS }
         | if fog.is_some() { FOG } else { 0 }
-        | if code_patch_picture() { CODE_PATCH_PICTURE } else { 0 };
+        | if code_patch_picture() { CODE_PATCH_PICTURE } else { 0 }
+        | if crate::ports::base::in_main_flush() { QUEUED } else { 0 };
     // A draw of a retained shape: its instance records in the place of this one (mode gpu:
     // the first draw of the instance), or before it (mode dual).
     if let Some((shape, id)) = crate::instance_stream::take_pending() {

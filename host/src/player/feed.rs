@@ -8,7 +8,10 @@ impl Player {
     /// Engine-rules R19, R22 (the skill wgpu-renderer-dev).
     pub(crate) fn feed(&mut self, tag: u32, data: &[u8]) -> bool {
         match tag {
-            tag::HEADER => self.size = (word(data, 0), word(data, 4)),
+            tag::HEADER => {
+                self.size = (word(data, 0), word(data, 4));
+                self.stream.queue_marked = data.len() >= 16 && word(data, 12) & 1 != 0;
+            }
             tag::TEXTURE => self.renderer.texture(data),
             tag::TEXTURE_UPDATE => self.renderer.texture_update(data),
             tag::SHOT => self.shots.push(String::from_utf8_lossy(data).into_owned()),
@@ -339,6 +342,7 @@ impl Player {
         }
         // The world bound of the shape (flag 0x400): the last 16 bytes of the record.
         self.stream.shape_bound = (flags & 0x400 != 0 && data.len() >= 16).then(|| core::array::from_fn(|i| float(data, data.len() - 16 + i * 4)));
+        self.stream.shape_queued = flags & 0x800 != 0;
         self.draw_shape(geometry, material, flags, core::array::from_fn(|i| float(data, 20 + i * 4)), &colours, effects.as_ref());
     }
 
@@ -595,7 +599,8 @@ impl Player {
             .filter_map(|(index, map)| {
                 let texture = self.renderer.textures.get(&map.texture)?.clone();
                 let mut sampler = material::sampler_states(map.clamp, map.filter);
-                // A texture with one level gets no mip filter, as the texture manager sets it.
+                // A texture with one level gets no mip filter [I: the engine's filter for a
+                // texture with one level was not read].
                 if texture.texture().mip_level_count() <= 1 {
                     sampler[4] = 0;
                 }

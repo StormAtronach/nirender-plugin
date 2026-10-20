@@ -1089,8 +1089,9 @@ impl RetainedSet {
     /// The depth of a draw is that of the nearest point of its bound: the distance from the
     /// near plane of the view less the radius, at least 0.
     /// 4. The blends the engine would sort, into `sorted_order`: back to front by the depth
-    ///    of the bound centre along the view, as the engine's accumulator sorts them, ties
-    ///    by the order of the slots. A view draws them after the rest
+    ///    of the bound centre along the view, ties by the order of the slots. This is not
+    ///    the engine's order: the engine sorts screen-space boxes (`$2::Sort` 0x6FE830,
+    ///    engine-rules R21). A view draws them after the rest
     ///    (`Sorted::Together`) or keeps them for the flush of the engine's queue
     ///    (`Sorted::Keep`, then `Only`).
     /// Engine-rules R3, R4, R20 (the skill wgpu-renderer-dev).
@@ -1411,7 +1412,7 @@ impl Player {
             // A skinned instance keeps its range of bones when it is made again; its bound
             // comes with the bones that the plugin sends after the instance record.
             let bones_first = if r.flags & INSTANCE_SKINNED != 0 { set.bones_first_of(id) } else { NO_BONES };
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted: p.blend[0] != 0 && !derived.no_sorter, pinned, bones_first });
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted: crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter), pinned, bones_first });
             set.buckets[bucket as usize].slots.push(slot);
             set.dirty.push(slot);
             slots.push(slot);

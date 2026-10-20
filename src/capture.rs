@@ -35,6 +35,10 @@ use crate::mem::rd;
 
 pub const MAGIC: &[u8; 8] = b"NIRCAP01";
 
+/// A bit of the fourth word of the header: the shape records carry the flag
+/// `shape_stream::QUEUED` for the draws of the engine's main sorted queue.
+pub const HEADER_QUEUE_MARKED: u32 = 1;
+
 /// The tags of the records.
 pub mod tag {
     /// handle, flags, width, height, levels, D3D format, pixel format, pixel format tag, bytes
@@ -62,8 +66,9 @@ pub mod tag {
     pub const CALL: u32 = 9;
     /// The frame is complete.
     pub const FRAME_END: u32 = 10;
-    /// The first record: the width and the height of the back buffer, and the window of
-    /// the game.
+    /// The first record: the width and the height of the back buffer, the window of the
+    /// game, and the abilities of the stream (`HEADER_QUEUE_MARKED`; an older capture has
+    /// only the first three words).
     pub const HEADER: u32 = 11;
     /// The game wrote a level of a texture: handle, level, width and height of the level,
     /// D3D format, size; then the bytes.
@@ -565,7 +570,7 @@ struct State {
     tee_dirty_material: HashSet<u32>,
     tee_only: bool,
     /// The words of the header record of a direct stream, for the file.
-    header: [u32; 3],
+    header: [u32; 4],
     /// The geometry data and the skin instances of the draws of the warm-up.
     geometry: HashSet<(u32, u32)>,
     /// The image surfaces: surfaces in system memory, where the game changes pixels.
@@ -761,9 +766,9 @@ pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, 
     }
     RECORDING.store(true, Ordering::Relaxed);
     if let Some(s) = state() {
-        s.header = [width, height, window];
+        s.header = [width, height, window, HEADER_QUEUE_MARKED];
     }
-    write(tag::HEADER, &[words(&[width, height, window])]);
+    write(tag::HEADER, &[words(&[width, height, window, HEADER_QUEUE_MARKED])]);
     write_kept();
     crate::log!("stream: start with the device, a ring of {megabytes} MB with the name {name}");
     Ok(())
@@ -784,7 +789,7 @@ unsafe fn begin(out: Sink, warmup: u32, frames: u32) {
         tee_dirty_geometry: HashSet::new(),
         tee_dirty_material: HashSet::new(),
         tee_only: false,
-        header: [0; 3],
+        header: [0; 4],
         geometry: HashSet::new(),
         image_surfaces: HashSet::new(),
         object: (0, 0),
@@ -1217,7 +1222,7 @@ pub unsafe fn geometry(head: &[u32], lengths: &[u8], vertices: &[u8], indexes: &
 /// A state command of the device. Only a transform goes into the stream, with its matrix:
 /// the helper takes the view and the projection from it. A render state, a stage state and
 /// a draw of the device do not: the helper draws from the shape records, and each record
-/// has the state of its draw.
+/// has the state that its format carries. A device draw without a record is lost.
 pub unsafe fn command(command: u32, a: u32, b: u32, c: u32) {
     if !recording() || command != COMMAND_TRANSFORM {
         return;
@@ -1418,7 +1423,7 @@ unsafe fn frame_end() {
                 let renderer = crate::engine::renderer();
                 let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
                 let window: u32 = if renderer != 0 { rd(renderer, DEVICE_WINDOW) } else { 0 };
-                write(tag::HEADER, &[words(&[size[0], size[1], window])]);
+                write(tag::HEADER, &[words(&[size[0], size[1], window, HEADER_QUEUE_MARKED])]);
                 write_kept();
                 // The purge at the next Present, outside the device lock, with the cell
                 // worker stalled (`run_pending_purge`).

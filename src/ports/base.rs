@@ -545,12 +545,34 @@ unsafe fn map_one() -> u32 {
     1.0f32.to_bits()
 }
 
+/// The renderer's accumulator when the camera's `Click` starts (`note_main_accumulator`): the
+/// queue of the Click. A sort adjust node puts its own accumulator in its place only during
+/// the walk. Main thread only.
+static mut MAIN_ACCUMULATOR: usize = 0;
+/// True while the flush of the main accumulator displays its objects, with every object it
+/// displays inside (a sort adjust node's own flush included).
+static mut IN_MAIN_FLUSH: bool = false;
+
+/// Notes the renderer's accumulator at the start of a camera's `Click` (`SetCameraData`).
+pub unsafe fn note_main_accumulator(renderer: usize) {
+    MAIN_ACCUMULATOR = if renderer != 0 { rd(renderer, R::accumulator) } else { 0 };
+}
+
+/// True while the engine draws an object of its main sorted queue: the flush of the Click.
+pub fn in_main_flush() -> bool {
+    unsafe { IN_MAIN_FLUSH }
+}
+
 /// 0x6F51D0 `NiRenderer::renderFromClusterAccumulator`. The port displays a scene object
 /// without the accumulator. The states of the object are the current states for the display.
-/// Then the port puts the accumulator and the states back.
+/// Then the port puts the accumulator and the states back. `FinishAccumulating` 0x6CF0E0
+/// calls it for each object in the order of its sort; a call for the Click's accumulator
+/// marks the draws of the object as draws of the main queue (`in_main_flush`).
 pub unsafe fn renderer_render_from_cluster_accumulator(this: usize, camera: usize, scene_object: usize) {
     crate::shadow::touch(&renderer_render_from_cluster_accumulator_port::STATE);
     let saved_accumulator: usize = rd(this, R::accumulator);
+    let outer_flush = IN_MAIN_FLUSH;
+    IN_MAIN_FLUSH = outer_flush || (saved_accumulator != 0 && saved_accumulator == MAIN_ACCUMULATOR);
     if saved_accumulator != 0 {
         ni::add_reference(saved_accumulator);
     }
@@ -606,6 +628,7 @@ pub unsafe fn renderer_render_from_cluster_accumulator(this: usize, camera: usiz
             ni::release(object);
         }
     }
+    IN_MAIN_FLUSH = outer_flush;
 }
 
 /// 0x6F5380 `NiRenderer::BeginBatch`. The states of the batch become the current states.
@@ -1125,8 +1148,9 @@ pub unsafe fn render_state_ctor(this: usize, device: usize, caps: usize) -> usiz
 
     ctor_alpha_mapping(this);
 
-    // The default alpha property of the render state. It has the test function "greater" and
-    // no blending.
+    // The default alpha property of the render state: the flags 0xEC as the constructor
+    // writes them, no blending. [I] Through `render_state.rs` the flags decode to the test
+    // function index 0 with the test off; the decode was not compared with the engine's.
     let alpha_property = eng::operator_new(ALPHA_PROPERTY_SIZE);
     if alpha_property != 0 {
         eng::ni_object_net_ctor(alpha_property);

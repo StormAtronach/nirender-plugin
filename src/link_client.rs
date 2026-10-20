@@ -107,7 +107,8 @@ const AV_WORLD_TRANSLATION: usize = 0x64;
 const AV_WORLD_TRANSFORM: usize = 0x40;
 /// `NiLight::GetType` in the vtable.
 const LIGHT_VTBL_GET_TYPE: usize = 0x94;
-/// The game does not use a light with a dimmer below this value (0x74F2EC).
+/// The game does not use a light with a dimmer below this value (the constant 0x74F2EC;
+/// `updateLights` compares the dimmer with it at 0x6BB7F7).
 const MIN_DIMMER: f32 = 0.01;
 /// Bit 0 of the flags of a `NiAVObject`: the application culled the object.
 const FLAG_APP_CULLED: u16 = 1;
@@ -930,6 +931,7 @@ unsafe fn scene_kind(camera: usize, world_controller: usize, water_controller: u
 /// calls it immediately before `BeginPaint`. The scene packet goes out here, because this
 /// function sends the view transform and MGE XE decides on the scene at that call.
 unsafe fn set_camera_data(args: &[usize]) {
+    crate::ports::base::note_main_accumulator(args[0]);
     let camera = args[1] - AV_WORLD_TRANSLATION;
     send_scene(camera, crate::camera_space::scene_begin(args[1]));
     SCENE_SENT_FOR.store(camera, Ordering::Relaxed);
@@ -1041,8 +1043,11 @@ unsafe fn swap_buffers(_args: &[usize]) {
 /// plane's root, displayed in the water scene, while the helper draws the water itself. A
 /// draw of the sorted queue in that scene has another root. The first display of a scene
 /// goes through, so that the helper's item for the water keeps its place; the others make
-/// no record and no draw. The water `Click` runs without the sorter, so the sorter does not
-/// tell the two apart.
+/// no record and no draw. The queue stays active in the water walk (`StartAccumulating`
+/// 0x6F9170 takes the same camera again, 0x41C654). On the pixel shader path the water
+/// plane has the no-sorter bit (0x51C597) and draws in place; on the plain path, with the
+/// eye below the plane, it is a sorted blend (0x51C5EB). [I] This rule was not checked
+/// against the second case.
 pub unsafe fn water_plane_display_skipped(shape: usize) -> bool {
     let roots = &*addr_of!(ROOTS);
     if roots.scene_kind != SCENE_WATER || object_class(shape, roots) != CLASS_WATER_PLANE {
@@ -1189,9 +1194,10 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     if skin != 0 {
         flags |= DRAW_SKINNED;
     }
-    // The accumulator is null while the sorted queue draws its objects.
+    // A draw of the flush of the Click's sorted queue. A draw with no accumulator outside that
+    // flush is a draw in place (a sort adjust node in the modes off and sub-sort).
     let world_camera = matches!(roots.scene_kind, SCENE_WORLD | SCENE_SORTED_ALPHA | SCENE_WATER);
-    if world_camera && rd::<usize>(this, R::accumulator) == 0 {
+    if world_camera && crate::ports::base::in_main_flush() {
         flags |= DRAW_FROM_SORTED_QUEUE;
     }
     let property_state: usize = rd(this, R::currentPropertyState);

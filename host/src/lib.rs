@@ -1035,7 +1035,8 @@ impl Pass {
                 map => (m.maps[map as usize].clamp, m.maps[map as usize].filter),
             };
             let mut sampler = material::sampler_states(clamp, filter);
-            // A texture with one level gets no mip filter, as the texture manager sets it.
+            // A texture with one level gets no mip filter. [I] The engine's filter for a
+            // texture with one level was not read.
             if textures.get(&st.texture).is_some_and(|t| t.texture().mip_level_count() <= 1) {
                 sampler[4] = 0;
             }
@@ -2916,7 +2917,9 @@ impl Renderer {
                 };
                 wgpu::BlendState { color: component, alpha: component }
             });
-            // Direct3D culls the faces with this winding. A front face of the game is clockwise.
+            // Direct3D culls the faces with this winding. A front face of the game is clockwise
+            // [I: the cull values come from the cull table of the render state, ctor 0x6B7D70,
+            // by transcription].
             let cull_mode = match key.cull {
                 2 => Some(wgpu::Face::Front),
                 3 => Some(wgpu::Face::Back),
@@ -3022,7 +3025,8 @@ struct Stream {
     fog: [u32; 4],
     /// `D3DRS_AMBIENTMATERIALSOURCE` as the last shape record with a value for it set it:
     /// the light manager of the game leaves the state of the draw before for a material
-    /// without one (see `material::Derived::sources`).
+    /// without one (see `material::Derived::sources`). [I] No engine function was read for
+    /// this, and the default sources of a new stream do not agree with it.
     ambient_source: u32,
     /// The bones of the skinned shape in progress in the bones of the frame: the first and
     /// the number, or `None` for a draw that is not skinned.
@@ -3030,6 +3034,13 @@ struct Stream {
     /// The world bound of the shape record in progress (flag 0x400): the centre and the
     /// radius, for the sort of a blended draw among the blends of the table.
     shape_bound: Option<[f32; 4]>,
+    /// The shape record in progress is a draw of the engine's main sorted queue (flag
+    /// 0x800).
+    shape_queued: bool,
+    /// The head of the stream says that its shape records carry the flag 0x800 (bit 1 of its
+    /// fourth word). Without it (an older capture), a blend is taken as sorted by its
+    /// material (`engine::alpha::sorted_by_engine`).
+    queue_marked: bool,
 }
 
 impl Stream {
@@ -3328,6 +3339,8 @@ impl Player {
                 ambient_source: 0,
                 shape_bones: None,
                 shape_bound: None,
+                shape_queued: false,
+                queue_marked: false,
             },
             encoder: None,
             pass: None,

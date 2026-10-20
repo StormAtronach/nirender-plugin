@@ -290,11 +290,14 @@ impl Player {
         }
         if hold {
             self.held_draws.push(Item::Draw(draw));
-        } else if draw.world && self.plan.world_begun && engine::alpha::sorted_by_engine(class, &derived.blends, derived.no_sorter) && self.target.is_none() {
-            // A blend the engine would sort: it waits for the sorted blends of the table, and
-            // the table's blends go between the engine's draws by depth
-            // (`draw_retained_sorted`). The centre of its bound is the key; a record without
-            // one (an older capture) gives the translation of the draw.
+        } else if draw.world && self.plan.world_begun && self.target.is_none() && (if self.stream.queue_marked { self.stream.shape_queued } else { engine::alpha::sorted_by_engine(class, &derived.blends, derived.no_sorter) }) {
+            // A draw of the flush of the engine's main sorted queue (the plugin marks it): it
+            // waits for the sorted blends of the table, and the table's blends go between the
+            // engine's draws by depth (`draw_retained_sorted`). A blend that the engine draws
+            // during the walk (no sorter, a sort adjust node in the modes off and sub-sort)
+            // stays in place. An older capture has no mark: there a blend of the material
+            // waits. The centre of its bound is the key; a record without one (an older
+            // capture) gives the translation of the draw.
             let centre = match self.stream.shape_bound {
                 Some(b) => [b[0], b[1], b[2]],
                 None => {
