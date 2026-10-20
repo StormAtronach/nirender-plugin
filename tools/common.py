@@ -26,7 +26,8 @@ FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiP
                      r"|NiNode::UpdateDownwardPass$"
                      # The new property and effect states of a shape (plan 8b, 2026-10-17).
                      r"|NiGeometry::UpdatePropertiesDownward$|NiGeometry::UpdateEffectsDownward$"
-                     # The events of the table walk (entry 13, 2026-10-17).
+                     # The events of the table walk (entry 13, 2026-10-17; the walk and its ports
+                     # were removed on 2026-10-20, the functions stay in the table for the census).
                      r"|NiGeometry::UpdateWorldData$|NiAVObject::SetAppCulled$"
                      r"|NiNode::AttachChild$|NiNode::DetachChild$|NiNode::DetachChildAt$|NiNode::SetChildAt$"
                      r"|ActorAnimController::setOpacity$"

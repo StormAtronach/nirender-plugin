@@ -334,29 +334,6 @@ pub unsafe fn note(renderer: usize, property_state: usize, effect_state: usize) 
     if sent().insert(handle) {
         crate::capture::material(handle, &w);
         RECORDS += 1;
-        if keep_words() {
-            let kept = (*core::ptr::addr_of_mut!(KEPT_WORDS)).get_or_insert_with(std::collections::HashMap::new);
-            if kept.len() < 8192 {
-                kept.insert(handle, w);
-            }
-        }
     }
     handle
-}
-
-/// The words of the first 8192 materials sent, by handle, with `NIRENDER_SWEEP_WORDS=1`: a
-/// change that no event marked (the table walk's sweep) names its words (`words_changed`).
-static mut KEPT_WORDS: Option<std::collections::HashMap<u32, [u32; WORDS]>> = None;
-static KEEP_WORDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-fn keep_words() -> bool {
-    *KEEP_WORDS.get_or_init(|| std::env::var("NIRENDER_SWEEP_WORDS").map_or(false, |v| v != "0"))
-}
-
-/// The words that differ between two materials sent, as "index: old -> new".
-pub unsafe fn words_changed(old: u32, new: u32) -> String {
-    let Some(kept) = (*core::ptr::addr_of!(KEPT_WORDS)).as_ref() else { return "no words kept".into() };
-    let (Some(a), Some(b)) = (kept.get(&old), kept.get(&new)) else { return "words not kept".into() };
-    let parts: Vec<String> = (0..WORDS).filter(|&i| a[i] != b[i]).map(|i| format!("{i}: 0x{:x} -> 0x{:x}", a[i], b[i])).collect();
-    parts.join(", ")
 }

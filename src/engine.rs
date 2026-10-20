@@ -184,17 +184,6 @@ pub unsafe fn game_fog_property() -> usize {
     }
 }
 
-/// `WorldController::getMACP`: the player's mobile, 0 before the world exists.
-const WORLD_CONTROLLER_GET_PLAYER: usize = 0x40FF20;
-
-/// The player's mobile (`MACP`), or 0.
-pub unsafe fn player_mobile() -> usize {
-    let world_controller: usize = rd(WORLD_CONTROLLER, 0);
-    if world_controller == 0 {
-        return 0;
-    }
-    thiscall0(WORLD_CONTROLLER_GET_PLAYER, world_controller) as usize
-}
 
 pub unsafe fn renderer() -> usize {
     let world_controller: usize = rd(WORLD_CONTROLLER, 0);

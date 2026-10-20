@@ -999,7 +999,6 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     (host.scene_begin)(&scene);
     crate::capture::scene_begin(&scene);
     crate::instance_stream::scene_begin(roots.scene_kind, camera);
-    crate::click_time::note_scene(camera, roots.scene_kind);
 }
 
 /// Runs after `EndPaint`.
@@ -1058,36 +1057,6 @@ pub unsafe fn water_plane_display_skipped(shape: usize) -> bool {
     true
 }
 
-/// The kind of the scene in progress.
-pub unsafe fn scene_kind_now() -> u32 {
-    (*addr_of!(ROOTS)).scene_kind
-}
-
-/// The sky root of the scene in progress (0 without one): the live walk runs after it.
-pub unsafe fn sky_root() -> usize {
-    (*addr_of!(ROOTS)).sky_root
-}
-
-/// A display port serves a shape in a scene of the world camera (the world scene, or the
-/// water scene's second walk of the world): the live walk lists it (plan F8, part 2).
-pub unsafe fn note_world_shape(shape: usize, kind: crate::live_walk::Kind) {
-    let roots = &*addr_of!(ROOTS);
-    if !matches!(roots.scene_kind, SCENE_WORLD | SCENE_WATER) {
-        return;
-    }
-    // The sky subtree is the engine's walk's, before the live walk runs (F8, decision (a)).
-    let mut node = shape;
-    for _ in 0..MAX_DEPTH {
-        if node == 0 {
-            break;
-        }
-        if node == roots.sky_root {
-            return;
-        }
-        node = rd(node, AV::parentNode);
-    }
-    crate::live_walk::note(shape, kind);
-}
 
 unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
     match roots.scene_kind {

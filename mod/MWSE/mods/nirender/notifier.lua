@@ -42,8 +42,8 @@ local function notify(object)
 end
 
 -- The writes of a shape or a node that the plugin does not read at every display. `flags`
--- holds the app-cull bit: MWSE writes the field with no call, and the table walk (entry 13)
--- reads the reach of a shape only when an event marks it.
+-- holds the app-cull bit: MWSE writes the field with no call. A change of a shape makes the
+-- plugin check its retained instance again at its next display.
 local AV_KEYS = {
     data = true, skinInstance = true, flags = true,
     alphaProperty = true, fogProperty = true, materialProperty = true, stencilProperty = true,

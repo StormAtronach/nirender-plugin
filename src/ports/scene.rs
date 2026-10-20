@@ -208,9 +208,6 @@ port_thiscall!(cull_show_port, 0x6EB480, "NiAVObject::CullShow",
 /// for the subtree and unmarked after it.
 pub unsafe fn cull_show(this: usize, camera: usize) {
     crate::shadow::touch(&cull_show_port::STATE);
-    if crate::live_walk::node_served(this) {
-        return;
-    }
     if vcall0(this, SLOT_GET_APP_CULLED) & 0xFF != 0 {
         return;
     }
@@ -273,22 +270,11 @@ pub unsafe fn node_display(this: usize, camera: usize) {
         while i < rd::<u32>(this, N::kChildren_endIndex) as usize {
             let child = rd::<usize>(rd::<usize>(this, N::kChildren_storage), i * 4);
             if child != 0 {
-                // The time of the sky's display (the measure per class, plan section 2).
-                let sky_start = if child == crate::link_client::sky_root() { crate::capture::ticks() } else { 0 };
                 thiscall1(CULL_SHOW, child, camera as u32);
-                if sky_start != 0 {
-                    crate::live_walk::note_sky_ticks(crate::capture::ticks() - sky_start);
-                }
-                // The sky-only walk (F8 part 3): after the sky root the table walk and the
-                // live walk serve the world, and the rest of the world root is not walked.
-                if crate::live_walk::after_child(this, child, camera) {
-                    break;
-                }
             }
             i += 1;
         }
     }
-    crate::live_walk::after_node(this);
 }
 
 port_thiscall!(bs_animation_node_display_port, 0x6F21C0, "BSAnimationNode::Display",
@@ -343,7 +329,7 @@ pub unsafe fn switch_node_display(this: usize, camera: usize) {
 
 /// The lazy update of the child a switch node selects (`NiSwitchNode::Display`): a child
 /// whose revision is not the node's gets an update with the node's saved time, and the
-/// node keeps the child's revision. The live walk calls it too (plan 8b, R26).
+/// node keeps the child's revision (plan 8b, R26).
 pub(crate) unsafe fn switch_prepare_child(this: usize, index: i32, child: usize) {
     let revision = rd::<u32>(this, SWITCH_UPDATE_REVISION);
     let storage = rd::<usize>(this, SWITCH_REVISIONS_STORAGE);
@@ -605,10 +591,6 @@ port_thiscall!(tri_shape_display_port, 0x6E4F90, "NiTriShape::Display",
 /// the shape's data, skin, world transform and world bound; and the counts of the frame.
 pub unsafe fn tri_shape_display(this: usize, camera: usize) {
     crate::shadow::touch(&tri_shape_display_port::STATE);
-    // The live walk displayed the shape in this run of the world root (plan F8, part 2).
-    if crate::live_walk::served(this) {
-        return;
-    }
     // A shape the helper draws from its table (plan 0.5 entry T5): the plugin notes its
     // changes, and the engine does not display it.
     if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(this, crate::link::DRAW_SHAPE) {
@@ -624,11 +606,6 @@ pub unsafe fn tri_shape_display(this: usize, camera: usize) {
     thiscall4(virtual_at(renderer, SLOT_RENDER_SHAPE), renderer, data as u32, skin as u32, (this + AV::worldTransform) as u32, bound as u32);
     let data = rd::<usize>(this, G::spModelData);
     count_render_call(vcall0(data, SLOT_GET_ACTIVE_TRIANGLE_COUNT), vcall0(data, SLOT_GET_ACTIVE_VERTEX_COUNT));
-    // After the draw the table knows the shape: a retained instance is the table's from its
-    // next display; every other shape is the engine's (plan F8, part 2).
-    if crate::instance_stream::engine_serves(this) {
-        crate::link_client::note_world_shape(this, crate::live_walk::Kind::Shape);
-    }
 }
 
 port_thiscall!(tri_strips_display_port, 0x742660, "NiTriStrips::Display",
@@ -641,9 +618,6 @@ port_thiscall!(tri_strips_display_port, 0x742660, "NiTriStrips::Display",
 /// the vertex count of the data as they are.
 pub unsafe fn tri_strips_display(this: usize, camera: usize) {
     crate::shadow::touch(&tri_strips_display_port::STATE);
-    if crate::live_walk::served(this) {
-        return;
-    }
     if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(this, crate::link::DRAW_STRIPS) {
         return;
     }
@@ -657,9 +631,6 @@ pub unsafe fn tri_strips_display(this: usize, camera: usize) {
     thiscall4(virtual_at(renderer, SLOT_RENDER_TRISTRIPS), renderer, data as u32, skin as u32, (this + AV::worldTransform) as u32, bound as u32);
     let data = rd::<usize>(this, G::spModelData);
     count_render_call(rd::<u16>(data, GD::SIZE) as u32, rd::<u16>(data, GD::vertexCount) as u32);
-    if crate::instance_stream::engine_serves(this) {
-        crate::link_client::note_world_shape(this, crate::live_walk::Kind::Strips);
-    }
 }
 
 /// The number of active particles of a `NiParticlesData`, at the end of its geometry data.
@@ -675,10 +646,6 @@ port_thiscall!(particles_display_port, 0x6DD3E0, "NiParticles::Display",
 /// particles for both.
 pub unsafe fn particles_display(this: usize, camera: usize) {
     crate::shadow::touch(&particles_display_port::STATE);
-    if crate::live_walk::served(this) {
-        return;
-    }
-    crate::link_client::note_world_shape(this, crate::live_walk::Kind::Particles);
     let Some(renderer) = shape_display_start(this, camera) else { return };
     render_points(this, renderer);
 }
@@ -701,10 +668,6 @@ port_thiscall!(auto_normal_particles_display_port, 0x6D3540, "NiAutoNormalPartic
 /// towards the camera first.
 pub unsafe fn auto_normal_particles_display(this: usize, camera: usize) {
     crate::shadow::touch(&auto_normal_particles_display_port::STATE);
-    if crate::live_walk::served(this) {
-        return;
-    }
-    crate::link_client::note_world_shape(this, crate::live_walk::Kind::Particles);
     let Some(renderer) = shape_display_start(this, camera) else { return };
     let normal = [-rd::<f32>(camera, C::kWorldDir), -rd::<f32>(camera, C::kWorldDir + 4), -rd::<f32>(camera, C::kWorldDir + 8)];
     let data = rd::<usize>(this, G::spModelData);
@@ -729,10 +692,6 @@ port_thiscall!(lines_display_port, 0x6DA850, "NiLines::Display",
 /// As `NiTriShape::Display`, with `RenderLines` (no skin) and no counts.
 pub unsafe fn lines_display(this: usize, camera: usize) {
     crate::shadow::touch(&lines_display_port::STATE);
-    if crate::live_walk::served(this) {
-        return;
-    }
-    crate::link_client::note_world_shape(this, crate::live_walk::Kind::Lines);
     let Some(renderer) = shape_display_start(this, camera) else { return };
     let data = rd::<usize>(this, G::spModelData);
     let bound = vcall0(this, SLOT_GET_WORLD_BOUND) as usize;
@@ -754,7 +713,6 @@ port_thiscall!(geometry_dtor_port, 0x6F3DB0, "NiGeometry::dtor",
 pub unsafe fn geometry_dtor(this: usize) {
     crate::shadow::touch(&geometry_dtor_port::STATE);
     crate::instance_stream::forget(this);
-    crate::live_walk::forget(this);
     geometry_dtor_port::engine(this);
 }
 

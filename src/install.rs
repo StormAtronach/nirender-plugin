@@ -170,12 +170,9 @@ pub unsafe fn install() -> Result<String, String> {
     device::set_frame_hook(frame::on_present);
     // A fault of the game's script loader that the addresses of the records decide (plan 8g).
     crate::script_names::install();
-    // The time of the draw of each camera (plan 8e: the engine's walk against the cut).
-    crate::click_time::install();
     // The shapes the engine destroys on another thread (plan C26).
     crate::worker_events::install();
     crate::freed_fill::install();
-    crate::update_root::install();
 
     let mut failed = 0;
     // A port left uninstalled for an A/B of its own cost (`NIRENDER_SKIP_PORT=<name>`,

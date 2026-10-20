@@ -150,7 +150,7 @@ pub mod tag {
     /// shape the engine reaches.
     pub const RETAINED_SCENE: u32 = 28;
     /// The bones of a skinned instance the helper draws from its table (mode gpu), in each
-    /// frame that the table walk works it in the view: id, the number of bones, the world
+    /// frame that the engine displays it: id, the number of bones, the world
     /// bound of the shape (the centre and the radius), then for each bone the matrix of its
     /// rotation and scale (9 floats, by columns) and its exact translation in the world (3
     /// doubles), as `camera_space::skin_bones` makes them.

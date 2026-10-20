@@ -412,20 +412,6 @@ unsafe extern "C" fn display_cost(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.engineWalk(on)`: the engine's walk of the world on (the default since
-/// 2026-10-19; the table walk, the live walk and the sky-only walk off) or off (the cut);
-/// returns the state before; without an argument the state.
-unsafe extern "C" fn engine_walk(l: LuaState) -> i32 {
-    let before = crate::live_walk::engine_walk_on();
-    if lua_gettop(l) >= 1 {
-        let on = lua_toboolean(l, 1) != 0;
-        crate::live_walk::set_engine_walk(on);
-        crate::log!("engine walk: {} (was {})", on, before);
-    }
-    lua_pushboolean(l, before as i32);
-    1
-}
-
 /// `nirender.skinTable(on)`: the table draws the skinned shapes (the actors, the default) or
 /// the engine's display does (the path before the takeover's step 1); returns the state
 /// before; without an argument the state.
@@ -691,7 +677,6 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "instances", instances_report);
     set_fn(l, "nifShading", nif_shading);
     set_fn(l, "animationPolicy", animation_policy);
-    set_fn(l, "engineWalk", engine_walk);
     set_fn(l, "skinTable", skin_table);
     set_fn(l, "noteEvery", note_every);
     set_fn(l, "changed", changed);

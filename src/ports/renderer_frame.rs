@@ -637,8 +637,6 @@ unsafe fn purge_material_regions(set: &mut Regions, this: usize, material: usize
 pub unsafe fn purge_effect(this: usize, effect: usize) {
     crate::shadow::touch(&purge_effect_port::STATE);
     if effect != 0 && ni::is_kind_of(effect, RTTI_NI_LIGHT) {
-        // The light set of the retained instances forgets the light (plan 8e).
-        crate::light_set::purge(effect);
         light_manager_remove_light(rd(this, R::lightManager), effect);
     }
 }
