@@ -256,7 +256,7 @@ pub unsafe fn note_transform(state: u32, matrix: usize) {
         s.transforms_known |= 1 << (state - D3DTS_WORLDMATRIX0);
         // The host knows the space of this matrix only now, during the call of the game.
         let bit = 1 << (state - D3DTS_WORLDMATRIX0);
-        let relative = crate::camera_space::pending()
+        let relative = crate::camera_space::pending(&t)
             || host().is_some_and(|host| host.capabilities & CAP_WORLD_SPACE != 0 && (host.world_space)() != 0);
         s.world_relative = if relative { s.world_relative | bit } else { s.world_relative & !bit };
         &mut s.worlds[(state - D3DTS_WORLDMATRIX0) as usize]
@@ -1004,17 +1004,21 @@ unsafe fn scene_kind(camera: usize, world_controller: usize, water_controller: u
 /// calls it immediately before `BeginPaint`. The scene packet goes out here, because this
 /// function sends the view transform and MGE XE decides on the scene at that call.
 unsafe fn set_camera_data(args: &[usize]) {
+    // A `before` function of a port: the main thread (`shadow::run_before`).
+    let t = &MainThread::claim();
     crate::ports::base::note_main_accumulator(args[0]);
     let camera = args[1] - AV_WORLD_TRANSLATION;
-    send_scene(camera, crate::camera_space::scene_begin(args[1]));
+    send_scene(camera, crate::camera_space::scene_begin(t, args[1]));
     SCENE_SENT_FOR.store(camera, Ordering::Relaxed);
 }
 
 /// `BeginPaint(this, camera)`
 unsafe fn begin_paint(args: &[usize]) {
+    // A `before` function of a port: the main thread (`shadow::run_before`).
+    let t = &MainThread::claim();
     // A caller other than `NiCamera::Click` did not go through `SetCameraData`.
     if SCENE_SENT_FOR.swap(0, Ordering::Relaxed) != args[1] {
-        send_scene(args[1], crate::camera_space::scene_begin(0));
+        send_scene(args[1], crate::camera_space::scene_begin(t, 0));
     }
 }
 
@@ -1115,7 +1119,9 @@ unsafe fn set_render_target(args: &[usize]) {
 
 /// `SwapBuffers(this)`
 unsafe fn swap_buffers(_args: &[usize]) {
-    crate::camera_space::frame_end();
+    // A `before` function of a port: the main thread (`shadow::run_before`).
+    let t = &MainThread::claim();
+    crate::camera_space::frame_end(t);
     if let Some(host) = host() {
         (host.frame_event)(EVENT_SWAP, 0, 0);
         crate::capture::frame_event(EVENT_SWAP, 0, 0);
@@ -1304,7 +1310,7 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     if plain_world_shape {
         let mut class = CLASS_UNKNOWN;
         if let Some((geometry_handle, material_handle)) = crate::instance_stream::seen(t, geometry, kind, &mut class) {
-            crate::shape_stream::note_handles(geometry_handle, material_handle, kind, class, geometry_data);
+            crate::shape_stream::note_handles(t, geometry_handle, material_handle, kind, class, geometry_data);
             return;
         }
     }
@@ -1335,9 +1341,9 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     if skin_data != 0 && geometry_data != 0 && crate::capture::recording() && crate::geometry_stream::needs_partitions(skin_data) {
         crate::ports::draw::ensure_skin_partitions(this, geometry_data, skin);
     }
-    let geometry_handle = crate::geometry_stream::note(kind, geometry_data, skin);
-    let material_handle = crate::material_stream::note(this, property_state, effect_state);
-    crate::shape_stream::note_handles(geometry_handle, material_handle, kind, draw.object_class, geometry_data);
+    let geometry_handle = crate::geometry_stream::note(t, kind, geometry_data, skin);
+    let material_handle = crate::material_stream::note(t, this, property_state, effect_state);
+    crate::shape_stream::note_handles(t, geometry_handle, material_handle, kind, draw.object_class, geometry_data);
     crate::capture::object(&draw, geometry_handle, material_handle);
     crate::instance_stream::consider(t, geometry, plain_world_shape && crate::instance_stream::class_retained(t, draw.object_class, skin != 0), skin != 0, draw.object_class, geometry_handle, material_handle, property_state, effect_state);
 }
@@ -1484,13 +1490,17 @@ pub fn world_is_relative(t: &MainThread) -> bool {
 
 /// `RenderShape(this, geometryData, skinInstance, transform, bound)`
 unsafe fn render_shape(args: &[usize]) {
-    crate::camera_space::geometry_begin(args[3]);
+    // A `before` function of a port: the main thread (`shadow::run_before`).
+    let t = &MainThread::claim();
+    crate::camera_space::geometry_begin(t, args[3]);
     send_draw(DRAW_SHAPE, args[0], args[3] - AV_WORLD_TRANSFORM, args[1], args[2]);
 }
 
 /// `RenderTriStrips(this, geometryData, skinInstance, transform, bound)`
 unsafe fn render_tri_strips(args: &[usize]) {
-    crate::camera_space::geometry_begin(args[3]);
+    // A `before` function of a port: the main thread (`shadow::run_before`).
+    let t = &MainThread::claim();
+    crate::camera_space::geometry_begin(t, args[3]);
     send_draw(DRAW_STRIPS, args[0], args[3] - AV_WORLD_TRANSFORM, args[1], args[2]);
 }
 
@@ -1500,19 +1510,25 @@ unsafe fn render_tri_strips(args: &[usize]) {
 
 /// `RenderPoints(this, geometryData, transform, bound)`
 unsafe fn render_points(args: &[usize]) {
-    crate::camera_space::geometry_begin(args[2]);
+    // A `before` function of a port: the main thread (`shadow::run_before`).
+    let t = &MainThread::claim();
+    crate::camera_space::geometry_begin(t, args[2]);
     send_draw(DRAW_POINTS, args[0], args[2] - AV_WORLD_TRANSFORM, args[1], 0);
 }
 
 /// `RenderLines(this, linesData, transform, bound)`
 unsafe fn render_lines(args: &[usize]) {
-    crate::camera_space::geometry_begin(args[2]);
+    // A `before` function of a port: the main thread (`shadow::run_before`).
+    let t = &MainThread::claim();
+    crate::camera_space::geometry_begin(t, args[2]);
     send_draw(DRAW_LINES, args[0], args[2] - AV_WORLD_TRANSFORM, args[1], 0);
 }
 
 /// `RenderScreenPoly(this, ...)`
 unsafe fn render_screen_poly(args: &[usize]) {
-    crate::camera_space::geometry_begin(0);
+    // A `before` function of a port: the main thread (`shadow::run_before`).
+    let t = &MainThread::claim();
+    crate::camera_space::geometry_begin(t, 0);
     send_draw(DRAW_SCREEN_POLYGON, args[0], 0, 0, 0);
 }
 
@@ -1659,7 +1675,7 @@ pub unsafe fn counters(reset: bool) -> Option<CountersV1> {
 }
 
 /// The counters as text: one line for each fact that the host compared.
-pub unsafe fn counters_text(reset: bool) -> String {
+pub unsafe fn counters_text(t: &MainThread, reset: bool) -> String {
     let Some(c) = counters(reset) else {
         return "no host".to_string();
     };
@@ -1706,7 +1722,7 @@ pub unsafe fn counters_text(reset: bool) -> String {
         SKIPPED.iter().for_each(Count::reset);
     }
     // The states that the Rust code asked for, as `state=calls`.
-    text.push_str(&crate::camera_space::report(reset));
+    text.push_str(&crate::camera_space::report(t, reset));
     text.push(0xA as char);
     let sets: [(&str, &[Count]); 2] = [("render_states:", &RENDER_STATE_SETS), ("stage_states:", &STAGE_STATE_SETS)];
     for (label, sets) in sets {

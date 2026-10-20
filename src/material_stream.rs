@@ -12,6 +12,7 @@
 use core::mem::transmute;
 use std::collections::HashSet;
 
+use crate::main_thread::{MainCell, MainThread};
 use crate::engine;
 use crate::gen::layouts::{
     NiAlphaProperty as AP, NiDX8Renderer as R, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as LIST,
@@ -61,11 +62,11 @@ pub const OWN_FOG: u32 = 16384;
 /// blend at once, in the order of the scene, and the table draws it with the opaque.
 pub const NO_SORTER: u32 = 32768;
 
-static mut SENT: Option<HashSet<u32>> = None;
-static mut RECORDS: u64 = 0;
+static SENT: MainCell<Option<HashSet<u32>>> = MainCell::new(None);
+static RECORDS: MainCell<u64> = MainCell::new(0);
 /// The flags of the last record noted: the helper models a material without projected
 /// lights and shadows.
-static mut LAST_FLAGS: u32 = 0;
+static LAST_FLAGS: MainCell<u32> = MainCell::new(0);
 
 /// The shape's own shade, dither and specular properties from its NIF go into the record
 /// (see `note`). Off by default: the game never showed them. `nirender.nifShading(on)`.
@@ -80,28 +81,28 @@ pub fn set_nif_shading(on: bool) {
     NIF_SHADING.store(on, core::sync::atomic::Ordering::Relaxed);
 }
 
-pub unsafe fn last_modelled() -> bool {
-    *core::ptr::addr_of!(LAST_FLAGS) & (PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0
+pub unsafe fn last_modelled(t: &MainThread) -> bool {
+    *LAST_FLAGS.get(t) & (PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0
 }
 
-unsafe fn sent() -> &'static mut HashSet<u32> {
-    (*core::ptr::addr_of_mut!(SENT)).get_or_insert_with(HashSet::new)
+fn sent<'a>(t: &'a MainThread) -> &'a mut HashSet<u32> {
+    (*SENT.get(t)).get_or_insert_with(HashSet::new)
 }
 
 /// Forgets the records that were sent: for a capture file from the stream.
-pub unsafe fn reset() {
-    sent().clear();
+pub unsafe fn reset(t: &MainThread) {
+    sent(t).clear();
 }
 
 /// Forgets these records: the next draw with each content sends it again.
-pub unsafe fn forget(handles: &[u32]) {
+pub unsafe fn forget(t: &MainThread, handles: &[u32]) {
     for handle in handles {
-        sent().remove(handle);
+        sent(t).remove(handle);
     }
 }
 
-pub unsafe fn report() -> String {
-    format!("material: {} records, {} distinct", *core::ptr::addr_of!(RECORDS), sent().len())
+pub unsafe fn report(t: &MainThread) -> String {
+    format!("material: {} records, {} distinct", *RECORDS.get(t), sent(t).len())
 }
 
 /// The device texture of a texture of the scene graph, from the texture manager of the
@@ -137,7 +138,7 @@ fn hash(words: &[u32]) -> u32 {
 
 /// Notes the material of a shape that is about to be drawn: sends its record when the
 /// content is new. Returns the handle (the hash), or 0 without a property state.
-pub unsafe fn note(renderer: usize, property_state: usize, effect_state: usize) -> u32 {
+pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effect_state: usize) -> u32 {
     if !crate::capture::recording() || property_state == 0 {
         return 0;
     }
@@ -323,12 +324,12 @@ pub unsafe fn note(renderer: usize, property_state: usize, effect_state: usize) 
         }
     }
     w[1] = flags;
-    *core::ptr::addr_of_mut!(LAST_FLAGS) = flags;
+    *LAST_FLAGS.get(t) = flags;
 
     let handle = hash(&w);
-    if sent().insert(handle) {
+    if sent(t).insert(handle) {
         crate::capture::material(handle, &w);
-        RECORDS += 1;
+        *RECORDS.get(t) += 1;
     }
     handle
 }

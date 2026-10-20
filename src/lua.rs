@@ -111,8 +111,8 @@ unsafe extern "C" fn install(l: LuaState) -> i32 {
 unsafe extern "C" fn skin_source(l: LuaState) -> i32 {
     let name = arg_str(l, 1);
     let before = match name.as_deref() {
-        Some("partitions") => crate::geometry_stream::set_skin_from_partitions(true),
-        Some("skindata") => crate::geometry_stream::set_skin_from_partitions(false),
+        Some("partitions") => crate::geometry_stream::set_skin_from_partitions(&MainThread::claim(), true),
+        Some("skindata") => crate::geometry_stream::set_skin_from_partitions(&MainThread::claim(), false),
         _ => crate::geometry_stream::skin_from_partitions(),
     };
     push_str(l, if before { "partitions" } else { "skindata" });
@@ -611,7 +611,7 @@ unsafe extern "C" fn link(l: LuaState) -> i32 {
 /// `nirender.linkCounters([reset])` returns the counters of the host as text: for each fact,
 /// how many times the packet and the inference of the host were equal or different.
 unsafe extern "C" fn link_counters(l: LuaState) -> i32 {
-    let text = crate::link_client::counters_text(lua_toboolean(l, 1) != 0);
+    let text = crate::link_client::counters_text(&MainThread::claim(), lua_toboolean(l, 1) != 0);
     crate::log!("link counters:\n{}", text);
     push_str(l, &text);
     1

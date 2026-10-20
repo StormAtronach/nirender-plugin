@@ -751,11 +751,11 @@ unsafe fn screen_polygon_record(t: &MainThread, this: usize, count: u32, vertice
     if !crate::shape_stream::on() {
         return false;
     }
-    let handle = crate::geometry_stream::note_screen_polygon(count, vertices, tex_coords, colour, rd(this, R::frustumNear), rd(this, R::frustumDistance));
+    let handle = crate::geometry_stream::note_screen_polygon(t, count, vertices, tex_coords, colour, rd(this, R::frustumNear), rd(this, R::frustumDistance));
     if handle == 0 {
         return false;
     }
-    crate::shape_stream::note_geometry(handle);
+    crate::shape_stream::note_geometry(t, handle);
     crate::ports::draw::shape_record(t, this, 0, transform, bound)
 }
 

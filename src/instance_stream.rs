@@ -467,7 +467,7 @@ pub unsafe fn set_skin_table(mt: &MainThread, on: bool) -> bool {
 unsafe fn send_bones(mt: &MainThread, shape: usize, id: u32) -> bool {
     let t = tables(mt);
     let mut bones = core::mem::take(&mut t.scratch_bones);
-    let result = crate::camera_space::skin_bones(shape, rd(shape, GEOMETRY_SKIN), &mut bones);
+    let result = crate::camera_space::skin_bones(mt, shape, rd(shape, GEOMETRY_SKIN), &mut bones);
     let t = tables(mt);
     let sent = match result {
         Ok(count) => {
@@ -571,7 +571,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
         Some(2)
     } else if !enabled(mt) {
         Some(3)
-    } else if !crate::material_stream::last_modelled() {
+    } else if !crate::material_stream::last_modelled(mt) {
         Some(4)
     } else {
         None
@@ -771,7 +771,7 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
         let exact = if skinned {
             [0.0; 3]
         } else {
-            let Some(exact) = crate::camera_space::exact_translation(shape, 0) else {
+            let Some(exact) = crate::camera_space::exact_translation(mt, shape, 0) else {
                 reject_at_record(mt, shape, LATER_TRANSLATION);
                 return false;
             };
@@ -901,7 +901,7 @@ const MOST_LIGHT_INDEX: usize = 1 << 20;
 /// entry, and its LIGHT record when the values changed (`light_stream::note_values`). Keyed
 /// by the index of the light, an array and not a hash: a frame notes each light of each
 /// retained shape.
-unsafe fn note_light_once(t: &mut Tables, light: usize, key: u32) {
+unsafe fn note_light_once(mt: &MainThread, t: &mut Tables, light: usize, key: u32) {
     let counts = &mut *core::ptr::addr_of_mut!(LIGHT_COUNTS);
     counts[LC_NOTES] += 1;
     let k = key as usize;
@@ -927,7 +927,7 @@ unsafe fn note_light_once(t: &mut Tables, light: usize, key: u32) {
         values[crate::light_stream::COLOUR_WORDS].fill(0);
         counts[LC_DARK] += 1;
     }
-    if crate::light_stream::note_values(key, &values) {
+    if crate::light_stream::note_values(mt, key, &values) {
         counts[LC_SENT] += 1;
     }
 }
@@ -1230,9 +1230,9 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         COST_NOTES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         // A skinned geometry is packed with the bone influences of its skin.
         let skin = if instance.skinned { rd(shape, GEOMETRY_SKIN) } else { 0 };
-        let geometry = crate::geometry_stream::note(kind, rd(shape, GEOMETRY_MODEL_DATA), skin);
-        let material = crate::material_stream::note(renderer, property_state, effect_state);
-        if geometry == 0 || material == 0 || !crate::material_stream::last_modelled() {
+        let geometry = crate::geometry_stream::note(mt, kind, rd(shape, GEOMETRY_MODEL_DATA), skin);
+        let material = crate::material_stream::note(mt, renderer, property_state, effect_state);
+        if geometry == 0 || material == 0 || !crate::material_stream::last_modelled(mt) {
             let cause = if geometry == 0 {
                 LATER_GEOMETRY
             } else if material == 0 {
@@ -1278,7 +1278,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         let exact = if skinned {
             [0.0; 3]
         } else {
-            let Some(exact) = crate::camera_space::exact_translation(shape, 0) else {
+            let Some(exact) = crate::camera_space::exact_translation(mt, shape, 0) else {
                 reject_at_record(mt, shape, LATER_TRANSLATION);
                 return false;
             };
@@ -1344,7 +1344,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     keys.clear();
     for &light in &lights {
         let key: u32 = rd(light, L::index);
-        note_light_once(t, light, key);
+        note_light_once(mt, t, light, key);
         keys.push(key);
     }
     let counts = &mut *core::ptr::addr_of_mut!(LIGHT_COUNTS);
@@ -1490,5 +1490,5 @@ pub unsafe fn report(mt: &MainThread) -> String {
         + "\n" + &crate::script_names::report()
         + "\n" + &crate::worker_events::report()
         + "\n" + &crate::freed_fill::report()
-        + "\n" + &crate::camera_space::skin_report()
+        + "\n" + &crate::camera_space::skin_report(mt)
 }

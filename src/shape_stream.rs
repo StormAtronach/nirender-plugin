@@ -9,7 +9,7 @@
 //! the game.
 
 use crate::capture;
-use crate::main_thread::MainThread;
+use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 
 /// The flags of a record. `RELATIVE`: the world matrix is relative to the camera. Do not use
@@ -119,15 +119,15 @@ pub unsafe fn fog_values_of(renderer: usize, fog: usize) -> Option<[u32; 4]> {
 }
 
 /// The handles of the object of the draw in progress, from the object record.
-static mut HANDLES: (u32, u32) = (0, 0);
-static mut RECORDS: u64 = 0;
+static HANDLES: MainCell<(u32, u32)> = MainCell::new((0, 0));
+static RECORDS: MainCell<u64> = MainCell::new(0);
 /// The draws that got no record while the stream recorded, by the reason: no geometry
 /// handle, no material handle. The helper does not draw them. The last count is the draws
 /// of an empty geometry (no active vertex, no triangle): those have nothing to draw.
-static mut WITHOUT: [u64; 3] = [0; 3];
+static WITHOUT: MainCell<[u64; 3]> = MainCell::new([0; 3]);
 /// The records of a material with projected lights or shadows: the helper draws the shape
 /// without them.
-static mut PROJECTED: u64 = 0;
+static PROJECTED: MainCell<u64> = MainCell::new(0);
 
 /// True when the shape records go out: a stream or a capture file records.
 pub fn on() -> bool {
@@ -144,19 +144,19 @@ pub fn records_only() -> bool {
 
 /// The draw kind, the class and the geometry data of the object of the draws that follow,
 /// for the log of a draw without a record.
-static mut OBJECT: (u32, u32, usize) = (0, 0, 0);
+static OBJECT: MainCell<(u32, u32, usize)> = MainCell::new((0, 0, 0));
 
 /// Notes the handles of the object of the draws that follow, with its draw kind, its class
 /// and its geometry data.
-pub unsafe fn note_handles(geometry: u32, material: u32, kind: u32, class: u32, geometry_data: usize) {
-    *core::ptr::addr_of_mut!(HANDLES) = (geometry, material);
-    *core::ptr::addr_of_mut!(OBJECT) = (kind, class, geometry_data);
+pub unsafe fn note_handles(t: &MainThread, geometry: u32, material: u32, kind: u32, class: u32, geometry_data: usize) {
+    *HANDLES.get(t) = (geometry, material);
+    *OBJECT.get(t) = (kind, class, geometry_data);
 }
 
 /// Notes the geometry of the draw in progress, for a draw whose geometry the port packs
 /// itself (a screen polygon): the object record of the link had none.
-pub unsafe fn note_geometry(geometry: u32) {
-    (*core::ptr::addr_of_mut!(HANDLES)).0 = geometry;
+pub unsafe fn note_geometry(t: &MainThread, geometry: u32) {
+    (*HANDLES.get(t)).0 = geometry;
 }
 
 /// The arguments of `NiDX8LightManager::setState` for the draw in progress: the light
@@ -175,34 +175,34 @@ pub unsafe fn ambient(renderer: usize) -> u32 {
     rd(rd::<usize>(renderer, R::renderState), RS::renderStateSettings + 139 * 8)
 }
 
-pub unsafe fn report() -> String {
-    let without = *core::ptr::addr_of!(WITHOUT);
+pub unsafe fn report(t: &MainThread) -> String {
+    let without = *WITHOUT.get(t);
     format!(
         "shapes: {} records, {} of them without their projected lights or shadows; draws without a record: {} with no geometry, {} with no material, {} skinned with no palette, {} skinned in software; {} draws of an empty geometry",
-        *core::ptr::addr_of!(RECORDS),
-        *core::ptr::addr_of!(PROJECTED),
+        *RECORDS.get(t),
+        *PROJECTED.get(t),
         without[0],
         without[1],
-        *core::ptr::addr_of!(WITHOUT_PALETTE),
-        *core::ptr::addr_of!(SOFTWARE_SKINNED),
+        *WITHOUT_PALETTE.get(t),
+        *SOFTWARE_SKINNED.get(t),
         without[2]
     )
 }
 
 /// The skinned draws that got no record because their skin has no complete palette.
-static mut WITHOUT_PALETTE: u64 = 0;
+static WITHOUT_PALETTE: MainCell<u64> = MainCell::new(0);
 /// The skinned draws that the game skins in software (MWSE's flag of the geometry, or less
 /// than 4 bones of the device): `RenderShape` gives them to `DrawPrimitive`, which sends no
 /// record.
-static mut SOFTWARE_SKINNED: u64 = 0;
+static SOFTWARE_SKINNED: MainCell<u64> = MainCell::new(0);
 
 /// Counts a skinned draw that the game skins in software, and writes the first ones to the
 /// log with the reason and the picture flag of the Code Patch.
-pub unsafe fn software_skinned(why: &str) {
+pub unsafe fn software_skinned(t: &MainThread, why: &str) {
     if !on() {
         return;
     }
-    let count = &mut *core::ptr::addr_of_mut!(SOFTWARE_SKINNED);
+    let count = &mut *SOFTWARE_SKINNED.get(t);
     *count += 1;
     if *count <= 8 {
         crate::log!("shapes: a skinned draw that the game skins in software ({why}), picture of the character {}", code_patch_picture());
@@ -211,14 +211,14 @@ pub unsafe fn software_skinned(why: &str) {
 
 /// Counts a skinned draw that gets no record because the palette of its skin cannot be made
 /// (`camera_space::skin_palette`), and writes the first ones to the log with the reason.
-pub unsafe fn without_palette(why: &str) {
+pub unsafe fn without_palette(t: &MainThread, why: &str) {
     if !on() {
         return;
     }
-    let count = &mut *core::ptr::addr_of_mut!(WITHOUT_PALETTE);
+    let count = &mut *WITHOUT_PALETTE.get(t);
     *count += 1;
     if *count <= 8 {
-        let (kind, class, _) = *core::ptr::addr_of!(OBJECT);
+        let (kind, class, _) = *OBJECT.get(t);
         crate::log!("shapes: a skinned draw without a record: kind {kind}, class {class}: {why}");
     }
 }
@@ -226,17 +226,17 @@ pub unsafe fn without_palette(why: &str) {
 /// Counts a draw that gets no record while the stream records. The log gets the first ones
 /// without a geometry that is not empty: the kind and the class of the object, and the
 /// reason.
-unsafe fn without(reason: usize) {
+unsafe fn without(t: &MainThread, reason: usize) {
     if !on() {
         return;
     }
-    let counts = &mut *core::ptr::addr_of_mut!(WITHOUT);
+    let counts = &mut *WITHOUT.get(t);
     if reason != 0 {
         counts[reason] += 1;
         return;
     }
-    let (kind, class, geometry_data) = *core::ptr::addr_of!(OBJECT);
-    let (why, empty) = crate::geometry_stream::why_none(kind, geometry_data);
+    let (kind, class, geometry_data) = *OBJECT.get(t);
+    let (why, empty) = crate::geometry_stream::why_none(t, kind, geometry_data);
     if empty {
         counts[2] += 1;
         return;
@@ -253,9 +253,9 @@ unsafe fn without(reason: usize) {
 /// has the matrix of each bone of the skin instead. Returns true when the ports of the
 /// pipeline must not run for this draw.
 pub unsafe fn send(t: &MainThread, renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>, palette: &[[f32; 16]]) -> bool {
-    let (geometry, _) = *core::ptr::addr_of!(HANDLES);
+    let (geometry, _) = *HANDLES.get(t);
     if geometry == 0 {
-        without(0);
+        without(t, 0);
         return false;
     }
     // The bones as the memory of the palette: little-endian floats, as the stream has them
@@ -269,9 +269,9 @@ pub unsafe fn send(t: &MainThread, renderer: usize, world: [f32; 16], relative: 
 /// `LINES`; the geometry is the lines data, noted by the link. Returns true when the
 /// pipeline of the device must not run for the draw.
 pub unsafe fn send_lines(t: &MainThread, renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>) -> bool {
-    let (geometry, _) = *core::ptr::addr_of!(HANDLES);
+    let (geometry, _) = *HANDLES.get(t);
     if geometry == 0 {
-        without(0);
+        without(t, 0);
         return false;
     }
     record(t, renderer, geometry, LINES, world, relative, ambient, material_values, fog, 0, &[], &[])
@@ -296,7 +296,7 @@ pub unsafe fn send_particles(t: &MainThread,
 ) -> bool {
     let count = (particles.len() / PARTICLE_BYTES) as u32;
     if key == 0 || count == 0 {
-        without(0);
+        without(t, 0);
         return false;
     }
     let tail = [count, radius.to_bits(), right[0].to_bits(), right[1].to_bits(), right[2].to_bits(), up[0].to_bits(), up[1].to_bits(), up[2].to_bits()];
@@ -341,18 +341,18 @@ const TAIL_WORDS: usize = EFFECT_WORDS + 4 + 8;
 /// texture effects when the draw has any, the fog when the draw has it, then `tail` and
 /// `bytes` (the bones, or the particle words and the particles).
 unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>, bone_count: u32, tail: &[u32], bytes: &[u8]) -> bool {
-    let (_, material) = *core::ptr::addr_of!(HANDLES);
+    let (_, material) = *HANDLES.get(t);
     if !on() {
         return false;
     }
     if material == 0 {
-        without(1);
+        without(t, 1);
         return false;
     }
-    if !crate::material_stream::last_modelled() {
-        *core::ptr::addr_of_mut!(PROJECTED) += 1;
+    if !crate::material_stream::last_modelled(t) {
+        *PROJECTED.get(t) += 1;
     }
-    let lights = crate::light_stream::note(renderer);
+    let lights = crate::light_stream::note(t, renderer);
     let count = lights.len() as u32;
     let effects = effect_words(renderer);
     let mut flags = (relative as u32)
@@ -411,7 +411,7 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
     let bound: [u32; 4] = rd(renderer, crate::gen::layouts::NiDX8Renderer::worldBound);
     words[2] |= BOUND;
     capture::shape(&words, lights, tail, bytes, &bound);
-    *core::ptr::addr_of_mut!(RECORDS) += 1;
+    *RECORDS.get(t) += 1;
     records_only()
 }
 

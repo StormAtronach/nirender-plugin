@@ -486,10 +486,10 @@ pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, tran
     let mut palette = PALETTE.with(|kept| core::mem::take(&mut *kept.borrow_mut()));
     palette.clear();
     let (world, relative) = if skin != 0 {
-        let relative = match crate::camera_space::skin_palette(skin, transform, true, &mut palette) {
+        let relative = match crate::camera_space::skin_palette(t, skin, transform, true, &mut palette) {
             Ok(relative) => relative,
             Err(why) => {
-                crate::shape_stream::without_palette(why);
+                crate::shape_stream::without_palette(t, why);
                 return false;
             }
         };
@@ -501,9 +501,9 @@ pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, tran
         }
         (identity, relative)
     } else {
-        if !crate::camera_space::take_model_transform(this, transform, true) {
+        if !crate::camera_space::take_model_transform(t, this, transform, true) {
             site_thiscall!(DP_SET_MODEL_TRANSFORM, this, transform);
-            crate::camera_space::check_model_transform(this, transform, true);
+            crate::camera_space::check_model_transform(t, this, transform, true);
         }
         site_thiscall!(DP_BOUND_COPY, this + R::worldBound, world_bound);
         site_thiscall!(DP_LIGHT_SET_STATE, light_manager, effect_state, texturing, vertex_color);
@@ -535,7 +535,7 @@ pub unsafe fn render_shape(t: &MainThread, this: usize, geom_data: usize, skin: 
     }
     if skin != 0 {
         let check = skinning_check(&skinning_check_bytes());
-        crate::shape_stream::software_skinned(match check {
+        crate::shape_stream::software_skinned(t, match check {
             SkinningCheck::HardwareBones => "less than 4 bones of the device",
             SkinningCheck::GeometryFlag => "the flag of MWSE on the geometry",
         });
@@ -575,7 +575,7 @@ pub unsafe fn render_tri_strips(t: &MainThread, this: usize, geom_data: usize, s
         return;
     }
     if skin != 0 {
-        crate::shape_stream::software_skinned("strips, less than 4 bones of the device");
+        crate::shape_stream::software_skinned(t, "strips, less than 4 bones of the device");
     }
     if skin == 0 && shape_record(t, this, 0, transform, world_bound) {
         return;
@@ -661,9 +661,9 @@ pub unsafe fn draw_primitive(
         if flags & BUILD_KEEP_TRANSFORM != 0 {
             set_bound = false;
         } else {
-            if !crate::camera_space::take_skinned_transforms(this, skin, partition, transform, true) {
+            if !crate::camera_space::take_skinned_transforms(t, this, skin, partition, transform, true) {
                 site_thiscall!(DP_SET_SKINNED_MODEL_TRANSFORMS, this, skin, partition, transform, world_bound);
-                crate::camera_space::check_skinned_transforms(skin, partition, transform, true);
+                crate::camera_space::check_skinned_transforms(t, skin, partition, transform, true);
             }
         }
     } else {
@@ -671,9 +671,9 @@ pub unsafe fn draw_primitive(
         if flags & BUILD_KEEP_TRANSFORM != 0 {
             set_bound = false;
         } else {
-            if !crate::camera_space::take_model_transform(this, transform, true) {
+            if !crate::camera_space::take_model_transform(t, this, transform, true) {
                 site_thiscall!(DP_SET_MODEL_TRANSFORM, this, transform);
-                crate::camera_space::check_model_transform(this, transform, true);
+                crate::camera_space::check_model_transform(t, this, transform, true);
             }
         }
     }
@@ -1035,9 +1035,9 @@ pub unsafe fn draw_skinned_primitive_2(
                         set_vertex_blend(this, rd(partition, P::numBonesPerVertex));
                     }
                     if flags & BUILD_KEEP_TRANSFORM == 0 {
-                        if !crate::camera_space::take_skinned_transforms(this, skin, partition, transform, true) {
+                        if !crate::camera_space::take_skinned_transforms(t, this, skin, partition, transform, true) {
                             site_thiscall!(S2_SET_SKINNED_MODEL_TRANSFORMS, this, skin, partition, transform, world_bound);
-                            crate::camera_space::check_skinned_transforms(skin, partition, transform, true);
+                            crate::camera_space::check_skinned_transforms(t, skin, partition, transform, true);
                         }
                     }
                     let buffer: usize = rd(partition, P::bufferData);
@@ -1253,9 +1253,9 @@ pub unsafe fn end_batch(t: &MainThread, this: usize) {
                         }
                         if flags & BUILD_KEEP_TRANSFORM == 0 {
                             let partition: usize = rd(batch, B::partition);
-                            if !crate::camera_space::take_skinned_transforms(this, skin, partition, transform, false) {
+                            if !crate::camera_space::take_skinned_transforms(t, this, skin, partition, transform, false) {
                                 site_thiscall!(EB_SET_SKINNED_MODEL_TRANSFORMS, this, skin, partition, transform, world_bound);
-                                crate::camera_space::check_skinned_transforms(skin, partition, transform, false);
+                                crate::camera_space::check_skinned_transforms(t, skin, partition, transform, false);
                             }
                             site_thiscall!(EB_BOUND_COPY, this + R::worldBound, world_bound);
                         }
@@ -1263,7 +1263,7 @@ pub unsafe fn end_batch(t: &MainThread, this: usize) {
                         set_vertex_blend(this, 0);
                         if flags & BUILD_KEEP_TRANSFORM == 0 {
                             site_thiscall!(EB_SET_MODEL_TRANSFORM, this, transform);
-                            crate::camera_space::check_model_transform(this, transform, false);
+                            crate::camera_space::check_model_transform(t, this, transform, false);
                             site_thiscall!(EB_BOUND_COPY, this + R::worldBound, world_bound);
                         }
                     }

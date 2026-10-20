@@ -644,9 +644,9 @@ unsafe fn tee(t: &MainThread, path: &str, frames: u32) -> Result<(), String> {
     write_kept();
     #[cfg(not(test))]
     crate::own_host::snapshot();
-    crate::geometry_stream::reset();
-    crate::material_stream::reset();
-    crate::light_stream::reset();
+    crate::geometry_stream::reset(t);
+    crate::material_stream::reset(t);
+    crate::light_stream::reset(t);
     crate::instance_stream::reset(t);
     if let Some(s) = state() {
         s.tee_only = false;
@@ -689,11 +689,11 @@ pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
     // The geometry and material records of the hold: forgotten, so that the next draw of
     // each sends it again, into the frames.
     let geometry: Vec<u32> = state().map(|s| s.tee_dirty_geometry.drain().collect()).unwrap_or_default();
-    crate::geometry_stream::forget(&geometry);
+    crate::geometry_stream::forget(t, &geometry);
     let material: Vec<u32> = state().map(|s| s.tee_dirty_material.drain().collect()).unwrap_or_default();
-    crate::material_stream::forget(&material);
+    crate::material_stream::forget(t, &material);
     // The lights change in most frames: all of them again, into the frames.
-    crate::light_stream::reset();
+    crate::light_stream::reset(t);
     crate::instance_stream::reset(t);
     true
 }
@@ -851,11 +851,11 @@ pub unsafe fn stop() {
         }
     }
     crate::log!("threads: {}", crate::sync::census_text().replace('\n', "; "));
-    crate::log!("{}", crate::geometry_stream::report());
-    crate::log!("{}", crate::material_stream::report());
-    crate::log!("{}", crate::light_stream::report());
-    crate::log!("{}", crate::shape_stream::report());
     if let Some(t) = proof.as_ref() {
+        crate::log!("{}", crate::geometry_stream::report(t));
+        crate::log!("{}", crate::material_stream::report(t));
+        crate::log!("{}", crate::light_stream::report(t));
+        crate::log!("{}", crate::shape_stream::report(t));
         crate::log!("{}", crate::instance_stream::report(t));
     }
     crate::log!(

@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 
+use crate::main_thread::{MainCell, MainThread};
 use crate::d3d::{D3DFVF_DIFFUSE, D3DFVF_NORMAL, D3DFVF_TEX1, D3DFVF_XYZ};
 use crate::engine::vcall0;
 use crate::gen::layouts::{NiGeometryData as GD, NiSkinInstance, NiSkinPartition, NiSkinPartition_Partition as P, NiTriStripsData as TS};
@@ -53,40 +54,40 @@ struct Version {
     skin_data: u32,
 }
 
-static mut VERSIONS: Option<HashMap<u32, Version>> = None;
+static VERSIONS: MainCell<Option<HashMap<u32, Version>>> = MainCell::new(None);
 /// The last geometry whose skin gave no bone influences (`skin_influences`), for the count of
 /// the draws without a record: such a geometry is not empty.
-static mut NO_INFLUENCES: usize = 0;
-static mut RECORDS: u64 = 0;
-static mut BYTES: u64 = 0;
+static NO_INFLUENCES: MainCell<usize> = MainCell::new(0);
+static RECORDS: MainCell<u64> = MainCell::new(0);
+static BYTES: MainCell<u64> = MainCell::new(0);
 
-unsafe fn versions() -> &'static mut HashMap<u32, Version> {
-    (*core::ptr::addr_of_mut!(VERSIONS)).get_or_insert_with(HashMap::new)
+fn versions<'a>(t: &'a MainThread) -> &'a mut HashMap<u32, Version> {
+    (*VERSIONS.get(t)).get_or_insert_with(HashMap::new)
 }
 
 /// Forgets the versions: the next draw of each geometry sends it again. For the start of a
 /// capture file from the stream, which has no geometry records before it.
-pub unsafe fn reset() {
-    versions().clear();
+pub unsafe fn reset(t: &MainThread) {
+    versions(t).clear();
 }
 
 /// Forgets these geometries: the next draw of each sends it again.
-pub unsafe fn forget(handles: &[u32]) {
+pub unsafe fn forget(t: &MainThread, handles: &[u32]) {
     for handle in handles {
-        versions().remove(handle);
+        versions(t).remove(handle);
     }
 }
 
 /// One line for the log: the records and the bytes that were sent, and the counts of the
 /// bone influences of the skins.
-pub unsafe fn report() -> String {
-    let (records, bytes) = (*core::ptr::addr_of!(RECORDS), *core::ptr::addr_of!(BYTES));
-    let s = &*core::ptr::addr_of!(SKIN_COUNTS);
+pub unsafe fn report(t: &MainThread) -> String {
+    let (records, bytes) = (*RECORDS.get(t), *BYTES.get(t));
+    let s = &*SKIN_COUNTS.get(t);
     format!(
         "geometry: {} records, {:.1} MB, {} geometries known; skins: {} from the skin data, {} from the partitions ({} without bone data); vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
         records,
         bytes as f64 / 1e6,
-        versions().len(),
+        versions(t).len(),
         s.from_data,
         s.from_partitions,
         s.without_bone_data,
@@ -108,9 +109,9 @@ static SKIN_FROM_PARTITIONS: core::sync::atomic::AtomicBool = core::sync::atomic
 
 /// Sets the source of the bone influences (true: the skin partitions) and forgets the
 /// geometries, so that each is packed again. Returns the source before.
-pub unsafe fn set_skin_from_partitions(partitions: bool) -> bool {
+pub unsafe fn set_skin_from_partitions(t: &MainThread, partitions: bool) -> bool {
     let before = SKIN_FROM_PARTITIONS.swap(partitions, core::sync::atomic::Ordering::Relaxed);
-    reset();
+    reset(t);
     before
 }
 
@@ -139,7 +140,7 @@ struct SkinCounts {
     different: u64,
 }
 
-static mut SKIN_COUNTS: SkinCounts = SkinCounts {
+static SKIN_COUNTS: MainCell<SkinCounts> = MainCell::new(SkinCounts {
     from_data: 0,
     from_partitions: 0,
     without_bone_data: 0,
@@ -150,7 +151,7 @@ static mut SKIN_COUNTS: SkinCounts = SkinCounts {
     triangles_over_four: 0,
     compared: 0,
     different: 0,
-};
+});
 
 /// `NiSkinData`: the number of bones and the array of their `BoneData`, each with the skin to
 /// bone transform, the bound, then the array of `BoneVertData` (a vertex and its weight, 8
@@ -261,10 +262,10 @@ fn same_influences(a: &([f32; 3], [u8; 4]), b: &([f32; 3], [u8; 4])) -> bool {
 /// the vertices with more than 4 bones, the triangles with more than 4 bones (the partitions
 /// take bones from those), and the vertices whose influences are not those of the partitions,
 /// when the skin has partitions. `triangles` gives the vertices of each triangle.
-unsafe fn skin_data_influences(skin_data: usize, vertices: usize, triangles: &[[usize; 3]]) -> Option<Vec<([f32; 3], [u8; 4])>> {
+unsafe fn skin_data_influences(t: &MainThread, skin_data: usize, vertices: usize, triangles: &[[usize; 3]]) -> Option<Vec<([f32; 3], [u8; 4])>> {
     let lists = skin_data_weights(skin_data, vertices)?;
     let packed: Vec<([f32; 3], [u8; 4])> = lists.iter().map(|list| pack_weights(list)).collect();
-    let s = &mut *core::ptr::addr_of_mut!(SKIN_COUNTS);
+    let s = &mut *SKIN_COUNTS.get(t);
     s.from_data += 1;
     s.vertices += vertices as u64;
     s.over_four += lists.iter().filter(|list| list.len() > 4).count() as u64;
@@ -307,7 +308,7 @@ unsafe fn triangle_vertices(indexes: usize, entries: u32, strip_count: u32, stri
 /// Why `note` gives no handle for this geometry: the checks of `note` in their order, and
 /// true when the geometry is empty (the device would draw nothing for it either). For the
 /// counts and the log of the draws without a record.
-pub unsafe fn why_none(kind: u32, geom_data: usize) -> (&'static str, bool) {
+pub unsafe fn why_none(t: &MainThread, kind: u32, geom_data: usize) -> (&'static str, bool) {
     if geom_data == 0 {
         return ("no geometry data", false);
     }
@@ -323,7 +324,7 @@ pub unsafe fn why_none(kind: u32, geom_data: usize) -> (&'static str, bool) {
     if vcall0(geom_data, V_GET_ACTIVE_VERTEX_COUNT) & 0xFFFF == 0 {
         return ("no active vertex", true);
     }
-    if geom_data == *core::ptr::addr_of!(NO_INFLUENCES) {
+    if geom_data == *NO_INFLUENCES.get(t) {
         return ("the skin partitions give no bone influences in the vertex format", false);
     }
     if strips {
@@ -338,14 +339,14 @@ pub unsafe fn why_none(kind: u32, geom_data: usize) -> (&'static str, bool) {
 /// Notes the geometry of a shape that is about to be drawn: sends it when it is new or
 /// changed. Returns the handle for the draws that follow, or 0 for a geometry that has
 /// nothing to draw (see `why_none`).
-pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
+pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize) -> u32 {
     if !crate::capture::recording() || geom_data == 0 {
         return 0;
     }
     let strips = match kind {
         DRAW_SHAPE => false,
         DRAW_STRIPS => true,
-        DRAW_LINES => return note_lines(geom_data),
+        DRAW_LINES => return note_lines(t, geom_data),
         _ => return 0,
     };
     if !ni::is_kind_of(geom_data, if strips { RTTI_NI_TRI_STRIPS_DATA } else { RTTI_NI_TRI_SHAPE_DATA }) {
@@ -376,7 +377,7 @@ pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
     let handle = geom_data as u32;
     let skin_data: usize = if skin != 0 { rd(skin, NiSkinInstance::skinData) } else { 0 };
     let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: active, entries, skin_data: skin_data as u32 };
-    if versions().get(&handle) == Some(&version) {
+    if versions(t).get(&handle) == Some(&version) {
         return handle;
     }
     // The vertices, as `NiDX8VertexBufferManager::PackUntransformedVB` packs them, with the
@@ -392,21 +393,21 @@ pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
             None
         } else {
             let triangles = triangle_vertices(indexes, entries, strip_count, strip_lengths);
-            let found = skin_data_influences(skin_data, all_vertices, &triangles);
+            let found = skin_data_influences(t, skin_data, all_vertices, &triangles);
             if found.is_none() {
-                (*core::ptr::addr_of_mut!(SKIN_COUNTS)).without_bone_data += 1;
+                (*SKIN_COUNTS.get(t)).without_bone_data += 1;
             }
             found
         };
         let found = from_data.or_else(|| {
             let partitions = skin_influences(skin_data, all_vertices);
-            (*core::ptr::addr_of_mut!(SKIN_COUNTS)).from_partitions += partitions.is_some() as u64;
+            (*SKIN_COUNTS.get(t)).from_partitions += partitions.is_some() as u64;
             partitions
         });
         match found {
             Some(influences) => Some(influences),
             None => {
-                *core::ptr::addr_of_mut!(NO_INFLUENCES) = geom_data;
+                *NO_INFLUENCES.get(t) = geom_data;
                 return 0;
             }
         }
@@ -464,17 +465,17 @@ pub unsafe fn note(kind: u32, geom_data: usize, skin: usize) -> u32 {
     if strip_count != 0 {
         lengths[..strip_count as usize * 2].copy_from_slice(core::slice::from_raw_parts(strip_lengths as *const u8, strip_count as usize * 2));
     }
-    send(handle, version, fvf, stride as u32, strip_count, &lengths, &bytes, index_bytes);
+    send(t, handle, version, fvf, stride as u32, strip_count, &lengths, &bytes, index_bytes);
     handle
 }
 
 /// Sends a geometry record and notes its version. `lengths` has the strip lengths, padded
 /// to 4 bytes.
-unsafe fn send(handle: u32, version: Version, fvf: u32, stride: u32, strip_count: u32, lengths: &[u8], bytes: &[u8], index_bytes: &[u8]) {
+unsafe fn send(t: &MainThread, handle: u32, version: Version, fvf: u32, stride: u32, strip_count: u32, lengths: &[u8], bytes: &[u8], index_bytes: &[u8]) {
     crate::capture::geometry(&[handle, version.unique, version.revision as u32, fvf, stride, version.vertices, version.entries, strip_count], lengths, bytes, index_bytes);
-    versions().insert(handle, version);
-    RECORDS += 1;
-    BYTES += (32 + lengths.len() + bytes.len() + index_bytes.len()) as u64;
+    versions(t).insert(handle, version);
+    *RECORDS.get(t) += 1;
+    *BYTES.get(t) += (32 + lengths.len() + bytes.len() + index_bytes.len()) as u64;
 }
 
 /// The vertex format and the stride of a vertex with a position, a colour when `colours`
@@ -499,7 +500,7 @@ fn plain_format(colours: bool, coords: bool) -> (u32, usize) {
 /// builds it: the vertex and the next one for each vertex with its segment flag. For the
 /// last vertex with the flag the function writes one index and counts two: the second index
 /// is what the buffer had there. The record has the vertex twice: a segment without length.
-unsafe fn note_lines(geom_data: usize) -> u32 {
+unsafe fn note_lines(t: &MainThread, geom_data: usize) -> u32 {
     let count = rd::<u16>(geom_data, GD::vertexCount) as usize;
     let flags: usize = rd(geom_data, LINES_SEGMENT_FLAGS);
     let vertices: usize = rd(geom_data, GD::vertices);
@@ -518,7 +519,7 @@ unsafe fn note_lines(geom_data: usize) -> u32 {
     }
     let handle = geom_data as u32;
     let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: count as u32, entries: indexes.len() as u32, skin_data: 0 };
-    if versions().get(&handle) == Some(&version) {
+    if versions(t).get(&handle) == Some(&version) {
         return handle;
     }
     let colours: usize = rd(geom_data, GD::colors);
@@ -535,7 +536,7 @@ unsafe fn note_lines(geom_data: usize) -> u32 {
         }
     }
     let index_bytes: Vec<u8> = indexes.iter().flat_map(|i| i.to_le_bytes()).collect();
-    send(handle, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes);
+    send(t, handle, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes);
     handle
 }
 
@@ -549,7 +550,7 @@ unsafe fn note_lines(geom_data: usize) -> u32 {
 ///
 /// The game keeps `d` on the x87 stack (64-bit mantissa); this code uses an `f64`, so a
 /// rounding can differ.
-pub unsafe fn note_screen_polygon(count: u32, vertices: usize, tex_coords: usize, colour: usize, near: f32, distance: f32) -> u32 {
+pub unsafe fn note_screen_polygon(t: &MainThread, count: u32, vertices: usize, tex_coords: usize, colour: usize, near: f32, distance: f32) -> u32 {
     if !crate::capture::recording() || vertices == 0 || count < 3 {
         return 0;
     }
@@ -573,9 +574,9 @@ pub unsafe fn note_screen_polygon(count: u32, vertices: usize, tex_coords: usize
     let index_bytes: Vec<u8> = indexes.iter().flat_map(|i| i.to_le_bytes()).collect();
     let handle = vertices as u32;
     let version = Version { unique: 0, revision: 0, vertices: count as u32, entries: indexes.len() as u32, skin_data: 0 };
-    send(handle, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes);
+    send(t, handle, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes);
     // The next draw of the polygon sends it again.
-    versions().remove(&handle);
+    versions(t).remove(&handle);
     handle
 }
 
