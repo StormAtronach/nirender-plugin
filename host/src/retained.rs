@@ -1542,9 +1542,12 @@ impl Player {
 
     /// Draws the sorted blends of the frame where the engine flushes its sorted queue: the
     /// kept blends of the table and the blended draws of the engine's path that
-    /// waited (`frame_sorted`), as one list back to front by the depth of the bound centre
-    /// along the view. A run of the table's entries is one `draw_retained` call; a draw of
-    /// the engine's path is issued between them.
+    /// waited (`frame_sorted`). The draws of the engine's path keep their order of arrival:
+    /// the engine sorted them, and a node that orders its subtree (a sort adjust node) gives
+    /// an order that the depth of each shape does not. The table's blends go between them by
+    /// the depth of the bound centre along the view (`merge_picks`). A run of the table's
+    /// entries is one `draw_retained` call; a draw of the engine's path is issued between
+    /// them.
     /// Engine-rules R21, R22 (the skill wgpu-renderer-dev).
     pub(super) fn draw_retained_sorted(&mut self, generation: u32) {
         let (deferred, later): (Vec<_>, Vec<_>) = core::mem::take(&mut self.frame_sorted).into_iter().partition(|e| e.3 == generation);
@@ -1563,43 +1566,115 @@ impl Player {
             return;
         }
         let near = self.world_near.unwrap_or([0.0; 4]);
-        let mut deferred: Vec<(u64, Rc<Draw>)> = deferred
+        let deferred: Vec<(u64, Rc<Draw>)> = deferred
             .into_iter()
             .map(|(c, sequence, draw, _)| {
                 let depth = (near[0] * c[0] + near[1] * c[1] + near[2] * c[2] + near[3]).max(0.0);
                 ((!depth.to_bits() as u64) << 32 | sequence as u64, draw)
             })
             .collect();
-        deferred.sort_unstable_by_key(|entry| entry.0);
         self.renderer.counts.merged_blends += deferred.len() as u64;
         if self.pass.is_none() {
             self.open_pass(None, None, None);
         }
-        let (mut i, mut j) = (0, 0);
-        while i < kept.len() || j < deferred.len() {
-            let table_next = j >= deferred.len() || (i < kept.len() && kept[i].0 <= deferred[j].0);
-            if table_next {
-                let start = i;
-                while i < kept.len() && (j >= deferred.len() || kept[i].0 <= deferred[j].0) {
-                    i += 1;
+        let kept_keys: Vec<u64> = kept.iter().map(|entry| entry.0).collect();
+        let deferred_keys: Vec<u64> = deferred.iter().map(|entry| entry.0).collect();
+        for pick in merge_picks(&kept_keys, &deferred_keys) {
+            match pick {
+                Pick::Table(start, end) => {
+                    let Some(mut v) = view else { break };
+                    v.sorted = Sorted::Only;
+                    v.target = self.pass_target;
+                    self.end_run();
+                    self.retained.kept_sorted = kept[start..end].to_vec();
+                    let Some(pass) = self.pass.as_mut() else { return };
+                    pass.push_debug_group("retained sorted blends");
+                    draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &v);
+                    pass.pop_debug_group();
+                    self.forget_bound();
                 }
-                let Some(mut v) = view else { break };
-                v.sorted = Sorted::Only;
-                v.target = self.pass_target;
-                self.end_run();
-                self.retained.kept_sorted = kept[start..i].to_vec();
-                let Some(pass) = self.pass.as_mut() else { return };
-                pass.push_debug_group("retained sorted blends");
-                draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &v);
-                pass.pop_debug_group();
-                self.forget_bound();
-            } else {
-                let draw = deferred[j].1.clone();
-                j += 1;
-                self.issue(&draw);
+                Pick::Engine(j) => {
+                    let draw = deferred[j].1.clone();
+                    self.issue(&draw);
+                }
             }
         }
         self.retained.kept_sorted = kept;
+    }
+}
+
+/// One step of the sorted blends: a run of the table's entries, or one draw of the engine's
+/// path.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pick {
+    Table(usize, usize),
+    Engine(usize),
+}
+
+/// The order of the sorted blends from the keys of the two lists (far first: a smaller key
+/// is farther). The table's keys are sorted; the engine's keys are in the engine's order and
+/// stay in it. Before each draw of the engine, the table's entries with a key not larger
+/// than its key go as one run.
+fn merge_picks(kept: &[u64], deferred: &[u64]) -> Vec<Pick> {
+    let mut picks = Vec::new();
+    let mut i = 0;
+    for (j, &key) in deferred.iter().enumerate() {
+        let start = i;
+        while i < kept.len() && kept[i] <= key {
+            i += 1;
+        }
+        if i > start {
+            picks.push(Pick::Table(start, i));
+        }
+        picks.push(Pick::Engine(j));
+    }
+    if i < kept.len() {
+        picks.push(Pick::Table(i, kept.len()));
+    }
+    picks
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::{merge_picks, Pick};
+
+    #[test]
+    fn the_engine_order_stays_when_its_keys_are_not_sorted() {
+        // A sort adjust node in mode 64: its shapes come in the order of the tree, and their
+        // own depths are not sorted. No table entry.
+        assert_eq!(merge_picks(&[], &[30, 10, 20]), vec![Pick::Engine(0), Pick::Engine(1), Pick::Engine(2)]);
+    }
+
+    #[test]
+    fn the_table_entries_go_before_the_first_nearer_draw_of_the_engine() {
+        assert_eq!(
+            merge_picks(&[5, 15, 40], &[10, 30]),
+            vec![Pick::Table(0, 1), Pick::Engine(0), Pick::Table(1, 2), Pick::Engine(1), Pick::Table(2, 3)]
+        );
+    }
+
+    #[test]
+    fn a_run_of_table_entries_is_one_pick() {
+        assert_eq!(merge_picks(&[1, 2, 3], &[9]), vec![Pick::Table(0, 3), Pick::Engine(0)]);
+        assert_eq!(merge_picks(&[1, 2], &[]), vec![Pick::Table(0, 2)]);
+    }
+
+    #[test]
+    fn sorted_engine_keys_give_the_merge_of_before() {
+        // The keys of the engine are sorted when no node orders a subtree: the picks are
+        // the merge of two sorted lists, as before the change.
+        assert_eq!(
+            merge_picks(&[2, 4, 6], &[1, 3, 5, 7]),
+            vec![
+                Pick::Engine(0),
+                Pick::Table(0, 1),
+                Pick::Engine(1),
+                Pick::Table(1, 2),
+                Pick::Engine(2),
+                Pick::Table(2, 3),
+                Pick::Engine(3)
+            ]
+        );
     }
 }
 

@@ -3218,8 +3218,8 @@ struct Player {
     parameters: Option<FrameParameters>,
     plan: plan::Plan,
     /// The blended world draws of the frame that the engine would sort: they wait for the
-    /// item `SortedBlends` and merge with the table's blends by depth (the centre of the
-    /// bound, the order of arrival, the draw).
+    /// item `SortedBlends`, keep their order of arrival, and take the table's blends between
+    /// them by depth (the centre of the bound, the order of arrival, the draw).
     frame_sorted: Vec<([f32; 3], u32, Rc<Draw>, u32)>,
     /// The near plane of the world's view of the frame, in the space of the world: the
     /// depth of the sort of the blends.

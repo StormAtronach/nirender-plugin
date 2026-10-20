@@ -292,9 +292,9 @@ impl Player {
             self.held_draws.push(Item::Draw(draw));
         } else if draw.world && self.plan.world_begun && engine::alpha::sorted_by_engine(class, &derived.blends, derived.no_sorter) && self.target.is_none() {
             // A blend the engine would sort: it waits for the sorted blends of the table, and
-            // the two lists merge by depth (`draw_retained_sorted`). The centre of its bound
-            // is the key; a record without one (an older capture) gives the translation of
-            // the draw.
+            // the table's blends go between the engine's draws by depth
+            // (`draw_retained_sorted`). The centre of its bound is the key; a record without
+            // one (an older capture) gives the translation of the draw.
             let centre = match self.stream.shape_bound {
                 Some(b) => [b[0], b[1], b[2]],
                 None => {
