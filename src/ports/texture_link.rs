@@ -181,6 +181,7 @@ pub unsafe fn create(texture: usize, renderer: usize) -> usize {
     } else {
         rd(texture, ST::pixelData)
     };
+    let unreadable = nested || (filename != 0 && pixel_data == 0);
     let prefs = texture + T::formatPrefs;
     // The pixel data that this function holds a reference to.
     let mut held = pixel_data;
@@ -289,6 +290,9 @@ pub unsafe fn create(texture: usize, renderer: usize) -> usize {
     wr(slot, 0, this);
     if held != 0 {
         ni::release(held);
+    }
+    if unreadable {
+        textures::mark_unreadable(this);
     }
     this
 }

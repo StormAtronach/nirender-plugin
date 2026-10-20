@@ -1365,7 +1365,7 @@ unsafe fn purge(s: &mut State) {
     if renderer == 0 {
         return;
     }
-    let (textures, kept) = crate::ports::textures::purge_source_textures();
+    let (textures, kept, unreadable) = crate::ports::textures::purge_source_textures();
     let rendered = crate::ports::rendered::remake_rendered_textures(renderer);
     // Every buffer the renderer has, by the renderer's own maps: the game can draw an object
     // into a rendered texture one time and not again. Do not read the objects kept from the
@@ -1374,6 +1374,9 @@ unsafe fn purge(s: &mut State) {
     crate::log!("capture: the renderer dropped {textures} source textures, the buffers of {shapes} shapes and {partitions} skin partitions ({} objects were in view), and made {rendered} rendered textures again", s.geometry.len());
     if kept != 0 {
         crate::log!("capture: {kept} source textures kept their data: the game cannot make them again (no file name, no pixel data); a capture file does not have them");
+    }
+    if unreadable != 0 {
+        crate::log!("capture: {unreadable} source textures kept the default texture: their file could not be read; a capture file does not have them");
     }
 }
 

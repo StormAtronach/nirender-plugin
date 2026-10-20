@@ -687,6 +687,34 @@ pub unsafe fn textures_with_data(table: u32) -> Vec<usize> {
     list
 }
 
+/// The renderer data of the source textures whose file could not be read: they hold the
+/// default texture. A purge keeps them. A new read opens the engine's error menu again, and
+/// the frames of that menu inside a display leave the accumulator of the display without
+/// its camera. The cell worker also makes and deletes renderer data, so the list has a lock.
+static UNREADABLE: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// Marks renderer data that holds the default texture because the file of its texture could
+/// not be read.
+pub fn mark_unreadable(data: usize) {
+    if let Ok(mut list) = UNREADABLE.lock() {
+        list.push(data);
+    }
+}
+
+/// True when `data` has the mark of `mark_unreadable`.
+pub fn is_unreadable(data: usize) -> bool {
+    UNREADABLE.lock().is_ok_and(|list| list.contains(&data))
+}
+
+/// Removes the mark of renderer data that is deleted.
+fn forget_unreadable(data: usize) {
+    if let Ok(mut list) = UNREADABLE.lock() {
+        if let Some(at) = list.iter().position(|&d| d == data) {
+            list.swap_remove(at);
+        }
+    }
+}
+
 /// Makes each source texture lose its renderer data: the game makes it again at the next use
 /// of the texture. A rendered texture keeps its data: the game does not make that again by
 /// itself. This is not a function of the game; the capture uses it.
@@ -695,17 +723,22 @@ pub unsafe fn textures_with_data(table: u32) -> Vec<usize> {
 /// `NiDX8SourceTextureData_static::Create` (0x6BFA50) reads the file of the texture when it
 /// has a file name. If not, it takes the pixel data of the texture. With neither, it takes
 /// the default texture of the renderer. A static texture made from pixel data has neither
-/// after its first use. Without its renderer data it stays the default texture.
+/// after its first use. Without its renderer data it stays the default texture. A texture
+/// whose file could not be read also keeps its data (`is_unreadable`).
 ///
-/// Returns the number of textures that lost their data, and the number that kept it.
-pub unsafe fn purge_source_textures() -> (u32, u32) {
-    let (mut dropped, mut kept) = (0, 0);
+/// Returns the number of textures that lost their data, the number that kept it because
+/// the game cannot make it again, and the number that kept it because its file could not
+/// be read.
+pub unsafe fn purge_source_textures() -> (u32, u32, u32) {
+    let (mut dropped, mut kept, mut unreadable) = (0, 0, 0);
     let mut texture = eng::texture_list_head();
     while texture != 0 {
         let data: usize = rd(texture, T::rendererData);
         if data != 0 && rd::<u32>(data, TD::vtbl_vtbl) == VTBL_SOURCE_TEXTURE_DATA {
             if rd::<usize>(texture, ST::filenameOnPC) == 0 && rd::<usize>(texture, ST::pixelData) == 0 {
                 kept += 1;
+            } else if is_unreadable(data) {
+                unreadable += 1;
             } else {
                 wr::<usize>(texture, T::rendererData, rd(data, TD::vtbl_linkedData));
                 ni::delete_object(data);
@@ -714,7 +747,7 @@ pub unsafe fn purge_source_textures() -> (u32, u32) {
         }
         texture = rd(texture, T::nextTexture);
     }
-    (dropped, kept)
+    (dropped, kept, unreadable)
 }
 
 // ---- NiDX8SourceTextureData
@@ -744,6 +777,7 @@ pub unsafe fn source_data_ctor(this: usize, texture: usize, renderer: usize) -> 
 pub unsafe fn source_data_dtor(this: usize) {
     crate::shadow::touch(&source_data_dtor_port::STATE);
     crate::instance_stream::textures_changed();
+    forget_unreadable(this);
     wr(this, SD::vtbl_vtbl, VTBL_SOURCE_TEXTURE_DATA);
     let texture: usize = rd(this, SD::d3dTexture);
     if texture != 0 {
@@ -1595,6 +1629,19 @@ pub(crate) mod tests {
 
     pub fn note(kind: u32, value: u32) {
         NOTES.with(|n| n.borrow_mut().push((kind, value)));
+    }
+
+    #[test]
+    fn the_mark_of_unreadable_data_lives_until_the_data_is_deleted() {
+        let (data, other) = (0x7FFF_0010usize, 0x7FFF_0020usize);
+        assert!(!is_unreadable(data));
+        mark_unreadable(data);
+        assert!(is_unreadable(data));
+        assert!(!is_unreadable(other));
+        forget_unreadable(other);
+        assert!(is_unreadable(data));
+        forget_unreadable(data);
+        assert!(!is_unreadable(data));
     }
 
     fn notes() -> Vec<(u32, u32)> {
