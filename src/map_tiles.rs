@@ -78,6 +78,18 @@ struct Open {
     pixel_data: usize,
     width: u32,
     height: u32,
+    /// The count of `poll` calls when the tile opened.
+    opened: u32,
+}
+
+/// The calls of `poll`: one after each Present.
+static POLLS: AtomicU32 = AtomicU32::new(0);
+
+/// `NIRENDER_MAP_TILES_HOLD=N`, a test switch: `poll` completes a tile only N Presents after it
+/// opened, so that a save or a purge soon after a cell cross finds open tiles. 0 by default.
+fn hold() -> u32 {
+    static HOLD: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *HOLD.get_or_init(|| std::env::var("NIRENDER_MAP_TILES_HOLD").ok().and_then(|value| value.parse().ok()).unwrap_or(0))
 }
 
 static OPEN: MainCell<Vec<Open>> = MainCell::new(Vec::new());
@@ -174,6 +186,9 @@ pub unsafe fn install() {
     }
     INSTALLED.store(true, Ordering::Relaxed);
     crate::log!("map tiles: the helper copies each tile of the local map on the GPU; the pixels come later");
+    if hold() != 0 {
+        crate::log!("map tiles: NIRENDER_MAP_TILES_HOLD={}: a tile stays open {} Presents at least", hold(), hold());
+    }
 }
 
 unsafe fn engine_render_map(this: usize, flag: u32) {
@@ -257,7 +272,7 @@ unsafe fn copy(t: &MainThread, this: usize) -> bool {
     };
     LAST_TICKET.store(ticket, Ordering::Relaxed);
     ni::add_reference(pixel_data);
-    OPEN.get(t).push(Open { ticket, pixel_data, width, height });
+    OPEN.get(t).push(Open { ticket, pixel_data, width, height, opened: POLLS.load(Ordering::Relaxed) });
     MOST_OPEN.fetch_max(OPEN.get(t).len(), Ordering::Relaxed);
     COPIED.fetch_add(1, Ordering::Relaxed);
     true
@@ -366,6 +381,7 @@ pub unsafe fn poll() {
         return;
     }
     let Some(t) = MainThread::here() else { return };
+    let polls = POLLS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     if OPEN.get(&t).is_empty() && PAINTS.get(&t).is_empty() {
         return;
     }
@@ -377,7 +393,11 @@ pub unsafe fn poll() {
     }
     let mut index = 0;
     while index < OPEN.get(&t).len() {
-        let ticket = OPEN.get(&t)[index].ticket;
+        let (ticket, opened) = (OPEN.get(&t)[index].ticket, OPEN.get(&t)[index].opened);
+        if polls.wrapping_sub(opened) < hold() {
+            index += 1;
+            continue;
+        }
         match crate::capture::tile_pixels(ticket) {
             Some(pixels) => {
                 let open = OPEN.get(&t).remove(index);
@@ -390,7 +410,11 @@ pub unsafe fn poll() {
 }
 
 /// Completes every open tile, with a wait, and runs the paints.
-unsafe fn complete_all(t: &MainThread) {
+unsafe fn complete_all(t: &MainThread, before: &str) {
+    static LOGGED: AtomicU32 = AtomicU32::new(0);
+    if LOGGED.fetch_add(1, Ordering::Relaxed) < 40 {
+        crate::log!("map tiles: before {before}: {} tiles open, {} paints wait", OPEN.get(t).len(), PAINTS.get(t).len());
+    }
     if OPEN.get(t).is_empty() && PAINTS.get(t).is_empty() {
         return;
     }
@@ -406,8 +430,14 @@ unsafe fn complete_all(t: &MainThread) {
 
 /// `DataHandler::purgeTextures` (thiscall).
 unsafe extern "thiscall" fn purge_detour(this: usize) {
-    if let Some(t) = MainThread::here() {
-        complete_all(&t);
+    match MainThread::here() {
+        Some(t) => complete_all(&t, "a purge"),
+        None => {
+            static LOGGED: AtomicBool = AtomicBool::new(false);
+            if !LOGGED.swap(true, Ordering::Relaxed) {
+                crate::log!("map tiles: a purge on another thread: the open tiles are not completed first");
+            }
+        }
     }
     let original: unsafe extern "thiscall" fn(usize) = core::mem::transmute(PURGE_ORIGINAL.load(Ordering::Relaxed));
     original(this);
@@ -417,7 +447,7 @@ unsafe extern "thiscall" fn purge_detour(this: usize) {
 /// file name; returns the pixel data of the picture).
 unsafe extern "C" fn save_shot_detour(filename: u32) -> u32 {
     if let Some(t) = MainThread::here() {
-        complete_all(&t);
+        complete_all(&t, "a save");
     }
     cdecl1(CREATE_SAVE_SCREENSHOT, filename)
 }
