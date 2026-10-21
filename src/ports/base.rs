@@ -519,18 +519,21 @@ fn window_to_buffer(x: u32, width: u32, y: u32, height: u32, one: u32) -> (u32, 
     (output[0], output[1])
 }
 
-/// The place and the bytes of MGE XE's UI scale patch (`MWBridge::setUIScale`) in
-/// `MapWindowPointToBufferPoint`: the two calls of the back buffer size become reads of the
-/// world controller's view size, so that a point of the scaled UI maps to the whole buffer.
+/// The place and the bytes of the UI scale patch in `MapWindowPointToBufferPoint`: the two
+/// calls of the back buffer size become reads of the world controller's view size, so that a
+/// point of the scaled UI maps to the whole buffer. MWSE writes them at a request of the UI
+/// scale (`mwse_native::NATIVE_REQUEST_UI_SCALE`); MGE XE wrote them before (`MWBridge::setUIScale`),
+/// and still does on Direct3D 9.
 pub(crate) const UI_SCALE_PATCH_AT: usize = 0x6F5157;
 pub(crate) const UI_SCALE_PATCH: [u8; 14] = [0xA1, 0xDC, 0x67, 0x7C, 0x00, 0x8B, 0x78, 0x78, 0x8B, 0x40, 0x7C, 0x90, 0x90, 0x90];
 /// `WorldController::viewWidth` and `viewHeight`.
 const WC_VIEW_WIDTH: usize = 0x78;
 const WC_VIEW_HEIGHT: usize = 0x7C;
 
-/// 0x6F5150 `NiRenderer::MapWindowPointToBufferPoint`. With MGE XE's UI scale patch in memory
-/// the port divides by the world controller's view size, as the patched function does; else by
-/// the back buffer size. The port returns 0 when the size is 0.
+/// 0x6F5150 `NiRenderer::MapWindowPointToBufferPoint`. When MWSE says that the pick ray
+/// divides by the UI's view size (its query of the UI scale), the port divides by the world
+/// controller's view size, as the patched function does; else by the back buffer size. The
+/// port returns 0 when the size is 0.
 pub unsafe fn renderer_map_window_point_to_buffer_point(this: usize, x: u32, y: u32, out_x: usize, out_y: usize) -> u8 {
     crate::shadow::touch(&renderer_map_window_point_to_buffer_point_port::STATE);
     let (width, height) = match ui_scale_world_controller() {
@@ -558,12 +561,12 @@ unsafe fn map_one() -> u32 {
     1.0f32.to_bits()
 }
 
-/// The world controller when MGE XE's UI scale patch is in memory and the world controller is
-/// there; else 0.
+/// The world controller when MWSE's pick ray divides by the UI's view size and the world
+/// controller is there; else 0.
 #[cfg(not(test))]
 unsafe fn ui_scale_world_controller() -> usize {
-    let patched = (0..UI_SCALE_PATCH.len()).all(|i| rd::<u8>(UI_SCALE_PATCH_AT, i) == UI_SCALE_PATCH[i]);
-    if patched { rd(crate::engine::WORLD_CONTROLLER, 0) } else { 0 }
+    let in_view_size = crate::mwse_native::ui_scale().is_some_and(|scale| scale.pick_ray_in_view_size != 0);
+    if in_view_size { rd(crate::engine::WORLD_CONTROLLER, 0) } else { 0 }
 }
 
 /// The world controller of a test: the address of its fields, or 0 for a game without the patch.

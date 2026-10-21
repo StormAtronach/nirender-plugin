@@ -12,9 +12,8 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::engine::{thiscall0, WORLD_CONTROLLER};
+use crate::engine::WORLD_CONTROLLER;
 use crate::gen::layouts::NiDX8Renderer as R;
-use crate::hook::{self, Cleanup};
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 use crate::ports::renderer_frame;
@@ -46,9 +45,6 @@ const WC_CAMERA_ROOTS: [usize; 3] = [0x130, 0x15C, 0x2BC];
 const WC_OWNED_CAMERAS: [usize; 2] = [0x134, 0x160];
 /// `PlayerAnimController`: the "Camera" node of the first-person model.
 const CONTROLLER_HEAD_CAMERA: usize = 0xD4;
-/// 0x542E60 `PlayerAnimController::updateCameraTransforms`, and its first instruction.
-const UPDATE_CAMERA_TRANSFORMS: usize = 0x542E60;
-const UPDATE_CAMERA_TRANSFORMS_HEAD: [u8; 6] = [0x64, 0xA1, 0x00, 0x00, 0x00, 0x00];
 
 const MAX_CHAIN_DEPTH: u32 = 64;
 const GUARD_STEPS: f32 = 16.0;
@@ -263,14 +259,11 @@ struct EyePair {
 static EYE: MainCell<EyePair> = MainCell::new(EyePair { valid: false, frame: 0, roots: [0; 3], stored: [0.0; 3], exact: [0.0; 3] });
 /// The number of the frame in progress. It goes up at the end of each frame.
 static FRAME: MainCell<u32> = MainCell::new(1);
-static UPDATE_CAMERA_TRANSFORMS_ORIGINAL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 unsafe fn capture_eye(controller: usize) {
-    // The engine updates its camera on the main thread; a call of another thread only
-    // runs the engine function.
+    // The engine updates its camera on the main thread; a call of another thread is counted.
     let Some(t) = MainThread::here() else {
         crate::sync::off_thread("camera space", "camera update");
-        thiscall0(UPDATE_CAMERA_TRANSFORMS_ORIGINAL.load(Ordering::Relaxed), controller);
         return;
     };
     let t = &t;
@@ -296,11 +289,11 @@ unsafe fn capture_eye(controller: usize) {
     eye.valid = true;
 }
 
-/// The detour of `PlayerAnimController::updateCameraTransforms`: the game function, then the
-/// capture.
-unsafe extern "fastcall" fn update_camera_transforms_detour(controller: usize, _edx: usize) {
-    thiscall0(UPDATE_CAMERA_TRANSFORMS_ORIGINAL.load(Ordering::Relaxed), controller);
-    capture_eye(controller);
+/// The listener of MWSE's event "the camera transforms updated" (0x542E60
+/// `PlayerAnimController::updateCameraTransforms` returned): the capture.
+unsafe extern "C" fn camera_transforms_updated(_user: *mut core::ffi::c_void, packet: *const core::ffi::c_void) {
+    let packet = &*(packet as *const crate::mwse_native::CameraTransformsUpdatedV1);
+    capture_eye(packet.player_animation_controller as usize);
 }
 
 /// True when the camera hangs from a root that the game wrote the copy into.
@@ -341,22 +334,20 @@ unsafe fn count(t: &MainThread, index: usize) {
     (*COUNTS.get(t))[index] += 1;
 }
 
-/// Turns the comparison on or off. Puts the detour for the eye in place at the first use.
+/// Turns the comparison on or off. Listens for the eye at the first use.
 pub unsafe fn set_compare(on: bool) -> Result<(), String> {
     install()?;
     COMPARE.store(on, Ordering::Relaxed);
     Ok(())
 }
 
-/// Puts the detour for the eye in place. The other steps need no hook: the draw ports call
+/// Listens to MWSE's event for the eye. The other steps need no hook: the draw ports call
 /// this module.
 pub unsafe fn install() -> Result<(), String> {
     if INSTALLED.load(Ordering::Relaxed) {
         return Ok(());
     }
-    let detour = update_camera_transforms_detour as *const () as usize;
-    let original = hook::install_raw(UPDATE_CAMERA_TRANSFORMS, &UPDATE_CAMERA_TRANSFORMS_HEAD, &[], detour, 0, Cleanup::Callee)?;
-    UPDATE_CAMERA_TRANSFORMS_ORIGINAL.store(original, Ordering::Relaxed);
+    crate::mwse_native::subscribe(crate::mwse_native::NATIVE_EVENT_CAMERA_TRANSFORMS_UPDATED, camera_transforms_updated)?;
     INSTALLED.store(true, Ordering::Relaxed);
     Ok(())
 }

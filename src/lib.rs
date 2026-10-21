@@ -64,6 +64,7 @@ pub mod material_stream;
 pub mod map_fog;
 pub mod map_tiles;
 pub mod mem;
+pub mod mwse_native;
 pub mod overlay;
 pub mod world_walk;
 #[cfg(feature = "rig")]

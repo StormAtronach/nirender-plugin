@@ -1271,9 +1271,8 @@ unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
     }
 }
 
-/// 0x4D2F40 `game_dynamicLightTest`, cdecl with 6 arguments, and its first instruction.
-const DYNAMIC_LIGHT_TEST: usize = 0x4D2F40;
-const DYNAMIC_LIGHT_TEST_HEAD: [u8; 6] = [0x64, 0xA1, 0x00, 0x00, 0x00, 0x00];
+/// 0x4D2F40 `game_dynamicLightTest`, cdecl with 6 arguments: the engine function that MWSE's
+/// override gives (`mwse_native::NATIVE_OVERRIDE_DYNAMIC_LIGHT_TEST`).
 static DYNAMIC_LIGHT_TEST_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 /// The slots of `LinkState::game_lights`.
 const GAME_LIGHT_SLOTS: usize = 2048;
@@ -1282,7 +1281,8 @@ fn game_light_slot(light: usize) -> usize {
     (light >> 4) % GAME_LIGHT_SLOTS
 }
 
-/// The detour of `game_dynamicLightTest`: a note of the light, then the game function.
+/// The plugin's function in MWSE's override of `game_dynamicLightTest`: a note of the light,
+/// then the game function.
 unsafe extern "C" fn dynamic_light_test_detour(light: usize, node: usize, radius: u32, flags: u32, is_land: u32, high_priority: u32) {
     // The game tests its lights on the main thread; a call of another thread is counted.
     match MainThread::here() {
@@ -1635,7 +1635,7 @@ pub unsafe fn connect() -> Result<String, String> {
     };
     if DYNAMIC_LIGHT_TEST_ORIGINAL.load(Ordering::Relaxed) == 0 {
         let detour = dynamic_light_test_detour as *const () as usize;
-        let original = crate::hook::install_raw(DYNAMIC_LIGHT_TEST, &DYNAMIC_LIGHT_TEST_HEAD, &[], detour, 6, crate::hook::Cleanup::Caller)?;
+        let original = crate::mwse_native::claim(crate::mwse_native::NATIVE_OVERRIDE_DYNAMIC_LIGHT_TEST, detour)?;
         DYNAMIC_LIGHT_TEST_ORIGINAL.store(original, Ordering::Relaxed);
     }
     crate::map_tiles::install();
