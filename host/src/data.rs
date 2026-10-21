@@ -281,6 +281,9 @@ pub(crate) struct Counts {
     /// The stages of the retained slots whose pinned texture or sampler was not in the
     /// arrays of the frame yet: they drew from a slot of the frame for one frame.
     pub(crate) pinned_late: u32,
+    /// The textures of retained slots pinned before their record came (the white view until
+    /// then; `set_texture` fills the slot).
+    pub(crate) pinned_before_record: u32,
     /// The indirect calls, the draws in them, and the draws drawn one by one because the
     /// buffer of the arguments was full.
     pub(crate) indirect_calls: u32,

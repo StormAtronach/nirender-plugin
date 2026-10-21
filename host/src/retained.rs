@@ -697,10 +697,14 @@ pub struct PinnedTexture {
 
 impl Renderer {
     /// A slot of the arrays of the frame that a texture keeps from frame to frame, for the
-    /// records of the retained instances: one more use of it. 0 for no texture, a texture
-    /// not known, or no room. The lowest free slot is taken before the room grows, so that
-    /// the free slots gather at the end, where `unpin_texture` drops them. The pinned slots
-    /// and the frame's own textures share the room; `FRAME_RESERVE` slots stay the frame's.
+    /// records of the retained instances: one more use of it. 0 for no texture or no room.
+    /// A texture not known yet takes a slot with the white view: its record can come after
+    /// the instance that names it (a capture that starts with a purge of the textures, a
+    /// texture made again under the same handle), and `set_texture` then puts the view into
+    /// the slot. Without the slot the instance drew white until its next record. The lowest
+    /// free slot is taken before the room grows, so that the free slots gather at the end,
+    /// where `unpin_texture` drops them. The pinned slots and the frame's own textures share
+    /// the room; `FRAME_RESERVE` slots stay the frame's.
     pub fn pin_texture(&mut self, handle: u32) -> u32 {
         if handle == 0 {
             return 0;
@@ -709,7 +713,13 @@ impl Renderer {
             self.pinned_textures[index].uses += 1;
             return index as u32 + 1;
         }
-        let Some(view) = self.textures.get(&handle).cloned() else { return 0 };
+        let view = match self.textures.get(&handle) {
+            Some(view) => view.clone(),
+            None => {
+                self.counts.pinned_before_record += 1;
+                self.white.clone()
+            }
+        };
         // `pinned_free` goes from the highest slot to the lowest: `pop` takes the lowest.
         let index = if let Some(index) = self.pinned_free.pop() {
             self.pinned_textures[index] = PinnedTexture { handle, view: view.clone(), uses: 1 };
@@ -1384,7 +1394,9 @@ impl Player {
             let mut sampler_values = [[0u32; 5]; STAGES];
             for stage in 0..STAGES {
                 let handle = p.stages[stage].texture;
-                if stage < data.counts[1] as usize && handle != 0 && self.renderer.textures.contains_key(&handle) {
+                // A texture not known yet keeps its handle: `pin_texture` gives it a slot
+                // with the white view, and its record fills the slot when it comes.
+                if stage < data.counts[1] as usize && handle != 0 {
                     handles[stage] = handle;
                     sampler_values[stage] = p.stages[stage].sampler;
                 }
