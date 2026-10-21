@@ -225,6 +225,8 @@ unsafe extern "system" fn release(this: *mut Object) -> u32 {
         if let Some(at) = live.iter().position(|&o| o == this as usize) {
             live.swap_remove(at);
         }
+        // A new texture can get the address.
+        forget_read(&lock, this as u32);
         drop(Box::from_raw(this));
         if !owner.is_null() {
             release(owner);
@@ -414,9 +416,23 @@ unsafe fn pixel_memory(surface: &mut Object) -> Option<&'static mut Vec<u8>> {
 
 /// Gets the pixels of a target from the host program of the stream into the memory of a
 /// surface of the same size.
+///
+/// A rendered texture that is not the target of the draws now gives the pixels of its last
+/// read again when nothing drew into it after that read (`READ_CACHE`): the fog of war of the
+/// map menu reads the same textures again and again (records entry 55).
 unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool {
     let (into_width, into_height) = (into.width, into.height);
     let Some(memory) = pixel_memory(into) else { return false };
+    let cacheable = target != 0 && read_cache_on() && texture_of(CURRENT_TARGET.load(Ordering::Relaxed)) != target;
+    if cacheable {
+        if let Some(kept) = READ_CACHE.get(lock).get(&target) {
+            if kept.len() == memory.len() {
+                memory.copy_from_slice(kept);
+                *CACHED_READS.get(lock) += 1;
+                return true;
+            }
+        }
+    }
     let start = crate::capture::ticks();
     let read = crate::capture::read_pixels(target);
     {
@@ -433,12 +449,39 @@ unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool
     }
     memory.copy_from_slice(pixels);
     *PIXEL_READS.get(&lock) += 1;
+    if cacheable {
+        READ_CACHE.get(lock).insert(target, pixels.to_vec());
+    }
     true
+}
+
+/// The pixels of the last read of each rendered texture, by its handle, while nothing drew
+/// into the texture after the read. A texture leaves the map when it becomes the target of
+/// the draws or stops being it, when pixels are copied into it, and when it is freed. The
+/// current target gives and keeps no read.
+static READ_CACHE: LockCell<std::collections::BTreeMap<u32, Vec<u8>>> = LockCell::new(std::collections::BTreeMap::new());
+static CACHED_READS: LockCell<u32> = LockCell::new(0);
+
+/// `NIRENDER_READ_CACHE=0` turns the cache of the reads off, for an A/B.
+fn read_cache_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("NIRENDER_READ_CACHE").is_ok_and(|value| value == "0"))
+}
+
+/// Something can draw into `target` (a texture handle, or 0): its read is not kept.
+fn forget_read(lock: &DeviceLock, target: u32) {
+    if target != 0 {
+        READ_CACHE.get(lock).remove(&target);
+    }
 }
 
 /// `IDirect3DDevice8::CopyRects` for all of a surface.
 unsafe fn copy_pixels(lock: &DeviceLock, source: u32, destination: u32) -> u32 {
     let (Some(source), Some(destination)) = (own(source), own(destination)) else { return OK };
+    if let Some(target) = target_of(destination) {
+        // Into a target: its kept read is old now.
+        forget_read(lock, target);
+    }
     if let Some(target) = target_of(source) {
         // Out of a target: the pixels come from the host program.
         read_target(&lock, target, destination);
@@ -742,6 +785,11 @@ unsafe extern "C" fn call(index: u32, arguments: *const u32) -> u32 {
         CALL_COPY_PIXELS => copy_pixels(&lock, a(0), a(3)),
         // The colour surface and the depth surface.
         CALL_RENDER_TARGET => {
+            // The old and the new target can get draws: their kept reads are old. (A test of
+            // 2026-10-21 that dropped a read only after a draw or a clear kept the same 41 of
+            // 100 reads of a crossing run: records entry 55.)
+            forget_read(&lock, texture_of(CURRENT_TARGET.load(Ordering::Relaxed)));
+            forget_read(&lock, texture_of(a(0)));
             CURRENT_TARGET.store(a(0), Ordering::Relaxed);
             OK
         }
@@ -836,5 +884,10 @@ pub unsafe fn report() -> String {
     for ((width, height, back), (count, ticks)) in READS_BY_SIZE.get(&lock).iter() {
         sizes.push_str(&format!(" {width}x{height}{}: {count} reads, {:.1} ms;", if *back { " (back buffer)" } else { "" }, *ticks as f64 * 1000.0 / per_second));
     }
-    format!("own host: {} pixel reads from the host program, by target size:{sizes} device calls without a call of the link, taken and not done:{text}", *PIXEL_READS.get(&lock))
+    format!(
+        "own host: {} pixel reads from the host program, by target size:{sizes} {} reads from the kept pixels{}; device calls without a call of the link, taken and not done:{text}",
+        *PIXEL_READS.get(&lock),
+        *CACHED_READS.get(&lock),
+        if read_cache_on() { "" } else { " (NIRENDER_READ_CACHE=0)" }
+    )
 }
