@@ -325,6 +325,12 @@ const SIGN_STEP: Duration = Duration::from_millis(125);
 /// configured again, one time for each frame. The log has each change of the status of a
 /// surface that gives no picture.
 fn acquire(surface: &wgpu::Surface, device: &wgpu::Device, configuration: Option<&wgpu::SurfaceConfiguration>, status: &mut &'static str, frame: u32) -> Option<wgpu::SurfaceTexture> {
+    // A lost device takes no picture: a picture of the window that is acquired and never
+    // shown ends the program at its end (wgpu-hal: "Trying to destroy a
+    // SwapchainAcquireSemaphore that is still in use", a test of 2026-10-21).
+    if super::gpu::lost() {
+        return None;
+    }
     let mut configured_again = false;
     loop {
         let (name, stale) = match surface.get_current_texture() {
@@ -517,10 +523,19 @@ impl ApplicationHandler for App {
         let mut looks: u32 = 0;
         loop {
             // The device is lost: nothing draws any more. The records are read and dropped,
-            // so that the game does not wait for this program.
+            // so that the game does not wait for this program. A request that the game waits
+            // for gets the answer "no pixels" at once.
             if super::gpu::lost() {
+                if let Some(player) = self.player.as_mut() {
+                    player.fail_tile_reads();
+                }
                 match self.ring.pop(&mut self.data) {
-                    Some(_) => continue,
+                    Some(tag) => {
+                        if let Some(player) = self.player.as_mut() {
+                            player.answer_lost(tag, &self.data);
+                        }
+                        continue;
+                    }
                     None if self.ring.closed() => return self.finish(event_loop, "the game closed the stream"),
                     None if waiting.elapsed() > Duration::from_millis(20) => return,
                     None => {

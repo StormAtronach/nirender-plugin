@@ -75,6 +75,11 @@ pub fn test_loss(device: &wgpu::Device) {
     TEST_LOSS.store(true, Ordering::Relaxed);
     device.destroy();
     let _ = device.poll(wgpu::PollType::Poll);
+    // The callback can come later than the poll (wgpu 30, a test of 2026-10-21): the loss
+    // counts from here, as it would for the driver's own report.
+    if !LOST.swap(true, Ordering::Relaxed) {
+        println!("gpu: the device is lost (the test)");
+    }
 }
 
 /// `queue.submit`, counted.

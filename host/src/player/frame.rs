@@ -351,9 +351,15 @@ impl Player {
             let (buffer, row) = copy_picture(&device, &mut encoder, &texture, width, height);
             player.renderer.upload_indirect(&player.frame_args);
             crate::gpu::submit(&player.renderer.queue, player.renderer.commands.take().into_iter().chain([encoder.finish()]));
-            buffer.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("the read of the pixels"));
+            // A device lost during the read: no pixels, and the game gets a width of 0.
+            let mapped_ok = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = mapped_ok.clone();
+            buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| flag.store(result.is_ok(), std::sync::atomic::Ordering::Release));
             let _ = device.poll(wgpu::PollType::wait_indefinitely());
-            let mapped = buffer.slice(..).get_mapped_range().expect("the bytes of the pixels");
+            if !mapped_ok.load(std::sync::atomic::Ordering::Acquire) || crate::gpu::lost() {
+                return None;
+            }
+            let Ok(mapped) = buffer.slice(..).get_mapped_range() else { return None };
             let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
             for y in 0..height as usize {
                 pixels.extend_from_slice(&mapped[y * row..y * row + width as usize * 4]);

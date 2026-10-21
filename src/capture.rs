@@ -406,6 +406,11 @@ impl Ring {
 pub const REPLY_HEAD: usize = 16;
 /// The game waits this long for an answer.
 const REPLY_WAIT_SECONDS: i64 = 5;
+/// The host program did not answer a pixel read or a tile read in time: a hung or ended
+/// helper. The later reads look once and do not wait, so that the game does not wait
+/// `REPLY_WAIT_SECONDS` for each of them. Any answer clears it. A helper that lost its device
+/// answers at once with no pixels (`answer_lost` of the crate), and does not set it.
+static HELPER_SILENT: AtomicBool = AtomicBool::new(false);
 
 struct Reply {
     mapping: isize,
@@ -453,13 +458,24 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
         reply.requests += 1;
         reply.requests
     };
+    // The helper is silent when it did not answer the last read in time. It is back when that
+    // read has its answer now.
+    if HELPER_SILENT.load(Ordering::Relaxed) && (state(&lock)?.reply.as_ref()?.base as *const u32).read_volatile() == request - 1 {
+        HELPER_SILENT.store(false, Ordering::Relaxed);
+        crate::log!("stream: the host program answers the pixel reads again");
+    }
     write(tag::READ_PIXELS, &[words(&[request, texture])]);
     // The write can end the stream.
     let reply = state(&lock)?.reply.as_mut()?;
     let start = ticks();
     while (reply.base as *const u32).read_volatile() != request {
+        // A silent helper gets one look, not a wait: the game must not hang on it.
+        if HELPER_SILENT.load(Ordering::Relaxed) {
+            return None;
+        }
         if ticks() - start > REPLY_WAIT_SECONDS * ticks_per_second() {
-            crate::log!("stream: no answer to the pixel read {request} of the texture {texture:#x}");
+            crate::log!("stream: no answer to the pixel read {request} of the texture {texture:#x}; the next reads do not wait until the host program answers again");
+            HELPER_SILENT.store(true, Ordering::Relaxed);
             return None;
         }
         wait_step();
@@ -547,6 +563,9 @@ pub unsafe fn tile_pixels(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
         return None;
     }
     let (width, height) = ((slot.add(4) as *const u32).read_volatile(), (slot.add(8) as *const u32).read_volatile());
+    if HELPER_SILENT.swap(false, Ordering::Relaxed) {
+        crate::log!("stream: the host program answers the tile reads again");
+    }
     let size = width as usize * height as usize * 4;
     if size > TILE_BYTES {
         return Some((0, 0, &[]));
@@ -565,8 +584,13 @@ pub unsafe fn wait_tile(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
         if let Some(pixels) = tile_pixels(ticket) {
             return Some(pixels);
         }
+        // A silent helper gets one look, not a wait (see `HELPER_SILENT`).
+        if HELPER_SILENT.load(Ordering::Relaxed) {
+            return None;
+        }
         if ticks() - start > REPLY_WAIT_SECONDS * ticks_per_second() {
-            crate::log!("stream: no pixels for the map tile read {ticket}");
+            crate::log!("stream: no pixels for the map tile read {ticket}; the next reads do not wait until the host program answers again");
+            HELPER_SILENT.store(true, Ordering::Relaxed);
             return None;
         }
         wait_step();

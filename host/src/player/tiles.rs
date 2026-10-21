@@ -141,10 +141,42 @@ impl Player {
         self.renderer.counts.tile_copies += 1;
     }
 
+    /// The device is lost: each tile read in progress gets the answer "no pixels" (a width of
+    /// 0), because its mapping can never finish, and the game must not wait for it.
+    pub(crate) fn fail_tile_reads(&mut self) {
+        for read in std::mem::take(&mut self.tile_reads) {
+            if let Some(out) = self.tile_out.as_mut() {
+                out(read.ticket, 0, 0, &[]);
+            }
+        }
+    }
+
+    /// The device is lost, and the record `tag` is dropped: a request that the game waits for
+    /// gets the answer "no pixels" at once.
+    pub(crate) fn answer_lost(&mut self, tag: u32, data: &[u8]) {
+        match tag {
+            tag::READ_PIXELS if data.len() >= 8 => {
+                if let Some(reply) = self.reply.as_mut() {
+                    reply(word(data, 0), 0, 0, &[]);
+                }
+            }
+            tag::COPY_TILE if data.len() >= 12 && word(data, 0) != 0 => {
+                if let Some(out) = self.tile_out.as_mut() {
+                    out(word(data, 0), 0, 0, &[]);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Gives the game the pixels of the tile reads that the GPU finished, in their order.
     /// It does not wait.
     pub(crate) fn deliver_tiles(&mut self) {
         if self.tile_reads.is_empty() {
+            return;
+        }
+        if crate::gpu::lost() {
+            self.fail_tile_reads();
             return;
         }
         let _ = self.renderer.device.poll(wgpu::PollType::Poll);

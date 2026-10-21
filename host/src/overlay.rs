@@ -266,6 +266,11 @@ impl Overlay {
         if !self.on && sign.is_none() && status.message.is_none() && !status.frame_rate {
             return;
         }
+        // A lost device makes no buffers, and the overlay's renderer ends the program when it
+        // cannot make one (a test of 2026-10-21, records entry 56).
+        if crate::gpu::lost() {
+            return;
+        }
         // The text has the same part of the height of a picture of any size: 1 at 1080 lines.
         let scale = (size.1 as f32 / 1080.0).max(0.75);
         let input = egui::RawInput {
