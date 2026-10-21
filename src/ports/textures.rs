@@ -194,12 +194,12 @@ unsafe fn data_get_levels(data: usize) -> u32 {
 }
 
 #[inline(always)]
-unsafe fn data_get_d3d_texture(data: usize) -> usize {
+pub(crate) unsafe fn data_get_d3d_texture(data: usize) -> usize {
     vcall0(data, VT_DATA_GET_D3D_TEXTURE) as usize
 }
 
 #[inline(always)]
-unsafe fn data_get_as_rendered(data: usize) -> usize {
+pub(crate) unsafe fn data_get_as_rendered(data: usize) -> usize {
     vcall0(data, VT_DATA_GET_AS_RENDERED) as usize
 }
 

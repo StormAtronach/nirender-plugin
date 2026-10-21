@@ -61,6 +61,7 @@ pub mod link;
 pub mod link_client;
 pub mod light_stream;
 pub mod material_stream;
+pub mod map_tiles;
 pub mod mem;
 pub mod overlay;
 #[cfg(feature = "rig")]

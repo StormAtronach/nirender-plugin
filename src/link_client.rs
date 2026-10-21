@@ -404,6 +404,7 @@ pub unsafe fn after_present() {
     if !crate::shadow::on_main_thread() {
         return;
     }
+    crate::map_tiles::poll();
     if !take_present_due() {
         if PRESENT_DUE.load(Ordering::Acquire) && PRESENT_LATE.fetch_add(1, Ordering::Relaxed) == 0 {
             crate::log!("link: the frame logic of MGE XE waits for the next Present: the device lock is held at the end of a Present");
@@ -1616,6 +1617,7 @@ pub unsafe fn connect() -> Result<String, String> {
         let original = crate::hook::install_raw(DYNAMIC_LIGHT_TEST, &DYNAMIC_LIGHT_TEST_HEAD, &[], detour, 6, crate::hook::Cleanup::Caller)?;
         DYNAMIC_LIGHT_TEST_ORIGINAL.store(original, Ordering::Relaxed);
     }
+    crate::map_tiles::install();
     // The members up to `read_counters` are in each version of the table.
     if (host.struct_size as usize) < core::mem::offset_of!(HostV1, use_facts) {
         return Err(format!("the table of the host has {} bytes", host.struct_size));

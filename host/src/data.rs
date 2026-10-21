@@ -285,6 +285,10 @@ pub(crate) struct Counts {
     pub(crate) texture_updates: u32,
     pub(crate) render_textures: u32,
     pub(crate) pixel_reads: u32,
+    /// The map tiles copied, the tile reads given to the game, and the tiles not copied.
+    pub(crate) tile_copies: u32,
+    pub(crate) tile_reads: u32,
+    pub(crate) tiles_lost: u32,
     /// The copies of the picture and of the depth for the calls of the extension.
     pub(crate) picture_copies: u32,
     pub(crate) depth_copies: u32,

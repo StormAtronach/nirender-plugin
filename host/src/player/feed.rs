@@ -39,6 +39,7 @@ impl Player {
                     }
                 }
             }
+            tag::COPY_TILE => self.copy_tile(word(data, 0), word(data, 4), word(data, 8)),
             tag::GEOMETRY if data.len() >= 32 => {
                 let handle = word(data, 0);
                 let known = self.renderer.geometries.contains_key(&handle);

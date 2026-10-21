@@ -165,6 +165,42 @@ impl Reply {
     }
 }
 
+/// The tile memory of a stream: shared memory with the name of the ring and `.tiles`, which
+/// the plugin makes. Slots of a head (the ticket, written last; the width; the height; one
+/// unused word) and the pixels of a tile of 512 x 512 at most. The ticket picks the slot. See
+/// `capture.rs` of the plugin.
+const TILE_SLOTS: usize = 8;
+const TILE_BYTES: usize = 512 * 512 * 4;
+const TILE_HEAD: usize = 16;
+
+struct Tiles {
+    base: *mut u8,
+}
+
+impl Tiles {
+    fn open(name: &str) -> Option<Tiles> {
+        let mut text = format!("{name}.tiles").into_bytes();
+        text.push(0);
+        let mapping = unsafe { OpenFileMappingA(0xF001F, 0, text.as_ptr()) };
+        if mapping == 0 {
+            return None;
+        }
+        let base = unsafe { MapViewOfFile(mapping, 0xF001F, 0, 0, 0) };
+        (!base.is_null()).then_some(Tiles { base })
+    }
+
+    fn answer(&self, ticket: u32, width: u32, height: u32, pixels: &[u8]) {
+        let (width, height, pixels) = if pixels.len() > TILE_BYTES { (0, 0, &[][..]) } else { (width, height, pixels) };
+        unsafe {
+            let slot = self.base.add((ticket as usize % TILE_SLOTS) * (TILE_HEAD + TILE_BYTES));
+            std::ptr::copy_nonoverlapping(pixels.as_ptr(), slot.add(TILE_HEAD), pixels.len());
+            (slot.add(4) as *mut u32).write_volatile(width);
+            (slot.add(8) as *mut u32).write_volatile(height);
+            (*(slot as *const std::sync::atomic::AtomicU32)).store(ticket, Ordering::Release);
+        }
+    }
+}
+
 /// The message memory of a stream: shared memory with the name of the ring and
 /// `.messages`, which the plugin makes. The head: `MESSAGES_MAGIC`, the number of data
 /// bytes, the bytes that this program wrote (u64), the bytes that the game read (u64). Then
@@ -226,6 +262,7 @@ impl Messages {
 struct App {
     ring: Ring,
     reply: Option<Reply>,
+    tiles: Option<Tiles>,
     messages: Option<Messages>,
     extension: Option<Box<dyn super::Extension>>,
     backends: wgpu::Backends,
@@ -442,6 +479,7 @@ impl ApplicationHandler for App {
         player.film_shot = self.shot_film.take();
         player.film_shot_at = self.shot_film_frame;
         player.reply = self.reply.take().map(|reply| Box::new(move |request, width, height, pixels: &[u8]| reply.answer(request, width, height, pixels)) as _);
+        player.tile_out = self.tiles.take().map(|tiles| Box::new(move |ticket, width, height, pixels: &[u8]| tiles.answer(ticket, width, height, pixels)) as _);
         self.player = Some(player);
         self.surface = Some(surface);
         self.window = Some(window);
@@ -509,6 +547,8 @@ impl ApplicationHandler for App {
                 if self.ring.closed() {
                     return self.finish(event_loop, "the game closed the stream");
                 }
+                // The tile reads that the GPU finished go to the game between the records.
+                self.player.as_mut().unwrap().deliver_tiles();
                 let since = *idle_since.get_or_insert_with(|| {
                     // The last record came just before this idle time.
                     self.last_record = Instant::now();
@@ -725,6 +765,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
     let mut app = App {
         ring,
         reply: Reply::open(name),
+        tiles: Tiles::open(name),
         messages: Messages::open(name),
         extension,
         back_buffer: None,

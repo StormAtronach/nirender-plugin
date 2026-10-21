@@ -618,6 +618,14 @@ struct Player {
     /// Takes the answer to a pixel read: the number of the request, the width, the height
     /// and the pixels with 4 bytes each, blue first. `None` without a game to answer.
     reply: Option<Box<dyn FnMut(u32, u32, u32, &[u8])>>,
+    /// Takes the pixels of a map tile read: the ticket, the width, the height and the
+    /// pixels, blue first (`player/tiles.rs`). `None` without a game to answer: then a tile
+    /// is copied and not read.
+    tile_out: Option<Box<dyn FnMut(u32, u32, u32, &[u8])>>,
+    /// The map tile reads that wait for the GPU, in their order.
+    tile_reads: Vec<player::TileRead>,
+    /// The pipelines that copy a map tile, by the format of the tile.
+    tile_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     /// The picture files that the game asked for: the frame in progress goes into them.
     shots: Vec<String>,
     /// The pictures of the frame from before the interface of the game, for an extension:

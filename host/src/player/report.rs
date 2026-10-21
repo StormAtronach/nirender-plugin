@@ -100,6 +100,7 @@ impl Player {
             "rendered textures made {}, draws into them {}, copies of pixels into them {}, pixel reads {}",
             c.render_textures, c.target_draws, c.target_copies, c.pixel_reads
         );
+        println!("map tiles copied {}, tile reads given to the game {}, tiles not copied {}", c.tile_copies, c.tile_reads, c.tiles_lost);
         println!("draws in screen coordinates {}, not drawn {}", c.screen_draws, c.screen_draws_lost);
         println!("copies of a draw without room in the records of the frame {}", c.no_record);
         println!(

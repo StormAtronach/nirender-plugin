@@ -34,6 +34,9 @@ pub const RETAINED_SCENE: u32 = 28;
 /// The bones of a skinned retained instance: id, count, bound, then each bone (9 floats,
 /// 3 doubles: `retained::BONE_BYTES`).
 pub const INSTANCE_BONES: u32 = 29;
+/// A map tile: the ticket, the rendered texture, the texture of the tile
+/// (`player/tiles.rs`).
+pub const COPY_TILE: u32 = 30;
 
 /// The least length of a record of the tag that the player reads without a check of its
 /// own: a shorter record is skipped and counted (`Counts::short_records`), not read past
@@ -63,6 +66,7 @@ pub fn least_length(tag: u32) -> usize {
         INSTANCE_STATE => 8,
         RETAINED_SCENE => 8,
         INSTANCE_BONES => 24,
+        COPY_TILE => 12,
         _ => 0,
     }
 }
@@ -73,7 +77,7 @@ mod tests {
 
     #[test]
     fn every_record_with_a_fixed_head_has_a_least_length() {
-        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES] {
+        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE] {
             assert!(least_length(tag) > 0, "tag {tag} has no least length");
         }
     }

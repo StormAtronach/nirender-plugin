@@ -161,6 +161,11 @@ pub mod tag {
     /// rotation and scale (9 floats, by columns) and its exact translation in the world (3
     /// doubles), as `camera_space::skin_bones` makes them.
     pub const INSTANCE_BONES: u32 = 29;
+    /// A map tile (`map_tiles`): the ticket, the rendered texture, the texture of the tile.
+    /// The host gives the texture of the tile a copy of the rendered texture with alpha 1.
+    /// With a ticket other than 0 it also reads the pixels of the copy, without a wait, and
+    /// puts them into the tile memory when the GPU has them.
+    pub const COPY_TILE: u32 = 30;
 }
 
 // ---- the ring in shared memory
@@ -468,6 +473,106 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
     Some((width, height, core::slice::from_raw_parts(reply.base.add(REPLY_HEAD), size)))
 }
 
+/// The tile memory of a stream: shared memory with the name of the ring and `.tiles`. The
+/// host writes the pixels of a `COPY_TILE` read into the slot of its ticket (the ticket
+/// modulo `TILE_SLOTS`): in the head of the slot the ticket (the host writes it last), the
+/// width, the height and one unused word, then the pixels with 4 bytes each, blue first. A
+/// width of 0 says that the host has no pixels for the ticket. The plugin has at most
+/// `TILE_SLOTS` tickets open, so a slot is free when the host writes it.
+pub const TILE_SLOTS: usize = 8;
+/// The largest tile: 512 x 512.
+pub const TILE_BYTES: usize = 512 * 512 * 4;
+const TILE_HEAD: usize = 16;
+
+struct Tiles {
+    mapping: isize,
+    base: *mut u8,
+    /// The last ticket.
+    tickets: u32,
+}
+
+impl Tiles {
+    unsafe fn create(name: &str) -> Option<Tiles> {
+        let mut text = format!("{name}.tiles").into_bytes();
+        text.push(0);
+        let size = TILE_SLOTS * (TILE_HEAD + TILE_BYTES);
+        let mapping = CreateFileMappingA(-1, core::ptr::null(), 4, 0, size as u32, text.as_ptr());
+        if mapping == 0 {
+            return None;
+        }
+        let base = MapViewOfFile(mapping, 0xF001F, 0, 0, 0);
+        if base.is_null() {
+            CloseHandle(mapping);
+            return None;
+        }
+        for slot in 0..TILE_SLOTS {
+            core::ptr::write_bytes(base.add(slot * (TILE_HEAD + TILE_BYTES)), 0, TILE_HEAD);
+        }
+        Some(Tiles { mapping, base, tickets: 0 })
+    }
+
+    unsafe fn slot(&self, ticket: u32) -> *mut u8 {
+        self.base.add((ticket as usize % TILE_SLOTS) * (TILE_HEAD + TILE_BYTES))
+    }
+
+    unsafe fn close(&mut self) {
+        UnmapViewOfFile(self.base);
+        CloseHandle(self.mapping);
+    }
+}
+
+/// Asks the host to copy the rendered texture `target` into the texture `texture` of a map
+/// tile, and to read the pixels of the copy without a wait. Returns the ticket of the read.
+/// `None` without a stream or without tile memory: then nothing was asked.
+pub unsafe fn copy_tile(target: u32, texture: u32) -> Option<u32> {
+    let lock = crate::sync::device_lock();
+    if !recording() {
+        return None;
+    }
+    let tiles = state(&lock)?.tiles.as_mut()?;
+    tiles.tickets = tiles.tickets.wrapping_add(1).max(1);
+    let ticket = tiles.tickets;
+    write(tag::COPY_TILE, &[words(&[ticket, target, texture])]);
+    Some(ticket)
+}
+
+/// The pixels of a tile read when the host has put them into the tile memory: the width,
+/// the height and the pixels, 4 bytes each, blue first. `Some` with a width of 0 when the
+/// host has no pixels for the ticket. `None` while the read is in progress.
+pub unsafe fn tile_pixels(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
+    let lock = crate::sync::device_lock();
+    let tiles = state(&lock)?.tiles.as_ref()?;
+    let slot = tiles.slot(ticket);
+    if (*(slot as *const core::sync::atomic::AtomicU32)).load(Ordering::Acquire) != ticket {
+        return None;
+    }
+    let (width, height) = ((slot.add(4) as *const u32).read_volatile(), (slot.add(8) as *const u32).read_volatile());
+    let size = width as usize * height as usize * 4;
+    if size > TILE_BYTES {
+        return Some((0, 0, &[]));
+    }
+    Some((width, height, core::slice::from_raw_parts(slot.add(TILE_HEAD), size)))
+}
+
+/// Waits for the pixels of a tile read, at most `REPLY_WAIT_SECONDS`. `None` when they do not
+/// come in time, or when the stream ended.
+pub unsafe fn wait_tile(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
+    let start = ticks();
+    loop {
+        if !recording() {
+            return None;
+        }
+        if let Some(pixels) = tile_pixels(ticket) {
+            return Some(pixels);
+        }
+        if ticks() - start > REPLY_WAIT_SECONDS * ticks_per_second() {
+            crate::log!("stream: no pixels for the map tile read {ticket}");
+            return None;
+        }
+        wait_step();
+    }
+}
+
 /// The message memory of a stream: shared memory with the name of the ring and `.messages`.
 /// The host writes messages of its extension into it (`Extension::messages` of the crate):
 /// records of the number, the length and the bytes, which can go around the end of the data.
@@ -556,6 +661,7 @@ struct State {
     direct: bool,
     out: Option<Sink>,
     reply: Option<Reply>,
+    tiles: Option<Tiles>,
     messages: Option<Messages>,
     /// A file that gets a copy of the records of a direct stream, with the number of frames
     /// that are left for it. While `tee_only`, the records go into the file only: the
@@ -747,6 +853,7 @@ pub unsafe fn start_stream(name: &str, megabytes: u32, warmup: u32, own_host: bo
         let renderer = crate::engine::renderer();
         let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
         s.reply = Reply::create(name, (size[0] as usize * size[1] as usize * 4).max(1024 * 1024 * 4));
+        s.tiles = Tiles::create(name);
     }
     crate::log!("stream: start, {warmup} frames of warm-up, a ring of {megabytes} MB with the name {name}, own host {own_host}");
     Ok(())
@@ -765,6 +872,7 @@ pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, 
         s.direct = true;
         s.phase = Phase::Record(0);
         s.reply = Reply::create(name, (width as usize * height as usize * 4).max(1024 * 1024 * 4));
+        s.tiles = Tiles::create(name);
         s.messages = Messages::create(name);
     }
     RECORDING.store(true, Ordering::Relaxed);
@@ -785,6 +893,7 @@ unsafe fn begin(lock: &DeviceLock, out: Sink, warmup: u32, frames: u32) {
         direct: false,
         out: Some(out),
         reply: None,
+        tiles: None,
         messages: None,
         tee: None,
         tee_hold: false,
@@ -840,6 +949,10 @@ pub unsafe fn stop() {
             if let Some(mut reply) = s.reply.take() {
                 crate::log!("stream: {} pixel reads, the game waited {:.1} ms in all for them", reply.requests, reply.waited as f64 * 1000.0 / ticks_per_second() as f64);
                 reply.close();
+            }
+            if let Some(mut tiles) = s.tiles.take() {
+                crate::log!("stream: {}", crate::map_tiles::report());
+                tiles.close();
             }
             if let Some(mut messages) = s.messages.take() {
                 messages.close();
