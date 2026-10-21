@@ -835,6 +835,7 @@ pub unsafe fn stop() {
                 ring.paced as f64 * 1000.0 / ticks_per_second() as f64,
                 ring.wakes
             );
+            crate::log!("stream: {}", crate::sync::lock_wait_report());
             ring.close();
             if let Some(mut reply) = s.reply.take() {
                 crate::log!("stream: {} pixel reads, the game waited {:.1} ms in all for them", reply.requests, reply.waited as f64 * 1000.0 / ticks_per_second() as f64);

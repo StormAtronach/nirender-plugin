@@ -25,7 +25,30 @@ struct CriticalSection([usize; 6]);
 extern "system" {
     fn InitializeCriticalSection(section: *mut CriticalSection);
     fn EnterCriticalSection(section: *mut CriticalSection);
+    fn TryEnterCriticalSection(section: *mut CriticalSection) -> i32;
     fn LeaveCriticalSection(section: *mut CriticalSection);
+}
+
+/// The waits for the device lock while another thread held it: the count, the sum and the
+/// longest, in ticks of the performance counter. Index 0 is the main thread, index 1 every
+/// other thread (the cell worker, the loading screen's thread).
+static LOCK_WAITS: [core::sync::atomic::AtomicU64; 2] = [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
+static LOCK_WAIT_TICKS: [core::sync::atomic::AtomicU64; 2] = [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
+static LOCK_WAIT_LONGEST: [core::sync::atomic::AtomicU64; 2] = [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
+
+/// The report line of the waits for the device lock.
+pub fn lock_wait_report() -> String {
+    use core::sync::atomic::Ordering::Relaxed;
+    let per_second = crate::capture::ticks_per_second() as f64;
+    let part = |i: usize| {
+        format!(
+            "{} waits, {:.1} ms in all, the longest {:.2} ms",
+            LOCK_WAITS[i].load(Relaxed),
+            LOCK_WAIT_TICKS[i].load(Relaxed) as f64 * 1000.0 / per_second,
+            LOCK_WAIT_LONGEST[i].load(Relaxed) as f64 * 1000.0 / per_second
+        )
+    };
+    format!("device lock: the main thread {}; the other threads {}", part(0), part(1))
 }
 
 static mut SECTION: CriticalSection = CriticalSection([0; 6]);
@@ -47,7 +70,17 @@ pub struct DeviceLock;
 pub fn device_lock() -> DeviceLock {
     unsafe {
         SECTION_MADE.call_once(|| InitializeCriticalSection(core::ptr::addr_of_mut!(SECTION)));
-        EnterCriticalSection(core::ptr::addr_of_mut!(SECTION));
+        // A free lock costs no clock read; a held one is timed (`lock_wait_report`).
+        if TryEnterCriticalSection(core::ptr::addr_of_mut!(SECTION)) == 0 {
+            let start = crate::capture::ticks();
+            EnterCriticalSection(core::ptr::addr_of_mut!(SECTION));
+            let waited = (crate::capture::ticks() - start).max(0) as u64;
+            let i = usize::from(!crate::shadow::on_main_thread());
+            use core::sync::atomic::Ordering::Relaxed;
+            LOCK_WAITS[i].fetch_add(1, Relaxed);
+            LOCK_WAIT_TICKS[i].fetch_add(waited, Relaxed);
+            LOCK_WAIT_LONGEST[i].fetch_max(waited, Relaxed);
+        }
     }
     DeviceLock
 }
