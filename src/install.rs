@@ -147,6 +147,15 @@ pub unsafe fn install() -> Result<String, String> {
     if ports::all().any(|p| p.installed()) {
         return Ok(attach_device()?.unwrap_or_else(|| "the game has no renderer yet".to_string()));
     }
+    // The renderer takes engine events and overrides from MWSE's native ABI (`mwse_native`).
+    // Without it the link to the host is not made and the game draws nothing: the renderer is
+    // refused before any port goes on, and the game keeps MGE XE on Direct3D 9.
+    if crate::link_client::own_d3d8() && crate::mwse_native::api().is_none() {
+        REFUSED.store(true, Ordering::Relaxed);
+        let message = format!("{}; the renderer is refused for this session; the game keeps MGE XE on Direct3D 9", crate::mwse_native::NO_TABLE);
+        crate::log!("{message}");
+        return Err(message);
+    }
     crate::log!("nirender v{}", env!("CARGO_PKG_VERSION"));
     shadow::set_main_thread();
     shadow::calibrate_stamps();
@@ -168,8 +177,6 @@ pub unsafe fn install() -> Result<String, String> {
         }
         device::set_frame_hook(crate::frame::on_present);
     }
-    // A fault of the game's script loader that the addresses of the records decide.
-    crate::script_names::install();
     // The shapes the engine destroys on another thread.
     crate::worker_events::install();
     crate::freed_fill::install();

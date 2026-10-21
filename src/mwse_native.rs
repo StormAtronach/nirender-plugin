@@ -20,8 +20,24 @@ pub const NATIVE_BAD_ARGUMENT: u32 = 6;
 
 pub const NATIVE_EVENT_CAMERA_TRANSFORMS_UPDATED: u32 = 1;
 pub const NATIVE_EVENT_UI_CONFIGURED: u32 = 2;
+pub const NATIVE_EVENT_GAME_IDS_RESOLVED: u32 = 3;
 pub const NATIVE_OVERRIDE_DYNAMIC_LIGHT_TEST: u32 = 1;
+pub const NATIVE_OVERRIDE_CAMERA_ROOT_CULL_SHOW: u32 = 2;
+pub const NATIVE_OVERRIDE_MAP_TILE_READ: u32 = 3;
+pub const NATIVE_OVERRIDE_TEXTURE_PURGE: u32 = 4;
+pub const NATIVE_OVERRIDE_MAP_CELL_PAINT: u32 = 5;
+pub const NATIVE_OVERRIDE_SAVE_PICTURE: u32 = 6;
+pub const NATIVE_OVERRIDE_RENDER_TARGET_LOCK: u32 = 7;
+pub const NATIVE_OVERRIDE_RENDER_TARGET_UNLOCK: u32 = 8;
+pub const NATIVE_OVERRIDE_FOG_RENDER: u32 = 9;
+pub const NATIVE_OVERRIDE_FOG_BLOB: u32 = 10;
+pub const NATIVE_OVERRIDE_LIGHT_ATTACH_RADIUS: u32 = 11;
+pub const NATIVE_OVERRIDE_FRAME_TIMER: u32 = 12;
 pub const NATIVE_REQUEST_UI_SCALE: u32 = 1;
+pub const NATIVE_REQUEST_LIGHT_LIMIT: u32 = 2;
+pub const NATIVE_REQUEST_RIPPLES: u32 = 3;
+pub const NATIVE_REQUEST_INTRO_MOVIES: u32 = 4;
+pub const NATIVE_REQUEST_LIGHT_PARTICLES_FIX: u32 = 5;
 pub const NATIVE_QUERY_UI_SCALE: u32 = 1;
 
 /// The name of the plugin in MWSE.log.
@@ -121,16 +137,49 @@ pub unsafe fn subscribe(event_id: u32, listener: Listener) -> Result<u32, String
     }
 }
 
-/// Makes the plugin the owner of an override of MWSE. Returns the engine function.
-pub unsafe fn claim(override_id: u32, function: usize) -> Result<usize, String> {
+/// An override of MWSE that the plugin owns: the engine function, and the handle to give it
+/// back.
+#[derive(Clone, Copy)]
+pub struct Claim {
+    pub engine: usize,
+    pub handle: u32,
+}
+
+/// Makes the plugin the owner of an override of MWSE.
+pub unsafe fn claim(override_id: u32, function: usize) -> Result<Claim, String> {
     let api = api().ok_or_else(|| NO_TABLE.to_string())?;
     let mut handle = 0u32;
     let mut engine: *const c_void = core::ptr::null();
     let status = (api.claim)(MODULE.as_ptr(), override_id, function as *const c_void, &mut engine, &mut handle);
     if status == NATIVE_OK && !engine.is_null() {
-        Ok(engine as usize)
+        Ok(Claim { engine: engine as usize, handle })
     } else {
         Err(format!("MWSE override {override_id}: {}", status_text(status)))
+    }
+}
+
+/// Makes the plugin the owner of several overrides of MWSE, all or none: a refusal gives the
+/// ones before it back. Returns the claims in the order of `overrides`.
+pub unsafe fn claim_all(overrides: &[(u32, usize)]) -> Result<Vec<Claim>, String> {
+    let mut claims = Vec::with_capacity(overrides.len());
+    for &(id, function) in overrides {
+        match claim(id, function) {
+            Ok(claim) => claims.push(claim),
+            Err(error) => {
+                for claim in claims {
+                    release(claim);
+                }
+                return Err(error);
+            }
+        }
+    }
+    Ok(claims)
+}
+
+/// Gives an override back to the engine function.
+pub unsafe fn release(claim: Claim) {
+    if let Some(api) = api() {
+        (api.release)(claim.handle);
     }
 }
 

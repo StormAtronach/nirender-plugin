@@ -38,18 +38,6 @@ use crate::mem::rd;
 use crate::ports::{ni, textures};
 use crate::sync::LockCell;
 
-/// The functions with detours, and the instructions that each jump displaces.
-/// `renderFogOfWar`, `updateFogOfWarVertexBuffer`, `lockRenderTarget`: `push -1`,
-/// `push <the handler>`. `unlockRenderTarget`: `push esi`, `mov esi, ecx`, `push edi`,
-/// `mov edi, [esi+4]`.
-const RENDER_FOG: usize = 0x42FC60;
-const RENDER_FOG_HEAD: [u8; 7] = [0x6A, 0xFF, 0x68, 0x20, 0x96, 0x72, 0x00];
-const DRAW_BLOB: usize = 0x42FA50;
-const DRAW_BLOB_HEAD: [u8; 7] = [0x6A, 0xFF, 0x68, 0xF8, 0x95, 0x72, 0x00];
-const LOCK_TARGET: usize = 0x42F3F0;
-const LOCK_TARGET_HEAD: [u8; 7] = [0x6A, 0xFF, 0x68, 0x88, 0x95, 0x72, 0x00];
-const UNLOCK_TARGET: usize = 0x42F620;
-const UNLOCK_TARGET_HEAD: [u8; 7] = [0x56, 0x8B, 0xF1, 0x57, 0x8B, 0x7E, 0x04];
 /// `worldController`, its `mapRenderTarget` (+0x22C), and the target's `screenPolygon` (+0x68).
 const WORLD_CONTROLLER: usize = 0x7C67DC;
 const MAP_RENDER_TARGET: usize = 0x22C;
@@ -102,8 +90,9 @@ fn check_on() -> bool {
     *ON.get_or_init(|| std::env::var("NIRENDER_FOG_CHECK").is_ok_and(|value| value == "1"))
 }
 
-/// Puts the detours in place, when all four functions hold the engine's code. The plugin calls
-/// this when it is the host of the render link.
+/// Claims MWSE's four overrides (the render of the fog, a blob of it, the lock and the unlock
+/// of a render target; MWSE's own fog cache locks through them too). The plugin calls this
+/// when it is the host of the render link.
 pub unsafe fn install() {
     if INSTALLED.load(Ordering::Relaxed) {
         return;
@@ -112,39 +101,30 @@ pub unsafe fn install() {
         crate::log!("map fog: NIRENDER_MAP_FOG=0, the engine reads the fog from the GPU");
         return;
     }
-    let live = |at: usize| core::slice::from_raw_parts(at as *const u8, 7);
-    let places = [
-        ("renderFogOfWar", RENDER_FOG, RENDER_FOG_HEAD),
-        ("updateFogOfWarVertexBuffer", DRAW_BLOB, DRAW_BLOB_HEAD),
-        ("lockRenderTarget", LOCK_TARGET, LOCK_TARGET_HEAD),
-        ("unlockRenderTarget", UNLOCK_TARGET, UNLOCK_TARGET_HEAD),
-    ];
-    let wrong: Vec<String> = places.iter().filter(|(_, at, head)| live(*at) != head).map(|(name, at, _)| format!("{name} {:02x?}", live(*at))).collect();
-    if !wrong.is_empty() {
-        crate::log!("map fog: another mod changed the code ({}): the engine reads the fog from the GPU", wrong.join("; "));
-        return;
-    }
-    let hooks = (|| -> Result<(), String> {
-        // The unlock first: it must know the locks of this module before any is given.
-        let unlock = crate::hook::install_raw(UNLOCK_TARGET, &UNLOCK_TARGET_HEAD, &[], unlock_detour as *const () as usize, 2, crate::hook::Cleanup::Callee)?;
-        UNLOCK_ORIGINAL.store(unlock, Ordering::Relaxed);
-        let render = crate::hook::install_raw(RENDER_FOG, &RENDER_FOG_HEAD, &[], render_fog_detour as *const () as usize, 3, crate::hook::Cleanup::Callee)?;
-        RENDER_FOG_ORIGINAL.store(render, Ordering::Relaxed);
-        let blob = crate::hook::install_raw(DRAW_BLOB, &DRAW_BLOB_HEAD, &[], draw_blob_detour as *const () as usize, 4, crate::hook::Cleanup::Callee)?;
-        DRAW_BLOB_ORIGINAL.store(blob, Ordering::Relaxed);
-        Ok(())
-    })();
-    if let Err(error) = hooks {
-        // A copy that misses a draw would give old pixels: the locks stay the engine's.
-        crate::log!("map fog: a detour failed ({error}): the engine reads the fog from the GPU");
-        return;
-    }
+    use crate::mwse_native::{claim, claim_all, NATIVE_OVERRIDE_FOG_BLOB, NATIVE_OVERRIDE_FOG_RENDER, NATIVE_OVERRIDE_RENDER_TARGET_LOCK, NATIVE_OVERRIDE_RENDER_TARGET_UNLOCK};
+    // The unlock first: it must know the locks of this module before any is given.
+    let claims = claim_all(&[
+        (NATIVE_OVERRIDE_RENDER_TARGET_UNLOCK, unlock_detour as *const () as usize),
+        (NATIVE_OVERRIDE_FOG_RENDER, render_fog_detour as *const () as usize),
+        (NATIVE_OVERRIDE_FOG_BLOB, draw_blob_detour as *const () as usize),
+    ]);
+    let claims = match claims {
+        Ok(claims) => claims,
+        Err(error) => {
+            // A copy that misses a draw would give old pixels: the locks stay the engine's.
+            crate::log!("map fog: {error}: the engine reads the fog from the GPU");
+            return;
+        }
+    };
+    UNLOCK_ORIGINAL.store(claims[0].engine, Ordering::Relaxed);
+    RENDER_FOG_ORIGINAL.store(claims[1].engine, Ordering::Relaxed);
+    DRAW_BLOB_ORIGINAL.store(claims[2].engine, Ordering::Relaxed);
     // The copies follow the draws from now on; the locks use them only after this.
     INSTALLED.store(true, Ordering::Relaxed);
-    match crate::hook::install_raw(LOCK_TARGET, &LOCK_TARGET_HEAD, &[], lock_detour as *const () as usize, 1, crate::hook::Cleanup::Callee) {
-        Ok(original) => LOCK_ORIGINAL.store(original, Ordering::Relaxed),
+    match claim(NATIVE_OVERRIDE_RENDER_TARGET_LOCK, lock_detour as *const () as usize) {
+        Ok(lock) => LOCK_ORIGINAL.store(lock.engine, Ordering::Relaxed),
         Err(error) => {
-            crate::log!("map fog: no detour on lockRenderTarget ({error}): the engine reads the fog from the GPU");
+            crate::log!("map fog: {error}: the engine reads the fog from the GPU");
             return;
         }
     }

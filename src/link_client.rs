@@ -1635,8 +1635,8 @@ pub unsafe fn connect() -> Result<String, String> {
     };
     if DYNAMIC_LIGHT_TEST_ORIGINAL.load(Ordering::Relaxed) == 0 {
         let detour = dynamic_light_test_detour as *const () as usize;
-        let original = crate::mwse_native::claim(crate::mwse_native::NATIVE_OVERRIDE_DYNAMIC_LIGHT_TEST, detour)?;
-        DYNAMIC_LIGHT_TEST_ORIGINAL.store(original, Ordering::Relaxed);
+        let claim = crate::mwse_native::claim(crate::mwse_native::NATIVE_OVERRIDE_DYNAMIC_LIGHT_TEST, detour)?;
+        DYNAMIC_LIGHT_TEST_ORIGINAL.store(claim.engine, Ordering::Relaxed);
     }
     crate::map_tiles::install();
     crate::map_fog::install();

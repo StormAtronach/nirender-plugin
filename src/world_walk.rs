@@ -5,7 +5,8 @@
 //! `TES3Game::initGame` attaches the weather's sky root as the first child of the world
 //! camera's root (0x417F31, `AttachChild` with "first available"); the game's world root
 //! comes after it. `NiCamera::Click` (0x6CC7B0) walks the root with one call of
-//! `NiAVObject::CullShow` at 0x6CC874. The plugin writes a call of `click_cull_show` there.
+//! `NiAVObject::CullShow` at 0x6CC874. The plugin owns MWSE's override of that call
+//! (`mwse_native::NATIVE_OVERRIDE_CAMERA_ROOT_CULL_SHOW`): MWSE calls `click_cull_show` there.
 //! For the root of the world scene (a plain `NiNode`), the function does what the engine does
 //! for that one object, in the same order: the tests of `NiAVObject::CullShow` (0x6EB480) on
 //! the root, then the loop of `NiNode::Display` (0x6C9190) over the children, each child
@@ -19,8 +20,8 @@ use crate::gen::layouts::{NiAVObject as AV, NiCamera as C, NiNode as N};
 use crate::main_thread::MainThread;
 use crate::mem::{rd, wr};
 
-/// The call of `NiAVObject::CullShow` in `NiCamera::Click`.
-const CLICK_CULL_SITE: usize = 0x6CC874;
+/// `NiAVObject::CullShow`, the function of the call in `NiCamera::Click` that MWSE's override
+/// replaces.
 const CULL_SHOW: usize = 0x6EB480;
 const NODE_DISPLAY: usize = 0x6C9190;
 const WHICH_SIDE: usize = 0x6F2660;
@@ -36,20 +37,15 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 static WALKS: AtomicU64 = AtomicU64::new(0);
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 
-/// True when the call at 0x6CC874 is the plugin's: the stream then carries the event, and
-/// its header says so (`capture::HEADER_WORLD_WALK`).
+/// True when the plugin owns MWSE's override of the root's walk: the stream then carries the
+/// event, and its header says so (`capture::HEADER_WORLD_WALK`).
 pub fn installed() -> bool {
     INSTALLED.load(Ordering::Relaxed)
 }
 
-fn call_bytes(site: usize, target: usize) -> [u8; 5] {
-    let mut bytes = [0xE8, 0, 0, 0, 0];
-    bytes[1..].copy_from_slice(&(target.wrapping_sub(site + 5) as u32).to_le_bytes());
-    bytes
-}
-
-/// Writes the call. Another mod's bytes at the site leave the engine's call: the stream then
-/// has no event, and the helper takes the world's start as an older capture has it.
+/// Claims MWSE's override. A refusal (another module owns it, or an MWSE without it) leaves the
+/// engine's call: the stream then has no event, and the helper takes the world's start as an
+/// older capture has it.
 pub unsafe fn install() {
     if installed() {
         return;
@@ -58,13 +54,8 @@ pub unsafe fn install() {
         crate::log!("world walk: NIRENDER_WORLD_WALK=0, the helper finds the world's start as before");
         return;
     }
-    let live = core::slice::from_raw_parts(CLICK_CULL_SITE as *const u8, 5);
-    if live != call_bytes(CLICK_CULL_SITE, CULL_SHOW) {
-        crate::log!("world walk: another mod changed the call at {CLICK_CULL_SITE:#x} ({live:02x?}): the helper finds the world's start as before");
-        return;
-    }
-    if !crate::win::patch(CLICK_CULL_SITE, &call_bytes(CLICK_CULL_SITE, click_cull_show as *const () as usize)) {
-        crate::log!("world walk: the call could not be written: the helper finds the world's start as before");
+    if let Err(error) = crate::mwse_native::claim(crate::mwse_native::NATIVE_OVERRIDE_CAMERA_ROOT_CULL_SHOW, click_cull_show as *const () as usize) {
+        crate::log!("world walk: {error}: the helper finds the world's start as before");
         return;
     }
     INSTALLED.store(true, Ordering::Relaxed);

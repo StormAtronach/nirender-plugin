@@ -1581,7 +1581,6 @@ pub unsafe fn report(mt: &MainThread) -> String {
         + &light_report(mt)
         + "\n"
         + &record_report(mt)
-        + "\n" + &crate::script_names::report()
         + "\n" + &crate::worker_events::report()
         + "\n" + &crate::freed_fill::report()
         + "\n" + &crate::camera_space::skin_report(mt)

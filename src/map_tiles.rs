@@ -9,7 +9,9 @@
 //! about 6 tiles (records entry 54).
 //!
 //! With this module the helper copies the target into the texture of the tile on the GPU, and
-//! sends the pixels some frames later. The detour of `renderMap`:
+//! sends the pixels some frames later. The four places are MWSE's overrides, which the plugin
+//! owns (`install`); the words "detour" below name the plugin's function in each. The detour
+//! of `renderMap`:
 //! 1. gives `readbackRenderedTexture` a memory of zeros in place of the locked surface. It
 //!    makes the pixel data and the source texture as for the engine.
 //! 2. makes the device texture of the source texture at once
@@ -40,23 +42,13 @@ use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 use crate::ports::{ni, textures};
 
-/// `WorldControllerRenderTarget::renderMap` and the instructions that the jump displaces:
-/// `mov al, [esp+4]`, `test al, al`.
-const RENDER_MAP: usize = 0x42F6F0;
-const RENDER_MAP_HEAD: [u8; 6] = [0x8A, 0x44, 0x24, 0x04, 0x84, 0xC0];
 /// `WorldControllerRenderTarget::readbackRenderedTexture` (thiscall, a `D3DLOCKED_RECT`).
 const READBACK: usize = 0x42F830;
-/// `DataHandler::purgeTextures` and the instructions that the jump displaces: `push ebx`,
-/// `push ebp`, `mov ebp, ecx`, `mov ecx, [worldController]`.
-const PURGE_TEXTURES: usize = 0x485490;
-const PURGE_TEXTURES_HEAD: [u8; 10] = [0x53, 0x55, 0x8B, 0xE9, 0x8B, 0x0D, 0xDC, 0x67, 0x7C, 0x00];
-/// The call of `RecordsHandler::mapDrawCell` in `Cell::sub_4E3210`, which puts a tile of the
-/// cache on the map.
-const PAINT_SITE: usize = 0x4E32FE;
+/// `RecordsHandler::mapDrawCell`, which puts a tile of the cache on the map. MWSE's override
+/// replaces its call in `Cell::sub_4E3210` (`NATIVE_OVERRIDE_MAP_CELL_PAINT`).
 const MAP_DRAW_CELL: usize = 0x4C81C0;
-/// The call of `TES3File_static::createSaveScreenshot` (cdecl, the file name) in
-/// `TES3File::writeSaveHeader`.
-const SAVE_SHOT_SITE: usize = 0x4B586D;
+/// `TES3File_static::createSaveScreenshot` (cdecl, the file name). MWSE's override replaces
+/// its call in `TES3File::writeSaveHeader` (`NATIVE_OVERRIDE_SAVE_PICTURE`).
 const CREATE_SAVE_SCREENSHOT: usize = 0x4B4F80;
 /// `NiDX8SourceTextureData_static::Create` (cdecl, the texture, the renderer).
 const SOURCE_DATA_CREATE: usize = 0x6BFA50;
@@ -120,21 +112,8 @@ static ROOM_WAIT_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::Atom
 static ROOM_WAIT_LONGEST: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 static MOST_OPEN: AtomicUsize = AtomicUsize::new(0);
 
-/// The bytes of a `call` at `site` to `target`.
-fn call_bytes(site: usize, target: usize) -> [u8; 5] {
-    let mut bytes = [0xE8, 0, 0, 0, 0];
-    bytes[1..].copy_from_slice(&(target.wrapping_sub(site + 5) as u32).to_le_bytes());
-    bytes
-}
-
-/// True when the 5 bytes at `site` are a call of `target`.
-unsafe fn calls(site: usize, target: usize) -> bool {
-    core::slice::from_raw_parts(site as *const u8, 5) == call_bytes(site, target)
-}
-
-/// Puts the detours in place. The plugin calls this when it is the host of the render link.
-/// All four places must hold the engine's code: without the deferred paint the world map would
-/// get the zeros of an open tile.
+/// Claims MWSE's four overrides, all or none. The plugin calls this when it is the host of the
+/// render link. Without the deferred paint the world map would get the zeros of an open tile.
 pub unsafe fn install() {
     if INSTALLED.load(Ordering::Relaxed) {
         return;
@@ -143,47 +122,21 @@ pub unsafe fn install() {
         crate::log!("map tiles: NIRENDER_MAP_TILES=0, the engine reads each tile");
         return;
     }
-    let live = |at: usize, len: usize| core::slice::from_raw_parts(at as *const u8, len);
-    let mut wrong = Vec::new();
-    if live(RENDER_MAP, RENDER_MAP_HEAD.len()) != RENDER_MAP_HEAD {
-        wrong.push(format!("renderMap {:02x?}", live(RENDER_MAP, RENDER_MAP_HEAD.len())));
-    }
-    if live(PURGE_TEXTURES, PURGE_TEXTURES_HEAD.len()) != PURGE_TEXTURES_HEAD {
-        wrong.push(format!("purgeTextures {:02x?}", live(PURGE_TEXTURES, PURGE_TEXTURES_HEAD.len())));
-    }
-    if !calls(PAINT_SITE, MAP_DRAW_CELL) {
-        wrong.push(format!("the paint call at {PAINT_SITE:#x} {:02x?}", live(PAINT_SITE, 5)));
-    }
-    if !calls(SAVE_SHOT_SITE, CREATE_SAVE_SCREENSHOT) {
-        wrong.push(format!("the save picture call at {SAVE_SHOT_SITE:#x} {:02x?}", live(SAVE_SHOT_SITE, 5)));
-    }
-    if !wrong.is_empty() {
-        crate::log!("map tiles: another mod changed the code ({}): the engine reads each tile", wrong.join("; "));
-        return;
-    }
-    let render_map = match crate::hook::install_raw(RENDER_MAP, &RENDER_MAP_HEAD, &[], render_map_detour as *const () as usize, 1, crate::hook::Cleanup::Callee) {
-        Ok(original) => original,
+    use crate::mwse_native::{claim_all, NATIVE_OVERRIDE_MAP_CELL_PAINT, NATIVE_OVERRIDE_MAP_TILE_READ, NATIVE_OVERRIDE_SAVE_PICTURE, NATIVE_OVERRIDE_TEXTURE_PURGE};
+    let claims = match claim_all(&[
+        (NATIVE_OVERRIDE_MAP_TILE_READ, render_map_detour as *const () as usize),
+        (NATIVE_OVERRIDE_TEXTURE_PURGE, purge_detour as *const () as usize),
+        (NATIVE_OVERRIDE_MAP_CELL_PAINT, paint_detour as *const () as usize),
+        (NATIVE_OVERRIDE_SAVE_PICTURE, save_shot_detour as *const () as usize),
+    ]) {
+        Ok(claims) => claims,
         Err(error) => {
-            crate::log!("map tiles: no detour on renderMap ({error}): the engine reads each tile");
+            crate::log!("map tiles: {error}: the engine reads each tile");
             return;
         }
     };
-    RENDER_MAP_ORIGINAL.store(render_map, Ordering::Relaxed);
-    match crate::hook::install_raw(PURGE_TEXTURES, &PURGE_TEXTURES_HEAD, &[], purge_detour as *const () as usize, 0, crate::hook::Cleanup::Callee) {
-        Ok(original) => PURGE_ORIGINAL.store(original, Ordering::Relaxed),
-        Err(error) => {
-            // The detour of renderMap is in place. It must not copy: a purge would make the
-            // textures of open tiles from zeros.
-            crate::log!("map tiles: no detour on purgeTextures ({error}): the engine reads each tile");
-            return;
-        }
-    }
-    if !crate::win::patch(PAINT_SITE, &call_bytes(PAINT_SITE, paint_detour as *const () as usize))
-        || !crate::win::patch(SAVE_SHOT_SITE, &call_bytes(SAVE_SHOT_SITE, save_shot_detour as *const () as usize))
-    {
-        crate::log!("map tiles: a call could not be written: the engine reads each tile");
-        return;
-    }
+    RENDER_MAP_ORIGINAL.store(claims[0].engine, Ordering::Relaxed);
+    PURGE_ORIGINAL.store(claims[1].engine, Ordering::Relaxed);
     INSTALLED.store(true, Ordering::Relaxed);
     crate::log!("map tiles: the helper copies each tile of the local map on the GPU; the pixels come later");
     if hold() != 0 {
