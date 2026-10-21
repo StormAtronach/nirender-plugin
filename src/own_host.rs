@@ -417,7 +417,16 @@ unsafe fn pixel_memory(surface: &mut Object) -> Option<&'static mut Vec<u8>> {
 unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool {
     let (into_width, into_height) = (into.width, into.height);
     let Some(memory) = pixel_memory(into) else { return false };
-    let Some((width, height, pixels)) = crate::capture::read_pixels(target) else { return false };
+    let start = crate::capture::ticks();
+    let read = crate::capture::read_pixels(target);
+    {
+        // The reads by the size of the target (the fog of war, a map tile, the character
+        // image, the back buffer): the count and the wait, for the report.
+        let entry = READS_BY_SIZE.get(&lock).entry((into_width, into_height, target == 0)).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += crate::capture::ticks() - start;
+    }
+    let Some((width, height, pixels)) = read else { return false };
     if (width, height) != (into_width, into_height) {
         return false;
     }
@@ -443,6 +452,8 @@ unsafe fn copy_pixels(lock: &DeviceLock, source: u32, destination: u32) -> u32 {
 }
 
 static PIXEL_READS: LockCell<u32> = LockCell::new(0);
+/// The reads by (width, height, from the back buffer): the count and the wait in ticks.
+static READS_BY_SIZE: LockCell<std::collections::BTreeMap<(u32, u32, bool), (u32, i64)>> = LockCell::new(std::collections::BTreeMap::new());
 
 unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, _rectangle: usize, _flags: u32) -> u32 {
     let lock = crate::sync::device_lock();
@@ -819,5 +830,10 @@ pub unsafe fn report() -> String {
     if text.is_empty() {
         text.push_str(" none");
     }
-    format!("own host: {} pixel reads from the host program; device calls without a call of the link, taken and not done:{text}", *PIXEL_READS.get(&lock))
+    let per_second = crate::capture::ticks_per_second() as f64;
+    let mut sizes = String::new();
+    for ((width, height, back), (count, ticks)) in READS_BY_SIZE.get(&lock).iter() {
+        sizes.push_str(&format!(" {width}x{height}{}: {count} reads, {:.1} ms;", if *back { " (back buffer)" } else { "" }, *ticks as f64 * 1000.0 / per_second));
+    }
+    format!("own host: {} pixel reads from the host program, by target size:{sizes} device calls without a call of the link, taken and not done:{text}", *PIXEL_READS.get(&lock))
 }
