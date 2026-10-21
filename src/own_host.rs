@@ -422,9 +422,10 @@ unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool
     {
         // The reads by the size of the target (the fog of war, a map tile, the character
         // image, the back buffer): the count and the wait, for the report.
+        let waited = crate::capture::ticks() - start;
         let entry = READS_BY_SIZE.get(&lock).entry((into_width, into_height, target == 0)).or_insert((0, 0));
         entry.0 += 1;
-        entry.1 += crate::capture::ticks() - start;
+        entry.1 += waited;
     }
     let Some((width, height, pixels)) = read else { return false };
     if (width, height) != (into_width, into_height) {

@@ -48,7 +48,7 @@ use crate::ptr_hash::{HashMap, HashSet};
 use crate::capture;
 use crate::engine::{thiscall1, vcall0};
 use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L, NiPropertyState as PS, NiTimeController as TC, NiZBufferProperty as ZP};
-use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_UNKNOWN, SCENE_WORLD};
+use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_UNKNOWN, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_RACE_MENU_HEAD, SCENE_WATER_REFLECTION, SCENE_WORLD};
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::{rd, wr};
 
@@ -207,6 +207,8 @@ struct Tables {
     /// The camera of the world scene in progress, for the check of the visibility at its
     /// end (mode gpu).
     world_camera: usize,
+    /// The kind of the scene in progress (`SCENE_*` of `link.rs`), for `skipped_display`.
+    scene_kind: u32,
     states: u64,
     light_records: u64,
     /// The displays the engine skipped, and the device values of the lights of the frame
@@ -280,6 +282,7 @@ fn tables(mt: &MainThread) -> &mut Tables {
         pending: None,
         mode: None,
         world_camera: 0,
+        scene_kind: crate::link::SCENE_OTHER,
         states: 0,
         light_records: 0,
         skipped: 0,
@@ -390,6 +393,7 @@ pub unsafe fn scene_begin(mt: &MainThread, kind: u32, camera: usize) {
     // The shapes destroyed on another thread leave the tables before any walk of the scene.
     crate::worker_events::drain();
     tables(mt).world_camera = if kind == SCENE_WORLD { camera } else { 0 };
+    tables(mt).scene_kind = kind;
     if kind == SCENE_WORLD && camera != 0 {
         crate::animation::note_camera(mt, camera);
     }
@@ -1157,6 +1161,15 @@ unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> boo
         return false;
     }
     if !t.skip || !capture::recording() {
+        return false;
+    }
+    // A scene that draws into a target of the game: the local map's tiles, the character
+    // preview, the race menu's head, the engine's water reflection. The helper draws its table
+    // only in the scenes of the world camera, so here the engine draws the shape on the record
+    // path (the draw is not a plain world shape there, `link_client`). The mark stays: the
+    // shape is still retained in the world scenes. Without this a map tile drawn at a walking
+    // cross lost its landscape (records entry 55).
+    if matches!(t.scene_kind, SCENE_RACE_MENU_HEAD | SCENE_CHARACTER_PREVIEW | SCENE_LOCAL_MAP | SCENE_WATER_REFLECTION) {
         return false;
     }
     if let Some(instance) = t.instances.get_mut(&shape) {
