@@ -18,5 +18,5 @@ call "%~dp0local.bat"
 if not defined LIVECODING set "LIVECODING=%~dp0..\moreFPS\docs\Numidium Project\scripts\wgpu-scene-audit\livecoding-mark.lua"
 "%PYTHON%" tools\play.py --mge-build "%MGE_BUILD%" --plugin --livecoding "%LIVECODING%"
 echo.
-echo The game is over and the instance is restored. Press a key to close this window.
-pause >nul
+echo The game is over and the instance is restored. This window closes in 60 s, or at a key.
+timeout /t 60 >nul
