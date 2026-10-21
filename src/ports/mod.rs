@@ -312,8 +312,8 @@ static FOLLOWED: &[Followed] = &[
     Followed::Operand { at: 0x6B7357, len: 1 },
     Followed::Operand { at: 0x6B737A, len: 1 },
     // `NiRenderer::MapWindowPointToBufferPoint`: MGE XE's UI scale (`MWBridge::setUIScale`).
-    // `base::renderer_map_window_point_to_buffer_point` reads the bytes.
-    Followed::Patch { at: base::UI_SCALE_PATCH_AT, bytes: &base::UI_SCALE_PATCH },
+    // `base::renderer_map_window_point_to_buffer_point` reads the bytes (`base::UI_SCALE_PATCH`).
+    Followed::Patch { at: 0x6F5157, bytes: &[0xA1, 0xDC, 0x67, 0x7C, 0x00, 0x8B, 0x78, 0x78, 0x8B, 0x40, 0x7C, 0x90, 0x90, 0x90] },
 ];
 
 /// The records of the Morrowind Code Patch that write inside a ported function: the feature,

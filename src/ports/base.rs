@@ -2135,6 +2135,10 @@ mod tests {
         // The bytes are those that MGE XE writes.
         assert_eq!(UI_SCALE_PATCH_AT, 0x6F5150 + 7);
         assert_eq!(&UI_SCALE_PATCH[1..5], &(crate::engine::WORLD_CONTROLLER as u32).to_le_bytes());
+        // The census follows the same bytes, and only those.
+        let read = |at: usize| UI_SCALE_PATCH[at - UI_SCALE_PATCH_AT];
+        assert!((0..UI_SCALE_PATCH.len()).all(|i| crate::ports::follows(UI_SCALE_PATCH_AT + i, read)));
+        assert!(!crate::ports::follows(UI_SCALE_PATCH_AT, |at| if at == UI_SCALE_PATCH_AT + 13 { 0xCC } else { read(at) }));
     }
 
     fn array(storage: &mut [usize], end: u32, filled: u32, grow: u32) -> [u32; 6] {
