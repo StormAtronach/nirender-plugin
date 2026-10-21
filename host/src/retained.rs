@@ -1078,6 +1078,32 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
 }
 
 impl RetainedSet {
+    /// The centre of the bound of an instance (of its first slot).
+    pub(crate) fn centre_of(&self, id: u32) -> Option<[f32; 3]> {
+        let &slot = self.by_id.get(&id)?.first()?;
+        let s = self.slots[slot as usize].as_ref()?;
+        Some([s.bound[0], s.bound[1], s.bound[2]])
+    }
+
+    /// Puts the entries of the sorted slots of an instance into `entries` (a run of
+    /// `Sorted::Only`), in the order of its slots. Returns the number of its slots that the
+    /// table does not sort: those drew with the other draws of the table.
+    fn placed_entries(&self, id: u32, entries: &mut Vec<(u64, u32, u32, u32)>) -> u32 {
+        let mut not_sorted = 0;
+        for &slot in self.by_id.get(&id).map(Vec::as_slice).unwrap_or(&[]) {
+            let Some(s) = self.slots[slot as usize].as_ref() else { continue };
+            if !s.sorted {
+                not_sorted += 1;
+                continue;
+            }
+            if s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES {
+                continue;
+            }
+            entries.push((0, s.bucket, 0, slot));
+        }
+        not_sorted
+    }
+
     /// The draws of a view in the order they go to the GPU, into `order`:
     /// 1. The buckets that do not blend and have no alpha test, front to back by their
     ///    nearest draw in view, and the draws of each front to back: the early depth test
@@ -1096,7 +1122,9 @@ impl RetainedSet {
     ///    the engine's order: the engine sorts screen-space boxes (`$2::Sort` 0x6FE830,
     ///    engine-rules R21). A view draws them after the rest
     ///    (`Sorted::Together`) or keeps them for the flush of the engine's queue
-    ///    (`Sorted::Keep`, then `Only`).
+    ///    (`Sorted::Keep`, then `Only`). There a kept blend with a place in the engine's
+    ///    queue (`tag::INSTANCE_QUEUED`) draws at its place, in the engine's order; this
+    ///    order is only for the blends without one (`draw_retained_sorted`).
     /// Engine-rules R3, R4, R20 (the skill wgpu-renderer-dev).
     fn collect_order(&mut self, view: &RetainedView) {
         self.order.clear();
@@ -1541,19 +1569,29 @@ impl Player {
     }
 
     /// Draws the sorted blends of the frame where the engine flushes its sorted queue: the
-    /// kept blends of the table and the blended draws of the engine's path that
-    /// waited (`frame_sorted`). The draws of the engine's path keep their order of arrival:
-    /// the engine sorted them, and a node that orders its subtree (a sort adjust node) gives
-    /// an order that the depth of each shape does not. The table's blends go between them by
-    /// the depth of the bound centre along the view (`merge_picks`). A run of the table's
-    /// entries is one `draw_retained` call; a draw of the engine's path is issued between
-    /// them.
+    /// blended draws of the engine's path and the places of the table's blends that waited
+    /// (`frame_sorted`), and the kept blends of the table without a place. The waiting
+    /// entries keep their order of arrival: the engine sorted them, the table's blends with
+    /// them (the plugin puts those into the engine's queue, `tag::INSTANCE_QUEUED`), and a
+    /// node that orders its subtree (a sort adjust node) gives an order that the depth of
+    /// each shape does not. A kept blend without a place (an older capture, a queue that did
+    /// not take the shape) goes between them by the depth of its bound centre along the view
+    /// (`merge_picks`). A run of the table's entries is one `draw_retained` call; a draw of
+    /// the engine's path is issued between them.
     /// Engine-rules R21, R22 (the skill wgpu-renderer-dev).
     pub(super) fn draw_retained_sorted(&mut self, generation: u32) {
         let (deferred, later): (Vec<_>, Vec<_>) = core::mem::take(&mut self.frame_sorted).into_iter().partition(|e| e.3 == generation);
         self.frame_sorted = later;
         let view = if generation == 0 { self.retained.sorted_view.take() } else { self.retained.sorted_view };
-        let kept = if generation == 0 && self.retained_on && view.is_some() { core::mem::take(&mut self.retained.kept_sorted) } else { Vec::new() };
+        let all_kept = if generation == 0 && self.retained_on && view.is_some() { core::mem::take(&mut self.retained.kept_sorted) } else { Vec::new() };
+        // The kept blends of the instances with a place in the queue draw at their place.
+        let placed: std::collections::HashSet<u32> = deferred.iter().filter_map(|e| if let crate::Waiting::Table(id) = e.2 { Some(id) } else { None }).collect();
+        let kept: Vec<(u64, u32, u32, u32)> = all_kept
+            .iter()
+            .copied()
+            .filter(|entry| placed.is_empty() || !self.retained.slots[entry.3 as usize].as_ref().is_some_and(|s| placed.contains(&s.id)))
+            .collect();
+        self.renderer.counts.sorted_without_place += kept.len() as u64;
         if crate::dump_wanted() != 0 {
             println!("sorted blends: {} kept, {} of the engine's path, pass open {}, frame {}", kept.len(), deferred.len(), self.pass.is_some(), self.renderer.counts.frames);
             for &(key, bucket, _, slot) in &kept {
@@ -1566,40 +1604,44 @@ impl Player {
             return;
         }
         let near = self.world_near.unwrap_or([0.0; 4]);
-        let deferred: Vec<(u64, Rc<Draw>)> = deferred
+        let deferred: Vec<(u64, crate::Waiting)> = deferred
             .into_iter()
-            .map(|(c, sequence, draw, _)| {
+            .map(|(c, sequence, waiting, _)| {
                 let depth = (near[0] * c[0] + near[1] * c[1] + near[2] * c[2] + near[3]).max(0.0);
-                ((!depth.to_bits() as u64) << 32 | sequence as u64, draw)
+                ((!depth.to_bits() as u64) << 32 | sequence as u64, waiting)
             })
             .collect();
-        self.renderer.counts.merged_blends += deferred.len() as u64;
+        self.renderer.counts.merged_blends += deferred.iter().filter(|e| matches!(e.1, crate::Waiting::Draw(_))).count() as u64;
         if self.pass.is_none() {
             self.open_pass(None, None, None);
         }
         let kept_keys: Vec<u64> = kept.iter().map(|entry| entry.0).collect();
         let deferred_keys: Vec<u64> = deferred.iter().map(|entry| entry.0).collect();
+        // The places of the table that follow each other draw as one run.
+        let mut run: Vec<(u64, u32, u32, u32)> = Vec::new();
         for pick in merge_picks(&kept_keys, &deferred_keys) {
             match pick {
                 Pick::Table(start, end) => {
-                    let Some(mut v) = view else { break };
-                    v.sorted = Sorted::Only;
-                    v.target = self.pass_target;
-                    self.end_run();
-                    self.retained.kept_sorted = kept[start..end].to_vec();
-                    let Some(pass) = self.pass.as_mut() else { return };
-                    pass.push_debug_group("retained sorted blends");
-                    draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &v);
-                    pass.pop_debug_group();
-                    self.forget_bound();
+                    self.draw_sorted_run(view, core::mem::take(&mut run));
+                    self.draw_sorted_run(view, kept[start..end].to_vec());
                 }
-                Pick::Engine(j) => {
-                    let draw = deferred[j].1.clone();
-                    self.issue(&draw);
-                }
+                Pick::Engine(j) => match &deferred[j].1 {
+                    crate::Waiting::Draw(draw) => {
+                        self.draw_sorted_run(view, core::mem::take(&mut run));
+                        let draw = draw.clone();
+                        self.issue(&draw);
+                    }
+                    &crate::Waiting::Table(id) => {
+                        self.renderer.counts.queued_places += 1;
+                        if self.retained.placed_entries(id, &mut run) != 0 {
+                            self.renderer.counts.queued_not_sorted += 1;
+                        }
+                    }
+                },
             }
         }
-        self.retained.kept_sorted = kept;
+        self.draw_sorted_run(view, run);
+        self.retained.kept_sorted = all_kept;
         // An item after the world end (the engine flushed its queue in a later scene): the
         // post-processing reads the copy of the world depth, so the depth of these blends
         // goes into it. The depth target still has the world, so a new copy is the nearer of
@@ -1608,6 +1650,26 @@ impl Player {
             self.copy_depth(1);
             self.open_pass(None, None, None);
         }
+    }
+}
+
+impl Player {
+    /// Draws a run of the table's sorted entries into the pass (`Sorted::Only`), with the
+    /// view of the main pass. Nothing without entries or without that view.
+    fn draw_sorted_run(&mut self, view: Option<RetainedView>, entries: Vec<(u64, u32, u32, u32)>) {
+        if entries.is_empty() {
+            return;
+        }
+        let Some(mut v) = view else { return };
+        v.sorted = Sorted::Only;
+        v.target = self.pass_target;
+        self.end_run();
+        self.retained.kept_sorted = entries;
+        let Some(pass) = self.pass.as_mut() else { return };
+        pass.push_debug_group("retained sorted blends");
+        draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &v);
+        pass.pop_debug_group();
+        self.forget_bound();
     }
 }
 

@@ -123,6 +123,11 @@ impl Player {
                     self.instance_draw(data);
                 }
             }
+            tag::INSTANCE_QUEUED if data.len() >= 4 => {
+                if self.retained_on {
+                    self.instance_queued(word(data, 0));
+                }
+            }
             tag::INSTANCE_DELETE if data.len() >= 4 => {
                 self.instances.remove(&word(data, 0));
                 self.retained_remove(word(data, 0));
@@ -395,6 +400,28 @@ impl Player {
         } else {
             self.retained_remove(id);
         }
+    }
+
+    /// The place of a sorted blend of the table in the flush of the engine's queue: it waits
+    /// with the engine's queued draws and keeps its place among them
+    /// (`draw_retained_sorted`). Its key for the blends without a place is the centre of its
+    /// bound. The place counts in a scene of the world camera in the back buffer, also
+    /// before the world began: in a view where the table holds every shape of the world the
+    /// engine draws nothing before its queue flushes, and the world begins at the scene's
+    /// end (`Plan::scene_end`), before the sorted blends of the scene.
+    pub(crate) fn instance_queued(&mut self, id: u32) {
+        let Some(centre) = self.retained.centre_of(id) else {
+            self.renderer.counts.queued_unknown += 1;
+            return;
+        };
+        let kind = self.plan.scene_kind;
+        let world_camera = kind == engine::scene::SCENE_WORLD || engine::scene::later_world_scene(kind);
+        if !world_camera || self.target.is_some() {
+            self.renderer.counts.queued_outside += 1;
+            return;
+        }
+        let sequence = self.frame_sorted.len() as u32;
+        self.frame_sorted.push((centre, sequence, crate::Waiting::Table(id), self.plan.defer()));
     }
 
     /// A draw of an instance: the draws of the shape from the instance, the ambient light

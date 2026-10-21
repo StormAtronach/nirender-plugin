@@ -312,7 +312,7 @@ impl Player {
                 }
             };
             let sequence = self.frame_sorted.len() as u32;
-            self.frame_sorted.push((centre, sequence, draw, self.plan.defer()));
+            self.frame_sorted.push((centre, sequence, crate::Waiting::Draw(draw), self.plan.defer()));
         } else {
             self.items.push(Item::Draw(draw));
         }

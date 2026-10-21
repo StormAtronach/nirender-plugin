@@ -601,6 +601,11 @@ pub unsafe fn main_queue_open(t: &MainThread) -> bool {
     accumulator != 0 && rd::<usize>(accumulator, ACC::camera) != 0
 }
 
+/// True when `accumulator` is the queue of the current Click (`note_main_accumulator`).
+pub fn is_main_accumulator(t: &MainThread, accumulator: usize) -> bool {
+    accumulator != 0 && *MAIN_ACCUMULATOR.get(t) == accumulator
+}
+
 /// True while the engine draws an object of its main sorted queue: the flush of the Click.
 pub fn in_main_flush(t: &MainThread) -> bool {
     *IN_MAIN_FLUSH.get(t)

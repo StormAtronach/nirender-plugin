@@ -48,7 +48,7 @@ use crate::ptr_hash::{HashMap, HashSet};
 use crate::capture;
 use crate::engine::{thiscall1, vcall0};
 use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L, NiPropertyState as PS, NiTimeController as TC, NiZBufferProperty as ZP};
-use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_UNKNOWN, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_RACE_MENU_HEAD, SCENE_WATER_REFLECTION, SCENE_WORLD};
+use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_UNKNOWN, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_RACE_MENU_HEAD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::{rd, wr};
 
@@ -188,6 +188,9 @@ struct Instance {
     /// A copy of the shape's property pointers at its last display. `apply_changes` reads
     /// only this copy, never engine memory: the cell worker can free a shape at any time.
     properties: [usize; PROPERTY_SLOTS],
+    /// The frame in which the engine's main sorted queue took the shape (`queue_blend`), or
+    /// `u32::MAX`.
+    queued: u32,
 }
 
 /// The property slots of `NiPropertyState` from `propAlpha` (+0x08) to `field_30` (+0x30).
@@ -609,7 +612,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS] });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], queued: u32::MAX });
     t.pending = Some((shape, id));
 }
 
@@ -1136,6 +1139,48 @@ pub fn display_cost() -> (u64, u64, f64) {
 /// timer reads at every display have a cost of their own.
 static COST_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// The sorted blends of the table in the engine's main sorted queue: the shapes the queue
+/// took (0), their places written at the flush (1), and the places of shapes the flush
+/// displayed without a queue entry of their own (2: the children of a sort adjust node the
+/// queue took).
+static QUEUE_COUNTS: MainCell<[u64; 3]> = MainCell::new([0; 3]);
+
+/// True when a retained shape that the engine displays now may go into the engine's main
+/// sorted queue: mode gpu, the skip on, a capture running, a scene of the world camera. The
+/// shape ports then push the shape's state and ask the renderer's accumulator, as the
+/// engine's display does (`NiTriShape::Display`); the queue sorts the table's blends with
+/// the engine's own, and its flush gives their places (`flush_place`).
+pub unsafe fn may_queue(mt: &MainThread) -> bool {
+    let t = tables(mt);
+    t.mode == Some(Mode::Gpu) && t.skip && capture::recording() && matches!(t.scene_kind, SCENE_WORLD | SCENE_SORTED_ALPHA | SCENE_WATER)
+}
+
+/// Notes that the engine's main sorted queue took the shape in this frame.
+pub unsafe fn note_queued(mt: &MainThread, shape: usize) {
+    let t = tables(mt);
+    if let Some(instance) = t.instances.get_mut(&shape) {
+        instance.queued = t.frame;
+        QUEUE_COUNTS.get(mt)[0] += 1;
+    }
+}
+
+/// At the flush of the engine's main sorted queue: true when the queue took the shape in
+/// this frame. Its display work is done; the caller writes its place (`flush_place`).
+pub unsafe fn queued_now(mt: &MainThread, shape: usize) -> bool {
+    let t = tables(mt);
+    t.instances.get(&shape).is_some_and(|i| i.queued == t.frame)
+}
+
+/// Writes the place of a retained shape in the flush of the engine's main sorted queue
+/// (`INSTANCE_QUEUED`). `own` is false for a shape the flush displays without a queue entry
+/// of its own.
+pub unsafe fn flush_place(mt: &MainThread, shape: usize, own: bool) {
+    let t = tables(mt);
+    let Some(instance) = t.instances.get(&shape) else { return };
+    capture::instance_queued(instance.id);
+    QUEUE_COUNTS.get(mt)[if own { 1 } else { 2 }] += 1;
+}
+
 /// The display of a retained shape by the engine (mode gpu): what the draw of the stream
 /// did for the instance, without the draw. True when the engine must not display the
 /// shape; false when the shape is not retained after all (the mark goes).
@@ -1494,6 +1539,10 @@ pub unsafe fn report(mt: &MainThread) -> String {
         + &format!(
             "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {}, shapes hit {}\n",
             RECHECKS.get(mt)[0], RECHECKS.get(mt)[1], RECHECKS.get(mt)[2], RECHECKS.get(mt)[3], RECHECKS.get(mt)[4], RECHECKS.get(mt)[5], CHANGE_NOTES.get(mt)[0], CHANGE_NOTES.get(mt)[1], CHANGE_NOTES.get(mt)[2]
+        )
+        + &format!(
+            "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node\n",
+            QUEUE_COUNTS.get(mt)[0], QUEUE_COUNTS.get(mt)[1], QUEUE_COUNTS.get(mt)[2]
         )
         + &crate::animation::report()
         + "\n"

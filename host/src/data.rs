@@ -327,6 +327,15 @@ pub(crate) struct Counts {
     pub(crate) shape_twins: u32,
     /// The blended draws of the engine's path merged into the sorted list of the table.
     pub(crate) merged_blends: u64,
+    /// The places of the table's blends in the engine's queue (`tag::INSTANCE_QUEUED`):
+    /// drawn there, of an instance the table does not have, outside the world scene, and of
+    /// an instance whose slots the table does not sort (drawn with the other draws); and the
+    /// sorted blends of the table without a place, put between by depth.
+    pub(crate) queued_places: u64,
+    pub(crate) queued_unknown: u64,
+    pub(crate) queued_outside: u64,
+    pub(crate) queued_not_sorted: u64,
+    pub(crate) sorted_without_place: u64,
     /// The light records, and the lights of a shape that no record came for.
     pub(crate) light_records: u32,
     pub(crate) light_missing: u32,

@@ -166,6 +166,11 @@ pub mod tag {
     /// With a ticket other than 0 it also reads the pixels of the copy, without a wait, and
     /// puts them into the tile memory when the GPU has them.
     pub const COPY_TILE: u32 = 30;
+    /// A sorted blend of the table at its place in the flush of the engine's main sorted
+    /// queue: id. The engine sorted the instance with its own blends
+    /// (`instance_stream::queue_blend`); the host draws it at this place in the order of the
+    /// queue's draws.
+    pub const INSTANCE_QUEUED: u32 = 31;
 }
 
 // ---- the ring in shared memory
@@ -1313,6 +1318,12 @@ pub unsafe fn instance_draw(id: u32, ambient: u32, fog: Option<[u32; 4]>, lights
     let bone_word = [bone_count];
     let palette: &[u8] = if skinned { bones } else { &[] };
     write(tag::INSTANCE_DRAW, &[words(&[id, ambient, flags]), words(fog.as_ref().map_or(&[], |f| &f[..])), words(&count), words(lights), words(if skinned { &bone_word } else { &[] }), palette]);
+}
+
+/// A sorted blend of the table in the flush of the engine's queue. See `tag::INSTANCE_QUEUED`.
+pub unsafe fn instance_queued(id: u32) {
+    let _lock = crate::sync::device_lock();
+    write(tag::INSTANCE_QUEUED, &[words(&[id])]);
 }
 
 /// The end of an instance. See `tag::INSTANCE_DELETE`.

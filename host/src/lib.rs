@@ -582,6 +582,15 @@ struct Renderer {
     commands: Rc<FrameCommands>,
 }
 
+/// A blend that waits for the flush of the engine's sorted queue (`Player::frame_sorted`).
+enum Waiting {
+    /// A blended draw of the engine's path.
+    Draw(Rc<Draw>),
+    /// The place of a sorted blend of the table in the engine's queue
+    /// (`tag::INSTANCE_QUEUED`): the id of the instance.
+    Table(u32),
+}
+
 /// Reads the records of a stream in their order and draws the frames.
 struct Player {
     renderer: Renderer,
@@ -665,10 +674,11 @@ struct Player {
     /// rendered texture as its target.
     parameters: Option<FrameParameters>,
     plan: plan::Plan,
-    /// The blended world draws of the frame that the engine would sort: they wait for the
-    /// item `SortedBlends`, keep their order of arrival, and take the table's blends between
-    /// them by depth (the centre of the bound, the order of arrival, the draw).
-    frame_sorted: Vec<([f32; 3], u32, Rc<Draw>, u32)>,
+    /// The blended world draws of the frame that the engine sorts, and the places of the
+    /// table's blends in the engine's queue: they wait for the item `SortedBlends` and keep
+    /// their order of arrival; the table's blends without a place go between them by depth
+    /// (the centre of the bound, the order of arrival, the draw or the place, the generation).
+    frame_sorted: Vec<([f32; 3], u32, Waiting, u32)>,
     /// The near plane of the world's view of the frame, in the space of the world: the
     /// depth of the sort of the blends.
     world_near: Option<[f32; 4]>,

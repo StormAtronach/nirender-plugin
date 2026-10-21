@@ -123,6 +123,42 @@ unsafe fn shape_display_start(this: usize, camera: usize) -> Option<usize> {
     Some(renderer)
 }
 
+/// The display of a shape the helper draws from its table (mode gpu): true when the port
+/// returns without a draw. In the flush of the engine's main sorted queue the shape's place
+/// goes into the stream (`INSTANCE_QUEUED`): the helper draws it there, in the engine's
+/// order. During the walk a sorted blend goes into the main queue, as the engine's display
+/// puts it there (`shape_display_start`: the state, then `RegisterObject`), so that the
+/// engine sorts it with its own blends. A queue that does not take the shape (no
+/// accumulator, not a sorted blend) leaves it to the helper's own order.
+unsafe fn retained_display(t: &MainThread, this: usize, camera: usize, kind: u32) -> bool {
+    let flush = crate::ports::base::in_main_flush(t);
+    if flush && crate::instance_stream::queued_now(t, this) {
+        crate::instance_stream::flush_place(t, this, true);
+        return true;
+    }
+    if !crate::instance_stream::skipped_display(t, this, kind) {
+        return false;
+    }
+    if !crate::instance_stream::may_queue(t) {
+        return true;
+    }
+    if flush {
+        // A shape under a node the queue took (a sort adjust node in mode 64): the node
+        // displays its subtree in the flush.
+        crate::instance_stream::flush_place(t, this, false);
+        return true;
+    }
+    let renderer = rd::<usize>(camera, C::spRenderer);
+    let accumulator = if renderer != 0 { rd::<usize>(renderer, R::accumulator) } else { 0 };
+    if accumulator != 0 && crate::ports::base::is_main_accumulator(t, accumulator) {
+        thiscall1(PUSH_STATE, this, renderer as u32);
+        if thiscall1(RENDERER_REGISTER_OBJECT, renderer, this as u32) & 0xFF != 0 {
+            crate::instance_stream::note_queued(t, this);
+        }
+    }
+    true
+}
+
 unsafe fn count_render_call(primitives: u32, vertices: u32) {
     wr(COUNT_RENDER_CALLS, 0, rd::<u32>(COUNT_RENDER_CALLS, 0) + 1);
     wr(COUNT_PRIMS_RENDERED, 0, rd::<u32>(COUNT_PRIMS_RENDERED, 0) + primitives);
@@ -141,7 +177,7 @@ pub unsafe fn tri_shape_display(t: &MainThread, this: usize, camera: usize) {
     crate::shadow::touch(&tri_shape_display_port::STATE);
     // A shape the helper draws from its table: the plugin notes its changes, and the engine
     // does not display it.
-    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(t, this, crate::link::DRAW_SHAPE) {
+    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && retained_display(t, this, camera, crate::link::DRAW_SHAPE) {
         return;
     }
     if crate::link_client::water_plane_display_skipped(t, this) {
@@ -166,7 +202,7 @@ port_thiscall!(tri_strips_display_port, 0x742660, "NiTriStrips::Display",
 /// the vertex count of the data as they are.
 pub unsafe fn tri_strips_display(t: &MainThread, this: usize, camera: usize) {
     crate::shadow::touch(&tri_strips_display_port::STATE);
-    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && crate::instance_stream::skipped_display(t, this, crate::link::DRAW_STRIPS) {
+    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && retained_display(t, this, camera, crate::link::DRAW_STRIPS) {
         return;
     }
     if crate::link_client::water_plane_display_skipped(t, this) {
