@@ -9,7 +9,7 @@
 
 use core::ffi::c_void;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use crate::engine::{vcall0, WORLD_CONTROLLER};
 use crate::d3d::{
@@ -374,10 +374,50 @@ unsafe fn find_stream_functions() {
     }
 }
 
-/// The game showed a frame: MGE XE runs its logic of a frame.
-pub unsafe fn stream_present() {
+/// The game showed a frame and MGE XE has not yet run its logic of that frame.
+static PRESENT_DUE: AtomicBool = AtomicBool::new(false);
+/// The Present calls whose frame logic waited for a later Present, because the device lock
+/// was held at the end of the Present.
+static PRESENT_LATE: AtomicU32 = AtomicU32::new(0);
+
+/// The capture recorded a Present: MGE XE runs its logic of the frame at `after_present`.
+pub fn present_due() {
+    PRESENT_DUE.store(true, Ordering::Release);
+}
+
+/// Takes the due Present when this thread does not hold the device lock. With the lock held
+/// the Present stays due, and the next call without the lock takes it.
+fn take_present_due() -> bool {
+    if crate::sync::device_lock_held_here() {
+        return false;
+    }
+    PRESENT_DUE.swap(false, Ordering::AcqRel)
+}
+
+/// The end of a Present, on the main thread: MGE XE runs its logic of the frame, then the
+/// capture runs a pending purge. Both stall the cell worker, and the worker takes the device
+/// lock for its device calls, so both run only with the lock free (the rule of
+/// `sync::device_lock`). The callers: `kind_call` after the Present's capture call, and the
+/// device's `Present` after its lock is free. Under a lock that a caller further out holds,
+/// the frame logic waits for the next Present.
+pub unsafe fn after_present() {
+    if !crate::shadow::on_main_thread() {
+        return;
+    }
+    if !take_present_due() {
+        if PRESENT_DUE.load(Ordering::Acquire) && PRESENT_LATE.fetch_add(1, Ordering::Relaxed) == 0 {
+            crate::log!("link: the frame logic of MGE XE waits for the next Present: the device lock is held at the end of a Present");
+        }
+        return;
+    }
+    stream_present();
+    crate::capture::run_pending_purge();
+}
+
+/// MGE XE runs its logic of a frame. Only through `after_present`, without the device lock.
+unsafe fn stream_present() {
     let function = STREAM_PRESENT.load(Ordering::Relaxed);
-    if function != 0 && crate::shadow::on_main_thread() {
+    if function != 0 {
         let (width, height) = crate::own_device::size();
         core::mem::transmute::<usize, unsafe extern "C" fn(u32, u32)>(function)(width, height);
     }
@@ -525,8 +565,7 @@ unsafe fn kind_call(kind: u32, call: u32, args: &[u32]) -> Option<u32> {
     let result = (host.call)(call, args.as_ptr());
     crate::capture::call(call, args, result);
     if kind == KIND_FRAME && call == CALL_PRESENT {
-        // A capture's purge, outside the device lock, with the cell worker stalled.
-        crate::capture::run_pending_purge();
+        after_present();
     }
     Some(result)
 }
@@ -1740,4 +1779,23 @@ pub unsafe fn counters_text(t: &MainThread, reset: bool) -> String {
         text.push(0xA as char);
     }
     text
+}
+
+#[cfg(test)]
+mod present_tests {
+    use super::*;
+
+    /// The rule of `sync::device_lock`: MGE XE's logic of the frame stalls the cell worker,
+    /// so a due Present is not taken while this thread holds the device lock.
+    #[test]
+    fn a_due_present_waits_while_the_device_lock_is_held() {
+        present_due();
+        {
+            let _lock = crate::sync::device_lock();
+            assert!(!take_present_due());
+            let _nested = crate::sync::device_lock();
+            assert!(!take_present_due());
+        }
+        assert!(take_present_due());
+    }
 }

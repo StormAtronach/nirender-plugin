@@ -1290,8 +1290,9 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
     }
     if index == CALL_PRESENT {
         frame_end(&lock);
-        #[cfg(not(test))]
-        crate::link_client::stream_present();
+        // MGE XE's logic of the frame stalls the cell worker: it runs after the lock is free
+        // (`link_client::after_present`).
+        crate::link_client::present_due();
     }
 }
 
@@ -1353,8 +1354,7 @@ const RELEASE_BACKGROUND_THREAD: usize = 0x48EB60;
 /// cell worker stalled. The purge frees through the engine's texture list and the
 /// renderer's maps of geometry and skin partitions, and the worker changes them with no
 /// lock. The worker can need the device lock before its stall point, so a stall taken under
-/// the device lock makes a deadlock. Called by the link client after the Present's capture
-/// call.
+/// the device lock makes a deadlock. Called by `link_client::after_present`.
 pub unsafe fn run_pending_purge() {
     if !PURGE_PENDING.load(Ordering::Acquire) || !crate::shadow::on_main_thread() || crate::sync::device_lock_held_here() {
         return;

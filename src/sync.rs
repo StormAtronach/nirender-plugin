@@ -34,6 +34,16 @@ static SECTION_MADE: Once = Once::new();
 /// The lock is free again when this value goes away.
 pub struct DeviceLock;
 
+/// The device lock: one device call at a time, from any thread, as with a Direct3D device
+/// for more than one thread. It also guards the state of the capture, the own device and
+/// the own host.
+///
+/// The rule: a thread that holds this lock never waits for another game thread. The cell
+/// worker takes the lock for its device calls (a texture of a cell it loads), and it stops
+/// for a stall only between two references. A stall of the worker under this lock is a
+/// deadlock (records entry 50). The stalls are MGE XE's logic of the frame and the
+/// capture's purge; both run in `link_client::after_present`, which checks
+/// `device_lock_held_here` first.
 pub fn device_lock() -> DeviceLock {
     unsafe {
         SECTION_MADE.call_once(|| InitializeCriticalSection(core::ptr::addr_of_mut!(SECTION)));

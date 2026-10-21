@@ -464,6 +464,16 @@ const SLOT_TEST_COOPERATIVE_LEVEL: usize = crate::d3d::DEVICE_TEST_COOPERATIVE_L
 pub static FORCE_RESET: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
+    let result = locked_device_call(slot, this, args);
+    // The end of a Present runs MGE XE's logic of the frame, which stalls the cell worker:
+    // only after the device lock is free (`link_client::after_present`).
+    if slot == SLOT_PRESENT {
+        crate::link_client::after_present();
+    }
+    result
+}
+
+unsafe fn locked_device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
     // One call of the device at a time, as with a device of Direct3D for more than one thread.
     let _lock = crate::sync::device_lock();
     crate::sync::off_thread("device", NAMES.get(slot).copied().unwrap_or("?"));
