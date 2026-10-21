@@ -227,6 +227,7 @@ unsafe extern "system" fn release(this: *mut Object) -> u32 {
         }
         // A new texture can get the address.
         forget_read(&lock, this as u32);
+        crate::map_fog::forget(&lock, this as u32);
         drop(Box::from_raw(this));
         if !owner.is_null() {
             release(owner);
@@ -388,6 +389,11 @@ unsafe fn target_of(surface: &Object) -> Option<u32> {
 /// The rendered texture that a surface of this host is level 0 of, or 0. This host makes a
 /// new surface object for each `GetSurfaceLevel`, so the address of a surface does not name
 /// the texture.
+/// The width and the height of a texture of this host, or `None` for another object.
+pub unsafe fn texture_size(handle: u32) -> Option<(u32, u32)> {
+    own(handle).filter(|object| object.kind == Kind::Texture).map(|object| (object.width, object.height))
+}
+
 pub unsafe fn texture_of(surface: u32) -> u32 {
     own(surface).and_then(|surface| target_of(surface)).unwrap_or(0)
 }
@@ -481,6 +487,7 @@ unsafe fn copy_pixels(lock: &DeviceLock, source: u32, destination: u32) -> u32 {
     if let Some(target) = target_of(destination) {
         // Into a target: its kept read is old now.
         forget_read(lock, target);
+        crate::map_fog::forget(lock, target);
     }
     if let Some(target) = target_of(source) {
         // Out of a target: the pixels come from the host program.

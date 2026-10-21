@@ -215,7 +215,7 @@ unsafe fn renderer_create_source_data(renderer: usize, texture: usize) -> u8 {
 
 /// `NiImageConverter` slot 0x8: pixel data from a file.
 #[inline(always)]
-pub(super) unsafe fn converter_read_file(converter: usize, filename: usize, arg: u32) -> usize {
+pub(crate) unsafe fn converter_read_file(converter: usize, filename: usize, arg: u32) -> usize {
     vcall2(converter, VT_CONVERTER_READ_FILE, filename as u32, arg) as usize
 }
 
@@ -228,7 +228,7 @@ unsafe fn converter_can_convert(converter: usize, source: usize, dest: usize) ->
 /// `NiImageConverter` slot 0x10: pixel data in the wanted format. This is the source when the
 /// source fits.
 #[inline(always)]
-pub(super) unsafe fn converter_convert(converter: usize, source: usize, format: usize, scratch: usize, mipmap: u8) -> usize {
+pub(crate) unsafe fn converter_convert(converter: usize, source: usize, format: usize, scratch: usize, mipmap: u8) -> usize {
     thiscall4(virtual_at(converter, VT_CONVERTER_CONVERT), converter, source as u32, format as u32, scratch as u32, mipmap as u32) as usize
 }
 

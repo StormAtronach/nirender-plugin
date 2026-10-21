@@ -952,6 +952,7 @@ pub unsafe fn stop() {
             }
             if let Some(mut tiles) = s.tiles.take() {
                 crate::log!("stream: {}", crate::map_tiles::report());
+                crate::log!("stream: {}", crate::map_fog::report());
                 tiles.close();
             }
             if let Some(mut messages) = s.messages.take() {
