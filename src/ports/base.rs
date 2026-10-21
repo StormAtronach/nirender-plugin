@@ -519,12 +519,24 @@ fn window_to_buffer(x: u32, width: u32, y: u32, height: u32, one: u32) -> (u32, 
     (output[0], output[1])
 }
 
-/// 0x6F5150 `NiRenderer::MapWindowPointToBufferPoint`. The port returns 0 when the back buffer
-/// has no size.
+/// The place and the bytes of MGE XE's UI scale patch (`MWBridge::setUIScale`) in
+/// `MapWindowPointToBufferPoint`: the two calls of the back buffer size become reads of the
+/// world controller's view size, so that a point of the scaled UI maps to the whole buffer.
+pub(crate) const UI_SCALE_PATCH_AT: usize = 0x6F5157;
+pub(crate) const UI_SCALE_PATCH: [u8; 14] = [0xA1, 0xDC, 0x67, 0x7C, 0x00, 0x8B, 0x78, 0x78, 0x8B, 0x40, 0x7C, 0x90, 0x90, 0x90];
+/// `WorldController::viewWidth` and `viewHeight`.
+const WC_VIEW_WIDTH: usize = 0x78;
+const WC_VIEW_HEIGHT: usize = 0x7C;
+
+/// 0x6F5150 `NiRenderer::MapWindowPointToBufferPoint`. With MGE XE's UI scale patch in memory
+/// the port divides by the world controller's view size, as the patched function does; else by
+/// the back buffer size. The port returns 0 when the size is 0.
 pub unsafe fn renderer_map_window_point_to_buffer_point(this: usize, x: u32, y: u32, out_x: usize, out_y: usize) -> u8 {
     crate::shadow::touch(&renderer_map_window_point_to_buffer_point_port::STATE);
-    let width = vcall0(this, SLOT_GET_BACKBUFFER_WIDTH);
-    let height = vcall0(this, SLOT_GET_BACKBUFFER_HEIGHT);
+    let (width, height) = match ui_scale_world_controller() {
+        0 => (vcall0(this, SLOT_GET_BACKBUFFER_WIDTH), vcall0(this, SLOT_GET_BACKBUFFER_HEIGHT)),
+        world_controller => (rd(world_controller, WC_VIEW_WIDTH), rd(world_controller, WC_VIEW_HEIGHT)),
+    };
     if width == 0 || height == 0 {
         return 0;
     }
@@ -544,6 +556,25 @@ unsafe fn map_one() -> u32 {
 unsafe fn map_one() -> u32 {
     let _ = F_ONE;
     1.0f32.to_bits()
+}
+
+/// The world controller when MGE XE's UI scale patch is in memory and the world controller is
+/// there; else 0.
+#[cfg(not(test))]
+unsafe fn ui_scale_world_controller() -> usize {
+    let patched = (0..UI_SCALE_PATCH.len()).all(|i| rd::<u8>(UI_SCALE_PATCH_AT, i) == UI_SCALE_PATCH[i]);
+    if patched { rd(crate::engine::WORLD_CONTROLLER, 0) } else { 0 }
+}
+
+/// The world controller of a test: the address of its fields, or 0 for a game without the patch.
+#[cfg(test)]
+thread_local! {
+    static TEST_WORLD_CONTROLLER: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+unsafe fn ui_scale_world_controller() -> usize {
+    TEST_WORLD_CONTROLLER.with(|cell| cell.get())
 }
 
 /// The renderer's accumulator when the camera's `Click` starts (`note_main_accumulator`): the
@@ -2080,6 +2111,30 @@ mod tests {
         // The point is unsigned and the size is signed.
         let (bx, by) = window_to_buffer(0x8000_0000, 0x4000_0000, 3, 0xFFFF_FFFE, 1.0f32.to_bits());
         assert_eq!((f32::from_bits(bx), f32::from_bits(by)), (2.0, 2.5));
+    }
+
+    #[test]
+    fn map_window_point_divides_by_the_view_with_the_ui_scale_patch() {
+        let vtable = vtable_of(backbuffer_size as *const () as usize, SLOT_GET_BACKBUFFER_HEIGHT / 4 + 1);
+        let mut renderer = [vtable.as_ptr() as usize, 1200];
+        let this = renderer.as_mut_ptr() as usize;
+        // A UI scale of 1.5: the view is 800 by 400 of a buffer of 1200 by 1200.
+        let mut world_controller = [0u32; 32];
+        world_controller[WC_VIEW_WIDTH / 4] = 800;
+        world_controller[WC_VIEW_HEIGHT / 4] = 400;
+        let (mut x, mut y) = (9.0f32, 9.0f32);
+        let (out_x, out_y) = (core::ptr::addr_of_mut!(x) as usize, core::ptr::addr_of_mut!(y) as usize);
+        TEST_WORLD_CONTROLLER.with(|cell| cell.set(world_controller.as_mut_ptr() as usize));
+        unsafe {
+            assert_eq!(renderer_map_window_point_to_buffer_point(this, 200, 300, out_x, out_y), 1);
+            assert_eq!((x, y), (0.25, 0.25));
+            world_controller[WC_VIEW_WIDTH / 4] = 0;
+            assert_eq!(renderer_map_window_point_to_buffer_point(this, 1, 1, out_x, out_y), 0);
+        }
+        TEST_WORLD_CONTROLLER.with(|cell| cell.set(0));
+        // The bytes are those that MGE XE writes.
+        assert_eq!(UI_SCALE_PATCH_AT, 0x6F5150 + 7);
+        assert_eq!(&UI_SCALE_PATCH[1..5], &(crate::engine::WORLD_CONTROLLER as u32).to_le_bytes());
     }
 
     fn array(storage: &mut [usize], end: u32, filled: u32, grow: u32) -> [u32; 6] {
