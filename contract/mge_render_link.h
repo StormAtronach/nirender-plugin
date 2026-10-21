@@ -227,6 +227,9 @@
 #define MGE_LINK_EVENT_SET_TARGET 2u
 // SwapBuffers: the end of the frame. a: 0. b: 0.
 #define MGE_LINK_EVENT_SWAP 3u
+// The walk of the world camera's root left the sky root: the world of the frame starts here.
+// a: 0. b: 0. (nirender src/world_walk.rs)
+#define MGE_LINK_EVENT_WORLD_WALK 4u
 
 // Facts that the host can compare. They are the indexes of `MgeLinkCountersV1::facts`.
 #define MGE_LINK_FACT_LIGHT_RADIUS 0u
@@ -549,6 +552,14 @@ extern "C" {
 // Returns the table of the host, or null when the host cannot work with `clientVersion`.
 // The table stays valid until the process ends.
 const MgeRenderLinkHostV1* __cdecl MGE_RenderLinkConnect(uint32_t clientVersion);
+
+// The calls of the wgpu path into MGE XE's d3d8.dll (a game without a Direct3D device).
+// The plugin finds them by name and calls them on the main thread, with the packets of this
+// contract: MGE XE takes its facts of the frame from them, not from the D3D8 calls and not
+// from patches of its own in the engine's code.
+// A camera's Click starts, before its view transform goes to the device. MGE XE reads the
+// camera object that `scene->camera` names (the same process); the eye is `cameraOrigin`.
+void __cdecl MGE_StreamSceneBegin(const MgeLinkSceneV1* scene);
 
 #ifdef __cplusplus
 }

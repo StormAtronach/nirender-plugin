@@ -366,6 +366,10 @@ static STREAM_TRANSFORM: AtomicUsize = AtomicUsize::new(0);
 /// `MGE_StreamMessage` of MGE XE: a message of the extension in the host program for MGE XE
 /// (`Extension::messages` of the crate), or 0.
 static STREAM_MESSAGE: AtomicUsize = AtomicUsize::new(0);
+/// `MGE_StreamSceneBegin` of MGE XE (the contract, `mge_render_link.h`): the start of a
+/// camera's Click with the scene packet, or 0. MGE XE takes its main view and its eye from it
+/// and from the camera object it names, not from the view matrix.
+static STREAM_SCENE_BEGIN: AtomicUsize = AtomicUsize::new(0);
 
 /// Finds the functions of MGE XE. The `d3d8.dll` of this repository has none.
 unsafe fn find_stream_functions() {
@@ -379,6 +383,8 @@ unsafe fn find_stream_functions() {
     STREAM_TRANSFORM.store(transform as usize, Ordering::Relaxed);
     let message = win::GetProcAddress(module as *mut c_void, b"MGE_StreamMessage\0".as_ptr());
     STREAM_MESSAGE.store(message as usize, Ordering::Relaxed);
+    let scene_begin = win::GetProcAddress(module as *mut c_void, b"MGE_StreamSceneBegin\0".as_ptr());
+    STREAM_SCENE_BEGIN.store(scene_begin as usize, Ordering::Relaxed);
     if !present.is_null() {
         crate::log!("link: the frame logic of MGE XE runs from the stream");
     }
@@ -1136,6 +1142,11 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     (host.scene_begin)(&scene);
     crate::capture::scene_begin(&scene);
     crate::instance_stream::scene_begin(t, roots.scene_kind, camera);
+    // MGE XE's frame logic takes the same packet (the contract's `MGE_StreamSceneBegin`).
+    let function = STREAM_SCENE_BEGIN.load(Ordering::Relaxed);
+    if function != 0 {
+        core::mem::transmute::<usize, unsafe extern "C" fn(*const SceneV1)>(function)(&scene);
+    }
 }
 
 /// Runs after `EndPaint`.
