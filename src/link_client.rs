@@ -217,6 +217,16 @@ fn state(t: &MainThread) -> &mut LinkState {
     STATE.get(t)
 }
 
+/// The kind of the scene of the Click in progress (`begin_paint` reads it from the camera).
+pub fn scene_kind_now(t: &MainThread) -> u32 {
+    state(t).roots.scene_kind
+}
+
+/// The weather's sky root as `begin_paint` read it for the Click in progress, or 0.
+pub fn sky_root_now(t: &MainThread) -> usize {
+    state(t).roots.sky_root
+}
+
 /// A count that only the main thread adds to, without a bus lock (as `shadow::Counter`),
 /// and that a report reads and resets.
 struct Count(core::sync::atomic::AtomicU32);
@@ -1619,6 +1629,7 @@ pub unsafe fn connect() -> Result<String, String> {
     }
     crate::map_tiles::install();
     crate::map_fog::install();
+    crate::world_walk::install();
     // The members up to `read_counters` are in each version of the table.
     if (host.struct_size as usize) < core::mem::offset_of!(HostV1, use_facts) {
         return Err(format!("the table of the host has {} bytes", host.struct_size));

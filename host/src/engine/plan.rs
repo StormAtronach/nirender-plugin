@@ -130,19 +130,33 @@ impl Plan {
     /// sky (the lines of the cell borders); it is not the world. With the sky hidden (a
     /// plain interior cell, ToggleSky) there is no sky draw: the world starts at the first
     /// draw.
-    pub(crate) fn world_draw(&mut self, extension: bool, in_back_buffer: bool, sky: bool, sky_hidden: bool) -> (Vec<Step>, bool) {
+    /// `walk_marked`: the stream marks the world's start with an event (`world_walk`); no
+    /// draw starts the world then, and a draw before the event that is not the sky is held.
+    pub(crate) fn world_draw(&mut self, extension: bool, in_back_buffer: bool, sky: bool, sky_hidden: bool, walk_marked: bool) -> (Vec<Step>, bool) {
         let world_scene = in_back_buffer && self.scene_kind == scene::SCENE_WORLD;
         if world_scene && sky {
             self.sky_seen = true;
         }
         let mut steps = Vec::new();
-        if extension && !self.world_begun && world_scene && !sky && (self.sky_seen || sky_hidden) {
+        if extension && !walk_marked && !self.world_begun && world_scene && !sky && (self.sky_seen || sky_hidden) {
             self.world_begun = true;
             steps.push(Step::StartWorld);
             steps.push(Step::ReleaseHeld);
         }
         let hold = extension && !self.world_begun && world_scene && !sky;
         (steps, hold)
+    }
+
+    /// The walk of the world camera's root left the sky root (the plugin's event
+    /// `EVENT_WORLD_WALK`): the world starts here, in the world scene in the back buffer. The
+    /// engine walks the sky root first (`TES3Game::initGame` attaches it as the first child of
+    /// the world camera's root), so the sky's draws came before.
+    pub(crate) fn world_walk(&mut self, extension: bool, in_back_buffer: bool) -> Vec<Step> {
+        if extension && in_back_buffer && self.scene_kind == scene::SCENE_WORLD && !self.world_begun {
+            self.world_begun = true;
+            return vec![Step::StartWorld, Step::ReleaseHeld];
+        }
+        Vec::new()
     }
 
     /// A blend of the engine's path waits for the next sorted-blends item: its generation.
@@ -160,8 +174,8 @@ mod tests {
     /// A world scene with the sky first, then the world.
     fn world_scene(plan: &mut Plan) -> Vec<Step> {
         assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
-        assert_eq!(plan.world_draw(true, true, true, false), (vec![], false));
-        assert_eq!(plan.world_draw(true, true, false, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
+        assert_eq!(plan.world_draw(true, true, true, false, false), (vec![], false));
+        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
         plan.scene_end(true, true, true, false)
     }
 
@@ -197,7 +211,7 @@ mod tests {
     fn the_queue_open_at_the_world_end_moves_the_table_to_the_flush() {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
-        plan.world_draw(true, true, false, true);
+        plan.world_draw(true, true, false, true, false);
         assert_eq!(plan.scene_end(true, true, true, true), vec![Step::ReleaseHeld, Step::EndWorld]);
         plan.scene_begin(SCENE_WATER);
         assert_eq!(plan.defer(), 0);
@@ -214,7 +228,7 @@ mod tests {
     fn a_later_scene_with_the_queue_open_gives_no_item() {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
-        plan.world_draw(true, true, false, true);
+        plan.world_draw(true, true, false, true, false);
         plan.scene_end(true, true, true, true);
         plan.scene_begin(SCENE_WATER);
         assert_eq!(plan.scene_end(true, true, true, true), vec![]);
@@ -228,7 +242,7 @@ mod tests {
     fn the_table_blends_without_a_flush_go_before_the_first_person() {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
-        plan.world_draw(true, true, false, true);
+        plan.world_draw(true, true, false, true, false);
         plan.scene_end(true, true, true, true);
         assert_eq!(plan.scene_begin(SCENE_FIRST_PERSON), vec![Step::SortedBlends(0)]);
         assert_eq!(plan.scene_end(true, true, true, false), vec![Step::FirstPersonEnd]);
@@ -239,7 +253,7 @@ mod tests {
     fn a_blend_deferred_in_the_world_scene_goes_with_the_first_item() {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
-        plan.world_draw(true, true, false, true);
+        plan.world_draw(true, true, false, true, false);
         assert_eq!(plan.defer(), 0);
         assert_eq!(plan.scene_end(true, true, true, false), vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
     }
@@ -248,18 +262,48 @@ mod tests {
     fn a_draw_before_the_sky_is_held() {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
-        assert_eq!(plan.world_draw(true, true, false, false), (vec![], true));
-        assert_eq!(plan.world_draw(true, true, true, false), (vec![], false));
-        assert_eq!(plan.world_draw(true, true, false, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
+        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![], true));
+        assert_eq!(plan.world_draw(true, true, true, false, false), (vec![], false));
+        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
         // A draw into a rendered texture is never the world's.
-        assert_eq!(plan.world_draw(true, false, false, false), (vec![], false));
+        assert_eq!(plan.world_draw(true, false, false, false, false), (vec![], false));
+    }
+
+    #[test]
+    fn with_the_walk_marked_the_event_starts_the_world_and_no_draw_does() {
+        let mut plan = Plan::default();
+        plan.scene_begin(SCENE_WORLD);
+        // The sky draws, then a draw that is not the sky: no start, the draw is held.
+        assert_eq!(plan.world_draw(true, true, true, false, true), (vec![], false));
+        assert_eq!(plan.world_draw(true, true, false, false, true), (vec![], true));
+        // The end of the sky's walk.
+        assert_eq!(plan.world_walk(true, true), vec![Step::StartWorld, Step::ReleaseHeld]);
+        assert!(plan.world_begun);
+        assert_eq!(plan.world_draw(true, true, false, false, true), (vec![], false));
+        // One start a frame.
+        assert_eq!(plan.world_walk(true, true), vec![]);
+        // The sky hidden: the event still starts the world before any draw.
+        let mut plan = Plan::default();
+        plan.scene_begin(SCENE_WORLD);
+        assert_eq!(plan.world_walk(true, true), vec![Step::StartWorld, Step::ReleaseHeld]);
+    }
+
+    #[test]
+    fn the_walk_event_counts_only_in_the_world_scene_in_the_back_buffer() {
+        let mut plan = Plan::default();
+        plan.scene_begin(SCENE_WATER);
+        assert_eq!(plan.world_walk(true, true), vec![]);
+        plan.scene_begin(SCENE_WORLD);
+        assert_eq!(plan.world_walk(true, false), vec![]);
+        assert_eq!(plan.world_walk(false, true), vec![]);
+        assert!(!plan.world_begun);
     }
 
     #[test]
     fn the_sky_hidden_starts_the_world_at_the_first_draw() {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
-        assert_eq!(plan.world_draw(true, true, false, true), (vec![Step::StartWorld, Step::ReleaseHeld], false));
+        assert_eq!(plan.world_draw(true, true, false, true, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
     }
 
     #[test]
@@ -273,7 +317,7 @@ mod tests {
     fn without_an_extension_nothing_starts() {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
-        assert_eq!(plan.world_draw(false, true, false, true), (vec![], false));
+        assert_eq!(plan.world_draw(false, true, false, true, false), (vec![], false));
         assert_eq!(plan.scene_end(false, true, true, false), vec![Step::ReleaseHeld]);
         assert!(!plan.world_begun);
     }

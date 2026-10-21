@@ -65,6 +65,7 @@ pub mod map_fog;
 pub mod map_tiles;
 pub mod mem;
 pub mod overlay;
+pub mod world_walk;
 #[cfg(feature = "rig")]
 pub mod perf;
 pub mod ptr_hash;

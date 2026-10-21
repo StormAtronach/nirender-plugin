@@ -40,6 +40,13 @@ pub(crate) const CALL_CREATE_TEXTURE: u32 = 20;
 pub(crate) const CALL_COPY_PIXELS: u32 = 23;
 
 pub(crate) const EVENT_SET_TARGET: u32 = 2;
+/// The walk of the world camera's root left the sky root: the world starts here (the
+/// plugin's `world_walk`; the header bit `HEADER_WORLD_WALK`).
+pub(crate) const EVENT_WORLD_WALK: u32 = 4;
+/// Bits of the fourth word of the header: the draws of the engine's sorted queue are marked;
+/// the world's start comes as `EVENT_WORLD_WALK`.
+pub(crate) const HEADER_QUEUE_MARKED: u32 = 1;
+pub(crate) const HEADER_WORLD_WALK: u32 = 2;
 
 /// The value of a state that the game did not set.
 pub(crate) const UNKNOWN: u32 = 0x7FFF_FFFF;

@@ -1436,6 +1436,38 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     true
 }
 
+/// The values of the frame for the world, at the start of the world (`world_walk`), in every
+/// mode: the ambient light of the lights on the world camera's root and on the game's world
+/// root (`TES3Game` +0x9C), the fog of the cell's property, and the weather's sky light. The
+/// sky light affects the node "worldRoot" (`WeatherController::initSkyLight` 0x43BB50); the
+/// engine's ambient lights affect the effects' root and the menu (`TES3Game::initGame`
+/// 0x4185E6, 0x418D6E), so the world's ambient is black unless a mod adds one. One record in a
+/// frame: the table's shapes then count only a difference (`scene_mixed`).
+pub unsafe fn world_scene(mt: &MainThread, camera_root: usize) {
+    let t = tables(mt);
+    let frame = t.frame;
+    if t.scene_frame == frame {
+        return;
+    }
+    let renderer = crate::engine::renderer();
+    if renderer == 0 {
+        return;
+    }
+    let game: usize = rd(TES3_GAME, 0);
+    let world_root: usize = if game != 0 { rd(game, GAME_WORLD_ROOT) } else { 0 };
+    let ambient = crate::ports::light_manager::ambient_of_effect_lists(&[camera_root, world_root]);
+    let cell_fog = crate::engine::game_fog_property();
+    let fog = if cell_fog != 0 { crate::shape_stream::fog_values_of(renderer, cell_fog) } else { None };
+    t.scene_frame = frame;
+    t.scene_values = (ambient, fog);
+    let sun = scene_sun(mt, t);
+    capture::retained_scene(ambient, fog, sun.as_ref());
+}
+
+/// `TES3Game` and its world root (MWSE `TES3Game.h`).
+const TES3_GAME: usize = 0x7C6CDC;
+const GAME_WORLD_ROOT: usize = 0x9C;
+
 /// `WorldController` (0x7C67DC) -> `weatherController` (+0x58) -> `sgSkyLight` (+0xAC):
 /// the weather's directional light, the sun of the hour (MWSE `TES3WeatherController.h`).
 const WORLD_CONTROLLER: usize = 0x7C67DC;

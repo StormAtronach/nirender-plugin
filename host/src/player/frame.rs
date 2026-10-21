@@ -31,6 +31,7 @@ impl Player {
                 shape_bound: None,
                 shape_queued: false,
                 queue_marked: false,
+                world_walk: false,
             },
             encoder: None,
             pass: None,

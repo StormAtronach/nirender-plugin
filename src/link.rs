@@ -119,6 +119,9 @@ pub const LIGHT_SUN: u32 = 4;
 pub const EVENT_CLEAR: u32 = 1;
 pub const EVENT_SET_TARGET: u32 = 2;
 pub const EVENT_SWAP: u32 = 3;
+/// The walk of the world camera's root left the sky root: the world of the frame starts here
+/// (`world_walk`).
+pub const EVENT_WORLD_WALK: u32 = 4;
 
 pub const FACT_LIGHT_RADIUS: u32 = 0;
 pub const FACT_SUN_LIGHT: u32 = 1;

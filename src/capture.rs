@@ -40,6 +40,14 @@ pub const MAGIC: &[u8; 8] = b"NIRCAP01";
 /// A bit of the fourth word of the header: the shape records carry the flag
 /// `shape_stream::QUEUED` for the draws of the engine's main sorted queue.
 pub const HEADER_QUEUE_MARKED: u32 = 1;
+/// A bit of the same word: the world camera's Click marks the end of the sky's walk with the
+/// frame event `link::EVENT_WORLD_WALK` (`world_walk`); the host starts the world there.
+pub const HEADER_WORLD_WALK: u32 = 2;
+
+/// The abilities of the stream for the fourth word of the header.
+fn header_abilities() -> u32 {
+    HEADER_QUEUE_MARKED | if crate::world_walk::installed() { HEADER_WORLD_WALK } else { 0 }
+}
 
 /// The tags of the records.
 pub mod tag {
@@ -906,9 +914,9 @@ pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, 
     }
     RECORDING.store(true, Ordering::Relaxed);
     if let Some(s) = state(&lock) {
-        s.header = [width, height, window, HEADER_QUEUE_MARKED];
+        s.header = [width, height, window, header_abilities()];
     }
-    write(tag::HEADER, &[words(&[width, height, window, HEADER_QUEUE_MARKED])]);
+    write(tag::HEADER, &[words(&[width, height, window, header_abilities()])]);
     write_kept(&lock);
     crate::log!("stream: start with the device, a ring of {megabytes} MB with the name {name}");
     Ok(())
@@ -982,6 +990,7 @@ pub unsafe fn stop() {
             if let Some(mut tiles) = s.tiles.take() {
                 crate::log!("stream: {}", crate::map_tiles::report());
                 crate::log!("stream: {}", crate::map_fog::report());
+                crate::log!("stream: {}", crate::world_walk::report());
                 tiles.close();
             }
             if let Some(mut messages) = s.messages.take() {
@@ -1585,7 +1594,7 @@ unsafe fn frame_end(lock: &DeviceLock) {
                 let renderer = crate::engine::renderer();
                 let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
                 let window: u32 = if renderer != 0 { rd(renderer, DEVICE_WINDOW) } else { 0 };
-                write(tag::HEADER, &[words(&[size[0], size[1], window, HEADER_QUEUE_MARKED])]);
+                write(tag::HEADER, &[words(&[size[0], size[1], window, header_abilities()])]);
                 write_kept(&lock);
                 // The purge at the next Present, outside the device lock, with the cell
                 // worker stalled (`run_pending_purge`).

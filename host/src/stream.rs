@@ -68,6 +68,11 @@ pub(crate) struct Stream {
     /// fourth word). Without it (an older capture), a blend is taken as sorted by its
     /// material (`engine::alpha::sorted_by_engine`).
     pub(crate) queue_marked: bool,
+    /// The head of the stream says that the world camera's Click marks the end of the sky's
+    /// walk (`EVENT_WORLD_WALK`, bit 2 of its fourth word): the world starts at that event,
+    /// never at a draw. Without it (an older capture), the plan finds the start from the
+    /// draws (`Plan::world_draw`).
+    pub(crate) world_walk: bool,
 }
 
 impl Stream {

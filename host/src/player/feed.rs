@@ -16,7 +16,9 @@ impl Player {
         match tag {
             tag::HEADER => {
                 self.size = (word(data, 0), word(data, 4));
-                self.stream.queue_marked = data.len() >= 16 && word(data, 12) & 1 != 0;
+                let abilities = if data.len() >= 16 { word(data, 12) } else { 0 };
+                self.stream.queue_marked = abilities & HEADER_QUEUE_MARKED != 0;
+                self.stream.world_walk = abilities & HEADER_WORLD_WALK != 0;
             }
             tag::TEXTURE => self.renderer.texture(data),
             tag::TEXTURE_UPDATE => self.renderer.texture_update(data),
@@ -77,6 +79,9 @@ impl Player {
             tag::FRAME_EVENT => {
                 if word(data, 0) == EVENT_SET_TARGET {
                     self.wants_texture = word(data, 4) != 0;
+                }
+                if word(data, 0) == EVENT_WORLD_WALK && self.stream.world_walk {
+                    self.world_walk();
                 }
             }
             // The kind and the class of the object of the shape records that follow.

@@ -116,6 +116,15 @@ impl Player {
         renderer.counts.draws += 1;
     }
 
+    /// The end of the sky's walk in the world camera's Click (`EVENT_WORLD_WALK`): the world
+    /// of the frame starts here, from the engine's walk, not from a draw.
+    pub(crate) fn world_walk(&mut self) {
+        let in_back_buffer = self.stream.back_buffer && self.target.is_none();
+        for step in self.plan.world_walk(self.extension.is_some(), in_back_buffer) {
+            self.plan_step(step);
+        }
+    }
+
     /// Collects one draw of a pass of the shape in progress: `topology` is the primitive
     /// type of Direct3D (2 a line list, 4 a triangle list, 5 a triangle strip), over
     /// `indexes` entries of the index list of the geometry from `first_index`.
@@ -144,7 +153,7 @@ impl Player {
         // a plain interior cell, or ToggleSky) there is no sky draw: the world starts at
         // the first draw.
         let sky = scene::sky_class(self.stream.object_class);
-        let (steps, hold) = self.plan.world_draw(self.extension.is_some(), in_back_buffer, sky, self.stream.sky_hidden);
+        let (steps, hold) = self.plan.world_draw(self.extension.is_some(), in_back_buffer, sky, self.stream.sky_hidden, self.stream.world_walk);
         for step in steps {
             self.plan_step(step);
         }
