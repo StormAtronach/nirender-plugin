@@ -669,8 +669,7 @@ pub fn light_data(l: &[u8], origin: Option<[f64; 3]>) -> LightData {
         position: [position[0], position[1], position[2], word(l, 0) as f32],
         direction: [direction[0], direction[1], direction[2], float(l, 19 * 4)],
         attenuation: [attenuation[0], attenuation[1], attenuation[2], float(l, 20 * 4)],
-        // The radius of a light of the game is in its first specular word: the plugin's radius
-        // word, or the engine's own write there in an older record.
+        // The plugin puts the radius of a light of the game into its first specular word.
         cone: [(float(l, 24 * 4) * 0.5).cos(), (float(l, 25 * 4) * 0.5).cos(), float(l, 5 * 4), 0.0],
     }
 }
