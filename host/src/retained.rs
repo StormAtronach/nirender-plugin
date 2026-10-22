@@ -1604,6 +1604,12 @@ impl Player {
             .filter(|entry| placed.is_empty() || !self.retained.slots[entry.3 as usize].as_ref().is_some_and(|s| placed.contains(&s.id)))
             .collect();
         self.renderer.counts.sorted_without_place += kept.len() as u64;
+        // Risk 34: a frame whose kept blends found no place at all points to a cause of the
+        // frame (a scene or a Click that did not queue); a frame with some places, to a cause
+        // of the shape.
+        if placed.is_empty() {
+            self.renderer.counts.sorted_without_place_no_places += kept.len() as u64;
+        }
         if crate::dump_wanted() != 0 {
             println!("sorted blends: {} kept, {} of the engine's path, pass open {}, frame {}", kept.len(), deferred.len(), self.pass.is_some(), self.renderer.counts.frames);
             for &(key, bucket, _, slot) in &kept {

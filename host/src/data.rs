@@ -346,6 +346,10 @@ pub(crate) struct Counts {
     pub(crate) queued_outside: u64,
     pub(crate) queued_not_sorted: u64,
     pub(crate) sorted_without_place: u64,
+    /// Of those, the ones in frames with no place at all (risk 34: a cause of the frame).
+    pub(crate) sorted_without_place_no_places: u64,
+    /// The places that came after the frame's first sorted blends (a later generation).
+    pub(crate) queued_late_places: u64,
     /// The light records, and the lights of a shape that no record came for.
     pub(crate) light_records: u32,
     pub(crate) light_missing: u32,

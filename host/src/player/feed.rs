@@ -426,7 +426,12 @@ impl Player {
             return;
         }
         let sequence = self.frame_sorted.len() as u32;
-        self.frame_sorted.push((centre, sequence, crate::Waiting::Table(id), self.plan.defer()));
+        let generation = self.plan.defer();
+        if generation != 0 {
+            // Risk 34: a place after the frame's first sorted blends: the kept list was taken.
+            self.renderer.counts.queued_late_places += 1;
+        }
+        self.frame_sorted.push((centre, sequence, crate::Waiting::Table(id), generation));
     }
 
     /// A draw of an instance: the draws of the shape from the instance, the ambient light
