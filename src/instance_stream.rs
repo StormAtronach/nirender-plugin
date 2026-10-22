@@ -677,6 +677,65 @@ unsafe fn reject_reason(mt: &MainThread, shape: usize, property_state: usize, ef
     None
 }
 
+/// The switch of the sky's census (`NIRENDER_SKY=count`): 0 not read, 1 off, 2 on.
+static SKY_CENSUS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+/// The sky shapes the census logged: once each.
+static SKY_SEEN: MainCell<Vec<usize>> = MainCell::new(Vec::new());
+
+/// True when the census of the sky is on.
+pub fn sky_census_on() -> bool {
+    use core::sync::atomic::Ordering::Relaxed;
+    match SKY_CENSUS.load(Relaxed) {
+        0 => {
+            let on = std::env::var("NIRENDER_SKY").is_ok_and(|value| value == "count");
+            SKY_CENSUS.store(if on { 2 } else { 1 }, Relaxed);
+            on
+        }
+        state => state == 2,
+    }
+}
+
+/// The census of the sky (milestone 6, step 0): what the table would say about a shape of the
+/// sky's classes (1 to 8), without a mark or a skip. Logs each shape once: the name, the class,
+/// the handles, whether the material is modelled, the reject reason, live, the depth and alpha
+/// flags, and the controllers on the shape, above it and on its properties.
+pub unsafe fn sky_census(mt: &MainThread, shape: usize, class: u32, plain_world_shape: bool, geometry: u32, material: u32, property_state: usize, effect_state: usize) {
+    let seen = &mut *SKY_SEEN.get(mt);
+    if seen.contains(&shape) {
+        return;
+    }
+    seen.push(shape);
+    let text: usize = rd(shape, 8);
+    let name = if text != 0 { core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+    let mut live = false;
+    let reason = reject_reason(mt, shape, property_state, effect_state, false, &mut live);
+    let (z_flags, z_function) = match if property_state != 0 { rd::<usize>(property_state, PS::propZBuffer) } else { 0 } {
+        0 => (None, None),
+        z => (Some(rd::<u16>(z, PROPERTY_FLAGS)), Some(rd::<u32>(z, ZP::testFunction))),
+    };
+    let alpha_flags = match if property_state != 0 { rd::<usize>(property_state, PS::propAlpha) } else { 0 } {
+        0 => None,
+        alpha => Some(rd::<u16>(alpha, PROPERTY_FLAGS)),
+    };
+    let mut node_controllers = 0;
+    let mut node: usize = rd(shape, PARENT);
+    for _ in 0..MAX_DEPTH {
+        if node == 0 {
+            break;
+        }
+        if rd::<usize>(node, CONTROLLERS) != 0 {
+            node_controllers += 1;
+        }
+        node = rd(node, PARENT);
+    }
+    let property_controllers = if property_state != 0 { (0..STATE_COUNT).filter(|slot| { let p: usize = rd(property_state, STATE_FIRST + slot * 4); p != 0 && rd::<usize>(p, CONTROLLERS) != 0 }).count() } else { 0 };
+    crate::log!(
+        "sky census: '{name}' class {class}, world shape {plain_world_shape}, geometry {geometry:#x}, material {material:#x}, modelled {}, reject {reason:?}, live {live}, zbuffer flags {z_flags:?} function {z_function:?}, alpha flags {alpha_flags:?}, controllers: shape {}, nodes above {node_controllers}, properties {property_controllers}",
+        crate::material_stream::last_modelled(mt),
+        rd::<usize>(shape, CONTROLLERS) != 0
+    );
+}
+
 /// True when the table can draw the texture effect: see `reject_reason`.
 unsafe fn effect_retained(effect: usize) -> bool {
     let mut node = effect;
