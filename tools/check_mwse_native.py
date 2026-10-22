@@ -28,7 +28,8 @@ def main():
     parser.add_argument("--header", default=DEFAULT_HEADER)
     args = parser.parse_args()
 
-    text = open(args.header, "rb").read().decode("ascii")
+    # The working copy can have CRLF line ends: the patterns end at "$" of a line.
+    text = open(args.header, "rb").read().decode("ascii").replace("\r\n", "\n")
     rust = open(RUST, encoding="utf-8").read()
     rust_consts = {m.group(1): int(m.group(2), 0) for m in re.finditer(r"pub const (\w+): u32 = (\w+);", rust)}
     problems = []
