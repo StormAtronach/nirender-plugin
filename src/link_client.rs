@@ -1307,7 +1307,7 @@ unsafe extern "C" fn dynamic_light_test_detour(light: usize, node: usize, radius
 /// A light that is part of a mesh does not go through that function, and its specular
 /// colour is a colour. Thus the value counts only for a light that the function got, and
 /// only while the colour is the radius that the function got.
-unsafe fn game_light_radius(t: &MainThread, light: usize) -> f32 {
+pub unsafe fn game_light_radius(t: &MainThread, light: usize) -> f32 {
     let (noted, radius) = state(t).game_lights[game_light_slot(light)];
     let specular: [f32; 3] = rd(light, L::specularColor_r);
     if noted == light as u32 && specular == [radius; 3] {

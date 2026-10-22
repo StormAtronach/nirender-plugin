@@ -377,6 +377,9 @@ pub(crate) struct Counts {
     /// The light records, and the lights of a shape that no record came for.
     pub(crate) light_records: u32,
     pub(crate) light_missing: u32,
+    /// The light records whose radius of the game differs from their first specular word:
+    /// the lights of meshes, which the old rule took a colour of as a radius.
+    pub(crate) light_radius_changed: u32,
     /// The lights and the entries of the clusters of the frames, and the frames that kept
     /// the lights of the draws because a light had no cut-off.
     pub(crate) cluster_lights: u64,

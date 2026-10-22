@@ -1395,10 +1395,11 @@ pub unsafe fn retained_scene(ambient: u32, fog: Option<[u32; 4]>, sun: Option<&[
     write(tag::RETAINED_SCENE, &[words(&[ambient, flags]), words(fog.as_ref().map_or(&[], |f| &f[..])), words(sun.map_or(&[], |s| &s[..]))]);
 }
 
-/// A light record. See `tag::LIGHT`.
-pub unsafe fn light(key: u32, values: &[u32; 26]) {
+/// A light record. See `tag::LIGHT`. The word after the device values is the radius that the
+/// game gave the light (`link_client::game_light_radius`), 0 for a light of a mesh.
+pub unsafe fn light(key: u32, values: &[u32; 26], radius: f32) {
     let _lock = crate::sync::device_lock();
-    write(tag::LIGHT, &[words(&[key]), words(values)]);
+    write(tag::LIGHT, &[words(&[key]), words(values), words(&[radius.to_bits()])]);
 }
 
 /// A material record. See `tag::MATERIAL`.

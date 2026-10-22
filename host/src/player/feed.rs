@@ -152,9 +152,18 @@ impl Player {
                 self.retained_remove(word(data, 0));
             }
             tag::LIGHT if data.len() >= 108 => {
-                self.renderer.lights_known.insert(word(data, 0), data[4..108].try_into().unwrap());
+                let mut light: [u8; 104] = data[4..108].try_into().unwrap();
+                // The radius of the game after the device values (0 for a light of a mesh) takes
+                // the place of the first specular word, where an older record has it.
+                if data.len() >= 112 {
+                    if light[20..24] != data[108..112] {
+                        self.renderer.counts.light_radius_changed += 1;
+                    }
+                    light[20..24].copy_from_slice(&data[108..112]);
+                }
+                self.renderer.lights_known.insert(word(data, 0), light);
                 self.renderer.counts.light_records += 1;
-                self.retained.light_changed(word(data, 0), &data[4..108]);
+                self.retained.light_changed(word(data, 0), &light);
             }
             tag::FRAME_END => {
                 self.renderer.counts.frames += 1;

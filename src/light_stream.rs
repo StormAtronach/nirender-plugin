@@ -13,15 +13,17 @@ const ITEM_NEXT: usize = 4;
 pub const MAX_LIGHTS: usize = 64;
 
 /// The values that were sent for each light, by its index: the indexes of the lights of
-/// the game are small numbers, and a draw looks up each of its lights.
-static VERSIONS: MainCell<Vec<Option<[u32; 26]>>> = MainCell::new(Vec::new());
+/// the game are small numbers, and a draw looks up each of its lights. The device values,
+/// then the radius of the game.
+type Sent = ([u32; 26], u32);
+static VERSIONS: MainCell<Vec<Option<Sent>>> = MainCell::new(Vec::new());
 /// An index above this is not a light of the game: it is not sent.
 const MOST_INDEX: usize = 1 << 20;
 /// The keys of the lights of the draw in progress. Only the render thread uses it.
 static KEYS: MainCell<[u32; MAX_LIGHTS]> = MainCell::new([0; MAX_LIGHTS]);
 static RECORDS: MainCell<u64> = MainCell::new(0);
 
-fn versions<'a>(t: &'a MainThread) -> &'a mut Vec<Option<[u32; 26]>> {
+fn versions<'a>(t: &'a MainThread) -> &'a mut Vec<Option<Sent>> {
     &mut *VERSIONS.get(t)
 }
 
@@ -35,10 +37,10 @@ pub unsafe fn report(t: &MainThread) -> String {
     format!("lights: {} records, {} lights known", *RECORDS.get(t), versions(t).iter().filter(|v| v.is_some()).count())
 }
 
-/// Notes one light by its key and its device values: sends a record when they are new or
-/// changed. For a light of a shape the engine does not display (`instance_stream`). True
-/// when a record went.
-pub unsafe fn note_values(t: &MainThread, key: u32, values: &[u32; 26]) -> bool {
+/// Notes one light by its key, its device values and the radius of the game: sends a record
+/// when they are new or changed. For a light of a shape the engine does not display
+/// (`instance_stream`). True when a record went.
+pub unsafe fn note_values(t: &MainThread, key: u32, values: &[u32; 26], radius: f32) -> bool {
     if key as usize >= MOST_INDEX {
         return false;
     }
@@ -46,9 +48,10 @@ pub unsafe fn note_values(t: &MainThread, key: u32, values: &[u32; 26]) -> bool 
     if versions.len() <= key as usize {
         versions.resize(key as usize + 1, None);
     }
-    if versions[key as usize] != Some(*values) {
-        crate::capture::light(key, values);
-        versions[key as usize] = Some(*values);
+    let sent = (*values, radius.to_bits());
+    if versions[key as usize] != Some(sent) {
+        crate::capture::light(key, values, radius);
+        versions[key as usize] = Some(sent);
         *RECORDS.get(t) += 1;
         return true;
     }
@@ -81,15 +84,7 @@ pub unsafe fn note<'a>(t: &'a MainThread, renderer: usize) -> &'a [u32] {
             continue;
         }
         let values: [u32; 26] = rd(entry, LE::d3dLight);
-        let versions = versions(t);
-        if versions.len() <= key as usize {
-            versions.resize(key as usize + 1, None);
-        }
-        if versions[key as usize] != Some(values) {
-            crate::capture::light(key, &values);
-            versions[key as usize] = Some(values);
-            *RECORDS.get(t) += 1;
-        }
+        note_values(t, key, &values, crate::link_client::game_light_radius(t, light));
         keys[count] = key;
         count += 1;
     }
