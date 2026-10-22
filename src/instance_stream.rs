@@ -685,8 +685,8 @@ unsafe fn reject_reason(mt: &MainThread, shape: usize, property_state: usize, ef
     None
 }
 
-/// The switch of the sky (`NIRENDER_SKY`): 0 not read, 1 off, 2 the census (`count`), 3 the
-/// sky's instances in the table (`on`; milestone 6).
+/// The switch of the sky (`NIRENDER_SKY`): 0 not read, 1 off (`off`), 2 the census (`count`),
+/// 3 the sky's instances in the table (the default; milestone 6).
 static SKY_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 /// The sky shapes the census logged: once each.
 static SKY_SEEN: MainCell<Vec<usize>> = MainCell::new(Vec::new());
@@ -696,9 +696,9 @@ fn sky_mode() -> u8 {
     match SKY_MODE.load(Relaxed) {
         0 => {
             let mode = match std::env::var("NIRENDER_SKY").as_deref() {
+                Ok("off") => 1,
                 Ok("count") => 2,
-                Ok("on") => 3,
-                _ => 1,
+                _ => 3,
             };
             SKY_MODE.store(mode, Relaxed);
             mode
