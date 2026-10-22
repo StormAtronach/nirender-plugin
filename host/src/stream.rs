@@ -73,6 +73,14 @@ pub(crate) struct Stream {
     /// never at a draw. Without it (an older capture), the plan finds the start from the
     /// draws (`Plan::world_draw`).
     pub(crate) world_walk: bool,
+    /// The head of the stream says that the scene records carry `SCENE_BACK_BUFFER` (bit 4 of
+    /// its fourth word): each scene starts on the target that the flag names. Without it (an
+    /// older capture), the target comes from the `SetRenderTarget` calls alone.
+    pub(crate) scene_target: bool,
+    /// The head of the stream says that the end of the flush of the engine's main sorted
+    /// queue comes as `EVENT_QUEUE_FLUSHED` (bit 8 of its fourth word): the sorted blends go
+    /// there. Without it (an older capture), the plan places them at the ends of the scenes.
+    pub(crate) queue_flush: bool,
 }
 
 impl Stream {

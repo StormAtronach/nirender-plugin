@@ -200,6 +200,11 @@
 // ToggleSky), or there is no sky root. The world scene has no sky draw then. An interior
 // cell can show the sky and an exterior can hide it, so this is not the interior flag.
 #define MGE_LINK_SCENE_SKY_HIDDEN 0x00000004u
+// The renderer's target at BeginPaint is the back buffer: the target that the device has
+// (`NiDX8Renderer::currentRenderTarget`), not the one that SetRenderTarget asked for. A
+// SetRenderTarget while a scene is open is refused, so `renderTarget` can name a texture
+// that is not the target.
+#define MGE_LINK_SCENE_BACK_BUFFER 0x00000008u
 
 // Flags of a texture description.
 // The game can change the pixels of the texture later.
@@ -230,6 +235,9 @@
 // The walk of the world camera's root left the sky root: the world of the frame starts here.
 // a: 0. b: 0. (nirender src/world_walk.rs)
 #define MGE_LINK_EVENT_WORLD_WALK 4u
+// The engine drew the main sorted queue of the Click: the end of its flush (MWSE's event
+// MWSE_NATIVE_EVENT_ACCUMULATOR_FINISHED). a: 0. b: 0. (nirender src/queue_flush.rs)
+#define MGE_LINK_EVENT_QUEUE_FLUSHED 5u
 
 // Facts that the host can compare. They are the indexes of `MgeLinkCountersV1::facts`.
 #define MGE_LINK_FACT_LIGHT_RADIUS 0u

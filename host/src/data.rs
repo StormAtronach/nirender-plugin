@@ -43,10 +43,18 @@ pub(crate) const EVENT_SET_TARGET: u32 = 2;
 /// The walk of the world camera's root left the sky root: the world starts here (the
 /// plugin's `world_walk`; the header bit `HEADER_WORLD_WALK`).
 pub(crate) const EVENT_WORLD_WALK: u32 = 4;
+/// The engine drew the main sorted queue of the Click: the end of its flush (the plugin's
+/// `queue_flush`; the header bit `HEADER_QUEUE_FLUSH`).
+pub(crate) const EVENT_QUEUE_FLUSHED: u32 = 5;
 /// Bits of the fourth word of the header: the draws of the engine's sorted queue are marked;
-/// the world's start comes as `EVENT_WORLD_WALK`.
+/// the world's start comes as `EVENT_WORLD_WALK`; the scene records carry `SCENE_BACK_BUFFER`;
+/// the end of the flush of the main sorted queue comes as `EVENT_QUEUE_FLUSHED`.
 pub(crate) const HEADER_QUEUE_MARKED: u32 = 1;
 pub(crate) const HEADER_WORLD_WALK: u32 = 2;
+pub(crate) const HEADER_SCENE_TARGET: u32 = 4;
+pub(crate) const HEADER_QUEUE_FLUSH: u32 = 8;
+/// A flag of the scene record: the renderer's target at `BeginPaint` is the back buffer.
+pub(crate) const SCENE_BACK_BUFFER: u32 = 0x8;
 
 /// The value of a state that the game did not set.
 pub(crate) const UNKNOWN: u32 = 0x7FFF_FFFF;
@@ -350,6 +358,13 @@ pub(crate) struct Counts {
     pub(crate) sorted_without_place_no_places: u64,
     /// The places that came after the frame's first sorted blends (a later generation).
     pub(crate) queued_late_places: u64,
+    /// The scenes whose record named the target, and of them the ones where the target that
+    /// the `SetRenderTarget` calls gave was another one.
+    pub(crate) scene_targets: u64,
+    pub(crate) scene_target_changed: u64,
+    /// The draws of a world view (the world camera's scenes, the first-person scene) with an
+    /// orthographic projection: the old test of the projection would have left them out.
+    pub(crate) orthographic_world_draws: u64,
     /// The light records, and the lights of a shape that no record came for.
     pub(crate) light_records: u32,
     pub(crate) light_missing: u32,

@@ -43,10 +43,18 @@ pub const HEADER_QUEUE_MARKED: u32 = 1;
 /// A bit of the same word: the world camera's Click marks the end of the sky's walk with the
 /// frame event `link::EVENT_WORLD_WALK` (`world_walk`); the host starts the world there.
 pub const HEADER_WORLD_WALK: u32 = 2;
+/// A bit of the same word: the scene records carry `link::SCENE_BACK_BUFFER`.
+pub const HEADER_SCENE_TARGET: u32 = 4;
+/// A bit of the same word: the end of the flush of the main sorted queue comes as the frame
+/// event `link::EVENT_QUEUE_FLUSHED` (`queue_flush`).
+pub const HEADER_QUEUE_FLUSH: u32 = 8;
 
 /// The abilities of the stream for the fourth word of the header.
 fn header_abilities() -> u32 {
-    HEADER_QUEUE_MARKED | if crate::world_walk::installed() { HEADER_WORLD_WALK } else { 0 }
+    HEADER_QUEUE_MARKED
+        | HEADER_SCENE_TARGET
+        | if crate::world_walk::installed() { HEADER_WORLD_WALK } else { 0 }
+        | if crate::queue_flush::installed() { HEADER_QUEUE_FLUSH } else { 0 }
 }
 
 /// The tags of the records.
@@ -991,6 +999,7 @@ pub unsafe fn stop() {
                 crate::log!("stream: {}", crate::map_tiles::report());
                 crate::log!("stream: {}", crate::map_fog::report());
                 crate::log!("stream: {}", crate::world_walk::report());
+                crate::log!("stream: {}", crate::queue_flush::report());
                 tiles.close();
             }
             if let Some(mut messages) = s.messages.take() {

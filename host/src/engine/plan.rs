@@ -69,8 +69,10 @@ impl Plan {
 
     /// The end of the scene in progress. `extension`: the player has an extension;
     /// `in_back_buffer`: the game draws into the back buffer; `drawing`: the frame is
-    /// drawn; `queue_open`: the engine's sorted queue stays open after the scene.
-    pub(crate) fn scene_end(&mut self, extension: bool, in_back_buffer: bool, drawing: bool, queue_open: bool) -> Vec<Step> {
+    /// drawn; `queue_open`: the engine's sorted queue stays open after the scene;
+    /// `flush_marked`: the stream marks the end of the engine's flush with an event
+    /// (`queue_flushed`): the sorted blends go there, not at a scene's end.
+    pub(crate) fn scene_end(&mut self, extension: bool, in_back_buffer: bool, drawing: bool, queue_open: bool, flush_marked: bool) -> Vec<Step> {
         let mut steps = Vec::new();
         let kind = self.scene_kind;
         let world_scene = kind == scene::SCENE_WORLD && in_back_buffer && drawing;
@@ -88,7 +90,10 @@ impl Plan {
         // water scene, where the engine flushes its queue after the water) waits past the
         // first item: an item of its own runs at the end of that scene (R22). The table's
         // blends that wait for the flush go into the same item.
-        if scene::later_world_scene(kind) && in_back_buffer && self.world_begun && (self.waiting || self.queue_open) && !queue_open {
+        // With the flush marked, the item is at the flush; a draw deferred after it still gets
+        // one here.
+        let due = if flush_marked { self.waiting } else { self.waiting || self.queue_open };
+        if scene::later_world_scene(kind) && in_back_buffer && self.world_begun && due && !queue_open {
             steps.push(self.sorted_blends());
         }
         // The end of the world scene: the sorted blends of the table where the engine
@@ -100,7 +105,7 @@ impl Plan {
             self.world_ended = true;
             if queue_open {
                 self.queue_open = true;
-            } else {
+            } else if !flush_marked || self.waiting {
                 steps.push(self.sorted_blends());
             }
             steps.push(Step::EndWorld);
@@ -159,6 +164,17 @@ impl Plan {
         Vec::new()
     }
 
+    /// The engine drew the main sorted queue of a Click (the plugin's event
+    /// `EVENT_QUEUE_FLUSHED`): the sorted blends of the table and of the engine's path go here,
+    /// in a scene of the world camera in the back buffer after the world began. Below the water
+    /// that is before the water plane, above it after the plane, as the engine does (R22).
+    pub(crate) fn queue_flushed(&mut self, in_back_buffer: bool) -> Vec<Step> {
+        if in_back_buffer && self.world_begun && scene::world_camera(self.scene_kind) {
+            return vec![self.sorted_blends()];
+        }
+        Vec::new()
+    }
+
     /// A blend of the engine's path waits for the next sorted-blends item: its generation.
     pub(crate) fn defer(&mut self) -> u32 {
         self.waiting = true;
@@ -176,7 +192,7 @@ mod tests {
         assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
         assert_eq!(plan.world_draw(true, true, true, false, false), (vec![], false));
         assert_eq!(plan.world_draw(true, true, false, false, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
-        plan.scene_end(true, true, true, false)
+        plan.scene_end(true, true, true, false, false)
     }
 
     #[test]
@@ -194,14 +210,14 @@ mod tests {
         world_scene(&mut plan);
         assert_eq!(plan.scene_begin(SCENE_WATER), vec![]);
         assert_eq!(plan.defer(), 1);
-        assert_eq!(plan.scene_end(true, true, true, false), vec![Step::SortedBlends(1)]);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::SortedBlends(1)]);
         // A later scene with no deferred draw gives no item.
         plan.scene_begin(SCENE_SORTED_ALPHA);
-        assert_eq!(plan.scene_end(true, true, true, false), vec![]);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![]);
         // Two deferred draws of one scene share its item.
         plan.scene_begin(SCENE_SORTED_ALPHA);
         assert_eq!((plan.defer(), plan.defer()), (2, 2));
-        assert_eq!(plan.scene_end(true, true, true, false), vec![Step::SortedBlends(2)]);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::SortedBlends(2)]);
     }
 
     /// The ghost near water: the world Click keeps the queue open, so the table's blends go
@@ -212,14 +228,14 @@ mod tests {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
         plan.world_draw(true, true, false, true, false);
-        assert_eq!(plan.scene_end(true, true, true, true), vec![Step::ReleaseHeld, Step::EndWorld]);
+        assert_eq!(plan.scene_end(true, true, true, true, false), vec![Step::ReleaseHeld, Step::EndWorld]);
         plan.scene_begin(SCENE_WATER);
         assert_eq!(plan.defer(), 0);
-        assert_eq!(plan.scene_end(true, true, true, false), vec![Step::SortedBlends(0)]);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::SortedBlends(0)]);
         // The next deferred draw has an item of its own.
         plan.scene_begin(SCENE_SORTED_ALPHA);
         assert_eq!(plan.defer(), 1);
-        assert_eq!(plan.scene_end(true, true, true, false), vec![Step::SortedBlends(1)]);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::SortedBlends(1)]);
     }
 
     /// A water Click that keeps the queue open too (the lake pass of the shader water) gives
@@ -229,11 +245,11 @@ mod tests {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
         plan.world_draw(true, true, false, true, false);
-        plan.scene_end(true, true, true, true);
+        plan.scene_end(true, true, true, true, false);
         plan.scene_begin(SCENE_WATER);
-        assert_eq!(plan.scene_end(true, true, true, true), vec![]);
+        assert_eq!(plan.scene_end(true, true, true, true, false), vec![]);
         plan.scene_begin(SCENE_WATER);
-        assert_eq!(plan.scene_end(true, true, true, false), vec![Step::SortedBlends(0)]);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::SortedBlends(0)]);
     }
 
     /// Without a scene that flushes the queue, the table's blends go before the first-person
@@ -243,9 +259,9 @@ mod tests {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
         plan.world_draw(true, true, false, true, false);
-        plan.scene_end(true, true, true, true);
+        plan.scene_end(true, true, true, true, false);
         assert_eq!(plan.scene_begin(SCENE_FIRST_PERSON), vec![Step::SortedBlends(0)]);
-        assert_eq!(plan.scene_end(true, true, true, false), vec![Step::FirstPersonEnd]);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::FirstPersonEnd]);
         assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::Post]);
     }
 
@@ -255,7 +271,7 @@ mod tests {
         plan.scene_begin(SCENE_WORLD);
         plan.world_draw(true, true, false, true, false);
         assert_eq!(plan.defer(), 0);
-        assert_eq!(plan.scene_end(true, true, true, false), vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
     }
 
     #[test]
@@ -310,7 +326,7 @@ mod tests {
     fn an_empty_world_scene_starts_the_world_at_its_end() {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
-        assert_eq!(plan.scene_end(true, true, true, false), vec![Step::StartWorld, Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::StartWorld, Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
     }
 
     #[test]
@@ -318,7 +334,7 @@ mod tests {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
         assert_eq!(plan.world_draw(false, true, false, true, false), (vec![], false));
-        assert_eq!(plan.scene_end(false, true, true, false), vec![Step::ReleaseHeld]);
+        assert_eq!(plan.scene_end(false, true, true, false, false), vec![Step::ReleaseHeld]);
         assert!(!plan.world_begun);
     }
 
@@ -327,13 +343,59 @@ mod tests {
         let mut plan = Plan::default();
         // Before the world ended (a menu frame), no step.
         plan.scene_begin(SCENE_FIRST_PERSON);
-        assert_eq!(plan.scene_end(true, true, true, false), vec![]);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![]);
         world_scene(&mut plan);
         plan.scene_begin(SCENE_FIRST_PERSON);
-        assert_eq!(plan.scene_end(true, true, true, false), vec![Step::FirstPersonEnd]);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::FirstPersonEnd]);
         // Into a rendered texture, no step.
         plan.scene_begin(SCENE_FIRST_PERSON);
-        assert_eq!(plan.scene_end(true, false, true, false), vec![]);
+        assert_eq!(plan.scene_end(true, false, true, false, false), vec![]);
+    }
+
+    /// With the flush marked, the world's sorted blends go at the flush in the world scene,
+    /// before the world's end, and the end of the scene adds no item.
+    #[test]
+    fn the_marked_flush_in_the_world_scene_places_the_item() {
+        let mut plan = Plan::default();
+        plan.scene_begin(SCENE_WORLD);
+        plan.world_draw(true, true, false, true, true);
+        assert_eq!(plan.world_walk(true, true), vec![Step::StartWorld, Step::ReleaseHeld]);
+        assert_eq!(plan.defer(), 0);
+        assert_eq!(plan.queue_flushed(true), vec![Step::SortedBlends(0)]);
+        assert_eq!(plan.scene_end(true, true, true, false, true), vec![Step::ReleaseHeld, Step::EndWorld]);
+    }
+
+    /// The water shown: the world Click keeps the queue open, and the water Click flushes it.
+    /// The item goes at the flush in the water scene, wherever the flush is in that scene
+    /// (before the plane below the water, after it above), not at the scene's end.
+    #[test]
+    fn the_marked_flush_in_the_water_scene_places_the_item() {
+        let mut plan = Plan::default();
+        plan.scene_begin(SCENE_WORLD);
+        plan.world_walk(true, true);
+        assert_eq!(plan.scene_end(true, true, true, true, true), vec![Step::ReleaseHeld, Step::EndWorld]);
+        plan.scene_begin(SCENE_WATER);
+        assert_eq!(plan.defer(), 0);
+        assert_eq!(plan.queue_flushed(true), vec![Step::SortedBlends(0)]);
+        assert_eq!(plan.scene_end(true, true, true, false, true), vec![]);
+        // The queue was flushed: the first-person scene gives no item.
+        assert_eq!(plan.scene_begin(SCENE_FIRST_PERSON), vec![]);
+    }
+
+    /// A flush outside a world view (the first person, a rendered texture, before the world)
+    /// gives no item; a draw deferred after the flush still gets one at the scene's end.
+    #[test]
+    fn a_marked_flush_outside_the_world_gives_no_item() {
+        let mut plan = Plan::default();
+        assert_eq!(plan.queue_flushed(true), vec![]);
+        plan.scene_begin(SCENE_WORLD);
+        plan.world_walk(true, true);
+        assert_eq!(plan.queue_flushed(false), vec![]);
+        assert_eq!(plan.queue_flushed(true), vec![Step::SortedBlends(0)]);
+        assert_eq!(plan.defer(), 1);
+        assert_eq!(plan.scene_end(true, true, true, false, true), vec![Step::ReleaseHeld, Step::SortedBlends(1), Step::EndWorld]);
+        plan.scene_begin(SCENE_FIRST_PERSON);
+        assert_eq!(plan.queue_flushed(true), vec![]);
     }
 
     #[test]

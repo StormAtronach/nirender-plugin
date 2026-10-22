@@ -67,6 +67,7 @@ pub mod mem;
 pub mod mwse_native;
 pub mod overlay;
 pub mod world_walk;
+pub mod queue_flush;
 #[cfg(feature = "rig")]
 pub mod perf;
 pub mod ptr_hash;

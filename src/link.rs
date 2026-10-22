@@ -58,6 +58,9 @@ pub const COMMAND_DRAW: u32 = 5;
 pub const SCENE_HAS_CAMERA_ORIGIN: u32 = 0x1;
 pub const SCENE_INTERIOR: u32 = 0x2;
 pub const SCENE_SKY_HIDDEN: u32 = 0x4;
+/// The renderer's target at `BeginPaint` is the back buffer (`currentRenderTarget`, the target
+/// that the device has, not the one that `SetRenderTarget` asked for).
+pub const SCENE_BACK_BUFFER: u32 = 0x8;
 
 /// The engine's sorted queue stays open after the scene: a later scene of the same camera
 /// flushes it (`ports::base::main_queue_open`).
@@ -122,6 +125,8 @@ pub const EVENT_SWAP: u32 = 3;
 /// The walk of the world camera's root left the sky root: the world of the frame starts here
 /// (`world_walk`).
 pub const EVENT_WORLD_WALK: u32 = 4;
+/// The engine drew the main sorted queue of the Click (`queue_flush`): the end of its flush.
+pub const EVENT_QUEUE_FLUSHED: u32 = 5;
 
 pub const FACT_LIGHT_RADIUS: u32 = 0;
 pub const FACT_SUN_LIGHT: u32 = 1;

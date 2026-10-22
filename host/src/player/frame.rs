@@ -32,6 +32,8 @@ impl Player {
                 shape_queued: false,
                 queue_marked: false,
                 world_walk: false,
+                scene_target: false,
+                queue_flush: false,
             },
             encoder: None,
             pass: None,

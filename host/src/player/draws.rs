@@ -125,6 +125,34 @@ impl Player {
         }
     }
 
+    /// The end of the flush of the engine's main sorted queue (`EVENT_QUEUE_FLUSHED`): the
+    /// sorted blends of the frame go here.
+    pub(crate) fn queue_flushed(&mut self) {
+        let in_back_buffer = self.stream.back_buffer && self.target.is_none();
+        for step in self.plan.queue_flushed(in_back_buffer) {
+            self.plan_step(step);
+        }
+    }
+
+    /// The target of a scene from its record (`SCENE_BACK_BUFFER`): the renderer's target at
+    /// `BeginPaint`. The back buffer ends a texture target of the calls; a texture that this
+    /// program did not make takes the draws nowhere. A change of the calls' target is counted.
+    pub(crate) fn scene_target(&mut self, back_buffer: bool) {
+        self.renderer.counts.scene_targets += 1;
+        let from_calls = self.stream.back_buffer && self.target.is_none();
+        if from_calls != back_buffer {
+            self.renderer.counts.scene_target_changed += 1;
+        }
+        if back_buffer {
+            self.stream.back_buffer = true;
+            if self.target.take().is_some() && self.drawing() {
+                self.items.push(Item::Target(None));
+            }
+        } else if self.target.is_none() {
+            self.stream.back_buffer = false;
+        }
+    }
+
     /// Collects one draw of a pass of the shape in progress: `topology` is the primitive
     /// type of Direct3D (2 a line list, 4 a triangle list, 5 a triangle strip), over
     /// `indexes` entries of the index list of the geometry from `first_index`.
@@ -203,8 +231,15 @@ impl Player {
         // the world in the back buffer (not for the sky, which is before the world, and not
         // for a texture that the game draws into), the sky for a sky draw in the back buffer
         // (MGE_LINK_CLASS_SKY_DOME is 1 and MGE_LINK_CLASS_SKY_OTHER is 7).
-        let world = self.plan.world_begun && in_back_buffer;
-        if world && self.stream.projection[11] == 1.0 {
+        // The views of the world: the world camera's scenes and the first-person scene, by the
+        // kind that the plugin gives, not by the projection. The matrices of the post chain
+        // come from the world camera only.
+        let kind = self.plan.scene_kind;
+        let world = self.plan.world_begun && in_back_buffer && (scene::world_camera(kind) || kind == scene::SCENE_FIRST_PERSON);
+        if world && self.stream.projection[11] != 1.0 {
+            renderer.counts.orthographic_world_draws += 1;
+        }
+        if world && scene::world_camera(kind) {
             self.world_matrices = Some((self.stream.view, self.stream.projection));
         }
         self.stream.fog_range = fog_range.filter(|_| world);
@@ -216,7 +251,7 @@ impl Player {
             crate::light_dump("record path", &self.frame_lights[first..first + count]);
         }
         let mut shaded = false;
-        if shade && world && self.stream.projection[11] == 1.0 {
+        if shade && world {
             if let Some(extension) = self.extension.as_mut() {
                 let (first, count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);
                 let facts = DrawFacts {
@@ -237,7 +272,7 @@ impl Player {
         // for the extension (`FrameLights`), and the draw that the extension shades can take
         // its light from them.
         let masked = shaded && renderer.clusters.on;
-        let extension_lights = self.parameters.as_ref().is_some_and(|p| p.lights) && world && self.stream.projection[11] == 1.0;
+        let extension_lights = self.parameters.as_ref().is_some_and(|p| p.lights) && world;
         let first = draw_data.light_range[0] as usize;
         let relative = shape.relative && self.stream.origin.is_some();
         for (i, light) in shape.lights.chunks_exact(STATE_LIGHT_SIZE).enumerate() {

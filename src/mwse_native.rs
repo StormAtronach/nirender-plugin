@@ -21,6 +21,7 @@ pub const NATIVE_BAD_ARGUMENT: u32 = 6;
 pub const NATIVE_EVENT_CAMERA_TRANSFORMS_UPDATED: u32 = 1;
 pub const NATIVE_EVENT_UI_CONFIGURED: u32 = 2;
 pub const NATIVE_EVENT_GAME_IDS_RESOLVED: u32 = 3;
+pub const NATIVE_EVENT_ACCUMULATOR_FINISHED: u32 = 4;
 pub const NATIVE_OVERRIDE_DYNAMIC_LIGHT_TEST: u32 = 1;
 pub const NATIVE_OVERRIDE_CAMERA_ROOT_CULL_SHOW: u32 = 2;
 pub const NATIVE_OVERRIDE_MAP_TILE_READ: u32 = 3;
@@ -38,6 +39,7 @@ pub const NATIVE_REQUEST_LIGHT_LIMIT: u32 = 2;
 pub const NATIVE_REQUEST_RIPPLES: u32 = 3;
 pub const NATIVE_REQUEST_INTRO_MOVIES: u32 = 4;
 pub const NATIVE_REQUEST_LIGHT_PARTICLES_FIX: u32 = 5;
+pub const NATIVE_REQUEST_SUN_GLARE: u32 = 6;
 pub const NATIVE_QUERY_UI_SCALE: u32 = 1;
 
 /// The name of the plugin in MWSE.log.
@@ -49,6 +51,13 @@ pub type Listener = unsafe extern "C" fn(user: *mut c_void, packet: *const c_voi
 pub struct CameraTransformsUpdatedV1 {
     pub struct_size: u32,
     pub player_animation_controller: u32,
+}
+
+#[repr(C)]
+pub struct AccumulatorFinishedV1 {
+    pub struct_size: u32,
+    pub accumulator: u32,
+    pub camera: u32,
 }
 
 #[repr(C)]

@@ -1136,7 +1136,8 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
         render_target: roots.render_target,
         flags: if origin.is_some() { SCENE_HAS_CAMERA_ORIGIN } else { 0 }
             | if in_interior() { SCENE_INTERIOR } else { 0 }
-            | if sky_hidden(roots.sky_root) { SCENE_SKY_HIDDEN } else { 0 },
+            | if sky_hidden(roots.sky_root) { SCENE_SKY_HIDDEN } else { 0 }
+            | if renderer_on_back_buffer() { SCENE_BACK_BUFFER } else { 0 },
         camera_origin: origin.unwrap_or_default(),
     };
     (host.scene_begin)(&scene);
@@ -1147,6 +1148,12 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     if function != 0 {
         core::mem::transmute::<usize, unsafe extern "C" fn(*const SceneV1)>(function)(&scene);
     }
+}
+
+/// The device's target is the renderer's back buffer.
+unsafe fn renderer_on_back_buffer() -> bool {
+    let renderer = crate::engine::renderer();
+    renderer != 0 && rd::<usize>(renderer, R::currentRenderTarget) == renderer + R::backbufferRenderTarget
 }
 
 /// Runs after `EndPaint`.
@@ -1641,6 +1648,7 @@ pub unsafe fn connect() -> Result<String, String> {
     crate::map_tiles::install();
     crate::map_fog::install();
     crate::world_walk::install();
+    crate::queue_flush::install();
     // The members up to `read_counters` are in each version of the table.
     if (host.struct_size as usize) < core::mem::offset_of!(HostV1, use_facts) {
         return Err(format!("the table of the host has {} bytes", host.struct_size));

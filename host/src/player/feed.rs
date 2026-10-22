@@ -19,6 +19,8 @@ impl Player {
                 let abilities = if data.len() >= 16 { word(data, 12) } else { 0 };
                 self.stream.queue_marked = abilities & HEADER_QUEUE_MARKED != 0;
                 self.stream.world_walk = abilities & HEADER_WORLD_WALK != 0;
+                self.stream.scene_target = abilities & HEADER_SCENE_TARGET != 0;
+                self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
             }
             tag::TEXTURE => self.renderer.texture(data),
             tag::TEXTURE_UPDATE => self.renderer.texture_update(data),
@@ -63,6 +65,9 @@ impl Player {
                 self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
                 self.stream.interior = word(data, 20) & 2 != 0;
                 self.stream.sky_hidden = word(data, 20) & 4 != 0;
+                if self.stream.scene_target {
+                    self.scene_target(word(data, 20) & SCENE_BACK_BUFFER != 0);
+                }
                 for step in self.plan.scene_begin(word(data, 4)) {
                     self.plan_step(step);
                 }
@@ -71,7 +76,7 @@ impl Player {
                 // Flag 1: the engine's sorted queue stays open after the scene. An older
                 // capture has no word.
                 let queue_open = data.len() >= 4 && word(data, 0) & 1 != 0;
-                let steps = self.plan.scene_end(self.extension.is_some(), self.target.is_none(), self.drawing(), queue_open);
+                let steps = self.plan.scene_end(self.extension.is_some(), self.target.is_none(), self.drawing(), queue_open, self.stream.queue_flush);
                 for step in steps {
                     self.plan_step(step);
                 }
@@ -82,6 +87,9 @@ impl Player {
                 }
                 if word(data, 0) == EVENT_WORLD_WALK && self.stream.world_walk {
                     self.world_walk();
+                }
+                if word(data, 0) == EVENT_QUEUE_FLUSHED && self.stream.queue_flush {
+                    self.queue_flushed();
                 }
             }
             // The kind and the class of the object of the shape records that follow.
@@ -594,7 +602,6 @@ impl Player {
             && scene::world_camera(self.plan.scene_kind)
             && !scene::sky_class(class)
             && class != scene::CLASS_WATER_PLANE
-            && self.stream.projection[11] == 1.0
             && flags & (8 | 64 | 128) == 0
             && self.stream.shape_bones.is_none()
             && !derived.passes.is_empty();
