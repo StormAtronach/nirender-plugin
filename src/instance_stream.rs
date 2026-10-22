@@ -712,10 +712,24 @@ pub fn sky_census_on() -> bool {
     sky_mode() == 2
 }
 
-/// True when the table takes the sky's shapes (step 1 of milestone 6: the instances exist, the
-/// engine still draws them).
+/// True when the table takes the sky's shapes (milestone 6): each draw of a sky shape goes as
+/// an `INSTANCE_DRAW` record in the place of the engine's shape record (`draw`).
 pub fn sky_table_on() -> bool {
     sky_mode() == 3
+}
+
+/// The draws of the sky instances go as `INSTANCE_DRAW` records (`nirender.skyDraws`; on by
+/// default): off, they go as the engine's shape records, for an A/B in one session.
+static SKY_DRAWS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// True when the draws of the sky instances go as `INSTANCE_DRAW` records.
+pub fn sky_draws() -> bool {
+    SKY_DRAWS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Sets whether the draws of the sky instances go as `INSTANCE_DRAW` records.
+pub fn set_sky_draws(on: bool) {
+    SKY_DRAWS.store(on, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// A class of the sky the table can take: the sky root's shapes in the world camera's walk.
@@ -852,12 +866,18 @@ pub unsafe fn reject_pending(mt: &MainThread, shape: usize, reason_later: bool) 
 pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], relative: bool, colours: &[u32; 14], fog: Option<[u32; 4]>, ambient: u32, lights: &[u32], bones: &[u8], bone_count: u32) -> bool {
     let t = tables(mt);
     let Some(instance) = t.instances.get_mut(&shape) else { return false };
+    if sky_table_class(instance.class) && !sky_draws() {
+        return false;
+    }
     // A skinned shape's world matrix is the identity (the palette has the transforms), so
     // only its colours and its first record send the instance again. In mode gpu the table
     // draws it with the bones of `send_bones`; with `NIRENDER_SKIN_TABLE=0` it stays on the
     // draw records, with its palette in each draw.
     let skinned = instance.skinned;
-    let gpu = t.mode == Some(Mode::Gpu) && (!skinned || t.skin_table);
+    // A sky instance goes as an `INSTANCE_DRAW` record at the place of the engine's draw (step
+    // 2 of milestone 6): the helper draws it from its record there, in the stream's order. In
+    // mode gpu the caller writes no shape record after it.
+    let gpu = t.mode == Some(Mode::Gpu) && (!skinned || t.skin_table) && !sky_table_class(instance.class);
     let rotation: [u32; 12] = core::array::from_fn(|i| world[i].to_bits());
     let stored: [u32; 3] = if skinned { [0; 3] } else { rd(shape, WORLD_TRANSLATION) };
     let bound: [f32; 4] = if skinned { [0.0; 4] } else { rd(shape, WORLD_BOUND) };
@@ -1333,10 +1353,6 @@ unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> boo
         }
         if instance.kind == 0 {
             instance.kind = kind;
-        }
-        // Step 1 of the sky (milestone 6): the instance exists, the engine still draws it.
-        if sky_table_class(instance.class) {
-            return false;
         }
     }
     display_work(mt, shape, kind)

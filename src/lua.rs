@@ -361,6 +361,18 @@ unsafe extern "C" fn nif_shading(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.skyDraws([on])`: with a boolean, the draws of the sky instances go as the table's
+/// `INSTANCE_DRAW` records (on, the default) or as the engine's shape records (off). Returns the
+/// state before.
+unsafe extern "C" fn sky_draws(l: LuaState) -> i32 {
+    let before = crate::instance_stream::sky_draws();
+    if lua_gettop(l) >= 1 {
+        crate::instance_stream::set_sky_draws(lua_toboolean(l, 1) != 0);
+    }
+    lua_pushboolean(l, before as i32);
+    1
+}
+
 /// `nirender.animationPolicy([name])`: with a name (`view`, `shadows`, `all`) sets the
 /// policy of what animates when the plugin's table draws the world. Returns
 /// the name of the policy in force.
@@ -690,6 +702,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "captureStatus", capture_status);
     set_fn(l, "instances", instances_report);
     set_fn(l, "nifShading", nif_shading);
+    set_fn(l, "skyDraws", sky_draws);
     set_fn(l, "animationPolicy", animation_policy);
     set_fn(l, "skinTable", skin_table);
     set_fn(l, "noteEvery", note_every);
