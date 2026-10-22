@@ -33,6 +33,9 @@ pub const INSTANCE_BLOCK: u32 = 0x100;
 /// The flag of a skinned instance (the shape record's `SKINNED`): its world is the identity,
 /// and its bones come in `INSTANCE_BONES` records (`RetainedSet::set_bones`).
 const INSTANCE_SKINNED: u32 = 4;
+/// The classes of the sky (1 to 8): the table keeps their instances and draws none of them yet;
+/// the engine draws the sky (step 1 of milestone 6).
+const SKY_CLASSES: u32 = 0x1FE;
 /// The bytes of one bone of an `INSTANCE_BONES` record: the matrix of the rotation and the
 /// scale (9 floats, by columns) and the exact translation in the world (3 doubles).
 pub const BONE_BYTES: usize = 9 * 4 + 3 * 8;
@@ -1160,7 +1163,7 @@ impl RetainedSet {
         let near = view.planes[4];
         let mut sequence = 0u32;
         for (b, bucket) in self.buckets.iter().enumerate() {
-            if view.classes & (1 << bucket.class.min(31)) == 0 {
+            if view.classes & !SKY_CLASSES & (1 << bucket.class.min(31)) == 0 {
                 continue;
             }
             let blends = bucket.key.blend[0] != 0;

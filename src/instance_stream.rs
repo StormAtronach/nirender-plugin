@@ -48,7 +48,7 @@ use crate::ptr_hash::{HashMap, HashSet};
 use crate::capture;
 use crate::engine::{thiscall1, vcall0};
 use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L, NiPropertyState as PS, NiTimeController as TC, NiZBufferProperty as ZP};
-use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_UNKNOWN, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_RACE_MENU_HEAD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
+use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_RACE_MENU_HEAD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::{rd, wr};
 
@@ -361,7 +361,7 @@ pub unsafe fn set_mode(mt: &MainThread, mode: Mode) -> Mode {
 /// 0 out; `NIRENDER_ANIMATED=0` keeps out the class 0 shapes that are not skinned.
 pub unsafe fn class_retained(mt: &MainThread, class: u32, skinned: bool) -> bool {
     let t = tables(mt);
-    class == CLASS_OBJECT || (class == CLASS_LANDSCAPE && t.landscape) || (class == CLASS_UNKNOWN && t.actors && (skinned || t.animated))
+    class == CLASS_OBJECT || (class == CLASS_LANDSCAPE && t.landscape) || (class == CLASS_UNKNOWN && t.actors && (skinned || t.animated)) || (sky_table_class(class) && sky_table_on())
 }
 
 /// Sets or clears the mark of a retained shape.
@@ -609,6 +609,14 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
         t.rejected_by[reason] += 1;
         return;
     }
+    // The engine changes the sky by writes of its vertices with a new revision, not with
+    // controllers: a sky instance is live from the start.
+    if sky_table_class(class) {
+        live = true;
+        let text: usize = rd(shape, 8);
+        let name = if text != 0 { core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+        crate::log!("sky: instance {} of class {class}, '{name}'", t.next_id);
+    }
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
@@ -677,22 +685,43 @@ unsafe fn reject_reason(mt: &MainThread, shape: usize, property_state: usize, ef
     None
 }
 
-/// The switch of the sky's census (`NIRENDER_SKY=count`): 0 not read, 1 off, 2 on.
-static SKY_CENSUS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+/// The switch of the sky (`NIRENDER_SKY`): 0 not read, 1 off, 2 the census (`count`), 3 the
+/// sky's instances in the table (`on`; milestone 6).
+static SKY_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 /// The sky shapes the census logged: once each.
 static SKY_SEEN: MainCell<Vec<usize>> = MainCell::new(Vec::new());
 
+fn sky_mode() -> u8 {
+    use core::sync::atomic::Ordering::Relaxed;
+    match SKY_MODE.load(Relaxed) {
+        0 => {
+            let mode = match std::env::var("NIRENDER_SKY").as_deref() {
+                Ok("count") => 2,
+                Ok("on") => 3,
+                _ => 1,
+            };
+            SKY_MODE.store(mode, Relaxed);
+            mode
+        }
+        mode => mode,
+    }
+}
+
 /// True when the census of the sky is on.
 pub fn sky_census_on() -> bool {
-    use core::sync::atomic::Ordering::Relaxed;
-    match SKY_CENSUS.load(Relaxed) {
-        0 => {
-            let on = std::env::var("NIRENDER_SKY").is_ok_and(|value| value == "count");
-            SKY_CENSUS.store(if on { 2 } else { 1 }, Relaxed);
-            on
-        }
-        state => state == 2,
-    }
+    sky_mode() == 2
+}
+
+/// True when the table takes the sky's shapes (step 1 of milestone 6: the instances exist, the
+/// engine still draws them).
+pub fn sky_table_on() -> bool {
+    sky_mode() == 3
+}
+
+/// A class of the sky the table can take: the sky root's shapes in the world camera's walk.
+/// The glare (class 8) draws in the first-person scene.
+fn sky_table_class(class: u32) -> bool {
+    (CLASS_SKY_DOME..=CLASS_SKY_OTHER).contains(&class)
 }
 
 /// The census of the sky (milestone 6, step 0): what the table would say about a shape of the
@@ -1304,6 +1333,10 @@ unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> boo
         }
         if instance.kind == 0 {
             instance.kind = kind;
+        }
+        // Step 1 of the sky (milestone 6): the instance exists, the engine still draws it.
+        if sky_table_class(instance.class) {
+            return false;
         }
     }
     display_work(mt, shape, kind)
