@@ -269,6 +269,8 @@ struct App {
     frames_wanted: u32,
     /// The size of the back buffer of the game, and its window when the host goes into it.
     size: (u32, u32),
+    /// The head of the stream: the player takes it first, for the abilities of the stream.
+    header: Vec<u8>,
     parent: Option<isize>,
     shot: Option<String>,
     shot_frame: u32,
@@ -480,6 +482,8 @@ impl ApplicationHandler for App {
         assert!(renderer.surface_usages.contains(wgpu::TextureUsages::COPY_DST), "the window does not take a copy of a picture");
         self.overlay = Some(super::overlay::Overlay::new(&renderer.device, renderer.target_format));
         let mut player = Player::new(renderer);
+        // The abilities of the stream are in its head: the player reads them as a replay does.
+        player.feed(super::tag::HEADER, &self.header);
         player.extension = self.extension.take();
         player.renderer.anisotropy = player.extension.as_ref().map_or(1, |extension| extension.anisotropy());
         player.film_shot = self.shot_film.take();
@@ -787,6 +791,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         backends,
         frames_wanted: option(args, "--frames").and_then(|text| text.parse().ok()).unwrap_or(0),
         size,
+        header: data.clone(),
         parent: embed.then_some(game_window),
         shot: option(args, "--shot"),
         shot_frame: option(args, "--shot-frame").and_then(|text| text.parse().ok()).unwrap_or(60),
