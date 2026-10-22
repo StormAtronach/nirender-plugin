@@ -131,6 +131,9 @@ struct Slot {
     /// The draw blends and the engine would sort it: the table draws it back to front with
     /// the other sorted blends where the engine flushes its queue.
     sorted: bool,
+    /// The shape's own alpha property blends and the engine does not sort it: the engine
+    /// draws it at its display, in the order of its walk (`engine::walk`).
+    in_place: bool,
     /// The texture handles the slot pinned (`Renderer::pin_texture`), one use each: their
     /// uses go when the slot goes.
     pinned: [u32; STAGES],
@@ -163,6 +166,11 @@ pub struct RetainedCounts {
     /// bones had not come.
     pub bone_records: u64,
     pub without_bones: u64,
+    /// In the main view with the walk's places on: the blends drawn in place by the engine
+    /// that had no place (drawn by bucket), and the places whose walk order differs from
+    /// their bucket order.
+    pub walk_without_place: u64,
+    pub walk_reordered: u64,
 }
 
 /// The origin of the set moves to the camera when the camera is farther from it than this,
@@ -214,6 +222,10 @@ pub struct RetainedSet {
     sorted_order: Vec<(u64, u32, u32, u32)>,
     kept_sorted: Vec<(u64, u32, u32, u32)>,
     pub sorted_view: Option<RetainedView>,
+    /// The places of the table's blends in the engine's walk, and the main view that left
+    /// their slots out for them.
+    pub(crate) walk: crate::engine::walk::Walk,
+    walk_view: Option<RetainedView>,
     /// The origin of the space of the instances: the translation of a slot and the
     /// position of a light are relative to it. With a relative scene (the packet has the
     /// exact position of the camera) the origin follows the camera (`rebase`), so the
@@ -247,6 +259,8 @@ impl RetainedSet {
             sorted_order: Vec::new(),
             kept_sorted: Vec::new(),
             sorted_view: None,
+            walk: Default::default(),
+            walk_view: None,
             origin: [0.0; 3],
             relative: false,
             main_view: [0.0; 16],
@@ -1124,7 +1138,9 @@ impl RetainedSet {
     ///    made, their draws in the order of their slots. A shape draws a base pass and a
     ///    blend pass that both write depth and test less-or-equal, in different buckets: the
     ///    base must come first, or it overwrites the blend at the same depth (the game draws
-    ///    the two in a row).
+    ///    the two in a row). In the main view a slot of an instance with a place in the
+    ///    engine's walk (`tag::INSTANCE_WALK`) leaves this group: it draws at its place
+    ///    (`engine::walk`). This order is only for the blends without one.
     /// The depth of a draw is that of the nearest point of its bound: the distance from the
     /// near plane of the view less the radius, at least 0.
     /// 4. The blends the engine would sort, into `sorted_order`: back to front by the depth
@@ -1189,6 +1205,13 @@ impl RetainedSet {
         }
         self.order.sort_unstable();
         self.sorted_order.sort_unstable();
+        // The main view: a blend out of the sort with a place in the engine's walk draws there.
+        if view.sorted == Sorted::Keep && self.walk.on {
+            let slots = &self.slots;
+            self.counts.walk_reordered += self.walk.leave_out(&mut self.order, |slot| slots[slot as usize].as_ref().map(|s| s.id)) as u64;
+            self.counts.walk_without_place += self.order.iter().filter(|e| e.0 >> 32 == crate::engine::walk::GROUP_IN_PLACE && slots[e.3 as usize].as_ref().is_some_and(|s| s.in_place)).count() as u64;
+            self.walk_view = Some(*view);
+        }
         match view.sorted {
             Sorted::Together => self.order.append(&mut self.sorted_order),
             Sorted::Keep => {
@@ -1451,7 +1474,9 @@ impl Player {
             // A skinned instance keeps its range of bones when it is made again; its bound
             // comes with the bones that the plugin sends after the instance record.
             let bones_first = if r.flags & INSTANCE_SKINNED != 0 { set.bones_first_of(id) } else { NO_BONES };
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted: crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter), pinned, bones_first });
+            let sorted = crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter);
+            let in_place = !sorted && derived.blends.first().is_some_and(|b| b[0] != 0);
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted, in_place, pinned, bones_first });
             set.buckets[bucket as usize].slots.push(slot);
             set.dirty.push(slot);
             slots.push(slot);
@@ -1689,6 +1714,21 @@ impl Player {
         pass.pop_debug_group();
         self.forget_bound();
     }
+
+    /// Draws a run of places of the table's blends in the engine's walk (`Item::WalkPlaces`):
+    /// the slots the main view left out for them, in the walk's order, with the main view.
+    /// The kept sorted blends stay for their item.
+    /// Engine-rules R2, R3 (the skill wgpu-renderer-dev).
+    pub(super) fn draw_walk_run(&mut self, run: usize) {
+        let (entries, late) = self.retained.walk.take_run(run);
+        self.renderer.counts.walk_late += late as u64;
+        if entries.is_empty() {
+            return;
+        }
+        let kept = core::mem::take(&mut self.retained.kept_sorted);
+        self.draw_sorted_run(self.retained.walk_view, entries);
+        self.retained.kept_sorted = kept;
+    }
 }
 
 /// The key of a sorted blend of the table: the far draw first (the bits of the depth of the
@@ -1808,6 +1848,13 @@ mod order_tests {
         let alpha_test = bucket_key(1, 3, 1.0);
         let blend = bucket_key(2, 0, 0.0);
         assert!(opaque < alpha_test && alpha_test < blend);
+    }
+
+    #[test]
+    fn the_walk_finds_the_group_of_the_blends_out_of_the_sort() {
+        assert_eq!(bucket_key(2, 7, 1.0) >> 32, crate::engine::walk::GROUP_IN_PLACE);
+        assert_ne!(bucket_key(0, 7, f32::MAX) >> 32, crate::engine::walk::GROUP_IN_PLACE);
+        assert_ne!(bucket_key(1, 7, f32::MAX) >> 32, crate::engine::walk::GROUP_IN_PLACE);
     }
 
     #[test]

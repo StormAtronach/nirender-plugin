@@ -128,8 +128,10 @@ unsafe fn shape_display_start(this: usize, camera: usize) -> Option<usize> {
 /// goes into the stream (`INSTANCE_QUEUED`): the helper draws it there, in the engine's
 /// order. During the walk a sorted blend goes into the main queue, as the engine's display
 /// puts it there (`shape_display_start`: the state, then `RegisterObject`), so that the
-/// engine sorts it with its own blends. A queue that does not take the shape (no
-/// accumulator, not a sorted blend) leaves it to the helper's own order.
+/// engine sorts it with its own blends. A blend that the queue does not take (the no-sorter
+/// bit, no accumulator) draws at its display in the engine: its place in the walk goes into
+/// the stream (`INSTANCE_WALK`). A shape under another accumulator keeps the helper's own
+/// order.
 unsafe fn retained_display(t: &MainThread, this: usize, camera: usize, kind: u32) -> bool {
     let flush = crate::ports::base::in_main_flush(t);
     if flush && crate::instance_stream::queued_now(t, this) {
@@ -140,6 +142,7 @@ unsafe fn retained_display(t: &MainThread, this: usize, camera: usize, kind: u32
         return false;
     }
     if !crate::instance_stream::may_queue(t) {
+        crate::instance_stream::walk_place(t, this);
         return true;
     }
     if flush {
@@ -150,10 +153,14 @@ unsafe fn retained_display(t: &MainThread, this: usize, camera: usize, kind: u32
     }
     let renderer = rd::<usize>(camera, C::spRenderer);
     let accumulator = if renderer != 0 { rd::<usize>(renderer, R::accumulator) } else { 0 };
-    if accumulator != 0 && crate::ports::base::is_main_accumulator(t, accumulator) {
+    if accumulator == 0 {
+        crate::instance_stream::walk_place(t, this);
+    } else if crate::ports::base::is_main_accumulator(t, accumulator) {
         thiscall1(PUSH_STATE, this, renderer as u32);
         if thiscall1(RENDERER_REGISTER_OBJECT, renderer, this as u32) & 0xFF != 0 {
             crate::instance_stream::note_queued(t, this);
+        } else {
+            crate::instance_stream::walk_place(t, this);
         }
     }
     true

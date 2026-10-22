@@ -234,6 +234,7 @@ impl Player {
         self.held_draws.clear();
         self.taken.clear();
         self.frame_sorted.clear();
+        self.retained.walk.frame_start();
         self.world_near = None;
         self.replaced = 0;
         self.plane_ahead = None;

@@ -171,6 +171,9 @@ enum Item {
     /// The sorted blends of the retained table and the blends of the engine's path that
     /// waited for this item: the generation names the item within the frame.
     SortedBlends(u32),
+    /// A run of places of the table's blends in the engine's walk (`engine::walk`): the
+    /// number of the run in the frame.
+    WalkPlaces(usize),
     /// The extension draws in place of the draws of this class. The number of world draws
     /// before this item: those after it are not in the picture yet.
     Replace(u32, Box<WorldFacts>, usize),

@@ -48,11 +48,15 @@ pub const HEADER_SCENE_TARGET: u32 = 4;
 /// A bit of the same word: the end of the flush of the main sorted queue comes as the frame
 /// event `link::EVENT_QUEUE_FLUSHED` (`queue_flush`).
 pub const HEADER_QUEUE_FLUSH: u32 = 8;
+/// A bit of the same word: a retained blend that the engine draws in its walk has its place
+/// there as `tag::INSTANCE_WALK`.
+pub const HEADER_WALK_PLACES: u32 = 16;
 
 /// The abilities of the stream for the fourth word of the header.
 fn header_abilities() -> u32 {
     HEADER_QUEUE_MARKED
         | HEADER_SCENE_TARGET
+        | HEADER_WALK_PLACES
         | if crate::world_walk::installed() { HEADER_WORLD_WALK } else { 0 }
         | if crate::queue_flush::installed() { HEADER_QUEUE_FLUSH } else { 0 }
 }
@@ -187,6 +191,11 @@ pub mod tag {
     /// (`instance_stream::queue_blend`); the host draws it at this place in the order of the
     /// queue's draws.
     pub const INSTANCE_QUEUED: u32 = 31;
+    /// A blend of the table at its place in the engine's walk: id. The engine draws the
+    /// instance at its display, because the main sorted queue did not take it (the no-sorter
+    /// bit, no accumulator) (`instance_stream::walk_place`); the host draws it at this place
+    /// in the order of the walk's draws.
+    pub const INSTANCE_WALK: u32 = 32;
 }
 
 // ---- the ring in shared memory
@@ -1342,6 +1351,12 @@ pub unsafe fn instance_draw(id: u32, ambient: u32, fog: Option<[u32; 4]>, lights
 pub unsafe fn instance_queued(id: u32) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_QUEUED, &[words(&[id])]);
+}
+
+/// A blend of the table at its place in the engine's walk. See `tag::INSTANCE_WALK`.
+pub unsafe fn instance_walk(id: u32) {
+    let _lock = crate::sync::device_lock();
+    write(tag::INSTANCE_WALK, &[words(&[id])]);
 }
 
 /// The end of an instance. See `tag::INSTANCE_DELETE`.

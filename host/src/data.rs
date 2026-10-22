@@ -48,11 +48,13 @@ pub(crate) const EVENT_WORLD_WALK: u32 = 4;
 pub(crate) const EVENT_QUEUE_FLUSHED: u32 = 5;
 /// Bits of the fourth word of the header: the draws of the engine's sorted queue are marked;
 /// the world's start comes as `EVENT_WORLD_WALK`; the scene records carry `SCENE_BACK_BUFFER`;
-/// the end of the flush of the main sorted queue comes as `EVENT_QUEUE_FLUSHED`.
+/// the end of the flush of the main sorted queue comes as `EVENT_QUEUE_FLUSHED`; the table's
+/// blends that the engine draws in its walk have their places there (`tag::INSTANCE_WALK`).
 pub(crate) const HEADER_QUEUE_MARKED: u32 = 1;
 pub(crate) const HEADER_WORLD_WALK: u32 = 2;
 pub(crate) const HEADER_SCENE_TARGET: u32 = 4;
 pub(crate) const HEADER_QUEUE_FLUSH: u32 = 8;
+pub(crate) const HEADER_WALK_PLACES: u32 = 16;
 /// A flag of the scene record: the renderer's target at `BeginPaint` is the back buffer.
 pub(crate) const SCENE_BACK_BUFFER: u32 = 0x8;
 
@@ -358,6 +360,13 @@ pub(crate) struct Counts {
     pub(crate) sorted_without_place_no_places: u64,
     /// The places that came after the frame's first sorted blends (a later generation).
     pub(crate) queued_late_places: u64,
+    /// The places of the table's blends in the engine's walk (`tag::INSTANCE_WALK`): taken in
+    /// a world view, of an instance the table does not have, outside a world view, and after
+    /// the main view of the table drew its blends (a part of the frame ran before them).
+    pub(crate) walk_places: u64,
+    pub(crate) walk_unknown: u64,
+    pub(crate) walk_outside: u64,
+    pub(crate) walk_late: u64,
     /// The scenes whose record named the target, and of them the ones where the target that
     /// the `SetRenderTarget` calls gave was another one.
     pub(crate) scene_targets: u64,

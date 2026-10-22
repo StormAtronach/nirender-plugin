@@ -1181,6 +1181,27 @@ pub unsafe fn flush_place(mt: &MainThread, shape: usize, own: bool) {
     QUEUE_COUNTS.get(mt)[if own { 1 } else { 2 }] += 1;
 }
 
+/// The places of the table's blends in the engine's walk (`walk_place`).
+static WALK_PLACES: MainCell<u64> = MainCell::new(0);
+
+/// Writes the place of a retained shape in the engine's walk (`INSTANCE_WALK`) when its alpha
+/// property blends: the engine draws such a shape at its display when the main queue does
+/// not take it (the no-sorter bit, no accumulator), so the helper draws it at this place, in
+/// the walk's order. The caller calls it only for a shape the queue did not take. An opaque
+/// shape gets no place.
+/// Engine-rules R2 (the skill wgpu-renderer-dev).
+pub unsafe fn walk_place(mt: &MainThread, shape: usize) {
+    let t = tables(mt);
+    let Some(instance) = t.instances.get(&shape) else { return };
+    let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
+    let alpha: usize = if property_state != 0 { rd(property_state, PS::propAlpha) } else { 0 };
+    if alpha == 0 || rd::<u16>(alpha, PROPERTY_FLAGS) & 1 == 0 {
+        return;
+    }
+    capture::instance_walk(instance.id);
+    *WALK_PLACES.get(mt) += 1;
+}
+
 /// The display of a retained shape by the engine (mode gpu): what the draw of the stream
 /// did for the instance, without the draw. True when the engine must not display the
 /// shape; false when the shape is not retained after all (the mark goes).
@@ -1573,8 +1594,8 @@ pub unsafe fn report(mt: &MainThread) -> String {
             RECHECKS.get(mt)[0], RECHECKS.get(mt)[1], RECHECKS.get(mt)[2], RECHECKS.get(mt)[3], RECHECKS.get(mt)[4], RECHECKS.get(mt)[5], CHANGE_NOTES.get(mt)[0], CHANGE_NOTES.get(mt)[1], CHANGE_NOTES.get(mt)[2]
         )
         + &format!(
-            "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node\n",
-            QUEUE_COUNTS.get(mt)[0], QUEUE_COUNTS.get(mt)[1], QUEUE_COUNTS.get(mt)[2]
+            "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk\n",
+            QUEUE_COUNTS.get(mt)[0], QUEUE_COUNTS.get(mt)[1], QUEUE_COUNTS.get(mt)[2], *WALK_PLACES.get(mt)
         )
         + &crate::animation::report()
         + "\n"

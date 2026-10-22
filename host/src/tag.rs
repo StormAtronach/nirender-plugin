@@ -40,6 +40,8 @@ pub const COPY_TILE: u32 = 30;
 /// The place of a sorted blend of the table in the flush of the engine's queue: id
 /// (`Player::instance_queued`).
 pub const INSTANCE_QUEUED: u32 = 31;
+/// The place of a blend of the table in the engine's walk: id (`Player::walk_place`).
+pub const INSTANCE_WALK: u32 = 32;
 
 /// The least length of a record of the tag that the player reads without a check of its
 /// own: a shorter record is skipped and counted (`Counts::short_records`), not read past
@@ -71,6 +73,7 @@ pub fn least_length(tag: u32) -> usize {
         INSTANCE_BONES => 24,
         COPY_TILE => 12,
         INSTANCE_QUEUED => 4,
+        INSTANCE_WALK => 4,
         _ => 0,
     }
 }
@@ -81,7 +84,7 @@ mod tests {
 
     #[test]
     fn every_record_with_a_fixed_head_has_a_least_length() {
-        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED] {
+        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK] {
             assert!(least_length(tag) > 0, "tag {tag} has no least length");
         }
     }
