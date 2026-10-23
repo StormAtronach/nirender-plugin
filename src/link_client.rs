@@ -1025,9 +1025,10 @@ unsafe fn scene_kind(camera: usize, world_controller: usize, water_controller: u
             SCENE_WATER
         } else if root != rd::<usize>(world_controller, WC_WORLD_ROOT) {
             SCENE_OTHER
-        } else if app_culled(root) {
-            SCENE_SORTED_ALPHA
         } else {
+            // On wgpu no module splits the world camera's Click (MGE XE's patchCameraClick is
+            // the Direct3D 9 proxy's), so the root's app-culled flag names no scene kind: a
+            // module or a console command can set it in a world scene.
             SCENE_WORLD
         }
     } else if is(WC_SHADOW_CAMERA) {
