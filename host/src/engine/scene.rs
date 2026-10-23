@@ -21,6 +21,11 @@ pub(crate) const SCENE_UI: u32 = 7;
 /// shadows, the rest of the sky, and the sun glare.
 pub(crate) const CLASS_SKY_FIRST: u32 = 1;
 pub(crate) const CLASS_SKY_LAST: u32 = 8;
+/// The sky dome: the shapes under the weather's sky dome node.
+pub(crate) const CLASS_SKY_DOME: u32 = 1;
+/// The moon shadow: the one shape "Moon Shadow" under the "Shadow Node" of each moon
+/// (`Moon::ctor` 0x4443B0), the disc that keeps the stars out of the moon.
+pub(crate) const CLASS_SKY_MOON_SHADOW: u32 = 6;
 /// The water plane of the game: not a thing of the world (the extension draws its water).
 pub(crate) const CLASS_WATER_PLANE: u32 = 10;
 

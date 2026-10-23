@@ -128,12 +128,11 @@ impl Stream {
         data.texture_factor = [1.0; 4];
         if let Some(sky) = self.sky {
             data.extension = sky;
-            if pass.stages[0].texture == 0 {
-                // The sky dome has no texture.
+            // The class of the draw names the part of the sky: a mod's mesh with or without a
+            // texture does not change it.
+            if self.object_class == engine::scene::CLASS_SKY_DOME {
                 data.counts[3] |= 4;
-            } else if self.object_class == 6 && pass.blend[2] == 6 {
-                // MGE_LINK_CLASS_SKY_MOON_SHADOW with D3DBLEND_INVSRCALPHA: the disc that keeps
-                // the stars out of a moon.
+            } else if self.object_class == engine::scene::CLASS_SKY_MOON_SHADOW {
                 data.counts[3] |= 8;
             }
         }
