@@ -61,6 +61,9 @@ pub const SCENE_SKY_HIDDEN: u32 = 0x4;
 /// The renderer's target at `BeginPaint` is the back buffer (`currentRenderTarget`, the target
 /// that the device has, not the one that `SetRenderTarget` asked for).
 pub const SCENE_BACK_BUFFER: u32 = 0x8;
+/// The game draws the world in wireframe: the shared wireframe property of `TES3Game`, which
+/// the console command ToggleWireframe turns on (`link_client::game_wireframe`).
+pub const SCENE_WIREFRAME: u32 = 0x10;
 
 /// The engine's sorted queue stays open after the scene: a later scene of the same camera
 /// flushes it (`ports::base::main_queue_open`).

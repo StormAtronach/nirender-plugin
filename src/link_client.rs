@@ -350,6 +350,21 @@ unsafe fn in_interior() -> bool {
     data_handler != 0 && rd::<usize>(data_handler, CURRENT_INTERIOR_CELL) != 0
 }
 
+/// `*(TES3Game**)`; `TES3Game::wireframeProperty` (+0xB0), the one wireframe property of the
+/// world (MWSE `TES3Game.h`). The console command ToggleWireframe turns it on and off
+/// (`MenuController::setWireframeEnabled` in MWSE).
+const TES3_GAME: usize = 0x7C6CDC;
+const GAME_WIREFRAME_PROPERTY: usize = 0xB0;
+/// `NiProperty::flags` (u16); bit 0 of a wireframe property is "on".
+const PROPERTY_FLAGS: usize = 0x14;
+
+/// True when the game draws the world in wireframe.
+unsafe fn game_wireframe() -> bool {
+    let game: usize = rd(TES3_GAME, 0);
+    let property: usize = if game != 0 { rd(game, GAME_WIREFRAME_PROPERTY) } else { 0 };
+    property != 0 && rd::<u16>(property, PROPERTY_FLAGS) & 1 != 0
+}
+
 /// True when the game hides the sky: `WeatherController` 0x440870 culls the sky root for an
 /// interior cell that does not behave like an exterior, and for the console command
 /// ToggleSky; 0x440820 shows it again. Without a sky root there is no sky either.
@@ -1138,7 +1153,8 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
         flags: if origin.is_some() { SCENE_HAS_CAMERA_ORIGIN } else { 0 }
             | if in_interior() { SCENE_INTERIOR } else { 0 }
             | if sky_hidden(roots.sky_root) { SCENE_SKY_HIDDEN } else { 0 }
-            | if renderer_on_back_buffer() { SCENE_BACK_BUFFER } else { 0 },
+            | if renderer_on_back_buffer() { SCENE_BACK_BUFFER } else { 0 }
+            | if game_wireframe() { SCENE_WIREFRAME } else { 0 },
         camera_origin: origin.unwrap_or_default(),
     };
     (host.scene_begin)(&scene);

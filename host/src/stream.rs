@@ -81,6 +81,11 @@ pub(crate) struct Stream {
     /// queue comes as `EVENT_QUEUE_FLUSHED` (bit 8 of its fourth word): the sorted blends go
     /// there. Without it (an older capture), the plan places them at the ends of the scenes.
     pub(crate) queue_flush: bool,
+    /// The head of the stream says that the scene records carry `SCENE_WIREFRAME` (bit 32 of
+    /// its fourth word). Without it (an older capture), the fill mode of the last draw says.
+    pub(crate) scene_wireframe: bool,
+    /// The scene in progress has the flag `SCENE_WIREFRAME`.
+    pub(crate) wireframe: bool,
 }
 
 impl Stream {

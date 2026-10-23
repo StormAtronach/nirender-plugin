@@ -143,9 +143,10 @@ impl Player {
     }
 
     /// The facts of the world scene as the stream has them now. With `first`, the sun and
-    /// the ambient light come from the shape record in progress (the first draw of the
-    /// world), or from the last one for a world scene without a draw; without it, they are
-    /// those of that draw.
+    /// the ambient light come from the frame's `RETAINED_SCENE` record; in an older capture
+    /// without it, from the shape record in progress (the first draw of the world), or from
+    /// the last one for a world scene without a draw. Without `first`, they are those of the
+    /// world's start.
     pub(crate) fn world_facts(&mut self, first: bool) -> WorldFacts {
         let shape = &self.stream.shape;
         if first {
@@ -169,21 +170,22 @@ impl Player {
             }
             // The sun: the weather's sky light as the engine gives it to the device, sent by
             // the plugin in the scene record (flag 64). Do not guess it from the light records.
-            // Without the record (an older plugin) the sun stays that of the engine's last
-            // world draw.
-            {
+            // With the record, a frame without the flag has no sun (the sky light off or too
+            // dim): a draw's directional light can be a mod's. Without the record (an older
+            // plugin) the sun stays that of the engine's last world draw.
+            if self.retained_values.is_some() {
                 if self.world_sun_logged < 4 {
                     self.world_sun_logged += 1;
-                    println!("world sun: the scene record {} the sun; the draw's sun {:?}", if self.retained_sun.is_some() { "carries" } else { "lacks" }, sun);
+                    println!("world sun: the scene record {} the sun", if self.retained_sun.is_some() { "carries" } else { "lacks" });
                 }
-                if let Some(l) = self.retained_sun.as_ref() {
+                sun = self.retained_sun.as_ref().map(|l| {
                     let l = &l[..];
                     let diffuse: [f32; 3] = floats(l, 4);
                     let light_ambient: [f32; 3] = floats(l, 9 * 4);
                     let direction: [f32; 3] = floats(l, 16 * 4);
                     let length = direction.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
-                    sun = Some((direction.map(|v| v / length), diffuse, light_ambient));
-                }
+                    (direction.map(|v| v / length), diffuse, light_ambient)
+                });
             }
             if switches().replay_debug {
                 println!("world start: lights {} sun {:?} ambient {:?}", shape.lights.len() / STATE_LIGHT_SIZE, sun, ambient);
@@ -193,7 +195,9 @@ impl Player {
         }
         // The fog of the world: the scene record's, which the plugin reads from the game's
         // own fog property each frame. Only without the record: the fog states of the last
-        // draw with fog. The fill mode is the last draw's (D3DFILL_WIREFRAME is 2).
+        // draw with fog. The fill mode: the scene record's flag, from the game's own
+        // wireframe property; only in an older capture the last draw's (D3DFILL_WIREFRAME is
+        // 2), which a mod's mesh with a wireframe property can give.
         let fog = self.retained_values.and_then(|(_, fog)| fog).unwrap_or(self.stream.fog);
         WorldFacts {
             target_size: self.size_of_target(),
@@ -202,7 +206,7 @@ impl Player {
             view: self.stream.view,
             projection: self.stream.projection,
             interior: self.stream.interior,
-            wireframe: self.stream.shape.fill == 2,
+            wireframe: if self.stream.scene_wireframe { self.stream.wireframe } else { self.stream.shape.fill == 2 },
             fog_color: color(fog[0]),
             fog_start: f32::from_bits(fog[1]),
             fog_end: f32::from_bits(fog[2]),

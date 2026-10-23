@@ -22,6 +22,7 @@ impl Player {
                 self.stream.scene_target = abilities & HEADER_SCENE_TARGET != 0;
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
                 self.retained.walk.on = abilities & HEADER_WALK_PLACES != 0;
+                self.stream.scene_wireframe = abilities & HEADER_SCENE_WIREFRAME != 0;
             }
             tag::TEXTURE => self.renderer.texture(data),
             tag::TEXTURE_UPDATE => self.renderer.texture_update(data),
@@ -66,6 +67,7 @@ impl Player {
                 self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
                 self.stream.interior = word(data, 20) & 2 != 0;
                 self.stream.sky_hidden = word(data, 20) & 4 != 0;
+                self.stream.wireframe = word(data, 20) & SCENE_WIREFRAME != 0;
                 if self.stream.scene_target {
                     self.scene_target(word(data, 20) & SCENE_BACK_BUFFER != 0);
                 }

@@ -34,6 +34,8 @@ impl Player {
                 world_walk: false,
                 scene_target: false,
                 queue_flush: false,
+                scene_wireframe: false,
+                wireframe: false,
             },
             encoder: None,
             pass: None,

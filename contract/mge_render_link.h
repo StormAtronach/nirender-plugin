@@ -205,6 +205,9 @@
 // SetRenderTarget while a scene is open is refused, so `renderTarget` can name a texture
 // that is not the target.
 #define MGE_LINK_SCENE_BACK_BUFFER 0x00000008u
+// The game draws the world in wireframe: the shared wireframe property of `TES3Game` (+0xB0)
+// is on (the console command ToggleWireframe). A renderer draws its own parts in lines then.
+#define MGE_LINK_SCENE_WIREFRAME 0x00000010u
 
 // Flags of a texture description.
 // The game can change the pixels of the texture later.

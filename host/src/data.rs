@@ -49,14 +49,19 @@ pub(crate) const EVENT_QUEUE_FLUSHED: u32 = 5;
 /// Bits of the fourth word of the header: the draws of the engine's sorted queue are marked;
 /// the world's start comes as `EVENT_WORLD_WALK`; the scene records carry `SCENE_BACK_BUFFER`;
 /// the end of the flush of the main sorted queue comes as `EVENT_QUEUE_FLUSHED`; the table's
-/// blends that the engine draws in its walk have their places there (`tag::INSTANCE_WALK`).
+/// blends that the engine draws in its walk have their places there (`tag::INSTANCE_WALK`);
+/// the scene records carry `SCENE_WIREFRAME`.
 pub(crate) const HEADER_QUEUE_MARKED: u32 = 1;
 pub(crate) const HEADER_WORLD_WALK: u32 = 2;
 pub(crate) const HEADER_SCENE_TARGET: u32 = 4;
 pub(crate) const HEADER_QUEUE_FLUSH: u32 = 8;
 pub(crate) const HEADER_WALK_PLACES: u32 = 16;
+pub(crate) const HEADER_SCENE_WIREFRAME: u32 = 32;
 /// A flag of the scene record: the renderer's target at `BeginPaint` is the back buffer.
 pub(crate) const SCENE_BACK_BUFFER: u32 = 0x8;
+/// A flag of the scene record: the game draws the world in wireframe (its shared wireframe
+/// property, the console command ToggleWireframe).
+pub(crate) const SCENE_WIREFRAME: u32 = 0x10;
 
 /// The value of a state that the game did not set.
 pub(crate) const UNKNOWN: u32 = 0x7FFF_FFFF;

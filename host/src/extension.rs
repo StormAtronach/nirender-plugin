@@ -50,10 +50,10 @@ pub struct SceneView<'a> {
     pub projection: [f32; 16],
     /// The player is in an interior cell.
     pub interior: bool,
-    /// The fill mode of the device of the game is wireframe at this call: the draw of the
-    /// game that is current, or the last one, has the wireframe property (the console
-    /// command ToggleWireframe puts the shared wireframe property of the engine on every
-    /// mesh). An extension then draws lines too, as MGE XE on Direct3D 9 does.
+    /// The game draws the world in wireframe: its shared wireframe property is on (the console
+    /// command ToggleWireframe), as the plugin's scene record says. An extension then draws
+    /// lines too, as MGE XE on Direct3D 9 does. In an older capture without the flag, the
+    /// fill mode of the game's last draw.
     pub wireframe: bool,
     /// The fog of the game: its colour, and the distances of its start and its end.
     pub fog_color: [f32; 4],

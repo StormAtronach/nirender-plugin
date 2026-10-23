@@ -51,12 +51,15 @@ pub const HEADER_QUEUE_FLUSH: u32 = 8;
 /// A bit of the same word: a retained blend that the engine draws in its walk has its place
 /// there as `tag::INSTANCE_WALK`.
 pub const HEADER_WALK_PLACES: u32 = 16;
+/// A bit of the same word: the scene records carry `link::SCENE_WIREFRAME`.
+pub const HEADER_SCENE_WIREFRAME: u32 = 32;
 
 /// The abilities of the stream for the fourth word of the header.
 fn header_abilities() -> u32 {
     HEADER_QUEUE_MARKED
         | HEADER_SCENE_TARGET
         | HEADER_WALK_PLACES
+        | HEADER_SCENE_WIREFRAME
         | if crate::world_walk::installed() { HEADER_WORLD_WALK } else { 0 }
         | if crate::queue_flush::installed() { HEADER_QUEUE_FLUSH } else { 0 }
 }
