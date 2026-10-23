@@ -41,12 +41,32 @@ impl Player {
         let (values, texture) = self.parameters.as_ref().map_or(([[0.0f32; 4]; 32], None), |p| (p.values, p.texture.clone()));
         self.renderer.queue.write_buffer(&self.renderer.frame_uniform, 0, bytemuck::cast_slice(&values));
         let texture = texture.unwrap_or_else(|| self.renderer.white.clone());
-        let renderer = &mut self.renderer;
         let clock = ticks::Clock::now();
+        // The lights of the world (`MGE_XE_LIGHTS=world`): the table's lights shaded for the
+        // main view before the clusters, which bin them; `draw_retained_main` takes the shade.
+        let world_start = items.iter().find_map(|item| if let Item::WorldStart(facts) = item { Some(facts) } else { None });
+        self.table_shaded = None;
+        let world = match world_start.filter(|_| self.renderer.clusters.world) {
+            Some(facts) => {
+                let shaded = self.shade_table_main(facts);
+                self.renderer.upload_retained_lights(&shaded.0);
+                self.table_shaded = Some(shaded);
+                Some((self.retained.world_light_slots(), self.retained.set_to_scene(facts.origin), facts.origin))
+            }
+            None => None,
+        };
+        let renderer = &mut self.renderer;
         // The view and the projection of the scene: those of the start of the world, as the
         // lights of the extension have them.
-        let scene = items.iter().find_map(|item| if let Item::WorldStart(facts) = item { Some((facts.view, facts.projection)) } else { None });
-        renderer.clusters.build(&renderer.device, &renderer.queue, &self.frame_lights, scene, self.frame_size, &mut renderer.counts);
+        let scene = world_start.map(|facts| (facts.view, facts.projection));
+        match (world, self.table_shaded.as_ref()) {
+            (Some((slots, to_scene, camera)), Some((lights, _))) => {
+                renderer.clusters.build_world(&renderer.device, &renderer.queue, lights, &slots, scene, camera, to_scene, self.frame_size, &mut renderer.counts);
+            }
+            _ => {
+                renderer.clusters.build(&renderer.device, &renderer.queue, &self.frame_lights, scene, self.frame_size, &mut renderer.counts);
+            }
+        }
         renderer.counts.times[TIME_CLUSTERS] += clock.elapsed();
         renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters, &renderer.light_buffer, &renderer.bone_buffer, &renderer.record_buffer, &renderer.light_index_buffer, &renderer.scene_buffer, &renderer.retained_light_buffer, &renderer.retained_bone_buffer));
         for item in items {
@@ -226,6 +246,7 @@ impl Player {
         let parameters = extension.frame(&scene);
         let clusters = &mut self.renderer.clusters;
         clusters.on = clusters.forced.unwrap_or(parameters.clustered_lights);
+        clusters.world = switches().world_lights || parameters.world_lights;
         self.parameters = Some(parameters);
         self.takes = self.parameters.as_ref().map_or(0, |p| p.watched & (1 << scene::CLASS_WATER_PLANE));
         self.shadow_reach = self.parameters.as_ref().map_or(0.0, |p| p.shadow_reach);

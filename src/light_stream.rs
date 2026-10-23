@@ -32,6 +32,7 @@ fn versions<'a>(t: &'a MainThread) -> &'a mut Vec<Option<Sent>> {
 /// file, and for the frames of a file that held.
 pub unsafe fn reset(t: &MainThread) {
     versions(t).clear();
+    crate::world_lights::resend();
 }
 
 pub unsafe fn report(t: &MainThread) -> String {

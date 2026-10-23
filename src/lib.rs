@@ -46,6 +46,7 @@ pub mod census;
 pub mod d3d;
 pub mod freed_fill;
 pub mod worker_events;
+pub mod world_lights;
 pub mod device;
 #[cfg(feature = "rig")]
 pub mod dump;

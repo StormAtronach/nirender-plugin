@@ -102,6 +102,9 @@ struct Clusters {
     screen: vec4f,
     // The slice of a depth z is scale * log(z) + bias; z is at least the third value.
     depth: vec4f,
+    // The lights of the world (w of `grid` 3): the translation from the space of the retained
+    // set to the space of a draw of the stream.
+    offset: vec4f,
 }
 @group(0) @binding(3) var<uniform> clusters: Clusters;
 @group(0) @binding(4) var<storage, read> cluster_table: array<vec2u>;
@@ -137,6 +140,8 @@ struct Scene {
     // The factor the extension's shade applies to an ambient light: a retained draw's own
     // ambient (its instance's lights record) times this is the scaled value.
     ambient_scale: vec4f,
+    // x: 1 when the view takes the point lights of the world (`world_lights_here`).
+    world_lights: vec4u,
 }
 @group(0) @binding(10) var<uniform> scene: Scene;
 @group(0) @binding(11) var<storage, read> lights_retained: array<Light>;
@@ -215,9 +220,37 @@ fn cluster_lights(pixel: vec2f, view_z: f32) -> vec2u {
     if clusters.grid.w == 0u || (draws[record].light_range.w & 1u) == 0u {
         return vec2u(0u, 0u);
     }
+    return cluster_at(pixel, view_z);
+}
+fn cluster_at(pixel: vec2f, view_z: f32) -> vec2u {
     let tile = vec2u(clamp(vec2i(pixel * clusters.screen.xy), vec2i(0), vec2i(clusters.grid.xy) - 1));
     let slice = u32(clamp(log(max(view_z, clusters.depth.z)) * clusters.depth.x + clusters.depth.y, 0.0, f32(clusters.grid.z) - 1.0));
     return cluster_table[(slice * clusters.grid.y + tile.y) * clusters.grid.x + tile.x];
+}
+
+// The lights of the world (`MGE_XE_LIGHTS=world`, `clusters.grid.w` 3): a lit draw of the world
+// (bit 32 of `light_range.w`) takes the point lights of the world in the cluster of its pixel
+// in place of its own point lights. A retained draw takes them only in a view whose scene says
+// so (the main view): a reflection or a shadow map keeps the lights of the draw.
+fn world_lights_here() -> bool {
+    let bits = draws[record].light_range.w;
+    if clusters.grid.w != 3u || (bits & 32u) == 0u {
+        return false;
+    }
+    return (bits & 8u) == 0u || scene.world_lights.x != 0u;
+}
+// The entries of the cluster of a pixel among the lights of the world.
+fn world_cluster(pixel: vec2f, view_z: f32) -> vec2u {
+    return cluster_at(pixel, view_z);
+}
+// A light of the world, an entry of `cluster_indexes`, in the space of the draw: the positions
+// are those of the retained set; a draw of the stream is relative to the camera.
+fn world_light(at: u32) -> Light {
+    var light = lights_retained[cluster_indexes[at]];
+    if (draws[record].light_range.w & 8u) == 0u {
+        light.position = vec4f(light.position.xyz + clusters.offset.xyz, light.position.w);
+    }
+    return light;
 }
 
 // The records of the draws of the frame, and the index of the record of this draw: each

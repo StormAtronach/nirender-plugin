@@ -143,12 +143,13 @@ unsafe fn on_texture_data_dtor(_args: &[usize]) {
 /// `NiDX8LightManager::RemoveLight(this, light)`: the light's destructor calls it, so the
 /// light is alive here.
 unsafe fn on_remove_light(args: &[usize]) {
+    let Some(&light) = args.get(1) else { return };
+    // On any thread: the set of the lights of the world never keeps a destroyed light.
+    crate::world_lights::forget_destroyed(light);
     if crate::shadow::on_main_thread() {
         return;
     }
-    if let Some(&light) = args.get(1) {
-        push(Event::LightGone(rd(light, crate::gen::layouts::NiLight::index)));
-    }
+    push(Event::LightGone(rd(light, crate::gen::layouts::NiLight::index)));
 }
 
 /// The hooks and the names of their ports.

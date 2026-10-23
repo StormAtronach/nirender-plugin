@@ -271,7 +271,7 @@ impl Player {
         // The lights of a draw have keys: they are candidates for the clusters of the frame,
         // for the extension (`FrameLights`), and the draw that the extension shades can take
         // its light from them.
-        let masked = shaded && renderer.clusters.on;
+        let masked = shaded && renderer.clusters.on && !renderer.clusters.world;
         let extension_lights = self.parameters.as_ref().is_some_and(|p| p.lights) && world;
         let first = draw_data.light_range[0] as usize;
         let relative = shape.relative && self.stream.origin.is_some();
@@ -289,6 +289,11 @@ impl Player {
         }
         if masked {
             draw_data.light_range[3] |= 1;
+        }
+        // The lights of the world (`MGE_XE_LIGHTS=world`): a lit draw of the world, relative to
+        // the camera, takes the point lights of its pixel's cluster in place of its own.
+        if shaded && world && relative && renderer.clusters.world && !derived.no_lights {
+            draw_data.light_range[3] |= crate::WORLD_LIGHTS_BIT;
         }
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
         let clock = ticks::Clock::now();

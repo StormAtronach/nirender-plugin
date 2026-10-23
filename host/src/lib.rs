@@ -217,6 +217,11 @@ struct Retained {
     bound: [f32; 4],
 }
 
+/// Bit 32 of `light_range[3]`: the draw may take the point lights of the world in the
+/// cluster of its pixel (`MGE_XE_LIGHTS=world`, `world_lights_here` in the shader). A lit
+/// draw of the world of the stream and a retained slot with lights have it.
+pub(crate) const WORLD_LIGHTS_BIT: u32 = 32;
+
 /// Bit 16 of `light_range[3]` for a material with flat shading (NiShadeProperty off): the
 /// shader takes the lit colour and the normal of the first vertex of each triangle, as
 /// Direct3D 8 does. The plugin sends the shade of a shape only with
@@ -616,6 +621,10 @@ struct Player {
     /// light and the fog of the frame for their draws (`RETAINED_SCENE`).
     retained: RetainedSet,
     retained_values: Option<(u32, Option<[u32; 4]>)>,
+    /// The table's lights as the extension shaded them for the main view of this frame, and
+    /// what the shade gives the scene: made before the clusters of the lights of the world
+    /// (`MGE_XE_LIGHTS=world`), then taken by `draw_retained_main`.
+    table_shaded: Option<(Vec<LightData>, Option<TableShade>)>,
     /// The frame in progress: its commands, its pass, and its two targets.
     encoder: Option<wgpu::CommandEncoder>,
     pass: Option<wgpu::RenderPass<'static>>,

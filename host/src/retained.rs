@@ -67,7 +67,10 @@ pub struct SceneData {
     /// so each retained draw's own ambient (`DrawData::scene_ambient`, from the instance's
     /// lights record) is scaled as the scene's is.
     pub ambient_scale: [f32; 4],
-    pub padding: [u32; 52],
+    /// x: 1 when the view takes the point lights of the world from the clusters (the main
+    /// view, `MGE_XE_LIGHTS=world`); a reflection or a shadow map keeps the lights of the draw.
+    pub world_lights: [u32; 4],
+    pub padding: [u32; 48],
 }
 const _: () = assert!(core::mem::size_of::<SceneData>() == SCENE_SIZE);
 
@@ -203,6 +206,9 @@ pub struct RetainedSet {
     light_indexes_dirty: bool,
     /// The keys of the lights of each instance, for the runs after a compaction.
     keys_of: HashMap<u32, Vec<u32>>,
+    /// The lights of the world that are on (`WORLD_LIGHTS`): their keys. Each has a slot in
+    /// `light_values`, which is the light buffer of the world mode.
+    world_keys: Vec<u32>,
     /// The ambient light of each instance's own effect state (the lights record), the
     /// `D3DRS_AMBIENT` of its draws: the shader multiplies it by the scene's `ambient_scale`.
     /// An instance without one takes the scene's ambient at its insert.
@@ -286,6 +292,7 @@ impl RetainedSet {
             light_indexes_live: 0,
             light_indexes_dirty: false,
             keys_of: HashMap::new(),
+            world_keys: Vec::new(),
             ambient_of: HashMap::new(),
             dirty: Vec::new(),
             moved: Vec::new(),
@@ -559,6 +566,34 @@ impl RetainedSet {
             self.light_values[slot as usize] = light_data(values, origin);
             self.light_dirty.push(slot);
         }
+    }
+
+    /// The lights of the world that are on: a slot for each key that has values.
+    pub fn set_world_lights(&mut self, keys: &[u32], known: &HashMap<u32, [u8; 104]>) {
+        self.world_keys.clear();
+        for &key in keys {
+            if self.light_slot(key, known).is_some() {
+                self.world_keys.push(key);
+            }
+        }
+    }
+
+    /// The slots of the point lights of the world in `light_values` (a directional light
+    /// stays with the draws that have it).
+    pub fn world_light_slots(&self) -> Vec<u32> {
+        self.world_keys
+            .iter()
+            .filter_map(|key| self.light_slot_of.get(key).copied())
+            .filter(|&slot| self.light_values.get(slot as usize).is_some_and(|l| l.position[3] != 3.0))
+            .collect()
+    }
+
+    /// The translation from the space of the set (the positions of `light_values`) to the
+    /// space relative to `camera`, or to the world without a camera.
+    pub fn set_to_scene(&self, camera: Option<[f64; 3]>) -> [f64; 3] {
+        let o = self.light_origin().unwrap_or([0.0; 3]);
+        let c = camera.unwrap_or([0.0; 3]);
+        [o[0] - c[0], o[1] - c[1], o[2] - c[2]]
     }
 
     /// The light of the game with this key is destroyed. Its slot gives no light until a new
@@ -1459,7 +1494,8 @@ impl Player {
             }
             // The kind of the pass for the shade bits of the scene.
             let kind = slot_kind(p.blend, derived.depth[1] != 0);
-            data.light_range = [0, 0, kind, RETAINED_RECORD_BITS | crate::flat_shading_bit(&derived)];
+            let world_lights = if derived.no_lights { 0 } else { crate::WORLD_LIGHTS_BIT };
+            data.light_range = [0, 0, kind, RETAINED_RECORD_BITS | crate::flat_shading_bit(&derived) | world_lights];
             data.counts[0] = 0;
             // The slot's fog: on or off (z), and by the distance (w) for a RANGE_SQ material.
             // A shape with a fog property of its own keeps its colour and range (z 2).
@@ -1576,7 +1612,8 @@ impl Player {
                 [o[0] as f32, o[1] as f32, o[2] as f32, 0.0]
             },
             ambient_scale: [1.0; 4],
-            padding: [0; 52],
+            world_lights: [0; 4],
+            padding: [0; 48],
         };
         // The fog of the extension for the world, as a draw of the world gets it: this is the
         // world camera's main view.
@@ -1648,6 +1685,21 @@ impl Player {
         out
     }
 
+    /// The table's lights as the extension shades them for the main view of the frame
+    /// (`Extension::shade_table`), and the values the shade gives the scene; the lights
+    /// unshaded when the extension does not shade.
+    pub(super) fn shade_table_main(&mut self, facts: &WorldFacts) -> (Vec<LightData>, Option<TableShade>) {
+        let mut lights = self.retained.light_values.clone();
+        let mut shade = None;
+        if self.parameters.as_ref().is_some_and(|p| p.shade) {
+            if let Some(extension) = self.extension.as_mut() {
+                // The kinds of a slot (`slot_kind`) are those of `TABLE_KINDS`.
+                shade = Some(extension.shade_table(&facts.view, &mut lights, &TABLE_KINDS));
+            }
+        }
+        (lights, shade)
+    }
+
     /// Draws the retained instances in the world of the frame: after the extension drew
     /// before the world, before the draws of the game. The extension shades the lights of
     /// the instances and the values of the scene as it shades a draw of the world that
@@ -1660,11 +1712,18 @@ impl Player {
             return;
         }
         let mut scene = self.retained_scene_main(facts);
-        let mut lights = self.retained.light_values.clone();
-        if self.parameters.as_ref().is_some_and(|p| p.shade) {
-            if let Some(extension) = self.extension.as_mut() {
-                // The kinds of a slot (`slot_kind`) are those of `TABLE_KINDS`.
-                let shade = extension.shade_table(&facts.view, &mut lights, &TABLE_KINDS);
+        let (lights, shade) = match self.table_shaded.take() {
+            Some(shaded) => shaded,
+            None => {
+                let shaded = self.shade_table_main(facts);
+                self.renderer.upload_retained_lights(&shaded.0);
+                shaded
+            }
+        };
+        // The view takes the point lights of the world when the frame binned them.
+        scene.world_lights[0] = (self.renderer.clusters.world && self.renderer.clusters.world_built) as u32;
+        {
+            if let Some(shade) = shade {
                 let s = shade.ambient_scale;
                 scene.scene_ambient = [scene.scene_ambient[0] * s[0], scene.scene_ambient[1] * s[1], scene.scene_ambient[2] * s[2], scene.scene_ambient[3]];
                 // Each retained draw's own ambient is multiplied by the factor in the shader.
@@ -1685,7 +1744,6 @@ impl Player {
         if crate::dump_wanted() != 0 {
             self.retained.dump_lights(crate::dump_wanted(), &lights);
         }
-        self.renderer.upload_retained_lights(&lights);
         self.renderer.scene_main = scene;
         self.renderer.write_scene(0, &scene);
         if crate::dump_wanted() != 0 {

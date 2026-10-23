@@ -268,6 +268,21 @@ pub unsafe fn light_entry_update(entry: usize, light: usize) -> u8 {
         return 0;
     }
     wr(entry, E::revisionId, revision);
+    write_d3d_light(entry, light);
+    eng::critical_section_unlock(ENTRY_CRITICAL_SECTION);
+    1
+}
+
+/// The `D3DLIGHT8` of a light as the light manager gives it to the device: the 26 words.
+/// For a light of the world that no draw has (`world_lights`).
+pub unsafe fn d3d_light_of(light: usize) -> [u32; 26] {
+    let mut entry = [0u32; E::SIZE / 4];
+    write_d3d_light(entry.as_mut_ptr() as usize, light);
+    rd(entry.as_ptr() as usize, E::d3dLight)
+}
+
+/// The `D3DLIGHT8` part of an entry, from the light.
+unsafe fn write_d3d_light(entry: usize, light: usize) {
     core::ptr::write_bytes(entry as *mut u8, 0, E::revisionId);
 
     let copy3 = |to: usize, from: usize| {
@@ -319,8 +334,6 @@ pub unsafe fn light_entry_update(entry: usize, light: usize) -> u8 {
     wr::<u32>(entry, E::d3dLight_Ambient, ambient_r);
     wr::<u32>(entry, E::d3dLight_Specular + 8, specular_b);
     wr::<u32>(entry, E::d3dLight_Ambient + 4, ambient_g);
-    eng::critical_section_unlock(ENTRY_CRITICAL_SECTION);
-    1
 }
 
 /// 0x6BAEC0 `NiDX8LightManager::resetRenderStates`

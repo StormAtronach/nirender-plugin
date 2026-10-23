@@ -176,6 +176,11 @@ impl Player {
                 self.renderer.counts.lights_gone += 1;
                 self.retained.light_gone(word(data, 0));
             }
+            tag::WORLD_LIGHTS if data.len() >= 4 => {
+                let count = (word(data, 0) as usize).min((data.len() - 4) / 4);
+                let keys: Vec<u32> = (0..count).map(|i| word(data, 4 + i * 4)).collect();
+                self.retained.set_world_lights(&keys, &self.renderer.lights_known);
+            }
             tag::FRAME_END => {
                 self.renderer.counts.frames += 1;
                 return true;

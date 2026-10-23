@@ -22,6 +22,9 @@ pub const NATIVE_EVENT_CAMERA_TRANSFORMS_UPDATED: u32 = 1;
 pub const NATIVE_EVENT_UI_CONFIGURED: u32 = 2;
 pub const NATIVE_EVENT_GAME_IDS_RESOLVED: u32 = 3;
 pub const NATIVE_EVENT_ACCUMULATOR_FINISHED: u32 = 4;
+pub const NATIVE_EVENT_PLAYER_CELL_CHANGED: u32 = 5;
+pub const NATIVE_EVENT_LIGHT_PLACED: u32 = 6;
+pub const NATIVE_EVENT_LIGHT_REMOVED: u32 = 7;
 pub const NATIVE_OVERRIDE_DYNAMIC_LIGHT_TEST: u32 = 1;
 pub const NATIVE_OVERRIDE_CAMERA_ROOT_CULL_SHOW: u32 = 2;
 pub const NATIVE_OVERRIDE_MAP_TILE_READ: u32 = 3;
@@ -58,6 +61,21 @@ pub struct AccumulatorFinishedV1 {
     pub struct_size: u32,
     pub accumulator: u32,
     pub camera: u32,
+}
+
+#[repr(C)]
+pub struct LightPlacedV1 {
+    pub struct_size: u32,
+    pub light: u32,
+    pub cell: u32,
+    pub radius: i32,
+    pub flags: i32,
+}
+
+#[repr(C)]
+pub struct LightRemovedV1 {
+    pub struct_size: u32,
+    pub light: u32,
 }
 
 #[repr(C)]

@@ -211,6 +211,10 @@ pub mod tag {
     /// key. The engine gives the key to the next light it makes. Sent only for a light that
     /// went as a `LIGHT` record. See `light_stream::forget`.
     pub const LIGHT_GONE: u32 = 33;
+    /// The lights of the world that are on (`world_lights`): the number, then their keys. Sent
+    /// at the start of a world scene when the set changed. The values of each light go as
+    /// `LIGHT` records before it.
+    pub const WORLD_LIGHTS: u32 = 34;
 }
 
 // ---- the ring in shared memory
@@ -1043,6 +1047,7 @@ pub unsafe fn stop() {
         crate::log!("{}", crate::geometry_stream::report(t));
         crate::log!("{}", crate::material_stream::report(t));
         crate::log!("{}", crate::light_stream::report(t));
+        crate::log!("{}", crate::world_lights::report());
         crate::log!("{}", crate::shape_stream::report(t));
         crate::log!("{}", crate::instance_stream::report(t));
     }
@@ -1422,6 +1427,12 @@ pub unsafe fn light(key: u32, values: &[u32; 26], radius: f32) {
 pub unsafe fn light_gone(key: u32) {
     let _lock = crate::sync::device_lock();
     write(tag::LIGHT_GONE, &[words(&[key])]);
+}
+
+/// The keys of the lights of the world. See `tag::WORLD_LIGHTS`.
+pub unsafe fn world_lights(keys: &[u32]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::WORLD_LIGHTS, &[words(&[keys.len() as u32]), words(keys)]);
 }
 
 /// A material record. See `tag::MATERIAL`.

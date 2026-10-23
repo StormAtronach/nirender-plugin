@@ -169,6 +169,10 @@ pub struct FrameParameters {
     /// of the draw: the same picture as the lights of the draw. `MGE_XE_CLUSTERS` (0 or 1)
     /// overrides it.
     pub clustered_lights: bool,
+    /// True when a lit draw of the world takes the point lights of the world that reach its
+    /// pixel (`world_lights_here` in the shader), not the lights the engine chose for it.
+    /// `MGE_XE_LIGHTS=world` makes it true.
+    pub world_lights: bool,
     /// The reach of the extension's shadow map in units of the world, 0 without shadows:
     /// the plugin animates what the map reaches, so that a shadow moves while its caster
     /// is out of view.
@@ -181,9 +185,10 @@ pub struct FrameParameters {
 /// of the picture by slices of the view depth of the game.
 ///
 /// - `lights`: an array of `LightData` (storage). A position is relative to `origin`.
-/// - `clusters` (uniform, 48 bytes): `grid: vec4u` (tiles across, tiles down, slices; w 2),
+/// - `clusters` (uniform, 64 bytes): `grid: vec4u` (tiles across, tiles down, slices; w 2),
 ///   `screen: vec4f` (x and y: tiles for each pixel), `depth: vec4f` (the slice of a view
-///   depth z is `log(max(z, depth.z)) * depth.x + depth.y`, clamped to the slices).
+///   depth z is `log(max(z, depth.z)) * depth.x + depth.y`, clamped to the slices), then 16
+///   bytes the extension's clusters do not use.
 /// - `table` (storage, `array<vec2u>`): for the cluster `(slice * grid.y + y) * grid.x + x`,
 ///   the first entry in `indexes` and the number of entries.
 /// - `indexes` (storage, `array<u32>`): the index of a light in `lights`.

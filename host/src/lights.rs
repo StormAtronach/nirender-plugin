@@ -15,15 +15,21 @@ pub(crate) const CLUSTER_GRID: [u32; 3] = [16, 9, 24];
 pub(crate) const CLUSTER_LIGHTS: usize = 64;
 
 /// The values of the clusters for the shader: the grid (w: 1 for the clusters of the draws, 2
-/// for those of the extension, 0 when they are off), the tiles for each pixel across and
-/// down, then the scale, the bias and the least depth of the slice of a depth.
+/// for those of the extension, 3 for the lights of the world, 0 when they are off), the tiles
+/// for each pixel across and down, the scale, the bias and the least depth of the slice of a
+/// depth, and for the lights of the world the translation from the space of the table's
+/// lights to the space of the stream's draws relative to the camera.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct ClusterData {
     pub(crate) grid: [u32; 4],
     pub(crate) screen: [f32; 4],
     pub(crate) depth: [f32; 4],
+    pub(crate) offset: [f32; 4],
 }
+
+/// `ClusterData::grid` w of the clusters of the lights of the world.
+pub(crate) const GRID_WORLD_LIGHTS: u32 = 3;
 
 /// Bins lights into the grid of the clusters of a projection of Direct3D. Each item is the
 /// entry of a light, its centre in the space of the view (`None` for a directional light,
@@ -85,6 +91,7 @@ pub(crate) fn bin_lights(lists: &mut [Vec<u32>], items: impl Iterator<Item = (u3
         grid: [CLUSTER_GRID[0], CLUSTER_GRID[1], CLUSTER_GRID[2], w],
         screen: [gx as f32 / size.0.max(1) as f32, gy as f32 / size.1.max(1) as f32, 0.0, 0.0],
         depth: [depth_scale, -near.ln() * depth_scale, near, 0.0],
+        offset: [0.0; 4],
     };
     (table, indexes, data)
 }
@@ -102,6 +109,11 @@ pub(crate) struct Clusters {
     pub(crate) on: bool,
     /// `MGE_XE_CLUSTERS` (0 or 1): it overrides `FrameParameters::clustered_lights`.
     pub(crate) forced: Option<bool>,
+    /// `MGE_XE_LIGHTS=world`: the clusters hold the point lights of the world
+    /// (`build_world`) and a draw takes them without a mask.
+    pub(crate) world: bool,
+    /// The clusters of this frame hold the lights of the world.
+    pub(crate) world_built: bool,
     pub(crate) uniform: wgpu::Buffer,
     pub(crate) table: wgpu::Buffer,
     pub(crate) indexes: wgpu::Buffer,
@@ -134,6 +146,8 @@ impl Clusters {
             // default: the binning costs CPU time.
             on: forced.unwrap_or(false),
             forced,
+            world: crate::switches().world_lights,
+            world_built: false,
             uniform: device.create_buffer(&wgpu::BufferDescriptor { label: Some("clusters"), size: core::mem::size_of::<ClusterData>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
             table: storage_buffer(device, "cluster table", cells, 8),
             indexes: storage_buffer(device, "cluster lights", index_capacity, 4),
@@ -165,6 +179,7 @@ impl Clusters {
     /// writes the buffers. `size` is the size of the picture. Returns false when the
     /// clusters are off for the frame (no start of the world).
     pub(crate) fn build(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lights: &[LightData], view: Option<([f32; 16], [f32; 16])>, size: (u32, u32), counts: &mut Counts) -> bool {
+        self.world_built = false;
         let overflow = core::mem::replace(&mut self.overflow, false);
         if overflow {
             counts.cluster_frames_many += 1;
@@ -204,17 +219,56 @@ impl Clusters {
         });
         let (table, indexes, data) = bin_lights(&mut self.lists, items, &projection, size, 1);
         self.unique.clear();
+        self.write(device, queue, &table, &indexes, &data, counts);
+        true
+    }
+
+    /// Bins the point lights of the world (`MGE_XE_LIGHTS=world`) for the view and the
+    /// projection of the scene. `lights` is the table's light buffer as the extension shaded
+    /// it for the main view, `slots` the slots of the lights of the world in it. `camera` is
+    /// the origin of the scene when its draws are relative to the camera; `to_scene` the
+    /// translation from the space of `lights` to that space. An entry is a slot: the shader
+    /// reads `lights_retained` and moves a light of a draw of the stream by `to_scene`.
+    /// Returns false when the frame has no start of the world.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_world(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lights: &[LightData], slots: &[u32], view: Option<([f32; 16], [f32; 16])>, camera: Option<[f64; 3]>, to_scene: [f64; 3], size: (u32, u32), counts: &mut Counts) -> bool {
+        self.unique.clear();
+        self.overflow = false;
+        self.world_built = false;
+        let Some((mut view, projection)) = view else {
+            queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&ClusterData::zeroed()));
+            return false;
+        };
+        self.world_built = true;
+        if camera.is_some() {
+            view[12] = 0.0;
+            view[13] = 0.0;
+            view[14] = 0.0;
+        }
+        counts.cluster_lights += slots.len() as u64;
+        let items = slots.iter().filter_map(|&slot| {
+            let light = lights.get(slot as usize)?;
+            let p = light.position;
+            let centre = [(p[0] as f64 + to_scene[0]) as f32, (p[1] as f64 + to_scene[1]) as f32, (p[2] as f64 + to_scene[2]) as f32, p[3]];
+            Some((slot, Some(view_point(&view, centre)), crate::extension::cluster_reach(light)))
+        });
+        let (table, indexes, mut data) = bin_lights(&mut self.lists, items, &projection, size, GRID_WORLD_LIGHTS);
+        data.offset = [to_scene[0] as f32, to_scene[1] as f32, to_scene[2] as f32, 0.0];
+        self.write(device, queue, &table, &indexes, &data, counts);
+        true
+    }
+
+    fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, table: &[[u32; 2]], indexes: &[u32], data: &ClusterData, counts: &mut Counts) {
         if indexes.len() > self.index_capacity {
             self.index_capacity = indexes.len().next_power_of_two();
             self.indexes = storage_buffer(device, "cluster lights", self.index_capacity, 4);
         }
         counts.cluster_entries += indexes.len() as u64;
-        queue.write_buffer(&self.table, 0, bytemuck::cast_slice(&table));
+        queue.write_buffer(&self.table, 0, bytemuck::cast_slice(table));
         if !indexes.is_empty() {
-            queue.write_buffer(&self.indexes, 0, bytemuck::cast_slice(&indexes));
+            queue.write_buffer(&self.indexes, 0, bytemuck::cast_slice(indexes));
         }
-        queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&data));
-        true
+        queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(data));
     }
 }
 

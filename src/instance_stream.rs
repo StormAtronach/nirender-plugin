@@ -401,6 +401,10 @@ pub unsafe fn scene_begin(mt: &MainThread, kind: u32, camera: usize) {
     if kind == SCENE_WORLD && camera != 0 {
         crate::animation::note_camera(mt, camera);
     }
+    // The lights of the world go before the draws of the world.
+    if kind == SCENE_WORLD {
+        crate::world_lights::send(mt);
+    }
 }
 
 /// A scene of the game ends. At the end of the world scene in mode gpu: an instance the

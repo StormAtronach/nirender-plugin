@@ -127,7 +127,7 @@ impl Replay for Replayer<'_> {
             let mut data = kept.data;
             let origin = kept.origin.unwrap_or([0.0; 3]);
             // The clusters are those of the view of the world: not for another view.
-            data.light_range[3] &= !1;
+            data.light_range[3] &= !(1 | crate::WORLD_LIGHTS_BIT);
             if let Some(matrix) = view.view {
                 data.view = matrix;
             }

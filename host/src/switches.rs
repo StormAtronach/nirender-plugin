@@ -13,6 +13,10 @@ pub(crate) struct Switches {
     pub(crate) cores_to_scheduler: bool,
     /// `MGE_XE_CLUSTERS=1` or `0`: the clusters of the lights on or off, over the setting.
     pub(crate) clusters: Option<bool>,
+    /// `MGE_XE_LIGHTS=world`: a lit draw of the world takes the point lights of the world
+    /// that reach its pixel (the clusters of `WORLD_LIGHTS`), not the lights the engine chose
+    /// for it. `engine` (the default until the A/B reaches parity): the lights the engine chose.
+    pub(crate) world_lights: bool,
     /// `MGE_XE_DRAW_DUMP=<geometry handle, hex>`: the words of each draw of that geometry.
     pub(crate) draw_dump: u32,
     /// `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
@@ -50,6 +54,7 @@ impl Switches {
                 Some("0") => Some(false),
                 _ => None,
             },
+            world_lights: is("MGE_XE_LIGHTS", "world"),
             draw_dump: var("MGE_XE_DRAW_DUMP").and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0),
             gpu_time: is("MGE_XE_GPU_TIME", "1"),
             runs_dump: is("MGE_XE_RUNS_DUMP", "1"),
