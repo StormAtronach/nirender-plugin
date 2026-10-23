@@ -23,6 +23,7 @@ impl Player {
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
                 self.retained.walk.on = abilities & HEADER_WALK_PLACES != 0;
                 self.stream.scene_wireframe = abilities & HEADER_SCENE_WIREFRAME != 0;
+                self.stream.envmap_lit = (abilities & HEADER_ENVMAP_KNOWN != 0).then_some(abilities & HEADER_ENVMAP_LIT != 0);
             }
             tag::TEXTURE => self.renderer.texture(data),
             tag::TEXTURE_UPDATE => self.renderer.texture_update(data),
@@ -580,7 +581,7 @@ impl Player {
         let derived = match self.renderer.derived.get(&(material, sets)) {
             Some(d) => d.clone(),
             None => {
-                let d = Rc::new(material::derive(&m, sets));
+                let d = Rc::new(material::derive(&m, sets, self.stream.envmap_lit));
                 self.renderer.derived.insert((material, sets), d.clone());
                 d
             }

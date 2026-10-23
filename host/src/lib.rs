@@ -820,7 +820,7 @@ mod tests {
             words[12 + map * 5] = 1;
         }
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        let d = derive(&Material::parse(&bytes).unwrap(), 1);
+        let d = derive(&Material::parse(&bytes).unwrap(), 1, None);
         assert_eq!(d.passes.len(), 2);
         assert_eq!(d.alpha_tests, vec![[1, 5, 128], [0, 0, 0]]);
         assert_eq!(d.blends[1], [1, 5, 6]);

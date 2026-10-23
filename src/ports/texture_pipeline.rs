@@ -213,6 +213,28 @@ unsafe fn texcoord_index_call_target() -> usize {
     0x65EDE0
 }
 
+/// The code of the Morrowind Code Patch's `patchEnvmapCombiner` before its jump back to
+/// `setTextureStageStateWithSave` (0x736F80 to 0x736FCE in the database). For a stage whose
+/// coordinate index is the camera-space reflection vector of set 0 (an environment map) it
+/// turns SELECTARG1(texture) into MODULATE(texture, diffuse), and ADD(texture, current) into
+/// MULTIPLYADD(current + texture * diffuse) with COLORARG0 = CURRENT.
+const ENVMAP_LIT_HOOK: [u8; 78] = [
+    0x81, 0xFA, 0x00, 0x00, 0x03, 0x00, 0x75, 0x46, 0x83, 0x7E, 0x10, 0x02, 0x75, 0x10, 0xC7, 0x46, 0x10, 0x04, 0x00, 0x00,
+    0x00, 0xC7, 0x46, 0x18, 0x00, 0x00, 0x00, 0x00, 0xEB, 0x30, 0x83, 0x7E, 0x10, 0x07, 0x75, 0x2A, 0xC7, 0x46, 0x10, 0x19,
+    0x00, 0x00, 0x00, 0xC7, 0x46, 0x14, 0x02, 0x00, 0x00, 0x00, 0xC7, 0x46, 0x18, 0x00, 0x00, 0x00, 0x00, 0x8B, 0x47, 0x08,
+    0x6A, 0x01, 0x6A, 0x1A, 0xFF, 0x76, 0x08, 0x8B, 0x08, 0x50, 0xFF, 0x91, 0xFC, 0x00, 0x00, 0x00, 0x8B, 0xCD,
+];
+
+/// The game's environment map stages take the lit colour: the call at 0x6C1BA4 goes to the
+/// Code Patch's hook (`ENVMAP_LIT_HOOK`, wherever it lies). The ports call that target, so
+/// the stream has it; the helper derives the stages of the retained table with this fact
+/// (`capture::HEADER_ENVMAP_LIT`). Another target is a patch of unknown effect: the table
+/// keeps the engine's combiner, and the stream has the patch's.
+pub unsafe fn envmap_lit() -> bool {
+    let target = texcoord_index_call_target();
+    target != 0x65EDE0 && core::slice::from_raw_parts(target as *const u8, ENVMAP_LIT_HOOK.len()) == ENVMAP_LIT_HOOK
+}
+
 /// Makes the call at 0x6C1BA4 with the registers that the game code has there. ECX and EBP
 /// are the render state of the renderer. EDI is the render state that the function read at
 /// entry. ESI is the stage. EBX is the renderer. EDX is the value. EAX is the stage number.

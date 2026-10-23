@@ -57,6 +57,8 @@ pub(crate) const HEADER_SCENE_TARGET: u32 = 4;
 pub(crate) const HEADER_QUEUE_FLUSH: u32 = 8;
 pub(crate) const HEADER_WALK_PLACES: u32 = 16;
 pub(crate) const HEADER_SCENE_WIREFRAME: u32 = 32;
+pub(crate) const HEADER_ENVMAP_KNOWN: u32 = 64;
+pub(crate) const HEADER_ENVMAP_LIT: u32 = 128;
 /// A flag of the scene record: the renderer's target at `BeginPaint` is the back buffer.
 pub(crate) const SCENE_BACK_BUFFER: u32 = 0x8;
 /// A flag of the scene record: the game draws the world in wireframe (its shared wireframe

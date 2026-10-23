@@ -1336,7 +1336,7 @@ impl Player {
         let derived = match self.renderer.derived.get(&(r.material, sets)) {
             Some(d) => d.clone(),
             None => {
-                let d = Rc::new(material::derive(&m, sets));
+                let d = Rc::new(material::derive(&m, sets, self.stream.envmap_lit));
                 self.renderer.derived.insert((r.material, sets), d.clone());
                 d
             }

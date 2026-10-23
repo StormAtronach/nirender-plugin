@@ -2,10 +2,16 @@
 //! the draw from them, as the ports of the engine's pipeline make it, where a rule names its
 //! function. The helper draws a shape with the derived state (`Pass` in lib.rs).
 //!
-//! The rules come from the ports of `NiDX8TexturePass::setCTPipelineState`,
-//! `NiDX8ConfigurableTexturePipeline::initAlphaStateTemplates`, `NiDX8RenderState` and
-//! `NiDX8LightManager::setState` in the plugin. Rules with no engine function read [I]: the
-//! cull from the stencil draw mode, and the default sources (lib.rs).
+//! Each rule names the engine function it comes from (read in IDA, 2026-10-23, guess audit
+//! item 4): `NiDX8TexturePass::setCTPipelineState` 0x6B41B0 and `applyStageBlendOps`
+//! 0x6B56B0 (the passes and the stages), `NiDX8ConfigurableTexturePipeline::
+//! initAlphaStateTemplates` 0x6B90E0 (the stage tables and the pass templates),
+//! `NiDX8RenderState::ctor` 0x6B7D70 (the tables of the blend, test, stencil and cull values),
+//! `updateD3DState` 0x6B82A0, `setStencilStates` 0x6B8C10 and `updateFogStates` 0x6B8A00 (the
+//! render states), `NiDX8LightManager::setState` 0x6BB200 (the lighting and the material
+//! sources). One rule is not the engine's: the environment map's combiner of the Morrowind
+//! Code Patch, which the plugin finds in the game (`derive`). One rule is [I]: the short
+//! path's test (`derive`).
 
 /// The words of a record. See `material_stream` of the plugin for the layout.
 pub const WORDS: usize = 91;
@@ -153,9 +159,13 @@ pub struct Stage {
 }
 
 /// The sampler states of a map: address U, address V, the magnify, minify and mip filters,
-/// as Direct3D has them. The clamp modes are clamp-clamp, clamp-wrap, wrap-clamp, wrap-wrap;
-/// the filters nearest, bilinear, trilinear, nearest with nearest mip, nearest with linear
-/// mip, bilinear with nearest mip.
+/// as Direct3D has them. The clamp modes are clamp-clamp, clamp-wrap, wrap-clamp, wrap-wrap
+/// (`setStageAddressingMode` 0x6B9E20 reads the pairs at 0x7DDBC8 that
+/// `initAlphaStateTemplates` writes); the filters nearest, bilinear, trilinear, nearest with
+/// nearest mip, nearest with linear mip, bilinear with nearest mip (`setTextureFiltering`
+/// 0x6C1FA0 reads the tables at 0x7DDB80 that `initFilteringAndAddressCaps` 0x6BA840 writes).
+/// For a texture without mip levels the engine takes the filters without a mip filter; a
+/// sampler of one level gives the same picture.
 pub fn sampler_states(clamp: u32, filter: u32) -> [u32; 5] {
     let (u, v) = match clamp {
         0 => (3, 3),
@@ -215,9 +225,11 @@ pub struct Derived {
 }
 
 // The first-stage table (pipeline + 0x108) and the later-stage table (+ 0x1F8) of the blend
-// slots, from `BLEND_TEMPLATES`: colour operation, argument 1, argument 2, alpha operation,
-// argument 1, argument 2. `SIGNED` is the bump operation of the device (BUMPENVMAPLUMINANCE
-// here, 0x17). Slots 3 and 5 of the first table are not written by the engine (zeros).
+// slots, as `initAlphaStateTemplates` 0x6B90E0 writes them and `applyStageBlendOps` 0x6B56B0
+// reads them: colour operation, argument 1, argument 2, alpha operation, argument 1, argument
+// 2. `SIGNED` is the bump operation of the device: BUMPENVMAPLUMINANCE (0x17) when the device
+// has it, else BUMPENVMAP (0x16), else 0; here 0x17. Slots 3, 5 and 7 of the first table are
+// not written by the engine (zeros).
 const SIGNED: u32 = 0x17;
 const FIRST: [[u32; 6]; 9] = [
     [2, 2, 0, 2, 2, 0],
@@ -243,8 +255,9 @@ const LATER: [[u32; 6]; 10] = [
     [4, 2, 1, 4, 2, 1],
 ];
 
-/// The blend of a pass whose first stage has the slot: from `adjustAlphaTemplate`. Slots 0
-/// and 8 add (ONE, ONE); 1 and 6 blend by the alpha (SRCALPHA, INVSRCALPHA); 2 and 4
+/// The blend of a pass whose first stage has the slot: the alpha template of the slot
+/// (pipeline + 0x2E8, the ten `NiAlphaProperty` of `initAlphaStateTemplates` 0x6B90E0).
+/// Slots 0 and 8 add (ONE, ONE); 1 and 6 blend by the alpha (SRCALPHA, INVSRCALPHA); 2 and 4
 /// multiply (ZERO, SRCCOLOR); the others do not blend.
 fn template_blend(slot: u32) -> [u32; 3] {
     match slot {
@@ -258,7 +271,7 @@ fn template_blend(slot: u32) -> [u32; 3] {
 /// The alpha test of a pass after the first, whose first stage has the slot: the pass takes
 /// the alpha state of its template (`NiDX8TexturePass::setBlendingState` gives the template
 /// to `updateAlphaStates` for each pass after the first), not that of the material. Only
-/// template 4 tests: "greater than" 128 (`adjustAlphaTemplate`).
+/// template 4 tests: "greater than" 128 (`initAlphaStateTemplates` 0x6B90E0).
 fn template_alpha_test(slot: u32) -> [u32; 3] {
     match slot {
         4 => [1, compare_function(4), 0x80],
@@ -267,25 +280,29 @@ fn template_alpha_test(slot: u32) -> [u32; 3] {
 }
 
 /// `NiAlphaProperty` blend modes to `D3DBLEND`, as `NiDX8RenderState::updateAlphaStates`
-/// reads them: the mode is a field of 4 bits that indexes the table of 11 blend values
+/// 0x6B8480 reads them: the mode is a field of 4 bits that indexes the table of 11 blend values
 /// without a bound, and the table of the alpha test functions follows it in the render
-/// state (`alphaMapping` at 0xE4, `alphaTestMapping` at 0x110). A mode of 11 to 15 thus
-/// gives an alpha test function as the blend value.
+/// state (`alphaMapping` at 0xE4, `alphaTestMapping` at 0x110; `NiDX8RenderState::ctor`
+/// 0x6B7D70 writes both). A mode of 11 to 15 thus gives an alpha test function as the blend
+/// value.
 pub fn blend_mode(value: u32) -> u32 {
     [2, 1, 3, 4, 9, 10, 5, 6, 7, 8, 11, 8, 2, 3, 4, 5][(value & 0xF) as usize]
 }
 
-/// The test functions of the properties to `D3DCMP`.
+/// The test functions of the alpha and z-buffer properties to `D3DCMP`: `alphaTestMapping`
+/// (0x110) and `zFuncMapping` (0x1D4) of `NiDX8RenderState::ctor` 0x6B7D70, the same values.
 pub fn compare_function(value: u32) -> u32 {
     [8, 2, 3, 4, 5, 6, 7, 1].get(value as usize).copied().unwrap_or(8)
 }
 
-/// `NiStencilProperty` actions to `D3DSTENCILOP`.
+/// `NiStencilProperty` actions to `D3DSTENCILOP`: `stencilActionMapping` (0x178) of
+/// `NiDX8RenderState::ctor` 0x6B7D70, which `setStencilStates` 0x6B8C10 reads.
 fn stencil_action(value: u32) -> u32 {
     [1, 2, 3, 4, 5, 6].get(value as usize).copied().unwrap_or(1)
 }
 
-/// The texture coordinate set of a map: its set when the geometry has it, else the last.
+/// The texture coordinate set of a map: its set when the geometry has it, else the last
+/// (`setCTPipelineState` 0x6B41B0, for each map but the base, which always takes set 0).
 fn coordinate_set(set: u32, sets: u32) -> u32 {
     let last = sets.saturating_sub(1);
     if set < sets {
@@ -295,9 +312,10 @@ fn coordinate_set(set: u32, sets: u32) -> u32 {
     }
 }
 
-/// The ops of a stage: the first-stage table for the first stage of a pass, else the
-/// later-stage table. `apply` is 1 when the apply mode is not "replace": a first stage with
-/// 0 takes the texture only. `has_texture` false gives the vertex colour only.
+/// The ops of a stage, as `applyStageBlendOps` 0x6B56B0 sets them: the first-stage table for
+/// the first stage of a pass, else the later-stage table. `apply` is 1 when the apply mode is
+/// not "replace": a first stage with 0 takes the texture only. `has_texture` false gives the
+/// vertex colour only.
 fn ops(slot: u32, first: bool, apply: bool, has_texture: bool) -> ([u32; 3], [u32; 3]) {
     if first {
         let t = FIRST.get(slot as usize).copied().unwrap_or([4, 2, 0, 4, 2, 0]);
@@ -315,20 +333,28 @@ fn ops(slot: u32, first: bool, apply: bool, has_texture: bool) -> ([u32; 3], [u3
 }
 
 /// Derives the state of a draw for a material with a geometry of `sets` texture sets.
-pub fn derive(m: &Material, sets: u32) -> Derived {
+/// `envmap_lit`: the game's environment map stages take the lit colour (the stream header's
+/// `HEADER_ENVMAP_LIT`); `None` for an older capture without the fact.
+pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
     let mut d = Derived { modelled: m.flags & (PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0, ..Default::default() };
     let apply = m.apply_mode != 0;
 
-    // The render states.
+    // The render states (`NiDX8RenderState::updateD3DState` 0x6B82A0): the depth write is
+    // flag 2 of the z-buffer property, its function ALWAYS without the test flag; the fill is
+    // WIREFRAME (2) with the wireframe flag, else SOLID (3); the shade GOURAUD (2) with the
+    // shade flag, else FLAT (1).
     d.alpha_test = if m.flags & ALPHA_TEST != 0 { [1, compare_function(m.alpha_function), m.alpha_reference] } else { [0, 0, 0] };
     d.depth = [1, (m.flags & DEPTH_WRITE != 0) as u32, if m.flags & DEPTH_TEST != 0 { compare_function(m.depth_function) } else { 8 }];
-    // The cull mode from the draw mode of the stencil property: both or CCW draw with the
-    // CW faces culled (2), CW with CCW culled (3), both sides none (1).
+    // The cull mode from the draw mode of the stencil property, with the stencil test on or
+    // off (`setStencilStates` 0x6B8C10: `cullModeMapping` at 0x190, indexed by twice the mode
+    // plus `bLeftRightSwap`, which the engine leaves 0): both or CCW draw with the CW faces
+    // culled (2), CW with CCW culled (3), both sides none (1).
     d.cull = [2, 2, 3, 1][(m.stencil[6] & 3) as usize];
     d.fill = if m.flags & WIREFRAME != 0 { 2 } else { 3 };
     d.shade = if m.flags & SMOOTH != 0 { 2 } else { 1 };
     // The test function of the stencil property counts from NEVER to ALWAYS, as `D3DCMP`
-    // does; the alpha and z-buffer properties count the other way.
+    // does (`stencilFuncMapping` at 0x158); the alpha and z-buffer properties count the
+    // other way.
     d.stencil = if m.flags & STENCIL != 0 {
         [1, (m.stencil[0] + 1).min(8), m.stencil[1], m.stencil[2], stencil_action(m.stencil[3]), stencil_action(m.stencil[4]), stencil_action(m.stencil[5])]
     } else {
@@ -342,7 +368,12 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
     d.own_fog = m.own_fog;
     // The colours come with each draw (the shape record): `d3d_material`.
 
-    // The lighting and the material sources (`NiDX8LightManager::setState`).
+    // The lighting and the material sources (`NiDX8LightManager::setState` 0x6BB200). A base
+    // texture with the apply mode "replace" turns the lighting off. The full lighting mode
+    // sets the three sources by the source mode. The emissive-only mode lights with the source
+    // modes "ignore" and "ambient and diffuse": it sets the emissive source to the material
+    // and leaves the diffuse and the ambient sources as the draw before left them (`None`);
+    // with "emissive" it turns the lighting off.
     let base = m.maps[BASE];
     if base.present && base.texture != 0 && m.apply_mode == 0 {
         d.lighting = false;
@@ -363,15 +394,22 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
         };
     }
 
-    // The stages. A pass has at most 8 stages.
+    // The stages. A pass has at most 8 stages. The base stage takes coordinate set 0,
+    // whatever set its map names (`setCTPipelineState` 0x6B41B0).
     let stage = |map: usize, slot: u32, first: bool| -> Stage {
         let mp = m.maps[map];
         let (color, alpha) = ops(slot, first, apply, mp.texture != 0);
-        Stage { texture: mp.texture, color, alpha, set: coordinate_set(mp.set, sets), source: map as u32, clamp: mp.clamp, filter: mp.filter }
+        let set = if map == BASE { 0 } else { coordinate_set(mp.set, sets) };
+        Stage { texture: mp.texture, color, alpha, set, source: map as u32, clamp: mp.clamp, filter: mp.filter }
     };
     let mut pass: Vec<Stage> = Vec::new();
     let mut pass_slot = 2u32;
     let has = |i: usize| m.maps[i].present && m.maps[i].texture != 0;
+    // [I] The engine takes the short path when the shape has no texture effect and no map
+    // after the base (`NiTexturingProperty::IsMultiTexture` 0x6E1D40 counts a map without a
+    // texture too). This test takes it also for the maps that give no stage here (a map
+    // without a texture; a gloss or bump map without an environment map), taken to give the
+    // same stages; the long path is not read for them.
     let multi = has(DARK) || has(DETAIL) || has(GLOW) || m.decals != 0 || (m.environment.present && (has(GLOSS) || has(BUMP)));
     let effects = m.environment.present || m.fog_map.present;
     if !multi && !effects {
@@ -429,13 +467,26 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
             pass.push(stage(BUMP, 8, pass.is_empty()));
         }
         // The stage of the environment map has blend slot 0 (it adds), and its generated
-        // texture coordinates have 0 in the low word of the index.
-        let (mut color, alpha) = ops(0, pass.is_empty(), true, true);
-        // Seen in the test level, not read in the code: with fog and a bump map, or with fog
-        // and no base texture, the stage multiplies the environment map by the diffuse
-        // colour and adds the current colour (MULTIPLYADD); else it adds the map.
-        if !pass.is_empty() && m.flags & FOG != 0 && (has(BUMP) || !has(BASE)) {
-            color = [25, 2, 0];
+        // texture coordinates have 0 in the low word of the index (the camera-space
+        // reflection vector of set 0). As a first stage it takes the texture alone
+        // (SELECTARG1: `configureStageFromTextureProp` 0x6B5A20 clears its apply flag);
+        // after another stage it adds the texture to the current colour (ADD).
+        let first = pass.is_empty();
+        let (mut color, alpha) = ops(0, first, true, true);
+        match envmap_lit {
+            // The Morrowind Code Patch's hook on the coordinate index (0x6C1BA4 to 0x736F80 in
+            // the patched game) scales the map by the lit colour: SELECTARG1 becomes
+            // MODULATE(texture, diffuse) and ADD becomes MULTIPLYADD(current + texture *
+            // diffuse); argument 0 is the current colour (`stream.rs`).
+            Some(true) => color = if first { [4, 2, 0] } else { [25, 2, 0] },
+            Some(false) => {}
+            // An older capture without the fact: the rule seen in the test level before the
+            // hook was read (fog with a bump map, or fog without a base texture).
+            None => {
+                if !first && m.flags & FOG != 0 && (has(BUMP) || !has(BASE)) {
+                    color = [25, 2, 0];
+                }
+            }
         }
         pass.push(Stage { texture: m.environment.texture, color, alpha, set: 0, source: 8, clamp: m.environment.clamp, filter: m.environment.filter });
         if has(GLOSS) {
@@ -479,7 +530,7 @@ pub fn derive(m: &Material, sets: u32) -> Derived {
 
 /// The `D3DMATERIAL8` of the colours of a material (ambient, diffuse, specular, emissive,
 /// shininess, alpha, as the records have them): diffuse, ambient, specular, emissive with the
-/// alpha, then the power.
+/// alpha, then the power (`NiDX8MaterialManager::Entry::Update` 0x6C2240).
 pub fn d3d_material(values: &[f32; 14]) -> [f32; 17] {
     let mut material = [0.0f32; 17];
     for (i, from) in [3usize, 0, 6, 9].into_iter().enumerate() {
@@ -512,7 +563,7 @@ mod fog_map_tests {
 
     #[test]
     fn the_fog_map_after_a_stage_blends_by_its_alpha() {
-        let d = derive(&material(true), 1);
+        let d = derive(&material(true), 1, None);
         let fog = d.passes[0].iter().find(|s| s.source == 9).unwrap();
         // Slot 1 of the later-stage table: BLENDTEXTUREALPHA (0xD) of the texture and the
         // current colour.
@@ -521,9 +572,57 @@ mod fog_map_tests {
 
     #[test]
     fn without_a_base_map_the_fog_map_follows_the_stage_with_no_texture() {
-        let d = derive(&material(false), 1);
+        let d = derive(&material(false), 1, None);
         assert_eq!(d.passes[0][0].source, 10);
         let fog = d.passes[0].iter().find(|s| s.source == 9).unwrap();
         assert_eq!(fog.color, [0xD, 2, 1]);
+    }
+}
+
+#[cfg(test)]
+mod engine_rule_tests {
+    use super::*;
+
+    /// A material record with a base map (texture 1, the coordinate set `base_set`) and an
+    /// environment map (texture 5); with `gloss` also a gloss map (texture 3), which puts the
+    /// environment map first in a pass of its own.
+    fn material(gloss: bool, base_set: u32) -> Material {
+        let mut words = [0u32; WORDS];
+        words[1] = ENVIRONMENT_MAP;
+        words[6] = 2;
+        words[8] = 1;
+        words[11] = base_set;
+        words[12] = 1;
+        if gloss {
+            words[8 + GLOSS * 5] = 3;
+            words[12 + GLOSS * 5] = 1;
+        }
+        words[81] = 5;
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        Material::parse(&bytes).unwrap()
+    }
+
+    fn environment_stage(d: &Derived) -> Stage {
+        *d.passes.iter().flatten().find(|s| s.source == 8).unwrap()
+    }
+
+    #[test]
+    fn the_code_patch_scales_an_environment_map_by_the_lit_colour() {
+        // After the base stage: ADD, or MULTIPLYADD with the Code Patch's hook.
+        assert_eq!(environment_stage(&derive(&material(false, 0), 1, Some(false))).color, [7, 2, 1]);
+        assert_eq!(environment_stage(&derive(&material(false, 0), 1, Some(true))).color, [25, 2, 0]);
+        // First in a pass of its own (with a gloss map): SELECTARG1 of the texture, or
+        // MODULATE by the diffuse colour.
+        assert_eq!(environment_stage(&derive(&material(true, 0), 1, Some(false))).color, [2, 2, 0]);
+        assert_eq!(environment_stage(&derive(&material(true, 0), 1, Some(true))).color, [4, 2, 0]);
+        // An older capture without the fact keeps the rule seen before (no fog here: ADD).
+        assert_eq!(environment_stage(&derive(&material(false, 0), 1, None)).color, [7, 2, 1]);
+    }
+
+    #[test]
+    fn the_base_stage_takes_coordinate_set_0() {
+        let d = derive(&material(false, 2), 3, Some(false));
+        assert_eq!(d.passes[0][0].source, BASE as u32);
+        assert_eq!(d.passes[0][0].set, 0);
     }
 }

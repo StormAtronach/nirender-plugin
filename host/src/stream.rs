@@ -84,6 +84,10 @@ pub(crate) struct Stream {
     /// The head of the stream says that the scene records carry `SCENE_WIREFRAME` (bit 32 of
     /// its fourth word). Without it (an older capture), the fill mode of the last draw says.
     pub(crate) scene_wireframe: bool,
+    /// The head of the stream says how the game combines an environment map (bit 64 of its
+    /// fourth word): with the lit colour (bit 128, the Morrowind Code Patch's hook) or not.
+    /// `None` for an older capture (`material::derive`).
+    pub(crate) envmap_lit: Option<bool>,
     /// The scene in progress has the flag `SCENE_WIREFRAME`.
     pub(crate) wireframe: bool,
 }

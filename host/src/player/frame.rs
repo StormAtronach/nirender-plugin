@@ -35,6 +35,7 @@ impl Player {
                 scene_target: false,
                 queue_flush: false,
                 scene_wireframe: false,
+                envmap_lit: None,
                 wireframe: false,
             },
             encoder: None,
