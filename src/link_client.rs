@@ -1291,12 +1291,20 @@ unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
     }
 }
 
-/// The radius of a point light: the engine keeps it in the light's specular colour
-/// (`game_dynamicLightTest` 0x4D3039 writes it, 0x4D3150 and `game_getLightRadiusFromSpecular`
-/// 0x4D1B80 read it back; MWSE's `PointLight::getRadius` too). A light that a mod made in
-/// Lua has the radius the mod set, 0 when it set none. The light manager's device values
-/// carry the specular colour times the dimmer: they are not the radius.
+/// The radius of a point light: the radius the engine passed to its attach pass when it placed
+/// the light (`light_stream::radius_of`, from MWSE's event). Else the light's specular colour,
+/// where `game_dynamicLightTest` (0x4D3039) writes the attach radius it was given (0x4D3150
+/// and `game_getLightRadiusFromSpecular` 0x4D1B80 read it back): without a module that owns the
+/// light attach radius it is the light's radius, but MGE XE makes it the end of its fade and
+/// 160 more. A light that a mod made in Lua has the radius the mod set, 0 when it set none.
+/// The light manager's device values carry the specular colour times the dimmer: they are not
+/// the radius.
 pub unsafe fn point_light_radius(light: usize) -> f32 {
+    if let Some(t) = MainThread::here() {
+        if let Some(radius) = crate::light_stream::radius_of(&t, rd(light, L::index)) {
+            return radius;
+        }
+    }
     rd(light, L::specularColor_r)
 }
 

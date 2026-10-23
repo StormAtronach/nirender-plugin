@@ -23,6 +23,28 @@ const MOST_INDEX: usize = 1 << 20;
 static KEYS: MainCell<[u32; MAX_LIGHTS]> = MainCell::new([0; MAX_LIGHTS]);
 static RECORDS: MainCell<u64> = MainCell::new(0);
 static GONE: MainCell<u64> = MainCell::new(0);
+/// The radius of each light by its key, as the engine passed it to its attach pass (MWSE's
+/// event of a light placed, `world_lights`); 0 when none came. The light's specular colour
+/// holds the attach radius, which a module that owns the light attach radius makes larger
+/// than the light: MGE XE makes it the end of its fade and 160 more.
+static RADII: MainCell<Vec<f32>> = MainCell::new(Vec::new());
+
+/// Notes the radius that the engine gave a light at its placement.
+pub fn note_radius(t: &MainThread, key: u32, radius: f32) {
+    if key as usize >= MOST_INDEX {
+        return;
+    }
+    let radii = RADII.get(t);
+    if radii.len() <= key as usize {
+        radii.resize(key as usize + 1, 0.0);
+    }
+    radii[key as usize] = radius;
+}
+
+/// The radius of a light from its placement, when one came.
+pub fn radius_of(t: &MainThread, key: u32) -> Option<f32> {
+    RADII.get(t).get(key as usize).copied().filter(|&radius| radius > 0.0)
+}
 
 fn versions<'a>(t: &'a MainThread) -> &'a mut Vec<Option<Sent>> {
     &mut *VERSIONS.get(t)
@@ -48,6 +70,9 @@ pub unsafe fn report(t: &MainThread) -> String {
 /// the key to the next light it makes. Sends a `LIGHT_GONE` record when a `LIGHT` record went
 /// for the key, so that the next light with the key goes as new.
 pub unsafe fn forget(t: &MainThread, key: u32) {
+    if let Some(radius) = RADII.get(t).get_mut(key as usize) {
+        *radius = 0.0;
+    }
     let Some(sent) = versions(t).get_mut(key as usize) else { return };
     if sent.take().is_some() {
         crate::capture::light_gone(key);

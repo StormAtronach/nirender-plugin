@@ -1415,9 +1415,9 @@ pub unsafe fn retained_scene(ambient: u32, fog: Option<[u32; 4]>, sun: Option<&[
     write(tag::RETAINED_SCENE, &[words(&[ambient, flags]), words(fog.as_ref().map_or(&[], |f| &f[..])), words(sun.map_or(&[], |s| &s[..]))]);
 }
 
-/// A light record. See `tag::LIGHT`. The word after the device values is the radius that the
-/// engine keeps in the light's specular colour (`link_client::point_light_radius`), not scaled
-/// by the dimmer as the device values are; 0 for a light with no radius.
+/// A light record. See `tag::LIGHT`. The word after the device values is the radius of the
+/// light (`link_client::point_light_radius`: the radius of its placement, else its specular
+/// colour), not scaled by the dimmer as the device values are; 0 for a light with no radius.
 pub unsafe fn light(key: u32, values: &[u32; 26], radius: f32) {
     let _lock = crate::sync::device_lock();
     write(tag::LIGHT, &[words(&[key]), words(values), words(&[radius.to_bits()])]);

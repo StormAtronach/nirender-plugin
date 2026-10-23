@@ -55,6 +55,13 @@ pub(crate) fn bin_lights(lists: &mut [Vec<u32>], items: impl Iterator<Item = (u3
                 if c[2] + reach < near || c[2] - reach > far {
                     continue;
                 }
+                // A light whose sphere is outside a side plane of the view is in no cluster: the
+                // clamps below would put it into the clusters at the edge, or into all of them
+                // when it reaches the near plane. A side plane of the view is `x * sx = z`.
+                let (across, down) = ((sx * sx + 1.0).sqrt(), (sy * sy + 1.0).sqrt());
+                if (sx * c[0] - c[2]) / across > reach || (-sx * c[0] - c[2]) / across > reach || (sy * c[1] - c[2]) / down > reach || (-sy * c[1] - c[2]) / down > reach {
+                    continue;
+                }
                 z0 = slice_of(c[2] - reach);
                 z1 = slice_of(c[2] + reach);
                 if c[2] - reach < near {
@@ -402,4 +409,54 @@ pub(crate) fn light_buffer(device: &wgpu::Device, lights: usize) -> wgpu::Buffer
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Direct3D projection of a square view with a field of 90 degrees, near 1, far 1000.
+    fn projection() -> [f32; 16] {
+        let (near, far) = (1.0f32, 1000.0f32);
+        let mut p = [0.0f32; 16];
+        p[0] = 1.0;
+        p[5] = 1.0;
+        p[10] = far / (far - near);
+        p[11] = 1.0;
+        p[14] = -near * far / (far - near);
+        p
+    }
+
+    fn entries(centre: [f32; 3], reach: f32) -> usize {
+        let cells = (CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]) as usize;
+        let mut lists: Vec<Vec<u32>> = (0..cells).map(|_| Vec::new()).collect();
+        let (_, indexes, _) = bin_lights(&mut lists, [(7u32, Some(centre), reach)].into_iter(), &projection(), (1024, 1024), 1);
+        indexes.len()
+    }
+
+    #[test]
+    fn a_light_in_the_view_is_in_clusters() {
+        assert!(entries([0.0, 0.0, 100.0], 10.0) > 0);
+    }
+
+    #[test]
+    fn a_light_beside_the_view_is_in_no_cluster() {
+        // At depth 300 the view reaches 300 across; the light's sphere ends at 700 across.
+        assert_eq!(entries([800.0, 0.0, 300.0], 100.0), 0);
+        assert_eq!(entries([-800.0, 0.0, 300.0], 100.0), 0);
+        assert_eq!(entries([0.0, 800.0, 300.0], 100.0), 0);
+        assert_eq!(entries([0.0, -800.0, 300.0], 100.0), 0);
+    }
+
+    #[test]
+    fn a_light_beside_the_camera_that_reaches_the_near_plane_is_in_no_cluster() {
+        // The sphere crosses the near plane, but it is 400 to the side of a view that is 50
+        // wide at its depth.
+        assert_eq!(entries([400.0, 0.0, 50.0], 100.0), 0);
+    }
+
+    #[test]
+    fn a_light_that_reaches_into_the_view_from_beside_it_is_in_clusters() {
+        assert!(entries([150.0, 0.0, 100.0], 80.0) > 0);
+    }
 }

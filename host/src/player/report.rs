@@ -89,10 +89,11 @@ impl Player {
             c.light_missing
         );
         println!(
-            "clusters: {:.1} lights and {:.0} entries for each frame, {} frames with more lights than a mask holds",
+            "clusters: {:.1} lights and {:.0} entries for each frame, {} frames with more lights than a mask holds; {:.3} ms of the helper for each frame (with the world mode's shade of the table's lights)",
             c.cluster_lights as f64 / c.frames.max(1) as f64,
             c.cluster_entries as f64 / c.frames.max(1) as f64,
-            c.cluster_frames_many
+            c.cluster_frames_many,
+            ticks::duration(c.times[TIME_CLUSTERS]).as_secs_f64() * 1000.0 / c.frames.max(1) as f64
         );
         println!("lights for the extension: {:.1} for each frame", c.extension_lights as f64 / c.frames.max(1) as f64);
         println!(

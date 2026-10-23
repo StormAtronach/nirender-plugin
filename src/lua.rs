@@ -444,6 +444,18 @@ unsafe extern "C" fn skin_table(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.worldLights()`: a table with a line for each light of the world
+/// (`world_lights::describe`), for a check in a live session.
+unsafe extern "C" fn world_lights(l: LuaState) -> i32 {
+    let lines = crate::world_lights::describe();
+    lua_createtable(l, lines.len() as i32, 0);
+    for (i, line) in lines.iter().enumerate() {
+        push_str(l, line);
+        lua_rawseti(l, -2, i as i32 + 1);
+    }
+    1
+}
+
 /// `nirender.retained(mode)` sets the mode of the retained instances ("off", "dual" or
 /// "gpu") and returns the mode before. Without an argument it returns the mode.
 unsafe extern "C" fn retained(l: LuaState) -> i32 {
@@ -709,6 +721,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "changed", changed);
     set_fn(l, "displayCost", display_cost);
     set_fn(l, "retained", retained);
+    set_fn(l, "worldLights", world_lights);
     set_fn(l, "captureFrames", capture_frames);
     set_fn(l, "captureEnd", capture_end);
     set_fn(l, "stream", stream);
