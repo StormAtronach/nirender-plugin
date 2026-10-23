@@ -207,6 +207,10 @@ pub mod tag {
     /// bit, no accumulator) (`instance_stream::walk_place`); the host draws it at this place
     /// in the order of the walk's draws.
     pub const INSTANCE_WALK: u32 = 32;
+    /// A light of the light manager was destroyed (`NiDX8LightManager::RemoveLight`): its
+    /// key. The engine gives the key to the next light it makes. Sent only for a light that
+    /// went as a `LIGHT` record. See `light_stream::forget`.
+    pub const LIGHT_GONE: u32 = 33;
 }
 
 // ---- the ring in shared memory
@@ -1412,6 +1416,12 @@ pub unsafe fn retained_scene(ambient: u32, fog: Option<[u32; 4]>, sun: Option<&[
 pub unsafe fn light(key: u32, values: &[u32; 26], radius: f32) {
     let _lock = crate::sync::device_lock();
     write(tag::LIGHT, &[words(&[key]), words(values), words(&[radius.to_bits()])]);
+}
+
+/// A light gone. See `tag::LIGHT_GONE`.
+pub unsafe fn light_gone(key: u32) {
+    let _lock = crate::sync::device_lock();
+    write(tag::LIGHT_GONE, &[words(&[key])]);
 }
 
 /// A material record. See `tag::MATERIAL`.

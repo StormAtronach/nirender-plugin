@@ -169,6 +169,13 @@ impl Player {
                 self.renderer.counts.light_records += 1;
                 self.retained.light_changed(word(data, 0), &light);
             }
+            tag::LIGHT_GONE if data.len() >= 4 => {
+                // The engine gives the key to the next light it makes: that light comes as a
+                // new record.
+                self.renderer.lights_known.remove(&word(data, 0));
+                self.renderer.counts.lights_gone += 1;
+                self.retained.light_gone(word(data, 0));
+            }
             tag::FRAME_END => {
                 self.renderer.counts.frames += 1;
                 return true;

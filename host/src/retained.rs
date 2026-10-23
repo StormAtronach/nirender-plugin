@@ -561,6 +561,17 @@ impl RetainedSet {
         }
     }
 
+    /// The light of the game with this key is destroyed. Its slot gives no light until a new
+    /// light with the key comes (`light_changed`): a run that still names the key adds nothing.
+    pub fn light_gone(&mut self, key: u32) {
+        if let Some(&slot) = self.light_slot_of.get(&key) {
+            let light = &mut self.light_values[slot as usize];
+            light.diffuse = [0.0; 4];
+            light.ambient = [0.0; 4];
+            self.light_dirty.push(slot);
+        }
+    }
+
     fn light_slot(&mut self, key: u32, known: &HashMap<u32, [u8; 104]>) -> Option<u32> {
         if let Some(&slot) = self.light_slot_of.get(&key) {
             return Some(slot);

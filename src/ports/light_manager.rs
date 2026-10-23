@@ -587,6 +587,10 @@ pub unsafe fn remove_light(this: usize, light: usize) {
         break;
     }
     eng::critical_section_unlock(cs);
+    // On the cell worker the event goes through `worker_events`.
+    if let Some(t) = crate::main_thread::MainThread::here() {
+        crate::light_stream::forget(&t, key);
+    }
 }
 
 /// 0x6BB6C0 `NiDX8LightManager::updateLights`. The port sends the lights of one effect state

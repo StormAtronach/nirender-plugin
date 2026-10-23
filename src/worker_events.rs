@@ -18,6 +18,7 @@
 //!   every instance note its handles again (a new generation). On the worker it does not:
 //!   the data goes with its texture, so no live instance names it (an inference). A new
 //!   generation for each texture of an unloaded cell makes a frame hitch.
+//! - `NiDX8LightManager::RemoveLight`: the light's key is free again (`light_stream::forget`).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -30,16 +31,19 @@ enum Event {
     Destroyed(usize),
     /// A source texture's renderer data was destroyed (counted only: see the module).
     TextureFreed,
+    /// A light was destroyed: its index.
+    LightGone(u32),
 }
 
-const KINDS: usize = 2;
-const KIND_NAMES: [&str; KINDS] = ["shapes destroyed", "textures freed"];
+const KINDS: usize = 3;
+const KIND_NAMES: [&str; KINDS] = ["shapes destroyed", "textures freed", "lights destroyed"];
 
 impl Event {
     fn kind(self) -> usize {
         match self {
             Event::Destroyed(_) => 0,
             Event::TextureFreed => 1,
+            Event::LightGone(_) => 2,
         }
     }
 }
@@ -136,10 +140,22 @@ unsafe fn on_texture_data_dtor(_args: &[usize]) {
     push(Event::TextureFreed);
 }
 
+/// `NiDX8LightManager::RemoveLight(this, light)`: the light's destructor calls it, so the
+/// light is alive here.
+unsafe fn on_remove_light(args: &[usize]) {
+    if crate::shadow::on_main_thread() {
+        return;
+    }
+    if let Some(&light) = args.get(1) {
+        push(Event::LightGone(rd(light, crate::gen::layouts::NiLight::index)));
+    }
+}
+
 /// The hooks and the names of their ports.
-const HOOKS: [(&str, unsafe fn(&[usize])); 2] = [
+const HOOKS: [(&str, unsafe fn(&[usize])); 3] = [
     ("NiGeometry::dtor", on_geometry_dtor),
     ("NiDX8SourceTextureData::dtor", on_texture_data_dtor),
+    ("NiDX8LightManager::RemoveLight", on_remove_light),
 ];
 
 /// Puts the hooks on their ports.
@@ -183,6 +199,7 @@ pub unsafe fn drain() {
                 }
             }
             Event::TextureFreed => {}
+            Event::LightGone(key) => crate::light_stream::forget(t, key),
         }
         if APPLIED[event.kind()].fetch_add(1, Ordering::Relaxed) == 0 {
             crate::log!("worker events: the first of the {} applied on the main thread", KIND_NAMES[event.kind()]);

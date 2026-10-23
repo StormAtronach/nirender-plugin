@@ -22,6 +22,7 @@ const MOST_INDEX: usize = 1 << 20;
 /// The keys of the lights of the draw in progress. Only the render thread uses it.
 static KEYS: MainCell<[u32; MAX_LIGHTS]> = MainCell::new([0; MAX_LIGHTS]);
 static RECORDS: MainCell<u64> = MainCell::new(0);
+static GONE: MainCell<u64> = MainCell::new(0);
 
 fn versions<'a>(t: &'a MainThread) -> &'a mut Vec<Option<Sent>> {
     &mut *VERSIONS.get(t)
@@ -34,7 +35,23 @@ pub unsafe fn reset(t: &MainThread) {
 }
 
 pub unsafe fn report(t: &MainThread) -> String {
-    format!("lights: {} records, {} lights known", *RECORDS.get(t), versions(t).iter().filter(|v| v.is_some()).count())
+    format!(
+        "lights: {} records, {} gone records, {} lights known",
+        *RECORDS.get(t),
+        *GONE.get(t),
+        versions(t).iter().filter(|v| v.is_some()).count()
+    )
+}
+
+/// The light with this key was destroyed (`NiDX8LightManager::RemoveLight`): the engine gives
+/// the key to the next light it makes. Sends a `LIGHT_GONE` record when a `LIGHT` record went
+/// for the key, so that the next light with the key goes as new.
+pub unsafe fn forget(t: &MainThread, key: u32) {
+    let Some(sent) = versions(t).get_mut(key as usize) else { return };
+    if sent.take().is_some() {
+        crate::capture::light_gone(key);
+        *GONE.get(t) += 1;
+    }
 }
 
 /// Notes one light by its key, its device values and the radius of the game: sends a record

@@ -383,8 +383,10 @@ pub(crate) struct Counts {
     /// The draws of a world view (the world camera's scenes, the first-person scene) with an
     /// orthographic projection: the old test of the projection would have left them out.
     pub(crate) orthographic_world_draws: u64,
-    /// The light records, and the lights of a shape that no record came for.
+    /// The light records, the lights destroyed, and the lights of a shape that no record came
+    /// for.
     pub(crate) light_records: u32,
+    pub(crate) lights_gone: u32,
     pub(crate) light_missing: u32,
     /// The lights and the entries of the clusters of the frames.
     pub(crate) cluster_lights: u64,

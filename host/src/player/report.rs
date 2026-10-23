@@ -81,7 +81,13 @@ impl Player {
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
         println!("skinned shapes {}, particle systems {}", c.shape_skinned, c.shape_particles);
         println!("shapes held for the extension {}", c.held);
-        println!("lights: {} records, {} lights of a shape without a record", c.light_records, c.light_missing);
+        println!(
+            "lights: {} records, {} destroyed, {} known now, {} lights of a shape without a record",
+            c.light_records,
+            c.lights_gone,
+            self.renderer.lights_known.len(),
+            c.light_missing
+        );
         println!(
             "clusters: {:.1} lights and {:.0} entries for each frame, {} frames with more lights than a mask holds",
             c.cluster_lights as f64 / c.frames.max(1) as f64,
