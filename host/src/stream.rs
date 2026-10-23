@@ -117,7 +117,8 @@ impl Stream {
         data.material_diffuse = material[0..4].try_into().unwrap();
         data.material_ambient = material[4..8].try_into().unwrap();
         data.material_emissive = material[12..16].try_into().unwrap();
-        data.scene_ambient = color(known(shape.ambient, 0));
+        // An emissive-only draw has a black ambient and no light (`Derived::no_lights`).
+        data.scene_ambient = if derived.no_lights { [0.0, 0.0, 0.0, 1.0] } else { color(known(shape.ambient, 0)) };
         // The fog of the draw: the colour, the start, the end, the range fog flag.
         if let (true, Some(fog)) = (derived.fog, self.shape_fog) {
             data.fog_color = color(fog[0]);
@@ -159,7 +160,7 @@ impl Stream {
             alpha_test[2],
         ];
 
-        let lights = shape.lights.len() / STATE_LIGHT_SIZE;
+        let lights = if derived.no_lights { 0 } else { shape.lights.len() / STATE_LIGHT_SIZE };
         counts.most_lights = counts.most_lights.max(lights as u32);
         data.light_range = [frame_lights.len() as u32, lights as u32, 0, flat_shading_bit(derived)];
         data.counts[0] = lights as u32;
@@ -168,7 +169,7 @@ impl Stream {
             data.flags[3] = 4;
             data.light_range[2] = first;
         }
-        for light in shape.lights.chunks_exact(STATE_LIGHT_SIZE) {
+        for light in shape.lights.chunks_exact(STATE_LIGHT_SIZE).take(lights) {
             // The `D3DLIGHT8` after the key.
             frame_lights.push(light_data(&light[4..], relative));
         }

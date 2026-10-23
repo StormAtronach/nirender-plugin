@@ -140,6 +140,9 @@ struct Slot {
     /// A skinned slot: the first of the bones of its instance in the table's palette (its
     /// instance carries it to the shader), or `NO_BONES`.
     bones_first: u32,
+    /// The material is emissive only (`Derived::no_lights`): the slot takes no light of its
+    /// instance and a black ambient.
+    no_lights: bool,
 }
 
 #[derive(Default)]
@@ -584,10 +587,14 @@ impl RetainedSet {
         let slots = self.by_id.get(&id).cloned().unwrap_or_default();
         for slot in slots {
             if let Some(s) = self.slots[slot as usize].as_mut() {
+                // An emissive-only slot keeps no light and a black ambient.
+                let count = if s.no_lights { 0 } else { count };
                 s.data.light_range[0] = first;
                 s.data.light_range[1] = count;
                 s.data.counts[0] = count;
-                if let Some(ambient) = ambient {
+                if s.no_lights {
+                    s.data.scene_ambient = [0.0, 0.0, 0.0, 1.0];
+                } else if let Some(ambient) = ambient {
                     s.data.scene_ambient = crate::d3d::color(ambient);
                 }
                 self.dirty.push(slot);
@@ -617,6 +624,7 @@ impl RetainedSet {
             }
             for slot in self.by_id.get(&id).cloned().unwrap_or_default() {
                 if let Some(s) = self.slots[slot as usize].as_mut() {
+                    let count = if s.no_lights { 0 } else { count };
                     s.data.light_range[0] = first;
                     s.data.light_range[1] = count;
                     s.data.counts[0] = count;
@@ -1479,7 +1487,7 @@ impl Player {
             let bones_first = if r.flags & INSTANCE_SKINNED != 0 { set.bones_first_of(id) } else { NO_BONES };
             let sorted = crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter);
             let in_place = !sorted && derived.blends.first().is_some_and(|b| b[0] != 0);
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted, in_place, pinned, bones_first });
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted, in_place, pinned, bones_first, no_lights: derived.no_lights });
             set.buckets[bucket as usize].slots.push(slot);
             set.dirty.push(slot);
             slots.push(slot);

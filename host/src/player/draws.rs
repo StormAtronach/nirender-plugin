@@ -275,7 +275,9 @@ impl Player {
         let extension_lights = self.parameters.as_ref().is_some_and(|p| p.lights) && world;
         let first = draw_data.light_range[0] as usize;
         let relative = shape.relative && self.stream.origin.is_some();
-        for (i, light) in shape.lights.chunks_exact(STATE_LIGHT_SIZE).enumerate() {
+        // An emissive-only draw has no light (`Derived::no_lights`): none in its mask.
+        let noted = if derived.no_lights { 0 } else { shape.lights.len() / STATE_LIGHT_SIZE };
+        for (i, light) in shape.lights.chunks_exact(STATE_LIGHT_SIZE).take(noted).enumerate() {
             if masked {
                 if let Some(slot) = renderer.clusters.note(word(light, 0), (first + i) as u32, relative, self.stream.origin) {
                     draw_data.light_mask[slot as usize / 128][slot as usize / 32 % 4] |= 1 << (slot % 32);

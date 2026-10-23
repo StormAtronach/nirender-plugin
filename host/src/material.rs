@@ -203,6 +203,11 @@ pub struct Derived {
     /// Enable, function, reference, mask, fail, z-fail, pass.
     pub stencil: [u32; 7],
     pub lighting: bool,
+    /// The lighting is on with no light and a black ambient: the emissive-only mode with the
+    /// sources "ignore" and "ambient and diffuse" (`useAmbientDiffuse` 0 of
+    /// `NiDX8LightManager::setState` 0x6BB200; `updateLights` 0x6BB6C0 then enables no light
+    /// and sets D3DRS_AMBIENT black). Only the emissive colour shows.
+    pub no_lights: bool,
     /// Diffuse, emissive and ambient material sources; `None` when the engine leaves the
     /// state of the draw before.
     pub sources: [Option<u32>; 3],
@@ -333,8 +338,9 @@ fn ops(slot: u32, first: bool, apply: bool, has_texture: bool) -> ([u32; 3], [u3
 }
 
 /// Derives the state of a draw for a material with a geometry of `sets` texture sets.
-/// `envmap_lit`: the game's environment map stages take the lit colour (the stream header's
-/// `HEADER_ENVMAP_LIT`); `None` for an older capture without the fact.
+/// `envmap_lit`: the game's environment map stages of the reflection vector take the lit
+/// colour (the stream header's `HEADER_ENVMAP_LIT`); `None` for an older capture without the
+/// fact.
 pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
     let mut d = Derived { modelled: m.flags & (PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0, ..Default::default() };
     let apply = m.apply_mode != 0;
@@ -370,10 +376,11 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
 
     // The lighting and the material sources (`NiDX8LightManager::setState` 0x6BB200). A base
     // texture with the apply mode "replace" turns the lighting off. The full lighting mode
-    // sets the three sources by the source mode. The emissive-only mode lights with the source
-    // modes "ignore" and "ambient and diffuse": it sets the emissive source to the material
-    // and leaves the diffuse and the ambient sources as the draw before left them (`None`);
-    // with "emissive" it turns the lighting off.
+    // sets the three sources by the source mode. The emissive-only mode with the source
+    // modes "ignore" and "ambient and diffuse" leaves the sources as the draw before left
+    // them (`None`), keeps the lighting on and clears `useAmbientDiffuse`: `updateLights`
+    // (0x6BB6C0) enables no light and sets a black ambient, so only the emissive colour
+    // shows (`no_lights`). With "emissive" it turns the lighting off.
     let base = m.maps[BASE];
     if base.present && base.texture != 0 && m.apply_mode == 0 {
         d.lighting = false;
@@ -382,6 +389,7 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
             d.lighting = false;
         } else {
             d.lighting = true;
+            d.no_lights = true;
             d.sources = [None, Some(0), None];
         }
     } else {
@@ -466,19 +474,25 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
         if has(BUMP) {
             pass.push(stage(BUMP, 8, pass.is_empty()));
         }
-        // The stage of the environment map has blend slot 0 (it adds), and its generated
-        // texture coordinates have 0 in the low word of the index (the camera-space
-        // reflection vector of set 0). As a first stage it takes the texture alone
-        // (SELECTARG1: `configureStageFromTextureProp` 0x6B5A20 clears its apply flag);
-        // after another stage it adds the texture to the current colour (ADD).
+        // The stage of the environment map has blend slot 0 (it adds). As a first stage it
+        // takes the texture alone (SELECTARG1: `configureStageFromTextureProp` 0x6B5A20
+        // clears its apply flag); after another stage it adds the texture to the current
+        // colour (ADD). Its coordinates come from the effect's mode (the plugin's
+        // `effect_stage_words`): 0 and 1 the camera-space position, 2 and 3 the camera-space
+        // reflection vector of set 0 (0x30000), 4 the camera-space normal.
         let first = pass.is_empty();
         let (mut color, alpha) = ops(0, first, true, true);
+        let reflection = matches!(m.environment_coordinates, 2 | 3);
         match envmap_lit {
             // The Morrowind Code Patch's hook on the coordinate index (0x6C1BA4 to 0x736F80 in
-            // the patched game) scales the map by the lit colour: SELECTARG1 becomes
-            // MODULATE(texture, diffuse) and ADD becomes MULTIPLYADD(current + texture *
-            // diffuse); argument 0 is the current colour (`stream.rs`).
-            Some(true) => color = if first { [4, 2, 0] } else { [25, 2, 0] },
+            // the patched game) scales the map by the lit colour when the index is the
+            // camera-space reflection vector of set 0 and nothing else (it compares the whole
+            // index with 0x30000): SELECTARG1 becomes MODULATE(texture, diffuse) and ADD
+            // becomes MULTIPLYADD(current + texture * diffuse); argument 0 is the current
+            // colour (`stream.rs`). A projected map (mode 0 or 1) and a diffuse cube map
+            // (mode 4) keep the engine's combiner.
+            Some(true) if reflection => color = if first { [4, 2, 0] } else { [25, 2, 0] },
+            Some(true) => {}
             Some(false) => {}
             // An older capture without the fact: the rule seen in the test level before the
             // hook was read (fog with a bump map, or fog without a base texture).
@@ -584,10 +598,17 @@ mod engine_rule_tests {
     use super::*;
 
     /// A material record with a base map (texture 1, the coordinate set `base_set`) and an
-    /// environment map (texture 5); with `gloss` also a gloss map (texture 3), which puts the
-    /// environment map first in a pass of its own.
+    /// environment map (texture 5) of a sphere map (the reflection vector); with `gloss` also
+    /// a gloss map (texture 3), which puts the environment map first in a pass of its own.
     fn material(gloss: bool, base_set: u32) -> Material {
+        material_of_mode(gloss, base_set, 2)
+    }
+
+    /// The same with the effect's coordinate mode `mode` (0 and 1 projected, 2 a sphere map,
+    /// 3 a specular cube map, 4 a diffuse cube map).
+    fn material_of_mode(gloss: bool, base_set: u32, mode: u32) -> Material {
         let mut words = [0u32; WORDS];
+        words[84] = mode;
         words[1] = ENVIRONMENT_MAP;
         words[6] = 2;
         words[8] = 1;
@@ -617,6 +638,43 @@ mod engine_rule_tests {
         assert_eq!(environment_stage(&derive(&material(true, 0), 1, Some(true))).color, [4, 2, 0]);
         // An older capture without the fact keeps the rule seen before (no fog here: ADD).
         assert_eq!(environment_stage(&derive(&material(false, 0), 1, None)).color, [7, 2, 1]);
+    }
+
+    #[test]
+    fn the_code_patch_leaves_other_coordinates_alone() {
+        // The hook compares the whole coordinate index with the camera-space reflection
+        // vector of set 0: a projected map (modes 0 and 1) and a diffuse cube map (mode 4)
+        // keep ADD and SELECTARG1 (the rainbow particles of the test level's exhibits 107 and
+        // 108 drew black when every map took MULTIPLYADD by their black vertex colour).
+        for mode in [0, 1, 4] {
+            assert_eq!(environment_stage(&derive(&material_of_mode(false, 0, mode), 1, Some(true))).color, [7, 2, 1], "mode {mode}");
+            assert_eq!(environment_stage(&derive(&material_of_mode(true, 0, mode), 1, Some(true))).color, [2, 2, 0], "mode {mode}");
+        }
+        assert_eq!(environment_stage(&derive(&material_of_mode(false, 0, 3), 1, Some(true))).color, [25, 2, 0]);
+    }
+
+    #[test]
+    fn the_emissive_only_mode_takes_no_light_and_a_black_ambient() {
+        // `NiDX8LightManager::setState` 0x6BB200 and `updateLights` 0x6BB6C0: lighting mode 0
+        // (emissive) with the sources "ignore" (0) and "ambient and diffuse" (2) clears
+        // `useAmbientDiffuse`: no light, a black ambient. With the source "emissive" (1) the
+        // lighting is off. The full mode (1) takes the lights.
+        let of = |lighting: u32, source: u32| {
+            let mut words = [0u32; WORDS];
+            words[68] = source;
+            words[69] = lighting;
+            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+            derive(&Material::parse(&bytes).unwrap(), 1, Some(false))
+        };
+        for source in [0, 2] {
+            let d = of(0, source);
+            assert!(d.lighting && d.no_lights, "source {source}");
+        }
+        assert!(!of(0, 1).lighting);
+        for source in [0, 1, 2] {
+            let d = of(1, source);
+            assert!(d.lighting && !d.no_lights, "source {source}");
+        }
     }
 
     #[test]
