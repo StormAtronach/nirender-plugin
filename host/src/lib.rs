@@ -89,6 +89,13 @@ struct WorldFacts {
     samples: u32,
 }
 
+/// The position of the camera of a view matrix of Direct3D: minus its translation times its
+/// transposed rotation. Only for a stream without the camera's origin.
+fn eye_of_view(view: &[f32; 16]) -> [f64; 3] {
+    let v = view.map(f64::from);
+    core::array::from_fn(|i| -(v[12] * v[i * 4] + v[13] * v[i * 4 + 1] + v[14] * v[i * 4 + 2]))
+}
+
 impl WorldFacts {
     fn view<'a>(&self, device: &'a wgpu::Device, queue: &'a wgpu::Queue, commands: &'a FrameCommands, target_format: wgpu::TextureFormat) -> SceneView<'a> {
         SceneView {
@@ -101,6 +108,7 @@ impl WorldFacts {
             samples: self.samples,
             view: self.view,
             projection: self.projection,
+            eye: self.origin.unwrap_or_else(|| eye_of_view(&self.view)),
             interior: self.interior,
             wireframe: self.wireframe,
             fog_color: self.fog_color,

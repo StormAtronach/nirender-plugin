@@ -48,6 +48,11 @@ pub struct SceneView<'a> {
     /// From the world space of the game to the camera, and the projection of the game.
     pub view: [f32; 16],
     pub projection: [f32; 16],
+    /// The position of the camera in the world space of the game: the exact origin of the
+    /// world camera that the plugin's scene record carries (64-bit), else the position that
+    /// `view` gives (an older capture). One source of the eye for an extension: a position
+    /// made again from the 32-bit `view` loses precision far from the origin of the world.
+    pub eye: [f64; 3],
     /// The player is in an interior cell.
     pub interior: bool,
     /// The game draws the world in wireframe: its shared wireframe property is on (the console
