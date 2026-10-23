@@ -225,8 +225,9 @@ struct Tables {
     scene_mixed: u64,
     /// The landscape (class 11) is retained too (`NIRENDER_LANDSCAPE=0` keeps it out).
     landscape: bool,
-    /// The actors (a skinned shape of class 0: the actors hang under no root the classes
-    /// know) are retained too (`NIRENDER_ACTORS=0` keeps them out).
+    /// The shapes of class 0 (under no root the classes know: the actors and their parts, and
+    /// objects hung elsewhere) are retained too (`NIRENDER_ACTORS=0` keeps them out). The class
+    /// does not say what a shape is; the reference of its scene node would.
     actors: bool,
     /// A shape under an animated node, and a shape of class 0 that is not skinned, are
     /// retained too (`NIRENDER_ANIMATED=0` keeps them out).
@@ -356,9 +357,9 @@ pub unsafe fn set_mode(mt: &MainThread, mode: Mode) -> Mode {
 
 /// True for a class of object the plugin retains: the objects of the references, the
 /// landscape, and class 0. Class 0 is a shape of the world scene under no root the classes
-/// know: the actors and their parts, and objects hung elsewhere. A skinned one is an actor;
-/// one that is not skinned follows the rules of any shape. `NIRENDER_ACTORS=0` keeps class
-/// 0 out; `NIRENDER_ANIMATED=0` keeps out the class 0 shapes that are not skinned.
+/// know: the actors and their parts, and objects hung elsewhere. By default every shape of
+/// class 0 is retained, skinned or not. `NIRENDER_ACTORS=0` keeps class 0 out;
+/// `NIRENDER_ANIMATED=0` keeps out the class 0 shapes that are not skinned.
 pub unsafe fn class_retained(mt: &MainThread, class: u32, skinned: bool) -> bool {
     let t = tables(mt);
     class == CLASS_OBJECT || (class == CLASS_LANDSCAPE && t.landscape) || (class == CLASS_UNKNOWN && t.actors && (skinned || t.animated)) || (sky_table_class(class) && sky_table_on())
@@ -986,9 +987,10 @@ unsafe fn send_instance(mt: &MainThread, shape: usize, instance: &Instance, exac
 /// ambient light; in the order of the manager's list (the last of the state first). A light
 /// that is off or too dim stays in the list: its record has zero colours
 /// (`note_light_once`), so that it gives light again when it is turned on, with no new work
-/// of the instance. [I] The light manager also gates the lights and the ambient
-/// (`updateLights` 0x6BB6C0 with `useAmbientDiffuse`, `setState` 0x6BB200: the replace mode
-/// of the base map and the lighting mode); this code does not.
+/// of the instance. The light manager's other gates (`setState` 0x6BB200: the replace mode
+/// of the base map, the lighting mode with `useAmbientDiffuse` for `updateLights` 0x6BB6C0)
+/// are rules of the helper's material (`host/src/material.rs`, `derive`): the lights are sent,
+/// and a material that the engine lights with no lights does not use them.
 unsafe fn state_lights(effect_state: usize, out: &mut Vec<usize>) {
     out.clear();
     if effect_state == 0 {
