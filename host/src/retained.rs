@@ -1519,9 +1519,9 @@ impl Player {
             ambient_scale: [1.0; 4],
             padding: [0; 52],
         };
-        // The fog of the extension for the world, as a draw of the world gets it.
-        let fog_range = self.parameters.as_ref().and_then(|p| p.fog_range);
-        if let (Some((start, end)), true) = (fog_range, facts.projection[11] == 1.0) {
+        // The fog of the extension for the world, as a draw of the world gets it: this is the
+        // world camera's main view.
+        if let Some((start, end)) = self.parameters.as_ref().and_then(|p| p.fog_range) {
             data.fog[0] = start;
             data.fog[1] = end;
             data.fog[3] = 1.0;
@@ -1573,9 +1573,8 @@ impl Player {
                     }
                     scene.counts[k / 4][k % 4] = data.counts[3];
                 }
-                // The factor the shade applies to an ambient light, from a probe of 0.5
-                // (1.0 is its white special case): each retained draw's own ambient is
-                // multiplied by it in the shader.
+                // The factor the shade applies to an ambient light, from a probe of 0.5: each
+                // retained draw's own ambient is multiplied by it in the shader.
                 let mut probe = DrawData::zeroed();
                 probe.view = facts.view;
                 probe.scene_ambient = [0.5, 0.5, 0.5, 1.0];

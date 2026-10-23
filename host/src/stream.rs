@@ -113,8 +113,9 @@ impl Stream {
         if let (true, Some(fog)) = (derived.fog, self.shape_fog) {
             data.fog_color = color(fog[0]);
             data.fog = [f32::from_bits(fog[1]), f32::from_bits(fog[2]), 1.0, (fog[3] != 0) as u32 as f32];
-            // The fog of the extension is for the world only: a perspective projection.
-            if let (Some((start, end)), true) = (self.fog_range, self.projection[11] == 1.0) {
+            // The fog of the extension is for the world only: `fog_range` is set for a draw of
+            // the world views (the scene kind), and empty for any other draw.
+            if let Some((start, end)) = self.fog_range {
                 data.fog[0] = start;
                 data.fog[1] = end;
                 // The fog of the extension is on the distance from the camera, as the fog
