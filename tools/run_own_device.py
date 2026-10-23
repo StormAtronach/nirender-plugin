@@ -180,6 +180,11 @@ def main():
             symbols = os.path.join(args.mge_build, name)
             if os.path.isfile(symbols):
                 mods[0][1]["Root/" + name] = symbols
+        # The DXVK of the build, when it has one, over the DXVK of the instance: the
+        # Direct3D 9 path of a feature that needs a DXVK change.
+        dxvk = os.path.join(args.mge_build, "d3d9.dll")
+        if os.path.isfile(dxvk):
+            mods[0][1]["Root/d3d9.dll"] = dxvk
         # The Lua of the build (the MGE XE Options mod: its menus and the event
         # distantLandReady), over the copy of the release in the instance.
         options = os.path.join(args.mge_build, "Data Files", "mwse", "mods", "MGE XE Options")
@@ -187,6 +192,12 @@ def main():
             for name in names:
                 source = os.path.join(folder, name)
                 mods[0][1]["MWSE/mods/MGE XE Options/" + os.path.relpath(source, options).replace(os.sep, "/")] = source
+        # The core shaders of the build (Direct3D 9 reads them at run time; the build's
+        # d3d8.dll sets the parameters they declare), over the copy of the release.
+        core = os.path.join(args.mge_build, "Data Files", "shaders", "core")
+        if os.path.isdir(core):
+            for name in os.listdir(core):
+                mods[0][1]["shaders/core/" + name] = os.path.join(core, name)
     elif args.reference:
         # MGE XE of the instance on Direct3D 9.
         mods.pop(0)
