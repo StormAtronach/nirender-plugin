@@ -298,6 +298,49 @@ pub struct DrawFacts {
     pub emissive: [f32; 4],
 }
 
+/// The kinds of a draw of the retained table for `Extension::shade_table`: the four blend
+/// forms (opaque, alpha, alpha that adds, colour that adds), each without and with a depth
+/// write. A slot of the table takes the shade of its kind (`retained::slot_kind`).
+pub const TABLE_KINDS: [DrawFacts; 8] = {
+    const FORMS: [(bool, u32, u32); 4] = [(false, 0, 0), (true, 5, 6), (true, 2, 6), (true, 5, 2)];
+    let mut kinds = [DrawFacts { class: 12, blend_enable: false, source_blend: 0, destination_blend: 0, depth_write: false, specular_power: 0.0, emissive: [0.0; 4] }; 8];
+    let mut k = 0;
+    while k < 8 {
+        let (blend, source, destination) = FORMS[k / 2];
+        kinds[k].blend_enable = blend;
+        kinds[k].source_blend = source;
+        kinds[k].destination_blend = destination;
+        kinds[k].depth_write = k % 2 == 1;
+        k += 1;
+    }
+    kinds
+};
+
+/// What the extension's shade does to the retained draws of a frame, one time for the
+/// frame (`Extension::shade_table`). The extension states it from its own state; the table
+/// does not infer it from stand-in draws.
+#[derive(Clone, Copy, Debug)]
+pub struct TableShade {
+    /// The factor for each ambient light of the table (the scene's, and the one of each
+    /// instance's lights record): what `shade` does to `DrawData::scene_ambient` of a draw
+    /// of the world.
+    pub ambient_scale: [f32; 3],
+    /// `DrawData::extension` 5 and 7 of a draw of the world that writes depth and does not
+    /// blend: the sun of the shadow.
+    pub extension5: [f32; 4],
+    pub extension7: [f32; 4],
+    /// The fog is on the distance from the camera (`DrawData::fog` w).
+    pub radial_fog: bool,
+    /// The bits of `counts.w` for a draw of each kind of `TABLE_KINDS`.
+    pub flags: [u32; 8],
+}
+
+impl Default for TableShade {
+    fn default() -> TableShade {
+        TableShade { ambient_scale: [1.0; 3], extension5: [0.0; 4], extension7: [0.0; 4], radial_fog: false, flags: [0; 8] }
+    }
+}
+
 /// Where the parts of a vertex of a draw of the game are: offsets in bytes from the start of
 /// the vertex, as the renderer reads the flexible vertex format of Direct3D 8.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -492,6 +535,14 @@ pub trait Extension {
     /// `FrameParameters::shade` is true. The extension sets bit 1 of `counts[3]` for a draw
     /// that its shader functions shade; bit 2 and the bits from 16 are its own.
     fn shade(&mut self, _draw: &mut DrawData, _lights: &mut [LightData], _facts: &DrawFacts) {}
+
+    /// The shade of the retained table for a frame, one time at the start of its world, when
+    /// `FrameParameters::shade` is true: as `shade` does to a draw of the world with this
+    /// view, for each kind of `TABLE_KINDS`. The extension changes the lights of the table
+    /// as `shade` changes the lights of such a draw.
+    fn shade_table(&mut self, _view: &[f32; 16], _lights: &mut [LightData], _kinds: &[DrawFacts; 8]) -> TableShade {
+        TableShade::default()
+    }
 
     /// The answers of the extension for a frame. The renderer asks at the first draw of the
     /// world scene of the game into the back buffer: before the sky, so the matrices of the

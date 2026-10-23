@@ -63,9 +63,9 @@ pub struct SceneData {
     /// The origin of the set in the world: the positions of its draws are relative to it.
     /// The stage of a texture effect that takes the position adds it (`stage_coordinate`).
     pub origin: [f32; 4],
-    /// What the extension's shade makes of an ambient light: the factor it applied to a
-    /// probe, so each retained draw's own ambient (`DrawData::scene_ambient`, from the
-    /// instance's lights record) is scaled as the scene's would be.
+    /// What the extension's shade makes of an ambient light (`TableShade::ambient_scale`),
+    /// so each retained draw's own ambient (`DrawData::scene_ambient`, from the instance's
+    /// lights record) is scaled as the scene's is.
     pub ambient_scale: [f32; 4],
     pub padding: [u32; 52],
 }
@@ -1228,8 +1228,9 @@ impl RetainedSet {
 
 /// The kind of a pass for the shade bits of the scene: the blend form (0 none, 1 by the alpha,
 /// 2 a source of ONE, 3 a destination of ONE: the extension's shade reads the two factors
-/// and the depth write) times 2, plus 1 with a depth write. `draw_retained_main` shades a
-/// dummy draw of each kind once a frame, and the shader takes the bits by this index.
+/// and the depth write) times 2, plus 1 with a depth write: the index into `TABLE_KINDS`.
+/// `draw_retained_main` asks the extension for the bits of each kind once a frame
+/// (`Extension::shade_table`), and the shader takes the bits by this index.
 /// Engine-rules R20 (the skill wgpu-renderer-dev).
 pub fn slot_kind(blend: [u32; 3], depth_write: bool) -> u32 {
     let form = if blend[0] == 0 {
@@ -1546,44 +1547,23 @@ impl Player {
         let mut lights = self.retained.light_values.clone();
         if self.parameters.as_ref().is_some_and(|p| p.shade) {
             if let Some(extension) = self.extension.as_mut() {
-                // The shade of an opaque draw gives the lights and the values of the scene;
-                // the shade of a blended and of an additive draw gives their bits (the lights
-                // of those calls are copies).
-                // The kinds of a slot (`slot_kind`): the four blend forms, each without and
-                // with a depth write, as the shade reads them.
-                let forms = [(false, 0u32, 0u32), (true, 5, 6), (true, 2, 6), (true, 5, 2)];
-                for k in 0..8 {
-                    let (blend, source, destination) = forms[k / 2];
-                    let write = k % 2 == 1;
-                    let mut data = DrawData::zeroed();
-                    data.view = facts.view;
-                    data.scene_ambient = scene.scene_ambient;
-                    let draw_facts = DrawFacts { class: 12, blend_enable: blend, source_blend: source, destination_blend: destination, depth_write: write, specular_power: 0.0, emissive: [0.0; 4] };
-                    if k == 1 {
-                        extension.shade(&mut data, &mut lights, &draw_facts);
-                        scene.scene_ambient = data.scene_ambient;
-                        scene.extension5 = data.extension[5];
-                        scene.extension7 = data.extension[7];
-                        // The shade puts the fog of a draw on the distance from the camera
-                        // (`fog.w`): the scene's fog takes it too, or a retained shape off the
-                        // axis of the view gets less fog than the same shape on the engine's
-                        // path.
-                        scene.fog[3] = scene.fog[3].max(data.fog[3]);
-                    } else {
-                        let mut copies = self.retained.light_values.clone();
-                        extension.shade(&mut data, &mut copies, &draw_facts);
-                    }
-                    scene.counts[k / 4][k % 4] = data.counts[3];
+                // The kinds of a slot (`slot_kind`) are those of `TABLE_KINDS`.
+                let shade = extension.shade_table(&facts.view, &mut lights, &TABLE_KINDS);
+                let s = shade.ambient_scale;
+                scene.scene_ambient = [scene.scene_ambient[0] * s[0], scene.scene_ambient[1] * s[1], scene.scene_ambient[2] * s[2], scene.scene_ambient[3]];
+                // Each retained draw's own ambient is multiplied by the factor in the shader.
+                scene.ambient_scale = [s[0], s[1], s[2], 1.0];
+                scene.extension5 = shade.extension5;
+                scene.extension7 = shade.extension7;
+                // The shade puts the fog of a draw on the distance from the camera: the
+                // scene's fog takes it too, or a retained shape off the axis of the view gets
+                // less fog than the same shape on the engine's path.
+                if shade.radial_fog {
+                    scene.fog[3] = 1.0;
                 }
-                // The factor the shade applies to an ambient light, from a probe of 0.5: each
-                // retained draw's own ambient is multiplied by it in the shader.
-                let mut probe = DrawData::zeroed();
-                probe.view = facts.view;
-                probe.scene_ambient = [0.5, 0.5, 0.5, 1.0];
-                let mut copies = self.retained.light_values.clone();
-                let probe_facts = DrawFacts { class: 12, blend_enable: false, source_blend: 0, destination_blend: 0, depth_write: true, specular_power: 0.0, emissive: [0.0; 4] };
-                extension.shade(&mut probe, &mut copies, &probe_facts);
-                scene.ambient_scale = [probe.scene_ambient[0] / 0.5, probe.scene_ambient[1] / 0.5, probe.scene_ambient[2] / 0.5, 1.0];
+                for (k, flags) in shade.flags.iter().enumerate() {
+                    scene.counts[k / 4][k % 4] = *flags;
+                }
             }
         }
         if crate::dump_wanted() != 0 {
