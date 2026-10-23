@@ -210,8 +210,8 @@ def stage_clusters(place, mge_build):
     sys.path.insert(0, HERE)
     import picture_diff
 
-    used = re.search(r"clusters: ([\d.]+) lights and (\d+) entries for each frame, (\d+) frames without", out)
-    ok = check(used is not None and used.group(3) == "0" and used.group(2) != "0", used.group(0) if used else "no clusters line in the replay")
+    used = re.search(r"clusters: ([\d.]+) lights and (\d+) entries for each frame", out)
+    ok = check(used is not None and used.group(2) != "0", used.group(0) if used else "no clusters line in the replay")
     numbers = picture_diff.compare(picture_diff.load(a), picture_diff.load(b))
     text = "replay with the clusters against the lights of the draws: %s" % (numbers.get("problem") or "%.2f %% different, %.2f %% by more than 8, mean %.3f, largest %d" % (
         numbers["different"] * 100, numbers.get("over8", 0) * 100, numbers["mean"], numbers.get("largest", 0)))

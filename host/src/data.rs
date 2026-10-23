@@ -99,7 +99,9 @@ pub struct LightData {
     /// The three numbers of the falloff; `w` is the falloff of a spot light.
     pub attenuation: [f32; 4],
     /// The cosines of the half angles of a spot light; `z` is the radius of the light of the
-    /// game (from its first specular word; 0 when the light has none).
+    /// game (from its first specular word, the light record's radius; 0 when the light has
+    /// none). The extension's shade can change them: then `x` is 1 over its cut-off, 0 for
+    /// none (`light_reach`).
     pub cone: [f32; 4],
 }
 
@@ -382,16 +384,11 @@ pub(crate) struct Counts {
     /// The light records, and the lights of a shape that no record came for.
     pub(crate) light_records: u32,
     pub(crate) light_missing: u32,
-    /// The light records whose radius of the game differs from their first specular word:
-    /// the lights of meshes, which the old rule took a colour of as a radius.
-    pub(crate) light_radius_changed: u32,
-    /// The lights and the entries of the clusters of the frames, and the frames that kept
-    /// the lights of the draws because a light had no cut-off.
+    /// The lights and the entries of the clusters of the frames.
     pub(crate) cluster_lights: u64,
     pub(crate) cluster_entries: u64,
     /// The lights of the frames for the extension (`FrameLights`).
     pub(crate) extension_lights: u64,
-    pub(crate) cluster_frames_off: u32,
     /// The frames with more clustered lights than a mask of a draw has bits.
     pub(crate) cluster_frames_many: u32,
     /// The GPU time of the render passes and of the whole frame, in nanoseconds, and the

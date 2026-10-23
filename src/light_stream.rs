@@ -84,7 +84,7 @@ pub unsafe fn note<'a>(t: &'a MainThread, renderer: usize) -> &'a [u32] {
             continue;
         }
         let values: [u32; 26] = rd(entry, LE::d3dLight);
-        note_values(t, key, &values, crate::link_client::game_light_radius(t, light));
+        note_values(t, key, &values, crate::link_client::point_light_radius(light));
         keys[count] = key;
         count += 1;
     }

@@ -234,6 +234,9 @@ impl Reads {
 /// The most reach of a light in the clusters: one cell of the game.
 pub const LIGHT_REACH_MAX: f32 = 8192.0;
 
+/// The light that a pixel shows at the least: one level of 8 bits.
+const LIGHT_VISIBLE: f32 = 1.0 / 256.0;
+
 /// The reach of a point or spot light in the clusters: see `FrameLights`.
 pub fn light_reach(light: &LightData) -> f32 {
     let reach = if light.cone[0] > 0.0 {
@@ -244,6 +247,35 @@ pub fn light_reach(light: &LightData) -> f32 {
         light.direction[3]
     };
     reach.min(LIGHT_REACH_MAX).max(0.0)
+}
+
+/// The reach of a point or spot light in the clusters of the game's draws. With a cut-off
+/// (the extension's fade: `cone[0]` is 1 over it), the cut-off. Without one (a light with no
+/// radius, as a mod's light made in Lua; or the fade off), the distance where its own
+/// attenuation brings its brightest colour under one level: the engine's light has no end,
+/// and a draw takes a clustered light only when the light is one of its own, so the reach
+/// only bins it.
+pub(crate) fn cluster_reach(light: &LightData) -> f32 {
+    let reach = if light.cone[0] > 0.0 { 1.0 / light.cone[0] } else { attenuation_reach(light) };
+    reach.min(LIGHT_REACH_MAX).max(0.0)
+}
+
+/// The distance where `colour / (a0 + a1 d + a2 d^2)` falls under `LIGHT_VISIBLE`, within
+/// the range of Direct3D (`direction[3]`) when the light has one.
+fn attenuation_reach(light: &LightData) -> f32 {
+    let brightest = light.diffuse[0].max(light.diffuse[1]).max(light.diffuse[2]).abs();
+    let [a0, a1, a2, _] = light.attenuation;
+    // Where the attenuation is `brightest / LIGHT_VISIBLE`.
+    let limit = brightest / LIGHT_VISIBLE;
+    let reach = if a2 > 0.0 {
+        ((a1 * a1 - 4.0 * a2 * (a0 - limit)).max(0.0).sqrt() - a1) / (2.0 * a2)
+    } else if a1 > 0.0 {
+        (limit - a0) / a1
+    } else {
+        LIGHT_REACH_MAX
+    };
+    let range = light.direction[3];
+    if range > 0.0 { reach.min(range) } else { reach }
 }
 
 /// The facts of a draw that are not in its uniform, for `Extension::shade` and
@@ -579,4 +611,44 @@ pub(crate) fn extension_shaders(extension: Option<&dyn Extension>) -> String {
         "fn extension_shade(in: VertexOut) -> vec4f { return in.vertex_color; }\nfn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f { return vec4f(mix(draw.fog_color.rgb, color, clear), alpha); }\n".to_string()
     });
     format!("{sky}\n{draw}\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytemuck::Zeroable;
+
+    fn point(diffuse: f32, attenuation: [f32; 3], cut: f32) -> LightData {
+        let mut light = LightData::zeroed();
+        light.diffuse = [diffuse, diffuse * 0.5, 0.0, 0.0];
+        light.position[3] = 1.0;
+        light.attenuation = [attenuation[0], attenuation[1], attenuation[2], 0.0];
+        light.cone[0] = cut;
+        light
+    }
+
+    #[test]
+    fn a_clustered_light_with_a_cut_off_reaches_to_it() {
+        assert_eq!(cluster_reach(&point(1.0, [0.0, 0.0, 1e-5], 1.0 / 512.0)), 512.0);
+    }
+
+    #[test]
+    fn a_clustered_light_without_a_cut_off_reaches_where_its_attenuation_ends() {
+        // 1 / (1e-5 d^2) = 1/256 at d = sqrt(256 / 1e-5) = 5059.6.
+        let reach = cluster_reach(&point(1.0, [0.0, 0.0, 1e-5], 0.0));
+        assert!((reach - 5059.6).abs() < 1.0, "{reach}");
+        // Linear: 1 / (0.01 d) = 1/256 at d = 25600, past one cell.
+        assert_eq!(cluster_reach(&point(1.0, [0.0, 0.01, 0.0], 0.0)), LIGHT_REACH_MAX);
+        // A constant attenuation has no end: one cell.
+        assert_eq!(cluster_reach(&point(1.0, [1.0, 0.0, 0.0], 0.0)), LIGHT_REACH_MAX);
+        // A black light reaches nothing.
+        assert_eq!(cluster_reach(&point(0.0, [0.0, 0.0, 1e-5], 0.0)), 0.0);
+    }
+
+    #[test]
+    fn the_range_of_direct3d_bounds_the_reach_of_a_clustered_light() {
+        let mut light = point(1.0, [0.0, 0.0, 1e-5], 0.0);
+        light.direction[3] = 300.0;
+        assert_eq!(cluster_reach(&light), 300.0);
+    }
 }

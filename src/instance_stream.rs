@@ -1044,7 +1044,7 @@ unsafe fn note_light_once(mt: &MainThread, t: &mut Tables, light: usize, key: u3
         values[crate::light_stream::COLOUR_WORDS].fill(0);
         counts[LC_DARK] += 1;
     }
-    if crate::light_stream::note_values(mt, key, &values, crate::link_client::game_light_radius(mt, light)) {
+    if crate::light_stream::note_values(mt, key, &values, crate::link_client::point_light_radius(light)) {
         counts[LC_SENT] += 1;
     }
 }

@@ -154,12 +154,15 @@ impl Player {
                 self.retained_remove(word(data, 0));
             }
             tag::LIGHT if data.len() >= 108 => {
-                let light: [u8; 104] = data[4..108].try_into().unwrap();
-                // The radius of the game after the device values (0 for a light of a mesh) is
-                // counted where it differs from the first specular word, which still gives the
-                // reach: a light of a mesh with no reach of its own is not decided yet.
-                if data.len() >= 112 && light[20..24] != data[108..112] {
-                    self.renderer.counts.light_radius_changed += 1;
+                // The engine keeps the radius of a point light in its specular colour
+                // (`game_dynamicLightTest` 0x4D3039). The device values carry that colour times
+                // the dimmer, so a dim or flickering light's reach would follow its dimmer; the
+                // word after them is the radius itself. It goes into the first specular word,
+                // which `light_data` reads as the radius (no shading reads the specular of a
+                // light). An older record without the word keeps the scaled value.
+                let mut light: [u8; 104] = data[4..108].try_into().unwrap();
+                if data.len() >= 112 {
+                    light[20..24].copy_from_slice(&data[108..112]);
                 }
                 self.renderer.lights_known.insert(word(data, 0), light);
                 self.renderer.counts.light_records += 1;

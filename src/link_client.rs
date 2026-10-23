@@ -189,9 +189,6 @@ struct LinkState {
     /// The buffers that the Rust code sent to the device last: vertex buffer, stride,
     /// vertex format, index buffer, base vertex index.
     buffers: [u32; 5],
-    /// The lights that `game_dynamicLightTest` got, with the radius that it got for each:
-    /// the address of the light and the radius. The slot comes from the address.
-    game_lights: [(u32, f32); GAME_LIGHT_SLOTS],
     /// The copy of the device's vtable with the draw functions of the link (`draw_vtable`).
     draw_vtable: [usize; DEVICE_METHODS],
 }
@@ -207,7 +204,6 @@ static STATE: MainCell<LinkState> = MainCell::new(LinkState {
     world_relative: 0,
     textures_known: 0,
     buffers: [0; 5],
-    game_lights: [(0, 0.0); GAME_LIGHT_SLOTS],
     draw_vtable: [0; DEVICE_METHODS],
 });
 
@@ -1295,43 +1291,13 @@ unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
     }
 }
 
-/// 0x4D2F40 `game_dynamicLightTest`, cdecl with 6 arguments: the engine function that MWSE's
-/// override gives (`mwse_native::NATIVE_OVERRIDE_DYNAMIC_LIGHT_TEST`).
-static DYNAMIC_LIGHT_TEST_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-/// The slots of `LinkState::game_lights`.
-const GAME_LIGHT_SLOTS: usize = 2048;
-
-fn game_light_slot(light: usize) -> usize {
-    (light >> 4) % GAME_LIGHT_SLOTS
-}
-
-/// The plugin's function in MWSE's override of `game_dynamicLightTest`: a note of the light,
-/// then the game function.
-unsafe extern "C" fn dynamic_light_test_detour(light: usize, node: usize, radius: u32, flags: u32, is_land: u32, high_priority: u32) {
-    // The game tests its lights on the main thread; a call of another thread is counted.
-    match MainThread::here() {
-        Some(t) if light != 0 => state(&t).game_lights[game_light_slot(light)] = (light as u32, radius as f32),
-        Some(_) => {}
-        None => crate::sync::off_thread("link", "dynamic light test"),
-    }
-    let original: unsafe extern "C" fn(usize, usize, u32, u32, u32, u32) = core::mem::transmute(DYNAMIC_LIGHT_TEST_ORIGINAL.load(Ordering::Relaxed));
-    original(light, node, radius, flags, is_land, high_priority)
-}
-
-/// The radius that the game keeps in a point light, or 0 when it is not known.
-///
-/// `game_dynamicLightTest` writes the radius into the three parts of the specular colour.
-/// A light that is part of a mesh does not go through that function, and its specular
-/// colour is a colour. Thus the value counts only for a light that the function got, and
-/// only while the colour is the radius that the function got.
-pub unsafe fn game_light_radius(t: &MainThread, light: usize) -> f32 {
-    let (noted, radius) = state(t).game_lights[game_light_slot(light)];
-    let specular: [f32; 3] = rd(light, L::specularColor_r);
-    if noted == light as u32 && specular == [radius; 3] {
-        radius
-    } else {
-        0.0
-    }
+/// The radius of a point light: the engine keeps it in the light's specular colour
+/// (`game_dynamicLightTest` 0x4D3039 writes it, 0x4D3150 and `game_getLightRadiusFromSpecular`
+/// 0x4D1B80 read it back; MWSE's `PointLight::getRadius` too). A light that a mod made in
+/// Lua has the radius the mod set, 0 when it set none. The light manager's device values
+/// carry the specular colour times the dimmer: they are not the radius.
+pub unsafe fn point_light_radius(light: usize) -> f32 {
+    rd(light, L::specularColor_r)
 }
 
 /// Fills `LIGHTS` with the lights of an effect state that the light manager sends to the
@@ -1356,7 +1322,7 @@ unsafe fn collect_lights(t: &MainThread, effect_state: usize) -> usize {
             light: light as u32,
             device_index: rd(light, L::index),
             light_type,
-            radius: if light_type == LIGHT_POINT { game_light_radius(t, light) } else { 0.0 },
+            radius: if light_type == LIGHT_POINT { point_light_radius(light) } else { 0.0 },
         };
         count += 1;
     }
@@ -1660,11 +1626,6 @@ pub unsafe fn connect() -> Result<String, String> {
     let Some(host) = table.as_ref() else {
         return Err(format!("the host refused version {VERSION}"));
     };
-    if DYNAMIC_LIGHT_TEST_ORIGINAL.load(Ordering::Relaxed) == 0 {
-        let detour = dynamic_light_test_detour as *const () as usize;
-        let claim = crate::mwse_native::claim(crate::mwse_native::NATIVE_OVERRIDE_DYNAMIC_LIGHT_TEST, detour)?;
-        DYNAMIC_LIGHT_TEST_ORIGINAL.store(claim.engine, Ordering::Relaxed);
-    }
     crate::map_tiles::install();
     crate::map_fog::install();
     crate::world_walk::install();

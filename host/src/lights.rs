@@ -185,15 +185,6 @@ impl Clusters {
         // the index in its low half.
         let mut candidates: Vec<(u32, u32, bool)> = self.unique.values().map(|&(index, slot, relative)| (slot, index, relative)).collect();
         candidates.sort_unstable();
-        // A point light without a cut-off (the fade of the extension is off) has no end:
-        // its tail would reach the pixels of objects the game never attached it to. The
-        // frame keeps the lights of the draws then.
-        if candidates.iter().any(|&(_, index, _)| lights.get(index as usize).is_some_and(|light| light.position[3] != 3.0 && light.cone[0] <= 0.0)) {
-            self.unique.clear();
-            counts.cluster_frames_off += 1;
-            queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&ClusterData::zeroed()));
-            return false;
-        }
         counts.cluster_lights += candidates.len() as u64;
         let items = candidates.iter().filter_map(|&(slot, index, relative)| {
             let light = lights.get(index as usize)?;
@@ -206,8 +197,10 @@ impl Clusters {
                 }
                 view_point(&view, position)
             });
-            // The reach: the cut-off of the extension (its fade).
-            Some((index | slot << 16, centre, 1.0 / light.cone[0]))
+            // The reach: the cut-off of the extension (its fade), or where the light's own
+            // attenuation ends (`cluster_reach`). A draw takes only the lights of its own set,
+            // so a reach past the objects the game attached the light to lights nothing more.
+            Some((index | slot << 16, centre, crate::extension::cluster_reach(light)))
         });
         let (table, indexes, data) = bin_lights(&mut self.lists, items, &projection, size, 1);
         self.unique.clear();

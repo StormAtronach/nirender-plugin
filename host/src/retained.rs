@@ -669,7 +669,9 @@ pub fn light_data(l: &[u8], origin: Option<[f64; 3]>) -> LightData {
         position: [position[0], position[1], position[2], word(l, 0) as f32],
         direction: [direction[0], direction[1], direction[2], float(l, 19 * 4)],
         attenuation: [attenuation[0], attenuation[1], attenuation[2], float(l, 20 * 4)],
-        // The plugin puts the radius of a light of the game into its first specular word.
+        // The engine keeps the radius of a point light in its specular colour (written by
+        // `game_dynamicLightTest` 0x4D3039, read back at 0x4D3150 and by
+        // `game_getLightRadiusFromSpecular` 0x4D1B80): the first specular word.
         cone: [(float(l, 24 * 4) * 0.5).cos(), (float(l, 25 * 4) * 0.5).cos(), float(l, 5 * 4), 0.0],
     }
 }
