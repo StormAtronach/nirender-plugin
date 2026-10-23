@@ -587,6 +587,16 @@ pub trait Extension {
         false
     }
 
+    /// True when the extension draws every shape with these facts itself whenever it can
+    /// (`hold`): whose the shape is, not whether the extension is ready this frame. The
+    /// retained table asks this once for each instance it takes in, and offers a claimed
+    /// instance to `hold` in each frame it is in view: a held instance is drawn by the
+    /// extension (`draw_held` or `draw_held_in_place`), not by the table, in each view of
+    /// that frame. Not asked for the sky, the water plane of the game or a skinned shape.
+    fn claims(&self, _facts: &DrawFacts) -> bool {
+        false
+    }
+
     /// The renderer calls this one time in a frame, at the end of the world scene of the
     /// game, with the shapes that `hold` took in the frame: after `after_world` and `blend`,
     /// before the draws of the game that blend (they come after the world scene) and its

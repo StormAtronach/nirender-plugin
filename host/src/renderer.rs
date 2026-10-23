@@ -222,6 +222,26 @@ pub(crate) fn bone_buffer(device: &wgpu::Device, bones: usize) -> wgpu::Buffer {
 }
 
 impl Renderer {
+    /// The maps of a material that have a texture, for a shape that the extension holds
+    /// (`HeldDraw::maps`): `sets` is the number of texture coordinate sets of its geometry.
+    pub(crate) fn held_maps(&self, m: &material::Material, sets: u32) -> Vec<HeldMap> {
+        m.maps
+            .iter()
+            .enumerate()
+            .filter(|(_, map)| map.present && map.texture != 0)
+            .filter_map(|(index, map)| {
+                let texture = self.textures.get(&map.texture)?.clone();
+                let mut sampler = material::sampler_states(map.clamp, map.filter);
+                // A texture with one level gets no mip filter [I: the engine's filter for a
+                // texture with one level was not read].
+                if texture.texture().mip_level_count() <= 1 {
+                    sampler[4] = 0;
+                }
+                Some(HeldMap { map: index, texture, set: map.set.min(sets.saturating_sub(1)), sampler })
+            })
+            .collect()
+    }
+
     /// Makes the device. With a window, also the surface of the window, and the format of
     /// the target is a format of that surface.
     pub(crate) fn new(

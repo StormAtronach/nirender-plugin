@@ -143,6 +143,11 @@ struct Slot {
     /// The material is emissive only (`Derived::no_lights`): the slot takes no light of its
     /// instance and a black ambient.
     no_lights: bool,
+    /// The facts of the instance's first pass, when the extension claims it
+    /// (`Extension::claims`): each frame offers the instance to `hold`.
+    claim: Option<DrawFacts>,
+    /// The extension holds the instance in this frame: no view of the table draws the slot.
+    held: bool,
 }
 
 #[derive(Default)]
@@ -246,12 +251,15 @@ pub struct RetainedSet {
     bones_of: HashMap<u32, (u32, u32)>,
     bone_free: Vec<(u32, u32)>,
     bones_dirty: bool,
+    /// The instances that the extension claims (`Slot::claim`).
+    claimed: std::collections::HashSet<u32>,
     pub counts: RetainedCounts,
 }
 
 impl RetainedSet {
     pub fn new() -> RetainedSet {
         RetainedSet {
+            claimed: std::collections::HashSet::new(),
             slots: Vec::new(),
             free: Vec::new(),
             by_id: HashMap::new(),
@@ -308,6 +316,7 @@ impl RetainedSet {
     #[must_use]
     pub fn remove(&mut self, id: u32) -> Vec<u32> {
         let mut pinned = Vec::new();
+        self.claimed.remove(&id);
         let Some(slots) = self.by_id.remove(&id) else { return pinned };
         for slot in slots {
             if let Some(taken) = self.slots[slot as usize].take() {
@@ -1126,6 +1135,9 @@ impl RetainedSet {
         let mut not_sorted = 0;
         for &slot in self.by_id.get(&id).map(Vec::as_slice).unwrap_or(&[]) {
             let Some(s) = self.slots[slot as usize].as_ref() else { continue };
+            if s.held {
+                continue;
+            }
             if !s.sorted {
                 not_sorted += 1;
                 continue;
@@ -1178,6 +1190,10 @@ impl RetainedSet {
                 let Some(s) = self.slots[slot as usize].as_ref() else { continue };
                 if !s.visible {
                     self.counts.hidden += 1;
+                    continue;
+                }
+                // The extension draws a held instance (`Extension::claims`).
+                if s.held {
                     continue;
                 }
                 if s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES {
@@ -1387,6 +1403,24 @@ impl Player {
         let topology = if strips.is_empty() { 4 } else { 5 };
         let stencil = derived.stencil;
         let effects = effect_stages(&m);
+        // The extension's claim (`Extension::claims`), from the facts of the first pass as
+        // `hold_shape` gives them to `hold`; as there, not for the sky, the water plane of the
+        // game or a skinned shape.
+        let colours = material::d3d_material(&r.colours);
+        let claim = (!derived.passes.is_empty() && r.flags & INSTANCE_SKINNED == 0 && !scene::sky_class(r.class) && r.class != scene::CLASS_WATER_PLANE)
+            .then(|| {
+                let p = Pass::new(&derived, 0, &m, &self.renderer.textures, effects.as_ref());
+                DrawFacts {
+                    class: r.class,
+                    blend_enable: p.blend[0] != 0,
+                    source_blend: p.blend[1],
+                    destination_blend: p.blend[2],
+                    depth_write: derived.depth[1] != 0,
+                    specular_power: colours[16],
+                    emissive: colours[12..16].try_into().unwrap(),
+                }
+            })
+            .filter(|facts| self.extension.as_ref().is_some_and(|extension| extension.claims(facts)));
         let mut slots = Vec::new();
         for pass in 0..derived.passes.len() {
             let p = Pass::new(&derived, pass, &m, &self.renderer.textures, effects.as_ref());
@@ -1487,13 +1521,16 @@ impl Player {
             let bones_first = if r.flags & INSTANCE_SKINNED != 0 { set.bones_first_of(id) } else { NO_BONES };
             let sorted = crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter);
             let in_place = !sorted && derived.blends.first().is_some_and(|b| b[0] != 0);
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted, in_place, pinned, bones_first, no_lights: derived.no_lights });
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted, in_place, pinned, bones_first, no_lights: derived.no_lights, claim, held: false });
             set.buckets[bucket as usize].slots.push(slot);
             set.dirty.push(slot);
             slots.push(slot);
         }
         let set = &mut self.retained;
         set.by_id.insert(id, slots);
+        if claim.is_some() {
+            set.claimed.insert(id);
+        }
         set.counts.instances = set.by_id.len() as u32;
         set.counts.slots = set.slots.iter().flatten().count() as u32;
         // The lights the instance had, when the record came again (`remove` dropped them).
@@ -1538,6 +1575,66 @@ impl Player {
             data.fog[3] = 1.0;
         }
         data
+    }
+
+    /// Offers the instances that the extension claims (`Extension::claims`) to `hold`, one
+    /// time in a frame for each one in the world's main view, as the stream's shapes are
+    /// offered (`hold_shape`): a held instance is drawn by the extension, and no view of the
+    /// table draws its slots in the frame (`Slot::held`). Returns the held draws, made from
+    /// the instance's first slot as `hold_shape` makes them from the first pass.
+    fn retained_hold(&mut self, facts: &WorldFacts, planes: &[[f32; 4]; 6]) -> Vec<HeldDraw> {
+        let mut out = Vec::new();
+        if self.retained.claimed.is_empty() {
+            return out;
+        }
+        let offer = self.parameters.as_ref().is_some_and(|p| p.hold);
+        let Some(mut extension) = self.extension.take() else { return out };
+        let origin = self.retained.light_origin();
+        let view = self.retained.scene_view(&facts.view, facts.origin);
+        let ids: Vec<u32> = self.retained.claimed.iter().copied().collect();
+        for id in ids {
+            let slots = self.retained.by_id.get(&id).cloned().unwrap_or_default();
+            let Some(&first) = slots.first() else { continue };
+            let Some(s) = self.retained.slots[first as usize].as_ref() else { continue };
+            let Some(claim) = s.claim else { continue };
+            let held = offer && s.visible && in_view(&s.bound, planes) && extension.hold(&claim);
+            if held {
+                let bucket = &self.retained.buckets[s.bucket as usize];
+                let key = bucket.key;
+                let sets = (key.fvf >> 8) & 0xF;
+                let derived = self.renderer.derived.get(&(s.material, sets)).cloned();
+                let m = self.renderer.materials.get(&s.material);
+                if let (Some(layout), Some(derived), Some(m)) = (VertexLayout::of(key.fvf, key.stride), derived, m) {
+                    let mut data = s.data;
+                    data.view = view;
+                    data.projection = facts.projection;
+                    out.push(HeldDraw {
+                        facts: claim,
+                        vertices: bucket.vertices.clone(),
+                        base_vertex: s.base_vertex,
+                        indexes: bucket.indexes.clone(),
+                        maps: self.renderer.held_maps(m, layout.coordinates.len() as u32),
+                        layout,
+                        topology: if key.topology == 5 { wgpu::PrimitiveTopology::TriangleStrip } else { wgpu::PrimitiveTopology::TriangleList },
+                        parts: s.ranges.clone(),
+                        data,
+                        origin,
+                        lights: Vec::new(),
+                        depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
+                        cull: derived.cull,
+                        stencil: derived.stencil,
+                    });
+                    self.renderer.counts.held += 1;
+                }
+            }
+            for slot in slots {
+                if let Some(s) = self.retained.slots[slot as usize].as_mut() {
+                    s.held = held;
+                }
+            }
+        }
+        self.extension = Some(extension);
+        out
     }
 
     /// Draws the retained instances in the world of the frame: after the extension drew
@@ -1586,12 +1683,23 @@ impl Player {
         // The cull is in the space of the world: the bounds of the slots are the engine's.
         self.retained.main_view = facts.view;
         let planes = frustum_planes(&multiply32(&facts.view, &facts.projection));
+        let held = self.retained_hold(facts, &planes);
         let Some(pass) = self.pass.as_mut() else { return };
         let view = RetainedView { scene_slot: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Keep, samples: self.pass_samples };
         pass.push_debug_group("retained instances");
         draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &view);
         pass.pop_debug_group();
         self.forget_bound();
+        // The held instances go where the stream's held shapes go: in place (after the
+        // table's draws, its place in the frame [I: the engine's walk would place each one
+        // among the game's draws]) or with the others at the end of the world scene.
+        for h in held {
+            if self.extension.as_ref().is_some_and(|extension| extension.held_in_place(&h)) {
+                self.give_held_here(h, facts);
+            } else {
+                self.taken.push(h);
+            }
+        }
     }
 
     /// Draws the sorted blends of the frame where the engine flushes its sorted queue: the
