@@ -90,9 +90,9 @@ const RENDERER_DATA_NEXT: usize = layouts::NiTexture_RendererData::linkedData;
 const GEOM_BUFFER_VERTEX_BUFFER: usize = layouts::NiGeometryBufferData::d3dVertexBuffer;
 const GEOM_BUFFER_INDEX_BUFFER: usize = layouts::NiGeometryBufferData::indexBuffer;
 const PARTITION_GEOM_BUFFER: usize = layouts::NiSkinPartition_Partition::bufferData;
-/// The value of a node of the `std::map` of `TES3Game` (`map_74`): the adapter description.
-/// The IDA type of the node ends before it.
-const STD_MAP_NODE_VALUE: usize = 0x1C;
+/// The value of a node of the `std::map` of `TES3Game` (`map_74`): the `NiDX8AdapterDesc` of
+/// an adapter description.
+const STD_MAP_NODE_VALUE: usize = layouts::TES3Game_AdapterMapNode::adapterDesc;
 const GAME_ADAPTER_MAP: usize = layouts::TES3Game::map_74;
 const ADAPTER_IDENTIFIER_WORDS: usize = layouts::D3DADAPTER_IDENTIFIER8::SIZE / 4;
 const ADAPTER_IDENTIFIER_DESCRIPTION: usize = layouts::D3DADAPTER_IDENTIFIER8::description;

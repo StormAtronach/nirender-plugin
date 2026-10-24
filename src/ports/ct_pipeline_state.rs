@@ -402,7 +402,7 @@ unsafe fn template_for(this: usize, subpass: usize) -> Option<usize> {
     }
     let first_stage: usize = rd(subpass, SUB::field_14);
     let slot: u32 = rd(first_stage, ST::field_94);
-    Some(rd(pipeline_of(this).wrapping_add((slot as usize).wrapping_mul(4)), CTP::field_2E8))
+    Some(rd(pipeline_of(this).wrapping_add((slot as usize).wrapping_mul(4)), CTP::alphaTemplates))
 }
 
 /// Gives the sub-pass its alpha template with the inline copy of `setNiObjectField48`: two
@@ -799,12 +799,12 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
             let reference: u8 = rd(alpha, AP::alphaTestRef);
             base_slot = 4;
             shadow_slot = 5;
-            template = rd(pipeline_of(this), CTP::field_2E8 + 4 * 4);
+            template = rd(pipeline_of(this), CTP::alphaTemplates + 4 * 4);
             e.wr(template, AP::alphaTestRef, reference);
         } else if rd::<u8>(alpha, AP::flags) & 1 != 0 {
             base_slot = 6;
             shadow_slot = 7;
-            template = rd(pipeline_of(this), CTP::field_2E8 + 6 * 4);
+            template = rd(pipeline_of(this), CTP::alphaTemplates + 6 * 4);
         } else {
             shadow_slot = 2;
         }
@@ -1819,7 +1819,7 @@ mod tests {
                 for index in 0..10 {
                     let template = world.template(index);
                     wr::<u32>(template, REF_COUNT, 1);
-                    wr(pipeline, CTP::field_2E8 + index * 4, template);
+                    wr(pipeline, CTP::alphaTemplates + index * 4, template);
                 }
                 for index in 0..subpass_count {
                     let subpass = world.subpasses[index].as_mut_ptr() as usize;

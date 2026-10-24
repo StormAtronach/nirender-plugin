@@ -12,7 +12,7 @@ use crate::d3d::{
 };
 use crate::engine::{self, EMPTY_STRING, MAX_SIMULTANEOUS_TEXTURES, MAX_TEXTURE_BLEND_STAGES, NI_REF_OBJECT_COUNT, VTBL_NI_REF_OBJECT};
 use crate::gen::layouts::{
-    NiDX8ConfigurableTexturePipeline as CTP, NiDX8RenderState as RS, NiDX8Renderer as REN, NiDX8TexturePass as TP,
+    NiDX8ConfigurableTexturePipeline as CTP, NiDX8ConfigurableTexturePipeline_BlendOps as BO, NiDX8RenderState as RS, NiDX8Renderer as REN, NiDX8TexturePass as TP,
     NiDX8TexturePass__1 as SUB, NiDX8TextureStage as ST, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as LIST,
     InterfaceNiDX8TextureData, NiRenderStateSetting, NiSourceTexture, NiTexture, NiTextureEffect, vec3,
 };
@@ -210,16 +210,18 @@ pub unsafe fn apply_stage_blend_ops(this: usize, stage: usize, flag: u8) {
     }
     let stage_index: u32 = rd(stage, ST::stage);
     let slot: u32 = rd(stage, ST::field_94);
+    // The game code computes the slot address as (slot * 3 + table / 8) * 8, in 32 bits.
+    let slot_offset = slot.wrapping_mul(BO::SIZE as u32) as usize;
     if stage_index == 0 && flag == 0 {
-        // The table of the first stage, at pipeline + 0x108.
+        // The table of the first stage.
         let pipeline: usize = rd(this, TP::configurableTexturePipeline);
-        let entry = pipeline.wrapping_add((slot.wrapping_mul(3).wrapping_add(0x21) as usize).wrapping_mul(8));
-        wr::<u32>(stage, ST::colorOp, rd(entry, 0x00));
-        wr::<u32>(stage, ST::colorArg1, rd(entry, 0x04));
-        wr::<u32>(stage, ST::colorArg2, rd(entry, 0x08));
-        wr::<u32>(stage, ST::alphaOp, rd(entry, 0x0C));
-        wr::<u32>(stage, ST::alphaArg1, rd(entry, 0x10));
-        wr::<u32>(stage, ST::alphaArg2, rd(entry, 0x14));
+        let entry = pipeline.wrapping_add((slot_offset as u32).wrapping_add(CTP::firstStageBlendOps as u32) as usize);
+        wr::<u32>(stage, ST::colorOp, rd(entry, BO::colorOp));
+        wr::<u32>(stage, ST::colorArg1, rd(entry, BO::colorArg1));
+        wr::<u32>(stage, ST::colorArg2, rd(entry, BO::colorArg2));
+        wr::<u32>(stage, ST::alphaOp, rd(entry, BO::alphaOp));
+        wr::<u32>(stage, ST::alphaArg1, rd(entry, BO::alphaArg1));
+        wr::<u32>(stage, ST::alphaArg2, rd(entry, BO::alphaArg2));
         if rd::<u8>(stage, ST::field_90) == 0 {
             wr::<u32>(stage, ST::colorOp, 2);
             wr::<u32>(stage, ST::colorArg1, 2);
@@ -233,16 +235,16 @@ pub unsafe fn apply_stage_blend_ops(this: usize, stage: usize, flag: u8) {
         wr::<u32>(stage, ST::colorOp, 3);
         wr::<u32>(stage, ST::alphaOp, 3);
     } else {
-        // The table of the later stages, at pipeline + 0x1F8.
+        // The table of the later stages. The game code reads the pipeline again for each member.
         let pipeline = || rd::<usize>(this, TP::configurableTexturePipeline);
-        let first = (slot.wrapping_mul(3).wrapping_add(0x3F) as usize).wrapping_mul(8);
-        let entry = (slot.wrapping_mul(3) << 3) as usize;
-        wr::<u32>(stage, ST::colorOp, rd(pipeline().wrapping_add(first), 0));
-        wr::<u32>(stage, ST::colorArg1, rd(pipeline().wrapping_add(entry), CTP::field_1FC));
-        wr::<u32>(stage, ST::colorArg2, rd(pipeline().wrapping_add(entry), CTP::field_1FC + 0x04));
-        wr::<u32>(stage, ST::alphaOp, rd(pipeline().wrapping_add(entry), CTP::field_1FC + 0x08));
-        wr::<u32>(stage, ST::alphaArg1, rd(pipeline().wrapping_add(entry), CTP::field_1FC + 0x0C));
-        wr::<u32>(stage, ST::alphaArg2, rd(pipeline().wrapping_add(entry), CTP::field_1FC + 0x10));
+        let first = (slot_offset as u32).wrapping_add(CTP::laterStageBlendOps as u32) as usize;
+        let table = CTP::laterStageBlendOps;
+        wr::<u32>(stage, ST::colorOp, rd(pipeline().wrapping_add(first), BO::colorOp));
+        wr::<u32>(stage, ST::colorArg1, rd(pipeline().wrapping_add(slot_offset), table + BO::colorArg1));
+        wr::<u32>(stage, ST::colorArg2, rd(pipeline().wrapping_add(slot_offset), table + BO::colorArg2));
+        wr::<u32>(stage, ST::alphaOp, rd(pipeline().wrapping_add(slot_offset), table + BO::alphaOp));
+        wr::<u32>(stage, ST::alphaArg1, rd(pipeline().wrapping_add(slot_offset), table + BO::alphaArg1));
+        wr::<u32>(stage, ST::alphaArg2, rd(pipeline().wrapping_add(slot_offset), table + BO::alphaArg2));
     }
 }
 
@@ -268,7 +270,7 @@ pub unsafe fn bind_stage_texture(this: usize, stage: usize, textures: u32, stage
     let first_stage: usize = rd(subpass, SUB::field_14);
     let pipeline: usize = rd(this, TP::configurableTexturePipeline);
     let slot: u32 = rd(first_stage, ST::field_94);
-    let object: usize = rd(pipeline.wrapping_add((slot as usize).wrapping_mul(4)), CTP::field_2E8);
+    let object: usize = rd(pipeline.wrapping_add((slot as usize).wrapping_mul(4)), CTP::alphaTemplates);
     // The game has the same code as `_1::setNiObjectField48` inline here.
     subpass_set_ni_object_field_48(subpass, object);
     result
@@ -1132,7 +1134,7 @@ unsafe fn bind_stage_texture_regions(set: &mut Regions, this: usize, stage: usiz
     let first_stage: usize = if rd::<u32>(subpass, SUB::field_8) == 0 { stage } else { rd(subpass, SUB::field_14) };
     let pipeline: usize = rd(this, TP::configurableTexturePipeline);
     let slot: u32 = rd(first_stage, ST::field_94);
-    let object: usize = rd(pipeline.wrapping_add((slot as usize).wrapping_mul(4)), CTP::field_2E8);
+    let object: usize = rd(pipeline.wrapping_add((slot as usize).wrapping_mul(4)), CTP::alphaTemplates);
     field_48_regions(set, subpass, object);
 }
 
@@ -1690,8 +1692,8 @@ mod tests {
         unsafe {
             // Slot 2 of the two tables.
             for index in 0..6u32 {
-                wr(p, CTP::field_108 + 2 * 24 + index as usize * 4, 0x100 + index);
-                wr(p, CTP::field_1F8 + 2 * 24 + index as usize * 4, 0x200 + index);
+                wr(p, CTP::firstStageBlendOps + 2 * BO::SIZE + index as usize * 4, 0x100 + index);
+                wr(p, CTP::laterStageBlendOps + 2 * BO::SIZE + index as usize * 4, 0x200 + index);
             }
             wr::<u32>(s, ST::field_94, 2);
 

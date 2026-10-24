@@ -1,11 +1,8 @@
 # The hand-written engine offsets of each file (tools/hand_offsets.py). It only goes down.
 src/ports/base.rs 1
-src/ports/buffers.rs 9
-src/ports/device_setup.rs 2
-src/ports/draw.rs 6
+src/ports/device_setup.rs 1
+src/ports/draw.rs 2
 src/ports/draw_misc.rs 6
-src/ports/rendered.rs 16
-src/ports/texture_pass_a.rs 2
-src/ports/texture_pass_b.rs 6
-src/ports/texture_pipeline.rs 7
-src/ports/textures.rs 12
+src/ports/texture_pass_a.rs 1
+src/ports/texture_pipeline.rs 2
+src/ports/textures.rs 1

@@ -1030,7 +1030,7 @@ unsafe fn shader_of(property: usize) -> (usize, u32) {
         if data != 0 && vcall0(data, V_GET_RENDERER_TYPE_ID) == 7 {
             let data: usize = rd(property, NiRendererSpecificProperty::renderData);
             if data != 0 {
-                return (rd(data, RenderData7::field_C), rd(data, RenderData7::field_8));
+                return (rd(data, RenderData7::prop1), rd(data, RenderData7::prop2));
             }
         }
     }
@@ -1512,8 +1512,8 @@ mod tests {
             assert_eq!(shader_of(0), (0, 0));
             assert_eq!(shader_of(at), (0, 0));
             wr(at, NiRendererSpecificProperty::renderData, data_at);
-            wr::<u32>(data_at, RenderData7::field_8, 0x88);
-            wr::<u32>(data_at, RenderData7::field_C, 0xCC);
+            wr::<u32>(data_at, RenderData7::prop2, 0x88);
+            wr::<u32>(data_at, RenderData7::prop1, 0xCC);
             wr(data_at, 0, vtable8.as_ptr() as usize);
             assert_eq!(shader_of(at), (0, 0));
             wr(data_at, 0, vtable7.as_ptr() as usize);

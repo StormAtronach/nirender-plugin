@@ -15,7 +15,8 @@ use crate::d3d::{
 };
 use crate::engine::{vcall0, virtual_at, CREATE_CRITICAL_SECTION, VTBL_NI_REF_OBJECT};
 use crate::gen::layouts::{
-    NiD3DShaderInterface as SI, NiDX8IndexBufferManager as IM, NiDX8VBResource as VR, NiDX8VertexBufferManager as VM,
+    NiD3DShaderInterface as SI, NiD3DShaderInterface_Declaration as DECL, NiD3DShaderInterface_DeclarationElement as ELEM,
+    NiD3DShaderInterface_ShaderEntry as SE, NiDX8IndexBufferManager as IM, NiDX8VBResource as VR, NiDX8VertexBufferManager as VM,
     NiDX8VertexBufferManager_VBInfo as VI, NiGeometryData as GD, NiSkinPartition_Partition as SP, THashMap as HM,
     THashMap_Node as HN,
 };
@@ -43,7 +44,7 @@ use crate::d3d::DEVICE_CREATE_VERTEX_SHADER;
 /// The slot of `GetActiveVertexCount` in the vtable of a `NiGeometryData` (0x6BDE63, 0x6BF0D2).
 const GEOMETRY_VTBL_ACTIVE_VERTEX_COUNT: usize = crate::gen::layouts::InterfaceNiGeometryData::GetActiveVertexCount;
 /// The slot of the function of `NiD3DShaderInterface` that gives the vertex declaration (0x6BEE75).
-const SHADER_VTBL_DECLARATION: usize = 0x2C;
+const SHADER_VTBL_DECLARATION: usize = crate::gen::layouts::InterfaceNiD3DShaderInterface::GetDeclaration;
 
 const ARRAY_STORAGE: usize = crate::gen::layouts::TArray::storage;
 const ARRAY_STORAGE_COUNT: usize = crate::gen::layouts::TArray::storageCount;
@@ -51,18 +52,20 @@ const ARRAY_END_INDEX: usize = crate::gen::layouts::TArray::endIndex;
 const ARRAY_FILLED_COUNT: usize = crate::gen::layouts::TArray::filledCount;
 const ARRAY_GROW_BY: usize = crate::gen::layouts::TArray::growByCount;
 
-// The object that `compileVertexShader` keeps for each shader. It has 0x24 bytes and the vtable 0x74F768.
-const SHADER_ENTRY_SIZE: usize = 0x24;
-const SHADER_ENTRY_NAME: usize = 0x10;
-const SHADER_ENTRY_HANDLE: usize = 0x20;
+// The object that `compileVertexShader` keeps for each shader. It has the vtable 0x74F768.
+const SHADER_ENTRY_SIZE: usize = SE::SIZE;
+const SHADER_ENTRY_NAME: usize = SE::name;
+const SHADER_ENTRY_HANDLE: usize = SE::vertexShader;
 
-// One vertex declaration of `NiD3DShaderInterface::field_24` has 0x10 bytes.
+// One vertex declaration of `NiD3DShaderInterface::declarations`. The game code multiplies the
+// index by its size with a shift.
 const DECLARATION_SHIFT: u32 = 4;
-const DECLARATION_ELEMENTS: usize = 0x8;
-const DECLARATION_STRIDE: usize = 0xC;
-/// One element of a declaration has 0x10 bytes. [`ELEMENT_OFFSET`] is its offset in the vertex.
-const ELEMENT_SIZE: usize = 0x10;
-const ELEMENT_OFFSET: usize = 0xC;
+const DECLARATION_ELEMENTS: usize = DECL::elements;
+const DECLARATION_STRIDE: usize = DECL::stride;
+/// One element of a declaration. [`ELEMENT_OFFSET`] is its offset in the vertex.
+const ELEMENT_SIZE: usize = ELEM::SIZE;
+const ELEMENT_OFFSET: usize = ELEM::offset;
+const _: () = assert!(1 << DECLARATION_SHIFT == DECL::SIZE);
 
 const VTBL_INDEX_BUFFER_MANAGER: u32 = 0x74F724;
 const VTBL_VERTEX_BUFFER_MANAGER: u32 = 0x74F73C;
@@ -83,7 +86,7 @@ const _: () = assert!(VM::SIZE == 0x3C && VM::hashmap_C == 0xC && VM::hashmap_1C
 const _: () = assert!(VI::SIZE == 0x1C && VI::nextFreeResourceIndex == 4 && VI::resources == 8);
 const _: () = assert!(VR::SIZE == 0x3C && VR::length == 0x14 && VR::pVB == 0x20 && VR::desc == 0x24);
 const _: () = assert!(SI::SIZE == 0xC0 && SI::shaderFunctions == 0x30 && SI::shaderUsages == 0x48 && SI::field_90 == 0x90);
-const _: () = assert!(SI::vertexShaderHandles == 0xA8 && SI::d3dDevice == 0xC && SI::field_1C == 0x1C && SI::field_24 == 0x24);
+const _: () = assert!(SI::vertexShaderHandles == 0xA8 && SI::d3dDevice == 0xC && SI::field_1C == 0x1C && SI::declarations == 0x24);
 
 // ---- engine functions and data at fixed addresses
 
@@ -1109,12 +1112,12 @@ pub unsafe fn compile_vertex_shader(this: usize, shader_function: u32, shader_us
     if entry == 0 {
         let block = eng::operator_new(SHADER_ENTRY_SIZE);
         if block != 0 {
-            wr(block, 0, VTBL_NI_REF_OBJECT);
-            wr::<u32>(block, 4, 0);
+            wr(block, SE::vtbl, VTBL_NI_REF_OBJECT);
+            wr::<u32>(block, SE::refCount, 0);
             eng::ref_object_count_add(1);
-            wr(block, 0, VTBL_SHADER_ENTRY);
-            wr::<u32>(block, 8, 0);
-            wr::<u32>(block, 0xC, 0);
+            wr(block, SE::vtbl, VTBL_SHADER_ENTRY);
+            wr::<u32>(block, SE::unknown_8, 0);
+            wr::<u32>(block, SE::unknown_C, 0);
             // This loop is the `strcpy` of the empty string of the game.
             let mut from = eng::empty_string();
             let mut to = block + SHADER_ENTRY_NAME;
@@ -1189,7 +1192,7 @@ pub unsafe fn build_vertex_buffer(
         }
     }
     let declaration_offset = declaration_index.wrapping_shl(DECLARATION_SHIFT) as usize;
-    let stride: u32 = rd(rd::<usize>(this, SI::field_24), declaration_offset + DECLARATION_STRIDE);
+    let stride: u32 = rd(rd::<usize>(this, SI::declarations), declaration_offset + DECLARATION_STRIDE);
     if stride == 0 {
         return 0;
     }
@@ -1218,7 +1221,7 @@ pub unsafe fn build_vertex_buffer(
     if buffer_lock(buffer, 0, 0, core::ptr::addr_of_mut!(data) as usize, 0) != 0 {
         return 0;
     }
-    let declaration = rd::<usize>(this, SI::field_24).wrapping_add(declaration_offset);
+    let declaration = rd::<usize>(this, SI::declarations).wrapping_add(declaration_offset);
     if declaration != 0 && rd::<u32>(this, SI::field_1C) != 0 {
         let mut element_offset: usize = 0;
         let mut i: u32 = 0;
@@ -2158,10 +2161,10 @@ mod tests {
         let elements = leak(2 * ELEMENT_SIZE);
         wr::<u32>(elements, ELEMENT_OFFSET, 0);
         wr::<u32>(elements, ELEMENT_SIZE + ELEMENT_OFFSET, 12);
-        let declarations = leak(0x20);
-        wr(declarations, 0x10 + DECLARATION_ELEMENTS, elements);
-        wr::<u32>(declarations, 0x10 + DECLARATION_STRIDE, 20);
-        wr(this, SI::field_24, declarations);
+        let declarations = leak(2 * DECL::SIZE);
+        wr(declarations, DECL::SIZE + DECLARATION_ELEMENTS, elements);
+        wr::<u32>(declarations, DECL::SIZE + DECLARATION_STRIDE, 20);
+        wr(this, SI::declarations, declarations);
         for array in [SI::shaderFunctions, SI::shaderUsages, SI::field_90, SI::vertexShaderHandles] {
             wr(this + array, ARRAY_STORAGE, leak(8));
             wr::<u32>(this + array, ARRAY_STORAGE_COUNT, 2);
@@ -2183,7 +2186,7 @@ mod tests {
             let buffer = build_vertex_buffer(this, shape, 0x22, 0, 0x44, 0, outs.0, 1, 8, outs.1, outs.2, 1);
             assert_eq!(calls(), [("CreateVertexBuffer", 60, 0), ("Lock", 0, 0), ("Unlock", 0, 0)]);
             assert_eq!((size, stride, shader), (60, 20, 0x77));
-            let declaration = rd::<usize>(this, SI::field_24) + 0x10;
+            let declaration = rd::<usize>(this, SI::declarations) + DECL::SIZE;
             let elements: usize = rd(declaration, DECLARATION_ELEMENTS);
             let data = data_of(buffer) as u32;
             let packed = eng::PACKED.with(|p| core::mem::take(&mut *p.borrow_mut()));

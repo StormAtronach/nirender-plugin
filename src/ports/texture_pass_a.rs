@@ -501,9 +501,10 @@ pub unsafe fn init_renderer(this: usize, renderer: usize) -> u8 {
         }
     }
 
-    // The port calls virtual function 4 of the texture manager with the new texture.
+    // The port calls virtual function 4 of the texture manager (`GetFormatFromTexture`) with the
+    // new texture.
     let manager: usize = rd(this, TP::textureManager);
-    let link: unsafe extern "thiscall" fn(usize, usize) -> u32 = transmute(rd::<usize>(rd::<usize>(manager, 0), 0x10));
+    let link: unsafe extern "thiscall" fn(usize, usize) -> u32 = transmute(rd::<usize>(rd::<usize>(manager, 0), crate::gen::layouts::InterfaceNiDX8TextureManager::GetFormatFromTexture));
     link(manager, rd(this, TP::texture_CDC));
 
     for index in 0..STAGES_PER_BANK {

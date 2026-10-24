@@ -57,7 +57,7 @@ const STR_CUBE_COPY_FAILED: usize = 0x7C4358;
 const STR_24_BIT: usize = 0x7C34FC;
 
 // ---------------------------------------------------------------------------------------
-// Offsets the layouts do not have
+// Offsets of the classes that the port reads
 // ---------------------------------------------------------------------------------------
 
 /// The second and the third group of `NiDX8Renderer::arrayArrayTextureFormats`. Each group has
@@ -67,26 +67,26 @@ const RENDERED_TEXTURE_FORMATS: usize = R::arrayArrayTextureFormats + 0x38;
 const CUBE_MAP_FORMATS: usize = R::arrayArrayTextureFormats + 0x70;
 
 /// `NiRenderedCubeMap`: the face that is the render target now.
-const RENDERED_CUBE_MAP_CURRENT_FACE: usize = 0x34;
+const RENDERED_CUBE_MAP_CURRENT_FACE: usize = crate::gen::layouts::NiRenderedCubeMap::currentFace;
 /// `NiSourceCubeMap`: six file names, then six `NiPixelData` pointers.
-const SOURCE_CUBE_MAP_FILE_NAMES: usize = 0x58;
-const SOURCE_CUBE_MAP_PIXEL_DATA: usize = 0x70;
+const SOURCE_CUBE_MAP_FILE_NAMES: usize = crate::gen::layouts::NiSourceCubeMap::fileNames;
+const SOURCE_CUBE_MAP_PIXEL_DATA: usize = crate::gen::layouts::NiSourceCubeMap::pixelData;
 
 /// `NiDX8RenderedCubeMapData`: a `NiDX8RenderedTextureData`, the cube texture and six targets.
-const RENDERED_CUBE_SIZE: usize = 0x9C;
-const RENDERED_CUBE_TEXTURE: usize = 0x80;
-const RENDERED_CUBE_TARGETS: usize = 0x84;
+const RENDERED_CUBE_SIZE: usize = crate::gen::layouts::NiDX8RenderedCubeMapData::SIZE;
+const RENDERED_CUBE_TEXTURE: usize = crate::gen::layouts::NiDX8RenderedCubeMapData::cubeTexture;
+const RENDERED_CUBE_TARGETS: usize = crate::gen::layouts::NiDX8RenderedCubeMapData::faceTargets;
 
 /// `NiDX8SourceCubeMapData`: a `NiDX8SourceTextureData`, the cube texture and the revision
 /// of the pixel data of each face.
-const SOURCE_CUBE_SIZE: usize = 0x84;
-const SOURCE_CUBE_TEXTURE: usize = 0x68;
-const SOURCE_CUBE_FACE_REVISIONS: usize = 0x6C;
+const SOURCE_CUBE_SIZE: usize = crate::gen::layouts::NiDX8SourceCubeMapData::SIZE;
+const SOURCE_CUBE_TEXTURE: usize = crate::gen::layouts::NiDX8SourceCubeMapData::cubeTexture;
+const SOURCE_CUBE_FACE_REVISIONS: usize = crate::gen::layouts::NiDX8SourceCubeMapData::faceRevisions;
 
 const PALETTE_REVISION: usize = crate::gen::layouts::NiPalette::revisionID;
 /// `NiBltSource::rendererData` and the surface in that data.
 const BLT_SOURCE_RENDERER_DATA: usize = crate::gen::layouts::NiBltSource::rendererData;
-const BLT_DATA_SURFACE: usize = 0x14;
+const BLT_DATA_SURFACE: usize = crate::gen::layouts::NiDX8BltSourceData::surface;
 /// `NiRect<unsigned int>`: left, right, top, bottom.
 const RECT_LEFT: usize = 0;
 const RECT_RIGHT: usize = 4;
@@ -529,7 +529,7 @@ pub unsafe fn rendered_texture_data_create(texture: usize, renderer: usize) -> u
         let height = texture_get_height(texture);
         let width = texture_get_width(texture);
         let device: usize = rd(renderer, R::d3dDevice);
-        let create: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize) -> u32 = transmute(rd::<usize>(device_vtable, 0x68));
+        let create: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize) -> u32 = transmute(rd::<usize>(device_vtable, crate::d3d::DEVICE_CREATE_DEPTH_STENCIL_SURFACE));
         let result = match crate::link_client::target_call(crate::link::CALL_CREATE_DEPTH_BUFFER, &[width, height, depth_format, 0, out as u32]) {
             Some(result) => result,
             None => create(device, width, height, depth_format, 0, out),
@@ -1600,10 +1600,11 @@ mod tests {
             assert_eq!(rendered_texture_data_is_loaded(d), 0);
             assert_eq!(rendered_cube_map_data_is_loaded(d), 0);
             assert_eq!(source_cube_map_data_is_loaded(d), 0);
-            wr::<u32>(d, 0x68, 0x1111);
-            wr::<u32>(d, 0x78, 0x2222);
-            wr::<u32>(d, 0x7C, 0x3333);
-            wr::<u32>(d, 0x80, 0x4444);
+            // One block for the three classes: their members do not overlap.
+            wr::<u32>(d, SOURCE_CUBE_TEXTURE, 0x1111);
+            wr::<u32>(d, RTD::d3dTexture, 0x2222);
+            wr::<u32>(d, RTD::target, 0x3333);
+            wr::<u32>(d, RENDERED_CUBE_TEXTURE, 0x4444);
             assert_eq!(source_cube_map_data_get_d3d_texture(d), 0x1111);
             assert_eq!(source_cube_map_data_is_loaded(d), 1);
             assert_eq!(rendered_texture_data_get_d3d_texture(d), 0x2222);
@@ -1611,11 +1612,11 @@ mod tests {
             assert_eq!(rendered_texture_data_get_target(d), 0x3333);
             assert_eq!(rendered_cube_map_data_get_d3d_texture(d), 0x4444);
             assert_eq!(rendered_cube_map_data_is_loaded(d), 1);
-            wr(d, 8, c);
+            wr(d, RTD::vtbl_sgTexture, c);
             for face in 0..6u32 {
-                wr::<u32>(d, 0x84 + face as usize * 4, 0x100 + face);
+                wr::<u32>(d, RENDERED_CUBE_TARGETS + face as usize * 4, 0x100 + face);
             }
-            wr::<u32>(c, 0x34, 4);
+            wr::<u32>(c, RENDERED_CUBE_MAP_CURRENT_FACE, 4);
             assert_eq!(rendered_cube_map_data_get_target(d), 0x104);
         }
     }

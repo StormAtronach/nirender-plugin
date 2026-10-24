@@ -50,10 +50,10 @@ const RENDERER_LIST_BLOCK_NODES: usize = 0x7DEA68;
 /// The constructor and the destructor write the count, head, tail, free nodes and node blocks.
 const RENDERER_LIST_SIZE: usize = 0x14;
 /// A node of the list: renderer, next, previous.
-const NODE_SIZE: usize = 12;
-const NODE_RENDERER: usize = 0;
-const NODE_NEXT: usize = 4;
-const NODE_PREVIOUS: usize = 8;
+const NODE_SIZE: usize = layouts::NiRenderer_globalSListNode::SIZE;
+const NODE_RENDERER: usize = layouts::NiRenderer_globalSListNode::renderer;
+const NODE_NEXT: usize = layouts::NiRenderer_globalSListNode::next;
+const NODE_PREVIOUS: usize = layouts::NiRenderer_globalSListNode::previous;
 
 /// The default value of each of the 256 render states.
 const RENDER_STATE_DEFAULTS: usize = 0x7C3858;
@@ -102,7 +102,7 @@ const ALPHA_PROPERTY_FLAGS: usize = layouts::NiAlphaProperty::flags;
 const ALPHA_PROPERTY_TEST_REF: usize = layouts::NiAlphaProperty::alphaTestRef;
 
 /// `NiDX8ConfigurableTexturePipeline`: the texture pass that the shader functions go to.
-const PIPELINE_TEXTURE_PASS: usize = CTP::field_8;
+const PIPELINE_TEXTURE_PASS: usize = CTP::currentPass;
 
 // ---------------------------------------------------------------------------------------------
 // Engine functions at fixed addresses
@@ -774,14 +774,14 @@ pub unsafe fn render_data_base_dtor(this: usize) {
 pub unsafe fn render_data_7_dtor(this: usize) {
     crate::shadow::touch(&render_data_7_dtor_port::STATE);
     wr(this, RD7::vtbl, VTBL_RENDER_DATA_7);
-    for member in [RD7::texturePass, RD7::field_8, RD7::field_C] {
+    for member in [RD7::texturePass, RD7::prop2, RD7::prop1] {
         let object: usize = rd(this, member);
         if object != 0 {
             ni::release(object);
             wr::<usize>(this, member, 0);
         }
     }
-    for member in [RD7::field_C, RD7::field_8, RD7::texturePass] {
+    for member in [RD7::prop1, RD7::prop2, RD7::texturePass] {
         let object: usize = rd(this, member);
         if object != 0 {
             ni::release(object);
@@ -794,7 +794,7 @@ pub unsafe fn render_data_7_dtor(this: usize) {
 /// destructor cannot run two times.
 unsafe fn render_data_7_dtor_regions(set: &mut Regions, this: usize) {
     set.add(this, RD7::SIZE);
-    for member in [RD7::texturePass, RD7::field_8, RD7::field_C] {
+    for member in [RD7::texturePass, RD7::prop2, RD7::prop1] {
         if !release_regions(set, rd(this, member)) {
             return set.skip();
         }
@@ -1969,7 +1969,7 @@ mod tests {
         assert_eq!(MP::rendererData, 0x18);
         assert_eq!(RSP::flags, 0x14);
         assert_eq!(RSP::renderData, 0x18);
-        assert_eq!((RD7::texturePass, RD7::field_8, RD7::field_C), (4, 8, 12));
+        assert_eq!((RD7::texturePass, RD7::prop2, RD7::prop1), (4, 8, 12));
         assert_eq!(MM::hashmap_8 + HM::bucketCount, 0x10);
         assert_eq!(MM::hashmap_8 + HM::arrayBuckets, 0x14);
         assert_eq!(MM::currentMaterialEntry, 0x18);
@@ -2198,7 +2198,7 @@ mod tests {
         let this = data.as_mut_ptr() as usize;
         unsafe {
             wr(this, RD7::texturePass, pass.as_mut_ptr() as usize);
-            wr(this, RD7::field_C, other.as_mut_ptr() as usize);
+            wr(this, RD7::prop1, other.as_mut_ptr() as usize);
             assert_eq!(render_data_7_deleting_dtor(this, 0), this);
         }
         assert_eq!(data, [VTBL_RENDER_DATA_BASE, 0, 0, 0]);

@@ -22,24 +22,24 @@ use crate::shadow::Regions;
 const PALETTE_REVISION: usize = layouts::NiPalette::revisionID;
 const PREFS_LAYOUT: usize = layouts::NiFormatPrefs::pixelLayout;
 const PREFS_ALPHA: usize = layouts::NiFormatPrefs::alphaFormat;
-/// An object of the renderer that is similar to `NiRenderTargetGroup`: its `NiDX8PixelFormat *`
+/// `NiDX8RenderTarget::DX8PixelFormat` of the current render target of the renderer
 /// (0x6B66D7).
-const RENDER_TARGET_PIXEL_FORMAT: usize = 0x8;
+const RENDER_TARGET_PIXEL_FORMAT: usize = layouts::NiDX8RenderTarget::DX8PixelFormat;
 
-// `NiBltSource` (0x6B66AC, 0x6B66C8, 0x6B67AC). The IDA type names the pixel data `field_10`.
+// `NiBltSource` (0x6B66AC, 0x6B66C8, 0x6B67AC)
 const BLT_FILENAME: usize = layouts::NiBltSource::pcFilename;
-const BLT_PIXEL_DATA: usize = 0x10;
+const BLT_PIXEL_DATA: usize = layouts::NiBltSource::pixelData;
 const BLT_RENDERER_DATA: usize = layouts::NiBltSource::rendererData;
 
 // `NiDX8BltSourceData` (0x6B672E)
-const BD_SIZE: usize = 0x24;
-const BD_LINKED: usize = 0x4;
-const BD_SOURCE: usize = 0x8;
-const BD_RENDERER: usize = 0x10;
-const BD_SURFACE: usize = 0x14;
-const BD_FIELD_18: usize = 0x18;
-const BD_WIDTH: usize = 0x1C;
-const BD_HEIGHT: usize = 0x20;
+const BD_SIZE: usize = layouts::NiDX8BltSourceData::SIZE;
+const BD_LINKED: usize = layouts::NiDX8BltSourceData::linkedData;
+const BD_SOURCE: usize = layouts::NiDX8BltSourceData::bltSource;
+const BD_RENDERER: usize = layouts::NiDX8BltSourceData::renderer;
+const BD_SURFACE: usize = layouts::NiDX8BltSourceData::surface;
+const BD_FIELD_18: usize = layouts::NiDX8BltSourceData::unknown_18;
+const BD_WIDTH: usize = layouts::NiDX8BltSourceData::width;
+const BD_HEIGHT: usize = layouts::NiDX8BltSourceData::height;
 
 /// A value in a hash map of the texture manager: a device object that the value holds (0x6BC3E2).
 const MAP_VALUE_DEVICE_OBJECT: usize = 0x2C;
@@ -61,12 +61,12 @@ const VTBL_BLT_RENDERER_DATA: u32 = 0x74F67C;
 /// `NiSourceTexture::ms_RTTI`
 const RTTI_SOURCE_TEXTURE: usize = 0x7DE3C0;
 
-// `NiDX8TextureData`. The IDA type of its vtable ends before `Update` (0x2C).
+// `NiDX8TextureData`. `Update` is in the vtable of `NiDX8SourceTextureData` and of its subclasses.
 const VT_DATA_GET_PIXEL_FORMAT: usize = layouts::InterfaceNiDX8TextureData::GetPixelFormat;
 const VT_DATA_GET_LEVELS: usize = layouts::InterfaceNiDX8TextureData::GetLevels;
 const VT_DATA_GET_D3D_TEXTURE: usize = layouts::InterfaceNiDX8TextureData::GetD3DTexture;
 const VT_DATA_GET_AS_RENDERED: usize = layouts::InterfaceNiDX8TextureData::GetAsRenderedTexture;
-const VT_DATA_UPDATE: usize = 0x2C;
+const VT_DATA_UPDATE: usize = layouts::InterfaceNiDX8SourceTextureData::Update;
 const VT_RENDERER_CREATE_SOURCE_DATA: usize = layouts::InterfaceNiRenderer::CreateSourceTextureRendererData;
 const VT_CONVERTER_READ_FILE: usize = layouts::NiImageConverter_vtbl::ReadImageFile;
 const VT_CONVERTER_CAN_CONVERT: usize = layouts::NiImageConverter_vtbl::CanConvertPixelData;

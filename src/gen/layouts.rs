@@ -773,6 +773,72 @@ pub mod InterfaceNiAccumulator {
     pub const RegisterObject: usize = 0x34;
 }
 
+pub mod InterfaceNiD3DShaderInterface {
+    pub const SIZE: usize = 0x30;
+    /// `void *[11]`, 0x2c bytes
+    pub const unknownSlots: usize = 0x0;
+    /// `DWORD *(__thiscall *)(NiD3DShaderInterface *this)`, 0x4 bytes
+    pub const GetDeclaration: usize = 0x2c;
+}
+
+pub mod InterfaceNiDX8RenderedTextureData {
+    pub const SIZE: usize = 0x2c;
+    /// `InterfaceNiDX8TextureData`, 0x28 bytes
+    pub const super_: usize = 0x0;
+    /// `void (__thiscall *)(NiTexture::RendererData *, char)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `bool (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const IsLoaded: usize = 0x4;
+    /// `unsigned int (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetWidth: usize = 0x8;
+    /// `unsigned int (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetHeight: usize = 0xc;
+    /// `NiDX8PixelFormat *(__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetPixelFormat: usize = 0x10;
+    /// `unsigned int (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetLevels: usize = 0x14;
+    /// `IDirect3DTexture8 *(__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetD3DTexture: usize = 0x18;
+    /// `unsigned int (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetD3DPalette: usize = 0x1c;
+    /// `int (__thiscall *)(_DWORD)`, 0x4 bytes
+    pub const GetAsRenderedTexture: usize = 0x20;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const GetAsSourceTexture: usize = 0x24;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const GetTarget: usize = 0x28;
+}
+
+pub mod InterfaceNiDX8SourceTextureData {
+    pub const SIZE: usize = 0x30;
+    /// `InterfaceNiDX8TextureData`, 0x28 bytes
+    pub const super_: usize = 0x0;
+    /// `void (__thiscall *)(NiTexture::RendererData *, char)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `bool (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const IsLoaded: usize = 0x4;
+    /// `unsigned int (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetWidth: usize = 0x8;
+    /// `unsigned int (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetHeight: usize = 0xc;
+    /// `NiDX8PixelFormat *(__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetPixelFormat: usize = 0x10;
+    /// `unsigned int (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetLevels: usize = 0x14;
+    /// `IDirect3DTexture8 *(__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetD3DTexture: usize = 0x18;
+    /// `unsigned int (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetD3DPalette: usize = 0x1c;
+    /// `int (__thiscall *)(_DWORD)`, 0x4 bytes
+    pub const GetAsRenderedTexture: usize = 0x20;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const GetAsSourceTexture: usize = 0x24;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const GetPalette: usize = 0x28;
+    /// `int (__thiscall *)(_DWORD)`, 0x4 bytes
+    pub const Update: usize = 0x2c;
+}
+
 pub mod InterfaceNiDX8TextureData {
     pub const SIZE: usize = 0x28;
     /// `void (__thiscall *)(NiTexture::RendererData *, char)`, 0x4 bytes
@@ -795,6 +861,20 @@ pub mod InterfaceNiDX8TextureData {
     pub const GetAsRenderedTexture: usize = 0x20;
     /// `_UNKNOWN *`, 0x4 bytes
     pub const GetAsSourceTexture: usize = 0x24;
+}
+
+pub mod InterfaceNiDX8TextureManager {
+    pub const SIZE: usize = 0x14;
+    /// `void (__thiscall *)(NiDX8TextureManager *this, char flags)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `void *(__thiscall *)(NiDX8TextureManager *this, int a1, int a2, int a3, int a4, int a5, int a6)`, 0x4 bytes
+    pub const GetTexture: usize = 0x4;
+    /// `IDirect3DTexture8 *(__thiscall *)(NiDX8TextureManager *this, NiSourceTexture *texture, bool *out_resourceCreated, bool *out_isMipMapped)`, 0x4 bytes
+    pub const PrepareTextureForRendering: usize = 0x8;
+    /// `bool (__thiscall *)(NiDX8TextureManager *this, NiTexture *texture, int a3, int a4)`, 0x4 bytes
+    pub const PrecacheTexture: usize = 0xc;
+    /// `unsigned int (__thiscall *)(NiDX8TextureManager *this, NiTexture *texture)`, 0x4 bytes
+    pub const GetFormatFromTexture: usize = 0x10;
 }
 
 pub mod InterfaceNiGeometryData {
@@ -1753,10 +1833,10 @@ pub mod NiBltSource {
     pub const refCount: usize = 0x4;
     /// `char *`, 0x4 bytes
     pub const fileName: usize = 0x8;
-    /// `int`, 0x4 bytes
+    /// `char *`, 0x4 bytes
     pub const pcFilename: usize = 0xc;
-    /// `NiObject *`, 0x4 bytes
-    pub const field_10: usize = 0x10;
+    /// `NiPixelData *`, 0x4 bytes
+    pub const pixelData: usize = 0x10;
     /// `void *`, 0x4 bytes
     pub const rendererData: usize = 0x14;
     /// `int`, 0x4 bytes
@@ -2215,7 +2295,7 @@ pub mod NiColorA {
 
 pub mod NiD3DShaderInterface {
     pub const SIZE: usize = 0xc0;
-    /// `int`, 0x4 bytes
+    /// `InterfaceNiD3DShaderInterface_Claude_ *`, 0x4 bytes
     pub const vtbl: usize = 0x0;
     /// `int`, 0x4 bytes
     pub const field_4: usize = 0x4;
@@ -2233,8 +2313,8 @@ pub mod NiD3DShaderInterface {
     pub const field_1C: usize = 0x1c;
     /// `int`, 0x4 bytes
     pub const field_20: usize = 0x20;
-    /// `DWORD *`, 0x4 bytes
-    pub const field_24: usize = 0x24;
+    /// `NiD3DShaderInterface::Declaration_Claude_ *`, 0x4 bytes
+    pub const declarations: usize = 0x24;
     /// `bool`, 0x1 bytes
     pub const flag_28: usize = 0x28;
     /// `int`, 0x4 bytes
@@ -2321,6 +2401,48 @@ pub mod NiD3DShaderInterface {
     pub const vertexShaderHandles_growByCount: usize = 0xbc;
 }
 
+pub mod NiD3DShaderInterface_DeclarationElement {
+    pub const SIZE: usize = 0x10;
+    /// `int`, 0x4 bytes
+    pub const unknown_0: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const unknown_4: usize = 0x4;
+    /// `int`, 0x4 bytes
+    pub const unknown_8: usize = 0x8;
+    /// `unsigned int`, 0x4 bytes
+    pub const offset: usize = 0xc;
+}
+
+pub mod NiD3DShaderInterface_Declaration {
+    pub const SIZE: usize = 0x10;
+    /// `int`, 0x4 bytes
+    pub const unknown_0: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const unknown_4: usize = 0x4;
+    /// `NiD3DShaderInterface::DeclarationElement_Claude_ *`, 0x4 bytes
+    pub const elements: usize = 0x8;
+    /// `unsigned int`, 0x4 bytes
+    pub const stride: usize = 0xc;
+}
+
+pub mod NiD3DShaderInterface_ShaderEntry {
+    pub const SIZE: usize = 0x24;
+    /// `NiRefObject`, 0x8 bytes
+    pub const super_: usize = 0x0;
+    /// `InterfaceNiObjectUnion`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const refCount: usize = 0x4;
+    /// `int`, 0x4 bytes
+    pub const unknown_8: usize = 0x8;
+    /// `int`, 0x4 bytes
+    pub const unknown_C: usize = 0xc;
+    /// `char[16]`, 0x10 bytes
+    pub const name: usize = 0x10;
+    /// `DWORD`, 0x4 bytes
+    pub const vertexShader: usize = 0x20;
+}
+
 pub mod NiDX8AdapterDesc {
     pub const SIZE: usize = 0x454;
     /// `unsigned int`, 0x4 bytes
@@ -2403,6 +2525,28 @@ pub mod NiDX8AdapterDesc_ModeDesc {
     pub const listRefreshRates_allocator_count: usize = 0x24;
 }
 
+pub mod NiDX8BltSourceData {
+    pub const SIZE: usize = 0x24;
+    /// `void *`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `NiDX8BltSourceData_Claude_ *`, 0x4 bytes
+    pub const linkedData: usize = 0x4;
+    /// `NiBltSource *`, 0x4 bytes
+    pub const bltSource: usize = 0x8;
+    /// `int`, 0x4 bytes
+    pub const unknown_C: usize = 0xc;
+    /// `NiDX8Renderer *`, 0x4 bytes
+    pub const renderer: usize = 0x10;
+    /// `IDirect3DSurface8 *`, 0x4 bytes
+    pub const surface: usize = 0x14;
+    /// `int`, 0x4 bytes
+    pub const unknown_18: usize = 0x18;
+    /// `unsigned int`, 0x4 bytes
+    pub const width: usize = 0x1c;
+    /// `unsigned int`, 0x4 bytes
+    pub const height: usize = 0x20;
+}
+
 pub mod NiDX8ConfigurableTexturePipeline {
     pub const SIZE: usize = 0xb38;
     /// `NiRefObject`, 0x8 bytes
@@ -2412,7 +2556,7 @@ pub mod NiDX8ConfigurableTexturePipeline {
     /// `int`, 0x4 bytes
     pub const refCount: usize = 0x4;
     /// `NiDX8TexturePass *`, 0x4 bytes
-    pub const field_8: usize = 0x8;
+    pub const currentPass: usize = 0x8;
     /// `NiDX8TexturePass *`, 0x4 bytes
     pub const combiners: usize = 0xc;
     /// `NiDX8TextureStage *`, 0x4 bytes
@@ -2541,248 +2685,12 @@ pub mod NiDX8ConfigurableTexturePipeline {
     pub const field_100: usize = 0x100;
     /// `int`, 0x4 bytes
     pub const field_104: usize = 0x104;
-    /// `int`, 0x4 bytes
-    pub const field_108: usize = 0x108;
-    /// `int`, 0x4 bytes
-    pub const field_10C: usize = 0x10c;
-    /// `int`, 0x4 bytes
-    pub const field_110: usize = 0x110;
-    /// `int`, 0x4 bytes
-    pub const field_114: usize = 0x114;
-    /// `int`, 0x4 bytes
-    pub const field_118: usize = 0x118;
-    /// `int`, 0x4 bytes
-    pub const field_11C: usize = 0x11c;
-    /// `int`, 0x4 bytes
-    pub const field_120: usize = 0x120;
-    /// `int`, 0x4 bytes
-    pub const field_124: usize = 0x124;
-    /// `int`, 0x4 bytes
-    pub const field_128: usize = 0x128;
-    /// `int`, 0x4 bytes
-    pub const field_12C: usize = 0x12c;
-    /// `int`, 0x4 bytes
-    pub const field_130: usize = 0x130;
-    /// `int`, 0x4 bytes
-    pub const field_134: usize = 0x134;
-    /// `int`, 0x4 bytes
-    pub const field_138: usize = 0x138;
-    /// `int`, 0x4 bytes
-    pub const field_13C: usize = 0x13c;
-    /// `int`, 0x4 bytes
-    pub const field_140: usize = 0x140;
-    /// `int`, 0x4 bytes
-    pub const field_144: usize = 0x144;
-    /// `int`, 0x4 bytes
-    pub const field_148: usize = 0x148;
-    /// `int`, 0x4 bytes
-    pub const field_14C: usize = 0x14c;
-    /// `int`, 0x4 bytes
-    pub const field_150: usize = 0x150;
-    /// `int`, 0x4 bytes
-    pub const field_154: usize = 0x154;
-    /// `int`, 0x4 bytes
-    pub const field_158: usize = 0x158;
-    /// `int`, 0x4 bytes
-    pub const field_15C: usize = 0x15c;
-    /// `int`, 0x4 bytes
-    pub const field_160: usize = 0x160;
-    /// `int`, 0x4 bytes
-    pub const field_164: usize = 0x164;
-    /// `int`, 0x4 bytes
-    pub const field_168: usize = 0x168;
-    /// `int`, 0x4 bytes
-    pub const field_16C: usize = 0x16c;
-    /// `int`, 0x4 bytes
-    pub const field_170: usize = 0x170;
-    /// `int`, 0x4 bytes
-    pub const field_174: usize = 0x174;
-    /// `int`, 0x4 bytes
-    pub const field_178: usize = 0x178;
-    /// `int`, 0x4 bytes
-    pub const field_17C: usize = 0x17c;
-    /// `int`, 0x4 bytes
-    pub const field_180: usize = 0x180;
-    /// `int`, 0x4 bytes
-    pub const field_184: usize = 0x184;
-    /// `int`, 0x4 bytes
-    pub const field_188: usize = 0x188;
-    /// `int`, 0x4 bytes
-    pub const field_18C: usize = 0x18c;
-    /// `int`, 0x4 bytes
-    pub const field_190: usize = 0x190;
-    /// `int`, 0x4 bytes
-    pub const field_194: usize = 0x194;
-    /// `int`, 0x4 bytes
-    pub const field_198: usize = 0x198;
-    /// `int`, 0x4 bytes
-    pub const field_19C: usize = 0x19c;
-    /// `int`, 0x4 bytes
-    pub const field_1A0: usize = 0x1a0;
-    /// `int`, 0x4 bytes
-    pub const field_1A4: usize = 0x1a4;
-    /// `int`, 0x4 bytes
-    pub const field_1A8: usize = 0x1a8;
-    /// `int`, 0x4 bytes
-    pub const field_1AC: usize = 0x1ac;
-    /// `int`, 0x4 bytes
-    pub const field_1B0: usize = 0x1b0;
-    /// `int`, 0x4 bytes
-    pub const field_1B4: usize = 0x1b4;
-    /// `int`, 0x4 bytes
-    pub const field_1B8: usize = 0x1b8;
-    /// `int`, 0x4 bytes
-    pub const field_1BC: usize = 0x1bc;
-    /// `int`, 0x4 bytes
-    pub const field_1C0: usize = 0x1c0;
-    /// `int`, 0x4 bytes
-    pub const field_1C4: usize = 0x1c4;
-    /// `int`, 0x4 bytes
-    pub const field_1C8: usize = 0x1c8;
-    /// `int`, 0x4 bytes
-    pub const field_1CC: usize = 0x1cc;
-    /// `int`, 0x4 bytes
-    pub const field_1D0: usize = 0x1d0;
-    /// `int`, 0x4 bytes
-    pub const field_1D4: usize = 0x1d4;
-    /// `int`, 0x4 bytes
-    pub const field_1D8: usize = 0x1d8;
-    /// `int`, 0x4 bytes
-    pub const field_1DC: usize = 0x1dc;
-    /// `int`, 0x4 bytes
-    pub const field_1E0: usize = 0x1e0;
-    /// `int`, 0x4 bytes
-    pub const field_1E4: usize = 0x1e4;
-    /// `int`, 0x4 bytes
-    pub const field_1E8: usize = 0x1e8;
-    /// `int`, 0x4 bytes
-    pub const field_1EC: usize = 0x1ec;
-    /// `int`, 0x4 bytes
-    pub const field_1F0: usize = 0x1f0;
-    /// `int`, 0x4 bytes
-    pub const field_1F4: usize = 0x1f4;
-    /// `int`, 0x4 bytes
-    pub const field_1F8: usize = 0x1f8;
-    /// `int`, 0x4 bytes
-    pub const field_1FC: usize = 0x1fc;
-    /// `int`, 0x4 bytes
-    pub const field_200: usize = 0x200;
-    /// `int`, 0x4 bytes
-    pub const field_204: usize = 0x204;
-    /// `int`, 0x4 bytes
-    pub const field_208: usize = 0x208;
-    /// `int`, 0x4 bytes
-    pub const field_20C: usize = 0x20c;
-    /// `int`, 0x4 bytes
-    pub const field_210: usize = 0x210;
-    /// `int`, 0x4 bytes
-    pub const field_214: usize = 0x214;
-    /// `int`, 0x4 bytes
-    pub const field_218: usize = 0x218;
-    /// `int`, 0x4 bytes
-    pub const field_21C: usize = 0x21c;
-    /// `int`, 0x4 bytes
-    pub const field_220: usize = 0x220;
-    /// `int`, 0x4 bytes
-    pub const field_224: usize = 0x224;
-    /// `int`, 0x4 bytes
-    pub const field_228: usize = 0x228;
-    /// `int`, 0x4 bytes
-    pub const field_22C: usize = 0x22c;
-    /// `int`, 0x4 bytes
-    pub const field_230: usize = 0x230;
-    /// `int`, 0x4 bytes
-    pub const field_234: usize = 0x234;
-    /// `int`, 0x4 bytes
-    pub const field_238: usize = 0x238;
-    /// `int`, 0x4 bytes
-    pub const field_23C: usize = 0x23c;
-    /// `int`, 0x4 bytes
-    pub const field_240: usize = 0x240;
-    /// `int`, 0x4 bytes
-    pub const field_244: usize = 0x244;
-    /// `int`, 0x4 bytes
-    pub const field_248: usize = 0x248;
-    /// `int`, 0x4 bytes
-    pub const field_24C: usize = 0x24c;
-    /// `int`, 0x4 bytes
-    pub const field_250: usize = 0x250;
-    /// `int`, 0x4 bytes
-    pub const field_254: usize = 0x254;
-    /// `int`, 0x4 bytes
-    pub const field_258: usize = 0x258;
-    /// `int`, 0x4 bytes
-    pub const field_25C: usize = 0x25c;
-    /// `int`, 0x4 bytes
-    pub const field_260: usize = 0x260;
-    /// `int`, 0x4 bytes
-    pub const field_264: usize = 0x264;
-    /// `int`, 0x4 bytes
-    pub const field_268: usize = 0x268;
-    /// `int`, 0x4 bytes
-    pub const field_26C: usize = 0x26c;
-    /// `int`, 0x4 bytes
-    pub const field_270: usize = 0x270;
-    /// `int`, 0x4 bytes
-    pub const field_274: usize = 0x274;
-    /// `int`, 0x4 bytes
-    pub const field_278: usize = 0x278;
-    /// `int`, 0x4 bytes
-    pub const field_27C: usize = 0x27c;
-    /// `int`, 0x4 bytes
-    pub const field_280: usize = 0x280;
-    /// `int`, 0x4 bytes
-    pub const field_284: usize = 0x284;
-    /// `int`, 0x4 bytes
-    pub const field_288: usize = 0x288;
-    /// `int`, 0x4 bytes
-    pub const field_28C: usize = 0x28c;
-    /// `int`, 0x4 bytes
-    pub const field_290: usize = 0x290;
-    /// `int`, 0x4 bytes
-    pub const field_294: usize = 0x294;
-    /// `int`, 0x4 bytes
-    pub const field_298: usize = 0x298;
-    /// `int`, 0x4 bytes
-    pub const field_29C: usize = 0x29c;
-    /// `int`, 0x4 bytes
-    pub const field_2A0: usize = 0x2a0;
-    /// `int`, 0x4 bytes
-    pub const field_2A4: usize = 0x2a4;
-    /// `int`, 0x4 bytes
-    pub const field_2A8: usize = 0x2a8;
-    /// `int`, 0x4 bytes
-    pub const field_2AC: usize = 0x2ac;
-    /// `int`, 0x4 bytes
-    pub const field_2B0: usize = 0x2b0;
-    /// `int`, 0x4 bytes
-    pub const field_2B4: usize = 0x2b4;
-    /// `int`, 0x4 bytes
-    pub const field_2B8: usize = 0x2b8;
-    /// `int`, 0x4 bytes
-    pub const field_2BC: usize = 0x2bc;
-    /// `int`, 0x4 bytes
-    pub const field_2C0: usize = 0x2c0;
-    /// `int`, 0x4 bytes
-    pub const field_2C4: usize = 0x2c4;
-    /// `int`, 0x4 bytes
-    pub const field_2C8: usize = 0x2c8;
-    /// `int`, 0x4 bytes
-    pub const field_2CC: usize = 0x2cc;
-    /// `int`, 0x4 bytes
-    pub const field_2D0: usize = 0x2d0;
-    /// `int`, 0x4 bytes
-    pub const field_2D4: usize = 0x2d4;
-    /// `int`, 0x4 bytes
-    pub const field_2D8: usize = 0x2d8;
-    /// `int`, 0x4 bytes
-    pub const field_2DC: usize = 0x2dc;
-    /// `int`, 0x4 bytes
-    pub const field_2E0: usize = 0x2e0;
-    /// `int`, 0x4 bytes
-    pub const field_2E4: usize = 0x2e4;
+    /// `NiDX8ConfigurableTexturePipeline::BlendOps_Claude_[10]`, 0xf0 bytes
+    pub const firstStageBlendOps: usize = 0x108;
+    /// `NiDX8ConfigurableTexturePipeline::BlendOps_Claude_[10]`, 0xf0 bytes
+    pub const laterStageBlendOps: usize = 0x1f8;
     /// `NiPointer[10]`, 0x28 bytes
-    pub const field_2E8: usize = 0x2e8;
+    pub const alphaTemplates: usize = 0x2e8;
     /// `int`, 0x4 bytes
     pub const field_310: usize = 0x310;
     /// `int`, 0x4 bytes
@@ -3831,6 +3739,22 @@ pub mod NiDX8ConfigurableTexturePipeline {
     pub const worldLocation_z: usize = 0xb34;
 }
 
+pub mod NiDX8ConfigurableTexturePipeline_BlendOps {
+    pub const SIZE: usize = 0x18;
+    /// `unsigned int`, 0x4 bytes
+    pub const colorOp: usize = 0x0;
+    /// `unsigned int`, 0x4 bytes
+    pub const colorArg1: usize = 0x4;
+    /// `unsigned int`, 0x4 bytes
+    pub const colorArg2: usize = 0x8;
+    /// `unsigned int`, 0x4 bytes
+    pub const alphaOp: usize = 0xc;
+    /// `unsigned int`, 0x4 bytes
+    pub const alphaArg1: usize = 0x10;
+    /// `unsigned int`, 0x4 bytes
+    pub const alphaArg2: usize = 0x14;
+}
+
 pub mod NiDX8DeviceDesc {
     pub const SIZE: usize = 0xf4;
     /// `int`, 0x4 bytes
@@ -4683,6 +4607,76 @@ pub mod NiDX8RenderTarget {
     pub const d3dSurfaceDepthStencil: usize = 0x20;
 }
 
+pub mod NiDX8RenderedCubeMapData {
+    pub const SIZE: usize = 0x9c;
+    /// `NiDX8RenderedTextureData`, 0x80 bytes
+    pub const super_: usize = 0x0;
+    /// `NiDX8TextureData`, 0x50 bytes
+    pub const super__: usize = 0x0;
+    /// `NiTexture::RendererData`, 0xc bytes
+    pub const vtbl: usize = 0x0;
+    /// `InterfaceNiDX8TextureData *`, 0x4 bytes
+    pub const vtbl_vtbl: usize = 0x0;
+    /// `NiTexture::RendererData *`, 0x4 bytes
+    pub const vtbl_linkedData: usize = 0x4;
+    /// `NiTexture *`, 0x4 bytes
+    pub const vtbl_sgTexture: usize = 0x8;
+    /// `ID3DDevice8 *`, 0x4 bytes
+    pub const field_C: usize = 0xc;
+    /// `NiDX8Renderer *`, 0x4 bytes
+    pub const renderer: usize = 0x10;
+    /// `NiDX8PixelFormat`, 0x28 bytes
+    pub const format: usize = 0x14;
+    /// `NiPixelFormat`, 0x20 bytes
+    pub const format_super: usize = 0x14;
+    /// `int`, 0x4 bytes
+    pub const format_format: usize = 0x14;
+    /// `int[4]`, 0x10 bytes
+    pub const format_channelMasks: usize = 0x18;
+    /// `int`, 0x4 bytes
+    pub const format_bitsPerPixel: usize = 0x28;
+    /// `int[2]`, 0x8 bytes
+    pub const format_compareBits: usize = 0x2c;
+    /// `unsigned int`, 0x4 bytes
+    pub const format_extraData: usize = 0x34;
+    /// `D3DFORMAT`, 0x4 bytes
+    pub const format_d3dFormat: usize = 0x38;
+    /// `int`, 0x4 bytes
+    pub const d3dPalette: usize = 0x3c;
+    /// `int`, 0x4 bytes
+    pub const d3dPalRevisionId: usize = 0x40;
+    /// `int`, 0x4 bytes
+    pub const width: usize = 0x44;
+    /// `int`, 0x4 bytes
+    pub const height: usize = 0x48;
+    /// `int`, 0x4 bytes
+    pub const levels: usize = 0x4c;
+    /// `NiDX8PixelFormat`, 0x28 bytes
+    pub const pixelFormat: usize = 0x50;
+    /// `NiPixelFormat`, 0x20 bytes
+    pub const pixelFormat_super: usize = 0x50;
+    /// `int`, 0x4 bytes
+    pub const pixelFormat_format: usize = 0x50;
+    /// `int[4]`, 0x10 bytes
+    pub const pixelFormat_channelMasks: usize = 0x54;
+    /// `int`, 0x4 bytes
+    pub const pixelFormat_bitsPerPixel: usize = 0x64;
+    /// `int[2]`, 0x8 bytes
+    pub const pixelFormat_compareBits: usize = 0x68;
+    /// `unsigned int`, 0x4 bytes
+    pub const pixelFormat_extraData: usize = 0x70;
+    /// `D3DFORMAT`, 0x4 bytes
+    pub const pixelFormat_d3dFormat: usize = 0x74;
+    /// `IDirect3DTexture8 *`, 0x4 bytes
+    pub const d3dTexture: usize = 0x78;
+    /// `NiDX8RenderTarget *`, 0x4 bytes
+    pub const target: usize = 0x7c;
+    /// `IDirect3DBaseTexture8 *`, 0x4 bytes
+    pub const cubeTexture: usize = 0x80;
+    /// `NiDX8RenderTarget *[6]`, 0x18 bytes
+    pub const faceTargets: usize = 0x84;
+}
+
 pub mod NiDX8RenderedTextureData {
     pub const SIZE: usize = 0x80;
     /// `NiDX8TextureData`, 0x50 bytes
@@ -5319,6 +5313,72 @@ pub mod NiDX8SelectResolution {
     pub const field_20: usize = 0x20;
     /// `char[3]`, 0x3 bytes
     pub const field_21: usize = 0x21;
+}
+
+pub mod NiDX8SourceCubeMapData {
+    pub const SIZE: usize = 0x84;
+    /// `NiDX8SourceTextureData`, 0x68 bytes
+    pub const super_: usize = 0x0;
+    /// `NiDX8TextureData`, 0x50 bytes
+    pub const super__: usize = 0x0;
+    /// `NiTexture::RendererData`, 0xc bytes
+    pub const vtbl: usize = 0x0;
+    /// `InterfaceNiDX8TextureData *`, 0x4 bytes
+    pub const vtbl_vtbl: usize = 0x0;
+    /// `NiTexture::RendererData *`, 0x4 bytes
+    pub const vtbl_linkedData: usize = 0x4;
+    /// `NiTexture *`, 0x4 bytes
+    pub const vtbl_sgTexture: usize = 0x8;
+    /// `ID3DDevice8 *`, 0x4 bytes
+    pub const field_C: usize = 0xc;
+    /// `NiDX8Renderer *`, 0x4 bytes
+    pub const renderer: usize = 0x10;
+    /// `NiDX8PixelFormat`, 0x28 bytes
+    pub const format: usize = 0x14;
+    /// `NiPixelFormat`, 0x20 bytes
+    pub const format_super: usize = 0x14;
+    /// `int`, 0x4 bytes
+    pub const format_format: usize = 0x14;
+    /// `int[4]`, 0x10 bytes
+    pub const format_channelMasks: usize = 0x18;
+    /// `int`, 0x4 bytes
+    pub const format_bitsPerPixel: usize = 0x28;
+    /// `int[2]`, 0x8 bytes
+    pub const format_compareBits: usize = 0x2c;
+    /// `unsigned int`, 0x4 bytes
+    pub const format_extraData: usize = 0x34;
+    /// `D3DFORMAT`, 0x4 bytes
+    pub const format_d3dFormat: usize = 0x38;
+    /// `int`, 0x4 bytes
+    pub const d3dPalette: usize = 0x3c;
+    /// `int`, 0x4 bytes
+    pub const d3dPalRevisionId: usize = 0x40;
+    /// `int`, 0x4 bytes
+    pub const width: usize = 0x44;
+    /// `int`, 0x4 bytes
+    pub const height: usize = 0x48;
+    /// `int`, 0x4 bytes
+    pub const levels: usize = 0x4c;
+    /// `char`, 0x1 bytes
+    pub const bMipMap: usize = 0x50;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_51: usize = 0x51;
+    /// `unsigned int`, 0x4 bytes
+    pub const formattedSize: usize = 0x54;
+    /// `NiPointer`, 0x4 bytes
+    pub const palette: usize = 0x58;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const palette_ptr: usize = 0x58;
+    /// `int`, 0x4 bytes
+    pub const palRevisionID: usize = 0x5c;
+    /// `IDirect3DTexture8 *`, 0x4 bytes
+    pub const d3dTexture: usize = 0x60;
+    /// `int`, 0x4 bytes
+    pub const sourceRevisionID: usize = 0x64;
+    /// `IDirect3DBaseTexture8 *`, 0x4 bytes
+    pub const cubeTexture: usize = 0x68;
+    /// `unsigned int[6]`, 0x18 bytes
+    pub const faceRevisions: usize = 0x6c;
 }
 
 pub mod NiDX8SourceTextureData {
@@ -7573,8 +7633,8 @@ pub mod NiParticlesData {
     pub const pad_32: usize = 0x32;
     /// `unsigned __int16`, 0x2 bytes
     pub const triangleCount: usize = 0x34;
-    /// `__int16`, 0x2 bytes
-    pub const pad_36: usize = 0x36;
+    /// `unsigned __int16`, 0x2 bytes
+    pub const patchRenderFlags: usize = 0x36;
     /// `float`, 0x4 bytes
     pub const particleRadius: usize = 0x38;
     /// `unsigned __int16`, 0x2 bytes
@@ -7839,6 +7899,48 @@ pub mod NiRenderStateSetting {
     pub const previousValue: usize = 0x4;
 }
 
+pub mod NiRenderedCubeMap {
+    pub const SIZE: usize = 0x38;
+    /// `NiRenderedTexture`, 0x34 bytes
+    pub const super_: usize = 0x0;
+    /// `NiTexture`, 0x2c bytes
+    pub const super__: usize = 0x0;
+    /// `NiObjectNET`, 0x14 bytes
+    pub const super___: usize = 0x0;
+    /// `NiObject`, 0x8 bytes
+    pub const super____: usize = 0x0;
+    /// `InterfaceNiObjectUnion`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const refCount: usize = 0x4;
+    /// `char *`, 0x4 bytes
+    pub const name: usize = 0x8;
+    /// `NiExtraData *`, 0x4 bytes
+    pub const extraData: usize = 0xc;
+    /// `NiTimeController *`, 0x4 bytes
+    pub const controllers: usize = 0x10;
+    /// `NiFormatPrefs`, 0xc bytes
+    pub const formatPrefs: usize = 0x14;
+    /// `int`, 0x4 bytes
+    pub const formatPrefs_pixelLayout: usize = 0x14;
+    /// `int`, 0x4 bytes
+    pub const formatPrefs_mipmapFlags: usize = 0x18;
+    /// `int`, 0x4 bytes
+    pub const formatPrefs_alphaFormat: usize = 0x1c;
+    /// `NiTexture::RendererData *`, 0x4 bytes
+    pub const rendererData: usize = 0x20;
+    /// `NiTexture *`, 0x4 bytes
+    pub const previousTexture: usize = 0x24;
+    /// `NiTexture *`, 0x4 bytes
+    pub const nextTexture: usize = 0x28;
+    /// `int`, 0x4 bytes
+    pub const width: usize = 0x2c;
+    /// `int`, 0x4 bytes
+    pub const height: usize = 0x30;
+    /// `unsigned int`, 0x4 bytes
+    pub const currentFace: usize = 0x34;
+}
+
 pub mod NiRenderedTexture {
     pub const SIZE: usize = 0x34;
     /// `NiTexture`, 0x2c bytes
@@ -7925,6 +8027,20 @@ pub mod NiRendererSpecificProperty {
     pub const renderData: usize = 0x18;
 }
 
+pub mod NiRendererSpecificProperty_PassObject {
+    pub const SIZE: usize = 0x30;
+    /// `NiRefObject`, 0x8 bytes
+    pub const super_: usize = 0x0;
+    /// `InterfaceNiObjectUnion`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const refCount: usize = 0x4;
+    /// `char[36]`, 0x24 bytes
+    pub const unknown_8: usize = 0x8;
+    /// `void *`, 0x4 bytes
+    pub const buildPass: usize = 0x2c;
+}
+
 pub mod NiRendererSpecificProperty_RenderData {
     pub const SIZE: usize = 0x4;
     /// `NiRendererSpecificProperty::RenderData_vtbl *`, 0x4 bytes
@@ -7942,13 +8058,11 @@ pub mod NiRendererSpecificProperty_RenderData7 {
     /// `NiObjectUnion`, 0x4 bytes
     pub const texturePass_ptr: usize = 0x4;
     /// `NiPointer`, 0x4 bytes
-    pub const field_8: usize = 0x8;
+    pub const prop2: usize = 0x8;
     /// `NiObjectUnion`, 0x4 bytes
-    pub const field_8_ptr: usize = 0x8;
-    /// `NiPointer`, 0x4 bytes
-    pub const field_C: usize = 0xc;
-    /// `NiObjectUnion`, 0x4 bytes
-    pub const field_C_ptr: usize = 0xc;
+    pub const prop2_ptr: usize = 0x8;
+    /// `NiRendererSpecificProperty::PassObject_Claude_ *`, 0x4 bytes
+    pub const prop1: usize = 0xc;
 }
 
 pub mod NiRendererSpecificProperty_RenderData_vTable {
@@ -7981,8 +8095,8 @@ pub mod NiRenderer_globalSListNode {
     pub const renderer: usize = 0x0;
     /// `NiRenderer_globalSListNode *`, 0x4 bytes
     pub const next: usize = 0x4;
-    /// `int`, 0x4 bytes
-    pub const field_8: usize = 0x8;
+    /// `NiRenderer_globalSListNode *`, 0x4 bytes
+    pub const previous: usize = 0x8;
 }
 
 pub mod NiScreenPolygon {
@@ -8257,6 +8371,16 @@ pub mod NiSortAdjustNode {
     pub const sortingMode: usize = 0xb0;
     /// `NiAccumulator *`, 0x4 bytes
     pub const accumulator: usize = 0xb4;
+}
+
+pub mod NiSourceCubeMap {
+    pub const SIZE: usize = 0x88;
+    /// `char[88]`, 0x58 bytes
+    pub const unknown_0: usize = 0x0;
+    /// `char *[6]`, 0x18 bytes
+    pub const fileNames: usize = 0x58;
+    /// `NiPixelData *[6]`, 0x18 bytes
+    pub const pixelData: usize = 0x70;
 }
 
 pub mod NiSourceTexture {
@@ -9173,8 +9297,8 @@ pub mod NiTriBasedGeomData {
     pub const pad_32: usize = 0x32;
     /// `unsigned __int16`, 0x2 bytes
     pub const triangleCount: usize = 0x34;
-    /// `__int16`, 0x2 bytes
-    pub const pad_36: usize = 0x36;
+    /// `unsigned __int16`, 0x2 bytes
+    pub const patchRenderFlags: usize = 0x36;
 }
 
 pub mod NiTriBasedGeometry {
@@ -9411,8 +9535,8 @@ pub mod NiTriShapeData {
     pub const pad_32: usize = 0x32;
     /// `unsigned __int16`, 0x2 bytes
     pub const triangleCount: usize = 0x34;
-    /// `__int16`, 0x2 bytes
-    pub const pad_36: usize = 0x36;
+    /// `unsigned __int16`, 0x2 bytes
+    pub const patchRenderFlags: usize = 0x36;
     /// `unsigned int`, 0x4 bytes
     pub const uiTriListLength: usize = 0x38;
     /// `unsigned __int16 *`, 0x4 bytes
@@ -9551,8 +9675,8 @@ pub mod NiTriStripsData {
     pub const pad_32: usize = 0x32;
     /// `unsigned __int16`, 0x2 bytes
     pub const triangleCount: usize = 0x34;
-    /// `__int16`, 0x2 bytes
-    pub const pad_36: usize = 0x36;
+    /// `unsigned __int16`, 0x2 bytes
+    pub const patchRenderFlags: usize = 0x36;
     /// `unsigned __int16`, 0x2 bytes
     pub const numStrips: usize = 0x38;
     /// `__int16`, 0x2 bytes
@@ -10073,6 +10197,30 @@ pub mod TES3Game {
     pub const skipRenderingNextFrame: usize = 0x10c;
     /// `char[3]`, 0x3 bytes
     pub const pad_10D: usize = 0x10d;
+}
+
+pub mod TES3Game_AdapterMapNode {
+    pub const SIZE: usize = 0x24;
+    /// `AdapterMapNode_Claude_ *`, 0x4 bytes
+    pub const branch_less: usize = 0x0;
+    /// `AdapterMapNode_Claude_ *`, 0x4 bytes
+    pub const nextLeafOrRoot: usize = 0x4;
+    /// `AdapterMapNode_Claude_ *`, 0x4 bytes
+    pub const branch_greaterEqual: usize = 0x8;
+    /// `std_string`, 0x10 bytes
+    pub const key: usize = 0xc;
+    /// `char`, 0x1 bytes
+    pub const key_tag: usize = 0xc;
+    /// `char *`, 0x4 bytes
+    pub const key_c_str: usize = 0x10;
+    /// `int`, 0x4 bytes
+    pub const key_length: usize = 0x14;
+    /// `int`, 0x4 bytes
+    pub const key_storageSize: usize = 0x18;
+    /// `NiDX8AdapterDesc *`, 0x4 bytes
+    pub const adapterDesc: usize = 0x1c;
+    /// `int`, 0x4 bytes
+    pub const red_black: usize = 0x20;
 }
 
 pub mod TES3WaterNVLake {

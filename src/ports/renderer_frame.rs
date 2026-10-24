@@ -461,7 +461,7 @@ unsafe fn begin_paint_regions(set: &mut Regions, this: usize) {
     if pipeline != 0 {
         set.add(pipeline, CTP::SIZE);
         // `nextFrame` of the pipeline calls a virtual function of its active texture pass.
-        set.add(rd(pipeline, CTP::field_8), NiDX8TexturePass::SIZE);
+        set.add(rd(pipeline, CTP::currentPass), NiDX8TexturePass::SIZE);
     }
     add_light_list_items(set, manager);
 }

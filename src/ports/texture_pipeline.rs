@@ -77,7 +77,7 @@ fn g(addr: usize) -> usize {
 // ---------------------------------------------------------------------------------------------
 
 /// `NiDX8ConfigurableTexturePipeline`: 10 `NiPointer<NiAlphaProperty>`, the alpha templates.
-const CTP_ALPHA_TEMPLATES: usize = CTP::field_2E8;
+const CTP_ALPHA_TEMPLATES: usize = CTP::alphaTemplates;
 /// The capability flags. 1 is an independent V address mode. 0x40 is the flag of `create`.
 /// 0x80 and 0x100 come from the texture caps.
 const CTP_FLAGS: usize = CTP::field_FC;
@@ -85,12 +85,12 @@ const CTP_FLAGS: usize = CTP::field_FC;
 const CTP_SIGNED_OP: usize = CTP::field_104;
 /// A block of 0x7E8 bytes that the game sets to 0, and one byte after it.
 const CTP_BLOCK_314: usize = CTP::field_314;
-const CTP_BLOCK_314_DWORDS: usize = 0x1FA;
+const CTP_BLOCK_314_DWORDS: usize = (CTP_BYTE_AFC - CTP_BLOCK_314) / 4;
 const CTP_BYTE_AFC: usize = CTP::field_AFC;
 /// The three stages of the default pass.
 const CTP_STAGES: [usize; 3] = [CTP::field_10, CTP::field_14, CTP::pipelineState_18];
 /// The pass in use (`field_8`). `combiners` is the fixed-function pass.
-const CTP_CURRENT_PASS: usize = CTP::field_8;
+const CTP_CURRENT_PASS: usize = CTP::currentPass;
 
 const RENDER_DATA_TEXTURE_PASS: usize = crate::gen::layouts::NiRendererSpecificProperty_RenderData7::texturePass;
 /// The renderer type id that `selectAndLinkPass` accepts.
@@ -1265,6 +1265,7 @@ pub static PORTS: &[&crate::shadow::PortState] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gen::layouts::NiDX8ConfigurableTexturePipeline_BlendOps as BO;
     use std::cell::{RefCell, UnsafeCell};
 
     const ARENA: usize = 0x300;
@@ -1539,10 +1540,11 @@ mod tests {
         unsafe {
             wr::<u32>(p, CTP_SIGNED_OP, 0x17);
             write_blend_templates(p);
-            assert_eq!(rd::<u32>(p, 0x1C8), 0x17);
-            assert_eq!(rd::<u32>(p, 0x2B8), 0x17);
-            assert_eq!(rd::<[u32; 3]>(p, 0x210), [0xD, 2, 1]);
-            assert_eq!(rd::<[u32; 3]>(p, 0x2DC), [4, 2, 1]);
+            let slot = |table: usize, index: usize, member: usize| table + index * BO::SIZE + member;
+            assert_eq!(rd::<u32>(p, slot(CTP::firstStageBlendOps, 8, BO::colorOp)), 0x17);
+            assert_eq!(rd::<u32>(p, slot(CTP::laterStageBlendOps, 8, BO::colorOp)), 0x17);
+            assert_eq!(rd::<[u32; 3]>(p, slot(CTP::laterStageBlendOps, 1, BO::colorOp)), [0xD, 2, 1]);
+            assert_eq!(rd::<[u32; 3]>(p, slot(CTP::laterStageBlendOps, 9, BO::alphaOp)), [4, 2, 1]);
             // The blocks that the game code does not write.
             for untouched in [0x150, 0x164, 0x180, 0x194, 0x1B0, 0x1C4, 0x1E0, 0x1F4] {
                 assert_eq!(rd::<u32>(p, untouched), 0xEEEE_EEEE, "{untouched:#x}");

@@ -277,11 +277,11 @@ const _: () = assert!(NiSkinPartition::refCount == ni::REF_COUNT && NiRefObject:
 
 const SKIN_DATA_SKIN_PARTITION: usize = crate::gen::layouts::NiSkinData::skinPartition;
 /// `NiRendererSpecificProperty::RenderData7`: the object the game code passes as `prop2`.
-const RENDER_DATA_FIELD_8: usize = 8;
+const RENDER_DATA_FIELD_8: usize = crate::gen::layouts::NiRendererSpecificProperty_RenderData7::prop2;
 /// `NiRendererSpecificProperty::RenderData7`: the object the game code passes as `prop1`.
-const RENDER_DATA_FIELD_C: usize = 0xC;
+const RENDER_DATA_FIELD_C: usize = crate::gen::layouts::NiRendererSpecificProperty_RenderData7::prop1;
 /// In `prop1`: a `__stdcall` function that replaces `buildSkinPartitionPass`.
-const PROP_1_PASS_CALLBACK: usize = 0x2C;
+const PROP_1_PASS_CALLBACK: usize = crate::gen::layouts::NiRendererSpecificProperty_PassObject::buildPass;
 /// The renderer type the render data must have.
 const RENDERER_TYPE_DX8: u32 = 7;
 
@@ -392,7 +392,7 @@ unsafe fn build_partition_pass(
     let callback: usize = if prop1 != 0 { rd(prop1, PROP_1_PASS_CALLBACK) } else { 0 };
     let pipeline: usize = rd(this, R::configurableTexturePipeline);
     if callback != 0 {
-        let pass: usize = rd(pipeline, CTP::field_8);
+        let pass: usize = rd(pipeline, CTP::currentPass);
         let f: unsafe extern "system" fn(usize, usize, u32, u32, usize, usize, usize, usize, usize, usize, usize) -> u32 = transmute(callback);
         f(property_state, effect_state, has_normals, 1, geom_data, skin, partition, transform, world_bound, prop2, pass);
     } else {
@@ -417,8 +417,8 @@ const SKINNING_CHECK_DATABASE: [u8; 8] = [0x83, 0xBF, 0xE0, 0x03, 0x00, 0x00, 0x
 /// the geometry data (ESI) has bit 0x200 in its flags. The jump has the same target as in the
 /// database.
 const SKINNING_CHECK_MWSE: [u8; 8] = [0x90, 0x66, 0xF7, 0x46, 0x36, 0x00, 0x02, 0x75];
-/// `NiTriBasedGeomData` + 0x36: the flags the MWSE patch reads (`patchRenderFlags`).
-const GEOM_DATA_PATCH_RENDER_FLAGS: usize = 0x36;
+/// The flags the MWSE patch reads, in the padding of `NiTriBasedGeomData`.
+const GEOM_DATA_PATCH_RENDER_FLAGS: usize = crate::gen::layouts::NiTriBasedGeomData::patchRenderFlags;
 const PATCH_RENDER_FLAG_SOFTWARE_SKINNING: u16 = 0x200;
 
 /// The condition in `RenderShape` that stops hardware skinning for a skinned shape.
@@ -1800,7 +1800,7 @@ mod tests {
         let mut pipeline = vec![0u32; 4];
         let mut property_state = vec![0u32; PS::SIZE / 4];
         let device = device();
-        pipeline[CTP::field_8 / 4] = PASS;
+        pipeline[CTP::currentPass / 4] = PASS;
         property_state[PS::propTexturing / 4] = TEXTURING;
         property_state[PS::propVertexColor / 4] = VERTEX_COLOR;
         let r = renderer.as_mut_ptr() as usize;
