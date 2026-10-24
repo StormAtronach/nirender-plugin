@@ -34,13 +34,12 @@ struct Sent {
     cell: usize,
 }
 
-/// `TES3::DataHandler` (the pointer at 0x7C67E0): `currentInteriorCell` at 0xAC; `TES3::Cell`:
-/// `cellFlags` at 0x18, bit 1 an interior (MWSE's TES3DataHandler.h and TES3Cell.h).
+/// `TES3::DataHandler` (the pointer at 0x7C67E0); a cell's flags, bit 1 an interior.
 const DATA_HANDLER: usize = 0x7C67E0;
-const CURRENT_INTERIOR_CELL: usize = 0xAC;
-const CELL_FLAGS: usize = 0x18;
-/// `TES3::Cell::name` (0x10), for `describe`.
-const CELL_NAME: usize = 0x10;
+const CURRENT_INTERIOR_CELL: usize = crate::gen::layouts::DataHandler::currentInteriorCell;
+const CELL_FLAGS: usize = crate::gen::layouts::Cell::cellFlags;
+/// For `describe`.
+const CELL_NAME: usize = crate::gen::layouts::Cell::name;
 const CELL_INTERIOR: u32 = 1;
 
 /// Whether a light placed in `cell` is in the active cells. A change from an exterior to an

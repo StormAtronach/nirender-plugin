@@ -40,10 +40,8 @@ const MIN_MAX_FOG: u32 = 0x3727_C5AC;
 /// `NiDX8Renderer` + 0x28C: the second description buffer that `init` empties. It has no name
 /// in the database (`field_28C`).
 const DESCRIPTION_2: usize = R::field_28C;
-/// `NiSkinData::transformRootParentToSkin`
-const SKIN_DATA_ROOT_PARENT_TO_SKIN: usize = 0x0C;
-/// `NiSkinData::boneData`
-const SKIN_DATA_BONE_DATA: usize = 0x44;
+const SKIN_DATA_ROOT_PARENT_TO_SKIN: usize = crate::gen::layouts::NiSkinData::transformRootParentToSkin;
+const SKIN_DATA_BONE_DATA: usize = crate::gen::layouts::NiSkinData::boneData;
 /// The size of one `NiSkinData::BoneData`. Its first member is the skin-to-bone `NiTransform`.
 const BONE_DATA_SIZE: usize = 76;
 /// `TListItem`: data, next, previous.

@@ -104,7 +104,7 @@ pub unsafe fn fog_values_of(renderer: usize, fog: usize) -> Option<[u32; 4]> {
         return None;
     }
     // `NiProperty::flags`: bit 1 is the fog on, bits 3 and 4 the mode (0 world Z, 1 range).
-    let flags: u8 = rd(fog, 0x14);
+    let flags: u8 = rd(fog, crate::gen::layouts::NiProperty::flags);
     if (flags >> 1) & 1 == 0 || (flags >> 3) & 3 >= 2 {
         return None;
     }

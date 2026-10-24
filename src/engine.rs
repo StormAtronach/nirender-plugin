@@ -9,8 +9,7 @@ use crate::mem::rd;
 
 /// `TES3::WorldController*`
 pub const WORLD_CONTROLLER: usize = 0x7C67DC;
-/// `WorldController::renderer`
-pub const WORLD_CONTROLLER_RENDERER: usize = 0x30;
+pub const WORLD_CONTROLLER_RENDERER: usize = crate::gen::layouts::WorldController::renderer;
 /// Initial values of the 32 texture stage states.
 pub const TEXTURE_STAGE_STATE_INITIAL: usize = 0x7C3C58;
 
@@ -177,7 +176,7 @@ pub unsafe fn game_fog_property() -> usize {
     if game == 0 {
         0
     } else {
-        rd(game, 0xF0)
+        rd(game, crate::gen::layouts::TES3Game::sgFogProperty)
     }
 }
 

@@ -37,6 +37,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use crate::engine::{cdecl1, cdecl2, thiscall1};
+use crate::gen::layouts;
 use crate::gen::layouts::{NiPixelData as PD, NiSourceTexture as ST, NiTexture as T};
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
@@ -52,17 +53,15 @@ const MAP_DRAW_CELL: usize = 0x4C81C0;
 const CREATE_SAVE_SCREENSHOT: usize = 0x4B4F80;
 /// `NiDX8SourceTextureData_static::Create` (cdecl, the texture, the renderer).
 const SOURCE_DATA_CREATE: usize = 0x6BFA50;
-/// `dataHandler` and `DataHandler::flagTestingCells`.
+/// `dataHandler`.
 const DATA_HANDLER: usize = 0x7C67E0;
-const TESTING_CELLS: usize = 0xB4DD;
-/// `WorldControllerRenderTarget`: the rendered texture, the copied texture, the size.
-const RENDERED_TEXTURE: usize = 0x2C;
-const COPIED_TEXTURE: usize = 0x30;
-const TARGET_WIDTH: usize = 0x40;
-const TARGET_HEIGHT: usize = 0x44;
-/// `Cell::mappingVisuals` and `CellMappingVisuals::textureSource`.
-const CELL_MAPPING_VISUALS: usize = 0x84;
-const VISUALS_TEXTURE_SOURCE: usize = 0x14;
+const TESTING_CELLS: usize = layouts::DataHandler::flagTestingCells;
+const RENDERED_TEXTURE: usize = layouts::WorldControllerRenderTarget::renderedTexture;
+const COPIED_TEXTURE: usize = layouts::WorldControllerRenderTarget::sgCopiedTexture;
+const TARGET_WIDTH: usize = layouts::WorldControllerRenderTarget::targetWidth;
+const TARGET_HEIGHT: usize = layouts::WorldControllerRenderTarget::targetHeight;
+const CELL_MAPPING_VISUALS: usize = layouts::Cell::mappingVisuals;
+const VISUALS_TEXTURE_SOURCE: usize = layouts::CellMappingVisuals::textureSource;
 
 /// A tile whose pixels did not come yet. The module holds a reference to its pixel data.
 struct Open {

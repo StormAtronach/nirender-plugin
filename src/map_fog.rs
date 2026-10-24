@@ -38,10 +38,10 @@ use crate::mem::rd;
 use crate::ports::{ni, textures};
 use crate::sync::LockCell;
 
-/// `worldController`, its `mapRenderTarget` (+0x22C), and the target's `screenPolygon` (+0x68).
+/// `worldController`, its `mapRenderTarget`, and the target's `screenPolygon`.
 const WORLD_CONTROLLER: usize = 0x7C67DC;
-const MAP_RENDER_TARGET: usize = 0x22C;
-const SCREEN_POLYGON: usize = 0x68;
+const MAP_RENDER_TARGET: usize = crate::gen::layouts::WorldController::mapRenderTarget;
+const SCREEN_POLYGON: usize = crate::gen::layouts::WorldControllerRenderTarget::screenPolygon;
 /// The texture coordinates of the blob's first corner (`sub_42D020`); the other is 1.
 const BLOB_UV_START: f32 = 0.0625;
 /// D3DFMT_DXT1.

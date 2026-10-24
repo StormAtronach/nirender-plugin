@@ -25,10 +25,9 @@ use crate::mem::{rd, wr};
 const CULL_SHOW: usize = 0x6EB480;
 const NODE_DISPLAY: usize = 0x6C9190;
 const WHICH_SIDE: usize = 0x6F2660;
-/// The slots of the vtable of `NiAVObject`.
-const SLOT_GET_APP_CULLED: usize = 0x54;
-const SLOT_IS_VISUAL_OBJECT: usize = 0x64;
-const SLOT_DISPLAY: usize = 0x78;
+const SLOT_GET_APP_CULLED: usize = crate::gen::layouts::InterfaceNiAVObject::GetAppCulled;
+const SLOT_IS_VISUAL_OBJECT: usize = crate::gen::layouts::InterfaceNiAVObject::IsVisualObject;
+const SLOT_DISPLAY: usize = crate::gen::layouts::InterfaceNiAVObject::Display;
 /// The flag that `NiNode::Display` sets on the node (the low byte of the flags).
 const NODE_DISPLAYED: u8 = 0x10;
 

@@ -41,14 +41,10 @@ const IDENTITY_MATRIX33: usize = 0x7DE664;
 const ONE: u32 = 0x3F80_0000;
 
 // Virtual functions.
-/// `NiGeometryData::GetActiveVertexCount`
-const V_GET_ACTIVE_VERTEX_COUNT: usize = 0x30;
-/// `NiTriBasedGeomData::GetActiveTriangleCount`
-const V_GET_ACTIVE_TRIANGLE_COUNT: usize = 0x3C;
-/// `NiTriBasedGeomData::GetTriList_const`
-const V_GET_TRI_LIST: usize = 0x44;
-/// `NiRendererSpecificProperty::RenderDataBase::getRendererTypeId`
-const V_GET_RENDERER_TYPE_ID: usize = 0x04;
+const V_GET_ACTIVE_VERTEX_COUNT: usize = crate::gen::layouts::InterfaceNiGeometryData::GetActiveVertexCount;
+const V_GET_ACTIVE_TRIANGLE_COUNT: usize = crate::gen::layouts::InterfaceNiTriBasedGeomData::GetActiveTriangleCount;
+const V_GET_TRI_LIST: usize = crate::gen::layouts::InterfaceNiTriBasedGeomData::GetTriList_const;
+const V_GET_RENDERER_TYPE_ID: usize = crate::gen::layouts::NiRendererSpecificProperty_RenderData_vtbl::getRendererTypeId;
 
 const SKIN_DATA_SKIN_PARTITION: usize = crate::gen::layouts::NiSkinData::skinPartition;
 

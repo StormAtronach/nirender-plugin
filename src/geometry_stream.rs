@@ -23,9 +23,8 @@ use crate::link::{DRAW_LINES, DRAW_SHAPE, DRAW_STRIPS};
 use crate::mem::rd;
 use crate::ports::ni;
 
-/// `NiLinesData::lineSegmentFlags`: one byte for each vertex, not 0 when a segment goes from
-/// the vertex to the next one.
-pub const LINES_SEGMENT_FLAGS: usize = 0x34;
+/// One byte for each vertex, not 0 when a segment goes from the vertex to the next one.
+pub const LINES_SEGMENT_FLAGS: usize = crate::gen::layouts::NiLinesData::lineSegmentFlags;
 
 /// [`D3DFVF_XYZB4`] and [`D3DFVF_LASTBETA_UBYTE4`]: a position, three weights and four bone
 /// indexes in a byte each. The format of a skinned vertex.
@@ -36,11 +35,9 @@ const SKIN_DATA_SKIN_PARTITION: usize = NiSkinData::skinPartition;
 /// `NiRTTI` of `NiTriShapeData` and of `NiTriStripsData`.
 const RTTI_NI_TRI_SHAPE_DATA: usize = 0x7DE490;
 const RTTI_NI_TRI_STRIPS_DATA: usize = 0x7DE588;
-/// `NiGeometryData::GetActiveVertexCount`, `NiTriBasedGeomData::GetActiveTriangleCount`,
-/// `NiTriBasedGeomData::GetTriList_const`.
-const V_GET_ACTIVE_VERTEX_COUNT: usize = 0x30;
-const V_GET_ACTIVE_TRIANGLE_COUNT: usize = 0x3C;
-const V_GET_TRI_LIST: usize = 0x44;
+const V_GET_ACTIVE_VERTEX_COUNT: usize = crate::gen::layouts::InterfaceNiGeometryData::GetActiveVertexCount;
+const V_GET_ACTIVE_TRIANGLE_COUNT: usize = crate::gen::layouts::InterfaceNiTriBasedGeomData::GetActiveTriangleCount;
+const V_GET_TRI_LIST: usize = crate::gen::layouts::InterfaceNiTriBasedGeomData::GetTriList_const;
 
 /// The version of a geometry data that was sent.
 #[derive(Clone, Copy, PartialEq, Eq)]

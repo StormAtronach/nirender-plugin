@@ -141,6 +141,9 @@ def main():
         if path_ not in texts:
             texts[path_] = open(os.path.join(REPO, path_), encoding="utf-8").read()
         alias = aliases(texts[path_])
+        # Only a replacement that takes a generated layout is this check's (not `size_of`).
+        if not any(alias.get(m.group(1), m.group(1)) in mods for m in PATH.finditer(new)):
+            continue
         new_parts = elements(new)
         if len(new_parts) != len(old_values):
             problems.append("%s %s: %d values became %d" % (path_, name, len(old_values), len(new_parts)))

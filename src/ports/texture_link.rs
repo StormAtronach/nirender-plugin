@@ -21,12 +21,9 @@ use crate::link::{TextureV1, TEXTURE_DYNAMIC};
 use crate::mem::{rd, wr};
 use crate::ports::ni::REF_COUNT;
 
-/// `NiFormatPrefs::mipmapFlags`
-const PREFS_MIPMAP_FLAGS: usize = 0x4;
-/// `NiPalette::revisionID`
-const PALETTE_REVISION: usize = 0xC;
-/// `NiTexture::RendererData::linkedData`
-const DATA_LINKED: usize = 0x4;
+const PREFS_MIPMAP_FLAGS: usize = crate::gen::layouts::NiFormatPrefs::mipmapFlags;
+const PALETTE_REVISION: usize = crate::gen::layouts::NiPalette::revisionID;
+const DATA_LINKED: usize = crate::gen::layouts::NiTexture_RendererData::linkedData;
 /// `global_NiTexture_bMipMapByDefault`
 const MIPMAP_BY_DEFAULT: usize = 0x7DE7F8;
 /// "NiDX8SourceTextureData::CreateSurf", the name that the game gives to the lock.

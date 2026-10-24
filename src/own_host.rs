@@ -712,7 +712,7 @@ unsafe fn target_surface(slot: &AtomicU32, format: u32) -> u32 {
             let (width, height) = crate::own_device::size();
             [width, height]
         } else if renderer != 0 {
-            crate::mem::rd(renderer, 0x23C)
+            crate::mem::rd(renderer, crate::gen::layouts::NiDX8Renderer::d3dPresentParameters)
         } else {
             [640, 480]
         };

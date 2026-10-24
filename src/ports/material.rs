@@ -2,19 +2,19 @@
 //! `D3DMATERIAL8` again when the revision of the property changes.
 
 use crate::engine;
-use crate::gen::layouts::{NiDX8MaterialManager as MM, NiMaterialProperty as MP};
+use crate::gen::layouts::{NiDX8MaterialManager as MM, NiDX8MaterialManager_Entry as E, NiMaterialProperty as MP};
 use crate::mem::{rd, wr, x87_pass};
 
 /// `NiDX8MaterialManager::Entry` holds a `D3DMATERIAL8` and the revision that the game built it from.
-pub const ENTRY_SIZE: usize = 0x48;
-const ENTRY_REVISION: usize = 0x44;
+pub const ENTRY_SIZE: usize = E::SIZE;
+const ENTRY_REVISION: usize = E::revisionID;
 
 // D3DMATERIAL8
-const DIFFUSE: usize = 0x00;
-const AMBIENT: usize = 0x10;
-const SPECULAR: usize = 0x20;
-const EMISSIVE: usize = 0x30;
-const POWER: usize = 0x40;
+const DIFFUSE: usize = E::d3dMaterial_Diffuse;
+const AMBIENT: usize = E::d3dMaterial_Ambient;
+const SPECULAR: usize = E::d3dMaterial_Specular;
+const EMISSIVE: usize = E::d3dMaterial_Emissive;
+const POWER: usize = E::d3dMaterial_power;
 
 /// 0x6C2240 `NiDX8MaterialManager::Entry::Update`. The port returns 1 when it built the entry again.
 pub unsafe fn entry_update(entry: usize, material: usize) -> u8 {

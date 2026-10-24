@@ -16,13 +16,13 @@ use crate::gen::layouts::{THashMap as HM, THashMap_Node as HN};
 use crate::mem::{rd, wr};
 
 /// The vtable slot of `hashKey`. It gives the bucket index of a key.
-pub const SLOT_HASH_KEY: usize = 0x04;
+pub const SLOT_HASH_KEY: usize = crate::gen::layouts::InterfaceTHashMap::hashKey;
 /// The vtable slot of `cmpKey`. It returns a `bool` in AL: 1 when the two keys are equal.
-pub const SLOT_CMP_KEY: usize = 0x08;
+pub const SLOT_CMP_KEY: usize = crate::gen::layouts::InterfaceTHashMap::cmpKey;
 /// The vtable slot of `makeKeyValuePair`. It writes the key and the value into a node.
-pub const SLOT_MAKE_KEY_VALUE_PAIR: usize = 0x0C;
+pub const SLOT_MAKE_KEY_VALUE_PAIR: usize = crate::gen::layouts::InterfaceTHashMap::makeKeyValuePair;
 /// The vtable slot of `dtorKeyValuePair`. It destroys the key and the value of a node.
-pub const SLOT_DTOR_KEY_VALUE_PAIR: usize = 0x10;
+pub const SLOT_DTOR_KEY_VALUE_PAIR: usize = crate::gen::layouts::InterfaceTHashMap::dtorKeyValuePair;
 
 // ---- the virtual functions
 

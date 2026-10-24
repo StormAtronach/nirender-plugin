@@ -36,7 +36,8 @@ LAYOUT_RE = re.compile(
     r"D3DADAPTER_IDENTIFIER8$|InterfaceNiGeometryData$|InterfaceNiTimeController$|NiRTTI$|NiDirectionalLight$|"
     r"NiPointLight$|NiSpotLight$|NiTexture::RendererData$|NiDX8VertexBufferManager$|NiDX8IndexBufferManager$|"
     r"NiDX8TextureManager$|NiDX8LightManager$|InterfaceNiTriBasedGeomData$|NiRendererSpecificProperty::RenderData7$|"
-    r"NiDX8SourceTextureData$)")
+    r"NiDX8SourceTextureData$|WorldControllerRenderTarget$|Cell$|CellMappingVisuals$|"
+    r"NiRendererSpecificProperty::RenderData_vtbl$|InterfaceTHashMap$)")
 
 
 KEYWORDS = {"type", "super", "self", "ref", "match", "loop", "move", "fn", "mod", "use", "in", "final", "box", "priv", "enum",

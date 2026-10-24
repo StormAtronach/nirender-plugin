@@ -97,9 +97,9 @@ unsafe fn on_geometry_dtor(args: &[usize]) {
     }
 }
 
-const FLAGS: usize = 0x14;
-const PARENT: usize = 0x18;
-const NAME: usize = 0x8;
+const FLAGS: usize = crate::gen::layouts::NiAVObject::flags;
+const PARENT: usize = crate::gen::layouts::NiAVObject::parentNode;
+const NAME: usize = crate::gen::layouts::NiObjectNET::name;
 
 unsafe fn name_of(object: usize) -> String {
     let at: usize = rd(object, NAME);

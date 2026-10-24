@@ -1113,8 +1113,8 @@ unsafe fn write_kept(lock: &DeviceLock) {
     }
 }
 
-/// The bytes of a `D3DGAMMARAMP`.
-pub const GAMMA_RAMP_BYTES: usize = 0x600;
+/// The bytes of a `D3DGAMMARAMP`: 256 u16 for each of red, green and blue.
+pub const GAMMA_RAMP_BYTES: usize = 3 * 256 * core::mem::size_of::<u16>();
 
 /// The last gamma ramp of the device, or [`None`] before the first.
 static GAMMA: LockCell<Option<Vec<u8>>> = LockCell::new(None);
@@ -1754,9 +1754,8 @@ unsafe fn frame_end(lock: &DeviceLock) {
 }
 
 /// `NiDX8Renderer::d3dPresentParameters`: the width and the height of the back buffer.
-const BACK_BUFFER_SIZE: usize = 0x23C;
-/// `NiDX8Renderer::d3dPresentParameters.hDeviceWindow`
-const DEVICE_WINDOW: usize = 0x254;
+const BACK_BUFFER_SIZE: usize = crate::gen::layouts::NiDX8Renderer::d3dPresentParameters;
+const DEVICE_WINDOW: usize = crate::gen::layouts::NiDX8Renderer::d3dPresentParameters_hDeviceWindow;
 
 #[cfg(test)]
 mod tests {

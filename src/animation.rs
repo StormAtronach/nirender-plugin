@@ -18,11 +18,9 @@ use crate::gen::layouts::NiCamera as C;
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 
-/// The vtable slot of `NiAVObject::GetWorldBound` (as `ports/scene.rs`).
-const SLOT_GET_WORLD_BOUND: usize = 0x34;
-/// `NiAVObject::worldTransform.translation` and `NiBound::radius`.
-const WORLD_TRANSLATION: usize = 0x64;
-const BOUND_RADIUS: usize = 0xC;
+const SLOT_GET_WORLD_BOUND: usize = crate::gen::layouts::InterfaceNiAVObject::GetWorldBound;
+const WORLD_TRANSLATION: usize = crate::gen::layouts::NiAVObject::worldTransform_translation;
+const BOUND_RADIUS: usize = crate::gen::layouts::NiBound::radius;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Policy {

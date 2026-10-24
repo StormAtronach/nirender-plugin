@@ -246,7 +246,7 @@ unsafe extern "C" fn port_times(l: LuaState) -> i32 {
 /// buffer and writes a BMP file into its folder.
 unsafe extern "C" fn game_screenshot(_l: LuaState) -> i32 {
     const TAKE_SCREENSHOT: usize = 0x42E620;
-    const CHARACTER_RENDER_TARGET: usize = 0x1A8;
+    const CHARACTER_RENDER_TARGET: usize = crate::gen::layouts::WorldController::characterRenderTarget;
     let world_controller: usize = crate::mem::rd(crate::engine::WORLD_CONTROLLER, 0);
     if world_controller != 0 {
         crate::engine::thiscall0(TAKE_SCREENSHOT, world_controller + CHARACTER_RENDER_TARGET);
@@ -266,7 +266,8 @@ unsafe extern "C" fn dump_device(l: LuaState) -> i32 {
         lua_pushboolean(l, 0);
         return 1;
     }
-    let device: usize = crate::mem::rd(renderer, 0x24);
+    use crate::gen::layouts::NiDX8Renderer as R;
+    let device: usize = crate::mem::rd(renderer, R::d3dDevice);
     let method = |object: usize, index: usize| crate::engine::virtual_at(object, index * 4);
     let hex = |bytes: &[u32]| bytes.iter().map(|w| format!("{w:08x}")).collect::<Vec<_>>().join(" ");
     let mut text = String::new();
@@ -274,9 +275,9 @@ unsafe extern "C" fn dump_device(l: LuaState) -> i32 {
     let mut caps = [0u32; 53];
     transmute::<usize, unsafe extern "system" fn(usize, *mut u32) -> u32>(method(device, 7))(device, caps.as_mut_ptr());
     let _ = writeln!(text, "caps {}", hex(&caps));
-    let parameters: [u32; 13] = crate::mem::rd(renderer, 0x23C);
+    let parameters: [u32; 13] = crate::mem::rd(renderer, R::d3dPresentParameters);
     let _ = writeln!(text, "present {}", hex(&parameters));
-    let _ = writeln!(text, "behavior {:08x} type {}", crate::mem::rd::<u32>(renderer, 0x238), crate::mem::rd::<u32>(renderer, 0x230));
+    let _ = writeln!(text, "behavior {:08x} type {}", crate::mem::rd::<u32>(renderer, R::d3dBehaviorFlags), crate::mem::rd::<u32>(renderer, R::d3dDeviceType));
     let mut direct3d = 0usize;
     transmute::<usize, unsafe extern "system" fn(usize, *mut usize) -> u32>(method(device, 6))(device, &mut direct3d);
     if direct3d != 0 {
