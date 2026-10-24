@@ -1,5 +1,5 @@
-//! The stream of the records: the facts of a shape as the records carry them (`ShapeFacts`),
-//! and the state of the stream between the records (`Stream`).
+//! The stream of the records: the facts of a shape as the records carry them ([`ShapeFacts`]),
+//! and the state of the stream between the records ([`Stream`]).
 
 use super::*;
 
@@ -20,7 +20,7 @@ pub(crate) struct ShapeFacts {
     /// The fill mode of the material (D3DFILLMODE: 2 lines, 3 solid).
     pub(crate) fill: u32,
     /// The lights of the draw from their records: the key, then the `D3DLIGHT8`,
-    /// `STATE_LIGHT_SIZE` bytes each.
+    /// [`STATE_LIGHT_SIZE`] bytes each.
     pub(crate) lights: Vec<u8>,
 }
 
@@ -36,27 +36,27 @@ pub(crate) struct Stream {
     /// The game hides the sky (the sky root is culled), from the scene packet: the world
     /// scene has no sky draw.
     pub(crate) sky_hidden: bool,
-    /// The fog distances of the extension for the draws of the world, or `None`.
+    /// The fog distances of the extension for the draws of the world, or [`None`].
     pub(crate) fog_range: Option<(f32, f32)>,
     /// The class of the object of the draws that follow: MGE_LINK_CLASS_* of its packet.
     pub(crate) object_class: u32,
-    /// The sky values of the extension for the draw in progress, or `None`.
+    /// The sky values of the extension for the draw in progress, or [`None`].
     pub(crate) sky: Option<[[f32; 4]; 8]>,
     pub(crate) shape: ShapeFacts,
     /// The fog of the shape record in progress (flag 32): the colour, the start, the end
     /// and the range fog flag, as the render state of the game gets them from the fog
-    /// property of the draw. `None` for a draw without fog.
+    /// property of the draw. [`None`] for a draw without fog.
     pub(crate) shape_fog: Option<[u32; 4]>,
     /// The fog of the last shape record that had one: the fog states of the device of the
     /// game stay as the last draw with fog set them.
     pub(crate) fog: [u32; 4],
     /// `D3DRS_AMBIENTMATERIALSOURCE` as the last shape record with a value for it set it:
     /// the light manager of the game leaves the state of the draw before for a material
-    /// without one (see `material::Derived::sources`). \[I\] No engine function was read for
+    /// without one (see [`material::Derived::sources`]). \[I\] No engine function was read for
     /// this, and the default sources of a new stream do not agree with it.
     pub(crate) ambient_source: u32,
     /// The bones of the skinned shape in progress in the bones of the frame: the first and
-    /// the number, or `None` for a draw that is not skinned.
+    /// the number, or [`None`] for a draw that is not skinned.
     pub(crate) shape_bones: Option<(u32, u32)>,
     /// The world bound of the shape record in progress (flag 0x400): the centre and the
     /// radius, for the sort of a blended draw among the blends of the table.
@@ -66,29 +66,29 @@ pub(crate) struct Stream {
     pub(crate) shape_queued: bool,
     /// The head of the stream says that its shape records carry the flag 0x800 (bit 1 of its
     /// fourth word). Without it (an older capture), a blend is taken as sorted by its
-    /// material (`engine::alpha::sorted_by_engine`).
+    /// material ([`engine::alpha::sorted_by_engine`]).
     pub(crate) queue_marked: bool,
     /// The head of the stream says that the world camera's Click marks the end of the sky's
-    /// walk (`EVENT_WORLD_WALK`, bit 2 of its fourth word): the world starts at that event,
+    /// walk ([`EVENT_WORLD_WALK`], bit 2 of its fourth word): the world starts at that event,
     /// never at a draw. Without it (an older capture), the plan finds the start from the
     /// draws (`Plan::world_draw`).
     pub(crate) world_walk: bool,
-    /// The head of the stream says that the scene records carry `SCENE_BACK_BUFFER` (bit 4 of
+    /// The head of the stream says that the scene records carry [`SCENE_BACK_BUFFER`] (bit 4 of
     /// its fourth word): each scene starts on the target that the flag names. Without it (an
     /// older capture), the target comes from the `SetRenderTarget` calls alone.
     pub(crate) scene_target: bool,
     /// The head of the stream says that the end of the flush of the engine's main sorted
-    /// queue comes as `EVENT_QUEUE_FLUSHED` (bit 8 of its fourth word): the sorted blends go
+    /// queue comes as [`EVENT_QUEUE_FLUSHED`] (bit 8 of its fourth word): the sorted blends go
     /// there. Without it (an older capture), the plan places them at the ends of the scenes.
     pub(crate) queue_flush: bool,
-    /// The head of the stream says that the scene records carry `SCENE_WIREFRAME` (bit 32 of
+    /// The head of the stream says that the scene records carry [`SCENE_WIREFRAME`] (bit 32 of
     /// its fourth word). Without it (an older capture), the fill mode of the last draw says.
     pub(crate) scene_wireframe: bool,
     /// The head of the stream says how the game combines an environment map (bit 64 of its
     /// fourth word): with the lit colour (bit 128, the Morrowind Code Patch's hook) or not.
-    /// `None` for an older capture (`material::derive`).
+    /// [`None`] for an older capture ([`material::derive`]).
     pub(crate) envmap_lit: Option<bool>,
-    /// The scene in progress has the flag `SCENE_WIREFRAME`.
+    /// The scene in progress has the flag [`SCENE_WIREFRAME`].
     pub(crate) wireframe: bool,
 }
 

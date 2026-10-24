@@ -1,21 +1,21 @@
-//! The replay of the kept world draws of a frame for an extension (`Replay`), and a draw as
-//! the player keeps it (`Draw`).
+//! The replay of the kept world draws of a frame for an extension ([`Replay`]), and a draw as
+//! the player keeps it ([`Draw`]).
 
 use super::*;
 
-/// How the renderer draws the kept world draws of the frame again. See `Replay`.
+/// How the renderer draws the kept world draws of the frame again. See [`Replay`].
 pub struct ReplayView {
     /// A change of the world before the view of the game, in the space of the world of the
-    /// game and with the layout of Direct3D: a mirror for a reflection. `None`: no change.
+    /// game and with the layout of Direct3D: a mirror for a reflection. [`None`]: no change.
     pub world: Option<[f64; 16]>,
     /// Another view matrix and not that of the game, for a camera at another place: the
-    /// light of a shadow map. `None`: the view of each draw.
+    /// light of a shadow map. [`None`]: the view of each draw.
     pub view: Option<[f32; 16]>,
-    /// Another projection. `None`: that of each draw.
+    /// Another projection. [`None`]: that of each draw.
     pub projection: Option<[f32; 16]>,
     /// The size of the target of the pass.
     pub target_size: (u32, u32),
-    /// The samples for each pixel of the targets of the pass: `SceneView::samples` for the
+    /// The samples for each pixel of the targets of the pass: [`SceneView::samples`] for the
     /// pass of the game, 1 for a texture of the extension.
     pub samples: u32,
     /// True for a mirror: the front side of a triangle is its other side.
@@ -32,7 +32,7 @@ pub struct ReplayView {
     /// of the game has it off, and in a reflection it must stay behind the land.
     pub force_depth_test: bool,
     /// The classes of the game to draw again, one bit for each (MGE_LINK_CLASS_*): the
-    /// world draws of a frame have the sky too (classes 1 to 7). `ReplayView::WORLD` is
+    /// world draws of a frame have the sky too (classes 1 to 7). [`ReplayView::WORLD`] is
     /// all but the sky.
     pub classes: u32,
 }
@@ -46,7 +46,7 @@ impl ReplayView {
 /// Draws the world draws of the frame again: those of the game in its world scene, its
 /// scene of sorted draws and its scene of the water, into the back buffer, with the sky and
 /// without the water plane of the game. The pass must have a colour target and a depth
-/// target with the formats of `SceneView`.
+/// target with the formats of [`SceneView`].
 pub trait Replay {
     fn replay(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView);
     /// The number of kept draws.
@@ -58,12 +58,12 @@ pub trait Replay {
 pub(crate) struct Draw {
     /// The class of the object of the draw: MGE_LINK_CLASS_*.
     pub(crate) class: u32,
-    /// A draw of the world of the game into the back buffer: one of the draws of `Replay`.
+    /// A draw of the world of the game into the back buffer: one of the draws of [`Replay`].
     pub(crate) world: bool,
     pub(crate) key: PipelineKey,
     pub(crate) stencil_reference: u32,
     pub(crate) data: DrawData,
-    /// The origin that the world matrices of the draw are relative to, or `None`.
+    /// The origin that the world matrices of the draw are relative to, or [`None`].
     pub(crate) origin: Option<[f64; 3]>,
     pub(crate) vertices: Rc<wgpu::Buffer>,
     pub(crate) indexes: Rc<wgpu::Buffer>,
@@ -86,7 +86,7 @@ impl Draw {
     }
 }
 
-/// The kept draws with the renderer, for `Replay`.
+/// The kept draws with the renderer, for [`Replay`].
 pub(crate) struct Replayer<'a> {
     pub(crate) renderer: &'a mut Renderer,
     pub(crate) kept: &'a [Rc<Draw>],

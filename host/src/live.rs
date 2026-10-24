@@ -30,7 +30,7 @@ const RING_HEAD: usize = 64;
 const RING_WRITTEN: usize = 8;
 const RING_READ: usize = 16;
 const RING_CLOSED: usize = 24;
-/// The classes of the game that the helper draws itself, for the plugin (`Player::takes`).
+/// The classes of the game that the helper draws itself, for the plugin ([`Player::takes`]).
 const RING_TAKES: usize = 32;
 /// 1 while this program waits for a record: the plugin sets the event of the ring
 /// after a write only then.
@@ -116,7 +116,7 @@ impl Ring {
         }
     }
 
-    /// Takes the next record out of the ring into `data`. Returns its tag, or `None` when
+    /// Takes the next record out of the ring into `data`. Returns its tag, or [`None`] when
     /// the ring has no complete record.
     fn pop(&self, data: &mut Vec<u8>) -> Option<u32> {
         let read = self.counter(RING_READ).load(Ordering::Relaxed);
@@ -202,7 +202,7 @@ impl Tiles {
 }
 
 /// The message memory of a stream: shared memory with the name of the ring and
-/// `.messages`, which the plugin makes. The head: `MESSAGES_MAGIC`, the number of data
+/// `.messages`, which the plugin makes. The head: [`MESSAGES_MAGIC`], the number of data
 /// bytes, the bytes that this program wrote (u64), the bytes that the game read (u64). Then
 /// the data: records of the number, the length and the bytes, which can go around the
 /// end. See `capture.rs` of the plugin.
@@ -280,7 +280,7 @@ struct App {
     /// Each picture file also as the window shows it (`--window-shots`), for a test of the
     /// text on the window without a picture of the screen.
     window_shots: bool,
-    /// A picture of a frame with a draw of the film player, or `None`, and which such
+    /// A picture of a frame with a draw of the film player, or [`None`], and which such
     /// draw (the first is 1).
     shot_film: Option<String>,
     shot_film_frame: u32,

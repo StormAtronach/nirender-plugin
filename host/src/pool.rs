@@ -40,7 +40,7 @@ fn alignment(align: u64) -> u64 {
 }
 
 /// Takes `size` bytes at a multiple of `align` out of the free ranges (first fit): the offset,
-/// or `None` when no range has room.
+/// or [`None`] when no range has room.
 fn carve(free: &mut Vec<(u64, u64)>, size: u64, align: u64) -> Option<u64> {
     let slot = free.iter().position(|&(offset, room)| offset.next_multiple_of(align) + size <= offset + room)?;
     let (offset, room) = free.remove(slot);

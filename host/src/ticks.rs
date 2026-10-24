@@ -1,9 +1,9 @@
 //! The time of the parts of the work, in ticks of the processor's counter.
 //!
 //! The accounting reads the time many times for each draw and each record
-//! (`Counts::times`), so it uses `rdtsc` and not `Instant::now`, which costs much more. The
+//! (`Counts::times`), so it uses `rdtsc` and not [`Instant::now`], which costs much more. The
 //! counter runs at a constant rate on current processors. The rate is not asked of the
-//! system: it is the ratio of the ticks to `Instant` since the first read, so a report made
+//! system: it is the ratio of the ticks to [`Instant`] since the first read, so a report made
 //! seconds later has it to better than 1 in 10000.
 
 use std::sync::OnceLock;
@@ -55,7 +55,7 @@ impl Clock {
     }
 }
 
-/// The ticks of a second: the ratio of the counter to `Instant` since the first read. Within
+/// The ticks of a second: the ratio of the counter to [`Instant`] since the first read. Within
 /// 20 ms of the first read it waits for the rest of those 20 ms, so that the ratio has four
 /// digits.
 fn rate() -> f64 {

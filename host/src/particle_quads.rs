@@ -4,7 +4,7 @@
 //! vertex buffer of the frame, as `NiDX8Renderer::RenderPoints` writes them (the position,
 //! the normal 0.3, the colour, the texture coordinates; 36 bytes). The draws then take the
 //! path of any shape. `MGE_XE_PARTICLE_QUADS=cpu` keeps the corners made on the CPU
-//! (`Renderer::particles`).
+//! ([`Renderer::particles`]).
 //!
 //! The input and the vertices of a frame are not overwritten within the frame: each system
 //! gets its own range, also a system drawn twice (the world and a reflection). The compute

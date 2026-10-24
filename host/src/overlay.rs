@@ -46,7 +46,7 @@ struct Shown {
     draws: f32,
     /// The age of the picture when it goes to the window, in ms, and its three parts: the
     /// frame of the game, the wait in the stream, this program. The medians of the part.
-    /// `None` without the times of the game.
+    /// [`None`] without the times of the game.
     age: Option<[f32; 4]>,
     working_set: u64,
     private: u64,
@@ -198,7 +198,7 @@ impl Overlay {
     }
 
     /// One line for the log with the median age of the pictures since the last call, or
-    /// `None` without a picture with the times of the game.
+    /// [`None`] without a picture with the times of the game.
     pub fn age_line(&mut self) -> Option<String> {
         let mut ages = std::mem::take(&mut self.mark_age);
         let frames = ages.len();

@@ -1,4 +1,4 @@
-//! The methods of `Renderer`: the device, the pipelines, the textures and the samplers, the
+//! The methods of [`Renderer`]: the device, the pipelines, the textures and the samplers, the
 //! buffers of the frame and of the retained instances, and the helpers of its buffers. The
 //! struct is in lib.rs.
 
@@ -149,7 +149,7 @@ pub(crate) fn make_timing(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<
 }
 
 impl Timing {
-    /// The pair of the next render pass of the frame, or `None` when the frame has more
+    /// The pair of the next render pass of the frame, or [`None`] when the frame has more
     /// passes than pairs.
     pub(crate) fn next_pass(&mut self) -> Option<u32> {
         let index = self.passes;
@@ -223,7 +223,7 @@ pub(crate) fn bone_buffer(device: &wgpu::Device, bones: usize) -> wgpu::Buffer {
 
 impl Renderer {
     /// The maps of a material that have a texture, for a shape that the extension holds
-    /// (`HeldDraw::maps`): `sets` is the number of texture coordinate sets of its geometry.
+    /// ([`HeldDraw::maps`]): `sets` is the number of texture coordinate sets of its geometry.
     pub(crate) fn held_maps(&self, m: &material::Material, sets: u32) -> Vec<HeldMap> {
         m.maps
             .iter()
@@ -679,7 +679,7 @@ impl Renderer {
     }
 
     /// The group of the arrays of the frame for a pass into `target` (a rendered texture of
-    /// the game, or `None` for the back buffer or a target of the extension): the texture of
+    /// the game, or [`None`] for the back buffer or a target of the extension): the texture of
     /// the target shows white in it. Made once, kept for the frame.
     pub(crate) fn array_group_for(&mut self, target: Option<u32>) -> Rc<wgpu::BindGroup> {
         let hide = target.and_then(|handle| self.frame_texture_slots.get(&handle).copied());
@@ -758,7 +758,7 @@ impl Renderer {
     }
 
     /// Instances made while the frame draws, in a row, from the end of the room: the first,
-    /// or `None` when the room is full.
+    /// or [`None`] when the room is full.
     pub(crate) fn append_instances(&mut self, instances: &[Instance]) -> Option<u32> {
         if self.retained_instances + self.instance_len + self.instance_extras + instances.len() > self.instance_capacity {
             return None;
@@ -770,7 +770,7 @@ impl Renderer {
     }
 
     /// The record of a draw of the frame: its data, in the records of the frame after
-    /// `upload_records`. Returns its index, or `None` when the records reached the device's
+    /// `upload_records`. Returns its index, or [`None`] when the records reached the device's
     /// limit of a storage binding: the draw is then not drawn (counted, and said once), and
     /// the rest of the frame draws.
     pub(crate) fn record(&mut self, data: &DrawData) -> Option<u32> {
@@ -805,7 +805,7 @@ impl Renderer {
     }
 
     /// A record made while the frame draws, written at once, from the end of the room:
-    /// its index, or `None` when the room is full.
+    /// its index, or [`None`] when the room is full.
     pub(crate) fn record_now(&mut self, data: &DrawData) -> Option<u32> {
         if self.retained_records + self.record_count + self.record_extras >= self.record_capacity {
             return None;
@@ -817,7 +817,7 @@ impl Renderer {
     }
 
     /// A copy of a draw for this part of the frame: a record with `data`, and instances with
-    /// the world matrices of the draw's that name it. The first instance, or `None` when the
+    /// the world matrices of the draw's that name it. The first instance, or [`None`] when the
     /// room of the records or of the instances is full.
     pub(crate) fn copy_of_draw(&mut self, data: &DrawData, instances: &[Instance]) -> Option<u32> {
         let record = self.record_now(data)?;

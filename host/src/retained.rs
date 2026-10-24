@@ -1,6 +1,6 @@
 //! The retained instances of the plugin drawn from a table of the helper. An `INSTANCE`
 //! record with the flag 0x100 goes into the table: its world matrix and
-//! its bound, and the record of its draw (`DrawData`) made once from its material and its
+//! its bound, and the record of its draw ([`DrawData`]) made once from its material and its
 //! geometry, in a segment of the record buffer and of the instance buffer of the frame
 //! that stays from frame to frame. The plugin then sends no draw for it: a change of its
 //! lights (`INSTANCE_LIGHTS`), of its visibility (`INSTANCE_STATE`), of its values (the
@@ -31,7 +31,7 @@ pub const RETAINED_LIGHTS_AT_FIRST: usize = 1024;
 /// The flag of an instance record: the helper draws the instance from its table.
 pub const INSTANCE_BLOCK: u32 = 0x100;
 /// The flag of a skinned instance (the shape record's `SKINNED`): its world is the identity,
-/// and its bones come in `INSTANCE_BONES` records (`RetainedSet::set_bones`).
+/// and its bones come in `INSTANCE_BONES` records ([`RetainedSet::set_bones`]).
 const INSTANCE_SKINNED: u32 = 4;
 /// The bytes of one bone of an `INSTANCE_BONES` record: the matrix of the rotation and the
 /// scale (9 floats, by columns) and the exact translation in the world (3 doubles).
@@ -56,15 +56,15 @@ pub struct SceneData {
     pub pixel: [f32; 4],
     pub clip_plane: [f32; 4],
     /// The sun of the view for the shade of the extension, and the bits of `counts.w` the
-    /// extension sets for a draw of the frame (`Extension::shade`).
+    /// extension sets for a draw of the frame ([`Extension::shade`]).
     pub extension5: [f32; 4],
     pub extension7: [f32; 4],
     pub counts: [[u32; 4]; 2],
     /// The origin of the set in the world: the positions of its draws are relative to it.
     /// The stage of a texture effect that takes the position adds it (`stage_coordinate`).
     pub origin: [f32; 4],
-    /// What the extension's shade makes of an ambient light (`TableShade::ambient_scale`),
-    /// so each retained draw's own ambient (`DrawData::scene_ambient`, from the instance's
+    /// What the extension's shade makes of an ambient light ([`TableShade::ambient_scale`]),
+    /// so each retained draw's own ambient ([`DrawData::scene_ambient`], from the instance's
     /// lights record) is scaled as the scene's is.
     pub ambient_scale: [f32; 4],
     /// x: 1 when the view takes the point lights of the world from the clusters (the main
@@ -135,19 +135,19 @@ struct Slot {
     /// the other sorted blends where the engine flushes its queue.
     sorted: bool,
     /// The shape's own alpha property blends and the engine does not sort it: the engine
-    /// draws it at its display, in the order of its walk (`engine::walk`).
+    /// draws it at its display, in the order of its walk ([`engine::walk`]).
     in_place: bool,
-    /// The texture handles the slot pinned (`Renderer::pin_texture`), one use each: their
+    /// The texture handles the slot pinned ([`Renderer::pin_texture`]), one use each: their
     /// uses go when the slot goes.
     pinned: [u32; STAGES],
     /// A skinned slot: the first of the bones of its instance in the table's palette (its
-    /// instance carries it to the shader), or `NO_BONES`.
+    /// instance carries it to the shader), or [`NO_BONES`].
     bones_first: u32,
     /// The material is emissive only (`Derived::no_lights`): the slot takes no light of its
     /// instance and a black ambient.
     no_lights: bool,
     /// The facts of the instance's first pass, when the extension claims it
-    /// (`Extension::claims`): each frame offers the instance to `hold`.
+    /// ([`Extension::claims`]): each frame offers the instance to `hold`.
     claim: Option<DrawFacts>,
     /// The extension holds the instance in this frame: no view of the table draws the slot.
     held: bool,
@@ -220,7 +220,7 @@ pub struct RetainedSet {
     all_dirty: bool,
     /// The slots that draw a stage from a slot of the frame in the frame they were made,
     /// with the pinned texture and sampler slots of each stage for the next frame
-    /// (`Player::retained_settle_late`).
+    /// ([`Player::retained_settle_late`]).
     late: Vec<(u32, [[u32; 2]; STAGES])>,
     /// The generations of the record and instance buffers the segments were written into.
     record_generation: u32,
@@ -232,7 +232,7 @@ pub struct RetainedSet {
     /// The nearest depth and the group of each bucket in the view in progress.
     bucket_depth: Vec<(f32, u8)>,
     /// The sorted blends of the view in progress, back to front; and those of the main view
-    /// kept for the flush of the engine's queue (`Sorted::Keep`), with the view.
+    /// kept for the flush of the engine's queue ([`Sorted::Keep`]), with the view.
     sorted_order: Vec<(u64, u32, u32, u32)>,
     kept_sorted: Vec<(u64, u32, u32, u32)>,
     pub sorted_view: Option<RetainedView>,
@@ -252,12 +252,12 @@ pub struct RetainedSet {
     /// The bones of the skinned instances, as their records give them (the matrix of the
     /// rotation and the scale, the exact translation): `bones_of` has the range of each
     /// instance, `bone_free` the free ranges. The GPU's palette is made from them for the
-    /// origin of the set when they changed (`Renderer::retained_upload`).
+    /// origin of the set when they changed ([`Renderer::retained_upload`]).
     bones: Vec<([f32; 9], [f64; 3])>,
     bones_of: HashMap<u32, (u32, u32)>,
     bone_free: Vec<(u32, u32)>,
     bones_dirty: bool,
-    /// The instances that the extension claims (`Slot::claim`).
+    /// The instances that the extension claims ([`Slot::claim`]).
     claimed: std::collections::HashSet<u32>,
     pub counts: RetainedCounts,
 }
@@ -319,7 +319,7 @@ impl RetainedSet {
 
     /// Removes the instance: its slots go to the free list, and the GPU keeps their stale
     /// records (no draw names them). Returns the texture handles its slots pinned, for
-    /// `Renderer::unpin_texture` (`Player::retained_remove`).
+    /// [`Renderer::unpin_texture`] ([`Player::retained_remove`]).
     #[must_use]
     pub fn remove(&mut self, id: u32) -> Vec<u32> {
         let mut pinned = Vec::new();
@@ -381,7 +381,7 @@ impl RetainedSet {
         r.world_at(&self.origin)
     }
 
-    /// The bones of a skinned instance (`INSTANCE_BONES`): `count` bones of `BONE_BYTES` in
+    /// The bones of a skinned instance (`INSTANCE_BONES`): `count` bones of [`BONE_BYTES`] in
     /// `data`, and the world bound of the shape for the cull. The instance keeps its range of
     /// the palette while its number of bones stays the same; its slots take the range and the
     /// bound.
@@ -443,9 +443,9 @@ impl RetainedSet {
     }
 
     /// The origin of the set follows the camera of the world: `camera` is the exact
-    /// position of the camera of a relative scene, or `None` for a scene that is not
+    /// position of the camera of a relative scene, or [`None`] for a scene that is not
     /// relative. When the scene changes kind, or the camera is farther than
-    /// `REBASE_DISTANCE` from the origin, every slot and every light is made again for the
+    /// [`REBASE_DISTANCE`] from the origin, every slot and every light is made again for the
     /// new origin, and the segments are written whole. Returns true then.
     pub fn rebase(&mut self, camera: Option<[f64; 3]>, known: &HashMap<u32, [u8; 104]>) -> bool {
         let (relative, target) = match camera {
@@ -483,7 +483,7 @@ impl RetainedSet {
 
     /// The view of a scene for the instances: the view of the game, with its translation
     /// made for the origin of the set. `camera` is the exact position of the camera (the
-    /// origin of the scene), or `None` for a scene that is not relative.
+    /// origin of the scene), or [`None`] for a scene that is not relative.
     pub fn scene_view(&self, view: &[f32; 16], camera: Option<[f64; 3]>) -> [f32; 16] {
         let Some(camera) = camera.filter(|_| self.relative) else { return *view };
         let d = [self.origin[0] - camera[0], self.origin[1] - camera[1], self.origin[2] - camera[2]];
@@ -761,11 +761,11 @@ pub struct RetainedView {
     pub force_depth_test: bool,
     pub target: Option<u32>,
     pub sorted: Sorted,
-    /// The samples for each pixel of the targets of the pass (`PipelineKey::samples`).
+    /// The samples for each pixel of the targets of the pass ([`PipelineKey::samples`]).
     pub samples: u32,
 }
 
-/// A texture with a slot of the arrays that stays from frame to frame (`Renderer::pin_texture`):
+/// A texture with a slot of the arrays that stays from frame to frame ([`Renderer::pin_texture`]):
 /// its slot is its index plus 1. `uses` counts the stages of the retained slots that name it;
 /// a free entry has the handle 0 and the white view.
 pub struct PinnedTexture {
@@ -783,7 +783,7 @@ impl Renderer {
     /// the slot. Without the slot the instance drew white until its next record. The lowest
     /// free slot is taken before the room grows, so that the free slots gather at the end,
     /// where `unpin_texture` drops them. The pinned slots and the frame's own textures share
-    /// the room; `FRAME_RESERVE` slots stay the frame's.
+    /// the room; [`FRAME_RESERVE`] slots stay the frame's.
     pub fn pin_texture(&mut self, handle: u32) -> u32 {
         if handle == 0 {
             return 0;
@@ -1077,7 +1077,7 @@ fn slot_instance(i: usize, slot: &Slot) -> Instance {
 
 /// Draws the instances of the set in view, one indirect call for each run of draws of one
 /// bucket. The pass state is not known after it: the caller forgets its bound groups. With
-/// `Sorted::Only` the view draws the sorted blends kept by the main view and nothing else.
+/// [`Sorted::Only`] the view draws the sorted blends kept by the main view and nothing else.
 pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Renderer, set: &mut RetainedSet, args: &mut Vec<IndirectArgs>, view: &RetainedView) {
     if set.by_id.is_empty() {
         return;
@@ -1175,7 +1175,7 @@ impl RetainedSet {
     }
 
     /// Puts the entries of the sorted slots of an instance into `entries` (a run of
-    /// `Sorted::Only`), in the order of its slots. Returns the number of its slots that the
+    /// [`Sorted::Only`]), in the order of its slots. Returns the number of its slots that the
     /// table does not sort: those drew with the other draws of the table.
     fn placed_entries(&self, id: u32, entries: &mut Vec<(u64, u32, u32, u32)>) -> u32 {
         let mut not_sorted = 0;
@@ -1207,17 +1207,17 @@ impl RetainedSet {
     ///    blend pass that both write depth and test less-or-equal, in different buckets: the
     ///    base must come first, or it overwrites the blend at the same depth (the game draws
     ///    the two in a row). In the main view a slot of an instance with a place in the
-    ///    engine's walk (`tag::INSTANCE_WALK`) leaves this group: it draws at its place
-    ///    (`engine::walk`). This order is only for the blends without one.
+    ///    engine's walk ([`tag::INSTANCE_WALK`]) leaves this group: it draws at its place
+    ///    ([`engine::walk`]). This order is only for the blends without one.
     /// The depth of a draw is that of the nearest point of its bound: the distance from the
     /// near plane of the view less the radius, at least 0.
     /// 4. The blends the engine would sort, into `sorted_order`: back to front by the depth
     ///    of the bound centre along the view, ties by the order of the slots. This is not
     ///    the engine's order: the engine sorts screen-space boxes (`$2::Sort` 0x6FE830,
     ///    engine-rules R21). A view draws them after the rest
-    ///    (`Sorted::Together`) or keeps them for the flush of the engine's queue
-    ///    (`Sorted::Keep`, then `Only`). There a kept blend with a place in the engine's
-    ///    queue (`tag::INSTANCE_QUEUED`) draws at its place, in the engine's order; this
+    ///    ([`Sorted::Together`]) or keeps them for the flush of the engine's queue
+    ///    ([`Sorted::Keep`], then `Only`). There a kept blend with a place in the engine's
+    ///    queue ([`tag::INSTANCE_QUEUED`]) draws at its place, in the engine's order; this
     ///    order is only for the blends without one (`draw_retained_sorted`).
     /// Engine-rules R3, R4, R20 (the skill wgpu-renderer-dev).
     fn collect_order(&mut self, view: &RetainedView) {
@@ -1298,9 +1298,9 @@ impl RetainedSet {
 
 /// The kind of a pass for the shade bits of the scene: the blend form (0 none, 1 by the alpha,
 /// 2 a source of ONE, 3 a destination of ONE: the extension's shade reads the two factors
-/// and the depth write) times 2, plus 1 with a depth write: the index into `TABLE_KINDS`.
+/// and the depth write) times 2, plus 1 with a depth write: the index into [`TABLE_KINDS`].
 /// `draw_retained_main` asks the extension for the bits of each kind once a frame
-/// (`Extension::shade_table`), and the shader takes the bits by this index.
+/// ([`Extension::shade_table`]), and the shader takes the bits by this index.
 /// Engine-rules R20 (the skill wgpu-renderer-dev).
 pub fn slot_kind(blend: [u32; 3], depth_write: bool) -> u32 {
     let form = if blend[0] == 0 {
@@ -1315,14 +1315,14 @@ pub fn slot_kind(blend: [u32; 3], depth_write: bool) -> u32 {
     form * 2 + depth_write as u32
 }
 
-/// The stages of the texture effects of a material for the table, as `Pass::new` takes them
+/// The stages of the texture effects of a material for the table, as [`Pass::new`] takes them
 /// from a shape record: the generation from a vector of the world in the high word of the
 /// coordinate index (5 the normal, 6 the position, 7 the reflection, as the shader reads
 /// them), the transform flags, and the texture matrix from the effect's world projection.
 /// The engine's callbacks make the same stage for a camera by turning the vector of camera
 /// space into one of the world first: here the shader does the turn, so the stage holds for
 /// every view. The position of a retained draw is relative to the origin of the set: the
-/// shader adds `scene.origin` before the matrix. `None` for a material without effects.
+/// shader adds `scene.origin` before the matrix. [`None`] for a material without effects.
 /// Engine-rules R7 (the skill wgpu-renderer-dev).
 fn effect_stages(m: &material::Material) -> Option<[[u32; EFFECT_STAGE_WORDS]; 2]> {
     if m.environment_effect.is_none() && m.fog_map_effect.is_none() {
@@ -1625,10 +1625,10 @@ impl Player {
         data
     }
 
-    /// Offers the instances that the extension claims (`Extension::claims`) to `hold`, one
+    /// Offers the instances that the extension claims ([`Extension::claims`]) to `hold`, one
     /// time in a frame for each one in the world's main view, as the stream's shapes are
     /// offered (`hold_shape`): a held instance is drawn by the extension, and no view of the
-    /// table draws its slots in the frame (`Slot::held`). Returns the held draws, made from
+    /// table draws its slots in the frame ([`Slot::held`]). Returns the held draws, made from
     /// the instance's first slot as `hold_shape` makes them from the first pass.
     fn retained_hold(&mut self, facts: &WorldFacts, planes: &[[f32; 4]; 6]) -> Vec<HeldDraw> {
         let mut out = Vec::new();
@@ -1686,7 +1686,7 @@ impl Player {
     }
 
     /// The table's lights as the extension shades them for the main view of the frame
-    /// (`Extension::shade_table`), and the values the shade gives the scene; the lights
+    /// ([`Extension::shade_table`]), and the values the shade gives the scene; the lights
     /// unshaded when the extension does not shade.
     pub(super) fn shade_table_main(&mut self, facts: &WorldFacts) -> (Vec<LightData>, Option<TableShade>) {
         let mut lights = self.retained.light_values.clone();
@@ -1703,7 +1703,7 @@ impl Player {
     /// Draws the retained instances in the world of the frame: after the extension drew
     /// before the world, before the draws of the game. The extension shades the lights of
     /// the instances and the values of the scene as it shades a draw of the world that
-    /// writes depth and does not blend (`Extension::shade`), one time for the frame.
+    /// writes depth and does not blend ([`Extension::shade`]), one time for the frame.
     /// Engine-rules R10, R20 (the skill wgpu-renderer-dev).
     pub(super) fn draw_retained_main(&mut self, facts: &WorldFacts) {
         // The near plane of the world's view, for the depth of the sort of the blends.
@@ -1775,7 +1775,7 @@ impl Player {
     /// blended draws of the engine's path and the places of the table's blends that waited
     /// (`frame_sorted`), and the kept blends of the table without a place. The waiting
     /// entries keep their order of arrival: the engine sorted them, the table's blends with
-    /// them (the plugin puts those into the engine's queue, `tag::INSTANCE_QUEUED`), and a
+    /// them (the plugin puts those into the engine's queue, [`tag::INSTANCE_QUEUED`]), and a
     /// node that orders its subtree (a sort adjust node) gives an order that the depth of
     /// each shape does not. A kept blend without a place (an older capture, a queue that did
     /// not take the shape) goes between them by the depth of its bound centre along the view
@@ -1863,7 +1863,7 @@ impl Player {
 }
 
 impl Player {
-    /// Draws a run of the table's sorted entries into the pass (`Sorted::Only`), with the
+    /// Draws a run of the table's sorted entries into the pass ([`Sorted::Only`]), with the
     /// view of the main pass. Nothing without entries or without that view.
     fn draw_sorted_run(&mut self, view: Option<RetainedView>, entries: Vec<(u64, u32, u32, u32)>) {
         if entries.is_empty() {
@@ -1881,7 +1881,7 @@ impl Player {
         self.forget_bound();
     }
 
-    /// Draws a run of places of the table's blends in the engine's walk (`Item::WalkPlaces`):
+    /// Draws a run of places of the table's blends in the engine's walk ([`Item::WalkPlaces`]):
     /// the slots the main view left out for them, in the walk's order, with the main view.
     /// The kept sorted blends stay for their item.
     /// Engine-rules R2, R3 (the skill wgpu-renderer-dev).

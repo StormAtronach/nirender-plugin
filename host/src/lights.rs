@@ -1,7 +1,7 @@
 //! The lights of a frame on the GPU: the clusters of the lights of the draws (binned on
 //! the CPU into a grid of tiles and depth slices) and the lights of the frame for the
 //! extension, with clusters of their own. The buffers and the binning only; the light
-//! values come from the records (`LightData`).
+//! values come from the records ([`LightData`]).
 
 use std::collections::HashMap;
 
@@ -28,11 +28,11 @@ pub(crate) struct ClusterData {
     pub(crate) offset: [f32; 4],
 }
 
-/// `ClusterData::grid` w of the clusters of the lights of the world.
+/// [`ClusterData::grid`] w of the clusters of the lights of the world.
 pub(crate) const GRID_WORLD_LIGHTS: u32 = 3;
 
 /// Bins lights into the grid of the clusters of a projection of Direct3D. Each item is the
-/// entry of a light, its centre in the space of the view (`None` for a directional light,
+/// entry of a light, its centre in the space of the view ([`None`] for a directional light,
 /// which is in each cluster) and its reach. `lists` has a list for each cluster. Returns the
 /// table (the first entry and the number for each cluster), the entries, and the values for
 /// the shader with `w` in the grid.
@@ -169,7 +169,7 @@ impl Clusters {
     /// Notes a light of the frame as a candidate, by its key and its index in the light
     /// buffer: the first draw with the key gives the values. `origin` is that of the scene
     /// of the draw; `relative` says that the position of the light is relative to it.
-    /// Returns the slot of the light in the masks of the draws, or `None` when the frame
+    /// Returns the slot of the light in the masks of the draws, or [`None`] when the frame
     /// has no slot left.
     pub(crate) fn note(&mut self, key: u32, index: u32, relative: bool, origin: Option<[f64; 3]>) -> Option<u32> {
         let next = self.unique.len() as u32;

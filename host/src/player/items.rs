@@ -4,7 +4,7 @@
 use crate::*;
 
 impl Player {
-    /// Does the items of the frame that are not done yet. See `Item`.
+    /// Does the items of the frame that are not done yet. See [`Item`].
     pub(crate) fn run_items(&mut self) {
         let items = std::mem::take(&mut self.items);
         if !self.drawing() {
@@ -124,7 +124,7 @@ impl Player {
         }
     }
 
-    /// Does a step of the plan of the items (`plan::Plan`).
+    /// Does a step of the plan of the items ([`plan::Plan`]).
     pub(crate) fn plan_step(&mut self, step: plan::Step) {
         match step {
             plan::Step::StartWorld => {
@@ -253,7 +253,7 @@ impl Player {
         }
     }
 
-    /// Asks the extension for its answers for the frame. See `Extension::frame`.
+    /// Asks the extension for its answers for the frame. See [`Extension::frame`].
     pub(crate) fn ask_frame(&mut self) {
         let Some(mut extension) = self.extension.take() else { return };
         let facts = self.world_facts(true);
@@ -272,7 +272,7 @@ impl Player {
         self.extension = Some(extension);
     }
 
-    /// Gives the extension its call at the start of the world. See `Extension::before_world`.
+    /// Gives the extension its call at the start of the world. See [`Extension::before_world`].
     pub(crate) fn start_world(&mut self, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
@@ -309,7 +309,7 @@ impl Player {
         self.draw_retained_main(facts);
     }
 
-    /// Gives the extension its call at the end of the world scene. See `Extension::after_world`.
+    /// Gives the extension its call at the end of the world scene. See [`Extension::after_world`].
     pub(crate) fn end_world(&mut self, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
@@ -373,7 +373,7 @@ impl Player {
         self.give_held(facts, world_depth_now);
     }
 
-    /// Gives the extension the shapes that it took in the frame. See `Extension::draw_held`.
+    /// Gives the extension the shapes that it took in the frame. See [`Extension::draw_held`].
     /// `world_depth_now`: the copy of the world depth is the depth as it is now.
     pub(crate) fn give_held(&mut self, facts: &WorldFacts, world_depth_now: bool) {
         if self.taken.is_empty() && !self.extension.as_ref().is_some_and(|extension| extension.wants_held()) {
@@ -407,7 +407,7 @@ impl Player {
         self.extension = Some(extension);
     }
 
-    /// Gives the extension a held shape in its place. See `Extension::draw_held_in_place`.
+    /// Gives the extension a held shape in its place. See [`Extension::draw_held_in_place`].
     pub(crate) fn give_held_here(&mut self, held: HeldDraw, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
         let (picture, depth) = self.copy_for(extension.reads(ReadingCall::HeldInPlace(&held)), false);
@@ -432,7 +432,7 @@ impl Player {
         self.extension = Some(extension);
     }
 
-    /// Keeps the picture of the frame as it is now, for `Extension::blend`.
+    /// Keeps the picture of the frame as it is now, for [`Extension::blend`].
     pub(crate) fn keep_before(&mut self) {
         let (Some(source), Some(encoder)) = (self.back_buffer.as_ref(), self.encoder.as_mut()) else { return };
         if !source.usage().contains(wgpu::TextureUsages::COPY_SRC) || !self.depth.as_ref().is_some_and(|depth| depth.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)) {
@@ -452,7 +452,7 @@ impl Player {
         self.before_kept = true;
     }
 
-    /// Copies what a call of the extension reads (`Extension::reads`): the picture of the
+    /// Copies what a call of the extension reads ([`Extension::reads`]): the picture of the
     /// frame and the depth of the game, outside of the pass. With `world_depth_now`, the copy
     /// of the world depth is the depth as it is now, and is given for it. The pass is open
     /// again after a copy.
@@ -497,8 +497,8 @@ impl Player {
     }
 
     /// Copies the depth as it is now, outside of the pass: into the copy of the moment (0),
-    /// the copy of the world (1, for `Extension::post`) or the copy of the draws of
-    /// `Extension::before_world` (2). The caller opens the pass again.
+    /// the copy of the world (1, for [`Extension::post`]) or the copy of the draws of
+    /// [`Extension::before_world`] (2). The caller opens the pass again.
     pub(crate) fn copy_depth(&mut self, which: u32) -> Option<wgpu::TextureView> {
         let source = self.depth.as_ref().map(|depth| depth.texture().clone())?;
         // A multisampled depth cannot be copied: the resolve pass writes the nearest sample
@@ -554,7 +554,7 @@ impl Player {
         self.open_pass(None, None, None);
     }
 
-    /// Gives the extension its post-processing call. See `Extension::post`.
+    /// Gives the extension its post-processing call. See [`Extension::post`].
     pub(crate) fn post_process(&mut self, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
         // The depth of the end of the world scene, when it was kept; else a copy of that of now.
@@ -603,8 +603,8 @@ impl Player {
     }
 
     /// Gives the extension its call in place of the draws of a class. See
-    /// `Extension::draw_class`. `drawn` is the number of world draws before the call. With
-    /// a plane for the class (`FrameParameters::class_plane`): the world draws that blend,
+    /// [`Extension::draw_class`]. `drawn` is the number of world draws before the call. With
+    /// a plane for the class ([`FrameParameters::class_plane`]): the world draws that blend,
     /// write no depth and come after the call go into the picture first, on the far side of
     /// the plane (those before the call are there already, on that side only); after the
     /// call each of them that came before it goes on the side of the camera, over the call's

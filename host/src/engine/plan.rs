@@ -46,7 +46,7 @@ pub(crate) struct Plan {
     /// The world ended with the engine's sorted queue open: the table's blends wait for the
     /// scene that flushes it (R19).
     queue_open: bool,
-    /// `Step::MissingClasses` was given in this frame.
+    /// [`Step::MissingClasses`] was given in this frame.
     classes_checked: bool,
 }
 

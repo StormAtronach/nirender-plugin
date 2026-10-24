@@ -1,4 +1,4 @@
-//! The targets of the frame with more than one sample for each pixel (`Extension::samples`).
+//! The targets of the frame with more than one sample for each pixel ([`Extension::samples`]).
 //! The pass of the game draws into a multisampled colour target and a multisampled depth
 //! target; the colour resolves into the back buffer at the end of each pass (the
 //! `resolve_target` of the pass, the average of the samples). This file has the two passes

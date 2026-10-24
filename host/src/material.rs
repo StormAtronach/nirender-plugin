@@ -208,7 +208,7 @@ pub struct Derived {
     /// `NiDX8LightManager::setState` 0x6BB200; `updateLights` 0x6BB6C0 then enables no light
     /// and sets D3DRS_AMBIENT black). Only the emissive colour shows.
     pub no_lights: bool,
-    /// Diffuse, emissive and ambient material sources; `None` when the engine leaves the
+    /// Diffuse, emissive and ambient material sources; [`None`] when the engine leaves the
     /// state of the draw before.
     pub sources: [Option<u32>; 3],
     /// The `D3DMATERIAL8`: diffuse, ambient, specular, emissive with the alpha, then power.
@@ -339,7 +339,7 @@ fn ops(slot: u32, first: bool, apply: bool, has_texture: bool) -> ([u32; 3], [u3
 
 /// Derives the state of a draw for a material with a geometry of `sets` texture sets.
 /// `envmap_lit`: the game's environment map stages of the reflection vector take the lit
-/// colour (the stream header's `HEADER_ENVMAP_LIT`); `None` for an older capture without the
+/// colour (the stream header's `HEADER_ENVMAP_LIT`); [`None`] for an older capture without the
 /// fact.
 pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
     let mut d = Derived { modelled: m.flags & (PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0, ..Default::default() };

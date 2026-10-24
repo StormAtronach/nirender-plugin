@@ -1,5 +1,5 @@
 //! The depth of the first-person scene merged into the copy of the world depth that the
-//! post-processing of the extension reads (`Player::merge_first_person_depth`). The game
+//! post-processing of the extension reads ([`Player::merge_first_person_depth`]). The game
 //! draws the arms and the weapon after a clear of the depth; without the merge a shader of
 //! the post chain that reads the depth (a fog, an occlusion) shades them by the depth of
 //! what is behind them.

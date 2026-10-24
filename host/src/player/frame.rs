@@ -1,4 +1,4 @@
-//! The frame and the pass of `Player`: begin, the targets, the draws into the pass, the end
+//! The frame and the pass of [`Player`]: begin, the targets, the draws into the pass, the end
 //! and the pictures. The struct is in lib.rs; the other concerns are beside this file.
 
 use crate::*;
@@ -167,7 +167,7 @@ impl Player {
     }
 
     /// With more than one sample: writes the back buffer into the multisampled colour target,
-    /// after a write of the back buffer outside the pass (`Extension::post`). The pass stays
+    /// after a write of the back buffer outside the pass ([`Extension::post`]). The pass stays
     /// closed. Nothing with one sample.
     pub(crate) fn load_color(&mut self) {
         if self.back_view.is_none() {

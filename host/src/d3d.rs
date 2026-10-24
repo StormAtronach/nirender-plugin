@@ -50,7 +50,7 @@ pub(crate) fn compare(value: u32) -> wgpu::CompareFunction {
 }
 
 /// The format of the GPU for a D3DFORMAT, the bytes of one of its blocks (0 for a format
-/// without blocks), and the bytes of a pixel in the stream. `None` for a format that this
+/// without blocks), and the bytes of a pixel in the stream. [`None`] for a format that this
 /// program does not make.
 pub(crate) fn texture_format(d3d_format: u32) -> Option<(wgpu::TextureFormat, usize, usize)> {
     Some(match d3d_format {
@@ -223,7 +223,7 @@ pub(crate) struct Attribute {
     pub(crate) format: wgpu::VertexFormat,
 }
 
-/// The attributes that a flexible vertex format of Direct3D 8 has. `None` for a format that
+/// The attributes that a flexible vertex format of Direct3D 8 has. [`None`] for a format that
 /// this program does not draw.
 pub(crate) fn attributes(fvf: u32, stride: u32) -> Option<Vec<Attribute>> {
     use wgpu::VertexFormat::*;

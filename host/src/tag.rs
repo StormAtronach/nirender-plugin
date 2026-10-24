@@ -46,7 +46,7 @@ pub const INSTANCE_WALK: u32 = 32;
 pub const LIGHT_GONE: u32 = 33;
 /// The keys of the lights of the world that are on (`RetainedSet::set_world_lights`).
 pub const WORLD_LIGHTS: u32 = 34;
-/// The particles of a particle instance's draw, before its `INSTANCE_DRAW`: the key of its
+/// The particles of a particle instance's draw, before its [`INSTANCE_DRAW`]: the key of its
 /// geometry, the count, the radius, the camera's right and up, then 20 bytes a particle
 /// (`Renderer::particles` makes the quads under the key).
 pub const INSTANCE_PARTICLES: u32 = 35;

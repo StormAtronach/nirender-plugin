@@ -116,7 +116,7 @@ impl Player {
         renderer.counts.draws += 1;
     }
 
-    /// The end of the sky's walk in the world camera's Click (`EVENT_WORLD_WALK`): the world
+    /// The end of the sky's walk in the world camera's Click ([`EVENT_WORLD_WALK`]): the world
     /// of the frame starts here, from the engine's walk, not from a draw.
     pub(crate) fn world_walk(&mut self) {
         let in_back_buffer = self.stream.back_buffer && self.target.is_none();
@@ -125,7 +125,7 @@ impl Player {
         }
     }
 
-    /// The end of the flush of the engine's main sorted queue (`EVENT_QUEUE_FLUSHED`): the
+    /// The end of the flush of the engine's main sorted queue ([`EVENT_QUEUE_FLUSHED`]): the
     /// sorted blends of the frame go here.
     pub(crate) fn queue_flushed(&mut self) {
         let in_back_buffer = self.stream.back_buffer && self.target.is_none();
@@ -134,7 +134,7 @@ impl Player {
         }
     }
 
-    /// The target of a scene from its record (`SCENE_BACK_BUFFER`): the renderer's target at
+    /// The target of a scene from its record ([`SCENE_BACK_BUFFER`]): the renderer's target at
     /// `BeginPaint`. The back buffer ends a texture target of the calls; a texture that this
     /// program did not make takes the draws nowhere. A change of the calls' target is counted.
     pub(crate) fn scene_target(&mut self, back_buffer: bool) {

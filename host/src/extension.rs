@@ -1,4 +1,4 @@
-//! The `Extension` trait: a program that draws more than the game does (the helper of MGE XE),
+//! The [`Extension`] trait: a program that draws more than the game does (the helper of MGE XE),
 //! and the types it sees: the parameters, the lights, the facts and the held draws of a frame.
 
 use super::*;
@@ -35,13 +35,13 @@ impl FrameCommands {
 pub struct SceneView<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
-    /// For the command buffers of the extension: `FrameCommands::defer`.
+    /// For the command buffers of the extension: [`FrameCommands::defer`].
     pub commands: &'a FrameCommands,
     /// The formats of the targets of the pass.
     pub target_format: wgpu::TextureFormat,
     pub depth_format: wgpu::TextureFormat,
     pub target_size: (u32, u32),
-    /// The samples for each pixel of the targets of the frame (`Extension::samples`, cut to
+    /// The samples for each pixel of the targets of the frame ([`Extension::samples`], cut to
     /// what the adapter has): a pipeline that draws into the pass of the game takes
     /// `multisample`. A pass on a texture of the extension has 1.
     pub samples: u32,
@@ -72,19 +72,19 @@ pub struct SceneView<'a> {
     pub sun_ambient: [f32; 3],
     /// The ambient light of the scene.
     pub ambient: [f32; 3],
-    /// For the calls of `ReadingCall`: the picture of the frame as it is before the call (a
+    /// For the calls of [`ReadingCall`]: the picture of the frame as it is before the call (a
     /// copy), and the depth of the draws of the game so far (in `blend`, the depth comes as
-    /// an argument), when `Extension::reads` says that the call reads them. `None` in the
+    /// an argument), when [`Extension::reads`] says that the call reads them. [`None`] in the
     /// other calls.
     pub picture: Option<&'a wgpu::TextureView>,
     pub depth: Option<&'a wgpu::TextureView>,
-    /// For `Extension::post`, `Extension::draw_class` and `Extension::draw_held`: the depth
-    /// of what `Extension::before_world` drew, when it gave true in this frame (the renderer
+    /// For [`Extension::post`], [`Extension::draw_class`] and [`Extension::draw_held`]: the depth
+    /// of what [`Extension::before_world`] drew, when it gave true in this frame (the renderer
     /// then clears the depth for the game). It has the projection of the extension, not that
     /// of the game.
     pub before_depth: Option<&'a wgpu::TextureView>,
-    /// For `Extension::draw_held`: the lights of the frame, when the extension asked for them
-    /// (`FrameParameters::lights`) and the frame has a view of the world with lights.
+    /// For [`Extension::draw_held`]: the lights of the frame, when the extension asked for them
+    /// ([`FrameParameters::lights`]) and the frame has a view of the world with lights.
     pub lights: Option<FrameLights<'a>>,
 }
 
@@ -98,18 +98,18 @@ impl SceneView<'_> {
     }
 }
 
-/// A picture file that an extension wants of a frame. See `Extension::pictures`.
+/// A picture file that an extension wants of a frame. See [`Extension::pictures`].
 pub struct PictureRequest {
     /// The file. Its extension gives the format: `.png`, `.bmp`, `.tga`, `.dds`, `.jpg`;
     /// PNG for another one.
     pub path: String,
     /// With the interface of the game (the picture at the end of the frame), or without it
-    /// (the picture after `Extension::post`).
+    /// (the picture after [`Extension::post`]).
     pub with_ui: bool,
 }
 
 /// The text that an extension shows in the upper left corner of the window. See
-/// `Extension::status`.
+/// [`Extension::status`].
 #[derive(Default)]
 pub struct Status {
     /// A message, and true when it is a warning or an error (red).
@@ -118,7 +118,7 @@ pub struct Status {
     pub frame_rate: bool,
 }
 
-/// The answers of an extension for a frame. See `Extension::frame`.
+/// The answers of an extension for a frame. See [`Extension::frame`].
 #[derive(Clone, Default)]
 pub struct FrameParameters {
     /// The values of the extension for the frame, for its shader functions: `frame.values`
@@ -131,23 +131,23 @@ pub struct FrameParameters {
     pub texture: Option<Rc<wgpu::TextureView>>,
     /// The distances of the start and of the end of the fog for the draws of the world of
     /// the game, in place of those of the game: so that they go into the fog as what the
-    /// extension draws does. `None`: the fog of the game.
+    /// extension draws does. [`None`]: the fog of the game.
     pub fog_range: Option<(f32, f32)>,
     /// True when the extension shades the draws of the world: the renderer calls
-    /// `Extension::shade` for each of them, and its shader uses the functions of
-    /// `Extension::draw_shader` for a draw that the call marks.
+    /// [`Extension::shade`] for each of them, and its shader uses the functions of
+    /// [`Extension::draw_shader`] for a draw that the call marks.
     pub shade: bool,
-    /// The values for the sky functions of `Extension::sky_shader`, or `None` for the sky
+    /// The values for the sky functions of [`Extension::sky_shader`], or [`None`] for the sky
     /// of the game as it is. With values, the sky dome of the game (a sky draw without a
     /// texture) gets its shape and its colour from the functions, and the shadow of a moon
     /// gets its colour from them and keeps its alpha.
     pub sky: Option<[[f32; 4]; 8]>,
-    /// True when the extension wants the call `Extension::blend` in this frame.
+    /// True when the extension wants the call [`Extension::blend`] in this frame.
     pub blend: bool,
     /// The classes of the game (MGE_LINK_CLASS_*, one bit for each) whose draws into the
-    /// back buffer the extension takes: see `Extension::draw_class`.
+    /// back buffer the extension takes: see [`Extension::draw_class`].
     pub watched: u32,
-    /// True when the extension wants the call `Extension::post` in this frame.
+    /// True when the extension wants the call [`Extension::post`] in this frame.
     pub post: bool,
     /// A class in `watched` and a plane for its call, `[a, b, c, d]` in the space of the
     /// world of the game, with the camera on the side where `a * x + b * y + c * z + d >= 0`:
@@ -155,14 +155,14 @@ pub struct FrameParameters {
     /// smoke) go into the picture on the other side of the plane before the call (so that the
     /// picture of the call has them, for a refraction), and on the side of the camera after
     /// the call, over what the call drew: each of them, whether the game sends it before or
-    /// after the call. `None`: the draws that blend come in their place in the order of the
+    /// after the call. [`None`]: the draws that blend come in their place in the order of the
     /// game.
     pub class_plane: Option<(u32, [f64; 4])>,
-    /// True when the extension takes draws of the world: the renderer calls `Extension::hold`
-    /// for each shape of the world, and gives the shapes it took to `Extension::draw_held`.
+    /// True when the extension takes draws of the world: the renderer calls [`Extension::hold`]
+    /// for each shape of the world, and gives the shapes it took to [`Extension::draw_held`].
     pub hold: bool,
     /// True when the extension lights what it draws with the lights of the frame, for each
-    /// pixel: `SceneView::lights` in `Extension::draw_held`.
+    /// pixel: [`SceneView::lights`] in [`Extension::draw_held`].
     pub lights: bool,
     /// True when a pixel of a draw that the extension shades takes its lights from the
     /// clusters of the frame (`cluster_lights` in the shader), with the mask of the lights
@@ -180,11 +180,11 @@ pub struct FrameParameters {
 }
 
 /// The lights of the world of a frame, for an extension that lights what it draws as the
-/// draws of the game are lit (`FrameParameters::lights`). The lights are those of the draws
-/// after `Extension::shade`, one copy of each light, binned into clusters of their own: tiles
+/// draws of the game are lit ([`FrameParameters::lights`]). The lights are those of the draws
+/// after [`Extension::shade`], one copy of each light, binned into clusters of their own: tiles
 /// of the picture by slices of the view depth of the game.
 ///
-/// - `lights`: an array of `LightData` (storage). A position is relative to `origin`.
+/// - `lights`: an array of [`LightData`] (storage). A position is relative to `origin`.
 /// - `clusters` (uniform, 64 bytes): `grid: vec4u` (tiles across, tiles down, slices; w 2),
 ///   `screen: vec4f` (x and y: tiles for each pixel), `depth: vec4f` (the slice of a view
 ///   depth z is `log(max(z, depth.z)) * depth.x + depth.y`, clamped to the slices), then 16
@@ -195,7 +195,7 @@ pub struct FrameParameters {
 ///
 /// A light is in each cluster that its reach touches: the cut-off of `shade` when
 /// `cone.x` is more than 0 (`cone.x` is 1 over it), else the radius of the light of the game
-/// (`cone.z`), else its range (`direction.w`), at most `LIGHT_REACH_MAX`. A directional light
+/// (`cone.z`), else its range (`direction.w`), at most [`LIGHT_REACH_MAX`]. A directional light
 /// is in each cluster.
 pub struct FrameLights<'a> {
     pub lights: &'a wgpu::Buffer,
@@ -207,18 +207,18 @@ pub struct FrameLights<'a> {
 }
 
 /// A call of the extension that can read the picture of the frame and the depth of the game
-/// (`SceneView::picture`, `SceneView::depth`). See `Extension::reads`.
+/// ([`SceneView::picture`], [`SceneView::depth`]). See [`Extension::reads`].
 #[derive(Clone, Copy)]
 pub enum ReadingCall<'a> {
     /// `Extension::blend`: only the picture counts (its depth is an argument).
     Blend,
-    /// `Extension::draw_class` for this class.
+    /// [`Extension::draw_class`] for this class.
     Class(u32),
-    /// `Extension::draw_held` with these shapes.
+    /// [`Extension::draw_held`] with these shapes.
     Held(&'a [HeldDraw]),
-    /// `Extension::draw_held_in_place` with this shape.
+    /// [`Extension::draw_held_in_place`] with this shape.
     HeldInPlace(&'a HeldDraw),
-    /// `Extension::post`.
+    /// [`Extension::post`].
     Post,
 }
 
@@ -242,7 +242,7 @@ pub const LIGHT_REACH_MAX: f32 = 8192.0;
 /// The light that a pixel shows at the least: one level of 8 bits.
 const LIGHT_VISIBLE: f32 = 1.0 / 256.0;
 
-/// The reach of a point or spot light in the clusters: see `FrameLights`.
+/// The reach of a point or spot light in the clusters: see [`FrameLights`].
 pub fn light_reach(light: &LightData) -> f32 {
     let reach = if light.cone[0] > 0.0 {
         1.0 / light.cone[0]
@@ -265,7 +265,7 @@ pub(crate) fn cluster_reach(light: &LightData) -> f32 {
     reach.min(LIGHT_REACH_MAX).max(0.0)
 }
 
-/// The distance where `colour / (a0 + a1 d + a2 d^2)` falls under `LIGHT_VISIBLE`, within
+/// The distance where `colour / (a0 + a1 d + a2 d^2)` falls under [`LIGHT_VISIBLE`], within
 /// the range of Direct3D (`direction[3]`) when the light has one.
 fn attenuation_reach(light: &LightData) -> f32 {
     let brightest = light.diffuse[0].max(light.diffuse[1]).max(light.diffuse[2]).abs();
@@ -283,8 +283,8 @@ fn attenuation_reach(light: &LightData) -> f32 {
     if range > 0.0 { reach.min(range) } else { reach }
 }
 
-/// The facts of a draw that are not in its uniform, for `Extension::shade` and
-/// `Extension::hold`.
+/// The facts of a draw that are not in its uniform, for [`Extension::shade`] and
+/// [`Extension::hold`].
 #[derive(Clone, Copy, Debug)]
 pub struct DrawFacts {
     /// The class of the object of the draw: MGE_LINK_CLASS_*.
@@ -303,7 +303,7 @@ pub struct DrawFacts {
     pub emissive: [f32; 4],
 }
 
-/// The kinds of a draw of the retained table for `Extension::shade_table`: the four blend
+/// The kinds of a draw of the retained table for [`Extension::shade_table`]: the four blend
 /// forms (opaque, alpha, alpha that adds, colour that adds), each without and with a depth
 /// write. A slot of the table takes the shade of its kind (`retained::slot_kind`).
 pub const TABLE_KINDS: [DrawFacts; 8] = {
@@ -322,21 +322,21 @@ pub const TABLE_KINDS: [DrawFacts; 8] = {
 };
 
 /// What the extension's shade does to the retained draws of a frame, one time for the
-/// frame (`Extension::shade_table`). The extension states it from its own state; the table
+/// frame ([`Extension::shade_table`]). The extension states it from its own state; the table
 /// does not infer it from stand-in draws.
 #[derive(Clone, Copy, Debug)]
 pub struct TableShade {
     /// The factor for each ambient light of the table (the scene's, and the one of each
-    /// instance's lights record): what `shade` does to `DrawData::scene_ambient` of a draw
+    /// instance's lights record): what `shade` does to [`DrawData::scene_ambient`] of a draw
     /// of the world.
     pub ambient_scale: [f32; 3],
-    /// `DrawData::extension` 5 and 7 of a draw of the world that writes depth and does not
+    /// [`DrawData::extension`] 5 and 7 of a draw of the world that writes depth and does not
     /// blend: the sun of the shadow.
     pub extension5: [f32; 4],
     pub extension7: [f32; 4],
-    /// The fog is on the distance from the camera (`DrawData::fog` w).
+    /// The fog is on the distance from the camera ([`DrawData::fog`] w).
     pub radial_fog: bool,
-    /// The bits of `counts.w` for a draw of each kind of `TABLE_KINDS`.
+    /// The bits of `counts.w` for a draw of each kind of [`TABLE_KINDS`].
     pub flags: [u32; 8],
 }
 
@@ -354,16 +354,16 @@ pub struct VertexLayout {
     pub stride: u64,
     /// Three floats.
     pub position: u64,
-    /// Three floats, or `None`.
+    /// Three floats, or [`None`].
     pub normal: Option<u64>,
-    /// A D3DCOLOR (`Unorm8x4`: blue, green, red, alpha), or `None`.
+    /// A D3DCOLOR (`Unorm8x4`: blue, green, red, alpha), or [`None`].
     pub color: Option<u64>,
     /// Two floats for each set of texture coordinates (four at most).
     pub coordinates: Vec<u64>,
 }
 
 impl VertexLayout {
-    /// The layout of a format with no blend weights. `None` for one that the renderer does not
+    /// The layout of a format with no blend weights. [`None`] for one that the renderer does not
     /// draw, or that has blend weights.
     pub(crate) fn of(fvf: u32, stride: u32) -> Option<VertexLayout> {
         let attributes = attributes(fvf, stride)?;
@@ -384,19 +384,19 @@ impl VertexLayout {
 /// A map of the material of a held draw, with the texture of the game.
 #[derive(Clone)]
 pub struct HeldMap {
-    /// The map in the texturing property: `material::BASE` to `material::DECAL0 + 1`.
+    /// The map in the texturing property: [`material::BASE`] to `material::DECAL0 + 1`.
     pub map: usize,
     pub texture: Rc<wgpu::TextureView>,
-    /// The set of texture coordinates of the map, in `VertexLayout::coordinates`.
+    /// The set of texture coordinates of the map, in [`VertexLayout::coordinates`].
     pub set: u32,
     /// The sampler states: address U, address V, the magnify, minify and mip filters, as
     /// Direct3D 8 has them.
     pub sampler: [u32; 5],
 }
 
-/// A shape of the world of the game that the extension took (`Extension::hold`): the renderer
+/// A shape of the world of the game that the extension took ([`Extension::hold`]): the renderer
 /// draws none of its passes, and the extension draws it in its own way in
-/// `Extension::draw_held`. It is never an instance of another draw.
+/// [`Extension::draw_held`]. It is never an instance of another draw.
 #[derive(Clone)]
 pub struct HeldDraw {
     pub facts: DrawFacts,
@@ -415,7 +415,7 @@ pub struct HeldDraw {
     /// the view and the projection of the draw (see `origin`), the material, the fog and the
     /// texture stages. Its `light_range` counts in `lights`.
     pub data: DrawData,
-    /// The origin that the world matrix is relative to, or `None`. With an origin, the view
+    /// The origin that the world matrix is relative to, or [`None`]. With an origin, the view
     /// of `data` has the camera at 0.
     pub origin: Option<[f64; 3]>,
     /// The lights that the game lit the shape with, relative to `origin` when there is one.
@@ -502,7 +502,7 @@ pub trait Extension {
     /// the work of a frame. The renderer calls this one time, before the first record.
     fn offline(&mut self) {}
 
-    /// WGSL source with the two sky functions of the extension, or `None`. The renderer
+    /// WGSL source with the two sky functions of the extension, or [`None`]. The renderer
     /// asks one time, before it makes its shader, and puts the source at the end of it:
     ///
     /// - `fn extension_sky_position(position: vec3f) -> vec3f`: the position of a vertex of
@@ -511,13 +511,13 @@ pub trait Extension {
     ///   the sky in a direction from the camera (length 1, in the space of the world), for
     ///   the pixel at these coordinates.
     ///
-    /// The source reads the values of `FrameParameters::sky` as `draw.extension[0]` to
+    /// The source reads the values of [`FrameParameters::sky`] as `draw.extension[0]` to
     /// `draw.extension[7]`.
     fn sky_shader(&self) -> Option<String> {
         None
     }
 
-    /// WGSL source with the two draw functions of the extension, or `None`. The renderer
+    /// WGSL source with the two draw functions of the extension, or [`None`]. The renderer
     /// puts the source at the end of its shader, after the sky functions. For a draw with
     /// bit 1 of `counts.w` set (see `shade`):
     ///
@@ -528,7 +528,7 @@ pub trait Extension {
     /// - `fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f`: the pixel
     ///   after the stages and the alpha test; `clear` is 1 with no fog and 0 in full fog.
     ///
-    /// The functions read the uniform of the draw as `draw` (see `DrawData`); the colour of
+    /// The functions read the uniform of the draw as `draw` (see [`DrawData`]); the colour of
     /// such a draw is not kept between 0 and 1 after the stages.
     fn draw_shader(&self) -> Option<String> {
         None
@@ -537,13 +537,13 @@ pub trait Extension {
     /// Changes the uniform of a world draw and its lights before the renderer puts the draw
     /// into the pass: the lights, the ambient light, the fog. Called for each draw of the
     /// world of the game into the back buffer with a perspective projection, when
-    /// `FrameParameters::shade` is true. The extension sets bit 1 of `counts[3]` for a draw
+    /// [`FrameParameters::shade`] is true. The extension sets bit 1 of `counts[3]` for a draw
     /// that its shader functions shade; bit 2 and the bits from 16 are its own.
     fn shade(&mut self, _draw: &mut DrawData, _lights: &mut [LightData], _facts: &DrawFacts) {}
 
     /// The shade of the retained table for a frame, one time at the start of its world, when
-    /// `FrameParameters::shade` is true: as `shade` does to a draw of the world with this
-    /// view, for each kind of `TABLE_KINDS`. The extension changes the lights of the table
+    /// [`FrameParameters::shade`] is true: as `shade` does to a draw of the world with this
+    /// view, for each kind of [`TABLE_KINDS`]. The extension changes the lights of the table
     /// as `shade` changes the lights of such a draw.
     fn shade_table(&mut self, _view: &[f32; 16], _lights: &mut [LightData], _kinds: &[DrawFacts; 8]) -> TableShade {
         TableShade::default()
@@ -574,7 +574,7 @@ pub trait Extension {
     fn after_world(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {}
 
     /// The renderer calls this at the first draw of a frame into the back buffer of a class
-    /// in `FrameParameters::watched`, in place of the draws of that class: none of them is
+    /// in [`FrameParameters::watched`], in place of the draws of that class: none of them is
     /// drawn. The pass and the matrices are those of that draw. A frame with no draw of the
     /// class gets the call too, before the sorted blends or at the world's end, with the
     /// matrices of the world (the engine culls a plane out of the view). `scene.picture` is the
@@ -585,7 +585,7 @@ pub trait Extension {
     fn draw_class(&mut self, _class: u32, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {}
 
     /// Takes a shape of the world of the game away from the renderer, when
-    /// `FrameParameters::hold` is true: none of its passes is drawn, and the extension gets
+    /// [`FrameParameters::hold`] is true: none of its passes is drawn, and the extension gets
     /// it in `draw_held`. Called one time for each shape record into the back buffer in the
     /// scenes of the world (with a perspective projection), but not for the sky, the water
     /// plane of the game, a skinned shape, a particle system or lines. `facts` are those of
@@ -638,7 +638,7 @@ pub trait Extension {
     }
 
     /// The renderer calls this after the world views of the game (at the start of its user
-    /// interface scene, or at the end of the frame without one), when `FrameParameters::post`
+    /// interface scene, or at the end of the frame without one), when [`FrameParameters::post`]
     /// was true. `scene.picture` is a copy of the picture of the frame and `scene.depth` a
     /// copy of the depth of the game. The extension records its passes into `encoder` and
     /// writes its result into `target`, the picture of the frame; the user interface of the
@@ -653,7 +653,7 @@ pub trait Extension {
         Vec::new()
     }
 
-    /// The renderer calls this after `after_world`, when `FrameParameters::blend` was true
+    /// The renderer calls this after `after_world`, when [`FrameParameters::blend`] was true
     /// and `before_world` gave true. The pass draws into the picture of the frame and has
     /// no depth target. `before` is the picture as it was after `before_world`, `depth`
     /// is the depth of the draws of the game (1 where the game drew nothing), and
@@ -662,7 +662,7 @@ pub trait Extension {
     fn blend(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _before: &wgpu::TextureView, _depth: &wgpu::TextureView) {}
 
     /// What `call` reads of the picture and of the depth, asked just before the call: the
-    /// renderer copies only these, and gives `None` in `SceneView` for the others. A picture
+    /// renderer copies only these, and gives [`None`] in [`SceneView`] for the others. A picture
     /// that a draw only modulates needs no copy: a blend state reads the target.
     fn reads(&self, _call: ReadingCall) -> Reads {
         Reads::ALL

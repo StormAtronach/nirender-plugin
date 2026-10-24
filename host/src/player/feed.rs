@@ -482,7 +482,7 @@ impl Player {
         self.frame_sorted.push((centre, sequence, crate::Waiting::Table(id), generation));
     }
 
-    /// The place of a blend of the table in the engine's walk (`tag::INSTANCE_WALK`): its
+    /// The place of a blend of the table in the engine's walk ([`tag::INSTANCE_WALK`]): its
     /// slots draw here, among the draws of the engine's path, in the walk's order. Places
     /// with no other item between them draw as one run. A place counts in a scene of the world
     /// camera in the back buffer after the world began: the table's main view draws at the
@@ -663,7 +663,7 @@ impl Player {
         self.stream.shape_bones = None;
     }
 
-    /// Gives the shape in progress to the extension when it takes it: see `Extension::hold`.
+    /// Gives the shape in progress to the extension when it takes it: see [`Extension::hold`].
     /// True when the extension took it; then none of its passes is drawn.
     pub(crate) fn hold_shape(&mut self, m: &material::Material, derived: &material::Derived, flags: u32, effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>, entries: u32, strips: &[u16]) -> bool {
         let class = self.stream.object_class;

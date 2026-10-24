@@ -3,7 +3,7 @@
 //! The helper of MGE XE G7 (numidium.exe) has this crate as a part: it reads the ring that
 //! the plugin writes in the game process and draws each frame into the window of the game,
 //! and adds its own draws (the distant land, the shadows, the water, the post shaders)
-//! through the `Extension` trait. The same crate is the program `nirender-host`, which
+//! through the [`Extension`] trait. The same crate is the program `nirender-host`, which
 //! draws a capture file without the game, or the ring in a window of its own:
 //!
 //! ```text
@@ -13,7 +13,7 @@
 //! ```
 //!
 //! The files, by concern:
-//! - `extension.rs`: the `Extension` trait and the types a program that draws more sees.
+//! - `extension.rs`: the [`Extension`] trait and the types a program that draws more sees.
 //! - `data.rs`: the data of a draw as the shader sees it, the counts, the constants.
 //! - `renderer.rs`: the methods of `Renderer` (the device, the pipelines, the textures, the
 //!   buffers); `stream.rs`: the state of the stream between the records; `player/`: the
@@ -69,7 +69,7 @@ use engine::{plan, scene};
 mod retained;
 use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_BONES_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
 
-/// The wgpu of this crate, for a program that draws with it through `Extension`.
+/// The wgpu of this crate, for a program that draws with it through [`Extension`].
 pub use wgpu;
 
 /// The facts of the world scene of the game at a moment, for a call of the extension.
@@ -87,7 +87,7 @@ struct WorldFacts {
     ambient: [f32; 3],
     /// The exact position of the camera, when the scene of the world is relative to it.
     origin: Option<[f64; 3]>,
-    /// The samples for each pixel of the targets of the frame (`Renderer::samples`).
+    /// The samples for each pixel of the targets of the frame ([`Renderer::samples`]).
     samples: u32,
 }
 
@@ -150,7 +150,7 @@ impl BoundGroups {
         *self = Self::default();
     }
 
-    /// Whether this group is the one bound at the index (`None`: no group is wanted).
+    /// Whether this group is the one bound at the index ([`None`]: no group is wanted).
     fn is(&self, index: u32, group: Option<&Rc<wgpu::BindGroup>>) -> bool {
         match (self.0[index as usize].as_ref(), group) {
             (Some(bound), Some(group)) => Rc::ptr_eq(bound, group),
@@ -181,7 +181,7 @@ enum Item {
     /// The sorted blends of the retained table and the blends of the engine's path that
     /// waited for this item: the generation names the item within the frame.
     SortedBlends(u32),
-    /// A run of places of the table's blends in the engine's walk (`engine::walk`): the
+    /// A run of places of the table's blends in the engine's walk ([`engine::walk`]): the
     /// number of the run in the frame.
     WalkPlaces(usize),
     /// The extension draws in place of the draws of this class. The number of world draws
@@ -193,14 +193,14 @@ enum Item {
     /// post-processing, with the projection of the first person.
     FirstPersonDepth([f32; 16]),
     /// A held shape that the extension draws in its place in the order of the game
-    /// (`Extension::draw_held_in_place`), with the facts of the world there.
+    /// ([`Extension::draw_held_in_place`]), with the facts of the world there.
     HeldHere(Box<HeldDraw>, Box<WorldFacts>),
 }
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-/// A retained instance of the plugin (`tag::INSTANCE`): the helper draws it from this at
+/// A retained instance of the plugin ([`tag::INSTANCE`]): the helper draws it from this at
 /// each `INSTANCE_DRAW` record, as it draws a shape record.
 #[derive(Clone, Copy)]
 struct Retained {
@@ -455,7 +455,7 @@ struct Renderer {
     /// The anisotropic filter that MGE XE forces, for a comparison with its picture. 1 for the
     /// filters that the game asks for.
     anisotropy: u16,
-    /// The samples for each pixel of the targets of the frame (`Extension::samples`, cut to
+    /// The samples for each pixel of the targets of the frame ([`Extension::samples`], cut to
     /// what the adapter has), and the pipelines of the resolves with more than one.
     samples: u32,
     multisample: Option<multisample::Multisample>,
@@ -466,7 +466,7 @@ struct Renderer {
     wireframe: bool,
     queue: wgpu::Queue,
     shader: wgpu::ShaderModule,
-    /// The records of the draws of the frame (`DrawData` each; `draws` in the shader): the
+    /// The records of the draws of the frame ([`DrawData`] each; `draws` in the shader): the
     /// buffer and its room, the data of the records made so far, how many of them are on
     /// the GPU, and the copies made while the frame draws (`record_now`), which take the
     /// room from its end, so that the records of the frame can grow between the parts of a
@@ -528,7 +528,7 @@ struct Renderer {
     pinned_samplers_in_frame: usize,
     bone_buffer: wgpu::Buffer,
     bone_capacity: usize,
-    /// The bones of the skinned retained instances (`Renderer::retained_upload`), in matrices.
+    /// The bones of the skinned retained instances ([`Renderer::retained_upload`]), in matrices.
     retained_bone_buffer: wgpu::Buffer,
     retained_bone_capacity: usize,
     /// The lights that came as records, by key: a `D3DLIGHT8`.
@@ -603,12 +603,12 @@ struct Renderer {
     commands: Rc<FrameCommands>,
 }
 
-/// A blend that waits for the flush of the engine's sorted queue (`Player::frame_sorted`).
+/// A blend that waits for the flush of the engine's sorted queue ([`Player::frame_sorted`]).
 enum Waiting {
     /// A blended draw of the engine's path.
     Draw(Rc<Draw>),
     /// The place of a sorted blend of the table in the engine's queue
-    /// (`tag::INSTANCE_QUEUED`): the id of the instance.
+    /// ([`tag::INSTANCE_QUEUED`]): the id of the instance.
     Table(u32),
 }
 
@@ -639,7 +639,7 @@ struct Player {
     back_buffer: Option<wgpu::Texture>,
     /// With more than one sample: the view of the back buffer, which the pass resolves its
     /// colour into, and the multisampled colour and depth targets that `color` and `depth`
-    /// view. `None` with one sample. See `multisample.rs`.
+    /// view. [`None`] with one sample. See `multisample.rs`.
     back_view: Option<Rc<wgpu::TextureView>>,
     ms_color: Option<wgpu::Texture>,
     ms_depth: Option<wgpu::Texture>,
@@ -650,10 +650,10 @@ struct Player {
     sent_in_part: bool,
     last_picture: Option<wgpu::Texture>,
     /// Takes the answer to a pixel read: the number of the request, the width, the height
-    /// and the pixels with 4 bytes each, blue first. `None` without a game to answer.
+    /// and the pixels with 4 bytes each, blue first. [`None`] without a game to answer.
     reply: Option<Box<dyn FnMut(u32, u32, u32, &[u8])>>,
     /// Takes the pixels of a map tile read: the ticket, the width, the height and the
-    /// pixels, blue first (`player/tiles.rs`). `None` without a game to answer: then a tile
+    /// pixels, blue first (`player/tiles.rs`). [`None`] without a game to answer: then a tile
     /// is copied and not read.
     tile_out: Option<Box<dyn FnMut(u32, u32, u32, &[u8])>>,
     /// The map tile reads that wait for the GPU, in their order.
@@ -677,13 +677,13 @@ struct Player {
     /// A program that draws more than the game does.
     extension: Option<Box<dyn Extension>>,
     /// The items of the frame that are not done yet, and the world draws of the frame for
-    /// `Replay`.
+    /// [`Replay`].
     items: Vec<Item>,
     world_draws: Vec<Rc<Draw>>,
     /// The draws of the world scene that are not the sky and came before the sky (see
     /// `draw`): they go into the items after the start of the world.
     held_draws: Vec<Item>,
-    /// The shapes of the frame that the extension took, for `Extension::draw_held`.
+    /// The shapes of the frame that the extension took, for [`Extension::draw_held`].
     taken: Vec<HeldDraw>,
     /// The lights of all draws of the frame, in the order of the draws.
     frame_lights: Vec<LightData>,
@@ -692,10 +692,10 @@ struct Player {
     /// The world matrices of the instances of the frame; the first is an identity, for
     /// the draws of their own.
     frame_instances: Vec<Instance>,
-    /// The collect: the answers of the extension for the frame (`None` before the world
-    /// scene), the plan of the items (`plan::Plan`: the world begun and ended, the scene in
+    /// The collect: the answers of the extension for the frame ([`None`] before the world
+    /// scene), the plan of the items ([`plan::Plan`]: the world begun and ended, the scene in
     /// progress), the sun and the ambient light of the first draw of the world, the texture
-    /// that the game draws into (`None` for the back buffer), and whether the game named a
+    /// that the game draws into ([`None`] for the back buffer), and whether the game named a
     /// rendered texture as its target.
     parameters: Option<FrameParameters>,
     plan: plan::Plan,
@@ -716,10 +716,10 @@ struct Player {
     /// plugin: the water plane while the extension draws the water.
     /// The live loop writes it into the head of the ring after each record.
     pub(crate) takes: u32,
-    /// The reach of the extension's shadow map (`FrameParameters::shadow_reach`), for the
+    /// The reach of the extension's shadow map ([`FrameParameters::shadow_reach`]), for the
     /// plugin's animation policy, written into the head of the ring with `takes`.
     pub(crate) shadow_reach: f32,
-    /// The plane of `FrameParameters::class_plane` when its call is in the items of the
+    /// The plane of [`FrameParameters::class_plane`] when its call is in the items of the
     /// frame: before the call the world draws that blend and write no depth are drawn only
     /// on its far side, and after it (`split`) only on the side of the camera.
     plane_ahead: Option<[f64; 4]>,
@@ -740,16 +740,16 @@ struct Player {
     target: Option<u32>,
     wants_texture: bool,
     /// The pass: its target, its size, its viewport, and the picture after
-    /// `Extension::before_world` for `Extension::blend` with true when it is of this frame.
+    /// [`Extension::before_world`] for [`Extension::blend`] with true when it is of this frame.
     pass_target: Option<u32>,
     target_size: (u32, u32),
     viewport: Option<([f32; 4], [f32; 2])>,
     before: Option<wgpu::Texture>,
     before_kept: bool,
-    /// The picture and the depth of the frame before a call of `Extension::draw_class`.
+    /// The picture and the depth of the frame before a call of [`Extension::draw_class`].
     picture_copy: Option<wgpu::Texture>,
     depth_copy: Option<wgpu::Texture>,
-    /// The depth of the game at the end of its world scene, for `Extension::post`: the game
+    /// The depth of the game at the end of its world scene, for [`Extension::post`]: the game
     /// clears its depth before its later scenes. The projection of the world at that time,
     /// and true when a draw of the first-person scene went into the back buffer in this
     /// frame (its depth goes into the copy at the end of that scene).
@@ -757,17 +757,17 @@ struct Player {
     world_depth_kept: bool,
     world_depth_projection: Option<[f32; 16]>,
     first_person_drawn: bool,
-    /// The depth of the draws of `Extension::before_world`, for `Extension::post`: the
+    /// The depth of the draws of [`Extension::before_world`], for [`Extension::post`]: the
     /// renderer clears the depth after them.
     before_depth: Option<wgpu::Texture>,
     before_depth_kept: bool,
-    /// The counts at the last mark. See `tag::MARK`.
+    /// The counts at the last mark. See [`tag::MARK`].
     mark_times: [u64; TIME_COUNT],
     mark_frames: u32,
     mark_draws: u32,
     mark_runs: u32,
     mark_gpu: (f64, f64, u32),
-    /// `gpu::work()` and `gpu::errors()` at the last mark.
+    /// [`gpu::work()`] and [`gpu::errors()`] at the last mark.
     mark_work: [u64; 4],
     mark_errors: u64,
     /// The groups that the pass of the game has now.

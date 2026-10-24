@@ -1,4 +1,4 @@
-//! The data of a frame as the shader sees it (`DrawData`, `LightData`, `StageData`), the
+//! The data of a frame as the shader sees it ([`DrawData`], [`LightData`], [`StageData`]), the
 //! geometry of a shape, the keys of the pipelines, the counts of a run, the times, and the
 //! constants of the buffers.
 
@@ -41,16 +41,16 @@ pub(crate) const CALL_COPY_PIXELS: u32 = 23;
 
 pub(crate) const EVENT_SET_TARGET: u32 = 2;
 /// The walk of the world camera's root left the sky root: the world starts here (the
-/// plugin's `world_walk`; the header bit `HEADER_WORLD_WALK`).
+/// plugin's `world_walk`; the header bit [`HEADER_WORLD_WALK`]).
 pub(crate) const EVENT_WORLD_WALK: u32 = 4;
 /// The engine drew the main sorted queue of the Click: the end of its flush (the plugin's
-/// `queue_flush`; the header bit `HEADER_QUEUE_FLUSH`).
+/// `queue_flush`; the header bit [`HEADER_QUEUE_FLUSH`]).
 pub(crate) const EVENT_QUEUE_FLUSHED: u32 = 5;
 /// Bits of the fourth word of the header: the draws of the engine's sorted queue are marked;
-/// the world's start comes as `EVENT_WORLD_WALK`; the scene records carry `SCENE_BACK_BUFFER`;
-/// the end of the flush of the main sorted queue comes as `EVENT_QUEUE_FLUSHED`; the table's
-/// blends that the engine draws in its walk have their places there (`tag::INSTANCE_WALK`);
-/// the scene records carry `SCENE_WIREFRAME`.
+/// the world's start comes as [`EVENT_WORLD_WALK`]; the scene records carry [`SCENE_BACK_BUFFER`];
+/// the end of the flush of the main sorted queue comes as [`EVENT_QUEUE_FLUSHED`]; the table's
+/// blends that the engine draws in its walk have their places there ([`tag::INSTANCE_WALK`]);
+/// the scene records carry [`SCENE_WIREFRAME`].
 pub(crate) const HEADER_QUEUE_MARKED: u32 = 1;
 pub(crate) const HEADER_WORLD_WALK: u32 = 2;
 pub(crate) const HEADER_SCENE_TARGET: u32 = 4;
@@ -161,7 +161,7 @@ pub struct DrawData {
     pub texture_transforms: [[f32; 16]; 6],
     /// 1 / width and -1 / height of the viewport.
     pub pixel: [f32; 4],
-    /// The values of `FrameParameters::sky`.
+    /// The values of [`FrameParameters::sky`].
     pub extension: [[f32; 4]; 8],
     /// A plane in the space of the world of the draw: a pixel on its negative side is not
     /// drawn. All 0: no plane.
@@ -259,7 +259,7 @@ pub(crate) struct PipelineKey {
     pub(crate) stencil: [u32; 7],
     /// D3DRS_COLORWRITEENABLE: red 1, green 2, blue 4, alpha 8.
     pub(crate) color_write: u32,
-    /// The samples for each pixel of the targets of the pass: `Renderer::samples` for the
+    /// The samples for each pixel of the targets of the pass: [`Renderer::samples`] for the
     /// targets of the frame, 1 for a texture that the game or an extension draws into.
     pub(crate) samples: u32,
 }
@@ -321,7 +321,7 @@ pub(crate) struct Counts {
     /// The copies of the picture and of the depth for the calls of the extension.
     pub(crate) picture_copies: u32,
     pub(crate) depth_copies: u32,
-    /// Where the time of the program goes, in the order of `TIME_NAMES`, in ticks (`ticks`).
+    /// Where the time of the program goes, in the order of [`TIME_NAMES`], in ticks (`ticks`).
     pub(crate) times: [u64; TIME_COUNT],
     /// The frames that are complete.
     pub(crate) frames: u32,
@@ -333,7 +333,7 @@ pub(crate) struct Counts {
     pub(crate) geometry_bad: u32,
     pub(crate) geometry_short: u32,
     pub(crate) material_records: u32,
-    /// The records shorter than the fixed part of their tag (`tag::least_length`), skipped.
+    /// The records shorter than the fixed part of their tag ([`tag::least_length`]), skipped.
     pub(crate) short_records: u32,
     /// The shape records, the draws made from them, and the records without a geometry or
     /// a material.
@@ -358,7 +358,7 @@ pub(crate) struct Counts {
     pub(crate) shape_twins: u32,
     /// The blended draws of the engine's path merged into the sorted list of the table.
     pub(crate) merged_blends: u64,
-    /// The places of the table's blends in the engine's queue (`tag::INSTANCE_QUEUED`):
+    /// The places of the table's blends in the engine's queue ([`tag::INSTANCE_QUEUED`]):
     /// drawn there, of an instance the table does not have, outside the world scene, and of
     /// an instance whose slots the table does not sort (drawn with the other draws); and the
     /// sorted blends of the table without a place, put between by depth.
@@ -371,7 +371,7 @@ pub(crate) struct Counts {
     pub(crate) sorted_without_place_no_places: u64,
     /// The places that came after the frame's first sorted blends (a later generation).
     pub(crate) queued_late_places: u64,
-    /// The places of the table's blends in the engine's walk (`tag::INSTANCE_WALK`): taken in
+    /// The places of the table's blends in the engine's walk ([`tag::INSTANCE_WALK`]): taken in
     /// a world view, of an instance the table does not have, outside a world view, and after
     /// the main view of the table drew its blends (a part of the frame ran before them).
     pub(crate) walk_places: u64,
@@ -382,7 +382,7 @@ pub(crate) struct Counts {
     /// the `SetRenderTarget` calls gave was another one.
     pub(crate) scene_targets: u64,
     pub(crate) scene_target_changed: u64,
-    /// The calls of `Extension::draw_class`: at the first draw of the class, and at the
+    /// The calls of [`Extension::draw_class`]: at the first draw of the class, and at the
     /// world's end of a frame that brought no draw of the class.
     pub(crate) class_calls: u64,
     pub(crate) class_calls_without_draw: u64,
@@ -397,7 +397,7 @@ pub(crate) struct Counts {
     /// The lights and the entries of the clusters of the frames.
     pub(crate) cluster_lights: u64,
     pub(crate) cluster_entries: u64,
-    /// The lights of the frames for the extension (`FrameLights`).
+    /// The lights of the frames for the extension ([`FrameLights`]).
     pub(crate) extension_lights: u64,
     /// The frames with more clustered lights than a mask of a draw has bits.
     pub(crate) cluster_frames_many: u32,
@@ -412,7 +412,7 @@ pub(crate) struct Counts {
     pub(crate) target_draws: u32,
     /// The kept draws that were drawn again for an extension.
     pub(crate) replayed: u32,
-    /// The shapes that the extension took (`Extension::hold`).
+    /// The shapes that the extension took ([`Extension::hold`]).
     pub(crate) held: u32,
     pub(crate) texture_updates_lost: u32,
     pub(crate) lost_reasons: HashMap<String, u32>,
@@ -447,7 +447,7 @@ pub(crate) struct Instance {
 
 pub(crate) const INSTANCE_SIZE: usize = core::mem::size_of::<Instance>();
 
-/// The size of a record of a draw: `DrawData`, as the shader's `array<Draw>` has it.
+/// The size of a record of a draw: [`DrawData`], as the shader's `array<Draw>` has it.
 pub(crate) const RECORD_SIZE: usize = core::mem::size_of::<DrawData>();
 
 const _: () = assert!(INSTANCE_SIZE == 80 && RECORD_SIZE % 16 == 0);
