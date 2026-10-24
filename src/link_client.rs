@@ -1365,8 +1365,10 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     crate::instance_stream::begin_draw(t);
     // A shape of the world, skinned or not: a draw of the world scene, or a blended shape
     // drawn from the sorted queue in a scene of the world camera. The table takes the
-    // blends, and the first draw of a blended shape is the queue's.
-    let plain_world_shape = matches!(kind, DRAW_SHAPE | DRAW_STRIPS) && (roots.scene_kind == SCENE_WORLD || (world_camera && flags & DRAW_FROM_SORTED_QUEUE != 0)) && crate::capture::recording();
+    // blends, and the first draw of a blended shape is the queue's. A particle system goes the
+    // same way when the table takes particles (`NIRENDER_PARTICLES=table`, particles plan step 2).
+    let points = kind == DRAW_POINTS && crate::instance_stream::particle_table_on();
+    let plain_world_shape = (matches!(kind, DRAW_SHAPE | DRAW_STRIPS) || points) && (roots.scene_kind == SCENE_WORLD || (world_camera && flags & DRAW_FROM_SORTED_QUEUE != 0)) && crate::capture::recording();
     if plain_world_shape {
         let mut class = CLASS_UNKNOWN;
         if let Some((geometry_handle, material_handle)) = crate::instance_stream::seen(t, geometry, kind, &mut class) {
@@ -1401,11 +1403,13 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     if skin_data != 0 && geometry_data != 0 && crate::capture::recording() && crate::geometry_stream::needs_partitions(skin_data) {
         crate::ports::draw::ensure_skin_partitions(this, geometry_data, skin);
     }
-    let geometry_handle = crate::geometry_stream::note(t, kind, geometry_data, skin);
+    // A particle instance's geometry is the key of its particles (the address of the data),
+    // as its shape record and its `INSTANCE_PARTICLES` records name it.
+    let geometry_handle = if points { geometry_data as u32 } else { crate::geometry_stream::note(t, kind, geometry_data, skin) };
     let material_handle = crate::material_stream::note(t, this, property_state, effect_state);
     crate::shape_stream::note_handles(t, geometry_handle, material_handle, kind, draw.object_class, geometry_data);
     crate::capture::object(&draw, geometry_handle, material_handle);
-    crate::instance_stream::consider(t, geometry, plain_world_shape && crate::instance_stream::class_retained(t, draw.object_class, skin != 0), skin != 0, draw.object_class, geometry_handle, material_handle, property_state, effect_state);
+    crate::instance_stream::consider(t, geometry, plain_world_shape && (points || crate::instance_stream::class_retained(t, draw.object_class, skin != 0)), skin != 0, points, draw.object_class, geometry_handle, material_handle, property_state, effect_state);
     if (CLASS_SKY_DOME..=CLASS_SUN_GLARE).contains(&draw.object_class) && crate::instance_stream::sky_census_on() {
         crate::instance_stream::sky_census(t, geometry, draw.object_class, plain_world_shape, geometry_handle, material_handle, property_state, effect_state);
     }

@@ -122,7 +122,7 @@ def sequence(path, wanted):
             print("RETAINED_SCENE ambient %#x flags %#x" % (ambient, flags))
         elif tag == TAG_INSTANCE_DRAW:
             i, ambient, flags = words(body, 0, 3)
-            lights = words(body, 28 if flags & 32 else 12, 1)[0]
+            lights = words(body, 12 + (144 if flags & 16 else 0) + (16 if flags & 32 else 0), 1)[0]
             print("  INSTANCE_DRAW %d flags %#x lights %d" % (i, flags, lights))
         elif tag == TAG_INSTANCE_DELETE:
             print("INSTANCE_DELETE %d" % words(body, 0, 1)[0])

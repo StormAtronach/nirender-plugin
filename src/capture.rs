@@ -167,8 +167,10 @@ pub mod tag {
     /// name. The same id again replaces the instance.
     pub const INSTANCE: u32 = 23;
     /// A draw of a retained instance, in the place of a shape record: id, ambient, flags,
-    /// the fog (4 words) when the flags have `FOG`, the number of lights, then their keys;
-    /// with the flag `SKINNED` then the number of bones and the palette (16 floats each).
+    /// the stages of the texture effects (36 words, as in `SHAPE`) when the flags have
+    /// `EFFECTS`, the fog (4 words) when the flags have `FOG`, the number of lights, then
+    /// their keys; with the flag `SKINNED` then the number of bones and the palette (16
+    /// floats each).
     pub const INSTANCE_DRAW: u32 = 24;
     /// The instance is deleted: id.
     pub const INSTANCE_DELETE: u32 = 25;
@@ -215,6 +217,11 @@ pub mod tag {
     /// at the start of a world scene when the set changed. The values of each light go as
     /// `LIGHT` records before it.
     pub const WORLD_LIGHTS: u32 = 34;
+    /// The particles of a particle system's draw, before its `INSTANCE_DRAW`: the key of its
+    /// geometry (the address of the particle data), the count, the radius, the camera's right
+    /// and up in model space, then 20 bytes a particle (the position, the size, the colour), as
+    /// the particle tail of a `SHAPE` record has them (`instance_stream`, particles plan step 2).
+    pub const INSTANCE_PARTICLES: u32 = 35;
 }
 
 // ---- the ring in shared memory
@@ -1357,14 +1364,28 @@ pub unsafe fn instance(head: &[u32], name: &[u8]) {
 }
 
 /// A draw of an instance. See `tag::INSTANCE_DRAW`.
-pub unsafe fn instance_draw(id: u32, ambient: u32, fog: Option<[u32; 4]>, lights: &[u32], bones: &[u8], bone_count: u32) {
+pub unsafe fn instance_draw(id: u32, ambient: u32, effects: Option<&[u32]>, fog: Option<[u32; 4]>, lights: &[u32], bones: &[u8], bone_count: u32, queued: bool) {
     let _lock = crate::sync::device_lock();
     let skinned = bone_count != 0;
-    let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 } | if skinned { crate::shape_stream::SKINNED } else { 0 };
+    let flags = if effects.is_some() { crate::shape_stream::EFFECTS } else { 0 }
+        | if fog.is_some() { crate::shape_stream::FOG } else { 0 }
+        | if skinned { crate::shape_stream::SKINNED } else { 0 }
+        | if queued { crate::shape_stream::QUEUED } else { 0 };
     let count = [lights.len() as u32];
     let bone_word = [bone_count];
     let palette: &[u8] = if skinned { bones } else { &[] };
-    write(tag::INSTANCE_DRAW, &[words(&[id, ambient, flags]), words(fog.as_ref().map_or(&[], |f| &f[..])), words(&count), words(lights), words(if skinned { &bone_word } else { &[] }), palette]);
+    write(
+        tag::INSTANCE_DRAW,
+        &[words(&[id, ambient, flags]), words(effects.unwrap_or(&[])), words(fog.as_ref().map_or(&[], |f| &f[..])), words(&count), words(lights), words(if skinned { &bone_word } else { &[] }), palette],
+    );
+}
+
+/// The particles of a particle system's draw. See `tag::INSTANCE_PARTICLES`.
+pub unsafe fn instance_particles(key: u32, radius: f32, right: [f32; 3], up: [f32; 3], particles: &[u8]) {
+    let _lock = crate::sync::device_lock();
+    let count = (particles.len() / crate::shape_stream::PARTICLE_BYTES) as u32;
+    let head = [key, count, radius.to_bits(), right[0].to_bits(), right[1].to_bits(), right[2].to_bits(), up[0].to_bits(), up[1].to_bits(), up[2].to_bits()];
+    write(tag::INSTANCE_PARTICLES, &[words(&head), particles]);
 }
 
 /// A sorted blend of the table in the flush of the engine's queue. See `tag::INSTANCE_QUEUED`.

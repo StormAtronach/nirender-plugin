@@ -373,6 +373,18 @@ unsafe extern "C" fn sky_draws(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.particleDraws([on])`: with a boolean, the draws of the particle instances go as
+/// `INSTANCE_PARTICLES` and `INSTANCE_DRAW` records (on, the default when the table takes
+/// particles) or as the engine's shape records (off). Returns the state before.
+unsafe extern "C" fn particle_draws(l: LuaState) -> i32 {
+    let before = crate::instance_stream::particle_draws();
+    if lua_gettop(l) >= 1 {
+        crate::instance_stream::set_particle_draws(lua_toboolean(l, 1) != 0);
+    }
+    lua_pushboolean(l, before as i32);
+    1
+}
+
 /// `nirender.animationPolicy([name])`: with a name (`view`, `shadows`, `all`) sets the
 /// policy of what animates when the plugin's table draws the world. Returns
 /// the name of the policy in force.
@@ -715,6 +727,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "instances", instances_report);
     set_fn(l, "nifShading", nif_shading);
     set_fn(l, "skyDraws", sky_draws);
+    set_fn(l, "particleDraws", particle_draws);
     set_fn(l, "animationPolicy", animation_policy);
     set_fn(l, "skinTable", skin_table);
     set_fn(l, "noteEvery", note_every);

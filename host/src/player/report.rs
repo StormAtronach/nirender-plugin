@@ -79,7 +79,7 @@ impl Player {
             r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.hidden, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
         );
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
-        println!("skinned shapes {}, particle systems {}", c.shape_skinned, c.shape_particles);
+        println!("skinned shapes {}, particle systems {} ({} of them from INSTANCE_PARTICLES records)", c.shape_skinned, c.shape_particles, c.instance_particles);
         match self.renderer.particle_quads_made() {
             Some((systems, particles)) => println!("particle quads made on the GPU: {systems} systems, {particles} particles"),
             None => println!("particle quads made on the GPU: none ({})", if switches().particle_quads_cpu { "MGE_XE_PARTICLE_QUADS=cpu" } else { "no system yet" }),

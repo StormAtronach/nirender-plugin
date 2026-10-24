@@ -364,16 +364,27 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
     // A draw of a retained shape: its instance records in the place of this one (mode gpu:
     // the first draw of the instance), or before it (mode dual).
     if let Some((shape, id)) = crate::instance_stream::take_pending(t) {
-        // A shape (kind 0) or a skinned shape (its palette in `bytes`); not particles, lines.
-        // A draw with texture effects stays (the table makes their stages from the material
-        // record; `reject_reason` keeps the kinds the table cannot draw).
-        if kind & !SKINNED != 0 || flags & CODE_PATCH_PICTURE != 0 {
+        // A shape (kind 0), a skinned shape (its palette in `bytes`), or a particle instance
+        // (its particle words in `tail`, its particles in `bytes`); not lines. A draw with
+        // texture effects stays (the table makes their stages from the material record;
+        // `reject_reason` keeps the kinds the table cannot draw). A draw at the engine's place
+        // (`INSTANCE_DRAW`) carries the engine's stages of this draw.
+        let points = kind == PARTICLES && crate::instance_stream::is_points(t, shape);
+        if points && !crate::instance_stream::particle_draws() {
+            // `nirender.particleDraws(false)`: the engine's record, the instance kept.
+        } else if (kind & !SKINNED != 0 && !points) || flags & CODE_PATCH_PICTURE != 0 {
             crate::instance_stream::reject_pending(t, shape, true);
-        } else if crate::instance_stream::draw(t, shape, id, &world, relative, &material_values, fog, ambient, lights, if kind & SKINNED != 0 { bytes } else { &[] }, bone_count) {
-            if crate::instance_stream::mode(t) == crate::instance_stream::Mode::Gpu {
-                return records_only();
+        } else {
+            if points && tail.len() >= 8 {
+                let float = |i: usize| f32::from_bits(tail[i]);
+                crate::capture::instance_particles(geometry, float(1), [float(2), float(3), float(4)], [float(5), float(6), float(7)], bytes);
             }
-            flags |= RETAINED_TWIN;
+            if crate::instance_stream::draw(t, shape, id, &world, relative, &material_values, effects.as_ref().map(|w| &w[..]), fog, ambient, lights, if kind & SKINNED != 0 { bytes } else { &[] }, bone_count, flags & QUEUED != 0) {
+                if crate::instance_stream::mode(t) == crate::instance_stream::Mode::Gpu {
+                    return records_only();
+                }
+                flags |= RETAINED_TWIN;
+            }
         }
     }
     // The tail of the record: the effects, the fog, then `tail`. On the stack: a draw does not

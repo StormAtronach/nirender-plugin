@@ -191,6 +191,10 @@ struct Instance {
     /// The frame in which the engine's main sorted queue took the shape (`queue_blend`), or
     /// `u32::MAX`.
     queued: u32,
+    /// A particle system (a `RenderPoints` draw): its particles go as an `INSTANCE_PARTICLES`
+    /// record before each `INSTANCE_DRAW`, at the place of the engine's draw, and the table
+    /// never draws it by itself (particles plan, step 2).
+    points: bool,
 }
 
 /// The property slots of `NiPropertyState` from `propAlpha` (+0x08) to `field_30` (+0x30).
@@ -266,6 +270,8 @@ struct Tables {
     handle_updates: u64,
     value_updates: u64,
     deletes: u64,
+    /// The draws of particle instances sent as `INSTANCE_DRAW` records (particles plan, step 2).
+    particle_draws: u64,
     rejected_by: [u64; REASONS],
     /// The draws that `consider` did not take, by the first cause: not a plain world draw
     /// of a retained class, no geometry handle, no material handle, the path off, the
@@ -313,6 +319,7 @@ fn tables(mt: &MainThread) -> &mut Tables {
         handle_updates: 0,
         value_updates: 0,
         deletes: 0,
+        particle_draws: 0,
         rejected_by: [0; REASONS],
         skipped_by: [0; 5],
     })
@@ -574,7 +581,7 @@ pub unsafe fn seen(mt: &MainThread, shape: usize, kind: u32, class_out: &mut u32
 /// After the notes of a draw: decides if the shape is retained, and makes the draw in
 /// progress pending for `draw` when it is. `property_state` and `effect_state` are those
 /// of the renderer for the draw.
-pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: bool, class: u32, geometry: u32, material: u32, property_state: usize, effect_state: usize) {
+pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: bool, points: bool, class: u32, geometry: u32, material: u32, property_state: usize, effect_state: usize) {
     let cause = if !eligible {
         Some(0)
     } else if geometry == 0 {
@@ -614,6 +621,10 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
         t.rejected_by[reason] += 1;
         return;
     }
+    // A particle system changes its particles every frame: live from the start.
+    if points {
+        live = true;
+    }
     // The engine changes the sky by writes of its vertices with a new revision, not with
     // controllers: a sky instance is live from the start.
     if sky_table_class(class) {
@@ -625,7 +636,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], queued: u32::MAX });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], queued: u32::MAX, points });
     t.pending = Some((shape, id));
 }
 
@@ -735,6 +746,47 @@ pub fn sky_draws() -> bool {
 /// Sets whether the draws of the sky instances go as `INSTANCE_DRAW` records.
 pub fn set_sky_draws(on: bool) {
     SKY_DRAWS.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// The switch of the particle systems (`NIRENDER_PARTICLES`; milestone 5): 0 not read, 1 off
+/// (the default in step 2: the engine's shape records), 2 the table (`table`: a particle system
+/// in a world camera's scene is an instance whose draws go as `INSTANCE_PARTICLES` and
+/// `INSTANCE_DRAW` records at the places of the engine's draws).
+static PARTICLE_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// True when the table takes the particle systems.
+pub fn particle_table_on() -> bool {
+    use core::sync::atomic::Ordering::Relaxed;
+    let mode = match PARTICLE_MODE.load(Relaxed) {
+        0 => {
+            let mode = if std::env::var("NIRENDER_PARTICLES").as_deref() == Ok("table") { 2 } else { 1 };
+            PARTICLE_MODE.store(mode, Relaxed);
+            mode
+        }
+        mode => mode,
+    };
+    mode == 2
+}
+
+/// The draws of the particle instances go as `INSTANCE_DRAW` records (`nirender.particleDraws`;
+/// on when the table takes them): off, they go as the engine's shape records, for an A/B in one
+/// session.
+static PARTICLE_DRAWS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// True when the draws of the particle instances go as `INSTANCE_DRAW` records.
+pub fn particle_draws() -> bool {
+    PARTICLE_DRAWS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Sets whether the draws of the particle instances go as `INSTANCE_DRAW` records.
+pub fn set_particle_draws(on: bool) {
+    PARTICLE_DRAWS.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// True when the shape is a particle instance (`shape_stream::record` sends its particles
+/// before its `INSTANCE_DRAW`, or keeps the engine's record when `particle_draws` is off).
+pub unsafe fn is_points(mt: &MainThread, shape: usize) -> bool {
+    tables(mt).instances.get(&shape).is_some_and(|instance| instance.points)
 }
 
 /// A class of the sky the table can take: the sky root's shapes in the world camera's walk.
@@ -865,13 +917,17 @@ pub unsafe fn reject_pending(mt: &MainThread, shape: usize, reason_later: bool) 
 /// draw differ from the retained ones or the record was not sent, then `INSTANCE_DRAW`.
 /// `world` is the world matrix of the draw as the renderer has it (relative to the origin
 /// of the scene when the plugin makes the matrices: `relative` is the flag of the shape
-/// record), `fog` the fog of the draw.
+/// record), `effects` the stages of the texture effects of the draw and `fog` its fog, for
+/// an `INSTANCE_DRAW` record.
 /// Returns false when the shape has no exact translation (the draw then goes as a shape
 /// record, and the shape is rejected).
-pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], relative: bool, colours: &[u32; 14], fog: Option<[u32; 4]>, ambient: u32, lights: &[u32], bones: &[u8], bone_count: u32) -> bool {
+pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], relative: bool, colours: &[u32; 14], effects: Option<&[u32]>, fog: Option<[u32; 4]>, ambient: u32, lights: &[u32], bones: &[u8], bone_count: u32, queued: bool) -> bool {
     let t = tables(mt);
     let Some(instance) = t.instances.get_mut(&shape) else { return false };
     if sky_table_class(instance.class) && !sky_draws() {
+        return false;
+    }
+    if instance.points && !particle_draws() {
         return false;
     }
     // A skinned shape's world matrix is the identity (the palette has the transforms), so
@@ -882,7 +938,9 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
     // A sky instance goes as an `INSTANCE_DRAW` record at the place of the engine's draw (step
     // 2 of milestone 6): the helper draws it from its record there, in the stream's order. In
     // mode gpu the caller writes no shape record after it.
-    let gpu = t.mode == Some(Mode::Gpu) && (!skinned || t.skin_table) && !sky_table_class(instance.class);
+    // A particle instance goes the same way: its particles change every frame (step 2 of the
+    // particles plan).
+    let gpu = t.mode == Some(Mode::Gpu) && (!skinned || t.skin_table) && !sky_table_class(instance.class) && !instance.points;
     let rotation: [u32; 12] = core::array::from_fn(|i| world[i].to_bits());
     let stored: [u32; 3] = if skinned { [0; 3] } else { rd(shape, WORLD_TRANSLATION) };
     let bound: [f32; 4] = if skinned { [0.0; 4] } else { rd(shape, WORLD_BOUND) };
@@ -959,7 +1017,10 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
         }
         return true;
     }
-    capture::instance_draw(id, ambient, fog, lights, bones, bone_count);
+    capture::instance_draw(id, ambient, effects, fog, lights, bones, bone_count, queued);
+    if instance.points {
+        t.particle_draws += 1;
+    }
     true
 }
 
@@ -1710,6 +1771,13 @@ pub unsafe fn report(mt: &MainThread) -> String {
         + &format!(
             "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk\n",
             QUEUE_COUNTS.get(mt)[0], QUEUE_COUNTS.get(mt)[1], QUEUE_COUNTS.get(mt)[2], *WALK_PLACES.get(mt)
+        )
+        + &format!(
+            "particles: the table {}, draws as instance records {}; {} particle instances, {} draws as INSTANCE_DRAW records\n",
+            if particle_table_on() { "on" } else { "off" },
+            if particle_draws() { "on" } else { "off" },
+            t.instances.values().filter(|i| i.points).count(),
+            t.particle_draws
         )
         + &crate::animation::report()
         + "\n"

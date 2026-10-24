@@ -352,6 +352,8 @@ pub(crate) struct Counts {
     /// not have, and the shape records skipped as twins of an instance draw.
     pub(crate) instance_records: u32,
     pub(crate) instance_draws: u32,
+    /// The `INSTANCE_PARTICLES` records: the particles of a particle instance's draw.
+    pub(crate) instance_particles: u32,
     pub(crate) instance_missing: u32,
     pub(crate) shape_twins: u32,
     /// The blended draws of the engine's path merged into the sorted list of the table.

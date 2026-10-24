@@ -46,6 +46,10 @@ pub const INSTANCE_WALK: u32 = 32;
 pub const LIGHT_GONE: u32 = 33;
 /// The keys of the lights of the world that are on (`RetainedSet::set_world_lights`).
 pub const WORLD_LIGHTS: u32 = 34;
+/// The particles of a particle instance's draw, before its `INSTANCE_DRAW`: the key of its
+/// geometry, the count, the radius, the camera's right and up, then 20 bytes a particle
+/// (`Renderer::particles` makes the quads under the key).
+pub const INSTANCE_PARTICLES: u32 = 35;
 
 /// The least length of a record of the tag that the player reads without a check of its
 /// own: a shorter record is skipped and counted (`Counts::short_records`), not read past
@@ -80,6 +84,8 @@ pub fn least_length(tag: u32) -> usize {
         INSTANCE_WALK => 4,
         LIGHT_GONE => 4,
         WORLD_LIGHTS => 4,
+        // The key, the count, the radius, the camera's right and up.
+        INSTANCE_PARTICLES => 36,
         _ => 0,
     }
 }
@@ -90,7 +96,7 @@ mod tests {
 
     #[test]
     fn every_record_with_a_fixed_head_has_a_least_length() {
-        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS] {
+        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES] {
             assert!(least_length(tag) > 0, "tag {tag} has no least length");
         }
     }

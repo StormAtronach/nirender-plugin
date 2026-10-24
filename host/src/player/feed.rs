@@ -140,6 +140,15 @@ impl Player {
                     self.instance_draw(data);
                 }
             }
+            tag::INSTANCE_PARTICLES if data.len() >= 36 => {
+                if self.retained_on {
+                    let count = word(data, 4) as usize;
+                    let particles = &data[36..(36 + count * 20).min(data.len())];
+                    let floats3 = |at: usize| -> [f32; 3] { core::array::from_fn(|i| f32::from_bits(word(data, at + i * 4))) };
+                    self.renderer.particles(word(data, 0), f32::from_bits(word(data, 8)), floats3(12), floats3(24), particles);
+                    self.renderer.counts.instance_particles += 1;
+                }
+            }
             tag::INSTANCE_QUEUED if data.len() >= 4 => {
                 if self.retained_on {
                     self.instance_queued(word(data, 0));
@@ -502,8 +511,12 @@ impl Player {
     /// shape record.
     pub(crate) fn instance_draw(&mut self, data: &[u8]) {
         let (id, ambient, flags) = (word(data, 0), word(data, 4), word(data, 8));
+        // The stages of the texture effects (flag 16), as the shape record has them: the
+        // engine's, for the camera of this draw.
+        let has_effects = flags & 16 != 0;
+        let fog_at = if has_effects { 12 + 2 * EFFECT_STAGE_WORDS * 4 } else { 12 };
         let has_fog = flags & 32 != 0;
-        let count_at = if has_fog { 28 } else { 12 };
+        let count_at = if has_fog { fog_at + 16 } else { fog_at };
         if data.len() < count_at + 4 {
             self.renderer.counts.shape_missing += 1;
             return;
@@ -520,7 +533,13 @@ impl Player {
         };
         self.renderer.counts.instance_draws += 1;
         self.stream.object_class = retained.class;
-        self.stream.shape_fog = has_fog.then(|| core::array::from_fn(|i| word(data, 12 + i * 4)));
+        // A draw of the flush of the engine's sorted queue (0x800), as the shape record has it,
+        // with the world bound of the instance as the key of its sort (the shape record's
+        // bound words).
+        self.stream.shape_queued = flags & 0x800 != 0;
+        self.stream.shape_bound = Some(retained.bound);
+        let effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, 12 + (e * EFFECT_STAGE_WORDS + i) * 4))));
+        self.stream.shape_fog = has_fog.then(|| core::array::from_fn(|i| word(data, fog_at + i * 4)));
         if let Some(fog) = self.stream.shape_fog {
             self.stream.fog = fog;
         }
@@ -571,7 +590,7 @@ impl Player {
             }
             world[15] = 1.0;
         }
-        self.draw_shape(retained.geometry, retained.material, retained.flags | (flags & 32), world, &retained.colours, None);
+        self.draw_shape(retained.geometry, retained.material, retained.flags | (flags & 32), world, &retained.colours, effects.as_ref());
         self.stream.shape_bones = None;
     }
 
