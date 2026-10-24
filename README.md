@@ -108,6 +108,11 @@ The A/B:
   the engine's path.
 - `NIRENDER_NODE_KINDS=0` keeps a shape under a billboard, switch, level of detail, BSP,
   animation or particle node on the engine's path (the rule before 2026-10-16).
+- `NIRENDER_PARTICLES=off` keeps the particle systems on the engine's path (the rule before
+  2026-10-24). `nirender.particleDraws(false)` keeps them in the table but sends their draws
+  as the engine's records, live.
+- `MGE_XE_PARTICLE_QUADS=cpu` makes the quads of the particle systems on the CPU, not on the
+  GPU.
 - `NIRENDER_CONTROLLERS=0` keeps a shape with a controller on itself or on a property (a
   morpher, a UV, flip, alpha or colour controller) on the engine's path (the rule before).
 - `NIRENDER_SKIN_TABLE=0` keeps the skinned shapes on the engine's display, with the palette
