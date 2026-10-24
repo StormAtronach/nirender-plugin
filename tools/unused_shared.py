@@ -11,7 +11,8 @@ import os
 import re
 import sys
 
-from common import REPO
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import REPO  # noqa: E402
 
 SHARED = ("src/engine.rs", "src/d3d.rs", "src/ports/ni.rs", "src/ports/hash_map.rs", "src/x87.rs")
 ITEM = re.compile(r"^pub(?:\(crate\))? (?:unsafe )?(?:const fn|fn|const|static) (\w+)", re.M)

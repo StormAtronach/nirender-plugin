@@ -16,7 +16,8 @@ import os
 import re
 import sys
 
-from common import REPO
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import REPO  # noqa: E402
 
 DEFAULT_HEADER = os.path.join(os.path.dirname(REPO), "MWSE", "MWSE", "MWSE", "MWSENativeApi.h")
 RUST = os.path.join(REPO, "src", "mwse_native.rs")

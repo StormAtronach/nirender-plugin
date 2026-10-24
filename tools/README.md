@@ -28,6 +28,7 @@ under the home folder.
 | `live.py` | A live game of the testing instance, started and stopped for work through the mwse-mcp tools. |
 | `own_device.py` | The testing instance put into the mode without a Direct3D device, for a game by hand, and taken out again. |
 | `release.py` | A test build release on GitHub (the archive of `cargo xtask dist` of MGE XE G7), and the removal of the releases before it. |
+| `clean_watchers.py` | Lists, and with `--end` ends, the shell tools (tail, grep, sed) that log watchers of Git Bash leave behind (harness trap T58). |
 
 ## The gates
 
@@ -35,7 +36,10 @@ under the home folder.
 | --- | --- |
 | `validate_retained.py` | The checks of the retained pipeline, one stage at a time: `capture`, `baseline`, `only`, `clusters`, `weathers`, `tour`. The gate of a change. |
 | `validate_tour.py` | The stops of a tour of a test level replayed and compared with a baseline. |
-| `check_readme.py` | README.md against the code: every switch the code reads, every path README names. |
+| `checks.py` | The content checks that need no compile, as one list for each repository (`plugin`, `mge`, `all`): the readme, the contract, MWSE's native ABI, the module headers and the skills' names. The commit hooks and `release.py` run it. |
+| `install_hooks.py` | Writes the pre-commit hooks that run `checks.py`: this repository, the MGE XE render-link worktree, and the docs repository (through its own `--install-hook`). `git commit --no-verify` skips a hook once. |
+| `check_readme.py` | README.md against the code: every switch the code reads, every path README names, a row here for every tool. |
+| `check_mwse_native.py` | The plugin's and MGE XE's copies of MWSE's native ABI against MWSE's header `MWSENativeApi.h`. |
 | `docs.py` | The rustdoc pages of the plugin, the host crate and the MGE XE helper, with the private items; fails on a broken link in a doc comment of our code; `target/docs.html` links the three (`--open`). `release.py` runs it. It runs cargo. |
 | `doc_links.py` | The names in backticks of the doc comments of one crate as links that rustdoc checks: it keeps the links that resolve and writes back the rest. Without `--apply` every file is restored. It runs cargo. |
 | `check_contract.py` | The render link contract: `contract/mge_render_link.h` against `src/link.rs`. |

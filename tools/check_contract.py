@@ -11,7 +11,8 @@ import os
 import re
 import sys
 
-from common import REPO
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import REPO  # noqa: E402
 
 HEADER = os.path.join(REPO, "contract", "mge_render_link.h")
 RUST = os.path.join(REPO, "src", "link.rs")

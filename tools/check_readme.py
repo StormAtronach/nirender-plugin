@@ -6,8 +6,9 @@
    crate, the d3d8 crate, the tools and the Lua mod) is in README.md.
 2. Every path that README.md names in back-quotes and that looks like a file or a folder of
    the repo exists.
+3. Every script `tools/*.py` has a row in tools/README.md (its name in back-quotes).
 
-The exit code is 0 when both checks pass.
+The exit code is 0 when all checks pass.
 """
 import os
 import re
@@ -47,6 +48,11 @@ def main():
             continue
         if not os.path.exists(os.path.join(REPO, path)):
             problems.append(f"README.md names `{path}`, which does not exist")
+    tools = os.path.join(REPO, "tools")
+    listed = open(os.path.join(tools, "README.md"), encoding="utf-8").read()
+    for name in sorted(os.listdir(tools)):
+        if name.endswith(".py") and f"`{name}`" not in listed:
+            problems.append(f"tools/{name} has no row in tools/README.md")
     for problem in problems:
         print(problem)
     print(f"{len(read)} switches read in the code, {len(problems)} problems")
