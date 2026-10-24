@@ -576,6 +576,7 @@ impl Renderer {
             array_group: None,
             array_variants: FxHashMap::default(),
             geometries: FxHashMap::default(),
+            gone_textures: Vec::new(),
             vertex_pool: pool::Pool::new("game vertices", wgpu::BufferUsages::VERTEX, VERTEX_CHUNK),
             index_pool: pool::Pool::new("game indexes", wgpu::BufferUsages::INDEX, INDEX_CHUNK),
             retired: Vec::new(),
@@ -1171,19 +1172,34 @@ impl Renderer {
         true
     }
 
-    /// A texture or a level surface of the plugin's device was freed (`TEXTURE_GONE`): the
-    /// handle names nothing here any more. A pinned slot keeps its view until the instances
-    /// that use it go; a slot of the frame in progress keeps its view for the frame.
+    /// A texture or a level surface of the plugin's device was freed (`TEXTURE_GONE`). A level
+    /// surface goes at once. A texture goes at the start of the next frame
+    /// (`drop_gone_textures`): the items of the frame in progress run at its end, and a
+    /// target change among them can name the texture (the game draws into a rendered texture,
+    /// sets another target, then frees it, in one frame). A pinned slot keeps its view until
+    /// the instances that use it go.
     pub(crate) fn texture_gone(&mut self, handle: u32) {
-        let mut held = self.textures.remove(&handle).is_some();
-        held |= self.texture_objects.remove(&handle).is_some();
-        held |= self.targets.remove(&handle).is_some();
-        held |= self.surfaces.remove(&handle).is_some();
-        self.decoded.remove(&handle);
-        if held {
+        let surface = self.surfaces.remove(&handle).is_some();
+        match self.textures.get(&handle) {
+            Some(view) => self.gone_textures.push((handle, view.clone())),
+            None if surface => self.counts.textures_gone += 1,
+            None => self.counts.textures_gone_not_held += 1,
+        }
+    }
+
+    /// The textures freed in the frame before go. A handle that got a new texture since its
+    /// free (the address came back) keeps the new one.
+    pub(crate) fn drop_gone_textures(&mut self) {
+        for (handle, view) in std::mem::take(&mut self.gone_textures) {
+            if !self.textures.get(&handle).is_some_and(|now| Rc::ptr_eq(now, &view)) {
+                self.counts.textures_gone_replaced += 1;
+                continue;
+            }
+            self.textures.remove(&handle);
+            self.texture_objects.remove(&handle);
+            self.targets.remove(&handle);
+            self.decoded.remove(&handle);
             self.counts.textures_gone += 1;
-        } else {
-            self.counts.textures_gone_not_held += 1;
         }
     }
 
@@ -1192,7 +1208,7 @@ impl Renderer {
     pub(crate) fn held_line(&self) -> String {
         let mb = |bytes: u64| bytes as f64 / 1e6;
         format!(
-            "held: {} textures ({} with pixels written here, {} rendered), {} level surfaces; {} geometries, the vertex pool {:.1} of {:.1} MB, the index pool {:.1} of {:.1} MB; {} materials ({} derived); gone: {} textures ({} not held), {} geometries ({} not held), {} instances whose geometry went",
+            "held: {} textures ({} with pixels written here, {} rendered), {} level surfaces; {} geometries, the vertex pool {:.1} of {:.1} MB, the index pool {:.1} of {:.1} MB; {} materials ({} derived); gone: {} textures ({} not held, {} replaced before their removal), {} geometries ({} not held), {} instances whose geometry went",
             self.textures.len(),
             self.texture_objects.len(),
             self.targets.len(),
@@ -1206,6 +1222,7 @@ impl Renderer {
             self.derived.len(),
             self.counts.textures_gone,
             self.counts.textures_gone_not_held,
+            self.counts.textures_gone_replaced,
             self.counts.geometries_gone,
             self.counts.geometries_gone_not_held,
             self.counts.geometry_orphans

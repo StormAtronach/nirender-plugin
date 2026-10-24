@@ -297,6 +297,9 @@ pub(crate) struct Counts {
     /// buffer's handle is not sent; a texture made before the stream).
     pub(crate) textures_gone: u64,
     pub(crate) textures_gone_not_held: u64,
+    /// Freed textures whose handle had a new texture by the start of the next frame: the new
+    /// one stays.
+    pub(crate) textures_gone_replaced: u64,
     /// The `GEOMETRY_GONE` records: of a geometry held here, and of none or of another unique
     /// id (a data never drawn, or a later data at the same address).
     pub(crate) geometries_gone: u64,

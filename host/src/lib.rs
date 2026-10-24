@@ -575,6 +575,9 @@ struct Renderer {
     /// in pools (`pool`), and the ranges of records replaced in this frame, given back at
     /// the start of the next.
     geometries: FxHashMap<u32, Geometry>,
+    /// The textures freed in this frame, with their view at the free: they go at the start of
+    /// the next frame (`Renderer::drop_gone_textures`).
+    gone_textures: Vec<(u32, Rc<wgpu::TextureView>)>,
     vertex_pool: pool::Pool,
     index_pool: pool::Pool,
     retired: Vec<pool::Range>,

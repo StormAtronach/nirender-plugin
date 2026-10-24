@@ -271,6 +271,8 @@ impl Player {
         // The ranges of the geometry replaced or gone in the frame before: the GPU is done with
         // it. No slot of the table may hold them after this.
         self.orphans_of_gone_geometry();
+        // The textures freed in the frame before: its items, which ran at its end, are done.
+        self.renderer.drop_gone_textures();
         for range in std::mem::take(&mut self.renderer.retired) {
             self.renderer.vertex_pool.give(&range);
         }
