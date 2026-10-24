@@ -3,7 +3,7 @@
 //!
 //! Each direct call (`call rel32`) of these functions goes through `site::call_target`. The
 //! port calls the target that the instruction in memory has now, with the calling convention
-//! and the arguments of the game code. `SITES` lists those instructions. This module does
+//! and the arguments of the game code. [`SITES`] lists those instructions. This module does
 //! not call a port of another module directly. The constructor also reads the sizes of its
 //! hash maps from the instructions in memory, because MWSE changes them there.
 
@@ -134,7 +134,7 @@ const PARTICLES_RADIUS: usize = 0x38;
 const PARTICLES_NUM_ACTIVE: usize = 0x3C;
 /// `NiParticlesData::sizes`
 const PARTICLES_SIZES: usize = 0x40;
-/// `NiRenderStateSetting` of `D3DRS_VERTEXBLEND` in the render state.
+/// `NiRenderStateSetting` of [`D3DRS_VERTEXBLEND`] in the render state.
 const RS_VERTEX_BLEND: usize = RS::renderStateSettings + D3DRS_VERTEXBLEND as usize * 8;
 
 /// `D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1`
@@ -632,7 +632,7 @@ mod tests {
 
     const FUNCTIONS: [usize; 3] = [0x6AD0A0, 0x6AD890, 0x6A9A70];
 
-    /// The callee that the database has for each entry of `SITES`, in the same order.
+    /// The callee that the database has for each entry of [`SITES`], in the same order.
     #[rustfmt::skip]
     const CALLEES: &[usize] = &[
         // NiDX8Renderer::RenderPoints

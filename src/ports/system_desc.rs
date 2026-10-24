@@ -1029,7 +1029,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    /// An `IDirect3D8` that answers from a table and keeps a log of the calls.
+    /// An [`IDirect3D8`] that answers from a table and keeps a log of the calls.
     #[repr(C)]
     struct FakeD3d {
         vtbl: *const usize,

@@ -391,7 +391,7 @@ unsafe fn fill_stage<E: Env>(e: &mut E, stage: usize, blend_slot: u32, coordinat
     e.wr::<usize>(stage, ST::texturePropMap, map);
 }
 
-/// The alpha template of the blend slot of the first stage of a sub-pass. It is `None` when
+/// The alpha template of the blend slot of the first stage of a sub-pass. It is [`None`] when
 /// the sub-pass is of the first pass or has no stages.
 #[inline(always)]
 unsafe fn template_for(this: usize, subpass: usize) -> Option<usize> {
@@ -429,7 +429,7 @@ unsafe fn link_template_call<E: Env>(e: &mut E, this: usize, subpass: usize, sit
 
 /// Puts one stage into the sub-pass that has space for it. `sites` are the calls of
 /// `acquireSubpassWithCapacity` and `appendStage` and the two calls of `NiPointer::set`.
-/// Returns the value that `appendStage` returned, or `None` when there was no sub-pass.
+/// Returns the value that `appendStage` returned, or [`None`] when there was no sub-pass.
 #[inline(always)]
 unsafe fn append_single<E: Env>(e: &mut E, this: usize, stage: usize, sites: [usize; 4]) -> Option<u8> {
     let subpass = e.acquire(sites[0], this, 1, 1);
@@ -1317,7 +1317,7 @@ impl Model {
     // The sub-pass, as in `texture_pass_b`.
 
     /// The stage goes into the list with the next index. Returns the stage count before the
-    /// call and the next index, or `None` when the list is full. The game code does not have
+    /// call and the next index, or [`None`] when the list is full. The game code does not have
     /// this check.
     unsafe fn store_appended(&mut self, subpass: usize, stage: usize) -> Option<(u32, u32)> {
         let index: u32 = rd(subpass, SUB::field_8);
@@ -1723,7 +1723,7 @@ unsafe fn plan(
 /// - the reference counts of the alpha templates that go into a sub-pass or come out of one;
 /// - the alpha test value of alpha template 4.
 ///
-/// A dry run of the body finds which of these blocks the call writes. Refer to `Model`. The
+/// A dry run of the body finds which of these blocks the call writes. Refer to [`Model`]. The
 /// set also gets the render state. No callee of the function writes the render state.
 ///
 /// The call is a skip when the dry run finds one of these conditions:

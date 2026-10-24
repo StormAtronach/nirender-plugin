@@ -308,7 +308,7 @@ pub fn append_record(log: &mut Vec<u32>, slot: usize, args: &[u32], payload_byte
     }
 }
 
-/// One record of a log. The result is `None` at the end or when the log is not complete.
+/// One record of a log. The result is [`None`] at the end or when the log is not complete.
 #[cfg(feature = "rig")]
 pub struct Record<'a> {
     pub slot: usize,
@@ -357,7 +357,7 @@ pub fn describe(record: &Record<'_>) -> String {
     text
 }
 
-/// The first place two logs differ, as text, or `None` when they are equal.
+/// The first place two logs differ, as text, or [`None`] when they are equal.
 #[cfg(feature = "rig")]
 pub fn first_difference(a: &[u32], b: &[u32]) -> Option<String> {
     if a == b {

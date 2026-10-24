@@ -3,7 +3,7 @@
 //! Other mods, for example MGE XE, change the target of `call` instructions in these
 //! functions in memory. Thus each direct call here reads its target from the call instruction
 //! in memory (`site::call_target`). This is also true when the callee has a port: the call
-//! goes through the detour of the port. `SITES` lists the call instructions.
+//! goes through the detour of the port. [`SITES`] lists the call instructions.
 
 use core::arch::asm;
 use core::mem::transmute;
@@ -259,7 +259,7 @@ unsafe fn site_draw_primitive(site: usize, device: usize, vtable: usize, primiti
 // Engine data
 // ---------------------------------------------------------------------------------------
 
-/// `data_NiDX8Renderer_vertexBlendLookup`: the `D3DRS_VERTEXBLEND` value for a count of bones.
+/// `data_NiDX8Renderer_vertexBlendLookup`: the [`D3DRS_VERTEXBLEND`] value for a count of bones.
 #[cfg(not(test))]
 #[inline(always)]
 fn vertex_blend_lookup() -> usize {
@@ -310,7 +310,7 @@ const VT_GET_TRI_LIST: usize = 0x44;
 
 /// Returns the "has normals" flag and the count of texture sets, as `DrawPrimitive` and
 /// `EndBatch` find them. A filled buffer gives them from its vertex format. If there is no
-/// filled buffer, the geometry data gives them. The result is `None` when there is neither,
+/// filled buffer, the geometry data gives them. The result is [`None`] when there is neither,
 /// and the function returns then. The count of texture sets is 8 at most.
 unsafe fn vertex_format(geom_buffer: usize, geom_data: usize) -> Option<(u32, u32)> {
     let mut has_normals = 0;
@@ -352,7 +352,7 @@ unsafe fn renderer_specific_objects(site: usize, property_state: usize) -> (usiz
     (0, 0)
 }
 
-/// Sets `D3DRS_VERTEXBLEND` for a count of bones when the render state has another value.
+/// Sets [`D3DRS_VERTEXBLEND`] for a count of bones when the render state has another value.
 unsafe fn set_vertex_blend(this: usize, bones: u16) {
     let render_state: usize = rd(this, R::renderState);
     let value: u32 = rd(vertex_blend_lookup(), bones as usize * 4);
@@ -431,7 +431,7 @@ enum SkinningCheck {
     GeometryFlag,
 }
 
-/// Returns the check that the bytes at `RS_SKINNING_CHECK` are. Bytes that are not the
+/// Returns the check that the bytes at [`RS_SKINNING_CHECK`] are. Bytes that are not the
 /// database bytes and not the MWSE bytes count as the database. The port does not run with
 /// such bytes: `ports::FOLLOWED` lists exactly the MWSE bytes for this place, and
 /// `install::census` locks the port when the memory has other bytes.
@@ -816,7 +816,7 @@ unsafe fn draw_primitive_regions(set: &mut Regions, this: usize, geom_data: usiz
 // ---------------------------------------------------------------------------------------
 
 /// The skin partitions of a skinned shape, made as `DrawSkinnedPrimitive` makes them (6ADE70
-/// to 6ADF0B) when the skin data has none. That is a `NiSkinPartition` with `MakePartitions`
+/// to 6ADF0B) when the skin data has none. That is a [`NiSkinPartition`] with `MakePartitions`
 /// for the bones of the device. Returns the skin partition, or the one that `MakePartitions`
 /// did not fill when it failed (as the game goes on with it). The record of a skinned shape
 /// needs the partitions before the draw function runs. The game makes them at the first draw

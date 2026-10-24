@@ -49,12 +49,12 @@ pub const HEADER_SCENE_TARGET: u32 = 4;
 /// event `link::EVENT_QUEUE_FLUSHED` (`queue_flush`).
 pub const HEADER_QUEUE_FLUSH: u32 = 8;
 /// A bit of the same word: a retained blend that the engine draws in its walk has its place
-/// there as `tag::INSTANCE_WALK`.
+/// there as [`tag::INSTANCE_WALK`].
 pub const HEADER_WALK_PLACES: u32 = 16;
 /// A bit of the same word: the scene records carry `link::SCENE_WIREFRAME`.
 pub const HEADER_SCENE_WIREFRAME: u32 = 32;
 /// A bit of the same word: the header says how the game combines an environment map
-/// (`HEADER_ENVMAP_LIT`).
+/// ([`HEADER_ENVMAP_LIT`]).
 pub const HEADER_ENVMAP_KNOWN: u32 = 64;
 /// A bit of the same word: the game's environment map stages take the lit colour (the
 /// Morrowind Code Patch's hook, `texture_pipeline::envmap_lit`).
@@ -167,7 +167,7 @@ pub mod tag {
     /// name. The same id again replaces the instance.
     pub const INSTANCE: u32 = 23;
     /// A draw of a retained instance, in the place of a shape record: id, ambient, flags,
-    /// the stages of the texture effects (36 words, as in `SHAPE`) when the flags have
+    /// the stages of the texture effects (36 words, as in [`SHAPE`]) when the flags have
     /// `EFFECTS`, the fog (4 words) when the flags have `FOG`, the number of lights, then
     /// their keys; with the flag `SKINNED` then the number of bones and the palette (16
     /// floats each).
@@ -211,16 +211,16 @@ pub mod tag {
     pub const INSTANCE_WALK: u32 = 32;
     /// A light of the light manager was destroyed (`NiDX8LightManager::RemoveLight`): its
     /// key. The engine gives the key to the next light it makes. Sent only for a light that
-    /// went as a `LIGHT` record. See `light_stream::forget`.
+    /// went as a [`LIGHT`] record. See `light_stream::forget`.
     pub const LIGHT_GONE: u32 = 33;
     /// The lights of the world that are on (`world_lights`): the number, then their keys. Sent
     /// at the start of a world scene when the set changed. The values of each light go as
-    /// `LIGHT` records before it.
+    /// [`LIGHT`] records before it.
     pub const WORLD_LIGHTS: u32 = 34;
-    /// The particles of a particle system's draw, before its `INSTANCE_DRAW`: the key of its
+    /// The particles of a particle system's draw, before its [`INSTANCE_DRAW`]: the key of its
     /// geometry (the address of the particle data), the count, the radius, the camera's right
     /// and up in model space, then 20 bytes a particle (the position, the size, the colour), as
-    /// the particle tail of a `SHAPE` record has them (`instance_stream`, particles plan step 2).
+    /// the particle tail of a [`SHAPE`] record has them (`instance_stream`, particles plan step 2).
     pub const INSTANCE_PARTICLES: u32 = 35;
 }
 
@@ -302,9 +302,9 @@ pub(crate) fn ticks_per_second() -> i64 {
     frequency.max(1)
 }
 
-/// The head of the shared memory: `RING_MAGIC`, the number of data bytes, the bytes that the
+/// The head of the shared memory: [`RING_MAGIC`], the number of data bytes, the bytes that the
 /// game wrote (u64), the bytes that the host read (u64), and 1 when the game closed the
-/// stream. The data starts at `RING_HEAD`. A record can go around the end of the data.
+/// stream. The data starts at [`RING_HEAD`]. A record can go around the end of the data.
 pub const RING_MAGIC: u32 = 0x474E_5231;
 pub const RING_HEAD: usize = 64;
 const RING_WRITTEN: usize = 8;
@@ -327,7 +327,7 @@ struct Ring {
     base: *mut u8,
     capacity: u64,
     /// The event the helper waits on for a record: `<name>-records`, set after a write
-    /// while the helper says it waits (`RING_WAITING`); the times it was set.
+    /// while the helper says it waits ([`RING_WAITING`]); the times it was set.
     event: isize,
     wakes: u64,
     /// The time that the game waited for room, in ticks.
@@ -464,7 +464,7 @@ pub const REPLY_HEAD: usize = 16;
 const REPLY_WAIT_SECONDS: i64 = 5;
 /// The host program did not answer a pixel read or a tile read in time: a hung or ended
 /// helper. The later reads look once and do not wait, so that the game does not wait
-/// `REPLY_WAIT_SECONDS` for each of them. Any answer clears it. A helper that lost its device
+/// [`REPLY_WAIT_SECONDS`] for each of them. Any answer clears it. A helper that lost its device
 /// answers at once with no pixels (`answer_lost` of the crate), and does not set it.
 static HELPER_SILENT: AtomicBool = AtomicBool::new(false);
 
@@ -502,7 +502,7 @@ impl Reply {
 
 /// Asks the host of the stream for the pixels of a rendered texture, or of the back buffer
 /// with `texture` 0. Gives the width, the height and the pixels: 4 bytes each, blue first.
-/// `None` without a stream, or when the host has no answer in time.
+/// [`None`] without a stream, or when the host has no answer in time.
 pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
     let lock = crate::sync::device_lock();
     if !recording() {
@@ -547,10 +547,10 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
 
 /// The tile memory of a stream: shared memory with the name of the ring and `.tiles`. The
 /// host writes the pixels of a `COPY_TILE` read into the slot of its ticket (the ticket
-/// modulo `TILE_SLOTS`): in the head of the slot the ticket (the host writes it last), the
+/// modulo [`TILE_SLOTS`]): in the head of the slot the ticket (the host writes it last), the
 /// width, the height and one unused word, then the pixels with 4 bytes each, blue first. A
 /// width of 0 says that the host has no pixels for the ticket. The plugin has at most
-/// `TILE_SLOTS` tickets open, so a slot is free when the host writes it.
+/// [`TILE_SLOTS`] tickets open, so a slot is free when the host writes it.
 pub const TILE_SLOTS: usize = 8;
 /// The largest tile: 512 x 512.
 pub const TILE_BYTES: usize = 512 * 512 * 4;
@@ -595,7 +595,7 @@ impl Tiles {
 
 /// Asks the host to copy the rendered texture `target` into the texture `texture` of a map
 /// tile, and to read the pixels of the copy without a wait. Returns the ticket of the read.
-/// `None` without a stream or without tile memory: then nothing was asked.
+/// [`None`] without a stream or without tile memory: then nothing was asked.
 pub unsafe fn copy_tile(target: u32, texture: u32) -> Option<u32> {
     let lock = crate::sync::device_lock();
     if !recording() {
@@ -609,8 +609,8 @@ pub unsafe fn copy_tile(target: u32, texture: u32) -> Option<u32> {
 }
 
 /// The pixels of a tile read when the host has put them into the tile memory: the width,
-/// the height and the pixels, 4 bytes each, blue first. `Some` with a width of 0 when the
-/// host has no pixels for the ticket. `None` while the read is in progress.
+/// the height and the pixels, 4 bytes each, blue first. [`Some`] with a width of 0 when the
+/// host has no pixels for the ticket. [`None`] while the read is in progress.
 pub unsafe fn tile_pixels(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
     let lock = crate::sync::device_lock();
     let tiles = state(&lock)?.tiles.as_ref()?;
@@ -629,7 +629,7 @@ pub unsafe fn tile_pixels(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
     Some((width, height, core::slice::from_raw_parts(slot.add(TILE_HEAD), size)))
 }
 
-/// Waits for the pixels of a tile read, at most `REPLY_WAIT_SECONDS`. `None` when they do not
+/// Waits for the pixels of a tile read, at most `REPLY_WAIT_SECONDS`. [`None`] when they do not
 /// come in time, or when the stream ended.
 pub unsafe fn wait_tile(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
     let start = ticks();
@@ -656,7 +656,7 @@ pub unsafe fn wait_tile(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
 /// The message memory of a stream: shared memory with the name of the ring and `.messages`.
 /// The host writes messages of its extension into it (`Extension::messages` of the crate):
 /// records of the number, the length and the bytes, which can go around the end of the data.
-/// The head: `MESSAGES_MAGIC`, the number of data bytes, the bytes that the host wrote (u64),
+/// The head: [`MESSAGES_MAGIC`], the number of data bytes, the bytes that the host wrote (u64),
 /// the bytes that the game read (u64). The plugin reads them at the end of each frame and
 /// gives each one to MGE XE (`link_client::stream_message`).
 pub const MESSAGES_MAGIC: u32 = 0x4753_4D31;
@@ -997,7 +997,7 @@ unsafe fn begin(lock: &DeviceLock, out: Sink, warmup: u32, frames: u32) {
     ACTIVE.store(true, Ordering::Relaxed);
 }
 
-/// A writer on another thread found the ring full for `RING_WAIT_SECONDS`: the main thread
+/// A writer on another thread found the ring full for [`RING_WAIT_SECONDS`]: the main thread
 /// ends the stream at the end of its frame (`frame_end`).
 static STOP_ASKED: AtomicBool = AtomicBool::new(false);
 
@@ -1079,10 +1079,10 @@ pub unsafe fn draw_up(texture: u32, vertex_format: u32, stride: u32, primitive_t
 /// has the number without the bit.
 pub const EXTENSION_KEPT: u32 = 0x8000_0000;
 
-/// The last record of each number with `EXTENSION_KEPT`, without the bit.
+/// The last record of each number with [`EXTENSION_KEPT`], without the bit.
 static KEPT: LockCell<Vec<(u32, Vec<u8>)>> = LockCell::new(Vec::new());
 
-/// Data of another program for its part in the renderer. See `tag::EXTENSION`.
+/// Data of another program for its part in the renderer. See [`tag::EXTENSION`].
 pub unsafe fn extension(id: u32, bytes: &[u8]) {
     let lock = crate::sync::device_lock();
     let id = if id & EXTENSION_KEPT != 0 {
@@ -1171,7 +1171,7 @@ unsafe fn overlay_tick(lock: &DeviceLock) {
     }
 }
 
-/// Puts a mark with a text into the stream. See `tag::MARK`.
+/// Puts a mark with a text into the stream. See [`tag::MARK`].
 pub unsafe fn mark(text: &str) {
     write(tag::MARK, &[text.as_bytes()]);
 }
@@ -1350,20 +1350,20 @@ pub unsafe fn object(draw: &DrawV1, geometry_handle: u32, material_handle: u32) 
 pub const OBJECT_HAS_GEOMETRY: u32 = 0x100;
 pub const OBJECT_HAS_MATERIAL: u32 = 0x200;
 
-/// A shape record. See `tag::SHAPE`. `tail` and `bytes` follow the lights: the bones of a
+/// A shape record. See [`tag::SHAPE`]. `tail` and `bytes` follow the lights: the bones of a
 /// skinned shape, or the particle words and the particles.
 pub unsafe fn shape(head: &[u32], lights: &[u32], tail: &[u32], bytes: &[u8], bound: &[u32]) {
     let _lock = crate::sync::device_lock();
     write(tag::SHAPE, &[words(head), words(lights), words(tail), bytes, words(bound)]);
 }
 
-/// An instance record. See `tag::INSTANCE`.
+/// An instance record. See [`tag::INSTANCE`].
 pub unsafe fn instance(head: &[u32], name: &[u8]) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE, &[words(head), name]);
 }
 
-/// A draw of an instance. See `tag::INSTANCE_DRAW`.
+/// A draw of an instance. See [`tag::INSTANCE_DRAW`].
 pub unsafe fn instance_draw(id: u32, ambient: u32, effects: Option<&[u32]>, fog: Option<[u32; 4]>, lights: &[u32], bones: &[u8], bone_count: u32, queued: bool) {
     let _lock = crate::sync::device_lock();
     let skinned = bone_count != 0;
@@ -1380,7 +1380,7 @@ pub unsafe fn instance_draw(id: u32, ambient: u32, effects: Option<&[u32]>, fog:
     );
 }
 
-/// The particles of a particle system's draw. See `tag::INSTANCE_PARTICLES`.
+/// The particles of a particle system's draw. See [`tag::INSTANCE_PARTICLES`].
 pub unsafe fn instance_particles(key: u32, radius: f32, right: [f32; 3], up: [f32; 3], particles: &[u8]) {
     let _lock = crate::sync::device_lock();
     let count = (particles.len() / crate::shape_stream::PARTICLE_BYTES) as u32;
@@ -1388,38 +1388,38 @@ pub unsafe fn instance_particles(key: u32, radius: f32, right: [f32; 3], up: [f3
     write(tag::INSTANCE_PARTICLES, &[words(&head), particles]);
 }
 
-/// A sorted blend of the table in the flush of the engine's queue. See `tag::INSTANCE_QUEUED`.
+/// A sorted blend of the table in the flush of the engine's queue. See [`tag::INSTANCE_QUEUED`].
 pub unsafe fn instance_queued(id: u32) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_QUEUED, &[words(&[id])]);
 }
 
-/// A blend of the table at its place in the engine's walk. See `tag::INSTANCE_WALK`.
+/// A blend of the table at its place in the engine's walk. See [`tag::INSTANCE_WALK`].
 pub unsafe fn instance_walk(id: u32) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_WALK, &[words(&[id])]);
 }
 
-/// The end of an instance. See `tag::INSTANCE_DELETE`.
+/// The end of an instance. See [`tag::INSTANCE_DELETE`].
 pub unsafe fn instance_delete(id: u32) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_DELETE, &[words(&[id])]);
 }
 
-/// The lights of an instance. See `tag::INSTANCE_LIGHTS`.
+/// The lights of an instance. See [`tag::INSTANCE_LIGHTS`].
 pub unsafe fn instance_lights(id: u32, lights: &[u32], ambient: u32) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_LIGHTS, &[words(&[id, lights.len() as u32]), words(lights), words(&[ambient])]);
 }
 
 /// The bones of an instance: `bones` holds `count` bones of `camera_space::BONE_BYTES`. See
-/// `tag::INSTANCE_BONES`.
+/// [`tag::INSTANCE_BONES`].
 pub unsafe fn instance_bones(id: u32, count: u32, bound: &[f32; 4], bones: &[u8]) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_BONES, &[words(&[id, count]), words(&bound.map(f32::to_bits)), bones]);
 }
 
-/// The visibility of an instance. See `tag::INSTANCE_STATE`.
+/// The visibility of an instance. See [`tag::INSTANCE_STATE`].
 pub unsafe fn instance_state(id: u32, visible: bool) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_STATE, &[words(&[id, visible as u32])]);
@@ -1429,14 +1429,14 @@ pub unsafe fn instance_state(id: u32, visible: bool) {
 /// sky light as the engine gives them to the device (`D3DLIGHT8`), after the fog.
 pub const SCENE_SUN: u32 = 64;
 
-/// The values of the frame for the retained draws. See `tag::RETAINED_SCENE`.
+/// The values of the frame for the retained draws. See [`tag::RETAINED_SCENE`].
 pub unsafe fn retained_scene(ambient: u32, fog: Option<[u32; 4]>, sun: Option<&[u32; 26]>) {
     let _lock = crate::sync::device_lock();
     let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 } | if sun.is_some() { SCENE_SUN } else { 0 };
     write(tag::RETAINED_SCENE, &[words(&[ambient, flags]), words(fog.as_ref().map_or(&[], |f| &f[..])), words(sun.map_or(&[], |s| &s[..]))]);
 }
 
-/// A light record. See `tag::LIGHT`. The word after the device values is the radius of the
+/// A light record. See [`tag::LIGHT`]. The word after the device values is the radius of the
 /// light (`link_client::point_light_radius`: the radius of its placement, else its specular
 /// colour), not scaled by the dimmer as the device values are; 0 for a light with no radius.
 pub unsafe fn light(key: u32, values: &[u32; 26], radius: f32) {
@@ -1444,25 +1444,25 @@ pub unsafe fn light(key: u32, values: &[u32; 26], radius: f32) {
     write(tag::LIGHT, &[words(&[key]), words(values), words(&[radius.to_bits()])]);
 }
 
-/// A light gone. See `tag::LIGHT_GONE`.
+/// A light gone. See [`tag::LIGHT_GONE`].
 pub unsafe fn light_gone(key: u32) {
     let _lock = crate::sync::device_lock();
     write(tag::LIGHT_GONE, &[words(&[key])]);
 }
 
-/// The keys of the lights of the world. See `tag::WORLD_LIGHTS`.
+/// The keys of the lights of the world. See [`tag::WORLD_LIGHTS`].
 pub unsafe fn world_lights(keys: &[u32]) {
     let _lock = crate::sync::device_lock();
     write(tag::WORLD_LIGHTS, &[words(&[keys.len() as u32]), words(keys)]);
 }
 
-/// A material record. See `tag::MATERIAL`.
+/// A material record. See [`tag::MATERIAL`].
 pub unsafe fn material(handle: u32, record: &[u32]) {
     let _lock = crate::sync::device_lock();
     write(tag::MATERIAL, &[words(&[handle]), words(record)]);
 }
 
-/// A geometry record. See `tag::GEOMETRY`.
+/// A geometry record. See [`tag::GEOMETRY`].
 pub unsafe fn geometry(head: &[u32], lengths: &[u8], vertices: &[u8], indexes: &[u8]) {
     let _lock = crate::sync::device_lock();
     write(tag::GEOMETRY, &[words(head), lengths, vertices, indexes]);

@@ -36,7 +36,7 @@ static RESULT: Mutex<Option<String>> = Mutex::new(None);
 static DUMP_PATH: Mutex<Option<String>> = Mutex::new(None);
 const DUMPING: u8 = 5;
 
-/// Writes the device calls of the next frame to `path`. See `dump::frame`.
+/// Writes the device calls of the next frame to `path`. See [`dump::frame`].
 pub fn request_dump(path: String) -> bool {
     if PHASE.load(Ordering::Relaxed) != IDLE {
         return false;

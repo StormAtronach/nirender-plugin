@@ -2,7 +2,7 @@
 //! locked buffer.
 //!
 //! The device recorder finds a buffer when the game creates or binds it. It replaces the
-//! vtable pointer of the buffer, as `device::attach` does for the device. Then `Unlock` puts
+//! vtable pointer of the buffer, as [`device::attach`] does for the device. Then [`Unlock`] puts
 //! the locked bytes into the device log as a separate record. Thus two runs must fill a
 //! buffer with the same data.
 

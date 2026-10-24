@@ -12,9 +12,9 @@ use crate::engine::{vcall0, vcall1, NI_REF_OBJECT_COUNT};
 use crate::gen::layouts::NiRefObject;
 use crate::mem::{rd, wr};
 
-/// `NiRefObject::refCount`: the offset of the reference count in each `NiRefObject`.
+/// `NiRefObject::refCount`: the offset of the reference count in each [`NiRefObject`].
 pub const REF_COUNT: usize = NiRefObject::refCount;
-/// The vtable slot of the deleting destructor of each `NiRefObject`.
+/// The vtable slot of the deleting destructor of each [`NiRefObject`].
 pub const SLOT_DELETING_DTOR: usize = 0x00;
 /// The vtable slot of `GetRTTI` of each `NiObject`.
 pub const SLOT_GET_RTTI: usize = 0x04;
@@ -107,7 +107,7 @@ pub unsafe fn is_kind_of(object: usize, rtti: usize) -> bool {
 }
 
 /// Adds `delta` to `global_count_of_NiRefObject` (0x7DECE0). The inline constructor of a
-/// `NiRefObject` adds 1. The inline destructor adds -1.
+/// [`NiRefObject`] adds 1. The inline destructor adds -1.
 #[inline(always)]
 pub unsafe fn ref_object_count_add(delta: i32) {
     wr(NI_REF_OBJECT_COUNT, 0, rd::<i32>(NI_REF_OBJECT_COUNT, 0).wrapping_add(delta));
@@ -128,7 +128,7 @@ mod tests {
         0
     }
 
-    /// `GetRTTI` of the fake object. The object has the address of its `NiRTTI` at +8.
+    /// [`GetRTTI`] of the fake object. The object has the address of its [`NiRTTI`] at +8.
     unsafe extern "thiscall" fn fake_get_rtti(this: usize) -> u32 {
         rd(this, 8)
     }

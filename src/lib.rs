@@ -4,7 +4,7 @@
 //! (`ports`) are Rust functions that take the place of the `NiDX8Renderer` subsystem, one
 //! for each engine function, through a detour on the function (`hook`, `install`). A port
 //! runs its Rust code on the main thread; on another thread it runs the engine function
-//! (`shadow::dispatch`), and the cell worker's calls reach the plugin as events
+//! ([`shadow::dispatch`]), and the cell worker's calls reach the plugin as events
 //! (`worker_events`).
 //!
 //! What the game draws goes as records into a ring in shared memory (`link`, `own_host`,

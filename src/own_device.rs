@@ -539,7 +539,7 @@ unsafe fn resource_add_reference(object: u32) {
 
 const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
-/// Does a call of the device. Returns `None` for a method that needs nothing here.
+/// Does a call of the device. Returns [`None`] for a method that needs nothing here.
 ///
 /// `a` are the arguments without the device. The numbers are the places of the methods in
 /// `IDirect3DDevice8`; `device::NAMES` has the names.

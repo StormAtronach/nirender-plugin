@@ -1,5 +1,5 @@
 //! The readers of the engine's display flag. Before each reader runs, the port sets the flag
-//! it reads on the nodes that the policy selects (`crate::animation`). Then the engine
+//! it reads on the nodes that the policy selects ([`crate::animation`]). Then the engine
 //! function runs as it is.
 //!
 //! `BSAnimationManager::Update` gives a managed node with the flag the full update. A node

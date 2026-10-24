@@ -79,7 +79,7 @@ pub const SET_ALPHA_SITE: usize = 0x6B5663;
 /// "Enchant glow in fog fix" (feature 12).
 const PATCH_SET_EFFECT_STATE: usize = 0x7364E0;
 
-/// The target of the call at `SET_ALPHA_SITE` as it is in memory now.
+/// The target of the call at [`SET_ALPHA_SITE`] as it is in memory now.
 #[cfg(not(test))]
 unsafe fn set_alpha_target() -> usize {
     crate::site::call_target(SET_ALPHA_SITE)
@@ -90,7 +90,7 @@ unsafe fn set_alpha_target() -> usize {
     PATCH_SET_EFFECT_STATE
 }
 
-/// The call at `SET_ALPHA_SITE`. With the Code Patch option on, the target is
+/// The call at [`SET_ALPHA_SITE`]. With the Code Patch option on, the target is
 /// `patchSetEffectState`. It takes the property from EDX and drops the stack argument. Thus
 /// the call gives it both, as the call site does. Without the option the target is
 /// `NiDX8RenderState::updateAlphaStates` (0x6B8480, a port too), a `__thiscall` with the

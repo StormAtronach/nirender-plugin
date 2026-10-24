@@ -249,7 +249,7 @@ unsafe fn write_projection(this: usize, frustum: usize, left_right_swap: u32) {
     wr::<u32>(this, element(R::screenPolyProj, 4, 3), rd(this, element(proj, 4, 3)));
 }
 
-/// The `D3DVIEWPORT8` of `SetCameraData` (0x6AC8C6 to 0x6AC96E) from the size of the render
+/// The [`D3DVIEWPORT8`] of `SetCameraData` (0x6AC8C6 to 0x6AC96E) from the size of the render
 /// target and the `NiRectFloat` of the camera (left, right, top, bottom).
 unsafe fn camera_viewport(target: usize, port: usize) -> [u32; 6] {
     let x = ftol_count_times(rd(target, RT::width), rd(port, 0));
@@ -441,7 +441,7 @@ unsafe fn add_light_list_items(set: &mut Regions, manager: usize) {
     }
 }
 
-/// The call is a skip when `TestCooperativeLevel` gives `D3DERR_DEVICENOTRESET`. `Recreate`
+/// The call is a skip when `TestCooperativeLevel` gives [`D3DERR_DEVICENOTRESET`]. `Recreate`
 /// resets the device then.
 ///
 /// The dry device returns 0 for `BeginScene`. `bSceneOpen` depends on that result. Thus a call
@@ -540,7 +540,7 @@ pub unsafe fn clear_buffer(this: usize, rect: usize, flags: u8) {
     );
 }
 
-/// The call is a skip when `TestCooperativeLevel` gives `D3DERR_DEVICENOTRESET`. `Recreate`
+/// The call is a skip when `TestCooperativeLevel` gives [`D3DERR_DEVICENOTRESET`]. `Recreate`
 /// resets the device then.
 unsafe fn clear_buffer_regions(set: &mut Regions, this: usize) {
     if d3d::device_test_cooperative_level(rd(this, R::d3dDevice)) == D3DERR_DEVICENOTRESET {
@@ -590,7 +590,7 @@ unsafe fn set_render_target_regions(set: &mut Regions, this: usize) {
 // Batch state, purges
 // ---------------------------------------------------------------------------------------
 
-/// Adds the memory that `ni::pointer_assign` writes outside the object that has the slot. The
+/// Adds the memory that [`ni::pointer_assign`] writes outside the object that has the slot. The
 /// call is a skip when the assignment deletes the old object. A virtual deleting destructor
 /// cannot run two times.
 unsafe fn assign_pointer_regions(set: &mut Regions, slot: usize, object: usize) {

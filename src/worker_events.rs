@@ -210,7 +210,7 @@ pub unsafe fn drain() {
 }
 
 /// Writes the notes on the worker's destructors of marked shapes to the log as they come (at
-/// most `NOTES_KEPT`).
+/// most [`NOTES_KEPT`]).
 unsafe fn log_notes() {
     let Ok(mut notes) = NOTES.try_lock() else { return };
     for note in notes.drain(..) {

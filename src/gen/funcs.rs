@@ -6,7 +6,7 @@ pub struct Func {
     pub name: &'static str,
     /// Bytes of stack arguments the function removes at return (0 for cdecl).
     pub argsize: usize,
-    /// Where the `size` bytes of the function in the database start in `CODE`.
+    /// Where the `size` bytes of the function in the database start in [`CODE`].
     pub code: usize,
     /// Bytes a 5-byte jump at the entry displaces (whole instructions).
     pub steal: usize,

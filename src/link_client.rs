@@ -483,7 +483,7 @@ unsafe fn command(command: u32, a: u32, b: u32, c: u32) -> bool {
 }
 
 /// The calls of the Rust code on D3D8 objects that are not the device: reference counts,
-/// buffers, textures, surfaces. The index is the place in `OBJECT_CALL_NAMES`.
+/// buffers, textures, surfaces. The index is the place in [`OBJECT_CALL_NAMES`].
 static OBJECT_CALLS: [core::sync::atomic::AtomicU32; 10] = [const { core::sync::atomic::AtomicU32::new(0) }; 10];
 const OBJECT_CALL_NAMES: [&str; 10] = [
     "AddRef",
@@ -500,7 +500,7 @@ const OBJECT_CALL_NAMES: [&str; 10] = [
 
 /// One call on a resource. `index` is the place in `OBJECT_CALL_NAMES`, and the call of the
 /// link is `CALL_ADD_REF + index`. Returns the result when the host made the call, and
-/// `None` when the caller must make the D3D8 call. Only the D3D8 calls are counted.
+/// [`None`] when the caller must make the D3D8 call. Only the D3D8 calls are counted.
 #[inline]
 pub unsafe fn object_call(index: usize, args: &[u32]) -> Option<u32> {
     let result = kind_call(KIND_OBJECTS, CALL_ADD_REF + index as u32, args);
@@ -515,7 +515,7 @@ static KINDS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new
 /// The frame and scene calls that went to the host and not to the device.
 static FRAME_CALLS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
-/// Tells the host which kinds `KIND_*` it has. Returns the mask that it uses, or `None`
+/// Tells the host which kinds `KIND_*` it has. Returns the mask that it uses, or [`None`]
 /// when the host has no such kinds.
 pub unsafe fn use_kinds(mask: u32) -> Option<u32> {
     let host = host()?;
@@ -527,7 +527,7 @@ pub unsafe fn use_kinds(mask: u32) -> Option<u32> {
     Some(used)
 }
 
-/// Makes a frame or scene call on the host. Returns `None` when the caller must make the
+/// Makes a frame or scene call on the host. Returns [`None`] when the caller must make the
 /// D3D8 call.
 #[inline]
 pub unsafe fn frame_call(call: u32, args: &[u32]) -> Option<u32> {
@@ -563,14 +563,14 @@ pub unsafe fn surface_pixels(surface: u32) -> Option<(u32, u32, u32, Vec<u8>)> {
     Some((width, height, format, pixels))
 }
 
-/// Makes a call of the target kind on the host. Returns `None` when the caller must make
+/// Makes a call of the target kind on the host. Returns [`None`] when the caller must make
 /// the D3D8 call.
 #[inline]
 pub unsafe fn target_call(call: u32, args: &[u32]) -> Option<u32> {
     kind_call(KIND_TARGETS, call, args)
 }
 
-/// Makes a buffer on the host. Returns `None` when the caller must make the D3D8 call.
+/// Makes a buffer on the host. Returns [`None`] when the caller must make the D3D8 call.
 #[inline]
 pub unsafe fn buffer_call(call: u32, args: &[u32]) -> Option<u32> {
     kind_call(KIND_BUFFERS, call, args)
@@ -693,7 +693,7 @@ pub unsafe fn draw_vtable(t: &MainThread, vtable: usize) -> usize {
 /// A device call of code that is not a port of this plugin: game code outside the renderer,
 /// a game function that another mod changed, a patch. The hook of the device gives each
 /// call here first. `slot` is the number of the method and `args` are its arguments without
-/// the device. Returns the result when the call went to the host, and `None` when it must
+/// the device. Returns the result when the call went to the host, and [`None`] when it must
 /// go to the device. A state call goes to the host at once, as a command: such code has no
 /// state packet.
 pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
@@ -701,7 +701,7 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
     if KINDS.load(Ordering::Relaxed) == 0 && SUPPRESS.load(Ordering::Relaxed) == 0 {
         return None;
     }
-    /// `IDirect3DDevice8::CreateDepthStencilSurface`
+    /// [`IDirect3DDevice8::CreateDepthStencilSurface`]
     const DEVICE_CREATE_DEPTH_STENCIL_SURFACE: usize = 0x68;
     let sent = |done: bool| if done { Some(0) } else { None };
     let routed = match slot * 4 {
@@ -728,7 +728,7 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
         DEVICE_DRAW_PRIMITIVE if commands_for(FACT_DEVICE_BUFFERS) => sent(command(COMMAND_DRAW, args.as_ptr() as u32, 0, 0)),
         _ => None,
     };
-    /// `IDirect3DDevice8::GetBackBuffer`
+    /// [`IDirect3DDevice8::GetBackBuffer`]
     const DEVICE_GET_BACK_BUFFER: usize = 0x40;
     // `GetBackBuffer(index, type, address)`: with the own host, the back buffer is the
     // surface that the host gives as the first render target.
@@ -1687,7 +1687,7 @@ pub unsafe fn connect() -> Result<String, String> {
 }
 
 /// Tells the host which facts to take from the packets. Bit n of `mask` is the fact `FACT_`
-/// n. Returns the mask that the host uses, or `None` when the host cannot use facts.
+/// n. Returns the mask that the host uses, or [`None`] when the host cannot use facts.
 pub unsafe fn use_facts(t: &MainThread, mask: u32) -> Option<u32> {
     let host = host()?;
     if host.capabilities & CAP_USE_FACTS == 0 || (host.struct_size as usize) < size_of::<HostV1>() {
@@ -1736,7 +1736,7 @@ pub unsafe fn texture_create(texture: &TextureV1) -> usize {
     }
 }
 
-/// The counters of the host, or `None` without a host.
+/// The counters of the host, or [`None`] without a host.
 pub unsafe fn counters(reset: bool) -> Option<CountersV1> {
     let host = host()?;
     let mut out = CountersV1 { struct_size: size_of::<CountersV1>() as u32, ..Default::default() };
@@ -1815,7 +1815,7 @@ pub unsafe fn counters_text(t: &MainThread, reset: bool) -> String {
 mod present_tests {
     use super::*;
 
-    /// The rule of `sync::device_lock`: MGE XE's logic of the frame stalls the cell worker,
+    /// The rule of [`sync::device_lock`]: MGE XE's logic of the frame stalls the cell worker,
     /// so a due Present is not taken while this thread holds the device lock.
     #[test]
     fn a_due_present_waits_while_the_device_lock_is_held() {

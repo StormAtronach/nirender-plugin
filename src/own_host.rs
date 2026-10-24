@@ -11,7 +11,7 @@
 //! through the table of the object, so an object that Direct3D made before `take_over`
 //! works too.
 //!
-//! The objects and their counts change only under the device lock (`crate::sync`).
+//! The objects and their counts change only under the device lock ([`crate::sync`]).
 //!
 //! The pixels of a target are in the other process. For a copy from a rendered texture or
 //! from the back buffer into a surface, and for a lock of the back buffer, this host asks
@@ -367,7 +367,7 @@ unsafe extern "system" fn surface_description(this: *mut Object, description: *m
     OK
 }
 
-/// The object of this host at this address, or `None` for an object of Direct3D.
+/// The object of this host at this address, or [`None`] for an object of Direct3D.
 unsafe fn own(object: u32) -> Option<&'static mut Object> {
     if object == 0 {
         return None;
@@ -389,7 +389,7 @@ unsafe fn target_of(surface: &Object) -> Option<u32> {
 /// The rendered texture that a surface of this host is level 0 of, or 0. This host makes a
 /// new surface object for each `GetSurfaceLevel`, so the address of a surface does not name
 /// the texture.
-/// The width and the height of a texture of this host, or `None` for another object.
+/// The width and the height of a texture of this host, or [`None`] for another object.
 pub unsafe fn texture_size(handle: u32) -> Option<(u32, u32)> {
     own(handle).filter(|object| object.kind == Kind::Texture).map(|object| (object.width, object.height))
 }
@@ -424,7 +424,7 @@ unsafe fn pixel_memory(surface: &mut Object) -> Option<&'static mut Vec<u8>> {
 /// surface of the same size.
 ///
 /// A rendered texture that is not the target of the draws now gives the pixels of its last
-/// read again when nothing drew into it after that read (`READ_CACHE`): the fog of war of the
+/// read again when nothing drew into it after that read ([`READ_CACHE`]): the fog of war of the
 /// map menu reads the same textures again and again (records entry 55).
 unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool {
     let (into_width, into_height) = (into.width, into.height);

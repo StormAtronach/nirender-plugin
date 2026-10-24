@@ -244,7 +244,7 @@ pub unsafe fn attach_device_early() {
     }
 }
 
-/// Puts the recorder on the device of the renderer. Returns `None` when the game has no
+/// Puts the recorder on the device of the renderer. Returns [`None`] when the game has no
 /// renderer or no device yet.
 pub unsafe fn attach_device() -> Result<Option<String>, String> {
     let renderer = engine::renderer();
@@ -325,7 +325,7 @@ mod tests {
     }
 
     /// The function as the census sees it with `bytes` written at `at`. A record of the Code
-    /// Patch can start before the function or end after it (`UpdateToDevice`): the census
+    /// Patch can start before the function or end after it ([`UpdateToDevice`]): the census
     /// compares the function only.
     fn live_with(func: &crate::gen::funcs::Func, at: usize, bytes: &[u8]) -> Vec<u8> {
         let mut live = census::expected(func).to_vec();
@@ -385,11 +385,11 @@ mod tests {
     }
 
     /// A new version of the Morrowind Code Patch that writes inside a ported function fails
-    /// here, on the machine of a developer, and not in the session of a player. Each record of each patch file in `NIRENDER_MCPATCH` (folders with a folder
+    /// here, on the machine of a developer, and not in the session of a player. Each record of each patch file in [`NIRENDER_MCPATCH`] (folders with a folder
     /// `mcpatch`, with `;` between them; `mcpatch_root` of `local.json` without it) that writes
-    /// inside a ported function must be in `ports::CODE_PATCH_RECORDS`, and the census must
+    /// inside a ported function must be in [`ports::CODE_PATCH_RECORDS`], and the census must
     /// follow it with the option on (the bytes of the record) and off (the bytes of
-    /// `NIRENDER_VANILLA_EXE`, or `vanilla_exe` of `local.json`). Skipped without the places
+    /// [`NIRENDER_VANILLA_EXE`], or `vanilla_exe` of `local.json`). Skipped without the places
     /// or the files: the patch file is not ours to ship.
     #[test]
     fn every_code_patch_record_in_a_port_is_followed() {

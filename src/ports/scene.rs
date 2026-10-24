@@ -108,7 +108,7 @@ unsafe fn push_state_regions(set: &mut Regions, this: usize, renderer: usize) {
 
 /// The start of the display of a shape: the states to the renderer, the accumulator, and
 /// the controllers' `OnPreDisplay`. Returns the renderer when the shape draws now, or
-/// `None` when the accumulator took it.
+/// [`None`] when the accumulator took it.
 unsafe fn shape_display_start(this: usize, camera: usize) -> Option<usize> {
     let renderer = rd::<usize>(camera, C::spRenderer);
     thiscall1(PUSH_STATE, this, renderer as u32);

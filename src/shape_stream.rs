@@ -12,7 +12,7 @@ use crate::capture;
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 
-/// The flags of a record. `RELATIVE`: the world matrix is relative to the camera. Do not use
+/// The flags of a record. [`RELATIVE`]: the world matrix is relative to the camera. Do not use
 /// the flag 2 again: old capture files have it.
 pub const RELATIVE: u32 = 1;
 /// The shape is skinned: the record has the palette of its bones after the lights.
@@ -48,7 +48,7 @@ pub const BOUND: u32 = 0x400;
 /// The draw is a draw of the flush of the engine's main sorted queue (`ports::base::
 /// in_main_flush`): the engine sorted it among its blends. A blend without the flag draws
 /// in place. The head of the stream says that the records carry the flag
-/// (`capture::HEADER_QUEUE_MARKED`); an older capture has no such word.
+/// ([`capture::HEADER_QUEUE_MARKED`]); an older capture has no such word.
 pub const QUEUED: u32 = 0x800;
 
 /// The address of the flags of the Code Patch for the picture of the character, 1 when the
@@ -67,7 +67,7 @@ static CODE_PATCH_FLAGS: core::sync::atomic::AtomicUsize = core::sync::atomic::A
 /// and ZERO, the alpha of stage 0 modulated). The game puts the number of the equipment slot
 /// into the alpha of the material of each part. It reads the alpha of the picture back to
 /// find the part under the pointer. The helper makes the same draws for a record with
-/// `CODE_PATCH_PICTURE`.
+/// [`CODE_PATCH_PICTURE`].
 pub unsafe fn code_patch_picture() -> bool {
     use core::sync::atomic::Ordering;
     const CALL: usize = 0x5CD38C;
@@ -88,7 +88,7 @@ pub unsafe fn code_patch_picture() -> bool {
 }
 
 /// The fog of a draw as `NiDX8RenderState::updateFogStates` and `updateD3DState` set it
-/// for its fog property: `None` when the fog is off for the draw (the property is off, or
+/// for its fog property: [`None`] when the fog is off for the draw (the property is off, or
 /// its mode is not one of the two the device fog has); else the colour, the start, the end
 /// (the bits of the floats) and the range fog flag.
 pub unsafe fn fog_values(renderer: usize, property_state: usize) -> Option<[u32; 4]> {
@@ -133,7 +133,7 @@ static PROJECTED: MainCell<u64> = MainCell::new(0);
 /// and the frames with one in a scene of the world camera (particles plan, step 4: the gate is 0
 /// in the scenes of the world camera).
 static ENGINE_PARTICLES: MainCell<[u64; 3]> = MainCell::new([0; 3]);
-/// The frame of the last count of `ENGINE_PARTICLES` in a scene of the world camera.
+/// The frame of the last count of [`ENGINE_PARTICLES`] in a scene of the world camera.
 static ENGINE_PARTICLES_FRAME: MainCell<u32> = MainCell::new(u32::MAX);
 /// The particle draw in progress (`note_points_scene`): in a scene of the world camera, the
 /// scene kind, the draw flags of the link, the shape.
@@ -322,7 +322,7 @@ pub unsafe fn send(t: &MainThread, renderer: usize, world: [f32; 16], relative: 
 }
 
 /// Sends the record of the lines that are about to be drawn (`RenderLines`), with the flag
-/// `LINES`; the geometry is the lines data, noted by the link. Returns true when the
+/// [`LINES`]; the geometry is the lines data, noted by the link. Returns true when the
 /// pipeline of the device must not run for the draw.
 pub unsafe fn send_lines(t: &MainThread, renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>) -> bool {
     let (geometry, _) = *HANDLES.get(t);
@@ -334,8 +334,8 @@ pub unsafe fn send_lines(t: &MainThread, renderer: usize, world: [f32; 16], rela
 }
 
 /// Sends the record of a particle system that is about to be drawn (`RenderPoints`), with
-/// the flag `PARTICLES`. `key` is the particle data of the game; `right` and `up` are the
-/// axes of the camera in the model space of the draw; `particles` has `PARTICLE_BYTES` for
+/// the flag [`PARTICLES`]. `key` is the particle data of the game; `right` and `up` are the
+/// axes of the camera in the model space of the draw; `particles` has [`PARTICLE_BYTES`] for
 /// each particle. Returns true when the pipeline of the device must not run for the draw.
 pub unsafe fn send_particles(t: &MainThread, 
     renderer: usize,
@@ -362,7 +362,7 @@ pub unsafe fn send_particles(t: &MainThread,
 /// The stages of the texture effects of the draw in progress (the environment map and the
 /// fog map of the effect state of the renderer), as the texture pass of the device would
 /// make them for this draw: the coordinate generation, the transform flags and the texture
-/// matrix of each, from the effect and the camera of the frame; `None` when the draw has no
+/// matrix of each, from the effect and the camera of the frame; [`None`] when the draw has no
 /// such effect. The material record has the effects' textures and modes; these values
 /// change with the camera, so they come with each draw, like the world matrix.
 unsafe fn effect_words(renderer: usize) -> Option<[u32; EFFECT_WORDS]> {

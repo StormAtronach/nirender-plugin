@@ -1,6 +1,6 @@
 //! The ports of `NiDX8Renderer` for the cache of geometry buffers, the precache functions, the screen
 //! polygon and the two functions that put an object into the batch list. The cache has one
-//! `NiGeometryBufferData` for each `NiGeometryData` and for each skin partition.
+//! `NiGeometryBufferData` for each [`NiGeometryData`] and for each skin partition.
 
 use core::mem::transmute;
 
@@ -31,9 +31,9 @@ use crate::shadow::Regions;
 const RTTI_NI_TRI_SHAPE: usize = 0x7DE550;
 /// `NiRTTI` of `NiTriStrips`.
 const RTTI_NI_TRI_STRIPS: usize = 0x7DE5A8;
-/// `NiRTTI` of `NiTriShapeData`.
+/// `NiRTTI` of [`NiTriShapeData`].
 const RTTI_NI_TRI_SHAPE_DATA: usize = 0x7DE490;
-/// `NiRTTI` of `NiTriStripsData`.
+/// `NiRTTI` of [`NiTriStripsData`].
 const RTTI_NI_TRI_STRIPS_DATA: usize = 0x7DE588;
 /// The identity `matrix33`. A static constructor of the game fills it.
 const IDENTITY_MATRIX33: usize = 0x7DE664;

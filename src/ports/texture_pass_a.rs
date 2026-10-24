@@ -71,7 +71,7 @@ unsafe fn source_texture_create_from_pixel_data(pixel_data: usize, prefs: *const
 }
 
 /// Calls `NiObject::release` (0x404630) for the object that a member points to, then sets the
-/// member to null. `ni::release_and_clear` is the inline form and does not call 0x404630.
+/// member to null. [`ni::release_and_clear`] is the inline form and does not call 0x404630.
 unsafe fn release_call_and_clear(member: usize) {
     let object: usize = rd(member, 0);
     if object != 0 {

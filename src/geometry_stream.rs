@@ -27,7 +27,7 @@ use crate::ports::ni;
 /// the vertex to the next one.
 pub const LINES_SEGMENT_FLAGS: usize = 0x34;
 
-/// `D3DFVF_XYZB4` and `D3DFVF_LASTBETA_UBYTE4`: a position, three weights and four bone
+/// [`D3DFVF_XYZB4`] and [`D3DFVF_LASTBETA_UBYTE4`]: a position, three weights and four bone
 /// indexes in a byte each. The format of a skinned vertex.
 const D3DFVF_XYZB4: u32 = 0x00C;
 const D3DFVF_LASTBETA_UBYTE4: u32 = 0x1000;
@@ -61,7 +61,7 @@ struct Sent {
 }
 
 /// The geometries sent, by the address of their data. The engine frees a geometry data with
-/// no event to the plugin, so an entry of a geometry not drawn for `FORGET_AFTER` frames goes
+/// no event to the plugin, so an entry of a geometry not drawn for [`FORGET_AFTER`] frames goes
 /// (`prune`): a map kept for the session grew with every address the game ever used (the leak
 /// hunt of 2026-10-23, UMDH: 819 KB after 35 minutes of a loop). A geometry still alive is
 /// sent again at its next draw.
@@ -93,7 +93,7 @@ fn known(t: &MainThread, handle: u32, version: Version) -> bool {
     }
 }
 
-/// Forgets the geometries not drawn for `FORGET_AFTER` frames, once in `PRUNE_EVERY` frames.
+/// Forgets the geometries not drawn for [`FORGET_AFTER`] frames, once in [`PRUNE_EVERY`] frames.
 fn prune(t: &MainThread, now: u32) {
     let last = LAST_PRUNE.get(t);
     if now.wrapping_sub(*last) < PRUNE_EVERY {
@@ -221,7 +221,7 @@ unsafe fn has_bone_weights(skin_data: usize) -> bool {
 /// The weights of the bones of each vertex from the skin data, as the skin partition code of
 /// Gamebryo collects them (`NiSkinPartition::CreateVertexInteractions` 0x6C6B60) [I: from the
 /// Gamebryo 1.2 source, not compared with the binary]: the sum of the weights of a vertex is
-/// made 1. `None` when the data is not complete.
+/// made 1. [`None`] when the data is not complete.
 unsafe fn skin_data_weights(skin_data: usize, vertices: usize) -> Option<Vec<Vec<(u8, f32)>>> {
     if !has_bone_weights(skin_data) {
         return None;
@@ -632,7 +632,7 @@ pub unsafe fn note_screen_polygon(t: &MainThread, count: u32, vertices: usize, t
 /// the binary]; with a palette (a partition with more bones than a
 /// vertex has weights), the palette gives for each weight of a vertex the bone of the
 /// partition. The last bone of a vertex goes to the fourth place, so the arithmetic is the
-/// same. `None` when the skin has no partitions yet, or the data does not fit the format.
+/// same. [`None`] when the skin has no partitions yet, or the data does not fit the format.
 unsafe fn skin_influences(skin_data: usize, vertices: usize) -> Option<Vec<([f32; 3], [u8; 4])>> {
     if skin_data == 0 {
         return None;

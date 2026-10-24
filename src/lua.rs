@@ -504,7 +504,7 @@ unsafe extern "C" fn dump_state(l: LuaState) -> i32 {
 }
 
 /// `nirender.dumpFrame(path)` returns started. The device calls of the next frame go to the
-/// file. `frameTestResult()` tells when the file is complete.
+/// file. [`frameTestResult()`] tells when the file is complete.
 #[cfg(feature = "rig")]
 unsafe extern "C" fn dump_frame(l: LuaState) -> i32 {
     let started = match arg_str(l, 1) {
@@ -574,7 +574,7 @@ unsafe extern "C" fn record_buffers(l: LuaState) -> i32 {
     0
 }
 
-/// `nirender.fault(n)` puts fault `n` into the Rust code. See `engine::FAULT`. 0 removes it.
+/// `nirender.fault(n)` puts fault `n` into the Rust code. See [`engine::FAULT`]. 0 removes it.
 #[cfg(feature = "rig")]
 unsafe extern "C" fn fault(l: LuaState) -> i32 {
     let n = lua_tonumber(l, 1) as u32;
@@ -583,8 +583,8 @@ unsafe extern "C" fn fault(l: LuaState) -> i32 {
     0
 }
 
-/// `nirender.forceReset()` makes the next `TestCooperativeLevel` of the game say that the
-/// device can be reset. The game then makes its renderer again: `NiDX8Renderer::Recreate`.
+/// `nirender.forceReset()` makes the next [`TestCooperativeLevel`] of the game say that the
+/// device can be reset. The game then makes its renderer again: [`NiDX8Renderer::Recreate`].
 #[cfg(feature = "rig")]
 unsafe extern "C" fn force_reset(_l: LuaState) -> i32 {
     crate::device::FORCE_RESET.store(true, Ordering::Relaxed);

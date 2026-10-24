@@ -236,7 +236,7 @@ pub(crate) unsafe fn converter_convert(converter: usize, source: usize, format: 
 
 /// For every value of a map: releases its device object, then destroys and frees the value.
 /// The nodes stay. The port reads the value of a node before the `hashKey` call for the next
-/// bucket. `hash_map::next` has no such read, thus this function has that step in its body.
+/// bucket. [`hash_map::next`] has no such read, thus this function has that step in its body.
 #[inline(always)]
 unsafe fn map_destroy_values(map: usize, value_dtor: unsafe fn(usize)) {
     let mut node = hash_map::first(map);
@@ -274,9 +274,9 @@ unsafe fn copy_rows(mut source: usize, bits: usize, pitch: u32, row_bytes: u32, 
 
 /// 0x6BC8A0 `NiDX8TextureManager::clearHashMap`: removes every node of a hash map.
 ///
-/// The body does not call `hash_map::drain_and_zero_count_with`. The game function reads
+/// The body does not call [`hash_map::drain_and_zero_count_with`]. The game function reads
 /// `arrayBuckets` one time before the first bucket (0x6BC8AD), then after each `_delete`.
-/// `hash_map::drain_with` reads `arrayBuckets` again for each bucket.
+/// [`hash_map::drain_with`] reads `arrayBuckets` again for each bucket.
 pub unsafe fn clear_hash_map(map: usize) {
     crate::shadow::touch(&clear_hash_map_port::STATE);
     let mut i = 0u32;

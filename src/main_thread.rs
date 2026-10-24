@@ -1,5 +1,5 @@
-//! The proof that code runs on the main thread of the game, as a value: `MainThread`. A
-//! table that only the main thread may touch lives in a `MainCell`, which opens only for a
+//! The proof that code runs on the main thread of the game, as a value: [`MainThread`]. A
+//! table that only the main thread may touch lives in a [`MainCell`], which opens only for a
 //! holder of the proof. A call without one does not compile.
 //!
 //! The proof is made at the places that are the main thread by construction: the dispatch
@@ -15,7 +15,7 @@
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 
-/// The holder runs on the main thread. Not `Send` and not `Sync`: it cannot leave the thread
+/// The holder runs on the main thread. Not [`Send`] and not [`Sync`]: it cannot leave the thread
 /// it was made on.
 pub struct MainThread(PhantomData<*mut ()>);
 
@@ -28,7 +28,7 @@ impl MainThread {
         MainThread(PhantomData)
     }
 
-    /// The proof when the calling thread is the main thread, else `None`: for a path that
+    /// The proof when the calling thread is the main thread, else [`None`]: for a path that
     /// any thread can reach, such as a call of the device.
     pub fn here() -> Option<MainThread> {
         crate::shadow::on_main_thread().then(|| MainThread(PhantomData))

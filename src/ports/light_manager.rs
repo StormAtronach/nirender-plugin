@@ -111,7 +111,7 @@ mod eng {
 }
 
 /// Replacements for the unit tests. The unit tests run without the game. The functions that
-/// `engine` and `ports::ni` have in the other `eng` have the same names here.
+/// `engine` and [`ports::ni`] have in the other `eng` have the same names here.
 #[cfg(test)]
 mod eng {
     use crate::mem::{rd, wr};
@@ -698,7 +698,7 @@ pub unsafe fn update_lights(this: usize, state: usize) {
 }
 
 /// The ambient light the light manager would set for a draw with this effect state
-/// (`D3DRS_AMBIENT`): the ambient lights of the state that are on and bright enough,
+/// ([`D3DRS_AMBIENT`]): the ambient lights of the state that are on and bright enough,
 /// each channel by the dimmer, as `update_lights` makes it. For a shape the engine does not
 /// display (`instance_stream`).
 pub(crate) unsafe fn ambient_of_state(state: usize) -> u32 {

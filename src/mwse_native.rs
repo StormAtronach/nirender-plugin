@@ -103,7 +103,7 @@ pub struct ApiV1 {
 /// The table, or 0 before the first look, or 1 when MWSE has none.
 static TABLE: AtomicUsize = AtomicUsize::new(0);
 
-/// The table of MWSE, or `None` when the MWSE.dll of the game has no native ABI of version 1.
+/// The table of MWSE, or [`None`] when the MWSE.dll of the game has no native ABI of version 1.
 pub fn api() -> Option<&'static ApiV1> {
     let mut table = TABLE.load(Ordering::Relaxed);
     if table == 0 {
@@ -210,7 +210,7 @@ pub unsafe fn release(claim: Claim) {
     }
 }
 
-/// The scale of the UI from MWSE, or `None` when MWSE has no native ABI.
+/// The scale of the UI from MWSE, or [`None`] when MWSE has no native ABI.
 pub unsafe fn ui_scale() -> Option<UIScaleV1> {
     let api = api()?;
     let mut packet = UIScaleV1 { struct_size: core::mem::size_of::<UIScaleV1>() as u32, scale: 1.0, view_width: 0, view_height: 0, pick_ray_in_view_size: 0 };

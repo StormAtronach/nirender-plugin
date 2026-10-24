@@ -1,4 +1,4 @@
-//! `NiDX8RenderState` translates a `NiPropertyState` into D3D render states. A cache drops a
+//! `NiDX8RenderState` translates a [`NiPropertyState`] into D3D render states. A cache drops a
 //! state that the device already has.
 
 use crate::d3d::{

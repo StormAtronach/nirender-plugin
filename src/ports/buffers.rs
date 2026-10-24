@@ -62,7 +62,7 @@ const SHADER_ENTRY_HANDLE: usize = 0x20;
 const DECLARATION_SHIFT: u32 = 4;
 const DECLARATION_ELEMENTS: usize = 0x8;
 const DECLARATION_STRIDE: usize = 0xC;
-/// One element of a declaration has 0x10 bytes. `ELEMENT_OFFSET` is its offset in the vertex.
+/// One element of a declaration has 0x10 bytes. [`ELEMENT_OFFSET`] is its offset in the vertex.
 const ELEMENT_SIZE: usize = 0x10;
 const ELEMENT_OFFSET: usize = 0xC;
 
@@ -378,7 +378,7 @@ unsafe fn map_dtor_body(map: usize, vtbl: usize) {
 }
 
 /// Tells if the game code can use an index buffer again. The buffer must have 16 bit indices, the same
-/// usage and pool, and a sufficient size. The result is `None` when `GetDesc` fails.
+/// usage and pool, and a sufficient size. The result is [`None`] when `GetDesc` fails.
 #[inline(always)]
 unsafe fn index_buffer_fits(buffer: usize, usage: u32, pool: u32, size: u32) -> Option<bool> {
     let mut desc = [0u32; 6];
@@ -1634,7 +1634,7 @@ mod tests {
     thread_local! {
         /// The calls that the fake device and the fake buffers got: (name, first value, second value).
         static CALLS: RefCell<Vec<(&'static str, u32, u32)>> = const { RefCell::new(Vec::new()) };
-        /// The result of the next `Lock` calls.
+        /// The result of the next [`Lock`] calls.
         static LOCK_RESULT: RefCell<u32> = const { RefCell::new(0) };
     }
 

@@ -1,5 +1,5 @@
 //! The census of the callers of the device: which code calls each method of the
-//! `IDirect3DDevice8` of the game.
+//! [`IDirect3DDevice8`] of the game.
 //!
 //! The plugin has the functions of the renderer subsystem. This census finds the other code
 //! that calls the device: video, screenshots, gamma, code of other mods.

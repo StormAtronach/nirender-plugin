@@ -97,7 +97,7 @@ unsafe extern "C" fn delete_detour(ptr: usize) {
     }
 }
 
-/// Puts the hooks on the allocator of the game. Without them `active()` stays false.
+/// Puts the hooks on the allocator of the game. Without them [`active()`] stays false.
 pub unsafe fn install() -> Result<(), String> {
     if active() {
         return Ok(());

@@ -150,7 +150,7 @@ unsafe fn source_texture_data_set_palette(this: usize, palette: usize) -> u8 {
 
 /// Does what `eh vector destructor iterator` (0x72759E) does with an array of six `NiPointer`.
 /// It calls `NiPointer::dtor` (0x40A880) for each, from the last to the first. It does not
-/// call `engine::eh_vector_destructor_iterator`: the port stays as the shadow test verified it.
+/// call [`engine::eh_vector_destructor_iterator`]: the port stays as the shadow test verified it.
 unsafe fn destroy_pointers(pointers: &mut [usize; 6]) {
     for index in (0..6).rev() {
         ni_pointer_dtor(pointers.as_mut_ptr().add(index) as usize);
@@ -184,7 +184,7 @@ fn compare_bits(shift_a: u32, mask_a: u32, shift_b: u32, mask_b: u32) -> u32 {
 }
 
 /// `compare_bits` with `dword_7DE8FC`, `dword_7C55B0`, `dword_7C55B8` and `dword_7C55B4`: the
-/// shift and the mask of two bit fields of `NiPixelFormat::compareBits`.
+/// shift and the mask of two bit fields of [`NiPixelFormat::compareBits`].
 unsafe fn default_compare_bits() -> u32 {
     compare_bits(rd(PIXEL_FORMAT_SHIFT_A, 0), rd(PIXEL_FORMAT_MASK_A, 0), rd(PIXEL_FORMAT_SHIFT_B, 0), rd(PIXEL_FORMAT_MASK_B, 0))
 }
@@ -219,7 +219,7 @@ unsafe fn append_renderer_data(data: usize) {
 // NiDX8PixelFormat
 // ---------------------------------------------------------------------------------------
 
-/// 0x6AB410 `NiDX8PixelFormat::ctor`. It writes the `NiPixelFormat` part only. Returns `this`.
+/// 0x6AB410 `NiDX8PixelFormat::ctor`. It writes the [`NiPixelFormat`] part only. Returns `this`.
 pub unsafe fn pixel_format_ctor(this: usize) -> usize {
     crate::shadow::touch(&pixel_format_ctor_port::STATE);
     wr::<u32>(this, PF::bitsPerPixel, 8);
@@ -234,7 +234,7 @@ pub unsafe fn pixel_format_ctor(this: usize) -> usize {
     this
 }
 
-/// The constructor of `NiPixelFormat` that `setPixelFormat` calls for a `D3DFORMAT`.
+/// The constructor of [`NiPixelFormat`] that `setPixelFormat` calls for a `D3DFORMAT`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FormatCtor {
     /// Masks of red, green, blue and alpha, and the bits per pixel.
@@ -263,7 +263,7 @@ fn format_ctor_for(d3d_format: u32) -> FormatCtor {
 }
 
 /// 0x4B52D0 `NiDX8PixelFormat::setPixelFormat`. Returns what the constructor of
-/// `NiPixelFormat` returns.
+/// [`NiPixelFormat`] returns.
 pub unsafe fn set_pixel_format(this: usize, d3d_format: u32) -> usize {
     crate::shadow::touch(&set_pixel_format_port::STATE);
     wr(this, PF::d3dFormat, d3d_format);
@@ -1126,7 +1126,7 @@ unsafe fn create_rendered_cube_map_renderer_data_regions(set: &mut Regions, this
 }
 
 /// The part of the back buffer that `TakeScreenshot` reads: left, top, width and height.
-/// Returns `None` when the rectangle starts outside the buffer. `rect` is left, right, top,
+/// Returns [`None`] when the rectangle starts outside the buffer. `rect` is left, right, top,
 /// bottom.
 fn screenshot_area(rect: Option<[u32; 4]>, buffer_width: u32, buffer_height: u32) -> Option<[u32; 4]> {
     let Some([left, right, top, bottom]) = rect else {
@@ -1202,7 +1202,7 @@ unsafe fn take_screenshot_regions(set: &mut Regions, this: usize, rect: usize) {
 }
 
 /// The source rectangle (left, top, right, bottom) of `ImageBlt`. `rect` is left, right,
-/// top, bottom, or `None` for the full source.
+/// top, bottom, or [`None`] for the full source.
 fn blt_source_rect(rect: Option<[u32; 4]>, source: [u32; 2], buffer: [u32; 2], dest: [u32; 2]) -> [u32; 4] {
     let [source_width, source_height] = source;
     let (left, top, mut right, mut bottom) = match rect {
@@ -1621,7 +1621,7 @@ mod tests {
         }
     }
 
-    /// A fake `NiRefObject` whose deleting destructor counts its calls.
+    /// A fake [`NiRefObject`] whose deleting destructor counts its calls.
     static DELETED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
     unsafe extern "thiscall" fn fake_deleting_dtor(_this: usize, _flags: u32) -> u32 {

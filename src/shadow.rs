@@ -58,7 +58,7 @@ impl Counter {
     }
 }
 
-/// A sum of time stamps of the processor. Only the main thread adds to it, as `Counter`.
+/// A sum of time stamps of the processor. Only the main thread adds to it, as [`Counter`].
 pub struct Stamps {
     low: AtomicU32,
     high: AtomicU32,

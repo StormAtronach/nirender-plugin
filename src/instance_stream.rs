@@ -13,7 +13,7 @@
 //! sorts the blends of its table back to front. The class of a shape is decided once and
 //! kept until the shape is deleted.
 //!
-//! The modes (`Mode`):
+//! The modes ([`Mode`]):
 //! - `off`: no instance.
 //! - `dual`: every record as before, plus the instance records. The shape record is the
 //!   twin of an instance draw, and the helper draws one of the two (`MGE_XE_RETAINED`).
@@ -25,7 +25,7 @@
 //! sets it from Lua.
 //!
 //! In mode gpu the engine does not display a retained shape. The shape carries
-//! `RETAINED_BIT`, and the ports of its `Display` call `skipped_display`, which does the
+//! [`RETAINED_BIT`], and the ports of its `Display` call `skipped_display`, which does the
 //! checks of a draw and returns. The engine's traversal still reaches the shape, so the
 //! engine's draws stay the measure of its visibility. `NIRENDER_SKIP=0` keeps the engine's
 //! display.
@@ -189,7 +189,7 @@ struct Instance {
     /// only this copy, never engine memory: the cell worker can free a shape at any time.
     properties: [usize; PROPERTY_SLOTS],
     /// The frame in which the engine's main sorted queue took the shape (`queue_blend`), or
-    /// `u32::MAX`.
+    /// [`u32::MAX`].
     queued: u32,
     /// A particle system (a `RenderPoints` draw): its particles go as an `INSTANCE_PARTICLES`
     /// record before each `INSTANCE_DRAW`, at the place of the engine's draw, and the table
@@ -238,7 +238,7 @@ struct Tables {
     animated: bool,
     /// A shape under a billboard, a switch, a level of detail, a BSP, an animation or a
     /// particle node is retained too (`NIRENDER_NODE_KINDS=0` keeps them out). See
-    /// `REJECTED_KINDS`.
+    /// [`REJECTED_KINDS`].
     node_kinds: bool,
     /// A shape with a controller on itself or on a property is retained as a live shape
     /// (`NIRENDER_CONTROLLERS=0` rejects it).
@@ -652,7 +652,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     t.pending = Some((shape, id));
 }
 
-/// Why the shape is not retained, or `None` when it is of the safe class. `live` is set
+/// Why the shape is not retained, or [`None`] when it is of the safe class. `live` is set
 /// when a controller on the shape or on a property changes it.
 /// Engine-rules R1, R6, R7 (the skill wgpu-renderer-dev).
 unsafe fn reject_reason(mt: &MainThread, shape: usize, property_state: usize, effect_state: usize, skinned: bool, live: &mut bool) -> Option<usize> {
@@ -1300,7 +1300,7 @@ pub unsafe fn recheck(mt: &MainThread, shape: usize, cause: Recheck) {
 }
 
 /// The switch that notes the material and the geometry of every retained shape at every
-/// display, not every `CHECK_FRAMES` frames (`NIRENDER_NOTE_EVERY=1`,
+/// display, not every [`CHECK_FRAMES`] frames (`NIRENDER_NOTE_EVERY=1`,
 /// `nirender.noteEvery(on)`); 255 means not read yet. Then the counters of the cost of the
 /// skipped displays (`display_cost`).
 static NOTE_EVERY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(255);

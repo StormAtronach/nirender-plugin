@@ -820,7 +820,7 @@ pub unsafe fn get_driver_info(this: usize) -> usize {
 // ---------------------------------------------------------------------------------------
 
 /// Makes the `NiPixelFormat` for the slot `index` of a texture format group in a new block
-/// from `operator new`. It returns 0 when the block is 0. It returns `None` for the two slots
+/// from `operator new`. It returns 0 when the block is 0. It returns [`None`] for the two slots
 /// that have no format.
 unsafe fn probe_pixel_format(index: u32) -> Option<usize> {
     if index == 6 || index == 7 {
@@ -930,7 +930,7 @@ unsafe fn probe_texture_formats_regions(set: &mut Regions, this: usize, formats:
 /// The order in which `createDefaultTextures` looks for a format of a group.
 const DEFAULT_FORMAT_ORDER: [usize; 6] = [1, 0, 2, 4, 3, 5];
 
-/// The first format of group `group` in the order of `DEFAULT_FORMAT_ORDER`, or 0.
+/// The first format of group `group` in the order of [`DEFAULT_FORMAT_ORDER`], or 0.
 unsafe fn default_texture_format(this: usize, group: usize) -> usize {
     for slot in DEFAULT_FORMAT_ORDER {
         let format: usize = rd(this, R::arrayArrayTextureFormats + (group * FORMATS_PER_GROUP + slot) * 4);
@@ -942,7 +942,7 @@ unsafe fn default_texture_format(this: usize, group: usize) -> usize {
 }
 
 /// 0x6ABA70 `NiDX8Renderer::createDefaultTextures`. For each of the four groups it sets the
-/// default format and makes a white 4 x 4 `NiPixelData` in that format. The return value
+/// default format and makes a white 4 x 4 [`NiPixelData`] in that format. The return value
 /// tells if the first group has a format.
 pub unsafe fn create_default_textures(this: usize) -> u8 {
     crate::shadow::touch(&create_default_textures_port::STATE);

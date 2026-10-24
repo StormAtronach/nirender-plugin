@@ -316,7 +316,7 @@ unsafe fn hangs_from_copied_root(t: &MainThread, camera: usize) -> bool {
 /// The module compares its matrices with the matrices of the hooks of the host.
 static COMPARE: AtomicBool = AtomicBool::new(false);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
-/// The origin of the scene in progress: the exact position of its camera. `None` when the
+/// The origin of the scene in progress: the exact position of its camera. [`None`] when the
 /// camera is not the world camera or the arm camera.
 static ORIGIN: MainCell<Option<[f64; 3]>> = MainCell::new(None);
 /// The comparison of the origin of this scene is done.
@@ -367,7 +367,7 @@ pub fn pending(t: &MainThread) -> bool {
 }
 
 /// A scene starts with the camera whose world translation is at `world_location`. Returns
-/// the origin for the scene packet: the exact position of the camera, or `None` when the
+/// the origin for the scene packet: the exact position of the camera, or [`None`] when the
 /// scene of this camera is not relative.
 pub unsafe fn scene_begin(t: &MainThread, world_location: usize) -> Option<[f64; 3]> {
     *ORIGIN.get(t) = None;

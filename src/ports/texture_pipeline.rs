@@ -643,7 +643,7 @@ unsafe fn adjust_alpha_template(index: usize, property: usize) {
     }
 }
 
-/// Marks the places in `BLEND_TEMPLATES` that take the value of `field_104`.
+/// Marks the places in [`BLEND_TEMPLATES`] that take the value of `field_104`.
 const SIGNED_OP: u32 = 0xFFFF_FFFF;
 
 /// The writes at the end of `initAlphaStateTemplates` (0x6B99AD to 0x6B9C02), in the order of

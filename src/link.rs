@@ -342,19 +342,19 @@ pub struct HostV1 {
     pub frame_event: unsafe extern "C" fn(kind: u32, a: u32, b: u32),
     pub draw: unsafe extern "C" fn(draw: *const DrawV1),
     pub read_counters: unsafe extern "C" fn(out: *mut CountersV1, reset: u32),
-    /// Only a host with `CAP_USE_FACTS` has this member.
+    /// Only a host with [`CAP_USE_FACTS`] has this member.
     pub use_facts: unsafe extern "C" fn(fact_mask: u32) -> u32,
-    /// Only a host with `CAP_DRAW_STATE` has this member.
+    /// Only a host with [`CAP_DRAW_STATE`] has this member.
     pub draw_state: unsafe extern "C" fn(state: *const DrawStateV1),
-    /// Only a host with `CAP_TEXTURES` has this member.
+    /// Only a host with [`CAP_TEXTURES`] has this member.
     pub texture_create: unsafe extern "C" fn(texture: *const TextureV1) -> u32,
-    /// Only a host with `CAP_WORLD_SPACE` has this member.
+    /// Only a host with [`CAP_WORLD_SPACE`] has this member.
     pub world_space: unsafe extern "C" fn() -> u32,
-    /// Only a host with `CAP_CAMERA_SPACE` has this member.
+    /// Only a host with [`CAP_CAMERA_SPACE`] has this member.
     pub camera_space: unsafe extern "C" fn(origin: *mut f64) -> u32,
-    /// Only a host with `CAP_COMMANDS` has this member.
+    /// Only a host with [`CAP_COMMANDS`] has this member.
     pub command: unsafe extern "C" fn(command: u32, a: u32, b: u32, c: u32),
-    /// Only a host with `CAP_CALLS` has this member and the next one.
+    /// Only a host with [`CAP_CALLS`] has this member and the next one.
     pub call: unsafe extern "C" fn(call: u32, args: *const u32) -> u32,
     pub use_kinds: unsafe extern "C" fn(kind_mask: u32) -> u32,
 }
