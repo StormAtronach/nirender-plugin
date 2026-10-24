@@ -7,6 +7,7 @@ use crate::d3d::{
     com_add_ref, com_release, device_create_image_surface, surface_get_desc, surface_lock_rect, surface_unlock_rect, texture_get_surface_level,
 };
 use crate::engine::{thiscall4, vcall0, vcall1, vcall2, virtual_at, VTBL_NI_REF_OBJECT};
+use crate::gen::layouts;
 use crate::gen::layouts::{
     NiDX8PixelFormat as PF, NiDX8Renderer as R, NiDX8SourceTextureData as SD, NiDX8TextureData as TD, NiDX8TextureManager as TM,
     NiPixelData as PD, NiSourceTexture as ST, NiTexture as T, THashMap as HM, THashMap_Node as HN,
@@ -18,19 +19,17 @@ use crate::shadow::Regions;
 
 // ---- members that are not in `gen::layouts`
 
-/// `NiPalette::revisionID` (0x6C006E)
-const PALETTE_REVISION: usize = 0xC;
-/// `NiFormatPrefs`: pixel layout and alpha format (0x6B6E59).
-const PREFS_LAYOUT: usize = 0x0;
-const PREFS_ALPHA: usize = 0x8;
+const PALETTE_REVISION: usize = layouts::NiPalette::revisionID;
+const PREFS_LAYOUT: usize = layouts::NiFormatPrefs::pixelLayout;
+const PREFS_ALPHA: usize = layouts::NiFormatPrefs::alphaFormat;
 /// An object of the renderer that is similar to `NiRenderTargetGroup`: its `NiDX8PixelFormat *`
 /// (0x6B66D7).
 const RENDER_TARGET_PIXEL_FORMAT: usize = 0x8;
 
-// `NiBltSource` (0x6B66AC, 0x6B66C8, 0x6B67AC)
-const BLT_FILENAME: usize = 0xC;
+// `NiBltSource` (0x6B66AC, 0x6B66C8, 0x6B67AC). The IDA type names the pixel data `field_10`.
+const BLT_FILENAME: usize = layouts::NiBltSource::pcFilename;
 const BLT_PIXEL_DATA: usize = 0x10;
-const BLT_RENDERER_DATA: usize = 0x14;
+const BLT_RENDERER_DATA: usize = layouts::NiBltSource::rendererData;
 
 // `NiDX8BltSourceData` (0x6B672E)
 const BD_SIZE: usize = 0x24;
@@ -62,18 +61,16 @@ const VTBL_BLT_RENDERER_DATA: u32 = 0x74F67C;
 /// `NiSourceTexture::ms_RTTI`
 const RTTI_SOURCE_TEXTURE: usize = 0x7DE3C0;
 
-// `NiDX8TextureData`
-const VT_DATA_GET_PIXEL_FORMAT: usize = 0x10;
-const VT_DATA_GET_LEVELS: usize = 0x14;
-const VT_DATA_GET_D3D_TEXTURE: usize = 0x18;
-const VT_DATA_GET_AS_RENDERED: usize = 0x20;
+// `NiDX8TextureData`. The IDA type of its vtable ends before `Update` (0x2C).
+const VT_DATA_GET_PIXEL_FORMAT: usize = layouts::InterfaceNiDX8TextureData::GetPixelFormat;
+const VT_DATA_GET_LEVELS: usize = layouts::InterfaceNiDX8TextureData::GetLevels;
+const VT_DATA_GET_D3D_TEXTURE: usize = layouts::InterfaceNiDX8TextureData::GetD3DTexture;
+const VT_DATA_GET_AS_RENDERED: usize = layouts::InterfaceNiDX8TextureData::GetAsRenderedTexture;
 const VT_DATA_UPDATE: usize = 0x2C;
-/// `NiRenderer::CreateSourceTextureRendererData`
-const VT_RENDERER_CREATE_SOURCE_DATA: usize = 0xF4;
-// `NiImageConverter`
-const VT_CONVERTER_READ_FILE: usize = 0x8;
-const VT_CONVERTER_CAN_CONVERT: usize = 0xC;
-const VT_CONVERTER_CONVERT: usize = 0x10;
+const VT_RENDERER_CREATE_SOURCE_DATA: usize = layouts::InterfaceNiRenderer::CreateSourceTextureRendererData;
+const VT_CONVERTER_READ_FILE: usize = layouts::NiImageConverter_vtbl::ReadImageFile;
+const VT_CONVERTER_CAN_CONVERT: usize = layouts::NiImageConverter_vtbl::CanConvertPixelData;
+const VT_CONVERTER_CONVERT: usize = layouts::NiImageConverter_vtbl::ConvertPixelData;
 
 // The game code gives these texts to its debug output. The debug output does nothing.
 const TEXT_UPDATE_LEVEL: usize = 0x7C40B8;

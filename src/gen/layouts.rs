@@ -527,6 +527,120 @@ pub mod DataHandler {
     pub const exteriorCellDataBuffer: usize = 0xb554;
 }
 
+pub mod InterfaceNiAVObject {
+    pub const SIZE: usize = 0x94;
+    /// `InterfaceNiObject`, 0x2c bytes
+    pub const super_: usize = 0x0;
+    /// `void (__thiscall *)(NiObject *, char)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `NiRTTI *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const GetRTTI: usize = 0x4;
+    /// `NiObject *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateClone: usize = 0x8;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LoadBinary: usize = 0xc;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LinkObject: usize = 0x10;
+    /// `bool (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const RegisterStreamables: usize = 0x14;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const SaveBinary: usize = 0x18;
+    /// `bool (__thiscall *)(const NiObject *, const NiObject *)`, 0x4 bytes
+    pub const IsEqual: usize = 0x1c;
+    /// `void (__thiscall *)(NiObject *, TArray *)`, 0x4 bytes
+    pub const AddViewerStrings: usize = 0x20;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const ProcessClone: usize = 0x24;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateRendererData: usize = 0x28;
+    /// `void (__thiscall *)(NiAVObject *this, float fTime)`, 0x4 bytes
+    pub const UpdateControllers: usize = 0x2c;
+    /// `void (__thiscall *)(NiAVObject *, matrix33 *, vec3 *, bool)`, 0x4 bytes
+    pub const ApplyTransform: usize = 0x30;
+    /// `NiBound *(__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const GetWorldBound: usize = 0x34;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const CreateWorldVertices: usize = 0x38;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const UpdateWorldVertices: usize = 0x3c;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const DestroyWorldVertices: usize = 0x40;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const CreateWorldNormals: usize = 0x44;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const UpdateWorldNormals: usize = 0x48;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const DestroyWorldNormals: usize = 0x4c;
+    /// `void (__thiscall *)(NiAVObject *this, bool cull)`, 0x4 bytes
+    pub const SetAppCulled: usize = 0x50;
+    /// `bool (__thiscall *)(const NiAVObject *)`, 0x4 bytes
+    pub const GetAppCulled: usize = 0x54;
+    /// `void (__thiscall *)(NiAVObject *, int)`, 0x4 bytes
+    pub const SetPropagationMode: usize = 0x58;
+    /// `NiAVObject *(__thiscall *)(NiAVObject *, const char *)`, 0x4 bytes
+    pub const GetObjectByName: usize = 0x5c;
+    /// `void (__thiscall *)(NiAVObject *this, float fTime, bool updateControllers, bool updateChildren)`, 0x4 bytes
+    pub const UpdateDownwardPass: usize = 0x60;
+    /// `bool (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const IsVisualObject: usize = 0x64;
+    /// `void (__thiscall *)(NiAVObject *this, NiPropertyState *propertyState)`, 0x4 bytes
+    pub const UpdatePropertiesDownward: usize = 0x68;
+    /// `void (__thiscall *)(NiAVObject *this, NiDynamicEffectState *effectState)`, 0x4 bytes
+    pub const UpdateEffectsDownward: usize = 0x6c;
+    /// `NiPointer *(__thiscall *)(NiAVObject *this, NiPointer *out_ptr)`, 0x4 bytes
+    pub const GetPropertyState: usize = 0x70;
+    /// `NiPointer *(__thiscall *)(NiAVObject *this, NiPointer *out_ptr)`, 0x4 bytes
+    pub const GetEffectState: usize = 0x74;
+    /// `void (__thiscall *)(NiAVObject *this, NiCamera *camera)`, 0x4 bytes
+    pub const Display: usize = 0x78;
+    /// `int (__thiscall *)(_DWORD)`, 0x4 bytes
+    pub const UpdateCollisionData: usize = 0x7c;
+    /// `bool (__thiscall *)(NiAVObject *this, float deltaTime, NiCollisionGroup::Record *collider, NiCollisionGroup::Record *collidee)`, 0x4 bytes
+    pub const TestCollisions: usize = 0x80;
+    /// `int (__thiscall *)(NiAVObject *this, float deltaTime, NiCollisionGroup::Record *collider, NiCollisionGroup::Record *collidee)`, 0x4 bytes
+    pub const FindCollisions: usize = 0x84;
+    /// `bool (__thiscall *)(NiAVObject *this, vec3 *position, vec3 *direction, NiPick *pick)`, 0x4 bytes
+    pub const FindIntersections: usize = 0x88;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const UpdateWorldData: usize = 0x8c;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const UpdateWorldBound: usize = 0x90;
+}
+
+pub mod InterfaceNiAccumulator {
+    pub const SIZE: usize = 0x38;
+    /// `InterfaceNiObject`, 0x2c bytes
+    pub const super_: usize = 0x0;
+    /// `void (__thiscall *)(NiObject *, char)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `NiRTTI *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const GetRTTI: usize = 0x4;
+    /// `NiObject *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateClone: usize = 0x8;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LoadBinary: usize = 0xc;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LinkObject: usize = 0x10;
+    /// `bool (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const RegisterStreamables: usize = 0x14;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const SaveBinary: usize = 0x18;
+    /// `bool (__thiscall *)(const NiObject *, const NiObject *)`, 0x4 bytes
+    pub const IsEqual: usize = 0x1c;
+    /// `void (__thiscall *)(NiObject *, TArray *)`, 0x4 bytes
+    pub const AddViewerStrings: usize = 0x20;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const ProcessClone: usize = 0x24;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateRendererData: usize = 0x28;
+    /// `bool (__thiscall *)(NiAccumulator *this, NiCamera *)`, 0x4 bytes
+    pub const StartAccumulating: usize = 0x2c;
+    /// `bool (__thiscall *)(NiAccumulator *this)`, 0x4 bytes
+    pub const FinishAccumulating: usize = 0x30;
+    /// `bool (__thiscall *)(NiAccumulator *this, NiGeometry *geom)`, 0x4 bytes
+    pub const RegisterObject: usize = 0x34;
+}
+
 pub mod InterfaceNiDX8TextureData {
     pub const SIZE: usize = 0x28;
     /// `void (__thiscall *)(NiTexture::RendererData *, char)`, 0x4 bytes
@@ -633,6 +747,204 @@ pub mod InterfaceNiLight {
     pub const UpdateWorldBound: usize = 0x90;
     /// `int (__thiscall *)(NiLight *)`, 0x4 bytes
     pub const GetType: usize = 0x94;
+}
+
+pub mod InterfaceNiObject {
+    pub const SIZE: usize = 0x2c;
+    /// `void (__thiscall *)(NiObject *, char)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `NiRTTI *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const GetRTTI: usize = 0x4;
+    /// `NiObject *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateClone: usize = 0x8;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LoadBinary: usize = 0xc;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LinkObject: usize = 0x10;
+    /// `bool (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const RegisterStreamables: usize = 0x14;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const SaveBinary: usize = 0x18;
+    /// `bool (__thiscall *)(const NiObject *, const NiObject *)`, 0x4 bytes
+    pub const IsEqual: usize = 0x1c;
+    /// `void (__thiscall *)(NiObject *, TArray *)`, 0x4 bytes
+    pub const AddViewerStrings: usize = 0x20;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const ProcessClone: usize = 0x24;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateRendererData: usize = 0x28;
+}
+
+pub mod InterfaceNiRenderer {
+    pub const SIZE: usize = 0x10c;
+    /// `InterfaceNiObject`, 0x2c bytes
+    pub const super_: usize = 0x0;
+    /// `void (__thiscall *)(NiObject *, char)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `NiRTTI *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const GetRTTI: usize = 0x4;
+    /// `NiObject *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateClone: usize = 0x8;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LoadBinary: usize = 0xc;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LinkObject: usize = 0x10;
+    /// `bool (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const RegisterStreamables: usize = 0x14;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const SaveBinary: usize = 0x18;
+    /// `bool (__thiscall *)(const NiObject *, const NiObject *)`, 0x4 bytes
+    pub const IsEqual: usize = 0x1c;
+    /// `void (__thiscall *)(NiObject *, TArray *)`, 0x4 bytes
+    pub const AddViewerStrings: usize = 0x20;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const ProcessClone: usize = 0x24;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateRendererData: usize = 0x28;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const GetDriverInfo: usize = 0x2c;
+    /// `unsigned int (__thiscall *)(NiDX8Renderer *)`, 0x4 bytes
+    pub const GetFlags: usize = 0x30;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const FindClosestPixelFormat: usize = 0x34;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const field_38: usize = 0x38;
+    /// `int (__thiscall *)(NiDX8Renderer *, NiRenderedTexture *)`, 0x4 bytes
+    pub const SetRenderTarget: usize = 0x3c;
+    /// `int (*)(void)`, 0x4 bytes
+    pub const SwapBuffers: usize = 0x40;
+    /// `int (__thiscall *)(_DWORD, _DWORD, _DWORD)`, 0x4 bytes
+    pub const ClearBuffer: usize = 0x44;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const GetLeftRightSwap: usize = 0x48;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const SetLeftRightSwap: usize = 0x4c;
+    /// `void (__thiscall *)(NiRenderer *, bool)`, 0x4 bytes
+    pub const SetUseWBuffer: usize = 0x50;
+    /// `int (__thiscall *)(NiRenderer *)`, 0x4 bytes
+    pub const GetBackbufferWidth: usize = 0x54;
+    /// `int (__thiscall *)(NiRenderer *)`, 0x4 bytes
+    pub const GetBackbufferHeight: usize = 0x58;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const TakeScreenShot: usize = 0x5c;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const ImageBlt: usize = 0x60;
+    /// `void (__thiscall *)(NiRenderer *this, float depthClear)`, 0x4 bytes
+    pub const SetDepthClear: usize = 0x64;
+    /// `void (__thiscall *)(NiDX8Renderer *this, NiColor *colour)`, 0x4 bytes
+    pub const SetBackgroundColor: usize = 0x68;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const SetStencilClear: usize = 0x6c;
+    /// `void (__thiscall *)(NiDX8Renderer *this, NiColor *colour)`, 0x4 bytes
+    pub const GetBackgroundColor: usize = 0x70;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const GetMaxFogValue: usize = 0x74;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const SetMaxFogValue: usize = 0x78;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const PrecacheTexture: usize = 0x7c;
+    /// `int (__thiscall *)(_DWORD, _DWORD)`, 0x4 bytes
+    pub const PurgeAllTextures: usize = 0x80;
+    /// `void (__thiscall *)(NiDX8Renderer *, NiTexture *)`, 0x4 bytes
+    pub const PurgeTexture: usize = 0x84;
+    /// `int (__thiscall *)(_DWORD, _DWORD, _DWORD)`, 0x4 bytes
+    pub const GetTextureMemoryStats: usize = 0x88;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const GetTextureStats: usize = 0x8c;
+    /// `int (__thiscall *)(_DWORD)`, 0x4 bytes
+    pub const GetTextureManagerStatus: usize = 0x90;
+    /// `void (__thiscall *)(NiRenderer *, int)`, 0x4 bytes
+    pub const SetMipmapSkipLevel: usize = 0x94;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const GetMipmapSkipLevel: usize = 0x98;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const field_9C: usize = 0x9c;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const field_A0: usize = 0xa0;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const field_A4: usize = 0xa4;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const PrecacheGeometry: usize = 0xa8;
+    /// `void (__thiscall *)(NiRenderer *this, NiAVObject *)`, 0x4 bytes
+    pub const BeginPaint: usize = 0xac;
+    /// `void (__thiscall *)(NiRenderer *this)`, 0x4 bytes
+    pub const EndPaint: usize = 0xb0;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const PurgeEffect: usize = 0xb4;
+    /// `void (__thiscall *)(NiRenderer *this, vec3 *worldLocation, vec3 *, vec3 *, vec3 *, NiFrustum *, NiRectFloat *)`, 0x4 bytes
+    pub const SetCameraData: usize = 0xb8;
+    /// `int (__thiscall *)(_DWORD, _DWORD, _DWORD, _DWORD, _DWORD)`, 0x4 bytes
+    pub const RenderShape: usize = 0xbc;
+    /// `int (__thiscall *)(_DWORD, _DWORD, _DWORD, _DWORD, _DWORD)`, 0x4 bytes
+    pub const RenderTristrips: usize = 0xc0;
+    /// `void (__thiscall *)(NiRenderer *, NiGeometryData *, NiTransform *, NiBound *)`, 0x4 bytes
+    pub const RenderPoints: usize = 0xc4;
+    /// `void (__thiscall *)(NiRenderer *, NiLinesData *, NiTransform *, NiBound *)`, 0x4 bytes
+    pub const RenderLines: usize = 0xc8;
+    /// `void (__thiscall *)(NiRenderer *this, int verticesCount, vec3 *vertices, vec2 *texCoords, NiColor *colour)`, 0x4 bytes
+    pub const RenderScreenPoly: usize = 0xcc;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const BeginBatch: usize = 0xd0;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const EndBatch: usize = 0xd4;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const BatchRenderShape: usize = 0xd8;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const BatchRenderStrips: usize = 0xdc;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const field_E0: usize = 0xe0;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const field_E4: usize = 0xe4;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const PurgeGeometryData: usize = 0xe8;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const PurgeMaterial: usize = 0xec;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const PurgeSkinPartitionRendererData: usize = 0xf0;
+    /// `bool (__thiscall *)(NiRenderer *, NiSourceTexture *)`, 0x4 bytes
+    pub const CreateSourceTextureRendererData: usize = 0xf4;
+    /// `char (__thiscall *)(NiDX8Renderer *, NiRenderedTexture *)`, 0x4 bytes
+    pub const CreateRenderedTextureRendererData: usize = 0xf8;
+    /// `char (__thiscall *)(NiDX8Renderer *, NiRenderedTexture *)`, 0x4 bytes
+    pub const CreateRenderedCubeMapRendererData: usize = 0xfc;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const CreateSourceCubeMapRendererData: usize = 0x100;
+    /// `bool (__thiscall *)(NiRenderer *, NiPalette *)`, 0x4 bytes
+    pub const CreatePaletteRendererData: usize = 0x104;
+    /// `int (__thiscall *)(_DWORD, _DWORD)`, 0x4 bytes
+    pub const CreateBltSourceRendererData: usize = 0x108;
+}
+
+pub mod InterfaceNiTexture {
+    pub const SIZE: usize = 0x34;
+    /// `InterfaceNiObject`, 0x2c bytes
+    pub const super_: usize = 0x0;
+    /// `void (__thiscall *)(NiObject *, char)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `NiRTTI *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const GetRTTI: usize = 0x4;
+    /// `NiObject *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateClone: usize = 0x8;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LoadBinary: usize = 0xc;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LinkObject: usize = 0x10;
+    /// `bool (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const RegisterStreamables: usize = 0x14;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const SaveBinary: usize = 0x18;
+    /// `bool (__thiscall *)(const NiObject *, const NiObject *)`, 0x4 bytes
+    pub const IsEqual: usize = 0x1c;
+    /// `void (__thiscall *)(NiObject *, TArray *)`, 0x4 bytes
+    pub const AddViewerStrings: usize = 0x20;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const ProcessClone: usize = 0x24;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateRendererData: usize = 0x28;
+    /// `unsigned int (__thiscall *)(NiTexture *)`, 0x4 bytes
+    pub const GetWidth: usize = 0x2c;
+    /// `unsigned int (__thiscall *)(NiTexture *)`, 0x4 bytes
+    pub const GetHeight: usize = 0x30;
 }
 
 pub mod Moon {
@@ -1161,6 +1473,28 @@ pub mod NiBillboardNode {
     pub const bUpdateControllers: usize = 0xb4;
     /// `char[3]`, 0x3 bytes
     pub const pad_B5: usize = 0xb5;
+}
+
+pub mod NiBltSource {
+    pub const SIZE: usize = 0x20;
+    /// `NiObject`, 0x8 bytes
+    pub const super_: usize = 0x0;
+    /// `InterfaceNiObjectUnion`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const refCount: usize = 0x4;
+    /// `char *`, 0x4 bytes
+    pub const fileName: usize = 0x8;
+    /// `int`, 0x4 bytes
+    pub const pcFilename: usize = 0xc;
+    /// `NiObject *`, 0x4 bytes
+    pub const field_10: usize = 0x10;
+    /// `void *`, 0x4 bytes
+    pub const rendererData: usize = 0x14;
+    /// `int`, 0x4 bytes
+    pub const field_18: usize = 0x18;
+    /// `int`, 0x4 bytes
+    pub const field_1C: usize = 0x1c;
 }
 
 pub mod NiBoneData {
@@ -5829,6 +6163,16 @@ pub mod NiFogProperty {
     pub const color_a: usize = 0x1f;
 }
 
+pub mod NiFormatPrefs {
+    pub const SIZE: usize = 0xc;
+    /// `int`, 0x4 bytes
+    pub const pixelLayout: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const mipmapFlags: usize = 0x4;
+    /// `int`, 0x4 bytes
+    pub const alphaFormat: usize = 0x8;
+}
+
 pub mod NiFrustum {
     pub const SIZE: usize = 0x18;
     /// `float`, 0x4 bytes
@@ -6043,6 +6387,20 @@ pub mod NiGeometryData {
     pub const revisionID: usize = 0x30;
     /// `char[2]`, 0x2 bytes
     pub const pad_32: usize = 0x32;
+}
+
+pub mod NiImageConverter_vtbl {
+    pub const SIZE: usize = 0x14;
+    /// `void (__thiscall *)(NiImageConverter *this, char a2)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `void *`, 0x4 bytes
+    pub const ReadImageFileInfo: usize = 0x4;
+    /// `NiPixelData *(__thiscall *)(NiImageConverter *, const char *, NiPixelData *)`, 0x4 bytes
+    pub const ReadImageFile: usize = 0x8;
+    /// `void *`, 0x4 bytes
+    pub const CanConvertPixelData: usize = 0xc;
+    /// `void *`, 0x4 bytes
+    pub const ConvertPixelData: usize = 0x10;
 }
 
 pub mod NiLODData {
@@ -6681,6 +7039,28 @@ pub mod NiObjectNET {
     pub const extraData: usize = 0xc;
     /// `NiTimeController *`, 0x4 bytes
     pub const controllers: usize = 0x10;
+}
+
+pub mod NiPalette {
+    pub const SIZE: usize = 0x41c;
+    /// `NiObject`, 0x8 bytes
+    pub const super_: usize = 0x0;
+    /// `InterfaceNiObjectUnion`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const refCount: usize = 0x4;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const maybe_alpha: usize = 0x8;
+    /// `int`, 0x4 bytes
+    pub const revisionID: usize = 0xc;
+    /// `int[256]`, 0x400 bytes
+    pub const palette: usize = 0x10;
+    /// `int`, 0x4 bytes
+    pub const maybe_renderData: usize = 0x410;
+    /// `NiPalette *`, 0x4 bytes
+    pub const previousPalette: usize = 0x414;
+    /// `NiPalette *`, 0x4 bytes
+    pub const nextPalette: usize = 0x418;
 }
 
 pub mod NiParticles {
@@ -7461,6 +7841,108 @@ pub mod NiStencilProperty {
     pub const passAction: usize = 0x30;
     /// `NiStencilProperty::DrawMode`, 0x4 bytes
     pub const drawMode: usize = 0x34;
+}
+
+pub mod NiStream {
+    pub const SIZE: usize = 0xac;
+    /// `InterfaceNiStream *`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `unsigned int`, 0x4 bytes
+    pub const version: usize = 0x4;
+    /// `unsigned int`, 0x4 bytes
+    pub const loadObjectsCount: usize = 0x8;
+    /// `int`, 0x4 bytes
+    pub const field_C: usize = 0xc;
+    /// `float`, 0x4 bytes
+    pub const field_10: usize = 0x10;
+    /// `int`, 0x4 bytes
+    pub const field_14: usize = 0x14;
+    /// `int`, 0x4 bytes
+    pub const field_18: usize = 0x18;
+    /// `void *`, 0x4 bytes
+    pub const field_1C: usize = 0x1c;
+    /// `int`, 0x4 bytes
+    pub const field_20: usize = 0x20;
+    /// `int`, 0x4 bytes
+    pub const field_24: usize = 0x24;
+    /// `int`, 0x4 bytes
+    pub const field_28: usize = 0x28;
+    /// `char *`, 0x4 bytes
+    pub const filename: usize = 0x2c;
+    /// `TArray`, 0x18 bytes
+    pub const objects_30: usize = 0x30;
+    /// `InterfaceTArray *`, 0x4 bytes
+    pub const objects_30_vtbl: usize = 0x30;
+    /// `void **`, 0x4 bytes
+    pub const objects_30_storage: usize = 0x34;
+    /// `int`, 0x4 bytes
+    pub const objects_30_storageCount: usize = 0x38;
+    /// `unsigned int`, 0x4 bytes
+    pub const objects_30_endIndex: usize = 0x3c;
+    /// `int`, 0x4 bytes
+    pub const objects_30_filledCount: usize = 0x40;
+    /// `int`, 0x4 bytes
+    pub const objects_30_growByCount: usize = 0x44;
+    /// `THashMap`, 0x10 bytes
+    pub const hashmap_48: usize = 0x48;
+    /// `InterfaceTHashMap *`, 0x4 bytes
+    pub const hashmap_48_vtbl: usize = 0x48;
+    /// `int`, 0x4 bytes
+    pub const hashmap_48_count: usize = 0x4c;
+    /// `unsigned int`, 0x4 bytes
+    pub const hashmap_48_bucketCount: usize = 0x50;
+    /// `THashMap::Node **`, 0x4 bytes
+    pub const hashmap_48_arrayBuckets: usize = 0x54;
+    /// `NiFile *`, 0x4 bytes
+    pub const inStream: usize = 0x58;
+    /// `NiFile *`, 0x4 bytes
+    pub const outStream: usize = 0x5c;
+    /// `TArray`, 0x18 bytes
+    pub const objects_60: usize = 0x60;
+    /// `InterfaceTArray *`, 0x4 bytes
+    pub const objects_60_vtbl: usize = 0x60;
+    /// `void **`, 0x4 bytes
+    pub const objects_60_storage: usize = 0x64;
+    /// `int`, 0x4 bytes
+    pub const objects_60_storageCount: usize = 0x68;
+    /// `unsigned int`, 0x4 bytes
+    pub const objects_60_endIndex: usize = 0x6c;
+    /// `int`, 0x4 bytes
+    pub const objects_60_filledCount: usize = 0x70;
+    /// `int`, 0x4 bytes
+    pub const objects_60_growByCount: usize = 0x74;
+    /// `NiObjectNET::LinkData *`, 0x4 bytes
+    pub const currentObjectLinkData: usize = 0x78;
+    /// `TArray`, 0x18 bytes
+    pub const maybe_loadingObjects: usize = 0x7c;
+    /// `InterfaceTArray *`, 0x4 bytes
+    pub const maybe_loadingObjects_vtbl: usize = 0x7c;
+    /// `void **`, 0x4 bytes
+    pub const maybe_loadingObjects_storage: usize = 0x80;
+    /// `int`, 0x4 bytes
+    pub const maybe_loadingObjects_storageCount: usize = 0x84;
+    /// `unsigned int`, 0x4 bytes
+    pub const maybe_loadingObjects_endIndex: usize = 0x88;
+    /// `int`, 0x4 bytes
+    pub const maybe_loadingObjects_filledCount: usize = 0x8c;
+    /// `int`, 0x4 bytes
+    pub const maybe_loadingObjects_growByCount: usize = 0x90;
+    /// `THashMap`, 0x10 bytes
+    pub const linkIds: usize = 0x94;
+    /// `InterfaceTHashMap *`, 0x4 bytes
+    pub const linkIds_vtbl: usize = 0x94;
+    /// `int`, 0x4 bytes
+    pub const linkIds_count: usize = 0x98;
+    /// `unsigned int`, 0x4 bytes
+    pub const linkIds_bucketCount: usize = 0x9c;
+    /// `THashMap::Node **`, 0x4 bytes
+    pub const linkIds_arrayBuckets: usize = 0xa0;
+    /// `char`, 0x1 bytes
+    pub const maybe_bBackgroundLoadExitStatus: usize = 0xa4;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_A5: usize = 0xa5;
+    /// `THashMap *`, 0x4 bytes
+    pub const field_A8: usize = 0xa8;
 }
 
 pub mod NiSwitchNode {
@@ -8757,6 +9239,22 @@ pub mod ShadowManager {
     pub const updateRequired: usize = 0x6c;
     /// `char[3]`, 0x3 bytes
     pub const padding_6D: usize = 0x6d;
+}
+
+pub mod TArray {
+    pub const SIZE: usize = 0x18;
+    /// `InterfaceTArray *`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `void **`, 0x4 bytes
+    pub const storage: usize = 0x4;
+    /// `int`, 0x4 bytes
+    pub const storageCount: usize = 0x8;
+    /// `unsigned int`, 0x4 bytes
+    pub const endIndex: usize = 0xc;
+    /// `int`, 0x4 bytes
+    pub const filledCount: usize = 0x10;
+    /// `int`, 0x4 bytes
+    pub const growByCount: usize = 0x14;
 }
 
 pub mod TES3Game {

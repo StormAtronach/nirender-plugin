@@ -57,7 +57,7 @@ def number(text):
     return int(text, 16) if text.lower().startswith("0x") else int(text)
 
 
-PATH = re.compile(r"(?:crate::gen::layouts::)?([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)")
+PATH = re.compile(r"(?:(?:crate::gen::)?layouts::)?([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)")
 ARITHMETIC = re.compile(r"^[0-9a-fA-Fx+\-* ()]+$")
 
 

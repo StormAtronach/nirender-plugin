@@ -9,7 +9,7 @@ src/map_fog.rs 2
 src/map_tiles.rs 7
 src/material_stream.rs 9
 src/own_host.rs 1
-src/ports/base.rs 28
+src/ports/base.rs 1
 src/ports/buffers.rs 19
 src/ports/ct_pipeline_state.rs 10
 src/ports/device_setup.rs 15
@@ -20,7 +20,7 @@ src/ports/hash_map.rs 4
 src/ports/light_manager.rs 15
 src/ports/material.rs 7
 src/ports/ni.rs 3
-src/ports/rendered.rs 25
+src/ports/rendered.rs 16
 src/ports/renderer_frame.rs 2
 src/ports/scene.rs 11
 src/ports/system_desc.rs 23
@@ -28,7 +28,7 @@ src/ports/texture_link.rs 3
 src/ports/texture_pass_a.rs 2
 src/ports/texture_pass_b.rs 6
 src/ports/texture_pipeline.rs 9
-src/ports/textures.rs 25
+src/ports/textures.rs 12
 src/shape_stream.rs 1
 src/worker_events.rs 3
 src/world_lights.rs 3

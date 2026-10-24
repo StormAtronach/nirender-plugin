@@ -83,10 +83,9 @@ const SOURCE_CUBE_SIZE: usize = 0x84;
 const SOURCE_CUBE_TEXTURE: usize = 0x68;
 const SOURCE_CUBE_FACE_REVISIONS: usize = 0x6C;
 
-/// `NiPalette::revisionID`
-const PALETTE_REVISION: usize = 0x0C;
+const PALETTE_REVISION: usize = crate::gen::layouts::NiPalette::revisionID;
 /// `NiBltSource::rendererData` and the surface in that data.
-const BLT_SOURCE_RENDERER_DATA: usize = 0x14;
+const BLT_SOURCE_RENDERER_DATA: usize = crate::gen::layouts::NiBltSource::rendererData;
 const BLT_DATA_SURFACE: usize = 0x14;
 /// `NiRect<unsigned int>`: left, right, top, bottom.
 const RECT_LEFT: usize = 0;
@@ -95,13 +94,13 @@ const RECT_TOP: usize = 8;
 const RECT_BOTTOM: usize = 12;
 
 // Virtual functions, as offsets in the vtable.
-const V_TEXTURE_GET_WIDTH: usize = 0x2C;
-const V_TEXTURE_GET_HEIGHT: usize = 0x30;
-const V_DATA_GET_D3D_TEXTURE: usize = 0x18;
-const V_RENDERER_SET_RENDER_TARGET: usize = 0x3C;
-const V_RENDERER_CREATE_BLT_SOURCE_DATA: usize = 0x108;
-const V_CONVERTER_READ_IMAGE_FILE: usize = 0x08;
-const V_CONVERTER_CONVERT_PIXEL_DATA: usize = 0x10;
+const V_TEXTURE_GET_WIDTH: usize = crate::gen::layouts::InterfaceNiTexture::GetWidth;
+const V_TEXTURE_GET_HEIGHT: usize = crate::gen::layouts::InterfaceNiTexture::GetHeight;
+const V_DATA_GET_D3D_TEXTURE: usize = crate::gen::layouts::InterfaceNiDX8TextureData::GetD3DTexture;
+const V_RENDERER_SET_RENDER_TARGET: usize = crate::gen::layouts::InterfaceNiRenderer::SetRenderTarget;
+const V_RENDERER_CREATE_BLT_SOURCE_DATA: usize = crate::gen::layouts::InterfaceNiRenderer::CreateBltSourceRendererData;
+const V_CONVERTER_READ_IMAGE_FILE: usize = crate::gen::layouts::NiImageConverter_vtbl::ReadImageFile;
+const V_CONVERTER_CONVERT_PIXEL_DATA: usize = crate::gen::layouts::NiImageConverter_vtbl::ConvertPixelData;
 
 const DISCARD_BYTES: u32 = 0x80000;
 const CREATE_TRIES: u32 = 60;

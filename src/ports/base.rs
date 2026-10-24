@@ -7,6 +7,7 @@ use core::arch::asm;
 use crate::main_thread::{MainCell, MainThread};
 use crate::d3d;
 use crate::engine::{vcall0, vcall1, NI_REF_OBJECT_COUNT, VTBL_NI_ALPHA_PROPERTY, VTBL_NI_REF_OBJECT};
+use crate::gen::layouts;
 use crate::gen::layouts::{
     NiAccumulator as ACC, NiDX8ConfigurableTexturePipeline as CTP, NiDX8MaterialManager as MM, NiDX8RenderState as RS,
     NiDX8TexturePass as TP, NiDX8TextureStage as TS, NiMaterialProperty as MP, NiRenderer as R,
@@ -69,39 +70,36 @@ const DEFAULT_MATERIAL: usize = 0x7DE29C;
 const F_ONE: usize = 0x74BFDC;
 
 // Vtable slots.
-const SLOT_LOAD_BINARY: usize = 0x0C;
-const SLOT_ACCUMULATOR_REGISTER_OBJECT: usize = 0x34;
-const SLOT_GET_BACKBUFFER_WIDTH: usize = 0x54;
-const SLOT_GET_BACKBUFFER_HEIGHT: usize = 0x58;
-const SLOT_GET_PROPERTY_STATE: usize = 0x70;
-const SLOT_GET_EFFECT_STATE: usize = 0x74;
-const SLOT_DISPLAY: usize = 0x78;
-const SLOT_PURGE_EFFECT: usize = 0xB4;
-const SLOT_PURGE_GEOMETRY_DATA: usize = 0xE8;
-const SLOT_PURGE_MATERIAL: usize = 0xEC;
-const SLOT_PURGE_SKIN_PARTITION: usize = 0xF0;
+const SLOT_LOAD_BINARY: usize = layouts::InterfaceNiObject::LoadBinary;
+const SLOT_ACCUMULATOR_REGISTER_OBJECT: usize = layouts::InterfaceNiAccumulator::RegisterObject;
+const SLOT_GET_BACKBUFFER_WIDTH: usize = layouts::InterfaceNiRenderer::GetBackbufferWidth;
+const SLOT_GET_BACKBUFFER_HEIGHT: usize = layouts::InterfaceNiRenderer::GetBackbufferHeight;
+const SLOT_GET_PROPERTY_STATE: usize = layouts::InterfaceNiAVObject::GetPropertyState;
+const SLOT_GET_EFFECT_STATE: usize = layouts::InterfaceNiAVObject::GetEffectState;
+const SLOT_DISPLAY: usize = layouts::InterfaceNiAVObject::Display;
+const SLOT_PURGE_EFFECT: usize = layouts::InterfaceNiRenderer::PurgeEffect;
+const SLOT_PURGE_GEOMETRY_DATA: usize = layouts::InterfaceNiRenderer::PurgeGeometryData;
+const SLOT_PURGE_MATERIAL: usize = layouts::InterfaceNiRenderer::PurgeMaterial;
+const SLOT_PURGE_SKIN_PARTITION: usize = layouts::InterfaceNiRenderer::PurgeSkinPartitionRendererData;
 
-// `TArray`
-const ARRAY_SIZE: usize = 0x18;
-const ARRAY_STORAGE: usize = 0x04;
-const ARRAY_STORAGE_COUNT: usize = 0x08;
-const ARRAY_END_INDEX: usize = 0x0C;
-const ARRAY_FILLED_COUNT: usize = 0x10;
-const ARRAY_GROW_BY: usize = 0x14;
+const ARRAY_SIZE: usize = layouts::TArray::SIZE;
+const ARRAY_STORAGE: usize = layouts::TArray::storage;
+const ARRAY_STORAGE_COUNT: usize = layouts::TArray::storageCount;
+const ARRAY_END_INDEX: usize = layouts::TArray::endIndex;
+const ARRAY_FILLED_COUNT: usize = layouts::TArray::filledCount;
+const ARRAY_GROW_BY: usize = layouts::TArray::growByCount;
 
-// `NiStream`
-const STREAM_LINK_DATA: usize = 0x78;
-const STREAM_LINK_ARRAY: usize = 0x7C;
+const STREAM_LINK_DATA: usize = layouts::NiStream::currentObjectLinkData;
+const STREAM_LINK_ARRAY: usize = layouts::NiStream::maybe_loadingObjects;
 
-// `NiObjectNET`
-const NET_NAME: usize = 0x08;
-const NET_EXTRA_DATA: usize = 0x0C;
-const NET_CONTROLLERS: usize = 0x10;
+const NET_NAME: usize = layouts::NiObjectNET::name;
+const NET_EXTRA_DATA: usize = layouts::NiObjectNET::extraData;
+const NET_CONTROLLERS: usize = layouts::NiObjectNET::controllers;
 
 // `NiAlphaProperty` as the render state constructor fills it.
-const ALPHA_PROPERTY_SIZE: usize = 0x1C;
-const ALPHA_PROPERTY_FLAGS: usize = 0x14;
-const ALPHA_PROPERTY_TEST_REF: usize = 0x18;
+const ALPHA_PROPERTY_SIZE: usize = layouts::NiAlphaProperty::SIZE;
+const ALPHA_PROPERTY_FLAGS: usize = layouts::NiAlphaProperty::flags;
+const ALPHA_PROPERTY_TEST_REF: usize = layouts::NiAlphaProperty::alphaTestRef;
 
 /// `NiDX8ConfigurableTexturePipeline`: the texture pass that the shader functions go to.
 const PIPELINE_TEXTURE_PASS: usize = CTP::field_8;
@@ -526,9 +524,8 @@ fn window_to_buffer(x: u32, width: u32, y: u32, height: u32, one: u32) -> (u32, 
 /// and still does on Direct3D 9.
 pub(crate) const UI_SCALE_PATCH_AT: usize = 0x6F5157;
 pub(crate) const UI_SCALE_PATCH: [u8; 14] = [0xA1, 0xDC, 0x67, 0x7C, 0x00, 0x8B, 0x78, 0x78, 0x8B, 0x40, 0x7C, 0x90, 0x90, 0x90];
-/// `WorldController::viewWidth` and `viewHeight`.
-const WC_VIEW_WIDTH: usize = 0x78;
-const WC_VIEW_HEIGHT: usize = 0x7C;
+const WC_VIEW_WIDTH: usize = layouts::WorldController::viewWidth;
+const WC_VIEW_HEIGHT: usize = layouts::WorldController::viewHeight;
 
 /// 0x6F5150 `NiRenderer::MapWindowPointToBufferPoint`. When MWSE says that the pick ray
 /// divides by the UI's view size (its query of the UI scale), the port divides by the world
