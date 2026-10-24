@@ -399,6 +399,320 @@ pub mod D3DVIEWPORT8 {
     pub const MaxZ: usize = 0x14;
 }
 
+pub mod DataHandler {
+    pub const SIZE: usize = 0xb558;
+    /// `RecordsHandler *`, 0x4 bytes
+    pub const records: usize = 0x0;
+    /// `DataHandler::ExteriorData *[3][3]`, 0x24 bytes
+    pub const arrayExteriorCellData: usize = 0x4;
+    /// `DataHandler::ExteriorData *[5][5]`, 0x64 bytes
+    pub const backgroundLoadExteriorCellData: usize = 0x28;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgWorldObjectRoot: usize = 0x8c;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgWorldPickObjectRoot: usize = 0x90;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgWorldLandscapeRoot: usize = 0x94;
+    /// `NiDirectionalLight *`, 0x4 bytes
+    pub const sgSunlight: usize = 0x98;
+    /// `NiFogProperty *`, 0x4 bytes
+    pub const sgFogProperty: usize = 0x9c;
+    /// `int`, 0x4 bytes
+    pub const centralGridX: usize = 0xa0;
+    /// `int`, 0x4 bytes
+    pub const centralGridY: usize = 0xa4;
+    /// `byte`, 0x1 bytes
+    pub const cellChanged: usize = 0xa8;
+    /// `Cell *`, 0x4 bytes
+    pub const currentInteriorCell: usize = 0xac;
+    /// `Cell **`, 0x4 bytes
+    pub const arrayInteriorCellBuffer: usize = 0xb0;
+    /// `Cell **`, 0x4 bytes
+    pub const arrayExteriorCellBuffer: usize = 0xb4;
+    /// `int`, 0x4 bytes
+    pub const lastExteriorCellPosX: usize = 0xb8;
+    /// `int`, 0x4 bytes
+    pub const lastExteriorCellPosY: usize = 0xbc;
+    /// `TList[2304]`, 0xb400 bytes
+    pub const array_listsCollisionGrid: usize = 0xc0;
+    /// `int`, 0x4 bytes
+    pub const collisionCentreX: usize = 0xb4c0;
+    /// `int`, 0x4 bytes
+    pub const collisionCentreY: usize = 0xb4c4;
+    /// `int`, 0x4 bytes
+    pub const collisionSubCellX: usize = 0xb4c8;
+    /// `int`, 0x4 bytes
+    pub const collisionSubCellY: usize = 0xb4cc;
+    /// `TList *`, 0x4 bytes
+    pub const soundEvents: usize = 0xb4d0;
+    /// `TList *`, 0x4 bytes
+    pub const tempSoundEvents: usize = 0xb4d4;
+    /// `TList *`, 0x4 bytes
+    pub const lightSoundEvents: usize = 0xb4d8;
+    /// `char`, 0x1 bytes
+    pub const showActorCollisionBounds: usize = 0xb4dc;
+    /// `char`, 0x1 bytes
+    pub const flagTestingCells: usize = 0xb4dd;
+    /// `char`, 0x1 bytes
+    pub const field_B4DE: usize = 0xb4de;
+    /// `char`, 0x1 bytes
+    pub const field_B4DF: usize = 0xb4df;
+    /// `int`, 0x4 bytes
+    pub const cellIndex_B4E0: usize = 0xb4e0;
+    /// `bool`, 0x1 bytes
+    pub const flagDisplayCellBorders: usize = 0xb4e4;
+    /// `THashMap *`, 0x4 bytes
+    pub const textureCacheHashMap: usize = 0xb4e8;
+    /// `WaterController *`, 0x4 bytes
+    pub const waterController: usize = 0xb4ec;
+    /// `int`, 0x4 bytes
+    pub const totalLoadableRecordCount: usize = 0xb4f0;
+    /// `unsigned int`, 0x4 bytes
+    pub const loadedRecordCount: usize = 0xb4f4;
+    /// `char`, 0x1 bytes
+    pub const flag_B4F8: usize = 0xb4f8;
+    /// `int`, 0x4 bytes
+    pub const backgroundThreadID: usize = 0xb4fc;
+    /// `int`, 0x4 bytes
+    pub const mainThreadID: usize = 0xb500;
+    /// `HANDLE`, 0x4 bytes
+    pub const backgroundThread: usize = 0xb504;
+    /// `int`, 0x4 bytes
+    pub const mainThread: usize = 0xb508;
+    /// `char`, 0x1 bytes
+    pub const cellLoading_field_B50C: usize = 0xb50c;
+    /// `char`, 0x1 bytes
+    pub const threadLoading_field_B50D: usize = 0xb50d;
+    /// `char`, 0x1 bytes
+    pub const threadLoading_field_B50E: usize = 0xb50e;
+    /// `char`, 0x1 bytes
+    pub const threadLoading_field_B50F: usize = 0xb50f;
+    /// `char`, 0x1 bytes
+    pub const flagShutdownBackgroundThread: usize = 0xb510;
+    /// `char`, 0x1 bytes
+    pub const flagBackgroundThreadRunning: usize = 0xb511;
+    /// `int`, 0x4 bytes
+    pub const field_B514: usize = 0xb514;
+    /// `char`, 0x1 bytes
+    pub const threadLoading_field_B518: usize = 0xb518;
+    /// `int`, 0x4 bytes
+    pub const threadSleepTime: usize = 0xb51c;
+    /// `int`, 0x4 bytes
+    pub const timeInterval_B520: usize = 0xb520;
+    /// `char`, 0x1 bytes
+    pub const threadLoading_field_B524: usize = 0xb524;
+    /// `float`, 0x4 bytes
+    pub const float_B528: usize = 0xb528;
+    /// `float`, 0x4 bytes
+    pub const float_B52C: usize = 0xb52c;
+    /// `char`, 0x1 bytes
+    pub const field_B530: usize = 0xb530;
+    /// `NiCriticalSection *`, 0x4 bytes
+    pub const criticalSection_AudioLists: usize = 0xb534;
+    /// `NiCriticalSection *`, 0x4 bytes
+    pub const criticalSection_ResumeBackgroundThread: usize = 0xb538;
+    /// `char`, 0x1 bytes
+    pub const bLoadCellFade: usize = 0xb53c;
+    /// `Cell *`, 0x4 bytes
+    pub const currentPCCell: usize = 0xb540;
+    /// `Cell *`, 0x4 bytes
+    pub const lastExteriorPCCell: usize = 0xb544;
+    /// `Sound *`, 0x4 bytes
+    pub const soundRegionalRandomSFX: usize = 0xb548;
+    /// `Sound *`, 0x4 bytes
+    pub const currentAmbientWaterSound: usize = 0xb54c;
+    /// `int`, 0x4 bytes
+    pub const exteriorCellDataBufferSize: usize = 0xb550;
+    /// `DataHandler::LandscapeData *`, 0x4 bytes
+    pub const exteriorCellDataBuffer: usize = 0xb554;
+}
+
+pub mod InterfaceNiDX8TextureData {
+    pub const SIZE: usize = 0x28;
+    /// `void (__thiscall *)(NiTexture::RendererData *, char)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `bool (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const IsLoaded: usize = 0x4;
+    /// `unsigned int (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetWidth: usize = 0x8;
+    /// `unsigned int (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetHeight: usize = 0xc;
+    /// `NiDX8PixelFormat *(__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetPixelFormat: usize = 0x10;
+    /// `unsigned int (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetLevels: usize = 0x14;
+    /// `IDirect3DTexture8 *(__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetD3DTexture: usize = 0x18;
+    /// `unsigned int (__thiscall *)(NiDX8TextureData *this)`, 0x4 bytes
+    pub const GetD3DPalette: usize = 0x1c;
+    /// `int (__thiscall *)(_DWORD)`, 0x4 bytes
+    pub const GetAsRenderedTexture: usize = 0x20;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const GetAsSourceTexture: usize = 0x24;
+}
+
+pub mod InterfaceNiLight {
+    pub const SIZE: usize = 0x98;
+    /// `InterfaceNiAVObject`, 0x94 bytes
+    pub const super_: usize = 0x0;
+    /// `InterfaceNiObject`, 0x2c bytes
+    pub const super__: usize = 0x0;
+    /// `void (__thiscall *)(NiObject *, char)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `NiRTTI *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const GetRTTI: usize = 0x4;
+    /// `NiObject *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateClone: usize = 0x8;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LoadBinary: usize = 0xc;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LinkObject: usize = 0x10;
+    /// `bool (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const RegisterStreamables: usize = 0x14;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const SaveBinary: usize = 0x18;
+    /// `bool (__thiscall *)(const NiObject *, const NiObject *)`, 0x4 bytes
+    pub const IsEqual: usize = 0x1c;
+    /// `void (__thiscall *)(NiObject *, TArray *)`, 0x4 bytes
+    pub const AddViewerStrings: usize = 0x20;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const ProcessClone: usize = 0x24;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateRendererData: usize = 0x28;
+    /// `void (__thiscall *)(NiAVObject *this, float fTime)`, 0x4 bytes
+    pub const UpdateControllers: usize = 0x2c;
+    /// `void (__thiscall *)(NiAVObject *, matrix33 *, vec3 *, bool)`, 0x4 bytes
+    pub const ApplyTransform: usize = 0x30;
+    /// `NiBound *(__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const GetWorldBound: usize = 0x34;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const CreateWorldVertices: usize = 0x38;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const UpdateWorldVertices: usize = 0x3c;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const DestroyWorldVertices: usize = 0x40;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const CreateWorldNormals: usize = 0x44;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const UpdateWorldNormals: usize = 0x48;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const DestroyWorldNormals: usize = 0x4c;
+    /// `void (__thiscall *)(NiAVObject *this, bool cull)`, 0x4 bytes
+    pub const SetAppCulled: usize = 0x50;
+    /// `bool (__thiscall *)(const NiAVObject *)`, 0x4 bytes
+    pub const GetAppCulled: usize = 0x54;
+    /// `void (__thiscall *)(NiAVObject *, int)`, 0x4 bytes
+    pub const SetPropagationMode: usize = 0x58;
+    /// `NiAVObject *(__thiscall *)(NiAVObject *, const char *)`, 0x4 bytes
+    pub const GetObjectByName: usize = 0x5c;
+    /// `void (__thiscall *)(NiAVObject *this, float fTime, bool updateControllers, bool updateChildren)`, 0x4 bytes
+    pub const UpdateDownwardPass: usize = 0x60;
+    /// `bool (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const IsVisualObject: usize = 0x64;
+    /// `void (__thiscall *)(NiAVObject *this, NiPropertyState *propertyState)`, 0x4 bytes
+    pub const UpdatePropertiesDownward: usize = 0x68;
+    /// `void (__thiscall *)(NiAVObject *this, NiDynamicEffectState *effectState)`, 0x4 bytes
+    pub const UpdateEffectsDownward: usize = 0x6c;
+    /// `NiPointer *(__thiscall *)(NiAVObject *this, NiPointer *out_ptr)`, 0x4 bytes
+    pub const GetPropertyState: usize = 0x70;
+    /// `NiPointer *(__thiscall *)(NiAVObject *this, NiPointer *out_ptr)`, 0x4 bytes
+    pub const GetEffectState: usize = 0x74;
+    /// `void (__thiscall *)(NiAVObject *this, NiCamera *camera)`, 0x4 bytes
+    pub const Display: usize = 0x78;
+    /// `int (__thiscall *)(_DWORD)`, 0x4 bytes
+    pub const UpdateCollisionData: usize = 0x7c;
+    /// `bool (__thiscall *)(NiAVObject *this, float deltaTime, NiCollisionGroup::Record *collider, NiCollisionGroup::Record *collidee)`, 0x4 bytes
+    pub const TestCollisions: usize = 0x80;
+    /// `int (__thiscall *)(NiAVObject *this, float deltaTime, NiCollisionGroup::Record *collider, NiCollisionGroup::Record *collidee)`, 0x4 bytes
+    pub const FindCollisions: usize = 0x84;
+    /// `bool (__thiscall *)(NiAVObject *this, vec3 *position, vec3 *direction, NiPick *pick)`, 0x4 bytes
+    pub const FindIntersections: usize = 0x88;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const UpdateWorldData: usize = 0x8c;
+    /// `void (__thiscall *)(NiAVObject *)`, 0x4 bytes
+    pub const UpdateWorldBound: usize = 0x90;
+    /// `int (__thiscall *)(NiLight *)`, 0x4 bytes
+    pub const GetType: usize = 0x94;
+}
+
+pub mod Moon {
+    pub const SIZE: usize = 0x15c;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgMoonRoot: usize = 0x0;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgMoonNode: usize = 0x4;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgShadowNode: usize = 0x8;
+    /// `NiTriShape *`, 0x4 bytes
+    pub const sgMoonTriShape: usize = 0xc;
+    /// `NiTriShape *`, 0x4 bytes
+    pub const sgShadowTriShape: usize = 0x10;
+    /// `WeatherController *`, 0x4 bytes
+    pub const weatherController: usize = 0x14;
+    /// `int`, 0x4 bytes
+    pub const fadeInStart: usize = 0x18;
+    /// `int`, 0x4 bytes
+    pub const fadeInFinish: usize = 0x1c;
+    /// `int`, 0x4 bytes
+    pub const fadeOutStart: usize = 0x20;
+    /// `int`, 0x4 bytes
+    pub const fadeOutFinish: usize = 0x24;
+    /// `float`, 0x4 bytes
+    pub const shadowEarlyFadeAngle: usize = 0x28;
+    /// `int`, 0x4 bytes
+    pub const field_2C: usize = 0x2c;
+    /// `int`, 0x4 bytes
+    pub const field_30: usize = 0x30;
+    /// `float`, 0x4 bytes
+    pub const fadeStartAngle: usize = 0x34;
+    /// `float`, 0x4 bytes
+    pub const fadeEndAngle: usize = 0x38;
+    /// `float`, 0x4 bytes
+    pub const dailyIncrement: usize = 0x3c;
+    /// `float`, 0x4 bytes
+    pub const speed: usize = 0x40;
+    /// `int`, 0x4 bytes
+    pub const maybe_daysPhaseRelated: usize = 0x44;
+    /// `char`, 0x1 bytes
+    pub const maybe_bWaxing: usize = 0x48;
+    /// `char`, 0x1 bytes
+    pub const maybe_bWaning: usize = 0x49;
+    /// `char`, 0x1 bytes
+    pub const bIsBloodmoon: usize = 0x4a;
+    /// `char`, 0x1 bytes
+    pub const field_4B: usize = 0x4b;
+    /// `int`, 0x4 bytes
+    pub const phase: usize = 0x4c;
+    /// `int`, 0x4 bytes
+    pub const index: usize = 0x50;
+    /// `char[260]`, 0x104 bytes
+    pub const texturePath: usize = 0x54;
+    /// `float`, 0x4 bytes
+    pub const axisOffset: usize = 0x158;
+}
+
+pub mod NVSkyRenderToTexture {
+    pub const SIZE: usize = 0x1c;
+    /// `NiRenderedTexture *`, 0x4 bytes
+    pub const renderedTexture: usize = 0x0;
+    /// `NiCamera *`, 0x4 bytes
+    pub const camera: usize = 0x4;
+    /// `NiDX8Renderer *`, 0x4 bytes
+    pub const renderer: usize = 0x8;
+    /// `NiNode *`, 0x4 bytes
+    pub const skyRoot: usize = 0xc;
+    /// `NiScreenPolygon *`, 0x4 bytes
+    pub const screenPolygon: usize = 0x10;
+    /// `NiMaterialProperty *`, 0x4 bytes
+    pub const materialProperty: usize = 0x14;
+    /// `char`, 0x1 bytes
+    pub const wp_terrain_on: usize = 0x18;
+    /// `char`, 0x1 bytes
+    pub const noWeatherReflectionCleared: usize = 0x19;
+    /// `char[2]`, 0x2 bytes
+    pub const padding_1A: usize = 0x1a;
+}
+
 pub mod NiAVObject {
     pub const SIZE: usize = 0x90;
     /// `NiObjectNET`, 0x14 bytes
@@ -7315,6 +7629,228 @@ pub mod NiTexture {
     pub const nextTexture: usize = 0x28;
 }
 
+pub mod NiTextureEffect {
+    pub const SIZE: usize = 0x148;
+    /// `NiDynamicEffect`, 0xa8 bytes
+    pub const super_: usize = 0x0;
+    /// `NiAVObject`, 0x90 bytes
+    pub const super__: usize = 0x0;
+    /// `NiObjectNET`, 0x14 bytes
+    pub const super___: usize = 0x0;
+    /// `NiObject`, 0x8 bytes
+    pub const super____: usize = 0x0;
+    /// `InterfaceNiObjectUnion`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const refCount: usize = 0x4;
+    /// `char *`, 0x4 bytes
+    pub const name: usize = 0x8;
+    /// `NiExtraData *`, 0x4 bytes
+    pub const extraData: usize = 0xc;
+    /// `NiTimeController *`, 0x4 bytes
+    pub const controllers: usize = 0x10;
+    /// `unsigned __int16`, 0x2 bytes
+    pub const flags: usize = 0x14;
+    /// `__int16`, 0x2 bytes
+    pub const pad_16: usize = 0x16;
+    /// `NiNode *`, 0x4 bytes
+    pub const parentNode: usize = 0x18;
+    /// `NiBound`, 0x10 bytes
+    pub const worldBound: usize = 0x1c;
+    /// `vec3`, 0xc bytes
+    pub const worldBound_centre: usize = 0x1c;
+    /// `float`, 0x4 bytes
+    pub const worldBound_centre_x: usize = 0x1c;
+    /// `float`, 0x4 bytes
+    pub const worldBound_centre_y: usize = 0x20;
+    /// `float`, 0x4 bytes
+    pub const worldBound_centre_z: usize = 0x24;
+    /// `float`, 0x4 bytes
+    pub const worldBound_radius: usize = 0x28;
+    /// `NiAVObject::LocalTransform`, 0x14 bytes
+    pub const localTransform: usize = 0x2c;
+    /// `matrix33 *`, 0x4 bytes
+    pub const localTransform_pLocalRotate: usize = 0x2c;
+    /// `vec3`, 0xc bytes
+    pub const localTransform_localTranslate: usize = 0x30;
+    /// `float`, 0x4 bytes
+    pub const localTransform_localTranslate_x: usize = 0x30;
+    /// `float`, 0x4 bytes
+    pub const localTransform_localTranslate_y: usize = 0x34;
+    /// `float`, 0x4 bytes
+    pub const localTransform_localTranslate_z: usize = 0x38;
+    /// `float`, 0x4 bytes
+    pub const localTransform_localScale: usize = 0x3c;
+    /// `NiTransform`, 0x34 bytes
+    pub const worldTransform: usize = 0x40;
+    /// `matrix33`, 0x24 bytes
+    pub const worldTransform_rotation: usize = 0x40;
+    /// `vec3`, 0xc bytes
+    pub const worldTransform_rotation_m0: usize = 0x40;
+    /// `vec3`, 0xc bytes
+    pub const worldTransform_rotation_m1: usize = 0x4c;
+    /// `vec3`, 0xc bytes
+    pub const worldTransform_rotation_m2: usize = 0x58;
+    /// `vec3`, 0xc bytes
+    pub const worldTransform_translation: usize = 0x64;
+    /// `float`, 0x4 bytes
+    pub const worldTransform_translation_x: usize = 0x64;
+    /// `float`, 0x4 bytes
+    pub const worldTransform_translation_y: usize = 0x68;
+    /// `float`, 0x4 bytes
+    pub const worldTransform_translation_z: usize = 0x6c;
+    /// `float`, 0x4 bytes
+    pub const worldTransform_scale: usize = 0x70;
+    /// `NiAVObject::Physics *`, 0x4 bytes
+    pub const pkVelocities: usize = 0x74;
+    /// `NiBoundingVolume *`, 0x4 bytes
+    pub const modelABV: usize = 0x78;
+    /// `NiBoundingVolume *`, 0x4 bytes
+    pub const worldABV: usize = 0x7c;
+    /// `int (__cdecl *)(NiCollisionGroup::Intersect *)`, 0x4 bytes
+    pub const collideCallback: usize = 0x80;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const collideCallbackUserData: usize = 0x84;
+    /// `NiPropertyList`, 0x8 bytes
+    pub const propertyList: usize = 0x88;
+    /// `NiProperty *`, 0x4 bytes
+    pub const propertyList_property: usize = 0x88;
+    /// `NiPropertyList *`, 0x4 bytes
+    pub const propertyList_next: usize = 0x8c;
+    /// `byte`, 0x1 bytes
+    pub const enabled: usize = 0x90;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_91: usize = 0x91;
+    /// `int`, 0x4 bytes
+    pub const index: usize = 0x94;
+    /// `int`, 0x4 bytes
+    pub const pushCount: usize = 0x98;
+    /// `int`, 0x4 bytes
+    pub const revisionID: usize = 0x9c;
+    /// `NiAVObjectList`, 0x8 bytes
+    pub const affectedNodes: usize = 0xa0;
+    /// `NiAVObject *`, 0x4 bytes
+    pub const affectedNodes_node: usize = 0xa0;
+    /// `NiAVObjectList *`, 0x4 bytes
+    pub const affectedNodes_next: usize = 0xa4;
+    /// `matrix33`, 0x24 bytes
+    pub const modelProjMat: usize = 0xa8;
+    /// `vec3`, 0xc bytes
+    pub const modelProjMat_m0: usize = 0xa8;
+    /// `float`, 0x4 bytes
+    pub const modelProjMat_m0_x: usize = 0xa8;
+    /// `float`, 0x4 bytes
+    pub const modelProjMat_m0_y: usize = 0xac;
+    /// `float`, 0x4 bytes
+    pub const modelProjMat_m0_z: usize = 0xb0;
+    /// `vec3`, 0xc bytes
+    pub const modelProjMat_m1: usize = 0xb4;
+    /// `float`, 0x4 bytes
+    pub const modelProjMat_m1_x: usize = 0xb4;
+    /// `float`, 0x4 bytes
+    pub const modelProjMat_m1_y: usize = 0xb8;
+    /// `float`, 0x4 bytes
+    pub const modelProjMat_m1_z: usize = 0xbc;
+    /// `vec3`, 0xc bytes
+    pub const modelProjMat_m2: usize = 0xc0;
+    /// `float`, 0x4 bytes
+    pub const modelProjMat_m2_x: usize = 0xc0;
+    /// `float`, 0x4 bytes
+    pub const modelProjMat_m2_y: usize = 0xc4;
+    /// `float`, 0x4 bytes
+    pub const modelProjMat_m2_z: usize = 0xc8;
+    /// `vec3`, 0xc bytes
+    pub const modelProjTrans: usize = 0xcc;
+    /// `float`, 0x4 bytes
+    pub const modelProjTrans_x: usize = 0xcc;
+    /// `float`, 0x4 bytes
+    pub const modelProjTrans_y: usize = 0xd0;
+    /// `float`, 0x4 bytes
+    pub const modelProjTrans_z: usize = 0xd4;
+    /// `matrix33`, 0x24 bytes
+    pub const worldProjMat: usize = 0xd8;
+    /// `vec3`, 0xc bytes
+    pub const worldProjMat_m0: usize = 0xd8;
+    /// `float`, 0x4 bytes
+    pub const worldProjMat_m0_x: usize = 0xd8;
+    /// `float`, 0x4 bytes
+    pub const worldProjMat_m0_y: usize = 0xdc;
+    /// `float`, 0x4 bytes
+    pub const worldProjMat_m0_z: usize = 0xe0;
+    /// `vec3`, 0xc bytes
+    pub const worldProjMat_m1: usize = 0xe4;
+    /// `float`, 0x4 bytes
+    pub const worldProjMat_m1_x: usize = 0xe4;
+    /// `float`, 0x4 bytes
+    pub const worldProjMat_m1_y: usize = 0xe8;
+    /// `float`, 0x4 bytes
+    pub const worldProjMat_m1_z: usize = 0xec;
+    /// `vec3`, 0xc bytes
+    pub const worldProjMat_m2: usize = 0xf0;
+    /// `float`, 0x4 bytes
+    pub const worldProjMat_m2_x: usize = 0xf0;
+    /// `float`, 0x4 bytes
+    pub const worldProjMat_m2_y: usize = 0xf4;
+    /// `float`, 0x4 bytes
+    pub const worldProjMat_m2_z: usize = 0xf8;
+    /// `vec3`, 0xc bytes
+    pub const worldProjTrans: usize = 0xfc;
+    /// `float`, 0x4 bytes
+    pub const worldProjTrans_x: usize = 0xfc;
+    /// `float`, 0x4 bytes
+    pub const worldProjTrans_y: usize = 0x100;
+    /// `float`, 0x4 bytes
+    pub const worldProjTrans_z: usize = 0x104;
+    /// `NiSourceTexture *`, 0x4 bytes
+    pub const sourceTexture: usize = 0x108;
+    /// `NiTexturingProperty::FilterMode`, 0x4 bytes
+    pub const filterMode: usize = 0x10c;
+    /// `NiTexturingProperty::ClampMode`, 0x4 bytes
+    pub const clampMode: usize = 0x110;
+    /// `int`, 0x4 bytes
+    pub const textureMode: usize = 0x114;
+    /// `int`, 0x4 bytes
+    pub const coordMode: usize = 0x118;
+    /// `char`, 0x1 bytes
+    pub const bPlaneEnable: usize = 0x11c;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_11D: usize = 0x11d;
+    /// `NiPlane`, 0x10 bytes
+    pub const modelPlane: usize = 0x120;
+    /// `vec3`, 0xc bytes
+    pub const modelPlane_normal: usize = 0x120;
+    /// `float`, 0x4 bytes
+    pub const modelPlane_normal_x: usize = 0x120;
+    /// `float`, 0x4 bytes
+    pub const modelPlane_normal_y: usize = 0x124;
+    /// `float`, 0x4 bytes
+    pub const modelPlane_normal_z: usize = 0x128;
+    /// `float`, 0x4 bytes
+    pub const modelPlane_constant: usize = 0x12c;
+    /// `NiPlane`, 0x10 bytes
+    pub const worldPlane: usize = 0x130;
+    /// `vec3`, 0xc bytes
+    pub const worldPlane_normal: usize = 0x130;
+    /// `float`, 0x4 bytes
+    pub const worldPlane_normal_x: usize = 0x130;
+    /// `float`, 0x4 bytes
+    pub const worldPlane_normal_y: usize = 0x134;
+    /// `float`, 0x4 bytes
+    pub const worldPlane_normal_z: usize = 0x138;
+    /// `float`, 0x4 bytes
+    pub const worldPlane_constant: usize = 0x13c;
+    /// `__int16`, 0x2 bytes
+    pub const sL: usize = 0x140;
+    /// `__int16`, 0x2 bytes
+    pub const sK: usize = 0x142;
+    /// `char`, 0x1 bytes
+    pub const field_144: usize = 0x144;
+    /// `char`, 0x1 bytes
+    pub const field_145: usize = 0x145;
+    /// `char[2]`, 0x2 bytes
+    pub const pad_146: usize = 0x146;
+}
+
 pub mod NiTexturingProperty {
     pub const SIZE: usize = 0x38;
     /// `NiProperty`, 0x18 bytes
@@ -8177,6 +8713,592 @@ pub mod PlayerAnimController {
     pub const shadowCameraMatrix_m2_z: usize = 0x120;
 }
 
+pub mod ShadowManager {
+    pub const SIZE: usize = 0x70;
+    /// `char`, 0x1 bytes
+    pub const bHighDetailShadows: usize = 0x0;
+    /// `char[3]`, 0x3 bytes
+    pub const field_1: usize = 0x1;
+    /// `TList *`, 0x4 bytes
+    pub const list_4: usize = 0x4;
+    /// `NiCamera *`, 0x4 bytes
+    pub const sgShadowCamera: usize = 0x8;
+    /// `char`, 0x1 bytes
+    pub const field_C: usize = 0xc;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgWorldRoot: usize = 0x10;
+    /// `__int16`, 0x2 bytes
+    pub const maxShadows: usize = 0x14;
+    /// `__int16`, 0x2 bytes
+    pub const maxShadowsPerObject: usize = 0x16;
+    /// `__int16`, 0x2 bytes
+    pub const unusedShadowCount: usize = 0x18;
+    /// `unsigned __int16`, 0x2 bytes
+    pub const framesSinceUpdate: usize = 0x1a;
+    /// `unsigned __int16`, 0x2 bytes
+    pub const frameUpdateInterval: usize = 0x1c;
+    /// `NiPointer[14]`, 0x38 bytes
+    pub const weaponShadowNodeArray: usize = 0x20;
+    /// `NiPointer`, 0x4 bytes
+    pub const sgPointer_58: usize = 0x58;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const sgPointer_58_ptr: usize = 0x58;
+    /// `NiPointer`, 0x4 bytes
+    pub const sgPointer_5C: usize = 0x5c;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const sgPointer_5C_ptr: usize = 0x5c;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgShadowVolume: usize = 0x60;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgShadowOverlay: usize = 0x64;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgSceneObjects: usize = 0x68;
+    /// `char`, 0x1 bytes
+    pub const updateRequired: usize = 0x6c;
+    /// `char[3]`, 0x3 bytes
+    pub const padding_6D: usize = 0x6d;
+}
+
+pub mod TES3Game {
+    pub const SIZE: usize = 0x110;
+    /// `InterfaceTES3Game *`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `char *`, 0x4 bytes
+    pub const registryKey: usize = 0x4;
+    /// `unsigned int`, 0x4 bytes
+    pub const windowWidth: usize = 0x8;
+    /// `unsigned int`, 0x4 bytes
+    pub const windowHeight: usize = 0xc;
+    /// `int`, 0x4 bytes
+    pub const screenDepth: usize = 0x10;
+    /// `int`, 0x4 bytes
+    pub const backBuffers: usize = 0x14;
+    /// `int`, 0x4 bytes
+    pub const multiSamples: usize = 0x18;
+    /// `char`, 0x1 bytes
+    pub const fullscreen: usize = 0x1c;
+    /// `char`, 0x1 bytes
+    pub const stencil: usize = 0x1d;
+    /// `char`, 0x1 bytes
+    pub const mipmap: usize = 0x1e;
+    /// `char`, 0x1 bytes
+    pub const hardware: usize = 0x1f;
+    /// `char`, 0x1 bytes
+    pub const pixelShader: usize = 0x20;
+    /// `char`, 0x1 bytes
+    pub const multipass: usize = 0x21;
+    /// `char`, 0x1 bytes
+    pub const screenShotEnabled: usize = 0x22;
+    /// `char`, 0x1 bytes
+    pub const field_23: usize = 0x23;
+    /// `int`, 0x4 bytes
+    pub const vertexProcessing: usize = 0x24;
+    /// `int`, 0x4 bytes
+    pub const swapEffect: usize = 0x28;
+    /// `int`, 0x4 bytes
+    pub const refreshRate: usize = 0x2c;
+    /// `int`, 0x4 bytes
+    pub const adapterID: usize = 0x30;
+    /// `int`, 0x4 bytes
+    pub const mipmapSkipLevel: usize = 0x34;
+    /// `int`, 0x4 bytes
+    pub const presentationInterval: usize = 0x38;
+    /// `float`, 0x4 bytes
+    pub const gamma: usize = 0x3c;
+    /// `char`, 0x1 bytes
+    pub const field_40: usize = 0x40;
+    /// `int`, 0x4 bytes
+    pub const windowPositionX: usize = 0x44;
+    /// `int`, 0x4 bytes
+    pub const windowPositionY: usize = 0x48;
+    /// `float`, 0x4 bytes
+    pub const renderDistance: usize = 0x4c;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const masterVolume: usize = 0x50;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const voiceVolume: usize = 0x51;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const effectVolume: usize = 0x52;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const footstepsVolume: usize = 0x53;
+    /// `float`, 0x4 bytes
+    pub const mediaVolume: usize = 0x54;
+    /// `int`, 0x4 bytes
+    pub const soundQuality3D: usize = 0x58;
+    /// `HWND`, 0x4 bytes
+    pub const Win32_hWndParent: usize = 0x5c;
+    /// `HWND`, 0x4 bytes
+    pub const Win32_hWnd: usize = 0x60;
+    /// `NiRenderer *`, 0x4 bytes
+    pub const renderer: usize = 0x64;
+    /// `NiColor`, 0xc bytes
+    pub const backgroundColour: usize = 0x68;
+    /// `float`, 0x4 bytes
+    pub const backgroundColour_r: usize = 0x68;
+    /// `float`, 0x4 bytes
+    pub const backgroundColour_g: usize = 0x6c;
+    /// `float`, 0x4 bytes
+    pub const backgroundColour_b: usize = 0x70;
+    /// `StdMap`, 0x10 bytes
+    pub const map_74: usize = 0x74;
+    /// `char`, 0x1 bytes
+    pub const map_74_tag: usize = 0x74;
+    /// `char`, 0x1 bytes
+    pub const map_74_field_1: usize = 0x75;
+    /// `__int16`, 0x2 bytes
+    pub const map_74_pad_2: usize = 0x76;
+    /// `StdMap::Node *`, 0x4 bytes
+    pub const map_74_root: usize = 0x78;
+    /// `char`, 0x1 bytes
+    pub const map_74_field_8: usize = 0x7c;
+    /// `char[3]`, 0x3 bytes
+    pub const map_74_pad_9: usize = 0x7d;
+    /// `int`, 0x4 bytes
+    pub const map_74_itemCount: usize = 0x80;
+    /// `std_vector`, 0x10 bytes
+    pub const resolutionModeStringsVector: usize = 0x84;
+    /// `char`, 0x1 bytes
+    pub const resolutionModeStringsVector_tag: usize = 0x84;
+    /// `void *`, 0x4 bytes
+    pub const resolutionModeStringsVector_begin: usize = 0x88;
+    /// `void *`, 0x4 bytes
+    pub const resolutionModeStringsVector_end: usize = 0x8c;
+    /// `void *`, 0x4 bytes
+    pub const resolutionModeStringsVector_storageEnd: usize = 0x90;
+    /// `void *`, 0x4 bytes
+    pub const showSceneGraphStruct: usize = 0x94;
+    /// `TList *`, 0x4 bytes
+    pub const pList_98: usize = 0x98;
+    /// `NiNode *`, 0x4 bytes
+    pub const worldRoot: usize = 0x9c;
+    /// `NiNode *`, 0x4 bytes
+    pub const worldObjectRoot: usize = 0xa0;
+    /// `NiNode *`, 0x4 bytes
+    pub const worldPickObjectRoot: usize = 0xa4;
+    /// `NiNode *`, 0x4 bytes
+    pub const worldLandRoot: usize = 0xa8;
+    /// `NiNode *`, 0x4 bytes
+    pub const debugRoot: usize = 0xac;
+    /// `NiProperty *`, 0x4 bytes
+    pub const sgWireframeProperty: usize = 0xb0;
+    /// `NiAmbientLight *`, 0x4 bytes
+    pub const sgActivationAmbLight: usize = 0xb4;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgMenuGridText: usize = 0xb8;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgMenuCollideText: usize = 0xbc;
+    /// `NiPointer`, 0x4 bytes
+    pub const sgPointer_C0: usize = 0xc0;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const sgPointer_C0_ptr: usize = 0xc0;
+    /// `NiPointer`, 0x4 bytes
+    pub const field_C4: usize = 0xc4;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const field_C4_ptr: usize = 0xc4;
+    /// `NiPointer`, 0x4 bytes
+    pub const sgMenuTextureText: usize = 0xc8;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const sgMenuTextureText_ptr: usize = 0xc8;
+    /// `NiPointer`, 0x4 bytes
+    pub const sgPointer_CC: usize = 0xcc;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const sgPointer_CC_ptr: usize = 0xcc;
+    /// `NiPointer[3]`, 0xc bytes
+    pub const sgPointers_debug_animationData: usize = 0xd0;
+    /// `int`, 0x4 bytes
+    pub const field_DC: usize = 0xdc;
+    /// `NiPointer`, 0x4 bytes
+    pub const sgPointer_E0: usize = 0xe0;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const sgPointer_E0_ptr: usize = 0xe0;
+    /// `NiPick *`, 0x4 bytes
+    pub const activationPick: usize = 0xe4;
+    /// `Reference *`, 0x4 bytes
+    pub const playerTarget: usize = 0xe8;
+    /// `Reference *`, 0x4 bytes
+    pub const playerTargetPrevFrame: usize = 0xec;
+    /// `NiFogProperty *`, 0x4 bytes
+    pub const sgFogProperty: usize = 0xf0;
+    /// `int`, 0x4 bytes
+    pub const compassHeading: usize = 0xf4;
+    /// `NiPointer`, 0x4 bytes
+    pub const sgPointer_debug_compassHeading: usize = 0xf8;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const sgPointer_debug_compassHeading_ptr: usize = 0xf8;
+    /// `NiColor`, 0xc bytes
+    pub const currentFogColour: usize = 0xfc;
+    /// `float`, 0x4 bytes
+    pub const currentFogColour_r: usize = 0xfc;
+    /// `float`, 0x4 bytes
+    pub const currentFogColour_g: usize = 0x100;
+    /// `float`, 0x4 bytes
+    pub const currentFogColour_b: usize = 0x104;
+    /// `LoadScreenManager *`, 0x4 bytes
+    pub const loadScreenManager: usize = 0x108;
+    /// `char`, 0x1 bytes
+    pub const skipRenderingNextFrame: usize = 0x10c;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_10D: usize = 0x10d;
+}
+
+pub mod TES3WaterNVLake {
+    pub const SIZE: usize = 0x278;
+    /// `PixelWaterCoupler *`, 0x4 bytes
+    pub const waterCoupler: usize = 0x0;
+    /// `NVSkyRenderToTexture *`, 0x4 bytes
+    pub const nvSkyRenderToTexture: usize = 0x4;
+    /// `int`, 0x4 bytes
+    pub const field_8: usize = 0x8;
+    /// `int`, 0x4 bytes
+    pub const field_C: usize = 0xc;
+    /// `int`, 0x4 bytes
+    pub const field_10: usize = 0x10;
+    /// `int`, 0x4 bytes
+    pub const field_14: usize = 0x14;
+    /// `float`, 0x4 bytes
+    pub const field_18: usize = 0x18;
+    /// `float`, 0x4 bytes
+    pub const field_1C: usize = 0x1c;
+    /// `int`, 0x4 bytes
+    pub const field_20: usize = 0x20;
+    /// `int`, 0x4 bytes
+    pub const field_24: usize = 0x24;
+    /// `int`, 0x4 bytes
+    pub const field_28: usize = 0x28;
+    /// `int`, 0x4 bytes
+    pub const field_2C: usize = 0x2c;
+    /// `int`, 0x4 bytes
+    pub const field_30: usize = 0x30;
+    /// `int`, 0x4 bytes
+    pub const field_34: usize = 0x34;
+    /// `int`, 0x4 bytes
+    pub const field_38: usize = 0x38;
+    /// `int`, 0x4 bytes
+    pub const field_3C: usize = 0x3c;
+    /// `int`, 0x4 bytes
+    pub const field_40: usize = 0x40;
+    /// `int`, 0x4 bytes
+    pub const field_44: usize = 0x44;
+    /// `int`, 0x4 bytes
+    pub const field_48: usize = 0x48;
+    /// `int`, 0x4 bytes
+    pub const field_4C: usize = 0x4c;
+    /// `int`, 0x4 bytes
+    pub const pixelShaderHandle: usize = 0x50;
+    /// `int`, 0x4 bytes
+    pub const vertexShaderHandle: usize = 0x54;
+    /// `float`, 0x4 bytes
+    pub const oneOverSurfaceFPS: usize = 0x58;
+    /// `bool`, 0x1 bytes
+    pub const wp_anim_on: usize = 0x5c;
+    /// `bool`, 0x1 bytes
+    pub const field_5D: usize = 0x5d;
+    /// `int`, 0x4 bytes
+    pub const field_60: usize = 0x60;
+    /// `ID3DDevice8 *`, 0x4 bytes
+    pub const deviceInterface: usize = 0x64;
+    /// `NiDX8Renderer *`, 0x4 bytes
+    pub const renderer: usize = 0x68;
+    /// `int`, 0x4 bytes
+    pub const field_6C: usize = 0x6c;
+    /// `int`, 0x4 bytes
+    pub const field_70: usize = 0x70;
+    /// `int`, 0x4 bytes
+    pub const field_74: usize = 0x74;
+    /// `int`, 0x4 bytes
+    pub const field_78: usize = 0x78;
+    /// `int`, 0x4 bytes
+    pub const field_7C: usize = 0x7c;
+    /// `bool`, 0x1 bytes
+    pub const field_80: usize = 0x80;
+    /// `float`, 0x4 bytes
+    pub const field_84: usize = 0x84;
+    /// `char`, 0x1 bytes
+    pub const field_88: usize = 0x88;
+    /// `float`, 0x4 bytes
+    pub const wp_alpha_reduce: usize = 0x8c;
+    /// `vec2`, 0x8 bytes
+    pub const tileBasePoint: usize = 0x90;
+    /// `float`, 0x4 bytes
+    pub const tileBasePoint_x: usize = 0x90;
+    /// `float`, 0x4 bytes
+    pub const tileBasePoint_y: usize = 0x94;
+    /// `char`, 0x1 bytes
+    pub const field_98: usize = 0x98;
+    /// `float`, 0x4 bytes
+    pub const wp_rain_size: usize = 0x9c;
+    /// `float`, 0x4 bytes
+    pub const wp_rain_freq: usize = 0xa0;
+    /// `int`, 0x4 bytes
+    pub const field_A4: usize = 0xa4;
+    /// `int`, 0x4 bytes
+    pub const wp_force_rain_on: usize = 0xa8;
+    /// `float`, 0x4 bytes
+    pub const bumpApplyMagnitude: usize = 0xac;
+    /// `float`, 0x4 bytes
+    pub const wp_char_dx: usize = 0xb0;
+    /// `float`, 0x4 bytes
+    pub const wp_char_dy: usize = 0xb4;
+    /// `bool`, 0x1 bytes
+    pub const wp_show_bumpmap: usize = 0xb8;
+    /// `char`, 0x1 bytes
+    pub const wp_highlight_detail: usize = 0xb9;
+    /// `char`, 0x1 bytes
+    pub const wp_framerate: usize = 0xba;
+    /// `float`, 0x4 bytes
+    pub const field_BC: usize = 0xbc;
+    /// `float`, 0x4 bytes
+    pub const field_C0: usize = 0xc0;
+    /// `float`, 0x4 bytes
+    pub const field_C4: usize = 0xc4;
+    /// `float`, 0x4 bytes
+    pub const field_C8: usize = 0xc8;
+    /// `int`, 0x4 bytes
+    pub const field_CC: usize = 0xcc;
+    /// `int`, 0x4 bytes
+    pub const field_D0: usize = 0xd0;
+    /// `int`, 0x4 bytes
+    pub const field_D4: usize = 0xd4;
+    /// `int`, 0x4 bytes
+    pub const field_D8: usize = 0xd8;
+    /// `float`, 0x4 bytes
+    pub const field_DC: usize = 0xdc;
+    /// `float`, 0x4 bytes
+    pub const field_E0: usize = 0xe0;
+    /// `int`, 0x4 bytes
+    pub const field_E4: usize = 0xe4;
+    /// `int`, 0x4 bytes
+    pub const field_E8: usize = 0xe8;
+    /// `int`, 0x4 bytes
+    pub const field_EC: usize = 0xec;
+    /// `NiRendererSpecificProperty *`, 0x4 bytes
+    pub const rendererSpecificProp: usize = 0xf0;
+    /// `TES3WaterNVLake::TexturePass *`, 0x4 bytes
+    pub const customTexturePass: usize = 0xf4;
+    /// `int`, 0x4 bytes
+    pub const wpm: usize = 0xf8;
+    /// `NiPackedColor`, 0x4 bytes
+    pub const colour_FC: usize = 0xfc;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const colour_FC_b: usize = 0xfc;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const colour_FC_g: usize = 0xfd;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const colour_FC_r: usize = 0xfe;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const colour_FC_a: usize = 0xff;
+    /// `NiPackedColor`, 0x4 bytes
+    pub const colour_100: usize = 0x100;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const colour_100_b: usize = 0x100;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const colour_100_g: usize = 0x101;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const colour_100_r: usize = 0x102;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const colour_100_a: usize = 0x103;
+    /// `NiPackedColor`, 0x4 bytes
+    pub const colour_104: usize = 0x104;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const colour_104_b: usize = 0x104;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const colour_104_g: usize = 0x105;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const colour_104_r: usize = 0x106;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const colour_104_a: usize = 0x107;
+    /// `bool`, 0x1 bytes
+    pub const rendererSupportsStencil: usize = 0x108;
+    /// `DataHandler *`, 0x4 bytes
+    pub const dataHandler: usize = 0x10c;
+    /// `WorldController *`, 0x4 bytes
+    pub const worldController: usize = 0x110;
+    /// `int`, 0x4 bytes
+    pub const field_114: usize = 0x114;
+    /// `int`, 0x4 bytes
+    pub const field_118: usize = 0x118;
+    /// `int`, 0x4 bytes
+    pub const field_11C: usize = 0x11c;
+    /// `int`, 0x4 bytes
+    pub const field_120: usize = 0x120;
+    /// `int`, 0x4 bytes
+    pub const field_124: usize = 0x124;
+    /// `int`, 0x4 bytes
+    pub const field_128: usize = 0x128;
+    /// `int`, 0x4 bytes
+    pub const field_12C: usize = 0x12c;
+    /// `int`, 0x4 bytes
+    pub const field_130: usize = 0x130;
+    /// `int`, 0x4 bytes
+    pub const field_134: usize = 0x134;
+    /// `int`, 0x4 bytes
+    pub const field_138: usize = 0x138;
+    /// `int`, 0x4 bytes
+    pub const field_13C: usize = 0x13c;
+    /// `int`, 0x4 bytes
+    pub const field_140: usize = 0x140;
+    /// `int`, 0x4 bytes
+    pub const field_144: usize = 0x144;
+    /// `int`, 0x4 bytes
+    pub const field_148: usize = 0x148;
+    /// `int`, 0x4 bytes
+    pub const field_14C: usize = 0x14c;
+    /// `int`, 0x4 bytes
+    pub const field_150: usize = 0x150;
+    /// `int`, 0x4 bytes
+    pub const field_154: usize = 0x154;
+    /// `int`, 0x4 bytes
+    pub const field_158: usize = 0x158;
+    /// `int`, 0x4 bytes
+    pub const field_15C: usize = 0x15c;
+    /// `int`, 0x4 bytes
+    pub const field_160: usize = 0x160;
+    /// `int`, 0x4 bytes
+    pub const field_164: usize = 0x164;
+    /// `int`, 0x4 bytes
+    pub const field_168: usize = 0x168;
+    /// `int`, 0x4 bytes
+    pub const field_16C: usize = 0x16c;
+    /// `int`, 0x4 bytes
+    pub const field_170: usize = 0x170;
+    /// `int`, 0x4 bytes
+    pub const field_174: usize = 0x174;
+    /// `int`, 0x4 bytes
+    pub const field_178: usize = 0x178;
+    /// `int`, 0x4 bytes
+    pub const field_17C: usize = 0x17c;
+    /// `int`, 0x4 bytes
+    pub const field_180: usize = 0x180;
+    /// `int`, 0x4 bytes
+    pub const field_184: usize = 0x184;
+    /// `int`, 0x4 bytes
+    pub const field_188: usize = 0x188;
+    /// `int`, 0x4 bytes
+    pub const field_18C: usize = 0x18c;
+    /// `int`, 0x4 bytes
+    pub const field_190: usize = 0x190;
+    /// `int`, 0x4 bytes
+    pub const field_194: usize = 0x194;
+    /// `int`, 0x4 bytes
+    pub const field_198: usize = 0x198;
+    /// `int`, 0x4 bytes
+    pub const field_19C: usize = 0x19c;
+    /// `int`, 0x4 bytes
+    pub const field_1A0: usize = 0x1a0;
+    /// `int`, 0x4 bytes
+    pub const field_1A4: usize = 0x1a4;
+    /// `int`, 0x4 bytes
+    pub const field_1A8: usize = 0x1a8;
+    /// `int`, 0x4 bytes
+    pub const field_1AC: usize = 0x1ac;
+    /// `int`, 0x4 bytes
+    pub const field_1B0: usize = 0x1b0;
+    /// `int`, 0x4 bytes
+    pub const field_1B4: usize = 0x1b4;
+    /// `int`, 0x4 bytes
+    pub const field_1B8: usize = 0x1b8;
+    /// `int`, 0x4 bytes
+    pub const field_1BC: usize = 0x1bc;
+    /// `int`, 0x4 bytes
+    pub const field_1C0: usize = 0x1c0;
+    /// `int`, 0x4 bytes
+    pub const field_1C4: usize = 0x1c4;
+    /// `int`, 0x4 bytes
+    pub const field_1C8: usize = 0x1c8;
+    /// `int`, 0x4 bytes
+    pub const field_1CC: usize = 0x1cc;
+    /// `int`, 0x4 bytes
+    pub const field_1D0: usize = 0x1d0;
+    /// `int`, 0x4 bytes
+    pub const field_1D4: usize = 0x1d4;
+    /// `int`, 0x4 bytes
+    pub const field_1D8: usize = 0x1d8;
+    /// `int`, 0x4 bytes
+    pub const field_1DC: usize = 0x1dc;
+    /// `int`, 0x4 bytes
+    pub const field_1E0: usize = 0x1e0;
+    /// `int`, 0x4 bytes
+    pub const field_1E4: usize = 0x1e4;
+    /// `int`, 0x4 bytes
+    pub const field_1E8: usize = 0x1e8;
+    /// `int`, 0x4 bytes
+    pub const field_1EC: usize = 0x1ec;
+    /// `int`, 0x4 bytes
+    pub const field_1F0: usize = 0x1f0;
+    /// `int`, 0x4 bytes
+    pub const field_1F4: usize = 0x1f4;
+    /// `int`, 0x4 bytes
+    pub const field_1F8: usize = 0x1f8;
+    /// `int`, 0x4 bytes
+    pub const field_1FC: usize = 0x1fc;
+    /// `int`, 0x4 bytes
+    pub const field_200: usize = 0x200;
+    /// `int`, 0x4 bytes
+    pub const field_204: usize = 0x204;
+    /// `int`, 0x4 bytes
+    pub const field_208: usize = 0x208;
+    /// `int`, 0x4 bytes
+    pub const field_20C: usize = 0x20c;
+    /// `int`, 0x4 bytes
+    pub const field_210: usize = 0x210;
+    /// `int`, 0x4 bytes
+    pub const field_214: usize = 0x214;
+    /// `int`, 0x4 bytes
+    pub const field_218: usize = 0x218;
+    /// `int`, 0x4 bytes
+    pub const field_21C: usize = 0x21c;
+    /// `int`, 0x4 bytes
+    pub const field_220: usize = 0x220;
+    /// `int`, 0x4 bytes
+    pub const field_224: usize = 0x224;
+    /// `bool`, 0x1 bytes
+    pub const field_228: usize = 0x228;
+    /// `int`, 0x4 bytes
+    pub const field_22C: usize = 0x22c;
+    /// `int`, 0x4 bytes
+    pub const field_230: usize = 0x230;
+    /// `int`, 0x4 bytes
+    pub const field_234: usize = 0x234;
+    /// `int`, 0x4 bytes
+    pub const field_238: usize = 0x238;
+    /// `int`, 0x4 bytes
+    pub const field_23C: usize = 0x23c;
+    /// `int`, 0x4 bytes
+    pub const field_240: usize = 0x240;
+    /// `int`, 0x4 bytes
+    pub const field_244: usize = 0x244;
+    /// `int`, 0x4 bytes
+    pub const field_248: usize = 0x248;
+    /// `int`, 0x4 bytes
+    pub const field_24C: usize = 0x24c;
+    /// `int`, 0x4 bytes
+    pub const field_250: usize = 0x250;
+    /// `int`, 0x4 bytes
+    pub const field_254: usize = 0x254;
+    /// `int`, 0x4 bytes
+    pub const field_258: usize = 0x258;
+    /// `int`, 0x4 bytes
+    pub const field_25C: usize = 0x25c;
+    /// `int`, 0x4 bytes
+    pub const field_260: usize = 0x260;
+    /// `int`, 0x4 bytes
+    pub const field_264: usize = 0x264;
+    /// `int`, 0x4 bytes
+    pub const field_268: usize = 0x268;
+    /// `int`, 0x4 bytes
+    pub const field_26C: usize = 0x26c;
+    /// `NiDX8RenderState *`, 0x4 bytes
+    pub const renderState: usize = 0x270;
+    /// `bool`, 0x1 bytes
+    pub const field_274: usize = 0x274;
+    /// `char`, 0x1 bytes
+    pub const field_275: usize = 0x275;
+    /// `char`, 0x1 bytes
+    pub const field_276: usize = 0x276;
+    /// `char`, 0x1 bytes
+    pub const field_277: usize = 0x277;
+}
+
 pub mod THashMap {
     pub const SIZE: usize = 0x10;
     /// `InterfaceTHashMap *`, 0x4 bytes
@@ -8197,6 +9319,360 @@ pub mod THashMap_Node {
     pub const data: usize = 0x4;
     /// `THashMap::Node *`, 0x4 bytes
     pub const nextNode: usize = 0x8;
+}
+
+pub mod TListItem {
+    pub const SIZE: usize = 0xc;
+    /// `void *`, 0x4 bytes
+    pub const data: usize = 0x0;
+    /// `TListItem *`, 0x4 bytes
+    pub const next: usize = 0x4;
+    /// `TListItem *`, 0x4 bytes
+    pub const previous: usize = 0x8;
+}
+
+pub mod WaterController {
+    pub const SIZE: usize = 0xc8;
+    /// `TES3WaterNVLake *`, 0x4 bytes
+    pub const waterNVLake: usize = 0x0;
+    /// `char`, 0x1 bytes
+    pub const pixelShaderEnabled: usize = 0x4;
+    /// `char`, 0x1 bytes
+    pub const waterShown: usize = 0x5;
+    /// `char *`, 0x4 bytes
+    pub const rippleTexturePath: usize = 0x8;
+    /// `NiFlipController *`, 0x4 bytes
+    pub const flipController: usize = 0xc;
+    /// `NiTexturingProperty *`, 0x4 bytes
+    pub const texturingProperty: usize = 0x10;
+    /// `NiAlphaProperty *`, 0x4 bytes
+    pub const alphaProperty: usize = 0x14;
+    /// `int`, 0x4 bytes
+    pub const surfaceFrameCount: usize = 0x18;
+    /// `int`, 0x4 bytes
+    pub const rippleFrameCount: usize = 0x1c;
+    /// `float`, 0x4 bytes
+    pub const field_20: usize = 0x20;
+    /// `float`, 0x4 bytes
+    pub const field_24: usize = 0x24;
+    /// `float`, 0x4 bytes
+    pub const timing: usize = 0x28;
+    /// `int`, 0x4 bytes
+    pub const surfaceFPS: usize = 0x2c;
+    /// `float`, 0x4 bytes
+    pub const field_30: usize = 0x30;
+    /// `float`, 0x4 bytes
+    pub const rippleLifetime: usize = 0x34;
+    /// `float`, 0x4 bytes
+    pub const rippleScaleX: usize = 0x38;
+    /// `float`, 0x4 bytes
+    pub const rippleScaleY: usize = 0x3c;
+    /// `float[3]`, 0xc bytes
+    pub const rippleAlphas: usize = 0x40;
+    /// `float`, 0x4 bytes
+    pub const rippleRotationSpeed: usize = 0x4c;
+    /// `int`, 0x4 bytes
+    pub const maxNumberRipples: usize = 0x50;
+    /// `WaterControllerRippleStruct *`, 0x4 bytes
+    pub const ripples: usize = 0x54;
+    /// `int`, 0x4 bytes
+    pub const nearWaterRadius: usize = 0x58;
+    /// `int`, 0x4 bytes
+    pub const nearWaterPoints: usize = 0x5c;
+    /// `float`, 0x4 bytes
+    pub const nearWaterUnderwaterFreq: usize = 0x60;
+    /// `float`, 0x4 bytes
+    pub const nearWaterUnderwaterVolume: usize = 0x64;
+    /// `float`, 0x4 bytes
+    pub const nearWaterIndoorTolerance: usize = 0x68;
+    /// `float`, 0x4 bytes
+    pub const nearWaterOutdoorTolerance: usize = 0x6c;
+    /// `char[32]`, 0x20 bytes
+    pub const nearWaterIndoorSoundID: usize = 0x70;
+    /// `char[32]`, 0x20 bytes
+    pub const nearWaterOutdoorSoundID: usize = 0x90;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgRippleNode: usize = 0xb0;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgWaterPlane: usize = 0xb4;
+    /// `NiTriShape **`, 0x4 bytes
+    pub const waterTriShapes: usize = 0xb8;
+    /// `char *`, 0x4 bytes
+    pub const surfaceTexturePath: usize = 0xbc;
+    /// `int`, 0x4 bytes
+    pub const surfaceTileCount: usize = 0xc0;
+    /// `int`, 0x4 bytes
+    pub const tileTextureDivisor: usize = 0xc4;
+}
+
+pub mod WeatherController {
+    pub const SIZE: usize = 0x1f0;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgSunVis: usize = 0x0;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgSunBase: usize = 0x4;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgSunGlare: usize = 0x8;
+    /// `int`, 0x4 bytes
+    pub const daysRemaining: usize = 0xc;
+    /// `char`, 0x1 bytes
+    pub const field_10: usize = 0x10;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_11: usize = 0x11;
+    /// `Weather *[10]`, 0x28 bytes
+    pub const arrayWeathers: usize = 0x14;
+    /// `Weather *`, 0x4 bytes
+    pub const currentWeather: usize = 0x3c;
+    /// `Weather *`, 0x4 bytes
+    pub const nextWeather: usize = 0x40;
+    /// `Moon *`, 0x4 bytes
+    pub const secundaMoonData: usize = 0x44;
+    /// `Moon *`, 0x4 bytes
+    pub const masserMoonData: usize = 0x48;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgSkyRoot: usize = 0x4c;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgSkyNight: usize = 0x50;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgSkyAtmosphere: usize = 0x54;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgSkyClouds: usize = 0x58;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgRain: usize = 0x5c;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgSnowRoot: usize = 0x60;
+    /// `NiTriShape *`, 0x4 bytes
+    pub const sgTriRain: usize = 0x64;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgSnowflake: usize = 0x68;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgStormRoot: usize = 0x6c;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgAshCloud: usize = 0x70;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgBlightCloud: usize = 0x74;
+    /// `NiNode *`, 0x4 bytes
+    pub const sgBlizzard: usize = 0x78;
+    /// `NiTriShape *`, 0x4 bytes
+    pub const sgTriAtmosphere: usize = 0x7c;
+    /// `NiTriShape *`, 0x4 bytes
+    pub const sgTriCloudsCurrent: usize = 0x80;
+    /// `NiTriShape *`, 0x4 bytes
+    pub const sgTriCloudsNext: usize = 0x84;
+    /// `NiTriShape *`, 0x4 bytes
+    pub const sgTriSunBase: usize = 0x88;
+    /// `NiTriShape *`, 0x4 bytes
+    pub const sgTriSunGlare: usize = 0x8c;
+    /// `NiColor`, 0xc bytes
+    pub const currentSkyColor: usize = 0x90;
+    /// `float`, 0x4 bytes
+    pub const currentSkyColor_r: usize = 0x90;
+    /// `float`, 0x4 bytes
+    pub const currentSkyColor_g: usize = 0x94;
+    /// `float`, 0x4 bytes
+    pub const currentSkyColor_b: usize = 0x98;
+    /// `NiColor`, 0xc bytes
+    pub const currentFogColor: usize = 0x9c;
+    /// `float`, 0x4 bytes
+    pub const currentFogColor_r: usize = 0x9c;
+    /// `float`, 0x4 bytes
+    pub const currentFogColor_g: usize = 0xa0;
+    /// `float`, 0x4 bytes
+    pub const currentFogColor_b: usize = 0xa4;
+    /// `NiPick *`, 0x4 bytes
+    pub const pickSunglare: usize = 0xa8;
+    /// `NiLight *`, 0x4 bytes
+    pub const sgSkyLight: usize = 0xac;
+    /// `NiPointer`, 0x4 bytes
+    pub const field_B0: usize = 0xb0;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const field_B0_ptr: usize = 0xb0;
+    /// `NiPointer`, 0x4 bytes
+    pub const field_B4: usize = 0xb4;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const field_B4_ptr: usize = 0xb4;
+    /// `vec3`, 0xc bytes
+    pub const windVelocityCurrWeather: usize = 0xb8;
+    /// `float`, 0x4 bytes
+    pub const windVelocityCurrWeather_x: usize = 0xb8;
+    /// `float`, 0x4 bytes
+    pub const windVelocityCurrWeather_y: usize = 0xbc;
+    /// `float`, 0x4 bytes
+    pub const windVelocityCurrWeather_z: usize = 0xc0;
+    /// `vec3`, 0xc bytes
+    pub const windVelocityNextWeather: usize = 0xc4;
+    /// `float`, 0x4 bytes
+    pub const windVelocityNextWeather_x: usize = 0xc4;
+    /// `float`, 0x4 bytes
+    pub const windVelocityNextWeather_y: usize = 0xc8;
+    /// `float`, 0x4 bytes
+    pub const windVelocityNextWeather_z: usize = 0xcc;
+    /// `float`, 0x4 bytes
+    pub const smoothedSunGlareVis: usize = 0xd0;
+    /// `float`, 0x4 bytes
+    pub const sunglareFaderMax: usize = 0xd4;
+    /// `float`, 0x4 bytes
+    pub const sunglareFaderAngleMax: usize = 0xd8;
+    /// `float`, 0x4 bytes
+    pub const sunriseHour: usize = 0xdc;
+    /// `float`, 0x4 bytes
+    pub const sunsetHour: usize = 0xe0;
+    /// `float`, 0x4 bytes
+    pub const sunriseDuration: usize = 0xe4;
+    /// `float`, 0x4 bytes
+    pub const sunsetDuration: usize = 0xe8;
+    /// `float`, 0x4 bytes
+    pub const fogDepthChangeSpeed: usize = 0xec;
+    /// `float`, 0x4 bytes
+    pub const ambientPreSunriseTime: usize = 0xf0;
+    /// `float`, 0x4 bytes
+    pub const ambientPostSunriseTime: usize = 0xf4;
+    /// `float`, 0x4 bytes
+    pub const ambientPreSunsetTime: usize = 0xf8;
+    /// `float`, 0x4 bytes
+    pub const ambientPostSunsetTime: usize = 0xfc;
+    /// `float`, 0x4 bytes
+    pub const fogPreSunriseTime: usize = 0x100;
+    /// `float`, 0x4 bytes
+    pub const fogPostSunriseTime: usize = 0x104;
+    /// `float`, 0x4 bytes
+    pub const fogPreSunsetTime: usize = 0x108;
+    /// `float`, 0x4 bytes
+    pub const fogPostSunsetTime: usize = 0x10c;
+    /// `float`, 0x4 bytes
+    pub const skyPreSunriseTime: usize = 0x110;
+    /// `float`, 0x4 bytes
+    pub const skyPostSunriseTime: usize = 0x114;
+    /// `float`, 0x4 bytes
+    pub const skyPreSunsetTime: usize = 0x118;
+    /// `float`, 0x4 bytes
+    pub const skyPostSunsetTime: usize = 0x11c;
+    /// `float`, 0x4 bytes
+    pub const sunPreSunriseTime: usize = 0x120;
+    /// `float`, 0x4 bytes
+    pub const sunPostSunriseTime: usize = 0x124;
+    /// `float`, 0x4 bytes
+    pub const sunPreSunsetTime: usize = 0x128;
+    /// `float`, 0x4 bytes
+    pub const sunPostSunsetTime: usize = 0x12c;
+    /// `float`, 0x4 bytes
+    pub const starsPostSunsetStart: usize = 0x130;
+    /// `float`, 0x4 bytes
+    pub const starsPreSunriseFinish: usize = 0x134;
+    /// `float`, 0x4 bytes
+    pub const starsFadingDuration: usize = 0x138;
+    /// `int`, 0x4 bytes
+    pub const activeRainParticles: usize = 0x13c;
+    /// `int`, 0x4 bytes
+    pub const activeSnowParticles: usize = 0x140;
+    /// `TList`, 0x14 bytes
+    pub const listActiveParticles: usize = 0x144;
+    /// `void (__thiscall **)(TList *, char)`, 0x4 bytes
+    pub const listActiveParticles_vtbl: usize = 0x144;
+    /// `int`, 0x4 bytes
+    pub const listActiveParticles_count: usize = 0x148;
+    /// `TList::Node *`, 0x4 bytes
+    pub const listActiveParticles_firstNode: usize = 0x14c;
+    /// `TList::Node *`, 0x4 bytes
+    pub const listActiveParticles_lastNode: usize = 0x150;
+    /// `TList::Node *`, 0x4 bytes
+    pub const listActiveParticles_iterator: usize = 0x154;
+    /// `TList`, 0x14 bytes
+    pub const listInactiveParticles: usize = 0x158;
+    /// `void (__thiscall **)(TList *, char)`, 0x4 bytes
+    pub const listInactiveParticles_vtbl: usize = 0x158;
+    /// `int`, 0x4 bytes
+    pub const listInactiveParticles_count: usize = 0x15c;
+    /// `TList::Node *`, 0x4 bytes
+    pub const listInactiveParticles_firstNode: usize = 0x160;
+    /// `TList::Node *`, 0x4 bytes
+    pub const listInactiveParticles_lastNode: usize = 0x164;
+    /// `TList::Node *`, 0x4 bytes
+    pub const listInactiveParticles_iterator: usize = 0x168;
+    /// `float`, 0x4 bytes
+    pub const hoursBetweenWeatherChanges: usize = 0x16c;
+    /// `float`, 0x4 bytes
+    pub const transitionScalar: usize = 0x170;
+    /// `float`, 0x4 bytes
+    pub const hoursRemaining: usize = 0x174;
+    /// `float`, 0x4 bytes
+    pub const activeFlashIntensity: usize = 0x178;
+    /// `float`, 0x4 bytes
+    pub const precipitationGravity: usize = 0x17c;
+    /// `float`, 0x4 bytes
+    pub const snowGravityScale: usize = 0x180;
+    /// `float`, 0x4 bytes
+    pub const snowHighKill: usize = 0x184;
+    /// `float`, 0x4 bytes
+    pub const snowLowKill: usize = 0x188;
+    /// `vec3`, 0xc bytes
+    pub const sunTransitConstants: usize = 0x18c;
+    /// `float`, 0x4 bytes
+    pub const sunTransitConstants_x: usize = 0x18c;
+    /// `float`, 0x4 bytes
+    pub const sunTransitConstants_y: usize = 0x190;
+    /// `float`, 0x4 bytes
+    pub const sunTransitConstants_z: usize = 0x194;
+    /// `char`, 0x1 bytes
+    pub const bInactivateWeather: usize = 0x198;
+    /// `char`, 0x1 bytes
+    pub const bUnderwaterPitchbendState: usize = 0x199;
+    /// `char`, 0x1 bytes
+    pub const bRainRipples: usize = 0x19a;
+    /// `char`, 0x1 bytes
+    pub const bSnowRipples: usize = 0x19b;
+    /// `char`, 0x1 bytes
+    pub const bTimescaleClouds: usize = 0x19c;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_19D: usize = 0x19d;
+    /// `float`, 0x4 bytes
+    pub const underwaterSunriseFog: usize = 0x1a0;
+    /// `float`, 0x4 bytes
+    pub const underwaterDayFog: usize = 0x1a4;
+    /// `float`, 0x4 bytes
+    pub const underwaterSunsetFog: usize = 0x1a8;
+    /// `float`, 0x4 bytes
+    pub const underwaterNightFog: usize = 0x1ac;
+    /// `float`, 0x4 bytes
+    pub const underwaterIndoorFog: usize = 0x1b0;
+    /// `vec3`, 0xc bytes
+    pub const underwaterCol: usize = 0x1b4;
+    /// `float`, 0x4 bytes
+    pub const underwaterCol_x: usize = 0x1b4;
+    /// `float`, 0x4 bytes
+    pub const underwaterCol_y: usize = 0x1b8;
+    /// `float`, 0x4 bytes
+    pub const underwaterCol_z: usize = 0x1bc;
+    /// `float`, 0x4 bytes
+    pub const underwaterColWeight: usize = 0x1c0;
+    /// `vec3`, 0xc bytes
+    pub const sunglareFaderCol: usize = 0x1c4;
+    /// `float`, 0x4 bytes
+    pub const sunglareFaderCol_x: usize = 0x1c4;
+    /// `float`, 0x4 bytes
+    pub const sunglareFaderCol_y: usize = 0x1c8;
+    /// `float`, 0x4 bytes
+    pub const sunglareFaderCol_z: usize = 0x1cc;
+    /// `Region *`, 0x4 bytes
+    pub const region: usize = 0x1d0;
+    /// `DataHandler *`, 0x4 bytes
+    pub const dataHandler: usize = 0x1d4;
+    /// `Sound *`, 0x4 bytes
+    pub const soundUnderwater: usize = 0x1d8;
+    /// `vec3`, 0xc bytes
+    pub const lastCameraPos: usize = 0x1dc;
+    /// `float`, 0x4 bytes
+    pub const lastCameraPos_x: usize = 0x1dc;
+    /// `float`, 0x4 bytes
+    pub const lastCameraPos_y: usize = 0x1e0;
+    /// `float`, 0x4 bytes
+    pub const lastCameraPos_z: usize = 0x1e4;
+    /// `int`, 0x4 bytes
+    pub const sunGlareRayTestLoadBalancer: usize = 0x1e8;
+    /// `char`, 0x1 bytes
+    pub const isSunOccluded: usize = 0x1ec;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_1ED: usize = 0x1ed;
 }
 
 pub mod WorldController {
@@ -8775,4 +10251,14 @@ pub mod WorldController {
     pub const enchantedItemTextureEffect: usize = 0x36c;
     /// `NiSourceTexture **`, 0x4 bytes
     pub const enchantedItemTextureArray: usize = 0x370;
+}
+
+pub mod vec3 {
+    pub const SIZE: usize = 0xc;
+    /// `float`, 0x4 bytes
+    pub const x: usize = 0x0;
+    /// `float`, 0x4 bytes
+    pub const y: usize = 0x4;
+    /// `float`, 0x4 bytes
+    pub const z: usize = 0x8;
 }

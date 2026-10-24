@@ -14,7 +14,7 @@ use crate::engine::{self, EMPTY_STRING, MAX_SIMULTANEOUS_TEXTURES, MAX_TEXTURE_B
 use crate::gen::layouts::{
     NiDX8ConfigurableTexturePipeline as CTP, NiDX8RenderState as RS, NiDX8Renderer as REN, NiDX8TexturePass as TP,
     NiDX8TexturePass__1 as SUB, NiDX8TextureStage as ST, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as LIST,
-    NiTexture,
+    InterfaceNiDX8TextureData, NiRenderStateSetting, NiSourceTexture, NiTexture, NiTextureEffect, vec3,
 };
 use crate::mem::{rd, wr};
 use crate::ports::ni::{add_reference, release, REF_COUNT};
@@ -39,35 +39,30 @@ const ADDR_METHOD_4: usize = 0x6B7900;
 const ADDR_RESET_PASS_FLAGS: usize = 0x6B59E0;
 
 // ---------------------------------------------------------------------------------------
-// Offsets that the layouts do not name
+// Offsets of the engine's types (src/gen/layouts.rs)
 // ---------------------------------------------------------------------------------------
 
-// `NiTextureEffect`. The export of the database has no layout for it.
-/// `NiDynamicEffect::enabled`
-const EFFECT_ENABLED: usize = 0x90;
+const EFFECT_ENABLED: usize = NiTextureEffect::enabled;
 /// The 3x3 matrix of the world projection.
-const EFFECT_PROJECTION_MATRIX: usize = 0xD8;
+const EFFECT_PROJECTION_MATRIX: usize = NiTextureEffect::worldProjMat;
 /// The translation of the world projection.
-const EFFECT_PROJECTION_TRANSLATION: usize = 0xFC;
-const EFFECT_TEXTURE: usize = 0x108;
-const EFFECT_FILTER_MODE: usize = 0x10C;
-const EFFECT_CLAMP_MODE: usize = 0x110;
+const EFFECT_PROJECTION_TRANSLATION: usize = NiTextureEffect::worldProjTrans;
+const EFFECT_TEXTURE: usize = NiTextureEffect::sourceTexture;
+const EFFECT_FILTER_MODE: usize = NiTextureEffect::filterMode;
+const EFFECT_CLAMP_MODE: usize = NiTextureEffect::clampMode;
 /// The index into `NiDX8TexturePass::callbacks_6E4`.
-const EFFECT_COORDINATE_MODE: usize = 0x118;
+const EFFECT_COORDINATE_MODE: usize = NiTextureEffect::coordMode;
 /// The effect has a clipping plane.
-const EFFECT_HAS_PLANE: usize = 0x11C;
+const EFFECT_HAS_PLANE: usize = NiTextureEffect::bPlaneEnable;
 /// The clipping plane: normal x, y, z and the constant.
-const EFFECT_PLANE: usize = 0x130;
+const EFFECT_PLANE: usize = NiTextureEffect::worldPlane;
 
-/// `NiSourceTexture::isStatic`
-const SOURCE_TEXTURE_IS_STATIC: usize = 0x38;
-/// `NiDX8TextureData` vtable: `GetD3DTexture` and `GetAsRenderedTexture`.
-const TEXTURE_DATA_GET_D3D_TEXTURE: usize = 0x18;
-const TEXTURE_DATA_GET_AS_RENDERED: usize = 0x20;
+const SOURCE_TEXTURE_IS_STATIC: usize = NiSourceTexture::isStatic;
+const TEXTURE_DATA_GET_D3D_TEXTURE: usize = InterfaceNiDX8TextureData::GetD3DTexture;
+const TEXTURE_DATA_GET_AS_RENDERED: usize = InterfaceNiDX8TextureData::GetAsRenderedTexture;
 
-/// `NiDX8RenderState::maybe_textureStageStateSettings`: 0x100 bytes for each stage, 8 bytes
-/// for each state.
-const STAGE_SETTINGS: usize = 0x100;
+/// `NiDX8RenderState::maybe_textureStageStateSettings`: the 32 states of each stage.
+const STAGE_SETTINGS: usize = 32 * NiRenderStateSetting::SIZE;
 
 // ---------------------------------------------------------------------------------------
 // Engine functions at fixed addresses, virtual calls, device calls
@@ -479,18 +474,18 @@ unsafe fn world_parallel(pipeline: usize, matrix: usize, translation: usize, sta
     let m = |offset: usize| rd::<f32>(matrix, offset);
     let t = |offset: usize| rd::<f32>(translation, offset);
 
-    wr(stage, 0x4C, dot3(w(0x00), m(0x00), w(0x18), m(0x08), w(0x0C), m(0x04)));
-    wr(stage, 0x5C, dot3(w(0x1C), m(0x08), w(0x10), m(0x04), m(0x00), w(0x04)));
-    wr(stage, 0x6C, dot3(m(0x04), w(0x14), m(0x00), w(0x08), m(0x08), w(0x20)));
-    wr(stage, 0x50, dot3(w(0x18), m(0x14), w(0x0C), m(0x10), m(0x0C), w(0x00)));
-    wr(stage, 0x60, dot3(w(0x1C), m(0x14), w(0x10), m(0x10), m(0x0C), w(0x04)));
-    wr(stage, 0x70, dot3(m(0x0C), w(0x08), w(0x20), m(0x14), w(0x14), m(0x10)));
-    wr(stage, 0x54, dot3(w(0x0C), m(0x1C), w(0x00), m(0x18), w(0x18), m(0x20)));
-    wr(stage, 0x64, dot3(w(0x10), m(0x1C), w(0x04), m(0x18), w(0x1C), m(0x20)));
-    wr(stage, 0x74, dot3(w(0x20), m(0x20), w(0x14), m(0x1C), w(0x08), m(0x18)));
-    wr(stage, 0x7C, dot3(m(0x04), w(0x28), m(0x08), w(0x2C), m(0x00), w(0x24)) + t(0x0));
-    wr(stage, 0x80, dot3(m(0x0C), w(0x24), m(0x10), w(0x28), m(0x14), w(0x2C)) + t(0x4));
-    wr(stage, 0x84, dot3(m(0x18), w(0x24), m(0x1C), w(0x28), m(0x20), w(0x2C)) + t(0x8));
+    wr(stage, ST::textureMatrix__11, dot3(w(0x00), m(0x00), w(0x18), m(0x08), w(0x0C), m(0x04)));
+    wr(stage, ST::textureMatrix__21, dot3(w(0x1C), m(0x08), w(0x10), m(0x04), m(0x00), w(0x04)));
+    wr(stage, ST::textureMatrix__31, dot3(m(0x04), w(0x14), m(0x00), w(0x08), m(0x08), w(0x20)));
+    wr(stage, ST::textureMatrix__12, dot3(w(0x18), m(0x14), w(0x0C), m(0x10), m(0x0C), w(0x00)));
+    wr(stage, ST::textureMatrix__22, dot3(w(0x1C), m(0x14), w(0x10), m(0x10), m(0x0C), w(0x04)));
+    wr(stage, ST::textureMatrix__32, dot3(m(0x0C), w(0x08), w(0x20), m(0x14), w(0x14), m(0x10)));
+    wr(stage, ST::textureMatrix__13, dot3(w(0x0C), m(0x1C), w(0x00), m(0x18), w(0x18), m(0x20)));
+    wr(stage, ST::textureMatrix__23, dot3(w(0x10), m(0x1C), w(0x04), m(0x18), w(0x1C), m(0x20)));
+    wr(stage, ST::textureMatrix__33, dot3(w(0x20), m(0x20), w(0x14), m(0x1C), w(0x08), m(0x18)));
+    wr(stage, ST::textureMatrix__41, dot3(m(0x04), w(0x28), m(0x08), w(0x2C), m(0x00), w(0x24)) + t(0x0));
+    wr(stage, ST::textureMatrix__42, dot3(m(0x0C), w(0x24), m(0x10), w(0x28), m(0x14), w(0x2C)) + t(0x4));
+    wr(stage, ST::textureMatrix__43, dot3(m(0x18), w(0x24), m(0x1C), w(0x28), m(0x20), w(0x2C)) + t(0x8));
 }
 
 /// 0x6B5EB0 `NiDX8TexturePass::texGen_WorldPerspective_Claude_`. Leaves the pipeline in EAX.
@@ -514,18 +509,18 @@ unsafe fn world_perspective(pipeline: usize, flags: u32, matrix: usize, translat
     let m = |offset: usize| rd::<f32>(matrix, offset);
     let t = |offset: usize| rd::<f32>(translation, offset);
 
-    wr(stage, 0x4C, dot3(w(0x00), m(0x00), w(0x18), m(0x08), w(0x0C), m(0x04)));
-    wr(stage, 0x5C, dot3(w(0x04), m(0x00), w(0x1C), m(0x08), w(0x10), m(0x04)));
-    wr(stage, 0x6C, dot3(m(0x08), w(0x20), w(0x14), m(0x04), m(0x00), w(0x08)));
-    wr(stage, 0x50, dot3(w(0x00), m(0x0C), m(0x10), w(0x0C), w(0x18), m(0x14)));
-    wr(stage, 0x60, dot3(m(0x10), w(0x10), w(0x04), m(0x0C), w(0x1C), m(0x14)));
-    wr(stage, 0x70, dot3(w(0x14), m(0x10), w(0x08), m(0x0C), w(0x20), m(0x14)));
-    wr(stage, 0x54, dot3(w(0x18), m(0x20), m(0x1C), w(0x0C), w(0x00), m(0x18)));
-    wr(stage, 0x64, dot3(w(0x1C), m(0x20), m(0x1C), w(0x10), w(0x04), m(0x18)));
-    wr(stage, 0x74, dot3(w(0x08), m(0x18), w(0x20), m(0x20), w(0x14), m(0x1C)));
-    wr(stage, 0x7C, dot3(m(0x04), w(0x28), m(0x08), w(0x2C), m(0x00), w(0x24)) + t(0x0));
-    wr(stage, 0x80, dot3(m(0x14), w(0x2C), m(0x0C), w(0x24), m(0x10), w(0x28)) + t(0x4));
-    wr(stage, 0x84, dot3(m(0x1C), w(0x28), m(0x20), w(0x2C), m(0x18), w(0x24)) + t(0x8));
+    wr(stage, ST::textureMatrix__11, dot3(w(0x00), m(0x00), w(0x18), m(0x08), w(0x0C), m(0x04)));
+    wr(stage, ST::textureMatrix__21, dot3(w(0x04), m(0x00), w(0x1C), m(0x08), w(0x10), m(0x04)));
+    wr(stage, ST::textureMatrix__31, dot3(m(0x08), w(0x20), w(0x14), m(0x04), m(0x00), w(0x08)));
+    wr(stage, ST::textureMatrix__12, dot3(w(0x00), m(0x0C), m(0x10), w(0x0C), w(0x18), m(0x14)));
+    wr(stage, ST::textureMatrix__22, dot3(m(0x10), w(0x10), w(0x04), m(0x0C), w(0x1C), m(0x14)));
+    wr(stage, ST::textureMatrix__32, dot3(w(0x14), m(0x10), w(0x08), m(0x0C), w(0x20), m(0x14)));
+    wr(stage, ST::textureMatrix__13, dot3(w(0x18), m(0x20), m(0x1C), w(0x0C), w(0x00), m(0x18)));
+    wr(stage, ST::textureMatrix__23, dot3(w(0x1C), m(0x20), m(0x1C), w(0x10), w(0x04), m(0x18)));
+    wr(stage, ST::textureMatrix__33, dot3(w(0x08), m(0x18), w(0x20), m(0x20), w(0x14), m(0x1C)));
+    wr(stage, ST::textureMatrix__41, dot3(m(0x04), w(0x28), m(0x08), w(0x2C), m(0x00), w(0x24)) + t(0x0));
+    wr(stage, ST::textureMatrix__42, dot3(m(0x14), w(0x2C), m(0x0C), w(0x24), m(0x10), w(0x28)) + t(0x4));
+    wr(stage, ST::textureMatrix__43, dot3(m(0x1C), w(0x28), m(0x20), w(0x2C), m(0x18), w(0x24)) + t(0x8));
 }
 
 /// The body of the three callbacks that work on a direction. It applies the rotation only and
@@ -545,19 +540,19 @@ unsafe fn direction(pipeline: usize, matrix: usize, translation: usize, stage: u
     let w = |offset: usize| camera(pipeline, offset);
     let m = |offset: usize| rd::<f32>(matrix, offset);
 
-    wr(stage, 0x4C, dot3(w(0x18), m(0x08), w(0x00), m(0x00), w(0x0C), m(0x04)));
-    wr(stage, 0x5C, dot3(w(0x1C), m(0x08), w(0x10), m(0x04), m(0x00), w(0x04)));
-    wr(stage, 0x6C, dot3(w(0x08), m(0x00), m(0x08), w(0x20), m(0x04), w(0x14)));
-    wr(stage, 0x50, dot3(w(0x00), m(0x0C), w(0x0C), m(0x10), m(0x14), w(0x18)));
-    wr(stage, 0x60, dot3(w(0x10), m(0x10), m(0x0C), w(0x04), m(0x14), w(0x1C)));
-    wr(stage, 0x70, dot3(m(0x14), w(0x20), w(0x08), m(0x0C), w(0x14), m(0x10)));
-    wr(stage, 0x54, dot3(w(0x18), m(0x20), m(0x18), w(0x00), w(0x0C), m(0x1C)));
-    wr(stage, 0x64, dot3(m(0x18), w(0x04), w(0x1C), m(0x20), w(0x10), m(0x1C)));
-    wr(stage, 0x74, dot3(w(0x14), m(0x1C), w(0x08), m(0x18), w(0x20), m(0x20)));
-    wr::<u32>(stage, 0x7C, rd(translation, 0x0));
-    wr::<u32>(stage, 0x80, rd(translation, 0x4));
-    let last: u32 = rd(translation, 0x8);
-    wr(stage, 0x84, last);
+    wr(stage, ST::textureMatrix__11, dot3(w(0x18), m(0x08), w(0x00), m(0x00), w(0x0C), m(0x04)));
+    wr(stage, ST::textureMatrix__21, dot3(w(0x1C), m(0x08), w(0x10), m(0x04), m(0x00), w(0x04)));
+    wr(stage, ST::textureMatrix__31, dot3(w(0x08), m(0x00), m(0x08), w(0x20), m(0x04), w(0x14)));
+    wr(stage, ST::textureMatrix__12, dot3(w(0x00), m(0x0C), w(0x0C), m(0x10), m(0x14), w(0x18)));
+    wr(stage, ST::textureMatrix__22, dot3(w(0x10), m(0x10), m(0x0C), w(0x04), m(0x14), w(0x1C)));
+    wr(stage, ST::textureMatrix__32, dot3(m(0x14), w(0x20), w(0x08), m(0x0C), w(0x14), m(0x10)));
+    wr(stage, ST::textureMatrix__13, dot3(w(0x18), m(0x20), m(0x18), w(0x00), w(0x0C), m(0x1C)));
+    wr(stage, ST::textureMatrix__23, dot3(m(0x18), w(0x04), w(0x1C), m(0x20), w(0x10), m(0x1C)));
+    wr(stage, ST::textureMatrix__33, dot3(w(0x14), m(0x1C), w(0x08), m(0x18), w(0x20), m(0x20)));
+    wr::<u32>(stage, ST::textureMatrix__41, rd(translation, vec3::x));
+    wr::<u32>(stage, ST::textureMatrix__42, rd(translation, vec3::y));
+    let last: u32 = rd(translation, vec3::z);
+    wr(stage, ST::textureMatrix__43, last);
     last
 }
 

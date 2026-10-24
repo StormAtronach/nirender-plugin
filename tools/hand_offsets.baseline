@@ -1,11 +1,9 @@
 # The hand-written engine offsets of each file (tools/hand_offsets.py). It only goes down.
 src/animation.rs 3
 src/capture.rs 3
-src/d3d.rs 54
 src/engine.rs 2
 src/geometry_stream.rs 4
 src/instance_stream.rs 17
-src/link_client.rs 49
 src/lua.rs 5
 src/map_fog.rs 2
 src/map_tiles.rs 7
@@ -28,7 +26,7 @@ src/ports/scene.rs 11
 src/ports/system_desc.rs 23
 src/ports/texture_link.rs 3
 src/ports/texture_pass_a.rs 2
-src/ports/texture_pass_b.rs 58
+src/ports/texture_pass_b.rs 6
 src/ports/texture_pipeline.rs 9
 src/ports/textures.rs 25
 src/shape_stream.rs 1

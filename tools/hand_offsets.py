@@ -27,6 +27,12 @@ CONST = re.compile(r"\bconst\s+([A-Z0-9_]+)\s*:\s*usize\s*=\s*(0x[0-9A-Fa-f]+)\s
 DECIMAL = re.compile(r"\bconst\s+([A-Z0-9_]+)\s*:\s*usize\s*=\s*([0-9]+)\s*;")
 FIELD_DOC = re.compile(r"^\s*///\s*`[A-Za-z0-9_]+(?:::[A-Za-z0-9_$\[\]]+)+(?:\.[A-Za-z0-9_]+)*`")
 READS_ENGINE = re.compile(r"\b(?:rd|wr|ptr_at)(?:::<[^>]+>)?\(")
+# Files whose offsets are not the engine's, with the reason.
+EXEMPT = {
+    # The slots of the Direct3D 8 interfaces: the published ABI of d3d8.h, each with its
+    # method's name. The IDA export lacks some of their vtables (IDirect3DDevice8).
+    "src/d3d.rs",
+}
 
 
 def scan():
@@ -39,6 +45,8 @@ def scan():
                 continue
             path = os.path.join(root, name)
             rel = os.path.relpath(path, REPO).replace("\\", "/")
+            if rel in EXEMPT:
+                continue
             text = open(path, encoding="utf-8").read()
             if not READS_ENGINE.search(text):
                 continue

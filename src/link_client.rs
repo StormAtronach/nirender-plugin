@@ -22,6 +22,10 @@ use crate::gen::layouts::{
     NiAVObject as AV, NiCamera as CAM, NiDX8Renderer as R, NiDynamicEffectState as DES,
     NiDynamicEffectState_InternalList as DL, NiLight as L, NiMaterialProperty as MP, NiPropertyState as PS,
 };
+use crate::gen::layouts::{
+    DataHandler, InterfaceNiLight, Moon, NVSkyRenderToTexture, ShadowManager, TES3Game, TES3WaterNVLake, WaterController,
+    WeatherController, WorldController,
+};
 use crate::d3d::{D3DTS_TEXTURE0, D3DTS_WORLDMATRIX0};
 use crate::link::*;
 use crate::main_thread::{MainCell, MainThread};
@@ -47,66 +51,65 @@ const RENDER_SCREEN_POLY: usize = 0x6ADD20;
 
 /// `*(DataHandler**)`
 const DATA_HANDLER: usize = 0x7C67E0;
-/// `DataHandler::sgSunlight`: the directional light of the sun, and of an interior cell.
-const DATA_HANDLER_SUN_LIGHT: usize = 0x98;
+/// The directional light of the sun, and of an interior cell.
+const DATA_HANDLER_SUN_LIGHT: usize = DataHandler::sgSunlight;
 /// `*(NiCamera**)`: the camera of the race menu head.
 const RACE_MENU_CAMERA: usize = 0x7D5838;
 
-// Offsets in the world controller.
-const WC_SPLASH_CAMERA: usize = 0x108;
-const WC_WORLD_ROOT: usize = 0x12C;
-const WC_WORLD_CAMERA: usize = 0x134;
-const WC_ARM_CAMERA: usize = 0x160;
-const WC_MENU_CAMERA: usize = 0x18C;
-const WC_PREVIEW_CAMERA: usize = 0x1B8;
-const WC_MAP_CAMERA: usize = 0x23C;
-const WC_SHADOW_CAMERA: usize = 0x2C0;
-const WC_SHADOW_MANAGER: usize = 0x2DC;
-const WC_WEATHER: usize = 0x58;
+// The world controller.
+const WC_SPLASH_CAMERA: usize = WorldController::splashscreenCamera_cameraData_camera;
+const WC_WORLD_ROOT: usize = WorldController::worldCamera_sgRoot;
+const WC_WORLD_CAMERA: usize = WorldController::worldCamera_cameraData_camera;
+const WC_ARM_CAMERA: usize = WorldController::armCamera_cameraData_camera;
+const WC_MENU_CAMERA: usize = WorldController::menuCamera_cameraData_camera;
+const WC_PREVIEW_CAMERA: usize = WorldController::characterRenderTarget_cameraData_camera;
+const WC_MAP_CAMERA: usize = WorldController::mapRenderTarget_cameraData_camera;
+const WC_SHADOW_CAMERA: usize = WorldController::shadowCamera_cameraData_camera;
+const WC_SHADOW_MANAGER: usize = WorldController::shadowManager;
+const WC_WEATHER: usize = WorldController::weatherController;
 
-// Offsets in the shadow manager.
-const SM_SHADOW_VOLUME: usize = 0x60;
-const SM_SHADOW_OVERLAY: usize = 0x64;
-const SM_SCENE_OBJECTS: usize = 0x68;
+// The shadow manager.
+const SM_SHADOW_VOLUME: usize = ShadowManager::sgShadowVolume;
+const SM_SHADOW_OVERLAY: usize = ShadowManager::sgShadowOverlay;
+const SM_SCENE_OBJECTS: usize = ShadowManager::sgSceneObjects;
 
-// Offsets in the data handler.
-const DH_OBJECT_ROOT: usize = 0x8C;
-const DH_LANDSCAPE_ROOT: usize = 0x94;
-const DH_WATER_CONTROLLER: usize = 0xB4EC;
+// The data handler.
+const DH_OBJECT_ROOT: usize = DataHandler::sgWorldObjectRoot;
+const DH_LANDSCAPE_ROOT: usize = DataHandler::sgWorldLandscapeRoot;
+const DH_WATER_CONTROLLER: usize = DataHandler::waterController;
 
-// Offsets in the water controller.
-const WATER_NV_LAKE: usize = 0x0;
-const WATER_RIPPLES: usize = 0xB0;
-const WATER_PLANE: usize = 0xB4;
+// The water controller.
+const WATER_NV_LAKE: usize = WaterController::waterNVLake;
+const WATER_RIPPLES: usize = WaterController::sgRippleNode;
+const WATER_PLANE: usize = WaterController::sgWaterPlane;
 
-// Offsets in the weather controller.
-const W_SUN_VIS: usize = 0x0;
-const W_SUN_BASE: usize = 0x4;
-const W_SUN_GLARE: usize = 0x8;
-const W_SECUNDA: usize = 0x44;
-const W_MASSER: usize = 0x48;
-const W_SKY_ROOT: usize = 0x4C;
-const W_NIGHT_SKY: usize = 0x50;
-const W_SKY_DOME: usize = 0x54;
-const W_CLOUDS: usize = 0x58;
-const W_RAIN: usize = 0x5C;
-const W_SNOW: usize = 0x60;
-const W_STORM: usize = 0x6C;
+// The weather controller.
+const W_SUN_VIS: usize = WeatherController::sgSunVis;
+const W_SUN_BASE: usize = WeatherController::sgSunBase;
+const W_SUN_GLARE: usize = WeatherController::sgSunGlare;
+const W_SECUNDA: usize = WeatherController::secundaMoonData;
+const W_MASSER: usize = WeatherController::masserMoonData;
+const W_SKY_ROOT: usize = WeatherController::sgSkyRoot;
+const W_NIGHT_SKY: usize = WeatherController::sgSkyNight;
+const W_SKY_DOME: usize = WeatherController::sgSkyAtmosphere;
+const W_CLOUDS: usize = WeatherController::sgSkyClouds;
+const W_RAIN: usize = WeatherController::sgRain;
+const W_SNOW: usize = WeatherController::sgSnowRoot;
+const W_STORM: usize = WeatherController::sgStormRoot;
 
-// Offsets in a moon.
-const MOON_ROOT: usize = 0x0;
-const MOON_NODE: usize = 0x4;
-const MOON_SHADOW_NODE: usize = 0x8;
-const MOON_SHADOW_SHAPE: usize = 0x10;
+// A moon.
+const MOON_ROOT: usize = Moon::sgMoonRoot;
+const MOON_NODE: usize = Moon::sgMoonNode;
+const MOON_SHADOW_NODE: usize = Moon::sgShadowNode;
+const MOON_SHADOW_SHAPE: usize = Moon::sgShadowTriShape;
 
-/// The offset of the translation of `worldTransform` in a `NiAVObject`. `NiCamera::Click`
-/// passes the address of this member of the camera to `SetCameraData`.
-const AV_WORLD_TRANSLATION: usize = 0x64;
-/// The offset of `worldTransform` in a `NiAVObject`. `NiTriShape::Display` passes the address
-/// of this member to `RenderShape`.
-const AV_WORLD_TRANSFORM: usize = 0x40;
-/// `NiLight::GetType` in the vtable.
-const LIGHT_VTBL_GET_TYPE: usize = 0x94;
+/// The translation of `worldTransform` in a `NiAVObject`. `NiCamera::Click` passes the address
+/// of this member of the camera to `SetCameraData`.
+const AV_WORLD_TRANSLATION: usize = AV::worldTransform_translation;
+/// `worldTransform` in a `NiAVObject`. `NiTriShape::Display` passes the address of this member
+/// to `RenderShape`.
+const AV_WORLD_TRANSFORM: usize = AV::worldTransform;
+const LIGHT_VTBL_GET_TYPE: usize = InterfaceNiLight::GetType;
 /// The game does not use a light with a dimmer below this value (the constant 0x74F2EC;
 /// `updateLights` compares the dimmer with it at 0x6BB7F7).
 const MIN_DIMMER: f32 = 0.01;
@@ -337,8 +340,8 @@ fn skip(fact: u32, in_packet: bool) -> bool {
     skipped
 }
 
-/// `DataHandler::currentInteriorCell`: the interior cell that the player is in, or 0.
-const CURRENT_INTERIOR_CELL: usize = 0xAC;
+/// The interior cell that the player is in, or 0.
+const CURRENT_INTERIOR_CELL: usize = DataHandler::currentInteriorCell;
 
 /// True when the player is in an interior cell.
 unsafe fn in_interior() -> bool {
@@ -350,9 +353,9 @@ unsafe fn in_interior() -> bool {
 /// world (MWSE `TES3Game.h`). The console command ToggleWireframe turns it on and off
 /// (`MenuController::setWireframeEnabled` in MWSE).
 const TES3_GAME: usize = 0x7C6CDC;
-const GAME_WIREFRAME_PROPERTY: usize = 0xB0;
-/// `NiProperty::flags` (u16); bit 0 of a wireframe property is "on".
-const PROPERTY_FLAGS: usize = 0x14;
+const GAME_WIREFRAME_PROPERTY: usize = TES3Game::sgWireframeProperty;
+/// A u16; bit 0 of a wireframe property is "on".
+const PROPERTY_FLAGS: usize = crate::gen::layouts::NiProperty::flags;
 
 /// True when the game draws the world in wireframe.
 unsafe fn game_wireframe() -> bool {
@@ -701,8 +704,6 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
     if KINDS.load(Ordering::Relaxed) == 0 && SUPPRESS.load(Ordering::Relaxed) == 0 {
         return None;
     }
-    /// [`IDirect3DDevice8::CreateDepthStencilSurface`]
-    const DEVICE_CREATE_DEPTH_STENCIL_SURFACE: usize = 0x68;
     let sent = |done: bool| if done { Some(0) } else { None };
     let routed = match slot * 4 {
         DEVICE_TEST_COOPERATIVE_LEVEL => frame_call(CALL_TEST_DEVICE, args),
@@ -728,8 +729,6 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
         DEVICE_DRAW_PRIMITIVE if commands_for(FACT_DEVICE_BUFFERS) => sent(command(COMMAND_DRAW, args.as_ptr() as u32, 0, 0)),
         _ => None,
     };
-    /// [`IDirect3DDevice8::GetBackBuffer`]
-    const DEVICE_GET_BACK_BUFFER: usize = 0x40;
     // `GetBackBuffer(index, type, address)`: with the own host, the back buffer is the
     // surface that the host gives as the first render target.
     let routed = if routed.is_none() && crate::own_host::active() && slot * 4 == DEVICE_GET_BACK_BUFFER && args.len() >= 3 {
@@ -751,7 +750,6 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
         }
         // `GetTextureStageState(stage, state, address)`: the Code Patch keeps the alpha
         // operation of stage 0 and puts it back after its draws.
-        const DEVICE_GET_TEXTURE_STAGE_STATE: usize = 0xF8;
         if slot * 4 == DEVICE_GET_TEXTURE_STAGE_STATE && args.len() >= 3 && args[2] != 0 && args[0] < 8 && args[1] < 32 {
             let renderer = crate::engine::renderer();
             if renderer != 0 {
@@ -993,8 +991,8 @@ pub unsafe fn note_texture(stage: u32, texture: usize) {
 /// The texture stage states of a state packet, in the order of the contract: `D3DTSS_*`.
 const STAGE_STATES: [u32; STATE_STAGE_STATES as usize] = [1, 2, 3, 4, 5, 6, 26, 27, 28, 11, 24, 7, 8, 9, 10, 22, 23];
 /// A list item of the game: data, next, previous.
-const ITEM_DATA: usize = 0x0;
-const ITEM_NEXT: usize = 0x4;
+const ITEM_DATA: usize = crate::gen::layouts::TListItem::data;
+const ITEM_NEXT: usize = crate::gen::layouts::TListItem::next;
 
 /// Makes `table` the host of the link. `own_host` uses this: the plugin answers the calls.
 pub unsafe fn set_host(table: &'static HostV1) {
@@ -1021,8 +1019,8 @@ unsafe fn app_culled(object: usize) -> bool {
 /// The reflection camera: water controller, NV lake, the render-to-texture object, its camera.
 unsafe fn reflection_camera(water_controller: usize) -> usize {
     let lake = ptr_at(water_controller, WATER_NV_LAKE);
-    let sky_render = ptr_at(lake, 0x4);
-    ptr_at(sky_render, 0x4)
+    let sky_render = ptr_at(lake, TES3WaterNVLake::nvSkyRenderToTexture);
+    ptr_at(sky_render, NVSkyRenderToTexture::camera)
 }
 
 unsafe fn scene_kind(camera: usize, world_controller: usize, water_controller: usize) -> u32 {

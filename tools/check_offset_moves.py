@@ -57,14 +57,25 @@ def number(text):
     return int(text, 16) if text.lower().startswith("0x") else int(text)
 
 
+PATH = re.compile(r"(?:crate::gen::layouts::)?([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)")
+ARITHMETIC = re.compile(r"^[0-9a-fA-Fx+\-* ()]+$")
+
+
 def resolve(expr, mods, alias):
-    expr = expr.strip()
-    expr = re.sub(r"^crate::gen::layouts::", "", expr)
-    parts = expr.split("::")
-    if len(parts) != 2:
+    """The value of a generated path, or of integer arithmetic over such paths (`32 * X::SIZE`)."""
+    missing = []
+
+    def value(match):
+        found = mods.get(alias.get(match.group(1), match.group(1)), {}).get(match.group(2))
+        if found is None:
+            missing.append(match.group(0))
+            return "0"
+        return str(found)
+
+    text = PATH.sub(value, expr.strip())
+    if missing or not ARITHMETIC.match(text):
         return None
-    module = alias.get(parts[0], parts[0])
-    return mods.get(module, {}).get(parts[1])
+    return eval(text, {"__builtins__": {}})  # digits, hex literals, + - * and parentheses only
 
 
 def elements(value):

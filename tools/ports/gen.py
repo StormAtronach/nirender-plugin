@@ -28,7 +28,9 @@ LAYOUT_RE = re.compile(
     r"NiTimeController$|NiTriShape$|NiAutoNormalParticles$|NiScreenPolygon$|"
     r"BSAnimationNode$|NiLODNode$|NiLODData$|NiTriStrips$|NiTriBasedGeometry$|"
     # The hand-written offsets moved here (tools/hand_offsets.py), from 2026-10-24.
-    r"NiSkinData$|NiBoneData$|WorldController$|PlayerAnimController$)")
+    r"NiSkinData$|NiBoneData$|WorldController$|PlayerAnimController$|NiTextureEffect$|vec3$|"
+    r"InterfaceNiDX8TextureData$|DataHandler$|ShadowManager$|WaterController$|WeatherController$|Moon$|"
+    r"InterfaceNiLight$|TES3Game$|TES3WaterNVLake$|NVSkyRenderToTexture$|TListItem$)")
 
 
 KEYWORDS = {"type", "super", "self", "ref", "match", "loop", "move", "fn", "mod", "use", "in", "final", "box", "priv", "enum",

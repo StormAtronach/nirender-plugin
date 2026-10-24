@@ -53,6 +53,8 @@ pub const DEVICE_RESOURCE_MANAGER_DISCARD_BYTES: usize = 0x14;
 pub const DEVICE_RESET: usize = 0x38;
 /// The slot of `IDirect3DDevice8::Present`.
 pub const DEVICE_PRESENT: usize = 0x3C;
+/// The slot of `IDirect3DDevice8::GetBackBuffer`.
+pub const DEVICE_GET_BACK_BUFFER: usize = 0x40;
 /// The slot of `IDirect3DDevice8::CreateTexture`.
 pub const DEVICE_CREATE_TEXTURE: usize = 0x50;
 /// The slot of `IDirect3DDevice8::CreateCubeTexture`.
@@ -61,6 +63,8 @@ pub const DEVICE_CREATE_CUBE_TEXTURE: usize = 0x58;
 pub const DEVICE_CREATE_VERTEX_BUFFER: usize = 0x5C;
 /// The slot of `IDirect3DDevice8::CreateIndexBuffer`.
 pub const DEVICE_CREATE_INDEX_BUFFER: usize = 0x60;
+/// The slot of `IDirect3DDevice8::CreateDepthStencilSurface`.
+pub const DEVICE_CREATE_DEPTH_STENCIL_SURFACE: usize = 0x68;
 /// The slot of `IDirect3DDevice8::CreateImageSurface`.
 pub const DEVICE_CREATE_IMAGE_SURFACE: usize = 0x6C;
 /// The slot of `IDirect3DDevice8::CopyRects`.
@@ -93,6 +97,8 @@ pub const DEVICE_SET_RENDER_STATE: usize = 0xC8;
 pub const DEVICE_GET_RENDER_STATE: usize = 0xCC;
 /// The slot of `IDirect3DDevice8::SetTexture`.
 pub const DEVICE_SET_TEXTURE: usize = 0xF4;
+/// The slot of `IDirect3DDevice8::GetTextureStageState`.
+pub const DEVICE_GET_TEXTURE_STAGE_STATE: usize = 0xF8;
 /// The slot of `IDirect3DDevice8::SetTextureStageState`.
 pub const DEVICE_SET_TEXTURE_STAGE_STATE: usize = 0xFC;
 /// The slot of `IDirect3DDevice8::DrawPrimitive`.
@@ -907,6 +913,9 @@ mod tests {
         assert_eq!(NAMES[DEVICE_RESOURCE_MANAGER_DISCARD_BYTES / 4], "ResourceManagerDiscardBytes");
         assert_eq!(NAMES[DEVICE_RESET / 4], "Reset");
         assert_eq!(NAMES[DEVICE_PRESENT / 4], "Present");
+        assert_eq!(NAMES[DEVICE_GET_BACK_BUFFER / 4], "GetBackBuffer");
+        assert_eq!(NAMES[DEVICE_CREATE_DEPTH_STENCIL_SURFACE / 4], "CreateDepthStencilSurface");
+        assert_eq!(NAMES[DEVICE_GET_TEXTURE_STAGE_STATE / 4], "GetTextureStageState");
         assert_eq!(NAMES[DEVICE_CREATE_TEXTURE / 4], "CreateTexture");
         assert_eq!(NAMES[DEVICE_CREATE_CUBE_TEXTURE / 4], "CreateCubeTexture");
         assert_eq!(NAMES[DEVICE_CREATE_VERTEX_BUFFER / 4], "CreateVertexBuffer");
