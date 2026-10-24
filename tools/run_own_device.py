@@ -96,8 +96,18 @@ def main():
                     "<name>-window.png: with the status text of MGE XE and the debug overlay (wgpu only)")
     ap.add_argument("--bridge", action="store_true", help="the Lua bridge of mwse-mcp (the mod mwseMCP of the testing instance) for this run only, "
                     "in the mod of the run's mgeXE.toml: live work in another instance without a change to its mods")
+    ap.add_argument("--add-file", action="append", default=[], metavar="SOURCE=PATH",
+                    help="a file for the run's mod at PATH (from the Data Files folder, or Root/... for the game folder), for this run only: "
+                    "a test texture or mesh; the run's mod wins over the instance's mods")
+    ap.add_argument("--mwse-dll", help="another MWSE.dll for this run only (as --add-file <it>=Root/MWSE.dll): an A/B of an MWSE build "
+                    "without a change to the instance")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
+    extra_files = [entry.split("=", 1) for entry in args.add_file]
+    if any(len(pair) != 2 for pair in extra_files):
+        raise SystemExit("--add-file takes SOURCE=PATH")
+    if args.mwse_dll:
+        extra_files.append((args.mwse_dll, "Root/MWSE.dll"))
 
     if args.instance:
         session.use_instance(args.instance, args.game_dir, args.profile)
@@ -105,7 +115,7 @@ def main():
         cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
         for folder in (HOST_DIR, D3D8_DIR):
             subprocess.run([cargo, "build", "--release", "--quiet"], cwd=folder, check=True)
-    session.prepare(build=not args.no_build)
+    session.prepare(build=not args.no_build, extra_files=extra_files)
     run = session.Run(args.label)
     # Without a save (--save ""), the scenario starts a new game: the films of the game play.
     spec = run.spec("owndevice", save=args.save or None, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,

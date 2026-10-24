@@ -80,10 +80,13 @@ def stage_background_config(deployment):
     print("  MWSE.json with RunInBackground = true <- %s" % (source or "the defaults (no MWSE.json in the instance)"))
 
 
-def prepare(build=True, features=()):
+def prepare(build=True, features=(), extra_files=()):
     """Builds the plugin, runs the offline tests and installs the mod into the testing instance.
 
-    `features` are cargo features of the build: ("rig",) for a run of the comparison rig."""
+    `features` are cargo features of the build: ("rig",) for a run of the comparison rig.
+    `extra_files` are (source, path in the mod) pairs that go into the run's mod for this run
+    only: test files, or another MWSE.dll as `Root/MWSE.dll`. The run's mod wins over the mods
+    of the instance; the next install takes them out."""
     if build:
         env = dict(os.environ)
         env["PATH"] = os.path.join(os.path.expanduser("~"), ".cargo", "bin") + os.pathsep + env["PATH"]
@@ -104,6 +107,13 @@ def prepare(build=True, features=()):
     pdb = os.path.splitext(DLL)[0] + ".pdb"
     if os.path.isfile(pdb):
         shutil.copy2(pdb, os.path.join(DIST, "MWSE", "lib", "akulakhan.pdb"))
+    for source, target in extra_files:
+        if not os.path.isfile(source):
+            raise SystemExit("no file %s for %s" % (source, target))
+        destination = os.path.join(DIST, *target.replace("\\", "/").split("/"))
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        shutil.copy2(source, destination)
+        print("  extra file: %s <- %s" % (target, source))
     # The harness installs its own mod by default. These names make it install this one.
     harness.MOD_SRC = DIST
     harness.MOD_NAME = MOD_NAME
