@@ -8,6 +8,7 @@ use crate::d3d::{
     D3DRS_DIFFUSEMATERIALSOURCE, D3DRS_EMISSIVEMATERIALSOURCE, D3DRS_LIGHTING,
 };
 use crate::engine::{device_set_render_state, vcall0, VTBL_NI_REF_OBJECT};
+use crate::gen::layouts;
 use crate::gen::layouts::{
     NiDX8LightManager as M, NiDX8LightManager_LightEntry as E, NiDX8RenderState as RS, NiDynamicEffectState as DES,
     NiDynamicEffectState_InternalList as DL, NiLight as L, NiTexturingProperty as TP, NiTexturingProperty_Map as TM,
@@ -18,29 +19,27 @@ use crate::ports::hash_map;
 use crate::ports::render_state::{set_if_changed, set_render_state, setting_set_value};
 use crate::shadow::Regions;
 
-// The members the subclasses of `NiLight` add. They are not in `gen::layouts`.
-/// `NiDirectionalLight`: world direction, 3 floats (0x6BACCE).
-const DIRECTIONAL_DIRECTION: usize = 0xD0;
+// The members the subclasses of `NiLight` add.
+/// World direction, 3 floats (0x6BACCE).
+const DIRECTIONAL_DIRECTION: usize = layouts::NiDirectionalLight::direction;
 /// `NiPointLight` and `NiSpotLight`: constant, linear and quadratic attenuation (0x6BABAA).
-const POINT_ATTENUATION: usize = 0xD0;
-/// `NiSpotLight`: world direction, 3 floats (0x6BAB6E).
-const SPOT_DIRECTION: usize = 0xDC;
-/// `NiSpotLight`: cone angle in degrees (0x6BAB89).
-const SPOT_ANGLE: usize = 0xE8;
-/// `NiSpotLight`: exponent (0x6BABA1).
-const SPOT_EXPONENT: usize = 0xEC;
-/// Slot of `NiLight::GetType` in the vtable of a light (0x6BAB3E, 0x6BB801).
-const LIGHT_VTBL_GET_TYPE: usize = 0x94;
+const POINT_ATTENUATION: usize = layouts::NiPointLight::constantAttenuation;
+/// World direction, 3 floats (0x6BAB6E).
+const SPOT_DIRECTION: usize = layouts::NiSpotLight::worldDirection;
+/// Cone angle in degrees (0x6BAB89).
+const SPOT_ANGLE: usize = layouts::NiSpotLight::spotAngle;
+/// (0x6BABA1)
+const SPOT_EXPONENT: usize = layouts::NiSpotLight::spotExponent;
+/// (0x6BAB3E, 0x6BB801)
+const LIGHT_VTBL_GET_TYPE: usize = layouts::InterfaceNiLight::GetType;
 
-// `TListItem`: data, next, previous.
-const ITEM_DATA: usize = 0x0;
-const ITEM_NEXT: usize = 0x4;
-const ITEM_PREVIOUS: usize = 0x8;
-const ITEM_SIZE: usize = 0xC;
+const ITEM_DATA: usize = layouts::TListItem::data;
+const ITEM_NEXT: usize = layouts::TListItem::next;
+const ITEM_PREVIOUS: usize = layouts::TListItem::previous;
+const ITEM_SIZE: usize = layouts::TListItem::SIZE;
 
-// `NiTListAllocator::Data`: the next block and its array of items.
-const BLOCK_NEXT: usize = 0x0;
-const BLOCK_ITEMS: usize = 0x4;
+const BLOCK_NEXT: usize = layouts::NiTListAllocator_Data::next;
+const BLOCK_ITEMS: usize = layouts::NiTListAllocator_Data::data;
 
 /// 0x74F2EC: the game does not use a light with a dimmer below this value.
 pub(crate) const MIN_DIMMER: u32 = 0x3C23_D70A; // 0.01
@@ -141,8 +140,9 @@ mod eng {
     }
     pub unsafe fn list_dealloc_item(list: usize, item: usize) {
         wr::<u32>(item, 0, 0);
-        wr::<usize>(item, 4, rd(list, 0xC));
-        wr(list, 0xC, item);
+        use crate::gen::layouts::{NiTListBase, TListItem};
+        wr::<usize>(item, TListItem::next, rd(list, NiTListBase::allocator_freeList));
+        wr(list, NiTListBase::allocator_freeList, item);
     }
     pub unsafe fn list_allocator_block_ctor(block: usize, count: u32) -> usize {
         let items = operator_new(count as usize * 12);
@@ -1094,7 +1094,7 @@ mod tests {
         wr(device_vtable, DEVICE_ADD_REF, dev_add_ref as *const () as usize);
         wr(device_vtable, DEVICE_SET_LIGHT, dev_set_light as *const () as usize);
         wr(device_vtable, DEVICE_LIGHT_ENABLE, dev_light_enable as *const () as usize);
-        wr(device_vtable, 0xC8, dev_set_render_state as *const () as usize);
+        wr(device_vtable, crate::d3d::DEVICE_SET_RENDER_STATE, dev_set_render_state as *const () as usize);
         let device = leak(4);
         wr(device, 0, device_vtable);
 

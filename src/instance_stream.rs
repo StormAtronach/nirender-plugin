@@ -47,45 +47,42 @@ use crate::ptr_hash::{HashMap, HashSet};
 
 use crate::capture;
 use crate::engine::{thiscall1, vcall0};
+use crate::gen::layouts::{InterfaceNiTimeController, NiAVObject, NiGeometry, NiProperty, NiPropertyState, NiRTTI};
 use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L, NiPropertyState as PS, NiTimeController as TC, NiZBufferProperty as ZP};
 use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_RACE_MENU_HEAD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::{rd, wr};
 
-/// `NiObjectNET::controllers`, `NiAVObject::parentNode`, `NiAVObject::worldTransform` and
-/// the translation in a transform.
-const CONTROLLERS: usize = 0x10;
-const PARENT: usize = 0x18;
-const WORLD: usize = 0x40;
-const WORLD_TRANSLATION: usize = WORLD + 0x24;
-/// `NiAVObject::worldBound`: the centre and the radius.
-const WORLD_BOUND: usize = 0x1c;
+const CONTROLLERS: usize = NiAVObject::controllers;
+const PARENT: usize = NiAVObject::parentNode;
+const WORLD: usize = NiAVObject::worldTransform;
+const WORLD_TRANSLATION: usize = NiAVObject::worldTransform_translation;
+/// The centre and the radius.
+const WORLD_BOUND: usize = NiAVObject::worldBound;
 /// `NiBound::WhichSide(plane)`: 0 across the plane, 1 in front, 2 behind (out of the view).
 const WHICH_SIDE: usize = 0x6F2660;
 /// The flag of an instance record of the mode gpu: the helper draws it from its table.
 const BLOCK: u32 = 0x100;
 /// `NiAVObject::flags` bit 12: the plugin's mark on a shape the helper draws from its table.
 pub const RETAINED_BIT: u16 = 0x1000;
-const FLAGS: usize = 0x14;
-/// `NiGeometry::spPropertyState`, `spEffectState`, `spModelData`, `skinInstance`.
-const GEOMETRY_PROPERTY_STATE: usize = 0x90;
-const GEOMETRY_EFFECT_STATE: usize = 0x94;
-const GEOMETRY_MODEL_DATA: usize = 0x98;
-const GEOMETRY_SKIN: usize = 0x9C;
+const FLAGS: usize = NiAVObject::flags;
+const GEOMETRY_PROPERTY_STATE: usize = NiGeometry::spPropertyState;
+const GEOMETRY_EFFECT_STATE: usize = NiGeometry::spEffectState;
+const GEOMETRY_MODEL_DATA: usize = NiGeometry::spModelData;
+const GEOMETRY_SKIN: usize = NiGeometry::skinInstance;
 /// The words of a `NiTransform`: the rotation, the translation (from word 9), the scale.
 const TRANSFORM_WORDS: usize = 13;
 const MOST_LIGHTS: usize = 64;
 /// The property pointers of a `NiPropertyState`: alpha first, 12 of them.
-const STATE_FIRST: usize = 0x8;
+const STATE_FIRST: usize = NiPropertyState::propAlpha;
 const STATE_COUNT: usize = 12;
-/// `NiProperty::flags` (u16); bit 0 of the alpha property is the blend.
-const PROPERTY_FLAGS: usize = 0x14;
-/// The vtable slot of `NiTimeController::OnPreDisplay`, which the display of a shape calls
-/// for each of its controllers before the draw (a morpher writes its vertices then).
-const SLOT_ON_PRE_DISPLAY: usize = 0x40;
-/// `NiRTTI`: the name, then the base.
-const RTTI_NAME: usize = 0x0;
-const RTTI_BASE: usize = 0x4;
+/// A u16; bit 0 of the alpha property is the blend.
+const PROPERTY_FLAGS: usize = NiProperty::flags;
+/// The display of a shape calls it for each of its controllers before the draw (a morpher
+/// writes its vertices then).
+const SLOT_ON_PRE_DISPLAY: usize = InterfaceNiTimeController::OnPreDisplay;
+const RTTI_NAME: usize = NiRTTI::name;
+const RTTI_BASE: usize = NiRTTI::baseRTTI;
 /// The most nodes above a shape that the walk looks at.
 const MAX_DEPTH: usize = 32;
 /// The frames between two checks of the handles of an instance.
@@ -1687,13 +1684,13 @@ pub unsafe fn world_scene(mt: &MainThread, camera_root: usize) {
 
 /// `TES3Game` and its world root (MWSE `TES3Game.h`).
 const TES3_GAME: usize = 0x7C6CDC;
-const GAME_WORLD_ROOT: usize = 0x9C;
+const GAME_WORLD_ROOT: usize = crate::gen::layouts::TES3Game::worldRoot;
 
-/// `WorldController` (0x7C67DC) -> `weatherController` (+0x58) -> `sgSkyLight` (+0xAC):
-/// the weather's directional light, the sun of the hour (MWSE `TES3WeatherController.h`).
+/// `WorldController` (0x7C67DC) -> `weatherController` -> `sgSkyLight`: the weather's
+/// directional light, the sun of the hour (MWSE `TES3WeatherController.h`).
 const WORLD_CONTROLLER: usize = 0x7C67DC;
-const WEATHER_CONTROLLER: usize = 0x58;
-const SKY_LIGHT: usize = 0xAC;
+const WEATHER_CONTROLLER: usize = crate::gen::layouts::WorldController::weatherController;
+const SKY_LIGHT: usize = crate::gen::layouts::WeatherController::sgSkyLight;
 
 /// The sun of the frame for the helper's own draws (the distant land, the shadows): the
 /// weather controller's sky light, converted as the engine converts a light for the device

@@ -21,6 +21,15 @@ from common import REPO  # noqa: E402
 from gen import LAYOUT_RE, OUT, flatten  # noqa: E402
 
 MWSE = os.path.join(os.path.dirname(REPO), "MWSE", "MWSE")
+# Differences that were looked at in IDA and do not change an offset either side reads, with
+# the reason. A struct here is still compared; its differences are listed as known.
+KNOWN = {
+    "NI::Texture::RendererData": "IDA ends the base at 0xC and puts +0xC (field_C) in NiDX8TextureData; MWSE puts it "
+    "in the base (unknown_0xC). The derived types agree (renderer at 0x10, size 0x50). The engine stores the texture "
+    "at +8 and the next renderer data at +4 (NiDX8TextureData::ctor_args, 0x6B6D0F); MWSE names +4 `texture` and "
+    "never reads it (2026-10-24).",
+}
+
 SIZE = re.compile(r"static_assert\s*\(\s*sizeof\s*\(\s*([\w:]+)\s*\)\s*==\s*(0x[0-9A-Fa-f]+|\d+)")
 STRUCT = re.compile(r"^\s*struct\s+(\w+)\b[^;]*\{")
 FIELD_COMMENT = re.compile(r"^\s*[^/]*?\b(\w+)\s*(?:\[[^\]]*\])?\s*;\s*//\s*(0x[0-9A-Fa-f]+)\b")
@@ -98,10 +107,13 @@ def main():
                 elif offset not in starts and not field.startswith("unknown_"):
                     # A placeholder inside a wider IDA member is less detail, not a contradiction.
                     problems.append("%s:%d %s::%s at 0x%x: no IDA member of %s starts there" % (rel, number, name, field, offset, ida))
-    for problem in problems:
+    known = [p for p in problems if any((" %s:" % name) in p or (" %s::" % name) in p for name in KNOWN)]
+    new = [p for p in problems if p not in known]
+    for problem in new:
         print("sharedse layouts: " + problem)
-    print("sharedse layouts: %d structs compared (%d sizes, %d field offsets), %d differences" % (compared, sizes_compared, fields_compared, len(problems)))
-    return 1 if problems else 0
+    print("sharedse layouts: %d structs compared (%d sizes, %d field offsets), %d differences, %d known (KNOWN)" % (
+        compared, sizes_compared, fields_compared, len(new), len(known)))
+    return 1 if new else 0
 
 
 if __name__ == "__main__":

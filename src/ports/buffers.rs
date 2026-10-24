@@ -37,21 +37,19 @@ const BUCKETS: u32 = 37;
 /// The number of resources of one `VBInfo`.
 const RING: usize = 5;
 
-/// The slot of `IDirect3DDevice8::CreateVertexShader`: slot 75. The call at 0x6BEE96 uses it.
-/// `d3d` does not have this slot.
-const DEVICE_CREATE_VERTEX_SHADER: usize = 0x12C;
+/// The call at 0x6BEE96 uses it.
+use crate::d3d::DEVICE_CREATE_VERTEX_SHADER;
 
 /// The slot of `GetActiveVertexCount` in the vtable of a `NiGeometryData` (0x6BDE63, 0x6BF0D2).
-const GEOMETRY_VTBL_ACTIVE_VERTEX_COUNT: usize = 0x30;
+const GEOMETRY_VTBL_ACTIVE_VERTEX_COUNT: usize = crate::gen::layouts::InterfaceNiGeometryData::GetActiveVertexCount;
 /// The slot of the function of `NiD3DShaderInterface` that gives the vertex declaration (0x6BEE75).
 const SHADER_VTBL_DECLARATION: usize = 0x2C;
 
-// `TArray`: vtbl, storage, storageCount, endIndex, filledCount, growByCount.
-const ARRAY_STORAGE: usize = 0x4;
-const ARRAY_STORAGE_COUNT: usize = 0x8;
-const ARRAY_END_INDEX: usize = 0xC;
-const ARRAY_FILLED_COUNT: usize = 0x10;
-const ARRAY_GROW_BY: usize = 0x14;
+const ARRAY_STORAGE: usize = crate::gen::layouts::TArray::storage;
+const ARRAY_STORAGE_COUNT: usize = crate::gen::layouts::TArray::storageCount;
+const ARRAY_END_INDEX: usize = crate::gen::layouts::TArray::endIndex;
+const ARRAY_FILLED_COUNT: usize = crate::gen::layouts::TArray::filledCount;
+const ARRAY_GROW_BY: usize = crate::gen::layouts::TArray::growByCount;
 
 // The object that `compileVertexShader` keeps for each shader. It has 0x24 bytes and the vtable 0x74F768.
 const SHADER_ENTRY_SIZE: usize = 0x24;
@@ -216,7 +214,7 @@ mod eng {
     }
     pub unsafe fn clear_hash_map(_map: usize) {}
     pub unsafe fn resource_release(resource: usize) {
-        wr::<u32>(resource, 0x10, 0);
+        wr::<u32>(resource, crate::gen::layouts::NiDX8VBResource::pD3DResource, 0);
     }
     pub unsafe fn resource_release_thunk(resource: usize) {
         resource_release(resource)
@@ -227,7 +225,8 @@ mod eng {
     }
     /// The sets follow each other in one array, as in the game.
     pub unsafe fn texture_set(geometry: usize, set: u32) -> usize {
-        rd::<usize>(geometry, 0x28) + set as usize * rd::<u16>(geometry, 0x8) as usize * 8
+        use crate::gen::layouts::NiGeometryData;
+        rd::<usize>(geometry, NiGeometryData::textureCoords) + set as usize * rd::<u16>(geometry, NiGeometryData::vertexCount) as usize * 8
     }
     pub unsafe fn array_set_size(array: usize, size: u32) {
         let storage = operator_new(size as usize * 4);

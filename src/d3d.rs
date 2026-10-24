@@ -105,6 +105,8 @@ pub const DEVICE_SET_TEXTURE_STAGE_STATE: usize = 0xFC;
 pub const DEVICE_DRAW_PRIMITIVE: usize = 0x118;
 /// The slot of `IDirect3DDevice8::DrawIndexedPrimitive`.
 pub const DEVICE_DRAW_INDEXED_PRIMITIVE: usize = 0x11C;
+/// The slot of `IDirect3DDevice8::CreateVertexShader` (75).
+pub const DEVICE_CREATE_VERTEX_SHADER: usize = 0x12C;
 /// The slot of `IDirect3DDevice8::SetVertexShader`.
 pub const DEVICE_SET_VERTEX_SHADER: usize = 0x130;
 /// The slot of `IDirect3DDevice8::SetStreamSource`.
@@ -914,6 +916,7 @@ mod tests {
         assert_eq!(NAMES[DEVICE_RESET / 4], "Reset");
         assert_eq!(NAMES[DEVICE_PRESENT / 4], "Present");
         assert_eq!(NAMES[DEVICE_GET_BACK_BUFFER / 4], "GetBackBuffer");
+        assert_eq!(NAMES[DEVICE_CREATE_VERTEX_SHADER / 4], "CreateVertexShader");
         assert_eq!(NAMES[DEVICE_CREATE_DEPTH_STENCIL_SURFACE / 4], "CreateDepthStencilSurface");
         assert_eq!(NAMES[DEVICE_GET_TEXTURE_STAGE_STATE / 4], "GetTextureStageState");
         assert_eq!(NAMES[DEVICE_CREATE_TEXTURE / 4], "CreateTexture");

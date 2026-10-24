@@ -58,7 +58,7 @@ def number(text):
 
 
 PATH = re.compile(r"(?:(?:crate::gen::)?layouts::)?([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)")
-ARITHMETIC = re.compile(r"^[0-9a-fA-Fx+\-* ()]+$")
+ARITHMETIC = re.compile(r"^[0-9a-fA-Fx+\-*/ ()]+$")
 
 
 def resolve(expr, mods, alias):
@@ -75,7 +75,8 @@ def resolve(expr, mods, alias):
     text = PATH.sub(value, expr.strip())
     if missing or not ARITHMETIC.match(text):
         return None
-    return eval(text, {"__builtins__": {}})  # digits, hex literals, + - * and parentheses only
+    # Digits, hex literals, + - * / and parentheses only; Rust's `/` on usize is a floor division.
+    return eval(text.replace("/", "//"), {"__builtins__": {}})
 
 
 def elements(value):

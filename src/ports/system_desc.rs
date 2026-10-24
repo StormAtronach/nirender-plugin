@@ -16,30 +16,29 @@ use crate::gen::layouts::{
 use crate::mem::{rd, wr};
 use crate::ports::hash_map;
 
-// NiTListBase
-const LIST_SIZE: usize = 0x18;
-const LIST_COUNT: usize = 0x00;
-const LIST_HEAD: usize = 0x04;
-const LIST_TAIL: usize = 0x08;
-const LIST_FREE: usize = 0x0C;
-const LIST_BLOCKS: usize = 0x10;
-const LIST_BLOCK_ITEMS: usize = 0x14;
-// TListItem
-const ITEM_SIZE: usize = 0x0C;
-const ITEM_DATA: usize = 0x00;
-const ITEM_NEXT: usize = 0x04;
-const ITEM_PREVIOUS: usize = 0x08;
-// NiTListAllocator::Data
-const BLOCK_SIZE: usize = 0x08;
-const BLOCK_NEXT: usize = 0x00;
-const BLOCK_ITEMS: usize = 0x04;
+use crate::gen::layouts::{NiTListAllocator_Data, NiTListBase, TArray, TListItem};
+
+const LIST_SIZE: usize = NiTListBase::SIZE;
+const LIST_COUNT: usize = NiTListBase::count;
+const LIST_HEAD: usize = NiTListBase::head;
+const LIST_TAIL: usize = NiTListBase::tail;
+const LIST_FREE: usize = NiTListBase::allocator_freeList;
+const LIST_BLOCKS: usize = NiTListBase::allocator_allocator;
+const LIST_BLOCK_ITEMS: usize = NiTListBase::allocator_count;
+const ITEM_SIZE: usize = TListItem::SIZE;
+const ITEM_DATA: usize = TListItem::data;
+const ITEM_NEXT: usize = TListItem::next;
+const ITEM_PREVIOUS: usize = TListItem::previous;
+const BLOCK_SIZE: usize = NiTListAllocator_Data::SIZE;
+const BLOCK_NEXT: usize = NiTListAllocator_Data::next;
+const BLOCK_ITEMS: usize = NiTListAllocator_Data::data;
 // TArray of pointers
-const ARRAY_VTBL: usize = 0x00;
-const ARRAY_STORAGE: usize = 0x04;
-const ARRAY_STORAGE_COUNT: usize = 0x08;
-const ARRAY_END: usize = 0x0C;
-const ARRAY_FILLED: usize = 0x10;
-const ARRAY_GROW_BY: usize = 0x14;
+const ARRAY_VTBL: usize = TArray::vtbl;
+const ARRAY_STORAGE: usize = TArray::storage;
+const ARRAY_STORAGE_COUNT: usize = TArray::storageCount;
+const ARRAY_END: usize = TArray::endIndex;
+const ARRAY_FILLED: usize = TArray::filledCount;
+const ARRAY_GROW_BY: usize = TArray::growByCount;
 // D3DDISPLAYMODE, as an array of four dwords
 const MODE_WIDTH: usize = 0;
 const MODE_HEIGHT: usize = 1;
@@ -1097,7 +1096,7 @@ mod tests {
     unsafe extern "system" fn get_adapter_identifier(this: usize, adapter: u32, flags: u32, out: usize) -> u32 {
         fake(this).log(format!("GetAdapterIdentifier {adapter} {flags}"));
         core::ptr::write_bytes(out as *mut u8, 0, 0x42C);
-        wr::<u32>(out, 0x408, 0x1234 + adapter); // VendorId
+        wr::<u32>(out, crate::gen::layouts::D3DADAPTER_IDENTIFIER8::venderId, 0x1234 + adapter);
         0
     }
     unsafe extern "system" fn get_adapter_mode_count(this: usize, adapter: u32) -> u32 {
@@ -1144,8 +1143,8 @@ mod tests {
             return 0x8876_086A;
         }
         core::ptr::write_bytes(caps as *mut u8, 0, 0xD4);
-        wr(caps, 0x0, device_type);
-        wr(caps, 0xC, fake(this).caps2);
+        wr(caps, crate::gen::layouts::D3DCAPS8::DeviceType, device_type);
+        wr(caps, crate::gen::layouts::D3DCAPS8::Caps2, fake(this).caps2);
         0
     }
 

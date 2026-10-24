@@ -115,6 +115,36 @@ pub mod BSAnimationNode {
     pub const padding_B1: usize = 0xb1;
 }
 
+pub mod D3DADAPTER_IDENTIFIER8 {
+    pub const SIZE: usize = 0x42c;
+    /// `char[512]`, 0x200 bytes
+    pub const driver: usize = 0x0;
+    /// `char[512]`, 0x200 bytes
+    pub const description: usize = 0x200;
+    /// `LARGE_INTEGER`, 0x8 bytes
+    pub const version: usize = 0x400;
+    /// `int`, 0x4 bytes
+    pub const venderId: usize = 0x408;
+    /// `int`, 0x4 bytes
+    pub const deviceId: usize = 0x40c;
+    /// `int`, 0x4 bytes
+    pub const subSysId: usize = 0x410;
+    /// `int`, 0x4 bytes
+    pub const revision: usize = 0x414;
+    /// `GUID`, 0x10 bytes
+    pub const identifier: usize = 0x418;
+    /// `DWORD`, 0x4 bytes
+    pub const identifier_Data1: usize = 0x418;
+    /// `WORD`, 0x2 bytes
+    pub const identifier_Data2: usize = 0x41c;
+    /// `WORD`, 0x2 bytes
+    pub const identifier_Data3: usize = 0x41e;
+    /// `BYTE[8]`, 0x8 bytes
+    pub const identifier_Data4: usize = 0x420;
+    /// `int`, 0x4 bytes
+    pub const WHQLevel: usize = 0x428;
+}
+
 pub mod D3DCAPS8 {
     pub const SIZE: usize = 0xd4;
     /// `DWORD`, 0x4 bytes
@@ -665,6 +695,40 @@ pub mod InterfaceNiDX8TextureData {
     pub const GetAsSourceTexture: usize = 0x24;
 }
 
+pub mod InterfaceNiGeometryData {
+    pub const SIZE: usize = 0x38;
+    /// `InterfaceNiObject`, 0x2c bytes
+    pub const super_: usize = 0x0;
+    /// `void (__thiscall *)(NiObject *, char)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `NiRTTI *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const GetRTTI: usize = 0x4;
+    /// `NiObject *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateClone: usize = 0x8;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LoadBinary: usize = 0xc;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LinkObject: usize = 0x10;
+    /// `bool (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const RegisterStreamables: usize = 0x14;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const SaveBinary: usize = 0x18;
+    /// `bool (__thiscall *)(const NiObject *, const NiObject *)`, 0x4 bytes
+    pub const IsEqual: usize = 0x1c;
+    /// `void (__thiscall *)(NiObject *, TArray *)`, 0x4 bytes
+    pub const AddViewerStrings: usize = 0x20;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const ProcessClone: usize = 0x24;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateRendererData: usize = 0x28;
+    /// `void (__thiscall *)(NiGeometryData *, unsigned __int16)`, 0x4 bytes
+    pub const SetActiveVertexCount: usize = 0x2c;
+    /// `unsigned __int16 (__thiscall *)(NiGeometryData *)`, 0x4 bytes
+    pub const GetActiveVertexCount: usize = 0x30;
+    /// `void (__thiscall *)(NiGeometryData *)`, 0x4 bytes
+    pub const CalculateNormals: usize = 0x34;
+}
+
 pub mod InterfaceNiLight {
     pub const SIZE: usize = 0x98;
     /// `InterfaceNiAVObject`, 0x94 bytes
@@ -945,6 +1009,48 @@ pub mod InterfaceNiTexture {
     pub const GetWidth: usize = 0x2c;
     /// `unsigned int (__thiscall *)(NiTexture *)`, 0x4 bytes
     pub const GetHeight: usize = 0x30;
+}
+
+pub mod InterfaceNiTimeController {
+    pub const SIZE: usize = 0x48;
+    /// `InterfaceNiObject`, 0x2c bytes
+    pub const super_: usize = 0x0;
+    /// `void (__thiscall *)(NiObject *, char)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `NiRTTI *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const GetRTTI: usize = 0x4;
+    /// `NiObject *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateClone: usize = 0x8;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LoadBinary: usize = 0xc;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LinkObject: usize = 0x10;
+    /// `bool (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const RegisterStreamables: usize = 0x14;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const SaveBinary: usize = 0x18;
+    /// `bool (__thiscall *)(const NiObject *, const NiObject *)`, 0x4 bytes
+    pub const IsEqual: usize = 0x1c;
+    /// `void (__thiscall *)(NiObject *, TArray *)`, 0x4 bytes
+    pub const AddViewerStrings: usize = 0x20;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const ProcessClone: usize = 0x24;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateRendererData: usize = 0x28;
+    /// `void (__thiscall *)(NiTimeController *this, float)`, 0x4 bytes
+    pub const Start: usize = 0x2c;
+    /// `void (__thiscall *)(NiTimeController *this)`, 0x4 bytes
+    pub const Stop: usize = 0x30;
+    /// `void (__thiscall *)(NiTimeController *this, float fTime)`, 0x4 bytes
+    pub const Update: usize = 0x34;
+    /// `void (__thiscall *)(NiTimeController *this, NiObjectNET *target)`, 0x4 bytes
+    pub const SetTarget: usize = 0x38;
+    /// `float (__thiscall *)(NiTimeController *this, float t)`, 0x4 bytes
+    pub const ComputeScaledTime: usize = 0x3c;
+    /// `void (__thiscall *)(NiTimeController *this)`, 0x4 bytes
+    pub const OnPreDisplay: usize = 0x40;
+    /// `char (__thiscall *)(NiTimeController *this)`, 0x4 bytes
+    pub const TargetIsRequiredType: usize = 0x44;
 }
 
 pub mod Moon {
@@ -5867,6 +5973,120 @@ pub mod NiDX8VertexBufferManager_VBInfo {
     pub const resources: usize = 0x8;
 }
 
+pub mod NiDirectionalLight {
+    pub const SIZE: usize = 0xdc;
+    /// `NiLight`, 0xd0 bytes
+    pub const super_: usize = 0x0;
+    /// `NiDynamicEffect`, 0xa8 bytes
+    pub const super__: usize = 0x0;
+    /// `NiAVObject`, 0x90 bytes
+    pub const super___: usize = 0x0;
+    /// `NiObjectNET`, 0x14 bytes
+    pub const super____: usize = 0x0;
+    /// `NiObject`, 0x8 bytes
+    pub const super_____: usize = 0x0;
+    /// `char *`, 0x4 bytes
+    pub const name: usize = 0x8;
+    /// `NiExtraData *`, 0x4 bytes
+    pub const extraData: usize = 0xc;
+    /// `NiTimeController *`, 0x4 bytes
+    pub const controllers: usize = 0x10;
+    /// `unsigned __int16`, 0x2 bytes
+    pub const flags: usize = 0x14;
+    /// `__int16`, 0x2 bytes
+    pub const pad_16: usize = 0x16;
+    /// `NiNode *`, 0x4 bytes
+    pub const parentNode: usize = 0x18;
+    /// `NiBound`, 0x10 bytes
+    pub const worldBound: usize = 0x1c;
+    /// `vec3`, 0xc bytes
+    pub const worldBound_centre: usize = 0x1c;
+    /// `float`, 0x4 bytes
+    pub const worldBound_radius: usize = 0x28;
+    /// `NiAVObject::LocalTransform`, 0x14 bytes
+    pub const localTransform: usize = 0x2c;
+    /// `matrix33 *`, 0x4 bytes
+    pub const localTransform_pLocalRotate: usize = 0x2c;
+    /// `vec3`, 0xc bytes
+    pub const localTransform_localTranslate: usize = 0x30;
+    /// `float`, 0x4 bytes
+    pub const localTransform_localScale: usize = 0x3c;
+    /// `NiTransform`, 0x34 bytes
+    pub const worldTransform: usize = 0x40;
+    /// `matrix33`, 0x24 bytes
+    pub const worldTransform_rotation: usize = 0x40;
+    /// `vec3`, 0xc bytes
+    pub const worldTransform_translation: usize = 0x64;
+    /// `float`, 0x4 bytes
+    pub const worldTransform_scale: usize = 0x70;
+    /// `NiAVObject::Physics *`, 0x4 bytes
+    pub const pkVelocities: usize = 0x74;
+    /// `NiBoundingVolume *`, 0x4 bytes
+    pub const modelABV: usize = 0x78;
+    /// `NiBoundingVolume *`, 0x4 bytes
+    pub const worldABV: usize = 0x7c;
+    /// `int (__cdecl *)(NiCollisionGroup::Intersect *)`, 0x4 bytes
+    pub const collideCallback: usize = 0x80;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const collideCallbackUserData: usize = 0x84;
+    /// `NiPropertyList`, 0x8 bytes
+    pub const propertyList: usize = 0x88;
+    /// `NiProperty *`, 0x4 bytes
+    pub const propertyList_property: usize = 0x88;
+    /// `NiPropertyList *`, 0x4 bytes
+    pub const propertyList_next: usize = 0x8c;
+    /// `byte`, 0x1 bytes
+    pub const enabled: usize = 0x90;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_91: usize = 0x91;
+    /// `int`, 0x4 bytes
+    pub const index: usize = 0x94;
+    /// `int`, 0x4 bytes
+    pub const pushCount: usize = 0x98;
+    /// `int`, 0x4 bytes
+    pub const revisionID: usize = 0x9c;
+    /// `NiAVObjectList`, 0x8 bytes
+    pub const affectedNodes: usize = 0xa0;
+    /// `NiAVObject *`, 0x4 bytes
+    pub const affectedNodes_node: usize = 0xa0;
+    /// `NiAVObjectList *`, 0x4 bytes
+    pub const affectedNodes_next: usize = 0xa4;
+    /// `float`, 0x4 bytes
+    pub const dimmer: usize = 0xa8;
+    /// `NiColor`, 0xc bytes
+    pub const ambientColor: usize = 0xac;
+    /// `float`, 0x4 bytes
+    pub const ambientColor_r: usize = 0xac;
+    /// `float`, 0x4 bytes
+    pub const ambientColor_g: usize = 0xb0;
+    /// `float`, 0x4 bytes
+    pub const ambientColor_b: usize = 0xb4;
+    /// `NiColor`, 0xc bytes
+    pub const diffuseColor: usize = 0xb8;
+    /// `float`, 0x4 bytes
+    pub const diffuseColor_r: usize = 0xb8;
+    /// `float`, 0x4 bytes
+    pub const diffuseColor_g: usize = 0xbc;
+    /// `float`, 0x4 bytes
+    pub const diffuseColor_b: usize = 0xc0;
+    /// `NiColor`, 0xc bytes
+    pub const specularColor: usize = 0xc4;
+    /// `float`, 0x4 bytes
+    pub const specularColor_r: usize = 0xc4;
+    /// `float`, 0x4 bytes
+    pub const specularColor_g: usize = 0xc8;
+    /// `float`, 0x4 bytes
+    pub const specularColor_b: usize = 0xcc;
+    /// `vec3`, 0xc bytes
+    pub const direction: usize = 0xd0;
+    /// `float`, 0x4 bytes
+    pub const direction_x: usize = 0xd0;
+    /// `float`, 0x4 bytes
+    pub const direction_y: usize = 0xd4;
+    /// `float`, 0x4 bytes
+    pub const direction_z: usize = 0xd8;
+}
+
 pub mod NiDynamicEffect {
     pub const SIZE: usize = 0xa8;
     /// `NiAVObject`, 0x90 bytes
@@ -7265,6 +7485,118 @@ pub mod NiPlane {
     pub const constant: usize = 0xc;
 }
 
+pub mod NiPointLight {
+    pub const SIZE: usize = 0xdc;
+    /// `NiLight`, 0xd0 bytes
+    pub const super_: usize = 0x0;
+    /// `NiDynamicEffect`, 0xa8 bytes
+    pub const super__: usize = 0x0;
+    /// `NiAVObject`, 0x90 bytes
+    pub const super___: usize = 0x0;
+    /// `NiObjectNET`, 0x14 bytes
+    pub const super____: usize = 0x0;
+    /// `NiObject`, 0x8 bytes
+    pub const super_____: usize = 0x0;
+    /// `char *`, 0x4 bytes
+    pub const name: usize = 0x8;
+    /// `NiExtraData *`, 0x4 bytes
+    pub const extraData: usize = 0xc;
+    /// `NiTimeController *`, 0x4 bytes
+    pub const controllers: usize = 0x10;
+    /// `unsigned __int16`, 0x2 bytes
+    pub const flags: usize = 0x14;
+    /// `__int16`, 0x2 bytes
+    pub const pad_16: usize = 0x16;
+    /// `NiNode *`, 0x4 bytes
+    pub const parentNode: usize = 0x18;
+    /// `NiBound`, 0x10 bytes
+    pub const worldBound: usize = 0x1c;
+    /// `vec3`, 0xc bytes
+    pub const worldBound_centre: usize = 0x1c;
+    /// `float`, 0x4 bytes
+    pub const worldBound_radius: usize = 0x28;
+    /// `NiAVObject::LocalTransform`, 0x14 bytes
+    pub const localTransform: usize = 0x2c;
+    /// `matrix33 *`, 0x4 bytes
+    pub const localTransform_pLocalRotate: usize = 0x2c;
+    /// `vec3`, 0xc bytes
+    pub const localTransform_localTranslate: usize = 0x30;
+    /// `float`, 0x4 bytes
+    pub const localTransform_localScale: usize = 0x3c;
+    /// `NiTransform`, 0x34 bytes
+    pub const worldTransform: usize = 0x40;
+    /// `matrix33`, 0x24 bytes
+    pub const worldTransform_rotation: usize = 0x40;
+    /// `vec3`, 0xc bytes
+    pub const worldTransform_translation: usize = 0x64;
+    /// `float`, 0x4 bytes
+    pub const worldTransform_scale: usize = 0x70;
+    /// `NiAVObject::Physics *`, 0x4 bytes
+    pub const pkVelocities: usize = 0x74;
+    /// `NiBoundingVolume *`, 0x4 bytes
+    pub const modelABV: usize = 0x78;
+    /// `NiBoundingVolume *`, 0x4 bytes
+    pub const worldABV: usize = 0x7c;
+    /// `int (__cdecl *)(NiCollisionGroup::Intersect *)`, 0x4 bytes
+    pub const collideCallback: usize = 0x80;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const collideCallbackUserData: usize = 0x84;
+    /// `NiPropertyList`, 0x8 bytes
+    pub const propertyList: usize = 0x88;
+    /// `NiProperty *`, 0x4 bytes
+    pub const propertyList_property: usize = 0x88;
+    /// `NiPropertyList *`, 0x4 bytes
+    pub const propertyList_next: usize = 0x8c;
+    /// `byte`, 0x1 bytes
+    pub const enabled: usize = 0x90;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_91: usize = 0x91;
+    /// `int`, 0x4 bytes
+    pub const index: usize = 0x94;
+    /// `int`, 0x4 bytes
+    pub const pushCount: usize = 0x98;
+    /// `int`, 0x4 bytes
+    pub const revisionID: usize = 0x9c;
+    /// `NiAVObjectList`, 0x8 bytes
+    pub const affectedNodes: usize = 0xa0;
+    /// `NiAVObject *`, 0x4 bytes
+    pub const affectedNodes_node: usize = 0xa0;
+    /// `NiAVObjectList *`, 0x4 bytes
+    pub const affectedNodes_next: usize = 0xa4;
+    /// `float`, 0x4 bytes
+    pub const dimmer: usize = 0xa8;
+    /// `NiColor`, 0xc bytes
+    pub const ambientColor: usize = 0xac;
+    /// `float`, 0x4 bytes
+    pub const ambientColor_r: usize = 0xac;
+    /// `float`, 0x4 bytes
+    pub const ambientColor_g: usize = 0xb0;
+    /// `float`, 0x4 bytes
+    pub const ambientColor_b: usize = 0xb4;
+    /// `NiColor`, 0xc bytes
+    pub const diffuseColor: usize = 0xb8;
+    /// `float`, 0x4 bytes
+    pub const diffuseColor_r: usize = 0xb8;
+    /// `float`, 0x4 bytes
+    pub const diffuseColor_g: usize = 0xbc;
+    /// `float`, 0x4 bytes
+    pub const diffuseColor_b: usize = 0xc0;
+    /// `NiColor`, 0xc bytes
+    pub const specularColor: usize = 0xc4;
+    /// `float`, 0x4 bytes
+    pub const specularColor_r: usize = 0xc4;
+    /// `float`, 0x4 bytes
+    pub const specularColor_g: usize = 0xc8;
+    /// `float`, 0x4 bytes
+    pub const specularColor_b: usize = 0xcc;
+    /// `float`, 0x4 bytes
+    pub const constantAttenuation: usize = 0xd0;
+    /// `float`, 0x4 bytes
+    pub const linearAttenuation: usize = 0xd4;
+    /// `float`, 0x4 bytes
+    pub const quadraticAttenuation: usize = 0xd8;
+}
+
 pub mod NiProperty {
     pub const SIZE: usize = 0x18;
     /// `NiObjectNET`, 0x14 bytes
@@ -7319,6 +7651,14 @@ pub mod NiPropertyState {
     pub const field_30: usize = 0x30;
     /// `NiProperty *`, 0x4 bytes
     pub const propRendererSpecific: usize = 0x34;
+}
+
+pub mod NiRTTI {
+    pub const SIZE: usize = 0x8;
+    /// `const char *`, 0x4 bytes
+    pub const name: usize = 0x0;
+    /// `NiRTTI *`, 0x4 bytes
+    pub const baseRTTI: usize = 0x4;
 }
 
 pub mod NiRefObject {
@@ -7801,6 +8141,104 @@ pub mod NiSourceTexture {
     pub const padding_39: usize = 0x39;
 }
 
+pub mod NiSpotLight {
+    pub const SIZE: usize = 0xf0;
+    /// `NiPointLight`, 0xdc bytes
+    pub const super_: usize = 0x0;
+    /// `NiLight`, 0xd0 bytes
+    pub const super__: usize = 0x0;
+    /// `NiDynamicEffect`, 0xa8 bytes
+    pub const super___: usize = 0x0;
+    /// `NiAVObject`, 0x90 bytes
+    pub const super____: usize = 0x0;
+    /// `NiObjectNET`, 0x14 bytes
+    pub const super_____: usize = 0x0;
+    /// `unsigned __int16`, 0x2 bytes
+    pub const flags: usize = 0x14;
+    /// `__int16`, 0x2 bytes
+    pub const pad_16: usize = 0x16;
+    /// `NiNode *`, 0x4 bytes
+    pub const parentNode: usize = 0x18;
+    /// `NiBound`, 0x10 bytes
+    pub const worldBound: usize = 0x1c;
+    /// `NiAVObject::LocalTransform`, 0x14 bytes
+    pub const localTransform: usize = 0x2c;
+    /// `NiTransform`, 0x34 bytes
+    pub const worldTransform: usize = 0x40;
+    /// `NiAVObject::Physics *`, 0x4 bytes
+    pub const pkVelocities: usize = 0x74;
+    /// `NiBoundingVolume *`, 0x4 bytes
+    pub const modelABV: usize = 0x78;
+    /// `NiBoundingVolume *`, 0x4 bytes
+    pub const worldABV: usize = 0x7c;
+    /// `int (__cdecl *)(NiCollisionGroup::Intersect *)`, 0x4 bytes
+    pub const collideCallback: usize = 0x80;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const collideCallbackUserData: usize = 0x84;
+    /// `NiPropertyList`, 0x8 bytes
+    pub const propertyList: usize = 0x88;
+    /// `byte`, 0x1 bytes
+    pub const enabled: usize = 0x90;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_91: usize = 0x91;
+    /// `int`, 0x4 bytes
+    pub const index: usize = 0x94;
+    /// `int`, 0x4 bytes
+    pub const pushCount: usize = 0x98;
+    /// `int`, 0x4 bytes
+    pub const revisionID: usize = 0x9c;
+    /// `NiAVObjectList`, 0x8 bytes
+    pub const affectedNodes: usize = 0xa0;
+    /// `NiAVObject *`, 0x4 bytes
+    pub const affectedNodes_node: usize = 0xa0;
+    /// `NiAVObjectList *`, 0x4 bytes
+    pub const affectedNodes_next: usize = 0xa4;
+    /// `float`, 0x4 bytes
+    pub const dimmer: usize = 0xa8;
+    /// `NiColor`, 0xc bytes
+    pub const ambientColor: usize = 0xac;
+    /// `float`, 0x4 bytes
+    pub const ambientColor_r: usize = 0xac;
+    /// `float`, 0x4 bytes
+    pub const ambientColor_g: usize = 0xb0;
+    /// `float`, 0x4 bytes
+    pub const ambientColor_b: usize = 0xb4;
+    /// `NiColor`, 0xc bytes
+    pub const diffuseColor: usize = 0xb8;
+    /// `float`, 0x4 bytes
+    pub const diffuseColor_r: usize = 0xb8;
+    /// `float`, 0x4 bytes
+    pub const diffuseColor_g: usize = 0xbc;
+    /// `float`, 0x4 bytes
+    pub const diffuseColor_b: usize = 0xc0;
+    /// `NiColor`, 0xc bytes
+    pub const specularColor: usize = 0xc4;
+    /// `float`, 0x4 bytes
+    pub const specularColor_r: usize = 0xc4;
+    /// `float`, 0x4 bytes
+    pub const specularColor_g: usize = 0xc8;
+    /// `float`, 0x4 bytes
+    pub const specularColor_b: usize = 0xcc;
+    /// `float`, 0x4 bytes
+    pub const constantAttenuation: usize = 0xd0;
+    /// `float`, 0x4 bytes
+    pub const linearAttenuation: usize = 0xd4;
+    /// `float`, 0x4 bytes
+    pub const quadraticAttenuation: usize = 0xd8;
+    /// `vec3`, 0xc bytes
+    pub const worldDirection: usize = 0xdc;
+    /// `float`, 0x4 bytes
+    pub const worldDirection_x: usize = 0xdc;
+    /// `float`, 0x4 bytes
+    pub const worldDirection_y: usize = 0xe0;
+    /// `float`, 0x4 bytes
+    pub const worldDirection_z: usize = 0xe4;
+    /// `float`, 0x4 bytes
+    pub const spotAngle: usize = 0xe8;
+    /// `float`, 0x4 bytes
+    pub const spotExponent: usize = 0xec;
+}
+
 pub mod NiStencilProperty {
     pub const SIZE: usize = 0x38;
     /// `NiProperty`, 0x18 bytes
@@ -8079,6 +8517,32 @@ pub mod NiSwitchNode {
     pub const pad_D5: usize = 0xd5;
 }
 
+pub mod NiTListAllocator_Data {
+    pub const SIZE: usize = 0x8;
+    /// `NiTListAllocator::Data *`, 0x4 bytes
+    pub const next: usize = 0x0;
+    /// `TListItem *`, 0x4 bytes
+    pub const data: usize = 0x4;
+}
+
+pub mod NiTListBase {
+    pub const SIZE: usize = 0x18;
+    /// `int`, 0x4 bytes
+    pub const count: usize = 0x0;
+    /// `TListItem *`, 0x4 bytes
+    pub const head: usize = 0x4;
+    /// `TListItem *`, 0x4 bytes
+    pub const tail: usize = 0x8;
+    /// `NiTListAllocator`, 0xc bytes
+    pub const allocator: usize = 0xc;
+    /// `TListItem *`, 0x4 bytes
+    pub const allocator_freeList: usize = 0xc;
+    /// `NiTListAllocator::Data *`, 0x4 bytes
+    pub const allocator_allocator: usize = 0x10;
+    /// `int`, 0x4 bytes
+    pub const allocator_count: usize = 0x14;
+}
+
 pub mod NiTexture {
     pub const SIZE: usize = 0x2c;
     /// `NiObjectNET`, 0x14 bytes
@@ -8109,6 +8573,16 @@ pub mod NiTexture {
     pub const previousTexture: usize = 0x24;
     /// `NiTexture *`, 0x4 bytes
     pub const nextTexture: usize = 0x28;
+}
+
+pub mod NiTexture_RendererData {
+    pub const SIZE: usize = 0xc;
+    /// `InterfaceNiDX8TextureData *`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `NiTexture::RendererData *`, 0x4 bytes
+    pub const linkedData: usize = 0x4;
+    /// `NiTexture *`, 0x4 bytes
+    pub const sgTexture: usize = 0x8;
 }
 
 pub mod NiTextureEffect {

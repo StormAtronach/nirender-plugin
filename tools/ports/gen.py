@@ -32,7 +32,10 @@ LAYOUT_RE = re.compile(
     r"InterfaceNiDX8TextureData$|DataHandler$|ShadowManager$|WaterController$|WeatherController$|Moon$|"
     r"InterfaceNiLight$|TES3Game$|TES3WaterNVLake$|NVSkyRenderToTexture$|TListItem$|InterfaceNiObject$|"
     r"InterfaceNiAccumulator$|InterfaceNiRenderer$|InterfaceNiAVObject$|TArray$|NiStream$|NiPalette$|"
-    r"NiBltSource$|InterfaceNiTexture$|NiImageConverter::vtbl$|NiFormatPrefs$)")
+    r"NiBltSource$|InterfaceNiTexture$|NiImageConverter::vtbl$|NiFormatPrefs$|NiTListBase$|NiTListAllocator::Data$|"
+    r"D3DADAPTER_IDENTIFIER8$|InterfaceNiGeometryData$|InterfaceNiTimeController$|NiRTTI$|NiDirectionalLight$|"
+    r"NiPointLight$|NiSpotLight$|NiTexture::RendererData$|NiDX8VertexBufferManager$|NiDX8IndexBufferManager$|"
+    r"NiDX8TextureManager$|NiDX8LightManager$)")
 
 
 KEYWORDS = {"type", "super", "self", "ref", "match", "loop", "move", "fn", "mod", "use", "in", "final", "box", "priv", "enum",

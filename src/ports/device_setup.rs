@@ -8,6 +8,7 @@
 
 use core::mem::transmute;
 
+use crate::gen::layouts;
 use crate::gen::layouts::{
     NiDX8AdapterDesc as Adapter, NiDX8DeviceDesc as DeviceDesc, NiDX8PixelFormat as PF, NiDX8RenderState as RS,
     NiDX8RenderTarget as RT, NiDX8Renderer as R, NiDX8Renderer_BatchedObject as Batched, NiDX8SystemDesc as SystemDesc,
@@ -81,35 +82,31 @@ const STR_UNKNOWN_DEVICE: usize = 0x7C34D4;
 /// "%s (%s-%s)"
 const STR_DRIVER_FORMAT: usize = 0x7C34BC;
 
-// Members the layouts do not have.
-/// `NiTexture::rendererData`
-const TEXTURE_RENDERER_DATA: usize = 0x20;
-/// `NiTexture::RendererData::linkedData`: the next renderer data of the same texture.
-const RENDERER_DATA_NEXT: usize = 0x04;
-/// The vertex buffer (`+0x14`) and the index buffer (`+0x24`) of a geometry buffer of the
-/// renderer. Each is a device buffer.
-const GEOM_BUFFER_VERTEX_BUFFER: usize = 0x14;
-const GEOM_BUFFER_INDEX_BUFFER: usize = 0x24;
-/// `NiSkinPartition::Partition`: its geometry buffer.
-const PARTITION_GEOM_BUFFER: usize = 0x28;
+const TEXTURE_RENDERER_DATA: usize = layouts::NiTexture::rendererData;
+/// The next renderer data of the same texture.
+const RENDERER_DATA_NEXT: usize = layouts::NiTexture_RendererData::linkedData;
+/// The vertex buffer and the index buffer of a geometry buffer of the renderer. Each is a
+/// device buffer.
+const GEOM_BUFFER_VERTEX_BUFFER: usize = layouts::NiGeometryBufferData::d3dVertexBuffer;
+const GEOM_BUFFER_INDEX_BUFFER: usize = layouts::NiGeometryBufferData::indexBuffer;
+const PARTITION_GEOM_BUFFER: usize = layouts::NiSkinPartition_Partition::bufferData;
 /// The value of a node of the `std::map` of `TES3Game` (`map_74`): the adapter description.
+/// The IDA type of the node ends before it.
 const STD_MAP_NODE_VALUE: usize = 0x1C;
-/// `TES3Game::map_74`
-const GAME_ADAPTER_MAP: usize = 0x74;
-/// `D3DADAPTER_IDENTIFIER8` has 0x42C bytes. `Description` is at 0x200.
-const ADAPTER_IDENTIFIER_WORDS: usize = 0x10B;
-const ADAPTER_IDENTIFIER_DESCRIPTION: usize = 0x200;
+const GAME_ADAPTER_MAP: usize = layouts::TES3Game::map_74;
+const ADAPTER_IDENTIFIER_WORDS: usize = layouts::D3DADAPTER_IDENTIFIER8::SIZE / 4;
+const ADAPTER_IDENTIFIER_DESCRIPTION: usize = layouts::D3DADAPTER_IDENTIFIER8::description;
 /// `D3DSURFACE_DESC`: Format, Type, Usage, Pool, Size, MultiSampleType, Width, Height.
 const SURFACE_DESC_FORMAT: usize = 0;
 const SURFACE_DESC_WIDTH: usize = 6;
 const SURFACE_DESC_HEIGHT: usize = 7;
 
 /// The sizes `Create` gives `operator new`.
-const SIZE_VERTEX_BUFFER_MANAGER: usize = 0x3C;
-const SIZE_INDEX_BUFFER_MANAGER: usize = 0x4C;
-const SIZE_TEXTURE_MANAGER: usize = 0x40;
-const SIZE_LIGHT_MANAGER: usize = 0x74;
-const SIZE_NI_PIXEL_FORMAT: usize = 0x20;
+const SIZE_VERTEX_BUFFER_MANAGER: usize = layouts::NiDX8VertexBufferManager::SIZE;
+const SIZE_INDEX_BUFFER_MANAGER: usize = layouts::NiDX8IndexBufferManager::SIZE;
+const SIZE_TEXTURE_MANAGER: usize = layouts::NiDX8TextureManager::SIZE;
+const SIZE_LIGHT_MANAGER: usize = layouts::NiDX8LightManager::SIZE;
+const SIZE_NI_PIXEL_FORMAT: usize = layouts::NiPixelFormat::SIZE;
 
 /// Texture formats in one group of `arrayArrayTextureFormats`.
 const FORMATS_PER_GROUP: usize = 14;
