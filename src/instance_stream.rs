@@ -272,6 +272,8 @@ struct Tables {
     deletes: u64,
     /// The draws of particle instances sent as `INSTANCE_DRAW` records (particles plan, step 2).
     particle_draws: u64,
+    /// The particle instances made (the log names the first 100).
+    particle_instances_made: u64,
     rejected_by: [u64; REASONS],
     /// The draws that `consider` did not take, by the first cause: not a plain world draw
     /// of a retained class, no geometry handle, no material handle, the path off, the
@@ -320,6 +322,7 @@ fn tables(mt: &MainThread) -> &mut Tables {
         value_updates: 0,
         deletes: 0,
         particle_draws: 0,
+        particle_instances_made: 0,
         rejected_by: [0; REASONS],
         skipped_by: [0; 5],
     })
@@ -624,6 +627,15 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     // A particle system changes its particles every frame: live from the start.
     if points {
         live = true;
+        t.particle_instances_made += 1;
+    }
+    if points && t.particle_instances_made <= 100 {
+        let text: usize = rd(shape, 8);
+        let name = if text != 0 { core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+        let parent: usize = rd(shape, crate::gen::layouts::NiAVObject::parentNode);
+        let parent_text: usize = if parent != 0 { rd(parent, crate::gen::layouts::NiObjectNET::name) } else { 0 };
+        let parent_name = if parent_text != 0 { core::ffi::CStr::from_ptr(parent_text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+        crate::log!("particles: instance {} of class {class}, '{name}' under '{parent_name}'", t.next_id);
     }
     // The engine changes the sky by writes of its vertices with a new revision, not with
     // controllers: a sky instance is live from the start.
@@ -781,6 +793,19 @@ pub fn particle_draws() -> bool {
 /// Sets whether the draws of the particle instances go as `INSTANCE_DRAW` records.
 pub fn set_particle_draws(on: bool) {
     PARTICLE_DRAWS.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// What the table knows of a shape, for a log line: an instance (with its id and kind),
+/// rejected, or not considered.
+pub unsafe fn describe(mt: &MainThread, shape: usize) -> String {
+    let t = tables(mt);
+    if let Some(instance) = t.instances.get(&shape) {
+        format!("instance {} (particles {}, class {}, live {})", instance.id, instance.points, instance.class, instance.live)
+    } else if t.rejected.contains(&shape) {
+        "rejected".to_string()
+    } else {
+        "not considered".to_string()
+    }
 }
 
 /// True when the shape is a particle instance (`shape_stream::record` sends its particles
@@ -1772,13 +1797,20 @@ pub unsafe fn report(mt: &MainThread) -> String {
             "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk\n",
             QUEUE_COUNTS.get(mt)[0], QUEUE_COUNTS.get(mt)[1], QUEUE_COUNTS.get(mt)[2], *WALK_PLACES.get(mt)
         )
-        + &format!(
-            "particles: the table {}, draws as instance records {}; {} particle instances, {} draws as INSTANCE_DRAW records\n",
-            if particle_table_on() { "on" } else { "off" },
-            if particle_draws() { "on" } else { "off" },
-            t.instances.values().filter(|i| i.points).count(),
-            t.particle_draws
-        )
+        + &{
+            let engine = crate::shape_stream::engine_particle_records(mt);
+            format!(
+                "particles: the table {}, draws as instance records {}; {} particle instances ({} made), {} draws as INSTANCE_DRAW records; as the engine's shape records {} in scenes of the world camera ({} frames), {} in other scenes\n",
+                if particle_table_on() { "on" } else { "off" },
+                if particle_draws() { "on" } else { "off" },
+                t.instances.values().filter(|i| i.points).count(),
+                t.particle_instances_made,
+                t.particle_draws,
+                engine[0],
+                engine[2],
+                engine[1]
+            )
+        }
         + &crate::animation::report()
         + "\n"
         + &light_report(mt)

@@ -1358,6 +1358,9 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     if world_camera && crate::ports::base::in_main_flush(t) {
         flags |= DRAW_FROM_SORTED_QUEUE;
     }
+    if kind == DRAW_POINTS {
+        crate::shape_stream::note_points_scene(t, world_camera, roots.scene_kind, flags, geometry);
+    }
     let property_state: usize = rd(this, R::currentPropertyState);
     let effect_state: usize = rd(this, R::currentEffectState);
     // A retained instance (`instance_stream`): the draw needs no notes and no object

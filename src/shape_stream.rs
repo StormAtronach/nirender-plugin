@@ -128,6 +128,62 @@ static WITHOUT: MainCell<[u64; 3]> = MainCell::new([0; 3]);
 /// The records of a material with projected lights or shadows: the helper draws the shape
 /// without them.
 static PROJECTED: MainCell<u64> = MainCell::new(0);
+/// The particle systems that went out as the engine's shape records, not as the table's: in a
+/// scene of the world camera (the world, its sorted blends, the water plane), in another scene,
+/// and the frames with one in a scene of the world camera (particles plan, step 4: the gate is 0
+/// in the scenes of the world camera).
+static ENGINE_PARTICLES: MainCell<[u64; 3]> = MainCell::new([0; 3]);
+/// The frame of the last count of `ENGINE_PARTICLES` in a scene of the world camera.
+static ENGINE_PARTICLES_FRAME: MainCell<u32> = MainCell::new(u32::MAX);
+/// The particle draw in progress (`note_points_scene`): in a scene of the world camera, the
+/// scene kind, the draw flags of the link, the shape.
+static POINTS_DRAW: MainCell<(bool, u32, u32, usize)> = MainCell::new((false, 0, 0, 0));
+/// The shapes whose engine records `count_engine_particles` logged (the first 40).
+static POINTS_LOGGED: MainCell<Vec<usize>> = MainCell::new(Vec::new());
+/// The particle draw in progress had a pending draw of the table at its record.
+static POINTS_PENDING: MainCell<bool> = MainCell::new(false);
+
+/// Notes the particle draw in progress: true for a scene of the world camera, the scene kind,
+/// the draw flags of the link and the shape.
+pub unsafe fn note_points_scene(t: &MainThread, world_camera: bool, scene_kind: u32, draw_flags: u32, shape: usize) {
+    *POINTS_DRAW.get(t) = (world_camera, scene_kind, draw_flags, shape);
+}
+
+/// The counts of `ENGINE_PARTICLES`: in the scenes of the world camera, in other scenes, and
+/// the frames with one in a scene of the world camera.
+pub unsafe fn engine_particle_records(t: &MainThread) -> [u64; 3] {
+    *ENGINE_PARTICLES.get(t)
+}
+
+/// Counts a particle system that goes out as the engine's shape record.
+unsafe fn count_engine_particles(t: &MainThread) {
+    let counts = ENGINE_PARTICLES.get(t);
+    let (world_camera, scene_kind, draw_flags, shape) = *POINTS_DRAW.get(t);
+    let logged = POINTS_LOGGED.get(t);
+    if shape != 0 && logged.len() < 40 && !logged.contains(&shape) {
+        logged.push(shape);
+        let name_at: usize = rd(shape, 8);
+        let name = if name_at != 0 { core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+        let parent: usize = rd(shape, crate::gen::layouts::NiAVObject::parentNode);
+        let parent_name_at: usize = if parent != 0 { rd(parent, crate::gen::layouts::NiObjectNET::name) } else { 0 };
+        let parent_name = if parent_name_at != 0 { core::ffi::CStr::from_ptr(parent_name_at as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+        crate::log!(
+            "particles: the engine's record of '{name}' under '{parent_name}' (shape 0x{shape:x}): scene {scene_kind}, world camera {world_camera}, draw flags {draw_flags:#x}, a pending draw {}; the table: {}",
+            *POINTS_PENDING.get(t),
+            crate::instance_stream::describe(t, shape)
+        );
+    }
+    if world_camera {
+        counts[0] += 1;
+        let frame = crate::camera_space::frame(t);
+        if *ENGINE_PARTICLES_FRAME.get(t) != frame {
+            *ENGINE_PARTICLES_FRAME.get(t) = frame;
+            counts[2] += 1;
+        }
+    } else {
+        counts[1] += 1;
+    }
+}
 
 /// True when the shape records go out: a stream or a capture file records.
 pub fn on() -> bool {
@@ -363,7 +419,15 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
         | if crate::ports::base::in_main_flush(t) { QUEUED } else { 0 };
     // A draw of a retained shape: its instance records in the place of this one (mode gpu:
     // the first draw of the instance), or before it (mode dual).
-    if let Some((shape, id)) = crate::instance_stream::take_pending(t) {
+    // The engine's record of a particle instance that `nirender.particleDraws(false)` asks for:
+    // not counted by `count_engine_particles`.
+    let mut switched_off = false;
+    let pending = crate::instance_stream::take_pending(t);
+    if pending.is_none() && kind == PARTICLES {
+        (*POINTS_PENDING.get(t)) = false;
+    }
+    if let Some((shape, id)) = pending {
+        (*POINTS_PENDING.get(t)) = true;
         // A shape (kind 0), a skinned shape (its palette in `bytes`), or a particle instance
         // (its particle words in `tail`, its particles in `bytes`); not lines. A draw with
         // texture effects stays (the table makes their stages from the material record;
@@ -372,6 +436,7 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
         let points = kind == PARTICLES && crate::instance_stream::is_points(t, shape);
         if points && !crate::instance_stream::particle_draws() {
             // `nirender.particleDraws(false)`: the engine's record, the instance kept.
+            switched_off = true;
         } else if (kind & !SKINNED != 0 && !points) || flags & CODE_PATCH_PICTURE != 0 {
             crate::instance_stream::reject_pending(t, shape, true);
         } else {
@@ -386,6 +451,9 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
                 flags |= RETAINED_TWIN;
             }
         }
+    }
+    if kind == PARTICLES && flags & RETAINED_TWIN == 0 && !switched_off {
+        count_engine_particles(t);
     }
     // The tail of the record: the effects, the fog, then `tail`. On the stack: a draw does not
     // allocate for it (a longer tail than the stack holds goes to the heap).
