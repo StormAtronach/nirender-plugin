@@ -38,9 +38,11 @@ CHECKS = {
     # keeps its value.
     "hand offsets": (PLUGIN / "tools" / "hand_offsets.py", PLUGIN, ["--check"]),
     "offset moves": (PLUGIN / "tools" / "check_offset_moves.py", PLUGIN, ["--cached"]),
+    # The IDA types of the layouts against MWSE's SharedSE and TES3 layouts.
+    "sharedse layouts": (PLUGIN / "tools" / "check_sharedse_layouts.py", REPOS / "MWSE" / "MWSE" / "SharedSE"),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves"],
+    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts"],
     "mge": ["mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))

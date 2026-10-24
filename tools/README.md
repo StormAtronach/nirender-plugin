@@ -45,6 +45,7 @@ under the home folder.
 | `check_contract.py` | The render link contract: `contract/mge_render_link.h` against `src/link.rs`. |
 | `check_comments_only.py` | That an edit changed comments only. |
 | `hand_offsets.py` | The engine field offsets written by hand outside `src/gen/layouts.rs`; `--check` fails on a file above its count in `hand_offsets.baseline`, `--update` lowers the counts. `checks.py` runs it. |
+| `check_sharedse_layouts.py` | The IDA types of the layouts against MWSE's own (SharedSE `NI*.h`, MWSE `TES3*.h`): each `static_assert` size and each field offset MWSE writes down. `--all` for every struct MWSE asserts. `checks.py` runs it. |
 | `check_offset_moves.py` | That each offset moved into the generated layouts keeps its old value (the staged diff with `--cached`). `checks.py` runs it. |
 | `unused_shared.py` | The public items of the shared modules that no other code uses. |
 
