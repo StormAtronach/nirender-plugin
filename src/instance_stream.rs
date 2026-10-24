@@ -761,7 +761,7 @@ pub fn set_sky_draws(on: bool) {
 }
 
 /// The switch of the particle systems (`NIRENDER_PARTICLES`; milestone 5): 0 not read, 1 off
-/// (the default in step 2: the engine's shape records), 2 the table (`table`: a particle system
+/// (`off`: the engine's shape records), 2 the table (the default since step 5: a particle system
 /// in a world camera's scene is an instance whose draws go as `INSTANCE_PARTICLES` and
 /// `INSTANCE_DRAW` records at the places of the engine's draws).
 static PARTICLE_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
@@ -771,7 +771,7 @@ pub fn particle_table_on() -> bool {
     use core::sync::atomic::Ordering::Relaxed;
     let mode = match PARTICLE_MODE.load(Relaxed) {
         0 => {
-            let mode = if std::env::var("NIRENDER_PARTICLES").as_deref() == Ok("table") { 2 } else { 1 };
+            let mode = if std::env::var("NIRENDER_PARTICLES").as_deref() == Ok("off") { 1 } else { 2 };
             PARTICLE_MODE.store(mode, Relaxed);
             mode
         }
