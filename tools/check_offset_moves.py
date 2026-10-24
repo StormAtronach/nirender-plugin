@@ -61,8 +61,21 @@ PATH = re.compile(r"(?:(?:crate::gen::)?layouts::)?([A-Za-z_][A-Za-z0-9_]*)::([A
 ARITHMETIC = re.compile(r"^[0-9a-fA-Fx+\-*/ ()]+$")
 
 
+D3D_CONST = re.compile(r"^pub const ([A-Z0-9_]+): (?:u32|usize) = (0x[0-9A-Fa-f_]+|[0-9_]+);", re.M)
+NAME = re.compile(r"\b(?:crate::d3d::)?([A-Z][A-Z0-9_]+)\b")
+
+
+def d3d_constants():
+    text = open(os.path.join(REPO, "src", "d3d.rs"), encoding="utf-8").read()
+    return {name: int(value.replace("_", ""), 0) for name, value in D3D_CONST.findall(text)}
+
+
+D3D = d3d_constants()
+
+
 def resolve(expr, mods, alias):
-    """The value of a generated path, or of integer arithmetic over such paths (`32 * X::SIZE`)."""
+    """The value of a generated path, or of integer arithmetic over such paths and the
+    constants of `d3d.rs` (`32 * X::SIZE`, `D3DRS_VERTEXBLEND as usize * X::SIZE`)."""
     missing = []
 
     def value(match):
@@ -72,7 +85,14 @@ def resolve(expr, mods, alias):
             return "0"
         return str(found)
 
-    text = PATH.sub(value, expr.strip())
+    def constant(match):
+        if match.group(1) not in D3D:
+            missing.append(match.group(0))
+            return "0"
+        return str(D3D[match.group(1)])
+
+    text = PATH.sub(value, expr.strip()).replace(" as usize", "")
+    text = NAME.sub(constant, text)
     if missing or not ARITHMETIC.match(text):
         return None
     # Digits, hex literals, + - * / and parentheses only; Rust's `/` on usize is a floor division.

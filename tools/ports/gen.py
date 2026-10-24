@@ -35,7 +35,8 @@ LAYOUT_RE = re.compile(
     r"NiBltSource$|InterfaceNiTexture$|NiImageConverter::vtbl$|NiFormatPrefs$|NiTListBase$|NiTListAllocator::Data$|"
     r"D3DADAPTER_IDENTIFIER8$|InterfaceNiGeometryData$|InterfaceNiTimeController$|NiRTTI$|NiDirectionalLight$|"
     r"NiPointLight$|NiSpotLight$|NiTexture::RendererData$|NiDX8VertexBufferManager$|NiDX8IndexBufferManager$|"
-    r"NiDX8TextureManager$|NiDX8LightManager$)")
+    r"NiDX8TextureManager$|NiDX8LightManager$|InterfaceNiTriBasedGeomData$|NiRendererSpecificProperty::RenderData7$|"
+    r"NiDX8SourceTextureData$)")
 
 
 KEYWORDS = {"type", "super", "self", "ref", "match", "loop", "move", "fn", "mod", "use", "in", "final", "box", "priv", "enum",

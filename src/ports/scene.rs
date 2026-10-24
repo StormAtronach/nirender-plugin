@@ -5,6 +5,7 @@
 //! ports call them. The traversal of the nodes is the engine's own code.
 
 use crate::engine::{thiscall1, thiscall3, thiscall4, vcall0, vcall1, virtual_at};
+use crate::gen::layouts;
 use crate::gen::layouts::{NiAVObject as AV, NiCamera as C, NiGeometry as G, NiGeometryData as GD, NiRenderer as R, NiTimeController as TC};
 use crate::main_thread::MainThread;
 use crate::mem::{rd, wr};
@@ -16,24 +17,20 @@ const COUNT_RENDER_CALLS: usize = 0x7DE968;
 const COUNT_PRIMS_RENDERED: usize = 0x7DE96C;
 const COUNT_VERTS_RENDERED: usize = 0x7DE970;
 
-/// The vtable slots of `NiObject` and `NiAVObject`.
-const SLOT_DELETING_DTOR: usize = 0x0;
-const SLOT_GET_WORLD_BOUND: usize = 0x34;
-/// The vtable slots of `NiRenderer`.
-const SLOT_RENDER_SHAPE: usize = 0xBC;
-const SLOT_RENDER_TRISTRIPS: usize = 0xC0;
-const SLOT_RENDER_POINTS: usize = 0xC4;
-const SLOT_RENDER_LINES: usize = 0xC8;
-/// The vtable slot of `NiTimeController::OnPreDisplay`.
-const SLOT_ON_PRE_DISPLAY: usize = 0x40;
-/// The vtable slots of `NiGeometryData` and `NiTriBasedGeomData`.
-const SLOT_GET_ACTIVE_VERTEX_COUNT: usize = 0x30;
-const SLOT_GET_ACTIVE_TRIANGLE_COUNT: usize = 0x3C;
+const SLOT_DELETING_DTOR: usize = layouts::InterfaceNiObject::deleting_dtor;
+const SLOT_GET_WORLD_BOUND: usize = layouts::InterfaceNiAVObject::GetWorldBound;
+const SLOT_RENDER_SHAPE: usize = layouts::InterfaceNiRenderer::RenderShape;
+const SLOT_RENDER_TRISTRIPS: usize = layouts::InterfaceNiRenderer::RenderTristrips;
+const SLOT_RENDER_POINTS: usize = layouts::InterfaceNiRenderer::RenderPoints;
+const SLOT_RENDER_LINES: usize = layouts::InterfaceNiRenderer::RenderLines;
+const SLOT_ON_PRE_DISPLAY: usize = layouts::InterfaceNiTimeController::OnPreDisplay;
+const SLOT_GET_ACTIVE_VERTEX_COUNT: usize = layouts::InterfaceNiGeometryData::GetActiveVertexCount;
+const SLOT_GET_ACTIVE_TRIANGLE_COUNT: usize = layouts::InterfaceNiTriBasedGeomData::GetActiveTriangleCount;
 
 /// Bit 4 of the flags of a node: the node was displayed in this frame.
 pub(crate) const NODE_DISPLAYED: u16 = 0x10;
-/// `BSAnimFlags_Displayed` in the byte at 0xB0 of a `BSAnimationNode`.
-pub(crate) const ANIM_FLAGS: usize = 0xB0;
+/// The byte of a `BSAnimationNode` with `BSAnimFlags_Displayed`.
+pub(crate) const ANIM_FLAGS: usize = layouts::BSAnimationNode::animFlags;
 pub(crate) const ANIM_DISPLAYED: u8 = 8;
 
 const PUSH_STATE: usize = 0x6F3F40;
@@ -225,7 +222,7 @@ pub unsafe fn tri_strips_display(t: &MainThread, this: usize, camera: usize) {
 }
 
 /// The number of active particles of a `NiParticlesData`, at the end of its geometry data.
-const PARTICLES_NUM_ACTIVE: usize = 0x3C;
+const PARTICLES_NUM_ACTIVE: usize = layouts::NiParticlesData::numActive;
 
 port_thiscall!(particles_display_port, 0x6DD3E0, "NiParticles::Display",
     fn(this, camera: usize) -> (),

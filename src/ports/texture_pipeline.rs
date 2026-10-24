@@ -92,13 +92,12 @@ const CTP_STAGES: [usize; 3] = [CTP::field_10, CTP::field_14, CTP::pipelineState
 /// The pass in use (`field_8`). `combiners` is the fixed-function pass.
 const CTP_CURRENT_PASS: usize = CTP::field_8;
 
-/// `NiRendererSpecificProperty::RenderData7::texturePass`
-const RENDER_DATA_TEXTURE_PASS: usize = 0x4;
+const RENDER_DATA_TEXTURE_PASS: usize = crate::gen::layouts::NiRendererSpecificProperty_RenderData7::texturePass;
 /// The renderer type id that `selectAndLinkPass` accepts.
 const RENDERER_TYPE_DX8: u32 = 7;
 
-/// `sizeof(NiDX8TexturePass::$1)`, the stage group of a pass.
-const STAGE_GROUP_SIZE: usize = 0x54;
+/// The stage group of a pass.
+const STAGE_GROUP_SIZE: usize = crate::gen::layouts::NiDX8TexturePass__1::SIZE;
 
 const HALF: u32 = 0x3F00_0000;
 const ONE: u32 = 0x3F80_0000;

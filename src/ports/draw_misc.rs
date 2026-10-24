@@ -128,12 +128,10 @@ const VTBL_HASH_MAPS: [usize; 4] = [
     engine::VTBL_RENDERER_MAP_CUBE_MAPS,
 ];
 
-/// `NiParticlesData::particleRadius`
-const PARTICLES_RADIUS: usize = 0x38;
-/// `NiParticlesData::numActive` (16 bits)
-const PARTICLES_NUM_ACTIVE: usize = 0x3C;
-/// `NiParticlesData::sizes`
-const PARTICLES_SIZES: usize = 0x40;
+const PARTICLES_RADIUS: usize = crate::gen::layouts::NiParticlesData::particleRadius;
+/// 16 bits
+const PARTICLES_NUM_ACTIVE: usize = crate::gen::layouts::NiParticlesData::numActive;
+const PARTICLES_SIZES: usize = crate::gen::layouts::NiParticlesData::sizes;
 /// `NiRenderStateSetting` of [`D3DRS_VERTEXBLEND`] in the render state.
 const RS_VERTEX_BLEND: usize = RS::renderStateSettings + D3DRS_VERTEXBLEND as usize * 8;
 

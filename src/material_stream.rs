@@ -14,6 +14,7 @@ use std::collections::HashSet;
 
 use crate::main_thread::{MainCell, MainThread};
 use crate::engine;
+use crate::gen::layouts;
 use crate::gen::layouts::{
     NiAlphaProperty as AP, NiDX8Renderer as R, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as LIST,
     NiPropertyState as PS, NiStencilProperty as SP, NiTexturingProperty as NTP,
@@ -26,19 +27,18 @@ use crate::mem::rd;
 /// (`texture_pass_b::effect_static_words`: the environment map at 91, the fog map at 104),
 /// for the stages of the table of the helper.
 pub const WORDS: usize = 117;
-/// `NiTexture::rendererData` and `NiDX8SourceTextureData::d3dTexture`.
-const NI_TEXTURE_RENDERER_DATA: usize = 0x20;
-const SOURCE_DATA_D3D_TEXTURE: usize = 0x60;
+const NI_TEXTURE_RENDERER_DATA: usize = layouts::NiTexture::rendererData;
+const SOURCE_DATA_D3D_TEXTURE: usize = layouts::NiDX8SourceTextureData::d3dTexture;
 /// The table of `NiDX8SourceTextureData`: a rendered texture has another renderer data.
 const VTBL_SOURCE_TEXTURE_DATA: u32 = 0x74F770;
-/// The flags of a property: `NiProperty::flags` (u16 at 0x14).
-const PROPERTY_FLAGS: usize = 0x14;
-/// `NiDynamicEffect::enabled`, and the fields of a `NiTextureEffect` (see `texture_pass_b`).
-const EFFECT_ENABLED: usize = 0x90;
-const EFFECT_TEXTURE: usize = 0x108;
-const EFFECT_FILTER_MODE: usize = 0x10C;
-const EFFECT_CLAMP_MODE: usize = 0x110;
-const EFFECT_COORDINATE_MODE: usize = 0x118;
+/// The flags of a property (u16).
+const PROPERTY_FLAGS: usize = layouts::NiProperty::flags;
+/// The fields of a `NiTextureEffect` (see `texture_pass_b`).
+const EFFECT_ENABLED: usize = layouts::NiTextureEffect::enabled;
+const EFFECT_TEXTURE: usize = layouts::NiTextureEffect::sourceTexture;
+const EFFECT_FILTER_MODE: usize = layouts::NiTextureEffect::filterMode;
+const EFFECT_CLAMP_MODE: usize = layouts::NiTextureEffect::clampMode;
+const EFFECT_COORDINATE_MODE: usize = layouts::NiTextureEffect::coordMode;
 
 // The bits of word 1.
 pub const BLEND: u32 = 1;
@@ -171,7 +171,7 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
         let maps: usize = rd(texturing, NTP::maps_storage);
         let end: u32 = rd(texturing, NTP::maps_endIndex);
         let mut decals = end.wrapping_sub(6);
-        if decals == 1 && rd::<usize>(maps, 0x18) == 0 {
+        if decals == 1 && crate::ports::ni::texturing_map(maps, crate::ports::ni::MAP_DECAL_0) == 0 {
             decals = 0;
         }
         w[7] = if end >= 6 { decals.min(2) } else { 0 };

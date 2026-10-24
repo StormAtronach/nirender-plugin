@@ -9,17 +9,32 @@
 
 
 use crate::engine::{vcall0, vcall1, NI_REF_OBJECT_COUNT};
-use crate::gen::layouts::NiRefObject;
+use crate::gen::layouts::{InterfaceNiObject, NiRTTI, NiRefObject};
 use crate::mem::{rd, wr};
 
 /// `NiRefObject::refCount`: the offset of the reference count in each [`NiRefObject`].
 pub const REF_COUNT: usize = NiRefObject::refCount;
 /// The vtable slot of the deleting destructor of each [`NiRefObject`].
-pub const SLOT_DELETING_DTOR: usize = 0x00;
+pub const SLOT_DELETING_DTOR: usize = InterfaceNiObject::deleting_dtor;
 /// The vtable slot of `GetRTTI` of each `NiObject`.
-pub const SLOT_GET_RTTI: usize = 0x04;
-/// The offset in a `NiRTTI` of the pointer to the `NiRTTI` of the base class.
-pub const RTTI_BASE: usize = 0x04;
+pub const SLOT_GET_RTTI: usize = InterfaceNiObject::GetRTTI;
+/// The pointer in a `NiRTTI` to the `NiRTTI` of the base class.
+pub const RTTI_BASE: usize = NiRTTI::baseRTTI;
+
+/// The slots of the map array of a `NiTexturingProperty` (`maps_storage`), by map type; the
+/// decals start at [`MAP_DECAL_0`].
+pub const MAP_DARK: usize = 1;
+pub const MAP_DETAIL: usize = 2;
+pub const MAP_GLOSS: usize = 3;
+pub const MAP_GLOW: usize = 4;
+pub const MAP_BUMP: usize = 5;
+pub const MAP_DECAL_0: usize = 6;
+
+/// The map of a slot of the map array `maps` of a `NiTexturingProperty`, or 0.
+#[inline(always)]
+pub unsafe fn texturing_map(maps: usize, slot: usize) -> usize {
+    rd(maps, slot * core::mem::size_of::<u32>())
+}
 
 /// Calls the virtual deleting destructor of `object`, slot 0x00, with the argument 1. The
 /// argument 1 is the flag "free the memory".

@@ -272,7 +272,7 @@ fn vertex_blend_lookup() -> usize {
 }
 
 /// `NiDX8RenderState::renderStateSettings[D3DRS_VERTEXBLEND].currentValue`
-const RS_VERTEX_BLEND_CURRENT: usize = 0x6B0;
+const RS_VERTEX_BLEND_CURRENT: usize = RS::renderStateSettings + D3DRS_VERTEXBLEND as usize * crate::gen::layouts::NiRenderStateSetting::SIZE + crate::gen::layouts::NiRenderStateSetting::currentValue;
 const _: () = assert!(NiSkinPartition::refCount == ni::REF_COUNT && NiRefObject::refCount == ni::REF_COUNT);
 
 const SKIN_DATA_SKIN_PARTITION: usize = crate::gen::layouts::NiSkinData::skinPartition;
@@ -299,9 +299,9 @@ const PASS_KEEP_STREAMS: u32 = 0x2000_0000;
 const PASS_NO_DRAW: u32 = 0x4000_0000;
 
 // Virtual functions of the geometry data.
-const VT_GET_ACTIVE_VERTEX_COUNT: usize = 0x30;
-const VT_GET_ACTIVE_TRIANGLE_COUNT: usize = 0x3C;
-const VT_GET_TRI_LIST: usize = 0x44;
+const VT_GET_ACTIVE_VERTEX_COUNT: usize = crate::gen::layouts::InterfaceNiGeometryData::GetActiveVertexCount;
+const VT_GET_ACTIVE_TRIANGLE_COUNT: usize = crate::gen::layouts::InterfaceNiTriBasedGeomData::GetActiveTriangleCount;
+const VT_GET_TRI_LIST: usize = crate::gen::layouts::InterfaceNiTriBasedGeomData::GetTriList_const;
 
 // ---------------------------------------------------------------------------------------
 // Parts the functions share. The game code has them inline in each function.

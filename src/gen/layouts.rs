@@ -1053,6 +1053,52 @@ pub mod InterfaceNiTimeController {
     pub const TargetIsRequiredType: usize = 0x44;
 }
 
+pub mod InterfaceNiTriBasedGeomData {
+    pub const SIZE: usize = 0x4c;
+    /// `InterfaceNiGeometryData`, 0x38 bytes
+    pub const super_: usize = 0x0;
+    /// `InterfaceNiObject`, 0x2c bytes
+    pub const super__: usize = 0x0;
+    /// `void (__thiscall *)(NiObject *, char)`, 0x4 bytes
+    pub const deleting_dtor: usize = 0x0;
+    /// `NiRTTI *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const GetRTTI: usize = 0x4;
+    /// `NiObject *(__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateClone: usize = 0x8;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LoadBinary: usize = 0xc;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const LinkObject: usize = 0x10;
+    /// `bool (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const RegisterStreamables: usize = 0x14;
+    /// `void (__thiscall *)(NiObject *, NiStream *)`, 0x4 bytes
+    pub const SaveBinary: usize = 0x18;
+    /// `bool (__thiscall *)(const NiObject *, const NiObject *)`, 0x4 bytes
+    pub const IsEqual: usize = 0x1c;
+    /// `void (__thiscall *)(NiObject *, TArray *)`, 0x4 bytes
+    pub const AddViewerStrings: usize = 0x20;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const ProcessClone: usize = 0x24;
+    /// `void (__thiscall *)(NiObject *)`, 0x4 bytes
+    pub const CreateRendererData: usize = 0x28;
+    /// `void (__thiscall *)(NiGeometryData *, unsigned __int16)`, 0x4 bytes
+    pub const SetActiveVertexCount: usize = 0x2c;
+    /// `unsigned __int16 (__thiscall *)(NiGeometryData *)`, 0x4 bytes
+    pub const GetActiveVertexCount: usize = 0x30;
+    /// `void (__thiscall *)(NiGeometryData *)`, 0x4 bytes
+    pub const CalculateNormals: usize = 0x34;
+    /// `void (__thiscall *)(NiGeometryData *, unsigned __int16)`, 0x4 bytes
+    pub const SetActiveTriangleCount: usize = 0x38;
+    /// `unsigned int (__thiscall *)(NiTriBasedGeomData *this)`, 0x4 bytes
+    pub const GetActiveTriangleCount: usize = 0x3c;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const GetTriList: usize = 0x40;
+    /// `unsigned __int16 *(__thiscall *)(const NiTriBasedGeomData *this)`, 0x4 bytes
+    pub const GetTriList_const: usize = 0x44;
+    /// `void (__thiscall *)(const NiTriBasedGeomData *this, unsigned __int16 triIndex, unsigned __int16 *i0, unsigned __int16 *i1, unsigned __int16 *i2)`, 0x4 bytes
+    pub const GetTriangleIndices: usize = 0x48;
+}
+
 pub mod Moon {
     pub const SIZE: usize = 0x15c;
     /// `NiNode *`, 0x4 bytes

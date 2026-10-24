@@ -20,7 +20,7 @@ use crate::gen::layouts::{
     NiTexturingProperty as NTP, NiTexturingProperty_BumpMap as BUMP, NiTexturingProperty_Map as MAP,
 };
 use crate::mem::{rd, x87_pass};
-use crate::ports::ni::REF_COUNT;
+use crate::ports::ni::{self, REF_COUNT};
 use crate::shadow::Regions;
 
 // ---------------------------------------------------------------------------------------
@@ -37,12 +37,11 @@ const BASE_TEXCOORD_PATCH: usize = 0x6B42AC;
 /// The size of a texture stage. The game code multiplies an index by this size.
 const STAGE: usize = ST::SIZE;
 
-// `NiTextureEffect`. The export of the database has no layout for it. The model of
-// `setTexturePipeline` reads these members.
-const EFFECT_ENABLED: usize = 0x90;
-const EFFECT_TEXTURE: usize = 0x108;
-const EFFECT_FILTER_MODE: usize = 0x10C;
-const EFFECT_CLAMP_MODE: usize = 0x110;
+// `NiTextureEffect`: the model of `setTexturePipeline` reads these members.
+const EFFECT_ENABLED: usize = crate::gen::layouts::NiTextureEffect::enabled;
+const EFFECT_TEXTURE: usize = crate::gen::layouts::NiTextureEffect::sourceTexture;
+const EFFECT_FILTER_MODE: usize = crate::gen::layouts::NiTextureEffect::filterMode;
+const EFFECT_CLAMP_MODE: usize = crate::gen::layouts::NiTextureEffect::clampMode;
 
 /// The address of every `call rel32` of the function, in the order of the code. The port
 /// calls the target that is in memory at each address.
@@ -554,14 +553,14 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
     if texture_sets != 0 {
         // 6B4351-6B438F: the decal count and the dark, detail, gloss and glow maps.
         decal_count = rd::<u32>(property, NTP::maps_endIndex).wrapping_sub(6);
-        if decal_count == 1 && rd::<usize>(rd::<usize>(property, NTP::maps_storage), 0x18) == 0 {
+        if decal_count == 1 && ni::texturing_map(rd::<usize>(property, NTP::maps_storage), ni::MAP_DECAL_0) == 0 {
             decal_count = 0;
         }
         let maps: usize = rd(property, NTP::maps_storage);
-        let detail_map: usize = rd(maps, 0x8);
-        let dark_map: usize = rd(maps, 0x4);
-        gloss_map = rd(maps, 0xC);
-        let glow_map: usize = rd(maps, 0x10);
+        let detail_map = ni::texturing_map(maps, ni::MAP_DETAIL);
+        let dark_map = ni::texturing_map(maps, ni::MAP_DARK);
+        gloss_map = ni::texturing_map(maps, ni::MAP_GLOSS);
+        let glow_map = ni::texturing_map(maps, ni::MAP_GLOW);
 
         // 6B4393-6B443B: the detail map, blend slot 3.
         if detail_map != 0 {
@@ -955,7 +954,7 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
     if rd::<u8>(this, TP::field_2B08) != 0 {
         // 6B515C-6B524A: the bump map, blend slot 8. `propertyState` counts the stages that
         // the pass must have space for.
-        let bump_map: usize = rd(rd::<usize>(property, NTP::maps_storage), 0x14);
+        let bump_map = ni::texturing_map(rd::<usize>(property, NTP::maps_storage), ni::MAP_BUMP);
         let mut needed: u32 = (gloss_map != 0) as u32 + 1;
         let mut bump_stage = 0usize;
         if bump_map != 0 {
