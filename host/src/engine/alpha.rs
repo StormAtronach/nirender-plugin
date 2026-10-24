@@ -3,7 +3,7 @@
 //! shape: blend on, and the no-sorter bit off. The blend it reads is the shape's own, the
 //! blend of the first pass of its material; a later pass that blends (the textures of the
 //! terrain) is not a reason. A stream that marks the draws of the queue (the shape flag
-//! 0x800) does not need this rule; an older capture does. [I] The world Click displays the
+//! 0x800) does not need this rule; an older capture does. \[I\] The world Click displays the
 //! sky with the accumulator set (0x41C654, 0x6CC7B0), so its blends register unless their
 //! alpha property has the no-sorter bit; not read for the sky meshes.
 

@@ -30,5 +30,9 @@ rustc-hash = "2"
 wgpu = { version = "30", features = ["static-dxc"] }
 winit = "0.30"
 
+# A link in a doc comment that rustdoc cannot resolve fails the doc build (`tools/docs.py`).
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+
 [profile.dev]
 opt-level = 1

@@ -18,6 +18,10 @@ crate-type = ["cdylib", "rlib"]
 # never a player's build. `cargo build --release --features rig`.
 rig = []
 
+# A link in a doc comment that rustdoc cannot resolve fails the doc build (`tools/docs.py`).
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+
 [profile.release]
 opt-level = 2
 debug = 1

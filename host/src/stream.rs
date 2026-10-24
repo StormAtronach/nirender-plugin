@@ -52,7 +52,7 @@ pub(crate) struct Stream {
     pub(crate) fog: [u32; 4],
     /// `D3DRS_AMBIENTMATERIALSOURCE` as the last shape record with a value for it set it:
     /// the light manager of the game leaves the state of the draw before for a material
-    /// without one (see `material::Derived::sources`). [I] No engine function was read for
+    /// without one (see `material::Derived::sources`). \[I\] No engine function was read for
     /// this, and the default sources of a new stream do not agree with it.
     pub(crate) ambient_source: u32,
     /// The bones of the skinned shape in progress in the bones of the frame: the first and

@@ -1217,7 +1217,7 @@ unsafe fn swap_buffers(_args: &[usize]) {
 /// no record and no draw. The queue stays active in the water walk (`StartAccumulating`
 /// 0x6F9170 takes the same camera again, 0x41C654). On the pixel shader path the water
 /// plane has the no-sorter bit (0x51C597) and draws in place; on the plain path, with the
-/// eye below the plane, it is a sorted blend (0x51C5EB). [I] This rule was not checked
+/// eye below the plane, it is a sorted blend (0x51C5EB). \[I\] This rule was not checked
 /// against the second case.
 pub unsafe fn water_plane_display_skipped(t: &MainThread, shape: usize) -> bool {
     let roots = &state(t).roots;

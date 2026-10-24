@@ -10,7 +10,7 @@
 //! `updateD3DState` 0x6B82A0, `setStencilStates` 0x6B8C10 and `updateFogStates` 0x6B8A00 (the
 //! render states), `NiDX8LightManager::setState` 0x6BB200 (the lighting and the material
 //! sources). One rule is not the engine's: the environment map's combiner of the Morrowind
-//! Code Patch, which the plugin finds in the game (`derive`). One rule is [I]: the short
+//! Code Patch, which the plugin finds in the game (`derive`). One rule is \[I\]: the short
 //! path's test (`derive`).
 
 /// The words of a record. See `material_stream` of the plugin for the layout.

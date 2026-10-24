@@ -1,5 +1,8 @@
 [build]
 target = "i686-pc-windows-msvc"
+# Most of the code is private to the crate: `cargo doc` documents it too. The host crate below
+# reads this file as well.
+rustdocflags = ["--document-private-items"]
 
 [target.i686-pc-windows-msvc]
 # No dependency on the Visual C++ runtime DLLs of the machine.
