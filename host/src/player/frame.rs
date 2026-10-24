@@ -337,7 +337,9 @@ impl Player {
         let source = self.back_buffer.as_ref()?;
         let (width, height) = (source.width(), source.height());
         if self.last_picture.as_ref().is_none_or(|kept| (kept.width(), kept.height()) != (width, height)) {
-            self.last_picture = Some(target_texture(&self.renderer.device, width, height, source.format(), wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC));
+            // The gamma pass of the window reads it as a texture (`gamma::Gamma::draw`).
+            let usage = wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING;
+            self.last_picture = Some(target_texture(&self.renderer.device, width, height, source.format(), usage));
         }
         let mut encoder = self.renderer.device.create_command_encoder(&Default::default());
         encoder.copy_texture_to_texture(source.as_image_copy(), self.last_picture.as_ref()?.as_image_copy(), wgpu::Extent3d { width, height, depth_or_array_layers: 1 });
