@@ -886,7 +886,7 @@ unsafe fn skin_data_complete(skin_data: usize) -> bool {
 }
 
 /// The name of an object (`NiObjectNET::name` at +8), or "-".
-unsafe fn object_name(object: usize) -> String {
+pub(crate) unsafe fn object_name(object: usize) -> String {
     if object == 0 {
         return String::from("-");
     }

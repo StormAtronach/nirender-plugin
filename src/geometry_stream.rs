@@ -73,6 +73,9 @@ static FORGOTTEN: MainCell<u64> = MainCell::new(0);
 /// The last geometry whose skin gave no bone influences (`skin_influences`), for the count of
 /// the draws without a record: such a geometry is not empty.
 static NO_INFLUENCES: MainCell<usize> = MainCell::new(0);
+/// The last geometry whose skin data was in its destructor (`skin_data_dying`), for the count
+/// of the draws without a record.
+static DYING: MainCell<usize> = MainCell::new(0);
 static RECORDS: MainCell<u64> = MainCell::new(0);
 static BYTES: MainCell<u64> = MainCell::new(0);
 
@@ -125,7 +128,7 @@ pub unsafe fn report(t: &MainThread) -> String {
     let (records, bytes) = (*RECORDS.get(t), *BYTES.get(t));
     let s = &*SKIN_COUNTS.get(t);
     format!(
-        "geometry: {} records, {:.1} MB, {} geometries known, {} forgotten after {} frames without a draw; skins: {} from the skin data, {} from the partitions ({} without bone data); vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
+        "geometry: {} records, {:.1} MB, {} geometries known, {} forgotten after {} frames without a draw; skins: {} from the skin data, {} from the partitions ({} without bone data), {} with a dying skin data; vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
         records,
         bytes as f64 / 1e6,
         versions(t).len(),
@@ -134,6 +137,7 @@ pub unsafe fn report(t: &MainThread) -> String {
         s.from_data,
         s.from_partitions,
         s.without_bone_data,
+        s.dying,
         s.vertices,
         s.over_four,
         s.most,
@@ -146,8 +150,8 @@ pub unsafe fn report(t: &MainThread) -> String {
 
 /// Where the bone influences of a skinned geometry come from: false for the weights of the
 /// bones in the skin data (`NiSkinData`), true for the skin partitions of the game. A skin
-/// data without its weights always takes the partitions. Only `NiSkinData::dtor` frees the
-/// weights: the partitions do not.
+/// data without its weights takes the partitions. A dying skin data (`skin_data_dying`) gets
+/// no record: `NiSkinData::dtor` frees the weights and releases the partitions.
 static SKIN_FROM_PARTITIONS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Sets the source of the bone influences (true: the skin partitions) and forgets the
@@ -164,9 +168,9 @@ pub fn skin_from_partitions() -> bool {
 }
 
 /// True when the record of a skinned shape needs the skin partitions: they are the source, or
-/// the skin data has no weights.
+/// the skin data has no weights. A dying skin data gets no record (`note`), so it needs none.
 pub unsafe fn needs_partitions(skin_data: usize) -> bool {
-    SKIN_FROM_PARTITIONS.load(core::sync::atomic::Ordering::Relaxed) || !has_bone_weights(skin_data)
+    (SKIN_FROM_PARTITIONS.load(core::sync::atomic::Ordering::Relaxed) || !has_bone_weights(skin_data)) && !skin_data_dying(skin_data)
 }
 
 /// The counts of the skins packed from the skin data, for the report.
@@ -174,6 +178,7 @@ struct SkinCounts {
     from_data: u64,
     from_partitions: u64,
     without_bone_data: u64,
+    dying: u64,
     vertices: u64,
     over_four: u64,
     most: usize,
@@ -187,6 +192,7 @@ static SKIN_COUNTS: MainCell<SkinCounts> = MainCell::new(SkinCounts {
     from_data: 0,
     from_partitions: 0,
     without_bone_data: 0,
+    dying: 0,
     vertices: 0,
     over_four: 0,
     most: 0,
@@ -216,6 +222,21 @@ unsafe fn has_bone_weights(skin_data: usize) -> bool {
         return false;
     }
     (0..count as usize).all(|b| rd::<u16>(bones + b * BONE_DATA_SIZE, BONE_VERT_COUNT) == 0 || rd::<usize>(bones + b * BONE_DATA_SIZE, BONE_VERT_DATA) != 0)
+}
+
+/// True when the skin data is in or after its destructor: a bone has a vertex count and no
+/// weight array. Only `NiSkinData::dtor` (0x6D09F0) writes a null array, after it releases the
+/// skin partition; `NiSkinData::LoadBinary` (0x6D0C90) gives every bone an array.
+pub unsafe fn skin_data_dying(skin_data: usize) -> bool {
+    if skin_data == 0 {
+        return false;
+    }
+    let count: u32 = rd(skin_data, DATA_BONE_COUNT);
+    let bones: usize = rd(skin_data, DATA_BONES);
+    if count == 0 || count > 256 || bones == 0 {
+        return false;
+    }
+    (0..count as usize).any(|b| rd::<u16>(bones + b * BONE_DATA_SIZE, BONE_VERT_COUNT) != 0 && rd::<usize>(bones + b * BONE_DATA_SIZE, BONE_VERT_DATA) == 0)
 }
 
 /// The weights of the bones of each vertex from the skin data, as the skin partition code of
@@ -366,6 +387,9 @@ pub unsafe fn why_none(t: &MainThread, kind: u32, geom_data: usize) -> (&'static
     if vcall0(geom_data, V_GET_ACTIVE_VERTEX_COUNT) & 0xFFFF == 0 {
         return ("no active vertex", true);
     }
+    if geom_data == *DYING.get(t) {
+        return ("the skin data is in its destructor", false);
+    }
     if geom_data == *NO_INFLUENCES.get(t) {
         return ("the skin partitions give no bone influences in the vertex format", false);
     }
@@ -418,6 +442,21 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize) -> 
     }
     let handle = geom_data as u32;
     let skin_data: usize = if skin != 0 { rd(skin, NiSkinInstance::skinData) } else { 0 };
+    // A dying skin data gets no record, also when its geometry is known: the draw of a shape
+    // whose skin data is in its destructor is a lifetime fault. The first 8 go to the log.
+    if skin_data_dying(skin_data) {
+        let counts = &mut *SKIN_COUNTS.get(t);
+        counts.dying += 1;
+        if counts.dying <= 8 {
+            let root: usize = rd(skin, NiSkinInstance::rootParent);
+            crate::log!(
+                "geometry: the skin data 0x{skin_data:x} of a shape under '{}' is in its destructor (a bone with a vertex count and no weight array); the shape gets no record",
+                crate::ports::draw::object_name(root)
+            );
+        }
+        *DYING.get(t) = geom_data;
+        return 0;
+    }
     let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: active, entries, skin_data: skin_data as u32 };
     if known(t, handle, version) {
         return handle;
@@ -685,7 +724,43 @@ unsafe fn skin_influences(skin_data: usize, vertices: usize) -> Option<Vec<([f32
 
 #[cfg(test)]
 mod tests {
-    use super::{pack_weights, same_influences, unitize, unpacked};
+    use super::{has_bone_weights, pack_weights, same_influences, skin_data_dying, unitize, unpacked};
+
+    /// A skin data with 2 bones: the first with 3 vertices and its array, the second with
+    /// `second_count` vertices and `second_array`.
+    fn skin_data_with_bones(second_count: u16, second_array: u32) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+        let mut weights = vec![0u32; 6];
+        let mut bones = vec![0u32; 0x4C / 4 * 2];
+        bones[0x44 / 4] = weights.as_mut_ptr() as u32;
+        bones[0x48 / 4] = 3;
+        bones[(0x4C + 0x44) / 4] = second_array;
+        bones[(0x4C + 0x48) / 4] = second_count as u32;
+        let mut data = vec![0u32; 0x48 / 4];
+        data[0x40 / 4] = 2;
+        data[0x44 / 4] = bones.as_mut_ptr() as u32;
+        (data, bones, weights)
+    }
+
+    #[test]
+    fn a_bone_with_a_count_and_no_weight_array_is_a_dying_skin_data() {
+        let mut storage = vec![0u32; 2];
+        let array = storage.as_mut_ptr() as u32;
+        // (the count of the second bone, its array, dying)
+        for (count, second, dying) in [(1, array, false), (1, 0, true), (0, 0, false), (0, array, false)] {
+            let (mut data, _bones, _weights) = skin_data_with_bones(count, second);
+            let at = data.as_mut_ptr() as usize;
+            assert_eq!(unsafe { skin_data_dying(at) }, dying, "count {count}, array 0x{second:x}");
+            assert_eq!(unsafe { has_bone_weights(at) }, !dying, "count {count}, array 0x{second:x}");
+        }
+        // The destructor's end state: every array null.
+        let (mut data, mut bones, _weights) = skin_data_with_bones(1, 0);
+        bones[0x44 / 4] = 0;
+        assert!(unsafe { skin_data_dying(data.as_mut_ptr() as usize) });
+        // No skin data, and a skin data without bones, are not dying.
+        assert!(!unsafe { skin_data_dying(0) });
+        data[0x40 / 4] = 0;
+        assert!(!unsafe { skin_data_dying(data.as_mut_ptr() as usize) });
+    }
 
     #[test]
     fn a_vertex_with_up_to_four_bones_keeps_them() {
