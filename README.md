@@ -123,11 +123,29 @@ The A/B:
   every display, not every 64th frame (`nirender.noteEvery`).
 - `NIRENDER_SKIP_PORT=<name>`: one port left uninstalled, to measure its cost. Only a port
   whose function is not the renderer's.
+- `NIRENDER_SKY=off` keeps the sky on the engine's records; `NIRENDER_SKY=count` also logs
+  each sky shape once. The default: the sky's instances in the table.
+- `NIRENDER_MAP_FOG=0`: the engine reads the fog of war of the local map from the GPU; by
+  default the plugin keeps a CPU copy (`src/map_fog.rs`).
+- `NIRENDER_MAP_TILES=0`: the engine reads each map tile from the GPU at once; by default the
+  helper copies the tile on the GPU and sends the pixels some frames later
+  (`src/map_tiles.rs`).
+- `NIRENDER_READ_CACHE=0` turns off the cache of the reads of rendered textures
+  (`src/own_host.rs`).
+- `NIRENDER_QUEUE_FLUSH=0` and `NIRENDER_WORLD_WALK=0`: the plugin takes no MWSE event for
+  the flush of the sorted queue and for the world's start; the helper places them as an older
+  capture has them.
+- `NIRENDER_WORLD_LIGHTS=0`: the plugin takes no MWSE light events; the helper's world mode
+  of the lights then has no lights.
 
 The instruments and the tests:
 
 - `NIRENDER_FILL_FREED=1`: every block the engine frees is filled with a pattern first; a
   read of freed memory faults at the read (`src/freed_fill.rs`).
+- `NIRENDER_FOG_CHECK=1`: each lock of a fog texture also reads the GPU and compares it with
+  the CPU copy; `NIRENDER_FOG_DUMP=<folder>` writes the first 8 pairs that differ.
+- `NIRENDER_MAP_TILES_HOLD=<N>`: a map tile completes only N Presents after it opened, so that
+  a save or a purge soon after a cell cross finds open tiles.
 - `NIRENDER_MCPATCH=<folders>` and `NIRENDER_VANILLA_EXE=<path>`: the inputs of the unit
   test that checks every Morrowind Code Patch record inside a ported function
   (`src/install.rs`); without them the test uses the paths of this machine.

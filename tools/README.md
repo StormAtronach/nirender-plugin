@@ -36,6 +36,8 @@ under the home folder.
 | `validate_retained.py` | The checks of the retained pipeline, one stage at a time: `capture`, `baseline`, `only`, `clusters`, `weathers`, `tour`. The gate of a change. |
 | `validate_tour.py` | The stops of a tour of a test level replayed and compared with a baseline. |
 | `check_readme.py` | README.md against the code: every switch the code reads, every path README names. |
+| `docs.py` | The rustdoc pages of the plugin, the host crate and the MGE XE helper, with the private items; fails on a broken link in a doc comment of our code; `target/docs.html` links the three (`--open`). `release.py` runs it. It runs cargo. |
+| `doc_links.py` | The names in backticks of the doc comments of one crate as links that rustdoc checks: it keeps the links that resolve and writes back the rest. Without `--apply` every file is restored. It runs cargo. |
 | `check_contract.py` | The render link contract: `contract/mge_render_link.h` against `src/link.rs`. |
 | `check_comments_only.py` | That an edit changed comments only. |
 | `unused_shared.py` | The public items of the shared modules that no other code uses. |
