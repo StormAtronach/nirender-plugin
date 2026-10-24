@@ -62,6 +62,7 @@ mod lights;
 use lights::{light_buffer, storage_buffer, Clusters, ExtensionLights};
 mod switches;
 use switches::switches;
+mod particle_quads;
 mod engine;
 mod player;
 use engine::{plan, scene};
@@ -580,6 +581,9 @@ struct Renderer {
     /// The index buffer of the quads of the particle systems, as the game keeps one: the
     /// number of quads it has, and the buffer. It grows to the largest system seen.
     quad_indexes: Option<(u32, Rc<wgpu::Buffer>)>,
+    /// The quads of the particle systems made on the GPU (`particle_quads`), made at the
+    /// first system; none with `MGE_XE_PARTICLE_QUADS=cpu`.
+    particle_quads: Option<particle_quads::ParticleQuads>,
     /// The material records by handle, and the states derived from them by (handle, texture
     /// sets of the geometry).
     materials: FxHashMap<u32, material::Material>,

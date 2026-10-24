@@ -39,6 +39,9 @@ pub(crate) struct Switches {
     /// `MGE_XE_SAMPLES=<n>`: the samples for each pixel of the targets of the frame (1, 2, 4
     /// or 8), over the setting of the extension: for an A/B of the multisampling.
     pub(crate) samples: Option<u32>,
+    /// `MGE_XE_PARTICLE_QUADS=cpu`: the quads of the particle systems made on the CPU, as
+    /// before the compute pass of `particle_quads`: for its A/B.
+    pub(crate) particle_quads_cpu: bool,
 }
 
 impl Switches {
@@ -63,6 +66,7 @@ impl Switches {
             array_cap: var("MGE_XE_ARRAY_CAP").and_then(|v| v.parse::<u32>().ok()).map(|n| n.max(256)),
             record_limit: var("MGE_XE_RECORD_LIMIT").and_then(|v| v.parse::<usize>().ok()).map(|n| n.max(1024)),
             samples: var("MGE_XE_SAMPLES").and_then(|v| v.parse::<u32>().ok()).map(|n| n.clamp(1, 8)),
+            particle_quads_cpu: is("MGE_XE_PARTICLE_QUADS", "cpu"),
         }
     }
 }

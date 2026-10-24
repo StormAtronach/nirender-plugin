@@ -581,6 +581,7 @@ impl Renderer {
             retired: Vec::new(),
             retired_indexes: Vec::new(),
             quad_indexes: None,
+            particle_quads: None,
             materials: FxHashMap::default(),
             derived: FxHashMap::default(),
             defaults,
@@ -1153,7 +1154,8 @@ impl Renderer {
     /// `NiDX8Renderer::RenderPoints` writes them (the position, the normal 0.3, the
     /// colour, the texture coordinates; 36 bytes). The quads are `(right + up) * radius`
     /// and `(up - right) * radius` from the position, scaled by the size of the particle.
-    /// The buffer replaces the one of the last frame under the same key.
+    /// The buffer replaces the one of the last frame under the same key. The corners are made
+    /// on the GPU (`particle_quads`), or on the CPU with `MGE_XE_PARTICLE_QUADS=cpu`.
     pub(crate) fn particles(&mut self, handle: u32, radius: f32, right: [f32; 3], up: [f32; 3], particles: &[u8]) {
         let clock = ticks::Clock::now();
         const STRIDE: usize = 36;
@@ -1161,6 +1163,18 @@ impl Renderer {
         let count = particles.len() / 20;
         let sum: [f32; 3] = core::array::from_fn(|i| (right[i] + up[i]) * radius);
         let difference: [f32; 3] = core::array::from_fn(|i| (up[i] - right[i]) * radius);
+        let index = self.quad_index_buffer(count as u32);
+        if !switches().particle_quads_cpu {
+            let device = self.device.clone();
+            let quads = self.particle_quads.get_or_insert_with(|| particle_quads::ParticleQuads::new(&device));
+            let (vertex, base_vertex) = quads.add(&device, particles, sum, difference);
+            self.counts.shape_particles += 1;
+            // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
+            let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: count as u32 * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex, first_index: 0 };
+            self.geometries.insert(handle, geometry);
+            self.counts.times[TIME_BUFFERS] += clock.elapsed();
+            return;
+        }
         let mut bytes = Vec::with_capacity(count * 4 * STRIDE);
         for p in particles.chunks_exact(20) {
             let position = [float(p, 0), float(p, 4), float(p, 8)];
@@ -1184,18 +1198,43 @@ impl Renderer {
             }
         }
         let quads = count as u32;
-        if self.quad_indexes.as_ref().is_none_or(|(have, _)| *have < quads) {
-            let indexes: Vec<u8> = (0..quads).flat_map(|q| [0u16, 1, 2, 0, 2, 3].map(|i| (q * 4) as u16 + i)).flat_map(|i| i.to_le_bytes()).collect();
-            let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("quads"), contents: &indexes, usage: wgpu::BufferUsages::INDEX });
-            self.quad_indexes = Some((quads, Rc::new(buffer)));
-        }
-        let index = self.quad_indexes.as_ref().map(|(_, buffer)| buffer.clone()).expect("the quad index buffer was just made");
         let vertex = Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("particles"), contents: &bytes, usage: wgpu::BufferUsages::VERTEX }));
         self.counts.shape_particles += 1;
         // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
         let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: 0, first_index: 0 };
         self.geometries.insert(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
+    }
+
+    /// The index buffer of the quads, two triangles of four vertices each, for at least
+    /// `quads` quads: the game keeps one and it grows to the largest system seen.
+    fn quad_index_buffer(&mut self, quads: u32) -> Rc<wgpu::Buffer> {
+        if self.quad_indexes.as_ref().is_none_or(|(have, _)| *have < quads) {
+            let indexes: Vec<u8> = (0..quads).flat_map(|q| [0u16, 1, 2, 0, 2, 3].map(|i| (q * 4) as u16 + i)).flat_map(|i| i.to_le_bytes()).collect();
+            let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("quads"), contents: &indexes, usage: wgpu::BufferUsages::INDEX });
+            self.quad_indexes = Some((quads, Rc::new(buffer)));
+        }
+        self.quad_indexes.as_ref().map(|(_, buffer)| buffer.clone()).expect("the quad index buffer was just made")
+    }
+
+    /// The systems and the particles whose quads the GPU made, when it made any.
+    pub(crate) fn particle_quads_made(&self) -> Option<(u64, u64)> {
+        self.particle_quads.as_ref().map(|quads| (quads.systems, quads.particles))
+    }
+
+    /// The start of a frame for the particle quads made on the GPU.
+    pub(crate) fn begin_frame_particles(&mut self) {
+        if let Some(quads) = self.particle_quads.as_mut() {
+            quads.begin_frame();
+        }
+    }
+
+    /// The compute passes of the particle systems that wait, into the frame's commands:
+    /// before the draws of a run of items.
+    pub(crate) fn flush_particles(&mut self) {
+        if let Some(quads) = self.particle_quads.as_mut() {
+            quads.flush(&self.device, &self.queue, &self.commands);
+        }
     }
 
     pub(crate) fn sampler(&mut self, values: [u32; 5]) -> Rc<wgpu::Sampler> {

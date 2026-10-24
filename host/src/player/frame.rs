@@ -225,6 +225,7 @@ impl Player {
         self.frame_instances.clear();
         self.frame_instances.push(Instance { world: IDENTITY, record: [0; 4] });
         self.renderer.begin_frame_arrays();
+        self.renderer.begin_frame_particles();
         self.renderer.pin_into_frame();
         self.retained_settle_late();
         self.renderer.scene_slots_used = 1;

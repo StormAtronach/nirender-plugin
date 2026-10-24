@@ -80,6 +80,10 @@ impl Player {
         );
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
         println!("skinned shapes {}, particle systems {}", c.shape_skinned, c.shape_particles);
+        match self.renderer.particle_quads_made() {
+            Some((systems, particles)) => println!("particle quads made on the GPU: {systems} systems, {particles} particles"),
+            None => println!("particle quads made on the GPU: none ({})", if switches().particle_quads_cpu { "MGE_XE_PARTICLE_QUADS=cpu" } else { "no system yet" }),
+        }
         println!("shapes held for the extension {}", c.held);
         println!("classes of the extension: {} calls at a draw of the class, {} calls in frames without a draw of the class", c.class_calls, c.class_calls_without_draw);
         println!(

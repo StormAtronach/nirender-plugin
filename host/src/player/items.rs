@@ -12,6 +12,7 @@ impl Player {
         }
         let clock = ticks::Clock::now();
         let inside_before = sum_except(&self.renderer.counts.times, TIME_ITEMS);
+        self.renderer.flush_particles();
         self.run_items_inner(items);
         let inside_after = sum_except(&self.renderer.counts.times, TIME_ITEMS);
         self.renderer.counts.times[TIME_ITEMS] += clock.elapsed().saturating_sub(inside_after - inside_before);
