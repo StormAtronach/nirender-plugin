@@ -11,7 +11,9 @@ The steps:
 2. `cargo xtask dist` in the MGE XE repository builds MGE XE and this plugin and packs the
    archive (`--max-perf` for the slow build of a final release).
 3. The archive goes up as `MGE-XE-G7-v<MGE XE>-nirender-v<plugin>.7z`, as a pre-release
-   with the text of `--notes`.
+   with the text of `--notes`. Each `--add SOURCE=PATH` puts a file into it first, at PATH
+   from the archive's root (the Morrowind folder): for example the MWSE.dll with the native
+   ABI that the plugin needs (`--add E:/nirender-keep/mwse/08f7d20ed4/MWSE.dll=MWSE.dll`).
 4. All other releases of the repository are deleted, so that a tester finds one build only.
    Their tags stay. `--keep-old` leaves the releases.
 
@@ -60,9 +62,15 @@ def main():
     ap.add_argument("--repo", default="StormAtronach/nirender-plugin", help="the GitHub repository of the releases")
     ap.add_argument("--keep-old", action="store_true", help="do not delete the releases before this one")
     ap.add_argument("--no-build", action="store_true", help="use the archive that is in dist (it must be of this version)")
+    ap.add_argument("--add", action="append", default=[], metavar="SOURCE=PATH", help="a file to put into the archive at PATH from its root")
     args = ap.parse_args()
 
     assert os.path.isfile(args.notes), args.notes
+    additions = []
+    for item in args.add:
+        source, _, path = item.partition("=")
+        assert os.path.isfile(source) and path, "--add needs SOURCE=PATH with an existing file: %s" % item
+        additions.append((source, path.replace("\\", "/")))
     plugin_version = version_of(os.path.join(PLUGIN, "Cargo.toml"))
     tag = "v" + plugin_version
     releases = json.loads(run(["gh", "release", "list", "--repo", args.repo, "--limit", "100", "--json", "tagName"], capture=True))
@@ -82,6 +90,19 @@ def main():
     mge_version = re.match(r"MGE-XE-G7-v([0-9.]+)", packed[0]).group(1)
     asset = os.path.join(args.mge, "dist", "MGE-XE-G7-v%s-nirender-%s.7z" % (mge_version, tag))
     shutil.copy2(os.path.join(args.mge, "dist", packed[0]), asset)
+    if additions:
+        # The files go into a folder laid out as the archive, and 7-Zip adds its entries.
+        stage = os.path.join(args.mge, "target", "release-additions")
+        if os.path.isdir(stage):
+            shutil.rmtree(stage)
+        for source, path in additions:
+            os.makedirs(os.path.dirname(os.path.join(stage, path)) or stage, exist_ok=True)
+            shutil.copy2(source, os.path.join(stage, path))
+        seven = r"C:\Program Files\7-Zip\7z.exe" if os.path.isfile(r"C:\Program Files\7-Zip\7z.exe") else "7z"
+        tops = sorted({path.split("/")[0] for _, path in additions})
+        run([seven, "a", "-t7z", "-mx=9", asset] + tops, cwd=stage)
+        for source, path in additions:
+            print("added %s as %s" % (source, path))
 
     title = "Test build: MGE XE G7 %s with nirender %s" % (mge_version, plugin_version)
     print(run(["gh", "release", "create", tag, "--repo", args.repo, "--prerelease", "--title", title, "--notes-file", args.notes, asset], capture=True).strip())
