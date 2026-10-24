@@ -59,6 +59,8 @@ impl Player {
             overlay_record: None,
             gamma_ramp: None,
             gamma_new: false,
+            gone_geometries: Default::default(),
+            orphaned: Default::default(),
             film_shot: None,
             film_shot_at: 1,
             film_draws: 0,
@@ -266,7 +268,9 @@ impl Player {
             timing.begin(&mut encoder);
         }
         self.encoder = Some(encoder);
-        // The ranges of the geometry replaced in the frame before: the GPU is done with it.
+        // The ranges of the geometry replaced or gone in the frame before: the GPU is done with
+        // it. No slot of the table may hold them after this.
+        self.orphans_of_gone_geometry();
         for range in std::mem::take(&mut self.renderer.retired) {
             self.renderer.vertex_pool.give(&range);
         }

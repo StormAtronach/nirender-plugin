@@ -228,6 +228,10 @@ unsafe extern "system" fn release(this: *mut Object) -> u32 {
         // A new texture can get the address.
         forget_read(&lock, this as u32);
         crate::map_fog::forget(&lock, this as u32);
+        // The helper keeps a texture and a level surface under the handle until this record.
+        if matches!((*this).kind, Kind::Texture | Kind::LevelSurface) {
+            crate::capture::texture_gone(this as u32);
+        }
         drop(Box::from_raw(this));
         if !owner.is_null() {
             release(owner);

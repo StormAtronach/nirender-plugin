@@ -19,6 +19,9 @@
 //!   the data goes with its texture, so no live instance names it (an inference). A new
 //!   generation for each texture of an unloaded cell makes a frame hitch.
 //! - `NiDX8LightManager::RemoveLight`: the light's key is free again (`light_stream::forget`).
+//! - `NiRenderer_static::RemoveGeometryData`: the geometry data goes from the helper
+//!   (`geometry_stream::gone`). Its one caller is the data's destructor. The hook reads the
+//!   unique id while the data is alive; on the main thread it sends the record at once.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -33,10 +36,12 @@ enum Event {
     TextureFreed,
     /// A light was destroyed: its index.
     LightGone(u32),
+    /// A geometry data was destroyed: its address and its unique id.
+    GeometryGone(u32, u32),
 }
 
-const KINDS: usize = 3;
-const KIND_NAMES: [&str; KINDS] = ["shapes destroyed", "textures freed", "lights destroyed"];
+const KINDS: usize = 4;
+const KIND_NAMES: [&str; KINDS] = ["shapes destroyed", "textures freed", "lights destroyed", "geometry data destroyed"];
 
 impl Event {
     fn kind(self) -> usize {
@@ -44,6 +49,7 @@ impl Event {
             Event::Destroyed(_) => 0,
             Event::TextureFreed => 1,
             Event::LightGone(_) => 2,
+            Event::GeometryGone(..) => 3,
         }
     }
 }
@@ -152,11 +158,26 @@ unsafe fn on_remove_light(args: &[usize]) {
     push(Event::LightGone(rd(light, crate::gen::layouts::NiLight::index)));
 }
 
+/// `NiRenderer_static::RemoveGeometryData(data)`: the data's destructor calls it, so the data
+/// is alive here.
+unsafe fn on_remove_geometry_data(args: &[usize]) {
+    let Some(&data) = args.first() else { return };
+    if data == 0 {
+        return;
+    }
+    let unique: u32 = rd(data, crate::gen::layouts::NiGeometryData::uniqueID);
+    match crate::main_thread::MainThread::here() {
+        Some(t) => crate::geometry_stream::gone(&t, data as u32, unique),
+        None => push(Event::GeometryGone(data as u32, unique)),
+    }
+}
+
 /// The hooks and the names of their ports.
-const HOOKS: [(&str, unsafe fn(&[usize])); 3] = [
+const HOOKS: [(&str, unsafe fn(&[usize])); 4] = [
     ("NiGeometry::dtor", on_geometry_dtor),
     ("NiDX8SourceTextureData::dtor", on_texture_data_dtor),
     ("NiDX8LightManager::RemoveLight", on_remove_light),
+    ("NiRenderer_static::RemoveGeometryData", on_remove_geometry_data),
 ];
 
 /// Puts the hooks on their ports.
@@ -201,6 +222,7 @@ pub unsafe fn drain() {
             }
             Event::TextureFreed => {}
             Event::LightGone(key) => crate::light_stream::forget(t, key),
+            Event::GeometryGone(data, unique) => crate::geometry_stream::gone(t, data, unique),
         }
         if APPLIED[event.kind()].fetch_add(1, Ordering::Relaxed) == 0 {
             crate::log!("worker events: the first of the {} applied on the main thread", KIND_NAMES[event.kind()]);

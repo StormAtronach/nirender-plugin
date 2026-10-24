@@ -56,11 +56,11 @@ struct Sent {
     used: u32,
 }
 
-/// The geometries sent, by the address of their data. The engine frees a geometry data with
-/// no event to the plugin, so an entry of a geometry not drawn for [`FORGET_AFTER`] frames goes
-/// (`prune`): a map kept for the session grew with every address the game ever used (the leak
-/// hunt of 2026-10-23, UMDH: 819 KB after 35 minutes of a loop). A geometry still alive is
-/// sent again at its next draw.
+/// The geometries sent, by the address of their data. A destroyed data leaves at its
+/// destructor ([`gone`]). An entry of a geometry not drawn for [`FORGET_AFTER`] frames goes
+/// too (`prune`): before `gone`, a map kept for the session grew with every address the game
+/// ever used (the leak hunt of 2026-10-23, UMDH: 819 KB after 35 minutes of a loop). A
+/// geometry still alive is sent again at its next draw.
 static VERSIONS: MainCell<Option<HashMap<u32, Sent>>> = MainCell::new(None);
 const FORGET_AFTER: u32 = 36_000;
 const PRUNE_EVERY: u32 = 4_096;
@@ -74,6 +74,8 @@ static NO_INFLUENCES: MainCell<usize> = MainCell::new(0);
 static DYING: MainCell<usize> = MainCell::new(0);
 static RECORDS: MainCell<u64> = MainCell::new(0);
 static BYTES: MainCell<u64> = MainCell::new(0);
+/// The `GEOMETRY_GONE` records sent.
+static GONE: MainCell<u64> = MainCell::new(0);
 
 fn versions<'a>(t: &'a MainThread) -> &'a mut HashMap<u32, Sent> {
     (*VERSIONS.get(t)).get_or_insert_with(HashMap::new)
@@ -111,6 +113,20 @@ pub unsafe fn reset(t: &MainThread) {
     versions(t).clear();
 }
 
+/// A geometry data was destroyed (`NiRenderer_static::RemoveGeometryData`, from its
+/// destructor): its version goes when it has this unique id, and the helper gets a
+/// `GEOMETRY_GONE` record. The record goes also for a data that was not sent or was
+/// forgotten by `prune`: the helper can still hold it, and it ignores a handle it does not
+/// hold.
+pub unsafe fn gone(t: &MainThread, handle: u32, unique: u32) {
+    let map = versions(t);
+    if map.get(&handle).is_some_and(|sent| sent.version.unique == unique) {
+        map.remove(&handle);
+    }
+    *GONE.get(t) += 1;
+    crate::capture::geometry_gone(handle, unique);
+}
+
 /// Forgets these geometries: the next draw of each sends it again.
 pub unsafe fn forget(t: &MainThread, handles: &[u32]) {
     for handle in handles {
@@ -124,12 +140,13 @@ pub unsafe fn report(t: &MainThread) -> String {
     let (records, bytes) = (*RECORDS.get(t), *BYTES.get(t));
     let s = &*SKIN_COUNTS.get(t);
     format!(
-        "geometry: {} records, {:.1} MB, {} geometries known, {} forgotten after {} frames without a draw; skins: {} from the skin data, {} from the partitions ({} without bone data), {} with a dying skin data; vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
+        "geometry: {} records, {:.1} MB, {} geometries known, {} forgotten after {} frames without a draw, {} destroyed (GEOMETRY_GONE); skins: {} from the skin data, {} from the partitions ({} without bone data), {} with a dying skin data; vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
         records,
         bytes as f64 / 1e6,
         versions(t).len(),
         *FORGOTTEN.get(t),
         FORGET_AFTER,
+        *GONE.get(t),
         s.from_data,
         s.from_partitions,
         s.without_bone_data,

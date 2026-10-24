@@ -59,10 +59,18 @@ impl Player {
                 let handle = word(data, 0);
                 let known = self.renderer.geometries.contains_key(&handle);
                 self.renderer.geometry(data);
-                if known {
+                // A handle whose instances left the table at a gone geometry puts them back.
+                if known || self.orphaned.remove(&handle) {
                     self.geometry_changed(handle);
                 }
             }
+            tag::GEOMETRY_GONE => {
+                let handle = word(data, 0);
+                if self.renderer.geometry_gone(handle, word(data, 4)) {
+                    self.gone_geometries.insert(handle);
+                }
+            }
+            tag::TEXTURE_GONE => self.renderer.texture_gone(word(data, 0)),
             tag::MATERIAL if data.len() >= 4 => {
                 if let Some(parsed) = material::Material::parse(&data[4..]) {
                     let handle = word(data, 0);
@@ -435,6 +443,24 @@ impl Player {
         for (id, r) in changed {
             self.retained_insert(id, &r);
             self.retained.counts.refreshed += 1;
+        }
+    }
+
+    /// The geometries that went in the last frame: an instance of the table that still names
+    /// one leaves the table before the ranges of the geometry go back to the pools, because
+    /// its slot holds those ranges. The plugin sends an instance's delete before the delete of
+    /// its geometry, so this finds an instance only when a shape got other data while it lived
+    /// (`counts.geometry_orphans`). One scan of the records for each frame with such deletes.
+    pub(crate) fn orphans_of_gone_geometry(&mut self) {
+        if self.gone_geometries.is_empty() {
+            return;
+        }
+        let gone = std::mem::take(&mut self.gone_geometries);
+        let orphans: Vec<(u32, u32)> = self.instances.iter().filter(|(_, r)| gone.contains(&r.geometry) && r.flags & INSTANCE_BLOCK != 0).map(|(id, r)| (*id, r.geometry)).collect();
+        for (id, handle) in orphans {
+            self.retained_remove(id);
+            self.orphaned.insert(handle);
+            self.renderer.counts.geometry_orphans += 1;
         }
     }
 

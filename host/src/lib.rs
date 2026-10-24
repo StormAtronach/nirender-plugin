@@ -33,7 +33,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 mod depth_merge;
 mod gamma;
@@ -619,6 +619,13 @@ struct Player {
     stream: Stream,
     /// The retained instances of the plugin, by their id.
     instances: HashMap<u32, Retained>,
+    /// The geometries that went in this frame (`GEOMETRY_GONE`): at the start of the next
+    /// frame, before their ranges go back to the pools, the instances that still name one
+    /// leave the table (`orphans_of_gone_geometry`).
+    gone_geometries: FxHashSet<u32>,
+    /// The handles of such instances: a geometry that comes under one of them again puts its
+    /// instances back.
+    orphaned: FxHashSet<u32>,
     /// The draws of the instances are drawn, and a shape record that is the twin of one is
     /// not. `MGE_XE_RETAINED=0` turns it round: for a capture of the dual mode of the plugin,
     /// the picture from the shape records.

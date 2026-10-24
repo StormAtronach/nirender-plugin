@@ -23,6 +23,10 @@ pub(crate) struct Geometry {
     /// first index entry (added to the first index of a draw).
     pub(crate) base_vertex: i32,
     pub(crate) first_index: u32,
+    /// The unique id of the geometry data of a `GEOMETRY` record; [`None`] for the quads of
+    /// particles. A `GEOMETRY_GONE` record removes the geometry only when its id is this one:
+    /// a later data at the same address has another id.
+    pub(crate) unique: Option<u32>,
 }
 
 pub(crate) const COMMAND_TRANSFORM: u32 = 3;
@@ -289,6 +293,18 @@ pub(crate) struct Counts {
     pub(crate) textures_replaced: u32,
     /// The pinned textures whose last use went (their slot is free for another).
     pub(crate) textures_unpinned: u32,
+    /// The `TEXTURE_GONE` records: of a handle held here, and of one not held (a vertex
+    /// buffer's handle is not sent; a texture made before the stream).
+    pub(crate) textures_gone: u64,
+    pub(crate) textures_gone_not_held: u64,
+    /// The `GEOMETRY_GONE` records: of a geometry held here, and of none or of another unique
+    /// id (a data never drawn, or a later data at the same address).
+    pub(crate) geometries_gone: u64,
+    pub(crate) geometries_gone_not_held: u64,
+    /// The retained instances that still named a geometry that went: taken out of the table
+    /// until a geometry comes under that handle again (a shape whose data changed while it
+    /// lived, between two notes of its handles).
+    pub(crate) geometry_orphans: u64,
     /// The most textures of a frame in the arrays, and the stages that found no slot.
     pub(crate) most_frame_textures: u32,
     pub(crate) over_array_cap: u32,

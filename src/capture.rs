@@ -226,6 +226,15 @@ pub mod tag {
     /// for red, green and blue. A state: written again after the header of a stream and of a
     /// file (see [`super::gamma_ramp`]).
     pub const GAMMA_RAMP: u32 = 36;
+    /// A texture or a level surface of the own device was freed: its handle. Its last
+    /// `Release` sends it (`own_host`), on any thread. The address can come back for a later
+    /// texture.
+    pub const TEXTURE_GONE: u32 = 37;
+    /// A geometry data was destroyed: its handle (the address of the data) and its unique id.
+    /// `NiRenderer_static::RemoveGeometryData`, from the data's destructor, sends it
+    /// (`geometry_stream::gone`; from the cell worker at the next drain of `worker_events`).
+    /// The helper removes the geometry only when its unique id is this one.
+    pub const GEOMETRY_GONE: u32 = 38;
 }
 
 // ---- the ring in shared memory
@@ -909,7 +918,7 @@ pub unsafe fn tee_end() {
 /// earlier frame, and a release sends again only the instances the engine displays.
 /// Engine-rules R14 (the skill wgpu-renderer-dev).
 fn resource_record(tag: u32) -> bool {
-    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE)
+    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE | tag::TEXTURE_GONE | tag::GEOMETRY_GONE)
 }
 
 /// Ends the capture file of a direct stream.
@@ -1469,6 +1478,18 @@ pub unsafe fn retained_scene(ambient: u32, fog: Option<[u32; 4]>, sun: Option<&[
 pub unsafe fn light(key: u32, values: &[u32; 26], radius: f32) {
     let _lock = crate::sync::device_lock();
     write(tag::LIGHT, &[words(&[key]), words(values), words(&[radius.to_bits()])]);
+}
+
+/// A texture or a level surface freed. See [`tag::TEXTURE_GONE`].
+pub unsafe fn texture_gone(handle: u32) {
+    let _lock = crate::sync::device_lock();
+    write(tag::TEXTURE_GONE, &[words(&[handle])]);
+}
+
+/// A geometry data destroyed. See [`tag::GEOMETRY_GONE`].
+pub unsafe fn geometry_gone(handle: u32, unique: u32) {
+    let _lock = crate::sync::device_lock();
+    write(tag::GEOMETRY_GONE, &[words(&[handle, unique])]);
 }
 
 /// A light gone. See [`tag::LIGHT_GONE`].

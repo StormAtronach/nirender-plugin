@@ -34,6 +34,7 @@ impl Player {
             delta[2] as f64 / frames.max(1) as f64,
             delta[3] as f64 / 1e6 / frames.max(1) as f64
         );
+        println!("  {}", self.renderer.held_line());
         let errors = gpu::errors();
         if errors != self.mark_errors {
             println!("  gpu errors: {}", errors - self.mark_errors);
@@ -59,6 +60,7 @@ impl Player {
             c.geometry_short
         );
         println!("material: {} records; {} records of any tag shorter than their fixed part, skipped", c.material_records, c.short_records);
+        println!("{}", self.renderer.held_line());
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material", c.shape_records, c.shape_draws, c.shape_missing);
         println!("instances: {} records, {} draws from them, {} draws of an instance not known, {} shape twins skipped, {} blends of the engine merged into the sorted list", c.instance_records, c.instance_draws, c.instance_missing, c.shape_twins, c.merged_blends);
         println!(

@@ -1140,13 +1140,76 @@ impl Renderer {
             first_index: (index_range.offset / 2) as u32,
             vertex_range: Some(vertex_range),
             index_range: Some(index_range),
+            unique: Some(word(data, 4)),
         };
+        self.put_geometry(handle, geometry);
+        self.counts.times[TIME_BUFFERS] += clock.elapsed();
+    }
+
+    /// Puts a geometry under its handle. The ranges of the geometry it replaces go back to the
+    /// pools after the frame: the draws of this frame may still use them.
+    fn put_geometry(&mut self, handle: u32, geometry: Geometry) {
         if let Some(old) = self.geometries.insert(handle, geometry) {
-            // The draws of this frame may still use the old ranges: they go back after it.
             self.retired.extend(old.vertex_range);
             self.retired_indexes.extend(old.index_range);
         }
-        self.counts.times[TIME_BUFFERS] += clock.elapsed();
+    }
+
+    /// A geometry data of the game was destroyed (`GEOMETRY_GONE`): its geometry goes, and its
+    /// ranges go back to the pools after the frame. Only a geometry of the same unique id goes
+    /// (the quads of particles have none: they go too). True when a geometry went.
+    pub(crate) fn geometry_gone(&mut self, handle: u32, unique: u32) -> bool {
+        if !self.geometries.get(&handle).is_some_and(|g| g.unique.is_none_or(|id| id == unique)) {
+            self.counts.geometries_gone_not_held += 1;
+            return false;
+        }
+        if let Some(old) = self.geometries.remove(&handle) {
+            self.retired.extend(old.vertex_range);
+            self.retired_indexes.extend(old.index_range);
+        }
+        self.counts.geometries_gone += 1;
+        true
+    }
+
+    /// A texture or a level surface of the plugin's device was freed (`TEXTURE_GONE`): the
+    /// handle names nothing here any more. A pinned slot keeps its view until the instances
+    /// that use it go; a slot of the frame in progress keeps its view for the frame.
+    pub(crate) fn texture_gone(&mut self, handle: u32) {
+        let mut held = self.textures.remove(&handle).is_some();
+        held |= self.texture_objects.remove(&handle).is_some();
+        held |= self.targets.remove(&handle).is_some();
+        held |= self.surfaces.remove(&handle).is_some();
+        self.decoded.remove(&handle);
+        if held {
+            self.counts.textures_gone += 1;
+        } else {
+            self.counts.textures_gone_not_held += 1;
+        }
+    }
+
+    /// One line of what the helper holds for the handles of the game: textures, geometry,
+    /// materials, and the frees so far.
+    pub(crate) fn held_line(&self) -> String {
+        let mb = |bytes: u64| bytes as f64 / 1e6;
+        format!(
+            "held: {} textures ({} with pixels written here, {} rendered), {} level surfaces; {} geometries, the vertex pool {:.1} of {:.1} MB, the index pool {:.1} of {:.1} MB; {} materials ({} derived); gone: {} textures ({} not held), {} geometries ({} not held), {} instances whose geometry went",
+            self.textures.len(),
+            self.texture_objects.len(),
+            self.targets.len(),
+            self.surfaces.len(),
+            self.geometries.len(),
+            mb(self.vertex_pool.used),
+            mb(self.vertex_pool.capacity()),
+            mb(self.index_pool.used),
+            mb(self.index_pool.capacity()),
+            self.materials.len(),
+            self.derived.len(),
+            self.counts.textures_gone,
+            self.counts.textures_gone_not_held,
+            self.counts.geometries_gone,
+            self.counts.geometries_gone_not_held,
+            self.counts.geometry_orphans
+        )
     }
 
     /// The geometry of a particle system for this frame, from the particles of its shape
@@ -1170,8 +1233,8 @@ impl Renderer {
             let (vertex, base_vertex) = quads.add(&device, particles, sum, difference);
             self.counts.shape_particles += 1;
             // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-            let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: count as u32 * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex, first_index: 0 };
-            self.geometries.insert(handle, geometry);
+            let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: count as u32 * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex, first_index: 0, unique: None };
+            self.put_geometry(handle, geometry);
             self.counts.times[TIME_BUFFERS] += clock.elapsed();
             return;
         }
@@ -1201,8 +1264,8 @@ impl Renderer {
         let vertex = Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("particles"), contents: &bytes, usage: wgpu::BufferUsages::VERTEX }));
         self.counts.shape_particles += 1;
         // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: 0, first_index: 0 };
-        self.geometries.insert(handle, geometry);
+        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: 0, first_index: 0, unique: None };
+        self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
     }
 

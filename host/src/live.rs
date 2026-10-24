@@ -171,6 +171,10 @@ impl Reply {
 /// `capture.rs` of the plugin.
 const TILE_SLOTS: usize = 8;
 const TILE_BYTES: usize = 512 * 512 * 4;
+
+/// The live mode prints what the helper holds once in this many frames (about 5 minutes at
+/// 60 frames a second).
+const HELD_EVERY_FRAMES: u32 = 18_000;
 const TILE_HEAD: usize = 16;
 
 struct Tiles {
@@ -779,6 +783,10 @@ impl ApplicationHandler for App {
             }
             self.frames += 1;
             self.first_frame.get_or_insert_with(Instant::now);
+            // What the helper holds, for a long run (D8 rule 6: flat over the hour).
+            if self.frames % HELD_EVERY_FRAMES == 0 {
+                println!("frame {}: {}", self.frames, player.renderer.held_line());
+            }
             if self.frames_wanted != 0 && self.frames >= self.frames_wanted {
                 return self.finish(event_loop, "all the frames that were asked for");
             }
