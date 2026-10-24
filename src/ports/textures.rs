@@ -114,8 +114,9 @@ mod eng {
     pub unsafe fn source_cube_map_data_create(texture: usize, renderer: usize) -> usize {
         cdecl2(0x6C10A0, texture as u32, renderer as u32) as usize
     }
-    /// 0x6ECA50 `sub_6ECA50`. It is `__cdecl`. The game calls it when a texture loses its last
-    /// reference.
+    /// 0x6ECA50 `game_textureMemoryRemove_Claude_`. It is `__cdecl`. It takes the size of a
+    /// texture off the totals of the game; its one caller in the game is
+    /// `NiDX8SourceTextureData::dtor`.
     pub unsafe fn texture_freed(texture: usize, size: u32) {
         cdecl2(0x6ECA50, texture as u32, size);
     }

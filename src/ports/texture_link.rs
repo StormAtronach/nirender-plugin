@@ -33,7 +33,7 @@ const MIPMAP_BY_DEFAULT: usize = 0x7DE7F8;
 const NAME_CREATE_SURFACE: usize = 0x7C414C;
 /// 0x6B0E20 `NiGetD3DFormatForNiPixelFormat` (cdecl)
 const D3D_FORMAT_FOR_PIXEL_FORMAT: usize = 0x6B0E20;
-/// 0x6ECA10 `sub_6ECA10` (cdecl): adds the size of a new texture to the totals of the game.
+/// 0x6ECA10 `game_textureMemoryAdd_Claude_` (cdecl): adds the size of a new texture to the totals of the game.
 /// The argument is a record of 260 bytes and then the size.
 const TEXTURE_MADE: usize = 0x6ECA10;
 

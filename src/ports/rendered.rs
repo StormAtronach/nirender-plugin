@@ -157,7 +157,7 @@ unsafe fn destroy_pointers(pointers: &mut [usize; 6]) {
     }
 }
 
-/// 0x6ECA10 `sub_6ECA10`. It is `__cdecl`. It adds the size at +0x104 of its argument to two
+/// 0x6ECA10 `game_textureMemoryAdd_Claude_`. It is `__cdecl`. It adds the size at +0x104 of its argument to two
 /// byte counters of the textures (0x7DE7FC and 0x7DE800).
 unsafe fn count_texture_bytes(info: usize) {
     cdecl1(0x6ECA10, info as u32);
