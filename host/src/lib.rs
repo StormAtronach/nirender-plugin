@@ -72,6 +72,7 @@ use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buff
 pub use wgpu;
 
 /// The facts of the world scene of the game at a moment, for a call of the extension.
+#[derive(Clone, Copy)]
 struct WorldFacts {
     target_size: (u32, u32),
     view: [f32; 16],
@@ -704,6 +705,9 @@ struct Player {
     world_near: Option<[f32; 4]>,
     /// The classes that the extension took in this frame, one bit for each.
     replaced: u32,
+    /// The facts of the world at its end in this frame: the camera of the world for the call
+    /// of a class that no draw brought (`replace_missing_classes`).
+    world_end_facts: Option<WorldFacts>,
     /// The classes of the game that the helper draws itself, one bit for each, for the
     /// plugin: the water plane while the extension draws the water.
     /// The live loop writes it into the head of the ring after each record.

@@ -575,7 +575,9 @@ pub trait Extension {
 
     /// The renderer calls this at the first draw of a frame into the back buffer of a class
     /// in `FrameParameters::watched`, in place of the draws of that class: none of them is
-    /// drawn. The pass and the matrices are those of that draw. `scene.picture` is the
+    /// drawn. The pass and the matrices are those of that draw. A frame with no draw of the
+    /// class gets the call too, before the sorted blends or at the world's end, with the
+    /// matrices of the world (the engine culls a plane out of the view). `scene.picture` is the
     /// picture of the frame before the call and `scene.depth` is the depth of the game so
     /// far: for a refraction. `scene.before_depth` is the depth of what `before_world` drew,
     /// when it gave true. MGE XE draws its water in place of the water plane of the game

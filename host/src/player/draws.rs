@@ -191,6 +191,7 @@ impl Player {
         if in_back_buffer && class < 32 && watched & (1 << class) != 0 {
             if self.replaced & (1 << class) == 0 {
                 self.replaced |= 1 << class;
+                self.renderer.counts.class_calls += 1;
                 let facts = self.world_facts(false);
                 self.items.push(Item::Replace(class, Box::new(facts), self.world_draws.len()));
             }

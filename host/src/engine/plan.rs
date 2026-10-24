@@ -25,6 +25,9 @@ pub(crate) enum Step {
     /// The first-person scene ends: its depth goes into the depth of the world that the
     /// post-processing reads, before the game clears the depth for its next scene.
     FirstPersonEnd,
+    /// The scenes of the world camera are done (the world and the water scene): the
+    /// extension's classes that no draw brought get their call here, once in a frame.
+    MissingClasses,
 }
 
 /// The state of the plan within a frame.
@@ -43,6 +46,8 @@ pub(crate) struct Plan {
     /// The world ended with the engine's sorted queue open: the table's blends wait for the
     /// scene that flushes it (R19).
     queue_open: bool,
+    /// `Step::MissingClasses` was given in this frame.
+    classes_checked: bool,
 }
 
 impl Plan {
@@ -54,10 +59,16 @@ impl Plan {
     /// The start of a scene. At the user interface scene of the game the world views are
     /// done and the post-processing is due. The table's blends that still wait for the flush
     /// of the queue go first, at the first-person or the user interface scene: the engine
-    /// flushes the queue in its water scene, so this is for a frame without one.
+    /// flushes the queue in its water scene, so this is for a frame without one. The classes
+    /// that no draw of the world camera brought go before them, as the engine draws its water
+    /// before it flushes the queue.
     pub(crate) fn scene_begin(&mut self, kind: u32) -> Vec<Step> {
         self.scene_kind = kind;
         let mut steps = Vec::new();
+        if self.world_ended && !self.classes_checked && (kind == scene::SCENE_FIRST_PERSON || kind == scene::SCENE_UI) {
+            self.classes_checked = true;
+            steps.push(Step::MissingClasses);
+        }
         if self.queue_open && (kind == scene::SCENE_FIRST_PERSON || kind == scene::SCENE_UI) {
             steps.push(self.sorted_blends());
         }
@@ -260,8 +271,25 @@ mod tests {
         plan.scene_begin(SCENE_WORLD);
         plan.world_draw(true, true, false, true, false);
         plan.scene_end(true, true, true, true, false);
-        assert_eq!(plan.scene_begin(SCENE_FIRST_PERSON), vec![Step::SortedBlends(0)]);
+        assert_eq!(plan.scene_begin(SCENE_FIRST_PERSON), vec![Step::MissingClasses, Step::SortedBlends(0)]);
         assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::FirstPersonEnd]);
+        assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::Post]);
+    }
+
+    /// The classes that no draw brought get their call once, after the scenes of the world
+    /// camera: at the first-person scene, or at the interface without one; not before the
+    /// world ended.
+    #[test]
+    fn the_missing_classes_come_once_after_the_world_camera() {
+        let mut plan = Plan::default();
+        assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::Post]);
+        plan.scene_end(true, true, true, false, false);
+        let mut plan = Plan::default();
+        world_scene(&mut plan);
+        plan.scene_begin(SCENE_WATER);
+        plan.scene_end(true, true, true, false, false);
+        assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::MissingClasses, Step::Post]);
+        plan.scene_end(true, true, true, false, false);
         assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::Post]);
     }
 
@@ -378,8 +406,8 @@ mod tests {
         assert_eq!(plan.defer(), 0);
         assert_eq!(plan.queue_flushed(true), vec![Step::SortedBlends(0)]);
         assert_eq!(plan.scene_end(true, true, true, false, true), vec![]);
-        // The queue was flushed: the first-person scene gives no item.
-        assert_eq!(plan.scene_begin(SCENE_FIRST_PERSON), vec![]);
+        // The queue was flushed: the first-person scene gives no sorted-blends item.
+        assert_eq!(plan.scene_begin(SCENE_FIRST_PERSON), vec![Step::MissingClasses]);
     }
 
     /// A flush outside a world view (the first person, a rendered texture, before the world)

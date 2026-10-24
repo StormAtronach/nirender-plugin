@@ -73,6 +73,7 @@ impl Player {
             frame_sorted: Vec::new(),
             world_near: None,
             replaced: 0,
+            world_end_facts: None,
             takes: 0,
             shadow_reach: 0.0,
             plane_ahead: None,
@@ -241,6 +242,7 @@ impl Player {
         self.retained.walk.frame_start();
         self.world_near = None;
         self.replaced = 0;
+        self.world_end_facts = None;
         self.plane_ahead = None;
         self.split = None;
         self.posted = false;

@@ -137,14 +137,31 @@ impl Player {
             plan::Step::SortedBlends(generation) => self.items.push(Item::SortedBlends(generation)),
             plan::Step::EndWorld => {
                 let facts = self.world_facts(false);
+                self.world_end_facts = Some(facts);
                 self.items.push(Item::WorldEnd(Box::new(facts)));
             }
+            plan::Step::MissingClasses => self.replace_missing_classes(),
             plan::Step::Post => self.post_item(),
             plan::Step::FirstPersonEnd => {
                 if self.first_person_drawn && self.parameters.as_ref().is_some_and(|p| p.post) {
                     self.items.push(Item::FirstPersonDepth(self.stream.projection));
                 }
             }
+        }
+    }
+
+    /// The call of each class that the extension takes and that no draw of the world camera's
+    /// scenes brought in this frame, with the camera of the world's end: the engine culls its
+    /// water plane when the plane is out of the view (high above the sea), and the water of
+    /// the extension must still draw. The Direct3D 9 path of MGE XE does the same at the end
+    /// of the scene after the world (`renderStageWater` when `waterDrawn` is false).
+    pub(crate) fn replace_missing_classes(&mut self) {
+        let missing = self.takes & !self.replaced;
+        let Some(facts) = self.world_end_facts.filter(|_| missing != 0 && self.drawing()) else { return };
+        for class in (0..32).filter(|class| missing & (1 << class) != 0) {
+            self.replaced |= 1 << class;
+            self.renderer.counts.class_calls_without_draw += 1;
+            self.items.push(Item::Replace(class, Box::new(facts), self.world_draws.len()));
         }
     }
 

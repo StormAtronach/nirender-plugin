@@ -380,6 +380,10 @@ pub(crate) struct Counts {
     /// the `SetRenderTarget` calls gave was another one.
     pub(crate) scene_targets: u64,
     pub(crate) scene_target_changed: u64,
+    /// The calls of `Extension::draw_class`: at the first draw of the class, and at the
+    /// world's end of a frame that brought no draw of the class.
+    pub(crate) class_calls: u64,
+    pub(crate) class_calls_without_draw: u64,
     /// The draws of a world view (the world camera's scenes, the first-person scene) with an
     /// orthographic projection: the old test of the projection would have left them out.
     pub(crate) orthographic_world_draws: u64,
