@@ -47,6 +47,9 @@ KEYWORDS = {"type", "super", "self", "ref", "match", "loop", "move", "fn", "mod"
 
 
 def ident(name):
+    # The IDA names that we gave carry the suffix `_Claude_` (the IDA rule); the Rust names do
+    # not (the owner, 2026-10-24).
+    name = name.replace("_Claude_", "")
     name = re.sub(r"[^0-9A-Za-z_]", "_", name)
     if not name or name[0].isdigit():
         name = "_" + name
