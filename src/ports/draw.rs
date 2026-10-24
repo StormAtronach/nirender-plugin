@@ -837,7 +837,9 @@ pub(crate) unsafe fn ensure_skin_partitions(this: usize, geom_data: usize, skin:
     // `NiSkinPartition::CreateVertexInteractions` (0x6C6B60) reads the array of each bone
     // with a count and faults on a null one. Such a skin gets the empty partition, as the
     // engine's failure path gives it. The shape draws nothing on the hardware path. The
-    // first 8 go to the log with their names.
+    // first 8 go to the log with their names. Only `NiSkinData::dtor` (0x6D09F0) writes a
+    // null array (`NiSkinData::LoadBinary` gives every bone one): such a skin data is in or
+    // after its destructor.
     if skin_data != 0 && !skin_data_complete(skin_data) {
         static REFUSED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
         if REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 8 {
@@ -859,16 +861,16 @@ pub(crate) unsafe fn ensure_skin_partitions(this: usize, geom_data: usize, skin:
 }
 
 /// `NiSkinData` (NetImmerse 4.0.0.2, as `camera_space` reads it): the bone count is at 0x40.
-/// The bone records are at 0x44, 0x4C bytes each. A bone record has the skin-to-bone
-/// transform, the bound, the vertex count (u16, +0x44) and the vertex weight array (+0x48).
-/// True when every bone with a count has its array: the engine's partition builder reads the
-/// array of each such bone.
+/// The bone records are at 0x44, 0x4C bytes each. A bone record (`NiBoneData`) has the
+/// skin-to-bone transform, the bound, the vertex weight array (+0x44) and the vertex count
+/// (u16, +0x48). True when every bone with a count has its array: the engine's partition
+/// builder reads the array of each such bone.
 unsafe fn skin_data_complete(skin_data: usize) -> bool {
     const BONE_COUNT: usize = 0x40;
     const BONES: usize = 0x44;
     const BONE_SIZE: usize = 0x4C;
-    const BONE_VERTICES: usize = 0x44;
-    const BONE_WEIGHTS: usize = 0x48;
+    const BONE_WEIGHTS: usize = 0x44;
+    const BONE_VERTICES: usize = 0x48;
     let count: u32 = rd(skin_data, BONE_COUNT);
     let bones: usize = rd(skin_data, BONES);
     if count == 0 {
@@ -2262,6 +2264,33 @@ mod tests {
         let mut instance = vec![0u32; NiSkinInstance::SIZE / 4];
         instance[NiSkinInstance::skinData / 4] = data.as_mut_ptr() as u32;
         Skin { instance, _data: data, skin_partition, partitions }
+    }
+
+    /// A skin data with two bone records: the first has 3 weights in an array, the second the
+    /// count and the array given.
+    fn skin_data_with_bones(second_count: u16, second_array: u32) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+        let mut weights = vec![0u32; 6];
+        let mut bones = vec![0u32; 0x4C / 4 * 2];
+        bones[0x44 / 4] = weights.as_mut_ptr() as u32;
+        bones[0x48 / 4] = 3;
+        bones[(0x4C + 0x44) / 4] = second_array;
+        bones[(0x4C + 0x48) / 4] = second_count as u32;
+        let mut data = vec![0u32; 0x48 / 4];
+        data[0x40 / 4] = 2;
+        data[0x44 / 4] = bones.as_mut_ptr() as u32;
+        (data, bones, weights)
+    }
+
+    #[test]
+    fn skin_data_complete_reads_the_array_at_0x44_and_the_count_at_0x48() {
+        let mut storage = vec![0u32; 2];
+        let array = storage.as_mut_ptr() as u32;
+        // (the count of the second bone, its array, the result)
+        for (count, second, complete) in [(1, array, true), (1, 0, false), (0, 0, true), (0, array, true)] {
+            let (mut data, _bones, _weights) = skin_data_with_bones(count, second);
+            let got = unsafe { skin_data_complete(data.as_mut_ptr() as usize) };
+            assert_eq!(got, complete, "count {count}, array 0x{second:x}");
+        }
     }
 
     impl Skin {

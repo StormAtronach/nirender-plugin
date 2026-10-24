@@ -146,8 +146,8 @@ pub unsafe fn report(t: &MainThread) -> String {
 
 /// Where the bone influences of a skinned geometry come from: false for the weights of the
 /// bones in the skin data (`NiSkinData`), true for the skin partitions of the game. A skin
-/// data without its weights (freed after the partitions were made) always takes the
-/// partitions.
+/// data without its weights always takes the partitions. Only `NiSkinData::dtor` frees the
+/// weights: the partitions do not.
 static SKIN_FROM_PARTITIONS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Sets the source of the bone influences (true: the skin partitions) and forgets the
@@ -219,9 +219,8 @@ unsafe fn has_bone_weights(skin_data: usize) -> bool {
 }
 
 /// The weights of the bones of each vertex from the skin data, as the skin partition code of
-/// Gamebryo collects them (`NiSkinPartition::CreateVertexInteractions` 0x6C6B60) [I: from the
-/// Gamebryo 1.2 source, not compared with the binary]: the sum of the weights of a vertex is
-/// made 1. [`None`] when the data is not complete.
+/// the engine collects them (`NiSkinPartition::CreateVertexInteractions` 0x6C6B60): the sum
+/// of the weights of a vertex is made 1. [`None`] when the data is not complete.
 unsafe fn skin_data_weights(skin_data: usize, vertices: usize) -> Option<Vec<Vec<(u8, f32)>>> {
     if !has_bone_weights(skin_data) {
         return None;
