@@ -585,6 +585,21 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
         16 => call(CALL_GET_RENDER_TARGET, &a[2..3]),
         // GetRasterStatus: not in a vertical blank, line 0.
         17 => put(a[0], &[0, 0]),
+        18 => {
+            // SetGammaRamp(flags, ramp): the helper applies it to the picture of the window.
+            if a[1] != 0 {
+                crate::capture::gamma_ramp(core::slice::from_raw_parts(a[1] as usize as *const u8, crate::capture::GAMMA_RAMP_BYTES));
+            }
+            OK
+        }
+        19 => {
+            // GetGammaRamp(address)
+            if a[0] != 0 {
+                let ramp = crate::capture::gamma_ramp_now();
+                core::ptr::copy_nonoverlapping(ramp.as_ptr(), a[0] as usize as *mut u8, ramp.len());
+            }
+            OK
+        }
         20 => call(CALL_CREATE_TEXTURE, a),
         23 => call(CALL_CREATE_VERTEX_BUFFER, a),
         24 => call(CALL_CREATE_INDEX_BUFFER, a),

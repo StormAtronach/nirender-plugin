@@ -57,6 +57,8 @@ impl Player {
             shots: Vec::new(),
             early_pictures: Vec::new(),
             overlay_record: None,
+            gamma_ramp: None,
+            gamma_new: false,
             film_shot: None,
             film_shot_at: 1,
             film_draws: 0,

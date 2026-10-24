@@ -290,6 +290,8 @@ struct App {
     player: Option<Player>,
     /// The debug overlay: a panel on the picture of the window, when the game asks.
     overlay: Option<super::overlay::Overlay>,
+    /// The pass of the gamma ramp, made at the first ramp that is not the identity.
+    gamma: Option<super::gamma::Gamma>,
     depth: Option<Rc<wgpu::TextureView>>,
     /// The back buffer of the game: the frames go into it, and then into the window. It
     /// keeps the last frame for a pixel read of the game.
@@ -362,6 +364,27 @@ fn acquire(surface: &wgpu::Surface, device: &wgpu::Device, configuration: Option
     }
 }
 
+/// Makes the pass of the gamma ramp at the first ramp that is not the identity, and writes a
+/// new ramp into its table.
+fn take_gamma_ramp(gamma: &mut Option<super::gamma::Gamma>, player: &Player) {
+    let Some(ramp) = player.gamma_ramp.as_ref() else { return };
+    let renderer = &player.renderer;
+    gamma.get_or_insert_with(|| super::gamma::Gamma::new(&renderer.device, renderer.target_format)).set(&renderer.queue, ramp);
+}
+
+/// The back buffer into the picture of the window, the part that the two have: through the
+/// gamma ramp of the device, or a plain copy for an identity ramp.
+fn to_window(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, gamma: Option<&super::gamma::Gamma>, back_buffer: &wgpu::Texture, window: &wgpu::Texture) {
+    match gamma {
+        Some(gamma) => gamma.draw(device, encoder, back_buffer, window),
+        None => encoder.copy_texture_to_texture(
+            back_buffer.as_image_copy(),
+            window.as_image_copy(),
+            wgpu::Extent3d { width: back_buffer.width().min(window.width()), height: back_buffer.height().min(window.height()), depth_or_array_layers: 1 },
+        ),
+    }
+}
+
 impl App {
     /// Sets the size of the picture in the window, and makes the depth buffer for it.
     fn configure(&mut self, width: u32, height: u32) {
@@ -390,17 +413,17 @@ impl App {
     fn show_sign(&mut self) {
         self.sign_at = Instant::now();
         self.sign_step += 1;
+        if let Some(player) = self.player.as_mut().filter(|player| player.gamma_new) {
+            player.gamma_new = false;
+            take_gamma_ramp(&mut self.gamma, player);
+        }
         let (Some(surface), Some(player), Some(overlay)) = (self.surface.as_ref(), self.player.as_ref(), self.overlay.as_mut()) else { return };
         let Some(back_buffer) = player.shown_picture() else { return };
         let Some(frame) = acquire(surface, &player.renderer.device, self.configuration.as_ref(), &mut self.surface_status, self.frames) else { return };
         let (device, queue) = (&player.renderer.device, &player.renderer.queue);
         let size = (frame.texture.width(), frame.texture.height());
         let mut encoder = device.create_command_encoder(&Default::default());
-        encoder.copy_texture_to_texture(
-            back_buffer.as_image_copy(),
-            frame.texture.as_image_copy(),
-            wgpu::Extent3d { width: back_buffer.width().min(size.0), height: back_buffer.height().min(size.1), depth_or_array_layers: 1 },
-        );
+        to_window(device, &mut encoder, self.gamma.as_ref().filter(|_| player.gamma_ramp.is_some()), back_buffer, &frame.texture);
         overlay.draw(device, queue, &mut encoder, &frame.texture.create_view(&Default::default()), size, Some(self.sign_step), &[], &Status::default());
         crate::gpu::submit(queue, [encoder.finish()]);
         queue.present(frame);
@@ -659,16 +682,18 @@ impl ApplicationHandler for App {
                 );
             }
             let status = player.extension.as_ref().map(|extension| extension.status()).unwrap_or_default();
+            if player.gamma_new {
+                player.gamma_new = false;
+                take_gamma_ramp(&mut self.gamma, player);
+            }
+            let gamma = self.gamma.as_ref().filter(|_| player.gamma_ramp.is_some());
             let overlay = self.overlay.as_mut();
             let mut read = None;
             player.end_frame(|encoder| {
-                // The picture goes into the window: the part that the two have.
+                // The picture goes into the window: the part that the two have, through the
+                // gamma ramp of the device.
                 if let Some(frame) = frame.as_ref() {
-                    encoder.copy_texture_to_texture(
-                        back_buffer.as_image_copy(),
-                        frame.texture.as_image_copy(),
-                        wgpu::Extent3d { width: width.min(frame.texture.width()), height: height.min(frame.texture.height()), depth_or_array_layers: 1 },
-                    );
+                    to_window(&device, encoder, gamma, back_buffer, &frame.texture);
                     // The debug overlay goes on the picture of the window, not into the
                     // back buffer: a picture file and a pixel read do not have it.
                     if let Some(overlay) = overlay {
@@ -698,8 +723,8 @@ impl ApplicationHandler for App {
                     save_picture(&device, &buffer, row, width, height, blue_first, path);
                     buffer.unmap();
                 }
-                // The same pictures as the window shows them: the overlay is drawn on a
-                // copy of the back buffer, as on the picture of the window.
+                // The same pictures as the window shows them: the gamma ramp and the overlay
+                // are on a copy of the back buffer, as on the picture of the window.
                 if let (true, Some(overlay)) = (self.window_shots, self.overlay.as_mut()) {
                     let copy = device.create_texture(&wgpu::TextureDescriptor {
                         label: Some("window picture"),
@@ -712,7 +737,7 @@ impl ApplicationHandler for App {
                         view_formats: &[],
                     });
                     let mut encoder = device.create_command_encoder(&Default::default());
-                    encoder.copy_texture_to_texture(back_buffer.as_image_copy(), copy.as_image_copy(), wgpu::Extent3d { width, height, depth_or_array_layers: 1 });
+                    to_window(&device, &mut encoder, gamma, back_buffer, &copy);
                     overlay.draw(&device, &queue, &mut encoder, &copy.create_view(&Default::default()), (width, height), None, &lines, &status);
                     let (buffer, row) = copy_picture(&device, &mut encoder, &copy, width, height);
                     crate::gpu::submit(&queue, [encoder.finish()]);
@@ -805,6 +830,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         configuration: None,
         player: None,
         overlay: None,
+        gamma: None,
         depth: None,
         in_frame: false,
         not_shown: 0,

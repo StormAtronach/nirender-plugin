@@ -222,6 +222,10 @@ pub mod tag {
     /// and up in model space, then 20 bytes a particle (the position, the size, the colour), as
     /// the particle tail of a [`SHAPE`] record has them (`instance_stream`, particles plan step 2).
     pub const INSTANCE_PARTICLES: u32 = 35;
+    /// The gamma ramp of the device (`SetGammaRamp`, a `D3DGAMMARAMP`): 256 u16 values each
+    /// for red, green and blue. A state: written again after the header of a stream and of a
+    /// file (see [`super::gamma_ramp`]).
+    pub const GAMMA_RAMP: u32 = 36;
 }
 
 // ---- the ring in shared memory
@@ -1097,12 +1101,35 @@ pub unsafe fn extension(id: u32, bytes: &[u8]) {
     write(tag::EXTENSION, &[words(&[id]), bytes]);
 }
 
-/// Writes the kept extension records again, after the header of a stream or of a file.
+/// Writes the kept extension records and the gamma ramp again, after the header of a stream
+/// or of a file.
 unsafe fn write_kept(lock: &DeviceLock) {
     let kept = (*KEPT.get(&lock)).clone();
     for (id, bytes) in kept {
         write(tag::EXTENSION, &[words(&[id]), &bytes]);
     }
+    if let Some(ramp) = (*GAMMA.get(&lock)).clone() {
+        write(tag::GAMMA_RAMP, &[&ramp]);
+    }
+}
+
+/// The bytes of a `D3DGAMMARAMP`.
+pub const GAMMA_RAMP_BYTES: usize = 0x600;
+
+/// The last gamma ramp of the device, or [`None`] before the first.
+static GAMMA: LockCell<Option<Vec<u8>>> = LockCell::new(None);
+
+/// The device has a new gamma ramp (`SetGammaRamp`): kept for `gamma_ramp_now`, and sent.
+pub unsafe fn gamma_ramp(ramp: &[u8]) {
+    let lock = crate::sync::device_lock();
+    *GAMMA.get(&lock) = Some(ramp.to_vec());
+    write(tag::GAMMA_RAMP, &[ramp]);
+}
+
+/// The gamma ramp of the device: the last one set, else the identity (`i * 257`).
+pub unsafe fn gamma_ramp_now() -> Vec<u8> {
+    let lock = crate::sync::device_lock();
+    (*GAMMA.get(&lock)).clone().unwrap_or_else(|| (0..GAMMA_RAMP_BYTES / 2).flat_map(|at| ((at % 256) as u16 * 257).to_le_bytes()).collect())
 }
 
 /// Asks the host of the stream for a picture file of the frame in progress.

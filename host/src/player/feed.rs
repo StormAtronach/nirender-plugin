@@ -30,6 +30,14 @@ impl Player {
             tag::SHOT => self.shots.push(String::from_utf8_lossy(data).into_owned()),
             tag::MARK => self.mark(&String::from_utf8_lossy(data)),
             tag::OVERLAY => self.overlay_record = Some(data.to_vec()),
+            tag::GAMMA_RAMP => {
+                self.gamma_ramp = gamma::read_ramp(data).filter(|ramp| !gamma::is_identity(ramp));
+                self.gamma_new = true;
+                match self.gamma_ramp.as_ref() {
+                    Some(ramp) => println!("gamma ramp: a look-up table for the window; red 64 -> {}, 128 -> {}, 192 -> {} (of 65535)", ramp[64], ramp[128], ramp[192]),
+                    None => println!("gamma ramp: the identity; the window takes the plain copy"),
+                }
+            }
             tag::EXTENSION if data.len() >= 4 => {
                 if let Some(extension) = self.extension.as_mut() {
                     extension.data(word(data, 0), &data[4..]);

@@ -36,6 +36,7 @@ use std::rc::Rc;
 use rustc_hash::FxHashMap;
 
 mod depth_merge;
+mod gamma;
 mod live;
 mod multisample;
 mod picture;
@@ -668,6 +669,10 @@ struct Player {
     /// The last `OVERLAY` record of the stream, for the live mode to take: the debug overlay
     /// on or off, with the numbers of the game process.
     overlay_record: Option<Vec<u8>>,
+    /// The gamma ramp of the device when it is not the identity, for the window of the live
+    /// mode (`gamma.rs`), and true until the window takes a new ramp.
+    gamma_ramp: Option<Vec<u16>>,
+    gamma_new: bool,
     /// A picture file for a frame with a draw of the film player (`--shot-film`, the
     /// `--shot-film-frame`th such draw: a film starts from black): a film holds the main loop
     /// of the game, so the game cannot ask for it in time.
