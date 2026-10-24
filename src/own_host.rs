@@ -801,7 +801,13 @@ unsafe extern "C" fn call(index: u32, arguments: *const u32) -> u32 {
             // 100 reads of a crossing run: records entry 55.)
             forget_read(&lock, texture_of(CURRENT_TARGET.load(Ordering::Relaxed)));
             forget_read(&lock, texture_of(a(0)));
-            CURRENT_TARGET.store(a(0), Ordering::Relaxed);
+            // The device holds a reference to its colour and depth surfaces, as
+            // `IDirect3DDevice8::SetRenderTarget` does: a surface set here lives until another
+            // one replaces it. The new ones first: the same surface again stays alive.
+            add_reference_of(a(0));
+            add_reference_of(a(1));
+            release_of(CURRENT_TARGET.swap(a(0), Ordering::Relaxed));
+            release_of(CURRENT_DEPTH.swap(a(1), Ordering::Relaxed));
             OK
         }
         // The frame, the scene, the target: nothing to do here. The stream has the call.
@@ -842,8 +848,26 @@ pub unsafe fn take(slot: usize) {
 }
 
 /// The colour surface that the game draws into now: the last one of a call to set the
-/// render target. 0 before the first call.
+/// render target. 0 before the first call. The device holds a reference to it.
 static CURRENT_TARGET: AtomicU32 = AtomicU32::new(0);
+/// The depth surface of the last call to set the render target. The device holds a reference
+/// to it.
+static CURRENT_DEPTH: AtomicU32 = AtomicU32::new(0);
+
+/// `AddRef` of a resource through its table (an object of this host or of Direct3D), when
+/// there is one.
+unsafe fn add_reference_of(object: u32) {
+    if object != 0 {
+        core::mem::transmute::<usize, unsafe extern "system" fn(u32) -> u32>(method(object, 1))(object);
+    }
+}
+
+/// `Release` of a resource through its table, when there is one.
+unsafe fn release_of(object: u32) {
+    if object != 0 {
+        core::mem::transmute::<usize, unsafe extern "system" fn(u32) -> u32>(method(object, 2))(object);
+    }
+}
 
 /// True when the game draws into the back buffer now, and not into a texture.
 pub fn target_is_back_buffer() -> bool {
