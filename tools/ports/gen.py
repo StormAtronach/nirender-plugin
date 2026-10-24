@@ -11,8 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 from common import is_renderer_function
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "out")
-GEN = os.path.join(HERE, "..", "src", "gen")
+TOOLS = os.path.dirname(HERE)
+OUT = os.path.join(TOOLS, "out")
+GEN = os.path.join(os.path.dirname(TOOLS), "src", "gen")
 
 LAYOUT_RE = re.compile(
     r"^(NiDX8|NiD3D|NiRender|NiGeometryBufferData|NiPropertyState|NiDynamicEffectState|NiRenderStateSetting|"
@@ -25,7 +26,9 @@ LAYOUT_RE = re.compile(
     r"NiNode$|NiSwitchNode$|NiFltAnimationNode$|NiBSPNode$|NiBillboardNode$|NiSortAdjustNode$|NiPlane$|"
     r"NiAccumulator$|NiClusterAccumulator|NiAlphaAccumulator$|NiParticles$|NiParticlesData$|NiLines$|NiLinesData$|"
     r"NiTimeController$|NiTriShape$|NiAutoNormalParticles$|NiScreenPolygon$|"
-    r"BSAnimationNode$|NiLODNode$|NiLODData$|NiTriStrips$|NiTriBasedGeometry$)")
+    r"BSAnimationNode$|NiLODNode$|NiLODData$|NiTriStrips$|NiTriBasedGeometry$|"
+    # The hand-written offsets moved here (tools/hand_offsets.py), from 2026-10-24.
+    r"NiSkinData$|NiBoneData$|WorldController$|PlayerAnimController$)")
 
 
 KEYWORDS = {"type", "super", "self", "ref", "match", "loop", "move", "fn", "mod", "use", "in", "final", "box", "priv", "enum",
@@ -111,7 +114,7 @@ def gen_funcs(funcs):
         "    pub name: &'static str,",
         "    /// Bytes of stack arguments the function removes at return (0 for cdecl).",
         "    pub argsize: usize,",
-        "    /// Where the `size` bytes of the function in the database start in `CODE`.",
+        "    /// Where the `size` bytes of the function in the database start in [`CODE`].",
         "    pub code: usize,",
         "    /// Bytes a 5-byte jump at the entry displaces (whole instructions).",
         "    pub steal: usize,",
@@ -134,9 +137,14 @@ def gen_funcs(funcs):
 
 def main():
     structs = json.load(open(os.path.join(OUT, "structs.json")))
-    funcs = json.load(open(os.path.join(OUT, "inventory.json")))
     os.makedirs(GEN, exist_ok=True)
     open(os.path.join(GEN, "layouts.rs"), "w", newline="\n").write(gen_layouts(structs))
+    # `--layouts-only` leaves the function table and its bytes alone: a new struct for the
+    # layouts does not change the ports' byte checks.
+    if "--layouts-only" in sys.argv:
+        print("layouts written")
+        return
+    funcs = json.load(open(os.path.join(OUT, "inventory.json")))
     open(os.path.join(GEN, "funcs.rs"), "w", newline="\n").write(gen_funcs(funcs))
     print("layouts and funcs written")
 

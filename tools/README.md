@@ -44,6 +44,8 @@ under the home folder.
 | `doc_links.py` | The names in backticks of the doc comments of one crate as links that rustdoc checks: it keeps the links that resolve and writes back the rest. Without `--apply` every file is restored. It runs cargo. |
 | `check_contract.py` | The render link contract: `contract/mge_render_link.h` against `src/link.rs`. |
 | `check_comments_only.py` | That an edit changed comments only. |
+| `hand_offsets.py` | The engine field offsets written by hand outside `src/gen/layouts.rs`; `--check` fails on a file above its count in `hand_offsets.baseline`, `--update` lowers the counts. `checks.py` runs it. |
+| `check_offset_moves.py` | That each offset moved into the generated layouts keeps its old value (the staged diff with `--cached`). `checks.py` runs it. |
 | `unused_shared.py` | The public items of the shared modules that no other code uses. |
 
 ## The pictures and the captures
@@ -82,7 +84,8 @@ The tools of `PORTING.md`. Three of them run inside IDA Pro (`ida_*.py`).
 | `ports/ida_export_inventory.py` | In IDA: the inventory of the renderer functions and the struct layouts, to `tools/out/*.json`. |
 | `ports/ida_dump_funcs.py` | In IDA: the pseudocode and the disassembly of each function, to `tools/out/dump/<address>.txt`. |
 | `ports/ida_abi_audit.py` | In IDA: the registers a caller reads after each call, to `tools/out/abi.json`. |
-| `ports/gen.py` | `src/gen/layouts.rs` and `src/gen/funcs.rs` from the IDA export. |
+| `ports/gen.py` | `src/gen/layouts.rs` and `src/gen/funcs.rs` from the IDA export; `--layouts-only` leaves the function table and its bytes alone. A struct gets into the layouts through `LAYOUT_RE`. |
+| `ports/layout_lookup.py` | The members of an IDA struct at given offsets, with the names `gen.py` gives them: the name for a hand-written offset that moves into the layouts. |
 | `ports/add_touch.py` | The execution counter at the top of each port function. |
 | `ports/merge_port.py` | A port branch merged into the current branch, its module registered. |
 

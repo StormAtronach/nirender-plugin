@@ -849,6 +849,66 @@ pub mod NiBillboardNode {
     pub const pad_B5: usize = 0xb5;
 }
 
+pub mod NiBoneData {
+    pub const SIZE: usize = 0x4c;
+    /// `NiTransform`, 0x34 bytes
+    pub const transformSkinToBone: usize = 0x0;
+    /// `matrix33`, 0x24 bytes
+    pub const transformSkinToBone_rotation: usize = 0x0;
+    /// `vec3`, 0xc bytes
+    pub const transformSkinToBone_rotation_m0: usize = 0x0;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_rotation_m0_x: usize = 0x0;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_rotation_m0_y: usize = 0x4;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_rotation_m0_z: usize = 0x8;
+    /// `vec3`, 0xc bytes
+    pub const transformSkinToBone_rotation_m1: usize = 0xc;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_rotation_m1_x: usize = 0xc;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_rotation_m1_y: usize = 0x10;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_rotation_m1_z: usize = 0x14;
+    /// `vec3`, 0xc bytes
+    pub const transformSkinToBone_rotation_m2: usize = 0x18;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_rotation_m2_x: usize = 0x18;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_rotation_m2_y: usize = 0x1c;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_rotation_m2_z: usize = 0x20;
+    /// `vec3`, 0xc bytes
+    pub const transformSkinToBone_translation: usize = 0x24;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_translation_x: usize = 0x24;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_translation_y: usize = 0x28;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_translation_z: usize = 0x2c;
+    /// `float`, 0x4 bytes
+    pub const transformSkinToBone_scale: usize = 0x30;
+    /// `NiBound`, 0x10 bytes
+    pub const bound: usize = 0x34;
+    /// `vec3`, 0xc bytes
+    pub const bound_centre: usize = 0x34;
+    /// `float`, 0x4 bytes
+    pub const bound_centre_x: usize = 0x34;
+    /// `float`, 0x4 bytes
+    pub const bound_centre_y: usize = 0x38;
+    /// `float`, 0x4 bytes
+    pub const bound_centre_z: usize = 0x3c;
+    /// `float`, 0x4 bytes
+    pub const bound_radius: usize = 0x40;
+    /// `NiBoneData::Weight *`, 0x4 bytes
+    pub const vertexWeights: usize = 0x44;
+    /// `unsigned __int16`, 0x2 bytes
+    pub const numVertexWeights: usize = 0x48;
+    /// `__int16`, 0x2 bytes
+    pub const padding_4A: usize = 0x4a;
+}
+
 pub mod NiBound {
     pub const SIZE: usize = 0x10;
     /// `vec3`, 0xc bytes
@@ -6751,6 +6811,60 @@ pub mod NiScreenPolygon {
     pub const color: usize = 0x18;
 }
 
+pub mod NiSkinData {
+    pub const SIZE: usize = 0x48;
+    /// `NiObject`, 0x8 bytes
+    pub const super_: usize = 0x0;
+    /// `InterfaceNiObjectUnion`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const refCount: usize = 0x4;
+    /// `NiSkinPartition *`, 0x4 bytes
+    pub const skinPartition: usize = 0x8;
+    /// `NiTransform`, 0x34 bytes
+    pub const transformRootParentToSkin: usize = 0xc;
+    /// `matrix33`, 0x24 bytes
+    pub const transformRootParentToSkin_rotation: usize = 0xc;
+    /// `vec3`, 0xc bytes
+    pub const transformRootParentToSkin_rotation_m0: usize = 0xc;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_rotation_m0_x: usize = 0xc;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_rotation_m0_y: usize = 0x10;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_rotation_m0_z: usize = 0x14;
+    /// `vec3`, 0xc bytes
+    pub const transformRootParentToSkin_rotation_m1: usize = 0x18;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_rotation_m1_x: usize = 0x18;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_rotation_m1_y: usize = 0x1c;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_rotation_m1_z: usize = 0x20;
+    /// `vec3`, 0xc bytes
+    pub const transformRootParentToSkin_rotation_m2: usize = 0x24;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_rotation_m2_x: usize = 0x24;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_rotation_m2_y: usize = 0x28;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_rotation_m2_z: usize = 0x2c;
+    /// `vec3`, 0xc bytes
+    pub const transformRootParentToSkin_translation: usize = 0x30;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_translation_x: usize = 0x30;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_translation_y: usize = 0x34;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_translation_z: usize = 0x38;
+    /// `float`, 0x4 bytes
+    pub const transformRootParentToSkin_scale: usize = 0x3c;
+    /// `unsigned int`, 0x4 bytes
+    pub const numBones: usize = 0x40;
+    /// `NiBoneData (*)[]`, 0x4 bytes
+    pub const boneData: usize = 0x44;
+}
+
 pub mod NiSkinInstance {
     pub const SIZE: usize = 0x18;
     /// `NiObject`, 0x8 bytes
@@ -7849,6 +7963,220 @@ pub mod NiZBufferProperty {
     pub const testFunction: usize = 0x18;
 }
 
+pub mod PlayerAnimController {
+    pub const SIZE: usize = 0x124;
+    /// `ActorAnimController`, 0xd4 bytes
+    pub const super_: usize = 0x0;
+    /// `InterfaceActorAnimController *`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `char`, 0x1 bytes
+    pub const useAnimationDelta: usize = 0x4;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_5: usize = 0x5;
+    /// `AnimGroupID`, 0x1 bytes
+    pub const animGroupAttack: usize = 0x8;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_9: usize = 0x9;
+    /// `ActorAnimPlaybackType`, 0x4 bytes
+    pub const playbackType: usize = 0xc;
+    /// `float`, 0x4 bytes
+    pub const attackFollowTiming: usize = 0x10;
+    /// `float`, 0x4 bytes
+    pub const remainingBlockTime: usize = 0x14;
+    /// `float`, 0x4 bytes
+    pub const startTime: usize = 0x18;
+    /// `float`, 0x4 bytes
+    pub const minAttackTiming: usize = 0x1c;
+    /// `float`, 0x4 bytes
+    pub const maxAttackTiming: usize = 0x20;
+    /// `float`, 0x4 bytes
+    pub const minHitTiming: usize = 0x24;
+    /// `float`, 0x4 bytes
+    pub const hitTiming: usize = 0x28;
+    /// `float`, 0x4 bytes
+    pub const strikeWhenAttackSwingReaches: usize = 0x2c;
+    /// `float`, 0x4 bytes
+    pub const attachTiming: usize = 0x30;
+    /// `float`, 0x4 bytes
+    pub const speedMultiplier: usize = 0x34;
+    /// `MACT *`, 0x4 bytes
+    pub const mobileActor: usize = 0x38;
+    /// `ActorAnimationData *`, 0x4 bytes
+    pub const animationAttachment: usize = 0x3c;
+    /// `NiPointer`, 0x4 bytes
+    pub const sgAlphaProperty: usize = 0x40;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const sgAlphaProperty_ptr: usize = 0x40;
+    /// `NiPointer`, 0x4 bytes
+    pub const sgMaterialProperty: usize = 0x44;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const sgMaterialProperty_ptr: usize = 0x44;
+    /// `NiPointer`, 0x4 bytes
+    pub const sgVertexColorProperty: usize = 0x48;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const sgVertexColorProperty_ptr: usize = 0x48;
+    /// `matrix33`, 0x24 bytes
+    pub const groundPlaneRotation: usize = 0x4c;
+    /// `vec3`, 0xc bytes
+    pub const groundPlaneRotation_m0: usize = 0x4c;
+    /// `float`, 0x4 bytes
+    pub const groundPlaneRotation_m0_x: usize = 0x4c;
+    /// `float`, 0x4 bytes
+    pub const groundPlaneRotation_m0_y: usize = 0x50;
+    /// `float`, 0x4 bytes
+    pub const groundPlaneRotation_m0_z: usize = 0x54;
+    /// `vec3`, 0xc bytes
+    pub const groundPlaneRotation_m1: usize = 0x58;
+    /// `float`, 0x4 bytes
+    pub const groundPlaneRotation_m1_x: usize = 0x58;
+    /// `float`, 0x4 bytes
+    pub const groundPlaneRotation_m1_y: usize = 0x5c;
+    /// `float`, 0x4 bytes
+    pub const groundPlaneRotation_m1_z: usize = 0x60;
+    /// `vec3`, 0xc bytes
+    pub const groundPlaneRotation_m2: usize = 0x64;
+    /// `float`, 0x4 bytes
+    pub const groundPlaneRotation_m2_x: usize = 0x64;
+    /// `float`, 0x4 bytes
+    pub const groundPlaneRotation_m2_y: usize = 0x68;
+    /// `float`, 0x4 bytes
+    pub const groundPlaneRotation_m2_z: usize = 0x6c;
+    /// `matrix33`, 0x24 bytes
+    pub const swimmingFlyingRotation: usize = 0x70;
+    /// `vec3`, 0xc bytes
+    pub const swimmingFlyingRotation_m0: usize = 0x70;
+    /// `float`, 0x4 bytes
+    pub const swimmingFlyingRotation_m0_x: usize = 0x70;
+    /// `float`, 0x4 bytes
+    pub const swimmingFlyingRotation_m0_y: usize = 0x74;
+    /// `float`, 0x4 bytes
+    pub const swimmingFlyingRotation_m0_z: usize = 0x78;
+    /// `vec3`, 0xc bytes
+    pub const swimmingFlyingRotation_m1: usize = 0x7c;
+    /// `float`, 0x4 bytes
+    pub const swimmingFlyingRotation_m1_x: usize = 0x7c;
+    /// `float`, 0x4 bytes
+    pub const swimmingFlyingRotation_m1_y: usize = 0x80;
+    /// `float`, 0x4 bytes
+    pub const swimmingFlyingRotation_m1_z: usize = 0x84;
+    /// `vec3`, 0xc bytes
+    pub const swimmingFlyingRotation_m2: usize = 0x88;
+    /// `float`, 0x4 bytes
+    pub const swimmingFlyingRotation_m2_x: usize = 0x88;
+    /// `float`, 0x4 bytes
+    pub const swimmingFlyingRotation_m2_y: usize = 0x8c;
+    /// `float`, 0x4 bytes
+    pub const swimmingFlyingRotation_m2_z: usize = 0x90;
+    /// `float`, 0x4 bytes
+    pub const field_94: usize = 0x94;
+    /// `AnimGroupID`, 0x1 bytes
+    pub const animGroupMovement: usize = 0x98;
+    /// `AnimGroupID`, 0x1 bytes
+    pub const animGroupIdle: usize = 0x99;
+    /// `AnimGroupID`, 0x1 bytes
+    pub const animGroupIdle2: usize = 0x9a;
+    /// `char`, 0x1 bytes
+    pub const patchedOverrideState: usize = 0x9b;
+    /// `int`, 0x4 bytes
+    pub const shouldJump: usize = 0x9c;
+    /// `float`, 0x4 bytes
+    pub const dotProductOfOrientationAndXMirroredWindVelocity: usize = 0xa0;
+    /// `ActorAnimController::BodySection`, 0x10 bytes
+    pub const sectionLowerBody: usize = 0xa4;
+    /// `AnimGroupID`, 0x1 bytes
+    pub const sectionLowerBody_animGroupID: usize = 0xa4;
+    /// `char[3]`, 0x3 bytes
+    pub const sectionLowerBody_pad_1: usize = 0xa5;
+    /// `ActorAnimPlaybackType`, 0x4 bytes
+    pub const sectionLowerBody_playbackType: usize = 0xa8;
+    /// `float`, 0x4 bytes
+    pub const sectionLowerBody_attackFollowTiming: usize = 0xac;
+    /// `int`, 0x4 bytes
+    pub const sectionLowerBody_loopCount: usize = 0xb0;
+    /// `ActorAnimController::BodySection`, 0x10 bytes
+    pub const sectionUpperBody: usize = 0xb4;
+    /// `AnimGroupID`, 0x1 bytes
+    pub const sectionUpperBody_animGroupID: usize = 0xb4;
+    /// `char[3]`, 0x3 bytes
+    pub const sectionUpperBody_pad_1: usize = 0xb5;
+    /// `ActorAnimPlaybackType`, 0x4 bytes
+    pub const sectionUpperBody_playbackType: usize = 0xb8;
+    /// `float`, 0x4 bytes
+    pub const sectionUpperBody_attackFollowTiming: usize = 0xbc;
+    /// `int`, 0x4 bytes
+    pub const sectionUpperBody_loopCount: usize = 0xc0;
+    /// `ActorAnimController::BodySection`, 0x10 bytes
+    pub const sectionLeftArm: usize = 0xc4;
+    /// `AnimGroupID`, 0x1 bytes
+    pub const sectionLeftArm_animGroupID: usize = 0xc4;
+    /// `char[3]`, 0x3 bytes
+    pub const sectionLeftArm_pad_1: usize = 0xc5;
+    /// `ActorAnimPlaybackType`, 0x4 bytes
+    pub const sectionLeftArm_playbackType: usize = 0xc8;
+    /// `float`, 0x4 bytes
+    pub const sectionLeftArm_attackFollowTiming: usize = 0xcc;
+    /// `int`, 0x4 bytes
+    pub const sectionLeftArm_loopCount: usize = 0xd0;
+    /// `NiCamera *`, 0x4 bytes
+    pub const firstPersonHeadCamera: usize = 0xd4;
+    /// `vec3`, 0xc bytes
+    pub const thirdPersonCameraOffset: usize = 0xd8;
+    /// `float`, 0x4 bytes
+    pub const thirdPersonCameraOffset_x: usize = 0xd8;
+    /// `float`, 0x4 bytes
+    pub const thirdPersonCameraOffset_y: usize = 0xdc;
+    /// `float`, 0x4 bytes
+    pub const thirdPersonCameraOffset_z: usize = 0xe0;
+    /// `NiPick *`, 0x4 bytes
+    pub const pickData: usize = 0xe4;
+    /// `char`, 0x1 bytes
+    pub const isThirdPersonCamera: usize = 0xe8;
+    /// `unsigned __int8`, 0x1 bytes
+    pub const switchPOVMode: usize = 0xe9;
+    /// `char`, 0x1 bytes
+    pub const allowVerticalAirControl: usize = 0xea;
+    /// `char`, 0x1 bytes
+    pub const padding_EB: usize = 0xeb;
+    /// `int`, 0x4 bytes
+    pub const vanityCameraEnabled: usize = 0xec;
+    /// `char`, 0x1 bytes
+    pub const useThirdPersonAfterVanityCameraDone: usize = 0xf0;
+    /// `char[3]`, 0x3 bytes
+    pub const padding_F1: usize = 0xf1;
+    /// `float`, 0x4 bytes
+    pub const vanityCameraZ: usize = 0xf4;
+    /// `int`, 0x4 bytes
+    pub const vanityCameraDistance: usize = 0xf8;
+    /// `NiCamera *`, 0x4 bytes
+    pub const sgVanityCamera: usize = 0xfc;
+    /// `matrix33`, 0x24 bytes
+    pub const shadowCameraMatrix: usize = 0x100;
+    /// `vec3`, 0xc bytes
+    pub const shadowCameraMatrix_m0: usize = 0x100;
+    /// `float`, 0x4 bytes
+    pub const shadowCameraMatrix_m0_x: usize = 0x100;
+    /// `float`, 0x4 bytes
+    pub const shadowCameraMatrix_m0_y: usize = 0x104;
+    /// `float`, 0x4 bytes
+    pub const shadowCameraMatrix_m0_z: usize = 0x108;
+    /// `vec3`, 0xc bytes
+    pub const shadowCameraMatrix_m1: usize = 0x10c;
+    /// `float`, 0x4 bytes
+    pub const shadowCameraMatrix_m1_x: usize = 0x10c;
+    /// `float`, 0x4 bytes
+    pub const shadowCameraMatrix_m1_y: usize = 0x110;
+    /// `float`, 0x4 bytes
+    pub const shadowCameraMatrix_m1_z: usize = 0x114;
+    /// `vec3`, 0xc bytes
+    pub const shadowCameraMatrix_m2: usize = 0x118;
+    /// `float`, 0x4 bytes
+    pub const shadowCameraMatrix_m2_x: usize = 0x118;
+    /// `float`, 0x4 bytes
+    pub const shadowCameraMatrix_m2_y: usize = 0x11c;
+    /// `float`, 0x4 bytes
+    pub const shadowCameraMatrix_m2_z: usize = 0x120;
+}
+
 pub mod THashMap {
     pub const SIZE: usize = 0x10;
     /// `InterfaceTHashMap *`, 0x4 bytes
@@ -7869,4 +8197,582 @@ pub mod THashMap_Node {
     pub const data: usize = 0x4;
     /// `THashMap::Node *`, 0x4 bytes
     pub const nextNode: usize = 0x8;
+}
+
+pub mod WorldController {
+    pub const SIZE: usize = 0x374;
+    /// `int`, 0x4 bytes
+    pub const framesSinceLastFPSMeasure: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const framesPerFPSMeasure: usize = 0x4;
+    /// `float`, 0x4 bytes
+    pub const lightFlickerSimTickRate: usize = 0x8;
+    /// `float`, 0x4 bytes
+    pub const minFPS: usize = 0xc;
+    /// `float`, 0x4 bytes
+    pub const maxFPS: usize = 0x10;
+    /// `float`, 0x4 bytes
+    pub const framesPerSecond: usize = 0x14;
+    /// `float`, 0x4 bytes
+    pub const lightFlickerSimTicksToSimulate: usize = 0x18;
+    /// `float`, 0x4 bytes
+    pub const lightFlickerSimTicksSmoothed: usize = 0x1c;
+    /// `int`, 0x4 bytes
+    pub const systemTimeMillis: usize = 0x20;
+    /// `int`, 0x4 bytes
+    pub const lastFrameTimeMillis: usize = 0x24;
+    /// `int`, 0x4 bytes
+    pub const lastFPSMeasureTimeMillis: usize = 0x28;
+    /// `float`, 0x4 bytes
+    pub const deltaTime: usize = 0x2c;
+    /// `NiDX8Renderer *`, 0x4 bytes
+    pub const renderer: usize = 0x30;
+    /// `AudioController *`, 0x4 bytes
+    pub const audio: usize = 0x34;
+    /// `int`, 0x4 bytes
+    pub const field_38: usize = 0x38;
+    /// `int`, 0x4 bytes
+    pub const field_3C: usize = 0x3c;
+    /// `Font *[3]`, 0xc bytes
+    pub const fonts: usize = 0x40;
+    /// `InputController *`, 0x4 bytes
+    pub const inputController: usize = 0x4c;
+    /// `CursorController *`, 0x4 bytes
+    pub const cursorController: usize = 0x50;
+    /// `ScriptRecord *`, 0x4 bytes
+    pub const scriptCompileAndRun: usize = 0x54;
+    /// `WeatherController *`, 0x4 bytes
+    pub const weatherController: usize = 0x58;
+    /// `MobManager *`, 0x4 bytes
+    pub const mobManager: usize = 0x5c;
+    /// `PlayerKillStats *`, 0x4 bytes
+    pub const playerKills: usize = 0x60;
+    /// `JournalHTML *`, 0x4 bytes
+    pub const journalHTML: usize = 0x64;
+    /// `SplashController *`, 0x4 bytes
+    pub const splashController: usize = 0x68;
+    /// `JournalController *`, 0x4 bytes
+    pub const journalController: usize = 0x6c;
+    /// `ActiveMagicManager *`, 0x4 bytes
+    pub const activeMagicManager: usize = 0x70;
+    /// `VFXManager *`, 0x4 bytes
+    pub const vfxManager: usize = 0x74;
+    /// `int`, 0x4 bytes
+    pub const viewWidth: usize = 0x78;
+    /// `int`, 0x4 bytes
+    pub const viewHeight: usize = 0x7c;
+    /// `int`, 0x4 bytes
+    pub const bitDepth: usize = 0x80;
+    /// `int`, 0x4 bytes
+    pub const bShadows: usize = 0x84;
+    /// `float`, 0x4 bytes
+    pub const helpDelay: usize = 0x88;
+    /// `char`, 0x1 bytes
+    pub const hudStyle: usize = 0x8c;
+    /// `float`, 0x4 bytes
+    pub const menuAlpha: usize = 0x90;
+    /// `bool`, 0x1 bytes
+    pub const bCursorOff: usize = 0x94;
+    /// `float`, 0x4 bytes
+    pub const aiDistance: usize = 0x98;
+    /// `float`, 0x4 bytes
+    pub const difficulty: usize = 0x9c;
+    /// `int`, 0x4 bytes
+    pub const werewolfFOV: usize = 0xa0;
+    /// `float`, 0x4 bytes
+    pub const projectionDistance: usize = 0xa4;
+    /// `GlobalVar *`, 0x4 bytes
+    pub const gvarGameHour: usize = 0xa8;
+    /// `GlobalVar *`, 0x4 bytes
+    pub const gvarYear: usize = 0xac;
+    /// `GlobalVar *`, 0x4 bytes
+    pub const gvarMonth: usize = 0xb0;
+    /// `GlobalVar *`, 0x4 bytes
+    pub const gvarDay: usize = 0xb4;
+    /// `GlobalVar *`, 0x4 bytes
+    pub const gvarDaysPassed: usize = 0xb8;
+    /// `struct GlobalVar *`, 0x4 bytes
+    pub const gvarTimescale: usize = 0xbc;
+    /// `GlobalVar *`, 0x4 bytes
+    pub const gvarCharGenState: usize = 0xc0;
+    /// `GlobalVar *`, 0x4 bytes
+    pub const gvarMonthsToRespawn: usize = 0xc4;
+    /// `HWND`, 0x4 bytes
+    pub const Win32_hWndParent: usize = 0xc8;
+    /// `HWND`, 0x4 bytes
+    pub const Win32_hWnd: usize = 0xcc;
+    /// `HINSTANCE`, 0x4 bytes
+    pub const Win32_hInstance: usize = 0xd0;
+    /// `bool`, 0x1 bytes
+    pub const flagEventMenuModeOn: usize = 0xd4;
+    /// `bool`, 0x1 bytes
+    pub const flagEventMenuModeOff: usize = 0xd5;
+    /// `bool`, 0x1 bytes
+    pub const flagMenuMode: usize = 0xd6;
+    /// `char`, 0x1 bytes
+    pub const field_D7: usize = 0xd7;
+    /// `bool`, 0x1 bytes
+    pub const collisionEnabled: usize = 0xd8;
+    /// `bool`, 0x1 bytes
+    pub const showActorCollisionBoxes: usize = 0xd9;
+    /// `bool`, 0x1 bytes
+    pub const disableAI: usize = 0xda;
+    /// `bool`, 0x1 bytes
+    pub const stopGameLoop: usize = 0xdb;
+    /// `char`, 0x1 bytes
+    pub const field_DC: usize = 0xdc;
+    /// `char`, 0x1 bytes
+    pub const flagSkillsWereAffectedInJail: usize = 0xdd;
+    /// `bool`, 0x1 bytes
+    pub const restartRendererRequired: usize = 0xde;
+    /// `bool`, 0x1 bytes
+    pub const fullscreen: usize = 0xdf;
+    /// `bool`, 0x1 bytes
+    pub const flagTeleportingDisabled: usize = 0xe0;
+    /// `bool`, 0x1 bytes
+    pub const flagLevitationDisabled: usize = 0xe1;
+    /// `bool`, 0x1 bytes
+    pub const bUseBestAttack: usize = 0xe2;
+    /// `bool`, 0x1 bytes
+    pub const bQuickSaveOnRest: usize = 0xe3;
+    /// `char`, 0x1 bytes
+    pub const field_E4: usize = 0xe4;
+    /// `char`, 0x1 bytes
+    pub const sunGlareTestsResult: usize = 0xe5;
+    /// `bool`, 0x1 bytes
+    pub const quickStartInSeydaNeen: usize = 0xe6;
+    /// `char`, 0x1 bytes
+    pub const shaderWaterReflectTerrain: usize = 0xe7;
+    /// `float`, 0x4 bytes
+    pub const mouseSensitivity: usize = 0xe8;
+    /// `float`, 0x4 bytes
+    pub const horzSensitivity: usize = 0xec;
+    /// `float`, 0x4 bytes
+    pub const shaderWaterReflectUpdate: usize = 0xf0;
+    /// `NiNode *`, 0x4 bytes
+    pub const nodeCursor: usize = 0xf4;
+    /// `WorldControllerRenderCamera`, 0x2c bytes
+    pub const splashscreenCamera: usize = 0xf8;
+    /// `InterfaceWorldControllerRenderCamera *`, 0x4 bytes
+    pub const splashscreenCamera_vtbl: usize = 0xf8;
+    /// `NiPointer`, 0x4 bytes
+    pub const splashscreenCamera_sgRenderer: usize = 0xfc;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const splashscreenCamera_sgRenderer_ptr: usize = 0xfc;
+    /// `NiPointer`, 0x4 bytes
+    pub const splashscreenCamera_sgRoot: usize = 0x100;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const splashscreenCamera_sgRoot_ptr: usize = 0x100;
+    /// `NiPointer`, 0x4 bytes
+    pub const splashscreenCamera_sgCameraRoot: usize = 0x104;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const splashscreenCamera_sgCameraRoot_ptr: usize = 0x104;
+    /// `WorldControllerRenderCameraData`, 0x1c bytes
+    pub const splashscreenCamera_cameraData: usize = 0x108;
+    /// `NiCamera *`, 0x4 bytes
+    pub const splashscreenCamera_cameraData_camera: usize = 0x108;
+    /// `NiNode *`, 0x4 bytes
+    pub const splashscreenCamera_cameraData_field_4: usize = 0x10c;
+    /// `float`, 0x4 bytes
+    pub const splashscreenCamera_cameraData_fovDegrees: usize = 0x110;
+    /// `float`, 0x4 bytes
+    pub const splashscreenCamera_cameraData_nearPlaneDistance: usize = 0x114;
+    /// `float`, 0x4 bytes
+    pub const splashscreenCamera_cameraData_farPlaneDistance: usize = 0x118;
+    /// `int`, 0x4 bytes
+    pub const splashscreenCamera_cameraData_viewportWidth: usize = 0x11c;
+    /// `int`, 0x4 bytes
+    pub const splashscreenCamera_cameraData_viewportHeight: usize = 0x120;
+    /// `WorldControllerRenderCamera`, 0x2c bytes
+    pub const worldCamera: usize = 0x124;
+    /// `InterfaceWorldControllerRenderCamera *`, 0x4 bytes
+    pub const worldCamera_vtbl: usize = 0x124;
+    /// `NiPointer`, 0x4 bytes
+    pub const worldCamera_sgRenderer: usize = 0x128;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const worldCamera_sgRenderer_ptr: usize = 0x128;
+    /// `NiPointer`, 0x4 bytes
+    pub const worldCamera_sgRoot: usize = 0x12c;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const worldCamera_sgRoot_ptr: usize = 0x12c;
+    /// `NiPointer`, 0x4 bytes
+    pub const worldCamera_sgCameraRoot: usize = 0x130;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const worldCamera_sgCameraRoot_ptr: usize = 0x130;
+    /// `WorldControllerRenderCameraData`, 0x1c bytes
+    pub const worldCamera_cameraData: usize = 0x134;
+    /// `NiCamera *`, 0x4 bytes
+    pub const worldCamera_cameraData_camera: usize = 0x134;
+    /// `NiNode *`, 0x4 bytes
+    pub const worldCamera_cameraData_field_4: usize = 0x138;
+    /// `float`, 0x4 bytes
+    pub const worldCamera_cameraData_fovDegrees: usize = 0x13c;
+    /// `float`, 0x4 bytes
+    pub const worldCamera_cameraData_nearPlaneDistance: usize = 0x140;
+    /// `float`, 0x4 bytes
+    pub const worldCamera_cameraData_farPlaneDistance: usize = 0x144;
+    /// `int`, 0x4 bytes
+    pub const worldCamera_cameraData_viewportWidth: usize = 0x148;
+    /// `int`, 0x4 bytes
+    pub const worldCamera_cameraData_viewportHeight: usize = 0x14c;
+    /// `WorldControllerRenderCamera`, 0x2c bytes
+    pub const armCamera: usize = 0x150;
+    /// `InterfaceWorldControllerRenderCamera *`, 0x4 bytes
+    pub const armCamera_vtbl: usize = 0x150;
+    /// `NiPointer`, 0x4 bytes
+    pub const armCamera_sgRenderer: usize = 0x154;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const armCamera_sgRenderer_ptr: usize = 0x154;
+    /// `NiPointer`, 0x4 bytes
+    pub const armCamera_sgRoot: usize = 0x158;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const armCamera_sgRoot_ptr: usize = 0x158;
+    /// `NiPointer`, 0x4 bytes
+    pub const armCamera_sgCameraRoot: usize = 0x15c;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const armCamera_sgCameraRoot_ptr: usize = 0x15c;
+    /// `WorldControllerRenderCameraData`, 0x1c bytes
+    pub const armCamera_cameraData: usize = 0x160;
+    /// `NiCamera *`, 0x4 bytes
+    pub const armCamera_cameraData_camera: usize = 0x160;
+    /// `NiNode *`, 0x4 bytes
+    pub const armCamera_cameraData_field_4: usize = 0x164;
+    /// `float`, 0x4 bytes
+    pub const armCamera_cameraData_fovDegrees: usize = 0x168;
+    /// `float`, 0x4 bytes
+    pub const armCamera_cameraData_nearPlaneDistance: usize = 0x16c;
+    /// `float`, 0x4 bytes
+    pub const armCamera_cameraData_farPlaneDistance: usize = 0x170;
+    /// `int`, 0x4 bytes
+    pub const armCamera_cameraData_viewportWidth: usize = 0x174;
+    /// `int`, 0x4 bytes
+    pub const armCamera_cameraData_viewportHeight: usize = 0x178;
+    /// `WorldControllerRenderCamera`, 0x2c bytes
+    pub const menuCamera: usize = 0x17c;
+    /// `InterfaceWorldControllerRenderCamera *`, 0x4 bytes
+    pub const menuCamera_vtbl: usize = 0x17c;
+    /// `NiPointer`, 0x4 bytes
+    pub const menuCamera_sgRenderer: usize = 0x180;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const menuCamera_sgRenderer_ptr: usize = 0x180;
+    /// `NiPointer`, 0x4 bytes
+    pub const menuCamera_sgRoot: usize = 0x184;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const menuCamera_sgRoot_ptr: usize = 0x184;
+    /// `NiPointer`, 0x4 bytes
+    pub const menuCamera_sgCameraRoot: usize = 0x188;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const menuCamera_sgCameraRoot_ptr: usize = 0x188;
+    /// `WorldControllerRenderCameraData`, 0x1c bytes
+    pub const menuCamera_cameraData: usize = 0x18c;
+    /// `NiCamera *`, 0x4 bytes
+    pub const menuCamera_cameraData_camera: usize = 0x18c;
+    /// `NiNode *`, 0x4 bytes
+    pub const menuCamera_cameraData_field_4: usize = 0x190;
+    /// `float`, 0x4 bytes
+    pub const menuCamera_cameraData_fovDegrees: usize = 0x194;
+    /// `float`, 0x4 bytes
+    pub const menuCamera_cameraData_nearPlaneDistance: usize = 0x198;
+    /// `float`, 0x4 bytes
+    pub const menuCamera_cameraData_farPlaneDistance: usize = 0x19c;
+    /// `int`, 0x4 bytes
+    pub const menuCamera_cameraData_viewportWidth: usize = 0x1a0;
+    /// `int`, 0x4 bytes
+    pub const menuCamera_cameraData_viewportHeight: usize = 0x1a4;
+    /// `WorldControllerRenderTarget`, 0x84 bytes
+    pub const characterRenderTarget: usize = 0x1a8;
+    /// `WorldControllerRenderCamera`, 0x2c bytes
+    pub const characterRenderTarget_super: usize = 0x1a8;
+    /// `InterfaceWorldControllerRenderCamera *`, 0x4 bytes
+    pub const characterRenderTarget_vtbl: usize = 0x1a8;
+    /// `NiPointer`, 0x4 bytes
+    pub const characterRenderTarget_sgRenderer: usize = 0x1ac;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const characterRenderTarget_sgRenderer_ptr: usize = 0x1ac;
+    /// `NiPointer`, 0x4 bytes
+    pub const characterRenderTarget_sgRoot: usize = 0x1b0;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const characterRenderTarget_sgRoot_ptr: usize = 0x1b0;
+    /// `NiPointer`, 0x4 bytes
+    pub const characterRenderTarget_sgCameraRoot: usize = 0x1b4;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const characterRenderTarget_sgCameraRoot_ptr: usize = 0x1b4;
+    /// `WorldControllerRenderCameraData`, 0x1c bytes
+    pub const characterRenderTarget_cameraData: usize = 0x1b8;
+    /// `NiCamera *`, 0x4 bytes
+    pub const characterRenderTarget_cameraData_camera: usize = 0x1b8;
+    /// `NiNode *`, 0x4 bytes
+    pub const characterRenderTarget_cameraData_field_4: usize = 0x1bc;
+    /// `float`, 0x4 bytes
+    pub const characterRenderTarget_cameraData_fovDegrees: usize = 0x1c0;
+    /// `float`, 0x4 bytes
+    pub const characterRenderTarget_cameraData_nearPlaneDistance: usize = 0x1c4;
+    /// `float`, 0x4 bytes
+    pub const characterRenderTarget_cameraData_farPlaneDistance: usize = 0x1c8;
+    /// `int`, 0x4 bytes
+    pub const characterRenderTarget_cameraData_viewportWidth: usize = 0x1cc;
+    /// `int`, 0x4 bytes
+    pub const characterRenderTarget_cameraData_viewportHeight: usize = 0x1d0;
+    /// `NiPointer`, 0x4 bytes
+    pub const characterRenderTarget_renderedTexture: usize = 0x1d4;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const characterRenderTarget_renderedTexture_ptr: usize = 0x1d4;
+    /// `NiPointer`, 0x4 bytes
+    pub const characterRenderTarget_sgCopiedTexture: usize = 0x1d8;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const characterRenderTarget_sgCopiedTexture_ptr: usize = 0x1d8;
+    /// `NiNode *`, 0x4 bytes
+    pub const characterRenderTarget_field_34: usize = 0x1dc;
+    /// `int`, 0x4 bytes
+    pub const characterRenderTarget_rendererWidth: usize = 0x1e0;
+    /// `int`, 0x4 bytes
+    pub const characterRenderTarget_rendererHeight: usize = 0x1e4;
+    /// `int`, 0x4 bytes
+    pub const characterRenderTarget_targetWidth: usize = 0x1e8;
+    /// `int`, 0x4 bytes
+    pub const characterRenderTarget_targetHeight: usize = 0x1ec;
+    /// `int`, 0x4 bytes
+    pub const characterRenderTarget_field_48: usize = 0x1f0;
+    /// `NiPointer`, 0x4 bytes
+    pub const characterRenderTarget_zBufferProperty: usize = 0x1f4;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const characterRenderTarget_zBufferProperty_ptr: usize = 0x1f4;
+    /// `IDirect3DSurface8 *`, 0x4 bytes
+    pub const characterRenderTarget_offscreenSurface: usize = 0x1f8;
+    /// `IDirect3DSurface8 *`, 0x4 bytes
+    pub const characterRenderTarget_textureSurface: usize = 0x1fc;
+    /// `NiPointer`, 0x4 bytes
+    pub const characterRenderTarget_accumulator: usize = 0x200;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const characterRenderTarget_accumulator_ptr: usize = 0x200;
+    /// `char`, 0x1 bytes
+    pub const characterRenderTarget_field_5C: usize = 0x204;
+    /// `NiPointer`, 0x4 bytes
+    pub const characterRenderTarget_sunlight: usize = 0x208;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const characterRenderTarget_sunlight_ptr: usize = 0x208;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const characterRenderTarget_field_64: usize = 0x20c;
+    /// `NiPointer`, 0x4 bytes
+    pub const characterRenderTarget_screenPolygon: usize = 0x210;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const characterRenderTarget_screenPolygon_ptr: usize = 0x210;
+    /// `char`, 0x1 bytes
+    pub const characterRenderTarget_readbackDataInitialized: usize = 0x214;
+    /// `char *`, 0x4 bytes
+    pub const characterRenderTarget_readbackAlphaChannelData: usize = 0x218;
+    /// `TList *`, 0x4 bytes
+    pub const characterRenderTarget_list_74: usize = 0x21c;
+    /// `TList *`, 0x4 bytes
+    pub const characterRenderTarget_list_78: usize = 0x220;
+    /// `NiPointer`, 0x4 bytes
+    pub const characterRenderTarget_alphaProperty: usize = 0x224;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const characterRenderTarget_alphaProperty_ptr: usize = 0x224;
+    /// `NiPointer`, 0x4 bytes
+    pub const characterRenderTarget_vertexColorProperty: usize = 0x228;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const characterRenderTarget_vertexColorProperty_ptr: usize = 0x228;
+    /// `WorldControllerRenderTarget`, 0x84 bytes
+    pub const mapRenderTarget: usize = 0x22c;
+    /// `WorldControllerRenderCamera`, 0x2c bytes
+    pub const mapRenderTarget_super: usize = 0x22c;
+    /// `InterfaceWorldControllerRenderCamera *`, 0x4 bytes
+    pub const mapRenderTarget_vtbl: usize = 0x22c;
+    /// `NiPointer`, 0x4 bytes
+    pub const mapRenderTarget_sgRenderer: usize = 0x230;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const mapRenderTarget_sgRenderer_ptr: usize = 0x230;
+    /// `NiPointer`, 0x4 bytes
+    pub const mapRenderTarget_sgRoot: usize = 0x234;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const mapRenderTarget_sgRoot_ptr: usize = 0x234;
+    /// `NiPointer`, 0x4 bytes
+    pub const mapRenderTarget_sgCameraRoot: usize = 0x238;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const mapRenderTarget_sgCameraRoot_ptr: usize = 0x238;
+    /// `WorldControllerRenderCameraData`, 0x1c bytes
+    pub const mapRenderTarget_cameraData: usize = 0x23c;
+    /// `NiCamera *`, 0x4 bytes
+    pub const mapRenderTarget_cameraData_camera: usize = 0x23c;
+    /// `NiNode *`, 0x4 bytes
+    pub const mapRenderTarget_cameraData_field_4: usize = 0x240;
+    /// `float`, 0x4 bytes
+    pub const mapRenderTarget_cameraData_fovDegrees: usize = 0x244;
+    /// `float`, 0x4 bytes
+    pub const mapRenderTarget_cameraData_nearPlaneDistance: usize = 0x248;
+    /// `float`, 0x4 bytes
+    pub const mapRenderTarget_cameraData_farPlaneDistance: usize = 0x24c;
+    /// `int`, 0x4 bytes
+    pub const mapRenderTarget_cameraData_viewportWidth: usize = 0x250;
+    /// `int`, 0x4 bytes
+    pub const mapRenderTarget_cameraData_viewportHeight: usize = 0x254;
+    /// `NiPointer`, 0x4 bytes
+    pub const mapRenderTarget_renderedTexture: usize = 0x258;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const mapRenderTarget_renderedTexture_ptr: usize = 0x258;
+    /// `NiPointer`, 0x4 bytes
+    pub const mapRenderTarget_sgCopiedTexture: usize = 0x25c;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const mapRenderTarget_sgCopiedTexture_ptr: usize = 0x25c;
+    /// `NiNode *`, 0x4 bytes
+    pub const mapRenderTarget_field_34: usize = 0x260;
+    /// `int`, 0x4 bytes
+    pub const mapRenderTarget_rendererWidth: usize = 0x264;
+    /// `int`, 0x4 bytes
+    pub const mapRenderTarget_rendererHeight: usize = 0x268;
+    /// `int`, 0x4 bytes
+    pub const mapRenderTarget_targetWidth: usize = 0x26c;
+    /// `int`, 0x4 bytes
+    pub const mapRenderTarget_targetHeight: usize = 0x270;
+    /// `int`, 0x4 bytes
+    pub const mapRenderTarget_field_48: usize = 0x274;
+    /// `NiPointer`, 0x4 bytes
+    pub const mapRenderTarget_zBufferProperty: usize = 0x278;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const mapRenderTarget_zBufferProperty_ptr: usize = 0x278;
+    /// `IDirect3DSurface8 *`, 0x4 bytes
+    pub const mapRenderTarget_offscreenSurface: usize = 0x27c;
+    /// `IDirect3DSurface8 *`, 0x4 bytes
+    pub const mapRenderTarget_textureSurface: usize = 0x280;
+    /// `NiPointer`, 0x4 bytes
+    pub const mapRenderTarget_accumulator: usize = 0x284;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const mapRenderTarget_accumulator_ptr: usize = 0x284;
+    /// `char`, 0x1 bytes
+    pub const mapRenderTarget_field_5C: usize = 0x288;
+    /// `NiPointer`, 0x4 bytes
+    pub const mapRenderTarget_sunlight: usize = 0x28c;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const mapRenderTarget_sunlight_ptr: usize = 0x28c;
+    /// `_UNKNOWN *`, 0x4 bytes
+    pub const mapRenderTarget_field_64: usize = 0x290;
+    /// `NiPointer`, 0x4 bytes
+    pub const mapRenderTarget_screenPolygon: usize = 0x294;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const mapRenderTarget_screenPolygon_ptr: usize = 0x294;
+    /// `char`, 0x1 bytes
+    pub const mapRenderTarget_readbackDataInitialized: usize = 0x298;
+    /// `char *`, 0x4 bytes
+    pub const mapRenderTarget_readbackAlphaChannelData: usize = 0x29c;
+    /// `TList *`, 0x4 bytes
+    pub const mapRenderTarget_list_74: usize = 0x2a0;
+    /// `TList *`, 0x4 bytes
+    pub const mapRenderTarget_list_78: usize = 0x2a4;
+    /// `NiPointer`, 0x4 bytes
+    pub const mapRenderTarget_alphaProperty: usize = 0x2a8;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const mapRenderTarget_alphaProperty_ptr: usize = 0x2a8;
+    /// `NiPointer`, 0x4 bytes
+    pub const mapRenderTarget_vertexColorProperty: usize = 0x2ac;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const mapRenderTarget_vertexColorProperty_ptr: usize = 0x2ac;
+    /// `WorldControllerRenderCamera`, 0x2c bytes
+    pub const shadowCamera: usize = 0x2b0;
+    /// `InterfaceWorldControllerRenderCamera *`, 0x4 bytes
+    pub const shadowCamera_vtbl: usize = 0x2b0;
+    /// `NiPointer`, 0x4 bytes
+    pub const shadowCamera_sgRenderer: usize = 0x2b4;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const shadowCamera_sgRenderer_ptr: usize = 0x2b4;
+    /// `NiPointer`, 0x4 bytes
+    pub const shadowCamera_sgRoot: usize = 0x2b8;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const shadowCamera_sgRoot_ptr: usize = 0x2b8;
+    /// `NiPointer`, 0x4 bytes
+    pub const shadowCamera_sgCameraRoot: usize = 0x2bc;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const shadowCamera_sgCameraRoot_ptr: usize = 0x2bc;
+    /// `WorldControllerRenderCameraData`, 0x1c bytes
+    pub const shadowCamera_cameraData: usize = 0x2c0;
+    /// `NiCamera *`, 0x4 bytes
+    pub const shadowCamera_cameraData_camera: usize = 0x2c0;
+    /// `NiNode *`, 0x4 bytes
+    pub const shadowCamera_cameraData_field_4: usize = 0x2c4;
+    /// `float`, 0x4 bytes
+    pub const shadowCamera_cameraData_fovDegrees: usize = 0x2c8;
+    /// `float`, 0x4 bytes
+    pub const shadowCamera_cameraData_nearPlaneDistance: usize = 0x2cc;
+    /// `float`, 0x4 bytes
+    pub const shadowCamera_cameraData_farPlaneDistance: usize = 0x2d0;
+    /// `int`, 0x4 bytes
+    pub const shadowCamera_cameraData_viewportWidth: usize = 0x2d4;
+    /// `int`, 0x4 bytes
+    pub const shadowCamera_cameraData_viewportHeight: usize = 0x2d8;
+    /// `ShadowManager *`, 0x4 bytes
+    pub const shadowManager: usize = 0x2dc;
+    /// `MapController *`, 0x4 bytes
+    pub const mapController: usize = 0x2e0;
+    /// `MenuController *`, 0x4 bytes
+    pub const menuController: usize = 0x2e4;
+    /// `UiInventoryController *`, 0x4 bytes
+    pub const uiInventoryData: usize = 0x2e8;
+    /// `Sound *`, 0x4 bytes
+    pub const soundWeaponSwish: usize = 0x2ec;
+    /// `Sound *`, 0x4 bytes
+    pub const soundLightArmorHit: usize = 0x2f0;
+    /// `Sound *`, 0x4 bytes
+    pub const soundMedArmorHit: usize = 0x2f4;
+    /// `Sound *`, 0x4 bytes
+    pub const soundHeavyArmorHit: usize = 0x2f8;
+    /// `Sound *`, 0x4 bytes
+    pub const soundHealthDamage: usize = 0x2fc;
+    /// `Sound *`, 0x4 bytes
+    pub const soundDrown: usize = 0x300;
+    /// `Sound *`, 0x4 bytes
+    pub const soundDrowningDamage: usize = 0x304;
+    /// `Sound *`, 0x4 bytes
+    pub const soundHandToHandHit: usize = 0x308;
+    /// `Sound *`, 0x4 bytes
+    pub const soundHandToHandHit2: usize = 0x30c;
+    /// `Sound *`, 0x4 bytes
+    pub const soundMiss: usize = 0x310;
+    /// `Sound *`, 0x4 bytes
+    pub const soundCriticalDamage: usize = 0x314;
+    /// `Sound *`, 0x4 bytes
+    pub const soundDefaultLand: usize = 0x318;
+    /// `Sound *`, 0x4 bytes
+    pub const soundDefaultLandWater: usize = 0x31c;
+    /// `Sound *`, 0x4 bytes
+    pub const soundMenuClick: usize = 0x320;
+    /// `Sound *`, 0x4 bytes
+    pub const soundMenuSize: usize = 0x324;
+    /// `Sound *`, 0x4 bytes
+    pub const soundItemRepair: usize = 0x328;
+    /// `Cell *`, 0x4 bytes
+    pub const startingCell: usize = 0x32c;
+    /// `float`, 0x4 bytes
+    pub const deadFloatScale: usize = 0x330;
+    /// `char`, 0x1 bytes
+    pub const collision_related_334: usize = 0x334;
+    /// `TList *`, 0x4 bytes
+    pub const listActiveGlobalScripts: usize = 0x338;
+    /// `TList *`, 0x4 bytes
+    pub const listAllActors: usize = 0x33c;
+    /// `TList *`, 0x4 bytes
+    pub const listChargableItems: usize = 0x340;
+    /// `char`, 0x1 bytes
+    pub const bSubtitles: usize = 0x344;
+    /// `int`, 0x4 bytes
+    pub const countMusicTracksBattle: usize = 0x348;
+    /// `int`, 0x4 bytes
+    pub const countMusicTracksExplore: usize = 0x34c;
+    /// `int`, 0x4 bytes
+    pub const musicSituation: usize = 0x350;
+    /// `Fader *`, 0x4 bytes
+    pub const transitionFader: usize = 0x354;
+    /// `Fader *`, 0x4 bytes
+    pub const blindnessFader: usize = 0x358;
+    /// `Fader *`, 0x4 bytes
+    pub const sunglareFader: usize = 0x35c;
+    /// `Fader *`, 0x4 bytes
+    pub const hitFader: usize = 0x360;
+    /// `Fader *`, 0x4 bytes
+    pub const werewolfFader: usize = 0x364;
+    /// `bool`, 0x1 bytes
+    pub const enchantedItemEffectCreated: usize = 0x368;
+    /// `NiTextureEffect *`, 0x4 bytes
+    pub const enchantedItemTextureEffect: usize = 0x36c;
+    /// `NiSourceTexture **`, 0x4 bytes
+    pub const enchantedItemTextureArray: usize = 0x370;
 }

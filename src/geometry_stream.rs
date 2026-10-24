@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use crate::main_thread::{MainCell, MainThread};
 use crate::d3d::{D3DFVF_DIFFUSE, D3DFVF_NORMAL, D3DFVF_TEX1, D3DFVF_XYZ};
 use crate::engine::vcall0;
-use crate::gen::layouts::{NiGeometryData as GD, NiSkinInstance, NiSkinPartition, NiSkinPartition_Partition as P, NiTriStripsData as TS};
+use crate::gen::layouts::{NiBoneData, NiGeometryData as GD, NiSkinData, NiSkinInstance, NiSkinPartition, NiSkinPartition_Partition as P, NiTriStripsData as TS};
 use crate::link::{DRAW_LINES, DRAW_SHAPE, DRAW_STRIPS};
 use crate::mem::rd;
 use crate::ports::ni;
@@ -31,8 +31,7 @@ pub const LINES_SEGMENT_FLAGS: usize = 0x34;
 /// indexes in a byte each. The format of a skinned vertex.
 const D3DFVF_XYZB4: u32 = 0x00C;
 const D3DFVF_LASTBETA_UBYTE4: u32 = 0x1000;
-/// `NiSkinData::skinPartition`
-const SKIN_DATA_SKIN_PARTITION: usize = 8;
+const SKIN_DATA_SKIN_PARTITION: usize = NiSkinData::skinPartition;
 
 /// `NiRTTI` of `NiTriShapeData` and of `NiTriStripsData`.
 const RTTI_NI_TRI_SHAPE_DATA: usize = 0x7DE490;
@@ -205,11 +204,11 @@ static SKIN_COUNTS: MainCell<SkinCounts> = MainCell::new(SkinCounts {
 /// `NiSkinData`: the number of bones and the array of their `BoneData`, each with the skin to
 /// bone transform, the bound, then the array of `BoneVertData` (a vertex and its weight, 8
 /// bytes) and its length.
-const DATA_BONE_COUNT: usize = 0x40;
-const DATA_BONES: usize = 0x44;
-const BONE_DATA_SIZE: usize = 0x4C;
-const BONE_VERT_DATA: usize = 0x44;
-const BONE_VERT_COUNT: usize = 0x48;
+const DATA_BONE_COUNT: usize = NiSkinData::numBones;
+const DATA_BONES: usize = NiSkinData::boneData;
+const BONE_DATA_SIZE: usize = NiBoneData::SIZE;
+const BONE_VERT_DATA: usize = NiBoneData::vertexWeights;
+const BONE_VERT_COUNT: usize = NiBoneData::numVertexWeights;
 
 /// True when the skin data has the weights of its bones.
 unsafe fn has_bone_weights(skin_data: usize) -> bool {

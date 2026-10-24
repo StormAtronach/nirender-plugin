@@ -34,9 +34,13 @@ CHECKS = {
     "mwse native": (PLUGIN / "tools" / "check_mwse_native.py", MWSE_HEADER),
     "module headers": (STATE / "build_module_map.py", STATE),
     "skill names": (STATE / "check_names.py", STATE),
+    # No new hand-written engine offset (src/gen/layouts.rs has them), and each one moved there
+    # keeps its value.
+    "hand offsets": (PLUGIN / "tools" / "hand_offsets.py", PLUGIN, ["--check"]),
+    "offset moves": (PLUGIN / "tools" / "check_offset_moves.py", PLUGIN, ["--cached"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names"],
+    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves"],
     "mge": ["mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
@@ -48,11 +52,12 @@ def main(argv):
         raise SystemExit("usage: checks.py plugin|mge|all")
     failed, passed, skipped = [], [], []
     for name in LISTS[which]:
-        script, needs = CHECKS[name]
+        script, needs, *rest = CHECKS[name]
+        args = rest[0] if rest else []
         if not script.exists() or not needs.exists():
             skipped.append(name)
             continue
-        run = subprocess.run([sys.executable, "-I", str(script)], cwd=script.parent, capture_output=True, text=True,
+        run = subprocess.run([sys.executable, "-I", str(script), *args], cwd=script.parent, capture_output=True, text=True,
                              encoding="utf-8", errors="replace", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         if run.returncode == 0:
             passed.append(name)

@@ -13,38 +13,35 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::engine::WORLD_CONTROLLER;
-use crate::gen::layouts::NiDX8Renderer as R;
+use crate::gen::layouts::{NiAVObject, NiBoneData, NiDX8Renderer as R, NiSkinData, NiSkinInstance, NiSkinPartition_Partition, NiTransform, PlayerAnimController, WorldController};
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 use crate::ports::renderer_frame;
 
 // `NiTransform`: a row-major rotation, a translation and a scale.
-const T_TRANSLATION: usize = 0x24;
-const T_SCALE: usize = 0x30;
+const T_TRANSLATION: usize = NiTransform::translation;
+const T_SCALE: usize = NiTransform::scale;
 const T_WORDS: usize = 13;
-// `NiAVObject`
-const AV_PARENT: usize = 0x18;
-const AV_LOCAL_TRANSLATE: usize = 0x30;
-const AV_WORLD: usize = 0x40;
-// `NiSkinInstance`
-const SKIN_DATA: usize = 0x8;
-const SKIN_ROOT_PARENT: usize = 0xC;
-const SKIN_BONES: usize = 0x10;
+const AV_PARENT: usize = NiAVObject::parentNode;
+const AV_LOCAL_TRANSLATE: usize = NiAVObject::localTransform_localTranslate;
+const AV_WORLD: usize = NiAVObject::worldTransform;
+const SKIN_DATA: usize = NiSkinInstance::skinData;
+const SKIN_ROOT_PARENT: usize = NiSkinInstance::rootParent;
+const SKIN_BONES: usize = NiSkinInstance::bones;
 // `NiSkinData`: the transform from the root parent to the skin, and the bone records.
-const DATA_TRANSFORM: usize = 0xC;
-const DATA_BONE_COUNT: usize = 0x40;
-const DATA_BONES: usize = 0x44;
-const BONE_RECORD_SIZE: usize = 0x4C;
-// `NiSkinPartition::Partition`
-const PARTITION_BONES: usize = 0x4;
-const PARTITION_BONE_COUNT: usize = 0x20;
+const DATA_TRANSFORM: usize = NiSkinData::transformRootParentToSkin;
+const DATA_BONE_COUNT: usize = NiSkinData::numBones;
+const DATA_BONES: usize = NiSkinData::boneData;
+const BONE_RECORD_SIZE: usize = NiBoneData::SIZE;
+const PARTITION_BONES: usize = NiSkinPartition_Partition::bones;
+const PARTITION_BONE_COUNT: usize = NiSkinPartition_Partition::numBones;
 /// `WorldController`: the roots that the game copies the eye of the first person into (world,
 /// arm and shadow camera).
-const WC_CAMERA_ROOTS: [usize; 3] = [0x130, 0x15C, 0x2BC];
+const WC_CAMERA_ROOTS: [usize; 3] = [WorldController::worldCamera_sgCameraRoot, WorldController::armCamera_sgCameraRoot, WorldController::shadowCamera_sgCameraRoot];
 /// `WorldController`: the world camera and the arm camera. Their scenes are relative.
-const WC_OWNED_CAMERAS: [usize; 2] = [0x134, 0x160];
+const WC_OWNED_CAMERAS: [usize; 2] = [WorldController::worldCamera_cameraData_camera, WorldController::armCamera_cameraData_camera];
 /// `PlayerAnimController`: the "Camera" node of the first-person model.
-const CONTROLLER_HEAD_CAMERA: usize = 0xD4;
+const CONTROLLER_HEAD_CAMERA: usize = PlayerAnimController::firstPersonHeadCamera;
 
 const MAX_CHAIN_DEPTH: u32 = 64;
 const GUARD_STEPS: f32 = 16.0;

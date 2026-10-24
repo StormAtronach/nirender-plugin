@@ -275,8 +275,7 @@ fn vertex_blend_lookup() -> usize {
 const RS_VERTEX_BLEND_CURRENT: usize = 0x6B0;
 const _: () = assert!(NiSkinPartition::refCount == ni::REF_COUNT && NiRefObject::refCount == ni::REF_COUNT);
 
-/// `NiSkinData::skinPartition`
-const SKIN_DATA_SKIN_PARTITION: usize = 8;
+const SKIN_DATA_SKIN_PARTITION: usize = crate::gen::layouts::NiSkinData::skinPartition;
 /// `NiRendererSpecificProperty::RenderData7`: the object the game code passes as `prop2`.
 const RENDER_DATA_FIELD_8: usize = 8;
 /// `NiRendererSpecificProperty::RenderData7`: the object the game code passes as `prop1`.
@@ -860,17 +859,16 @@ pub(crate) unsafe fn ensure_skin_partitions(this: usize, geom_data: usize, skin:
     new_partition
 }
 
-/// `NiSkinData` (NetImmerse 4.0.0.2, as `camera_space` reads it): the bone count is at 0x40.
-/// The bone records are at 0x44, 0x4C bytes each. A bone record (`NiBoneData`) has the
-/// skin-to-bone transform, the bound, the vertex weight array (+0x44) and the vertex count
-/// (u16, +0x48). True when every bone with a count has its array: the engine's partition
-/// builder reads the array of each such bone.
+/// True when every bone of the `NiSkinData` with a vertex count (`NiBoneData::numVertexWeights`)
+/// has its weight array (`NiBoneData::vertexWeights`): the engine's partition builder reads
+/// the array of each such bone.
 unsafe fn skin_data_complete(skin_data: usize) -> bool {
-    const BONE_COUNT: usize = 0x40;
-    const BONES: usize = 0x44;
-    const BONE_SIZE: usize = 0x4C;
-    const BONE_WEIGHTS: usize = 0x44;
-    const BONE_VERTICES: usize = 0x48;
+    use crate::gen::layouts::{NiBoneData, NiSkinData};
+    const BONE_COUNT: usize = NiSkinData::numBones;
+    const BONES: usize = NiSkinData::boneData;
+    const BONE_SIZE: usize = NiBoneData::SIZE;
+    const BONE_WEIGHTS: usize = NiBoneData::vertexWeights;
+    const BONE_VERTICES: usize = NiBoneData::numVertexWeights;
     let count: u32 = rd(skin_data, BONE_COUNT);
     let bones: usize = rd(skin_data, BONES);
     if count == 0 {

@@ -50,8 +50,7 @@ const V_GET_TRI_LIST: usize = 0x44;
 /// `NiRendererSpecificProperty::RenderDataBase::getRendererTypeId`
 const V_GET_RENDERER_TYPE_ID: usize = 0x04;
 
-/// `NiSkinData::skinPartition`
-const SKIN_DATA_SKIN_PARTITION: usize = 0x08;
+const SKIN_DATA_SKIN_PARTITION: usize = crate::gen::layouts::NiSkinData::skinPartition;
 
 /// 0x6BDE50 `NiDX8VertexBufferManager::PackUntransformedVB`. Returns the vertex buffer.
 #[allow(clippy::too_many_arguments)]
