@@ -395,6 +395,11 @@ pub unsafe fn scene_begin(t: &MainThread, world_location: usize) -> Option<[f64;
     Some(origin)
 }
 
+/// The number of the frame in progress (it wraps).
+pub fn frame(t: &MainThread) -> u32 {
+    *FRAME.get(t)
+}
+
 /// The frame ends.
 pub unsafe fn frame_end(t: &MainThread) {
     *FRAME.get(t) = (*FRAME.get(t)).wrapping_add(1);
@@ -553,10 +558,14 @@ struct SkinMeasure {
     bones: u64,
     skeletons: u64,
     ticks: i64,
+    /// The bones and skeletons of the frame `seen_frame`. Cleared at a new frame: the counts
+    /// ask only for the frame's own, and a map kept for the session grew with every bone the
+    /// game ever made (the leak hunt of 2026-10-23, UMDH: 590 KB after an hour).
     seen: Option<crate::ptr_hash::HashMap<usize, u32>>,
+    seen_frame: u32,
 }
 
-static SKIN_MEASURE: MainCell<SkinMeasure> = MainCell::new(SkinMeasure { parts: 0, matrices: 0, bones: 0, skeletons: 0, ticks: 0, seen: None });
+static SKIN_MEASURE: MainCell<SkinMeasure> = MainCell::new(SkinMeasure { parts: 0, matrices: 0, bones: 0, skeletons: 0, ticks: 0, seen: None, seen_frame: 0 });
 
 unsafe fn note_skin(t: &MainThread, skin: usize, matrices: usize, ticks: i64) {
     let measure = &mut *SKIN_MEASURE.get(t);
@@ -565,6 +574,10 @@ unsafe fn note_skin(t: &MainThread, skin: usize, matrices: usize, ticks: i64) {
     measure.matrices += matrices as u64;
     measure.ticks += ticks;
     let seen = measure.seen.get_or_insert_with(Default::default);
+    if measure.seen_frame != frame {
+        seen.clear();
+        measure.seen_frame = frame;
+    }
     let root_parent: usize = rd(skin, SKIN_ROOT_PARENT);
     if seen.insert(root_parent | 1, frame) != Some(frame) {
         measure.skeletons += 1;

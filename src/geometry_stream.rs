@@ -54,15 +54,56 @@ struct Version {
     skin_data: u32,
 }
 
-static VERSIONS: MainCell<Option<HashMap<u32, Version>>> = MainCell::new(None);
+/// A geometry that was sent: its version, and the frame of its last draw.
+struct Sent {
+    version: Version,
+    used: u32,
+}
+
+/// The geometries sent, by the address of their data. The engine frees a geometry data with
+/// no event to the plugin, so an entry of a geometry not drawn for `FORGET_AFTER` frames goes
+/// (`prune`): a map kept for the session grew with every address the game ever used (the leak
+/// hunt of 2026-10-23, UMDH: 819 KB after 35 minutes of a loop). A geometry still alive is
+/// sent again at its next draw.
+static VERSIONS: MainCell<Option<HashMap<u32, Sent>>> = MainCell::new(None);
+const FORGET_AFTER: u32 = 36_000;
+const PRUNE_EVERY: u32 = 4_096;
+static LAST_PRUNE: MainCell<u32> = MainCell::new(0);
+static FORGOTTEN: MainCell<u64> = MainCell::new(0);
 /// The last geometry whose skin gave no bone influences (`skin_influences`), for the count of
 /// the draws without a record: such a geometry is not empty.
 static NO_INFLUENCES: MainCell<usize> = MainCell::new(0);
 static RECORDS: MainCell<u64> = MainCell::new(0);
 static BYTES: MainCell<u64> = MainCell::new(0);
 
-fn versions<'a>(t: &'a MainThread) -> &'a mut HashMap<u32, Version> {
+fn versions<'a>(t: &'a MainThread) -> &'a mut HashMap<u32, Sent> {
     (*VERSIONS.get(t)).get_or_insert_with(HashMap::new)
+}
+
+/// True when `handle` was sent with `version`: the draw sends nothing. Marks it used now.
+fn known(t: &MainThread, handle: u32, version: Version) -> bool {
+    let now = crate::camera_space::frame(t);
+    prune(t, now);
+    match versions(t).get_mut(&handle) {
+        Some(sent) if sent.version == version => {
+            sent.used = now;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Forgets the geometries not drawn for `FORGET_AFTER` frames, once in `PRUNE_EVERY` frames.
+fn prune(t: &MainThread, now: u32) {
+    let last = LAST_PRUNE.get(t);
+    if now.wrapping_sub(*last) < PRUNE_EVERY {
+        return;
+    }
+    *last = now;
+    let map = versions(t);
+    let before = map.len();
+    map.retain(|_, sent| now.wrapping_sub(sent.used) < FORGET_AFTER);
+    *FORGOTTEN.get(t) += (before - map.len()) as u64;
 }
 
 /// Forgets the versions: the next draw of each geometry sends it again. For the start of a
@@ -84,10 +125,12 @@ pub unsafe fn report(t: &MainThread) -> String {
     let (records, bytes) = (*RECORDS.get(t), *BYTES.get(t));
     let s = &*SKIN_COUNTS.get(t);
     format!(
-        "geometry: {} records, {:.1} MB, {} geometries known; skins: {} from the skin data, {} from the partitions ({} without bone data); vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
+        "geometry: {} records, {:.1} MB, {} geometries known, {} forgotten after {} frames without a draw; skins: {} from the skin data, {} from the partitions ({} without bone data); vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
         records,
         bytes as f64 / 1e6,
         versions(t).len(),
+        *FORGOTTEN.get(t),
+        FORGET_AFTER,
         s.from_data,
         s.from_partitions,
         s.without_bone_data,
@@ -377,7 +420,7 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize) -> 
     let handle = geom_data as u32;
     let skin_data: usize = if skin != 0 { rd(skin, NiSkinInstance::skinData) } else { 0 };
     let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: active, entries, skin_data: skin_data as u32 };
-    if versions(t).get(&handle) == Some(&version) {
+    if known(t, handle, version) {
         return handle;
     }
     // The vertices, as `NiDX8VertexBufferManager::PackUntransformedVB` packs them, with the
@@ -473,7 +516,7 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize) -> 
 /// to 4 bytes.
 unsafe fn send(t: &MainThread, handle: u32, version: Version, fvf: u32, stride: u32, strip_count: u32, lengths: &[u8], bytes: &[u8], index_bytes: &[u8]) {
     crate::capture::geometry(&[handle, version.unique, version.revision as u32, fvf, stride, version.vertices, version.entries, strip_count], lengths, bytes, index_bytes);
-    versions(t).insert(handle, version);
+    versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t) });
     *RECORDS.get(t) += 1;
     *BYTES.get(t) += (32 + lengths.len() + bytes.len() + index_bytes.len()) as u64;
 }
@@ -519,7 +562,7 @@ unsafe fn note_lines(t: &MainThread, geom_data: usize) -> u32 {
     }
     let handle = geom_data as u32;
     let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: count as u32, entries: indexes.len() as u32, skin_data: 0 };
-    if versions(t).get(&handle) == Some(&version) {
+    if known(t, handle, version) {
         return handle;
     }
     let colours: usize = rd(geom_data, GD::colors);
