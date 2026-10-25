@@ -320,6 +320,10 @@ struct App {
     sign_step: u32,
     records: u64,
     bytes: u64,
+    /// The records and the bytes of each tag (`tag.rs`); a tag over the end counts in the last.
+    by_tag: [(u64, u64); TAG_SLOTS],
+    /// `by_tag` at the last mark, for the line of each mark.
+    by_tag_at_mark: [(u64, u64); TAG_SLOTS],
     shot_done: bool,
     finished: bool,
 }
@@ -328,6 +332,20 @@ struct App {
 /// frames, and the time of one step of the sign.
 const SIGN_AFTER: Duration = Duration::from_millis(500);
 const SIGN_STEP: Duration = Duration::from_millis(125);
+/// The slots of `App::by_tag`.
+const TAG_SLOTS: usize = 64;
+
+/// The tags with records, the most bytes first: the tag, the records, the MB and the share.
+fn tag_line(counts: &[(u64, u64)]) -> String {
+    let total: u64 = counts.iter().map(|count| count.1).sum();
+    let mut tags: Vec<usize> = (0..counts.len()).filter(|&tag| counts[tag].0 > 0).collect();
+    tags.sort_by_key(|&tag| std::cmp::Reverse(counts[tag].1));
+    let parts: Vec<String> = tags.iter().map(|&tag| {
+        let (records, bytes) = counts[tag];
+        format!("{tag} {records} ({:.1} MB, {:.1} %)", bytes as f64 / 1e6, bytes as f64 * 100.0 / total.max(1) as f64)
+    }).collect();
+    parts.join("; ")
+}
 
 /// Gets the picture of the window for a frame. A surface that is outdated or lost is
 /// configured again, one time for each frame. The log has each change of the status of a
@@ -460,6 +478,7 @@ impl App {
             }
         }
         println!("records {}, {:.1} MB, {:.2} MB for each frame", self.records, self.bytes as f64 / 1e6, self.bytes as f64 / 1e6 / self.frames.max(1) as f64);
+        println!("records by tag, the most bytes first: {}", tag_line(&self.by_tag));
         if let Some(player) = self.player.as_ref() {
             player.print_counts();
         }
@@ -624,6 +643,9 @@ impl ApplicationHandler for App {
             }
             self.records += 1;
             self.bytes += 8 + self.data.len() as u64;
+            let slot = &mut self.by_tag[(tag as usize).min(TAG_SLOTS - 1)];
+            slot.0 += 1;
+            slot.1 += 8 + self.data.len() as u64;
             let player = self.player.as_mut().unwrap();
             let clock = super::ticks::Clock::now();
             // The times of the frame in the game, and the time of this read: for the age
@@ -646,6 +668,9 @@ impl ApplicationHandler for App {
                 if let Some(line) = self.overlay.as_mut().and_then(|overlay| overlay.age_line()) {
                     println!("  {line}");
                 }
+                let since: Vec<(u64, u64)> = self.by_tag.iter().zip(&self.by_tag_at_mark).map(|(now, then)| (now.0 - then.0, now.1 - then.1)).collect();
+                println!("  records by tag since the mark before: {}", tag_line(&since));
+                self.by_tag_at_mark = self.by_tag;
             }
             if !frame_end {
                 continue;
@@ -853,6 +878,8 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         sign_step: 0,
         records: 0,
         bytes: 0,
+        by_tag: [(0, 0); TAG_SLOTS],
+        by_tag_at_mark: [(0, 0); TAG_SLOTS],
         shot_done: false,
         finished: false,
     };

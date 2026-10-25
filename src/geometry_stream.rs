@@ -418,7 +418,8 @@ pub unsafe fn why_none(t: &MainThread, kind: u32, geom_data: usize) -> (&'static
 /// Notes the geometry of a shape that is about to be drawn: sends it when it is new or
 /// changed. Returns the handle for the draws that follow, or 0 for a geometry that has
 /// nothing to draw (see `why_none`).
-pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize) -> u32 {
+/// `shape` is the geometry object that draws the data, for the census only (0 when unknown).
+pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, shape: usize) -> u32 {
     if !crate::capture::recording() || geom_data == 0 {
         return 0;
     }
@@ -473,6 +474,9 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize) -> 
     let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: active, entries, skin_data: skin_data as u32 };
     if known(t, handle, version) {
         return handle;
+    }
+    if census_on() {
+        census_note(t, handle, version, geom_data, skin, shape);
     }
     // The vertices, as `NiDX8VertexBufferManager::PackUntransformedVB` packs them, with the
     // weights and the bone indexes of a skinned shape after the position.
@@ -561,6 +565,127 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize) -> 
     }
     send(t, handle, version, fvf, stride as u32, strip_count, &lengths, &bytes, index_bytes);
     handle
+}
+
+/// A geometry data of the census (`NIRENDER_GEOMETRY_CENSUS=1`), by its handle and unique id:
+/// its sends after the first, with a new revision only or with other changes (the counts, the
+/// skin data, or a send after the version was forgotten), the bytes of these sends, and the
+/// shape that drew it first: its name, the names of two nodes above it, and the classes of
+/// its controllers.
+struct CensusEntry {
+    revisions: u64,
+    others: u64,
+    bytes: u64,
+    path: String,
+    controllers: String,
+}
+
+static CENSUS: MainCell<Option<HashMap<(u32, u32), CensusEntry>>> = MainCell::new(None);
+
+fn census_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("NIRENDER_GEOMETRY_CENSUS").as_deref() == Ok("1"))
+}
+
+/// The class names of the controllers on `object`, joined with '+', or "none".
+unsafe fn controller_classes(object: usize) -> String {
+    let mut names = Vec::new();
+    let mut controller: usize = rd(object, crate::gen::layouts::NiAVObject::controllers);
+    while controller != 0 && names.len() < 8 {
+        let rtti = ni::get_rtti(controller);
+        let name: usize = if rtti != 0 { rd(rtti, crate::gen::layouts::NiRTTI::name) } else { 0 };
+        names.push(if name != 0 { core::ffi::CStr::from_ptr(name as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::from("?") });
+        controller = rd(controller, crate::gen::layouts::NiTimeController::nextController);
+    }
+    if names.is_empty() { String::from("none") } else { names.join("+") }
+}
+
+/// Counts a send of a geometry data for the census: the first send makes its entry; a later
+/// one counts as a revision when only the revision changed.
+unsafe fn census_note(t: &MainThread, handle: u32, version: Version, geom_data: usize, skin: usize, shape: usize) {
+    let before = versions(t).get(&handle).map(|sent| sent.version).filter(|sent| sent.unique == version.unique);
+    let census = (*CENSUS.get(t)).get_or_insert_with(Default::default);
+    let key = (handle, version.unique);
+    if !census.contains_key(&key) {
+        census.insert(key, {
+            let parent: usize = if shape != 0 { rd(shape, crate::gen::layouts::NiAVObject::parentNode) } else { 0 };
+            let above: usize = if parent != 0 { rd(parent, crate::gen::layouts::NiAVObject::parentNode) } else { 0 };
+            let path = format!(
+                "{} < {} < {}",
+                crate::ports::draw::object_name(shape),
+                crate::ports::draw::object_name(parent),
+                crate::ports::draw::object_name(above)
+            );
+            let mut controllers = if shape != 0 { controller_classes(shape) } else { String::from("?") };
+            if skin != 0 {
+                controllers.push_str(", skinned");
+            }
+            CensusEntry { revisions: 0, others: 0, bytes: 0, path, controllers }
+        });
+        return;
+    }
+    let all = rd::<u16>(geom_data, GD::vertexCount) as u64;
+    let per_vertex = 12
+        + if rd::<usize>(geom_data, GD::normals) != 0 { 12 } else { 0 }
+        + if rd::<usize>(geom_data, GD::colors) != 0 { 4 } else { 0 }
+        + 8 * (rd::<u16>(geom_data, GD::textureSets) as u64).min(8);
+    let bytes = all * per_vertex + version.entries as u64 * 2;
+    if let Some(entry) = census.get_mut(&key) {
+        let only_revision = before.is_some_and(|before| before.vertices == version.vertices && before.entries == version.entries && before.skin_data == version.skin_data);
+        if only_revision {
+            entry.revisions += 1;
+        } else {
+            entry.others += 1;
+        }
+        entry.bytes += bytes;
+    }
+}
+
+/// The census since the last mark, for the log, and a new count from here: the entries stay,
+/// their sends start again at 0. Empty without `NIRENDER_GEOMETRY_CENSUS=1`.
+pub unsafe fn census_take(t: &MainThread) -> Vec<String> {
+    let lines = census_report(t);
+    if let Some(census) = (*CENSUS.get(t)).as_mut() {
+        for entry in census.values_mut() {
+            entry.revisions = 0;
+            entry.others = 0;
+            entry.bytes = 0;
+        }
+    }
+    lines
+}
+
+/// The census for the log: the sends again by the classes of the controllers, then the 20
+/// geometries sent again most. Empty without `NIRENDER_GEOMETRY_CENSUS=1`.
+pub unsafe fn census_report(t: &MainThread) -> Vec<String> {
+    let Some(census) = (*CENSUS.get(t)).as_ref() else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    let mut by_class: std::collections::HashMap<&str, (u64, u64, u64, u64)> = Default::default();
+    for entry in census.values() {
+        let sum = by_class.entry(entry.controllers.as_str()).or_default();
+        sum.0 += 1;
+        if entry.revisions + entry.others > 0 {
+            sum.1 += 1;
+        }
+        sum.2 += entry.revisions + entry.others;
+        sum.3 += entry.bytes;
+    }
+    let total: u64 = by_class.values().map(|sum| sum.3).sum();
+    let mut classes: Vec<_> = by_class.into_iter().collect();
+    classes.sort_by_key(|(_, sum)| std::cmp::Reverse(sum.3));
+    lines.push(format!("geometry census: {} geometries, sent again {} times, {:.1} MB; by the controllers of the shape:", census.len(), classes.iter().map(|(_, sum)| sum.2).sum::<u64>(), total as f64 / 1e6));
+    for (class, (geometries, again, sends, bytes)) in classes.iter().take(16) {
+        lines.push(format!("  {class}: {geometries} geometries, {again} of them sent again, {sends} times, {:.1} MB ({:.1} %)", *bytes as f64 / 1e6, *bytes as f64 * 100.0 / total.max(1) as f64));
+    }
+    let mut most: Vec<_> = census.values().filter(|entry| entry.revisions + entry.others > 0).collect();
+    most.sort_by_key(|entry| std::cmp::Reverse(entry.bytes));
+    lines.push(String::from("geometry census: the 20 geometries with the most bytes sent again (revision only, other changes, MB, controllers, shape < parent < above):"));
+    for entry in most.iter().take(20) {
+        lines.push(format!("  {} {} {:.1} [{}] {}", entry.revisions, entry.others, entry.bytes as f64 / 1e6, entry.controllers, entry.path));
+    }
+    lines
 }
 
 /// Sends a geometry record and notes its version. `lengths` has the strip lengths, padded

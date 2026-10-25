@@ -1506,7 +1506,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         COST_NOTES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         // A skinned geometry is packed with the bone influences of its skin.
         let skin = if instance.skinned { rd(shape, GEOMETRY_SKIN) } else { 0 };
-        let geometry = crate::geometry_stream::note(mt, kind, rd(shape, GEOMETRY_MODEL_DATA), skin);
+        let geometry = crate::geometry_stream::note(mt, kind, rd(shape, GEOMETRY_MODEL_DATA), skin, shape);
         let material = crate::material_stream::note(mt, renderer, property_state, effect_state);
         if geometry == 0 || material == 0 || !crate::material_stream::last_modelled(mt) {
             let cause = if geometry == 0 {

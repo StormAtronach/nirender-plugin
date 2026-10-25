@@ -103,6 +103,8 @@ under the home folder.
 The A/B:
 
 - `NIRENDER_PORT_TIMING=1` times each live port call.
+- `NIRENDER_GEOMETRY_CENSUS=1` counts the geometries sent again, by the controllers of their
+  shape, and logs the census at each stream mark (`geometry_stream::census_take`).
 - `NIRENDER_SKIP=0` makes the engine display the retained shapes too.
 - `NIRENDER_LANDSCAPE=0`, `NIRENDER_ACTORS=0` and `NIRENDER_ANIMATED=0` keep that class on
   the engine's path.

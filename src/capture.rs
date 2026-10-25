@@ -1070,6 +1070,9 @@ pub unsafe fn stop() {
     crate::log!("threads: {}", crate::sync::census_text().replace('\n', "; "));
     if let Some(t) = proof.as_ref() {
         crate::log!("{}", crate::geometry_stream::report(t));
+        for line in crate::geometry_stream::census_report(t) {
+            crate::log!("{line}");
+        }
         crate::log!("{}", crate::material_stream::report(t));
         crate::log!("{}", crate::light_stream::report(t));
         crate::log!("{}", crate::world_lights::report());
@@ -1215,6 +1218,15 @@ unsafe fn overlay_tick(lock: &DeviceLock) {
 /// Puts a mark with a text into the stream. See [`tag::MARK`].
 pub unsafe fn mark(text: &str) {
     write(tag::MARK, &[text.as_bytes()]);
+    if let Some(t) = MainThread::here() {
+        let lines = crate::geometry_stream::census_take(&t);
+        if !lines.is_empty() {
+            crate::log!("geometry census to the mark '{text}':");
+            for line in lines {
+                crate::log!("{line}");
+            }
+        }
+    }
 }
 
 /// One line about the capture, for the scenario: the phase, the records and the bytes,

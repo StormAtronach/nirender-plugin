@@ -1406,7 +1406,7 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     }
     // A particle instance's geometry is the key of its particles (the address of the data),
     // as its shape record and its `INSTANCE_PARTICLES` records name it.
-    let geometry_handle = if points { geometry_data as u32 } else { crate::geometry_stream::note(t, kind, geometry_data, skin) };
+    let geometry_handle = if points { geometry_data as u32 } else { crate::geometry_stream::note(t, kind, geometry_data, skin, geometry) };
     let material_handle = crate::material_stream::note(t, this, property_state, effect_state);
     crate::shape_stream::note_handles(t, geometry_handle, material_handle, kind, draw.object_class, geometry_data);
     crate::capture::object(&draw, geometry_handle, material_handle);
