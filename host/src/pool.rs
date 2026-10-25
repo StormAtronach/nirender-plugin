@@ -28,6 +28,17 @@ pub struct Pool {
     pub used: u64,
 }
 
+/// Writes `bytes` at `at`, with zeros after them up to `size` (a multiple of 4).
+fn write_padded(queue: &wgpu::Queue, buffer: &wgpu::Buffer, at: u64, bytes: &[u8], size: u64) {
+    if bytes.len() as u64 == size {
+        queue.write_buffer(buffer, at, bytes);
+    } else {
+        let mut padded = bytes.to_vec();
+        padded.resize(size as usize, 0);
+        queue.write_buffer(buffer, at, &padded);
+    }
+}
+
 fn gcd(a: u64, b: u64) -> u64 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
@@ -104,15 +115,19 @@ impl Pool {
             }
         };
         let buffer = &self.chunks[index].buffer;
-        if bytes.len() as u64 == size {
-            queue.write_buffer(buffer, at, bytes);
-        } else {
-            let mut padded = bytes.to_vec();
-            padded.resize(size as usize, 0);
-            queue.write_buffer(buffer, at, &padded);
-        }
+        write_padded(queue, buffer, at, bytes, size);
         self.used += size;
         Range { buffer: buffer.clone(), offset: at, size }
+    }
+
+    /// Writes `bytes` into a range it took before, when they take the same room. False, and
+    /// nothing written, when they do not.
+    pub fn rewrite(queue: &wgpu::Queue, range: &Range, bytes: &[u8]) -> bool {
+        if (bytes.len() as u64).next_multiple_of(4).max(4) != range.size {
+            return false;
+        }
+        write_padded(queue, &range.buffer, range.offset, bytes, range.size);
+        true
     }
 
     /// Gives a range back. A range of a buffer that is not a chunk of this pool is ignored.

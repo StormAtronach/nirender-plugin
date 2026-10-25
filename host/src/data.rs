@@ -354,6 +354,8 @@ pub(crate) struct Counts {
     /// The geometry records, their bytes, the draws from them, the records that did not
     /// parse, and the draws of more index entries than their geometry has.
     pub(crate) geometry_records: u32,
+    /// The records of a known geometry with the same layout, written into its ranges.
+    pub(crate) geometry_in_place: u32,
     pub(crate) geometry_bytes: u64,
     pub(crate) geometry_draws: u32,
     pub(crate) geometry_bad: u32,

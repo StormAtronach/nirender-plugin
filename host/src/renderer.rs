@@ -1161,8 +1161,10 @@ impl Renderer {
         self.counts.texture_updates += 1;
     }
 
-    /// A geometry record: resident buffers for the draws that name it.
-    pub(crate) fn geometry(&mut self, data: &[u8]) {
+    /// A geometry record: resident buffers for the draws that name it. A new version of a
+    /// geometry with the same layout goes into the ranges it has, so the draws and the table's
+    /// slots that name them stay: true then.
+    pub(crate) fn geometry(&mut self, data: &[u8]) -> bool {
         let clock = ticks::Clock::now();
         let (handle, fvf, stride, vertices, entries, strips) = (word(data, 0), word(data, 12), word(data, 16), word(data, 20), word(data, 24), word(data, 28));
         let lengths = ((strips as usize * 2) + 3) & !3;
@@ -1170,13 +1172,25 @@ impl Renderer {
         let index_end = index_at + entries as usize * 2;
         if data.len() < index_end || stride == 0 {
             self.counts.geometry_bad += 1;
-            return;
+            return false;
         }
         let strip_lengths: Vec<u16> = (0..strips as usize).map(|i| u16::from_le_bytes([data[32 + i * 2], data[33 + i * 2]])).collect();
-        let vertex_range = self.vertex_pool.take(&self.device, &self.queue, &data[vertex_at..index_at], stride as u64);
-        let index_range = self.index_pool.take(&self.device, &self.queue, &data[index_at..index_end], 4);
         self.counts.geometry_records += 1;
         self.counts.geometry_bytes += data.len() as u64;
+        let (vertex_bytes, index_bytes) = (&data[vertex_at..index_at], &data[index_at..index_end]);
+        let same_layout = self.geometries.get(&handle).filter(|old| old.unique == Some(word(data, 4)) && old.fvf == fvf && old.stride == stride && old.entries == entries && old.strips == strip_lengths);
+        if let Some((Some(vertex_range), Some(index_range))) = same_layout.map(|old| (old.vertex_range.as_ref(), old.index_range.as_ref())) {
+            let fits = |range: &pool::Range, bytes: &[u8]| (bytes.len() as u64).next_multiple_of(4).max(4) == range.size;
+            if fits(vertex_range, vertex_bytes) && fits(index_range, index_bytes) {
+                pool::Pool::rewrite(&self.queue, vertex_range, vertex_bytes);
+                pool::Pool::rewrite(&self.queue, index_range, index_bytes);
+                self.counts.geometry_in_place += 1;
+                self.counts.times[TIME_BUFFERS] += clock.elapsed();
+                return true;
+            }
+        }
+        let vertex_range = self.vertex_pool.take(&self.device, &self.queue, vertex_bytes, stride as u64);
+        let index_range = self.index_pool.take(&self.device, &self.queue, index_bytes, 4);
         let geometry = Geometry {
             fvf,
             stride,
@@ -1192,6 +1206,7 @@ impl Renderer {
         };
         self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
+        false
     }
 
     /// Puts a geometry under its handle. The ranges of the geometry it replaces go back to the

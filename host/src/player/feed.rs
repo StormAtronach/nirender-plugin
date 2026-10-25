@@ -58,9 +58,9 @@ impl Player {
             tag::GEOMETRY if data.len() >= 32 => {
                 let handle = word(data, 0);
                 let known = self.renderer.geometries.contains_key(&handle);
-                self.renderer.geometry(data);
+                let in_place = self.renderer.geometry(data);
                 // A handle whose instances left the table at a gone geometry puts them back.
-                if known || self.orphaned.remove(&handle) {
+                if (known && !in_place) || self.orphaned.remove(&handle) {
                     self.geometry_changed(handle);
                 }
             }
