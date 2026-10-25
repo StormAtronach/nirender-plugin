@@ -310,6 +310,11 @@ pub(crate) struct Counts {
     pub(crate) geometry_orphans: u64,
     /// The materials removed after a `MATERIAL_GONE` record.
     pub(crate) materials_gone: u64,
+    /// The frames whose arrays stayed from the frame before and the frames that laid them
+    /// out again (`begin_frame_arrays`), and the groups of the arrays made.
+    pub(crate) arrays_kept: u64,
+    pub(crate) arrays_laid_out: u64,
+    pub(crate) array_groups_made: u64,
     /// The most textures of a frame in the arrays, and the stages that found no slot.
     pub(crate) most_frame_textures: u32,
     pub(crate) over_array_cap: u32,

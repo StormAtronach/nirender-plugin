@@ -157,7 +157,10 @@ impl Player {
         );
         println!("indirect calls {}, draws in them {}, draws one by one for want of room {}", c.indirect_calls, c.indirect_draws, c.indirect_over);
         println!(
-            "texture arrays: the most textures of a frame {}, stages over the room {} (of them retained textures with no pinned slot {}; room for {}, pinned at most {}), textures that came again for a handle with a slot {}, pinned slots freed {}, dropped from the end {} (pinned now {}, free {}, the most {}), stages drawn from a slot of the frame until their pinned slot came {}, retained textures pinned before their record {}",
+            "texture arrays: kept from the frame before in {} frames, laid out again in {}, groups made {}; the most textures of a frame {}, stages over the room {} (of them retained textures with no pinned slot {}; room for {}, pinned at most {}), textures that came again for a handle with a slot {}, pinned slots freed {}, dropped from the end {} (pinned now {}, free {}, the most {}), stages drawn from a slot of the frame until their pinned slot came {}, retained textures pinned before their record {}",
+            c.arrays_kept,
+            c.arrays_laid_out,
+            c.array_groups_made,
             c.most_frame_textures,
             c.over_array_cap,
             c.pinned_over,

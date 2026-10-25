@@ -852,6 +852,12 @@ impl Renderer {
         pinned.handle = 0;
         pinned.view = self.white.clone();
         self.pinned_index.remove(&handle);
+        // The arrays stay from frame to frame: the slot lets the texture go now.
+        if index < self.pinned_in_frame && index + 1 < self.frame_texture_views.len() {
+            self.frame_texture_views[index + 1] = self.white.clone();
+            self.array_group = None;
+            self.array_variants.clear();
+        }
         let at = self.pinned_free.partition_point(|&free| free > index);
         self.pinned_free.insert(at, index);
         if self.frame_texture_slots.get(&handle) == Some(&(index as u32 + 1)) {
@@ -896,7 +902,7 @@ impl Renderer {
     }
 
     /// The pinned textures and samplers at the start of the arrays of a frame, in their
-    /// slots. After `begin_frame_arrays` cleared the arrays.
+    /// slots. After `begin_frame_arrays` cleared the arrays (it returned true).
     pub fn pin_into_frame(&mut self) {
         self.pinned_in_frame = self.pinned_textures.len();
         self.pinned_samplers_in_frame = self.pinned_samplers.len();

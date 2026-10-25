@@ -627,9 +627,22 @@ impl Renderer {
         (renderer, surface)
     }
 
-    /// The slots of the textures and the samplers of a frame start empty: slot 0 is white
-    /// and a plain sampler.
-    pub(crate) fn begin_frame_arrays(&mut self) {
+    /// The arrays of the textures and the samplers at the start of a frame. They stay from
+    /// frame to frame with their group, so a frame with no new texture or sampler makes no
+    /// group. They are laid out again (slot 0 white and a plain sampler, then the pinned
+    /// slots, `pin_into_frame`) when the pinned part grew past its place, when the frame's own
+    /// part grew past twice [`FRAME_RESERVE`], or when the room runs short. True when they
+    /// were laid out again.
+    pub(crate) fn begin_frame_arrays(&mut self) -> bool {
+        let laid_out = !self.frame_texture_views.is_empty();
+        let pinned_grew = self.pinned_textures.len() > self.pinned_in_frame || self.pinned_samplers.len() > self.pinned_samplers_in_frame;
+        let own = self.frame_texture_views.len().saturating_sub(self.pinned_in_frame + 1);
+        let room_short = self.frame_texture_views.len() + FRAME_RESERVE > self.array_cap || self.frame_samplers.len() + 8 > self.sampler_cap;
+        if laid_out && !pinned_grew && own <= 2 * FRAME_RESERVE && !room_short {
+            self.counts.arrays_kept += 1;
+            return false;
+        }
+        self.counts.arrays_laid_out += 1;
         self.frame_texture_slots.clear();
         self.frame_texture_views.clear();
         self.frame_sampler_slots.clear();
@@ -639,6 +652,7 @@ impl Renderer {
         self.frame_texture_views.push(self.white.clone());
         let plain = self.sampler(material::sampler_states(0, 0));
         self.frame_samplers.push(plain);
+        true
     }
 
     /// The texture of a handle. A handle is the address of an object of the game's side:
@@ -733,6 +747,7 @@ impl Renderer {
             views[slot as usize] = &self.white;
         }
         let samplers: Vec<&wgpu::Sampler> = self.frame_samplers.iter().map(|sampler| &**sampler).collect();
+        self.counts.array_groups_made += 1;
         let group = Rc::new(crate::gpu::frame_group(
             &self.device,
             &wgpu::BindGroupDescriptor {
@@ -1231,6 +1246,16 @@ impl Renderer {
             self.texture_objects.remove(&handle);
             self.targets.remove(&handle);
             self.decoded.remove(&handle);
+            // The arrays stay from frame to frame: a slot of the frame's own part lets the
+            // texture go. A pinned slot goes with its last use (`unpin_texture`).
+            if let Some(&slot) = self.frame_texture_slots.get(&handle) {
+                if slot as usize > self.pinned_in_frame {
+                    self.frame_texture_views[slot as usize] = self.white.clone();
+                    self.frame_texture_slots.remove(&handle);
+                    self.array_group = None;
+                    self.array_variants.clear();
+                }
+            }
             self.counts.textures_gone += 1;
         }
     }
