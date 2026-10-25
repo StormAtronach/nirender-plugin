@@ -68,6 +68,7 @@ mod engine;
 mod player;
 use engine::{plan, scene};
 mod retained;
+pub mod stamps;
 use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_BONES_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
 
 /// The wgpu of this crate, for a program that draws with it through [`Extension`].
@@ -536,6 +537,9 @@ struct Renderer {
     lights_known: HashMap<u32, [u8; 104]>,
     /// The GPU time stamps, when the adapter has them.
     timing: Option<Timing>,
+    /// The named GPU stamps of the frame (`MGE_XE_GPU_TIME=1`), for the helper and the
+    /// extension (`SceneView::stamps`).
+    stamps: Rc<stamps::Stamps>,
     pipeline_layout: wgpu::PipelineLayout,
     pipelines: FxHashMap<PipelineKey, Rc<wgpu::RenderPipeline>>,
     textures: FxHashMap<u32, Rc<wgpu::TextureView>>,

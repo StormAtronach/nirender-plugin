@@ -8,10 +8,27 @@ use super::*;
 /// own command buffers, in the order that they came: one submit for each frame, as the best
 /// practices of wgpu have it. A `queue.write_buffer` goes to the GPU before all the command
 /// buffers of that submit: a buffer that two of them read must not get two values in a frame.
-#[derive(Default)]
-pub struct FrameCommands(pub(crate) core::cell::RefCell<Vec<wgpu::CommandBuffer>>);
+/// It also carries the frame's named GPU stamps ([`FrameCommands::stamps`]).
+pub struct FrameCommands(pub(crate) core::cell::RefCell<Vec<wgpu::CommandBuffer>>, pub(crate) Rc<crate::stamps::Stamps>);
+
+impl Default for FrameCommands {
+    fn default() -> FrameCommands {
+        FrameCommands(Default::default(), Rc::new(crate::stamps::Stamps::off()))
+    }
+}
 
 impl FrameCommands {
+    /// The command list of a frame with these stamps.
+    pub(crate) fn with_stamps(stamps: Rc<crate::stamps::Stamps>) -> FrameCommands {
+        FrameCommands(Default::default(), stamps)
+    }
+
+    /// The named GPU stamps of the frame, for the GPU time of the extension's parts with
+    /// `MGE_XE_GPU_TIME=1`: a post shader, a pass of its own. Off without it.
+    pub fn stamps(&self) -> &crate::stamps::Stamps {
+        &self.1
+    }
+
     /// Adds a command buffer for the next submit.
     pub fn defer(&self, buffer: wgpu::CommandBuffer) {
         self.0.borrow_mut().push(buffer);

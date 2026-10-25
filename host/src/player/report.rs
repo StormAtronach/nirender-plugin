@@ -111,20 +111,28 @@ impl Player {
         // With `MGE_XE_GPU_TIME=1`: the GPU time of all timed frames (a replay has no marks).
         if c.gpu_frames != 0 {
             println!("gpu: {:.3} ms in the passes, {:.3} ms the frame, for each of {} timed frames", c.gpu_passes / 1e6 / c.gpu_frames as f64, c.gpu_frame / 1e6 / c.gpu_frames as f64, c.gpu_frames);
-            // The named work outside the frame's own passes, the most time first; the rest of
-            // the frame outside its passes has no stamp.
+            // The named spans (`stamps::Stamps`) by kind, the most time first. The parts do not
+            // overlap one another; a part's time holds the copies and the details inside it.
             let frames = c.gpu_frames as f64;
-            let mut outside = c.gpu_outside.clone();
-            outside.sort_by(|a, b| b.1.total_cmp(&a.1));
-            let named: f64 = outside.iter().map(|(_, time, _)| time).sum();
-            println!(
-                "gpu outside the passes: {:.3} ms for each frame in all, {:.3} ms of it named; with no stamp {:.3} ms",
-                (c.gpu_frame - c.gpu_passes) / 1e6 / frames,
-                named / 1e6 / frames,
-                (c.gpu_frame - c.gpu_passes - named) / 1e6 / frames
-            );
-            for (name, time, count) in &outside {
-                println!("  {:7.3} ms  {name} ({:.2} for each frame)", time / 1e6 / frames, *count as f64 / frames);
+            let ms = |time: f64| time / 1e6 / frames;
+            let mut named = c.gpu_named.clone();
+            named.sort_by(|a, b| b.2.total_cmp(&a.2));
+            let of = |kind: stamps::StampKind| named.iter().filter(move |(_, k, _, _)| *k == kind);
+            let parts: f64 = of(stamps::StampKind::Part).map(|(_, _, time, _)| time).sum();
+            println!("gpu by part: {:.3} ms of the frame's {:.3} ms in named parts, {:.3} ms in none", ms(parts), ms(c.gpu_frame), ms(c.gpu_frame - parts));
+            for (name, _, time, count) in of(stamps::StampKind::Part) {
+                println!("  {:7.3} ms  {name} ({:.2} for each frame)", ms(*time), *count as f64 / frames);
+            }
+            let copies: f64 = of(stamps::StampKind::Outside).map(|(_, _, time, _)| time).sum();
+            println!("gpu copies and resolves: {:.3} ms (one made inside a part, for a class of draws or the held draws, is in that part's time too)", ms(copies));
+            for (name, _, time, count) in of(stamps::StampKind::Outside) {
+                println!("  {:7.3} ms  {name} ({:.2} for each frame)", ms(*time), *count as f64 / frames);
+            }
+            if of(stamps::StampKind::Detail).next().is_some() {
+                println!("gpu details (inside a part, or in an encoder of their own before the frame):");
+                for (name, _, time, count) in of(stamps::StampKind::Detail) {
+                    println!("  {:7.3} ms  {name} ({:.2} for each frame)", ms(*time), *count as f64 / frames);
+                }
             }
         }
         println!("not drawn: other target {}, vertex format {}", c.other_target, c.no_layout);

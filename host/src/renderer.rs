@@ -102,14 +102,13 @@ pub(crate) fn instance_buffer(device: &wgpu::Device, instances: usize) -> wgpu::
 /// after them.
 pub(crate) const TIMING_PASSES: u32 = 126;
 
-/// The pairs of the frame's work outside its own passes (copies, resolves, the extension's
-/// passes), after the pair of the frame: each has a name (`Timing::outside_begin`).
-pub(crate) const TIMING_OUTSIDE: u32 = 48;
+/// The named pairs of a frame (`stamps::Stamps`), after the pair of the frame.
+pub(crate) const TIMING_NAMED: u32 = 96;
 
-pub(crate) const TIMING_QUERIES: u32 = 2 * (TIMING_PASSES + 1 + TIMING_OUTSIDE);
+pub(crate) const TIMING_QUERIES: u32 = 2 * (TIMING_PASSES + 1 + TIMING_NAMED);
 
-/// The first query of the pairs outside the passes.
-const OUTSIDE_FIRST: u32 = 2 * (TIMING_PASSES + 1);
+/// The first query of the named pairs.
+const NAMED_FIRST: u32 = 2 * (TIMING_PASSES + 1);
 
 /// GPU time stamps: a pair for each render pass of the frame, and a pair for the frame
 /// (when the adapter writes them outside a pass). They are resolved at the end of the
@@ -131,10 +130,10 @@ pub(crate) struct Timing {
     pub(crate) period: f32,
     /// The adapter writes stamps outside a pass: the frame has its pair.
     pub(crate) frame_stamps: bool,
-    /// The names of the pairs outside the passes of the frame in progress, and of each
-    /// staging buffer's frame.
-    pub(crate) outside: Vec<&'static str>,
-    pub(crate) slot_outside: Vec<Vec<&'static str>>,
+    /// The named stamps of the frame in progress (shared with the extension), and the names
+    /// of each staging buffer's frame.
+    pub(crate) stamps: Rc<crate::stamps::Stamps>,
+    pub(crate) slot_names: Vec<Vec<(&'static str, crate::stamps::StampKind)>>,
 }
 
 /// Only with `MGE_XE_GPU_TIME=1`: the stamps cost time at the end of each frame.
@@ -145,8 +144,12 @@ pub(crate) fn make_timing(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<
     let size = TIMING_QUERIES as u64 * 8;
     let buffer = |usage| device.create_buffer(&wgpu::BufferDescriptor { label: Some("timing"), size, usage, mapped_at_creation: false });
     let (sender, ready) = std::sync::mpsc::channel();
+    let set = device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("timing"), ty: wgpu::QueryType::Timestamp, count: TIMING_QUERIES });
+    let in_encoders = device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+    let in_passes = device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
+    let stamps = Rc::new(crate::stamps::Stamps::new(set.clone(), NAMED_FIRST, TIMING_NAMED, in_encoders, in_passes));
     Some(Timing {
-        set: device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("timing"), ty: wgpu::QueryType::Timestamp, count: TIMING_QUERIES }),
+        set,
         resolve: buffer(wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST),
         staging: (0..3).map(|_| buffer(wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST)).collect(),
         busy: vec![false; 3],
@@ -156,8 +159,8 @@ pub(crate) fn make_timing(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<
         passes: 0,
         period: queue.get_timestamp_period(),
         frame_stamps: device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
-        outside: Vec::new(),
-        slot_outside: vec![Vec::new(); 3],
+        stamps,
+        slot_names: vec![Vec::new(); 3],
     })
 }
 
@@ -176,7 +179,7 @@ impl Timing {
     /// The start of a frame: the stamp of the frame, when the adapter can write it.
     pub(crate) fn begin(&mut self, encoder: &mut wgpu::CommandEncoder) {
         self.passes = 0;
-        self.outside.clear();
+        self.stamps.clear();
         if self.frame_stamps {
             encoder.write_timestamp(&self.set, 2 * TIMING_PASSES);
         }
@@ -198,14 +201,14 @@ impl Timing {
                 counts.gpu_passes += (0..self.slot_passes[slot]).map(span).sum::<f64>();
                 counts.gpu_frame += span(TIMING_PASSES);
                 counts.gpu_frames += 1;
-                for (i, name) in self.slot_outside[slot].iter().enumerate() {
-                    let time = span(OUTSIDE_FIRST / 2 + i as u32);
-                    match counts.gpu_outside.iter_mut().find(|(n, _, _)| n == name) {
+                for (i, &(name, kind)) in self.slot_names[slot].iter().enumerate() {
+                    let time = span(NAMED_FIRST / 2 + i as u32);
+                    match counts.gpu_named.iter_mut().find(|(n, k, _, _)| *n == name && *k == kind) {
                         Some(entry) => {
-                            entry.1 += time;
-                            entry.2 += 1;
+                            entry.2 += time;
+                            entry.3 += 1;
                         }
-                        None => counts.gpu_outside.push((name, time, 1)),
+                        None => counts.gpu_named.push((name, kind, time, 1)),
                     }
                 }
             }
@@ -221,28 +224,8 @@ impl Timing {
         encoder.copy_buffer_to_buffer(&self.resolve, 0, &self.staging[slot], 0, TIMING_QUERIES as u64 * 8);
         self.busy[slot] = true;
         self.slot_passes[slot] = self.passes;
-        self.slot_outside[slot] = std::mem::take(&mut self.outside);
+        self.slot_names[slot] = self.stamps.take_names();
         Some(slot)
-    }
-
-    /// The start of a piece of the frame's work outside its own passes, named `name`: its
-    /// pair, or [`None`] when the adapter writes no stamps outside a pass or the pairs are
-    /// used up. No pass may be open on the encoder.
-    pub(crate) fn outside_begin(&mut self, encoder: &mut wgpu::CommandEncoder, name: &'static str) -> Option<u32> {
-        let index = self.outside.len() as u32;
-        if !self.frame_stamps || index >= TIMING_OUTSIDE {
-            return None;
-        }
-        encoder.write_timestamp(&self.set, OUTSIDE_FIRST + 2 * index);
-        self.outside.push(name);
-        Some(index)
-    }
-
-    /// The end of a piece that `outside_begin` started.
-    pub(crate) fn outside_end(&self, encoder: &mut wgpu::CommandEncoder, index: Option<u32>) {
-        if let Some(index) = index {
-            encoder.write_timestamp(&self.set, OUTSIDE_FIRST + 2 * index + 1);
-        }
     }
 
     /// After the submit: asks for the map of the buffer of the frame.
@@ -366,6 +349,7 @@ impl Renderer {
                         & (wgpu::Features::POLYGON_MODE_LINE
                             | wgpu::Features::TIMESTAMP_QUERY
                             | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+                            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES
                             | wgpu::Features::INDIRECT_FIRST_INSTANCE
                             | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT))
                     | array_features,
@@ -544,6 +528,8 @@ impl Renderer {
         let first_indirect = indirect_buffer(&device, RECORDS_AT_FIRST);
         let first_retained_bones = bone_buffer(&device, RETAINED_BONES_AT_FIRST);
         let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones, &first_records, &first_light_indexes, &first_scenes, &first_retained_lights, &first_retained_bones));
+        let timing = make_timing(&device, &queue);
+        let stamps = timing.as_ref().map_or_else(|| Rc::new(crate::stamps::Stamps::off()), |timing| timing.stamps.clone());
         let renderer = Renderer {
             frame_layout,
             frame_uniform,
@@ -555,7 +541,8 @@ impl Renderer {
             instance_buffer: instance_buffer(&device, RETAINED_AT_FIRST + INSTANCES_AT_FIRST),
             instance_capacity: RETAINED_AT_FIRST + INSTANCES_AT_FIRST,
             lights_known: HashMap::new(),
-            timing: make_timing(&device, &queue),
+            timing,
+            stamps: stamps.clone(),
             bone_buffer: first_bones,
             bone_capacity: BONES_AT_FIRST,
             retained_bone_buffer: first_retained_bones,
@@ -635,7 +622,7 @@ impl Renderer {
             screen_layout: None,
             screen_sampler: None,
             counts: Counts::default(),
-            commands: Rc::new(FrameCommands::default()),
+            commands: Rc::new(FrameCommands::with_stamps(stamps.clone())),
         };
         (renderer, surface)
     }
