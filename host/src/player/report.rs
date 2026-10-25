@@ -34,6 +34,10 @@ impl Player {
             delta[2] as f64 / frames.max(1) as f64,
             delta[3] as f64 / 1e6 / frames.max(1) as f64
         );
+        let passes = gpu::passes();
+        let delta: [u64; 10] = core::array::from_fn(|i| passes[i] - self.mark_passes[i]);
+        println!("  {}", gpu::pass_line(&delta, frames as u64));
+        self.mark_passes = passes;
         println!("  {}", self.renderer.held_line());
         let errors = gpu::errors();
         if errors != self.mark_errors {

@@ -130,9 +130,9 @@ impl Player {
             match item {
                 Item::Target(target) => {
                     self.pass_target = target;
-                    self.open_pass(None, None, None);
+                    self.open_pass(crate::gpu::PassReason::Target, None, None, None);
                 }
-                Item::Clear(color, depth, stencil) => self.open_pass(color, depth, stencil),
+                Item::Clear(color, depth, stencil) => self.open_pass(crate::gpu::PassReason::Clear, color, depth, stencil),
                 Item::Viewport(viewport) => {
                     self.viewport = Some(viewport);
                     self.apply_viewport();
@@ -343,7 +343,7 @@ impl Player {
                 self.before_depth_kept = self.copy_depth(2, "depth: before the world").is_some();
             }
             // The draws of the game start with a depth target of their own.
-            self.open_pass(None, Some(1.0), None);
+            self.open_pass(crate::gpu::PassReason::WorldStart, None, Some(1.0), None);
         }
         let part = self.part_begin("the table's opaque slots");
         self.draw_retained_main(facts);
@@ -375,7 +375,7 @@ impl Player {
             world_depth_now = self.copy_depth(1, "depth: the world, for the post chain").is_some();
             self.world_depth_kept = world_depth_now;
             self.world_depth_projection = Some(facts.projection);
-            self.open_pass(None, None, None);
+            self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
         // The blend: a pass on the picture only, so that a shader can read the depth. A copy
         // of the picture when the extension reads it. A multisampled depth goes to the shader
@@ -391,6 +391,7 @@ impl Player {
             scene.picture = picture.as_ref();
             let before = before.create_view(&Default::default());
             let depth = resolved.unwrap_or_else(|| depth.texture().create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
+            crate::gpu::note_other_pass();
             let mut pass = encoder
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("blend"),
@@ -411,7 +412,7 @@ impl Player {
             drop(pass);
             stamp_end(&self.renderer.stamps, encoder, at);
             self.renderer.counts.times[TIME_EXT_AFTER] += clock.elapsed();
-            self.open_pass(None, None, None);
+            self.open_pass(crate::gpu::PassReason::AfterExtension, None, None, None);
         }
         self.extension = Some(extension);
         // The blend pass has no depth target: the copy of the world depth is the depth now.
@@ -514,7 +515,7 @@ impl Player {
             (true, false) => self.copy_depth(0, names.1),
         };
         if self.pass.is_none() {
-            self.open_pass(None, None, None);
+            self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
         (picture, depth)
     }
@@ -602,7 +603,7 @@ impl Player {
     pub(crate) fn merge_first_person_depth(&mut self, projection: &[f32; 16]) {
         let Some(world_projection) = self.world_depth_projection.filter(|_| self.world_depth_kept) else { return };
         let Some(arms) = self.copy_depth(0, "depth: first person") else {
-            self.open_pass(None, None, None);
+            self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
             return;
         };
         if let (Some(target), Some(encoder)) = (self.world_depth.as_ref(), self.encoder.as_mut()) {
@@ -612,7 +613,7 @@ impl Player {
             stamp_end(&self.renderer.stamps, encoder, at);
             self.renderer.counts.depth_copies += 1;
         }
-        self.open_pass(None, None, None);
+        self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
     }
 
     /// Gives the extension its post-processing call. See [`Extension::post`].
@@ -662,7 +663,7 @@ impl Player {
         // The draws after the post-processing (the interface of the game) go into the
         // multisampled target: it gets the picture of the back buffer first.
         self.load_color();
-        self.open_pass(None, None, None);
+        self.open_pass(crate::gpu::PassReason::AfterExtension, None, None, None);
     }
 
     /// Gives the extension its call in place of the draws of a class. See

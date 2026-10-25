@@ -100,6 +100,76 @@ pub fn frame_group(device: &wgpu::Device, descriptor: &wgpu::BindGroupDescriptor
     group
 }
 
+/// Why a pass on the game's targets opened (`Player::open_pass`), for the census of the passes.
+#[derive(Clone, Copy)]
+pub enum PassReason {
+    FrameStart,
+    Flush,
+    Target,
+    Clear,
+    WorldStart,
+    AfterCopy,
+    AfterExtension,
+}
+
+/// The names of [`PassReason`], in its order.
+pub const PASS_REASONS: [&str; 7] = ["the frame's start", "a flush", "a target", "a clear", "the world's start", "after a copy", "after the extension"];
+
+static PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+static EMPTY_PASSES: AtomicU64 = AtomicU64::new(0);
+static OTHER_PASSES: AtomicU64 = AtomicU64::new(0);
+static ARRAY_BINDS: AtomicU64 = AtomicU64::new(0);
+
+/// A pass on the game's targets opened.
+pub fn note_pass(reason: PassReason) {
+    PASSES[reason as usize].fetch_add(1, Ordering::Relaxed);
+}
+
+/// A pass on the game's targets ended with no draw of the game or of the table.
+pub fn note_empty_pass() {
+    EMPTY_PASSES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A pass of another part opened: a copy, a merge, the overlay, the map tiles, the extension's
+/// own passes.
+pub fn note_other_pass() {
+    OTHER_PASSES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The bind group of the texture arrays was set in a pass.
+pub fn note_array_bind() {
+    ARRAY_BINDS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The census of the passes since the start: the passes by [`PassReason`], the passes with no
+/// draw, the other passes, the binds of the texture arrays.
+pub fn passes() -> [u64; 10] {
+    let mut out = [0u64; 10];
+    for (slot, count) in out.iter_mut().zip(PASSES.iter()) {
+        *slot = count.load(Ordering::Relaxed);
+    }
+    out[7] = EMPTY_PASSES.load(Ordering::Relaxed);
+    out[8] = OTHER_PASSES.load(Ordering::Relaxed);
+    out[9] = ARRAY_BINDS.load(Ordering::Relaxed);
+    out
+}
+
+/// The census as a line of the log: `delta` against the counts at the last mark, for `frames`
+/// frames.
+pub fn pass_line(delta: &[u64; 10], frames: u64) -> String {
+    let per = |n: u64| n as f64 / frames.max(1) as f64;
+    let opened: u64 = delta[..7].iter().sum();
+    let reasons: Vec<String> = PASS_REASONS.iter().zip(&delta[..7]).filter(|(_, n)| **n != 0).map(|(name, n)| format!("{name} {:.2}", per(*n))).collect();
+    format!(
+        "passes: {:.2} on the game's targets for each frame ({}), {:.2} of them with no draw; {:.2} other passes; {:.2} binds of the texture arrays",
+        per(opened),
+        reasons.join(", "),
+        per(delta[7]),
+        per(delta[8]),
+        per(delta[9])
+    )
+}
+
 /// The counts since the start: submits and their nanoseconds, bind groups made for a frame
 /// and their nanoseconds.
 pub fn work() -> [u64; 4] {

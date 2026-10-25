@@ -100,6 +100,7 @@ impl DepthMerge {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(arms) },
             ],
         });
+        crate::gpu::note_other_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("first-person depth merge"),
             color_attachments: &[],

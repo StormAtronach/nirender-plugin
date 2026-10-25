@@ -1262,6 +1262,7 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
         if !arrays_bound {
             let group = renderer.array_group_for(view.target);
             pass.set_bind_group(1, &*group, &[]);
+            crate::gpu::note_array_bind();
             arrays_bound = true;
         }
         pass.set_vertex_buffer(0, bucket.vertices.slice(..));
@@ -1956,7 +1957,7 @@ impl Player {
             .collect();
         self.renderer.counts.merged_blends += deferred.iter().filter(|e| matches!(e.1, crate::Waiting::Draw(_))).count() as u64;
         if self.pass.is_none() {
-            self.open_pass(None, None, None);
+            self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
         let kept_keys: Vec<u64> = kept.iter().map(|entry| entry.0).collect();
         let deferred_keys: Vec<u64> = deferred.iter().map(|entry| entry.0).collect();
@@ -1991,7 +1992,7 @@ impl Player {
         // the two, as `renderStage2` of the Direct3D 9 path merges its later scenes.
         if self.world_depth_kept {
             self.copy_depth(1, "depth: the world again, after late sorted blends");
-            self.open_pass(None, None, None);
+            self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
     }
 }

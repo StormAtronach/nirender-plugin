@@ -118,6 +118,7 @@ impl Multisample {
             layout: &self.depth_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) }],
         });
+        crate::gpu::note_other_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("depth resolve"),
             color_attachments: &[],
@@ -143,6 +144,7 @@ impl Multisample {
             layout: &self.color_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) }],
         });
+        crate::gpu::note_other_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("colour load"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

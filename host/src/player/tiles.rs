@@ -106,6 +106,7 @@ impl Player {
             });
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map tile copy") });
             {
+                crate::gpu::note_other_pass();
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("map tile copy"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {

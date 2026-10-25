@@ -117,6 +117,7 @@ impl Gamma {
                 ],
             },
         );
+        crate::gpu::note_other_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("gamma ramp"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

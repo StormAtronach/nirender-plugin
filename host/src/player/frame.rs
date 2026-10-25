@@ -113,6 +113,7 @@ impl Player {
             mark_runs: 0,
             mark_gpu: (0.0, 0.0, 0),
             mark_work: [0; 4],
+            mark_passes: [0; 10],
             mark_errors: 0,
             bound: BoundGroups::default(),
             pass_pipeline: None,
@@ -121,6 +122,7 @@ impl Player {
             pass_indexes: None,
             pass_shared: false,
             pass_arrays: false,
+            pass_draws_at_open: None,
             run_args: Vec::new(),
             frame_args: Vec::new(),
             size: (0, 0),
@@ -129,7 +131,11 @@ impl Player {
     }
 
     /// Starts a pass on the targets of the frame: it draws on what is there, or it clears first.
-    pub(crate) fn open_pass(&mut self, clear_color: Option<wgpu::Color>, clear_depth: Option<f32>, clear_stencil: Option<u32>) {
+    /// `reason`: why, for the census of the passes (`gpu::passes`).
+    pub(crate) fn open_pass(&mut self, reason: crate::gpu::PassReason, clear_color: Option<wgpu::Color>, clear_depth: Option<f32>, clear_stencil: Option<u32>) {
+        self.note_pass_end();
+        crate::gpu::note_pass(reason);
+        self.pass_draws_at_open = Some(self.pass_draw_count());
         if let Some(pass) = self.pass.as_mut() {
             flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
         }
@@ -177,6 +183,21 @@ impl Player {
     /// With more than one sample: writes the back buffer into the multisampled colour target,
     /// after a write of the back buffer outside the pass ([`Extension::post`]). The pass stays
     /// closed. Nothing with one sample.
+    /// The draws of the game and of the table so far, for the census of the passes.
+    fn pass_draw_count(&self) -> u64 {
+        self.renderer.counts.draws as u64 + self.retained.counts.calls
+    }
+
+    /// Counts the last pass opened on the game's targets as one with no draw when no draw
+    /// came since it opened.
+    pub(crate) fn note_pass_end(&mut self) {
+        if let Some(at_open) = self.pass_draws_at_open.take() {
+            if self.pass_draw_count() == at_open {
+                crate::gpu::note_empty_pass();
+            }
+        }
+    }
+
     pub(crate) fn load_color(&mut self) {
         if self.back_view.is_none() {
             return;
@@ -311,9 +332,9 @@ impl Player {
             self.back_view = None;
         }
         if keep {
-            self.open_pass(None, None, None);
+            self.open_pass(crate::gpu::PassReason::FrameStart, None, None, None);
         } else {
-            self.open_pass(Some(wgpu::Color::BLACK), Some(1.0), Some(0));
+            self.open_pass(crate::gpu::PassReason::FrameStart, Some(wgpu::Color::BLACK), Some(1.0), Some(0));
         }
     }
 
@@ -336,7 +357,7 @@ impl Player {
         let result = between(self);
         if in_frame {
             self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
-            self.open_pass(None, None, None);
+            self.open_pass(crate::gpu::PassReason::Flush, None, None, None);
         }
         result
     }
@@ -415,6 +436,7 @@ impl Player {
         if let Some(extension) = self.extension.as_mut() {
             self.shots.extend(extension.pictures().into_iter().map(|request| request.path));
         }
+        self.note_pass_end();
         let clock = ticks::Clock::now();
         if let Some(pass) = self.pass.as_mut() {
             flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);

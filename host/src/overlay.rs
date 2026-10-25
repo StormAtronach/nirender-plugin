@@ -357,6 +357,7 @@ impl Overlay {
         // The buffers of a paint callback: the panel has none.
         let _ = self.renderer.update_buffers(device, queue, encoder, &jobs, &screen);
         {
+            crate::gpu::note_other_pass();
             let mut pass = encoder
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("overlay"),
