@@ -13,6 +13,7 @@ impl Player {
             self.renderer.counts.short_records += 1;
             return false;
         }
+        let move_check = self.move_check.take();
         match tag {
             tag::HEADER => {
                 self.size = (word(data, 0), word(data, 4));
@@ -134,7 +135,8 @@ impl Player {
                     self.shape(data);
                 }
             }
-            tag::INSTANCE if data.len() >= 176 => self.instance(data),
+            tag::INSTANCE if data.len() >= 176 => self.instance(data, move_check),
+            tag::INSTANCE_MOVE => self.instance_move(data),
             tag::INSTANCE_LIGHTS if data.len() >= 8 => {
                 let (id, count) = (word(data, 0), word(data, 4) as usize);
                 if data.len() >= 8 + count * 4 {
@@ -531,7 +533,8 @@ impl Player {
     }
 
     /// An instance record: into the table, by its id.
-    pub(crate) fn instance(&mut self, data: &[u8]) {
+    /// `move_check`: the id and the values of an `INSTANCE_MOVE` record just before.
+    pub(crate) fn instance(&mut self, data: &[u8], move_check: Option<(u32, Retained)>) {
         let retained = Retained {
             class: word(data, 4),
             flags: word(data, 8),
@@ -544,6 +547,12 @@ impl Player {
             bound: core::array::from_fn(|i| float(data, 160 + i * 4)),
         };
         let id = word(data, 0);
+        if let Some((_, moved)) = move_check.filter(|(moved_id, _)| *moved_id == id) {
+            self.renderer.counts.moves_checked += 1;
+            if moved != retained {
+                self.renderer.counts.moves_different += 1;
+            }
+        }
         self.instance_put(id, retained);
         self.renderer.counts.instance_records += 1;
         if retained.flags & INSTANCE_BLOCK != 0 {
@@ -552,6 +561,26 @@ impl Player {
             }
         } else {
             self.retained_remove(id);
+        }
+    }
+
+    /// A move of a known instance ([`tag::INSTANCE_MOVE`]): the new rotation, exact and stored
+    /// translations and bound over its last record, moved in place as a full record would be.
+    pub(crate) fn instance_move(&mut self, data: &[u8]) {
+        let id = word(data, 0);
+        let Some(mut retained) = self.instances.get(&id).copied() else {
+            self.renderer.counts.instance_missing += 1;
+            return;
+        };
+        retained.rotation = core::array::from_fn(|i| float(data, 4 + i * 4));
+        retained.exact = core::array::from_fn(|i| double(data, 52 + i * 8));
+        retained.stored = core::array::from_fn(|i| float(data, 76 + i * 4));
+        retained.bound = core::array::from_fn(|i| float(data, 88 + i * 4));
+        self.instance_put(id, retained);
+        self.renderer.counts.instance_moves += 1;
+        self.move_check = Some((id, retained));
+        if retained.flags & INSTANCE_BLOCK != 0 && !self.retained.update_place(id, &retained) {
+            self.retained_insert(id, &retained);
         }
     }
 

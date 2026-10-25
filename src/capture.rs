@@ -240,6 +240,11 @@ pub mod tag {
     /// a later draw with the same content sends the record again. The helper removes the
     /// material when no instance of its table names it any more.
     pub const MATERIAL_GONE: u32 = 39;
+    /// A move of a sent instance (`instance_stream::send_move`): the id, the rows 0 to 2 of
+    /// the world matrix (12 floats), the exact translation (3 doubles), the stored translation
+    /// (3 floats) and the world bound (4 floats). The other values stay those of its last
+    /// [`INSTANCE`].
+    pub const INSTANCE_MOVE: u32 = 40;
 }
 
 // ---- the ring in shared memory
@@ -1414,6 +1419,12 @@ pub unsafe fn shape(head: &[u32], lights: &[u32], tail: &[u32], bytes: &[u8], bo
 pub unsafe fn instance(head: &[u32], name: &[u8]) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE, &[words(head), name]);
+}
+
+/// A move of an instance. See [`tag::INSTANCE_MOVE`].
+pub unsafe fn instance_move(head: &[u32]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::INSTANCE_MOVE, &[words(head)]);
 }
 
 /// A draw of an instance. See [`tag::INSTANCE_DRAW`].

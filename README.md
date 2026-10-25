@@ -103,6 +103,9 @@ under the home folder.
 The A/B:
 
 - `NIRENDER_PORT_TIMING=1` times each live port call.
+- `NIRENDER_COMPACT_MOVES=0` sends a move of a retained instance as the whole `INSTANCE`
+  record, as before `INSTANCE_MOVE`; `check` sends both, and the helper counts the moves whose
+  values differ from the full record's.
 - `NIRENDER_GEOMETRY_CENSUS=1` counts the geometries sent again, by the controllers of their
   shape, and logs the census at each stream mark (`geometry_stream::census_take`).
 - `NIRENDER_SKIP=0` makes the engine display the retained shapes too.

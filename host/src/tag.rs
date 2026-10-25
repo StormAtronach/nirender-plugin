@@ -61,6 +61,10 @@ pub const GEOMETRY_GONE: u32 = 38;
 /// A material names a device texture that was freed: its handle
 /// (`Player::drop_gone_materials`). The plugin sends the record again for a later draw.
 pub const MATERIAL_GONE: u32 = 39;
+/// A move of a known instance (`Player::instance_move`): the id, the rows 0 to 2 of the world
+/// matrix (12 floats), the exact translation (3 doubles), the stored translation (3 floats)
+/// and the world bound (4 floats); the rest stays that of its last [`INSTANCE`].
+pub const INSTANCE_MOVE: u32 = 40;
 
 /// The least length of a record of the tag that the player reads without a check of its
 /// own: a shorter record is skipped and counted (`Counts::short_records`), not read past
@@ -101,6 +105,7 @@ pub fn least_length(tag: u32) -> usize {
         TEXTURE_GONE => 4,
         GEOMETRY_GONE => 8,
         MATERIAL_GONE => 4,
+        INSTANCE_MOVE => 104,
         _ => 0,
     }
 }
@@ -111,7 +116,7 @@ mod tests {
 
     #[test]
     fn every_record_with_a_fixed_head_has_a_least_length() {
-        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE] {
+        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE] {
             assert!(least_length(tag) > 0, "tag {tag} has no least length");
         }
     }

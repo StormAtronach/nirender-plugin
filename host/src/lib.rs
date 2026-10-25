@@ -204,7 +204,7 @@ use wgpu::util::DeviceExt;
 
 /// A retained instance of the plugin ([`tag::INSTANCE`]): the helper draws it from this at
 /// each `INSTANCE_DRAW` record, as it draws a shape record.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct Retained {
     class: u32,
     flags: u32,
@@ -633,6 +633,10 @@ struct Player {
     /// (`instance_put`, `instance_take`): a changed or a gone geometry finds its instances
     /// without a scan of all of them.
     by_geometry: FxHashMap<u32, Vec<u32>>,
+    /// The values an `INSTANCE_MOVE` record gave its instance, until the next record: with the
+    /// plugin's `NIRENDER_COMPACT_MOVES=check` an `INSTANCE` record of the same instance
+    /// follows, and its values must be the same (`Counts::moves_checked`).
+    move_check: Option<(u32, Retained)>,
     /// The geometries that went in this frame (`GEOMETRY_GONE`): at the start of the next
     /// frame, before their ranges go back to the pools, the instances that still name one
     /// leave the table (`orphans_of_gone_geometry`).

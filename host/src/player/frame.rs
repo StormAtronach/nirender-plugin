@@ -9,6 +9,7 @@ impl Player {
             renderer,
             instances: HashMap::new(),
             by_geometry: FxHashMap::default(),
+            move_check: None,
             retained_on: switches().retained,
             retained: RetainedSet::new(),
             retained_values: None,

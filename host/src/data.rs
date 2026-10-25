@@ -384,6 +384,11 @@ pub(crate) struct Counts {
     /// The instance records, the draws from them, the draws of an instance the helper does
     /// not have, and the shape records skipped as twins of an instance draw.
     pub(crate) instance_records: u32,
+    /// The `INSTANCE_MOVE` records, and those an `INSTANCE` record of the same instance
+    /// followed (the plugin's check mode), with other values than the move gave.
+    pub(crate) instance_moves: u32,
+    pub(crate) moves_checked: u32,
+    pub(crate) moves_different: u32,
     pub(crate) instance_draws: u32,
     /// The `INSTANCE_PARTICLES` records: the particles of a particle instance's draw.
     pub(crate) instance_particles: u32,

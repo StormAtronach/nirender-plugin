@@ -63,7 +63,7 @@ impl Player {
         println!("material: {} records; {} records of any tag shorter than their fixed part, skipped", c.material_records, c.short_records);
         println!("{}", self.renderer.held_line());
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material", c.shape_records, c.shape_draws, c.shape_missing);
-        println!("instances: {} records, {} draws from them, {} draws of an instance not known, {} shape twins skipped, {} blends of the engine merged into the sorted list", c.instance_records, c.instance_draws, c.instance_missing, c.shape_twins, c.merged_blends);
+        println!("instances: {} records and {} moves ({} checked against a full record, {} different), {} draws from them, {} draws of an instance not known, {} shape twins skipped, {} blends of the engine merged into the sorted list", c.instance_records, c.instance_moves, c.moves_checked, c.moves_different, c.instance_draws, c.instance_missing, c.shape_twins, c.merged_blends);
         println!(
             "sorted queue: {} places of the table's blends drawn in the engine's order, {} of an instance not known, {} outside the world scene, {} of an instance the table does not sort; {} sorted blends of the table without a place, put between by depth ({} of them in frames with no place at all); {} places after the frame's first sorted blends",
             c.queued_places, c.queued_unknown, c.queued_outside, c.queued_not_sorted, c.sorted_without_place, c.sorted_without_place_no_places, c.queued_late_places

@@ -163,6 +163,8 @@ struct Instance {
     visible: bool,
     /// The `INSTANCE` record with these values went into the stream or the file.
     sent: bool,
+    /// The matrices of its last `INSTANCE` record were relative to the camera's origin.
+    relative: bool,
     /// The values above were taken from a draw.
     filled: bool,
     /// The generation of the tables at the last check of the handles.
@@ -645,7 +647,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], queued: u32::MAX, points });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], queued: u32::MAX, points });
     t.pending = Some((shape, id));
 }
 
@@ -1046,6 +1048,41 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
     true
 }
 
+/// How a move of a sent instance goes (`NIRENDER_COMPACT_MOVES`): as `INSTANCE_MOVE` (the
+/// default); as the whole `INSTANCE` record (`0`, as before, for the A/B); or both (`check`:
+/// the helper compares the values of the two).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompactMoves {
+    On,
+    Off,
+    Check,
+}
+
+fn compact_moves() -> CompactMoves {
+    static MODE: std::sync::OnceLock<CompactMoves> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("NIRENDER_COMPACT_MOVES").as_deref() {
+        Ok("0") => CompactMoves::Off,
+        Ok("check") => CompactMoves::Check,
+        _ => CompactMoves::On,
+    })
+}
+
+/// Sends the `INSTANCE_MOVE` record of a sent instance: its rotation, its exact translation,
+/// its stored translation and its bound.
+unsafe fn send_move(instance: &Instance, exact: [f64; 3]) {
+    let mut words = [0u32; 26];
+    words[0] = instance.id;
+    words[1..13].copy_from_slice(&instance.rotation);
+    for (i, value) in exact.iter().enumerate() {
+        let bits = value.to_bits();
+        words[13 + i * 2] = bits as u32;
+        words[14 + i * 2] = (bits >> 32) as u32;
+    }
+    words[19..22].copy_from_slice(&instance.stored);
+    words[22..26].copy_from_slice(&instance.bound.map(f32::to_bits));
+    capture::instance_move(&words);
+}
+
 /// Sends the words of the `INSTANCE` record of an instance of the mode gpu.
 unsafe fn send_instance(mt: &MainThread, shape: usize, instance: &Instance, exact: [f64; 3], relative: bool) {
     let flags = if relative { crate::shape_stream::RELATIVE } else { 0 } | BLOCK | if instance.skinned { crate::shape_stream::SKINNED } else { 0 };
@@ -1138,8 +1175,9 @@ unsafe fn note_light_once(mt: &MainThread, t: &mut Tables, light: usize, key: u3
 
 /// The counts of the instance records, by `RC_*`: why a record went (the first
 /// send or a new handle; a move of the transform; the bound alone; the colours alone; a move
-/// and the colours), whether a moved instance is live or not; the bytes of the names.
-static RECORD_COUNTS: MainCell<[u64; 8]> = MainCell::new([0; 8]);
+/// and the colours), whether a moved instance is live or not; the bytes of the names; the
+/// records that went as `INSTANCE_MOVE`.
+static RECORD_COUNTS: MainCell<[u64; 9]> = MainCell::new([0; 9]);
 const RC_FIRST: usize = 0;
 const RC_MOVED: usize = 1;
 const RC_BOUND: usize = 2;
@@ -1148,6 +1186,7 @@ const RC_MOVED_COLOURS: usize = 4;
 const RC_LIVE: usize = 5;
 const RC_STILL: usize = 6;
 const RC_NAME_BYTES: usize = 7;
+const RC_COMPACT_MOVES: usize = 8;
 /// The time from the decision to send a record to its end, on the main thread: the matrix
 /// (the engine's conversion of the world transform), the exact translation, the record.
 static RECORD_TICKS: MainCell<[i64; 3]> = MainCell::new([0; 3]);
@@ -1173,7 +1212,7 @@ pub unsafe fn record_report(mt: &MainThread) -> String {
     let ms: f64 = parts.iter().sum();
     let total: u64 = c[RC_FIRST..=RC_MOVED_COLOURS].iter().sum();
     format!(
-        "instance records: {} ({:.3} ms, {:.2} us each: the matrix {:.3} ms, the exact translation {:.3}, the record {:.3}); first or new handle {}, moved {}, bound alone {}, colours alone {}, moved and colours {}; the moved: live {}, not live {}; name bytes {}",
+        "instance records: {} ({:.3} ms, {:.2} us each: the matrix {:.3} ms, the exact translation {:.3}, the record {:.3}); first or new handle {}, moved {}, bound alone {}, colours alone {}, moved and colours {}; the moved: live {}, not live {}; name bytes {}; as INSTANCE_MOVE {}",
         total,
         ms,
         ms * 1000.0 / total.max(1) as f64,
@@ -1187,7 +1226,8 @@ pub unsafe fn record_report(mt: &MainThread) -> String {
         c[RC_MOVED_COLOURS],
         c[RC_LIVE],
         c[RC_STILL],
-        c[RC_NAME_BYTES]
+        c[RC_NAME_BYTES],
+        c[RC_COMPACT_MOVES]
     )
 }
 
@@ -1563,11 +1603,22 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         if changed {
             t.value_updates += 1;
         }
-        instance.sent = true;
-        let exact_end = capture::ticks();
         // The plugin makes the matrices of every draw relative when it owns the camera
-        // space: the record says so whether or not a draw happened this frame.
-        send_instance(mt, shape, instance, exact, crate::camera_space::own());
+        // space: the record says so whether or not a draw happened this frame. A move of a
+        // sent instance with the same colours and space goes as the compact record.
+        let relative = crate::camera_space::own();
+        let moves = compact_moves();
+        let move_only = instance.sent && !colours_changed && instance.relative == relative && moves != CompactMoves::Off;
+        instance.sent = true;
+        instance.relative = relative;
+        let exact_end = capture::ticks();
+        if move_only {
+            send_move(instance, exact);
+            (*RECORD_COUNTS.get(mt))[RC_COMPACT_MOVES] += 1;
+        }
+        if !move_only || moves == CompactMoves::Check {
+            send_instance(mt, shape, instance, exact, relative);
+        }
         t.records += 1;
         let send_end = capture::ticks();
         record_ticks[0] += matrix_end - record_start;
