@@ -626,6 +626,10 @@ struct Player {
     stream: Stream,
     /// The retained instances of the plugin, by their id.
     instances: HashMap<u32, Retained>,
+    /// The ids of the instances of each geometry handle, kept with `instances`
+    /// (`instance_put`, `instance_take`): a changed or a gone geometry finds its instances
+    /// without a scan of all of them.
+    by_geometry: FxHashMap<u32, Vec<u32>>,
     /// The geometries that went in this frame (`GEOMETRY_GONE`): at the start of the next
     /// frame, before their ranges go back to the pools, the instances that still name one
     /// leave the table (`orphans_of_gone_geometry`).

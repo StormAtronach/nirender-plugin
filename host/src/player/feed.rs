@@ -184,7 +184,7 @@ impl Player {
                 }
             }
             tag::INSTANCE_DELETE if data.len() >= 4 => {
-                self.instances.remove(&word(data, 0));
+                self.instance_take(word(data, 0));
                 self.retained_remove(word(data, 0));
             }
             tag::LIGHT if data.len() >= 108 => {
@@ -447,7 +447,7 @@ impl Player {
     /// geometries.
     /// Engine-rules R6 (the skill wgpu-renderer-dev).
     pub(crate) fn geometry_changed(&mut self, handle: u32) {
-        let changed: Vec<(u32, Retained)> = self.instances.iter().filter(|(_, r)| r.geometry == handle && r.flags & INSTANCE_BLOCK != 0).map(|(id, r)| (*id, *r)).collect();
+        let changed = self.instances_of(handle);
         for (id, r) in changed {
             self.retained_insert(id, &r);
             self.retained.counts.refreshed += 1;
@@ -464,7 +464,7 @@ impl Player {
             return;
         }
         let gone = std::mem::take(&mut self.gone_geometries);
-        let orphans: Vec<(u32, u32)> = self.instances.iter().filter(|(_, r)| gone.contains(&r.geometry) && r.flags & INSTANCE_BLOCK != 0).map(|(id, r)| (*id, r.geometry)).collect();
+        let orphans: Vec<(u32, u32)> = gone.iter().flat_map(|&handle| self.instances_of(handle).into_iter().map(move |(id, _)| (id, handle))).collect();
         for (id, handle) in orphans {
             self.retained_remove(id);
             self.orphaned.insert(handle);
@@ -495,6 +495,41 @@ impl Player {
         self.renderer.derived.retain(|(material, _), _| !going.contains(material));
     }
 
+    /// An instance into `instances` and its id under its geometry in `by_geometry`.
+    fn instance_put(&mut self, id: u32, retained: Retained) {
+        if let Some(old) = self.instances.insert(id, retained) {
+            if old.geometry == retained.geometry {
+                return;
+            }
+            self.by_geometry_remove(old.geometry, id);
+        }
+        self.by_geometry.entry(retained.geometry).or_default().push(id);
+    }
+
+    /// An instance out of `instances` and `by_geometry`.
+    fn instance_take(&mut self, id: u32) {
+        if let Some(old) = self.instances.remove(&id) {
+            self.by_geometry_remove(old.geometry, id);
+        }
+    }
+
+    fn by_geometry_remove(&mut self, geometry: u32, id: u32) {
+        if let Some(ids) = self.by_geometry.get_mut(&geometry) {
+            if let Some(at) = ids.iter().position(|&other| other == id) {
+                ids.swap_remove(at);
+            }
+            if ids.is_empty() {
+                self.by_geometry.remove(&geometry);
+            }
+        }
+    }
+
+    /// The instances of the table whose geometry is `handle`.
+    fn instances_of(&self, handle: u32) -> Vec<(u32, Retained)> {
+        let Some(ids) = self.by_geometry.get(&handle) else { return Vec::new() };
+        ids.iter().filter_map(|id| self.instances.get(id).map(|r| (*id, *r))).filter(|(_, r)| r.flags & INSTANCE_BLOCK != 0).collect()
+    }
+
     /// An instance record: into the table, by its id.
     pub(crate) fn instance(&mut self, data: &[u8]) {
         let retained = Retained {
@@ -509,7 +544,7 @@ impl Player {
             bound: core::array::from_fn(|i| float(data, 160 + i * 4)),
         };
         let id = word(data, 0);
-        self.instances.insert(id, retained);
+        self.instance_put(id, retained);
         self.renderer.counts.instance_records += 1;
         if retained.flags & INSTANCE_BLOCK != 0 {
             if !self.retained.update_place(id, &retained) {
