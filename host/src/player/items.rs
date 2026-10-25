@@ -301,7 +301,7 @@ impl Player {
             // The depth of the draws of the extension, for its post-processing and for the
             // draws that it makes with the held shapes.
             if self.parameters.as_ref().is_some_and(|p| p.post || p.hold || p.watched != 0) {
-                self.before_depth_kept = self.copy_depth(2).is_some();
+                self.before_depth_kept = self.copy_depth(2, "depth: before the world").is_some();
             }
             // The draws of the game start with a depth target of their own.
             self.open_pass(None, Some(1.0), None);
@@ -329,7 +329,7 @@ impl Player {
         // its later scenes.
         let mut world_depth_now = false;
         if self.parameters.as_ref().is_some_and(|p| p.post) {
-            world_depth_now = self.copy_depth(1).is_some();
+            world_depth_now = self.copy_depth(1, "depth: the world, for the post chain").is_some();
             self.world_depth_kept = world_depth_now;
             self.world_depth_projection = Some(facts.projection);
             self.open_pass(None, None, None);
@@ -337,13 +337,14 @@ impl Player {
         // The blend: a pass on the picture only, so that a shader can read the depth. A copy
         // of the picture when the extension reads it. A multisampled depth goes to the shader
         // resolved: the copy of the world depth when it was made now, else a resolve now.
-        let picture = if self.before_kept && extension.reads(ReadingCall::Blend).picture { self.copy_picture() } else { None };
-        let resolved = if self.before_kept && self.renderer.samples > 1 { if world_depth_now { self.world_depth_view() } else { self.copy_depth(0) } } else { None };
+        let picture = if self.before_kept && extension.reads(ReadingCall::Blend).picture { self.copy_picture("picture: the blend") } else { None };
+        let resolved = if self.before_kept && self.renderer.samples > 1 { if world_depth_now { self.world_depth_view() } else { self.copy_depth(0, "depth: the blend") } } else { None };
         if let (true, Some(before), Some(color), Some(depth), Some(encoder)) = (self.before_kept, self.before.as_ref(), self.color.clone(), self.depth.clone(), self.encoder.as_mut()) {
             if let Some(pass) = self.pass.as_mut() {
                 flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
             }
             drop(self.pass.take());
+            let at = stamp(&mut self.renderer.timing, encoder, "the blend pass (extension)");
             scene.picture = picture.as_ref();
             let before = before.create_view(&Default::default());
             let depth = resolved.unwrap_or_else(|| depth.texture().create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
@@ -365,6 +366,7 @@ impl Player {
             let clock = ticks::Clock::now();
             extension.blend(&scene, &mut pass, &before, &depth);
             drop(pass);
+            stamp_end(&self.renderer.timing, encoder, at);
             self.renderer.counts.times[TIME_EXT_AFTER] += clock.elapsed();
             self.open_pass(None, None, None);
         }
@@ -380,7 +382,7 @@ impl Player {
             return;
         }
         let Some(mut extension) = self.extension.take() else { return };
-        let (picture, depth) = self.copy_for(extension.reads(ReadingCall::Held(&self.taken)), world_depth_now);
+        let (picture, depth) = self.copy_for(extension.reads(ReadingCall::Held(&self.taken)), world_depth_now, ("picture: held draws", "depth: held draws"));
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let commands = self.renderer.commands.clone();
         let mut scene = facts.view(&device, &queue, &commands, format);
@@ -410,7 +412,7 @@ impl Player {
     /// Gives the extension a held shape in its place. See [`Extension::draw_held_in_place`].
     pub(crate) fn give_held_here(&mut self, held: HeldDraw, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
-        let (picture, depth) = self.copy_for(extension.reads(ReadingCall::HeldInPlace(&held)), false);
+        let (picture, depth) = self.copy_for(extension.reads(ReadingCall::HeldInPlace(&held)), false, ("picture: a held draw in place", "depth: a held draw in place"));
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let commands = self.renderer.commands.clone();
         let mut scene = facts.view(&device, &queue, &commands, format);
@@ -447,7 +449,9 @@ impl Player {
             flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
         }
         drop(self.pass.take());
+        let at = stamp(&mut self.renderer.timing, encoder, "picture kept for the blend");
         encoder.copy_texture_to_texture(source.as_image_copy(), self.before.as_ref().unwrap().as_image_copy(), size);
+        stamp_end(&self.renderer.timing, encoder, at);
         self.renderer.counts.picture_copies += 1;
         self.before_kept = true;
     }
@@ -456,12 +460,13 @@ impl Player {
     /// frame and the depth of the game, outside of the pass. With `world_depth_now`, the copy
     /// of the world depth is the depth as it is now, and is given for it. The pass is open
     /// again after a copy.
-    pub(crate) fn copy_for(&mut self, reads: Reads, world_depth_now: bool) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
-        let picture = if reads.picture { self.copy_picture() } else { None };
+    /// `names`: the names of the picture copy and of the depth copy for the GPU time.
+    pub(crate) fn copy_for(&mut self, reads: Reads, world_depth_now: bool, names: (&'static str, &'static str)) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
+        let picture = if reads.picture { self.copy_picture(names.0) } else { None };
         let depth = match (reads.depth, world_depth_now) {
             (false, _) => None,
             (true, true) => self.world_depth_view(),
-            (true, false) => self.copy_depth(0),
+            (true, false) => self.copy_depth(0, names.1),
         };
         if self.pass.is_none() {
             self.open_pass(None, None, None);
@@ -477,8 +482,9 @@ impl Player {
             .map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }))
     }
 
-    /// Copies the picture of the frame, outside of the pass. The pass stays closed.
-    pub(crate) fn copy_picture(&mut self) -> Option<wgpu::TextureView> {
+    /// Copies the picture of the frame, outside of the pass. The pass stays closed. `name`:
+    /// the copy's name for the GPU time.
+    pub(crate) fn copy_picture(&mut self, name: &'static str) -> Option<wgpu::TextureView> {
         let (Some(source), Some(encoder)) = (self.back_buffer.as_ref(), self.encoder.as_mut()) else { return None };
         if !source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
             return None;
@@ -491,15 +497,18 @@ impl Player {
             flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
         }
         drop(self.pass.take());
+        let at = stamp(&mut self.renderer.timing, encoder, name);
         encoder.copy_texture_to_texture(source.as_image_copy(), self.picture_copy.as_ref().unwrap().as_image_copy(), size);
+        stamp_end(&self.renderer.timing, encoder, at);
         self.renderer.counts.picture_copies += 1;
         self.picture_copy.as_ref().map(|copy| copy.create_view(&Default::default()))
     }
 
     /// Copies the depth as it is now, outside of the pass: into the copy of the moment (0),
     /// the copy of the world (1, for [`Extension::post`]) or the copy of the draws of
-    /// [`Extension::before_world`] (2). The caller opens the pass again.
-    pub(crate) fn copy_depth(&mut self, which: u32) -> Option<wgpu::TextureView> {
+    /// [`Extension::before_world`] (2). The caller opens the pass again. `name`: the copy's
+    /// name for the GPU time.
+    pub(crate) fn copy_depth(&mut self, which: u32, name: &'static str) -> Option<wgpu::TextureView> {
         let source = self.depth.as_ref().map(|depth| depth.texture().clone())?;
         // A multisampled depth cannot be copied: the resolve pass writes the nearest sample
         // of each pixel (`multisample.rs`).
@@ -524,6 +533,10 @@ impl Player {
             let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST;
             *copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), usage));
         }
+        if resolve && self.renderer.multisample.is_none() {
+            return None;
+        }
+        let at = stamp(&mut self.renderer.timing, encoder, name);
         if resolve {
             let multisample = self.renderer.multisample.as_ref()?;
             let samples = source.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() });
@@ -531,6 +544,7 @@ impl Player {
         } else {
             encoder.copy_texture_to_texture(source.as_image_copy(), copy.as_ref().unwrap().as_image_copy(), size);
         }
+        stamp_end(&self.renderer.timing, encoder, at);
         self.renderer.counts.depth_copies += 1;
         copy.as_ref().map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }))
     }
@@ -542,13 +556,15 @@ impl Player {
     /// (`renderStage2`, the nearest of the two). `projection` is that of the first person.
     pub(crate) fn merge_first_person_depth(&mut self, projection: &[f32; 16]) {
         let Some(world_projection) = self.world_depth_projection.filter(|_| self.world_depth_kept) else { return };
-        let Some(arms) = self.copy_depth(0) else {
+        let Some(arms) = self.copy_depth(0, "depth: first person") else {
             self.open_pass(None, None, None);
             return;
         };
         if let (Some(target), Some(encoder)) = (self.world_depth.as_ref(), self.encoder.as_mut()) {
             let merge = self.renderer.depth_merge.get_or_insert_with(|| depth_merge::DepthMerge::new(&self.renderer.device));
+            let at = stamp(&mut self.renderer.timing, encoder, "first person depth merged into the world's");
             merge.merge(&self.renderer.device, encoder, &arms, &target.create_view(&Default::default()), projection, &world_projection);
+            stamp_end(&self.renderer.timing, encoder, at);
             self.renderer.counts.depth_copies += 1;
         }
         self.open_pass(None, None, None);
@@ -561,7 +577,7 @@ impl Player {
         let mut reads = extension.reads(ReadingCall::Post);
         let world_depth = self.world_depth_view().filter(|_| reads.depth);
         reads.depth &= world_depth.is_none();
-        let (picture, depth_now) = self.copy_for(reads, false);
+        let (picture, depth_now) = self.copy_for(reads, false, ("picture: the post chain", "depth: the post chain"));
         let depth = world_depth.or(depth_now);
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let commands = self.renderer.commands.clone();
@@ -579,9 +595,11 @@ impl Player {
             }
             drop(self.pass.take());
             let clock = ticks::Clock::now();
+            let at = stamp(&mut self.renderer.timing, encoder, "the post chain (extension)");
             encoder.push_debug_group("extension: post-processing");
             extension.post(&scene, encoder, &color);
             encoder.pop_debug_group();
+            stamp_end(&self.renderer.timing, encoder, at);
             self.renderer.counts.times[TIME_EXT_POST] += clock.elapsed();
             // The pictures that the extension wants: one without the interface of the game
             // is the picture as it is now.
@@ -618,7 +636,7 @@ impl Player {
             self.plane_ahead = None;
             self.split = Some(plane);
         }
-        let (picture, depth) = self.copy_for(extension.reads(ReadingCall::Class(class)), false);
+        let (picture, depth) = self.copy_for(extension.reads(ReadingCall::Class(class)), false, ("picture: a class of draws", "depth: a class of draws"));
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let commands = self.renderer.commands.clone();
         let mut scene = facts.view(&device, &queue, &commands, format);
@@ -666,5 +684,18 @@ impl Player {
             },
         );
         self.world_draws = world;
+    }
+}
+
+/// The start of a named piece of the frame's GPU work outside its own passes, with
+/// `MGE_XE_GPU_TIME=1` (`Timing::outside_begin`). No pass may be open on the encoder.
+fn stamp(timing: &mut Option<Timing>, encoder: &mut wgpu::CommandEncoder, name: &'static str) -> Option<u32> {
+    timing.as_mut().and_then(|timing| timing.outside_begin(encoder, name))
+}
+
+/// The end of a piece that [`stamp`] started.
+fn stamp_end(timing: &Option<Timing>, encoder: &mut wgpu::CommandEncoder, at: Option<u32>) {
+    if let Some(timing) = timing {
+        timing.outside_end(encoder, at);
     }
 }

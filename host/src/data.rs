@@ -427,6 +427,9 @@ pub(crate) struct Counts {
     pub(crate) gpu_passes: f64,
     pub(crate) gpu_frame: f64,
     pub(crate) gpu_frames: u32,
+    /// The GPU time of each named piece of work outside the frame's own passes, in
+    /// nanoseconds, and how many there were (`Timing::outside_begin`).
+    pub(crate) gpu_outside: Vec<(&'static str, f64, u64)>,
     pub(crate) screen_draws: u32,
     pub(crate) screen_draws_lost: u32,
     pub(crate) target_copies: u32,

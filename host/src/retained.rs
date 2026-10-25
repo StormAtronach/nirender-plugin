@@ -1856,7 +1856,7 @@ impl Player {
         // goes into it. The depth target still has the world, so a new copy is the nearer of
         // the two, as `renderStage2` of the Direct3D 9 path merges its later scenes.
         if self.world_depth_kept {
-            self.copy_depth(1);
+            self.copy_depth(1, "depth: the world again, after late sorted blends");
             self.open_pass(None, None, None);
         }
     }

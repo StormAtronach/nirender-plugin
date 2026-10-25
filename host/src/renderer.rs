@@ -102,7 +102,14 @@ pub(crate) fn instance_buffer(device: &wgpu::Device, instances: usize) -> wgpu::
 /// after them.
 pub(crate) const TIMING_PASSES: u32 = 126;
 
-pub(crate) const TIMING_QUERIES: u32 = 2 * (TIMING_PASSES + 1);
+/// The pairs of the frame's work outside its own passes (copies, resolves, the extension's
+/// passes), after the pair of the frame: each has a name (`Timing::outside_begin`).
+pub(crate) const TIMING_OUTSIDE: u32 = 48;
+
+pub(crate) const TIMING_QUERIES: u32 = 2 * (TIMING_PASSES + 1 + TIMING_OUTSIDE);
+
+/// The first query of the pairs outside the passes.
+const OUTSIDE_FIRST: u32 = 2 * (TIMING_PASSES + 1);
 
 /// GPU time stamps: a pair for each render pass of the frame, and a pair for the frame
 /// (when the adapter writes them outside a pass). They are resolved at the end of the
@@ -124,6 +131,10 @@ pub(crate) struct Timing {
     pub(crate) period: f32,
     /// The adapter writes stamps outside a pass: the frame has its pair.
     pub(crate) frame_stamps: bool,
+    /// The names of the pairs outside the passes of the frame in progress, and of each
+    /// staging buffer's frame.
+    pub(crate) outside: Vec<&'static str>,
+    pub(crate) slot_outside: Vec<Vec<&'static str>>,
 }
 
 /// Only with `MGE_XE_GPU_TIME=1`: the stamps cost time at the end of each frame.
@@ -145,6 +156,8 @@ pub(crate) fn make_timing(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<
         passes: 0,
         period: queue.get_timestamp_period(),
         frame_stamps: device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
+        outside: Vec::new(),
+        slot_outside: vec![Vec::new(); 3],
     })
 }
 
@@ -163,6 +176,7 @@ impl Timing {
     /// The start of a frame: the stamp of the frame, when the adapter can write it.
     pub(crate) fn begin(&mut self, encoder: &mut wgpu::CommandEncoder) {
         self.passes = 0;
+        self.outside.clear();
         if self.frame_stamps {
             encoder.write_timestamp(&self.set, 2 * TIMING_PASSES);
         }
@@ -184,6 +198,16 @@ impl Timing {
                 counts.gpu_passes += (0..self.slot_passes[slot]).map(span).sum::<f64>();
                 counts.gpu_frame += span(TIMING_PASSES);
                 counts.gpu_frames += 1;
+                for (i, name) in self.slot_outside[slot].iter().enumerate() {
+                    let time = span(OUTSIDE_FIRST / 2 + i as u32);
+                    match counts.gpu_outside.iter_mut().find(|(n, _, _)| n == name) {
+                        Some(entry) => {
+                            entry.1 += time;
+                            entry.2 += 1;
+                        }
+                        None => counts.gpu_outside.push((name, time, 1)),
+                    }
+                }
             }
             self.staging[slot].unmap();
             self.busy[slot] = false;
@@ -197,7 +221,28 @@ impl Timing {
         encoder.copy_buffer_to_buffer(&self.resolve, 0, &self.staging[slot], 0, TIMING_QUERIES as u64 * 8);
         self.busy[slot] = true;
         self.slot_passes[slot] = self.passes;
+        self.slot_outside[slot] = std::mem::take(&mut self.outside);
         Some(slot)
+    }
+
+    /// The start of a piece of the frame's work outside its own passes, named `name`: its
+    /// pair, or [`None`] when the adapter writes no stamps outside a pass or the pairs are
+    /// used up. No pass may be open on the encoder.
+    pub(crate) fn outside_begin(&mut self, encoder: &mut wgpu::CommandEncoder, name: &'static str) -> Option<u32> {
+        let index = self.outside.len() as u32;
+        if !self.frame_stamps || index >= TIMING_OUTSIDE {
+            return None;
+        }
+        encoder.write_timestamp(&self.set, OUTSIDE_FIRST + 2 * index);
+        self.outside.push(name);
+        Some(index)
+    }
+
+    /// The end of a piece that `outside_begin` started.
+    pub(crate) fn outside_end(&self, encoder: &mut wgpu::CommandEncoder, index: Option<u32>) {
+        if let Some(index) = index {
+            encoder.write_timestamp(&self.set, OUTSIDE_FIRST + 2 * index + 1);
+        }
     }
 
     /// After the submit: asks for the map of the buffer of the frame.
