@@ -195,7 +195,24 @@ unsafe fn new_object(lock: &DeviceLock, kind: Kind, table: &'static Table) -> *m
         level_memory: Vec::new(),
     }));
     LIVE.get(&lock).push(object as usize);
+    // An address freed since the last drain that a new object takes: its old texture's
+    // materials fit the new one too (the same words), so they stay.
+    let freed = FREED_TEXTURES.get(&lock);
+    if let Some(at) = freed.iter().position(|&handle| handle == object as u32) {
+        freed.swap_remove(at);
+    }
     object
+}
+
+/// The textures freed since the last drain (`take_freed_textures`), whose address no new
+/// object took. Under the device lock.
+static FREED_TEXTURES: LockCell<Vec<u32>> = LockCell::new(Vec::new());
+
+/// The textures freed since the last call: for the main thread, which forgets the materials
+/// that name them (`material_stream::drain_freed_textures`).
+pub unsafe fn take_freed_textures() -> Vec<u32> {
+    let lock = crate::sync::device_lock();
+    core::mem::take(FREED_TEXTURES.get(&lock))
 }
 
 // ---- the methods
@@ -231,6 +248,9 @@ unsafe extern "system" fn release(this: *mut Object) -> u32 {
         // The helper keeps a texture and a level surface under the handle until this record.
         if matches!((*this).kind, Kind::Texture | Kind::LevelSurface) {
             crate::capture::texture_gone(this as u32);
+        }
+        if (*this).kind == Kind::Texture {
+            FREED_TEXTURES.get(&lock).push(this as u32);
         }
         drop(Box::from_raw(this));
         if !owner.is_null() {

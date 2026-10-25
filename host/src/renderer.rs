@@ -1208,7 +1208,7 @@ impl Renderer {
     pub(crate) fn held_line(&self) -> String {
         let mb = |bytes: u64| bytes as f64 / 1e6;
         format!(
-            "held: {} textures ({} with pixels written here, {} rendered), {} level surfaces; {} geometries, the vertex pool {:.1} of {:.1} MB, the index pool {:.1} of {:.1} MB; {} materials ({} derived); gone: {} textures ({} not held, {} replaced before their removal), {} geometries ({} not held), {} instances whose geometry went",
+            "held: {} textures ({} with pixels written here, {} rendered), {} level surfaces; {} geometries, the vertex pool {:.1} of {:.1} MB, the index pool {:.1} of {:.1} MB; {} materials ({} derived); gone: {} materials, {} textures ({} not held, {} replaced before their removal), {} geometries ({} not held), {} instances whose geometry went",
             self.textures.len(),
             self.texture_objects.len(),
             self.targets.len(),
@@ -1220,6 +1220,7 @@ impl Renderer {
             mb(self.index_pool.capacity()),
             self.materials.len(),
             self.derived.len(),
+            self.counts.materials_gone,
             self.counts.textures_gone,
             self.counts.textures_gone_not_held,
             self.counts.textures_gone_replaced,

@@ -203,6 +203,8 @@ pub unsafe fn drain() {
     }
     // The check above: this is the main thread, and the events open its table.
     let t = &crate::main_thread::MainThread::claim();
+    // The textures freed on any thread since the last drain take their materials with them.
+    crate::material_stream::drain_freed_textures(t);
     if !WAITING.load(Ordering::Acquire) {
         return;
     }

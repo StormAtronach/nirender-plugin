@@ -71,12 +71,20 @@ impl Player {
                 }
             }
             tag::TEXTURE_GONE => self.renderer.texture_gone(word(data, 0)),
+            tag::MATERIAL_GONE => {
+                self.gone_materials.push(word(data, 0));
+                self.gone_materials_new = true;
+            }
             tag::MATERIAL if data.len() >= 4 => {
                 if let Some(parsed) = material::Material::parse(&data[4..]) {
                     let handle = word(data, 0);
                     // A record with a handle that is known has the same content: a hold of a
                     // capture file sends it again.
                     self.renderer.materials.entry(handle).or_insert(parsed);
+                    // The plugin sent it again after a `MATERIAL_GONE`: it stays.
+                    if !self.gone_materials.is_empty() {
+                        self.gone_materials.retain(|&gone| gone != handle);
+                    }
                     self.renderer.counts.material_records += 1;
                 }
             }
@@ -462,6 +470,29 @@ impl Player {
             self.orphaned.insert(handle);
             self.renderer.counts.geometry_orphans += 1;
         }
+    }
+
+    /// The materials of `MATERIAL_GONE` records go, with their derived states, when no
+    /// instance names them: the slots of the table read their material at each frame. One
+    /// scan of the instances in a frame after a new record, and in every 64th frame while some
+    /// wait (an instance gets its handles noted again within 64 frames).
+    pub(crate) fn drop_gone_materials(&mut self) {
+        if self.gone_materials.is_empty() || !(std::mem::take(&mut self.gone_materials_new) || self.renderer.counts.frames % 64 == 0) {
+            return;
+        }
+        let named: FxHashSet<u32> = self.instances.values().map(|r| r.material).collect();
+        let (waiting, going): (Vec<u32>, Vec<u32>) = std::mem::take(&mut self.gone_materials).into_iter().partition(|handle| named.contains(handle));
+        self.gone_materials = waiting;
+        if going.is_empty() {
+            return;
+        }
+        let going: FxHashSet<u32> = going.into_iter().collect();
+        for handle in &going {
+            if self.renderer.materials.remove(handle).is_some() {
+                self.renderer.counts.materials_gone += 1;
+            }
+        }
+        self.renderer.derived.retain(|(material, _), _| !going.contains(material));
     }
 
     /// An instance record: into the table, by its id.

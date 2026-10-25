@@ -10,7 +10,7 @@
 //! the state packet has.
 
 use core::mem::transmute;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::main_thread::{MainCell, MainThread};
 use crate::engine;
@@ -64,6 +64,15 @@ pub const NO_SORTER: u32 = 32768;
 
 static SENT: MainCell<Option<HashSet<u32>>> = MainCell::new(None);
 static RECORDS: MainCell<u64> = MainCell::new(0);
+/// The records sent, by each device texture they name: a freed texture takes them with it
+/// (`drain_freed_textures`). A handle in a list can be stale (its record went with another
+/// texture): it goes only if it is still sent, and then it names this texture.
+static BY_TEXTURE: MainCell<Option<HashMap<u32, Vec<u32>>>> = MainCell::new(None);
+/// The `MATERIAL_GONE` records sent.
+static GONE: MainCell<u64> = MainCell::new(0);
+/// The words of a record that hold a device texture: the 8 maps, the environment map, the
+/// fog map.
+const TEXTURE_WORDS: [usize; 10] = [8, 13, 18, 23, 28, 33, 38, 43, 81, 85];
 /// The flags of the last record noted: the helper models a material without projected
 /// lights and shadows.
 static LAST_FLAGS: MainCell<u32> = MainCell::new(0);
@@ -92,6 +101,7 @@ fn sent<'a>(t: &'a MainThread) -> &'a mut HashSet<u32> {
 /// Forgets the records that were sent: for a capture file from the stream.
 pub unsafe fn reset(t: &MainThread) {
     sent(t).clear();
+    by_texture(t).clear();
 }
 
 /// Forgets these records: the next draw with each content sends it again.
@@ -101,8 +111,28 @@ pub unsafe fn forget(t: &MainThread, handles: &[u32]) {
     }
 }
 
+fn by_texture<'a>(t: &'a MainThread) -> &'a mut HashMap<u32, Vec<u32>> {
+    (*BY_TEXTURE.get(t)).get_or_insert_with(HashMap::new)
+}
+
+/// The records that name a device texture that was freed go: each gets a `MATERIAL_GONE`
+/// record, and a later draw with the same content sends it again. A texture whose address a
+/// new texture took before this drain keeps its records (`own_host::take_freed_textures`).
+pub unsafe fn drain_freed_textures(t: &MainThread) {
+    let freed = crate::own_host::take_freed_textures();
+    for texture in freed {
+        let Some(handles) = by_texture(t).remove(&texture) else { continue };
+        for handle in handles {
+            if sent(t).remove(&handle) {
+                crate::capture::material_gone(handle);
+                *GONE.get(t) += 1;
+            }
+        }
+    }
+}
+
 pub unsafe fn report(t: &MainThread) -> String {
-    format!("material: {} records, {} distinct", *RECORDS.get(t), sent(t).len())
+    format!("material: {} records, {} distinct, {} gone with their textures", *RECORDS.get(t), sent(t).len(), *GONE.get(t))
 }
 
 /// The device texture of a texture of the scene graph, from the texture manager of the
@@ -330,6 +360,11 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
     if sent(t).insert(handle) {
         crate::capture::material(handle, &w);
         *RECORDS.get(t) += 1;
+        for at in TEXTURE_WORDS {
+            if w[at] != 0 {
+                by_texture(t).entry(w[at]).or_default().push(handle);
+            }
+        }
     }
     handle
 }

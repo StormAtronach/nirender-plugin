@@ -308,6 +308,8 @@ pub(crate) struct Counts {
     /// until a geometry comes under that handle again (a shape whose data changed while it
     /// lived, between two notes of its handles).
     pub(crate) geometry_orphans: u64,
+    /// The materials removed after a `MATERIAL_GONE` record.
+    pub(crate) materials_gone: u64,
     /// The most textures of a frame in the arrays, and the stages that found no slot.
     pub(crate) most_frame_textures: u32,
     pub(crate) over_array_cap: u32,

@@ -61,6 +61,8 @@ impl Player {
             gamma_new: false,
             gone_geometries: Default::default(),
             orphaned: Default::default(),
+            gone_materials: Vec::new(),
+            gone_materials_new: false,
             film_shot: None,
             film_shot_at: 1,
             film_draws: 0,
@@ -273,6 +275,7 @@ impl Player {
         self.orphans_of_gone_geometry();
         // The textures freed in the frame before: its items, which ran at its end, are done.
         self.renderer.drop_gone_textures();
+        self.drop_gone_materials();
         for range in std::mem::take(&mut self.renderer.retired) {
             self.renderer.vertex_pool.give(&range);
         }

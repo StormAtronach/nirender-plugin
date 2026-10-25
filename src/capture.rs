@@ -235,6 +235,11 @@ pub mod tag {
     /// (`geometry_stream::gone`; from the cell worker at the next drain of `worker_events`).
     /// The helper removes the geometry only when its unique id is this one.
     pub const GEOMETRY_GONE: u32 = 38;
+    /// A material record names a device texture that was freed: its handle. The main thread
+    /// sends it at the drain of the freed textures (`material_stream::drain_freed_textures`);
+    /// a later draw with the same content sends the record again. The helper removes the
+    /// material when no instance of its table names it any more.
+    pub const MATERIAL_GONE: u32 = 39;
 }
 
 // ---- the ring in shared memory
@@ -918,7 +923,7 @@ pub unsafe fn tee_end() {
 /// earlier frame, and a release sends again only the instances the engine displays.
 /// Engine-rules R14 (the skill wgpu-renderer-dev).
 fn resource_record(tag: u32) -> bool {
-    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE | tag::TEXTURE_GONE | tag::GEOMETRY_GONE)
+    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE | tag::TEXTURE_GONE | tag::GEOMETRY_GONE | tag::MATERIAL_GONE)
 }
 
 /// Ends the capture file of a direct stream.
@@ -1490,6 +1495,12 @@ pub unsafe fn texture_gone(handle: u32) {
 pub unsafe fn geometry_gone(handle: u32, unique: u32) {
     let _lock = crate::sync::device_lock();
     write(tag::GEOMETRY_GONE, &[words(&[handle, unique])]);
+}
+
+/// A material whose texture was freed. See [`tag::MATERIAL_GONE`].
+pub unsafe fn material_gone(handle: u32) {
+    let _lock = crate::sync::device_lock();
+    write(tag::MATERIAL_GONE, &[words(&[handle])]);
 }
 
 /// A light gone. See [`tag::LIGHT_GONE`].
