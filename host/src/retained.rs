@@ -184,12 +184,46 @@ pub struct RetainedCounts {
     pub walk_reordered: u64,
 }
 
+/// What the cull of a view reads of a slot (`collect_order`), beside the slot in a small
+/// record: the slots of a view are mostly culled, and the slot itself is large.
+#[derive(Clone, Copy, Default)]
+struct CullEntry {
+    bound: [f32; 4],
+    state: u8,
+}
+
+/// The bits of [`CullEntry::state`].
+const CULL_LIVE: u8 = 1;
+const CULL_VISIBLE: u8 = 2;
+const CULL_HELD: u8 = 4;
+const CULL_WITHOUT_BONES: u8 = 8;
+
+impl CullEntry {
+    fn of(slot: Option<&Slot>) -> CullEntry {
+        let Some(s) = slot else { return CullEntry::default() };
+        let mut state = CULL_LIVE;
+        if s.visible {
+            state |= CULL_VISIBLE;
+        }
+        if s.held {
+            state |= CULL_HELD;
+        }
+        if s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES {
+            state |= CULL_WITHOUT_BONES;
+        }
+        CullEntry { bound: s.bound, state }
+    }
+}
+
 /// The origin of the set moves to the camera when the camera is farther from it than this,
 /// in units of the world. A 32-bit float has steps of 0.0005 units at 4096.
 const REBASE_DISTANCE: f64 = 4096.0;
 
 pub struct RetainedSet {
     slots: Vec<Option<Slot>>,
+    /// The cull's record of each slot (`refresh_cull`), and the draw ranges of all slots.
+    cull: Vec<CullEntry>,
+    ranges_total: usize,
     free: Vec<u32>,
     by_id: HashMap<u32, Vec<u32>>,
     buckets: Vec<Bucket>,
@@ -267,6 +301,8 @@ impl RetainedSet {
         RetainedSet {
             claimed: std::collections::HashSet::new(),
             slots: Vec::new(),
+            cull: Vec::new(),
+            ranges_total: 0,
             free: Vec::new(),
             by_id: HashMap::new(),
             buckets: Vec::new(),
@@ -306,7 +342,7 @@ impl RetainedSet {
 
     /// The most indirect arguments one view of the set can take.
     pub fn most_args(&self) -> usize {
-        self.slots.iter().flatten().map(|slot| slot.ranges.len()).sum()
+        self.ranges_total
     }
 
     fn take_slot(&mut self) -> u32 {
@@ -314,7 +350,13 @@ impl RetainedSet {
             return slot;
         }
         self.slots.push(None);
+        self.cull.push(CullEntry::default());
         (self.slots.len() - 1) as u32
+    }
+
+    /// The cull's record of a slot after a change of the slot.
+    fn refresh_cull(&mut self, slot: u32) {
+        self.cull[slot as usize] = CullEntry::of(self.slots[slot as usize].as_ref());
     }
 
     /// Removes the instance: its slots go to the free list, and the GPU keeps their stale
@@ -327,6 +369,8 @@ impl RetainedSet {
         let Some(slots) = self.by_id.remove(&id) else { return pinned };
         for slot in slots {
             if let Some(taken) = self.slots[slot as usize].take() {
+                self.ranges_total -= taken.ranges.len();
+                self.refresh_cull(slot);
                 let bucket = &mut self.buckets[taken.bucket as usize];
                 bucket.slots.retain(|&s| s != slot);
                 self.light_indexes_live = self.light_indexes_live.saturating_sub(self.keys_of.get(&id).map_or(0, |keys| keys.len()));
@@ -361,6 +405,7 @@ impl RetainedSet {
                 }
                 s.data.world[0] = world;
             }
+            self.cull[slot as usize] = CullEntry::of(self.slots[slot as usize].as_ref());
             self.moved.push(slot);
         }
         self.counts.moves += 1;
@@ -415,6 +460,7 @@ impl RetainedSet {
                         self.moved.push(slot);
                     }
                 }
+                self.cull[slot as usize] = CullEntry::of(self.slots[slot as usize].as_ref());
             }
         }
     }
@@ -553,6 +599,7 @@ impl RetainedSet {
                 if let Some(s) = self.slots[slot as usize].as_mut() {
                     s.visible = visible;
                 }
+                self.cull[slot as usize] = CullEntry::of(self.slots[slot as usize].as_ref());
             }
         }
     }
@@ -1239,23 +1286,27 @@ impl RetainedSet {
             }
             let blends = bucket.key.blend[0] != 0;
             for &slot in &bucket.slots {
-                let Some(s) = self.slots[slot as usize].as_ref() else { continue };
-                if !s.visible {
+                let cull = &self.cull[slot as usize];
+                if cull.state & CULL_LIVE == 0 {
+                    continue;
+                }
+                if cull.state & CULL_VISIBLE == 0 {
                     self.counts.hidden += 1;
                     continue;
                 }
                 // The extension draws a held instance (`Extension::claims`).
-                if s.held {
+                if cull.state & CULL_HELD != 0 {
                     continue;
                 }
-                if s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES {
+                if cull.state & CULL_WITHOUT_BONES != 0 {
                     self.counts.without_bones += 1;
                     continue;
                 }
-                if !in_view(&s.bound, &view.planes) {
+                if !in_view(&cull.bound, &view.planes) {
                     self.counts.culled += 1;
                     continue;
                 }
+                let Some(s) = self.slots[slot as usize].as_ref() else { continue };
                 self.counts.drawn += 1;
                 let centre = near[0] * s.bound[0] + near[1] * s.bound[1] + near[2] * s.bound[2] + near[3];
                 sequence += 1;
@@ -1575,6 +1626,8 @@ impl Player {
             let sorted = crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter);
             let in_place = !sorted && derived.blends.first().is_some_and(|b| b[0] != 0);
             set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted, in_place, pinned, bones_first, no_lights: derived.no_lights, claim, held: false });
+            set.ranges_total += ranges.len();
+            set.cull[slot as usize] = CullEntry::of(set.slots[slot as usize].as_ref());
             set.buckets[bucket as usize].slots.push(slot);
             set.dirty.push(slot);
             slots.push(slot);
@@ -1685,6 +1738,7 @@ impl Player {
                 if let Some(s) = self.retained.slots[slot as usize].as_mut() {
                     s.held = held;
                 }
+                self.retained.cull[slot as usize] = CullEntry::of(self.retained.slots[slot as usize].as_ref());
             }
         }
         self.extension = Some(extension);
