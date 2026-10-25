@@ -289,6 +289,11 @@ pub(crate) struct Counts {
     /// storage binding (`record_limit`), and the retained slots past it.
     pub(crate) records_over_limit: u32,
     pub(crate) retained_over_limit: u32,
+    /// The uploads of the retained segment of the instances: whole, and as runs of changed
+    /// slots with their bytes (`retained_upload`).
+    pub(crate) instance_uploads_whole: u64,
+    pub(crate) instance_upload_runs: u64,
+    pub(crate) instance_upload_bytes: u64,
     /// The textures that came again for a handle with a slot of the arrays.
     pub(crate) textures_replaced: u32,
     /// The pinned textures whose last use went (their slot is free for another).

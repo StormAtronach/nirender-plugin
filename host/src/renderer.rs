@@ -581,6 +581,7 @@ impl Renderer {
             scene_slots_used: 1,
             retained_records: RETAINED_AT_FIRST,
             retained_instances: RETAINED_AT_FIRST,
+            retained_instance_copy: Vec::new(),
             record_generation: 0,
             instance_generation: 0,
             pinned_textures: Vec::new(),

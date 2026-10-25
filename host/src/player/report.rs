@@ -81,6 +81,13 @@ impl Player {
             "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} hidden, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
             r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.hidden, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
         );
+        println!(
+            "retained instance uploads: {} whole, {} runs of changed entries with {:.1} MB{}",
+            c.instance_uploads_whole,
+            c.instance_upload_runs,
+            c.instance_upload_bytes as f64 / 1e6,
+            if switches().instance_upload_all { " (MGE_XE_INSTANCE_UPLOAD=all: the segment goes whole above 64 changed slots)" } else { "" }
+        );
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
         println!("skinned shapes {}, particle systems {} ({} of them from INSTANCE_PARTICLES records)", c.shape_skinned, c.shape_particles, c.instance_particles);
         match self.renderer.particle_quads_made() {

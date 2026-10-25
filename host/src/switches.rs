@@ -42,6 +42,10 @@ pub(crate) struct Switches {
     /// `MGE_XE_PARTICLE_QUADS=cpu`: the quads of the particle systems made on the CPU, as
     /// before the compute pass of `particle_quads`: for its A/B.
     pub(crate) particle_quads_cpu: bool,
+    /// `MGE_XE_INSTANCE_UPLOAD=all`: the retained segment of the instances goes up whole when
+    /// more than 64 slots changed in a frame, as before the copy of `retained_upload`: for its
+    /// A/B.
+    pub(crate) instance_upload_all: bool,
 }
 
 impl Switches {
@@ -67,6 +71,7 @@ impl Switches {
             record_limit: var("MGE_XE_RECORD_LIMIT").and_then(|v| v.parse::<usize>().ok()).map(|n| n.max(1024)),
             samples: var("MGE_XE_SAMPLES").and_then(|v| v.parse::<u32>().ok()).map(|n| n.clamp(1, 8)),
             particle_quads_cpu: is("MGE_XE_PARTICLE_QUADS", "cpu"),
+            instance_upload_all: is("MGE_XE_INSTANCE_UPLOAD", "all"),
         }
     }
 }

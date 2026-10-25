@@ -512,6 +512,9 @@ struct Renderer {
     scene_slots_used: u32,
     retained_records: usize,
     retained_instances: usize,
+    /// The retained segment of the instance buffer as it was last written: a changed slot
+    /// writes its entry here, and the runs of changed entries go up from here.
+    retained_instance_copy: Vec<Instance>,
     record_generation: u32,
     instance_generation: u32,
     /// The textures and the samplers with a slot of the arrays that stays from frame to

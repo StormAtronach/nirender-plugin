@@ -38,6 +38,9 @@ const INSTANCE_SKINNED: u32 = 4;
 pub const BONE_BYTES: usize = 9 * 4 + 3 * 8;
 /// The room of the bones of the skinned instances at first, in matrices.
 pub const RETAINED_BONES_AT_FIRST: usize = 1024;
+/// The unchanged instance entries between two changed ones that one write of
+/// `retained_upload` still takes: fewer writes for a few more bytes.
+const RUN_GAP: usize = 4;
 /// The first bone of a slot whose bones have not come yet: the slot is not drawn.
 const NO_BONES: u32 = u32::MAX;
 /// The bits of `light_range.w` of the record of a retained instance: the world matrix from
@@ -1015,16 +1018,58 @@ impl Renderer {
         set.moved.retain(|&i| (i as usize) < room);
         if all {
             let mut records = vec![0u8; room * RECORD_SIZE];
-            let mut instances = vec![0u8; room * INSTANCE_SIZE];
+            let copy = &mut self.retained_instance_copy;
+            copy.clear();
+            copy.resize(room, Instance::zeroed());
             for (i, slot) in set.slots.iter().take(room).enumerate() {
                 if let Some(slot) = slot {
                     records[i * RECORD_SIZE..(i + 1) * RECORD_SIZE].copy_from_slice(bytemuck::bytes_of(&slot.data));
-                    instances[i * INSTANCE_SIZE..(i + 1) * INSTANCE_SIZE].copy_from_slice(bytemuck::bytes_of(&slot_instance(i, slot)));
+                    copy[i] = slot_instance(i, slot);
                 }
             }
             if !records.is_empty() {
                 self.queue.write_buffer(&self.record_buffer, 0, &records);
-                self.queue.write_buffer(&self.instance_buffer, 0, &instances);
+                self.queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&self.retained_instance_copy[..]));
+            }
+            self.counts.instance_uploads_whole += 1;
+            set.dirty.clear();
+            set.moved.clear();
+        } else if !switches().instance_upload_all {
+            set.dirty.sort_unstable();
+            set.dirty.dedup();
+            for &i in &set.dirty {
+                if let Some(slot) = set.slots[i as usize].as_ref() {
+                    self.queue.write_buffer(&self.record_buffer, (i as usize * RECORD_SIZE) as u64, bytemuck::bytes_of(&slot.data));
+                }
+            }
+            // The entries of the changed and the moved slots go into the copy, then up as runs:
+            // slots at most `RUN_GAP` apart share a write (the entries between are the copy's,
+            // the same as the buffer's).
+            set.moved.extend_from_slice(&set.dirty);
+            set.moved.sort_unstable();
+            set.moved.dedup();
+            let copy = &mut self.retained_instance_copy;
+            if copy.len() < room {
+                copy.resize(room, Instance::zeroed());
+            }
+            for &i in &set.moved {
+                if let Some(slot) = set.slots[i as usize].as_ref() {
+                    copy[i as usize] = slot_instance(i as usize, slot);
+                }
+            }
+            let mut k = 0;
+            while k < set.moved.len() {
+                let first = set.moved[k] as usize;
+                let mut last = first;
+                k += 1;
+                while k < set.moved.len() && set.moved[k] as usize <= last + 1 + RUN_GAP {
+                    last = set.moved[k] as usize;
+                    k += 1;
+                }
+                let run = &copy[first..=last];
+                self.queue.write_buffer(&self.instance_buffer, (first * INSTANCE_SIZE) as u64, bytemuck::cast_slice(run));
+                self.counts.instance_upload_runs += 1;
+                self.counts.instance_upload_bytes += (run.len() * INSTANCE_SIZE) as u64;
             }
             set.dirty.clear();
             set.moved.clear();
