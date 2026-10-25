@@ -65,6 +65,11 @@ pub const MATERIAL_GONE: u32 = 39;
 /// matrix (12 floats), the exact translation (3 doubles), the stored translation (3 floats)
 /// and the world bound (4 floats); the rest stays that of its last [`INSTANCE`].
 pub const INSTANCE_MOVE: u32 = 40;
+/// The state of the UV controller of a geometry (`Player::geometry_uv_record`): the handle,
+/// the unique id, the texture set in the low half and the flags in the high half (1: the
+/// state of the vertices the last `GEOMETRY` record of the handle had), then the U offset,
+/// the V offset, the U tiling and the V tiling (`uv_animation`).
+pub const GEOMETRY_UV: u32 = 41;
 
 /// The least length of a record of the tag that the player reads without a check of its
 /// own: a shorter record is skipped and counted (`Counts::short_records`), not read past
@@ -106,6 +111,7 @@ pub fn least_length(tag: u32) -> usize {
         GEOMETRY_GONE => 8,
         MATERIAL_GONE => 4,
         INSTANCE_MOVE => 104,
+        GEOMETRY_UV => 28,
         _ => 0,
     }
 }
@@ -116,7 +122,7 @@ mod tests {
 
     #[test]
     fn every_record_with_a_fixed_head_has_a_least_length() {
-        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE] {
+        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV] {
             assert!(least_length(tag) > 0, "tag {tag} has no least length");
         }
     }

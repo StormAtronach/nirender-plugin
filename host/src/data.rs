@@ -27,6 +27,9 @@ pub(crate) struct Geometry {
     /// particles. A `GEOMETRY_GONE` record removes the geometry only when its id is this one:
     /// a later data at the same address has another id.
     pub(crate) unique: Option<u32>,
+    /// The UV controller of the data, when the plugin sends its steps
+    /// ([`crate::tag::GEOMETRY_UV`]): the draws take the step from the held vertices.
+    pub(crate) uv: Option<crate::uv_animation::UvAnimation>,
 }
 
 pub(crate) const COMMAND_TRANSFORM: u32 = 3;
@@ -361,6 +364,11 @@ pub(crate) struct Counts {
     pub(crate) geometry_records: u32,
     /// The records of a known geometry with the same layout, written into its ranges.
     pub(crate) geometry_in_place: u32,
+    /// The `GEOMETRY_UV` records: with the state of the vertices just sent, with a new state,
+    /// and those of a geometry not held (or of another unique id).
+    pub(crate) uv_bases: u32,
+    pub(crate) uv_steps: u32,
+    pub(crate) uv_missing: u32,
     pub(crate) geometry_bytes: u64,
     pub(crate) geometry_draws: u32,
     pub(crate) geometry_bad: u32,

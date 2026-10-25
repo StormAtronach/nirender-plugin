@@ -246,6 +246,9 @@ impl Player {
         self.stream.fog_range = fog_range.filter(|_| world);
         self.stream.sky = sky.filter(|_| in_back_buffer && (1..=7).contains(&self.stream.object_class));
         let mut draw_data = self.stream.draw_data(derived, pass, &mut renderer.counts, &mut self.frame_lights);
+        if let Some(uv) = renderer.geometries.get(&self.stream.shape.geometry).and_then(|g| g.uv) {
+            crate::uv_animation::compose(&mut draw_data, &uv);
+        }
         crate::draw_dump("record path", self.stream.shape.geometry, &draw_data);
         if self.stream.shape.geometry == crate::dump_wanted() {
             let (first, count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);

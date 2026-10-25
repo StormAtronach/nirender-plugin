@@ -106,6 +106,9 @@ The A/B:
 - `NIRENDER_COMPACT_MOVES=0` sends a move of a retained instance as the whole `INSTANCE`
   record, as before `INSTANCE_MOVE`; `check` sends both, and the helper counts the moves whose
   values differ from the full record's.
+- `NIRENDER_UV_STEPS=0` sends a geometry under a UV controller whole at each new revision,
+  as before `GEOMETRY_UV`; `check` sends both, and the plugin compares the step from the sent
+  coordinates with the engine's (the geometry line of the log).
 - `NIRENDER_GEOMETRY_CENSUS=1` counts the geometries sent again, by the controllers of their
   shape, and logs the census at each stream mark (`geometry_stream::census_take`).
 - `NIRENDER_SKIP=0` makes the engine display the retained shapes too.

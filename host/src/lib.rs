@@ -68,6 +68,7 @@ mod engine;
 mod player;
 use engine::{plan, scene};
 mod retained;
+mod uv_animation;
 pub mod stamps;
 use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_BONES_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
 

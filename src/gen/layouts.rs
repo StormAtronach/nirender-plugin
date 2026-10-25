@@ -9687,6 +9687,66 @@ pub mod NiTriStripsData {
     pub const stripLists: usize = 0x40;
 }
 
+pub mod NiUVController {
+    pub const SIZE: usize = 0x5c;
+    /// `NiTimeController`, 0x34 bytes
+    pub const super_: usize = 0x0;
+    /// `NiObject`, 0x8 bytes
+    pub const super__: usize = 0x0;
+    /// `InterfaceNiObjectUnion`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const refCount: usize = 0x4;
+    /// `__int16`, 0x2 bytes
+    pub const flags: usize = 0x8;
+    /// `__int16`, 0x2 bytes
+    pub const pad_A: usize = 0xa;
+    /// `float`, 0x4 bytes
+    pub const frequency: usize = 0xc;
+    /// `float`, 0x4 bytes
+    pub const phase: usize = 0x10;
+    /// `float`, 0x4 bytes
+    pub const lowKeyFrame: usize = 0x14;
+    /// `float`, 0x4 bytes
+    pub const highKeyFrame: usize = 0x18;
+    /// `float`, 0x4 bytes
+    pub const startTime: usize = 0x1c;
+    /// `float`, 0x4 bytes
+    pub const lastTime: usize = 0x20;
+    /// `float`, 0x4 bytes
+    pub const lastScaledTime: usize = 0x24;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const target: usize = 0x28;
+    /// `NiTimeController *`, 0x4 bytes
+    pub const nextController: usize = 0x2c;
+    /// `byte`, 0x1 bytes
+    pub const updateRequired: usize = 0x30;
+    /// `char[3]`, 0x3 bytes
+    pub const padding_31: usize = 0x31;
+    /// `unsigned int`, 0x4 bytes
+    pub const lastUOffsetIdx: usize = 0x34;
+    /// `unsigned int`, 0x4 bytes
+    pub const lastUTilingIdx: usize = 0x38;
+    /// `unsigned int`, 0x4 bytes
+    pub const lastVOffsetIdx: usize = 0x3c;
+    /// `unsigned int`, 0x4 bytes
+    pub const lastVTilingIdx: usize = 0x40;
+    /// `__int16`, 0x2 bytes
+    pub const textureSet: usize = 0x44;
+    /// `NiPointer`, 0x4 bytes
+    pub const uvData: usize = 0x48;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const uvData_ptr: usize = 0x48;
+    /// `float`, 0x4 bytes
+    pub const UOffset: usize = 0x4c;
+    /// `float`, 0x4 bytes
+    pub const VOffset: usize = 0x50;
+    /// `float`, 0x4 bytes
+    pub const UTiling: usize = 0x54;
+    /// `float`, 0x4 bytes
+    pub const VTiling: usize = 0x58;
+}
+
 pub mod NiVertexColorProperty {
     pub const SIZE: usize = 0x20;
     /// `NiProperty`, 0x18 bytes

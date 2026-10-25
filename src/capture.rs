@@ -245,6 +245,11 @@ pub mod tag {
     /// (3 floats) and the world bound (4 floats). The other values stay those of its last
     /// [`INSTANCE`].
     pub const INSTANCE_MOVE: u32 = 40;
+    /// The state of the UV controller of a geometry (`geometry_stream::send_uv`): the handle,
+    /// the unique id, the texture set in the low half and the flags in the high half (1: the
+    /// state of the vertices of the `GEOMETRY` record just before), then the U offset, the V
+    /// offset, the U tiling and the V tiling of the controller.
+    pub const GEOMETRY_UV: u32 = 41;
 }
 
 // ---- the ring in shared memory
@@ -1419,6 +1424,12 @@ pub unsafe fn shape(head: &[u32], lights: &[u32], tail: &[u32], bytes: &[u8], bo
 pub unsafe fn instance(head: &[u32], name: &[u8]) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE, &[words(head), name]);
+}
+
+/// A state of a UV controller. See [`tag::GEOMETRY_UV`].
+pub unsafe fn geometry_uv(head: &[u32]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::GEOMETRY_UV, &[words(head)]);
 }
 
 /// A move of an instance. See [`tag::INSTANCE_MOVE`].

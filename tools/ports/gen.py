@@ -41,7 +41,9 @@ LAYOUT_RE = re.compile(
     # The IDA typing pass of 2026-10-24.
     r"NiSourceCubeMap$|InterfaceNiDX8SourceTextureData$|InterfaceNiDX8RenderedTextureData$|"
     r"InterfaceNiDX8TextureManager$|InterfaceNiD3DShaderInterface$|NiRendererSpecificProperty::PassObject$|"
-    r"TES3Game::AdapterMapNode$)")
+    r"TES3Game::AdapterMapNode$|"
+    # The UV controller's state for GEOMETRY_UV (2026-10-25).
+    r"NiUVController$)")
 
 
 KEYWORDS = {"type", "super", "self", "ref", "match", "loop", "move", "fn", "mod", "use", "in", "final", "box", "priv", "enum",

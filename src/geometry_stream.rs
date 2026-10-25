@@ -50,10 +50,12 @@ struct Version {
     skin_data: u32,
 }
 
-/// A geometry that was sent: its version, and the frame of its last draw.
+/// A geometry that was sent: its version, the frame of its last draw, and the texture set of
+/// its UV controller when a `GEOMETRY_UV` record gave the state of its vertices.
 struct Sent {
     version: Version,
     used: u32,
+    uv_set: Option<u32>,
 }
 
 /// The geometries sent, by the address of their data. A destroyed data leaves at its
@@ -140,9 +142,13 @@ pub unsafe fn report(t: &MainThread) -> String {
     let (records, bytes) = (*RECORDS.get(t), *BYTES.get(t));
     let s = &*SKIN_COUNTS.get(t);
     format!(
-        "geometry: {} records, {:.1} MB, {} geometries known, {} forgotten after {} frames without a draw, {} destroyed (GEOMETRY_GONE); skins: {} from the skin data, {} from the partitions ({} without bone data), {} with a dying skin data; vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
+        "geometry: {} records, {:.1} MB, {} UV steps (checked {}, over 1/1000 {}, the most {:.6}), {} geometries known, {} forgotten after {} frames without a draw, {} destroyed (GEOMETRY_GONE); skins: {} from the skin data, {} from the partitions ({} without bone data), {} with a dying skin data; vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
         records,
         bytes as f64 / 1e6,
+        *UV_STEPS.get(t),
+        (*UV_CHECK.get(t)).0,
+        (*UV_CHECK.get(t)).1,
+        (*UV_CHECK.get(t)).2,
         versions(t).len(),
         *FORGOTTEN.get(t),
         FORGET_AFTER,
@@ -478,6 +484,25 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
     if census_on() {
         census_note(t, handle, version, geom_data, skin, shape);
     }
+    // A geometry whose only controller is a UV controller: a new revision alone, after a
+    // record with the state of its vertices, goes as the controller's new state.
+    let uv = uv_controller(shape, geom_data);
+    if let Some(uv) = uv {
+        let step = versions(t).get(&handle).is_some_and(|sent| {
+            let before = sent.version;
+            sent.uv_set == Some(uv.set) && before.unique == version.unique && before.vertices == version.vertices && before.entries == version.entries && before.skin_data == version.skin_data
+        });
+        if step {
+            send_uv(handle, version.unique, &uv, false);
+            *UV_STEPS.get(t) += 1;
+            if uv_mode() == UvMode::Check {
+                check_uv(t, handle, geom_data, &uv);
+            } else {
+                versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: Some(uv.set) });
+                return handle;
+            }
+        }
+    }
     // The vertices, as `NiDX8VertexBufferManager::PackUntransformedVB` packs them, with the
     // weights and the bone indexes of a skinned shape after the position.
     let vertices: usize = rd(geom_data, GD::vertices);
@@ -564,7 +589,124 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         lengths[..strip_count as usize * 2].copy_from_slice(core::slice::from_raw_parts(strip_lengths as *const u8, strip_count as usize * 2));
     }
     send(t, handle, version, fvf, stride as u32, strip_count, &lengths, &bytes, index_bytes);
+    if let Some(uv) = uv {
+        send_uv(handle, version.unique, &uv, true);
+        if let Some(sent) = versions(t).get_mut(&handle) {
+            sent.uv_set = Some(uv.set);
+        }
+        if uv_mode() == UvMode::Check {
+            keep_uv_base(t, handle, geom_data, &uv);
+        }
+    }
     handle
+}
+
+/// `NiRTTI` of `NiUVController` (`NiUVController::GetRTTI` 0x722950), and its texture set and
+/// its state: the U offset, the V offset, the U tiling and the V tiling (0x4C to 0x58;
+/// `NiUVController::Update` 0x7220E0).
+const RTTI_NI_UV_CONTROLLER: usize = 0x7DF4A4;
+const UV_TEXTURE_SET: usize = crate::gen::layouts::NiUVController::textureSet;
+const UV_STATE: usize = crate::gen::layouts::NiUVController::UOffset;
+
+/// The texture set and the state of a UV controller.
+#[derive(Clone, Copy)]
+struct UvState {
+    set: u32,
+    state: [f32; 4],
+}
+
+/// How a geometry under a UV controller goes (`NIRENDER_UV_STEPS`): its new revisions as the
+/// controller's state (the default); as whole geometries (`0`, as before); or both (`check`:
+/// the plugin compares the step from the last sent coordinates with the engine's).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UvMode {
+    On,
+    Off,
+    Check,
+}
+
+fn uv_mode() -> UvMode {
+    static MODE: std::sync::OnceLock<UvMode> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("NIRENDER_UV_STEPS").as_deref() {
+        Ok("0") => UvMode::Off,
+        Ok("check") => UvMode::Check,
+        _ => UvMode::On,
+    })
+}
+
+/// The UV controller of `shape` and its state, when it is the only controller of the shape,
+/// its target is the shape, the shape draws `geom_data`, and the data has its texture set.
+unsafe fn uv_controller(shape: usize, geom_data: usize) -> Option<UvState> {
+    if shape == 0 || uv_mode() == UvMode::Off {
+        return None;
+    }
+    let controller: usize = rd(shape, crate::gen::layouts::NiAVObject::controllers);
+    if controller == 0 || rd::<usize>(controller, crate::gen::layouts::NiTimeController::nextController) != 0 {
+        return None;
+    }
+    if ni::get_rtti(controller) != RTTI_NI_UV_CONTROLLER || rd::<usize>(controller, crate::gen::layouts::NiTimeController::target) != shape {
+        return None;
+    }
+    if rd::<usize>(shape, crate::gen::layouts::NiGeometry::spModelData) != geom_data {
+        return None;
+    }
+    let set = rd::<u16>(controller, UV_TEXTURE_SET) as u32;
+    if set >= rd::<u16>(geom_data, GD::textureSets) as u32 {
+        return None;
+    }
+    Some(UvState { set, state: rd(controller, UV_STATE) })
+}
+
+/// Sends the state of a UV controller; `base` when it is the state of the vertices of the
+/// `GEOMETRY` record just sent.
+unsafe fn send_uv(handle: u32, unique: u32, uv: &UvState, base: bool) {
+    let [u, v, tu, tv] = uv.state.map(f32::to_bits);
+    crate::capture::geometry_uv(&[handle, unique, uv.set | (base as u32) << 16, u, v, tu, tv]);
+}
+
+/// The steps sent as a state, and the check mode's counts: the steps compared, those with a
+/// coordinate further than 1/1000 from the engine's, and the largest distance.
+static UV_STEPS: MainCell<u64> = MainCell::new(0);
+static UV_CHECK: MainCell<(u64, u64, f32)> = MainCell::new((0, 0, 0.0));
+/// The check mode's copy of the sent texture set of each geometry, with its state.
+static UV_BASES: MainCell<Option<HashMap<u32, ([f32; 4], Vec<[f32; 2]>)>>> = MainCell::new(None);
+
+unsafe fn texture_set(geom_data: usize, set: u32) -> &'static [[f32; 2]] {
+    let all = rd::<u16>(geom_data, GD::vertexCount) as usize;
+    let coords: usize = rd(geom_data, GD::textureCoords);
+    if coords == 0 {
+        return &[];
+    }
+    core::slice::from_raw_parts((coords + set as usize * all * 8) as *const [f32; 2], all)
+}
+
+unsafe fn keep_uv_base(t: &MainThread, handle: u32, geom_data: usize, uv: &UvState) {
+    let bases = (*UV_BASES.get(t)).get_or_insert_with(Default::default);
+    bases.insert(handle, (uv.state, texture_set(geom_data, uv.set).to_vec()));
+}
+
+/// Compares the step from the kept coordinates to the controller's new state with the
+/// engine's coordinates (the closed form of `uv_animation.rs` of the helper).
+unsafe fn check_uv(t: &MainThread, handle: u32, geom_data: usize, uv: &UvState) {
+    let Some((base, kept)) = (*UV_BASES.get(t)).as_ref().and_then(|bases| bases.get(&handle)) else { return };
+    let [base_u, base_v, base_tu, base_tv] = *base;
+    let [now_u, now_v, now_tu, now_tv] = uv.state;
+    if base_tu == 0.0 || base_tv == 0.0 {
+        return;
+    }
+    let (ru, rv) = (now_tu / base_tu, now_tv / base_tv);
+    let (bu, bv) = ((1.0 - ru) * 0.5 - (now_u - ru * base_u), (1.0 - rv) * 0.5 + (now_v - rv * base_v));
+    let engine = texture_set(geom_data, uv.set);
+    let mut worst = 0.0f32;
+    for (k, e) in kept.iter().zip(engine) {
+        worst = worst.max((ru * k[0] + bu - e[0]).abs()).max((rv * k[1] + bv - e[1]).abs());
+    }
+    let check = &mut *UV_CHECK.get(t);
+    check.0 += 1;
+    if worst > 1e-3 {
+        check.1 += 1;
+    }
+    check.2 = check.2.max(worst);
 }
 
 /// A geometry data of the census (`NIRENDER_GEOMETRY_CENSUS=1`), by its handle and unique id:
@@ -692,7 +834,7 @@ pub unsafe fn census_report(t: &MainThread) -> Vec<String> {
 /// to 4 bytes.
 unsafe fn send(t: &MainThread, handle: u32, version: Version, fvf: u32, stride: u32, strip_count: u32, lengths: &[u8], bytes: &[u8], index_bytes: &[u8]) {
     crate::capture::geometry(&[handle, version.unique, version.revision as u32, fvf, stride, version.vertices, version.entries, strip_count], lengths, bytes, index_bytes);
-    versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t) });
+    versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: None });
     *RECORDS.get(t) += 1;
     *BYTES.get(t) += (32 + lengths.len() + bytes.len() + index_bytes.len()) as u64;
 }

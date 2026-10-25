@@ -82,6 +82,10 @@ impl Player {
             r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.hidden, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
         );
         println!(
+            "uv controllers: {} records with the state of the vertices, {} steps, {} for a geometry not held",
+            c.uv_bases, c.uv_steps, c.uv_missing
+        );
+        println!(
             "retained instance uploads: {} whole, {} runs of changed entries with {:.1} MB{}",
             c.instance_uploads_whole,
             c.instance_upload_runs,

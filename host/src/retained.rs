@@ -154,6 +154,9 @@ struct Slot {
     claim: Option<DrawFacts>,
     /// The extension holds the instance in this frame: no view of the table draws the slot.
     held: bool,
+    /// The stages of `data` before the step of its geometry's UV controller, while it has one
+    /// (`RetainedSet::set_uv`).
+    uv_base: Option<Box<crate::uv_animation::StageBase>>,
 }
 
 #[derive(Default)]
@@ -413,6 +416,29 @@ impl RetainedSet {
         }
         self.counts.moves += 1;
         true
+    }
+
+    /// The step of a UV controller in the slots of an instance: each slot keeps its stages
+    /// before the step (`Slot::uv_base`) and takes the step over them; [`None`] or no step
+    /// gives the slots their stages back.
+    pub fn set_uv(&mut self, id: u32, uv: Option<&crate::uv_animation::UvAnimation>) {
+        let Some(slots) = self.by_id.get(&id) else { return };
+        let step = uv.and_then(|uv| uv.matrix().map(|m| (uv.set, m)));
+        for &slot in slots {
+            let Some(s) = self.slots[slot as usize].as_mut() else { continue };
+            match step {
+                None => {
+                    let Some(base) = s.uv_base.take() else { continue };
+                    base.restore(&mut s.data);
+                }
+                Some((set, m)) => {
+                    let base = s.uv_base.get_or_insert_with(|| Box::new(crate::uv_animation::StageBase::of(&s.data)));
+                    base.restore(&mut s.data);
+                    crate::uv_animation::compose_matrix(&mut s.data, set, &m);
+                }
+            }
+            self.dirty.push(slot);
+        }
     }
 
     /// The origin that the positions of the lights of the set are relative to.
@@ -1670,7 +1696,7 @@ impl Player {
             let bones_first = if r.flags & INSTANCE_SKINNED != 0 { set.bones_first_of(id) } else { NO_BONES };
             let sorted = crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter);
             let in_place = !sorted && derived.blends.first().is_some_and(|b| b[0] != 0);
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted, in_place, pinned, bones_first, no_lights: derived.no_lights, claim, held: false });
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted, in_place, pinned, bones_first, no_lights: derived.no_lights, claim, held: false, uv_base: None });
             set.ranges_total += ranges.len();
             set.cull[slot as usize] = CullEntry::of(set.slots[slot as usize].as_ref());
             set.buckets[bucket as usize].slots.push(slot);
@@ -1689,6 +1715,9 @@ impl Player {
             let known = &self.renderer.lights_known;
             let ambient = self.retained.ambient_of.get(&id).copied();
             self.retained.set_lights(id, &keys, ambient, known);
+        }
+        if let Some(uv) = self.renderer.geometries.get(&r.geometry).and_then(|g| g.uv) {
+            self.retained.set_uv(id, Some(&uv));
         }
     }
 

@@ -59,12 +59,19 @@ impl Player {
             tag::GEOMETRY if data.len() >= 32 => {
                 let handle = word(data, 0);
                 let known = self.renderer.geometries.contains_key(&handle);
+                let had_uv = self.renderer.geometries.get(&handle).is_some_and(|g| g.uv.is_some());
                 let in_place = self.renderer.geometry(data);
+                // New vertices in place hold the engine's coordinates: no step on them, until
+                // the `GEOMETRY_UV` record of their state.
+                if in_place && had_uv {
+                    self.geometry_uv(handle, None);
+                }
                 // A handle whose instances left the table at a gone geometry puts them back.
                 if (known && !in_place) || self.orphaned.remove(&handle) {
                     self.geometry_changed(handle);
                 }
             }
+            tag::GEOMETRY_UV => self.geometry_uv_record(data),
             tag::GEOMETRY_GONE => {
                 let handle = word(data, 0);
                 if self.renderer.geometry_gone(handle, word(data, 4)) {
@@ -584,6 +591,41 @@ impl Player {
         }
     }
 
+    /// A state of the UV controller of a geometry ([`tag::GEOMETRY_UV`]).
+    pub(crate) fn geometry_uv_record(&mut self, data: &[u8]) {
+        let (handle, unique, set_flags) = (word(data, 0), word(data, 4), word(data, 8));
+        let state: [f32; 4] = core::array::from_fn(|i| float(data, 12 + i * 4));
+        let Some(geometry) = self.renderer.geometries.get(&handle).filter(|g| g.unique == Some(unique)) else {
+            self.renderer.counts.uv_missing += 1;
+            return;
+        };
+        let set = set_flags & 0xFFFF;
+        let uv = if set_flags >> 16 & 1 != 0 {
+            self.renderer.counts.uv_bases += 1;
+            crate::uv_animation::UvAnimation { set, base: state, now: state }
+        } else if let Some(uv) = geometry.uv.filter(|uv| uv.set == set) {
+            self.renderer.counts.uv_steps += 1;
+            crate::uv_animation::UvAnimation { now: state, ..uv }
+        } else {
+            self.renderer.counts.uv_missing += 1;
+            return;
+        };
+        self.geometry_uv(handle, Some(uv));
+    }
+
+    /// Sets the UV state of a geometry, and the texture transforms of the table's slots of
+    /// its instances.
+    pub(crate) fn geometry_uv(&mut self, handle: u32, uv: Option<crate::uv_animation::UvAnimation>) {
+        if let Some(geometry) = self.renderer.geometries.get_mut(&handle) {
+            geometry.uv = uv;
+        }
+        if let Some(ids) = self.by_geometry.get(&handle) {
+            for &id in ids {
+                self.retained.set_uv(id, uv.as_ref());
+            }
+        }
+    }
+
     /// The place of a sorted blend of the table in the flush of the engine's queue: it waits
     /// with the engine's queued draws and keeps its place among them
     /// (`draw_retained_sorted`). Its key for the blends without a place is the centre of its
@@ -852,7 +894,10 @@ impl Player {
         self.stream.fog_range = fog_range;
         self.stream.sky = None;
         let mut lights = Vec::new();
-        let data = self.stream.draw_data(derived, &pass, &mut self.renderer.counts, &mut lights);
+        let mut data = self.stream.draw_data(derived, &pass, &mut self.renderer.counts, &mut lights);
+        if let Some(uv) = self.renderer.geometries.get(&self.stream.shape.geometry).and_then(|g| g.uv) {
+            crate::uv_animation::compose(&mut data, &uv);
+        }
         let origin = self.stream.origin.filter(|_| self.stream.shape.relative);
         let held = HeldDraw {
             facts,
