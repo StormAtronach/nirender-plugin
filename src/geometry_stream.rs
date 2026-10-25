@@ -715,7 +715,53 @@ unsafe fn morph_controller(shape: usize, geom_data: usize) -> Option<Morph> {
     if (0..targets as usize).any(|i| rd::<usize>(array + i * MT::SIZE, MT::targetVerts) == 0) {
         return None;
     }
-    Some(Morph { data, targets, vertices, time: rd(controller, MC::updateTime) })
+    Some(Morph { data, targets, vertices, time: scaled_time(controller) })
+}
+
+/// The time that `GenMorphInterp` gets: what `NiTimeController::ComputeScaledTime` (0x6FC710)
+/// returns. That call leaves the sum of the scaled steps in `lastScaledTime`; the time is that
+/// sum plus the phase, wrapped by the cycle (bits 1 and 2 of the flags: 0 loop, 1 reverse,
+/// else clamp) between the low and the high key times, then held between them. The call runs
+/// in `OnPreDisplay` (0x717384), or in `Update` with the Morrowind Code Patch, which then keeps
+/// the time at `updateTime`; after the display both leave these fields.
+unsafe fn scaled_time(controller: usize) -> f32 {
+    use crate::gen::layouts::NiTimeController as TC;
+    let low = rd::<f32>(controller, TC::lowKeyFrame) as f64;
+    let high = rd::<f32>(controller, TC::highKeyFrame) as f64;
+    let mut time = rd::<f32>(controller, TC::lastScaledTime) as f64 + rd::<f32>(controller, TC::phase) as f64;
+    let interval = high - low;
+    match (rd::<u16>(controller, TC::flags) >> 1) & 3 {
+        0 => {
+            time = if interval == 0.0 { low } else { (time - low) % interval + low };
+            if time < low {
+                time += interval;
+            }
+        }
+        1 => {
+            if interval == 0.0 {
+                time = low;
+            } else {
+                // As the engine does: the remainder is tested against the low key time.
+                let twice = interval + interval;
+                let mut t = (time - low) % twice;
+                if t < low {
+                    t += twice;
+                }
+                if t > interval {
+                    t = twice - t;
+                }
+                time = t + low;
+            }
+        }
+        _ => {}
+    }
+    if time > high {
+        high as f32
+    } else if time < low {
+        low as f32
+    } else {
+        time as f32
+    }
 }
 
 /// The weights of the targets at the controller's time, as `GenMorphInterp` (0x725ED0) takes
@@ -762,6 +808,8 @@ static MORPH_SCRATCH: MainCell<Vec<f32>> = MainCell::new(Vec::new());
 /// The unique id of each handle whose targets went: the helper keeps them until the data goes.
 static MORPH_SENT: MainCell<Option<HashMap<u32, u32>>> = MainCell::new(None);
 static MORPH_CHECK: MainCell<(u64, u64, f32)> = MainCell::new((0, 0, 0.0));
+/// The check mode's time and weights of the last step of each geometry data.
+static MORPH_BEFORE: MainCell<Option<HashMap<usize, (f32, Vec<f32>)>>> = MainCell::new(None);
 
 /// Compares the weighted targets with the positions the engine's morph wrote.
 unsafe fn check_morph(t: &MainThread, morph: &Morph, weights: &[f32], geom_data: usize) {
@@ -771,25 +819,46 @@ unsafe fn check_morph(t: &MainThread, morph: &Morph, weights: &[f32], geom_data:
     if positions == 0 {
         return;
     }
-    let mut worst = 0.0f32;
-    for v in 0..morph.vertices as usize {
-        let mut sum = [0.0f32; 3];
-        for (i, &w) in weights.iter().enumerate() {
-            let verts: usize = rd(array + i * MT::SIZE, MT::targetVerts);
-            let p: [f32; 3] = rd(verts, v * 12);
+    let distance = |weights: &[f32]| {
+        let mut worst = 0.0f32;
+        for v in 0..morph.vertices as usize {
+            let mut sum = [0.0f32; 3];
+            // As `GenMorphInterp` adds: the product and the sum in the x87's wider precision,
+            // rounded to a float at the store after each target.
+            for (i, &w) in weights.iter().enumerate() {
+                let verts: usize = rd(array + i * MT::SIZE, MT::targetVerts);
+                let p: [f32; 3] = rd(verts, v * 12);
+                for c in 0..3 {
+                    sum[c] = (sum[c] as f64 + w as f64 * p[c] as f64) as f32;
+                }
+            }
+            let engine: [f32; 3] = rd(positions, v * 12);
             for c in 0..3 {
-                sum[c] += w * p[c];
+                worst = worst.max((sum[c] - engine[c]).abs());
             }
         }
-        let engine: [f32; 3] = rd(positions, v * 12);
-        for c in 0..3 {
-            worst = worst.max((sum[c] - engine[c]).abs());
-        }
-    }
+        worst
+    };
+    let worst = distance(weights);
+    // The weights of the step before of the same data, for the log: a lag of one step shows
+    // as a small distance to them.
+    let before = (*MORPH_BEFORE.get(t)).get_or_insert_with(Default::default).insert(geom_data, (morph.time, weights.to_vec()));
     let check = &mut *MORPH_CHECK.get(t);
     check.0 += 1;
     if worst > 1e-3 {
         check.1 += 1;
+        if check.1 <= 6 {
+            let relative = rd::<u8>(morph.data, MD::bRelativeTargets);
+            let keys: Vec<(i32, i32)> = (0..morph.targets as usize).map(|i| {
+                let target = array + i * MT::SIZE;
+                (rd(target, MT::numKeys), rd(target, MT::eType))
+            }).collect();
+            let (time_before, to_before) = before.as_ref().map_or((f32::NAN, f32::NAN), |(time, w)| (*time, distance(w)));
+            crate::log!(
+                "geometry: morph check {}: data 0x{:x}, {} targets of {} vertices, relative {}, time {} (the step before {}), keys (count, type) {:?}, weights {:?}, the most {} (to the weights before {})",
+                check.1, morph.data, morph.targets, morph.vertices, relative, morph.time, time_before, keys, weights, worst, to_before
+            );
+        }
     }
     check.2 = check.2.max(worst);
 }
@@ -1197,7 +1266,48 @@ unsafe fn skin_influences(skin_data: usize, vertices: usize) -> Option<Vec<([f32
 
 #[cfg(test)]
 mod tests {
-    use super::{has_bone_weights, pack_weights, same_influences, skin_data_dying, unitize, unpacked};
+    use super::{has_bone_weights, pack_weights, same_influences, scaled_time, skin_data_dying, unitize, unpacked};
+
+    /// A time controller in memory with these fields (`NiTimeController` layout).
+    fn controller(flags: u16, phase: f32, low: f32, high: f32, last_scaled: f32) -> Vec<u32> {
+        use crate::gen::layouts::NiTimeController as TC;
+        let mut words = vec![0u32; TC::SIZE / 4];
+        words[TC::flags / 4] = flags as u32;
+        words[TC::phase / 4] = phase.to_bits();
+        words[TC::lowKeyFrame / 4] = low.to_bits();
+        words[TC::highKeyFrame / 4] = high.to_bits();
+        words[TC::lastScaledTime / 4] = last_scaled.to_bits();
+        words
+    }
+
+    fn time(words: &[u32]) -> f32 {
+        unsafe { scaled_time(words.as_ptr() as usize) }
+    }
+
+    #[test]
+    fn a_loop_wraps_the_scaled_sum_between_the_key_times() {
+        // The morph of the test level's exhibit 088: keys from 0 to 8.33, a loop (cycle 0).
+        let t = time(&controller(8, 0.0, 0.0, 25.0 / 3.0, 65.16));
+        assert!((t - (65.16 - 7.0 * 25.0 / 3.0)).abs() < 1e-3, "{t}");
+        // The phase moves it; a sum below the low key time wraps up.
+        let t = time(&controller(8, 1.0, 2.0, 4.0, 0.5));
+        assert!((t - 3.5).abs() < 1e-5, "{t}");
+    }
+
+    #[test]
+    fn reverse_goes_back_from_the_high_key_time() {
+        // Cycle 1 (flags bits 1-2 = 1): 0 to 2, then back.
+        assert!((time(&controller(2, 0.0, 0.0, 2.0, 1.5)) - 1.5).abs() < 1e-5);
+        assert!((time(&controller(2, 0.0, 0.0, 2.0, 2.5)) - 1.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn clamp_holds_the_time_between_the_key_times() {
+        // Cycle 2.
+        assert_eq!(time(&controller(4, 0.0, 1.0, 3.0, 7.0)), 3.0);
+        assert_eq!(time(&controller(4, 0.0, 1.0, 3.0, 0.25)), 1.0);
+        assert_eq!(time(&controller(4, 0.0, 1.0, 3.0, 2.0)), 2.0);
+    }
 
     /// A skin data with 2 bones: the first with 3 vertices and its array, the second with
     /// `second_count` vertices and `second_array`.
