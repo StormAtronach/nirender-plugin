@@ -69,6 +69,7 @@ mod player;
 use engine::{plan, scene};
 mod retained;
 mod uv_animation;
+mod morph;
 pub mod stamps;
 use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_BONES_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
 
@@ -596,6 +597,9 @@ struct Renderer {
     /// The quads of the particle systems made on the GPU (`particle_quads`), made at the
     /// first system; none with `MGE_XE_PARTICLE_QUADS=cpu`.
     particle_quads: Option<particle_quads::ParticleQuads>,
+    /// The morphs of the geometries whose targets the plugin sent (`morph.rs`), made at the
+    /// first `MORPH_TARGETS` record.
+    morphs: Option<morph::Morphs>,
     /// The material records by handle, and the states derived from them by (handle, texture
     /// sets of the geometry).
     materials: FxHashMap<u32, material::Material>,

@@ -250,6 +250,13 @@ pub mod tag {
     /// state of the vertices of the `GEOMETRY` record just before), then the U offset, the V
     /// offset, the U tiling and the V tiling of the controller.
     pub const GEOMETRY_UV: u32 = 41;
+    /// The targets of the morph controller of a geometry (`geometry_stream::send_morph_targets`):
+    /// the handle, the unique id, the number of targets, the vertices of a target; then the
+    /// positions of each target (3 floats a vertex), one target after the other.
+    pub const MORPH_TARGETS: u32 = 42;
+    /// The weights of the targets for the new revision of a geometry (`send_morph_weights`):
+    /// the handle, the unique id, the number of weights, then the weights.
+    pub const MORPH_WEIGHTS: u32 = 43;
 }
 
 // ---- the ring in shared memory
@@ -1424,6 +1431,28 @@ pub unsafe fn shape(head: &[u32], lights: &[u32], tail: &[u32], bytes: &[u8], bo
 pub unsafe fn instance(head: &[u32], name: &[u8]) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE, &[words(head), name]);
+}
+
+/// The targets of a morph controller: `parts` go into the ring one after the other. See
+/// [`tag::MORPH_TARGETS`].
+pub unsafe fn morph_targets(parts: &[&[u8]]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::MORPH_TARGETS, parts);
+}
+
+/// The weights of a morph. See [`tag::MORPH_WEIGHTS`].
+pub unsafe fn morph_weights(head: &[u32], weights: &[f32]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::MORPH_WEIGHTS, &[words(head), float_bytes(weights)]);
+}
+
+/// The bytes of a list of words, for the head of a record made of parts.
+pub fn word_bytes(values: &[u32]) -> &[u8] {
+    words(values)
+}
+
+fn float_bytes(values: &[f32]) -> &[u8] {
+    unsafe { core::slice::from_raw_parts(values.as_ptr() as *const u8, values.len() * 4) }
 }
 
 /// A state of a UV controller. See [`tag::GEOMETRY_UV`].

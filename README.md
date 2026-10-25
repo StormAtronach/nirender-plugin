@@ -109,6 +109,9 @@ The A/B:
 - `NIRENDER_UV_STEPS=0` sends a geometry under a UV controller whole at each new revision,
   as before `GEOMETRY_UV`; `check` sends both, and the plugin compares the step from the sent
   coordinates with the engine's (the geometry line of the log).
+- `NIRENDER_MORPH_WEIGHTS=0` sends a geometry under a morph controller whole at each new
+  revision, as before `MORPH_TARGETS` and `MORPH_WEIGHTS`; `check` sends both, and the plugin
+  compares the weighted targets with the engine's positions (the geometry line of the log).
 - `NIRENDER_GEOMETRY_CENSUS=1` counts the geometries sent again, by the controllers of their
   shape, and logs the census at each stream mark (`geometry_stream::census_take`).
 - `NIRENDER_SKIP=0` makes the engine display the retained shapes too.

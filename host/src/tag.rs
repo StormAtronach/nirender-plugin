@@ -70,6 +70,13 @@ pub const INSTANCE_MOVE: u32 = 40;
 /// state of the vertices the last `GEOMETRY` record of the handle had), then the U offset,
 /// the V offset, the U tiling and the V tiling (`uv_animation`).
 pub const GEOMETRY_UV: u32 = 41;
+/// The targets of the morph controller of a geometry (`Renderer::morph_targets`): the handle,
+/// the unique id, the number of targets, the vertices of a target, then the positions of each
+/// target (3 floats a vertex), one target after the other (`morph.rs`).
+pub const MORPH_TARGETS: u32 = 42;
+/// The weights of the targets for a new revision of a geometry (`Renderer::morph_weights`):
+/// the handle, the unique id, the number of weights, then the weights.
+pub const MORPH_WEIGHTS: u32 = 43;
 
 /// The least length of a record of the tag that the player reads without a check of its
 /// own: a shorter record is skipped and counted (`Counts::short_records`), not read past
@@ -112,6 +119,8 @@ pub fn least_length(tag: u32) -> usize {
         MATERIAL_GONE => 4,
         INSTANCE_MOVE => 104,
         GEOMETRY_UV => 28,
+        MORPH_TARGETS => 16,
+        MORPH_WEIGHTS => 12,
         _ => 0,
     }
 }
@@ -122,7 +131,7 @@ mod tests {
 
     #[test]
     fn every_record_with_a_fixed_head_has_a_least_length() {
-        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV] {
+        for tag in [HEADER, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS] {
             assert!(least_length(tag) > 0, "tag {tag} has no least length");
         }
     }

@@ -81,6 +81,11 @@ impl Player {
             "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} hidden, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
             r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.hidden, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
         );
+        let (morph_steps, morph_skipped) = self.renderer.morph_counts();
+        println!(
+            "morphs: {} records of targets, {} steps made on the GPU, {} not made, {} for a geometry not held",
+            c.morph_targets, morph_steps, morph_skipped, c.morph_missing
+        );
         println!(
             "uv controllers: {} records with the state of the vertices, {} steps, {} for a geometry not held",
             c.uv_bases, c.uv_steps, c.uv_missing

@@ -610,12 +610,14 @@ impl Renderer {
             array_variants: FxHashMap::default(),
             geometries: FxHashMap::default(),
             gone_textures: Vec::new(),
-            vertex_pool: pool::Pool::new("game vertices", wgpu::BufferUsages::VERTEX, VERTEX_CHUNK),
+            // Storage too: the morph pass writes the positions of a morphed geometry in place.
+            vertex_pool: pool::Pool::new("game vertices", wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE, VERTEX_CHUNK),
             index_pool: pool::Pool::new("game indexes", wgpu::BufferUsages::INDEX, INDEX_CHUNK),
             retired: Vec::new(),
             retired_indexes: Vec::new(),
             quad_indexes: None,
             particle_quads: None,
+            morphs: None,
             materials: FxHashMap::default(),
             derived: FxHashMap::default(),
             defaults,
@@ -1232,8 +1234,55 @@ impl Renderer {
             self.retired.extend(old.vertex_range);
             self.retired_indexes.extend(old.index_range);
         }
+        if let Some(morphs) = self.morphs.as_mut() {
+            morphs.gone(handle, unique);
+        }
         self.counts.geometries_gone += 1;
         true
+    }
+
+    /// The targets of a geometry's morph ([`tag::MORPH_TARGETS`]): the handle, the unique id,
+    /// the targets, the vertices of a target, then the positions.
+    pub(crate) fn morph_targets(&mut self, data: &[u8]) {
+        let (handle, unique, count, vertices) = (word(data, 0), word(data, 4), word(data, 8), word(data, 12));
+        let floats = (count as usize) * (vertices as usize) * 3;
+        if data.len() < 16 + floats * 4 {
+            self.counts.short_records += 1;
+            return;
+        }
+        let values: Vec<f32> = data[16..16 + floats * 4].chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+        let device = self.device.clone();
+        let morphs = self.morphs.get_or_insert_with(|| morph::Morphs::new(&device));
+        morphs.put_targets(&self.device, &self.queue, handle, unique, count, vertices, &values);
+        self.counts.morph_targets += 1;
+    }
+
+    /// The weights of a new revision of a geometry ([`tag::MORPH_WEIGHTS`]): the handle, the
+    /// unique id, the number of weights, then the weights.
+    pub(crate) fn morph_weights(&mut self, data: &[u8]) {
+        let (handle, unique, count) = (word(data, 0), word(data, 4), word(data, 8) as usize);
+        if data.len() < 12 + count * 4 {
+            self.counts.short_records += 1;
+            return;
+        }
+        let weights: Vec<f32> = (0..count).map(|i| float(data, 12 + i * 4)).collect();
+        let (Some(morphs), Some(geometry)) = (self.morphs.as_mut(), self.geometries.get(&handle).filter(|g| g.unique == Some(unique))) else {
+            self.counts.morph_missing += 1;
+            return;
+        };
+        morphs.step(&self.device, handle, unique, &weights, geometry);
+    }
+
+    /// The compute pass of the frame's morphs, into the frame's commands: before its draws.
+    pub(crate) fn flush_morphs(&mut self) {
+        if let Some(morphs) = self.morphs.as_mut() {
+            morphs.flush(&self.device, &self.queue, &self.commands);
+        }
+    }
+
+    /// The morph counts for the report: the steps made and those not made.
+    pub(crate) fn morph_counts(&self) -> (u64, u64) {
+        self.morphs.as_ref().map_or((0, 0), |m| (m.steps, m.skipped))
     }
 
     /// A texture or a level surface of the plugin's device was freed (`TEXTURE_GONE`). A level

@@ -72,6 +72,8 @@ impl Player {
                 }
             }
             tag::GEOMETRY_UV => self.geometry_uv_record(data),
+            tag::MORPH_TARGETS => self.renderer.morph_targets(data),
+            tag::MORPH_WEIGHTS => self.renderer.morph_weights(data),
             tag::GEOMETRY_GONE => {
                 let handle = word(data, 0);
                 if self.renderer.geometry_gone(handle, word(data, 4)) {

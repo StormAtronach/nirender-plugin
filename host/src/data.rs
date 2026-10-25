@@ -369,6 +369,10 @@ pub(crate) struct Counts {
     pub(crate) uv_bases: u32,
     pub(crate) uv_steps: u32,
     pub(crate) uv_missing: u32,
+    /// The `MORPH_TARGETS` records, and the `MORPH_WEIGHTS` records for a geometry not held
+    /// or before any targets.
+    pub(crate) morph_targets: u32,
+    pub(crate) morph_missing: u32,
     pub(crate) geometry_bytes: u64,
     pub(crate) geometry_draws: u32,
     pub(crate) geometry_bad: u32,

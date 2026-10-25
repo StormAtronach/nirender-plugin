@@ -7333,6 +7333,92 @@ pub mod NiMaterialProperty {
     pub const revisionID: usize = 0x54;
 }
 
+pub mod NiMorphData {
+    pub const SIZE: usize = 0x18;
+    /// `NiObject`, 0x8 bytes
+    pub const super_: usize = 0x0;
+    /// `InterfaceNiObjectUnion`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const refCount: usize = 0x4;
+    /// `unsigned int`, 0x4 bytes
+    pub const numTargets: usize = 0x8;
+    /// `unsigned int`, 0x4 bytes
+    pub const numVertsPerTarget: usize = 0xc;
+    /// `NiMorphData::MorphTarget *`, 0x4 bytes
+    pub const arrayMorphTargets: usize = 0x10;
+    /// `char`, 0x1 bytes
+    pub const bRelativeTargets: usize = 0x14;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_15: usize = 0x15;
+}
+
+pub mod NiMorphData_MorphTarget {
+    pub const SIZE: usize = 0x14;
+    /// `vec3 *`, 0x4 bytes
+    pub const targetVerts: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const numKeys: usize = 0x4;
+    /// `int`, 0x4 bytes
+    pub const eType: usize = 0x8;
+    /// `NiFloatKey *`, 0x4 bytes
+    pub const morphKeys: usize = 0xc;
+    /// `int`, 0x4 bytes
+    pub const lastIndex: usize = 0x10;
+}
+
+pub mod NiMorpherController {
+    pub const SIZE: usize = 0x44;
+    /// `NiTimeController`, 0x34 bytes
+    pub const super_: usize = 0x0;
+    /// `NiObject`, 0x8 bytes
+    pub const super__: usize = 0x0;
+    /// `InterfaceNiObjectUnion`, 0x4 bytes
+    pub const vtbl: usize = 0x0;
+    /// `int`, 0x4 bytes
+    pub const refCount: usize = 0x4;
+    /// `__int16`, 0x2 bytes
+    pub const flags: usize = 0x8;
+    /// `__int16`, 0x2 bytes
+    pub const pad_A: usize = 0xa;
+    /// `float`, 0x4 bytes
+    pub const frequency: usize = 0xc;
+    /// `float`, 0x4 bytes
+    pub const phase: usize = 0x10;
+    /// `float`, 0x4 bytes
+    pub const lowKeyFrame: usize = 0x14;
+    /// `float`, 0x4 bytes
+    pub const highKeyFrame: usize = 0x18;
+    /// `float`, 0x4 bytes
+    pub const startTime: usize = 0x1c;
+    /// `float`, 0x4 bytes
+    pub const lastTime: usize = 0x20;
+    /// `float`, 0x4 bytes
+    pub const lastScaledTime: usize = 0x24;
+    /// `NiObjectUnion`, 0x4 bytes
+    pub const target: usize = 0x28;
+    /// `NiTimeController *`, 0x4 bytes
+    pub const nextController: usize = 0x2c;
+    /// `byte`, 0x1 bytes
+    pub const updateRequired: usize = 0x30;
+    /// `char[3]`, 0x3 bytes
+    pub const padding_31: usize = 0x31;
+    /// `NiMorphData *`, 0x4 bytes
+    pub const morphData: usize = 0x34;
+    /// `bool`, 0x1 bytes
+    pub const updateRequiredMorpher: usize = 0x38;
+    /// `bool`, 0x1 bytes
+    pub const field_39: usize = 0x39;
+    /// `char[2]`, 0x2 bytes
+    pub const pad_3A: usize = 0x3a;
+    /// `float`, 0x4 bytes
+    pub const updateTime: usize = 0x3c;
+    /// `bool`, 0x1 bytes
+    pub const flagAlwaysUpdate: usize = 0x40;
+    /// `char[3]`, 0x3 bytes
+    pub const pad_41: usize = 0x41;
+}
+
 pub mod NiNode {
     pub const SIZE: usize = 0xb0;
     /// `NiAVObject`, 0x90 bytes

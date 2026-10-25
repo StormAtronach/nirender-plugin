@@ -43,7 +43,9 @@ LAYOUT_RE = re.compile(
     r"InterfaceNiDX8TextureManager$|InterfaceNiD3DShaderInterface$|NiRendererSpecificProperty::PassObject$|"
     r"TES3Game::AdapterMapNode$|"
     # The UV controller's state for GEOMETRY_UV (2026-10-25).
-    r"NiUVController$)")
+    r"NiUVController$|"
+    # The morph controller's targets and weights for MORPH_TARGETS and MORPH_WEIGHTS (2026-10-25).
+    r"NiMorpherController$|NiMorphData$|NiMorphData::MorphTarget$)")
 
 
 KEYWORDS = {"type", "super", "self", "ref", "match", "loop", "move", "fn", "mod", "use", "in", "final", "box", "priv", "enum",

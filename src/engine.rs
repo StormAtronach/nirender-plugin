@@ -71,6 +71,16 @@ pub const NI_POINTER_CTOR: usize = 0x40B080;
 /// 0x40A880 `NiPointer::dtor`. The game code gives this address to the vector iterators.
 pub const NI_POINTER_DTOR: usize = 0x40A880;
 
+/// 0x70CFE0 `NiFloatKey_static::genInterp`: `float __cdecl (time, keys, key type, key count,
+/// *index)`. It searches from the key at `*index` and moves it.
+const FLOAT_KEY_INTERP: usize = 0x70CFE0;
+
+/// The value of a track of float keys at `time`, as the engine's controllers take it. `index`
+/// is the key to search from; the call moves it.
+pub unsafe fn float_key_interp(time: f32, keys: usize, kind: i32, count: i32, index: &mut u32) -> f32 {
+    transmute::<usize, unsafe extern "C" fn(f32, usize, i32, i32, *mut u32) -> f32>(FLOAT_KEY_INTERP)(time, keys, kind, count, index)
+}
+
 // ---- call primitives
 
 /// Calls the `__thiscall` function at `addr` with `this` in ECX and no stack argument.

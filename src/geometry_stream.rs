@@ -56,6 +56,8 @@ struct Sent {
     version: Version,
     used: u32,
     uv_set: Option<u32>,
+    /// The helper has the targets of its morph controller: a new revision can go as weights.
+    morph: bool,
 }
 
 /// The geometries sent, by the address of their data. A destroyed data leaves at its
@@ -113,6 +115,7 @@ fn prune(t: &MainThread, now: u32) {
 /// capture file from the stream, which has no geometry records before it.
 pub unsafe fn reset(t: &MainThread) {
     versions(t).clear();
+    *MORPH_SENT.get(t) = None;
 }
 
 /// A geometry data was destroyed (`NiRenderer_static::RemoveGeometryData`, from its
@@ -124,6 +127,11 @@ pub unsafe fn gone(t: &MainThread, handle: u32, unique: u32) {
     let map = versions(t);
     if map.get(&handle).is_some_and(|sent| sent.version.unique == unique) {
         map.remove(&handle);
+    }
+    if let Some(sent_targets) = (*MORPH_SENT.get(t)).as_mut() {
+        if sent_targets.get(&handle) == Some(&unique) {
+            sent_targets.remove(&handle);
+        }
     }
     *GONE.get(t) += 1;
     crate::capture::geometry_gone(handle, unique);
@@ -142,13 +150,17 @@ pub unsafe fn report(t: &MainThread) -> String {
     let (records, bytes) = (*RECORDS.get(t), *BYTES.get(t));
     let s = &*SKIN_COUNTS.get(t);
     format!(
-        "geometry: {} records, {:.1} MB, {} UV steps (checked {}, over 1/1000 {}, the most {:.6}), {} geometries known, {} forgotten after {} frames without a draw, {} destroyed (GEOMETRY_GONE); skins: {} from the skin data, {} from the partitions ({} without bone data), {} with a dying skin data; vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
+        "geometry: {} records, {:.1} MB, {} UV steps (checked {}, over 1/1000 {}, the most {:.6}), {} morph steps (checked {}, over 1/1000 {}, the most {:.6}), {} geometries known, {} forgotten after {} frames without a draw, {} destroyed (GEOMETRY_GONE); skins: {} from the skin data, {} from the partitions ({} without bone data), {} with a dying skin data; vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
         records,
         bytes as f64 / 1e6,
         *UV_STEPS.get(t),
         (*UV_CHECK.get(t)).0,
         (*UV_CHECK.get(t)).1,
         (*UV_CHECK.get(t)).2,
+        *MORPH_STEPS.get(t),
+        (*MORPH_CHECK.get(t)).0,
+        (*MORPH_CHECK.get(t)).1,
+        (*MORPH_CHECK.get(t)).2,
         versions(t).len(),
         *FORGOTTEN.get(t),
         FORGET_AFTER,
@@ -498,7 +510,28 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
             if uv_mode() == UvMode::Check {
                 check_uv(t, handle, geom_data, &uv);
             } else {
-                versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: Some(uv.set) });
+                versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: Some(uv.set), morph: false });
+                return handle;
+            }
+        }
+    }
+    // A geometry whose only controller is a morph controller: a new revision alone, after its
+    // targets went, goes as the weights of the targets.
+    let morph = if uv.is_none() { morph_controller(shape, geom_data) } else { None };
+    if let Some(morph) = &morph {
+        let step = versions(t).get(&handle).is_some_and(|sent| {
+            let before = sent.version;
+            sent.morph && before.unique == version.unique && before.vertices == version.vertices && before.entries == version.entries && before.skin_data == version.skin_data
+        });
+        if step {
+            let weights = &mut *MORPH_SCRATCH.get(t);
+            morph_weights(morph, weights);
+            crate::capture::morph_weights(&[handle, version.unique, weights.len() as u32], weights);
+            *MORPH_STEPS.get(t) += 1;
+            if morph_mode() == MorphMode::Check {
+                check_morph(t, morph, weights, geom_data);
+            } else {
+                versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: None, morph: true });
                 return handle;
             }
         }
@@ -598,7 +631,167 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
             keep_uv_base(t, handle, geom_data, &uv);
         }
     }
+    if let Some(morph) = morph {
+        let sent_targets = (*MORPH_SENT.get(t)).get_or_insert_with(Default::default);
+        if sent_targets.insert(handle, version.unique) != Some(version.unique) {
+            send_morph_targets(handle, version.unique, &morph);
+        }
+        if let Some(sent) = versions(t).get_mut(&handle) {
+            sent.morph = true;
+        }
+    }
     handle
+}
+
+/// `NiRTTI` of `NiGeomMorpherController` (`GetRTTI` 0x717900), and its flag that makes the
+/// engine compute the normals again after a morph (`OnPreDisplay` 0x717370, bit 4).
+const RTTI_NI_GEOM_MORPHER_CONTROLLER: usize = 0x7DF180;
+const MORPH_UPDATE_NORMALS: u16 = 0x10;
+/// The most targets of a morph that goes as weights.
+const MORPH_MOST_TARGETS: u32 = 64;
+
+/// A morph controller: its data, its targets, the vertices of a target, and its time.
+struct Morph {
+    data: usize,
+    targets: u32,
+    vertices: u32,
+    time: f32,
+}
+
+/// How a geometry under a morph controller goes (`NIRENDER_MORPH_WEIGHTS`): its new revisions
+/// as the weights of its targets (the default); as whole geometries (`0`, as before); or both
+/// (`check`: the plugin compares the weighted targets with the engine's positions).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MorphMode {
+    On,
+    Off,
+    Check,
+}
+
+fn morph_mode() -> MorphMode {
+    static MODE: std::sync::OnceLock<MorphMode> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("NIRENDER_MORPH_WEIGHTS").as_deref() {
+        Ok("0") => MorphMode::Off,
+        Ok("check") => MorphMode::Check,
+        _ => MorphMode::On,
+    })
+}
+
+/// The morph controller of `shape`, when it is the only controller of the shape, its target
+/// is the shape and the shape draws `geom_data`; its morph sets the positions only (no new
+/// normals, no sum onto the positions before: `field_39`, `GenMorphInterp` 0x725ED0); and
+/// its targets are at most [`MORPH_MOST_TARGETS`], each with vertices.
+unsafe fn morph_controller(shape: usize, geom_data: usize) -> Option<Morph> {
+    use crate::gen::layouts::{NiMorphData as MD, NiMorphData_MorphTarget as MT, NiMorpherController as MC};
+    if shape == 0 || morph_mode() == MorphMode::Off {
+        return None;
+    }
+    let controller: usize = rd(shape, crate::gen::layouts::NiAVObject::controllers);
+    if controller == 0 || rd::<usize>(controller, MC::nextController) != 0 {
+        return None;
+    }
+    if ni::get_rtti(controller) != RTTI_NI_GEOM_MORPHER_CONTROLLER || rd::<usize>(controller, MC::target) != shape {
+        return None;
+    }
+    if rd::<usize>(shape, crate::gen::layouts::NiGeometry::spModelData) != geom_data {
+        return None;
+    }
+    if rd::<u16>(controller, MC::flags) & MORPH_UPDATE_NORMALS != 0 && rd::<usize>(geom_data, GD::normals) != 0 {
+        return None;
+    }
+    if rd::<u8>(controller, MC::field_39) != 0 {
+        return None;
+    }
+    let data: usize = rd(controller, MC::morphData);
+    if data == 0 {
+        return None;
+    }
+    let targets: u32 = rd(data, MD::numTargets);
+    let vertices: u32 = rd(data, MD::numVertsPerTarget);
+    let array: usize = rd(data, MD::arrayMorphTargets);
+    if targets == 0 || targets > MORPH_MOST_TARGETS || vertices == 0 || array == 0 || vertices > rd::<u16>(geom_data, GD::vertexCount) as u32 {
+        return None;
+    }
+    if (0..targets as usize).any(|i| rd::<usize>(array + i * MT::SIZE, MT::targetVerts) == 0) {
+        return None;
+    }
+    Some(Morph { data, targets, vertices, time: rd(controller, MC::updateTime) })
+}
+
+/// The weights of the targets at the controller's time, as `GenMorphInterp` (0x725ED0) takes
+/// them: the first target of relative targets has weight 1; a target without keys adds
+/// nothing. Each search starts from a copy of the target's key index: the engine's stays.
+unsafe fn morph_weights(morph: &Morph, out: &mut Vec<f32>) {
+    use crate::gen::layouts::{NiMorphData as MD, NiMorphData_MorphTarget as MT};
+    out.clear();
+    let relative = rd::<u8>(morph.data, MD::bRelativeTargets) != 0;
+    let array: usize = rd(morph.data, MD::arrayMorphTargets);
+    for i in 0..morph.targets as usize {
+        let target = array + i * MT::SIZE;
+        let keys: i32 = rd(target, MT::numKeys);
+        let weight = if i == 0 && relative {
+            1.0
+        } else if keys == 0 {
+            0.0
+        } else {
+            let mut index: u32 = rd(target, MT::lastIndex);
+            crate::engine::float_key_interp(morph.time, rd(target, MT::morphKeys), rd(target, MT::eType), keys, &mut index)
+        };
+        out.push(weight);
+    }
+}
+
+/// Sends the targets of a morph: each target's positions, copied once into the ring.
+unsafe fn send_morph_targets(handle: u32, unique: u32, morph: &Morph) {
+    use crate::gen::layouts::{NiMorphData as MD, NiMorphData_MorphTarget as MT};
+    let head = [handle, unique, morph.targets, morph.vertices];
+    let array: usize = rd(morph.data, MD::arrayMorphTargets);
+    let mut parts: Vec<&[u8]> = vec![crate::capture::word_bytes(&head)];
+    for i in 0..morph.targets as usize {
+        let verts: usize = rd(array + i * MT::SIZE, MT::targetVerts);
+        parts.push(core::slice::from_raw_parts(verts as *const u8, morph.vertices as usize * 12));
+    }
+    crate::capture::morph_targets(&parts);
+}
+
+/// The steps sent as weights, the weights of the last step, the targets sent, and the check
+/// mode's counts: the steps compared, those with a position further than 1/1000 from the
+/// engine's, and the largest distance.
+static MORPH_STEPS: MainCell<u64> = MainCell::new(0);
+static MORPH_SCRATCH: MainCell<Vec<f32>> = MainCell::new(Vec::new());
+/// The unique id of each handle whose targets went: the helper keeps them until the data goes.
+static MORPH_SENT: MainCell<Option<HashMap<u32, u32>>> = MainCell::new(None);
+static MORPH_CHECK: MainCell<(u64, u64, f32)> = MainCell::new((0, 0, 0.0));
+
+/// Compares the weighted targets with the positions the engine's morph wrote.
+unsafe fn check_morph(t: &MainThread, morph: &Morph, weights: &[f32], geom_data: usize) {
+    use crate::gen::layouts::{NiMorphData as MD, NiMorphData_MorphTarget as MT};
+    let array: usize = rd(morph.data, MD::arrayMorphTargets);
+    let positions: usize = rd(geom_data, GD::vertices);
+    if positions == 0 {
+        return;
+    }
+    let mut worst = 0.0f32;
+    for v in 0..morph.vertices as usize {
+        let mut sum = [0.0f32; 3];
+        for (i, &w) in weights.iter().enumerate() {
+            let verts: usize = rd(array + i * MT::SIZE, MT::targetVerts);
+            let p: [f32; 3] = rd(verts, v * 12);
+            for c in 0..3 {
+                sum[c] += w * p[c];
+            }
+        }
+        let engine: [f32; 3] = rd(positions, v * 12);
+        for c in 0..3 {
+            worst = worst.max((sum[c] - engine[c]).abs());
+        }
+    }
+    let check = &mut *MORPH_CHECK.get(t);
+    check.0 += 1;
+    if worst > 1e-3 {
+        check.1 += 1;
+    }
+    check.2 = check.2.max(worst);
 }
 
 /// `NiRTTI` of `NiUVController` (`NiUVController::GetRTTI` 0x722950), and its texture set and
@@ -834,7 +1027,7 @@ pub unsafe fn census_report(t: &MainThread) -> Vec<String> {
 /// to 4 bytes.
 unsafe fn send(t: &MainThread, handle: u32, version: Version, fvf: u32, stride: u32, strip_count: u32, lengths: &[u8], bytes: &[u8], index_bytes: &[u8]) {
     crate::capture::geometry(&[handle, version.unique, version.revision as u32, fvf, stride, version.vertices, version.entries, strip_count], lengths, bytes, index_bytes);
-    versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: None });
+    versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: None, morph: false });
     *RECORDS.get(t) += 1;
     *BYTES.get(t) += (32 + lengths.len() + bytes.len() + index_bytes.len()) as u64;
 }
