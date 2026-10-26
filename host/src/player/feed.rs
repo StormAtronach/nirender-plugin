@@ -3,6 +3,16 @@
 
 use crate::*;
 
+/// The generation of the reply memory that a `READ_PIXELS` record names: 0 in a record of a
+/// plugin before the third word.
+pub(crate) fn reply_generation(data: &[u8]) -> u32 {
+    if data.len() >= 12 {
+        word(data, 8)
+    } else {
+        0
+    }
+}
+
 impl Player {
     /// Does one record. Returns true for the record that ends a frame.
     /// Engine-rules R19, R22 (the skill wgpu-renderer-dev).
@@ -49,9 +59,10 @@ impl Player {
                 // The game waits for the answer. Without the target, the answer has no size.
                 let answer = self.read_pixels(word(data, 4));
                 if let Some(reply) = self.reply.as_mut() {
+                    let generation = reply_generation(data);
                     match answer {
-                        Some((width, height, pixels)) => reply(word(data, 0), width, height, &pixels),
-                        None => reply(word(data, 0), 0, 0, &[]),
+                        Some((width, height, pixels)) => reply(word(data, 0), generation, width, height, &pixels),
+                        None => reply(word(data, 0), generation, 0, 0, &[]),
                     }
                 }
             }

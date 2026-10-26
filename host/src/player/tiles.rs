@@ -158,7 +158,7 @@ impl Player {
         match tag {
             tag::READ_PIXELS if data.len() >= 8 => {
                 if let Some(reply) = self.reply.as_mut() {
-                    reply(word(data, 0), 0, 0, &[]);
+                    reply(word(data, 0), super::feed::reply_generation(data), 0, 0, &[]);
                 }
             }
             tag::COPY_TILE if data.len() >= 12 && word(data, 0) != 0 => {

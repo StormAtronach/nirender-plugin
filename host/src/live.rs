@@ -19,6 +19,8 @@ use super::{copy_picture, option, save_picture, switches, target_texture, Player
 extern "system" {
     fn OpenFileMappingA(access: u32, inherit: i32, name: *const u8) -> isize;
     fn MapViewOfFile(mapping: isize, access: u32, offset_high: u32, offset_low: u32, bytes: usize) -> *mut u8;
+    fn UnmapViewOfFile(base: *const u8) -> i32;
+    fn CloseHandle(handle: isize) -> i32;
     fn IsWindow(window: isize) -> i32;
     fn GetClientRect(window: isize, rect: *mut [i32; 4]) -> i32;
     fn OpenEventA(access: u32, inherit: i32, name: *const u8) -> isize;
@@ -200,34 +202,51 @@ const REPLY_HEAD: usize = 16;
 const REPLY_CAPACITY: usize = 12;
 
 struct Reply {
+    /// The name of the ring.
+    name: String,
+    mapping: isize,
     base: *mut u8,
-    /// An answer did not fit: said one time.
-    too_large: std::cell::Cell<bool>,
+    generation: u32,
 }
 
 impl Reply {
     fn open(name: &str) -> Option<Reply> {
-        let mut text = format!("{name}.reply").into_bytes();
+        let (mapping, base) = Reply::map(name, 0)?;
+        Some(Reply { name: name.to_string(), mapping, base, generation: 0 })
+    }
+
+    /// The memory of the generation `generation`: `.reply`, then `.reply<generation>`.
+    fn map(name: &str, generation: u32) -> Option<(isize, *mut u8)> {
+        let mut text = if generation == 0 { format!("{name}.reply") } else { format!("{name}.reply{generation}") }.into_bytes();
         text.push(0);
         let mapping = unsafe { OpenFileMappingA(0xF001F, 0, text.as_ptr()) };
         if mapping == 0 {
             return None;
         }
         let base = unsafe { MapViewOfFile(mapping, 0xF001F, 0, 0, 0) };
-        (!base.is_null()).then_some(Reply { base, too_large: std::cell::Cell::new(false) })
+        if base.is_null() {
+            unsafe { CloseHandle(mapping) };
+            return None;
+        }
+        Some((mapping, base))
     }
 
-    /// Pixels that do not fit into the memory get the answer of no target (width 0).
-    fn answer(&self, request: u32, width: u32, height: u32, pixels: &[u8]) {
-        let capacity = unsafe { (self.base.add(REPLY_CAPACITY) as *const u32).read_volatile() } as usize;
-        let (width, height, pixels) = if pixels.len() > capacity {
-            if !self.too_large.replace(true) {
-                println!("reply: a read of {width} x {height} pixels ({} bytes) does not fit into the reply memory of {capacity} bytes: answered with no pixels", pixels.len());
+    /// Answers in the memory of the generation of the request. Pixels that do not fit get
+    /// their width and height and no pixels: the plugin makes a larger memory and asks again.
+    fn answer(&mut self, request: u32, generation: u32, width: u32, height: u32, pixels: &[u8]) {
+        if generation != self.generation {
+            let Some((mapping, base)) = Reply::map(&self.name, generation) else {
+                println!("reply: no reply memory of the generation {generation}: the read {request} has no answer");
+                return;
+            };
+            unsafe {
+                UnmapViewOfFile(self.base);
+                CloseHandle(self.mapping);
             }
-            (0, 0, &[][..])
-        } else {
-            (width, height, pixels)
-        };
+            (self.mapping, self.base, self.generation) = (mapping, base, generation);
+        }
+        let capacity = unsafe { (self.base.add(REPLY_CAPACITY) as *const u32).read_volatile() } as usize;
+        let pixels = if pixels.len() > capacity { &[][..] } else { pixels };
         unsafe {
             std::ptr::copy_nonoverlapping(pixels.as_ptr(), self.base.add(REPLY_HEAD), pixels.len());
             (self.base.add(4) as *mut u32).write_volatile(width);
@@ -628,7 +647,7 @@ impl App {
         player.renderer.anisotropy = player.extension.as_ref().map_or(1, |extension| extension.anisotropy());
         player.film_shot = self.shot_film.take();
         player.film_shot_at = self.shot_film_frame;
-        player.reply = self.reply.take().map(|reply| Box::new(move |request, width, height, pixels: &[u8]| reply.answer(request, width, height, pixels)) as _);
+        player.reply = self.reply.take().map(|mut reply| Box::new(move |request, generation, width, height, pixels: &[u8]| reply.answer(request, generation, width, height, pixels)) as _);
         player.tile_out = self.tiles.take().map(|tiles| Box::new(move |ticket, width, height, pixels: &[u8]| tiles.answer(ticket, width, height, pixels)) as _);
         self.player = Some(player);
         self.surface = Some(surface);
@@ -1053,23 +1072,57 @@ mod tests {
         u32::from_le_bytes(memory[at..at + 4].try_into().unwrap())
     }
 
+    fn reply_on(memory: &mut [u8]) -> Reply {
+        Reply { name: String::new(), mapping: 0, base: memory.as_mut_ptr(), generation: 0 }
+    }
+
     #[test]
     fn pixels_that_fit_are_answered() {
         let mut memory = memory();
-        let reply = Reply { base: memory.as_mut_ptr(), too_large: std::cell::Cell::new(false) };
-        reply.answer(7, 2, 2, &[0x11; 16]);
+        let mut reply = reply_on(&mut memory);
+        reply.answer(7, 0, 2, 2, &[0x11; 16]);
         assert_eq!((word(&memory, 0), word(&memory, 4), word(&memory, 8)), (7, 2, 2));
         assert!(memory[REPLY_HEAD..REPLY_HEAD + 16].iter().all(|&byte| byte == 0x11));
         assert!(memory[REPLY_HEAD + 16..].iter().all(|&byte| byte == 0xAA));
     }
 
     #[test]
-    fn pixels_that_do_not_fit_get_no_target_and_nothing_is_written_past_the_memory() {
+    fn pixels_that_do_not_fit_get_their_size_and_nothing_is_written_past_the_memory() {
         let mut memory = memory();
-        let reply = Reply { base: memory.as_mut_ptr(), too_large: std::cell::Cell::new(false) };
-        reply.answer(8, 4, 2, &[0x22; 32]);
-        assert_eq!((word(&memory, 0), word(&memory, 4), word(&memory, 8)), (8, 0, 0));
+        let mut reply = reply_on(&mut memory);
+        reply.answer(8, 0, 4, 2, &[0x22; 32]);
+        assert_eq!((word(&memory, 0), word(&memory, 4), word(&memory, 8)), (8, 4, 2));
+        assert!(memory[REPLY_HEAD..].iter().all(|&byte| byte == 0 || byte == 0xAA));
         assert!(memory[REPLY_HEAD + 16..].iter().all(|&byte| byte == 0xAA));
-        assert!(reply.too_large.get());
+    }
+
+    extern "system" {
+        fn CreateFileMappingA(file: isize, attributes: *const u8, protect: u32, size_high: u32, size_low: u32, name: *const u8) -> isize;
+    }
+
+    #[test]
+    fn a_request_of_the_next_generation_is_answered_in_its_memory() {
+        // The memory that the plugin makes when it grows: 32 pixel bytes.
+        let ring = format!("nirender-test-{}", std::process::id());
+        let name = format!("{ring}.reply1\0");
+        let mapping = unsafe { CreateFileMappingA(-1, std::ptr::null(), 4, 0, (REPLY_HEAD + 32) as u32, name.as_ptr()) };
+        assert_ne!(mapping, 0);
+        let larger = unsafe { MapViewOfFile(mapping, 0xF001F, 0, 0, 0) };
+        assert!(!larger.is_null());
+        unsafe { (larger.add(REPLY_CAPACITY) as *mut u32).write(32) };
+        // The first memory: a second view of the same mapping, which the switch unmaps.
+        let first = Reply::map(&ring, 1).unwrap();
+        let mut reply = Reply { name: ring.clone(), mapping: first.0, base: first.1, generation: 0 };
+        reply.answer(9, 1, 4, 2, &[0x33; 32]);
+        assert_eq!(reply.generation, 1);
+        let answered = unsafe { std::slice::from_raw_parts(larger, REPLY_HEAD + 32) };
+        assert_eq!((word(answered, 0), word(answered, 4), word(answered, 8)), (9, 4, 2));
+        assert!(answered[REPLY_HEAD..].iter().all(|&byte| byte == 0x33));
+        unsafe {
+            UnmapViewOfFile(reply.base);
+            CloseHandle(reply.mapping);
+            UnmapViewOfFile(larger);
+            CloseHandle(mapping);
+        }
     }
 }

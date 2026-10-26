@@ -107,9 +107,9 @@ pub mod tag {
     /// The game wrote a level of a texture: handle, level, width and height of the level,
     /// D3D format, size; then the bytes.
     pub const TEXTURE_UPDATE: u32 = 12;
-    /// The game asks for the pixels of a target: the number of the request, and the texture
-    /// (0 for the back buffer). Only in a stream. The host puts the answer into the reply
-    /// memory.
+    /// The game asks for the pixels of a target: the number of the request, the texture (0
+    /// for the back buffer), and the generation of the reply memory. Only in a stream. The
+    /// host puts the answer into the reply memory of that generation.
     pub const READ_PIXELS: u32 = 13;
     /// The host saves the picture of the frame in progress into the file with this name.
     pub const SHOT: u32 = 14;
@@ -508,11 +508,13 @@ impl Ring {
     }
 }
 
-/// The reply memory of a stream: shared memory with the name of the ring and `.reply`. The
-/// host writes the answer to a `READ_PIXELS` record into it: the number of the request (the
-/// host writes it last), the width, the height, the number of pixel bytes that the memory
-/// holds (this side writes it), and then the pixels with 4 bytes each, blue first. A width of
-/// 0 says that the host has no such target, or that its pixels do not fit.
+/// The reply memory of a stream: shared memory with the name of the ring and `.reply`, or
+/// `.reply<generation>` after it grew. The host writes the answer to a `READ_PIXELS` record
+/// into it: the number of the request (the host writes it last), the width, the height, the
+/// number of pixel bytes that the memory holds (this side writes it), and then the pixels with
+/// 4 bytes each, blue first. A width of 0 says that the host has no such target. Pixels that
+/// do not fit get their width and height and no pixels: this side makes a larger memory with
+/// the next generation and asks again. The record names the generation of the memory.
 pub const REPLY_HEAD: usize = 16;
 const REPLY_CAPACITY: usize = 12;
 /// The game waits this long for an answer.
@@ -530,11 +532,27 @@ struct Reply {
     requests: u32,
     /// The time that the game waited for answers, in ticks.
     waited: i64,
+    /// The name of the ring.
+    name: String,
+    generation: u32,
+}
+
+/// The name of the reply memory of the ring `ring` in its generation `generation`.
+pub fn reply_name(ring: &str, generation: u32) -> String {
+    if generation == 0 {
+        format!("{ring}.reply")
+    } else {
+        format!("{ring}.reply{generation}")
+    }
 }
 
 impl Reply {
     unsafe fn create(name: &str, capacity: usize) -> Option<Reply> {
-        let mut text = format!("{name}.reply").into_bytes();
+        Reply::create_generation(name, capacity, 0)
+    }
+
+    unsafe fn create_generation(name: &str, capacity: usize, generation: u32) -> Option<Reply> {
+        let mut text = reply_name(name, generation).into_bytes();
         text.push(0);
         let mapping = CreateFileMappingA(-1, core::ptr::null(), 4, 0, (capacity + REPLY_HEAD) as u32, text.as_ptr());
         if mapping == 0 {
@@ -547,12 +565,25 @@ impl Reply {
         }
         core::ptr::write_bytes(base, 0, REPLY_HEAD);
         (base.add(REPLY_CAPACITY) as *mut u32).write_volatile(capacity as u32);
-        Some(Reply { mapping, base, capacity, requests: 0, waited: 0 })
+        Some(Reply { mapping, base, capacity, requests: 0, waited: 0, name: name.to_string(), generation })
     }
 
     unsafe fn close(&mut self) {
         UnmapViewOfFile(self.base);
         CloseHandle(self.mapping);
+    }
+
+    /// Puts a memory of the next generation for `size` pixel bytes in place of this one. The
+    /// counts stay. False when the new memory cannot be made: this one stays.
+    unsafe fn grow(&mut self, size: usize) -> bool {
+        let Some(mut larger) = Reply::create_generation(&self.name, size, self.generation + 1) else { return false };
+        // The number of the last answer, so that a silent helper is found as before.
+        (larger.base as *mut u32).write_volatile((self.base as *const u32).read_volatile());
+        (larger.requests, larger.waited) = (self.requests, self.waited);
+        self.close();
+        crate::log!("stream: the reply memory grew from {} to {} pixel bytes (generation {})", self.capacity, size, larger.generation);
+        *self = larger;
+        true
     }
 }
 
@@ -564,21 +595,40 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
     if !recording() {
         return None;
     }
-    let s = state(&lock)?;
-    let request = {
-        let reply = s.reply.as_mut()?;
+    let (mut width, mut height) = ask_pixels(&lock, texture)?;
+    let size = width as usize * height as usize * 4;
+    if size > state(&lock)?.reply.as_ref()?.capacity {
+        // The host has the target, and its pixels need a larger memory.
+        if !state(&lock)?.reply.as_mut()?.grow(size) {
+            crate::log!("stream: no reply memory of {size} bytes for the pixel read of the texture {texture:#x}");
+            return None;
+        }
+        (width, height) = ask_pixels(&lock, texture)?;
+    }
+    let reply = state(&lock)?.reply.as_ref()?;
+    let size = width as usize * height as usize * 4;
+    if size == 0 || size > reply.capacity {
+        return None;
+    }
+    Some((width, height, core::slice::from_raw_parts(reply.base.add(REPLY_HEAD), size)))
+}
+
+/// Sends one `READ_PIXELS` record and waits for its answer: the width and the height.
+unsafe fn ask_pixels(lock: &DeviceLock, texture: u32) -> Option<(u32, u32)> {
+    let (request, generation) = {
+        let reply = state(lock)?.reply.as_mut()?;
         reply.requests += 1;
-        reply.requests
+        (reply.requests, reply.generation)
     };
     // The helper is silent when it did not answer the last read in time. It is back when that
     // read has its answer now.
-    if HELPER_SILENT.load(Ordering::Relaxed) && (state(&lock)?.reply.as_ref()?.base as *const u32).read_volatile() == request - 1 {
+    if HELPER_SILENT.load(Ordering::Relaxed) && (state(lock)?.reply.as_ref()?.base as *const u32).read_volatile() == request - 1 {
         HELPER_SILENT.store(false, Ordering::Relaxed);
         crate::log!("stream: the host program answers the pixel reads again");
     }
-    write(tag::READ_PIXELS, &[words(&[request, texture])]);
+    write(tag::READ_PIXELS, &[words(&[request, texture, generation])]);
     // The write can end the stream.
-    let reply = state(&lock)?.reply.as_mut()?;
+    let reply = state(lock)?.reply.as_mut()?;
     let start = ticks();
     while (reply.base as *const u32).read_volatile() != request {
         // A silent helper gets one look, not a wait: the game must not hang on it.
@@ -593,12 +643,7 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
         wait_step();
     }
     reply.waited += ticks() - start;
-    let (width, height) = ((reply.base.add(4) as *const u32).read_volatile(), (reply.base.add(8) as *const u32).read_volatile());
-    let size = width as usize * height as usize * 4;
-    if size == 0 || size > reply.capacity {
-        return None;
-    }
-    Some((width, height, core::slice::from_raw_parts(reply.base.add(REPLY_HEAD), size)))
+    Some(((reply.base.add(4) as *const u32).read_volatile(), (reply.base.add(8) as *const u32).read_volatile()))
 }
 
 /// The tile memory of a stream: shared memory with the name of the ring and `.tiles`. The
@@ -1876,6 +1921,24 @@ const DEVICE_WINDOW: usize = crate::gen::layouts::NiDX8Renderer::d3dPresentParam
 
 #[cfg(test)]
 mod tests {
+    /// A reply memory that grows has the next generation, the new capacity in its head, the
+    /// number of the last answer and the counts.
+    #[test]
+    fn the_reply_memory_grows_to_the_next_generation() {
+        unsafe {
+            let ring = format!("nirender-test-grow-{}", std::process::id());
+            let mut reply = super::Reply::create(&ring, 64).unwrap();
+            (reply.base as *mut u32).write_volatile(5);
+            reply.requests = 5;
+            assert!(reply.grow(256));
+            assert_eq!((reply.generation, reply.capacity, reply.requests), (1, 256, 5));
+            assert_eq!((reply.base.add(super::REPLY_CAPACITY) as *const u32).read_volatile(), 256);
+            assert_eq!((reply.base as *const u32).read_volatile(), 5);
+            assert_eq!(super::reply_name(&ring, 1), format!("{ring}.reply1"));
+            reply.close();
+        }
+    }
+
     /// The words of a record are the same bytes as before the view without a copy: each value
     /// as its little-endian bytes.
     #[test]
