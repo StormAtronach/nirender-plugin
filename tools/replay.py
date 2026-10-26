@@ -6,7 +6,8 @@ same file each time. For a check of a change of the renderer against the picture
 
 With --frames-at, one run of the helper writes <prefix>-<frame as 5 digits>.png for each
 frame named (the frames count from 0, as --frame): one start of the helper for a capture of
-many stops, in place of one for each.
+many stops, in place of one for each. With --marks-every N, the helper prints a mark (its
+time for each frame by part) after every N frames: the bench of a long capture.
         [--config-root DIR] [--distant-land DIR] [--backend vulkan|dx12]
 
 The helper reads mgeXE.toml from --config-root (the Root folder of the Configuration mod of
@@ -40,6 +41,7 @@ def main():
     ap.add_argument("--game-dir", default=GAME_DIR, help="the game folder with Morrowind.ini and the archives")
     ap.add_argument("--backend", default="vulkan")
     ap.add_argument("--anisotropy", type=int, default=None, help="the anisotropic filter of the textures the game filters (1 without this)")
+    ap.add_argument("--marks-every", type=int, default=None, help="a mark after every N frames: the helper's time for each frame by part")
     args = ap.parse_args()
     exe = os.path.join(args.mge_build, "numidium.exe")
     command = [exe, "--replay", os.path.abspath(args.capture), os.path.abspath(args.picture), "--backend", args.backend]
@@ -49,6 +51,8 @@ def main():
         command += ["--frame", str(args.frame)]
     if args.anisotropy is not None:
         command += ["--anisotropy", str(args.anisotropy)]
+    if args.marks_every:
+        command += ["--marks-every", str(args.marks_every)]
     env = dict(os.environ, MGE_XE_DISTANT_LAND_DIR=args.distant_land, MGE_XE_GAME_DIR=args.game_dir)
     result = subprocess.run(command, cwd=args.config_root, env=env, capture_output=True, text=True)
     sys.stdout.write(result.stdout)

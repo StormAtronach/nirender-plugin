@@ -53,7 +53,7 @@ under the home folder.
 
 | Tool | What it is |
 | --- | --- |
-| `replay.py` | A frame of a capture file drawn with the MGE XE helper, offline: the same picture from the same file each time. |
+| `replay.py` | A frame of a capture file drawn with the MGE XE helper, offline: the same picture from the same file each time. `--marks-every N`: the helper's time for each frame by part after every N frames, with a wait for the GPU after each frame (the replay bench of the docs, `scripts/wgpu-bench/bench_replay.py`). |
 | `picture_diff.py` | Two pictures of the same size compared; how different they are. |
 | `compare_pictures.py` | The pictures of two folders compared by name, with `picture_diff`. |
 | `diff_crops.py` | Crops of the places where two pictures differ, side by side and enlarged. |

@@ -51,7 +51,7 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
         return live::run(&name, backends, &args, extension);
     }
     if args.len() < 3 {
-        eprintln!("use: nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N | --frames-at N,M,...]");
+        eprintln!("use: nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N | --frames-at N,M,...] [--marks-every N]");
         eprintln!("     nirender-host --live <name of the shared memory> [--backend vulkan|dx12] [--frames N] [--shot picture.png]");
         std::process::exit(2);
     }
@@ -69,6 +69,10 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     // (the frames count from 0, as `--frame`). One start of the helper for a capture of many
     // stops, in place of one for each.
     let frames_at: Vec<usize> = option(&args, "--frames-at").map(|text| text.split(',').filter_map(|n| n.trim().parse().ok()).collect()).unwrap_or_default();
+    // `--marks-every N`: a mark after every N frames (the helper's time for each frame by
+    // part), and a wait for the GPU after each frame, for the bench of a long capture
+    // (`scripts/wgpu-bench/bench_replay.py` of the docs).
+    let marks_every: usize = option(&args, "--marks-every").and_then(|text| text.parse().ok()).unwrap_or(0);
     let wanted = match frames_at.iter().max() {
         Some(&last) => last,
         None => option(&args, "--frame").and_then(|text| text.parse().ok()).unwrap_or(frames.saturating_sub(1)),
@@ -129,6 +133,14 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
                 }
             }
             frame += 1;
+            // The bench waits for the GPU after each frame, out of the timed parts: a replay
+            // records faster than the GPU draws, and a queue that is full stalls the submit.
+            if marks_every != 0 {
+                let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            }
+            if marks_every != 0 && frame % marks_every == 0 {
+                player.mark(&format!("replay frame {frame}"));
+            }
         }
     }
     player.print_counts();
