@@ -148,6 +148,12 @@ The A/B:
   capture has them.
 - `NIRENDER_WORLD_LIGHTS=0`: the plugin takes no MWSE light events; the helper's world mode
   of the lights then has no lights.
+- `NIRENDER_PACE=0`: no pacing of the game to the helper (`src/pacing.rs`). The pacing waits
+  at MWSE's start of a frame (native event 8, before the input of the frame) until the
+  helper will need the frame, so that the picture is as new as the helper allows. Without it
+  a frame waits about one frame of the helper in the ring.
+- `NIRENDER_PACE_LEAD_US=<n>`: the lead of the pacing in microseconds (default 200): the
+  frame is complete this long before the helper is free for it. For a test.
 
 The instruments and the tests:
 

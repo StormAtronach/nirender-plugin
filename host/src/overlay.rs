@@ -135,6 +135,17 @@ pub fn ticks() -> i64 {
     count
 }
 
+/// The ticks of [`ticks`] in a second.
+pub fn ticks_per_second() -> i64 {
+    static RATE: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *RATE.get_or_init(|| {
+        let mut frequency = 0;
+        // SAFETY: the call writes one number.
+        unsafe { QueryPerformanceFrequency(&mut frequency) };
+        frequency.max(1)
+    })
+}
+
 fn megabytes(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
 }

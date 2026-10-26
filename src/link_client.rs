@@ -1644,6 +1644,7 @@ pub unsafe fn connect() -> Result<String, String> {
     crate::world_walk::install();
     crate::queue_flush::install();
     crate::world_lights::install();
+    crate::pacing::install();
     // The members up to `read_counters` are in each version of the table.
     if (host.struct_size as usize) < core::mem::offset_of!(HostV1, use_facts) {
         return Err(format!("the table of the host has {} bytes", host.struct_size));

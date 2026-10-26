@@ -284,7 +284,7 @@ extern "system" {
 /// The host's window is a child of the game's window, so Windows sends messages to the game
 /// thread and waits for the answers. A wait that only sleeps makes a deadlock. With these
 /// flags `PeekMessage` answers the sent messages and takes no message out of the queue.
-unsafe fn wait_step() {
+pub(crate) unsafe fn wait_step() {
     // PM_NOREMOVE with PM_QS_SENDMESSAGE: QS_SENDMESSAGE (0x40) in the high word.
     let mut message = [0u32; 7];
     PeekMessageA(&mut message, 0, 0, 0, 0x0040_0000);
@@ -340,8 +340,8 @@ pub(crate) fn ticks_per_second() -> i64 {
 /// The head of the shared memory: [`RING_MAGIC`], the number of data bytes, the bytes that the
 /// game wrote (u64), the bytes that the host read (u64), and 1 when the game closed the
 /// stream. The data starts at [`RING_HEAD`]. A record can go around the end of the data.
-pub const RING_MAGIC: u32 = 0x474E_5231;
-pub const RING_HEAD: usize = 64;
+pub const RING_MAGIC: u32 = 0x474E_5232;
+pub const RING_HEAD: usize = 128;
 const RING_WRITTEN: usize = 8;
 const RING_READ: usize = 16;
 const RING_CLOSED: usize = 24;
@@ -354,6 +354,21 @@ const RING_WAITING: usize = 36;
 /// The reach of the helper's shadow map in units of the world (the bits of an f32; 0
 /// without shadows), for the animation policy of the plugin (`animation`).
 pub const RING_SHADOW_REACH: usize = 40;
+/// The helper's busy time for each frame, in microseconds (u32), written at each frame it
+/// shows, for the pacing of the game ([`crate::pacing`]).
+pub(crate) const RING_BUSY: usize = 44;
+/// The bytes that the helper had read at the end of the last frame that it showed (u64), and
+/// the time when it showed it, in ticks of the performance counter (u64).
+pub(crate) const RING_DONE_AT: usize = 48;
+pub(crate) const RING_DONE_TIME: usize = 56;
+/// When the game starts its next frame (i64, ticks of the performance counter; `i64::MAX`
+/// from the end of a frame to the start of the next), written by the pacing: while the game
+/// writes a frame the helper waits for its records awake, and else it sleeps.
+pub(crate) const RING_NEXT_START: usize = 64;
+/// The start of the frame of the game in progress, in ticks of the performance counter, for
+/// the age of the picture in the debug overlay: the end of the wait of the frame before
+/// ([`crate::pacing`] at the start of the frame, else after the wait at Present).
+pub(crate) static FRAME_START: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 /// The game waits this long for room in the ring. Then it ends the stream: the host is gone.
 const RING_WAIT_SECONDS: i64 = 10;
 
@@ -401,6 +416,7 @@ impl Ring {
         let mut event_name = format!("{name}-records").into_bytes();
         event_name.push(0);
         let event = CreateEventA(core::ptr::null(), 0, 0, event_name.as_ptr());
+        crate::pacing::start(mapping, name);
         Ok(Ring { mapping, base, capacity, event, wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false })
     }
 
@@ -481,12 +497,14 @@ impl Ring {
         }
         self.read_before = read;
         self.frame_before = self.counter(RING_WRITTEN).load(Ordering::Relaxed);
+        crate::pacing::frame_end(self.frame_before, start);
     }
 
     unsafe fn close(&mut self) {
         (self.base.add(RING_CLOSED) as *mut u32).write_volatile(1);
         UnmapViewOfFile(self.base);
         CloseHandle(self.mapping);
+        crate::pacing::stop();
     }
 }
 
@@ -1211,7 +1229,7 @@ pub unsafe fn helper_shadow_reach() -> f32 {
 unsafe fn overlay_record(lock: &DeviceLock) {
     let Some(s) = state(&lock) else { return };
     let waits = match s.out.as_ref() {
-        Some(Sink::Ring(ring)) => ring.waited + ring.paced,
+        Some(Sink::Ring(ring)) => ring.waited + ring.paced + crate::pacing::waited(),
         _ => 0,
     };
     let (spent, ports) = (s.spent, crate::shadow::port_ms());
@@ -1809,10 +1827,8 @@ unsafe fn frame_end(lock: &DeviceLock) {
                 crate::instance_stream::frame_tick(&t);
             }
             // The times of the frame, for the age of the picture in the debug overlay: the
-            // start of the frame of the game (the end of the wait of the frame before) and
-            // its end, in ticks of the performance counter. The host program has the same
-            // counter.
-            static FRAME_START: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+            // start of the frame of the game ([`FRAME_START`]) and its end, in ticks of the
+            // performance counter. The host program has the same counter.
             let end = ticks();
             let start = match FRAME_START.load(Ordering::Relaxed) {
                 0 => end,
@@ -1834,6 +1850,9 @@ unsafe fn frame_end(lock: &DeviceLock) {
             }
             if let Some(Sink::Ring(ring)) = s.out.as_mut() {
                 ring.pace();
+                // The next frame reads its input after the wait: it starts now, or after the
+                // wait of the pacing at its start.
+                FRAME_START.store(ticks(), Ordering::Relaxed);
             }
             s.frames_done += 1;
             if s.frames == 0 {

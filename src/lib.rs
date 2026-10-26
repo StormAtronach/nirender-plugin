@@ -67,6 +67,7 @@ pub mod map_tiles;
 pub mod mem;
 pub mod mwse_native;
 pub mod overlay;
+pub mod pacing;
 pub mod world_walk;
 pub mod queue_flush;
 #[cfg(feature = "rig")]

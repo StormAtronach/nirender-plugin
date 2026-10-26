@@ -22,12 +22,13 @@ extern "system" {
     fn IsWindow(window: isize) -> i32;
     fn GetClientRect(window: isize, rect: *mut [i32; 4]) -> i32;
     fn OpenEventA(access: u32, inherit: i32, name: *const u8) -> isize;
+    fn SetEvent(event: isize) -> i32;
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
 }
 
 /// The head of the shared memory. See `capture.rs` of the plugin.
-const RING_MAGIC: u32 = 0x474E_5231;
-const RING_HEAD: usize = 64;
+const RING_MAGIC: u32 = 0x474E_5232;
+const RING_HEAD: usize = 128;
 const RING_WRITTEN: usize = 8;
 const RING_READ: usize = 16;
 const RING_CLOSED: usize = 24;
@@ -38,6 +39,26 @@ const RING_TAKES: usize = 32;
 const RING_WAITING: usize = 36;
 /// The reach of the shadow map for the plugin's animation policy (the bits of an f32).
 const RING_SHADOW_REACH: usize = 40;
+/// For the pacing of the game (`pacing.rs` of the plugin): the busy time of this program for
+/// a frame (u32, microseconds), the bytes read at the end of the last frame shown (u64) and
+/// the time it was shown (u64, ticks of the performance counter).
+const RING_BUSY: usize = 44;
+const RING_DONE_AT: usize = 48;
+const RING_DONE_TIME: usize = 56;
+/// From the pacing: when the game starts its next frame (i64, ticks of the performance
+/// counter; `i64::MAX` from the end of a frame to the start of the next). While the game
+/// writes a frame this program waits for the records awake ([`Ring::game_writes`]).
+const RING_NEXT_START: usize = 64;
+
+/// Where the game is when this program has no record: [`Ring::game_phase`].
+#[derive(Clone, Copy, PartialEq)]
+enum GamePhase {
+    Writes,
+    BetweenFrames,
+    Waiting,
+    Long,
+    NoPacing,
+}
 
 struct Ring {
     base: *mut u8,
@@ -45,6 +66,9 @@ struct Ring {
     /// The event the plugin sets when it writes while this program waits; 0 with a
     /// plugin that has none (this program then yields instead).
     event: isize,
+    /// The event `<ring>-shown` of the pacing, set when this program has shown a frame; 0
+    /// without the pacing.
+    shown_event: isize,
 }
 
 impl Ring {
@@ -65,7 +89,10 @@ impl Ring {
                 let mut event_name = format!("{name}-records").into_bytes();
                 event_name.push(0);
                 let event = unsafe { OpenEventA(0x1F0003, 0, event_name.as_ptr()) };
-                return Ring { base, capacity, event };
+                let mut shown_name = format!("{name}-shown").into_bytes();
+                shown_name.push(0);
+                let shown_event = unsafe { OpenEventA(0x1F0003, 0, shown_name.as_ptr()) };
+                return Ring { base, capacity, event, shown_event };
             }
             assert!(start.elapsed() < Duration::from_secs(60), "no shared memory with the name {name}");
             std::thread::sleep(Duration::from_millis(50));
@@ -83,6 +110,37 @@ impl Ring {
 
     fn counter(&self, offset: usize) -> &AtomicU64 {
         unsafe { &*(self.base.add(offset) as *const AtomicU64) }
+    }
+
+    /// Tells the plugin that a frame is shown, for its pacing: the bytes read up to the end
+    /// of the frame, the time (ticks of the performance counter) and the busy time of this
+    /// program for a frame, in microseconds.
+    fn shown(&self, time: i64, busy_us: u32) {
+        let read = self.counter(RING_READ).load(Ordering::Relaxed);
+        unsafe { (*(self.base.add(RING_BUSY) as *const std::sync::atomic::AtomicU32)).store(busy_us, Ordering::Release) };
+        self.counter(RING_DONE_TIME).store(time as u64, Ordering::Release);
+        self.counter(RING_DONE_AT).store(read, Ordering::Release);
+        if self.shown_event != 0 {
+            unsafe { SetEvent(self.shown_event) };
+        }
+    }
+
+    /// Where the game is, by the start of its frame from the pacing: it writes a frame (from
+    /// 0.5 ms before its start, for 50 ms at most), it is between two frames, it waits for the
+    /// start of its next frame, or it writes for longer (a load), or there is no pacing. While
+    /// it writes, the next record comes soon and this program waits awake, so that its core
+    /// does not go to sleep between the records.
+    fn game_phase(&self) -> GamePhase {
+        let start = unsafe { (*(self.base.add(RING_NEXT_START) as *const std::sync::atomic::AtomicI64)).load(Ordering::Acquire) };
+        let rate = super::overlay::ticks_per_second();
+        let now = super::overlay::ticks();
+        match start {
+            0 => GamePhase::NoPacing,
+            i64::MAX => GamePhase::BetweenFrames,
+            start if now < start - rate / 2000 => GamePhase::Waiting,
+            start if now > start + rate / 20 => GamePhase::Long,
+            _ => GamePhase::Writes,
+        }
     }
 
     fn closed(&self) -> bool {
@@ -327,6 +385,12 @@ struct App {
     by_tag_at_mark: [(u64, u64); TAG_SLOTS],
     shot_done: bool,
     finished: bool,
+    /// The sum of the timed parts at the last frame shown, and the busy time of a frame as a
+    /// mean in microseconds: for the pacing of the game ([`Ring::shown`]).
+    busy_before: u64,
+    busy_mean_us: f64,
+    /// The waits for a record that slept, by the phase of the game ([`GamePhase`]).
+    blocks: [u64; 5],
 }
 
 /// The time without a record after which the window shows the sign that the game sends no
@@ -482,6 +546,14 @@ impl App {
             self.waited.as_secs_f64() * 100.0 / seconds.max(0.001)
         );
         println!("frames that the window did not take: {}", self.not_shown);
+        let b = self.blocks;
+        println!(
+            "waits for a record that slept: {} with the game between two frames, {} before the start of its frame, {} in a frame longer than 50 ms, {} without the pacing",
+            b[GamePhase::BetweenFrames as usize],
+            b[GamePhase::Waiting as usize],
+            b[GamePhase::Long as usize],
+            b[GamePhase::NoPacing as usize]
+        );
         if let Some(line) = self.overlay.as_mut().and_then(|overlay| overlay.age_line()) {
             println!("{line}");
         }
@@ -681,7 +753,15 @@ impl ApplicationHandler for App {
                 if looks < 256 {
                     std::thread::yield_now();
                 } else {
-                    self.ring.wait_for_record();
+                    let phase = self.ring.game_phase();
+                    if phase == GamePhase::Writes {
+                        // The game writes the frame now: the next record comes soon. Wait
+                        // awake, and look at the phase again in 256 looks.
+                        looks = 0;
+                    } else {
+                        self.blocks[phase as usize] += 1;
+                        self.ring.wait_for_record();
+                    }
                 }
                 continue;
             };
@@ -848,6 +928,13 @@ impl ApplicationHandler for App {
                 player.renderer.queue.present(frame);
             }
             player.renderer.counts.times[super::TIME_PRESENT] += clock.elapsed();
+            // The frame is shown: its busy time (all the timed parts, the waits for the GPU
+            // with them, not the waits for the game), as a mean, for the pacing of the game.
+            let busy: u64 = player.renderer.counts.times.iter().sum();
+            let frame_us = super::ticks::duration(busy - self.busy_before).as_secs_f64() * 1e6;
+            self.busy_before = busy;
+            self.busy_mean_us = if self.busy_mean_us == 0.0 { frame_us } else { self.busy_mean_us + (frame_us - self.busy_mean_us) * 0.1 };
+            self.ring.shown(super::overlay::ticks(), self.busy_mean_us as u32);
             if let Some(overlay) = self.overlay.as_mut() {
                 if let (Some((start, end, read)), true) = (stamps, in_window) {
                     overlay.age(start, end, read, super::overlay::ticks());
@@ -930,6 +1017,9 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         by_tag_at_mark: [(0, 0); TAG_SLOTS],
         shot_done: false,
         finished: false,
+        busy_before: 0,
+        busy_mean_us: 0.0,
+        blocks: [0; 5],
     };
     EventLoop::new().expect("an event loop").run_app(&mut app).expect("the event loop");
 }
