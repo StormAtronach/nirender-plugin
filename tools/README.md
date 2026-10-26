@@ -29,6 +29,7 @@ under the home folder.
 | `own_device.py` | The testing instance put into the mode without a Direct3D device, for a game by hand, and taken out again. |
 | `release.py` | A test build release on GitHub (the archive of `cargo xtask dist` of MGE XE G7), and the removal of the releases before it. |
 | `clean_watchers.py` | Lists, and with `--end` ends, the shell tools (tail, grep, sed) that log watchers of Git Bash leave behind (harness trap T58). |
+| `clean_results.py` | Lists the run folders of `results/` and, with `--delete` and a "yes", removes the oldest until the folder is under `--limit-gb` (40). It keeps the runs younger than `--keep-days` (3), the runs named in the docs, and everything that is not a run folder. |
 
 ## The gates
 
