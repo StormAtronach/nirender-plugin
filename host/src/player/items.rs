@@ -38,8 +38,28 @@ impl Player {
         let small = self.mark_small_draws(&items);
         // Room for the copies that the parts of the frame make (clipped draws, replays).
         let copies = 3 * self.renderer.record_count + 256;
+        let generations = (self.renderer.record_generation, self.renderer.instance_generation);
+        let frame = self.renderer.counts.frames;
+        if let Some(path) = self.growth_shot_next.take().filter(|_| world_origin.is_some()) {
+            self.shots.push(path);
+        }
+        if self.growth_test.0 != 0 && world_origin.is_some() && frame % self.growth_test.0 == 0 {
+            self.renderer.force_record_growth = true;
+        }
         self.renderer.upload_instances(&self.frame_instances, copies);
         self.renderer.upload_records(copies);
+        let instances = self.retained.counts.instances;
+        if (self.renderer.record_generation, self.renderer.instance_generation) != generations && instances != 0 {
+            // A buffer that grew in these uploads is new and zeroed: the table's segment goes
+            // into it now, or every draw of the table reads zeros in this frame (audit U4-03).
+            // The upload before them sized the segment; this one writes the whole of it.
+            self.renderer.retained_upload(&mut self.retained);
+            println!("buffers: a buffer grew at frame {frame} with {instances} instances in the table");
+            if let Some(prefix) = self.growth_test.1.clone() {
+                self.shots.push(format!("{prefix}-{frame:06}-growth.png"));
+                self.growth_shot_next = Some(format!("{prefix}-{frame:06}-after.png"));
+            }
+        }
         let draws = items.iter().filter(|item| matches!(item, Item::Draw(_))).count();
         // The retained instances: a view of them in the world and in each replay.
         self.renderer.reserve_indirect(self.frame_args.len() + draws + 64 + 8 * self.retained.most_args());

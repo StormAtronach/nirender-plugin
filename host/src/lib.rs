@@ -540,6 +540,9 @@ struct Renderer {
     retained_instance_copy: Vec<Instance>,
     record_generation: u32,
     instance_generation: u32,
+    /// A test (`NIRENDER_FORCE_GROWTH`): the next `upload_records` makes its buffer again, as a
+    /// growth does.
+    force_record_growth: bool,
     /// The textures and the samplers with a slot of the arrays that stays from frame to
     /// frame, for the records of the retained instances. A texture slot counts the stages of
     /// the instances that use it; at 0 it is free (handle 0, the white view) and a later
@@ -723,6 +726,12 @@ struct Player {
     tile_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     /// The picture files that the game asked for: the frame in progress goes into them.
     shots: Vec<String>,
+    /// A test of the growth of the buffers (`NIRENDER_FORCE_GROWTH=<frames>`,
+    /// `NIRENDER_GROWTH_SHOTS=<prefix>`): every so many world frames the record buffer is made
+    /// again; the frame of each growth while the table holds instances, and the frame after it,
+    /// go into pictures. The picture of the next frame waits here.
+    growth_test: (u32, Option<String>),
+    growth_shot_next: Option<String>,
     /// The pictures of the frame from before the interface of the game, for an extension:
     /// the buffer, the length of a row, the size, the file. Saved at the end of the frame.
     early_pictures: Vec<(wgpu::Buffer, usize, u32, u32, String)>,

@@ -612,6 +612,7 @@ impl Renderer {
             retained_instance_copy: Vec::new(),
             record_generation: 0,
             instance_generation: 0,
+            force_record_growth: false,
             pinned_textures: Vec::new(),
             pinned_free: Vec::new(),
             pinned_index: FxHashMap::default(),
@@ -902,8 +903,8 @@ impl Renderer {
     pub(crate) fn upload_records(&mut self, copies: usize) {
         // At most the device's limit: the copies past it find no room (`record_now`).
         let needed = (self.retained_records + self.record_count + copies).min(self.record_limit);
-        if needed > self.record_capacity {
-            self.record_capacity = needed.next_power_of_two().min(self.record_limit);
+        if needed > self.record_capacity || std::mem::take(&mut self.force_record_growth) {
+            self.record_capacity = needed.next_power_of_two().min(self.record_limit).max(self.record_capacity);
             self.record_buffer = Rc::new(record_buffer(&self.device, self.record_capacity));
             self.record_written = 0;
             self.record_extras = 0;
