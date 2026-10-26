@@ -21,20 +21,22 @@ impl Player {
         // The instances of the frame come after the segment of the retained instances.
         let mut instances = (renderer.retained_instances as u32 + draw.instances.0, draw.instances.1);
         // A draw before the world or after the post chain into the back buffer takes the small
-        // group of the arrays (`mark_small_draws`), with its slots in that group.
-        let mut small = self.small_arrays.as_ref().filter(|_| self.small_now && self.pass_target.is_none());
+        // group of the arrays and the copy of its record with its slots in that group, made
+        // before the upload of the frame (`mark_small_draws`).
+        let mut small = self.small_arrays.as_ref().filter(|_| self.small_copy.is_some() && self.pass_target.is_none());
         let mut copy = None;
         if let Some(plane) = side.filter(|_| split) {
-            // A copy of the record with the plane, and instances that name it.
+            // A copy of the record with the plane, and instances that name it, now.
             let mut data = draw.data;
             data.clip_plane = plane_of_draw(plane, draw.origin);
-            copy = Some(data);
-        }
-        if let Some((_, remap)) = small {
-            let data = copy.get_or_insert(draw.data);
-            for stage in data.stages.iter_mut() {
-                stage.slots[0] = remap.get(&stage.slots[0]).copied().unwrap_or(0);
+            if let Some((_, remap)) = small {
+                for stage in data.stages.iter_mut() {
+                    stage.slots[0] = remap.get(&stage.slots[0]).copied().unwrap_or(0);
+                }
             }
+            copy = Some(data);
+        } else if let (Some(_), Some(first)) = (small, self.small_copy) {
+            instances = (renderer.retained_instances as u32 + first, draw.instances.1);
         }
         if let Some(data) = copy {
             let (start, n) = (draw.instances.0 as usize, draw.instances.1 as usize);

@@ -124,7 +124,7 @@ impl Player {
             pass_shared: false,
             pass_arrays: None,
             small_arrays: None,
-            small_now: false,
+            small_copy: None,
             phase_world: false,
             phase_posted: false,
             pass_draws_at_open: None,

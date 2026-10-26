@@ -849,10 +849,12 @@ struct Player {
     /// The group of the texture arrays that `issue` bound in this pass (group 1).
     pass_arrays: Option<Rc<wgpu::BindGroup>>,
     /// The group of the textures of the game's draws before the world and after the post
-    /// chain, with the slot of each texture in it, for the items in progress; and whether the
-    /// draw in progress is one of them (`run_items_inner`, `issue`).
+    /// chain, with the slot of each texture in it, for the items in progress
+    /// (`run_items_inner`, `issue`).
     small_arrays: Option<(Rc<wgpu::BindGroup>, FxHashMap<u32, u32>)>,
-    small_now: bool,
+    /// The copy of the draw in progress for the small group: its first instance among the
+    /// frame's instances (`mark_small_draws`).
+    small_copy: Option<u32>,
     /// The world began and the post chain ran, among the items run so far in the frame.
     phase_world: bool,
     phase_posted: bool,

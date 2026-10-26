@@ -33,6 +33,9 @@ impl Player {
         self.renderer.retained_upload(&mut self.retained);
         self.renderer.upload_lights(&self.frame_lights);
         self.renderer.upload_bones(&self.frame_bones);
+        // The small group and the copies of its draws, in the records and instances of the
+        // frame before their upload.
+        let small = self.mark_small_draws(&items);
         // Room for the copies that the parts of the frame make (clipped draws, replays).
         let copies = 3 * self.renderer.record_count + 256;
         self.renderer.upload_instances(&self.frame_instances, copies);
@@ -77,7 +80,6 @@ impl Player {
         // chain and the first person's depth have spans of their own inside.
         let (mut world_started, mut world_ended, mut posted) = (false, false, false);
         let mut group: Option<(&'static str, Stamp)> = None;
-        let small = self.mark_small_draws(&items);
         for (index, item) in items.into_iter().enumerate() {
             let label = match &item {
                 Item::Draw(_) | Item::Screen(_) if posted => Some("game: the interface"),
@@ -145,9 +147,9 @@ impl Player {
                     self.apply_viewport();
                 }
                 Item::Draw(draw) => {
-                    self.small_now = small.get(index).copied().unwrap_or(false);
+                    self.small_copy = small.get(index).copied().flatten();
                     self.issue(&draw);
-                    self.small_now = false;
+                    self.small_copy = None;
                 }
                 Item::Screen(screen) => {
                     self.begin_pass();
@@ -175,15 +177,19 @@ impl Player {
     }
 
     /// Marks the game's draws among `items` that come before the world or after the post
-    /// chain, and makes the small group of their textures (`small_arrays`): no draw of the
-    /// table comes in those parts of the frame, and their textures are few, so their passes
-    /// need not bind the whole arrays. Nothing with `MGE_XE_PASS_GROUPS=0`.
-    pub(crate) fn mark_small_draws(&mut self, items: &[Item]) -> Vec<bool> {
+    /// chain into the back buffer, and makes the small group of their textures
+    /// (`small_arrays`): no draw of the table comes in those parts of the frame, and their
+    /// textures are few, so their passes need not bind the whole arrays. Each marked draw
+    /// gets a copy of its record with its slots in the small group, and copies of its
+    /// instances that name it, in the records and instances of the frame before their one
+    /// upload: the first instance of the copy, for each item. Nothing with
+    /// `MGE_XE_PASS_GROUPS=0`.
+    pub(crate) fn mark_small_draws(&mut self, items: &[Item]) -> Vec<Option<u32>> {
         self.small_arrays = None;
         if !switches().pass_groups {
             return Vec::new();
         }
-        let (mut world, mut posted) = (self.phase_world, self.phase_posted);
+        let (mut world, mut posted, mut target) = (self.phase_world, self.phase_posted, self.pass_target);
         let mut slots = Vec::new();
         let marks: Vec<bool> = items
             .iter()
@@ -196,17 +202,48 @@ impl Player {
                     posted = true;
                     false
                 }
-                Item::Draw(draw) if !world || posted => {
+                Item::Target(next) => {
+                    target = *next;
+                    false
+                }
+                Item::Draw(draw) if (!world || posted) && target.is_none() => {
                     slots.extend(draw.data.stages.iter().map(|stage| stage.slots[0]));
                     true
                 }
                 _ => false,
             })
             .collect();
-        if marks.iter().any(|&mark| mark) {
-            self.small_arrays = Some(self.renderer.small_array_group(&slots));
+        if !marks.iter().any(|&mark| mark) {
+            return Vec::new();
         }
-        marks
+        let (group, remap) = self.renderer.small_array_group(&slots);
+        let copies = items
+            .iter()
+            .zip(&marks)
+            .map(|(item, &mark)| match item {
+                Item::Draw(draw) if mark => self.small_copy_of(draw, &remap),
+                _ => None,
+            })
+            .collect();
+        self.small_arrays = Some((group, remap));
+        copies
+    }
+
+    /// The copy of a draw for the small group (`mark_small_draws`): its first instance, or
+    /// [`None`] when the records are full (the draw then binds the whole arrays).
+    fn small_copy_of(&mut self, draw: &Draw, remap: &FxHashMap<u32, u32>) -> Option<u32> {
+        let mut data = draw.data;
+        for stage in data.stages.iter_mut() {
+            stage.slots[0] = remap.get(&stage.slots[0]).copied().unwrap_or(0);
+        }
+        let record = self.renderer.record(&data)?;
+        let (start, n) = (draw.instances.0 as usize, draw.instances.1 as usize);
+        let first = self.frame_instances.len() as u32;
+        for index in start..start + n {
+            let world = self.frame_instances[index].world;
+            self.frame_instances.push(Instance { world, record: [record, 0, 0, 0] });
+        }
+        Some(first)
     }
 
     /// Does a step of the plan of the items ([`plan::Plan`]).
