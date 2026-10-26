@@ -114,7 +114,7 @@ impl Player {
             mark_runs: 0,
             mark_gpu: (0.0, 0.0, 0),
             mark_work: [0; 4],
-            mark_passes: [0; 11],
+            mark_passes: [0; crate::gpu::PASS_COUNTS],
             mark_errors: 0,
             bound: BoundGroups::default(),
             pass_pipeline: None,
@@ -160,6 +160,7 @@ impl Player {
             clear_color: clear_color.or(carried.as_ref().and_then(|c| c.clear_color)),
             clear_depth: clear_depth.or(carried.as_ref().and_then(|c| c.clear_depth)),
             clear_stencil: clear_stencil.or(carried.as_ref().and_then(|c| c.clear_stencil)),
+            reason,
         });
         self.forget_bound();
         if !lazy {
@@ -171,8 +172,8 @@ impl Player {
     /// it before a draw into `pass`.
     pub(crate) fn begin_pass(&mut self) {
         let Some(pending) = self.pending.take().filter(|_| self.encoder.is_some()) else { return };
-        crate::gpu::note_pass_begun();
-        self.pass_draws_at_open = Some(self.pass_draw_count());
+        crate::gpu::note_pass_begun(pending.reason);
+        self.pass_draws_at_open = Some((self.pass_draw_count(), pending.reason));
         let stamps = self.renderer.timing.as_mut().and_then(Timing::next_pass);
         let pass = self
             .encoder
@@ -229,12 +230,12 @@ impl Player {
         self.renderer.counts.draws as u64 + self.retained.counts.calls
     }
 
-    /// Counts the last pass opened on the game's targets as one with no draw when no draw
-    /// came since it opened.
+    /// Counts the last pass begun on the game's targets as one with a draw when a draw came
+    /// since it began.
     pub(crate) fn note_pass_end(&mut self) {
-        if let Some(at_open) = self.pass_draws_at_open.take() {
-            if self.pass_draw_count() == at_open {
-                crate::gpu::note_empty_pass();
+        if let Some((at_open, reason)) = self.pass_draws_at_open.take() {
+            if self.pass_draw_count() != at_open {
+                crate::gpu::note_drawn_pass(reason);
             }
         }
     }

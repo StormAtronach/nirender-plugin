@@ -116,24 +116,28 @@ pub enum PassReason {
 pub const PASS_REASONS: [&str; 7] = ["the frame's start", "a flush", "a target", "a clear", "the world's start", "after a copy", "after the extension"];
 
 static PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
-static EMPTY_PASSES: AtomicU64 = AtomicU64::new(0);
+static BEGUN_PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+static DRAWN_PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static OTHER_PASSES: AtomicU64 = AtomicU64::new(0);
 static ARRAY_BINDS: AtomicU64 = AtomicU64::new(0);
-static BEGUN_PASSES: AtomicU64 = AtomicU64::new(0);
+
+/// The number of counts in [`passes`].
+pub const PASS_COUNTS: usize = 23;
 
 /// A pass on the game's targets was asked for.
 pub fn note_pass(reason: PassReason) {
     PASSES[reason as usize].fetch_add(1, Ordering::Relaxed);
 }
 
-/// A pass on the game's targets began (`Player::begin_pass`).
-pub fn note_pass_begun() {
-    BEGUN_PASSES.fetch_add(1, Ordering::Relaxed);
+/// A pass on the game's targets began (`Player::begin_pass`). `reason`: that of the last ask
+/// for it.
+pub fn note_pass_begun(reason: PassReason) {
+    BEGUN_PASSES[reason as usize].fetch_add(1, Ordering::Relaxed);
 }
 
-/// A pass on the game's targets ended with no draw of the game or of the table.
-pub fn note_empty_pass() {
-    EMPTY_PASSES.fetch_add(1, Ordering::Relaxed);
+/// A pass on the game's targets ended with a draw of the game or of the table.
+pub fn note_drawn_pass(reason: PassReason) {
+    DRAWN_PASSES[reason as usize].fetch_add(1, Ordering::Relaxed);
 }
 
 /// A pass of another part opened: a copy, a merge, the overlay, the map tiles, the extension's
@@ -147,34 +151,34 @@ pub fn note_array_bind() {
     ARRAY_BINDS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// The census of the passes since the start: the passes asked for by [`PassReason`], the
-/// passes with no draw, the other passes, the binds of the texture arrays, the passes begun.
-pub fn passes() -> [u64; 11] {
-    let mut out = [0u64; 11];
-    for (slot, count) in out.iter_mut().zip(PASSES.iter()) {
+/// The census of the passes since the start, by [`PassReason`]: the passes asked for (0..7),
+/// begun (7..14) and with a draw (14..21); then the other passes and the binds of the texture
+/// arrays.
+pub fn passes() -> [u64; PASS_COUNTS] {
+    let mut out = [0u64; PASS_COUNTS];
+    for (slot, count) in out.iter_mut().zip(PASSES.iter().chain(&BEGUN_PASSES).chain(&DRAWN_PASSES)) {
         *slot = count.load(Ordering::Relaxed);
     }
-    out[7] = EMPTY_PASSES.load(Ordering::Relaxed);
-    out[8] = OTHER_PASSES.load(Ordering::Relaxed);
-    out[9] = ARRAY_BINDS.load(Ordering::Relaxed);
-    out[10] = BEGUN_PASSES.load(Ordering::Relaxed);
+    out[21] = OTHER_PASSES.load(Ordering::Relaxed);
+    out[22] = ARRAY_BINDS.load(Ordering::Relaxed);
     out
 }
 
 /// The census as a line of the log: `delta` against the counts at the last mark, for `frames`
 /// frames.
-pub fn pass_line(delta: &[u64; 11], frames: u64) -> String {
+pub fn pass_line(delta: &[u64; PASS_COUNTS], frames: u64) -> String {
     let per = |n: u64| n as f64 / frames.max(1) as f64;
-    let opened: u64 = delta[..7].iter().sum();
-    let reasons: Vec<String> = PASS_REASONS.iter().zip(&delta[..7]).filter(|(_, n)| **n != 0).map(|(name, n)| format!("{name} {:.2}", per(*n))).collect();
+    let part = |counts: &[u64]| {
+        let reasons: Vec<String> = PASS_REASONS.iter().zip(counts).filter(|(_, n)| **n != 0).map(|(name, n)| format!("{name} {:.2}", per(*n))).collect();
+        format!("{:.2} ({})", per(counts.iter().sum()), reasons.join(", "))
+    };
     format!(
-        "passes: {:.2} asked for on the game's targets for each frame ({}), {:.2} begun, {:.2} of them with no draw; {:.2} other passes; {:.2} binds of the texture arrays",
-        per(opened),
-        reasons.join(", "),
-        per(delta[10]),
-        per(delta[7]),
-        per(delta[8]),
-        per(delta[9])
+        "passes: on the game's targets for each frame {} asked for, {} begun, {} with a draw; {:.2} other passes; {:.2} binds of the texture arrays",
+        part(&delta[..7]),
+        part(&delta[7..14]),
+        part(&delta[14..21]),
+        per(delta[21]),
+        per(delta[22])
     )
 }
 

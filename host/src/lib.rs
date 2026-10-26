@@ -174,6 +174,8 @@ struct PendingPass {
     clear_color: Option<wgpu::Color>,
     clear_depth: Option<f32>,
     clear_stencil: Option<u32>,
+    /// The reason of the last ask for the pass, for the census.
+    reason: gpu::PassReason,
 }
 
 impl PendingPass {
@@ -831,7 +833,7 @@ struct Player {
     /// [`gpu::work()`] and [`gpu::errors()`] at the last mark.
     mark_work: [u64; 4],
     /// The census of the passes at the last mark (`gpu::passes`).
-    mark_passes: [u64; 11],
+    mark_passes: [u64; gpu::PASS_COUNTS],
     mark_errors: u64,
     /// The groups that the pass of the game has now.
     bound: BoundGroups,
@@ -845,9 +847,9 @@ struct Player {
     pass_shared: bool,
     /// The arrays of the frame are bound in this pass.
     pass_arrays: bool,
-    /// The draws so far when the last pass on the game's targets opened, until its end is
-    /// counted (`note_pass_end`).
-    pass_draws_at_open: Option<u64>,
+    /// The draws so far when the last pass on the game's targets began, and its reason, until
+    /// its end is counted (`note_pass_end`).
+    pass_draws_at_open: Option<(u64, gpu::PassReason)>,
     /// The arguments of the draws of the run that is open, and of all the runs of the frame
     /// (`flush_run`).
     run_args: Vec<IndirectArgs>,
