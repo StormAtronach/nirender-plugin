@@ -86,7 +86,7 @@ impl Player {
         if !self.pass_arrays {
             let group = renderer.array_group_for(self.pass_target);
             pass.set_bind_group(1, &*group, &[]);
-            crate::gpu::note_array_bind();
+            crate::gpu::note_array_bind(crate::gpu::BindOrigin::Game);
             self.pass_arrays = true;
         }
         if !self.pass_vertices.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices)) {

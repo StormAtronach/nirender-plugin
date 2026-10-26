@@ -118,11 +118,23 @@ pub const PASS_REASONS: [&str; 7] = ["the frame's start", "a flush", "a target",
 static PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static BEGUN_PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static DRAWN_PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+static TABLE_PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static OTHER_PASSES: AtomicU64 = AtomicU64::new(0);
-static ARRAY_BINDS: AtomicU64 = AtomicU64::new(0);
+static ARRAY_BINDS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
 /// The number of counts in [`passes`].
-pub const PASS_COUNTS: usize = 23;
+pub const PASS_COUNTS: usize = 32;
+
+/// Who bound the group of the texture arrays, for the census of the passes.
+#[derive(Clone, Copy)]
+pub enum BindOrigin {
+    /// A draw of the game (`Player::issue`).
+    Game,
+    /// The table's draws in the game's pass (the main view, the sorted blends).
+    Table,
+    /// A replay for the extension: its own passes (the reflection, the shadows) or its calls.
+    Replay,
+}
 
 /// A pass on the game's targets was asked for.
 pub fn note_pass(reason: PassReason) {
@@ -135,9 +147,13 @@ pub fn note_pass_begun(reason: PassReason) {
     BEGUN_PASSES[reason as usize].fetch_add(1, Ordering::Relaxed);
 }
 
-/// A pass on the game's targets ended with a draw of the game or of the table.
-pub fn note_drawn_pass(reason: PassReason) {
+/// A pass on the game's targets ended with a draw of the game or of the table; `table`: with
+/// a draw of the table.
+pub fn note_drawn_pass(reason: PassReason, table: bool) {
     DRAWN_PASSES[reason as usize].fetch_add(1, Ordering::Relaxed);
+    if table {
+        TABLE_PASSES[reason as usize].fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// A pass of another part opened: a copy, a merge, the overlay, the map tiles, the extension's
@@ -147,20 +163,22 @@ pub fn note_other_pass() {
 }
 
 /// The bind group of the texture arrays was set in a pass.
-pub fn note_array_bind() {
-    ARRAY_BINDS.fetch_add(1, Ordering::Relaxed);
+pub fn note_array_bind(origin: BindOrigin) {
+    ARRAY_BINDS[origin as usize].fetch_add(1, Ordering::Relaxed);
 }
 
 /// The census of the passes since the start, by [`PassReason`]: the passes asked for (0..7),
-/// begun (7..14) and with a draw (14..21); then the other passes and the binds of the texture
-/// arrays.
+/// begun (7..14), with a draw (14..21) and with a draw of the table (21..28); then the other
+/// passes, and the binds of the texture arrays by [`BindOrigin`] (29..32).
 pub fn passes() -> [u64; PASS_COUNTS] {
     let mut out = [0u64; PASS_COUNTS];
-    for (slot, count) in out.iter_mut().zip(PASSES.iter().chain(&BEGUN_PASSES).chain(&DRAWN_PASSES)) {
+    for (slot, count) in out.iter_mut().zip(PASSES.iter().chain(&BEGUN_PASSES).chain(&DRAWN_PASSES).chain(&TABLE_PASSES)) {
         *slot = count.load(Ordering::Relaxed);
     }
-    out[21] = OTHER_PASSES.load(Ordering::Relaxed);
-    out[22] = ARRAY_BINDS.load(Ordering::Relaxed);
+    out[28] = OTHER_PASSES.load(Ordering::Relaxed);
+    for (slot, count) in out[29..].iter_mut().zip(ARRAY_BINDS.iter()) {
+        *slot = count.load(Ordering::Relaxed);
+    }
     out
 }
 
@@ -173,12 +191,16 @@ pub fn pass_line(delta: &[u64; PASS_COUNTS], frames: u64) -> String {
         format!("{:.2} ({})", per(counts.iter().sum()), reasons.join(", "))
     };
     format!(
-        "passes: on the game's targets for each frame {} asked for, {} begun, {} with a draw; {:.2} other passes; {:.2} binds of the texture arrays",
+        "passes: on the game's targets for each frame {} asked for, {} begun, {} with a draw, {} with a draw of the table; {:.2} other passes; {:.2} binds of the texture arrays ({:.2} by the game's draws, {:.2} by the table, {:.2} by the replays)",
         part(&delta[..7]),
         part(&delta[7..14]),
         part(&delta[14..21]),
-        per(delta[21]),
-        per(delta[22])
+        part(&delta[21..28]),
+        per(delta[28]),
+        per(delta[29] + delta[30] + delta[31]),
+        per(delta[29]),
+        per(delta[30]),
+        per(delta[31])
     )
 }
 

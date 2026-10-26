@@ -847,9 +847,9 @@ struct Player {
     pass_shared: bool,
     /// The arrays of the frame are bound in this pass.
     pass_arrays: bool,
-    /// The draws so far when the last pass on the game's targets began, and its reason, until
-    /// its end is counted (`note_pass_end`).
-    pass_draws_at_open: Option<(u64, gpu::PassReason)>,
+    /// The draws so far and the table's draws so far when the last pass on the game's targets
+    /// began, and its reason, until its end is counted (`note_pass_end`).
+    pass_draws_at_open: Option<(u64, u64, gpu::PassReason)>,
     /// The arguments of the draws of the run that is open, and of all the runs of the frame
     /// (`flush_run`).
     run_args: Vec<IndirectArgs>,

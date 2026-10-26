@@ -183,6 +183,7 @@ impl Replay for Replayer<'_> {
                 // texture of the game.
                 let group = self.renderer.array_group_for(None);
                 pass.set_bind_group(1, &*group, &[]);
+                crate::gpu::note_array_bind(crate::gpu::BindOrigin::Replay);
                 arrays_bound = true;
             }
             pass.set_vertex_buffer(0, kept.vertices.slice(..));

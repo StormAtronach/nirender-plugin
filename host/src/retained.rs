@@ -1262,7 +1262,8 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
         if !arrays_bound {
             let group = renderer.array_group_for(view.target);
             pass.set_bind_group(1, &*group, &[]);
-            crate::gpu::note_array_bind();
+            // Scene slot 0 is the main view of the table; a replay has a slot of its own.
+            crate::gpu::note_array_bind(if view.scene_slot == 0 { crate::gpu::BindOrigin::Table } else { crate::gpu::BindOrigin::Replay });
             arrays_bound = true;
         }
         pass.set_vertex_buffer(0, bucket.vertices.slice(..));

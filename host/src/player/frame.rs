@@ -173,7 +173,7 @@ impl Player {
     pub(crate) fn begin_pass(&mut self) {
         let Some(pending) = self.pending.take().filter(|_| self.encoder.is_some()) else { return };
         crate::gpu::note_pass_begun(pending.reason);
-        self.pass_draws_at_open = Some((self.pass_draw_count(), pending.reason));
+        self.pass_draws_at_open = Some((self.pass_draw_count(), self.retained.counts.calls, pending.reason));
         let stamps = self.renderer.timing.as_mut().and_then(Timing::next_pass);
         let pass = self
             .encoder
@@ -231,11 +231,11 @@ impl Player {
     }
 
     /// Counts the last pass begun on the game's targets as one with a draw when a draw came
-    /// since it began.
+    /// since it began, and as one with a draw of the table when that draw was the table's.
     pub(crate) fn note_pass_end(&mut self) {
-        if let Some((at_open, reason)) = self.pass_draws_at_open.take() {
+        if let Some((at_open, table_at_open, reason)) = self.pass_draws_at_open.take() {
             if self.pass_draw_count() != at_open {
-                crate::gpu::note_drawn_pass(reason);
+                crate::gpu::note_drawn_pass(reason, self.retained.counts.calls != table_at_open);
             }
         }
     }
