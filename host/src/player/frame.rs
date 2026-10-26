@@ -43,6 +43,7 @@ impl Player {
             },
             encoder: None,
             pass: None,
+            pending: None,
             color: None,
             depth: None,
             back_buffer: None,
@@ -113,7 +114,7 @@ impl Player {
             mark_runs: 0,
             mark_gpu: (0.0, 0.0, 0),
             mark_work: [0; 4],
-            mark_passes: [0; 10],
+            mark_passes: [0; 11],
             mark_errors: 0,
             bound: BoundGroups::default(),
             pass_pipeline: None,
@@ -130,16 +131,12 @@ impl Player {
         }
     }
 
-    /// Starts a pass on the targets of the frame: it draws on what is there, or it clears first.
+    /// Asks for a pass on the targets of the frame: it draws on what is there, or it clears
+    /// first. The pass begins at its first draw ([`Player::begin_pass`]). A pass asked for
+    /// before on the same targets that has not begun gives its clears to this one.
     /// `reason`: why, for the census of the passes (`gpu::passes`).
     pub(crate) fn open_pass(&mut self, reason: crate::gpu::PassReason, clear_color: Option<wgpu::Color>, clear_depth: Option<f32>, clear_stencil: Option<u32>) {
-        self.note_pass_end();
         crate::gpu::note_pass(reason);
-        self.pass_draws_at_open = Some(self.pass_draw_count());
-        if let Some(pass) = self.pass.as_mut() {
-            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
-        }
-        drop(self.pass.take());
         let rendered = self.pass_target.and_then(|handle| self.renderer.targets.get(&handle));
         // A texture that the game draws into has one sample; the targets of the frame have
         // `Renderer::samples`, and the pass resolves its colour into the back buffer.
@@ -147,24 +144,52 @@ impl Player {
             Some(texture) => Some((texture.view.clone(), texture.depth.clone(), texture.size, None, 1)),
             None => self.color.clone().zip(self.depth.clone()).map(|(color, depth)| (color, depth, self.frame_size, self.back_view.clone(), self.renderer.samples)),
         };
-        let (Some(encoder), Some((color, depth, size, resolve, samples))) = (self.encoder.as_mut(), views) else { return };
+        let lazy = switches().lazy_pass;
+        let carried = match (&views, self.pending.as_ref()) {
+            (Some((color, depth, ..)), Some(pending)) if lazy && Rc::ptr_eq(color, &pending.color) && Rc::ptr_eq(depth, &pending.depth) => self.pending.take(),
+            _ => None,
+        };
+        self.close_pass();
+        let (Some((color, depth, size, resolve, samples)), true) = (views, self.encoder.is_some()) else { return };
         self.target_size = size;
         self.pass_samples = samples;
-        let (color, depth) = (&*color, &*depth);
+        self.pending = Some(PendingPass {
+            color,
+            depth,
+            resolve,
+            clear_color: clear_color.or(carried.as_ref().and_then(|c| c.clear_color)),
+            clear_depth: clear_depth.or(carried.as_ref().and_then(|c| c.clear_depth)),
+            clear_stencil: clear_stencil.or(carried.as_ref().and_then(|c| c.clear_stencil)),
+        });
+        self.forget_bound();
+        if !lazy {
+            self.begin_pass();
+        }
+    }
+
+    /// Begins the pass that was asked for ([`Player::open_pass`]), if it has not begun. Call
+    /// it before a draw into `pass`.
+    pub(crate) fn begin_pass(&mut self) {
+        let Some(pending) = self.pending.take().filter(|_| self.encoder.is_some()) else { return };
+        crate::gpu::note_pass_begun();
+        self.pass_draws_at_open = Some(self.pass_draw_count());
         let stamps = self.renderer.timing.as_mut().and_then(Timing::next_pass);
-        let pass = encoder
+        let pass = self
+            .encoder
+            .as_mut()
+            .unwrap()
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("game pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color,
+                    view: &pending.color,
                     depth_slice: None,
-                    resolve_target: resolve.as_deref(),
-                    ops: wgpu::Operations { load: clear_color.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store },
+                    resolve_target: pending.resolve.as_deref(),
+                    ops: wgpu::Operations { load: pending.clear_color.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: depth,
-                    depth_ops: Some(wgpu::Operations { load: clear_depth.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store }),
-                    stencil_ops: Some(wgpu::Operations { load: clear_stencil.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store }),
+                    view: &pending.depth,
+                    depth_ops: Some(wgpu::Operations { load: pending.clear_depth.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store }),
+                    stencil_ops: Some(wgpu::Operations { load: pending.clear_stencil.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store }),
                 }),
                 timestamp_writes: stamps.map(|index| wgpu::RenderPassTimestampWrites {
                     query_set: &self.renderer.timing.as_ref().unwrap().set,
@@ -180,9 +205,25 @@ impl Player {
         self.apply_viewport();
     }
 
-    /// With more than one sample: writes the back buffer into the multisampled colour target,
-    /// after a write of the back buffer outside the pass ([`Extension::post`]). The pass stays
-    /// closed. Nothing with one sample.
+    /// Ends the pass on the game's targets, with the run of draws that is open. A pass that
+    /// has not begun begins and ends here when it clears; else nothing of it remains.
+    pub(crate) fn close_pass(&mut self) {
+        if self.pending.as_ref().is_some_and(PendingPass::clears) {
+            self.begin_pass();
+        }
+        self.pending = None;
+        self.note_pass_end();
+        if let Some(pass) = self.pass.as_mut() {
+            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
+        }
+        drop(self.pass.take());
+    }
+
+    /// A pass on the game's targets is open or asked for.
+    pub(crate) fn pass_wanted(&self) -> bool {
+        self.pass.is_some() || self.pending.is_some()
+    }
+
     /// The draws of the game and of the table so far, for the census of the passes.
     fn pass_draw_count(&self) -> u64 {
         self.renderer.counts.draws as u64 + self.retained.counts.calls
@@ -198,14 +239,14 @@ impl Player {
         }
     }
 
+    /// With more than one sample: writes the back buffer into the multisampled colour target,
+    /// after a write of the back buffer outside the pass ([`Extension::post`]). The pass stays
+    /// closed. Nothing with one sample.
     pub(crate) fn load_color(&mut self) {
         if self.back_view.is_none() {
             return;
         }
-        if let Some(pass) = self.pass.as_mut() {
-            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
-        }
-        drop(self.pass.take());
+        self.close_pass();
         let (Some(multisample), Some(source), Some(target), Some(encoder)) = (self.renderer.multisample.as_ref(), self.back_view.as_ref(), self.color.as_ref(), self.encoder.as_mut()) else { return };
         multisample.load_color(&self.renderer.device, encoder, source, target);
         self.renderer.counts.picture_copies += 1;
@@ -342,10 +383,7 @@ impl Player {
     pub(crate) fn flush<T>(&mut self, between: impl FnOnce(&mut Player) -> T) -> T {
         self.run_items();
         let in_frame = self.drawing();
-        if let Some(pass) = self.pass.as_mut() {
-            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
-        }
-        drop(self.pass.take());
+        self.close_pass();
         if let Some(encoder) = self.encoder.take() {
             // The first part of a frame: the back buffer has the last complete picture
             // until these commands run. A copy of it stays for the window (see
@@ -436,12 +474,8 @@ impl Player {
         if let Some(extension) = self.extension.as_mut() {
             self.shots.extend(extension.pictures().into_iter().map(|request| request.path));
         }
-        self.note_pass_end();
         let clock = ticks::Clock::now();
-        if let Some(pass) = self.pass.as_mut() {
-            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
-        }
-        drop(self.pass.take());
+        self.close_pass();
         self.color = None;
         self.depth = None;
         self.back_view = None;

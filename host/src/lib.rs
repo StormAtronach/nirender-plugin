@@ -164,6 +164,24 @@ impl BoundGroups {
     }
 }
 
+/// A pass on the game's targets that was asked for and has not begun: it begins at the first
+/// draw into it (`Player::begin_pass`). Its clears carry into the next pass on the same
+/// targets, or it begins and ends with no draw to do them (`Player::close_pass`).
+struct PendingPass {
+    color: Rc<wgpu::TextureView>,
+    depth: Rc<wgpu::TextureView>,
+    resolve: Option<Rc<wgpu::TextureView>>,
+    clear_color: Option<wgpu::Color>,
+    clear_depth: Option<f32>,
+    clear_stencil: Option<u32>,
+}
+
+impl PendingPass {
+    fn clears(&self) -> bool {
+        self.clear_color.is_some() || self.clear_depth.is_some() || self.clear_stencil.is_some()
+    }
+}
+
 /// A draw with its vertices in the record, ready for the pass.
 struct ScreenDraw {
     pipeline: wgpu::RenderPipeline,
@@ -669,6 +687,9 @@ struct Player {
     /// The frame in progress: its commands, its pass, and its two targets.
     encoder: Option<wgpu::CommandEncoder>,
     pass: Option<wgpu::RenderPass<'static>>,
+    /// The pass on the game's targets that was asked for and has not begun: never with
+    /// `pass` (`Player::begin_pass`).
+    pending: Option<PendingPass>,
     color: Option<Rc<wgpu::TextureView>>,
     depth: Option<Rc<wgpu::TextureView>>,
     /// The texture of `color`, for a read of its pixels. It stays after the frame.
@@ -810,7 +831,7 @@ struct Player {
     /// [`gpu::work()`] and [`gpu::errors()`] at the last mark.
     mark_work: [u64; 4],
     /// The census of the passes at the last mark (`gpu::passes`).
-    mark_passes: [u64; 10],
+    mark_passes: [u64; 11],
     mark_errors: u64,
     /// The groups that the pass of the game has now.
     bound: BoundGroups,

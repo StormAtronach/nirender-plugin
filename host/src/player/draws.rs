@@ -37,6 +37,8 @@ impl Player {
             return;
         };
         renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
+        self.begin_pass();
+        let renderer = &mut self.renderer;
         let clock = ticks::Clock::now();
         let Some(pass) = self.pass.as_mut() else { return };
         // A change of the state ends the run that is open.

@@ -1888,6 +1888,7 @@ impl Player {
         self.retained.main_view = facts.view;
         let planes = frustum_planes(&multiply32(&facts.view, &facts.projection));
         let held = self.retained_hold(facts, &planes);
+        self.begin_pass();
         let Some(pass) = self.pass.as_mut() else { return };
         let view = RetainedView { scene_slot: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Keep, samples: self.pass_samples };
         pass.push_debug_group("retained instances");
@@ -1956,7 +1957,7 @@ impl Player {
             })
             .collect();
         self.renderer.counts.merged_blends += deferred.iter().filter(|e| matches!(e.1, crate::Waiting::Draw(_))).count() as u64;
-        if self.pass.is_none() {
+        if !self.pass_wanted() {
             self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
         let kept_keys: Vec<u64> = kept.iter().map(|entry| entry.0).collect();
@@ -2009,6 +2010,7 @@ impl Player {
         v.target = self.pass_target;
         self.end_run();
         self.retained.kept_sorted = entries;
+        self.begin_pass();
         let Some(pass) = self.pass.as_mut() else { return };
         pass.push_debug_group("retained sorted blends");
         draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &v);

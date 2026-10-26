@@ -139,6 +139,7 @@ impl Player {
                 }
                 Item::Draw(draw) => self.issue(&draw),
                 Item::Screen(screen) => {
+                    self.begin_pass();
                     let Some(pass) = self.pass.as_mut() else { continue };
                     pass.set_pipeline(&screen.pipeline);
                     pass.set_bind_group(0, &screen.group, &[]);
@@ -316,6 +317,7 @@ impl Player {
         let commands = self.renderer.commands.clone();
         let scene = facts.view(&device, &queue, &commands, format);
         let part = self.part_begin("before the world (extension: terrain, distant statics, glows)");
+        self.begin_pass();
         let clear_depth = match self.pass.as_mut() {
             Some(pass) => {
                 let world = std::mem::take(&mut self.world_draws);
@@ -357,6 +359,7 @@ impl Player {
         let commands = self.renderer.commands.clone();
         let mut scene = facts.view(&device, &queue, &commands, format);
         let part = self.part_begin("after the world (extension: grass)");
+        self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
@@ -382,12 +385,11 @@ impl Player {
         // resolved: the copy of the world depth when it was made now, else a resolve now.
         let picture = if self.before_kept && extension.reads(ReadingCall::Blend).picture { self.copy_picture("picture: the blend") } else { None };
         let resolved = if self.before_kept && self.renderer.samples > 1 { if world_depth_now { self.world_depth_view() } else { self.copy_depth(0, "depth: the blend") } } else { None };
+        if self.before_kept && self.before.is_some() && self.color.is_some() && self.depth.is_some() && self.encoder.is_some() {
+            self.close_pass();
+        }
         if let (true, Some(before), Some(color), Some(depth), Some(encoder)) = (self.before_kept, self.before.as_ref(), self.color.clone(), self.depth.clone(), self.encoder.as_mut()) {
-            if let Some(pass) = self.pass.as_mut() {
-                flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
-            }
-            drop(self.pass.take());
-            let at = stamp(&self.renderer.stamps, encoder, StampKind::Part, "the blend pass (extension)");
+            let at =stamp(&self.renderer.stamps, encoder, StampKind::Part, "the blend pass (extension)");
             scene.picture = picture.as_ref();
             let before = before.create_view(&Default::default());
             let depth = resolved.unwrap_or_else(|| depth.texture().create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
@@ -441,6 +443,7 @@ impl Player {
         let lights = own.built.then(|| (own.lights.clone(), own.uniform.clone(), own.table.clone(), own.indexes.clone(), own.origin));
         scene.lights = lights.as_ref().map(|(lights, clusters, table, indexes, origin)| FrameLights { lights, clusters, table, indexes, origin: *origin });
         let part = self.part_begin("held draws (extension: caustics, water volumes, far water)");
+        self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
@@ -467,6 +470,7 @@ impl Player {
         let own = &self.renderer.extension_lights;
         let lights = own.built.then(|| (own.lights.clone(), own.uniform.clone(), own.table.clone(), own.indexes.clone(), own.origin));
         scene.lights = lights.as_ref().map(|(lights, clusters, table, indexes, origin)| FrameLights { lights, clusters, table, indexes, origin: *origin });
+        self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
@@ -482,7 +486,7 @@ impl Player {
 
     /// Keeps the picture of the frame as it is now, for [`Extension::blend`].
     pub(crate) fn keep_before(&mut self) {
-        let (Some(source), Some(encoder)) = (self.back_buffer.as_ref(), self.encoder.as_mut()) else { return };
+        let Some(source) = self.back_buffer.clone().filter(|_| self.encoder.is_some()) else { return };
         if !source.usage().contains(wgpu::TextureUsages::COPY_SRC) || !self.depth.as_ref().is_some_and(|depth| depth.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)) {
             return;
         }
@@ -491,10 +495,8 @@ impl Player {
             self.before = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
         }
         // A copy is not a part of a pass.
-        if let Some(pass) = self.pass.as_mut() {
-            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
-        }
-        drop(self.pass.take());
+        self.close_pass();
+        let Some(encoder) = self.encoder.as_mut() else { return };
         let at = stamp(&self.renderer.stamps, encoder, StampKind::Outside, "picture kept for the blend");
         encoder.copy_texture_to_texture(source.as_image_copy(), self.before.as_ref().unwrap().as_image_copy(), size);
         stamp_end(&self.renderer.stamps, encoder, at);
@@ -514,7 +516,7 @@ impl Player {
             (true, true) => self.world_depth_view(),
             (true, false) => self.copy_depth(0, names.1),
         };
-        if self.pass.is_none() {
+        if !self.pass_wanted() {
             self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
         (picture, depth)
@@ -531,7 +533,7 @@ impl Player {
     /// Copies the picture of the frame, outside of the pass. The pass stays closed. `name`:
     /// the copy's name for the GPU time.
     pub(crate) fn copy_picture(&mut self, name: &'static str) -> Option<wgpu::TextureView> {
-        let (Some(source), Some(encoder)) = (self.back_buffer.as_ref(), self.encoder.as_mut()) else { return None };
+        let source = self.back_buffer.clone().filter(|_| self.encoder.is_some())?;
         if !source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
             return None;
         }
@@ -539,11 +541,9 @@ impl Player {
         if self.picture_copy.as_ref().is_none_or(|copy| copy.size() != size) {
             self.picture_copy = Some(target_texture(&self.renderer.device, size.width, size.height, source.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
         }
-        if let Some(pass) = self.pass.as_mut() {
-            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
-        }
-        drop(self.pass.take());
-        let at = stamp(&self.renderer.stamps, encoder, StampKind::Outside, name);
+        self.close_pass();
+        let encoder = self.encoder.as_mut()?;
+        let at =stamp(&self.renderer.stamps, encoder, StampKind::Outside, name);
         encoder.copy_texture_to_texture(source.as_image_copy(), self.picture_copy.as_ref().unwrap().as_image_copy(), size);
         stamp_end(&self.renderer.stamps, encoder, at);
         self.renderer.counts.picture_copies += 1;
@@ -562,10 +562,7 @@ impl Player {
         if !resolve && !source.usage().contains(wgpu::TextureUsages::COPY_SRC) {
             return None;
         }
-        if let Some(pass) = self.pass.as_mut() {
-            flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
-        }
-        drop(self.pass.take());
+        self.close_pass();
         let encoder = self.encoder.as_mut()?;
         let size = source.size();
         let copy = match which {
@@ -635,11 +632,10 @@ impl Player {
         // The extension writes the picture with one sample: the back buffer, which the pass
         // resolved into, with more than one sample; `color` is it with one.
         let picture_target = self.back_view.clone().or_else(|| self.color.clone());
+        if picture_target.is_some() && self.encoder.is_some() {
+            self.close_pass();
+        }
         if let (Some(color), Some(encoder)) = (picture_target, self.encoder.as_mut()) {
-            if let Some(pass) = self.pass.as_mut() {
-                flush_run(pass, &mut self.renderer, &mut self.run_args, &mut self.frame_args);
-            }
-            drop(self.pass.take());
             let clock = ticks::Clock::now();
             let at = stamp(&self.renderer.stamps, encoder, StampKind::Part, "the post chain (extension)");
             encoder.push_debug_group("extension: post-processing");
@@ -690,6 +686,7 @@ impl Player {
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
         scene.before_depth = before_depth.as_ref();
+        self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
@@ -709,6 +706,7 @@ impl Player {
     /// Draws the world draws in `range` that blend and write no depth again, into the pass,
     /// only where they are on the positive side of `plane`.
     pub(crate) fn replay_blended(&mut self, range: impl std::slice::SliceIndex<[Rc<Draw>], Output = [Rc<Draw>]>, plane: [f64; 4], target_size: (u32, u32)) {
+        self.begin_pass();
         let Some(pass) = self.pass.as_mut() else { return };
         let world = std::mem::take(&mut self.world_draws);
         let samples = self.pass_samples;

@@ -46,6 +46,9 @@ pub(crate) struct Switches {
     /// more than 64 slots changed in a frame, as before the copy of `retained_upload`: for its
     /// A/B.
     pub(crate) instance_upload_all: bool,
+    /// `MGE_XE_LAZY_PASS=0`: a pass on the game's targets begins when it is asked for, and a
+    /// clear does not carry into the next pass, as before `Player::begin_pass`: for its A/B.
+    pub(crate) lazy_pass: bool,
 }
 
 impl Switches {
@@ -72,6 +75,7 @@ impl Switches {
             samples: var("MGE_XE_SAMPLES").and_then(|v| v.parse::<u32>().ok()).map(|n| n.clamp(1, 8)),
             particle_quads_cpu: is("MGE_XE_PARTICLE_QUADS", "cpu"),
             instance_upload_all: is("MGE_XE_INSTANCE_UPLOAD", "all"),
+            lazy_pass: on_unless_0("MGE_XE_LAZY_PASS"),
         }
     }
 }
