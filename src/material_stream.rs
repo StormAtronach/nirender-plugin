@@ -29,6 +29,7 @@ use crate::mem::rd;
 pub const WORDS: usize = 117;
 const NI_TEXTURE_RENDERER_DATA: usize = layouts::NiTexture::rendererData;
 const SOURCE_DATA_D3D_TEXTURE: usize = layouts::NiDX8SourceTextureData::d3dTexture;
+const SOURCE_TEXTURE_IS_STATIC: usize = layouts::NiSourceTexture::isStatic;
 /// The table of `NiDX8SourceTextureData`: a rendered texture has another renderer data.
 const VTBL_SOURCE_TEXTURE_DATA: u32 = 0x74F770;
 /// The flags of a property (u16).
@@ -141,12 +142,15 @@ unsafe fn device_texture(renderer: usize, texture: usize) -> u32 {
     if texture == 0 {
         return 0;
     }
-    // A texture that is loaded has its device texture in its renderer data
-    // (`NiDX8SourceTextureData::d3dTexture`): no call of the manager for it.
+    // A static texture that is loaded has its device texture in its renderer data
+    // (`NiDX8SourceTextureData::d3dTexture`): no call of the manager for it. A texture that
+    // is not static goes to the manager at each draw, as the engine's draw does: its update
+    // copies a new revision of the pixel data (a mod that changes the pixels), and returns at
+    // once when there is none.
     let data: usize = rd(texture, NI_TEXTURE_RENDERER_DATA);
     if data != 0 && rd::<u32>(data, 0) == VTBL_SOURCE_TEXTURE_DATA {
         let loaded: u32 = rd(data, SOURCE_DATA_D3D_TEXTURE);
-        if loaded != 0 {
+        if loaded != 0 && rd::<u8>(texture, SOURCE_TEXTURE_IS_STATIC) != 0 {
             return loaded;
         }
     }
