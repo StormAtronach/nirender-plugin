@@ -62,6 +62,9 @@ pub(crate) struct Switches {
     /// `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over
     /// `AutoNoVsync`, for a test.
     pub(crate) present: Option<wgpu::PresentMode>,
+    /// `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a
+    /// child window of it: for an A/B of the mouse's lag.
+    pub(crate) game_window: bool,
 }
 
 impl Switches {
@@ -98,6 +101,7 @@ impl Switches {
                 Some("auto") => Some(wgpu::PresentMode::AutoNoVsync),
                 _ => None,
             },
+            game_window: is("MGE_XE_WINDOW", "game"),
         }
     }
 }

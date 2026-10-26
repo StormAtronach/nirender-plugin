@@ -20,6 +20,7 @@ extern "system" {
     fn OpenFileMappingA(access: u32, inherit: i32, name: *const u8) -> isize;
     fn MapViewOfFile(mapping: isize, access: u32, offset_high: u32, offset_low: u32, bytes: usize) -> *mut u8;
     fn IsWindow(window: isize) -> i32;
+    fn GetClientRect(window: isize, rect: *mut [i32; 4]) -> i32;
     fn OpenEventA(access: u32, inherit: i32, name: *const u8) -> isize;
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
 }
@@ -499,33 +500,22 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
-        }
-        let mut attributes =
-            Window::default_attributes().with_title("nirender host").with_inner_size(PhysicalSize::new(self.size.0, self.size.1)).with_resizable(false).with_active(false);
-        if let Some(parent) = self.parent.and_then(std::num::NonZeroIsize::new) {
-            // A child window of the window of the game, over all of it.
-            let handle = RawWindowHandle::Win32(Win32WindowHandle::new(parent));
-            attributes = unsafe { attributes.with_parent_window(Some(handle)) }.with_decorations(false).with_position(PhysicalPosition::new(0, 0));
-        }
-        let window = Arc::new(event_loop.create_window(attributes).expect("a window"));
-        if self.parent.is_some() {
-            // A window that is not enabled takes no mouse and no keys: they go to the game.
-            window.set_enable(false);
-        }
+impl App {
+    /// Makes the renderer and the surface of the window, and the player.
+    fn start(&mut self, target: super::WindowTarget) {
+        let own = match &target {
+            super::WindowTarget::Own(window) => Some(window.clone()),
+            super::WindowTarget::Game(_) => None,
+        };
         let (renderer, surface) = Renderer::new(
             self.backends,
-            Some(window.clone()),
+            Some(target),
             wgpu::TextureFormat::Bgra8Unorm,
             crate::extension_shaders(self.extension.as_deref()),
             self.extension.as_ref().map_or(0, |extension| extension.texture_slots()),
             switches().samples.unwrap_or_else(|| self.extension.as_ref().map_or(1, |extension| extension.samples())),
         );
         let surface = surface.expect("a surface");
-        let size = window.inner_size();
         // The host shows a frame when the game gives one. It does not wait for the screen.
         let present_mode = switches().present.unwrap_or(wgpu::PresentMode::AutoNoVsync);
         let frame_latency = switches().frame_latency.unwrap_or_else(|| self.extension.as_ref().map_or(2, |extension| extension.frame_latency()).clamp(1, 3));
@@ -557,8 +547,47 @@ impl ApplicationHandler for App {
         player.tile_out = self.tiles.take().map(|tiles| Box::new(move |ticket, width, height, pixels: &[u8]| tiles.answer(ticket, width, height, pixels)) as _);
         self.player = Some(player);
         self.surface = Some(surface);
-        self.window = Some(window);
-        self.configure(size.width, size.height);
+        self.window = own;
+        let (width, height) = self.window_size();
+        self.configure(width, height);
+    }
+
+    /// The size of the inside of the window: of this program's window, else of the game's.
+    fn window_size(&self) -> (u32, u32) {
+        if let Some(window) = self.window.as_ref() {
+            let size = window.inner_size();
+            return (size.width, size.height);
+        }
+        let mut rect = [0i32; 4];
+        unsafe { GetClientRect(self.parent.unwrap_or(0), &mut rect) };
+        ((rect[2] - rect[0]).max(0) as u32, (rect[3] - rect[1]).max(0) as u32)
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.surface.is_some() {
+            return;
+        }
+        // The surface on the window of the game itself: no window of this program.
+        let game_window = self.parent.and_then(std::num::NonZeroIsize::new).filter(|_| switches().game_window);
+        if let Some(handle) = game_window {
+            println!("window: the surface goes on the window of the game");
+            return self.start(super::WindowTarget::Game(handle));
+        }
+        let mut attributes =
+            Window::default_attributes().with_title("nirender host").with_inner_size(PhysicalSize::new(self.size.0, self.size.1)).with_resizable(false).with_active(false);
+        if let Some(parent) = self.parent.and_then(std::num::NonZeroIsize::new) {
+            // A child window of the window of the game, over all of it.
+            let handle = RawWindowHandle::Win32(Win32WindowHandle::new(parent));
+            attributes = unsafe { attributes.with_parent_window(Some(handle)) }.with_decorations(false).with_position(PhysicalPosition::new(0, 0));
+        }
+        let window = Arc::new(event_loop.create_window(attributes).expect("a window"));
+        if self.parent.is_some() {
+            // A window that is not enabled takes no mouse and no keys: they go to the game.
+            window.set_enable(false);
+        }
+        self.start(super::WindowTarget::Own(window));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window: WindowId, event: WindowEvent) {
@@ -580,8 +609,8 @@ impl ApplicationHandler for App {
             return self.finish(event_loop, "the window of the game is gone");
         }
         let size = self.size;
-        let now = self.window.as_ref().unwrap().inner_size();
-        self.configure(now.width, now.height);
+        let (width, height) = self.window_size();
+        self.configure(width, height);
         let waiting = Instant::now();
         let mut idle_since: Option<Instant> = None;
         // The clock is read once in 256 spins: a read in each spin is too costly. The

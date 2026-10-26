@@ -249,6 +249,14 @@ pub(crate) fn bone_buffer(device: &wgpu::Device, bones: usize) -> wgpu::Buffer {
     })
 }
 
+/// The window that the frames go into.
+pub(crate) enum WindowTarget {
+    /// A window of this program: a child of the game's window, or a window of its own.
+    Own(std::sync::Arc<winit::window::Window>),
+    /// The game's window itself (`MGE_XE_WINDOW=game`).
+    Game(std::num::NonZeroIsize),
+}
+
 impl Renderer {
     /// The maps of a material that have a texture, for a shape that the extension holds
     /// ([`HeldDraw::maps`]): `sets` is the number of texture coordinate sets of its geometry.
@@ -274,7 +282,7 @@ impl Renderer {
     /// the target is a format of that surface.
     pub(crate) fn new(
         backends: wgpu::Backends,
-        window: Option<std::sync::Arc<winit::window::Window>>,
+        window: Option<WindowTarget>,
         mut target_format: wgpu::TextureFormat,
         extension_shader: String,
         texture_slots: u32,
@@ -291,7 +299,24 @@ impl Renderer {
         // The new shader compiler of Direct3D, a part of this program: the old one is slow.
         descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::StaticDxc;
         let instance = wgpu::Instance::new(descriptor);
-        let surface = window.map(|window| instance.create_surface(window).expect("a surface for the window"));
+        let surface = window.map(|window| match window {
+            WindowTarget::Own(window) => instance.create_surface(window).expect("a surface for the window"),
+            // The game's window lives until the game ends, and this program ends with it.
+            WindowTarget::Game(handle) => unsafe {
+                use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
+                extern "system" {
+                    fn GetWindowLongPtrW(window: isize, index: i32) -> isize;
+                }
+                // Vulkan wants the module of the window (GWLP_HINSTANCE).
+                let mut window = Win32WindowHandle::new(handle);
+                window.hinstance = std::num::NonZeroIsize::new(GetWindowLongPtrW(handle.get(), -6));
+                instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                    raw_display_handle: Some(RawDisplayHandle::Windows(WindowsDisplayHandle::new())),
+                    raw_window_handle: RawWindowHandle::Win32(window),
+                })
+            }
+            .expect("a surface on the window of the game"),
+        });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: surface.as_ref(),
