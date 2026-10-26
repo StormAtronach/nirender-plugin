@@ -106,7 +106,9 @@ def check_counts(folder):
     host = open(os.path.join(folder, "host.txt"), errors="replace").read()
     ok = check(" 0 without a geometry or a material" in counts["shapes"], counts["shapes"][:160] or "no shapes line of the helper")
     ok &= check(" 0 draws of more index entries" in counts["geometry"], counts["geometry"][:160] or "no geometry line of the helper")
-    lights = re.search(r"lights: (\d+) records, (\d+) lights of a shape without a record", host)
+    # The line has more fields between the two since the light events (`0 destroyed, 71 known
+    # now`, records entry 85); the pattern takes any.
+    lights = re.search(r"lights: (\d+) records, .*?(\d+) lights of a shape without a record", host)
     ok &= check(lights is not None and lights.group(2) == "0", lights.group(0) if lights else "no lights line")
     report = plugin_report(folder)
     # Since the skin weights of NiSkinData (1f01765) the line also counts the skinned draws
