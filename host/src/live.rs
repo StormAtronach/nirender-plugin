@@ -196,9 +196,13 @@ impl Ring {
 
 /// The reply memory. See `capture.rs` of the plugin.
 const REPLY_HEAD: usize = 16;
+/// The word of the head where the plugin writes how many pixel bytes the memory holds.
+const REPLY_CAPACITY: usize = 12;
 
 struct Reply {
     base: *mut u8,
+    /// An answer did not fit: said one time.
+    too_large: std::cell::Cell<bool>,
 }
 
 impl Reply {
@@ -210,11 +214,20 @@ impl Reply {
             return None;
         }
         let base = unsafe { MapViewOfFile(mapping, 0xF001F, 0, 0, 0) };
-        (!base.is_null()).then_some(Reply { base })
+        (!base.is_null()).then_some(Reply { base, too_large: std::cell::Cell::new(false) })
     }
 
-    /// The game made the memory large enough for its back buffer and its textures.
+    /// Pixels that do not fit into the memory get the answer of no target (width 0).
     fn answer(&self, request: u32, width: u32, height: u32, pixels: &[u8]) {
+        let capacity = unsafe { (self.base.add(REPLY_CAPACITY) as *const u32).read_volatile() } as usize;
+        let (width, height, pixels) = if pixels.len() > capacity {
+            if !self.too_large.replace(true) {
+                println!("reply: a read of {width} x {height} pixels ({} bytes) does not fit into the reply memory of {capacity} bytes: answered with no pixels", pixels.len());
+            }
+            (0, 0, &[][..])
+        } else {
+            (width, height, pixels)
+        };
         unsafe {
             std::ptr::copy_nonoverlapping(pixels.as_ptr(), self.base.add(REPLY_HEAD), pixels.len());
             (self.base.add(4) as *mut u32).write_volatile(width);
@@ -1022,4 +1035,41 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         blocks: [0; 5],
     };
     EventLoop::new().expect("an event loop").run_app(&mut app).expect("the event loop");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A reply memory of 16 pixel bytes and 16 bytes after it that must stay 0xAA.
+    fn memory() -> Vec<u8> {
+        let mut memory = vec![0u8; REPLY_HEAD + 16];
+        memory[REPLY_CAPACITY..REPLY_CAPACITY + 4].copy_from_slice(&16u32.to_le_bytes());
+        memory.extend_from_slice(&[0xAA; 16]);
+        memory
+    }
+
+    fn word(memory: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(memory[at..at + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn pixels_that_fit_are_answered() {
+        let mut memory = memory();
+        let reply = Reply { base: memory.as_mut_ptr(), too_large: std::cell::Cell::new(false) };
+        reply.answer(7, 2, 2, &[0x11; 16]);
+        assert_eq!((word(&memory, 0), word(&memory, 4), word(&memory, 8)), (7, 2, 2));
+        assert!(memory[REPLY_HEAD..REPLY_HEAD + 16].iter().all(|&byte| byte == 0x11));
+        assert!(memory[REPLY_HEAD + 16..].iter().all(|&byte| byte == 0xAA));
+    }
+
+    #[test]
+    fn pixels_that_do_not_fit_get_no_target_and_nothing_is_written_past_the_memory() {
+        let mut memory = memory();
+        let reply = Reply { base: memory.as_mut_ptr(), too_large: std::cell::Cell::new(false) };
+        reply.answer(8, 4, 2, &[0x22; 32]);
+        assert_eq!((word(&memory, 0), word(&memory, 4), word(&memory, 8)), (8, 0, 0));
+        assert!(memory[REPLY_HEAD + 16..].iter().all(|&byte| byte == 0xAA));
+        assert!(reply.too_large.get());
+    }
 }

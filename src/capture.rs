@@ -510,9 +510,11 @@ impl Ring {
 
 /// The reply memory of a stream: shared memory with the name of the ring and `.reply`. The
 /// host writes the answer to a `READ_PIXELS` record into it: the number of the request (the
-/// host writes it last), the width, the height, one unused word, and then the pixels with 4
-/// bytes each, blue first. A width of 0 says that the host has no such target.
+/// host writes it last), the width, the height, the number of pixel bytes that the memory
+/// holds (this side writes it), and then the pixels with 4 bytes each, blue first. A width of
+/// 0 says that the host has no such target, or that its pixels do not fit.
 pub const REPLY_HEAD: usize = 16;
+const REPLY_CAPACITY: usize = 12;
 /// The game waits this long for an answer.
 const REPLY_WAIT_SECONDS: i64 = 5;
 /// The host program did not answer a pixel read or a tile read in time: a hung or ended
@@ -544,6 +546,7 @@ impl Reply {
             return None;
         }
         core::ptr::write_bytes(base, 0, REPLY_HEAD);
+        (base.add(REPLY_CAPACITY) as *mut u32).write_volatile(capacity as u32);
         Some(Reply { mapping, base, capacity, requests: 0, waited: 0 })
     }
 
