@@ -329,18 +329,23 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
     }))
 }
 
+impl Tables {
+    /// The mode, from `NIRENDER_RETAINED` at the first call.
+    fn mode(&mut self) -> Mode {
+        *self.mode.get_or_insert_with(|| std::env::var("NIRENDER_RETAINED").ok().and_then(|v| Mode::parse(&v)).unwrap_or(Mode::Gpu))
+    }
+}
+
 /// The mode, from `NIRENDER_RETAINED` at the first call.
 pub unsafe fn mode(mt: &MainThread) -> Mode {
-    let mut tables_open = tables(mt);
-    let t = &mut *tables_open;
-    *t.mode.get_or_insert_with(|| std::env::var("NIRENDER_RETAINED").ok().and_then(|v| Mode::parse(&v)).unwrap_or(Mode::Gpu))
+    tables(mt).mode()
 }
 
 /// Sets the mode and returns the one before. A change of the mode sends the `INSTANCE`
 /// record of each shape again at its next draw: the record says which mode draws it.
 /// Engine-rules R18 (the skill wgpu-renderer-dev).
 pub unsafe fn set_mode(mt: &MainThread, mode: Mode) -> Mode {
-    let before = self::mode(mt);
+    let before = tables(mt).mode();
     // Drain the cell worker's events first: a shape it destroyed leaves the table.
     crate::worker_events::drain();
     let mut tables_open = tables(mt);
@@ -432,7 +437,7 @@ pub unsafe fn scene_end(mt: &MainThread) {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     let camera = core::mem::replace(&mut t.world_camera, 0);
-    if camera == 0 || mode(mt) != Mode::Gpu || !capture::recording() {
+    if camera == 0 || t.mode() != Mode::Gpu || !capture::recording() {
         return;
     }
     let count = rd::<i32>(camera, C::countCullingPlanes).max(0) as usize;
@@ -469,9 +474,7 @@ pub unsafe fn skin_table(mt: &MainThread) -> bool {
 /// `draw` marks it; off, its display clears the mark, and its draw sends the record without
 /// the table's flag, which takes it out of the helper's table.
 pub unsafe fn set_skin_table(mt: &MainThread, on: bool) -> bool {
-    let mut tables_open = tables(mt);
-    let t = &mut *tables_open;
-    let before = t.skin_table;
+    let before = tables(mt).skin_table;
     if on == before {
         return before;
     }
@@ -494,13 +497,9 @@ pub unsafe fn set_skin_table(mt: &MainThread, on: bool) -> bool {
 
 /// Sends the bones of a skinned instance (`INSTANCE_BONES`) with the shape's world bound.
 /// Returns false when the bones cannot be made: the instance is hidden then, and counted.
-unsafe fn send_bones(mt: &MainThread, shape: usize, id: u32) -> bool {
-    let mut tables_open = tables(mt);
-    let t = &mut *tables_open;
+unsafe fn send_bones(mt: &MainThread, t: &mut Tables, shape: usize, id: u32) -> bool {
     let mut bones = core::mem::take(&mut t.scratch_bones);
     let result = crate::camera_space::skin_bones(mt, shape, rd(shape, GEOMETRY_SKIN), &mut bones);
-    let mut tables_open = tables(mt);
-    let t = &mut *tables_open;
     let sent = match result {
         Ok(count) => {
             let posed: [f32; 4] = rd(shape, WORLD_BOUND);
@@ -634,7 +633,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
         return;
     }
     let mut live = false;
-    if let Some(reason) = reject_reason(mt, shape, property_state, effect_state, skinned, &mut live) {
+    if let Some(reason) = reject_reason(t, shape, property_state, effect_state, skinned, &mut live) {
         t.rejected.insert(shape);
         t.rejected_by[reason] += 1;
         return;
@@ -670,12 +669,10 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
 /// Why the shape is not retained, or [`None`] when it is of the safe class. `live` is set
 /// when a controller on the shape or on a property changes it.
 /// Engine-rules R1, R6, R7 (the skill wgpu-renderer-dev).
-unsafe fn reject_reason(mt: &MainThread, shape: usize, property_state: usize, effect_state: usize, skinned: bool, live: &mut bool) -> Option<usize> {
+unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, effect_state: usize, skinned: bool, live: &mut bool) -> Option<usize> {
     // A controller on the shape changes its data (a morpher, a UV controller): the shape is
     // live. A controller on a node above only moves the shape, and `skipped_display` moves
     // the instance in place.
-    let mut tables_open = tables(mt);
-    let t = &mut *tables_open;
     if rd::<usize>(shape, CONTROLLERS) != 0 {
         if !t.controllers {
             return Some(REASON_CONTROLLER);
@@ -691,7 +688,7 @@ unsafe fn reject_reason(mt: &MainThread, shape: usize, property_state: usize, ef
         if !animated && !skinned && rd::<usize>(node, CONTROLLERS) != 0 {
             return Some(REASON_CONTROLLER);
         }
-        if kind_rejected(mt, node, skinned) {
+        if kind_rejected(t.node_kinds, node, skinned) {
             return Some(REASON_NODE_KIND);
         }
         node = rd(node, PARENT);
@@ -850,7 +847,7 @@ pub unsafe fn sky_census(mt: &MainThread, shape: usize, class: u32, plain_world_
     let text: usize = rd(shape, 8);
     let name = if text != 0 { core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
     let mut live = false;
-    let reason = reject_reason(mt, shape, property_state, effect_state, false, &mut live);
+    let reason = reject_reason(&tables(mt), shape, property_state, effect_state, false, &mut live);
     let (z_flags, z_function) = match if property_state != 0 { rd::<usize>(property_state, PS::propZBuffer) } else { 0 } {
         0 => (None, None),
         z => (Some(rd::<u16>(z, PROPERTY_FLAGS)), Some(rd::<u32>(z, ZP::testFunction))),
@@ -895,8 +892,8 @@ unsafe fn effect_retained(effect: usize) -> bool {
 
 /// True when the run-time type of the node, or a base of it, is one of the rejected kinds
 /// (with `NIRENDER_NODE_KINDS=0`, the `*_BEFORE` lists: the narrower one for a skinned shape).
-unsafe fn kind_rejected(mt: &MainThread, node: usize, skinned: bool) -> bool {
-    let kinds: &[&[u8]] = if tables(mt).node_kinds {
+unsafe fn kind_rejected(node_kinds: bool, node: usize, skinned: bool) -> bool {
+    let kinds: &[&[u8]] = if node_kinds {
         &REJECTED_KINDS
     } else if skinned {
         &REJECTED_KINDS_SKINNED_BEFORE
@@ -934,26 +931,32 @@ const LATER_NOT_MODELLED: usize = 2;
 const LATER_TRANSLATION: usize = 3;
 
 /// `reject_pending` with the cause counted.
-unsafe fn reject_at_record(mt: &MainThread, shape: usize, cause: usize) {
+unsafe fn reject_at_record(mt: &MainThread, t: &mut Tables, shape: usize, cause: usize) {
     (*LATER_BY.get(mt))[cause] += 1;
-    reject_pending(mt, shape, true);
+    t.reject_pending(shape, true);
 }
 
-/// The shape of a pending draw turned out not retainable at the record (a kind of draw
-/// other than a shape, a picture of the Code Patch, no handle): it goes to the rejected set.
-pub unsafe fn reject_pending(mt: &MainThread, shape: usize, reason_later: bool) {
-    let mut tables_open = tables(mt);
-    let t = &mut *tables_open;
-    mark(shape, false);
-    if let Some(instance) = t.instances.remove(&shape) {
-        if instance.sent && capture::recording() {
-            capture::instance_delete(instance.id);
+impl Tables {
+    /// The shape of a pending draw turned out not retainable at the record (a kind of draw
+    /// other than a shape, a picture of the Code Patch, no handle): it goes to the rejected
+    /// set.
+    unsafe fn reject_pending(&mut self, shape: usize, reason_later: bool) {
+        mark(shape, false);
+        if let Some(instance) = self.instances.remove(&shape) {
+            if instance.sent && capture::recording() {
+                capture::instance_delete(instance.id);
+            }
+        }
+        self.rejected.insert(shape);
+        if reason_later {
+            self.rejected_by[REASON_LATER] += 1;
         }
     }
-    t.rejected.insert(shape);
-    if reason_later {
-        t.rejected_by[REASON_LATER] += 1;
-    }
+}
+
+/// See `Tables::reject_pending`.
+pub unsafe fn reject_pending(mt: &MainThread, shape: usize, reason_later: bool) {
+    tables(mt).reject_pending(shape, reason_later);
 }
 
 /// The records of a draw of a retained shape: the `INSTANCE` record when the values of the
@@ -994,7 +997,7 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
             [0.0; 3]
         } else {
             let Some(exact) = crate::camera_space::exact_translation(mt, shape, 0) else {
-                reject_at_record(mt, shape, LATER_TRANSLATION);
+                reject_at_record(mt, t, shape, LATER_TRANSLATION);
                 return false;
             };
             exact
@@ -1057,7 +1060,7 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
             t.states += 1;
         }
         if skinned {
-            send_bones(mt, shape, id);
+            send_bones(mt, t, shape, id);
         }
         return true;
     }
@@ -1484,33 +1487,35 @@ pub unsafe fn skipped_display(mt: &MainThread, shape: usize, kind: u32) -> bool 
 }
 
 unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> bool {
-    let mut tables_open = tables(mt);
-    let t = &mut *tables_open;
-    // Clear a stale mark here, on the shape the engine displays: `set_mode` and
-    // `set_skin_table` write no mark into kept shapes.
-    if t.mode != Some(Mode::Gpu) {
-        mark(shape, false);
-        return false;
-    }
-    if !t.skip || !capture::recording() {
-        return false;
-    }
-    // A scene that draws into a target of the game: the local map's tiles, the character
-    // preview, the race menu's head, the engine's water reflection. The helper draws its table
-    // only in the scenes of the world camera, so here the engine draws the shape on the record
-    // path (the draw is not a plain world shape there, `link_client`). The mark stays: the
-    // shape is still retained in the world scenes. Without this a map tile drawn at a walking
-    // cross lost its landscape (records entry 55).
-    if matches!(t.scene_kind, SCENE_RACE_MENU_HEAD | SCENE_CHARACTER_PREVIEW | SCENE_LOCAL_MAP | SCENE_WATER_REFLECTION) {
-        return false;
-    }
-    if let Some(instance) = t.instances.get_mut(&shape) {
-        if instance.skinned && !t.skin_table {
+    {
+        let mut tables_open = tables(mt);
+        let t = &mut *tables_open;
+        // Clear a stale mark here, on the shape the engine displays: `set_mode` and
+        // `set_skin_table` write no mark into kept shapes.
+        if t.mode != Some(Mode::Gpu) {
             mark(shape, false);
             return false;
         }
-        if instance.kind == 0 {
-            instance.kind = kind;
+        if !t.skip || !capture::recording() {
+            return false;
+        }
+        // A scene that draws into a target of the game: the local map's tiles, the character
+        // preview, the race menu's head, the engine's water reflection. The helper draws its
+        // table only in the scenes of the world camera, so here the engine draws the shape on
+        // the record path (the draw is not a plain world shape there, `link_client`). The mark
+        // stays: the shape is still retained in the world scenes. Without this a map tile drawn
+        // at a walking cross lost its landscape (records entry 55).
+        if matches!(t.scene_kind, SCENE_RACE_MENU_HEAD | SCENE_CHARACTER_PREVIEW | SCENE_LOCAL_MAP | SCENE_WATER_REFLECTION) {
+            return false;
+        }
+        if let Some(instance) = t.instances.get_mut(&shape) {
+            if instance.skinned && !t.skin_table {
+                mark(shape, false);
+                return false;
+            }
+            if instance.kind == 0 {
+                instance.kind = kind;
+            }
         }
     }
     display_work(mt, shape, kind)
@@ -1520,31 +1525,53 @@ unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> boo
 /// recheck, the live controllers, the notes when due, the transform, the scene values, the
 /// lights, the visible flag.
 unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
-    let mut tables_open = tables(mt);
-    let t = &mut *tables_open;
     let renderer = crate::engine::renderer();
-    let (frame, generation) = (t.frame, t.generation);
-    // A new property or effect state since the classification: classify again.
-    if let Some((skinned, was_live)) = t.instances.get_mut(&shape).filter(|i| i.recheck).map(|i| {
-        i.recheck = false;
-        (i.skinned, i.live)
-    }) {
-        let rechecks = &mut *RECHECKS.get(mt);
-        rechecks[3] += 1;
-        let mut live = false;
-        if reject_reason(mt, shape, rd(shape, GEOMETRY_PROPERTY_STATE), rd(shape, GEOMETRY_EFFECT_STATE), skinned, &mut live).is_some() {
-            rechecks[4] += 1;
-            reject_pending(mt, shape, true);
-            return false;
-        }
+    let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
+    let effect_state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
+    let (frame, generation, id, live) = {
         let mut tables_open = tables(mt);
         let t = &mut *tables_open;
-        if let Some(instance) = t.instances.get_mut(&shape) {
-            if instance.live != live {
-                rechecks[5] += 1;
+        let (frame, generation) = (t.frame, t.generation);
+        // A new property or effect state since the classification: classify again.
+        if let Some((skinned, was_live)) = t.instances.get_mut(&shape).filter(|i| i.recheck).map(|i| {
+            i.recheck = false;
+            (i.skinned, i.live)
+        }) {
+            let rechecks = &mut *RECHECKS.get(mt);
+            rechecks[3] += 1;
+            let mut live = false;
+            if reject_reason(t, shape, property_state, effect_state, skinned, &mut live).is_some() {
+                rechecks[4] += 1;
+                t.reject_pending(shape, true);
+                return false;
             }
-            instance.live = live || was_live;
-            instance.generation = instance.generation.wrapping_sub(1);
+            if let Some(instance) = t.instances.get_mut(&shape) {
+                if instance.live != live {
+                    rechecks[5] += 1;
+                }
+                instance.live = live || was_live;
+                instance.generation = instance.generation.wrapping_sub(1);
+            }
+        }
+        let Some(instance) = t.instances.get_mut(&shape) else {
+            mark(shape, false);
+            return false;
+        };
+        if !instance.filled || renderer == 0 {
+            return false;
+        }
+        // The copy of the properties for `apply_changes` (the shape is alive here).
+        instance.properties = if property_state != 0 { core::array::from_fn(|i| rd(property_state, PS::propAlpha + i * 4)) } else { [0; PROPERTY_SLOTS] };
+        (frame, generation, instance.id, instance.live)
+    };
+    // The controllers of a live shape run before its draw, as the engine's display runs
+    // them (`NiTriShape::Display`): a morpher writes its vertices then. A controller is
+    // engine code that can come back into the plugin: the tables are closed here.
+    if live {
+        let mut controller: usize = rd(shape, CONTROLLERS);
+        while controller != 0 {
+            vcall0(controller, SLOT_ON_PRE_DISPLAY);
+            controller = rd(controller, TC::nextController);
         }
     }
     let mut tables_open = tables(mt);
@@ -1553,23 +1580,6 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         mark(shape, false);
         return false;
     };
-    if !instance.filled || renderer == 0 {
-        return false;
-    }
-    let id = instance.id;
-    let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
-    let effect_state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
-    // The copy of the properties for `apply_changes` (the shape is alive here).
-    instance.properties = if property_state != 0 { core::array::from_fn(|i| rd(property_state, PS::propAlpha + i * 4)) } else { [0; PROPERTY_SLOTS] };
-    // The controllers of a live shape run before its draw, as the engine's display runs
-    // them (`NiTriShape::Display`): a morpher writes its vertices then.
-    if instance.live {
-        let mut controller: usize = rd(shape, CONTROLLERS);
-        while controller != 0 {
-            vcall0(controller, SLOT_ON_PRE_DISPLAY);
-            controller = rd(controller, TC::nextController);
-        }
-    }
     // The handles, when due: every 64th frame, after a change of the device textures, for
     // a record that must go again (the start of a capture), and at every display of a
     // live shape (a new revision of the data sends the geometry again under its handle).
@@ -1588,7 +1598,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
             } else {
                 LATER_NOT_MODELLED
             };
-            reject_at_record(mt, shape, cause);
+            reject_at_record(mt, t, shape, cause);
             return false;
         }
         instance.generation = generation;
@@ -1627,7 +1637,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
             [0.0; 3]
         } else {
             let Some(exact) = crate::camera_space::exact_translation(mt, shape, 0) else {
-                reject_at_record(mt, shape, LATER_TRANSLATION);
+                reject_at_record(mt, t, shape, LATER_TRANSLATION);
                 return false;
             };
             exact
@@ -1658,7 +1668,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         record_ticks[2] += send_end - exact_end;
     }
     // The bones of a skinned instance, in each frame the engine displays it.
-    if skinned && !send_bones(mt, shape, id) {
+    if skinned && !send_bones(mt, t, shape, id) {
         return false;
     }
     // The table draws a skinned part with the scene's ambient light and fog: count the parts
@@ -1838,6 +1848,8 @@ unsafe fn scene_sun(mt: &MainThread, t: &mut Tables) -> Option<[u32; 26]> {
 }
 
 pub unsafe fn report(mt: &MainThread) -> String {
+    // Copies of the counts: each table opens once here.
+    let (rechecks, change_notes, queue_counts, walk_places) = (*RECHECKS.get(mt), *CHANGE_NOTES.get(mt), *QUEUE_COUNTS.get(mt), *WALK_PLACES.get(mt));
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     let reasons = ["controller", "node kind", "property controller", "effect", "at the record", "depth function"];
@@ -1850,7 +1862,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
     let skipped: Vec<String> = causes.iter().zip(t.skipped_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
         "instances: mode {}, {} retained ({} live, {} skinned: the table draws them {}, {} bone records, {} hidden with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
-        mode(mt).name(),
+        t.mode().name(),
         t.instances.len(),
         t.instances.values().filter(|i| i.live).count(),
         t.instances.values().filter(|i| i.skinned).count(),
@@ -1873,11 +1885,11 @@ pub unsafe fn report(mt: &MainThread) -> String {
     ) + "\n"
         + &format!(
             "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {}, shapes hit {}\n",
-            RECHECKS.get(mt)[0], RECHECKS.get(mt)[1], RECHECKS.get(mt)[2], RECHECKS.get(mt)[3], RECHECKS.get(mt)[4], RECHECKS.get(mt)[5], CHANGE_NOTES.get(mt)[0], CHANGE_NOTES.get(mt)[1], CHANGE_NOTES.get(mt)[2]
+            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], change_notes[0], change_notes[1], change_notes[2]
         )
         + &format!(
             "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk\n",
-            QUEUE_COUNTS.get(mt)[0], QUEUE_COUNTS.get(mt)[1], QUEUE_COUNTS.get(mt)[2], *WALK_PLACES.get(mt)
+            queue_counts[0], queue_counts[1], queue_counts[2], walk_places
         )
         + &{
             let engine = crate::shape_stream::engine_particle_records(mt);

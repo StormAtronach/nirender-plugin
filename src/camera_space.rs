@@ -294,8 +294,7 @@ unsafe extern "C" fn camera_transforms_updated(_user: *mut core::ffi::c_void, pa
 }
 
 /// True when the camera hangs from a root that the game wrote the copy into.
-unsafe fn hangs_from_copied_root(t: &MainThread, camera: usize) -> bool {
-    let eye = &*EYE.get(t);
+unsafe fn hangs_from_copied_root(eye: &EyePair, camera: usize) -> bool {
     let mut node: usize = rd(camera, AV_PARENT);
     let mut depth = 0;
     while node != 0 && depth < EYE_MAX_PARENT_DEPTH {
@@ -380,7 +379,7 @@ pub unsafe fn scene_begin(t: &MainThread, world_location: usize) -> Option<[f64;
     }
     let location: [f32; 3] = rd(world_location, 0);
     let eye = &*EYE.get(t);
-    let exact = if eye.valid && eye.frame == *FRAME.get(t) && hangs_from_copied_root(t, camera) {
+    let exact = if eye.valid && eye.frame == *FRAME.get(t) && hangs_from_copied_root(eye, camera) {
         Some([0, 1, 2].map(|i| eye.exact[i] + (location[i] as f64 - eye.stored[i] as f64)))
     } else {
         exact_translation(t, camera, 0)
@@ -399,7 +398,9 @@ pub fn frame(t: &MainThread) -> u32 {
 
 /// The frame ends.
 pub unsafe fn frame_end(t: &MainThread) {
-    *FRAME.get(t) = (*FRAME.get(t)).wrapping_add(1);
+    let mut frame = FRAME.get(t);
+    *frame = frame.wrapping_add(1);
+    drop(frame);
     retire_cache(t);
 }
 

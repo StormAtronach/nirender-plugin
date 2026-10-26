@@ -345,7 +345,10 @@ pub unsafe fn poll() {
     }
     let mut index = 0;
     while index < OPEN.get(&t).len() {
-        let (ticket, opened) = (OPEN.get(&t)[index].ticket, OPEN.get(&t)[index].opened);
+        let (ticket, opened) = {
+            let open = OPEN.get(&t);
+            (open[index].ticket, open[index].opened)
+        };
         if polls.wrapping_sub(opened) < hold() {
             index += 1;
             continue;

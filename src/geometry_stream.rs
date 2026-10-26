@@ -150,19 +150,21 @@ pub unsafe fn forget(t: &MainThread, handles: &[u32]) {
 /// bone influences of the skins.
 pub unsafe fn report(t: &MainThread) -> String {
     let (records, bytes) = (*RECORDS.get(t), *BYTES.get(t));
+    // Copies: each table opens once here.
+    let (uv_check, morph_check) = (*UV_CHECK.get(t), *MORPH_CHECK.get(t));
     let s = &*SKIN_COUNTS.get(t);
     format!(
         "geometry: {} records, {:.1} MB, {} UV steps (checked {}, over 1/1000 {}, the most {:.6}), {} morph steps (checked {}, over 1/1000 {}, the most {:.6}), {} geometries known, {} forgotten after {} frames without a draw, {} destroyed (GEOMETRY_GONE); skins: {} from the skin data, {} from the partitions ({} without bone data), {} with a dying skin data; vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
         records,
         bytes as f64 / 1e6,
         *UV_STEPS.get(t),
-        (*UV_CHECK.get(t)).0,
-        (*UV_CHECK.get(t)).1,
-        (*UV_CHECK.get(t)).2,
+        uv_check.0,
+        uv_check.1,
+        uv_check.2,
         *MORPH_STEPS.get(t),
-        (*MORPH_CHECK.get(t)).0,
-        (*MORPH_CHECK.get(t)).1,
-        (*MORPH_CHECK.get(t)).2,
+        morph_check.0,
+        morph_check.1,
+        morph_check.2,
         versions(t).len(),
         *FORGOTTEN.get(t),
         FORGET_AFTER,

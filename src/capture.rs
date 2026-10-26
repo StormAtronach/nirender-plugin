@@ -706,10 +706,12 @@ pub unsafe fn copy_tile(target: u32, texture: u32) -> Option<u32> {
     if !recording() {
         return None;
     }
-    let mut s = state(&lock)?;
-    let tiles = s.tiles.as_mut()?;
-    tiles.tickets = tiles.tickets.wrapping_add(1).max(1);
-    let ticket = tiles.tickets;
+    let ticket = {
+        let mut s = state(&lock)?;
+        let tiles = s.tiles.as_mut()?;
+        tiles.tickets = tiles.tickets.wrapping_add(1).max(1);
+        tiles.tickets
+    };
     write(tag::COPY_TILE, &[words(&[ticket, target, texture])]);
     Some(ticket)
 }
@@ -931,11 +933,13 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     let file = File::create(path).map_err(|error| format!("{path}: {error}"))?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     out.write_all(MAGIC).map_err(|error| error.to_string())?;
-    let Some(mut s) = state(&lock) else { return Err("no stream".into()) };
-    s.tee = Some((out, frames.max(1)));
-    s.tee_hold = frames == 0;
-    s.tee_only = true;
-    let header = s.header;
+    let header = {
+        let Some(mut s) = state(&lock) else { return Err("no stream".into()) };
+        s.tee = Some((out, frames.max(1)));
+        s.tee_hold = frames == 0;
+        s.tee_only = true;
+        s.header
+    };
     write(tag::HEADER, &[words(&header)]);
     write_kept(&lock);
     #[cfg(not(test))]
@@ -966,12 +970,14 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
 /// them. Returns false without such a file.
 pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
     let lock = crate::sync::device_lock();
-    let Some(mut s) = state(&lock) else { return false };
-    if !s.tee_hold || s.tee.is_none() {
-        return false;
-    }
-    if let Some((_, left)) = s.tee.as_mut() {
-        *left = frames.max(1);
+    {
+        let Some(mut s) = state(&lock) else { return false };
+        if !s.tee_hold || s.tee.is_none() {
+            return false;
+        }
+        if let Some((_, left)) = s.tee.as_mut() {
+            *left = frames.max(1);
+        }
     }
     // The content of the buffers and textures that changed while the file held, as it is
     // now, once each.
@@ -1363,6 +1369,11 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
         return;
     }
     let Some(mut s) = state(&lock) else { return };
+    // A ring that failed ends at the end of the frame (`STOP_ASKED`): no record waits for it
+    // again before then.
+    if s.failed && matches!(s.out, Some(Sink::Ring(_))) {
+        return;
+    }
     let start = ticks();
     let length: usize = parts.iter().map(|p| p.len()).sum();
     let hold = s.tee_hold;
@@ -1408,15 +1419,11 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
             if !ring.push(tag, parts) {
                 crate::log!("stream: the host did not read for {RING_WAIT_SECONDS} s; the stream ends");
                 s.failed = true;
-                // Only the main thread ends the stream: `stop` walks the tables the main
-                // thread owns and unmaps the ring it reads. A writer on another thread (the
-                // engine's cell worker makes textures) asks, and the main thread stops at the
-                // end of its frame.
-                if crate::shadow::on_main_thread() {
-                    stop();
-                } else {
-                    STOP_ASKED.store(true, Ordering::Release);
-                }
+                // The main thread ends the stream at the end of its frame: `stop` walks the
+                // tables the main thread owns and unmaps the ring it reads, and a writer can
+                // be on another thread (the engine's cell worker makes textures) or hold
+                // those tables open (audit finding U1-02).
+                STOP_ASKED.store(true, Ordering::Release);
                 return;
             }
         }
@@ -1802,9 +1809,11 @@ pub unsafe fn run_pending_purge() {
     }
     {
         let lock = crate::sync::device_lock();
-        if let Some(mut s) = state(&lock) {
-            purge(&mut s);
-        };
+        // The purge makes the engine write records: the state is closed during it.
+        let in_view = state(&lock).map(|s| s.geometry.len());
+        if let Some(in_view) = in_view {
+            purge(in_view);
+        }
     }
     if data_handler != 0 {
         crate::engine::thiscall0(RELEASE_BACKGROUND_THREAD, data_handler);
@@ -1813,7 +1822,7 @@ pub unsafe fn run_pending_purge() {
 
 /// Makes the renderer drop its textures and the buffers of the geometry of the warm-up.
 /// Only through `run_pending_purge`: the cell worker stalled.
-unsafe fn purge(s: &mut State) {
+unsafe fn purge(in_view: usize) {
     let renderer = crate::engine::renderer();
     if renderer == 0 {
         return;
@@ -1824,7 +1833,7 @@ unsafe fn purge(s: &mut State) {
     // into a rendered texture one time and not again. Do not read the objects kept from the
     // warm-up (`s.geometry`): the cell worker can have freed them.
     let (shapes, partitions) = crate::ports::geometry::purge_all_geometry(renderer);
-    crate::log!("capture: the renderer dropped {textures} source textures, the buffers of {shapes} shapes and {partitions} skin partitions ({} objects were in view), and made {rendered} rendered textures again", s.geometry.len());
+    crate::log!("capture: the renderer dropped {textures} source textures, the buffers of {shapes} shapes and {partitions} skin partitions ({} objects were in view), and made {rendered} rendered textures again", in_view);
     if kept != 0 {
         crate::log!("capture: {kept} source textures kept their data: the game cannot make them again (no file name, no pixel data); a capture file does not have them");
     }
@@ -1852,22 +1861,28 @@ unsafe fn frame_end(lock: &DeviceLock) {
             let _ = (id, bytes);
         }
     }
-    let Some(mut s) = state(&lock) else { return };
-    match s.phase {
+    // The state opens for each step here: a write, the host's take-over and the frame tick
+    // open it (or another table) themselves.
+    let Some(phase) = state(&lock).map(|s| s.phase) else { return };
+    match phase {
         Phase::Off => {}
         Phase::Warmup(left) => {
             if left > 1 {
-                s.phase = Phase::Warmup(left - 1);
+                if let Some(mut s) = state(&lock) {
+                    s.phase = Phase::Warmup(left - 1);
+                }
             } else {
                 #[cfg(not(test))]
                 {
-                    if s.own_host {
+                    if state(&lock).is_some_and(|s| s.own_host) {
                         crate::own_host::take_over();
                     }
                 }
                 // The record starts before the drop: the calls that make the rendered textures
                 // again are a part of the stream.
-                s.phase = Phase::Record(s.frames);
+                if let Some(mut s) = state(&lock) {
+                    s.phase = Phase::Record(s.frames);
+                }
                 RECORDING.store(true, Ordering::Relaxed);
                 let renderer = crate::engine::renderer();
                 let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
@@ -1895,33 +1910,37 @@ unsafe fn frame_end(lock: &DeviceLock) {
             };
             write(tag::FRAME_END, &[&start.to_le_bytes(), &end.to_le_bytes()]);
             FRAME_START.store(ticks(), Ordering::Relaxed);
-            let Some(mut s) = state(&lock) else { return };
-            if s.phase == Phase::Off {
-                // The write ended the stream.
-                return;
-            }
-            let hold = s.tee_hold;
-            if let Some((_, left)) = s.tee.as_mut().filter(|tee| tee.1 > 0) {
-                *left -= 1;
-                if *left == 0 && !hold {
-                    end_tee(&mut s);
+            let last = {
+                let Some(mut s) = state(&lock) else { return };
+                if s.phase == Phase::Off {
+                    // The write ended the stream.
+                    return;
                 }
+                let hold = s.tee_hold;
+                if let Some((_, left)) = s.tee.as_mut().filter(|tee| tee.1 > 0) {
+                    *left -= 1;
+                    if *left == 0 && !hold {
+                        end_tee(&mut s);
+                    }
+                }
+                if let Some(Sink::Ring(ring)) = s.out.as_mut() {
+                    ring.pace();
+                    // The next frame reads its input after the wait: it starts now, or after
+                    // the wait of the pacing at its start.
+                    FRAME_START.store(ticks(), Ordering::Relaxed);
+                }
+                s.frames_done += 1;
+                if s.frames == 0 {
+                    return;
+                }
+                if left > 1 {
+                    s.phase = Phase::Record(left - 1);
+                }
+                left <= 1
+            };
+            if last {
+                stop();
             }
-            if let Some(Sink::Ring(ring)) = s.out.as_mut() {
-                ring.pace();
-                // The next frame reads its input after the wait: it starts now, or after the
-                // wait of the pacing at its start.
-                FRAME_START.store(ticks(), Ordering::Relaxed);
-            }
-            s.frames_done += 1;
-            if s.frames == 0 {
-                return;
-            }
-            if left > 1 {
-                s.phase = Phase::Record(left - 1);
-                return;
-            }
-            stop();
         }
     }
 }
