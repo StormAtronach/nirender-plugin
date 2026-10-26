@@ -406,10 +406,68 @@ pub unsafe fn manager_prepare_texture_for_rendering(this: usize, texture: usize,
         data_update(data);
         wr::<u8>(out_created, 0, 1);
     } else if rd::<u8>(texture, ST::isStatic) == 0 {
-        data_update(data);
+        match source_data_size_change(texture, data) {
+            SizeChange::None => data_update(data),
+            SizeChange::Remake => {
+                // A new renderer data at the new size, as at the first use of the texture.
+                wr::<usize>(texture, T::rendererData, rd(data, TD::vtbl_linkedData));
+                ni::delete_object(data);
+                eng::source_texture_data_create(texture, rd(this, TM::renderer));
+                data = rd(texture, T::rendererData);
+                if data == 0 {
+                    return 0;
+                }
+                wr::<u8>(out_created, 0, 1);
+            }
+            SizeChange::Unusable => {}
+        }
     }
     wr::<u8>(out_mipmapped, 0, (data_get_levels(data) > 1) as u8);
     data_get_d3d_texture(data)
+}
+
+/// What a new revision of the pixel data of a texture that is not static asks of its source
+/// renderer data ([`source_data_size_change`]).
+#[derive(Debug, PartialEq)]
+enum SizeChange {
+    /// No new revision, or the same size: `Update` copies the pixels.
+    None,
+    /// Another size: the renderer data is made again (`Create` makes the device texture from
+    /// the size of the pixel data).
+    Remake,
+    /// Another size that `Create` would refuse (not a power of two): the old picture stays,
+    /// and the revision counts as seen.
+    Unusable,
+}
+
+/// Unlike the engine, which copies pixel data of any size into the device texture of the old
+/// size (`NiDX8SourceTextureData::Update` 0x6C0050; past the end of its memory when the new
+/// data is larger): a new revision whose first level has another width or height than the
+/// renderer data (`width` and `height`, which `Create` 0x6BFA50 takes from the pixel data)
+/// asks for a new renderer data. A mod can give a texture that is not static new pixel data
+/// of another size (MWSE's `pixelData` is writable).
+unsafe fn source_data_size_change(texture: usize, data: usize) -> SizeChange {
+    if rd::<u32>(data, TD::vtbl_vtbl) != VTBL_SOURCE_TEXTURE_DATA {
+        return SizeChange::None;
+    }
+    let pixel_data: usize = rd(texture, ST::pixelData);
+    if pixel_data == 0 || rd::<u32>(pixel_data, PD::revisionID) == rd::<u32>(data, SD::sourceRevisionID) {
+        return SizeChange::None;
+    }
+    let width: u32 = rd(rd::<usize>(pixel_data, PD::mipmapWidths), 0);
+    let height: u32 = rd(rd::<usize>(pixel_data, PD::mipmapHeights), 0);
+    if width == rd::<u32>(data, SD::width) && height == rd::<u32>(data, SD::height) {
+        return SizeChange::None;
+    }
+    if width.is_power_of_two() && height.is_power_of_two() {
+        return SizeChange::Remake;
+    }
+    static REFUSED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    if REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 8 {
+        crate::log!("textures: new pixel data of {width} x {height} for a texture of {} x {}: not a power of two, the texture keeps its picture", rd::<u32>(data, SD::width), rd::<u32>(data, SD::height));
+    }
+    wr::<u32>(data, SD::sourceRevisionID, rd(pixel_data, PD::revisionID));
+    SizeChange::Unusable
 }
 
 /// 0x6BC670 `NiDX8TextureManager::PrecacheTexture`
@@ -879,28 +937,34 @@ pub unsafe fn source_data_update(this: usize) {
     }
     let converter = eng::get_image_converter();
     let converted = converter_convert(converter, pixel_data, this + SD::format, pixel_data, rd(this, SD::bMipMap));
-    wr::<u32>(this, SD::sourceRevisionID, rd(pixel_data, PD::revisionID));
-    if rd::<usize>(this, SD::vtbl_sgTexture) != 0 {
-        let levels: u32 = rd(converted, PD::mipmapLevels);
-        wr(this, SD::levels, levels);
-        if levels != 0 {
-            let mut level = 0u32;
-            loop {
-                let mut surface = 0usize;
-                let texture: usize = rd(this, SD::d3dTexture);
-                let result = texture_get_surface_level(texture, level, core::ptr::addr_of_mut!(surface) as usize);
-                if result != 0 {
-                    eng::debug_print2(TEXT_UPDATE_LEVEL, level as usize, eng::directx_error_name(result));
-                    com_release(rd(this, SD::d3dTexture));
-                    break;
-                }
-                source_data_copy_data_to_surface(converted, level, surface);
-                com_release(surface);
-                level += 1;
-                if level >= rd::<u32>(this, SD::levels) {
-                    break;
-                }
+    // Unlike the engine: the pixels go into the device texture only when they have its size
+    // (`Create` made it from `width` and `height`). Pixel data of another size keeps its
+    // revision unseen: the next `PrepareTextureForRendering` makes the renderer data again
+    // (`source_data_size_change`). The engine copies them into the old texture, past the
+    // end of its levels.
+    let texture: usize = rd(this, SD::d3dTexture);
+    let fits = converted != 0
+        && rd::<u32>(rd::<usize>(converted, PD::mipmapWidths), 0) == rd::<u32>(this, SD::width)
+        && rd::<u32>(rd::<usize>(converted, PD::mipmapHeights), 0) == rd::<u32>(this, SD::height);
+    if fits {
+        wr::<u32>(this, SD::sourceRevisionID, rd(pixel_data, PD::revisionID));
+    }
+    if fits && texture != 0 && rd::<usize>(this, SD::vtbl_sgTexture) != 0 {
+        // At most the levels of the device texture (`levels`, from `Create`).
+        let levels = rd::<u32>(converted, PD::mipmapLevels).min(rd::<u32>(this, SD::levels));
+        let mut level = 0u32;
+        while level < levels {
+            let mut surface = 0usize;
+            let result = texture_get_surface_level(texture, level, core::ptr::addr_of_mut!(surface) as usize);
+            if result != 0 {
+                // Unlike the engine, which releases the device texture here and keeps its
+                // address (the destructor releases it again): the texture stays.
+                eng::debug_print2(TEXT_UPDATE_LEVEL, level as usize, eng::directx_error_name(result));
+                break;
             }
+            source_data_copy_data_to_surface(converted, level, surface);
+            com_release(surface);
+            level += 1;
         }
     }
     if converted != 0 {
@@ -1672,9 +1736,16 @@ pub(crate) mod tests {
         0xAB00 | (unsafe { rd::<u32>(dest, 0) } != 0) as u32
     }
 
+    /// The fake conversion gives the source pixel data back.
+    extern "thiscall" fn convert_to_itself(_this: usize, source: usize, _format: usize, _scratch: usize, _mipmap: u32) -> usize {
+        source
+    }
+
     pub fn converter() -> usize {
         static CONVERTER: OnceLock<usize> = OnceLock::new();
-        *CONVERTER.get_or_init(|| object(1, &[(VT_CONVERTER_CAN_CONVERT, can_convert as *const () as usize)]))
+        *CONVERTER.get_or_init(|| {
+            object(1, &[(VT_CONVERTER_CAN_CONVERT, can_convert as *const () as usize), (VT_CONVERTER_CONVERT, convert_to_itself as *const () as usize)])
+        })
     }
 
     /// A list of 14 formats. The converter can make the formats in `usable`. The formats in
@@ -2102,6 +2173,97 @@ pub(crate) mod tests {
             assert_eq!(manager_precache_texture(manager, texture, 0, 0), 1);
             assert_eq!(manager_precache_texture(manager, 0, 0, 0), 0);
             assert_eq!(manager_get_format_from_texture(manager, texture), 21);
+        }
+    }
+
+    /// A source renderer data of `width` x `height` with `levels` levels and the revision 5,
+    /// for a texture whose pixel data is `pixels` (revision `revision`).
+    fn source_data_for(width: u32, height: u32, levels: u32, pixels: usize, revision: u32) -> (usize, usize) {
+        let texture = block(ST::SIZE / 4);
+        let data = block(SD::SIZE / 4);
+        unsafe {
+            wr(texture, ST::pixelData, pixels);
+            wr::<u32>(pixels, PD::revisionID, revision);
+            wr::<u32>(data, TD::vtbl_vtbl, VTBL_SOURCE_TEXTURE_DATA);
+            wr(data, SD::vtbl_sgTexture, texture);
+            wr(data, SD::width, width);
+            wr(data, SD::height, height);
+            wr(data, SD::levels, levels);
+            wr::<u32>(data, SD::sourceRevisionID, 5);
+        }
+        (texture, data)
+    }
+
+    /// The audit's U3-02: new pixel data of another size asks for a new renderer data, and
+    /// a size that `Create` would refuse keeps the old picture without asking again.
+    #[test]
+    fn a_new_size_of_the_pixel_data_asks_for_a_new_renderer_data() {
+        let pixels = [0u8; 21];
+        let new = pixel_data(0, &pixels); // 3 x 2: not a power of two
+        unsafe {
+            // The same revision: nothing to do, whatever the size.
+            let (texture, data) = source_data_for(8, 8, 1, new, 5);
+            assert_eq!(source_data_size_change(texture, data), SizeChange::None);
+            // A new revision of the same size: an update.
+            let (texture, data) = source_data_for(3, 2, 2, new, 6);
+            assert_eq!(source_data_size_change(texture, data), SizeChange::None);
+            // Not a source renderer data: the update as before.
+            wr::<u32>(data, TD::vtbl_vtbl, 0x1234);
+            assert_eq!(source_data_size_change(texture, data), SizeChange::None);
+            // Another size that is not a power of two: the picture stays, the revision is seen.
+            let (texture, data) = source_data_for(4, 4, 3, new, 7);
+            assert_eq!(source_data_size_change(texture, data), SizeChange::Unusable);
+            assert_eq!(rd::<u32>(data, SD::sourceRevisionID), 7);
+            assert_eq!(source_data_size_change(texture, data), SizeChange::None);
+            // Another size that is a power of two: a new renderer data.
+            wr::<[u32; 2]>(rd::<usize>(new, PD::mipmapWidths), 0, [16, 8]);
+            wr::<[u32; 2]>(rd::<usize>(new, PD::mipmapHeights), 0, [8, 4]);
+            let (texture, data) = source_data_for(4, 4, 3, new, 8);
+            assert_eq!(source_data_size_change(texture, data), SizeChange::Remake);
+        }
+    }
+
+    extern "system" fn texture_surface_level(_this: usize, level: u32, _out: usize) -> u32 {
+        note(0x5E, level);
+        // A failure ends the loop of the update at once.
+        1
+    }
+    extern "system" fn texture_release(_this: usize) -> u32 {
+        note(0x5E1E, 0);
+        0
+    }
+
+    /// The audit's U3-02: `Update` copies only pixel data of the size of the device texture,
+    /// and a failed level read does not release the texture.
+    #[test]
+    fn update_copies_only_pixel_data_of_the_size_of_the_texture() {
+        let pixels = [0u8; 21];
+        let new = pixel_data(0, &pixels); // 3 x 2, 2 levels
+        let device_texture = object(
+            1,
+            &[(crate::d3d::TEXTURE_GET_SURFACE_LEVEL, texture_surface_level as *const () as usize), (crate::d3d::COM_RELEASE, texture_release as *const () as usize)],
+        );
+        unsafe {
+            // The texture holds its pixel data: the fake conversion gives it back, and the end
+            // of `Update` releases the converted data.
+            wr::<u32>(new, REF_COUNT, 1);
+            // Another size: no level is read, and the revision stays unseen.
+            let (_texture, data) = source_data_for(4, 4, 3, new, 6);
+            wr(data, SD::d3dTexture, device_texture);
+            notes();
+            source_data_update(data);
+            assert!(notes().iter().all(|n| n.0 != 0x5E && n.0 != 0x5E1E));
+            assert_eq!(rd::<u32>(data, SD::sourceRevisionID), 5);
+            // The same size: the update reads level 0, which fails; the texture stays.
+            let (_texture, data) = source_data_for(3, 2, 2, new, 6);
+            wr(data, SD::d3dTexture, device_texture);
+            notes();
+            source_data_update(data);
+            let got = notes();
+            assert!(got.contains(&(0x5E, 0)));
+            assert!(!got.iter().any(|n| n.0 == 0x5E1E));
+            assert_eq!(rd::<usize>(data, SD::d3dTexture), device_texture);
+            assert_eq!(rd::<u32>(data, SD::sourceRevisionID), 6);
         }
     }
 
