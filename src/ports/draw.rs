@@ -826,20 +826,16 @@ pub(crate) unsafe fn ensure_skin_partitions(this: usize, geom_data: usize, skin:
     if skin_partition != 0 {
         return skin_partition;
     }
-    let mut new_partition: usize = 0;
-    let mut eax = site_cdecl!(SP_OPERATOR_NEW, NiSkinPartition::SIZE) as usize;
-    if eax != 0 {
-        eax = site_thiscall!(SP_SKIN_PARTITION_CTOR, eax) as usize;
-        new_partition = eax;
+    if skin_data == 0 {
+        return 0;
     }
     // Unlike the engine: a bone with a vertex count and no weight array gets no partitions.
     // `NiSkinPartition::CreateVertexInteractions` (0x6C6B60) reads the array of each bone
-    // with a count and faults on a null one. Such a skin gets the empty partition, as the
-    // engine's failure path gives it. The shape draws nothing on the hardware path. The
-    // first 8 go to the log with their names. Only `NiSkinData::dtor` (0x6D09F0) writes a
-    // null array (`NiSkinData::LoadBinary` gives every bone one): such a skin data is in or
-    // after its destructor.
-    if skin_data != 0 && !skin_data_complete(skin_data) {
+    // with a count and faults on a null one. Such a skin gets no partition object (0), and
+    // the draws of the shape draw nothing. The first 8 go to the log with their names. Only
+    // `NiSkinData::dtor` (0x6D09F0) writes a null array (`NiSkinData::LoadBinary` gives every
+    // bone one): such a skin data is in or after its destructor.
+    if !skin_data_complete(skin_data) {
         static REFUSED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
         if REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 8 {
             let root: usize = rd(skin, NiSkinInstance::rootParent);
@@ -848,15 +844,29 @@ pub(crate) unsafe fn ensure_skin_partitions(this: usize, geom_data: usize, skin:
                 object_name(root)
             );
         }
-        return new_partition;
+        return 0;
+    }
+    let mut new_partition: usize = 0;
+    let mut eax = site_cdecl!(SP_OPERATOR_NEW, NiSkinPartition::SIZE) as usize;
+    if eax != 0 {
+        eax = site_thiscall!(SP_SKIN_PARTITION_CTOR, eax) as usize;
+        new_partition = eax;
+    }
+    if new_partition == 0 {
+        return 0;
     }
     // `mov al, countHWBones; push eax; push eax`: the high bytes keep the value EAX had.
     let bones = (eax as u32 & 0xFFFF_FF00) | rd::<u8>(this, R::countHWBones) as u32;
     if site_thiscall!(SP_MAKE_PARTITIONS, new_partition, geom_data, skin_data, bones, bones) as u8 != 0 {
         let slot = rd::<usize>(skin, NiSkinInstance::skinData) + SKIN_DATA_SKIN_PARTITION;
         ni::pointer_assign(slot, new_partition);
+        return new_partition;
     }
-    new_partition
+    // Unlike the engine, which draws with the object that `MakePartitions` did not fill (its
+    // table of partitions is null): the object goes (no reference holds it) and the shape
+    // draws nothing.
+    ni::delete_object(new_partition);
+    0
 }
 
 /// True when every bone of the `NiSkinData` with a vertex count (`NiBoneData::numVertexWeights`)
@@ -901,8 +911,14 @@ pub(crate) unsafe fn object_name(object: usize) -> String {
 pub unsafe fn draw_skinned_primitive(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&draw_skinned_primitive_port::STATE);
     let skin_partition = ensure_skin_partitions(this, geom_data, skin);
-
+    // No partitions (`ensure_skin_partitions` made none): nothing to draw.
+    if skin_partition == 0 {
+        return;
+    }
     let partitions: usize = rd(skin_partition, NiSkinPartition::partitions);
+    if partitions == 0 {
+        return;
+    }
     let count: u32 = rd(skin_partition, NiSkinPartition::partitionCount);
     let is_list = rd::<u16>(partitions, P::numStripLengths) == 0;
     let primitive_type = if is_list { D3DPT_TRIANGLELIST } else { D3DPT_TRIANGLESTRIP };
@@ -962,7 +978,14 @@ pub unsafe fn draw_skinned_primitive_2(
     }
     let skin_data: usize = rd(skin, NiSkinInstance::skinData);
     let skin_partition: usize = if skin_data != 0 { rd(skin_data, SKIN_DATA_SKIN_PARTITION) } else { 0 };
+    // A skin with no partitions (`ensure_skin_partitions` made none) draws nothing.
+    if skin_partition == 0 {
+        return;
+    }
     let partitions: usize = rd(skin_partition, NiSkinPartition::partitions);
+    if partitions == 0 {
+        return;
+    }
     let first_buffer: usize = rd(partitions, P::bufferData);
 
     // This is different from DrawPrimitive. The game code does not test the geometry data
@@ -2351,6 +2374,16 @@ mod tests {
         }
     }
 
+    thread_local! {
+        /// The objects that the fake deleting destructor got.
+        static DELETED: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    unsafe extern "thiscall" fn fake_deleting_dtor(this: usize, _flags: u32) -> u32 {
+        DELETED.with(|deleted| deleted.borrow_mut().push(this));
+        0
+    }
+
     #[test]
     fn draw_skinned_primitive_makes_the_partitions_when_there_are_none() {
         let mut w = world();
@@ -2359,9 +2392,11 @@ mod tests {
         let si = s.address();
         let made = s.skin_partition.as_mut_ptr() as usize;
         let data: usize = unsafe { rd(si, NiSkinInstance::skinData) };
+        let vtable = [fake_deleting_dtor as *const () as usize];
         unsafe {
             wr::<u32>(data, SKIN_DATA_SKIN_PARTITION, 0);
             wr::<u32>(r, R::countHWBones, 4);
+            wr::<usize>(made, 0, vtable.as_ptr() as usize);
             // The allocator returns a block and the constructor returns the object.
             let block = 0x00AB_CD00u32;
             returns(SP_OPERATOR_NEW, &[block]);
@@ -2373,9 +2408,11 @@ mod tests {
             assert_eq!(log[1], (SP_SKIN_PARTITION_CTOR, vec![block]));
             let bones = (made as u32 & 0xFFFF_FF00) | 4;
             assert_eq!(log[2], (SP_MAKE_PARTITIONS, vec![made as u32, 0x40, data as u32, bones, bones]));
-            assert_eq!(log[3].0, SP_DRAW_SKINNED_PRIMITIVE_2);
-            // MakePartitions returned false (AL is 0): the skin data does not get the object.
+            // MakePartitions returned false (AL is 0): the skin data does not get the object,
+            // the object goes, and nothing draws.
+            assert_eq!(log.len(), 3);
             assert_eq!(rd::<u32>(data, SKIN_DATA_SKIN_PARTITION), 0);
+            assert_eq!(DELETED.with(|deleted| core::mem::take(&mut *deleted.borrow_mut())), vec![made]);
 
             // MakePartitions returns true: the skin data gets the object, and the object gets
             // a reference.
@@ -2386,6 +2423,29 @@ mod tests {
             assert_eq!(calls().len(), 4);
             assert_eq!(rd::<usize>(data, SKIN_DATA_SKIN_PARTITION), made);
             assert_eq!(rd::<u32>(made, NiSkinPartition::refCount), 1);
+            assert!(DELETED.with(|deleted| deleted.borrow().is_empty()));
+        }
+    }
+
+    /// The audit's U2-01: a skin data with a bone that has a vertex count and no weight array
+    /// (a skin data in or after its destructor). No object is made, nothing reads the null
+    /// table of partitions, and nothing draws.
+    #[test]
+    fn draw_skinned_primitive_makes_nothing_for_an_incomplete_skin_data() {
+        let mut w = world();
+        let r = w.r();
+        let mut s = skin(0);
+        let si = s.address();
+        let (mut data, _bones, _weights) = skin_data_with_bones(1, 0);
+        let data_address = data.as_mut_ptr() as usize;
+        unsafe {
+            wr::<usize>(si, NiSkinInstance::skinData, data_address);
+            assert_eq!(ensure_skin_partitions(r, 0x40, si), 0);
+            draw_skinned_primitive(r, 0x40, si, 0x10, 0x20);
+            assert_eq!(calls(), vec![]);
+            // The draw of the partitions alone draws nothing either.
+            draw_skinned_primitive_2(&MainThread::for_test(), r, 4, 0x40, si, 0x10, 0x20, 0, 0);
+            assert_eq!(calls(), vec![]);
         }
     }
 
