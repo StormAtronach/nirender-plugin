@@ -308,6 +308,11 @@ impl Player {
                         });
                         let clear_depth = (flags & 2 != 0).then(|| float(arguments, 16));
                         let clear_stencil = (flags & 4 != 0).then(|| word(arguments, 20));
+                        if clear_depth.is_some() {
+                            for step in self.plan.depth_clear() {
+                                self.plan_step(step);
+                            }
+                        }
                         self.items.push(Item::Clear(clear_color, clear_depth, clear_stencil));
                     }
                     _ => {}

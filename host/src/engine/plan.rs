@@ -78,6 +78,19 @@ impl Plan {
         steps
     }
 
+    /// A clear of the depth by the game. After the world, it starts the game's scenes past the
+    /// world camera (the first person, the sun glare): the classes that no draw brought get
+    /// their call before it, while the depth still holds the world. After the clear, a late
+    /// sea plane would test an empty depth and draw over everything below the horizon (G7's
+    /// report of 2026-10-26: a player levitating high, the engine's water plane culled).
+    pub(crate) fn depth_clear(&mut self) -> Vec<Step> {
+        if self.world_ended && !self.classes_checked {
+            self.classes_checked = true;
+            return vec![Step::MissingClasses];
+        }
+        Vec::new()
+    }
+
     /// The end of the scene in progress. `extension`: the player has an extension;
     /// `in_back_buffer`: the game draws into the back buffer; `drawing`: the frame is
     /// drawn; `queue_open`: the engine's sorted queue stays open after the scene;
@@ -291,6 +304,18 @@ mod tests {
         assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::MissingClasses, Step::Post]);
         plan.scene_end(true, true, true, false, false);
         assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::Post]);
+    }
+
+    /// A clear of the depth after the world gives the missing classes before it, once; the
+    /// scene after it gives them no more. Before the world ended a clear gives nothing.
+    #[test]
+    fn the_missing_classes_come_before_a_depth_clear_after_the_world() {
+        let mut plan = Plan::default();
+        assert_eq!(plan.depth_clear(), vec![]);
+        world_scene(&mut plan);
+        assert_eq!(plan.depth_clear(), vec![Step::MissingClasses]);
+        assert_eq!(plan.depth_clear(), vec![]);
+        assert_eq!(plan.scene_begin(SCENE_FIRST_PERSON), vec![]);
     }
 
     #[test]
