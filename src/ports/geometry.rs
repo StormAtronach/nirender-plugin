@@ -3,6 +3,7 @@
 //! `NiGeometryBufferData` for each [`NiGeometryData`] and for each skin partition.
 
 use core::mem::transmute;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::main_thread::MainThread;
 use crate::d3d::{
@@ -47,6 +48,66 @@ const V_GET_TRI_LIST: usize = crate::gen::layouts::InterfaceNiTriBasedGeomData::
 const V_GET_RENDERER_TYPE_ID: usize = crate::gen::layouts::NiRendererSpecificProperty_RenderData_vtbl::getRendererTypeId;
 
 const SKIN_DATA_SKIN_PARTITION: usize = crate::gen::layouts::NiSkinData::skinPartition;
+
+// ---- the crossings of the geometry cache (audit finding U3-01)
+//
+// The renderer's maps hashGeomBuffers and hashmap_skinPartitionsToGeomBuffers have no lock.
+// The ports below write them on the main thread; the engine's RemoveGeometryData writes them
+// on the cell worker. These counts tell whether the two ever overlap: the worker's removal
+// is a window from its `any_thread` hook to its `after` hook (`worker_events`), a write of
+// the main thread is a window of `CacheWrite`. An overlap starts inside one of them.
+
+static MAIN_IN_CACHE: AtomicBool = AtomicBool::new(false);
+static WORKER_REMOVING: AtomicU32 = AtomicU32::new(0);
+/// A main-thread write that started in a removal of the worker, and a removal of the worker
+/// that started in a main-thread write.
+static CROSSINGS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+static REMOVALS: AtomicU32 = AtomicU32::new(0);
+
+/// A write of the geometry cache by the main thread, for the time of the guard.
+struct CacheWrite;
+
+impl CacheWrite {
+    fn enter() -> CacheWrite {
+        MAIN_IN_CACHE.store(true, Ordering::SeqCst);
+        if WORKER_REMOVING.load(Ordering::SeqCst) != 0 && CROSSINGS[0].fetch_add(1, Ordering::Relaxed) == 0 {
+            crate::log!("geometry cache: a main-thread write began in a removal of the cell worker (the first)");
+        }
+        CacheWrite
+    }
+}
+
+impl Drop for CacheWrite {
+    fn drop(&mut self) {
+        MAIN_IN_CACHE.store(false, Ordering::SeqCst);
+    }
+}
+
+/// A removal of geometry data begins on the cell worker (`worker_events`).
+pub fn worker_removal_begins() {
+    WORKER_REMOVING.fetch_add(1, Ordering::SeqCst);
+    REMOVALS.fetch_add(1, Ordering::Relaxed);
+    if MAIN_IN_CACHE.load(Ordering::SeqCst) && CROSSINGS[1].fetch_add(1, Ordering::Relaxed) == 0 {
+        crate::log!("geometry cache: a removal of the cell worker began in a main-thread write (the first)");
+    }
+}
+
+/// The `after` hook of `RemoveGeometryData`: a removal of the cell worker ends.
+pub unsafe fn worker_removal_ends() {
+    if !crate::shadow::on_main_thread() {
+        WORKER_REMOVING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// One line for the log: the removals of the worker and the crossings.
+pub fn crossings_report() -> String {
+    format!(
+        "geometry cache: {} removals on the cell worker; crossings with a main-thread write: {} writes began in a removal, {} removals began in a write",
+        REMOVALS.load(Ordering::Relaxed),
+        CROSSINGS[0].load(Ordering::Relaxed),
+        CROSSINGS[1].load(Ordering::Relaxed)
+    )
+}
 
 /// 0x6BDE50 `NiDX8VertexBufferManager::PackUntransformedVB`. Returns the vertex buffer.
 #[allow(clippy::too_many_arguments)]
@@ -315,6 +376,7 @@ unsafe fn purge_geometry_data_regions(set: &mut Regions, this: usize, geom_data:
 /// data into `*out`. Returns 1 when it made a new one.
 pub unsafe fn create_geometry_buffer_data(this: usize, out: usize, geom_data: usize) -> u8 {
     crate::shadow::touch(&create_geometry_buffer_data_port::STATE);
+    let _write = CacheWrite::enter();
     if geom_data == 0 {
         return 0;
     }
@@ -348,6 +410,7 @@ unsafe fn create_geometry_buffer_data_regions(set: &mut Regions, this: usize, ou
 /// no entry in the map and a value in `*out`, the function makes nothing.
 pub unsafe fn find_cached_partition_geom_buffer(this: usize, out: usize, geom_data: usize, skin: usize, partition: usize) -> u8 {
     crate::shadow::touch(&find_cached_partition_geom_buffer_port::STATE);
+    let _write = CacheWrite::enter();
     if geom_data == 0 || skin == 0 {
         return 0;
     }
@@ -798,6 +861,7 @@ unsafe fn render_screen_poly_regions(set: &mut Regions, this: usize, count: u32)
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn precache_geometry_data(this: usize, geom_data: usize, indices: u32, index_count: u32, flags: u32, _extra: usize, shader: usize, shader_data: u32) -> u8 {
     crate::shadow::touch(&precache_geometry_data_port::STATE);
+    let _write = CacheWrite::enter();
     let key: u32 = rd(geom_data, NiGeometryData::uniqueID);
     let map = this + R::hashGeomBuffers;
     let node = hash_map::find(map, key);
@@ -898,6 +962,7 @@ pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
     per_vertex: u32,
 ) -> u8 {
     crate::shadow::touch(&maybe_pre_pack_skinned_geometry_buffer_port::STATE);
+    let _write = CacheWrite::enter();
     if skin == 0 {
         return 0;
     }
@@ -1352,6 +1417,28 @@ pub static PORTS: &[&crate::shadow::PortState] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both kinds of overlap are counted: a write that starts in a removal of the worker, and
+    /// a removal that starts in a write. (In a test no thread is the main thread, so the end
+    /// of a removal counts here.)
+    #[test]
+    fn the_crossings_of_the_geometry_cache_are_counted() {
+        let before = [CROSSINGS[0].load(Ordering::Relaxed), CROSSINGS[1].load(Ordering::Relaxed)];
+        {
+            let _write = CacheWrite::enter();
+            worker_removal_begins();
+        }
+        assert_eq!(CROSSINGS[1].load(Ordering::Relaxed), before[1] + 1);
+        {
+            let _write = CacheWrite::enter();
+        }
+        assert_eq!(CROSSINGS[0].load(Ordering::Relaxed), before[0] + 1, "a write in the removal that is still open");
+        unsafe { worker_removal_ends() };
+        {
+            let _write = CacheWrite::enter();
+        }
+        assert_eq!(CROSSINGS[0].load(Ordering::Relaxed), before[0] + 1, "no removal open: no crossing");
+    }
 
     // A hash map whose key is a number. The bucket is the key modulo the bucket count.
     unsafe extern "thiscall" fn fake_hash_key(map: usize, key: u32) -> u32 {

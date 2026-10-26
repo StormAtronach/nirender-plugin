@@ -1166,6 +1166,7 @@ pub unsafe fn stop() {
     crate::log!("threads: {}", crate::sync::census_text().replace('\n', "; "));
     if let Some(t) = proof.as_ref() {
         crate::log!("{}", crate::geometry_stream::report(t));
+        crate::log!("{}", crate::ports::geometry::crossings_report());
         for line in crate::geometry_stream::census_report(t) {
             crate::log!("{line}");
         }

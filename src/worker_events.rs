@@ -162,6 +162,9 @@ unsafe fn on_remove_light(args: &[usize]) {
 /// is alive here.
 unsafe fn on_remove_geometry_data(args: &[usize]) {
     let Some(&data) = args.first() else { return };
+    if !crate::shadow::on_main_thread() {
+        crate::ports::geometry::worker_removal_begins();
+    }
     if data == 0 {
         return;
     }
@@ -188,6 +191,11 @@ pub fn install() {
             Some(port) => port.any_thread.store(hook as usize, Ordering::Relaxed),
             None => missing.push(name),
         }
+    }
+    // The end of a removal of geometry data on the cell worker, for the crossings of the
+    // geometry cache (`ports::geometry`).
+    if let Some(port) = crate::ports::all().find(|port| port.name == "NiRenderer_static::RemoveGeometryData") {
+        port.after.store(crate::ports::geometry::worker_removal_ends as *const () as usize, Ordering::Relaxed);
     }
     if missing.is_empty() {
         crate::log!("worker events: {} ports write their events from the engine's cell worker", HOOKS.len());
