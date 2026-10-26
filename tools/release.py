@@ -1,7 +1,7 @@
 """Makes a test build release on GitHub, and removes the releases before it.
 
     python tools/release.py --notes <file.md> [--max-perf] [--mge DIR] [--repo OWNER/NAME]
-        [--keep-old] [--no-build]
+        [--keep-old] [--no-build] [--add SOURCE=PATH ...] [--add-dir SOURCE=PATH ...]
 
 The steps:
 
@@ -15,8 +15,15 @@ The steps:
    with the text of `--notes`. Each `--add SOURCE=PATH` puts a file into it first, at PATH
    from the archive's root (the Morrowind folder): for example the MWSE.dll with the native
    ABI that the plugin needs (`--add E:/nirender-keep/mwse/08f7d20ed4/MWSE.dll=MWSE.dll`).
+   Each `--add-dir SOURCE=PATH` puts every file of the folder SOURCE into it, at PATH (`.`
+   for the root) and their paths under SOURCE: for example a mod laid out as the game
+   folder (`--add-dir <stage of True Water>=.`). One argument for a folder: 157 `--add` did
+   not fit on the command line of Windows (v0.2.15).
 4. All other releases of the repository are deleted, so that a tester finds one build only.
    Their tags stay. `--keep-old` leaves the releases.
+
+`--dry-run` does the steps up to the packed archive and publishes and deletes nothing; the
+checks of step 1 then only print what would stop a release. A test of the archive's contents.
 
 The tool starts no game.
 """
@@ -45,14 +52,21 @@ def version_of(manifest):
     return re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE).group(1)
 
 
-def clean_and_pushed(repo):
+def stop(text, dry_run):
+    """Stops a release; a dry run only prints it."""
+    if not dry_run:
+        raise SystemExit(text)
+    print("dry run, a release would stop here: " + text)
+
+
+def clean_and_pushed(repo, dry_run):
     """Stops when the repository has work that is not committed or not pushed."""
     if run(["git", "-C", repo, "status", "--porcelain", "--untracked-files=no"], capture=True).strip():
-        raise SystemExit("%s has changes that are not committed" % repo)
+        stop("%s has changes that are not committed" % repo, dry_run)
     run(["git", "-C", repo, "fetch", "--quiet"])
     ahead = run(["git", "-C", repo, "rev-list", "--count", "@{upstream}..HEAD"], capture=True).strip()
     if ahead != "0":
-        raise SystemExit("%s has %s commits that are not pushed" % (repo, ahead))
+        stop("%s has %s commits that are not pushed" % (repo, ahead), dry_run)
 
 
 def main():
@@ -64,6 +78,8 @@ def main():
     ap.add_argument("--keep-old", action="store_true", help="do not delete the releases before this one")
     ap.add_argument("--no-build", action="store_true", help="use the archive that is in dist (it must be of this version)")
     ap.add_argument("--add", action="append", default=[], metavar="SOURCE=PATH", help="a file to put into the archive at PATH from its root")
+    ap.add_argument("--add-dir", action="append", default=[], metavar="SOURCE=PATH", help="every file of the folder SOURCE, at PATH (. for the root) and their paths under SOURCE")
+    ap.add_argument("--dry-run", action="store_true", help="pack the archive, publish and delete nothing")
     args = ap.parse_args()
 
     assert os.path.isfile(args.notes), args.notes
@@ -72,14 +88,26 @@ def main():
         source, _, path = item.partition("=")
         assert os.path.isfile(source) and path, "--add needs SOURCE=PATH with an existing file: %s" % item
         additions.append((source, path.replace("\\", "/")))
+    for item in args.add_dir:
+        folder, _, path = item.partition("=")
+        assert os.path.isdir(folder) and path, "--add-dir needs SOURCE=PATH with an existing folder: %s" % item
+        files = 0
+        for root, _, names in os.walk(folder):
+            for name in names:
+                source = os.path.join(root, name)
+                inside = os.path.relpath(source, folder).replace("\\", "/")
+                additions.append((source, inside if path in (".", "/") else path.rstrip("/\\").replace("\\", "/") + "/" + inside))
+                files += 1
+        assert files, "--add-dir: the folder %s has no file" % folder
+        print("the folder %s gives %d files" % (folder, files))
     plugin_version = version_of(os.path.join(PLUGIN, "Cargo.toml"))
     tag = "v" + plugin_version
     releases = json.loads(run(["gh", "release", "list", "--repo", args.repo, "--limit", "100", "--json", "tagName"], capture=True))
     tags = [release["tagName"] for release in releases]
     if tag in tags:
-        raise SystemExit("the release %s is there already: set a new version in Cargo.toml" % tag)
+        stop("the release %s is there already: set a new version in Cargo.toml" % tag, args.dry_run)
     for repo in (PLUGIN, args.mge):
-        clean_and_pushed(repo)
+        clean_and_pushed(repo, args.dry_run)
 
     cargo = shutil.which("cargo") or os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
     if not args.no_build:
@@ -110,6 +138,9 @@ def main():
             print("added %s as %s" % (source, path))
 
     title = "Test build: MGE XE G7 %s with nirender %s" % (mge_version, plugin_version)
+    if args.dry_run:
+        print("dry run: the archive %s; not published (%s); no release deleted" % (asset, title))
+        return 0
     print(run(["gh", "release", "create", tag, "--repo", args.repo, "--prerelease", "--title", title, "--notes-file", args.notes, asset], capture=True).strip())
     if not args.keep_old:
         for old in tags:
