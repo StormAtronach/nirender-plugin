@@ -47,7 +47,7 @@ const RING_DONE_AT: usize = 48;
 const RING_DONE_TIME: usize = 56;
 /// From the pacing: when the game starts its next frame (i64, ticks of the performance
 /// counter; `i64::MAX` from the end of a frame to the start of the next). While the game
-/// writes a frame this program waits for the records awake ([`Ring::game_writes`]).
+/// writes a frame this program waits for the records awake ([`Ring::game_phase`]).
 const RING_NEXT_START: usize = 64;
 
 /// Where the game is when this program has no record: [`Ring::game_phase`].

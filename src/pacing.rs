@@ -133,7 +133,7 @@ pub unsafe fn stop() {
 }
 
 /// The end of a frame of the stream (its Present): the bytes written up to it and its time.
-/// The game writes no frame until the start of the next one ([`RING_NEXT_START`]).
+/// The game writes no frame until the start of the next one (`RING_NEXT_START`).
 pub fn frame_end(written: u64, end: i64) {
     if let Some(pacer) = PACER.lock().ok().as_mut().and_then(|guard| guard.as_mut()) {
         pacer.before = pacer.last;
