@@ -80,6 +80,7 @@ pub(crate) use u32_of;
 /// and goes in ECX. Each other argument goes on the stack as a `u32`. The macro returns EAX.
 macro_rules! site_thiscall {
     ($site:expr, $this:expr $(, $a:expr)* $(,)?) => {{
+        let _call = $crate::entry_trace::call_out();
         let f: unsafe extern "thiscall" fn(usize $(, $crate::site::u32_of!($a))*) -> u32 = core::mem::transmute(target($site));
         f($this $(, $a as u32)*)
     }};
@@ -90,6 +91,7 @@ pub(crate) use site_thiscall;
 /// the stack as a `u32`. The macro returns EAX.
 macro_rules! site_cdecl {
     ($site:expr $(, $a:expr)* $(,)?) => {{
+        let _call = $crate::entry_trace::call_out();
         let f: unsafe extern "C" fn($($crate::site::u32_of!($a)),*) -> u32 = core::mem::transmute(target($site));
         f($($a as u32),*)
     }};

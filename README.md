@@ -157,6 +157,9 @@ The A/B:
 
 The instruments and the tests:
 
+- `NIRENDER_ENTRY_TRACE=1`: an entry into the plugin made while another is live writes the
+  outer entry, the call into the engine between them and the inner entry to the log, once
+  for each triple (`src/entry_trace.rs`; the re-entrancy map in the docs reads these lines).
 - `NIRENDER_FILL_FREED=1`: every block the engine frees is filled with a pattern first; a
   read of freed memory faults at the read (`src/freed_fill.rs`).
 - `NIRENDER_FOG_CHECK=1`: each lock of a fog texture also reads the GPU and compares it with

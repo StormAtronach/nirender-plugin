@@ -40,6 +40,7 @@ pub mod callers;
 pub mod capture;
 pub mod camera_space;
 pub mod checked;
+pub mod entry_trace;
 pub mod cores;
 pub mod log;
 pub mod main_thread;

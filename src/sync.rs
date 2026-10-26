@@ -55,7 +55,7 @@ static mut SECTION: CriticalSection = CriticalSection([0; 6]);
 static SECTION_MADE: Once = Once::new();
 
 /// The lock is free again when this value goes away.
-pub struct DeviceLock;
+pub struct DeviceLock(#[allow(dead_code)] Option<crate::entry_trace::Mark>);
 
 /// The device lock: one device call at a time, from any thread, as with a Direct3D device
 /// for more than one thread. It also guards the state of the capture, the own device and
@@ -67,6 +67,7 @@ pub struct DeviceLock;
 /// deadlock (records entry 50). The stalls are MGE XE's logic of the frame and the
 /// capture's purge; both run in `link_client::after_present`, which checks
 /// `device_lock_held_here` first.
+#[track_caller]
 pub fn device_lock() -> DeviceLock {
     unsafe {
         SECTION_MADE.call_once(|| InitializeCriticalSection(core::ptr::addr_of_mut!(SECTION)));
@@ -82,7 +83,7 @@ pub fn device_lock() -> DeviceLock {
             LOCK_WAIT_LONGEST[i].fetch_max(waited, Relaxed);
         }
     }
-    DeviceLock
+    DeviceLock(crate::entry_trace::entry())
 }
 
 impl Drop for DeviceLock {

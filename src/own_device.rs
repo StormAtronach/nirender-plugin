@@ -170,7 +170,7 @@ pub fn present() -> bool {
 /// The size of the back buffer.
 pub unsafe fn size() -> (u32, u32) {
     let lock = crate::sync::device_lock();
-    let mut s = state(&lock);
+    let s = state(&lock);
     (s.parameters[0].max(1), s.parameters[1].max(1))
 }
 

@@ -23,7 +23,9 @@ macro_rules! port_impl {
                 $ename, $addr, $stack_args, $crate::hook::Cleanup::$cleanup, detour_addr);
 
             /// The engine function.
+            #[track_caller]
             pub unsafe fn engine($($p: $pt),*) -> u32 {
+                let _call = $crate::entry_trace::call_out();
                 let f: unsafe extern $abi fn($($pt),*) -> u32 = core::mem::transmute(STATE.orig.load(Ordering::Relaxed));
                 f($($p),*)
             }
@@ -112,7 +114,9 @@ macro_rules! port_thiscall_float {
                 $crate::shadow::PortState::new($ename, $addr, 0, $crate::hook::Cleanup::Callee, detour_addr);
 
             /// The engine function.
+            #[track_caller]
             pub unsafe fn engine($this: usize) -> f32 {
+                let _call = $crate::entry_trace::call_out();
                 let f: unsafe extern "thiscall" fn(usize) -> f32 = core::mem::transmute(STATE.orig.load(Ordering::Relaxed));
                 f($this)
             }

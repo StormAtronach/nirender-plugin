@@ -18,27 +18,33 @@ use core::marker::PhantomData;
 
 /// The holder runs on the main thread. Not [`Send`] and not [`Sync`]: it cannot leave the thread
 /// it was made on.
-pub struct MainThread(PhantomData<*mut ()>);
+pub struct MainThread(PhantomData<*mut ()>, #[allow(dead_code)] Option<crate::entry_trace::Mark>);
 
 impl MainThread {
     /// The proof, where the caller is the main thread by construction. The three places:
     /// `shadow::dispatch_inner` after its thread check, `lua::main_thread_gate` behind its
     /// check, and `worker_events::drain` after its check.
+    #[track_caller]
     pub unsafe fn claim() -> MainThread {
         debug_assert!(crate::shadow::on_main_thread(), "a claim of the main thread off it");
-        MainThread(PhantomData)
+        MainThread(PhantomData, crate::entry_trace::entry())
     }
 
     /// The proof when the calling thread is the main thread, else [`None`]: for a path that
     /// any thread can reach, such as a call of the device.
+    #[track_caller]
     pub fn here() -> Option<MainThread> {
-        crate::shadow::on_main_thread().then(|| MainThread(PhantomData))
+        if crate::shadow::on_main_thread() {
+            Some(MainThread(PhantomData, crate::entry_trace::entry()))
+        } else {
+            None
+        }
     }
 
     /// A test runs on its own thread, which is its main thread.
     #[cfg(test)]
     pub fn for_test() -> MainThread {
-        MainThread(PhantomData)
+        MainThread(PhantomData, None)
     }
 }
 
