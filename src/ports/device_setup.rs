@@ -1393,6 +1393,15 @@ unsafe fn release_rendered_textures(map: usize, key_is_next_position: bool) {
     }
 }
 
+/// Takes the pixel format of the back buffer out of the renderer: the field is 0 after it.
+/// The game code deletes the format and keeps the field, so a second `Recreate` after a
+/// failed `Reset` deleted the same block again.
+unsafe fn take_back_buffer_format(this: usize) -> usize {
+    let format: usize = rd(this, R::backbufferRenderTarget_DX8PixelFormat);
+    wr::<usize>(this, R::backbufferRenderTarget_DX8PixelFormat, 0);
+    format
+}
+
 /// 0x6AAE80 `NiDX8Renderer::Recreate`. It resets a lost device. It releases each object of
 /// the default pool first and makes it again after `Reset`. It returns 0 when `Reset` fails
 /// or when it cannot make the texture formats.
@@ -1417,7 +1426,7 @@ pub unsafe fn recreate(this: usize) -> u8 {
     release_rendered_textures(textures, false);
     release_rendered_textures(cube_maps, true);
 
-    let format: usize = rd(this, R::backbufferRenderTarget_DX8PixelFormat);
+    let format = take_back_buffer_format(this);
     if format != 0 {
         operator_delete(format);
     }
@@ -1879,6 +1888,17 @@ mod tests {
         assert_eq!(R::depthStencilFormats - 0xC8, R::arrayArrayTextureFormats + FORMATS_PER_GROUP * 4);
         assert_eq!(R::field_28C - R::capabilityFlags, 4);
         assert_eq!(ADAPTER_IDENTIFIER_WORDS * 4, 0x42C);
+    }
+
+    #[test]
+    fn a_second_recreate_after_a_failed_reset_has_no_format_to_delete() {
+        let mut renderer = renderer();
+        let this = renderer.as_mut_ptr() as usize;
+        unsafe {
+            wr::<usize>(this, R::backbufferRenderTarget_DX8PixelFormat, 0x1234_5678);
+            assert_eq!(take_back_buffer_format(this), 0x1234_5678);
+            assert_eq!(take_back_buffer_format(this), 0);
+        }
     }
 
     #[test]
