@@ -12,6 +12,7 @@
 use core::mem::transmute;
 use std::collections::{HashMap, HashSet};
 
+use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
 use crate::engine;
 use crate::gen::layouts;
@@ -95,8 +96,9 @@ pub unsafe fn last_modelled(t: &MainThread) -> bool {
     *LAST_FLAGS.get(t) & (PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0
 }
 
-fn sent<'a>(t: &'a MainThread) -> &'a mut HashSet<u32> {
-    (*SENT.get(t)).get_or_insert_with(HashSet::new)
+#[track_caller]
+fn sent<'a>(t: &'a MainThread) -> Open<'a, HashSet<u32>> {
+    SENT.get(t).map(|sent| sent.get_or_insert_with(HashSet::new))
 }
 
 /// Forgets the records that were sent: for a capture file from the stream.
@@ -112,8 +114,9 @@ pub unsafe fn forget(t: &MainThread, handles: &[u32]) {
     }
 }
 
-fn by_texture<'a>(t: &'a MainThread) -> &'a mut HashMap<u32, Vec<u32>> {
-    (*BY_TEXTURE.get(t)).get_or_insert_with(HashMap::new)
+#[track_caller]
+fn by_texture<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Vec<u32>>> {
+    BY_TEXTURE.get(t).map(|by_texture| by_texture.get_or_insert_with(HashMap::new))
 }
 
 /// The records that name a device texture that was freed go: each gets a `MATERIAL_GONE`

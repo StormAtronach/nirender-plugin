@@ -191,7 +191,7 @@ unsafe fn copy(t: &MainThread, this: usize) -> bool {
     }
     make_room(t);
     // The source texture and its pixel data, as the engine makes them from the locked surface.
-    let zeros = ZEROS.get(t);
+    let mut zeros = ZEROS.get(t);
     if zeros.len() < size {
         zeros.resize(size, 0);
     }
@@ -234,7 +234,7 @@ unsafe fn copy(t: &MainThread, this: usize) -> bool {
 unsafe fn make_room(t: &MainThread) {
     let next = LAST_TICKET.load(Ordering::Relaxed).wrapping_add(1);
     loop {
-        let open = OPEN.get(t);
+        let mut open = OPEN.get(t);
         let Some(oldest) = open.first() else { return };
         if (next.wrapping_sub(oldest.ticket) as usize) < crate::capture::TILE_SLOTS {
             return;
@@ -301,7 +301,7 @@ fn is_open(t: &MainThread, pixel_data: usize) -> bool {
 unsafe extern "thiscall" fn paint_detour(records: usize, cell: usize) {
     if let Some(t) = MainThread::here() {
         if is_open(&t, cell_pixel_data(cell)) {
-            let paints = PAINTS.get(&t);
+            let mut paints = PAINTS.get(&t);
             if !paints.contains(&(records, cell)) {
                 paints.push((records, cell));
             }
@@ -317,7 +317,7 @@ unsafe fn run_paints(t: &MainThread) {
     if PAINTS.get(t).is_empty() {
         return;
     }
-    let paints = core::mem::take(PAINTS.get(t));
+    let paints = core::mem::take(&mut *PAINTS.get(t));
     for (records, cell) in paints {
         if is_open(t, cell_pixel_data(cell)) {
             PAINTS.get(t).push((records, cell));
@@ -339,7 +339,7 @@ pub unsafe fn poll() {
     }
     if !crate::capture::recording() {
         // The stream ended: no pixels come any more.
-        for open in core::mem::take(OPEN.get(&t)) {
+        for open in core::mem::take(&mut *OPEN.get(&t)) {
             complete(open, None);
         }
     }
@@ -371,7 +371,7 @@ unsafe fn complete_all(t: &MainThread, before: &str) {
         return;
     }
     let start = crate::capture::ticks();
-    for open in core::mem::take(OPEN.get(t)) {
+    for open in core::mem::take(&mut *OPEN.get(t)) {
         let pixels = crate::capture::wait_tile(open.ticket);
         WAITED.fetch_add(1, Ordering::Relaxed);
         complete(open, pixels);

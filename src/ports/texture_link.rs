@@ -138,7 +138,7 @@ struct InProgress(usize);
 impl InProgress {
     /// Marks the texture, and tells whether a `create` of it was already in progress.
     unsafe fn enter(t: &MainThread, texture: usize) -> (InProgress, bool) {
-        let list = IN_PROGRESS.get(t);
+        let mut list = IN_PROGRESS.get(t);
         let nested = list.contains(&texture);
         list.push(texture);
         (InProgress(texture), nested)
@@ -149,7 +149,7 @@ impl Drop for InProgress {
     fn drop(&mut self) {
         // The mark goes at the end of the `create` that made it, on the main thread.
         let Some(t) = MainThread::here() else { return };
-        let list = IN_PROGRESS.get(&t);
+        let mut list = IN_PROGRESS.get(&t);
         if let Some(at) = list.iter().rposition(|&texture| texture == self.0) {
             list.remove(at);
         }

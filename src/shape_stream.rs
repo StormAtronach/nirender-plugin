@@ -157,9 +157,9 @@ pub unsafe fn engine_particle_records(t: &MainThread) -> [u64; 3] {
 
 /// Counts a particle system that goes out as the engine's shape record.
 unsafe fn count_engine_particles(t: &MainThread) {
-    let counts = ENGINE_PARTICLES.get(t);
+    let mut counts = ENGINE_PARTICLES.get(t);
     let (world_camera, scene_kind, draw_flags, shape) = *POINTS_DRAW.get(t);
-    let logged = POINTS_LOGGED.get(t);
+    let mut logged = POINTS_LOGGED.get(t);
     if shape != 0 && logged.len() < 40 && !logged.contains(&shape) {
         logged.push(shape);
         let name_at: usize = rd(shape, 8);
@@ -444,7 +444,7 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
                 let float = |i: usize| f32::from_bits(tail[i]);
                 crate::capture::instance_particles(geometry, float(1), [float(2), float(3), float(4)], [float(5), float(6), float(7)], bytes);
             }
-            if crate::instance_stream::draw(t, shape, id, &world, relative, &material_values, effects.as_ref().map(|w| &w[..]), fog, ambient, lights, if kind & SKINNED != 0 { bytes } else { &[] }, bone_count, flags & QUEUED != 0) {
+            if crate::instance_stream::draw(t, shape, id, &world, relative, &material_values, effects.as_ref().map(|w| &w[..]), fog, ambient, &lights, if kind & SKINNED != 0 { bytes } else { &[] }, bone_count, flags & QUEUED != 0) {
                 if crate::instance_stream::mode(t) == crate::instance_stream::Mode::Gpu {
                     return records_only();
                 }
@@ -489,7 +489,7 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
     // goes out: `RenderShape`, `RenderPoints` and `RenderLines` each set it first).
     let bound: [u32; 4] = rd(renderer, crate::gen::layouts::NiDX8Renderer::worldBound);
     words[2] |= BOUND;
-    capture::shape(&words, lights, tail, bytes, &bound);
+    capture::shape(&words, &lights, tail, bytes, &bound);
     *RECORDS.get(t) += 1;
     records_only()
 }

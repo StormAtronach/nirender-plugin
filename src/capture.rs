@@ -31,6 +31,7 @@ use crate::link::{
     CALL_CREATE_TEXTURE, CALL_CREATE_VERTEX_BUFFER, CALL_CUBE_FACE, CALL_GET_DEPTH_BUFFER, CALL_GET_RENDER_TARGET, CALL_PRESENT,
     CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_TRANSFORM,
 };
+use crate::checked::Open;
 use crate::main_thread::MainThread;
 use crate::sync::{DeviceLock, LockCell};
 use crate::mem::rd;
@@ -605,7 +606,8 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
         }
         (width, height) = ask_pixels(&lock, texture)?;
     }
-    let reply = state(&lock)?.reply.as_ref()?;
+    let s = state(&lock)?;
+    let reply = s.reply.as_ref()?;
     let size = width as usize * height as usize * 4;
     if size == 0 || size > reply.capacity {
         return None;
@@ -616,7 +618,8 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
 /// Sends one `READ_PIXELS` record and waits for its answer: the width and the height.
 unsafe fn ask_pixels(lock: &DeviceLock, texture: u32) -> Option<(u32, u32)> {
     let (request, generation) = {
-        let reply = state(lock)?.reply.as_mut()?;
+        let mut s = state(lock)?;
+        let reply = s.reply.as_mut()?;
         reply.requests += 1;
         (reply.requests, reply.generation)
     };
@@ -628,7 +631,8 @@ unsafe fn ask_pixels(lock: &DeviceLock, texture: u32) -> Option<(u32, u32)> {
     }
     write(tag::READ_PIXELS, &[words(&[request, texture, generation])]);
     // The write can end the stream.
-    let reply = state(lock)?.reply.as_mut()?;
+    let mut s = state(lock)?;
+    let reply = s.reply.as_mut()?;
     let start = ticks();
     while (reply.base as *const u32).read_volatile() != request {
         // A silent helper gets one look, not a wait: the game must not hang on it.
@@ -702,7 +706,8 @@ pub unsafe fn copy_tile(target: u32, texture: u32) -> Option<u32> {
     if !recording() {
         return None;
     }
-    let tiles = state(&lock)?.tiles.as_mut()?;
+    let mut s = state(&lock)?;
+    let tiles = s.tiles.as_mut()?;
     tiles.tickets = tiles.tickets.wrapping_add(1).max(1);
     let ticket = tiles.tickets;
     write(tag::COPY_TILE, &[words(&[ticket, target, texture])]);
@@ -714,7 +719,8 @@ pub unsafe fn copy_tile(target: u32, texture: u32) -> Option<u32> {
 /// host has no pixels for the ticket. [`None`] while the read is in progress.
 pub unsafe fn tile_pixels(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
     let lock = crate::sync::device_lock();
-    let tiles = state(&lock)?.tiles.as_ref()?;
+    let s = state(&lock)?;
+    let tiles = s.tiles.as_ref()?;
     let slot = tiles.slot(ticket);
     if (*(slot as *const core::sync::atomic::AtomicU32)).load(Ordering::Acquire) != ticket {
         return None;
@@ -881,8 +887,9 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// The record is in progress.
 static RECORDING: AtomicBool = AtomicBool::new(false);
 
-fn state<'a>(lock: &'a DeviceLock) -> Option<&'a mut State> {
-    STATE.get(lock).as_mut()
+#[track_caller]
+fn state<'a>(lock: &'a DeviceLock) -> Option<Open<'a, State>> {
+    STATE.get(lock).filter_map(Option::as_mut)
 }
 
 #[inline]
@@ -924,7 +931,7 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     let file = File::create(path).map_err(|error| format!("{path}: {error}"))?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     out.write_all(MAGIC).map_err(|error| error.to_string())?;
-    let Some(s) = state(&lock) else { return Err("no stream".into()) };
+    let Some(mut s) = state(&lock) else { return Err("no stream".into()) };
     s.tee = Some((out, frames.max(1)));
     s.tee_hold = frames == 0;
     s.tee_only = true;
@@ -937,7 +944,7 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     crate::material_stream::reset(t);
     crate::light_stream::reset(t);
     crate::instance_stream::reset(t);
-    if let Some(s) = state(&lock) {
+    if let Some(mut s) = state(&lock) {
         s.tee_only = false;
         if s.tee_hold {
             if let Some((_, left)) = s.tee.as_mut() {
@@ -959,7 +966,7 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
 /// them. Returns false without such a file.
 pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
     let lock = crate::sync::device_lock();
-    let Some(s) = state(&lock) else { return false };
+    let Some(mut s) = state(&lock) else { return false };
     if !s.tee_hold || s.tee.is_none() {
         return false;
     }
@@ -968,7 +975,7 @@ pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
     }
     // The content of the buffers and textures that changed while the file held, as it is
     // now, once each.
-    let dirty: Vec<u32> = state(&lock).map(|s| s.tee_dirty.drain().collect()).unwrap_or_default();
+    let dirty: Vec<u32> = state(&lock).map(|mut s| s.tee_dirty.drain().collect()).unwrap_or_default();
     #[cfg(not(test))]
     for handle in dirty {
         crate::own_host::write_resource(handle as usize);
@@ -977,9 +984,9 @@ pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
     drop(dirty);
     // The geometry and material records of the hold: forgotten, so that the next draw of
     // each sends it again, into the frames.
-    let geometry: Vec<u32> = state(&lock).map(|s| s.tee_dirty_geometry.drain().collect()).unwrap_or_default();
+    let geometry: Vec<u32> = state(&lock).map(|mut s| s.tee_dirty_geometry.drain().collect()).unwrap_or_default();
     crate::geometry_stream::forget(t, &geometry);
-    let material: Vec<u32> = state(&lock).map(|s| s.tee_dirty_material.drain().collect()).unwrap_or_default();
+    let material: Vec<u32> = state(&lock).map(|mut s| s.tee_dirty_material.drain().collect()).unwrap_or_default();
     crate::material_stream::forget(t, &material);
     // The lights change in most frames: all of them again, into the frames.
     crate::light_stream::reset(t);
@@ -990,13 +997,13 @@ pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
 /// Ends a file from the stream that holds.
 pub unsafe fn tee_end() {
     let lock = crate::sync::device_lock();
-    if let Some(s) = state(&lock) {
+    if let Some(mut s) = state(&lock) {
         s.tee_hold = false;
         s.tee_dirty.clear();
         s.tee_dirty_geometry.clear();
         s.tee_dirty_material.clear();
-        end_tee(s);
-    }
+        end_tee(&mut s);
+    };
 }
 
 /// A record that makes a resource, or changes one in a way that has no content: a file that
@@ -1028,7 +1035,7 @@ pub unsafe fn start_stream(name: &str, megabytes: u32, warmup: u32, own_host: bo
         return Err("a capture is in progress".into());
     }
     begin(&lock, Sink::Ring(Ring::create(name, megabytes)?), warmup, 0);
-    if let Some(s) = state(&lock) {
+    if let Some(mut s) = state(&lock) {
         s.own_host = own_host;
         // Room for the back buffer, and for a rendered texture of 1024 x 1024.
         let renderer = crate::engine::renderer();
@@ -1049,7 +1056,7 @@ pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, 
         return Err("a capture is in progress".into());
     }
     begin(&lock, Sink::Ring(Ring::create(name, megabytes)?), 1, 0);
-    if let Some(s) = state(&lock) {
+    if let Some(mut s) = state(&lock) {
         s.direct = true;
         s.phase = Phase::Record(0);
         s.reply = Reply::create(name, (width as usize * height as usize * 4).max(1024 * 1024 * 4));
@@ -1057,7 +1064,7 @@ pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, 
         s.messages = Messages::create(name);
     }
     RECORDING.store(true, Ordering::Relaxed);
-    if let Some(s) = state(&lock) {
+    if let Some(mut s) = state(&lock) {
         s.header = [width, height, window, header_abilities()];
     }
     write(tag::HEADER, &[words(&[width, height, window, header_abilities()])]);
@@ -1108,14 +1115,14 @@ pub unsafe fn stop() {
     // The main thread ends the stream (`call` asks it from another thread); the proof is for
     // the report of the table, which only the main thread opens.
     let proof = MainThread::here();
-    let Some(s) = state(&lock) else { return };
+    let Some(mut s) = state(&lock) else { return };
     if s.phase == Phase::Off {
         return;
     }
     RECORDING.store(false, Ordering::Relaxed);
     ACTIVE.store(false, Ordering::Relaxed);
     s.phase = Phase::Off;
-    end_tee(s);
+    end_tee(&mut s);
     match s.out.take() {
         Some(Sink::File(mut out)) => s.failed |= out.flush().is_err(),
         Some(Sink::Ring(mut ring)) => {
@@ -1229,7 +1236,8 @@ pub unsafe fn gamma_ramp(ramp: &[u8]) {
 /// The gamma ramp of the device: the last one set, else the identity (`i * 257`).
 pub unsafe fn gamma_ramp_now() -> Vec<u8> {
     let lock = crate::sync::device_lock();
-    (*GAMMA.get(&lock)).clone().unwrap_or_else(|| (0..GAMMA_RAMP_BYTES / 2).flat_map(|at| ((at % 256) as u16 * 257).to_le_bytes()).collect())
+    let ramp = (*GAMMA.get(&lock)).clone().unwrap_or_else(|| (0..GAMMA_RAMP_BYTES / 2).flat_map(|at| ((at % 256) as u16 * 257).to_le_bytes()).collect());
+    ramp
 }
 
 /// Asks the host of the stream for a picture file of the frame in progress.
@@ -1319,7 +1327,7 @@ pub unsafe fn mark(text: &str) {
 /// of the frames (`pace`). The difference of two lines gives the numbers of one step.
 pub unsafe fn status() -> String {
     let lock = crate::sync::device_lock();
-    match state(&lock) {
+    let status = match state(&lock) {
         None => "off 0 0".into(),
         Some(s) => {
             let phase = match s.phase {
@@ -1345,7 +1353,8 @@ pub unsafe fn status() -> String {
                 if s.failed { " FAILED" } else { "" }
             )
         }
-    }
+    };
+    status
 }
 
 unsafe fn write(tag: u32, parts: &[&[u8]]) {
@@ -1353,7 +1362,7 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
     if !recording() {
         return;
     }
-    let Some(s) = state(&lock) else { return };
+    let Some(mut s) = state(&lock) else { return };
     let start = ticks();
     let length: usize = parts.iter().map(|p| p.len()).sum();
     let hold = s.tee_hold;
@@ -1458,10 +1467,11 @@ pub unsafe fn object(draw: &DrawV1, geometry_handle: u32, material_handle: u32) 
     if !active() {
         return;
     }
-    if let Some(s) = state(&lock) {
+    if let Some(mut s) = state(&lock) {
         s.object = (draw.geometry_data, draw.skin_instance);
         if !recording() {
-            s.geometry.insert(s.object);
+            let object = s.object;
+            s.geometry.insert(object);
             return;
         }
     }
@@ -1693,7 +1703,7 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
         crate::resource::wrap(handle as usize);
     }
     if index == CALL_CREATE_IMAGE_SURFACE && handle != 0 {
-        if let Some(s) = state(&lock) {
+        if let Some(mut s) = state(&lock) {
             s.image_surfaces.insert(handle);
         }
     }
@@ -1792,9 +1802,9 @@ pub unsafe fn run_pending_purge() {
     }
     {
         let lock = crate::sync::device_lock();
-        if let Some(s) = state(&lock) {
-            purge(s);
-        }
+        if let Some(mut s) = state(&lock) {
+            purge(&mut s);
+        };
     }
     if data_handler != 0 {
         crate::engine::thiscall0(RELEASE_BACKGROUND_THREAD, data_handler);
@@ -1833,15 +1843,16 @@ unsafe fn frame_end(lock: &DeviceLock) {
     #[cfg(not(test))]
     crate::own_device::check_host();
     // The messages of the host for MGE XE.
-    if let Some(messages) = state(&lock).and_then(|s| s.messages.as_mut()) {
-        for (id, bytes) in messages.take() {
+    let messages = state(&lock).and_then(|mut s| s.messages.as_mut().map(|messages| messages.take()));
+    if let Some(messages) = messages {
+        for (id, bytes) in messages {
             #[cfg(not(test))]
             crate::link_client::stream_message(id, &bytes);
             #[cfg(test)]
             let _ = (id, bytes);
         }
     }
-    let Some(s) = state(&lock) else { return };
+    let Some(mut s) = state(&lock) else { return };
     match s.phase {
         Phase::Off => {}
         Phase::Warmup(left) => {
@@ -1884,7 +1895,7 @@ unsafe fn frame_end(lock: &DeviceLock) {
             };
             write(tag::FRAME_END, &[&start.to_le_bytes(), &end.to_le_bytes()]);
             FRAME_START.store(ticks(), Ordering::Relaxed);
-            let Some(s) = state(&lock) else { return };
+            let Some(mut s) = state(&lock) else { return };
             if s.phase == Phase::Off {
                 // The write ended the stream.
                 return;
@@ -1893,7 +1904,7 @@ unsafe fn frame_end(lock: &DeviceLock) {
             if let Some((_, left)) = s.tee.as_mut().filter(|tee| tee.1 > 0) {
                 *left -= 1;
                 if *left == 0 && !hold {
-                    end_tee(s);
+                    end_tee(&mut s);
                 }
             }
             if let Some(Sink::Ring(ring)) = s.out.as_mut() {

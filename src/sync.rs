@@ -92,24 +92,27 @@ impl Drop for DeviceLock {
 }
 
 /// State that only a holder of the device lock may touch, from any thread: the capture, the
-/// own device, the own host. `get` needs the guard. What it does not prove, as
-/// `main_thread::MainCell`: one open at a time. The section is reentrant, so a function
-/// that cannot take its caller's guard takes the lock again.
-pub struct LockCell<T>(core::cell::UnsafeCell<T>);
+/// own device, the own host. `get` needs the guard. The rule, as for
+/// `main_thread::MainCell`: one open at a time; the guard of `get`
+/// ([`crate::checked::Open`]) finds a second open while the first is live. The section is
+/// reentrant, so a function that cannot take its caller's guard takes the lock again.
+pub struct LockCell<T>(crate::checked::Checked<T>);
 
 // The cell is a static shared between threads; the lock orders the opens.
 unsafe impl<T> Sync for LockCell<T> {}
 
 impl<T> LockCell<T> {
     pub const fn new(value: T) -> LockCell<T> {
-        LockCell(core::cell::UnsafeCell::new(value))
+        LockCell(crate::checked::Checked::new(value))
     }
 
-    /// The state, for a holder of the lock. One open at a time (see the type).
+    /// The state, for a holder of the lock, until the guard ends. One open at a time (see
+    /// the type).
+    #[track_caller]
     #[inline(always)]
-    pub fn get<'a>(&'a self, _: &'a DeviceLock) -> &'a mut T {
-        // The guard says the lock is held, and the rule says one open at a time.
-        unsafe { &mut *self.0.get() }
+    pub fn get<'a>(&'a self, _: &'a DeviceLock) -> crate::checked::Open<'a, T> {
+        // The guard says the lock is held: no other thread opens the state.
+        unsafe { self.0.open() }
     }
 }
 

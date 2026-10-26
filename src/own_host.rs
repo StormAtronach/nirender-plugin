@@ -197,7 +197,7 @@ unsafe fn new_object(lock: &DeviceLock, kind: Kind, table: &'static Table) -> *m
     LIVE.get(&lock).push(object as usize);
     // An address freed since the last drain that a new object takes: its old texture's
     // materials fit the new one too (the same words), so they stay.
-    let freed = FREED_TEXTURES.get(&lock);
+    let mut freed = FREED_TEXTURES.get(&lock);
     if let Some(at) = freed.iter().position(|&handle| handle == object as u32) {
         freed.swap_remove(at);
     }
@@ -212,7 +212,8 @@ static FREED_TEXTURES: LockCell<Vec<u32>> = LockCell::new(Vec::new());
 /// that name them (`material_stream::drain_freed_textures`).
 pub unsafe fn take_freed_textures() -> Vec<u32> {
     let lock = crate::sync::device_lock();
-    core::mem::take(FREED_TEXTURES.get(&lock))
+    let freed = core::mem::take(&mut *FREED_TEXTURES.get(&lock));
+    freed
 }
 
 // ---- the methods
@@ -469,7 +470,8 @@ unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool
         // The reads by the size of the target (the fog of war, a map tile, the character
         // image, the back buffer): the count and the wait, for the report.
         let waited = crate::capture::ticks() - start;
-        let entry = READS_BY_SIZE.get(&lock).entry((into_width, into_height, target == 0)).or_insert((0, 0));
+        let mut reads = READS_BY_SIZE.get(&lock);
+        let entry = reads.entry((into_width, into_height, target == 0)).or_insert((0, 0));
         entry.0 += 1;
         entry.1 += waited;
     }
@@ -864,7 +866,7 @@ pub unsafe fn take(slot: usize) {
     let lock = crate::sync::device_lock();
     if let Some(count) = TAKEN.get(&lock).get_mut(slot) {
         *count += 1;
-    }
+    };
 }
 
 /// The colour surface that the game draws into now: the last one of a call to set the

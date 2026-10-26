@@ -219,7 +219,7 @@ unsafe extern "C" fn port_times(l: LuaState) -> i32 {
     crate::shadow::set_timing(true);
     let t = &MainThread::claim();
     static LAST_CALLS: MainCell<Vec<u64>> = MainCell::new(Vec::new());
-    let last = LAST_CALLS.get(t);
+    let mut last = LAST_CALLS.get(t);
     let ports: Vec<_> = ports::all().collect();
     last.resize(ports.len(), 0);
     let mut rows: Vec<(f64, u64, &str)> = ports

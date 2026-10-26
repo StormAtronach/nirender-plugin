@@ -8,11 +8,12 @@
 //! itself takes `here()`. The engine's cell worker never gets one: a port's Rust does not
 //! run there, and the worker's events reach the tables through a queue (`worker_events`).
 //!
-//! What the proof does not do: two `get` calls with one proof give two `&mut` to one table.
-//! That is the rule the code follows with each table (one open at a time, no call back
-//! into the module while it is open), and it stays a rule, not a type.
+//! What the proof does not do: two `get` calls with one proof would give two `&mut` to one
+//! table. The rule is one open at a time (no call back into the module while a table is
+//! open). `get` gives a guard ([`crate::checked::Open`]) that finds a second open while the
+//! first is live.
 
-use core::cell::UnsafeCell;
+use crate::checked::{Checked, Open};
 use core::marker::PhantomData;
 
 /// The holder runs on the main thread. Not [`Send`] and not [`Sync`]: it cannot leave the thread
@@ -42,21 +43,23 @@ impl MainThread {
 }
 
 /// A table of the main thread. `get` needs the proof.
-pub struct MainCell<T>(UnsafeCell<T>);
+pub struct MainCell<T>(Checked<T>);
 
 // The cell is shared between threads as a static, but only the main thread opens it.
 unsafe impl<T> Sync for MainCell<T> {}
 
 impl<T> MainCell<T> {
     pub const fn new(value: T) -> MainCell<T> {
-        MainCell(UnsafeCell::new(value))
+        MainCell(Checked::new(value))
     }
 
-    /// The table, for a holder of the proof. One open at a time (see the module).
+    /// The table, for a holder of the proof, until the guard ends. One open at a time (see
+    /// the module).
+    #[track_caller]
     #[inline(always)]
-    pub fn get<'a>(&'a self, _: &'a MainThread) -> &'a mut T {
-        // The proof says the main thread, and the rule says one open at a time.
-        unsafe { &mut *self.0.get() }
+    pub fn get<'a>(&'a self, _: &'a MainThread) -> Open<'a, T> {
+        // The proof says the main thread: no other thread opens the table.
+        unsafe { self.0.open() }
     }
 }
 

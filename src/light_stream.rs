@@ -2,6 +2,7 @@
 //! record for a light the first time a draw has it and when its values change, keyed by the
 //! index of the light, and the keys of the lights of a draw in its shape record.
 
+use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
 use crate::gen::layouts::{NiDX8LightManager as LM, NiDX8LightManager_LightEntry as LE, NiDX8Renderer as R, NiLight as L};
 use crate::mem::rd;
@@ -34,7 +35,7 @@ pub fn note_radius(t: &MainThread, key: u32, radius: f32) {
     if key as usize >= MOST_INDEX {
         return;
     }
-    let radii = RADII.get(t);
+    let mut radii = RADII.get(t);
     if radii.len() <= key as usize {
         radii.resize(key as usize + 1, 0.0);
     }
@@ -46,8 +47,9 @@ pub fn radius_of(t: &MainThread, key: u32) -> Option<f32> {
     RADII.get(t).get(key as usize).copied().filter(|&radius| radius > 0.0)
 }
 
-fn versions<'a>(t: &'a MainThread) -> &'a mut Vec<Option<Sent>> {
-    &mut *VERSIONS.get(t)
+#[track_caller]
+fn versions<'a>(t: &'a MainThread) -> Open<'a, Vec<Option<Sent>>> {
+    VERSIONS.get(t)
 }
 
 /// Forgets the lights: the next draw with each sends it again. For the start of a capture
@@ -73,7 +75,8 @@ pub unsafe fn forget(t: &MainThread, key: u32) {
     if let Some(radius) = RADII.get(t).get_mut(key as usize) {
         *radius = 0.0;
     }
-    let Some(sent) = versions(t).get_mut(key as usize) else { return };
+    let mut versions = versions(t);
+    let Some(sent) = versions.get_mut(key as usize) else { return };
     if sent.take().is_some() {
         crate::capture::light_gone(key);
         *GONE.get(t) += 1;
@@ -87,7 +90,7 @@ pub unsafe fn note_values(t: &MainThread, key: u32, values: &[u32; 26], radius: 
     if key as usize >= MOST_INDEX {
         return false;
     }
-    let versions = versions(t);
+    let mut versions = versions(t);
     if versions.len() <= key as usize {
         versions.resize(key as usize + 1, None);
     }
@@ -107,8 +110,9 @@ pub const COLOUR_WORDS: core::ops::Range<usize> = 1..13;
 
 /// Notes the lights of the light manager of the renderer, as the state of the draw has
 /// them: sends the ones that are new or changed, and returns the keys of all of them.
-pub unsafe fn note<'a>(t: &'a MainThread, renderer: usize) -> &'a [u32] {
-    let keys = &mut *KEYS.get(t);
+#[track_caller]
+pub unsafe fn note<'a>(t: &'a MainThread, renderer: usize) -> Open<'a, [u32]> {
+    let mut keys = KEYS.get(t);
     let mut count = 0;
     let manager: usize = rd(renderer, R::lightManager);
     // The list and the map under the manager's own lock, as the engine's `updateLights` walks
@@ -131,5 +135,5 @@ pub unsafe fn note<'a>(t: &'a MainThread, renderer: usize) -> &'a [u32] {
         keys[count] = key;
         count += 1;
     }
-    &keys[..count]
+    keys.map(|keys| &mut keys[..count])
 }

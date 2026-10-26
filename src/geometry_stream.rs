@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 
+use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
 use crate::d3d::{D3DFVF_DIFFUSE, D3DFVF_NORMAL, D3DFVF_TEX1, D3DFVF_XYZ};
 use crate::engine::vcall0;
@@ -81,8 +82,9 @@ static BYTES: MainCell<u64> = MainCell::new(0);
 /// The `GEOMETRY_GONE` records sent.
 static GONE: MainCell<u64> = MainCell::new(0);
 
-fn versions<'a>(t: &'a MainThread) -> &'a mut HashMap<u32, Sent> {
-    (*VERSIONS.get(t)).get_or_insert_with(HashMap::new)
+#[track_caller]
+fn versions<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Sent>> {
+    VERSIONS.get(t).map(|versions| versions.get_or_insert_with(HashMap::new))
 }
 
 /// True when `handle` was sent with `version`: the draw sends nothing. Marks it used now.
@@ -100,12 +102,12 @@ fn known(t: &MainThread, handle: u32, version: Version) -> bool {
 
 /// Forgets the geometries not drawn for [`FORGET_AFTER`] frames, once in [`PRUNE_EVERY`] frames.
 fn prune(t: &MainThread, now: u32) {
-    let last = LAST_PRUNE.get(t);
+    let mut last = LAST_PRUNE.get(t);
     if now.wrapping_sub(*last) < PRUNE_EVERY {
         return;
     }
     *last = now;
-    let map = versions(t);
+    let mut map = versions(t);
     let before = map.len();
     map.retain(|_, sent| now.wrapping_sub(sent.used) < FORGET_AFTER);
     *FORGOTTEN.get(t) += (before - map.len()) as u64;
@@ -124,7 +126,7 @@ pub unsafe fn reset(t: &MainThread) {
 /// forgotten by `prune`: the helper can still hold it, and it ignores a handle it does not
 /// hold.
 pub unsafe fn gone(t: &MainThread, handle: u32, unique: u32) {
-    let map = versions(t);
+    let mut map = versions(t);
     if map.get(&handle).is_some_and(|sent| sent.version.unique == unique) {
         map.remove(&handle);
     }
@@ -632,7 +634,8 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         }
     }
     if let Some(morph) = morph {
-        let sent_targets = (*MORPH_SENT.get(t)).get_or_insert_with(Default::default);
+        let mut morph_sent = MORPH_SENT.get(t);
+        let sent_targets = morph_sent.get_or_insert_with(Default::default);
         if sent_targets.insert(handle, version.unique) != Some(version.unique) {
             send_morph_targets(handle, version.unique, &morph);
         }
@@ -943,14 +946,16 @@ unsafe fn texture_set(geom_data: usize, set: u32) -> &'static [[f32; 2]] {
 }
 
 unsafe fn keep_uv_base(t: &MainThread, handle: u32, geom_data: usize, uv: &UvState) {
-    let bases = (*UV_BASES.get(t)).get_or_insert_with(Default::default);
+    let mut uv_bases = UV_BASES.get(t);
+    let bases = uv_bases.get_or_insert_with(Default::default);
     bases.insert(handle, (uv.state, texture_set(geom_data, uv.set).to_vec()));
 }
 
 /// Compares the step from the kept coordinates to the controller's new state with the
 /// engine's coordinates (the closed form of `uv_animation.rs` of the helper).
 unsafe fn check_uv(t: &MainThread, handle: u32, geom_data: usize, uv: &UvState) {
-    let Some((base, kept)) = (*UV_BASES.get(t)).as_ref().and_then(|bases| bases.get(&handle)) else { return };
+    let uv_bases = UV_BASES.get(t);
+    let Some((base, kept)) = uv_bases.as_ref().and_then(|bases| bases.get(&handle)) else { return };
     let [base_u, base_v, base_tu, base_tv] = *base;
     let [now_u, now_v, now_tu, now_tv] = uv.state;
     if base_tu == 0.0 || base_tv == 0.0 {
@@ -1008,7 +1013,8 @@ unsafe fn controller_classes(object: usize) -> String {
 /// one counts as a revision when only the revision changed.
 unsafe fn census_note(t: &MainThread, handle: u32, version: Version, geom_data: usize, skin: usize, shape: usize) {
     let before = versions(t).get(&handle).map(|sent| sent.version).filter(|sent| sent.unique == version.unique);
-    let census = (*CENSUS.get(t)).get_or_insert_with(Default::default);
+    let mut census_open = CENSUS.get(t);
+    let census = census_open.get_or_insert_with(Default::default);
     let key = (handle, version.unique);
     if !census.contains_key(&key) {
         census.insert(key, {
@@ -1062,7 +1068,8 @@ pub unsafe fn census_take(t: &MainThread) -> Vec<String> {
 /// The census for the log: the sends again by the classes of the controllers, then the 20
 /// geometries sent again most. Empty without `NIRENDER_GEOMETRY_CENSUS=1`.
 pub unsafe fn census_report(t: &MainThread) -> Vec<String> {
-    let Some(census) = (*CENSUS.get(t)).as_ref() else {
+    let census_open = CENSUS.get(t);
+    let Some(census) = census_open.as_ref() else {
         return Vec::new();
     };
     let mut lines = Vec::new();

@@ -183,8 +183,10 @@ unsafe extern "thiscall" fn draw_blob_detour(this: usize, texture: usize, x: i32
         }
         return;
     }
-    let Some(copy) = COPIES.get(&lock).as_mut().and_then(|copies| copies.get_mut(&handle)) else { return };
-    let blob = BLOB.get(&lock).as_ref().unwrap();
+    let mut copies = COPIES.get(&lock);
+    let Some(copy) = copies.as_mut().and_then(|copies| copies.get_mut(&handle)) else { return };
+    let blob_open = BLOB.get(&lock);
+    let blob = blob_open.as_ref().unwrap();
     draw_blob(copy, blob, x as i16 as f32, y as i16 as f32, f32::from_bits(size));
     if copy.blobs.len() < 4096 {
         copy.blobs.push([x as i16 as f32, y as i16 as f32, f32::from_bits(size)]);
@@ -420,7 +422,8 @@ unsafe extern "thiscall" fn unlock_detour(this: usize, rect: usize, copy_back: u
 /// tests of the map menu (green over 2 outside, over 32 inside) for each pixel.
 unsafe fn check(lock: &crate::sync::DeviceLock, handle: u32) {
     let Some((width, height, pixels)) = crate::capture::read_pixels(handle) else { return };
-    let Some(copy) = COPIES.get(lock).as_ref().and_then(|copies| copies.get(&handle)) else { return };
+    let copies = COPIES.get(lock);
+    let Some(copy) = copies.as_ref().and_then(|copies| copies.get(&handle)) else { return };
     CHECKS.fetch_add(1, Ordering::Relaxed);
     if (width, height) != (copy.width, copy.height) {
         CHECK_PIXELS_OFF.fetch_add(width * height, Ordering::Relaxed);

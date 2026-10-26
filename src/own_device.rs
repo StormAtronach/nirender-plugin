@@ -19,6 +19,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 
+use crate::checked::Open;
 use crate::sync::{DeviceLock, LockCell};
 use crate::link::*;
 
@@ -140,8 +141,9 @@ static STATE: LockCell<Option<State>> = LockCell::new(None);
 static PRESENT: AtomicBool = AtomicBool::new(false);
 static DEVICE: AtomicUsize = AtomicUsize::new(0);
 
-fn state<'a>(lock: &'a DeviceLock) -> &'a mut State {
-    STATE.get(lock).get_or_insert_with(|| State {
+#[track_caller]
+fn state<'a>(lock: &'a DeviceLock) -> Open<'a, State> {
+    STATE.get(lock).map(|state| state.get_or_insert_with(|| State {
         parameters: [0; 13],
         focus_window: 0,
         behavior: 0,
@@ -156,7 +158,7 @@ fn state<'a>(lock: &'a DeviceLock) -> &'a mut State {
         render_target: 0,
         modes: Vec::new(),
         current_mode: [640, 480, 60],
-    })
+    }))
 }
 
 /// True when the game got its Direct3D from this module.
@@ -168,7 +170,7 @@ pub fn present() -> bool {
 /// The size of the back buffer.
 pub unsafe fn size() -> (u32, u32) {
     let lock = crate::sync::device_lock();
-    let s = state(&lock);
+    let mut s = state(&lock);
     (s.parameters[0].max(1), s.parameters[1].max(1))
 }
 
@@ -276,16 +278,16 @@ unsafe fn read_modes(s: &mut State) {
 
 unsafe extern "system" fn d3d_adapter_mode_count(_this: usize, _adapter: u32) -> u32 {
     let lock = crate::sync::device_lock();
-    let s = state(&lock);
-    read_modes(s);
+    let mut s = state(&lock);
+    read_modes(&mut s);
     s.modes.len() as u32
 }
 
 /// A D3DDISPLAYMODE: width, height, refresh rate, format.
 unsafe extern "system" fn d3d_enum_adapter_modes(_this: usize, _adapter: u32, index: u32, out: u32) -> u32 {
     let lock = crate::sync::device_lock();
-    let s = state(&lock);
-    read_modes(s);
+    let mut s = state(&lock);
+    read_modes(&mut s);
     match s.modes.get(index as usize) {
         Some(mode) => put(out, &[mode[0], mode[1], mode[2], DISPLAY_FORMAT]),
         None => INVALID_CALL,
@@ -294,8 +296,8 @@ unsafe extern "system" fn d3d_enum_adapter_modes(_this: usize, _adapter: u32, in
 
 unsafe extern "system" fn d3d_adapter_display_mode(_this: usize, _adapter: u32, out: u32) -> u32 {
     let lock = crate::sync::device_lock();
-    let s = state(&lock);
-    read_modes(s);
+    let mut s = state(&lock);
+    read_modes(&mut s);
     put(out, &[s.current_mode[0], s.current_mode[1], s.current_mode[2], DISPLAY_FORMAT])
 }
 
@@ -355,9 +357,9 @@ unsafe extern "system" fn d3d_create_device(this: *mut Object, _adapter: u32, _k
         return INVALID_CALL;
     }
     let lock = crate::sync::device_lock();
-    let s = state(&lock);
-    read_modes(s);
-    accept_parameters(s, parameters);
+    let mut s = state(&lock);
+    read_modes(&mut s);
+    accept_parameters(&mut s, parameters);
     s.focus_window = window;
     s.behavior = behavior;
     let device = new_object(&DEVICE_TABLE, &method_table());
@@ -367,9 +369,9 @@ unsafe extern "system" fn d3d_create_device(this: *mut Object, _adapter: u32, _k
         "own device: made, {} x {}, window {:#x}, behavior {behavior:#x}",
         s.parameters[0],
         s.parameters[1],
-        device_window(s)
+        device_window(&s)
     );
-    start_stream(s);
+    start_stream(&s);
     *out = device;
     OK
 }
@@ -546,7 +548,7 @@ const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1
 pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
     use crate::own_host::direct_call as call;
     let lock = crate::sync::device_lock();
-    let s = state(&lock);
+    let mut s = state(&lock);
     let device = DEVICE.load(Ordering::Relaxed) as *mut Object;
     Some(match slot {
         0 => {
@@ -576,7 +578,7 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
             if a[0] == 0 {
                 return Some(INVALID_CALL);
             }
-            accept_parameters(s, a[0] as usize as *mut u32);
+            accept_parameters(&mut s, a[0] as usize as *mut u32);
             crate::log!("own device: reset, {} x {}", s.parameters[0], s.parameters[1]);
             OK
         }

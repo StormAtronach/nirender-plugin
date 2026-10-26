@@ -28,6 +28,7 @@ use crate::gen::layouts::{
 };
 use crate::d3d::{D3DTS_TEXTURE0, D3DTS_WORLDMATRIX0};
 use crate::link::*;
+use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 use crate::shadow::BeforeFn;
@@ -211,8 +212,9 @@ static STATE: MainCell<LinkState> = MainCell::new(LinkState {
 });
 
 /// The state, for a holder of the proof of the main thread.
+#[track_caller]
 #[inline(always)]
-fn state(t: &MainThread) -> &mut LinkState {
+fn state(t: &MainThread) -> Open<'_, LinkState> {
     STATE.get(t)
 }
 
@@ -260,7 +262,7 @@ pub unsafe fn note_transform(state: u32, matrix: usize) {
         crate::sync::off_thread("link", "transform");
         return;
     };
-    let s = self::state(&t);
+    let mut s = self::state(&t);
     let to = if (D3DTS_WORLDMATRIX0..D3DTS_WORLDMATRIX0 + 4).contains(&state) {
         s.transforms_known |= 1 << (state - D3DTS_WORLDMATRIX0);
         // The host knows the space of this matrix only now, during the call of the game.
@@ -866,7 +868,7 @@ const RENDER_STATES_IN_RECORD: u32 = 256;
 /// Sends to the device the state that the game believes the device has, for the kinds in
 /// `kinds`. The Rust code made no call for them while the host had them.
 unsafe fn resync(t: &MainThread, kinds: u32) {
-    let s = state(t);
+    let mut s = state(t);
     let renderer = RENDERER.load(Ordering::Relaxed);
     if renderer == 0 {
         return;
@@ -983,7 +985,7 @@ pub unsafe fn note_texture(stage: u32, texture: usize) {
             crate::sync::off_thread("link", "texture");
             return;
         };
-        let s = state(&t);
+        let mut s = state(&t);
         s.textures[stage as usize] = texture as u32;
         s.textures_known |= 1 << stage;
     }
@@ -1440,7 +1442,7 @@ pub unsafe fn draw_state(
     RENDERER.store(renderer, Ordering::Relaxed);
     let render_state: usize = rd(renderer, R::renderState);
     let rs = |state: u32| -> u32 { rd(render_state, RS::renderStateSettings + state as usize * 8) };
-    let s = state(t);
+    let mut s = state(t);
     let buffers = s.buffers;
     let mut samplers = [[0u32; STATE_SAMPLER_STATES as usize]; STATE_STAGES as usize];
     for (stage, values) in samplers.iter_mut().enumerate() {
