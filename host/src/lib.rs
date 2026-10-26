@@ -845,8 +845,16 @@ struct Player {
     pass_vertices: Option<Rc<wgpu::Buffer>>,
     pass_indexes: Option<Rc<wgpu::Buffer>>,
     pass_shared: bool,
-    /// The arrays of the frame are bound in this pass.
-    pass_arrays: bool,
+    /// The group of the texture arrays that `issue` bound in this pass (group 1).
+    pass_arrays: Option<Rc<wgpu::BindGroup>>,
+    /// The group of the textures of the game's draws before the world and after the post
+    /// chain, with the slot of each texture in it, for the items in progress; and whether the
+    /// draw in progress is one of them (`run_items_inner`, `issue`).
+    small_arrays: Option<(Rc<wgpu::BindGroup>, FxHashMap<u32, u32>)>,
+    small_now: bool,
+    /// The world began and the post chain ran, among the items run so far in the frame.
+    phase_world: bool,
+    phase_posted: bool,
     /// The draws so far and the table's draws so far when the last pass on the game's targets
     /// began, and its reason, until its end is counted (`note_pass_end`).
     pass_draws_at_open: Option<(u64, u64, gpu::PassReason)>,

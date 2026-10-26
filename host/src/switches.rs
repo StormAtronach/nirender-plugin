@@ -49,6 +49,10 @@ pub(crate) struct Switches {
     /// `MGE_XE_LAZY_PASS=0`: a pass on the game's targets begins when it is asked for, and a
     /// clear does not carry into the next pass, as before `Player::begin_pass`: for its A/B.
     pub(crate) lazy_pass: bool,
+    /// `MGE_XE_PASS_GROUPS=0`: the game's draws before the world and after the post chain bind
+    /// the whole group of the texture arrays, as before `Renderer::small_array_group`: for its
+    /// A/B.
+    pub(crate) pass_groups: bool,
 }
 
 impl Switches {
@@ -76,6 +80,7 @@ impl Switches {
             particle_quads_cpu: is("MGE_XE_PARTICLE_QUADS", "cpu"),
             instance_upload_all: is("MGE_XE_INSTANCE_UPLOAD", "all"),
             lazy_pass: on_unless_0("MGE_XE_LAZY_PASS"),
+            pass_groups: on_unless_0("MGE_XE_PASS_GROUPS"),
         }
     }
 }

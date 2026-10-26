@@ -122,7 +122,11 @@ impl Player {
             pass_vertices: None,
             pass_indexes: None,
             pass_shared: false,
-            pass_arrays: false,
+            pass_arrays: None,
+            small_arrays: None,
+            small_now: false,
+            phase_world: false,
+            phase_posted: false,
             pass_draws_at_open: None,
             run_args: Vec::new(),
             frame_args: Vec::new(),
@@ -268,7 +272,7 @@ impl Player {
         self.pass_vertices = None;
         self.pass_indexes = None;
         self.pass_shared = false;
-        self.pass_arrays = false;
+        self.pass_arrays = None;
     }
 
     /// Gives the viewport of the stream to the pass, cut to the size of the targets.
@@ -320,6 +324,8 @@ impl Player {
         self.plane_ahead = None;
         self.split = None;
         self.posted = false;
+        self.phase_world = false;
+        self.phase_posted = false;
         self.world_matrices = None;
         self.world_depth_kept = false;
         self.world_depth_projection = None;

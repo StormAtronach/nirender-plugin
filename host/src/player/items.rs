@@ -77,7 +77,8 @@ impl Player {
         // chain and the first person's depth have spans of their own inside.
         let (mut world_started, mut world_ended, mut posted) = (false, false, false);
         let mut group: Option<(&'static str, Stamp)> = None;
-        for item in items {
+        let small = self.mark_small_draws(&items);
+        for (index, item) in items.into_iter().enumerate() {
             let label = match &item {
                 Item::Draw(_) | Item::Screen(_) if posted => Some("game: the interface"),
                 Item::Draw(_) | Item::Screen(_) if world_ended => Some("game: after the world (first person)"),
@@ -100,9 +101,15 @@ impl Player {
                 }
             }
             match &item {
-                Item::WorldStart(_) => world_started = true,
+                Item::WorldStart(_) => {
+                    world_started = true;
+                    self.phase_world = true;
+                }
                 Item::WorldEnd(_) => world_ended = true,
-                Item::Post(_) => posted = true,
+                Item::Post(_) => {
+                    posted = true;
+                    self.phase_posted = true;
+                }
                 _ => {}
             }
             if !matches!(item, Item::Draw(_)) {
@@ -137,7 +144,11 @@ impl Player {
                     self.viewport = Some(viewport);
                     self.apply_viewport();
                 }
-                Item::Draw(draw) => self.issue(&draw),
+                Item::Draw(draw) => {
+                    self.small_now = small.get(index).copied().unwrap_or(false);
+                    self.issue(&draw);
+                    self.small_now = false;
+                }
                 Item::Screen(screen) => {
                     self.begin_pass();
                     let Some(pass) = self.pass.as_mut() else { continue };
@@ -160,6 +171,42 @@ impl Player {
         if let Some((_, at)) = group.take() {
             self.part_end(at);
         }
+        self.small_arrays = None;
+    }
+
+    /// Marks the game's draws among `items` that come before the world or after the post
+    /// chain, and makes the small group of their textures (`small_arrays`): no draw of the
+    /// table comes in those parts of the frame, and their textures are few, so their passes
+    /// need not bind the whole arrays. Nothing with `MGE_XE_PASS_GROUPS=0`.
+    pub(crate) fn mark_small_draws(&mut self, items: &[Item]) -> Vec<bool> {
+        self.small_arrays = None;
+        if !switches().pass_groups {
+            return Vec::new();
+        }
+        let (mut world, mut posted) = (self.phase_world, self.phase_posted);
+        let mut slots = Vec::new();
+        let marks: Vec<bool> = items
+            .iter()
+            .map(|item| match item {
+                Item::WorldStart(_) => {
+                    world = true;
+                    false
+                }
+                Item::Post(_) => {
+                    posted = true;
+                    false
+                }
+                Item::Draw(draw) if !world || posted => {
+                    slots.extend(draw.data.stages.iter().map(|stage| stage.slots[0]));
+                    true
+                }
+                _ => false,
+            })
+            .collect();
+        if marks.iter().any(|&mark| mark) {
+            self.small_arrays = Some(self.renderer.small_array_group(&slots));
+        }
+        marks
     }
 
     /// Does a step of the plan of the items ([`plan::Plan`]).

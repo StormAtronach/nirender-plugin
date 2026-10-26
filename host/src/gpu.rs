@@ -120,10 +120,10 @@ static BEGUN_PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static DRAWN_PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static TABLE_PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static OTHER_PASSES: AtomicU64 = AtomicU64::new(0);
-static ARRAY_BINDS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+static ARRAY_BINDS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 /// The number of counts in [`passes`].
-pub const PASS_COUNTS: usize = 32;
+pub const PASS_COUNTS: usize = 33;
 
 /// Who bound the group of the texture arrays, for the census of the passes.
 #[derive(Clone, Copy)]
@@ -134,6 +134,9 @@ pub enum BindOrigin {
     Table,
     /// A replay for the extension: its own passes (the reflection, the shadows) or its calls.
     Replay,
+    /// A draw of the game before the world or after the post chain, with the small group of
+    /// its own textures (`Renderer::small_array_group`).
+    Small,
 }
 
 /// A pass on the game's targets was asked for.
@@ -169,7 +172,7 @@ pub fn note_array_bind(origin: BindOrigin) {
 
 /// The census of the passes since the start, by [`PassReason`]: the passes asked for (0..7),
 /// begun (7..14), with a draw (14..21) and with a draw of the table (21..28); then the other
-/// passes, and the binds of the texture arrays by [`BindOrigin`] (29..32).
+/// passes, and the binds of the texture arrays by [`BindOrigin`] (29..33).
 pub fn passes() -> [u64; PASS_COUNTS] {
     let mut out = [0u64; PASS_COUNTS];
     for (slot, count) in out.iter_mut().zip(PASSES.iter().chain(&BEGUN_PASSES).chain(&DRAWN_PASSES).chain(&TABLE_PASSES)) {
@@ -191,7 +194,7 @@ pub fn pass_line(delta: &[u64; PASS_COUNTS], frames: u64) -> String {
         format!("{:.2} ({})", per(counts.iter().sum()), reasons.join(", "))
     };
     format!(
-        "passes: on the game's targets for each frame {} asked for, {} begun, {} with a draw, {} with a draw of the table; {:.2} other passes; {:.2} binds of the texture arrays ({:.2} by the game's draws, {:.2} by the table, {:.2} by the replays)",
+        "passes: on the game's targets for each frame {} asked for, {} begun, {} with a draw, {} with a draw of the table; {:.2} other passes; {:.2} binds of the whole texture arrays ({:.2} by the game's draws, {:.2} by the table, {:.2} by the replays), {:.2} binds of a small group",
         part(&delta[..7]),
         part(&delta[7..14]),
         part(&delta[14..21]),
@@ -200,7 +203,8 @@ pub fn pass_line(delta: &[u64; PASS_COUNTS], frames: u64) -> String {
         per(delta[29] + delta[30] + delta[31]),
         per(delta[29]),
         per(delta[30]),
-        per(delta[31])
+        per(delta[31]),
+        per(delta[32])
     )
 }
 

@@ -771,6 +771,38 @@ impl Renderer {
         group
     }
 
+    /// A group of the arrays with only the textures of these slots of the frame, for draws
+    /// into the back buffer, and the slot of each texture in it. The slot 0 of the frame stays
+    /// 0: every draw samples all its stages, and an unused stage has the slot 0. The samplers
+    /// are those of the frame. A bind of a group costs wgpu work for each of its textures.
+    pub(crate) fn small_array_group(&mut self, slots: &[u32]) -> (Rc<wgpu::BindGroup>, FxHashMap<u32, u32>) {
+        let mut slots: Vec<u32> = slots.iter().copied().filter(|&slot| slot != 0).collect();
+        slots.sort_unstable();
+        slots.dedup();
+        let mut remap = FxHashMap::default();
+        remap.insert(0, 0);
+        let view = |slot: u32| self.frame_texture_views.get(slot as usize).map_or(&*self.white, |view| &**view);
+        let mut views: Vec<&wgpu::TextureView> = vec![view(0)];
+        for slot in slots {
+            remap.insert(slot, views.len() as u32);
+            views.push(view(slot));
+        }
+        let samplers: Vec<&wgpu::Sampler> = self.frame_samplers.iter().map(|sampler| &**sampler).collect();
+        self.counts.array_groups_made += 1;
+        let group = Rc::new(crate::gpu::frame_group(
+            &self.device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("draw texture arrays, small"),
+                layout: &self.array_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureViewArray(&views) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::SamplerArray(&samplers) },
+                ],
+            },
+        ));
+        (group, remap)
+    }
+
     /// Room in the buffer of the indirect draws for `draws` arguments. A new buffer when the
     /// room is short: only between the parts of a frame (the calls of a part name the buffer
     /// of their time, and the part is submitted before the next begins).

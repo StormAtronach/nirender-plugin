@@ -20,16 +20,38 @@ impl Player {
         let split = draw.world && draw.translucent() && ReplayView::WORLD & (1 << draw.class.min(31)) != 0;
         // The instances of the frame come after the segment of the retained instances.
         let mut instances = (renderer.retained_instances as u32 + draw.instances.0, draw.instances.1);
+        // A draw before the world or after the post chain into the back buffer takes the small
+        // group of the arrays (`mark_small_draws`), with its slots in that group.
+        let mut small = self.small_arrays.as_ref().filter(|_| self.small_now && self.pass_target.is_none());
+        let mut copy = None;
         if let Some(plane) = side.filter(|_| split) {
             // A copy of the record with the plane, and instances that name it.
             let mut data = draw.data;
             data.clip_plane = plane_of_draw(plane, draw.origin);
+            copy = Some(data);
+        }
+        if let Some((_, remap)) = small {
+            let data = copy.get_or_insert(draw.data);
+            for stage in data.stages.iter_mut() {
+                stage.slots[0] = remap.get(&stage.slots[0]).copied().unwrap_or(0);
+            }
+        }
+        if let Some(data) = copy {
             let (start, n) = (draw.instances.0 as usize, draw.instances.1 as usize);
             match renderer.copy_of_draw(&data, &self.frame_instances[start..start + n]) {
                 Some(first) => instances = (first, draw.instances.1),
-                None => renderer.counts.no_record += 1,
+                None => {
+                    renderer.counts.no_record += 1;
+                    // The record of the draw has the slots of the whole arrays.
+                    small = None;
+                }
             }
         }
+        let arrays = match small {
+            Some((group, _)) => group.clone(),
+            None => renderer.array_group_for(self.pass_target),
+        };
+        let small = small.is_some();
         renderer.counts.times[TIME_DRAW_UPLOAD] += clock.elapsed();
         let clock = ticks::Clock::now();
         let Some(pipeline) = renderer.pipeline(draw.key) else {
@@ -46,7 +68,8 @@ impl Player {
             && self.pass_stencil == Some(draw.stencil_reference)
             && self.pass_vertices.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices))
             && self.pass_indexes.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.indexes))
-            && self.bound.is(0, Some(&renderer.frame_group));
+            && self.bound.is(0, Some(&renderer.frame_group))
+            && self.pass_arrays.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &arrays));
         if !same {
             flush_run(pass, renderer, &mut self.run_args, &mut self.frame_args);
         }
@@ -83,11 +106,10 @@ impl Player {
             );
         }
         self.bound.set(pass, 0, &renderer.frame_group);
-        if !self.pass_arrays {
-            let group = renderer.array_group_for(self.pass_target);
-            pass.set_bind_group(1, &*group, &[]);
-            crate::gpu::note_array_bind(crate::gpu::BindOrigin::Game);
-            self.pass_arrays = true;
+        if !self.pass_arrays.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &arrays)) {
+            pass.set_bind_group(1, &*arrays, &[]);
+            crate::gpu::note_array_bind(if small { crate::gpu::BindOrigin::Small } else { crate::gpu::BindOrigin::Game });
+            self.pass_arrays = Some(arrays);
         }
         if !self.pass_vertices.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices)) {
             pass.set_vertex_buffer(0, draw.vertices.slice(..));
