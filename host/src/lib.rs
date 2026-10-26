@@ -474,8 +474,9 @@ struct Renderer {
     device: Rc<wgpu::Device>,
     /// The format of the picture that the pipelines draw into.
     target_format: wgpu::TextureFormat,
-    /// What the picture of the window can be used for.
+    /// What the picture of the window can be used for, and the present modes of the window.
     surface_usages: wgpu::TextureUsages,
+    present_modes: Vec<wgpu::PresentMode>,
     /// The anisotropic filter that MGE XE forces, for a comparison with its picture. 1 for the
     /// filters that the game asks for.
     anisotropy: u16,

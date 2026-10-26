@@ -3,6 +3,8 @@
 
 use std::sync::OnceLock;
 
+use crate::wgpu;
+
 /// The switches, as the environment of the process had them at the first read.
 #[derive(Clone, Debug)]
 pub(crate) struct Switches {
@@ -53,6 +55,13 @@ pub(crate) struct Switches {
     /// the whole group of the texture arrays, as before `Renderer::small_array_group`: for its
     /// A/B.
     pub(crate) pass_groups: bool,
+    /// `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the
+    /// setting of the extension ([`crate::Extension::frame_latency`]): for an A/B of the
+    /// mouse's lag.
+    pub(crate) frame_latency: Option<u32>,
+    /// `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over
+    /// `AutoNoVsync`, for a test.
+    pub(crate) present: Option<wgpu::PresentMode>,
 }
 
 impl Switches {
@@ -81,6 +90,14 @@ impl Switches {
             instance_upload_all: is("MGE_XE_INSTANCE_UPLOAD", "all"),
             lazy_pass: on_unless_0("MGE_XE_LAZY_PASS"),
             pass_groups: on_unless_0("MGE_XE_PASS_GROUPS"),
+            frame_latency: var("MGE_XE_FRAME_LATENCY").and_then(|v| v.parse::<u32>().ok()).map(|n| n.clamp(1, 3)),
+            present: match var("MGE_XE_PRESENT").as_deref() {
+                Some("immediate") => Some(wgpu::PresentMode::Immediate),
+                Some("mailbox") => Some(wgpu::PresentMode::Mailbox),
+                Some("fifo") => Some(wgpu::PresentMode::Fifo),
+                Some("auto") => Some(wgpu::PresentMode::AutoNoVsync),
+                _ => None,
+            },
         }
     }
 }

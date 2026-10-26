@@ -302,6 +302,7 @@ impl Renderer {
         let info = adapter.get_info();
         println!("adapter: {} ({:?}, driver {} {})", info.name, info.backend, info.driver, info.driver_info);
         let mut surface_usages = wgpu::TextureUsages::empty();
+        let mut present_modes = Vec::new();
         if let Some(surface) = surface.as_ref() {
             // The game gives colours that are ready for the screen: no sRGB format.
             let capabilities = surface.get_capabilities(&adapter);
@@ -310,6 +311,7 @@ impl Renderer {
             }
             surface_usages = capabilities.usages;
             println!("window: the present modes of the surface are {:?}", capabilities.present_modes);
+            present_modes = capabilities.present_modes;
         }
         // The samples for each pixel of the targets of the frame: the largest count up to the
         // wanted one that the adapter has for the colour format, with a resolve, and for the
@@ -550,6 +552,7 @@ impl Renderer {
             device: Rc::new(device),
             target_format,
             surface_usages,
+            present_modes,
             anisotropy: 1,
             samples,
             multisample,

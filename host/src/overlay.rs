@@ -43,6 +43,8 @@ struct Shown {
     worst_ms: f32,
     long_frames: usize,
     waited: f32,
+    /// The wait for a picture of the window, in ms for each frame.
+    acquire_ms: f32,
     draws: f32,
     /// The age of the picture when it goes to the window, in ms, and its three parts: the
     /// frame of the game, the wait in the stream, this program. The medians of the part.
@@ -65,6 +67,7 @@ pub struct Overlay {
     part: Instant,
     part_frames: u32,
     part_waited: Duration,
+    part_acquired: Duration,
     part_draws: u64,
     part_worst: f32,
     /// The ages of the pictures of the part in progress, and of the pictures since the last
@@ -150,6 +153,7 @@ impl Overlay {
             part: Instant::now(),
             part_frames: 0,
             part_waited: Duration::ZERO,
+            part_acquired: Duration::ZERO,
             part_draws: 0,
             part_worst: 0.0,
             part_age: Vec::new(),
@@ -209,9 +213,10 @@ impl Overlay {
         ))
     }
 
-    /// A frame went to the window. `waited` and `draws` are the totals of the program: the
-    /// time it waited for the game, and its draws.
-    pub fn frame(&mut self, device: &wgpu::Device, waited: Duration, draws: u64) {
+    /// A frame went to the window. `waited`, `acquired` and `draws` are the totals of the
+    /// program: the time it waited for the game, the time it waited for a picture of the
+    /// window (long when the GPU is behind and frames wait for it), and its draws.
+    pub fn frame(&mut self, device: &wgpu::Device, waited: Duration, acquired: Duration, draws: u64) {
         let now = Instant::now();
         if let Some(last) = self.last.replace(now) {
             let ms = (now - last).as_secs_f32() * 1000.0;
@@ -234,6 +239,8 @@ impl Overlay {
         self.shown.worst_ms = self.history.iter().copied().fold(0.0, f32::max);
         self.shown.long_frames = self.history.iter().filter(|&&ms| ms > LONG * mean).count();
         self.shown.waited = (waited - self.part_waited).as_secs_f32() * 100.0 / seconds;
+        self.shown.acquire_ms = (acquired.saturating_sub(self.part_acquired)).as_secs_f32() * 1000.0 / frames;
+        self.part_acquired = acquired;
         self.shown.draws = (draws - self.part_draws) as f32 / frames;
         self.shown.age = medians(&mut self.part_age);
         self.part_age.clear();
@@ -318,6 +325,7 @@ impl Overlay {
                         ui.label(format!("picture     {age:5.1} ms old when shown: the game {game:5.1} ms, the stream {stream:5.2} ms, the renderer {renderer:5.1} ms"));
                     }
                     ui.label(format!("renderer    waits for the game {:3.0} % of the time, {:.0} draws in a frame", shown.waited, shown.draws));
+                    ui.label(format!("            waits {:.2} ms a frame for a picture of the window (long: the GPU is behind)", shown.acquire_ms));
                     ui.label(format!("            memory {:6.0} MB in use, {:6.0} MB private", megabytes(shown.working_set), megabytes(shown.private)));
                     match shown.gpu {
                         Some((allocated, reserved)) => ui.label(format!("            GPU    {:6.0} MB in use, {:6.0} MB reserved", megabytes(allocated), megabytes(reserved))),

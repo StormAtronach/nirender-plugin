@@ -461,6 +461,13 @@ pub trait Extension {
         1
     }
 
+    /// The frames that may wait for the GPU before the window shows them, from the settings of
+    /// the extension (1 to 3). Fewer frames is less lag of the mouse when the GPU is behind;
+    /// more frames keep a slow GPU busier. The window asks one time, when it is made.
+    fn frame_latency(&self) -> u32 {
+        2
+    }
+
     /// The room of the texture arrays from the settings of the extension: 0 is automatic
     /// (the adapter's room, at most `AUTO_TEXTURE_SLOTS`), another number the most slots
     /// (at least `MIN_TEXTURE_SLOTS`, at most the adapter's room). The renderer asks one time,

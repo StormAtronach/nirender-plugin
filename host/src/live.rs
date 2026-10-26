@@ -347,6 +347,19 @@ fn tag_line(counts: &[(u64, u64)]) -> String {
     parts.join("; ")
 }
 
+/// The present mode that wgpu takes for `asked` with the modes of the surface: an automatic
+/// mode is the first that the surface has of its list (`AutoNoVsync`: immediate, mailbox,
+/// FIFO; `AutoVsync`: FIFO relaxed, FIFO).
+fn chosen_present_mode(asked: wgpu::PresentMode, modes: &[wgpu::PresentMode]) -> wgpu::PresentMode {
+    use wgpu::PresentMode::*;
+    let order: &[wgpu::PresentMode] = match asked {
+        AutoNoVsync => &[Immediate, Mailbox, Fifo],
+        AutoVsync => &[FifoRelaxed, Fifo],
+        other => return other,
+    };
+    order.iter().copied().find(|mode| modes.contains(mode)).unwrap_or(Fifo)
+}
+
 /// Gets the picture of the window for a frame. A surface that is outdated or lost is
 /// configured again, one time for each frame. The log has each change of the status of a
 /// surface that gives no picture.
@@ -513,14 +526,20 @@ impl ApplicationHandler for App {
         );
         let surface = surface.expect("a surface");
         let size = window.inner_size();
+        // The host shows a frame when the game gives one. It does not wait for the screen.
+        let present_mode = switches().present.unwrap_or(wgpu::PresentMode::AutoNoVsync);
+        let frame_latency = switches().frame_latency.unwrap_or_else(|| self.extension.as_ref().map_or(2, |extension| extension.frame_latency()).clamp(1, 3));
+        println!(
+            "window: present mode {:?} ({present_mode:?} asked), {frame_latency} frames may wait for the GPU",
+            chosen_present_mode(present_mode, &renderer.present_modes)
+        );
         self.configuration = Some(wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
             format: renderer.target_format,
             width: 0,
             height: 0,
-            // The host shows a frame when the game gives one. It does not wait for the screen.
-            present_mode: wgpu::PresentMode::AutoNoVsync,
-            desired_maximum_frame_latency: 2,
+            present_mode,
+            desired_maximum_frame_latency: frame_latency,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
             color_space: Default::default(),
@@ -804,7 +823,7 @@ impl ApplicationHandler for App {
                 if let (Some((start, end, read)), true) = (stamps, in_window) {
                     overlay.age(start, end, read, super::overlay::ticks());
                 }
-                overlay.frame(&device, self.idle, player.renderer.counts.draws as u64);
+                overlay.frame(&device, self.idle, super::ticks::duration(player.renderer.counts.times[super::TIME_ACQUIRE]), player.renderer.counts.draws as u64);
             }
             self.frames += 1;
             self.first_frame.get_or_insert_with(Instant::now);
