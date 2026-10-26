@@ -29,7 +29,7 @@ use std::io::{BufWriter, Write};
 use crate::link::{
     DrawV1, SceneV1, TextureV1, CALL_COPY_PIXELS, CALL_CREATE_DEPTH_BUFFER, CALL_CREATE_IMAGE_SURFACE, CALL_CREATE_INDEX_BUFFER,
     CALL_CREATE_TEXTURE, CALL_CREATE_VERTEX_BUFFER, CALL_CUBE_FACE, CALL_GET_DEPTH_BUFFER, CALL_GET_RENDER_TARGET, CALL_PRESENT,
-    CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_TRANSFORM,
+    CALL_RENDER_TARGET, CALL_SURFACE_DESCRIPTION, CALL_SURFACE_LOCK, CALL_SURFACE_UNLOCK, CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_TRANSFORM,
 };
 use crate::checked::Open;
 use crate::main_thread::MainThread;
@@ -629,7 +629,7 @@ unsafe fn ask_pixels(lock: &DeviceLock, texture: u32) -> Option<(u32, u32)> {
         HELPER_SILENT.store(false, Ordering::Relaxed);
         crate::log!("stream: the host program answers the pixel reads again");
     }
-    write(tag::READ_PIXELS, &[words(&[request, texture, generation])]);
+    write(tag::READ_PIXELS, &[words(&[request, stream_handle(texture), generation])]);
     // The write can end the stream.
     let mut s = state(lock)?;
     let reply = s.reply.as_mut()?;
@@ -712,7 +712,7 @@ pub unsafe fn copy_tile(target: u32, texture: u32) -> Option<u32> {
         tiles.tickets = tiles.tickets.wrapping_add(1).max(1);
         tiles.tickets
     };
-    write(tag::COPY_TILE, &[words(&[ticket, target, texture])]);
+    write(tag::COPY_TILE, &[words(&[ticket, stream_handle(target), stream_handle(texture)])]);
     Some(ticket)
 }
 
@@ -859,7 +859,7 @@ struct State {
     /// The file from the stream stays open when its frames are done: it takes the resource
     /// records only, until `tee_frames` asks for frames again. See `tee`.
     tee_hold: bool,
-    /// The buffers and textures whose content changed while the file holds: their content
+    /// The textures whose content changed while the file holds, by serial: their content
     /// goes into the file once, when frames are asked for.
     tee_dirty: HashSet<u32>,
     /// The geometry and material records that came while the file held: the plugin sends
@@ -983,8 +983,8 @@ pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
     // now, once each.
     let dirty: Vec<u32> = state(&lock).map(|mut s| s.tee_dirty.drain().collect()).unwrap_or_default();
     #[cfg(not(test))]
-    for handle in dirty {
-        crate::own_host::write_resource(handle as usize);
+    for serial in dirty {
+        crate::own_host::write_texture(serial);
     }
     #[cfg(test)]
     drop(dirty);
@@ -1188,7 +1188,7 @@ pub unsafe fn stop() {
 
 /// A draw with its vertices in the call.
 pub unsafe fn draw_up(texture: u32, vertex_format: u32, stride: u32, primitive_type: u32, primitives: u32, vertices: &[u8]) {
-    write(tag::DRAW_UP, &[words(&[texture, vertex_format, stride, primitive_type, primitives]), vertices]);
+    write(tag::DRAW_UP, &[words(&[stream_handle(texture), vertex_format, stride, primitive_type, primitives]), vertices]);
 }
 
 /// The bit of the number of an extension record that marks a state, not an event: the
@@ -1383,7 +1383,7 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
     if hold && s.tee.as_ref().is_some_and(|tee| tee.1 == 0) && parts.first().is_some_and(|p| p.len() >= 4) {
         let handle = u32::from_le_bytes([parts[0][0], parts[0][1], parts[0][2], parts[0][3]]);
         match tag {
-            tag::BUFFER_DATA | tag::TEXTURE_UPDATE => {
+            tag::TEXTURE_UPDATE => {
                 s.tee_dirty.insert(handle);
             }
             tag::GEOMETRY => {
@@ -1635,7 +1635,7 @@ pub unsafe fn light(key: u32, values: &[u32; 26], radius: f32) {
 /// A texture or a level surface freed. See [`tag::TEXTURE_GONE`].
 pub unsafe fn texture_gone(handle: u32) {
     let _lock = crate::sync::device_lock();
-    write(tag::TEXTURE_GONE, &[words(&[handle])]);
+    write(tag::TEXTURE_GONE, &[words(&[stream_handle(handle)])]);
 }
 
 /// A geometry data destroyed. See [`tag::GEOMETRY_GONE`].
@@ -1710,6 +1710,21 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
     if index == CALL_CREATE_VERTEX_BUFFER || index == CALL_CREATE_INDEX_BUFFER {
         crate::resource::wrap(handle as usize);
     }
+    // The handles of the stream: the serial of a texture or a surface (`stream_handle`). The
+    // address stays in `args` for the calls below that read the object.
+    let handle = stream_handle(handle);
+    let surface_arguments: &[usize] = match index {
+        CALL_TEXTURE_LEVEL | CALL_CUBE_FACE | CALL_SURFACE_DESCRIPTION | CALL_SURFACE_LOCK | CALL_SURFACE_UNLOCK => &[0],
+        CALL_RENDER_TARGET => &[0, 1],
+        CALL_COPY_PIXELS => &[0, 3],
+        _ => &[],
+    };
+    let mut named = args.to_vec();
+    for &i in surface_arguments {
+        if let Some(word) = named.get_mut(i) {
+            *word = stream_handle(*word);
+        }
+    }
     if index == CALL_CREATE_IMAGE_SURFACE && handle != 0 {
         if let Some(mut s) = state(&lock) {
             s.image_surfaces.insert(handle);
@@ -1717,12 +1732,12 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
     }
     if recording() {
         let mut head = vec![index, result, handle, args.len() as u32];
-        head.extend_from_slice(args);
+        head.extend_from_slice(&named);
         // A copy from an image surface: the pixels are those that the game wrote, for
         // example the character image after the game changed its alpha. The record has
         // width, height, format, size, the texture of the destination when the own host
         // knows it (or 0), and the pixels.
-        let from_image = index == CALL_COPY_PIXELS && (result as i32) >= 0 && !args.is_empty() && state(&lock).is_some_and(|s| s.image_surfaces.contains(&args[0]));
+        let from_image = index == CALL_COPY_PIXELS && (result as i32) >= 0 && !named.is_empty() && state(&lock).is_some_and(|s| s.image_surfaces.contains(&named[0]));
         let pixels = if from_image { crate::link_client::surface_pixels(args[0]) } else { None };
         if let Some((width, height, format, pixels)) = pixels {
             let texture = if args.len() > 3 { destination_texture(args[3]) } else { 0 };
@@ -1743,7 +1758,7 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
 #[cfg(not(test))]
 unsafe fn destination_texture(surface: u32) -> u32 {
     if crate::own_host::active() {
-        crate::own_host::texture_of(surface)
+        stream_handle(crate::own_host::texture_of(surface))
     } else {
         0
     }
@@ -1752,6 +1767,19 @@ unsafe fn destination_texture(surface: u32) -> u32 {
 #[cfg(test)]
 unsafe fn destination_texture(_surface: u32) -> u32 {
     0
+}
+
+/// The handle of a device object in the stream: the serial of a texture or a surface of the
+/// own host (`own_host::serial_of`), never the address, which comes back for a later object.
+#[cfg(not(test))]
+pub unsafe fn stream_handle(address: u32) -> u32 {
+    crate::own_host::serial_of(address)
+}
+
+/// The tests name their objects with made-up values: they stay as they are.
+#[cfg(test)]
+pub unsafe fn stream_handle(address: u32) -> u32 {
+    address
 }
 
 /// A texture that the host made from these pixels.
@@ -1764,7 +1792,7 @@ pub unsafe fn texture(texture: &TextureV1, handle: usize) {
     let widths = core::slice::from_raw_parts(texture.level_widths, levels);
     let heights = core::slice::from_raw_parts(texture.level_heights, levels);
     let head = [
-        handle as u32,
+        stream_handle(handle as u32),
         texture.flags,
         texture.width,
         texture.height,
@@ -1780,7 +1808,7 @@ pub unsafe fn texture(texture: &TextureV1, handle: usize) {
 
 /// The bytes that the game wrote into a level of a texture.
 pub unsafe fn texture_update(handle: usize, level: u32, width: u32, height: u32, format: u32, bytes: &[u8]) {
-    write(tag::TEXTURE_UPDATE, &[words(&[handle as u32, level, width, height, format, bytes.len() as u32]), bytes]);
+    write(tag::TEXTURE_UPDATE, &[words(&[stream_handle(handle as u32), level, width, height, format, bytes.len() as u32]), bytes]);
 }
 
 /// A purge is due (`purge`): the capture asked for it under the device lock.

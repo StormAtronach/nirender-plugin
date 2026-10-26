@@ -178,7 +178,7 @@ impl Player {
         );
         println!("indirect calls {}, draws in them {}, draws one by one for want of room {}", c.indirect_calls, c.indirect_draws, c.indirect_over);
         println!(
-            "texture arrays: kept from the frame before in {} frames, laid out again in {}, groups made {}; the most textures of a frame {}, stages over the room {} (of them retained textures with no pinned slot {}; room for {}, pinned at most {}), textures that came again for a handle with a slot {}, pinned slots freed {}, dropped from the end {} (pinned now {}, free {}, the most {}), stages drawn from a slot of the frame until their pinned slot came {}, retained textures pinned before their record {}",
+            "texture arrays: kept from the frame before in {} frames, laid out again in {}, groups made {}; the most textures of a frame {}, stages over the room {} (of them retained textures with no pinned slot {}; room for {}, pinned at most {}), textures that came again for a handle with a slot {}, pinned slots freed {}, dropped from the end {} (pinned now {}, free {}, the most {}), stages drawn from a slot of the frame until their pinned slot came {}, retained textures pinned before their record {}, pinned slots in use that took another texture {} with other facts and {} with the same",
             c.arrays_kept,
             c.arrays_laid_out,
             c.array_groups_made,
@@ -194,7 +194,9 @@ impl Player {
             self.renderer.pinned_free.len(),
             c.pinned_most,
             c.pinned_late,
-            c.pinned_before_record
+            c.pinned_before_record,
+            c.pinned_replaced[0],
+            c.pinned_replaced[1]
         );
         println!(
             "geometry pools: {:.1} MB of vertices in {} buffers of {:.0} MB in all, {:.1} MB of indexes in {} buffers of {:.0} MB in all",

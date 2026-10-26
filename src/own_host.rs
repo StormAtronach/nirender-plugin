@@ -50,6 +50,8 @@ struct Object {
     table: *const usize,
     references: u32,
     kind: Kind,
+    /// The handle of the object in the stream ([`serial_of`]).
+    serial: u32,
     /// A buffer: its length. A texture or a surface: its width and height.
     length: u32,
     width: u32,
@@ -155,9 +157,17 @@ pub unsafe fn snapshot() {
     crate::log!("own host: snapshot of {} textures, {} level surfaces, {} buffers, {} surfaces", count[0], count[1], count[2], count[3]);
 }
 
+/// Writes the content of one texture that is alive into the capture, as it is now, by its
+/// serial ([`serial_of`]). For a capture file that holds between its frames.
+pub unsafe fn write_texture(serial: u32) {
+    let lock = crate::sync::device_lock();
+    let Some(handle) = LIVE.get(&lock).iter().copied().find(|&o| (*(o as *const Object)).serial == serial) else { return };
+    write_resource(handle);
+}
+
 /// Writes the content of one buffer or texture that is alive into the capture, as it is
-/// now. For a capture file that holds between its frames.
-pub unsafe fn write_resource(handle: usize) {
+/// now.
+unsafe fn write_resource(handle: usize) {
     let lock = crate::sync::device_lock();
     if !LIVE.get(&lock).contains(&handle) {
         return;
@@ -182,6 +192,7 @@ unsafe fn new_object(lock: &DeviceLock, kind: Kind, table: &'static Table) -> *m
         table: table.methods(),
         references: 1,
         kind,
+        serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
         length: 0,
         width: 0,
         height: 0,
@@ -195,21 +206,32 @@ unsafe fn new_object(lock: &DeviceLock, kind: Kind, table: &'static Table) -> *m
         level_memory: Vec::new(),
     }));
     LIVE.get(&lock).push(object as usize);
-    // An address freed since the last drain that a new object takes: its old texture's
-    // materials fit the new one too (the same words), so they stay.
-    let mut freed = FREED_TEXTURES.get(&lock);
-    if let Some(at) = freed.iter().position(|&handle| handle == object as u32) {
-        freed.swap_remove(at);
-    }
     object
 }
 
-/// The textures freed since the last drain (`take_freed_textures`), whose address no new
-/// object took. Under the device lock.
+/// The serial of the next object: 1 for the first, never 0 (no texture) and never used
+/// again in a session.
+static NEXT_SERIAL: AtomicU32 = AtomicU32::new(1);
+
+/// The handle of an object of the game's device in the stream: the serial of a texture or a
+/// surface of this host, made with the object and never given to another. The game keeps the
+/// address (it is the COM pointer of the object), and an address comes back for a later
+/// object: a handle of the stream must not, or a draw that names the old texture draws the
+/// new one. A buffer keeps its address (its records name the buffer as long as it lives,
+/// and no draw names it after). Any other value (0, an object of another host) stays as it is.
+pub unsafe fn serial_of(address: u32) -> u32 {
+    match own(address) {
+        Some(o) if !matches!(o.kind, Kind::VertexBuffer | Kind::IndexBuffer) => o.serial,
+        _ => address,
+    }
+}
+
+/// The textures freed since the last drain (`take_freed_textures`): their serials. Under the
+/// device lock.
 static FREED_TEXTURES: LockCell<Vec<u32>> = LockCell::new(Vec::new());
 
-/// The textures freed since the last call: for the main thread, which forgets the materials
-/// that name them (`material_stream::drain_freed_textures`).
+/// The textures freed since the last call, by serial: for the main thread, which forgets the
+/// materials that name them (`material_stream::drain_freed_textures`).
 pub unsafe fn take_freed_textures() -> Vec<u32> {
     let lock = crate::sync::device_lock();
     let freed = core::mem::take(&mut *FREED_TEXTURES.get(&lock));
@@ -251,7 +273,7 @@ unsafe extern "system" fn release(this: *mut Object) -> u32 {
             crate::capture::texture_gone(this as u32);
         }
         if (*this).kind == Kind::Texture {
-            FREED_TEXTURES.get(&lock).push(this as u32);
+            FREED_TEXTURES.get(&lock).push((*this).serial);
         }
         drop(Box::from_raw(this));
         if !owner.is_null() {

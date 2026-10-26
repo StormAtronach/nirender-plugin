@@ -694,6 +694,27 @@ impl Renderer {
         let mut changed = false;
         if let Some(pinned) = self.pinned_textures.iter_mut().find(|p| p.handle == handle) {
             if !Rc::ptr_eq(&pinned.view, &view) {
+                // A slot in use that held a texture takes another one under the same handle.
+                // A handle is the serial of one object of the plugin's device, so this is the
+                // same object with new content (a map tile). Other facts (size, levels,
+                // format) mark a handle that named two objects: the instances of the slot
+                // draw the wrong texture (the fault of 2026-10-27, addresses as handles).
+                if pinned.uses != 0 && !Rc::ptr_eq(&pinned.view, &self.white) {
+                    let (old, new) = (pinned.view.texture(), view.texture());
+                    let facts = |t: &wgpu::Texture| (t.width(), t.height(), t.mip_level_count(), t.format());
+                    let same = facts(old) == facts(new);
+                    self.counts.pinned_replaced[same as usize] += 1;
+                    if self.counts.pinned_replaced[0] + self.counts.pinned_replaced[1] <= 20 {
+                        println!(
+                            "texture slots: frame {}: the pinned slot of {handle:#x} ({} uses) takes another texture: {:?} before, {:?} now ({})",
+                            self.counts.frames,
+                            pinned.uses,
+                            facts(old),
+                            facts(new),
+                            if same { "same facts" } else { "other facts" }
+                        );
+                    }
+                }
                 pinned.view = view.clone();
                 changed = true;
             }

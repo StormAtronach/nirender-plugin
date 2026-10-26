@@ -337,6 +337,9 @@ pub(crate) struct Counts {
     /// The textures of retained slots pinned before their record came (the white view until
     /// then; `set_texture` fills the slot).
     pub(crate) pinned_before_record: u32,
+    /// The pinned slots in use that held a texture and took another one under the same
+    /// handle (`set_texture`): with other facts (size, levels, format), with the same.
+    pub(crate) pinned_replaced: [u32; 2],
     /// The indirect calls, the draws in them, and the draws drawn one by one because the
     /// buffer of the arguments was full.
     pub(crate) indirect_calls: u32,

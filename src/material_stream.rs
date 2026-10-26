@@ -66,9 +66,9 @@ pub const NO_SORTER: u32 = 32768;
 
 static SENT: MainCell<Option<HashSet<u32>>> = MainCell::new(None);
 static RECORDS: MainCell<u64> = MainCell::new(0);
-/// The records sent, by each device texture they name: a freed texture takes them with it
-/// (`drain_freed_textures`). A handle in a list can be stale (its record went with another
-/// texture): it goes only if it is still sent, and then it names this texture.
+/// The records sent, by each device texture they name (its serial): a freed texture takes them
+/// with it (`drain_freed_textures`). A handle in a list can be stale (its record went with
+/// another texture): it goes only if it is still sent, and then it names this texture.
 static BY_TEXTURE: MainCell<Option<HashMap<u32, Vec<u32>>>> = MainCell::new(None);
 /// The `MATERIAL_GONE` records sent.
 static GONE: MainCell<u64> = MainCell::new(0);
@@ -120,8 +120,8 @@ fn by_texture<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Vec<u32>>> {
 }
 
 /// The records that name a device texture that was freed go: each gets a `MATERIAL_GONE`
-/// record, and a later draw with the same content sends it again. A texture whose address a
-/// new texture took before this drain keeps its records (`own_host::take_freed_textures`).
+/// record, and a later draw with the same content sends it again. A new texture at the same
+/// address has another serial (`own_host::serial_of`), so its records are others.
 pub unsafe fn drain_freed_textures(t: &MainThread) {
     let freed = crate::own_host::take_freed_textures();
     for texture in freed {
@@ -140,8 +140,14 @@ pub unsafe fn report(t: &MainThread) -> String {
 }
 
 /// The device texture of a texture of the scene graph, from the texture manager of the
-/// renderer (slot 2 of its table: `PrepareTextureForRendering`). 0 without a texture.
+/// renderer (slot 2 of its table: `PrepareTextureForRendering`), as the stream names it (its
+/// serial, `own_host::serial_of`). 0 without a texture.
 unsafe fn device_texture(renderer: usize, texture: usize) -> u32 {
+    crate::capture::stream_handle(device_texture_address(renderer, texture))
+}
+
+/// The address of the device texture of a texture of the scene graph (see `device_texture`).
+unsafe fn device_texture_address(renderer: usize, texture: usize) -> u32 {
     if texture == 0 {
         return 0;
     }
