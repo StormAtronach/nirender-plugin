@@ -543,6 +543,13 @@ pub unsafe fn frame_call(call: u32, args: &[u32]) -> Option<u32> {
     kind_call(KIND_FRAME, call, args)
 }
 
+/// True when the frame and scene calls go to the host and not to the device: the wrappers
+/// of `device.rs` then see none of them (the frame hook of the rig, the census of the
+/// callers, the forced reset).
+pub fn frame_calls_linked() -> bool {
+    KINDS.load(Ordering::Relaxed) & KIND_FRAME != 0 && unsafe { host() }.is_some()
+}
+
 /// The pixels of a surface of the host with 4 bytes for each pixel: width, height, format and
 /// the rows without the bytes after each row. The capture uses it; the call is not in the
 /// stream.

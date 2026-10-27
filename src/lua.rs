@@ -536,11 +536,25 @@ unsafe extern "C" fn dump_state(l: LuaState) -> i32 {
     1
 }
 
+/// The rig calls that watch the device's own calls answer false on the path of the render
+/// link, with a line in the log: there the calls of a frame go to the link and not through
+/// the device, so a frame dump or a frame test would never end and a reset never comes.
+#[cfg(feature = "rig")]
+fn refused_on_link(call: &str) -> bool {
+    let linked = crate::link_client::frame_calls_linked();
+    if linked {
+        crate::log!("nirender.{call}: false: on the path of the render link the calls of a frame go to the link, not through the device");
+    }
+    linked
+}
+
 /// `nirender.dumpFrame(path)` returns started. The device calls of the next frame go to the
-/// file. [`frameTestResult()`] tells when the file is complete.
+/// file. [`frameTestResult()`] tells when the file is complete. False on the path of the
+/// render link ([`refused_on_link`]).
 #[cfg(feature = "rig")]
 unsafe extern "C" fn dump_frame(l: LuaState) -> i32 {
     let started = match arg_str(l, 1) {
+        Some(_) if refused_on_link("dumpFrame") => false,
         Some(path) => crate::frame::request_dump(path),
         None => false,
     };
@@ -575,10 +589,15 @@ unsafe extern "C" fn report_lua(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.frameTest(kind)` returns started. `kind` is "control" or "live".
+/// `nirender.frameTest(kind)` returns started. `kind` is "control" or "live". False on the
+/// path of the render link ([`refused_on_link`]).
 #[cfg(feature = "rig")]
 unsafe extern "C" fn frame_test(l: LuaState) -> i32 {
     use crate::frame;
+    if refused_on_link("frameTest") {
+        lua_pushboolean(l, 0);
+        return 1;
+    }
     let kind = match arg_str(l, 1).as_deref() {
         Some("live") => frame::Kind::Live,
         _ => frame::Kind::Control,
@@ -617,11 +636,16 @@ unsafe extern "C" fn fault(l: LuaState) -> i32 {
 }
 
 /// `nirender.forceReset()` makes the next [`TestCooperativeLevel`] of the game say that the
-/// device can be reset. The game then makes its renderer again: [`NiDX8Renderer::Recreate`].
+/// device can be reset, and returns true. The game then makes its renderer again:
+/// [`NiDX8Renderer::Recreate`]. False on the path of the render link ([`refused_on_link`]).
 #[cfg(feature = "rig")]
-unsafe extern "C" fn force_reset(_l: LuaState) -> i32 {
-    crate::device::FORCE_RESET.store(true, Ordering::Relaxed);
-    0
+unsafe extern "C" fn force_reset(l: LuaState) -> i32 {
+    let set = !refused_on_link("forceReset");
+    if set {
+        crate::device::FORCE_RESET.store(true, Ordering::Relaxed);
+    }
+    lua_pushboolean(l, set as i32);
+    1
 }
 
 /// `nirender.renderer()` returns the address of the renderer of the game, or 0 before it
@@ -732,6 +756,7 @@ unsafe extern "C" fn link_use_kinds(l: LuaState) -> i32 {
 
 /// `nirender.deviceCallers(true)` starts the census of the callers of the device.
 /// `nirender.deviceCallers(false)` stops it and returns the counts as text. See `callers.rs`.
+/// On the path of the render link the counts are 0: the calls of a frame go to the link.
 #[cfg(feature = "rig")]
 unsafe extern "C" fn device_callers(l: LuaState) -> i32 {
     if lua_toboolean(l, 1) != 0 {
