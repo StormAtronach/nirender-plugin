@@ -999,6 +999,23 @@ impl ApplicationHandler for App {
     }
 }
 
+/// The file name of this program, for a message to the player: numidium.exe as the helper
+/// of MGE XE, nirender-host.exe on its own.
+fn program_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "the host program".to_string())
+}
+
+/// The builds that read the stream: this crate's, and the program's that has it as a part.
+pub(crate) fn reader_build(extension: Option<&dyn super::Extension>) -> String {
+    match extension.map(|extension| extension.name()).filter(|name| !name.is_empty()) {
+        Some(name) => format!("{}, {name}", super::BUILD_ID),
+        None => super::BUILD_ID.to_string(),
+    }
+}
+
 pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Option<Box<dyn super::Extension>>) {
     println!("{}", super::cores::prefer_performance_cores());
     let ring = Ring::open(name);
@@ -1014,8 +1031,23 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         std::thread::sleep(Duration::from_millis(5));
     };
     assert_eq!(tag, super::tag::HEADER, "the first record is not the head of the stream");
-    let size = (super::word(&data, 0).max(64), super::word(&data, 4).max(64));
+    // The window of the game owns the boxes of this program, the one of a refused stream too.
     let game_window = if data.len() >= 12 { super::word(&data, 8) as isize } else { 0 };
+    super::gpu::set_owner_window(game_window);
+    // The stream format of the plugin against this build's, before any record is read. A
+    // difference ends this program: the plugin reads the exit code and shows no second box.
+    let reader = format!("{} ({})", program_name(), reader_build(extension.as_deref()));
+    match super::stream_format::accept_header(&data, &reader) {
+        Ok(writer) => println!("stream format {}, the plugin {}", writer.format, writer.build_id),
+        Err(message) => {
+            for line in message.lines() {
+                println!("{line}");
+            }
+            super::gpu::message_box(&format!("{message}\n\nThe game shows no new picture: close it with Alt+F4. nirender-host.log has the details."));
+            super::gpu::exit_now(super::stream_format::EXIT_STREAM_FORMAT);
+        }
+    }
+    let size = (super::word(&data, 0).max(64), super::word(&data, 4).max(64));
     let embed = args.iter().any(|a| a == "--embed");
     println!("picture {} x {}, window of the game {game_window:#x}{}", size.0, size.1, if embed { ", the host goes into it" } else { "" });
     let mut app = App {
