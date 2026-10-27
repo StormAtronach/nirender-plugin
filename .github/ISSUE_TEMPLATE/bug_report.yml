@@ -65,7 +65,7 @@ body:
     id: files
     attributes:
       label: The files
-      description: Attach them to this report (drag them into the text box below). At least `nirender.log` and `nirender-host.log`. All of them are in the Morrowind folder; with Mod Organizer 2 and Root Builder they are in `overwrite\Root` of the instance after the game has ended. The logs, `mgeXE.toml` and the dump are small and attach as they are.
+      description: Attach them to this report (drag them into the text box below). At least `nirender.log` and `nirender-host.log`. All of them are in the Morrowind folder; with Mod Organizer 2 and Root Builder they are in `overwrite\Root` of the instance after the game has ended. The logs and the dump attach as they are; zip `mgeXE.toml` and a save (`.ess`) before you attach them, since GitHub does not take those file types.
       options:
         - label: "`mgeXE.log`"
         - label: "`MWSE.log`"
