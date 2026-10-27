@@ -406,6 +406,18 @@ unsafe extern "C" fn sky_draws(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.weatherDraws([on])`: with a boolean, the draws of the weather instances (the rain,
+/// snow and storm drops, with `NIRENDER_WEATHER=on`) go as the table's `INSTANCE_DRAW` records
+/// (on, the default) or as the engine's shape records (off). Returns the state before.
+unsafe extern "C" fn weather_draws(l: LuaState) -> i32 {
+    let before = crate::instance_stream::weather_draws();
+    if lua_gettop(l) >= 1 {
+        crate::instance_stream::set_weather_draws(lua_toboolean(l, 1) != 0);
+    }
+    lua_pushboolean(l, before as i32);
+    1
+}
+
 /// `nirender.particleDraws([on])`: with a boolean, the draws of the particle instances go as
 /// `INSTANCE_PARTICLES` and `INSTANCE_DRAW` records (on, the default when the table takes
 /// particles) or as the engine's shape records (off). Returns the state before.
@@ -760,6 +772,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "instances", instances_report);
     set_fn(l, "nifShading", nif_shading);
     set_fn(l, "skyDraws", sky_draws);
+    set_fn(l, "weatherDraws", weather_draws);
     set_fn(l, "particleDraws", particle_draws);
     set_fn(l, "animationPolicy", animation_policy);
     set_fn(l, "skinTable", skin_table);

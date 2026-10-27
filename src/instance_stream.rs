@@ -49,7 +49,7 @@ use crate::capture;
 use crate::engine::{thiscall1, vcall0};
 use crate::gen::layouts::{InterfaceNiTimeController, NiAVObject, NiGeometry, NiProperty, NiPropertyState, NiRTTI};
 use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L, NiPropertyState as PS, NiTimeController as TC, NiZBufferProperty as ZP};
-use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_RACE_MENU_HEAD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
+use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, CLASS_WEATHER_PARTICLES, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_RACE_MENU_HEAD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
 use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::{rd, wr};
@@ -381,7 +381,11 @@ pub unsafe fn set_mode(mt: &MainThread, mode: Mode) -> Mode {
 pub unsafe fn class_retained(mt: &MainThread, class: u32, skinned: bool) -> bool {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
-    class == CLASS_OBJECT || (class == CLASS_LANDSCAPE && t.landscape) || (class == CLASS_UNKNOWN && t.actors && (skinned || t.animated)) || (sky_table_class(class) && sky_table_on())
+    class == CLASS_OBJECT
+        || (class == CLASS_LANDSCAPE && t.landscape)
+        || (class == CLASS_UNKNOWN && t.actors && (skinned || t.animated))
+        || (sky_table_class(class) && sky_table_on())
+        || (class == CLASS_WEATHER_PARTICLES && weather_table_on())
 }
 
 /// Sets or clears the mark of a retained shape.
@@ -773,6 +777,54 @@ pub fn set_sky_draws(on: bool) {
     SKY_DRAWS.store(on, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// The switch of the weather's shapes, the rain, snow and storm drops of class 9
+/// (`NIRENDER_WEATHER`; the plan note's section 3.1): 0 not read, 1 off (the default until its
+/// gate: the engine's shape records), 2 the census (`count`), 3 the drops' instances in the
+/// table (`on`), drawn as the sky's are.
+static WEATHER_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+fn weather_mode() -> u8 {
+    use core::sync::atomic::Ordering::Relaxed;
+    match WEATHER_MODE.load(Relaxed) {
+        0 => {
+            let mode = match crate::switches::choice("NIRENDER_WEATHER", &["off", "count", "on"]) {
+                Some("count") => 2,
+                Some("on") => 3,
+                _ => 1,
+            };
+            WEATHER_MODE.store(mode, Relaxed);
+            mode
+        }
+        mode => mode,
+    }
+}
+
+/// True when the census of the weather's shapes is on.
+pub fn weather_census_on() -> bool {
+    weather_mode() == 2
+}
+
+/// True when the table takes the weather's shapes: each draw of a drop goes as an
+/// `INSTANCE_DRAW` record in the place of the engine's shape record (`draw`), as a sky shape's.
+pub fn weather_table_on() -> bool {
+    weather_mode() == 3
+}
+
+/// The draws of the weather instances go as `INSTANCE_DRAW` records (`nirender.weatherDraws`;
+/// on when the table takes them): off, they go as the engine's shape records, for an A/B in one
+/// session.
+static WEATHER_DRAWS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// True when the draws of the weather instances go as `INSTANCE_DRAW` records.
+pub fn weather_draws() -> bool {
+    WEATHER_DRAWS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Sets whether the draws of the weather instances go as `INSTANCE_DRAW` records.
+pub fn set_weather_draws(on: bool) {
+    WEATHER_DRAWS.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
 /// The switch of the particle systems (`NIRENDER_PARTICLES`; milestone 5): 0 not read, 1 off
 /// (`off`: the engine's shape records), 2 the table (the default since step 5: a particle system
 /// in a world camera's scene is an instance whose draws go as `INSTANCE_PARTICLES` and
@@ -834,11 +886,12 @@ fn sky_table_class(class: u32) -> bool {
     (CLASS_SKY_DOME..=CLASS_SKY_OTHER).contains(&class)
 }
 
-/// The census of the sky (milestone 6, step 0): what the table would say about a shape of the
-/// sky's classes (1 to 8), without a mark or a skip. Logs each shape once: the name, the class,
+/// The census of the sky (milestone 6, step 0) and of the weather's shapes (class 9): what the
+/// table would say about a shape of those classes, without a mark or a skip; `what` names the
+/// set in the log line ("sky", "weather"). Logs each shape once: the name, the class,
 /// the handles, whether the material is modelled, the reject reason, live, the depth and alpha
 /// flags, and the controllers on the shape, above it and on its properties.
-pub unsafe fn sky_census(mt: &MainThread, shape: usize, class: u32, plain_world_shape: bool, geometry: u32, material: u32, property_state: usize, effect_state: usize) {
+pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, plain_world_shape: bool, geometry: u32, material: u32, property_state: usize, effect_state: usize) {
     let seen = &mut *SKY_SEEN.get(mt);
     if seen.contains(&shape) {
         return;
@@ -869,7 +922,7 @@ pub unsafe fn sky_census(mt: &MainThread, shape: usize, class: u32, plain_world_
     }
     let property_controllers = if property_state != 0 { (0..STATE_COUNT).filter(|slot| { let p: usize = rd(property_state, STATE_FIRST + slot * 4); p != 0 && rd::<usize>(p, CONTROLLERS) != 0 }).count() } else { 0 };
     crate::log!(
-        "sky census: '{name}' class {class}, world shape {plain_world_shape}, geometry {geometry:#x}, material {material:#x}, modelled {}, reject {reason:?}, live {live}, zbuffer flags {z_flags:?} function {z_function:?}, alpha flags {alpha_flags:?}, controllers: shape {}, nodes above {node_controllers}, properties {property_controllers}",
+        "{what} census: '{name}' class {class}, world shape {plain_world_shape}, geometry {geometry:#x}, material {material:#x}, modelled {}, reject {reason:?}, live {live}, zbuffer flags {z_flags:?} function {z_function:?}, alpha flags {alpha_flags:?}, controllers: shape {}, nodes above {node_controllers}, properties {property_controllers}",
         crate::material_stream::last_modelled(mt),
         rd::<usize>(shape, CONTROLLERS) != 0
     );
@@ -974,6 +1027,9 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
     if sky_table_class(instance.class) && !sky_draws() {
         return false;
     }
+    if instance.class == CLASS_WEATHER_PARTICLES && !weather_draws() {
+        return false;
+    }
     if instance.points && !particle_draws() {
         return false;
     }
@@ -986,8 +1042,9 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
     // 2 of milestone 6): the helper draws it from its record there, in the stream's order. In
     // mode gpu the caller writes no shape record after it.
     // A particle instance goes the same way: its particles change every frame (step 2 of the
-    // particles plan).
-    let gpu = t.mode == Some(Mode::Gpu) && (!skinned || t.skin_table) && !sky_table_class(instance.class) && !instance.points;
+    // particles plan). A weather instance too: the drops blend, so they keep the stream's order.
+    let at_place = sky_table_class(instance.class) || instance.class == CLASS_WEATHER_PARTICLES || instance.points;
+    let gpu = t.mode == Some(Mode::Gpu) && (!skinned || t.skin_table) && !at_place;
     let rotation: [u32; 12] = core::array::from_fn(|i| world[i].to_bits());
     let stored: [u32; 3] = if skinned { [0; 3] } else { rd(shape, WORLD_TRANSLATION) };
     let bound: [f32; 4] = if skinned { [0.0; 4] } else { rd(shape, WORLD_BOUND) };
