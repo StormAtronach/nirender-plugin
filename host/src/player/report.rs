@@ -67,7 +67,7 @@ impl Player {
         );
         println!("material: {} records; {} records of any tag shorter than their tag needs, refused", c.material_records, c.short_records);
         if crate::reads_past_end() != 0 {
-            println!("reads past the end of a record: {} (a fault of the rule of `tag::needed`, not of the plugin)", crate::reads_past_end());
+            println!("reads past the end of a buffer: {} (of a record or a part of one; a fault of the rule of `tag::needed`, not of the plugin)", crate::reads_past_end());
         }
         if c.unknown_records != 0 {
             println!("records of a tag this build does not know: {}, skipped; the first tag {}", c.unknown_records, c.unknown_tag);

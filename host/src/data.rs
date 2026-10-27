@@ -82,9 +82,10 @@ pub(crate) const SCENE_WIREFRAME: u32 = 0x10;
 /// The value of a state that the game did not set.
 pub(crate) const UNKNOWN: u32 = 0x7FFF_FFFF;
 
-/// The reads of a word or a double past the end of a record, counted for the report: a
-/// record that passed the gate of `Player::feed` (`tag::needed`) has every byte its reader
-/// takes, so a count here is a fault of the gate's rule, not of the plugin.
+/// The reads of a word or a double past the end of a buffer (a record, or a part of one that
+/// a reader cut), counted for the report: a record that passed the gate of `Player::feed`
+/// (`tag::needed`) has every byte its reader takes, so a count here is a fault of the gate's
+/// rule, not of the plugin.
 static READS_PAST_END: AtomicU32 = AtomicU32::new(0);
 
 pub(crate) fn reads_past_end() -> u32 {

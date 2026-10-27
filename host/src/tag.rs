@@ -146,8 +146,10 @@ pub fn least_length(tag: u32) -> usize {
 /// part name, as the reader of the tag takes them (`player/feed.rs`, `renderer.rs`). A record
 /// shorter than this is refused by `Player::feed` with one line, never read past its end.
 /// While the record is shorter than its fixed part, the fixed part is the answer (the counts
-/// cannot be read yet). The parts whose end a reader takes from the record's own length (the
-/// pixels of a texture, the particles) are not in it: those reads stop at the end.
+/// cannot be read yet). The parts whose end a reader takes from the record's own length are
+/// not in it, and those reads stop at the end: the pixels of a texture (each level is cut to
+/// what the record has, and the rest of the level is zero), the particles of a particle
+/// instance (the count is cut to the whole particles that the record has).
 pub fn needed(tag: u32, data: &[u8]) -> usize {
     let head = least_length(tag);
     if data.len() < head {
@@ -197,9 +199,11 @@ pub fn needed(tag: u32, data: &[u8]) -> usize {
             CALL_CLEAR => 16 + 24,
             _ => 16,
         },
-        // A transform: the 16 floats of the matrix after the head.
+        // A transform: the 16 floats of the matrix after the head. A transform with a null
+        // matrix is the head alone (the plugin's `bytes_at` of a null address is empty): it
+        // is valid, and the reader takes no matrix from it.
         COMMAND => {
-            if word(data, 0) == COMMAND_TRANSFORM {
+            if word(data, 0) == COMMAND_TRANSFORM && data.len() != 16 {
                 16 + 64
             } else {
                 16
@@ -261,11 +265,28 @@ pub fn name(tag: u32) -> &'static str {
 mod tests {
     use super::*;
 
-    /// Every tag the player reads.
-    const READ_TAGS: [u32; 38] = [
+    /// Every tag the player reads: all the known tags but the two retired ones (2 and 7).
+    const READ_TAGS: [u32; 41] = [
         HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, COMMAND, CALL, FRAME_END, READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS,
-        INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE,
+        INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS,
     ];
+
+    #[test]
+    fn the_test_reads_every_known_tag_but_the_retired_ones() {
+        let known: Vec<u32> = (1..=MORPH_WEIGHTS).filter(|&tag| is_known(tag) && tag != 2 && tag != 7).collect();
+        let mut read = READ_TAGS.to_vec();
+        read.sort();
+        assert_eq!(read, known);
+    }
+
+    #[test]
+    fn a_transform_with_a_null_matrix_is_valid() {
+        let mut record = vec![0u8; 16];
+        record[0..4].copy_from_slice(&COMMAND_TRANSFORM.to_le_bytes());
+        assert_eq!(needed(COMMAND, &record), 16);
+        record.resize(40, 0);
+        assert_eq!(needed(COMMAND, &record), 80);
+    }
 
     /// A record of the tag with every part the reader takes: the fixed part, and variable
     /// parts with counts of 1 or 2, so that a cut inside any part is a short record.
@@ -331,6 +352,11 @@ mod tests {
         for tag in READ_TAGS {
             let record = full_record(tag);
             for cut in 0..record.len() {
+                // The head of a transform alone is a whole record: a transform with a null
+                // matrix (`a_transform_with_a_null_matrix_is_valid`).
+                if tag == COMMAND && cut == 16 {
+                    continue;
+                }
                 let needed = needed(tag, &record[..cut]);
                 assert!(needed > cut, "tag {tag} ({}): a record of {cut} bytes passes with {needed} needed", name(tag));
                 assert!(needed <= record.len(), "tag {tag} ({}): {needed} needed from a cut of {cut} bytes, more than the whole record of {}", name(tag), record.len());
