@@ -42,6 +42,7 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
         log_to(&path);
     }
     println!("nirender-host v{}{}", env!("CARGO_PKG_VERSION"), extension.as_ref().map_or(String::new(), |e| format!(", {}", e.name())));
+    switches::log_set();
     let backends = match option(&args, "--backend").as_deref() {
         Some("dx12") => wgpu::Backends::DX12,
         Some("vulkan") => wgpu::Backends::VULKAN,

@@ -58,10 +58,7 @@ impl Player {
             tile_reads: Vec::new(),
             tile_pipelines: HashMap::new(),
             shots: Vec::new(),
-            growth_test: (
-                std::env::var("NIRENDER_FORCE_GROWTH").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
-                std::env::var("NIRENDER_GROWTH_SHOTS").ok(),
-            ),
+            growth_test: (switches().force_growth, switches().growth_shots.clone()),
             growth_shot_next: None,
             early_pictures: Vec::new(),
             overlay_record: None,

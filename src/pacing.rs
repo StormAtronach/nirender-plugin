@@ -34,7 +34,7 @@ const LEAD_US: i64 = 200;
 
 fn lead_us() -> i64 {
     static LEAD: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
-    *LEAD.get_or_init(|| std::env::var("NIRENDER_PACE_LEAD_US").ok().and_then(|v| v.parse().ok()).unwrap_or(LEAD_US))
+    *LEAD.get_or_init(|| crate::switches::number("NIRENDER_PACE_LEAD_US", LEAD_US))
 }
 /// The part of the error of a lead that the margin takes at each frame.
 const GAIN: f64 = 0.1;
@@ -75,7 +75,7 @@ pub unsafe fn install() {
     if INSTALLED.load(Ordering::Relaxed) {
         return;
     }
-    if std::env::var("NIRENDER_PACE").is_ok_and(|value| value == "0") {
+    if crate::switches::on("NIRENDER_PACE") == Some(false) {
         crate::log!("pacing: NIRENDER_PACE=0, no pacing of the game to the helper");
         return;
     }

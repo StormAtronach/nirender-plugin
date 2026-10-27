@@ -409,12 +409,12 @@ unsafe fn device_window(s: &State) -> u32 {
 unsafe fn start_stream(s: &State) {
     crate::own_host::activate();
     let name = format!("nirender-{}", GetCurrentProcessId());
-    let megabytes = std::env::var("NIRENDER_RING_MB").ok().and_then(|text| text.parse().ok()).unwrap_or(64);
+    let megabytes = crate::switches::number_from_to("NIRENDER_RING_MB", 64, 1, 4096);
     if let Err(problem) = crate::capture::start_direct(&name, megabytes, s.parameters[0], s.parameters[1], device_window(s)) {
         crate::log!("own device: no stream: {problem}");
         return;
     }
-    let program = std::env::var("NIRENDER_HOST_EXE").ok().filter(|path| std::path::Path::new(path).is_file()).or_else(|| {
+    let program = crate::switches::text("NIRENDER_HOST_EXE").filter(|path| std::path::Path::new(path).is_file()).or_else(|| {
         let mut module = 0usize;
         let mut path = [0u8; 600];
         // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
@@ -428,16 +428,16 @@ unsafe fn start_stream(s: &State) {
         return;
     };
     let mut command = format!("\"{program}\" --live {name} --embed");
-    if let Ok(backend) = std::env::var("NIRENDER_BACKEND") {
+    if let Some(backend) = crate::switches::choice("NIRENDER_BACKEND", &["vulkan", "dx12"]) {
         command.push_str(&format!(" --backend {backend}"));
     }
     // More arguments for the host program, for a test.
-    if let Ok(more) = std::env::var("NIRENDER_HOST_ARGS") {
+    if let Some(more) = crate::switches::text("NIRENDER_HOST_ARGS") {
         command.push_str(&format!(" {more}"));
     }
     // The text of the host program goes into a file: the one that NIRENDER_HOST_LOG names, or
     // nirender-host.log in the folder of the game.
-    let log = std::env::var("NIRENDER_HOST_LOG").unwrap_or_else(|_| "nirender-host.log".into());
+    let log = crate::switches::text("NIRENDER_HOST_LOG").unwrap_or_else(|| "nirender-host.log".into());
     let log = std::path::absolute(&log).map(|path| path.to_string_lossy().into_owned()).unwrap_or(log);
     command.push_str(&format!(" --log \"{log}\""));
     let mut line = command.clone().into_bytes();
