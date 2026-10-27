@@ -6,8 +6,7 @@
 //!
 //! A pixel of the first person goes in when it is nearer: its depth becomes a distance with
 //! the projection of the first person, and that distance a depth with the projection of the
-//! world. A projection of Direct3D gives the depth `d = a + b / z` for a distance `z` in front
-//! of the camera, with `a` and `b` its places 10 and 14.
+//! world, with the depth terms of each projection ([`depth`]).
 
 use super::*;
 
@@ -24,7 +23,7 @@ struct Quad { @builtin(position) position: vec4f }
     return Quad(vec4f(x, y, 0.0, 1.0));
 }
 
-// x, y: a and b of the projection of the first person; z, w: those of the world.
+// x, y: the depth terms of the projection of the first person; z, w: those of the world.
 // mode.x: 1 when both projections are perspective (else the depth goes in as it is).
 struct Values { projections: vec4f, mode: vec4f }
 @group(0) @binding(0) var<uniform> v: Values;
@@ -33,14 +32,14 @@ struct Values { projections: vec4f, mode: vec4f }
 @fragment fn fs(in: Quad) -> @builtin(frag_depth) f32 {
     let d = textureLoad(arms, vec2i(in.position.xy), 0);
     // The clear of the first-person scene: nothing of the arms here.
-    if d >= 1.0 {
+    if depth_empty(d) {
         discard;
     }
     if v.mode.x < 0.5 {
         return d;
     }
-    let z = v.projections.y / (d - v.projections.x);
-    return clamp(v.projections.z + v.projections.w / z, 0.0, 1.0);
+    let z = view_distance(d, v.projections.xy);
+    return clamp(depth_at_distance(z, v.projections.zw), 0.0, 1.0);
 }
 ";
 
@@ -63,7 +62,7 @@ impl DepthMerge {
                 },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("first-person depth merge"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("first-person depth merge"), source: wgpu::ShaderSource::Wgsl(format!("{}{}", depth::WGSL, SHADER).into()) });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("first-person depth merge"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("first-person depth merge"),
@@ -90,7 +89,8 @@ impl DepthMerge {
     /// where it is nearer. The projections have the layout of Direct3D.
     pub(crate) fn merge(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, arms: &wgpu::TextureView, world: &wgpu::TextureView, arms_projection: &[f32; 16], world_projection: &[f32; 16]) {
         let perspective = arms_projection[11] == 1.0 && world_projection[11] == 1.0 && arms_projection[14] != 0.0;
-        let values: [f32; 8] = [arms_projection[10], arms_projection[14], world_projection[10], world_projection[14], perspective as u32 as f32, 0.0, 0.0, 0.0];
+        let ([arms_a, arms_b], [world_a, world_b]) = (depth::terms(arms_projection), depth::terms(world_projection));
+        let values: [f32; 8] = [arms_a, arms_b, world_a, world_b, perspective as u32 as f32, 0.0, 0.0, 0.0];
         let buffer = wgpu::util::DeviceExt::create_buffer_init(device, &wgpu::util::BufferInitDescriptor { label: Some("first-person depth merge"), contents: bytemuck::cast_slice(&values), usage: wgpu::BufferUsages::UNIFORM });
         let group = gpu::frame_group(device, &wgpu::BindGroupDescriptor {
             label: Some("first-person depth merge"),

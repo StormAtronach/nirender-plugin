@@ -35,6 +35,7 @@ use std::rc::Rc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+pub mod depth;
 mod depth_merge;
 mod gamma;
 mod live;
