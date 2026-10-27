@@ -874,11 +874,19 @@ const RENDER_STATES_IN_RECORD: u32 = 256;
 /// Sends to the device the state that the game believes the device has, for the kinds in
 /// `kinds`. The Rust code made no call for them while the host had them.
 unsafe fn resync(t: &MainThread, kinds: u32) {
-    let mut s = state(t);
     let renderer = RENDERER.load(Ordering::Relaxed);
     if renderer == 0 {
         return;
     }
+    // A copy of the kept state: the device calls below note their values into the state
+    // again (`note_texture`, `note_transform`, `note_stream_source`, ...), so no guard of the
+    // state may be live across them.
+    let (textures_known, textures, transforms_known, texture_transforms, buffers, kept_buffers) = {
+        let s = state(t);
+        (s.textures_known, s.textures, s.transforms_known, s.texture_transforms, s.buffers, s.kept_buffers)
+    };
+    let mut textures_gone = 0u32;
+    let (mut vertex_buffer_gone, mut index_buffer_gone) = (false, false);
     let device: usize = rd(renderer, R::d3dDevice);
     let render_state: usize = rd(renderer, R::renderState);
     if kinds >> FACT_DEVICE_RENDER_STATES & 1 != 0 {
@@ -907,22 +915,21 @@ unsafe fn resync(t: &MainThread, kinds: u32) {
     let live = |kept: crate::own_host::Kept| if crate::own_host::active() { kept.live() } else { 0 };
     if kinds >> FACT_DEVICE_TEXTURES & 1 != 0 {
         for stage in 0..STATE_STAGES {
-            if s.textures_known >> stage & 1 != 0 {
-                let texture = live(s.textures[stage as usize]);
+            if textures_known >> stage & 1 != 0 {
+                let texture = live(textures[stage as usize]);
                 if texture != 0 {
                     crate::d3d::device_set_texture(device, stage, texture as usize);
                 } else {
-                    s.textures_known &= !(1 << stage);
+                    textures_gone |= 1 << stage;
                 }
             }
         }
     }
     if kinds >> FACT_DEVICE_TRANSFORMS & 1 != 0 {
         // Not the world matrices: the game sends them again for each draw.
-        let known = s.transforms_known;
         for stage in 0..STATE_STAGES {
-            if known >> (8 + stage) & 1 != 0 {
-                crate::d3d::device_set_transform(device, D3DTS_TEXTURE0 + stage, s.texture_transforms[stage as usize].as_ptr() as usize);
+            if transforms_known >> (8 + stage) & 1 != 0 {
+                crate::d3d::device_set_transform(device, D3DTS_TEXTURE0 + stage, texture_transforms[stage as usize].as_ptr() as usize);
             }
         }
     }
@@ -950,18 +957,26 @@ unsafe fn resync(t: &MainThread, kinds: u32) {
         }
     }
     if kinds >> FACT_DEVICE_BUFFERS & 1 != 0 {
-        let buffers = s.buffers;
-        if buffers[0] != 0 && live(s.kept_buffers[0]) == buffers[0] {
+        if buffers[0] != 0 && live(kept_buffers[0]) == buffers[0] {
             crate::d3d::device_set_stream_source(device, 0, buffers[0] as usize, buffers[1]);
             crate::d3d::device_set_vertex_shader(device, rd(render_state, RS::currentVertexShader));
         } else {
-            s.buffers[0] = 0;
+            vertex_buffer_gone = true;
         }
-        if buffers[3] != 0 && live(s.kept_buffers[1]) == buffers[3] {
+        if buffers[3] != 0 && live(kept_buffers[1]) == buffers[3] {
             crate::d3d::device_set_indices(device, buffers[3] as usize, buffers[4]);
         } else {
-            s.buffers[3] = 0;
+            index_buffer_gone = true;
         }
+    }
+    // The handles that are gone are forgotten, after the device calls.
+    let mut s = state(t);
+    s.textures_known &= !textures_gone;
+    if vertex_buffer_gone {
+        s.buffers[0] = 0;
+    }
+    if index_buffer_gone {
+        s.buffers[3] = 0;
     }
 }
 
@@ -1842,5 +1857,137 @@ mod present_tests {
             assert!(!take_present_due());
         }
         assert!(take_present_due());
+    }
+}
+
+#[cfg(test)]
+mod resync_tests {
+    use super::*;
+    use core::sync::atomic::AtomicU32;
+
+    /// The calls of `SetTransform` of the fake device, and the state of the last one.
+    static SET_TRANSFORMS: AtomicU32 = AtomicU32::new(0);
+    static LAST_TRANSFORM: AtomicU32 = AtomicU32::new(0);
+
+    unsafe extern "system" fn set_transform(_device: usize, state: u32, _matrix: usize) -> u32 {
+        SET_TRANSFORMS.fetch_add(1, Ordering::Relaxed);
+        LAST_TRANSFORM.store(state, Ordering::Relaxed);
+        0
+    }
+
+    // The host of the test: it takes the facts that it is asked for, and nothing else.
+    unsafe extern "C" fn use_facts_of_host(mask: u32) -> u32 {
+        mask
+    }
+    unsafe extern "C" fn scene_begin(_scene: *const SceneV1) {}
+    unsafe extern "C" fn no_arguments() {}
+    unsafe extern "C" fn frame_event(_kind: u32, _a: u32, _b: u32) {}
+    unsafe extern "C" fn draw(_draw: *const DrawV1) {}
+    unsafe extern "C" fn read_counters(_out: *mut CountersV1, _reset: u32) {}
+    unsafe extern "C" fn draw_state(_state: *const DrawStateV1) {}
+    unsafe extern "C" fn texture_create(_texture: *const TextureV1) -> u32 {
+        0
+    }
+    unsafe extern "C" fn none() -> u32 {
+        0
+    }
+    unsafe extern "C" fn camera_space(_origin: *mut f64) -> u32 {
+        0
+    }
+    unsafe extern "C" fn command(_command: u32, _a: u32, _b: u32, _c: u32) {}
+    unsafe extern "C" fn call(_call: u32, _args: *const u32) -> u32 {
+        0
+    }
+    unsafe extern "C" fn use_kinds(_mask: u32) -> u32 {
+        0
+    }
+
+    /// The fakes of the test in the statics of the link, and the test's thread as the main
+    /// thread. The drop puts all back, also when an assert of the test fails: else the fakes
+    /// stay for the later tests of the process, and a later thread with the same id would
+    /// count as the main thread.
+    struct Fakes {
+        main_thread_before: u32,
+    }
+
+    impl Fakes {
+        fn install(renderer: usize) -> Fakes {
+            let main_thread_before = crate::shadow::main_thread_for_test();
+            HOST.store(&HOST_OF_TEST as *const HostV1 as usize, Ordering::Relaxed);
+            RENDERER.store(renderer, Ordering::Relaxed);
+            Fakes { main_thread_before }
+        }
+    }
+
+    impl Drop for Fakes {
+        fn drop(&mut self) {
+            HOST.store(0, Ordering::Relaxed);
+            RENDERER.store(0, Ordering::Relaxed);
+            SUPPRESS.store(0, Ordering::Relaxed);
+            USED_FACTS.store(0, Ordering::Relaxed);
+            crate::shadow::restore_main_thread(self.main_thread_before);
+        }
+    }
+
+    static HOST_OF_TEST: HostV1 = HostV1 {
+        struct_size: size_of::<HostV1>() as u32,
+        version: 1,
+        capabilities: CAP_USE_FACTS,
+        reserved: 0,
+        scene_begin,
+        scene_end: no_arguments,
+        frame_event,
+        draw,
+        read_counters,
+        use_facts: use_facts_of_host,
+        draw_state,
+        texture_create,
+        world_space: none,
+        camera_space,
+        command,
+        call,
+        use_kinds,
+    };
+
+    /// The path of 662621d: a mask that clears a device fact that the host had makes
+    /// `use_facts` call `resync`, whose `device_set_transform` notes the transform into the
+    /// link state (`note_transform`). With a guard of the state live across the device calls,
+    /// that note opens the state a second time, and the refusal of a second open panics
+    /// ("is opened again at"). The renderer and the device are fakes: the renderer holds
+    /// the device at its `d3dDevice` field, and the device's vtable has `SetTransform` only.
+    #[test]
+    fn resync_makes_its_device_calls_with_no_guard_of_the_state() {
+        // The fake device: its first word is its vtable, whose slot `DEVICE_SET_TRANSFORM` is
+        // the fake's function. The other slots are 0: the test reaches no other call.
+        let mut vtable = vec![0usize; crate::d3d::DEVICE_SET_TRANSFORM / size_of::<usize>() + 1];
+        vtable[crate::d3d::DEVICE_SET_TRANSFORM / size_of::<usize>()] = set_transform as unsafe extern "system" fn(usize, u32, usize) -> u32 as usize;
+        let device = Box::new(vtable.as_ptr() as usize);
+        let device = &*device as *const usize as usize;
+        // The fake renderer: zeros, with the device at its field. The render state is 0: the
+        // transforms of `resync` do not read it.
+        let mut renderer = vec![0u8; R::renderState + 64];
+        // SAFETY: the field is inside the buffer, and the buffer lives for the test.
+        unsafe { (renderer.as_mut_ptr().add(R::d3dDevice) as *mut usize).write_unaligned(device) };
+
+        // This thread is the main thread of the test: the notes of the device calls open the
+        // state only there. The guard comes after the fakes, so it drops before them.
+        let _fakes = Fakes::install(renderer.as_ptr() as usize);
+        let t = MainThread::for_test();
+        let identity: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        // SAFETY: the matrix is 16 floats that live for the calls; the fakes above stand in
+        // for the host, the renderer and the device for the whole test.
+        unsafe {
+            // The game set a texture transform: the state keeps it.
+            note_transform(D3DTS_TEXTURE0, identity.as_ptr() as usize);
+            // The host takes the transforms, then gives them back: `resync` sends the kept
+            // texture transform to the device.
+            assert_eq!(use_facts(&t, 1 << FACT_DEVICE_TRANSFORMS), Some(1 << FACT_DEVICE_TRANSFORMS));
+            assert_eq!(use_facts(&t, 0), Some(0));
+        }
+
+        assert_eq!(SET_TRANSFORMS.load(Ordering::Relaxed), 1, "resync made one SetTransform for the kept texture transform");
+        assert_eq!(LAST_TRANSFORM.load(Ordering::Relaxed), D3DTS_TEXTURE0);
+        // The state is closed again: a later open does not panic.
+        assert_eq!(state(&t).transforms_known & 0x100, 0x100);
     }
 }

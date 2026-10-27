@@ -94,6 +94,10 @@ pub(crate) struct Switches {
     /// ([`crate::request::TextureTier`]); unset, tier A when the adapter has the binding arrays,
     /// else tier C.
     pub(crate) texture_tier: Option<crate::request::TextureTier>,
+    /// `MGE_XE_MEMORY_MINUTES=<n>`: in the live mode the log gets the memory report
+    /// ([`crate::gpu::memory_lines`]) at the first frame and then every n minutes; 0 or unset:
+    /// none. For a long run (risk 43).
+    pub(crate) memory_minutes: u32,
 }
 
 impl Switches {
@@ -132,6 +136,7 @@ impl Switches {
             // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
             box_seconds: read.parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |v| v.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600)),
             texture_tier: read.choice("MGE_XE_TEXTURE_TIER", &["a", "c"]).map(|tier| if tier == "a" { crate::request::TextureTier::A } else { crate::request::TextureTier::C }),
+            memory_minutes: read.number("MGE_XE_MEMORY_MINUTES").unwrap_or(0),
         };
         read.report();
         switches

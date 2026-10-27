@@ -223,10 +223,10 @@ def point_light(position, diffuse=(1.0, 1.0, 1.0)):
     return b
 
 
-def make(name, geometry, extra_properties=(), effect=None, material_block=None, light=None):
+def make(name, geometry, extra_properties=(), effect=None, material_block=None, light=None, base_texture=BASE_TEXTURE):
     """The blocks: 0 root, 1 shape, 2 data, 3 material, 4 texturing, 5 texture, then the
     extra properties, then the effect and its texture, then the light."""
-    blocks = [node("@_nifx " + name), None, tri_shape_data(geometry), material_block or material(), texturing(5), source_texture(BASE_TEXTURE)]
+    blocks = [node("@_nifx " + name), None, tri_shape_data(geometry), material_block or material(), texturing(5), source_texture(base_texture)]
     shape = av_object(name, 0)
     shape.update({"type": "NiTriShape", "data": 2, "skin": -1, "properties": [3, 4]})
     blocks[1] = shape
@@ -327,10 +327,33 @@ def write_checker(path, size=64, cell=8):
     open(path, "wb").write(header + pixels)
 
 
+def bc7_pixel(level, x, y, size=64):
+    """The pattern of the BC7 test textures, as a colour of level `level`: a gradient of the
+    hue across, darker downwards, a dark line every 8 pixels of the top level, and a red cell
+    at the origin, so that a turned, a mirrored or a wrongly decoded texture shows."""
+    scale = 1 << level
+    tx, ty = x * scale, y * scale
+    if tx < 8 and ty < 8:
+        return (255, 0, 0, 255)
+    if tx % 8 == 0 or ty % 8 == 0:
+        return (24, 24, 24, 255)
+    u, v = tx / size, ty / size
+    r = int(255 * max(0.0, 1.0 - 2.0 * u))
+    g = int(255 * (1.0 - abs(2.0 * u - 1.0)))
+    b = int(255 * max(0.0, 2.0 * u - 1.0))
+    shade = 1.0 - 0.6 * v
+    return (int(r * shade), int(g * shade), int(b * shade), 255)
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     os.makedirs(TEXTURES, exist_ok=True)
     write_checker(os.path.join(TEXTURES, "checker.dds"))
+    # The BC7 textures (MGE XE's BC7, the DX10 header): the plain and the sRGB form, the
+    # same blocks. Both draw as stored on both renderers (the BC7 design).
+    import bc7
+    bc7.write_dds(os.path.join(TEXTURES, "bc7.dds"), 64, bc7_pixel, bc7.DXGI_BC7)
+    bc7.write_dds(os.path.join(TEXTURES, "bc7_srgb.dds"), 64, bc7_pixel, bc7.DXGI_BC7_SRGB)
     b = box(120.0)
     c = cylinder(60.0, 140.0)
     check_winding("box", b)
@@ -361,6 +384,9 @@ def main():
         ("node_lod", make_tree("node_lod", "NiLODNode", [(b, ZERO3), (c, ZERO3)], {"index": 0, "lod_center": list(ZERO3), "lod_levels": [(0.0, 350.0), (350.0, 100000.0)]})),
         ("node_bsp", make_tree("node_bsp", "NiBSPNode", [(b, [-100.0, 0.0, 0.0]), (c, [100.0, 0.0, 0.0])], {"plane_normal": [1.0, 0.0, 0.0], "plane_constant": 0.0})),
         ("node_sortadjust", make_tree("node_sortadjust", "NiSortAdjustNode", [(b, [-80.0, 0.0, 0.0]), (b, [80.0, 0.0, 0.0])], {"sorting_mode": 0, "sub_sorter": -1})),
+        # BC7 base textures: MGE XE's DDS reader patch takes them on both renderers.
+        ("bc7", make("bc7", b, base_texture="textures\\@_nifx\\bc7.dds")),
+        ("bc7_srgb", make("bc7_srgb", b, base_texture="textures\\@_nifx\\bc7_srgb.dds")),
     ]
     lines = ["-- The test NIFs of the flag support, made by tools/make_test_nifs.py (do not edit).",
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",

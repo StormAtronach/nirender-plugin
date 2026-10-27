@@ -95,6 +95,10 @@ The run:
   arrays, a small group of the 6 textures and 6 samplers of each set (the default on an
   adapter without them). The helper's log and the probe say `texture tier: a` or `c`. Tier
   `a` forced on an adapter without the arrays is a refusal (the code 20).
+- `MGE_XE_MEMORY_MINUTES=<n>`: the helper's log gets a memory report at the first frame and
+  then every n minutes, as `memory:` lines: the GPU memory of wgpu's allocator by the kind of
+  object (the label, its numbers as `#`), and the counts of wgpu's objects; 0 or unset, none.
+  For a long run (risk 43).
 - `MGE_XE_BOX_SECONDS=<n>`: a message box of the plugin, of the helper or of MGE XE's
   d3d8.dll closes itself after n seconds, and its text is in that part's log as `box:` lines
   (always); unset or 0, the box waits for the click. The runner sets 5.

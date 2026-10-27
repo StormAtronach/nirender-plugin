@@ -1368,6 +1368,13 @@ pub unsafe fn create(
     let stencil = (shifted & 0xFFFF_FF00) | (shifted & 1);
     let state = render_state_create(rd(this, R::d3dDevice), caps, 1, 1, stencil);
     wr(this, R::renderState, state);
+    // A state of 0 (its port's `operator new` gave 0): the camera data, the light manager and
+    // the texture defaults below would write through it. Create ends as it does when the
+    // texture defaults fail.
+    if state == 0 {
+        crate::log!("renderer: no render state; Create gives no renderer");
+        return abandon(this);
+    }
 
     // left, right, top, bottom, near, far
     let frustum: [u32; 6] = [0xBF80_0000, 0x3F80_0000, 0x3F80_0000, 0xBF80_0000, 0x3DCC_CCCD, 0x3F80_0000];
@@ -1386,6 +1393,12 @@ pub unsafe fn create(
     }
     let pipeline = texture_pipeline::create(this, caps, rd(this, R::renderState), rd(this, R::textureManager), 1);
     wr(this, R::configurableTexturePipeline, pipeline);
+    // A pipeline of 0 (its `operator new` gave 0): the draws would use it. Create ends as it
+    // does when the texture defaults fail.
+    if pipeline == 0 {
+        crate::log!("renderer: no texture pipeline; Create gives no renderer");
+        return abandon(this);
+    }
     if rd::<u32>(this, R::d3dPresentParameters_MultiSampleType) != 0 {
         render_state::set_multisampling(rd(this, R::renderState), 1);
     }
@@ -1548,9 +1561,13 @@ pub unsafe fn dtor(this: usize) {
     crate::shadow::touch(&dtor_port::STATE);
     wr(this, R::vtbl, VTBL_NI_DX8_RENDERER);
     if rd::<usize>(this, R::d3dDevice) != 0 {
-        // Nothing stays bound to the device.
+        // Nothing stays bound to the device. A renderer that Create abandoned for a render state
+        // of 0 has no state: the game's code (0x6A9E10) reads through it; the port skips the
+        // loop.
         let mut stage = 0u32;
-        if rd::<u32>(MAX_TEXTURE_BLEND_STAGES, 0) > 0 {
+        if rd::<usize>(this, R::renderState) == 0 {
+            crate::log!("renderer: destroyed with no render state; no texture stage to unbind");
+        } else if rd::<u32>(MAX_TEXTURE_BLEND_STAGES, 0) > 0 {
             loop {
                 let state: usize = rd(this, R::renderState);
                 let slot = RS::texturePerStage + stage as usize * 4;

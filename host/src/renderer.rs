@@ -948,6 +948,10 @@ impl Renderer {
         };
         // The GPU takes a block format only for a size that is a multiple of 4.
         let decode = block != 0 && (width % 4 != 0 || height % 4 != 0);
+        if decode && !crate::d3d::cpu_decodes(d3d_format) {
+            *self.counts.texture_formats.entry(d3d_format).or_default() += 1;
+            return;
+        }
         let format = if decode { wgpu::TextureFormat::Bgra8Unorm } else { format };
         let mut bytes = Vec::new();
         for level in 0..levels {
@@ -1086,6 +1090,10 @@ impl Renderer {
         // The GPU takes a block format only for a size that is a multiple of 4. For each other
         // size this program makes the pixels of each level itself.
         let decode = block != 0 && (width % 4 != 0 || height % 4 != 0);
+        if decode && !crate::d3d::cpu_decodes(d3d_format) {
+            *self.counts.texture_formats.entry(d3d_format).or_default() += 1;
+            return;
+        }
         let format = if decode { wgpu::TextureFormat::Bgra8Unorm } else { format };
         if decode {
             self.decoded.insert(handle);
@@ -1366,14 +1374,19 @@ impl Renderer {
     }
 
     /// One line of what the helper holds for the handles of the game: textures, geometry,
-    /// materials, and the frees so far.
+    /// materials, and the frees so far. The bytes of the textures are those of their colour
+    /// ([`texture_bytes`]); the depth of a rendered texture is not in them.
     pub(crate) fn held_line(&self) -> String {
         let mb = |bytes: u64| bytes as f64 / 1e6;
+        let written: u64 = self.texture_objects.values().map(|(texture, _)| bytes_of(texture)).sum();
+        let rendered: u64 = self.targets.values().map(|target| bytes_of(&target.texture)).sum();
         format!(
-            "held: {} textures ({} with pixels written here, {} rendered), {} level surfaces; {} geometries, the vertex pool {:.1} of {:.1} MB, the index pool {:.1} of {:.1} MB; {} materials ({} derived); {} texture groups of the stages (tier c); gone: {} materials, {} textures ({} not held, {} replaced before their removal), {} geometries ({} not held), {} instances whose geometry went",
+            "held: {} textures ({} with pixels written here, {:.1} MB; {} rendered, {:.1} MB), {} level surfaces; {} geometries, the vertex pool {:.1} of {:.1} MB, the index pool {:.1} of {:.1} MB; {} materials ({} derived); {} texture groups of the stages (tier c); gone: {} materials, {} textures ({} not held, {} replaced before their removal), {} geometries ({} not held), {} instances whose geometry went",
             self.textures.len(),
             self.texture_objects.len(),
+            mb(written),
             self.targets.len(),
+            mb(rendered),
             self.surfaces.len(),
             self.geometries.len(),
             mb(self.vertex_pool.used),
@@ -1606,5 +1619,56 @@ impl Renderer {
             self.pipelines.insert(key, pipeline.clone());
             Some(pipeline)
         }
+    }
+}
+
+/// The bytes of a 2D texture or texture array as its format packs them: each level of each
+/// layer in whole blocks, for each sample. 0 for a format with no one block size (a depth with
+/// a stencil).
+pub(crate) fn texture_bytes(width: u32, height: u32, layers: u32, levels: u32, samples: u32, format: wgpu::TextureFormat) -> u64 {
+    let Some(block_bytes) = format.block_copy_size(None) else { return 0 };
+    let (block_width, block_height) = format.block_dimensions();
+    let level_bytes = |level: u32| {
+        let blocks_across = (width >> level).max(1).div_ceil(block_width) as u64;
+        let blocks_down = (height >> level).max(1).div_ceil(block_height) as u64;
+        blocks_across * blocks_down * block_bytes as u64
+    };
+    (0..levels).map(level_bytes).sum::<u64>() * layers as u64 * samples as u64
+}
+
+/// The bytes of a texture of the helper ([`texture_bytes`]).
+fn bytes_of(texture: &wgpu::Texture) -> u64 {
+    let size = texture.size();
+    texture_bytes(size.width, size.height, size.depth_or_array_layers, texture.mip_level_count(), texture.sample_count(), texture.format())
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::texture_bytes;
+    use crate::wgpu::TextureFormat;
+
+    #[test]
+    fn held_bytes_of_a_plain_texture_with_its_levels() {
+        // 4x4 RGBA8: 64 bytes, then 2x2 16 and 1x1 4.
+        assert_eq!(texture_bytes(4, 4, 1, 3, 1, TextureFormat::Rgba8Unorm), 84);
+    }
+
+    #[test]
+    fn held_bytes_of_a_block_format_count_whole_blocks() {
+        // BC1: 8 bytes a 4x4 block. 8x8 is 4 blocks, 4x4 one, and 2x2 and 1x1 one each.
+        assert_eq!(texture_bytes(8, 8, 1, 4, 1, TextureFormat::Bc1RgbaUnorm), 32 + 8 + 8 + 8);
+        // BC7: 16 bytes a block; a 6x6 texture takes 2x2 blocks.
+        assert_eq!(texture_bytes(6, 6, 1, 1, 1, TextureFormat::Bc7RgbaUnorm), 64);
+    }
+
+    #[test]
+    fn held_bytes_of_layers_and_samples() {
+        assert_eq!(texture_bytes(4, 4, 6, 1, 1, TextureFormat::Rgba8Unorm), 6 * 64);
+        assert_eq!(texture_bytes(4, 4, 1, 1, 4, TextureFormat::Rgba8Unorm), 4 * 64);
+    }
+
+    #[test]
+    fn held_bytes_of_a_depth_with_a_stencil_are_none() {
+        assert_eq!(texture_bytes(4, 4, 1, 1, 1, TextureFormat::Depth24PlusStencil8), 0);
     }
 }

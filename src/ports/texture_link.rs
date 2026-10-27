@@ -64,12 +64,24 @@ unsafe fn texture_made(converted: usize) {
     cdecl1(TEXTURE_MADE, record.as_mut_ptr() as u32);
 }
 
+/// The Direct3D format of the texture of `this`, made from `converted`: 'BC7 ' for the pixel
+/// format 8 (the 16-byte blocks of DXT5) with MGE XE's tag of BC7 in its first channel mask,
+/// as MGE XE's `patchLoadTexture2DCreate` reads it; else the format of the engine's table
+/// for the pixel format of `this`. The tag is in the converted pixel data, not in the format
+/// of `this`, which is a copy of the renderer's DXT5 entry.
+unsafe fn d3d_format_of(this: usize, converted: usize) -> u32 {
+    if crate::d3d::is_bc7(rd(converted, PD::format_format), rd(converted, PD::format_channelMasks)) {
+        return crate::d3d::D3DFMT_BC7;
+    }
+    cdecl1(D3D_FORMAT_FOR_PIXEL_FORMAT, (this + SD::format) as u32)
+}
+
 /// Makes the D3D8 texture of `this` on the device and copies each level of `converted` into
 /// it. Returns the D3D8 format.
 unsafe fn make_on_device(this: usize, converted: usize) -> u32 {
     let mut d3d_format = 0;
     if rd::<usize>(this, SD::d3dTexture) == 0 {
-        d3d_format = cdecl1(D3D_FORMAT_FOR_PIXEL_FORMAT, (this + SD::format) as u32);
+        d3d_format = d3d_format_of(this, converted);
         wr::<u32>(this, SD::levels, rd(converted, PD::mipmapLevels));
         let device: usize = rd(rd::<usize>(this, SD::renderer), R::d3dDevice);
         critical_section_lock(CREATE_CRITICAL_SECTION, NAME_CREATE_SURFACE);
@@ -237,7 +249,7 @@ pub unsafe fn create(t: &MainThread, texture: usize, renderer: usize) -> usize {
             width: rd(this, SD::width),
             height: rd(this, SD::height),
             levels,
-            d3d_format: cdecl1(D3D_FORMAT_FOR_PIXEL_FORMAT, (this + SD::format) as u32),
+            d3d_format: d3d_format_of(this, converted),
             pixel_format: rd(converted, PD::format_format),
             pixel_format_tag: rd(converted, PD::format_channelMasks),
             bytes_per_pixel: rd(converted, PD::bytesPerPixel),
