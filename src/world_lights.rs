@@ -15,7 +15,7 @@
 //! too.
 
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -62,7 +62,7 @@ struct WorldSet {
 }
 
 static SET: Mutex<Option<WorldSet>> = Mutex::new(None);
-static INSTALLED: AtomicBool = AtomicBool::new(false);
+static INSTALLED: crate::sync::InstallState = crate::sync::InstallState::new();
 static PLACED: AtomicU64 = AtomicU64::new(0);
 static REMOVED: AtomicU64 = AtomicU64::new(0);
 /// The lights destroyed while in the set: the engine destroyed them without a removal.
@@ -81,19 +81,21 @@ fn with_set<R>(f: impl FnOnce(&mut WorldSet) -> R) -> Option<R> {
 /// would stay in the set. A refusal leaves the plugin without the lights of the world: the
 /// helper's world mode then has no lights.
 pub unsafe fn install() {
-    if INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.begin() {
         return;
     }
     use crate::mwse_native::{subscribe, NATIVE_EVENT_LIGHT_PLACED, NATIVE_EVENT_LIGHT_REMOVED};
     if let Err(error) = subscribe(NATIVE_EVENT_LIGHT_REMOVED, removed) {
         crate::log!("world lights: {error}: no lights of the world");
+        INSTALLED.finish(false);
         return;
     }
     if let Err(error) = subscribe(NATIVE_EVENT_LIGHT_PLACED, placed) {
         crate::log!("world lights: {error}: no lights of the world");
+        INSTALLED.finish(false);
         return;
     }
-    INSTALLED.store(true, Ordering::Relaxed);
+    INSTALLED.finish(true);
     crate::log!("world lights: MWSE reports each light placed in the world and each light removed");
 }
 
@@ -155,7 +157,7 @@ pub fn resend() {
 /// At the start of a world scene: the values of each light of the set that changed, then the
 /// keys of the lights that are on when the set changed.
 pub unsafe fn send(t: &MainThread) {
-    if !INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.is_installed() {
         return;
     }
     // The lights are read under the lock; the records go after it.
