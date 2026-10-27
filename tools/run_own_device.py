@@ -130,6 +130,9 @@ def main():
         os.environ["NIRENDER_HOST_EXE"] = HOST
     os.environ["NIRENDER_HOST_LOG"] = run.path("host.txt")
     os.environ["NIRENDER_BACKEND"] = args.backend
+    # A message box of the plugin, the helper or MGE XE closes itself after 5 s: a run never
+    # waits for a click, and the box's text is in the log (the failure-path design, 5.1).
+    os.environ["MGE_XE_BOX_SECONDS"] = "5"
     # Pictures of the start of the game, before the scenario can ask for one.
     # Pictures of the start of the game, before the scenario can ask for one, and of a frame of
     # a film (the 120th: a film starts from black): a film holds the main loop, so the scenario

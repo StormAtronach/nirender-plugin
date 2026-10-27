@@ -11,8 +11,8 @@
    the repo exists.
 4. Every script `tools/*.py` has a row in tools/README.md (its name in back-quotes).
 
-With `--mge`: checks 1 and 2 for MGE XE's code (`mgeHost64/src`, `d3d8/src` of the
-MGE-XE-G7-render-link worktree next to this repo) against its RENDERER.md.
+With `--mge`: checks 1 and 2 for MGE XE's code (`mgeHost64/src`, `d3d8/src` and the C++ of
+`d3d8/cpp` of the MGE-XE-G7-render-link worktree next to this repo) against its RENDERER.md.
 
 The exit code is 0 when all checks pass.
 """
@@ -39,7 +39,7 @@ def code_files(repo, folders):
     for folder in folders:
         for root, _, names in os.walk(os.path.join(repo, folder)):
             for name in names:
-                if name.endswith((".rs", ".py", ".lua")):
+                if name.endswith((".rs", ".py", ".lua", ".cpp", ".h")):
                     yield os.path.join(root, name)
 
 
@@ -60,7 +60,7 @@ def switches(repo, folders, document):
 
 def main():
     if "--mge" in sys.argv[1:]:
-        problems, read = switches(MGE, ("mgeHost64/src", "d3d8/src"), os.path.join(MGE, "RENDERER.md"))
+        problems, read = switches(MGE, ("mgeHost64/src", "d3d8/src", "d3d8/cpp"), os.path.join(MGE, "RENDERER.md"))
         for problem in problems:
             print(problem)
         print(f"{len(read)} switches read in MGE XE's code, {len(problems)} problems")

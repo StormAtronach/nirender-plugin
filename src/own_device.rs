@@ -38,6 +38,7 @@ extern "system" {
 
 extern "system" {
     fn GetModuleHandleExA(flags: u32, address: *const core::ffi::c_void, module: *mut usize) -> i32;
+    fn GetModuleHandleA(name: *const u8) -> usize;
     fn GetModuleFileNameA(module: usize, name: *mut u8, size: u32) -> u32;
     fn GetCurrentProcessId() -> u32;
     fn CreateProcessA(
@@ -83,18 +84,57 @@ pub unsafe fn check_host() {
         crate::log!("own device: the exit code is a refusal of the host program, which showed its message (nirender-host.log has the reason)");
         return;
     }
-    const MB_ICONERROR: u32 = 0x10;
-    const MB_SETFOREGROUND: u32 = 0x1_0000;
-    const MB_TOPMOST: u32 = 0x4_0000;
-    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let name = HOST_NAME.get().map(String::as_str).unwrap_or("the host program");
-    let text = wide(&format!(
+    message_box(&format!(
         "The wgpu renderer of MGE XE ({name}) has stopped (exit code {code:#x}).\n\n\
          The game cannot show a new picture. Quit the game and start it again.\n\n\
          The logs nirender-host.log and nirender.log in the folder of the game have the details."
     ));
+}
+
+/// Shows `text` to the player in a box with the caption "MGE XE" and waits until it is
+/// closed. The rule of every box of the three parts (the failure-path design of the Numidium
+/// docs, sections 5 and 5.1; the helper's `gpu::message_box` and d3d8.dll's box follow it
+/// too): each line goes to the log first as "box: "; with `MGE_XE_BOX_SECONDS=<n>` the box
+/// closes itself after n seconds, through MessageBoxTimeoutW of user32 (not in the documented
+/// API, so taken by GetProcAddress; without it the box is only logged); without the switch it
+/// waits for the click.
+///
+/// # Safety
+///
+/// Called on the thread of the game, as the other calls of this module are.
+pub unsafe fn message_box(text: &str) {
+    type MessageBoxTimeout = unsafe extern "system" fn(isize, *const u16, *const u16, u32, u16, u32) -> i32;
+    const MB_ICONERROR: u32 = 0x10;
+    const MB_SETFOREGROUND: u32 = 0x1_0000;
+    const MB_TOPMOST: u32 = 0x4_0000;
+    const TIMED_OUT: i32 = 32000;
+    for line in text.lines() {
+        crate::log!("box: {line}");
+    }
+    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let text = wide(text);
     let caption = wide("MGE XE");
-    MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+    let flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
+    let seconds: u32 = std::env::var("MGE_XE_BOX_SECONDS").ok().and_then(|value| value.trim().parse().ok()).unwrap_or(0);
+    let answer = if seconds == 0 {
+        MessageBoxW(0, text.as_ptr(), caption.as_ptr(), flags)
+    } else {
+        let user32 = GetModuleHandleA(c"user32.dll".as_ptr().cast());
+        let timed = crate::win::GetProcAddress(user32 as *mut core::ffi::c_void, c"MessageBoxTimeoutW".as_ptr().cast());
+        if timed.is_null() {
+            crate::log!("box: not shown: this Windows has no MessageBoxTimeoutW");
+            return;
+        }
+        // SAFETY: the function taken from user32 has the signature of MessageBoxTimeoutW.
+        let timed: MessageBoxTimeout = core::mem::transmute(timed);
+        timed(0, text.as_ptr(), caption.as_ptr(), flags, 0, seconds * 1000)
+    };
+    if answer == TIMED_OUT {
+        crate::log!("box: closed after {seconds} s, no click");
+    } else {
+        crate::log!("box: closed by a click");
+    }
 }
 
 /// The D3DCAPS8 of the device of the testing computer (MGE XE on DXVK), from

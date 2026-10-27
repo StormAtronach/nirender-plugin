@@ -1028,6 +1028,9 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         std::thread::sleep(Duration::from_millis(5));
     };
     assert_eq!(tag, super::tag::HEADER, "the first record is not the head of the stream");
+    // The window of the game owns the boxes of this program, the one of a refused stream too.
+    let game_window = if data.len() >= 12 { super::word(&data, 8) as isize } else { 0 };
+    super::gpu::set_owner_window(game_window);
     // The stream format of the plugin against this build's, before any record is read. A
     // difference ends this program: the plugin reads the exit code and shows no second box.
     let reader = format!("{} ({})", program_name(), reader_build(extension.as_deref()));
@@ -1042,7 +1045,6 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         }
     }
     let size = (super::word(&data, 0).max(64), super::word(&data, 4).max(64));
-    let game_window = if data.len() >= 12 { super::word(&data, 8) as isize } else { 0 };
     let embed = args.iter().any(|a| a == "--embed");
     println!("picture {} x {}, window of the game {game_window:#x}{}", size.0, size.1, if embed { ", the host goes into it" } else { "" });
     let mut app = App {
