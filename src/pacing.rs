@@ -16,7 +16,8 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use crate::capture::{ticks, ticks_per_second, wait_step, RING_BUSY, RING_DONE_AT, RING_DONE_TIME, RING_HEAD, RING_NEXT_START};
+use crate::capture::{ticks, ticks_per_second, wait_step};
+use crate::stream_format::{RING_BUSY, RING_DONE_AT, RING_DONE_TIME, RING_HEAD, RING_NEXT_START, SHOWN_EVENT};
 
 extern "system" {
     fn MapViewOfFile(mapping: isize, access: u32, offset_high: u32, offset_low: u32, bytes: usize) -> *mut u8;
@@ -109,7 +110,7 @@ pub unsafe fn start(mapping: isize, name: &str) {
     // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (2), TIMER_ALL_ACCESS.
     let timer = CreateWaitableTimerExW(core::ptr::null(), core::ptr::null(), 2, 0x1F_0003);
     // An event that resets itself: one wait takes one set.
-    let mut event_name = format!("{name}-shown").into_bytes();
+    let mut event_name = format!("{name}{SHOWN_EVENT}").into_bytes();
     event_name.push(0);
     let shown = CreateEventA(core::ptr::null(), 0, 0, event_name.as_ptr());
     let pacer = Pacer { head, timer, shown, before: 0, last: 0, end: 0, started: 0, work: 0.0, margin: 0.0, leads: 0.0, frames: 0 };

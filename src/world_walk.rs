@@ -37,7 +37,7 @@ static WALKS: AtomicU64 = AtomicU64::new(0);
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 
 /// True when the plugin owns MWSE's override of the root's walk: the stream then carries the
-/// event, and its header says so (`capture::HEADER_WORLD_WALK`).
+/// event, and its header says so (`stream_format::HEADER_WORLD_WALK`).
 pub fn installed() -> bool {
     INSTALLED.is_installed()
 }

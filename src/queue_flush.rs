@@ -20,7 +20,7 @@ static FINISHED: AtomicU64 = AtomicU64::new(0);
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 
 /// True when the plugin listens to MWSE's event: the stream then carries the event, and its
-/// header says so (`capture::HEADER_QUEUE_FLUSH`).
+/// header says so (`stream_format::HEADER_QUEUE_FLUSH`).
 pub fn installed() -> bool {
     INSTALLED.is_installed()
 }

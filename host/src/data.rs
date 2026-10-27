@@ -55,24 +55,11 @@ pub(crate) const CALL_COPY_PIXELS: u32 = 23;
 
 pub(crate) const EVENT_SET_TARGET: u32 = 2;
 /// The walk of the world camera's root left the sky root: the world starts here (the
-/// plugin's `world_walk`; the header bit [`HEADER_WORLD_WALK`]).
+/// plugin's `world_walk`; the header bit [`HEADER_WORLD_WALK`](crate::stream_format::HEADER_WORLD_WALK)).
 pub(crate) const EVENT_WORLD_WALK: u32 = 4;
 /// The engine drew the main sorted queue of the Click: the end of its flush (the plugin's
-/// `queue_flush`; the header bit [`HEADER_QUEUE_FLUSH`]).
+/// `queue_flush`; the header bit [`HEADER_QUEUE_FLUSH`](crate::stream_format::HEADER_QUEUE_FLUSH)).
 pub(crate) const EVENT_QUEUE_FLUSHED: u32 = 5;
-/// Bits of the fourth word of the header: the draws of the engine's sorted queue are marked;
-/// the world's start comes as [`EVENT_WORLD_WALK`]; the scene records carry [`SCENE_BACK_BUFFER`];
-/// the end of the flush of the main sorted queue comes as [`EVENT_QUEUE_FLUSHED`]; the table's
-/// blends that the engine draws in its walk have their places there ([`tag::INSTANCE_WALK`]);
-/// the scene records carry [`SCENE_WIREFRAME`].
-pub(crate) const HEADER_QUEUE_MARKED: u32 = 1;
-pub(crate) const HEADER_WORLD_WALK: u32 = 2;
-pub(crate) const HEADER_SCENE_TARGET: u32 = 4;
-pub(crate) const HEADER_QUEUE_FLUSH: u32 = 8;
-pub(crate) const HEADER_WALK_PLACES: u32 = 16;
-pub(crate) const HEADER_SCENE_WIREFRAME: u32 = 32;
-pub(crate) const HEADER_ENVMAP_KNOWN: u32 = 64;
-pub(crate) const HEADER_ENVMAP_LIT: u32 = 128;
 /// A flag of the scene record: the renderer's target at `BeginPaint` is the back buffer.
 pub(crate) const SCENE_BACK_BUFFER: u32 = 0x8;
 /// A flag of the scene record: the game draws the world in wireframe (its shared wireframe

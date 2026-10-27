@@ -81,6 +81,9 @@ pub(crate) struct Switches {
     /// `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a
     /// child window of it: for an A/B of the mouse's lag.
     pub(crate) game_window: bool,
+    /// `MGE_XE_WATCHDOG=0`: no watchdog of the frame thread ([`crate::watchdog`]): for a test
+    /// of the plugin's own limit on a stalled helper.
+    pub(crate) watchdog: bool,
     /// `NIRENDER_FORCE_GROWTH=<n>`: every n frames the retained table grows on purpose, for
     /// the test of its growth; 0 is never.
     pub(crate) force_growth: u32,
@@ -127,6 +130,7 @@ impl Switches {
                 _ => AutoNoVsync,
             }),
             game_window: read.choice("MGE_XE_WINDOW", &["game", "child"]) == Some("game"),
+            watchdog: read.on("MGE_XE_WATCHDOG") != Some(false),
             force_growth: read.number("NIRENDER_FORCE_GROWTH").unwrap_or(0),
             growth_shots: read.text("NIRENDER_GROWTH_SHOTS"),
             // At most an hour: the timeout of the box is in ms, and a larger value overflows it.

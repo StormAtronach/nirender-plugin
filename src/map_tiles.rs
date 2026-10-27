@@ -186,7 +186,7 @@ unsafe fn copy(t: &MainThread, this: usize) -> bool {
     }
     let (width, height) = (rd::<u32>(this, TARGET_WIDTH), rd::<u32>(this, TARGET_HEIGHT));
     let size = width as usize * height as usize * 4;
-    if size == 0 || size > crate::capture::TILE_BYTES {
+    if size == 0 || size > crate::stream_format::TILE_BYTES {
         return false;
     }
     let rendered: usize = rd(this, RENDERED_TEXTURE);
@@ -243,7 +243,7 @@ unsafe fn make_room(t: &MainThread) {
     loop {
         let mut open = OPEN.get(t);
         let Some(oldest) = open.first() else { return };
-        if (next.wrapping_sub(oldest.ticket) as usize) < crate::capture::TILE_SLOTS {
+        if (next.wrapping_sub(oldest.ticket) as usize) < crate::stream_format::TILE_SLOTS {
             return;
         }
         let oldest = open.remove(0);

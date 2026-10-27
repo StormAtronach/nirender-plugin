@@ -168,6 +168,11 @@ if ownDevice and installed and os.getenv("NIRENDER_NOTIFIER") ~= "0" then
     end)
 end
 
+-- The failure path of the renderer: the autosave and the message box when the helper stops.
+if ownDevice and installed then
+    dofile("Data Files\\MWSE\\mods\\nirender\\failure.lua")
+end
+
 event.register("initialized", function()
     nirender.loadingDone()
     if installed then

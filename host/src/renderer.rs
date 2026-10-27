@@ -293,7 +293,7 @@ impl Renderer {
         let request = request::request(backends, window, target_format, texture_slots, samples)?;
         request.report();
         let request::Request { adapter: _, info, surface, device, queue, target_format, surface_usages, present_modes, depth_format, samples, array_cap, sampler_cap, .. } = request;
-        gpu::watch(&device, &info, surface.is_some());
+        gpu::watch(&device, &info);
 
         let multisample = (samples > 1).then(|| multisample::Multisample::new(&device, target_format, depth_format, samples));
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);

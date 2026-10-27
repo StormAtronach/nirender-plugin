@@ -33,12 +33,10 @@ const NOT_AVAILABLE: u32 = 0x8876_086A;
 extern "system" {
     fn EnumDisplaySettingsA(device: *const u8, mode: u32, out: *mut u8) -> i32;
     fn MonitorFromWindow(window: usize, flags: u32) -> usize;
-    fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
 }
 
 extern "system" {
     fn GetModuleHandleExA(flags: u32, address: *const core::ffi::c_void, module: *mut usize) -> i32;
-    fn GetModuleHandleA(name: *const u8) -> usize;
     fn GetModuleFileNameA(module: usize, name: *mut u8, size: u32) -> u32;
     fn GetCurrentProcessId() -> u32;
     fn CreateProcessA(
@@ -55,23 +53,34 @@ extern "system" {
     ) -> i32;
     fn CloseHandle(handle: isize) -> i32;
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
+    fn TerminateProcess(process: isize, code: u32) -> i32;
     fn GetExitCodeProcess(process: isize, code: *mut u32) -> i32;
 }
 
-/// The process of the host program that `start_stream` started, or 0, and the name of its
-/// file.
+/// The process of the host program that `start_stream` started, or 0.
 static HOST_PROCESS: AtomicIsize = AtomicIsize::new(0);
-static HOST_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// The window of the game that the device draws into, from the start of the stream, or 0:
+/// a stop box closes it when the box closes (`failure.rs`).
+static GAME_WINDOW: AtomicUsize = AtomicUsize::new(0);
+
+/// The window of the game, or 0 before the device is made.
+pub fn game_window() -> usize {
+    GAME_WINDOW.load(Ordering::Relaxed)
+}
 
 /// The game showed a frame. When the host program has ended, no new picture goes into the
-/// window: the plugin says so one time, in its log and in a message box. The host program
-/// ends after the game at the end of a session, so this finds a crash or a kill only. A
-/// device that the host program lost does not end it: the host program shows its own box.
-pub unsafe fn check_host() {
+/// window: the plugin logs the exit code and starts the failure path (`failure`: the
+/// autosave, then the box), unless the host program ended on a refusal of its own, which it
+/// named in its own box. The host program ends after the game at the end of a session, so
+/// this finds a crash, its watchdog, `end_host` or a kill only. A device that the host
+/// program lost does not end it: the host program says so in a message (`capture.rs`).
+/// Returns true when the host program has ended: the stream then ends. `allowance` is the
+/// host program's allowance word (`stream_format::RING_ALLOWANCE`), for the box of a stall.
+pub unsafe fn check_host(allowance: u32) -> bool {
     let process = HOST_PROCESS.load(Ordering::Relaxed);
     // WAIT_OBJECT_0: the process has ended.
     if process == 0 || WaitForSingleObject(process, 0) != 0 {
-        return;
+        return false;
     }
     HOST_PROCESS.store(0, Ordering::Relaxed);
     let mut code = 0u32;
@@ -82,64 +91,47 @@ pub unsafe fn check_host() {
     // it named the reason in its log and in its own message box.
     if crate::stream_format::helper_said_why(code) {
         crate::log!("own device: the exit code is a refusal of the host program, which showed its message (nirender-host.log has the reason)");
-        return;
+        return true;
     }
-    let name = HOST_NAME.get().map(String::as_str).unwrap_or("the host program");
-    message_box(&format!(
-        "The wgpu renderer of MGE XE ({name}) has stopped (exit code {code:#x}).\n\n\
-         The game cannot show a new picture: close it with Alt+F4.\n\n\
-         The folder of the game has the details: the logs nirender-host.log, mgeXE.log (its lines \
-         that start with \"nirender: \") and mgeHost64.log, and the minidump numidium.dmp after a crash \
-         of the renderer."
-    ));
+    crate::failure::found(crate::failure::Cause::of_exit_code(code, allowance));
+    true
 }
 
-/// Shows `text` to the player in a box with the caption "MGE XE" and waits until it is
-/// closed. The rule of every box of the three parts (the failure-path design of the Numidium
-/// docs, sections 5 and 5.1; the helper's `gpu::message_box` and d3d8.dll's box follow it
-/// too): each line goes to the log first as "box: "; with `MGE_XE_BOX_SECONDS=<n>` the box
-/// closes itself after n seconds, through MessageBoxTimeoutW of user32 (not in the documented
-/// API, so taken by GetProcAddress; without it the box is only logged); without the switch it
-/// waits for the click.
+/// Ends the host program with the exit code `code`, when it runs: for a host program that
+/// reads no record (the ring wait of `capture.rs`). `check_host` then finds the code.
 ///
 /// # Safety
 ///
-/// Called on the thread of the game, as the other calls of this module are.
-pub unsafe fn message_box(text: &str) {
-    type MessageBoxTimeout = unsafe extern "system" fn(isize, *const u16, *const u16, u32, u16, u32) -> i32;
-    const MB_ICONERROR: u32 = 0x10;
-    const MB_SETFOREGROUND: u32 = 0x1_0000;
-    const MB_TOPMOST: u32 = 0x4_0000;
-    for line in text.lines() {
-        crate::log!("box: {line}");
-    }
-    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let text = wide(text);
-    let caption = wide("MGE XE");
-    let flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
-    // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
-    let seconds: u32 = crate::switches::parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |value| value.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600));
-    let started = std::time::Instant::now();
-    if seconds == 0 {
-        MessageBoxW(0, text.as_ptr(), caption.as_ptr(), flags);
-    } else {
-        let user32 = GetModuleHandleA(c"user32.dll".as_ptr().cast());
-        let timed = crate::win::GetProcAddress(user32 as *mut core::ffi::c_void, c"MessageBoxTimeoutW".as_ptr().cast());
-        if timed.is_null() {
-            crate::log!("box: not shown: this Windows has no MessageBoxTimeoutW");
-            return;
+/// The process handle of `HOST_PROCESS` is one that `start_stream` made and `check_host` has
+/// not closed: the handle stays open until `check_host` finds the end.
+pub unsafe fn end_host(code: u32) {
+    let process = HOST_PROCESS.load(Ordering::Relaxed);
+    if process != 0 && TerminateProcess(process, code) != 0 {
+        crate::log!("own device: the host program is ended with the exit code {code}");
+        // TerminateProcess returns before the process has ended. The wait lets the check of
+        // the host at this frame end find the exit code before the stream stops
+        // (`capture::frame_end`): after the stop no frame end checks again. The decision
+        // does not wait for it: the code and the box stand.
+        let started = std::time::Instant::now();
+        // WAIT_OBJECT_0: the process has ended.
+        if WaitForSingleObject(process, 2000) == 0 {
+            crate::log!("own device: the helper ended in {} ms", started.elapsed().as_millis());
+        } else {
+            crate::log!("own device: the helper had not ended after 2 s (a driver call); the plugin goes on");
         }
-        // SAFETY: the function taken from user32 has the signature of MessageBoxTimeoutW.
-        let timed: MessageBoxTimeout = core::mem::transmute(timed);
-        timed(0, text.as_ptr(), caption.as_ptr(), flags, 0, seconds * 1000);
     }
-    // The elapsed time tells a timeout from a click: MessageBoxTimeoutW answers IDOK on the
-    // timeout on this machine, not the documented 32000 [V Rob's run, 2026-10-27].
-    if seconds != 0 && started.elapsed() >= std::time::Duration::from_secs(u64::from(seconds)) {
-        crate::log!("box: closed after {seconds} s, no click");
-    } else {
-        crate::log!("box: closed by a click");
-    }
+}
+
+/// True when the host program that `start_stream` started has ended; its exit code stays for
+/// `check_host`. For the wait for room in a full ring (`capture.rs`).
+///
+/// # Safety
+///
+/// Called under the device lock, as `check_host` is: the handle is closed only there.
+pub unsafe fn host_ended() -> bool {
+    let process = HOST_PROCESS.load(Ordering::Relaxed);
+    // WAIT_OBJECT_0: the process has ended.
+    process != 0 && WaitForSingleObject(process, 0) == 0
 }
 
 /// The D3DCAPS8 of the device of the testing computer (MGE XE on DXVK), from
@@ -459,6 +451,7 @@ unsafe fn device_window(s: &State) -> u32 {
 /// NIRENDER_HOST_EXE names, or the one in the folder of this plugin.
 unsafe fn start_stream(s: &State) {
     crate::own_host::activate();
+    GAME_WINDOW.store(device_window(s) as usize, Ordering::Relaxed);
     let name = format!("nirender-{}", GetCurrentProcessId());
     // 128 MB: a record must fit the ring whole, and the largest level of a texture of a
     // modded install is 64 MiB (4096 x 4096 ARGB, or 8192 x 8192 DXT5), which a 64 MB ring
@@ -524,8 +517,6 @@ unsafe fn start_stream(s: &State) {
     if started != 0 {
         // The process stays open: `check_host` asks it whether it has ended.
         HOST_PROCESS.store(information[0] as isize, Ordering::Relaxed);
-        let file = std::path::Path::new(&program).file_name().map(|name| name.to_string_lossy().into_owned());
-        let _ = HOST_NAME.set(file.unwrap_or(program.clone()));
         CloseHandle(information[1] as isize);
     }
     crate::log!("own device: host program {}: {command}", if started != 0 { "started" } else { "NOT started" });

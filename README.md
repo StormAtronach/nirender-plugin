@@ -211,6 +211,8 @@ MGE-XE-G7 render-link worktree.
   `AutoNoVsync`).
 - `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a child
   window of it: for an A/B of the mouse's lag.
+- `MGE_XE_WATCHDOG=0`: no watchdog of the frame thread in the helper (`host/src/watchdog.rs`):
+  for a test of the plugin's own limit of 10 s on a helper that reads no record.
 - `MGE_XE_CORES=0`: the threads of the helper are left to the scheduler.
 - `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n, for the test of a full
   room; below 256 the request refuses the adapter, for the test of `numidium.exe --probe`
