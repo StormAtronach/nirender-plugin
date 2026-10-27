@@ -43,9 +43,11 @@ CHECKS = {
     "offset moves": (PLUGIN / "tools" / "check_offset_moves.py", PLUGIN, ["--cached"]),
     # The IDA types of the layouts against MWSE's SharedSE and TES3 layouts.
     "sharedse layouts": (PLUGIN / "tools" / "check_sharedse_layouts.py", REPOS / "MWSE" / "MWSE" / "SharedSE"),
+    # The fixture test of the third-party notices writer of the release archive.
+    "notices": (PLUGIN / "tools" / "third_party_notices.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts"],
+    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices"],
     "mge": ["mge readme", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))

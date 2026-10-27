@@ -21,6 +21,16 @@ The steps:
    for the root) and their paths under SOURCE: for example a mod laid out as the game
    folder (`--add-dir <stage of True Water>=.`). One argument for a folder: 157 `--add` did
    not fit on the command line of Windows (v0.2.15).
+   The license files go in with them: `COPYING-GPL-2.0.txt` (the text of the GNU General
+   Public License, version 2, from the MGE XE repository: the license of MGE XE G7, of
+   MWSE.dll and of watervolumes.dll), `LICENSE-nirender.txt` (this repository's LICENSE),
+   `THIRD-PARTY-NOTICES.txt` (the crates inside the programs, written by
+   `tools/third_party_notices.py` from the MGE XE lock file), and `SOURCES.txt`, which names
+   each part of the archive with its license and its source repository at its commit. The
+   MGE XE and nirender commits come from the two repositories; each `--source NAME=URL@COMMIT`
+   adds a part whose binary comes from `--add` or `--add-dir`, for example
+   `--source "MWSE.dll=https://github.com/StormAtronach/MWSE@652cb8ae31"` and
+   `--source "True Water=https://github.com/StormAtronach/MWSE-water-volumes@208499f"`.
 4. All other releases of the repository are deleted, so that a tester finds one build only.
    Their tags stay. `--keep-old` leaves the releases.
 
@@ -71,6 +81,58 @@ def clean_and_pushed(repo, dry_run):
         stop("%s has %s commits that are not pushed" % (repo, ahead), dry_run)
 
 
+def sources_text(mge_url, mge_commit, plugin_url, plugin_tag, plugin_commit, sources):
+    """The text of SOURCES.txt: each part of the archive, its license and its source at its
+    commit. `sources` is a list of (name, url, commit) for the parts added from outside the
+    two repositories."""
+    lines = [
+        "THE SOURCES OF THIS ARCHIVE",
+        "",
+        "Each part of the archive, its license, and its complete source at the commit it was",
+        "built from. The license texts are in the archive: COPYING-GPL-2.0.txt (the GNU General",
+        "Public License, version 2), LICENSE-nirender.txt (MIT), THIRD-PARTY-NOTICES.txt (the",
+        "crates inside the programs), and the two files of True Water.",
+        "",
+        "MGE XE G7 (d3d8.dll, dinput8.dll, MGEXEgui.exe, the MGE XE part of numidium.exe, the",
+        "shaders, textures, meshes, the esp and the MGE XE Options mod): GNU General Public",
+        "License, version 2.",
+        "  %s at %s" % (mge_url, mge_commit),
+        "",
+        "nirender (Data Files/MWSE/lib/akulakhan.dll, Data Files/MWSE/mods/nirender, the host",
+        "crate of numidium.exe): MIT. numidium.exe as a whole is distributed under the GNU",
+        "General Public License, version 2, since it contains the code of MGE XE G7.",
+        "  %s at %s (the tag %s)" % (plugin_url, plugin_commit, plugin_tag),
+        "",
+    ]
+    for name, url, commit in sources:
+        lines += ["%s: see its license files in the archive, or its repository." % name, "  %s at %s" % (url, commit), ""]
+    lines += [
+        "The crates inside numidium.exe, MGEXEgui.exe, d3d8.dll and dinput8.dll: see",
+        "THIRD-PARTY-NOTICES.txt.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def license_additions(mge, plugin_url, plugin_tag, sources, stage):
+    """Writes SOURCES.txt and THIRD-PARTY-NOTICES.txt into `stage` and returns the license
+    files to add to the archive, as (source, path) pairs."""
+    os.makedirs(stage, exist_ok=True)
+    mge_url = run(["git", "-C", mge, "remote", "get-url", "origin"], capture=True).strip()
+    mge_commit = run(["git", "-C", mge, "rev-parse", "HEAD"], capture=True).strip()
+    plugin_commit = run(["git", "-C", PLUGIN, "rev-parse", "HEAD"], capture=True).strip()
+    sources_path = os.path.join(stage, "SOURCES.txt")
+    with open(sources_path, "w", encoding="utf-8", newline="\n") as out:
+        out.write(sources_text(mge_url, mge_commit, plugin_url, plugin_tag, plugin_commit, sources))
+    notices_path = os.path.join(stage, "THIRD-PARTY-NOTICES.txt")
+    run([sys.executable, "-I", os.path.join(HERE, "third_party_notices.py"), "--mge", mge, "--out", notices_path])
+    gpl = os.path.join(mge, "license.txt")
+    assert os.path.isfile(gpl), "the MGE XE repository has no license.txt"
+    plugin_license = os.path.join(PLUGIN, "LICENSE")
+    assert os.path.isfile(plugin_license), "this repository has no LICENSE"
+    return [(gpl, "COPYING-GPL-2.0.txt"), (plugin_license, "LICENSE-nirender.txt"), (notices_path, "THIRD-PARTY-NOTICES.txt"), (sources_path, "SOURCES.txt")]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--notes", required=True, help="the text of the release, a Markdown file")
@@ -81,10 +143,17 @@ def main():
     ap.add_argument("--no-build", action="store_true", help="use the archive that is in dist (it must be of this version)")
     ap.add_argument("--add", action="append", default=[], metavar="SOURCE=PATH", help="a file to put into the archive at PATH from its root")
     ap.add_argument("--add-dir", action="append", default=[], metavar="SOURCE=PATH", help="every file of the folder SOURCE, at PATH (. for the root) and their paths under SOURCE")
+    ap.add_argument("--source", action="append", default=[], metavar="NAME=URL@COMMIT", help="the source of a part added with --add or --add-dir, for SOURCES.txt")
     ap.add_argument("--dry-run", action="store_true", help="pack the archive, publish and delete nothing")
     args = ap.parse_args()
 
     assert os.path.isfile(args.notes), args.notes
+    sources = []
+    for item in args.source:
+        name, _, rest = item.partition("=")
+        url, _, commit = rest.rpartition("@")
+        assert name and url and commit, "--source needs NAME=URL@COMMIT: %s" % item
+        sources.append((name, url, commit))
     additions = []
     for item in args.add:
         source, _, path = item.partition("=")
@@ -126,6 +195,8 @@ def main():
     mge_version = re.match(r"MGE-XE-G7-v([0-9.]+)", packed[0]).group(1)
     asset = os.path.join(args.mge, "dist", "MGE-XE-G7-v%s-nirender-%s.7z" % (mge_version, tag))
     shutil.copy2(os.path.join(args.mge, "dist", packed[0]), asset)
+    # The license texts, the notices of the crates and the sources of the parts.
+    additions += license_additions(args.mge, "https://github.com/" + args.repo, tag, sources, os.path.join(args.mge, "target", "release-licenses"))
     if additions:
         # The files go into a folder laid out as the archive, and 7-Zip adds its entries.
         stage = os.path.join(args.mge, "target", "release-additions")
