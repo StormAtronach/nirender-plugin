@@ -79,6 +79,72 @@ struct Handle {
     check: u32,
     sent: bool,
 }
+
+/// A hash of each group of the words of each sent record ([`GROUP_NAMES`]), made when the
+/// record goes and dropped when it is unsent: what a new note of an instance changed.
+static SENT_GROUPS: MainCell<Option<HashMap<u32, [u32; GROUPS]>>> = MainCell::new(None);
+
+#[track_caller]
+fn sent_groups<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, [u32; GROUPS]>> {
+    SENT_GROUPS.get(t).map(|groups| groups.get_or_insert_with(HashMap::new))
+}
+
+/// The groups of the words of a record, for the count of what a note of an instance finds
+/// changed (`instance_stream`, the note of every 64th frame).
+pub const GROUPS: usize = 11;
+pub const GROUP_NAMES: [&str; GROUPS] = [
+    "flags and alpha",
+    "texturing and map modes",
+    "a map's texture",
+    "bump",
+    "vertex colour",
+    "z-buffer and stencil",
+    "own fog",
+    "an effect's texture",
+    "an effect's modes",
+    "projected lights and shadows",
+    "an effect's projection",
+];
+
+/// The group of a word of the record (the layout of [`note`]).
+fn group_of(word: usize) -> usize {
+    match word {
+        8 | 13 | 18 | 23 | 28 | 33 | 38 | 43 => 2,
+        6..=47 => 1,
+        48..=53 => 3,
+        54 | 55 | 78..=80 => 6,
+        68 | 69 => 4,
+        70..=77 => 5,
+        81 | 85 => 7,
+        82..=84 | 86..=88 => 8,
+        89 | 90 => 9,
+        91.. => 10,
+        // The size, the flags, alpha, and the words 56 to 67 that stay 0.
+        _ => 0,
+    }
+}
+
+/// A hash of each group of the words (FNV-1a).
+fn group_hashes(words: &[u32]) -> [u32; GROUPS] {
+    let mut hashes = [0x811C_9DC5u32; GROUPS];
+    for (index, &word) in words.iter().enumerate() {
+        let hash = &mut hashes[group_of(index)];
+        *hash = (*hash ^ word).wrapping_mul(0x0100_0193);
+    }
+    hashes
+}
+
+/// The groups whose hashes differ, as bits (bit `g` for [`GROUP_NAMES`]`[g]`).
+fn differing_groups(a: &[u32; GROUPS], b: &[u32; GROUPS]) -> u16 {
+    (0..GROUPS).filter(|&g| a[g] != b[g]).fold(0, |bits, g| bits | 1 << g)
+}
+
+/// The groups of words in which the records of two sent handles differ, as bits; [`None`]
+/// when one of them is not sent now.
+pub fn changed_groups(t: &MainThread, old: u32, new: u32) -> Option<u16> {
+    let groups = sent_groups(t);
+    Some(differing_groups(groups.get(&old)?, groups.get(&new)?))
+}
 static RECORDS: MainCell<u64> = MainCell::new(0);
 /// The records sent, by each device texture they name (its serial): a freed texture takes them
 /// with it (`drain_freed_textures`). A handle in a list can be stale (its record went with
@@ -122,6 +188,7 @@ fn handles<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Handle>> {
 
 /// Takes the record of a handle off the sent ones. True when it was sent.
 fn unsend(t: &MainThread, handle: u32) -> bool {
+    sent_groups(t).remove(&handle);
     handles(t).get_mut(&handle).is_some_and(|h| core::mem::replace(&mut h.sent, false))
 }
 
@@ -136,6 +203,7 @@ pub unsafe fn reset(t: &MainThread) {
     for h in handles(t).values_mut() {
         h.sent = false;
     }
+    sent_groups(t).clear();
     by_texture(t).clear();
 }
 
@@ -468,6 +536,7 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
     let (handle, new) = handle_of(t, first, check);
     if new {
         crate::capture::material(handle, &w);
+        sent_groups(t).insert(handle, group_hashes(&w));
         *RECORDS.get(t) += 1;
         for at in TEXTURE_WORDS {
             if w[at] != 0 {
@@ -504,4 +573,29 @@ pub unsafe fn effect_signature(renderer: usize, effect: usize) -> [u32; EFFECT_S
     words[3] = rd(effect, EFFECT_COORDINATE_MODE);
     words[4..].copy_from_slice(&crate::ports::texture_pass_b::effect_static_words(renderer, effect));
     words
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_groups_follow_the_layout_of_the_record() {
+        assert_eq!(GROUP_NAMES[group_of(8)], "a map's texture");
+        assert_eq!(GROUP_NAMES[group_of(9)], "texturing and map modes");
+        assert_eq!(GROUP_NAMES[group_of(81)], "an effect's texture");
+        assert_eq!(GROUP_NAMES[group_of(89)], "projected lights and shadows");
+        assert_eq!(GROUP_NAMES[group_of(91)], "an effect's projection");
+        assert_eq!(GROUP_NAMES[group_of(WORDS - 1)], "an effect's projection");
+    }
+
+    #[test]
+    fn a_changed_word_shows_in_its_group_only() {
+        let words = [3u32; WORDS];
+        let mut other = words;
+        other[13] = 4;
+        let bits = differing_groups(&group_hashes(&words), &group_hashes(&other));
+        assert_eq!(bits, 1 << 2);
+        assert_eq!(differing_groups(&group_hashes(&words), &group_hashes(&words)), 0);
+    }
 }
