@@ -54,7 +54,7 @@ The steps:
    `tools/notes-template.md`: their Tested block must hold the token (or the gate's result
    line, with `--no-gate`) and the run folder of the live checks through the mwse-mcp
    bridge (`YYYYmmdd-HHMMSS-label` under `results`), written by hand; a release stops at
-   the start without them. `--no-gate` skips it; the notes must then hold the result by hand (no token).
+   the start without them. `--no-gate` skips the gate.
 4. All other releases of the repository are deleted, so that a tester finds one build only.
    Their tags stay. `--keep-old` leaves the releases.
 
@@ -125,9 +125,10 @@ def clean_and_pushed(repo, sources, dry_run):
 
 def unit_tests(mge):
     """Runs `cargo test` in the plugin, in the host crate and for the helper in the MGE XE
-    repository. Each tree builds with the toolchain its own rust-toolchain.toml pins (rustup
-    reads it from the working folder; the plugin's is stable, MGE XE's a dated nightly), and
-    the version is printed first. A failed test stops the release."""
+    repository. Each tree builds with the toolchain its rust-toolchain.toml pins (rustup
+    reads it from the working folder; the plugin and MGE XE pin the same dated nightly, the
+    host crate has none and takes the plugin's), and the version is printed first. A failed
+    test stops the release."""
     environment = {key: value for key, value in os.environ.items() if key != "RUSTUP_TOOLCHAIN"}
     trees = [("the plugin", PLUGIN, []), ("the host crate", os.path.join(PLUGIN, "host"), []), ("the helper", mge, ["-p", "mgeHost64"])]
     for name, folder, extra in trees:
