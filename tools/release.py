@@ -23,7 +23,9 @@ The steps:
    for the slow build of a final release). `--no-build` skips all of step 2 and takes the
    archive that is in dist.
 3. The archive goes up as `MGE-XE-G7-v<MGE XE>-nirender-v<plugin>.7z`, as a pre-release
-   with the text of `--notes`. Each `--add SOURCE=PATH` puts a file into it first, at PATH
+   with the text of `--notes`. The MGE XE repository then gets the tag `nirender-v<plugin>`
+   on the commit the archive was built from, pushed with the release (step 1 stops when
+   that tag is there already). Each `--add SOURCE=PATH` puts a file into it first, at PATH
    from the archive's root (the Morrowind folder): for example the MWSE.dll with the native
    ABI that the plugin needs (`--add E:/nirender-keep/mwse/08f7d20ed4/MWSE.dll=MWSE.dll`).
    Each `--add-dir SOURCE=PATH` puts every file of the folder SOURCE into it, at PATH (`.`
@@ -161,6 +163,13 @@ def fill_gate(notes, lines):
     return notes.replace(GATE_TOKEN, "the capture gate: " + "; ".join(lines))
 
 
+def render_link_tag(plugin_tag):
+    """The tag of the MGE XE repository for a release: `nirender-v<plugin version>`, so that
+    the commit of MGE XE that an archive was built from is named there too (its own tags,
+    v<MGE XE version>, mark MGE XE's versions, not the releases)."""
+    return "nirender-" + plugin_tag
+
+
 def seven_zip():
     usual = r"C:\Program Files\7-Zip\7z.exe"
     return usual if os.path.isfile(usual) else "7z"
@@ -230,6 +239,7 @@ def self_test():
     assert fill_gate("## Tested\n\n- {gate}\n", lines) == "## Tested\n\n- the capture gate: 2 of 2 pictures equal to the accepted ones in a; 206 of 206 pictures equal to the accepted ones in b\n"
     assert fill_gate("## Tested\n\n- the gate by hand\n", lines) is None
     assert GATE_RESULT.findall("  ok   " + lines[0] + "\n  FAIL  1 of 2 pictures equal to the accepted ones in c\n") == [lines[0], "1 of 2 pictures equal to the accepted ones in c"]
+    assert render_link_tag("v0.3.3") == "nirender-v0.3.3"
     print("release self-test: ok")
 
 
@@ -291,6 +301,9 @@ def main():
     tags = [release["tagName"] for release in releases]
     if tag in tags:
         stop("the release %s is there already: set a new version in Cargo.toml" % tag, args.dry_run)
+    mge_tag = render_link_tag(tag)
+    if run(["git", "-C", args.mge, "tag", "--list", mge_tag], capture=True).strip():
+        stop("the MGE XE repository has the tag %s already: set a new version in Cargo.toml" % mge_tag, args.dry_run)
     for repo, sources in ((PLUGIN, PLUGIN_SOURCES), (args.mge, MGE_SOURCES)):
         clean_and_pushed(repo, sources, args.dry_run)
 
@@ -345,9 +358,14 @@ def main():
 
     title = "Test build: MGE XE G7 %s with nirender %s" % (mge_version, plugin_version)
     if args.dry_run:
-        print("dry run: the archive %s; not published (%s); no release deleted" % (asset, title))
+        print("dry run: the archive %s; not published (%s); no release deleted; the MGE XE tag %s not made" % (asset, title, mge_tag))
         return 0
     print(run(["gh", "release", "create", tag, "--repo", args.repo, "--prerelease", "--title", title, "--notes-file", notes_path, asset], capture=True).strip())
+    # The commit of MGE XE that the archive was built from gets the release's tag too; it
+    # goes up with the release, never before it.
+    run(["git", "-C", args.mge, "tag", mge_tag])
+    run(["git", "-C", args.mge, "push", "origin", mge_tag])
+    print("the MGE XE repository is tagged %s" % mge_tag)
     if not args.keep_old:
         for old in tags:
             run(["gh", "release", "delete", old, "--repo", args.repo, "--yes"])
