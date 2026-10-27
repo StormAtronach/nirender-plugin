@@ -2,6 +2,8 @@
 //! geometry of a shape, the keys of the pipelines, the counts of a run, the times, and the
 //! constants of the buffers.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use super::*;
 
 /// The geometry of a shape from a `GEOMETRY` record: resident buffers, keyed by the
@@ -80,8 +82,24 @@ pub(crate) const SCENE_WIREFRAME: u32 = 0x10;
 /// The value of a state that the game did not set.
 pub(crate) const UNKNOWN: u32 = 0x7FFF_FFFF;
 
+/// The reads of a word or a double past the end of a record, counted for the report: a
+/// record that passed the gate of `Player::feed` (`tag::needed`) has every byte its reader
+/// takes, so a count here is a fault of the gate's rule, not of the plugin.
+static READS_PAST_END: AtomicU32 = AtomicU32::new(0);
+
+pub(crate) fn reads_past_end() -> u32 {
+    READS_PAST_END.load(Ordering::Relaxed)
+}
+
+/// The word at `offset` of a record; 0 for a read past its end (counted), never a panic.
 pub(crate) fn word(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    match offset.checked_add(4).and_then(|end| bytes.get(offset..end)) {
+        Some(word) => u32::from_le_bytes(word.try_into().unwrap()),
+        None => {
+            READS_PAST_END.fetch_add(1, Ordering::Relaxed);
+            0
+        }
+    }
 }
 
 pub(crate) fn float(bytes: &[u8], offset: usize) -> f32 {
@@ -92,8 +110,15 @@ pub(crate) fn floats<const N: usize>(bytes: &[u8], offset: usize) -> [f32; N] {
     core::array::from_fn(|i| float(bytes, offset + i * 4))
 }
 
+/// The double at `offset` of a record; 0 for a read past its end (counted), never a panic.
 pub(crate) fn double(bytes: &[u8], offset: usize) -> f64 {
-    f64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+    match offset.checked_add(8).and_then(|end| bytes.get(offset..end)) {
+        Some(double) => f64::from_le_bytes(double.try_into().unwrap()),
+        None => {
+            READS_PAST_END.fetch_add(1, Ordering::Relaxed);
+            0.0
+        }
+    }
 }
 
 // ---- the data of a draw for the shader
@@ -389,8 +414,11 @@ pub(crate) struct Counts {
     pub(crate) geometry_bad: u32,
     pub(crate) geometry_short: u32,
     pub(crate) material_records: u32,
-    /// The records shorter than the fixed part of their tag ([`tag::least_length`]), skipped.
+    /// The records shorter than their tag needs ([`tag::needed`]: the fixed part, and the
+    /// variable parts that its counts name), refused and counted; a bit for each tag under 64
+    /// whose first refusal is in the log.
     pub(crate) short_records: u32,
+    pub(crate) refused_tags: u64,
     /// The records of a tag this build does not know ([`tag::is_known`]), skipped, and the
     /// first such tag.
     pub(crate) unknown_records: u32,
