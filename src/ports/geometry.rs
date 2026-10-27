@@ -57,39 +57,79 @@ const SKIN_DATA_SKIN_PARTITION: usize = crate::gen::layouts::NiSkinData::skinPar
 // is a window from its `any_thread` hook to its `after` hook (`worker_events`), a write of
 // the main thread is a window of `CacheWrite`. An overlap starts inside one of them.
 
-static MAIN_IN_CACHE: AtomicBool = AtomicBool::new(false);
-static WORKER_REMOVING: AtomicU32 = AtomicU32::new(0);
-/// A main-thread write that started in a removal of the worker, and a removal of the worker
-/// that started in a main-thread write.
-static CROSSINGS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
-static REMOVALS: AtomicU32 = AtomicU32::new(0);
+/// The windows of the two threads in the geometry cache, and the crossings between them. The
+/// game has one ([`CACHE`]); a test has its own, which no other test touches.
+struct Crossings {
+    main_in_cache: AtomicBool,
+    worker_removing: AtomicU32,
+    /// A main-thread write that started in a removal of the worker, and a removal of the
+    /// worker that started in a main-thread write.
+    crossings: [AtomicU32; 2],
+    removals: AtomicU32,
+}
 
-/// A write of the geometry cache by the main thread, for the time of the guard.
-struct CacheWrite;
+static CACHE: Crossings = Crossings::new();
 
-impl CacheWrite {
-    fn enter() -> CacheWrite {
-        MAIN_IN_CACHE.store(true, Ordering::SeqCst);
-        if WORKER_REMOVING.load(Ordering::SeqCst) != 0 && CROSSINGS[0].fetch_add(1, Ordering::Relaxed) == 0 {
+impl Crossings {
+    const fn new() -> Crossings {
+        Crossings {
+            main_in_cache: AtomicBool::new(false),
+            worker_removing: AtomicU32::new(0),
+            crossings: [AtomicU32::new(0), AtomicU32::new(0)],
+            removals: AtomicU32::new(0),
+        }
+    }
+
+    /// A write of the cache by the main thread begins; it ends with the guard.
+    fn write(&self) -> CacheWrite<'_> {
+        self.main_in_cache.store(true, Ordering::SeqCst);
+        if self.worker_removing.load(Ordering::SeqCst) != 0 && self.crossings[0].fetch_add(1, Ordering::Relaxed) == 0 {
             crate::log!("geometry cache: a main-thread write began in a removal of the cell worker (the first)");
         }
-        CacheWrite
+        CacheWrite(self)
+    }
+
+    fn removal_begins(&self) {
+        self.worker_removing.fetch_add(1, Ordering::SeqCst);
+        self.removals.fetch_add(1, Ordering::Relaxed);
+        if self.main_in_cache.load(Ordering::SeqCst) && self.crossings[1].fetch_add(1, Ordering::Relaxed) == 0 {
+            crate::log!("geometry cache: a removal of the cell worker began in a main-thread write (the first)");
+        }
+    }
+
+    fn removal_ends(&self) {
+        self.worker_removing.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "geometry cache: {} removals on the cell worker; crossings with a main-thread write: {} writes began in a removal, {} removals began in a write",
+            self.removals.load(Ordering::Relaxed),
+            self.crossings[0].load(Ordering::Relaxed),
+            self.crossings[1].load(Ordering::Relaxed)
+        )
     }
 }
 
-impl Drop for CacheWrite {
+/// A write of the geometry cache by the main thread, for the time of the guard.
+struct CacheWrite<'a>(&'a Crossings);
+
+impl CacheWrite<'static> {
+    /// A write of the game's cache ([`CACHE`]).
+    fn enter() -> CacheWrite<'static> {
+        CACHE.write()
+    }
+}
+
+impl Drop for CacheWrite<'_> {
     fn drop(&mut self) {
-        MAIN_IN_CACHE.store(false, Ordering::SeqCst);
+        self.0.main_in_cache.store(false, Ordering::SeqCst);
     }
 }
 
 /// A removal of geometry data begins on the cell worker (`worker_events`).
 pub fn worker_removal_begins() {
-    WORKER_REMOVING.fetch_add(1, Ordering::SeqCst);
-    REMOVALS.fetch_add(1, Ordering::Relaxed);
-    if MAIN_IN_CACHE.load(Ordering::SeqCst) && CROSSINGS[1].fetch_add(1, Ordering::Relaxed) == 0 {
-        crate::log!("geometry cache: a removal of the cell worker began in a main-thread write (the first)");
-    }
+    CACHE.removal_begins();
 }
 
 /// The `after` hook of `RemoveGeometryData`: a removal of the cell worker ends.
@@ -101,18 +141,13 @@ pub fn worker_removal_begins() {
 /// does nothing.
 pub unsafe fn worker_removal_ends() {
     if !crate::shadow::on_main_thread() {
-        WORKER_REMOVING.fetch_sub(1, Ordering::SeqCst);
+        CACHE.removal_ends();
     }
 }
 
 /// One line for the log: the removals of the worker and the crossings.
 pub fn crossings_report() -> String {
-    format!(
-        "geometry cache: {} removals on the cell worker; crossings with a main-thread write: {} writes began in a removal, {} removals began in a write",
-        REMOVALS.load(Ordering::Relaxed),
-        CROSSINGS[0].load(Ordering::Relaxed),
-        CROSSINGS[1].load(Ordering::Relaxed)
-    )
+    CACHE.report()
 }
 
 /// 0x6BDE50 `NiDX8VertexBufferManager::PackUntransformedVB`. Returns the vertex buffer.
@@ -1503,25 +1538,28 @@ mod tests {
     use super::*;
 
     /// Both kinds of overlap are counted: a write that starts in a removal of the worker, and
-    /// a removal that starts in a write. (In a test no thread is the main thread, so the end
-    /// of a removal counts here.)
+    /// a removal that starts in a write. The test has its own counts: the other geometry tests
+    /// run in parallel and write the game's cache through the ports (a shared count failed
+    /// 83 of 300 runs of the geometry tests, 2026-10-27).
     #[test]
     fn the_crossings_of_the_geometry_cache_are_counted() {
-        let before = [CROSSINGS[0].load(Ordering::Relaxed), CROSSINGS[1].load(Ordering::Relaxed)];
+        let cache = Crossings::new();
+        let count = |kind: usize| cache.crossings[kind].load(Ordering::Relaxed);
         {
-            let _write = CacheWrite::enter();
-            worker_removal_begins();
+            let _write = cache.write();
+            cache.removal_begins();
         }
-        assert_eq!(CROSSINGS[1].load(Ordering::Relaxed), before[1] + 1);
+        assert_eq!((count(0), count(1)), (0, 1), "a removal that began in a write");
         {
-            let _write = CacheWrite::enter();
+            let _write = cache.write();
         }
-        assert_eq!(CROSSINGS[0].load(Ordering::Relaxed), before[0] + 1, "a write in the removal that is still open");
-        unsafe { worker_removal_ends() };
+        assert_eq!(count(0), 1, "a write in the removal that is still open");
+        cache.removal_ends();
         {
-            let _write = CacheWrite::enter();
+            let _write = cache.write();
         }
-        assert_eq!(CROSSINGS[0].load(Ordering::Relaxed), before[0] + 1, "no removal open: no crossing");
+        assert_eq!(count(0), 1, "no removal open: no crossing");
+        assert_eq!(cache.removals.load(Ordering::Relaxed), 1);
     }
 
     // A hash map whose key is a number. The bucket is the key modulo the bucket count.
