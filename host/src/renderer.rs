@@ -888,6 +888,10 @@ impl Renderer {
         };
         // The GPU takes a block format only for a size that is a multiple of 4.
         let decode = block != 0 && (width % 4 != 0 || height % 4 != 0);
+        if decode && !crate::d3d::cpu_decodes(d3d_format) {
+            *self.counts.texture_formats.entry(d3d_format).or_default() += 1;
+            return;
+        }
         let format = if decode { wgpu::TextureFormat::Bgra8Unorm } else { format };
         let mut bytes = Vec::new();
         for level in 0..levels {
@@ -1026,6 +1030,10 @@ impl Renderer {
         // The GPU takes a block format only for a size that is a multiple of 4. For each other
         // size this program makes the pixels of each level itself.
         let decode = block != 0 && (width % 4 != 0 || height % 4 != 0);
+        if decode && !crate::d3d::cpu_decodes(d3d_format) {
+            *self.counts.texture_formats.entry(d3d_format).or_default() += 1;
+            return;
+        }
         let format = if decode { wgpu::TextureFormat::Bgra8Unorm } else { format };
         if decode {
             self.decoded.insert(handle);
