@@ -44,6 +44,11 @@ The steps:
    SOURCES.txt is the written offer of the source of the GPL binaries in the archive, and no
    later step would catch a part without one. The license files are made before the build,
    so that a problem with them costs no build.
+   Then the gate: the archive is unpacked into `target/release-gate` of the MGE XE repository
+   and `tools/validate_retained.py baseline` replays the captures of the baseline on the
+   helper in it, the one that ships. A failed gate stops the release. Its result lines go
+   into the notes in place of the token `{gate}` of their Tested block; the filled notes are
+   written to `dist/notes-<tag>.md` and published. `--no-gate` skips it; the notes must then hold the result by hand (no token).
 4. All other releases of the repository are deleted, so that a tester finds one build only.
    Their tags stay. `--keep-old` leaves the releases.
 
@@ -125,6 +130,42 @@ def unit_tests(mge):
         run(["cargo", "test"] + extra, cwd=folder, env=environment)
 
 
+GATE_TOKEN = "{gate}"
+GATE_RESULT = re.compile(r"\d+ of \d+ pictures equal to the accepted ones in \S+")
+
+
+def gate(mge, asset, dry_run):
+    """Unpacks the archive into `<mge>/target/release-gate` and replays the captures of the
+    baseline on the helper in it (`validate_retained.py baseline --mge-build <that folder>`:
+    the helper that ships, not the one in bin). Returns the result lines ("N of M pictures
+    equal to the accepted ones in ..."); a failed gate stops the release."""
+    folder = os.path.join(mge, "target", "release-gate")
+    if os.path.isdir(folder):
+        shutil.rmtree(folder)
+    run([seven_zip(), "x", "-y", "-o" + folder, asset], capture=True)
+    assert os.path.isfile(os.path.join(folder, "numidium.exe")), "the archive has no numidium.exe at its root"
+    print("the gate on the helper of %s" % asset, flush=True)
+    result = subprocess.run([sys.executable, "-I", os.path.join(HERE, "validate_retained.py"), "baseline", "--mge-build", folder], capture_output=True, text=True, cwd=PLUGIN)
+    print(result.stdout + result.stderr, flush=True)
+    lines = GATE_RESULT.findall(result.stdout)
+    if result.returncode != 0 or not lines:
+        stop("the gate failed on the packed helper (%s)" % ("; ".join(lines) or "no result line"), dry_run)
+    return lines
+
+
+def fill_gate(notes, lines):
+    """The notes with the gate's result lines in place of the token `{gate}` of their Tested
+    block; None when the notes have no token."""
+    if GATE_TOKEN not in notes:
+        return None
+    return notes.replace(GATE_TOKEN, "the capture gate: " + "; ".join(lines))
+
+
+def seven_zip():
+    usual = r"C:\Program Files\7-Zip\7z.exe"
+    return usual if os.path.isfile(usual) else "7z"
+
+
 def sources_text(mge_url, mge_commit, plugin_url, plugin_tag, plugin_commit, sources):
     """The text of SOURCES.txt: each part of the archive, its license and its source at its
     commit. `sources` is a list of (name, url, commit) for the parts added from outside the
@@ -185,6 +226,10 @@ def self_test():
     assert untracked_in_sources(["?? docs/a.md", " M src/lib.rs"], MGE_SOURCES) == []
     # A file named whole matches itself only, not a longer name that starts with it.
     assert untracked_in_sources(["?? Cargo.toml.orig"], PLUGIN_SOURCES) == []
+    lines = ["2 of 2 pictures equal to the accepted ones in a", "206 of 206 pictures equal to the accepted ones in b"]
+    assert fill_gate("## Tested\n\n- {gate}\n", lines) == "## Tested\n\n- the capture gate: 2 of 2 pictures equal to the accepted ones in a; 206 of 206 pictures equal to the accepted ones in b\n"
+    assert fill_gate("## Tested\n\n- the gate by hand\n", lines) is None
+    assert GATE_RESULT.findall("  ok   " + lines[0] + "\n  FAIL  1 of 2 pictures equal to the accepted ones in c\n") == [lines[0], "1 of 2 pictures equal to the accepted ones in c"]
     print("release self-test: ok")
 
 
@@ -201,6 +246,7 @@ def main():
     ap.add_argument("--add-dir", action="append", default=[], metavar="SOURCE=PATH", help="every file of the folder SOURCE, at PATH (. for the root) and their paths under SOURCE")
     ap.add_argument("--source", action="append", default=[], metavar="NAME=URL@COMMIT", help="the source of a part added with --add or --add-dir, for SOURCES.txt")
     ap.add_argument("--dry-run", action="store_true", help="pack the archive, publish and delete nothing")
+    ap.add_argument("--no-gate", action="store_true", help="skip the replay gate on the packed helper; the notes must then hold its result by hand")
     args = ap.parse_args()
     if args.self_test:
         self_test()
@@ -276,17 +322,32 @@ def main():
         for source, path in additions:
             os.makedirs(os.path.dirname(os.path.join(stage, path)) or stage, exist_ok=True)
             shutil.copy2(source, os.path.join(stage, path))
-        seven = r"C:\Program Files\7-Zip\7z.exe" if os.path.isfile(r"C:\Program Files\7-Zip\7z.exe") else "7z"
         tops = sorted({path.split("/")[0] for _, path in additions})
-        run([seven, "a", "-t7z", "-mx=9", asset] + tops, cwd=stage)
+        run([seven_zip(), "a", "-t7z", "-mx=9", asset] + tops, cwd=stage)
         for source, path in additions:
             print("added %s as %s" % (source, path))
+
+    # The gate on the helper that ships, and its result into the notes.
+    notes = open(args.notes, encoding="utf-8").read()
+    notes_path = args.notes
+    if args.no_gate:
+        if GATE_TOKEN in notes:
+            stop("--no-gate: the notes still have the token %s; write the gate's result by hand" % GATE_TOKEN, args.dry_run)
+    else:
+        filled = fill_gate(notes, gate(args.mge, asset, args.dry_run))
+        if filled is None:
+            stop("the notes have no %s token in their Tested block for the gate's result" % GATE_TOKEN, args.dry_run)
+        else:
+            notes_path = os.path.join(args.mge, "dist", "notes-%s.md" % tag)
+            with open(notes_path, "w", encoding="utf-8", newline="\n") as out:
+                out.write(filled)
+            print("the notes with the gate's result: %s" % notes_path)
 
     title = "Test build: MGE XE G7 %s with nirender %s" % (mge_version, plugin_version)
     if args.dry_run:
         print("dry run: the archive %s; not published (%s); no release deleted" % (asset, title))
         return 0
-    print(run(["gh", "release", "create", tag, "--repo", args.repo, "--prerelease", "--title", title, "--notes-file", args.notes, asset], capture=True).strip())
+    print(run(["gh", "release", "create", tag, "--repo", args.repo, "--prerelease", "--title", title, "--notes-file", notes_path, asset], capture=True).strip())
     if not args.keep_old:
         for old in tags:
             run(["gh", "release", "delete", old, "--repo", args.repo, "--yes"])
