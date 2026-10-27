@@ -609,6 +609,12 @@ pub unsafe fn frame_tick(mt: &MainThread) {
         let now = t.frame;
         t.effects.retain(|_, watch| now.wrapping_sub(watch.frame) < EFFECT_FRAMES);
     }
+    // The material handles that went with their textures and that no instance names leave
+    // the material table.
+    if t.frame.is_multiple_of(crate::material_stream::SWEEP_FRAMES) {
+        let in_use: HashSet<u32> = t.instances.values().map(|instance| instance.material).collect();
+        crate::material_stream::sweep(mt, &in_use, t.frame);
+    }
 }
 
 /// The shape is deleted (the destructor of `NiGeometry`): its instance goes, with a record

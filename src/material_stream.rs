@@ -12,6 +12,8 @@
 use core::mem::transmute;
 use std::collections::HashMap;
 
+use crate::ptr_hash::HashSet;
+
 use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
 use crate::engine;
@@ -78,7 +80,19 @@ static COLLISIONS: MainCell<u64> = MainCell::new(0);
 struct Handle {
     check: u32,
     sent: bool,
+    /// The record went with a freed texture (`MATERIAL_GONE`): [`GONE_UNAGED`] until a
+    /// sweep notes the frame, then the frame of that sweep; 0 while it is not gone.
+    gone_since: u32,
 }
+
+/// A gone record whose age the next sweep starts.
+const GONE_UNAGED: u32 = u32::MAX;
+
+/// The frames between two sweeps of the handles ([`sweep`]), and the least age of a gone
+/// handle that leaves the table.
+pub const SWEEP_FRAMES: u32 = 1024;
+/// The handles the sweeps took out of the table.
+static SWEPT: MainCell<u64> = MainCell::new(0);
 static RECORDS: MainCell<u64> = MainCell::new(0);
 /// The records sent, by each device texture they name (its serial): a freed texture takes them
 /// with it (`drain_freed_textures`). A handle in a list can be stale (its record went with
@@ -159,13 +173,16 @@ fn handle_of(t: &MainThread, first: u32, check: u32) -> (u32, bool) {
     let mut handle = first;
     loop {
         match table.get_mut(&handle) {
-            Some(h) if h.check == check => return (handle, !core::mem::replace(&mut h.sent, true)),
+            Some(h) if h.check == check => {
+                h.gone_since = 0;
+                return (handle, !core::mem::replace(&mut h.sent, true));
+            }
             Some(_) => {
                 *COLLISIONS.get(t) += 1;
                 handle = handle.wrapping_add(1).max(1);
             }
             None => {
-                table.insert(handle, Handle { check, sent: true });
+                table.insert(handle, Handle { check, sent: true, gone_since: 0 });
                 return (handle, true);
             }
         }
@@ -191,10 +208,13 @@ pub unsafe fn drain_freed_textures(t: &MainThread) {
     let freed = crate::own_host::take_freed_textures();
     let mut gone = Vec::new();
     for texture in freed {
-        let Some(handles) = by_texture(t).remove(&texture) else { continue };
-        for handle in handles {
+        let Some(materials) = by_texture(t).remove(&texture) else { continue };
+        for handle in materials {
             if unsend(t, handle) {
                 crate::capture::material_gone(handle);
+                if let Some(h) = handles(t).get_mut(&handle) {
+                    h.gone_since = GONE_UNAGED;
+                }
                 *GONE.get(t) += 1;
                 gone.push(handle);
             }
@@ -203,6 +223,33 @@ pub unsafe fn drain_freed_textures(t: &MainThread) {
     if !gone.is_empty() {
         crate::instance_stream::note_materials_again(t, &gone);
     }
+}
+
+/// The handles of records that went with their textures leave the table when no instance
+/// names them (`in_use`) and a sweep at least [`SWEEP_FRAMES`] frames ago found them gone.
+/// Their content names a freed texture's serial, which never comes again, so without this
+/// the table grows over a session. The helper has dropped such a record by then: it drops a
+/// gone material at its next scan when no instance names it, within 64 frames. Only then can
+/// another content take the handle without the helper keeping the old one. A record unsent
+/// by the start of a capture (`reset`) never got a `MATERIAL_GONE`, so it stays.
+pub fn sweep(t: &MainThread, in_use: &HashSet<u32>, frame: u32) {
+    let removed = sweep_table(&mut handles(t), in_use, frame);
+    *SWEPT.get(t) += removed;
+}
+
+fn sweep_table(table: &mut HashMap<u32, Handle>, in_use: &HashSet<u32>, frame: u32) -> u64 {
+    let before = table.len();
+    table.retain(|handle, h| {
+        if h.gone_since == 0 || h.sent || in_use.contains(handle) {
+            return true;
+        }
+        if h.gone_since == GONE_UNAGED {
+            h.gone_since = frame.max(1);
+            return true;
+        }
+        frame.wrapping_sub(h.gone_since) < SWEEP_FRAMES
+    });
+    (before - table.len()) as u64
 }
 
 /// # Safety
@@ -215,11 +262,12 @@ pub unsafe fn report(t: &MainThread) -> String {
         (table.values().filter(|h| h.sent).count(), table.len())
     };
     format!(
-        "material: {} records, {} distinct sent now, {} handles in the session, {} gone with their textures, {} steps past the handle of another content (collisions of the first hash, at each note)",
+        "material: {} records, {} distinct sent now, {} handles in the session, {} gone with their textures ({} of their handles swept), {} steps past the handle of another content (collisions of the first hash, at each note)",
         *RECORDS.get(t),
         sent,
         all,
         *GONE.get(t),
+        *SWEPT.get(t),
         *COLLISIONS.get(t)
     )
 }
@@ -504,4 +552,30 @@ pub unsafe fn effect_signature(renderer: usize, effect: usize) -> [u32; EFFECT_S
     words[3] = rd(effect, EFFECT_COORDINATE_MODE);
     words[4..].copy_from_slice(&crate::ports::texture_pass_b::effect_static_words(renderer, effect));
     words
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn handle(sent: bool, gone_since: u32) -> Handle {
+        Handle { check: 1, sent, gone_since }
+    }
+
+    #[test]
+    fn a_gone_handle_leaves_only_when_unused_and_old_enough() {
+        let mut table: HashMap<u32, Handle> = HashMap::default();
+        table.insert(1, handle(false, GONE_UNAGED));
+        table.insert(2, handle(false, GONE_UNAGED));
+        table.insert(3, handle(true, 0));
+        table.insert(4, handle(false, 0));
+        let in_use: HashSet<u32> = [2u32].into_iter().collect();
+        // The first sweep starts the age of 1; 2 is named by an instance; 3 is sent; 4 was
+        // unsent by a capture's start, never gone.
+        assert_eq!(sweep_table(&mut table, &in_use, 100), 0);
+        assert_eq!(sweep_table(&mut table, &in_use, 100 + SWEEP_FRAMES - 1), 0);
+        assert_eq!(sweep_table(&mut table, &in_use, 100 + SWEEP_FRAMES), 1);
+        assert!(!table.contains_key(&1));
+        assert!(table.contains_key(&2) && table.contains_key(&3) && table.contains_key(&4));
+    }
 }
