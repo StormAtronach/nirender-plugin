@@ -485,6 +485,13 @@ pub unsafe extern "C" fn nirender_stream_extension(id: u32, data: *const u8, len
     }
 }
 
+/// The build id of this plugin, zero-ended, for the log of the `d3d8.dll` of MGE XE at the
+/// plugin's load. A plugin without this export is from before the handshake.
+#[no_mangle]
+pub extern "C" fn nirender_build_id() -> *const u8 {
+    crate::BUILD_ID_C.as_ptr()
+}
+
 /// The `Direct3DCreate8` of the plugin. The `d3d8.dll` of this repository calls it.
 #[no_mangle]
 pub unsafe extern "C" fn nirender_direct3d_create8(_sdk_version: u32) -> usize {

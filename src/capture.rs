@@ -66,7 +66,7 @@ pub const HEADER_ENVMAP_LIT: u32 = 128;
 /// the ring and of each capture file: the helper compares the format before it reads on.
 fn header_record(width: u32, height: u32, window: u32) -> Vec<u8> {
     let mut header = words(&[width, height, window, header_abilities(), crate::stream_format::STREAM_FORMAT]).to_vec();
-    header.extend_from_slice(&crate::stream_format::build_id_bytes(&crate::build_id()));
+    header.extend_from_slice(&crate::stream_format::build_id_bytes(crate::BUILD_ID));
     header
 }
 
@@ -2035,7 +2035,7 @@ mod tests {
         assert_eq!(header.len(), HEADER_BYTES);
         assert_eq!(&header[..12], super::words(&[1920, 1080, 0x1234]));
         assert_eq!(header_format(&header), STREAM_FORMAT);
-        assert_eq!(header_build_id(&header), crate::build_id());
+        assert_eq!(header_build_id(&header), crate::BUILD_ID);
         assert!(accept_header(&header, "a reader").is_ok());
     }
 }

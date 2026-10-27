@@ -86,11 +86,12 @@ pub mod sync;
 pub mod win;
 pub mod x87;
 
-/// The name and the version of this build, for the first line of the log, the Lua table and
-/// the HEADER record of the stream.
-pub fn build_id() -> String {
-    format!("nirender v{}", env!("CARGO_PKG_VERSION"))
-}
+/// The build id of this plugin: its name, its version and its commit (`build.rs` puts the
+/// commit into BUILD_COMMIT). The first line of the log, the HEADER record of the stream and
+/// the export `nirender_build_id` for MGE XE carry it.
+pub const BUILD_ID: &str = concat!("nirender v", env!("CARGO_PKG_VERSION"), " ", env!("BUILD_COMMIT"));
+/// The same, zero-ended, for the export.
+pub const BUILD_ID_C: &str = concat!("nirender v", env!("CARGO_PKG_VERSION"), " ", env!("BUILD_COMMIT"), "\0");
 
 // The test binary runs outside the game, where there is no lua51.dll to load.
 #[cfg(not(test))]

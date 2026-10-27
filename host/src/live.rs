@@ -999,8 +999,8 @@ fn program_name() -> String {
 /// The builds that read the stream: this crate's, and the program's that has it as a part.
 pub(crate) fn reader_build(extension: Option<&dyn super::Extension>) -> String {
     match extension.map(|extension| extension.name()).filter(|name| !name.is_empty()) {
-        Some(name) => format!("{}, {name}", super::build_id()),
-        None => super::build_id(),
+        Some(name) => format!("{}, {name}", super::BUILD_ID),
+        None => super::BUILD_ID.to_string(),
     }
 }
 

@@ -52,11 +52,10 @@ pub mod stream_format;
 mod extension;
 pub use extension::*;
 
-/// The name and the version of this crate, for the first line of the log and the message of
-/// a refused stream.
-pub fn build_id() -> String {
-    format!("nirender-host v{}", env!("CARGO_PKG_VERSION"))
-}
+/// The build id of this crate: its name, its version and its commit (`build.rs` puts the
+/// commit into BUILD_COMMIT), for the first line of the log and the message of a refused
+/// stream.
+pub const BUILD_ID: &str = concat!("nirender-host v", env!("CARGO_PKG_VERSION"), " ", env!("BUILD_COMMIT"));
 mod replay;
 pub use replay::*;
 mod data;
