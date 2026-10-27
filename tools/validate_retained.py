@@ -196,6 +196,9 @@ def stage_baseline(baseline, accept, mge_build):
         if adapter:
             with open(adapter_path, "w", encoding="utf-8", newline="\n") as out_file:
                 out_file.write(adapter + "\n")
+        elif os.path.isfile(adapter_path):
+            # No adapter printed this time: an old record would name the wrong one.
+            os.remove(adapter_path)
         return check(True, "%d pictures accepted%s, on %s" % (len(captures), ", and the tour" if os.path.isdir(tour) else "", adapter or "an adapter the helper did not print"))
     recorded = open(adapter_path, encoding="utf-8").read().strip() if os.path.isfile(adapter_path) else None
     print("       " + adapter_note(recorded, adapter), flush=True)
