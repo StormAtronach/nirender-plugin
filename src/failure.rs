@@ -13,9 +13,8 @@
 //! [`LUA_ANSWER_SECONDS`] (an error in its handler at each frame), `after_present` shows the
 //! box itself, with "No save was possible".
 //!
-//! The box is modal on the game's thread: a close of the game waits until the box is closed
-//! (the run 20261027-122536-triage-crash3 sat in it for minutes). `MGE_XE_BOX_SECONDS=<n>`
-//! closes it after n seconds, for a test.
+//! The box runs on a thread of its own (`show`): the game's thread goes on and takes Alt+F4 at
+//! once. `MGE_XE_BOX_SECONDS=<n>` closes it after n seconds, for a test.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -183,33 +182,44 @@ fn take_box(now: &str) -> Option<String> {
 }
 
 /// Shows the box (the failure-path design, section 5.1): each line of its text goes into the
-/// log first, prefixed `box: `; with `MGE_XE_BOX_SECONDS=<n>` the box closes itself after n
-/// seconds, and the log says whether a click or the time closed it.
+/// log first, prefixed `box: `, on the caller's thread; with `MGE_XE_BOX_SECONDS=<n>` the box
+/// closes itself after n seconds, and the log says whether a click or the time closed it.
+///
+/// The box runs on a thread of its own, with no owner window, and nobody waits for it (the
+/// failure-path design, section 5 "The thread rule"): a modal box on the game's main thread
+/// pumps messages into the game's window procedure (a crash in `restartRenderer` at start-up,
+/// Hob's run 1c) and holds a close of the game until it is closed (the run
+/// 20261027-122536-triage-crash3). On its own thread the box leaves the game's thread to pump
+/// its messages: Alt+F4 closes the game at once, with the box up or not.
 fn show(text: &str) {
     for line in text.lines().filter(|line| !line.is_empty()) {
         crate::log!("box: {line}");
     }
-    let seconds = std::env::var("MGE_XE_BOX_SECONDS").ok().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
+    // 0 to an hour, as the other boxes take the switch (`own_device::message_box`).
+    let seconds = std::env::var("MGE_XE_BOX_SECONDS").ok().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0).min(3600);
     let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let (text, caption) = (wide(text), wide(CAPTION));
-    const MB_ICONERROR: u32 = 0x10;
-    const MB_SETFOREGROUND: u32 = 0x1_0000;
-    const MB_TOPMOST: u32 = 0x4_0000;
-    let kind = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
-    let shown = Instant::now();
-    // SAFETY: both strings are zero-ended UTF-16 that live until the call returns; the
-    // function of user32 has the signature of `MessageBoxTimeout` when it is there.
-    unsafe {
-        match (seconds, message_box_timeout()) {
-            (0, _) => MessageBoxW(0, text.as_ptr(), caption.as_ptr(), kind),
-            (_, Some(with_timeout)) => with_timeout(0, text.as_ptr(), caption.as_ptr(), kind, 0, seconds * 1000),
-            (_, None) => {
-                crate::log!("box: not shown: this Windows has no MessageBoxTimeoutW");
-                return;
+    std::thread::spawn(move || {
+        const MB_ICONERROR: u32 = 0x10;
+        const MB_SETFOREGROUND: u32 = 0x1_0000;
+        const MB_TOPMOST: u32 = 0x4_0000;
+        let kind = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
+        let shown = Instant::now();
+        // SAFETY: both strings are zero-ended UTF-16 that the thread owns until the call
+        // returns; the function of user32 has the signature of `MessageBoxTimeout` when it is
+        // there.
+        unsafe {
+            match (seconds, message_box_timeout()) {
+                (0, _) => MessageBoxW(0, text.as_ptr(), caption.as_ptr(), kind),
+                (_, Some(with_timeout)) => with_timeout(0, text.as_ptr(), caption.as_ptr(), kind, 0, seconds * 1000),
+                (_, None) => {
+                    crate::log!("box: not shown: this Windows has no MessageBoxTimeoutW");
+                    return;
+                }
             }
-        }
-    };
-    crate::log!("{}", closed_line(shown.elapsed(), seconds));
+        };
+        crate::log!("{}", closed_line(shown.elapsed(), seconds));
+    });
 }
 
 /// The log line after the box: a box with a time limit that stayed up for the limit was
