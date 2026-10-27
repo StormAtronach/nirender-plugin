@@ -205,6 +205,12 @@ pub fn install() {
 }
 
 /// The main thread applies the events written since the last drain, in their order.
+///
+/// # Safety
+///
+/// No condition: the function returns on a thread other than the main thread. The events name
+/// shapes, lights and geometry data that the worker threads saw go, which the function only
+/// forgets.
 pub unsafe fn drain() {
     if !crate::shadow::on_main_thread() {
         return;

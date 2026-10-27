@@ -23,6 +23,13 @@ impl<T> Checked<T> {
     }
 
     /// Opens the table. The caller holds the proof that no other thread opens it now.
+    ///
+    /// # Safety
+    ///
+    /// No other thread opens or uses this table while the guard lives. The proof of it is the
+    /// caller's: the main thread for `main_thread::MainCell`, the lock for `sync::LockCell`. The
+    /// caller also does not open the table again while the guard lives: a second open gives a
+    /// second `&mut` to the table, which the check logs but does not stop.
     #[track_caller]
     #[inline(always)]
     pub unsafe fn open(&self) -> Open<'_, T> {

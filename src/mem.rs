@@ -2,11 +2,19 @@
 //!
 //! The ports work on the engine objects themselves. The offsets come from `gen::layouts`.
 
+/// # Safety
+///
+/// `base + off` is the address of `size_of::<T>()` readable bytes that hold a valid `T`. The
+/// address need not be aligned.
 #[inline(always)]
 pub unsafe fn rd<T: Copy>(base: usize, off: usize) -> T {
     ((base + off) as *const T).read_unaligned()
 }
 
+/// # Safety
+///
+/// `base + off` is the address of `size_of::<T>()` writable bytes that nothing else reads or writes
+/// during the call. The address need not be aligned. The old value is not dropped.
 #[inline(always)]
 pub unsafe fn wr<T>(base: usize, off: usize, value: T) {
     ((base + off) as *mut T).write_unaligned(value)

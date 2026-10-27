@@ -41,8 +41,9 @@ pub(crate) struct Switches {
     /// `dual` (and the engine's walk), the engine's own draws of the same capture: the
     /// reference of a debug toggle.
     pub(crate) retained: bool,
-    /// `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n (at least 256), for
-    /// the test of a full room.
+    /// `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n, for the test of a
+    /// full room; below 256 the request refuses the adapter, for the test of the probe and
+    /// of the live start with a GPU the renderer cannot use.
     pub(crate) array_cap: Option<u32>,
     /// `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
     /// guard of the device's limit.
@@ -105,7 +106,7 @@ impl Switches {
             runs_dump: read.on("MGE_XE_RUNS_DUMP") == Some(true),
             indirect: read.on("MGE_XE_INDIRECT") != Some(false),
             retained: read.on("MGE_XE_RETAINED") != Some(false),
-            array_cap: read.number::<u32>("MGE_XE_ARRAY_CAP").map(|n| n.max(256)),
+            array_cap: read.number::<u32>("MGE_XE_ARRAY_CAP"),
             record_limit: read.number::<usize>("MGE_XE_RECORD_LIMIT").map(|n| n.max(1024)),
             samples: read.number::<u32>("MGE_XE_SAMPLES").map(|n| n.clamp(1, 8)),
             depth24: read.choice("MGE_XE_DEPTH_FORMAT", &["24", "32"]) == Some("24"),

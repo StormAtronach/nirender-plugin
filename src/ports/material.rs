@@ -17,6 +17,12 @@ const EMISSIVE: usize = E::d3dMaterial_Emissive;
 const POWER: usize = E::d3dMaterial_power;
 
 /// 0x6C2240 `NiDX8MaterialManager::Entry::Update`. The port returns 1 when it built the entry again.
+///
+/// # Safety
+///
+/// `entry` points at an entry of the material manager of at least `ENTRY_SIZE` bytes, and
+/// `material` at a live `NiMaterialProperty`: the function reads its revision, colours, alpha and
+/// shininess and writes the entry.
 pub unsafe fn entry_update(entry: usize, material: usize) -> u8 {
     crate::shadow::touch(&entry_update_port::STATE);
     let revision: u32 = rd(material, MP::revisionID);
@@ -37,6 +43,12 @@ pub unsafe fn entry_update(entry: usize, material: usize) -> u8 {
 }
 
 /// 0x6C2620 `NiDX8MaterialManager::SetCurrentMaterial`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8MaterialManager`, and `material` at a live `NiMaterialProperty`
+/// whose renderer data is 0 or an entry that this manager made (`ENTRY_SIZE` bytes). The function
+/// writes both.
 pub unsafe fn set_current_material(this: usize, material: usize) {
     crate::shadow::touch(&set_current_material_port::STATE);
     let mut entry: usize = rd(material, MP::rendererData);
@@ -76,6 +88,12 @@ unsafe fn code_patch_material_alpha() -> bool {
 /// With the Morrowind Code Patch the function also keeps a flag for the patch: bit 1 is on
 /// after a material that is not opaque, and only bit 0 stays after an opaque one. The port
 /// does that when the call of the patch is in the game code.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8MaterialManager`. When its changed flag is set, the function reads
+/// its current entry, which nothing here checks for 0; `device` is the device of the plugin that
+/// the engine renders with (`d3d::device_set_material`).
 pub unsafe fn update_to_device(this: usize, device: usize) {
     crate::shadow::touch(&update_to_device_port::STATE);
     if rd::<u8>(this, MM::changed) == 0 {

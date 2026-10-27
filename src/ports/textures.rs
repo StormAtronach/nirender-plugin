@@ -275,6 +275,11 @@ unsafe fn copy_rows(mut source: usize, bits: usize, pitch: u32, row_bytes: u32, 
 /// The body does not call [`hash_map::drain_and_zero_count_with`]. The game function reads
 /// `arrayBuckets` one time before the first bucket (0x6BC8AD), then after each `_delete`.
 /// [`hash_map::drain_with`] reads `arrayBuckets` again for each bucket.
+///
+/// # Safety
+///
+/// `map` points at a live hash map of the texture manager whose nodes come from the engine's
+/// `operator new`; nothing uses its nodes after the call.
 pub unsafe fn clear_hash_map(map: usize) {
     crate::shadow::touch(&clear_hash_map_port::STATE);
     let mut i = 0u32;
@@ -299,6 +304,10 @@ pub unsafe fn clear_hash_map(map: usize) {
 }
 
 /// 0x6BC840 `NiDX8TextureManager::HashMap::dtor`
+///
+/// # Safety
+///
+/// `map` points at a live hash map of the texture manager that nothing uses after the call.
 pub unsafe fn hash_map_dtor(map: usize) {
     crate::shadow::touch(&hash_map_dtor_port::STATE);
     wr(map, HM::vtbl, VTBL_HASH_MAP);
@@ -307,6 +316,11 @@ pub unsafe fn hash_map_dtor(map: usize) {
 }
 
 /// 0x6BC8F0 `NiDX8TextureManager::deleting_dtor_6BC8F0`: the deleting destructor of the hash map.
+///
+/// # Safety
+///
+/// `map` points at a live hash map of the texture manager that nothing uses after the call; with
+/// bit 0 of `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn hash_map_deleting_dtor(map: usize, flags: u32) -> usize {
     crate::shadow::touch(&hash_map_deleting_dtor_port::STATE);
     hash_map_dtor(map);
@@ -317,6 +331,11 @@ pub unsafe fn hash_map_deleting_dtor(map: usize, flags: u32) -> usize {
 }
 
 /// 0x6BC100 `NiDX8TextureManager::ctor`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8TextureManager` that is not constructed yet, and
+/// `renderer` at the live `NiDX8Renderer`.
 pub unsafe fn manager_ctor(this: usize, renderer: usize) -> usize {
     crate::shadow::touch(&manager_ctor_port::STATE);
     wr(this, TM::vtbl, VTBL_NI_REF_OBJECT);
@@ -344,6 +363,11 @@ pub unsafe fn manager_ctor(this: usize, renderer: usize) -> usize {
 }
 
 /// 0x6BC330 `NiDX8TextureManager::dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TextureManager` that nothing uses after the call: the function
+/// releases the device resources of its maps.
 pub unsafe fn manager_dtor(this: usize) {
     crate::shadow::touch(&manager_dtor_port::STATE);
     wr(this, TM::vtbl, VTBL_TEXTURE_MANAGER);
@@ -366,6 +390,11 @@ pub unsafe fn manager_dtor(this: usize) {
 }
 
 /// 0x6BC310 `NiDX8TextureManager::deleting_dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TextureManager` that nothing uses after the call; with bit 0 of
+/// `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn manager_deleting_dtor(this: usize, flags: u32) -> usize {
     crate::shadow::touch(&manager_deleting_dtor_port::STATE);
     manager_dtor(this);
@@ -376,6 +405,10 @@ pub unsafe fn manager_deleting_dtor(this: usize, flags: u32) -> usize {
 }
 
 /// 0x6BC590 `NiDX8TextureManager::GetTexture`. The game does not implement it.
+///
+/// # Safety
+///
+/// No condition: the function returns 0. It is `unsafe` as every port function is.
 pub unsafe fn manager_get_texture(_this: usize, _a1: u32, _a2: u32, _a3: u32, _a4: u32, _a5: u32, _a6: u32) -> u32 {
     crate::shadow::touch(&manager_get_texture_port::STATE);
     0
@@ -383,6 +416,11 @@ pub unsafe fn manager_get_texture(_this: usize, _a1: u32, _a2: u32, _a3: u32, _a
 
 /// 0x6BC5A0 `NiDX8TextureManager::PrepareTextureForRendering`: returns the device texture of a
 /// texture. It makes or updates the device texture when necessary.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TextureManager` with its renderer; `texture` is 0 or a live
+/// `NiTexture`; `out_created` and `out_mipmapped` point at bytes that the function writes.
 pub unsafe fn manager_prepare_texture_for_rendering(this: usize, texture: usize, out_created: usize, out_mipmapped: usize) -> usize {
     crate::shadow::touch(&manager_prepare_texture_for_rendering_port::STATE);
     wr::<u8>(out_created, 0, 0);
@@ -471,6 +509,11 @@ unsafe fn source_data_size_change(texture: usize, data: usize) -> SizeChange {
 }
 
 /// 0x6BC670 `NiDX8TextureManager::PrecacheTexture`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TextureManager` with its renderer, and `texture` is 0 or a live
+/// `NiTexture`.
 pub unsafe fn manager_precache_texture(this: usize, texture: usize, _a3: u32, _a4: u32) -> u8 {
     crate::shadow::touch(&manager_precache_texture_port::STATE);
     if texture == 0 {
@@ -492,6 +535,11 @@ pub unsafe fn manager_precache_texture(this: usize, texture: usize, _a3: u32, _a
 
 /// 0x6BC6F0 `NiDX8TextureManager::GetFormatFromTexture`: the extra data of the pixel format
 /// of the texture, or 14.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TextureManager` with its renderer, and `texture` at a live
+/// `NiTexture`: the function reads it before any test, so it is not 0.
 pub unsafe fn manager_get_format_from_texture(this: usize, texture: usize) -> u32 {
     crate::shadow::touch(&manager_get_format_from_texture_port::STATE);
     let data: usize = rd(texture, T::rendererData);
@@ -508,6 +556,11 @@ pub unsafe fn manager_get_format_from_texture(this: usize, texture: usize) -> u3
 }
 
 /// 0x6BC770 `NiDX8TextureManager::Recreate`: the first map loses its values and its nodes.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TextureManager`; nothing uses the device resources of its first
+/// map after the call.
 pub unsafe fn manager_recreate(t: &MainThread, this: usize) {
     crate::shadow::touch(&manager_recreate_port::STATE);
     crate::instance_stream::textures_changed(t);
@@ -519,6 +572,11 @@ pub unsafe fn manager_recreate(t: &MainThread, this: usize) {
 // ---- NiDX8TextureData
 
 /// 0x6B6D00 `NiDX8TextureData::ctor_args`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8TextureData` that is not constructed yet;
+/// `texture` at a live `NiTexture`, and `renderer` at the live `NiDX8Renderer`.
 pub unsafe fn texture_data_ctor(this: usize, texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&texture_data_ctor_port::STATE);
     wr(this, TD::vtbl_vtbl, VTBL_RENDERER_DATA);
@@ -544,6 +602,11 @@ pub unsafe fn texture_data_ctor(this: usize, texture: usize, renderer: usize) ->
 }
 
 /// 0x6B6DC0 `NiDX8TextureData::deleting_dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TextureData` that nothing uses after the call; with bit 0 of
+/// `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn texture_data_deleting_dtor(this: usize, flags: u32) -> usize {
     crate::shadow::touch(&texture_data_deleting_dtor_port::STATE);
     eng::texture_renderer_data_dtor(this);
@@ -554,18 +617,30 @@ pub unsafe fn texture_data_deleting_dtor(this: usize, flags: u32) -> usize {
 }
 
 /// 0x6B6E10 `NiDX8TextureData::GetHeight`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TextureData`.
 pub unsafe fn texture_data_get_height(this: usize) -> u32 {
     crate::shadow::touch(&texture_data_get_height_port::STATE);
     rd(this, TD::height)
 }
 
 /// 0x6B6E30 `NiDX8TextureData::GetPixelFormat`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TextureData`.
 pub unsafe fn texture_data_get_pixel_format(this: usize) -> usize {
     crate::shadow::touch(&texture_data_get_pixel_format_port::STATE);
     this + TD::format
 }
 
 /// 0x6B6E40 `NiDX8TextureData::GetD3DPalette`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TextureData`.
 pub unsafe fn texture_data_get_d3d_palette(this: usize) -> u32 {
     crate::shadow::touch(&texture_data_get_d3d_palette_port::STATE);
     rd(this, TD::d3dPalette)
@@ -573,6 +648,12 @@ pub unsafe fn texture_data_get_d3d_palette(this: usize) -> u32 {
 
 /// 0x6B6E50 `NiDX8TextureData_static::FindClosestPixelFormat`: the format of the list that
 /// best fits the preferences. It has no pixel data to examine. Returns 0 when no format fits.
+///
+/// # Safety
+///
+/// `prefs` points at the live format preferences of a texture, and `formats` at the renderer's
+/// array of texture formats (each 0 or a live `NiDX8PixelFormat`), as long as the function indexes
+/// it.
 pub unsafe fn find_closest_pixel_format(_renderer: usize, prefs: usize, formats: usize) -> usize {
     crate::shadow::touch(&find_closest_pixel_format_port::STATE);
     let mut layout: u32 = rd(prefs, PREFS_LAYOUT);
@@ -622,6 +703,12 @@ pub unsafe fn find_closest_pixel_format(_renderer: usize, prefs: usize, formats:
 
 /// 0x6B6F70 `NiDX8TextureData::FindMatchingPixelFormat`: the format of the list that best fits
 /// the preferences. The image converter must be able to make it from the source format.
+///
+/// # Safety
+///
+/// `source` points at a live pixel format, `prefs` at the live format preferences of a texture, and
+/// `formats` at the renderer's array of texture formats (each 0 or live), as long as the function
+/// indexes it; the engine's image converter is set.
 pub unsafe fn find_matching_pixel_format(_this: usize, source: usize, prefs: usize, formats: usize) -> usize {
     crate::shadow::touch(&find_matching_pixel_format_port::STATE);
     let format: u32 = rd(source, 0);
@@ -717,6 +804,11 @@ pub unsafe fn find_matching_pixel_format(_this: usize, source: usize, prefs: usi
 }
 
 /// 0x6B74F0 `NiDX8TextureData_static::ClearTextureData`: every texture loses its renderer data.
+///
+/// # Safety
+///
+/// The engine's list of live textures holds live textures; nothing uses the renderer data that the
+/// function deletes after the call.
 pub unsafe fn clear_texture_data(_renderer: usize) {
     crate::shadow::touch(&clear_texture_data_port::STATE);
     let mut texture = eng::texture_list_head();
@@ -731,6 +823,10 @@ pub unsafe fn clear_texture_data(_renderer: usize) {
 }
 
 /// The textures that are alive and whose first renderer data has this method table.
+///
+/// # Safety
+///
+/// The engine's list of live textures holds live textures.
 pub unsafe fn textures_with_data(table: u32) -> Vec<usize> {
     let mut list = Vec::new();
     let mut texture = eng::texture_list_head();
@@ -786,6 +882,11 @@ fn forget_unreadable(data: usize) {
 /// Returns the number of textures that lost their data, the number that kept it because
 /// the game cannot make it again, and the number that kept it because its file could not
 /// be read.
+///
+/// # Safety
+///
+/// The engine's list of live textures holds live textures; nothing uses the renderer data that the
+/// function deletes during the call (the game makes it again at the next use of the texture).
 pub unsafe fn purge_source_textures() -> (u32, u32, u32) {
     let (mut dropped, mut kept, mut unreadable) = (0, 0, 0);
     let mut texture = eng::texture_list_head();
@@ -810,6 +911,11 @@ pub unsafe fn purge_source_textures() -> (u32, u32, u32) {
 // ---- NiDX8SourceTextureData
 
 /// 0x6BFDE0 `NiDX8SourceTextureData::ctor`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8SourceTextureData` that is not constructed yet;
+/// `texture` at a live `NiSourceTexture`, and `renderer` at the live `NiDX8Renderer`.
 pub unsafe fn source_data_ctor(this: usize, texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&source_data_ctor_port::STATE);
     texture_data_ctor(this, texture, renderer);
@@ -831,6 +937,10 @@ pub unsafe fn source_data_ctor(this: usize, texture: usize, renderer: usize) -> 
 }
 
 /// 0x6BFE90 `NiDX8SourceTextureData::dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8SourceTextureData` that nothing uses after the call.
 pub unsafe fn source_data_dtor(t: &MainThread, this: usize) {
     crate::shadow::touch(&source_data_dtor_port::STATE);
     crate::instance_stream::textures_changed(t);
@@ -851,6 +961,11 @@ pub unsafe fn source_data_dtor(t: &MainThread, this: usize) {
 }
 
 /// 0x6BFE70 `NiDX8SourceTextureData::deleting_dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8SourceTextureData` that nothing uses after the call; with bit 0 of
+/// `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn source_data_deleting_dtor(t: &MainThread, this: usize, flags: u32) -> usize {
     crate::shadow::touch(&source_data_deleting_dtor_port::STATE);
     source_data_dtor(t, this);
@@ -861,12 +976,20 @@ pub unsafe fn source_data_deleting_dtor(t: &MainThread, this: usize, flags: u32)
 }
 
 /// 0x6BFF20 `NiDX8SourceTextureData::GetD3DTexture`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8SourceTextureData`.
 pub unsafe fn source_data_get_d3d_texture(this: usize) -> usize {
     crate::shadow::touch(&source_data_get_d3d_texture_port::STATE);
     rd(this, SD::d3dTexture)
 }
 
 /// 0x6BFF30 `NiDX8SourceTextureData::IsLoaded`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8SourceTextureData`.
 pub unsafe fn source_data_is_loaded(this: usize) -> u8 {
     crate::shadow::touch(&source_data_is_loaded_port::STATE);
     (rd::<usize>(this, SD::d3dTexture) != 0) as u8
@@ -874,6 +997,11 @@ pub unsafe fn source_data_is_loaded(this: usize) -> u8 {
 
 /// 0x6BFF40 `NiDX8SourceTextureData::CopyDataToSurface`: copies one mipmap level of the pixel
 /// data to a surface.
+///
+/// # Safety
+///
+/// `pixel_data` points at a live `NiPixelData` with at least `level + 1` levels, and `surface` at a
+/// live surface of the device.
 pub unsafe fn source_data_copy_data_to_surface(pixel_data: usize, level: u32, surface: usize) {
     crate::shadow::touch(&source_data_copy_data_to_surface_port::STATE);
     let mut desc = [0u32; 8];
@@ -908,6 +1036,10 @@ pub unsafe fn source_data_copy_data_to_surface(pixel_data: usize, level: u32, su
 
 /// 0x6C0050 `NiDX8SourceTextureData::Update`: when the pixel data or its palette changed, it
 /// copies every level to the device texture again.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8SourceTextureData` whose texture is a live `NiSourceTexture`.
 pub unsafe fn source_data_update(this: usize) {
     crate::shadow::touch(&source_data_update_port::STATE);
     let pixel_data: usize = rd(rd::<usize>(this, SD::vtbl_sgTexture), ST::pixelData);
@@ -980,6 +1112,10 @@ pub unsafe fn source_data_update(this: usize) {
 
 /// 0x6C0160 `NiDX8SourceTextureData::setPalette`. Returns 1 when the palette or its
 /// revision is new.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8SourceTextureData`, and `palette` is 0 or a live `NiPalette`.
 pub unsafe fn source_data_set_palette(this: usize, palette: usize) -> u8 {
     crate::shadow::touch(&source_data_set_palette_port::STATE);
     let mut changed = 0u8;
@@ -1006,6 +1142,11 @@ pub unsafe fn source_data_set_palette(this: usize, palette: usize) -> u8 {
 
 /// 0x6B68F0 `NiDX8BltSourceData::CreateSurface`: makes an image surface with the first level of
 /// the pixel data. Returns 1 when it made the surface.
+///
+/// # Safety
+///
+/// `this` points at live blit source data whose renderer has its device; `pixel_data` at a live
+/// `NiPixelData`, and `pixel_format` at a live `NiDX8PixelFormat`.
 pub unsafe fn blt_data_create_surface(this: usize, pixel_data: usize, pixel_format: usize) -> u8 {
     crate::shadow::touch(&blt_data_create_surface_port::STATE);
     let slot = this + BD_SURFACE;
@@ -1045,6 +1186,11 @@ pub unsafe fn blt_data_create_surface(this: usize, pixel_data: usize, pixel_form
 
 /// 0x6B6690 `NiDX8BltSourceData::Create`: makes the renderer data of a blit source and puts it
 /// at the end of its list. Returns the data, or 0 when there is no pixel data.
+///
+/// # Safety
+///
+/// `blt_source` points at a live `NiBltSource`, and `renderer` at the live `NiDX8Renderer`; when
+/// the source names a file, the engine's image converter is set.
 pub unsafe fn blt_data_create(blt_source: usize, renderer: usize) -> usize {
     crate::shadow::touch(&blt_data_create_port::STATE);
     let filename: usize = rd(blt_source, BLT_FILENAME);
@@ -1103,6 +1249,10 @@ pub unsafe fn blt_data_create(blt_source: usize, renderer: usize) -> usize {
 }
 
 /// 0x6B6810 `NiDX8BltSourceData::dtor`
+///
+/// # Safety
+///
+/// `this` points at live blit source data that nothing uses after the call.
 pub unsafe fn blt_data_dtor(this: usize) {
     crate::shadow::touch(&blt_data_dtor_port::STATE);
     wr(this, 0, VTBL_BLT_SOURCE_DATA);
@@ -1119,6 +1269,11 @@ pub unsafe fn blt_data_dtor(this: usize) {
 }
 
 /// 0x6B67F0 `NiDX8BltSourceData::deleting_dtor`
+///
+/// # Safety
+///
+/// `this` points at live blit source data that nothing uses after the call; with bit 0 of `flags`
+/// it is a block of the engine's allocation, which the function frees.
 pub unsafe fn blt_data_deleting_dtor(this: usize, flags: u32) -> usize {
     crate::shadow::touch(&blt_data_deleting_dtor_port::STATE);
     blt_data_dtor(this);
@@ -1131,6 +1286,10 @@ pub unsafe fn blt_data_deleting_dtor(this: usize, flags: u32) -> usize {
 // ---- NiDX8Renderer
 
 /// 0x6B0380 `NiDX8Renderer::CreateSourceTextureRendererData`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`, and `texture` at a live `NiSourceTexture`.
 pub unsafe fn renderer_create_source_texture_renderer_data(this: usize, texture: usize) -> u8 {
     crate::shadow::touch(&renderer_create_source_texture_renderer_data_port::STATE);
     if rd::<usize>(texture, T::rendererData) == 0 && eng::source_texture_data_create(texture, this) == 0 {
@@ -1140,6 +1299,10 @@ pub unsafe fn renderer_create_source_texture_renderer_data(this: usize, texture:
 }
 
 /// 0x6B0580 `NiDX8Renderer::CreateSourceCubeMapRendererData`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`, and `texture` at a live `NiSourceCubeMap`.
 pub unsafe fn renderer_create_source_cube_map_renderer_data(this: usize, texture: usize) -> u8 {
     crate::shadow::touch(&renderer_create_source_cube_map_renderer_data_port::STATE);
     if rd::<usize>(texture, T::rendererData) != 0 {
@@ -1149,6 +1312,10 @@ pub unsafe fn renderer_create_source_cube_map_renderer_data(this: usize, texture
 }
 
 /// 0x6B05B0 `NiDX8Renderer::CreateBltSourceRendererData`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`, and `blt_source` at a live `NiBltSource`.
 pub unsafe fn renderer_create_blt_source_renderer_data(this: usize, blt_source: usize) -> u8 {
     crate::shadow::touch(&renderer_create_blt_source_renderer_data_port::STATE);
     if rd::<usize>(blt_source, BLT_RENDERER_DATA) == 0 && blt_data_create(blt_source, this) == 0 {
@@ -1158,6 +1325,11 @@ pub unsafe fn renderer_create_blt_source_renderer_data(this: usize, blt_source: 
 }
 
 /// 0x6AC390 `NiDX8Renderer::PurgeAllTextures`
+///
+/// # Safety
+///
+/// As for `clear_texture_data`: the engine's list of live textures holds live textures, and nothing
+/// uses their renderer data after the call.
 pub unsafe fn renderer_purge_all_textures(this: usize, _a2: u32) -> u8 {
     crate::shadow::touch(&renderer_purge_all_textures_port::STATE);
     clear_texture_data(this);
@@ -1165,6 +1337,11 @@ pub unsafe fn renderer_purge_all_textures(this: usize, _a2: u32) -> u8 {
 }
 
 /// 0x6AC3A0 `NiDX8Renderer::PurgeTexture`: the texture loses the head of its renderer data.
+///
+/// # Safety
+///
+/// `texture` points at a live `NiTexture`; nothing uses its first renderer data after the call (the
+/// function deletes it).
 pub unsafe fn renderer_purge_texture(_this: usize, texture: usize) -> u8 {
     crate::shadow::touch(&renderer_purge_texture_port::STATE);
     let data: usize = rd(texture, T::rendererData);
@@ -1176,18 +1353,31 @@ pub unsafe fn renderer_purge_texture(_this: usize, texture: usize) -> u8 {
 }
 
 /// 0x6AC400 `NiDX8Renderer::GetTextureMemoryStats`. The game does not implement it.
+///
+/// # Safety
+///
+/// No condition: the function returns 0. It is `unsafe` as every port function is.
 pub unsafe fn renderer_get_texture_memory_stats(_this: usize, _a1: u32, _a2: u32) -> u8 {
     crate::shadow::touch(&renderer_get_texture_memory_stats_port::STATE);
     0
 }
 
 /// 0x6AC410 `NiDX8Renderer::GetTextureStats_maybe`. The game does not implement it.
+///
+/// # Safety
+///
+/// No condition: the function returns 0. It is `unsafe` as every port function is.
 pub unsafe fn renderer_get_texture_stats(_this: usize, _a1: u32, _a2: u32, _a3: u32, _a4: u32, _a5: u32) -> u8 {
     crate::shadow::touch(&renderer_get_texture_stats_port::STATE);
     0
 }
 
 /// 0x6ABD00 `NiDX8Renderer::FindClosestPixelFormat`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its texture formats, and `prefs` at the live
+/// format preferences of a texture.
 pub unsafe fn renderer_find_closest_pixel_format(this: usize, prefs: usize) -> usize {
     crate::shadow::touch(&renderer_find_closest_pixel_format_port::STATE);
     find_closest_pixel_format(this, prefs, this + R::arrayArrayTextureFormats)

@@ -31,6 +31,11 @@ pub const MAP_BUMP: usize = 5;
 pub const MAP_DECAL_0: usize = 6;
 
 /// The map of a slot of the map array `maps` of a `NiTexturingProperty`, or 0.
+///
+/// # Safety
+///
+/// `maps` points at the map array of a live `NiTexturingProperty` that holds at least `slot + 1`
+/// entries; nothing here checks the slot.
 #[inline(always)]
 pub unsafe fn texturing_map(maps: usize, slot: usize) -> usize {
     rd(maps, slot * core::mem::size_of::<u32>())
@@ -38,6 +43,11 @@ pub unsafe fn texturing_map(maps: usize, slot: usize) -> usize {
 
 /// Calls the virtual deleting destructor of `object`, slot 0x00, with the argument 1. The
 /// argument 1 is the flag "free the memory".
+///
+/// # Safety
+///
+/// `object` points at a live `NiObject` that nothing uses after the call: its deleting destructor
+/// frees it.
 #[inline(always)]
 pub unsafe fn delete_object(object: usize) {
     vcall1(object, SLOT_DELETING_DTOR, 1);
@@ -45,6 +55,10 @@ pub unsafe fn delete_object(object: usize) {
 
 /// Adds one reference to `object`. The game code has this inline as `inc dword ptr [object+4]`.
 /// `object` is not 0.
+///
+/// # Safety
+///
+/// `object` points at a live `NiRefObject`; it is not 0.
 #[inline(always)]
 pub unsafe fn add_reference(object: usize) {
     wr(object, REF_COUNT, rd::<u32>(object, REF_COUNT).wrapping_add(1));
@@ -53,6 +67,11 @@ pub unsafe fn add_reference(object: usize) {
 /// The inline release of one reference. It subtracts 1 from the count and writes the count.
 /// When the count is 0 it calls the deleting destructor with the argument 1. `object` is not
 /// 0. This is not a call of `NiObject::release` (0x404630).
+///
+/// # Safety
+///
+/// `object` points at a live `NiRefObject` (not 0) on which the caller holds a reference. When the
+/// count reaches 0 the object is freed, and nothing may use it after the call.
 #[inline(always)]
 pub unsafe fn release(object: usize) {
     let count = rd::<u32>(object, REF_COUNT).wrapping_sub(1);
@@ -64,6 +83,10 @@ pub unsafe fn release(object: usize) {
 
 /// The inline release with the test for a null object before it. It does nothing when
 /// `object` is 0.
+///
+/// # Safety
+///
+/// `object` is 0, or a live `NiRefObject` on which the caller holds a reference, as for `release`.
 #[inline(always)]
 pub unsafe fn release_if_set(object: usize) {
     if object != 0 {
@@ -73,6 +96,11 @@ pub unsafe fn release_if_set(object: usize) {
 
 /// The inline release of the object that the pointer at `slot` holds. Then it writes 0 to
 /// `slot`. It does nothing when the pointer is 0, also no write.
+///
+/// # Safety
+///
+/// `slot` points at an `NiPointer` that holds 0 or a live `NiRefObject` whose reference the pointer
+/// counts.
 #[inline(always)]
 pub unsafe fn release_and_clear(slot: usize) {
     let object: usize = rd(slot, 0);
@@ -86,6 +114,11 @@ pub unsafe fn release_and_clear(slot: usize) {
 /// already, it does nothing. If not, it releases the old object inline, writes `object` to
 /// `slot`, then adds one reference to `object`. This is not a call of `NiPointer::set`
 /// (0x471B00), `NiPointer::operator=` (0x6EA9C0) or `NiPointer::assign` (0x712850).
+///
+/// # Safety
+///
+/// `slot` points at an `NiPointer` that holds 0 or a live `NiRefObject` whose reference the pointer
+/// counts; `object` is 0 or a live `NiRefObject`.
 #[inline(always)]
 pub unsafe fn pointer_assign(slot: usize, object: usize) {
     let old: usize = rd(slot, 0);
@@ -102,6 +135,10 @@ pub unsafe fn pointer_assign(slot: usize, object: usize) {
 
 /// `GetRTTI` of a `NiObject` through its vtable, slot 0x04. Returns the address of the
 /// `NiRTTI`.
+///
+/// # Safety
+///
+/// `object` points at a live `NiObject`: the function calls its virtual table.
 #[inline(always)]
 pub unsafe fn get_rtti(object: usize) -> usize {
     vcall0(object, SLOT_GET_RTTI) as usize
@@ -109,6 +146,11 @@ pub unsafe fn get_rtti(object: usize) -> usize {
 
 /// The inline `NiIsKindOf`. It makes one `GetRTTI` call, then it follows the base pointers.
 /// The result is true when the run-time type of `object` is `rtti` or comes from `rtti`.
+///
+/// # Safety
+///
+/// `object` points at a live `NiObject`, and the chain of base pointers from its `NiRTTI` ends with
+/// 0, as the engine's chains do.
 #[inline(always)]
 pub unsafe fn is_kind_of(object: usize, rtti: usize) -> bool {
     let mut at = get_rtti(object);
@@ -123,6 +165,11 @@ pub unsafe fn is_kind_of(object: usize, rtti: usize) -> bool {
 
 /// Adds `delta` to `global_count_of_NiRefObject` (0x7DECE0). The inline constructor of a
 /// [`NiRefObject`] adds 1. The inline destructor adds -1.
+///
+/// # Safety
+///
+/// The engine's count at 0x7DECE0 is read and written without a lock: two callers on different
+/// threads can lose an update. Which threads call it is not known here.
 #[inline(always)]
 pub unsafe fn ref_object_count_add(delta: i32) {
     wr(NI_REF_OBJECT_COUNT, 0, rd::<i32>(NI_REF_OBJECT_COUNT, 0).wrapping_add(delta));

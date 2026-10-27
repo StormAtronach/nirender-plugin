@@ -80,9 +80,10 @@ mod engine;
 mod player;
 use engine::{plan, scene};
 mod retained;
-/// For the check of the world shader without a GPU in the helper of MGE XE (`shader_check`
-/// of mgeHost64): the text of an extension as the shader module takes it.
-pub use retained::rewrite_extension_text;
+mod request;
+/// The request of the GPU and what a check of a shader without a GPU takes from it (the
+/// helper of MGE XE, `shader_check` of mgeHost64), the probe, and the exit code of a refusal.
+pub use request::{fixed_limits, probe, required_features, world_shader_source, Refusal, ARRAY_SAMPLERS, ARRAY_TEXTURES, SAMPLED_TEXTURES};
 mod uv_animation;
 mod morph;
 pub mod stamps;

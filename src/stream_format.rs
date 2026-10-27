@@ -30,6 +30,11 @@ pub const HEADER_BYTES: usize = HEADER_BUILD_ID_AT + HEADER_BUILD_ID_BYTES;
 /// [`helper_said_why`]: the helper showed its message, the plugin shows none.
 pub const EXIT_STREAM_FORMAT: u32 = 10;
 pub const EXIT_EXTENSION_FORMAT: u32 = 11;
+/// The GPU or the window cannot be used: no adapter on any backend, no binding arrays with
+/// their room, no BC compression, too few sampled textures, no surface. The live start and
+/// `--probe` exit with it; d3d8.dll reads it from the probe as `MGE_PROBE_EXIT_GPU` of
+/// `mgeversion.h` (a unit test of mgeHost64 compares the two).
+pub const EXIT_GPU: u32 = 20;
 
 /// True when the helper ended with one of its refusals (10 to 29): it named the reason in a
 /// message box and in its log, and the plugin adds no second box.
