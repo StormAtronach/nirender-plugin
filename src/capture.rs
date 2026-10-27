@@ -38,7 +38,7 @@ use crate::mem::rd;
 // The layout of the HEADER record and of the shared memories: their one home.
 use crate::stream_format::{
     HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET, HEADER_SCENE_WIREFRAME,
-    HEADER_WALK_PLACES, HEADER_WORLD_WALK, MESSAGES_CAPACITY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_READ, MESSAGES_WRITTEN, REPLY_CAPACITY,
+    HEADER_WALK_PLACES, HEADER_WORLD_WALK, MESSAGES_CAPACITY, MESSAGES_MEMORY, READ_EVENT, RECORDS_EVENT, TILES_MEMORY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_READ, MESSAGES_WRITTEN, REPLY_CAPACITY,
     REPLY_HEAD, REPLY_HEIGHT, REPLY_REQUEST, REPLY_WIDTH, RING_CAPACITY, RING_CLOSED, RING_GAME_WAITING, RING_HEAD, RING_MAGIC, RING_READ,
     RING_SHADOW_REACH, RING_TAKES, RING_WAITING, RING_WRITTEN, TILE_BYTES, TILE_HEAD, TILE_HEIGHT, TILE_SLOTS, TILE_TICKET, TILE_WIDTH,
 };
@@ -475,10 +475,10 @@ impl Ring {
         (base as *mut u32).write(RING_MAGIC);
         (base.add(RING_CAPACITY) as *mut u32).write(capacity as u32);
         // An event that resets itself: one wait takes one set.
-        let mut event_name = format!("{name}-records").into_bytes();
+        let mut event_name = format!("{name}{RECORDS_EVENT}").into_bytes();
         event_name.push(0);
         let event = CreateEventA(core::ptr::null(), 0, 0, event_name.as_ptr());
-        let mut read_name = format!("{name}-read").into_bytes();
+        let mut read_name = format!("{name}{READ_EVENT}").into_bytes();
         read_name.push(0);
         let read_event = CreateEventA(core::ptr::null(), 0, 0, read_name.as_ptr());
         crate::pacing::start(mapping, name);
@@ -676,22 +676,13 @@ struct Reply {
     generation: u32,
 }
 
-/// The name of the reply memory of the ring `ring` in its generation `generation`.
-pub fn reply_name(ring: &str, generation: u32) -> String {
-    if generation == 0 {
-        format!("{ring}.reply")
-    } else {
-        format!("{ring}.reply{generation}")
-    }
-}
-
 impl Reply {
     unsafe fn create(name: &str, capacity: usize) -> Option<Reply> {
         Reply::create_generation(name, capacity, 0)
     }
 
     unsafe fn create_generation(name: &str, capacity: usize, generation: u32) -> Option<Reply> {
-        let mut text = reply_name(name, generation).into_bytes();
+        let mut text = crate::stream_format::reply_memory_name(name, generation).into_bytes();
         text.push(0);
         let mapping = CreateFileMappingA(-1, core::ptr::null(), 4, 0, (capacity + REPLY_HEAD) as u32, text.as_ptr());
         if mapping == 0 {
@@ -800,7 +791,7 @@ struct Tiles {
 
 impl Tiles {
     unsafe fn create(name: &str) -> Option<Tiles> {
-        let mut text = format!("{name}.tiles").into_bytes();
+        let mut text = format!("{name}{TILES_MEMORY}").into_bytes();
         text.push(0);
         let size = TILE_SLOTS * (TILE_HEAD + TILE_BYTES);
         let mapping = CreateFileMappingA(-1, core::ptr::null(), 4, 0, size as u32, text.as_ptr());
@@ -906,7 +897,7 @@ struct Messages {
 
 impl Messages {
     unsafe fn create(name: &str) -> Option<Messages> {
-        let mut text = format!("{name}.messages").into_bytes();
+        let mut text = format!("{name}{MESSAGES_MEMORY}").into_bytes();
         text.push(0);
         let mapping = CreateFileMappingA(-1, core::ptr::null(), 4, 0, (MESSAGES_BYTES + MESSAGES_HEAD) as u32, text.as_ptr());
         if mapping == 0 {
@@ -2280,7 +2271,6 @@ mod tests {
             assert_eq!((reply.generation, reply.capacity, reply.requests), (1, 256, 5));
             assert_eq!((reply.base.add(super::REPLY_CAPACITY) as *const u32).read_volatile(), 256);
             assert_eq!((reply.base.add(super::REPLY_REQUEST) as *const u32).read_volatile(), 5);
-            assert_eq!(super::reply_name(&ring, 1), format!("{ring}.reply1"));
             reply.close();
         }
     }

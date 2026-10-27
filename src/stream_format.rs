@@ -100,6 +100,33 @@ pub const HEADER_ENVMAP_LIT: u32 = 128;
 // The shared memories of a stream. The plugin makes each one, named after the ring; the
 // helper opens it. The words of the ring head are in the table at the head of this file.
 
+/// The names of the kernel objects of a stream are the ring's own name with a suffix. The
+/// event that the plugin sets after a write while the helper waits for a record
+/// ([`RING_WAITING`]).
+pub const RECORDS_EVENT: &str = "-records";
+/// The event that the helper sets when it has shown a frame, for the pacing of the game.
+pub const SHOWN_EVENT: &str = "-shown";
+/// The event that the helper sets after a read while the game waits for one
+/// ([`RING_GAME_WAITING`]).
+pub const READ_EVENT: &str = "-read";
+/// The reply memory; one of a later generation has the generation after it
+/// ([`reply_memory_name`]).
+pub const REPLY_MEMORY: &str = ".reply";
+/// The tile memory.
+pub const TILES_MEMORY: &str = ".tiles";
+/// The message memory.
+pub const MESSAGES_MEMORY: &str = ".messages";
+
+/// The name of the reply memory of the ring `ring` in its generation `generation`:
+/// `<ring>.reply`, then `<ring>.reply<generation>` after it grew.
+pub fn reply_memory_name(ring: &str, generation: u32) -> String {
+    if generation == 0 {
+        format!("{ring}{REPLY_MEMORY}")
+    } else {
+        format!("{ring}{REPLY_MEMORY}{generation}")
+    }
+}
+
 /// The first word of the ring head: the plugin made this memory.
 pub const RING_MAGIC: u32 = 0x474E_5232;
 /// The bytes of the ring head: the data starts here. A record can go around the end of the
@@ -416,6 +443,12 @@ mod tests {
         // The HEADER record: its words one after the other, then the build id.
         let header = [(HEADER_WIDTH_AT, 4), (HEADER_HEIGHT_AT, 4), (HEADER_WINDOW_AT, 4), (HEADER_ABILITIES_AT, 4), (HEADER_FORMAT_AT, 4)];
         assert_eq!(words_fit(&header, HEADER_BYTES), HEADER_BUILD_ID_AT);
+    }
+
+    #[test]
+    fn the_reply_memory_has_its_generation_after_its_suffix() {
+        assert_eq!(reply_memory_name("nirender-1", 0), "nirender-1.reply");
+        assert_eq!(reply_memory_name("nirender-1", 3), "nirender-1.reply3");
     }
 
     #[test]

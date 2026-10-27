@@ -31,7 +31,8 @@ extern "system" {
 // The layout of the HEADER record and of the shared memories of a stream: their one home,
 // shared with the plugin.
 use super::stream_format::{
-    HEADER_HEIGHT_AT, HEADER_WIDTH_AT, HEADER_WINDOW_AT, MESSAGES_CAPACITY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_READ, MESSAGES_WRITTEN,
+    HEADER_HEIGHT_AT, HEADER_WIDTH_AT, HEADER_WINDOW_AT, MESSAGES_CAPACITY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_MEMORY, MESSAGES_READ, MESSAGES_WRITTEN,
+    READ_EVENT, RECORDS_EVENT, SHOWN_EVENT, TILES_MEMORY,
     REPLY_CAPACITY, REPLY_HEAD, REPLY_HEIGHT, REPLY_REQUEST, REPLY_WIDTH, RING_BUSY, RING_CAPACITY, RING_CLOSED, RING_DONE_AT, RING_DONE_TIME,
     RING_GAME_WAITING, RING_HEAD, RING_MAGIC, RING_NEXT_START, RING_READ, RING_SHADOW_REACH, RING_TAKES, RING_WAITING, RING_WRITTEN, TILE_BYTES,
     TILE_HEAD, TILE_HEIGHT, TILE_SLOTS, TILE_TICKET, TILE_WIDTH,
@@ -93,13 +94,13 @@ impl Ring {
                 assert_eq!(unsafe { (base as *const u32).read() }, RING_MAGIC, "not a ring of the plugin");
                 let capacity = unsafe { (base.add(RING_CAPACITY) as *const u32).read() } as u64;
                 // EVENT_ALL_ACCESS.
-                let mut event_name = format!("{name}-records").into_bytes();
+                let mut event_name = format!("{name}{RECORDS_EVENT}").into_bytes();
                 event_name.push(0);
                 let event = unsafe { OpenEventA(0x1F0003, 0, event_name.as_ptr()) };
-                let mut shown_name = format!("{name}-shown").into_bytes();
+                let mut shown_name = format!("{name}{SHOWN_EVENT}").into_bytes();
                 shown_name.push(0);
                 let shown_event = unsafe { OpenEventA(0x1F0003, 0, shown_name.as_ptr()) };
-                let mut read_name = format!("{name}-read").into_bytes();
+                let mut read_name = format!("{name}{READ_EVENT}").into_bytes();
                 read_name.push(0);
                 // SAFETY: the name is a NUL-ended byte string that lives for the call; a
                 // missing event gives 0, which the reader tests before each use.
@@ -244,9 +245,9 @@ impl Reply {
         Some(Reply { name: name.to_string(), mapping, base, generation: 0 })
     }
 
-    /// The memory of the generation `generation`: `.reply`, then `.reply<generation>`.
+    /// The memory of the generation `generation` (`stream_format::reply_memory_name`).
     fn map(name: &str, generation: u32) -> Option<(isize, *mut u8)> {
-        let mut text = if generation == 0 { format!("{name}.reply") } else { format!("{name}.reply{generation}") }.into_bytes();
+        let mut text = super::stream_format::reply_memory_name(name, generation).into_bytes();
         text.push(0);
         let mapping = unsafe { OpenFileMappingA(0xF001F, 0, text.as_ptr()) };
         if mapping == 0 {
@@ -297,7 +298,7 @@ struct Tiles {
 
 impl Tiles {
     fn open(name: &str) -> Option<Tiles> {
-        let mut text = format!("{name}.tiles").into_bytes();
+        let mut text = format!("{name}{TILES_MEMORY}").into_bytes();
         text.push(0);
         let mapping = unsafe { OpenFileMappingA(0xF001F, 0, text.as_ptr()) };
         if mapping == 0 {
@@ -330,7 +331,7 @@ struct Messages {
 
 impl Messages {
     fn open(name: &str) -> Option<Messages> {
-        let mut text = format!("{name}.messages").into_bytes();
+        let mut text = format!("{name}{MESSAGES_MEMORY}").into_bytes();
         text.push(0);
         let mapping = unsafe { OpenFileMappingA(0xF001F, 0, text.as_ptr()) };
         if mapping == 0 {
@@ -1219,7 +1220,7 @@ mod tests {
     fn a_request_of_the_next_generation_is_answered_in_its_memory() {
         // The memory that the plugin makes when it grows: 32 pixel bytes.
         let ring = format!("nirender-test-{}", std::process::id());
-        let name = format!("{ring}.reply1\0");
+        let name = format!("{}\0", super::super::stream_format::reply_memory_name(&ring, 1));
         let mapping = unsafe { CreateFileMappingA(-1, std::ptr::null(), 4, 0, (REPLY_HEAD + 32) as u32, name.as_ptr()) };
         assert_ne!(mapping, 0);
         let larger = unsafe { MapViewOfFile(mapping, 0xF001F, 0, 0, 0) };
