@@ -444,10 +444,10 @@ fn tag_line(counts: &[(u64, u64)]) -> String {
     parts.join("; ")
 }
 
-/// The present mode for the setting of the extension ([`Extension::vsync`]): with vsync the
-/// window waits for the refresh of the screen (FIFO, the frame rate capped at the refresh
-/// rate); without it the window shows a frame when the game gives one (`AutoNoVsync`:
-/// immediate, mailbox or FIFO, the first that the surface has).
+/// The present mode for the setting of the extension ([`crate::Extension::vsync`]): with
+/// vsync the window waits for the refresh of the screen (FIFO, the frame rate capped at the
+/// refresh rate); without it the window shows a frame when the game gives one
+/// (`AutoNoVsync`: immediate, mailbox or FIFO, the first that the surface has).
 fn present_mode_of(vsync: bool) -> wgpu::PresentMode {
     if vsync {
         wgpu::PresentMode::Fifo
