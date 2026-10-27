@@ -48,7 +48,7 @@ pub const BOUND: u32 = 0x400;
 /// The draw is a draw of the flush of the engine's main sorted queue (`ports::base::
 /// in_main_flush`): the engine sorted it among its blends. A blend without the flag draws
 /// in place. The head of the stream says that the records carry the flag
-/// ([`capture::HEADER_QUEUE_MARKED`]); an older capture has no such word.
+/// ([`stream_format::HEADER_QUEUE_MARKED`]); an older capture has no such word.
 pub const QUEUED: u32 = 0x800;
 
 /// The address of the flags of the Code Patch for the picture of the character, 1 when the

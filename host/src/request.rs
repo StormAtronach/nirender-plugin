@@ -333,6 +333,10 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     let float_depth = features.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) && !switches().depth24;
     let depth_format = if float_depth { wgpu::TextureFormat::Depth32FloatStencil8 } else { DEPTH_FORMAT };
     depth::set_reversed(float_depth && !switches().depth_plain);
+    depth::set_one_buffer(switches().one_depth);
+    if switches().one_depth && !depth::one_buffer() {
+        println!("depth: MGE_XE_ONE_DEPTH needs the reversed float depth; the land keeps its own depth");
+    }
     let mut samples = samples.clamp(1, 8).next_power_of_two();
     while samples > 1 {
         let color = adapter.get_texture_format_features(target_format).flags;
@@ -427,8 +431,8 @@ pub fn probe(backends: wgpu::Backends, texture_slots: u32) -> i32 {
 }
 
 /// The box of the live start when no backend serves (the failure-path page, section 5, the
-/// code 20), and the log lines of the refusals.
-pub(crate) fn refuse_live(refusals: &[Refusal]) {
+/// code 20), and the log lines of the refusals; then the program ends with the code.
+pub(crate) fn refuse_live(refusals: &[Refusal]) -> ! {
     for refusal in refusals {
         println!("gpu: {refusal}");
     }
@@ -437,7 +441,7 @@ pub(crate) fn refuse_live(refusals: &[Refusal]) {
         "The wgpu renderer of MGE XE cannot use this graphics device.\n{}\nClose this box: the game closes. Set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\nnirender-host.log in the folder of the game has the details.",
         why.join("\n")
     );
-    gpu::message_box(&text);
+    gpu::refuse(crate::stream_format::EXIT_GPU, &text)
 }
 
 #[cfg(test)]

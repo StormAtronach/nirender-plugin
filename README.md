@@ -143,6 +143,9 @@ The A/B:
   `depth:` names the format in use).
 - `MGE_XE_DEPTH_REVERSED=0` keeps the float depth in the plain convention (near 0, far 1), not
   reversed (near 1, far 0): for an A/B of the reversed depth (`host/src/depth.rs`).
+- `MGE_XE_ONE_DEPTH=1` draws the distant land and the game into one depth buffer, with an
+  infinite far plane for every perspective projection of the world view (step 6 of the depth
+  design; only with the reversed float depth). Temporary: it goes when step 6 is accepted.
 - `NIRENDER_CONTROLLERS=0` keeps a shape with a controller on itself or on a property (a
   morpher, a UV, flip, alpha or colour controller) on the engine's path (the rule before).
 - `NIRENDER_SKIN_TABLE=0` keeps the skinned shapes on the engine's display, with the palette
@@ -216,6 +219,8 @@ MGE-XE-G7 render-link worktree.
   `AutoNoVsync`).
 - `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a child
   window of it: for an A/B of the mouse's lag.
+- `MGE_XE_WATCHDOG=0`: no watchdog of the frame thread in the helper (`host/src/watchdog.rs`):
+  for a test of the plugin's own limit of 10 s on a helper that reads no record.
 - `MGE_XE_CORES=0`: the threads of the helper are left to the scheduler.
 - `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n, for the test of a full
   room; below 256 the request refuses the adapter, for the test of `numidium.exe --probe`

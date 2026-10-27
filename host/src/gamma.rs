@@ -142,6 +142,11 @@ impl Gamma {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_gamma_shader_is_valid_wgsl() {
+        crate::assert_wgsl("gamma ramp", SHADER);
+    }
+
     /// The ramp of `NiDX8Application::SetGamma` for a gamma setting.
     fn engine_ramp(gamma: f32) -> Vec<u16> {
         let exponent = if gamma < 1.0 { gamma * 0.99 + 0.01 } else { gamma * 5.0 - 4.0 };

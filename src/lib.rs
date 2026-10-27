@@ -43,6 +43,7 @@ pub mod checked;
 pub mod entry_trace;
 pub mod cores;
 pub mod crash;
+pub mod failure;
 pub mod log;
 pub mod main_thread;
 pub mod census;

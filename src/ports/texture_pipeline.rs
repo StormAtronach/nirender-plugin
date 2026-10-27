@@ -227,7 +227,7 @@ const ENVMAP_LIT_HOOK: [u8; 78] = [
 /// The game's environment map stages take the lit colour: the call at 0x6C1BA4 goes to the
 /// Code Patch's hook (`ENVMAP_LIT_HOOK`, wherever it lies). The ports call that target, so
 /// the stream has it; the helper derives the stages of the retained table with this fact
-/// (`capture::HEADER_ENVMAP_LIT`). Another target is a patch of unknown effect: the table
+/// (`stream_format::HEADER_ENVMAP_LIT`). Another target is a patch of unknown effect: the table
 /// keeps the engine's combiner, and the stream has the patch's.
 ///
 /// # Safety

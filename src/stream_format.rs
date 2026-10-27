@@ -9,8 +9,55 @@
 //! else and stops on a difference (`live::run`); a replay prints the difference and goes on,
 //! because the gate's accepted captures come from before the number existed.
 //!
-//! Bump [`STREAM_FORMAT`] with any change of the ring head, of a record tag's layout or
-//! meaning, or of the HEADER record. Name the bump in the commit message.
+//! Bump [`STREAM_FORMAT`] with a change of the meaning or the offset of a word of the ring
+//! head, of the start of the records, of a record tag's layout or meaning, or of the HEADER
+//! record; name the bump in the commit message. A new word in the free area of the ring head,
+//! read as 0 from an older writer whose 0 means the behaviour before the word, needs none.
+//!
+//! The file is also the one home of the exit codes of the helper that the plugin reads, of
+//! the ids of the messages of the helper for the game process, and of the layout of the
+//! HEADER record and of the shared memories of a stream (the ring, the reply memory, the
+//! tile memory, the message memory). `tools/check_handshake.py` refuses a second definition
+//! of any constant of this file in the two crates and in mgeHost64.
+//!
+//! The exit codes of numidium.exe (the failure-path design, section 4):
+//!
+//! | code | meaning |
+//! | --- | --- |
+//! | 0 | ended as asked |
+//! | 1 to 9 | its IPC host mode (`error.rs` of mgeHost64) |
+//! | 10 to 29 | a refusal with a message box of its own: 10 the stream format, 11 the extension format, 20 the GPU or the window ([`EXIT_GPU`]) |
+//! | 30 | the watchdog of the helper: its frame thread made no progress for [`STALL_SECONDS`]; numidium.dmp written |
+//! | 31 | the plugin ended the helper: no read of the ring for the limit of its allowance ([`limit`]) |
+//! | 0xc0000409 | a Rust panic (the fast fail of the abort); numidium.dmp written by the panic hook |
+//! | other 0xC... | an exception (0xc0000005 an access violation); numidium.dmp written by the exception filter |
+//!
+//! The plugin's `check_host` reads them: for 10 to 29 the helper showed its message and the
+//! plugin adds no second box ([`helper_said_why`]); for the rest the plugin runs the failure
+//! path (`failure.rs`: the autosave, then its box).
+//!
+//! The words of the head of the ring ([`RING_HEAD`] bytes; each has its constant below, the
+//! one home of its offset for the plugin and the host crate):
+//!
+//! | offset | type | writer | word |
+//! | --- | --- | --- | --- |
+//! | 0 | u32 | plugin | the magic |
+//! | 4 | u32 | plugin | the capacity of the data |
+//! | 8 | u64 | plugin | the bytes written |
+//! | 16 | u64 | helper | the bytes read |
+//! | 24 | u32 | plugin | 1 when the game closed the stream |
+//! | 32 | u32 | helper | the classes the helper draws itself |
+//! | 36 | u32 | helper | 1 while the helper waits for a record |
+//! | 40 | f32 | helper | the reach of the shadow map |
+//! | 44 | u32 | helper | the busy time of a frame, microseconds |
+//! | 48 | u64 | helper | the bytes read at the last frame shown |
+//! | 56 | u64 | helper | the time of the last frame shown, ticks |
+//! | 64 | i64 | plugin | the start of the next frame of the game, ticks |
+//! | 72 | u32 | plugin | the game waits for the helper (Ryker's `fix/plugin-limits`) |
+//! | 76 | u32 | helper | [`RING_ALLOWANCE`]: the seconds a step of the helper's frame thread may take |
+//! | 80 | u32 | helper | [`RING_ENDING`]: the exit code that the helper announced, 0 for none |
+//!
+//! The free area of the ring head: 84 to 127.
 
 /// The format of the stream that this build writes and reads.
 pub const STREAM_FORMAT: u32 = 1;
@@ -18,10 +65,143 @@ pub const STREAM_FORMAT: u32 = 1;
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
 /// game, the abilities of the stream, the stream format, then the build id of the plugin as
 /// ASCII, zero-padded. A HEADER of 16 bytes comes from a plugin before the handshake.
+pub const HEADER_WIDTH_AT: usize = 0;
+pub const HEADER_HEIGHT_AT: usize = 4;
+pub const HEADER_WINDOW_AT: usize = 8;
+pub const HEADER_ABILITIES_AT: usize = 12;
 pub const HEADER_FORMAT_AT: usize = 16;
 pub const HEADER_BUILD_ID_AT: usize = 20;
 pub const HEADER_BUILD_ID_BYTES: usize = 64;
 pub const HEADER_BYTES: usize = HEADER_BUILD_ID_AT + HEADER_BUILD_ID_BYTES;
+
+/// A bit of the abilities word of the HEADER: the shape records carry the flag
+/// `shape_stream::QUEUED` for the draws of the engine's main sorted queue.
+pub const HEADER_QUEUE_MARKED: u32 = 1;
+/// A bit of the same word: the world camera's Click marks the end of the sky's walk with the
+/// frame event `link::EVENT_WORLD_WALK` (`world_walk`); the host starts the world there.
+pub const HEADER_WORLD_WALK: u32 = 2;
+/// A bit of the same word: the scene records carry `link::SCENE_BACK_BUFFER`.
+pub const HEADER_SCENE_TARGET: u32 = 4;
+/// A bit of the same word: the end of the flush of the main sorted queue comes as the frame
+/// event `link::EVENT_QUEUE_FLUSHED` (`queue_flush`).
+pub const HEADER_QUEUE_FLUSH: u32 = 8;
+/// A bit of the same word: a retained blend that the engine draws in its walk has its place
+/// there as the record `INSTANCE_WALK`.
+pub const HEADER_WALK_PLACES: u32 = 16;
+/// A bit of the same word: the scene records carry `link::SCENE_WIREFRAME`.
+pub const HEADER_SCENE_WIREFRAME: u32 = 32;
+/// A bit of the same word: the header says how the game combines an environment map
+/// ([`HEADER_ENVMAP_LIT`]).
+pub const HEADER_ENVMAP_KNOWN: u32 = 64;
+/// A bit of the same word: the game's environment map stages take the lit colour (the
+/// Morrowind Code Patch's hook, `texture_pipeline::envmap_lit` of the plugin).
+pub const HEADER_ENVMAP_LIT: u32 = 128;
+
+// The shared memories of a stream. The plugin makes each one, named after the ring; the
+// helper opens it. The words of the ring head are in the table at the head of this file.
+
+/// The names of the kernel objects of a stream are the ring's own name with a suffix. The
+/// event that the plugin sets after a write while the helper waits for a record
+/// ([`RING_WAITING`]).
+pub const RECORDS_EVENT: &str = "-records";
+/// The event that the helper sets when it has shown a frame, for the pacing of the game.
+pub const SHOWN_EVENT: &str = "-shown";
+/// The event that the helper sets after a read while the game waits for one
+/// ([`RING_GAME_WAITING`]).
+pub const READ_EVENT: &str = "-read";
+/// The reply memory; one of a later generation has the generation after it
+/// ([`reply_memory_name`]).
+pub const REPLY_MEMORY: &str = ".reply";
+/// The tile memory.
+pub const TILES_MEMORY: &str = ".tiles";
+/// The message memory.
+pub const MESSAGES_MEMORY: &str = ".messages";
+
+/// The name of the reply memory of the ring `ring` in its generation `generation`:
+/// `<ring>.reply`, then `<ring>.reply<generation>` after it grew.
+pub fn reply_memory_name(ring: &str, generation: u32) -> String {
+    if generation == 0 {
+        format!("{ring}{REPLY_MEMORY}")
+    } else {
+        format!("{ring}{REPLY_MEMORY}{generation}")
+    }
+}
+
+/// The first word of the ring head: the plugin made this memory.
+pub const RING_MAGIC: u32 = 0x474E_5232;
+/// The bytes of the ring head: the data starts here. A record can go around the end of the
+/// data.
+pub const RING_HEAD: usize = 128;
+/// The number of data bytes (u32).
+pub const RING_CAPACITY: usize = 4;
+/// The bytes that the game wrote (u64).
+pub const RING_WRITTEN: usize = 8;
+/// The bytes that the helper read (u64).
+pub const RING_READ: usize = 16;
+/// 1 when the game closed the stream (u32).
+pub const RING_CLOSED: usize = 24;
+/// The classes of the game that the helper draws itself (one bit for each `CLASS_*`),
+/// written by the helper at each frame, read by the plugin (`helper_takes`).
+pub const RING_TAKES: usize = 32;
+/// The helper waits for a record (1 while it does): the game sets the event of the ring
+/// after a write only then.
+pub const RING_WAITING: usize = 36;
+/// The reach of the helper's shadow map in units of the world (the bits of an f32; 0
+/// without shadows), for the animation policy of the plugin (`animation`).
+pub const RING_SHADOW_REACH: usize = 40;
+/// The helper's busy time for each frame, in microseconds (u32), written at each frame it
+/// shows, for the pacing of the game (`pacing` of the plugin).
+pub const RING_BUSY: usize = 44;
+/// The bytes that the helper had read at the end of the last frame that it showed (u64).
+pub const RING_DONE_AT: usize = 48;
+/// The time when the helper showed that frame, in ticks of the performance counter (u64).
+pub const RING_DONE_TIME: usize = 56;
+/// When the game starts its next frame (i64, ticks of the performance counter; `i64::MAX`
+/// from the end of a frame to the start of the next), written by the pacing: while the game
+/// writes a frame the helper waits for its records awake, and else it sleeps.
+pub const RING_NEXT_START: usize = 64;
+/// The game waits for the helper to read (1 while it does: for room in the ring, or for the
+/// frame before the last one at the end of a frame): the helper sets the event
+/// `<name>-read` after a read only then, and the game's wait ends on it.
+pub const RING_GAME_WAITING: usize = 72;
+
+/// The reply memory (`<ring>.reply`, `.reply<generation>` after it grew): the helper's answer
+/// to a `READ_PIXELS` record. The number of the request (u32; the helper writes it last).
+pub const REPLY_REQUEST: usize = 0;
+/// The width and the height of the answer (u32 each); a width of 0: no such target.
+pub const REPLY_WIDTH: usize = 4;
+pub const REPLY_HEIGHT: usize = 8;
+/// The number of pixel bytes that the memory holds (u32; the plugin writes it).
+pub const REPLY_CAPACITY: usize = 12;
+/// The bytes of the head: the pixels start here, 4 bytes each, blue first.
+pub const REPLY_HEAD: usize = 16;
+
+/// The tile memory (`<ring>.tiles`): the pixels of a `COPY_TILE` read, in the slot of its
+/// ticket (the ticket modulo [`TILE_SLOTS`]). The plugin has at most this many tickets open,
+/// so a slot is free when the helper writes it.
+pub const TILE_SLOTS: usize = 8;
+/// The pixel bytes of a slot: a tile of 512 x 512 at most.
+pub const TILE_BYTES: usize = 512 * 512 * 4;
+/// The words of the head of a slot (u32 each): the ticket (the helper writes it last), the
+/// width (0: no pixels for the ticket), the height, one unused word.
+pub const TILE_TICKET: usize = 0;
+pub const TILE_WIDTH: usize = 4;
+pub const TILE_HEIGHT: usize = 8;
+/// The bytes of the head of a slot: its pixels start here, 4 bytes each, blue first. A slot
+/// is `TILE_HEAD + TILE_BYTES` bytes.
+pub const TILE_HEAD: usize = 16;
+
+/// The message memory (`<ring>.messages`): the messages of the helper's extension for the
+/// game process, records of the number, the length and the bytes, which can go around the
+/// end of the data. The first word of its head.
+pub const MESSAGES_MAGIC: u32 = 0x4753_4D31;
+/// The number of data bytes (u32; the plugin writes it).
+pub const MESSAGES_CAPACITY: usize = 4;
+/// The bytes that the helper wrote (u64), and that the game read (u64).
+pub const MESSAGES_WRITTEN: usize = 8;
+pub const MESSAGES_READ: usize = 16;
+/// The bytes of the head: the data starts here.
+pub const MESSAGES_HEAD: usize = 32;
 
 /// The exit codes of the helper when the parts do not match. The helper's own table: 0 ok,
 /// 1 to 9 its IPC host mode (`error.rs` of mgeHost64), 10 to 29 a refusal with a message box
@@ -35,6 +215,79 @@ pub const EXIT_EXTENSION_FORMAT: u32 = 11;
 /// `--probe` exit with it; d3d8.dll reads it from the probe as `MGE_PROBE_EXIT_GPU` of
 /// `mgeversion.h` (a unit test of mgeHost64 compares the two).
 pub const EXIT_GPU: u32 = 20;
+
+/// The watchdog of the helper found its frame thread stalled and ended the program.
+pub const EXIT_STALLED: u32 = 30;
+/// A panic of the helper: the fast fail of the abort after the panic hook (`int 29h`, the
+/// status STATUS_STACK_BUFFER_OVERRUN). The hook announces it before its dump.
+pub const EXIT_PANIC: u32 = 0xC000_0409;
+/// The plugin ended the helper, which read no record for the limit of [`limit`].
+pub const EXIT_NOT_ANSWERING: u32 = 31;
+/// The seconds without a step of the frame thread after which the watchdog ends the helper.
+pub const STALL_SECONDS: u64 = 5;
+/// The seconds a step may take while the extension of the helper loads (the distant land
+/// after a game load): the watchdog's limit then, and the allowance it writes.
+pub const LOADING_SECONDS: u64 = 30;
+
+/// The word of the ring head where the helper writes the seconds that a step of its frame
+/// thread may take: [`STALL_SECONDS`] when its frames start, [`LOADING_SECONDS`] while its
+/// extension loads. 0 before the frames start (and from a helper older than the word).
+pub const RING_ALLOWANCE: usize = 76;
+/// The seconds the plugin gives the helper over its allowance before it ends it: the
+/// plugin's limit is the later of the two, as the last resort is.
+pub const ALLOWANCE_MARGIN_SECONDS: u64 = 5;
+/// The seconds the plugin gives the helper while the allowance word is 0: the helper's own
+/// limit for its first record (`live.rs`).
+pub const FIRST_RECORD_SECONDS: u64 = 60;
+
+/// The word of the ring head where the helper announces its exit before it ends on purpose:
+/// the code it will exit with, 0 while it announced none (and from a helper older than the
+/// word). A refusal writes its code (10 to 29) before its box (`gpu::refuse` of the host
+/// crate), so that no limit ends the helper while the player reads the box. The watchdog
+/// (30), the panic hook ([`EXIT_PANIC`]) and the exception filter (the exception code) write
+/// theirs before the dump (`crash.rs`): a dump that hangs is ended by the plugin after
+/// [`ENDING_SECONDS`] with that code, so that the box names the crash or the stall.
+pub const RING_ENDING: usize = 80;
+/// The seconds the plugin gives a helper that announced an exit outside 10 to 29 (a crash or a
+/// stall that writes its dump), from the first look that sees the announcement; then the
+/// plugin ends the helper with the announced code.
+pub const ENDING_SECONDS: u64 = 10;
+
+/// The one limit of the plugin on a helper that reads no record while records wait, at the
+/// end of a frame and in the wait for room in a full ring alike, from the two words that the
+/// helper writes ([`RING_ENDING`], [`RING_ALLOWANCE`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    /// No exit announced: the read counter unchanged for this many seconds is a stall, and
+    /// the plugin ends the helper with [`EXIT_NOT_ANSWERING`].
+    Silence(u64),
+    /// A refusal is announced: its box is up, and the helper ends when the player closes it.
+    None,
+    /// Another exit is announced: this many seconds after the plugin saw it, the plugin ends
+    /// the helper with the announced code.
+    Ending(u64),
+}
+
+/// The limit for the announced exit `ending` and the allowance word `allowance`.
+pub fn limit(ending: u32, allowance: u32) -> Limit {
+    if ending == 0 {
+        Limit::Silence(not_answering_limit(allowance))
+    } else if helper_said_why(ending) {
+        Limit::None
+    } else {
+        Limit::Ending(ENDING_SECONDS)
+    }
+}
+
+/// The seconds without a read, while records wait, after which the plugin ends the helper
+/// with [`EXIT_NOT_ANSWERING`], for the allowance word of the ring head.
+pub fn not_answering_limit(allowance: u32) -> u64 {
+    if allowance == 0 {
+        FIRST_RECORD_SECONDS
+    } else {
+        u64::from(allowance) + ALLOWANCE_MARGIN_SECONDS
+    }
+}
 
 /// True when the helper ended with one of its refusals (10 to 29): it named the reason in a
 /// message box and in its log, and the plugin adds no second box.
@@ -97,6 +350,12 @@ pub fn accept_header(header: &[u8], reader: &str) -> Result<Writer, String> {
     ))
 }
 
+/// The messages of the helper for the game process (`Extension::messages` of the host crate
+/// and the message memory of the stream): 1 is the distant land of MGE XE
+/// (`MGE_StreamMessage`); 2 says that the helper lost its graphics device (the data: the
+/// version word 1). The plugin ends the stream on it and runs the failure path.
+pub const MESSAGE_LOST_DEVICE: u32 = 2;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,7 +396,78 @@ mod tests {
     fn the_refusals_of_the_helper_are_the_codes_10_to_29() {
         assert!(helper_said_why(EXIT_STREAM_FORMAT) && helper_said_why(EXIT_EXTENSION_FORMAT) && helper_said_why(20));
         // The IPC host mode's codes, a stall and the codes of Windows for a crash are not.
-        assert!(!helper_said_why(0) && !helper_said_why(3) && !helper_said_why(30) && !helper_said_why(0xC000_0409));
+        assert!(!helper_said_why(0) && !helper_said_why(3) && !helper_said_why(30) && !helper_said_why(EXIT_PANIC));
+        assert!(!helper_said_why(EXIT_STALLED) && !helper_said_why(EXIT_NOT_ANSWERING));
+    }
+
+    /// The words of one head, as (offset, bytes): each is aligned to its size, none overlaps
+    /// another, and all end before `head`. Gives the end of the last word.
+    fn words_fit(words: &[(usize, usize)], head: usize) -> usize {
+        let mut sorted = words.to_vec();
+        sorted.sort();
+        let mut end = 0;
+        for &(offset, bytes) in &sorted {
+            assert_eq!(offset % bytes, 0, "the word at {offset} is not aligned to its {bytes} bytes");
+            assert!(offset >= end, "the word at {offset} overlaps the word before it");
+            end = offset + bytes;
+        }
+        assert!(end <= head, "the words end at {end}, after the head of {head} bytes");
+        end
+    }
+
+    #[test]
+    fn the_words_of_each_shared_memory_fit_its_head() {
+        let magic = (0, 4);
+        let ring = [
+            magic,
+            (RING_CAPACITY, 4),
+            (RING_WRITTEN, 8),
+            (RING_READ, 8),
+            (RING_CLOSED, 4),
+            (RING_TAKES, 4),
+            (RING_WAITING, 4),
+            (RING_SHADOW_REACH, 4),
+            (RING_BUSY, 4),
+            (RING_DONE_AT, 8),
+            (RING_DONE_TIME, 8),
+            (RING_NEXT_START, 8),
+            (RING_GAME_WAITING, 4),
+            (RING_ALLOWANCE, 4),
+            (RING_ENDING, 4),
+        ];
+        // The free area of the head (the doc of this file) starts after the last word.
+        assert_eq!(words_fit(&ring, RING_HEAD), 84);
+        words_fit(&[(REPLY_REQUEST, 4), (REPLY_WIDTH, 4), (REPLY_HEIGHT, 4), (REPLY_CAPACITY, 4)], REPLY_HEAD);
+        words_fit(&[(TILE_TICKET, 4), (TILE_WIDTH, 4), (TILE_HEIGHT, 4)], TILE_HEAD);
+        words_fit(&[magic, (MESSAGES_CAPACITY, 4), (MESSAGES_WRITTEN, 8), (MESSAGES_READ, 8)], MESSAGES_HEAD);
+        // The HEADER record: its words one after the other, then the build id.
+        let header = [(HEADER_WIDTH_AT, 4), (HEADER_HEIGHT_AT, 4), (HEADER_WINDOW_AT, 4), (HEADER_ABILITIES_AT, 4), (HEADER_FORMAT_AT, 4)];
+        assert_eq!(words_fit(&header, HEADER_BYTES), HEADER_BUILD_ID_AT);
+    }
+
+    #[test]
+    fn the_reply_memory_has_its_generation_after_its_suffix() {
+        assert_eq!(reply_memory_name("nirender-1", 0), "nirender-1.reply");
+        assert_eq!(reply_memory_name("nirender-1", 3), "nirender-1.reply3");
+    }
+
+    #[test]
+    fn an_announced_refusal_has_no_limit_and_another_exit_10_s() {
+        assert_eq!(limit(0, STALL_SECONDS as u32), Limit::Silence(10));
+        assert_eq!(limit(0, 0), Limit::Silence(60));
+        assert_eq!(limit(EXIT_STREAM_FORMAT, 5), Limit::None);
+        assert_eq!(limit(EXIT_EXTENSION_FORMAT, 30), Limit::None);
+        assert_eq!(limit(EXIT_GPU, 0), Limit::None);
+        assert_eq!(limit(EXIT_STALLED, 30), Limit::Ending(10));
+        assert_eq!(limit(EXIT_PANIC, 5), Limit::Ending(10));
+        assert_eq!(limit(0xC000_0005, 30), Limit::Ending(10));
+    }
+
+    #[test]
+    fn the_plugin_gives_the_helper_its_allowance_and_5_s() {
+        assert_eq!(not_answering_limit(0), 60);
+        assert_eq!(not_answering_limit(STALL_SECONDS as u32), 10);
+        assert_eq!(not_answering_limit(LOADING_SECONDS as u32), 35);
     }
 
     #[test]

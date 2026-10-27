@@ -534,6 +534,13 @@ pub trait Extension {
     /// the work of a frame. The renderer calls this one time, before the first record.
     fn offline(&mut self) {}
 
+    /// Whether the extension loads data now (the distant land after a game load): a frame
+    /// may then take long, and the watchdog of the frame thread gives a step 30 s in place
+    /// of 5. The renderer asks at the end of each live frame.
+    fn loading(&self) -> bool {
+        false
+    }
+
     /// WGSL source with the two sky functions of the extension, or [`None`]. The renderer
     /// asks one time, before it makes its shader, and puts the source at the end of it:
     ///

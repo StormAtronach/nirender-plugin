@@ -57,6 +57,10 @@ pub(crate) struct Switches {
     /// `MGE_XE_DEPTH_REVERSED=0`: the float depth of the frame keeps the plain convention (near
     /// 0, far 1): for an A/B of the reversed depth (`depth::reversed`).
     pub(crate) depth_plain: bool,
+    /// `MGE_XE_ONE_DEPTH=1`: the distant land and the game in one depth buffer, with an
+    /// infinite far plane (`depth::one_buffer`). Temporary, for the test of step 6 of the depth
+    /// design.
+    pub(crate) one_depth: bool,
     /// `MGE_XE_PARTICLE_QUADS=cpu`: the quads of the particle systems made on the CPU, as
     /// before the compute pass of `particle_quads`: for its A/B.
     pub(crate) particle_quads_cpu: bool,
@@ -81,6 +85,9 @@ pub(crate) struct Switches {
     /// `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a
     /// child window of it: for an A/B of the mouse's lag.
     pub(crate) game_window: bool,
+    /// `MGE_XE_WATCHDOG=0`: no watchdog of the frame thread ([`crate::watchdog`]): for a test
+    /// of the plugin's own limit on a stalled helper.
+    pub(crate) watchdog: bool,
     /// `NIRENDER_FORCE_GROWTH=<n>`: every n frames the retained table grows on purpose, for
     /// the test of its growth; 0 is never.
     pub(crate) force_growth: u32,
@@ -119,6 +126,7 @@ impl Switches {
             samples: read.number::<u32>("MGE_XE_SAMPLES").map(|n| n.clamp(1, 8)),
             depth24: read.choice("MGE_XE_DEPTH_FORMAT", &["24", "32"]) == Some("24"),
             depth_plain: read.on("MGE_XE_DEPTH_REVERSED") == Some(false),
+            one_depth: read.on("MGE_XE_ONE_DEPTH") == Some(true),
             particle_quads_cpu: read.choice("MGE_XE_PARTICLE_QUADS", &["cpu", "gpu"]) == Some("cpu"),
             instance_upload_all: read.choice("MGE_XE_INSTANCE_UPLOAD", &["all", "changed"]) == Some("all"),
             lazy_pass: read.on("MGE_XE_LAZY_PASS") != Some(false),
@@ -131,6 +139,7 @@ impl Switches {
                 _ => AutoNoVsync,
             }),
             game_window: read.choice("MGE_XE_WINDOW", &["game", "child"]) == Some("game"),
+            watchdog: read.on("MGE_XE_WATCHDOG") != Some(false),
             force_growth: read.number("NIRENDER_FORCE_GROWTH").unwrap_or(0),
             growth_shots: read.text("NIRENDER_GROWTH_SHOTS"),
             // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
