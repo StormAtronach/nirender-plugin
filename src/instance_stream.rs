@@ -86,7 +86,14 @@ const RTTI_NAME: usize = NiRTTI::name;
 const RTTI_BASE: usize = NiRTTI::baseRTTI;
 /// The most nodes above a shape that the walk looks at.
 const MAX_DEPTH: usize = 32;
-/// The frames between two checks of the handles of an instance.
+/// The frames between two checks of the handles of an instance. This note is a safety net for
+/// changes of a retained shape's material that no event reports. Followed by events: the
+/// property and effect states (`recheck`), the Lua changes (`note_change`), the live
+/// controllers (each display), a texture effect's words ([`EffectWatch`]), the freed textures
+/// ([`note_materials_again`]). Left to the net: a map's texture swapped in place without a Lua
+/// note (59 of the 1051 changes it caught in the captures of 2026-10-27). The rechecks line
+/// counts what the net finds, by group (`periodic_changes`). A group leaves the net only when
+/// an event covers every path that writes it, never because a run counted 0.
 const CHECK_FRAMES: u32 = 64;
 
 /// The node kinds that keep a shape under them on the engine's path. A sort adjust node
@@ -267,6 +274,10 @@ struct Tables {
     effect_notes: u64,
     /// The instances marked for a new note because their material named a freed texture.
     texture_notes: u64,
+    /// The notes that only the every-64th-frame turn made due and that found another
+    /// material, by the groups of words that changed (`material_stream::GROUP_NAMES`): what
+    /// that note catches that no event reports.
+    periodic_changes: [u64; crate::material_stream::GROUPS],
     /// The landscape (class 11) is retained too (`NIRENDER_LANDSCAPE=0` keeps it out).
     landscape: bool,
     /// The shapes of class 0 (under no root the classes know: the actors and their parts, and
@@ -346,6 +357,7 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         effects: HashMap::default(),
         effect_notes: 0,
         texture_notes: 0,
+        periodic_changes: [0; crate::material_stream::GROUPS],
         landscape: crate::switches::on("NIRENDER_LANDSCAPE") != Some(false),
         actors: crate::switches::on("NIRENDER_ACTORS") != Some(false),
         animated: crate::switches::on("NIRENDER_ANIMATED") != Some(false),
@@ -608,6 +620,12 @@ pub unsafe fn frame_tick(mt: &MainThread) {
     if t.frame.is_multiple_of(EFFECT_FRAMES) {
         let now = t.frame;
         t.effects.retain(|_, watch| now.wrapping_sub(watch.frame) < EFFECT_FRAMES);
+    }
+    // The material handles that went with their textures and that no instance names leave
+    // the material table.
+    if t.frame.is_multiple_of(crate::material_stream::SWEEP_FRAMES) {
+        let in_use: HashSet<u32> = t.instances.values().map(|instance| instance.material).collect();
+        crate::material_stream::sweep(mt, &in_use, t.frame);
     }
 }
 
@@ -1725,7 +1743,8 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     // a record that must go again (the start of a capture), and at every display of a
     // live shape (a new revision of the data sends the geometry again under its handle).
     // And when an effect of the shape changed: its material record copies the effect.
-    let due = note_every() || instance.live || !instance.sent || effects_changed || instance.generation != generation || id.wrapping_add(frame) % CHECK_FRAMES == 0;
+    let event_due = note_every() || instance.live || !instance.sent || effects_changed || instance.generation != generation;
+    let due = event_due || id.wrapping_add(frame).is_multiple_of(CHECK_FRAMES);
     if due {
         COST_NOTES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         // A skinned geometry is packed with the bone influences of its skin.
@@ -1748,6 +1767,14 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
             t.effect_notes += 1;
         }
         instance.effect_versions = effect_versions;
+        // A change that only the periodic turn found: count it by its groups of words.
+        if !event_due && instance.material != material {
+            if let Some(bits) = crate::material_stream::changed_groups(mt, instance.material, material) {
+                for (group, count) in t.periodic_changes.iter_mut().enumerate() {
+                    *count += u64::from(bits >> group & 1);
+                }
+            }
+        }
         if instance.geometry != geometry || instance.material != material {
             instance.geometry = geometry;
             instance.material = material;
@@ -2030,8 +2057,9 @@ pub unsafe fn report(mt: &MainThread) -> String {
         t.states
     ) + "\n"
         + &format!(
-            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {}, shapes hit {}; texture effects watched {}, materials noted again for a changed effect {}, for a freed texture {}\n",
-            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], change_notes[0], change_notes[1], change_notes[2], t.effects.len(), t.effect_notes, t.texture_notes
+            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {}, shapes hit {}; texture effects watched {}, materials noted again for a changed effect {}, for a freed texture {}; the note of every 64th frame found changed: {}\n",
+            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], change_notes[0], change_notes[1], change_notes[2], t.effects.len(), t.effect_notes, t.texture_notes,
+            crate::material_stream::GROUP_NAMES.iter().zip(t.periodic_changes).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
         )
         + &format!(
             "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk\n",
