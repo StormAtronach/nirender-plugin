@@ -312,6 +312,12 @@ fn abs_difference(a: u32, b: u32) -> i32 {
 /// 0x6B1600 `NiDX8DeviceDesc::ScreenFormatInfo::ctor`. It finds each render target format
 /// that the device has with this screen format. For each one it makes the list of the depth
 /// formats that are compatible with it.
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `ScreenFormatInfo` that is not constructed yet; `d3d` at
+/// the live `IDirect3D8` that the engine enumerates with, and `adapter`, `device_type` and `format`
+/// are values that it accepts.
 pub unsafe fn screen_format_info_ctor(this: usize, d3d: usize, adapter: u32, device_type: u32, format: u32, fullscreen: u8, windowed: u8) -> usize {
     crate::shadow::touch(&screen_format_info_ctor_port::STATE);
     let map = this + SFI::validDepthStencils;
@@ -377,6 +383,10 @@ fn depth_stencil_bits(format: u32) -> (u32, u32) {
 
 /// 0x6B1940 `NiDX8DeviceDesc::ScreenFormatInfo::findClosestDepthStencilFormat`. Returns the
 /// depth format for the render target `format`, or 0.
+///
+/// # Safety
+///
+/// `this` points at a live `ScreenFormatInfo` whose map holds live lists of depth formats.
 pub unsafe fn screen_format_info_find_closest_depth_stencil_format(this: usize, format: u32, depth_bits: u32, stencil_bits: u32) -> u32 {
     crate::shadow::touch(&screen_format_info_find_closest_depth_stencil_format_port::STATE);
     let map = this + SFI::validDepthStencils;
@@ -409,6 +419,11 @@ pub unsafe fn screen_format_info_find_closest_depth_stencil_format(this: usize, 
 // ---- NiDX8DeviceDesc
 
 /// 0x6B1AB0 `NiDX8DeviceDesc::ctor`
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8DeviceDesc` that is not constructed yet; `d3d` at
+/// the live `IDirect3D8`, and `adapter` is one of its adapters.
 pub unsafe fn device_desc_ctor(this: usize, d3d: usize, adapter: u32, device_type: u32, current_display_format: u32) -> usize {
     crate::shadow::touch(&device_desc_ctor_port::STATE);
     let list = this + DD::screenFormats;
@@ -501,6 +516,11 @@ unsafe fn device_desc_has_format(this: usize, format: u32) -> bool {
 }
 
 /// 0x6B1D60 `NiDX8DeviceDesc::dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8DeviceDesc` that nothing uses after the call: the function frees
+/// its screen formats and their lists of depth formats.
 pub unsafe fn device_desc_dtor(this: usize) {
     crate::shadow::touch(&device_desc_dtor_port::STATE);
     let mut item: usize = rd(this, DD::screenFormats_head);
@@ -543,6 +563,11 @@ fn screen_format_enum(format: u32) -> u32 {
 }
 
 /// 0x6B1EC0 `NiDX8DeviceDesc::getScreenFormatEnum`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8DeviceDesc` whose list of screen formats holds 0 or live
+/// `ScreenFormatInfo`s.
 pub unsafe fn device_desc_get_screen_format_enum(this: usize, is_windowed: u8, bit_depth: u32) -> u32 {
     crate::shadow::touch(&device_desc_get_screen_format_enum_port::STATE);
     let mut item: usize = rd(this, DD::screenFormats_head);
@@ -571,6 +596,11 @@ pub unsafe fn device_desc_get_screen_format_enum(this: usize, is_windowed: u8, b
 }
 
 /// 0x6B21D0 `NiDX8DeviceDesc::findClosestDepthStencilForScreenFormat`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8DeviceDesc` whose list of screen formats holds 0 or live
+/// `ScreenFormatInfo`s.
 pub unsafe fn device_desc_find_closest_depth_stencil_for_screen_format(
     this: usize,
     screen_format: u32,
@@ -609,6 +639,11 @@ pub unsafe fn device_desc_find_closest_depth_stencil_for_screen_format(
 // ---- NiDX8AdapterDesc
 
 /// 0x6B2260 `NiDX8AdapterDesc::ctor`
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8AdapterDesc` that is not constructed yet; `d3d` at
+/// the live `IDirect3D8`, and `adapter_index` is one of its adapters.
 pub unsafe fn adapter_desc_ctor(this: usize, d3d: usize, adapter_index: u32) -> usize {
     crate::shadow::touch(&adapter_desc_ctor_port::STATE);
     let modes = this + AD::modeList;
@@ -723,6 +758,11 @@ pub unsafe fn adapter_desc_ctor(this: usize, d3d: usize, adapter_index: u32) -> 
 
 /// 0x6B25D0 `NiDX8AdapterDesc::findClosestMode`. Returns the `ModeDesc` or 0. The function
 /// replaces a refresh rate that is not 0 and not 0x7FFFFFFF with a rate that the mode has.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8AdapterDesc`, and `inout_refresh_rate` at a word that the function
+/// reads and can write.
 pub unsafe fn adapter_desc_find_closest_mode(this: usize, format: u32, width: u32, height: u32, inout_refresh_rate: usize) -> usize {
     crate::shadow::touch(&adapter_desc_find_closest_mode_port::STATE);
     let mut result = 0usize;
@@ -768,6 +808,11 @@ pub unsafe fn adapter_desc_find_closest_mode(this: usize, format: u32, width: u3
 // ---- NiDX8SystemDesc
 
 /// 0x6B26A0 `NiDX8SystemDesc::ctor`
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8SystemDesc` that is not constructed yet, and `d3d`
+/// at the live `IDirect3D8`.
 pub unsafe fn system_desc_ctor(this: usize, d3d: usize) -> usize {
     crate::shadow::touch(&system_desc_ctor_port::STATE);
     let adapters = this + SD::adapterList;
@@ -843,6 +888,11 @@ pub unsafe fn system_desc_ctor(this: usize, d3d: usize) -> usize {
 }
 
 /// 0x6B2800 `NiDX8SystemDesc::dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8SystemDesc` that nothing uses after the call: the function frees
+/// its adapters, their modes and the lists of the modes.
 pub unsafe fn system_desc_dtor(this: usize) {
     crate::shadow::touch(&system_desc_dtor_port::STATE);
     let adapters = this + SD::adapterList;
@@ -884,6 +934,11 @@ pub unsafe fn system_desc_dtor(this: usize) {
 /// 0x6B2B80 `NiDX8SystemDesc_static::GetBPPFromFormat`. It returns the bits per pixel of a
 /// `D3DFORMAT`. It returns 0 for a format without a fixed size and 0xFFFFFFFF for a format
 /// that it does not know.
+///
+/// # Safety
+///
+/// No condition: the function reads no memory and only maps the number. It is `unsafe` as every
+/// port function is.
 pub unsafe fn get_bpp_from_format(format: u32) -> u32 {
     crate::shadow::touch(&get_bpp_from_format_port::STATE);
     const UNKNOWN: u32 = 0xFFFF_FFFF;

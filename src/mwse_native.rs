@@ -154,6 +154,11 @@ pub fn status_text(status: u32) -> &'static str {
 pub const NO_TABLE: &str = "the MWSE.dll of the game has no native ABI (MWSE_GetNativeApi version 1): it needs a newer MWSE";
 
 /// Subscribes `listener` to an event of MWSE.
+///
+/// # Safety
+///
+/// `listener` stays a valid function until its subscription ends (`unsubscribe`): the
+/// plugin's listeners are functions of the DLL, which stays loaded.
 pub unsafe fn subscribe(event_id: u32, listener: Listener) -> Result<u32, String> {
     let api = api().ok_or_else(|| NO_TABLE.to_string())?;
     let mut handle = 0u32;
@@ -162,6 +167,18 @@ pub unsafe fn subscribe(event_id: u32, listener: Listener) -> Result<u32, String
         Ok(handle)
     } else {
         Err(format!("MWSE event {event_id}: {}", status_text(status)))
+    }
+}
+
+/// Ends a subscription that `subscribe` gave (its handle). Without MWSE's table nothing was
+/// subscribed, so nothing happens.
+///
+/// # Safety
+///
+/// On the main thread of the game, as every call of MWSE's table (MWSENativeApi.h).
+pub unsafe fn unsubscribe(handle: u32) {
+    if let Some(api) = api() {
+        (api.unsubscribe)(handle);
     }
 }
 
@@ -174,6 +191,11 @@ pub struct Claim {
 }
 
 /// Makes the plugin the owner of an override of MWSE.
+///
+/// # Safety
+///
+/// `function` is a function with the ABI of the override `override_id`, and it stays valid until
+/// [`release`] gives the override back.
 pub unsafe fn claim(override_id: u32, function: usize) -> Result<Claim, String> {
     let api = api().ok_or_else(|| NO_TABLE.to_string())?;
     let mut handle = 0u32;
@@ -188,6 +210,10 @@ pub unsafe fn claim(override_id: u32, function: usize) -> Result<Claim, String> 
 
 /// Makes the plugin the owner of several overrides of MWSE, all or none: a refusal gives the
 /// ones before it back. Returns the claims in the order of `overrides`.
+///
+/// # Safety
+///
+/// As for [`claim`], for each pair of `overrides`.
 pub unsafe fn claim_all(overrides: &[(u32, usize)]) -> Result<Vec<Claim>, String> {
     let mut claims = Vec::with_capacity(overrides.len());
     for &(id, function) in overrides {
@@ -205,6 +231,11 @@ pub unsafe fn claim_all(overrides: &[(u32, usize)]) -> Result<Vec<Claim>, String
 }
 
 /// Gives an override back to the engine function.
+///
+/// # Safety
+///
+/// `claim` came from [`claim`] and was not released before; nothing calls the engine function of
+/// the claim through the plugin's function after the call.
 pub unsafe fn release(claim: Claim) {
     if let Some(api) = api() {
         (api.release)(claim.handle);
@@ -212,6 +243,10 @@ pub unsafe fn release(claim: Claim) {
 }
 
 /// The scale of the UI from MWSE, or [`None`] when MWSE has no native ABI.
+///
+/// # Safety
+///
+/// No condition other than that MWSE's table, when [`api`] finds one, is a live `ApiV1`.
 pub unsafe fn ui_scale() -> Option<UIScaleV1> {
     let api = api()?;
     let mut packet = UIScaleV1 { struct_size: core::mem::size_of::<UIScaleV1>() as u32, scale: 1.0, view_width: 0, view_height: 0, pick_ray_in_view_size: 0 };

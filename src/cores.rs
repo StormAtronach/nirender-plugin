@@ -28,7 +28,7 @@ extern "system" {
 
 /// Returns one line for the log with what was done. Called on the main thread of the game.
 pub fn prefer_performance_cores() -> String {
-    if std::env::var("MGE_XE_CORES").is_ok_and(|v| v == "0") {
+    if crate::switches::on("MGE_XE_CORES") == Some(false) {
         return "cores: left to the scheduler (MGE_XE_CORES=0)".into();
     }
     // SAFETY: calls of the Windows API with valid arguments; the buffer is sized by the

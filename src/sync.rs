@@ -117,6 +117,45 @@ impl<T> LockCell<T> {
     }
 }
 
+/// The state of an install of a part of the plugin (a subscription to MWSE, a claim): not
+/// installed, one thread installing it, or installed. `begin` tests and sets in one atomic
+/// step, so that two threads never both install; `finish` gives the result, and a failed
+/// install can be tried again.
+pub struct InstallState(core::sync::atomic::AtomicU8);
+
+impl InstallState {
+    const NONE: u8 = 0;
+    const INSTALLING: u8 = 1;
+    const INSTALLED: u8 = 2;
+
+    pub const fn new() -> InstallState {
+        InstallState(core::sync::atomic::AtomicU8::new(Self::NONE))
+    }
+
+    /// True for the one caller that must install now; false when the part is installed or
+    /// another thread installs it.
+    pub fn begin(&self) -> bool {
+        use core::sync::atomic::Ordering;
+        self.0.compare_exchange(Self::NONE, Self::INSTALLING, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+
+    /// The end of the install that `begin` let start: installed, or back to not installed.
+    pub fn finish(&self, installed: bool) {
+        self.0.store(if installed { Self::INSTALLED } else { Self::NONE }, core::sync::atomic::Ordering::Release);
+    }
+
+    /// True when the install has ended well.
+    pub fn is_installed(&self) -> bool {
+        self.0.load(core::sync::atomic::Ordering::Acquire) == Self::INSTALLED
+    }
+}
+
+impl Default for InstallState {
+    fn default() -> InstallState {
+        InstallState::new()
+    }
+}
+
 /// True when this thread holds the device lock now (`CRITICAL_SECTION::OwningThread`, the
 /// fourth word, is the owner's thread id; the section is made at its first use).
 pub fn device_lock_held_here() -> bool {
@@ -134,6 +173,11 @@ pub struct EngineLock(*mut CriticalSection);
 /// object, initialized by the engine) while the value lives. The engine's own code takes the
 /// same lock around the structure the plugin reads (the light manager's list and map,
 /// `NiDX8LightManager+0x50`), so a walk under it cannot see a half-changed structure.
+///
+/// # Safety
+///
+/// `section` points at a `CRITICAL_SECTION` that the engine initialized and does not delete while
+/// the guard lives.
 pub unsafe fn engine_lock(section: usize) -> EngineLock {
     let section = section as *mut CriticalSection;
     EnterCriticalSection(section);
@@ -175,4 +219,36 @@ pub fn census_text() -> String {
         return "no call from another thread".to_string();
     }
     census.iter().map(|((group, name), count)| format!("{group} {name} {count}")).collect::<Vec<_>>().join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InstallState;
+
+    /// One caller installs; the others return at once while it does and after it did; a failed
+    /// install can be tried again.
+    #[test]
+    fn one_caller_installs_and_a_failure_can_be_tried_again() {
+        let state = InstallState::new();
+        assert!(state.begin());
+        assert!(!state.begin(), "a second caller during the install");
+        assert!(!state.is_installed());
+        state.finish(false);
+        assert!(!state.is_installed());
+        assert!(state.begin(), "a failed install can be tried again");
+        state.finish(true);
+        assert!(state.is_installed());
+        assert!(!state.begin(), "an installed part is not installed again");
+    }
+
+    /// Of many threads that begin at once, exactly one installs.
+    #[test]
+    fn of_many_threads_one_installs() {
+        static STATE: InstallState = InstallState::new();
+        let winners = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..16).map(|_| scope.spawn(|| STATE.begin())).collect();
+            handles.into_iter().map(|handle| handle.join().unwrap()).filter(|&won| won).count()
+        });
+        assert_eq!(winners, 1);
+    }
 }

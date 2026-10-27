@@ -80,7 +80,7 @@ static POLLS: AtomicU32 = AtomicU32::new(0);
 /// opened, so that a save or a purge soon after a cell cross finds open tiles. 0 by default.
 fn hold() -> u32 {
     static HOLD: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *HOLD.get_or_init(|| std::env::var("NIRENDER_MAP_TILES_HOLD").ok().and_then(|value| value.parse().ok()).unwrap_or(0))
+    *HOLD.get_or_init(|| crate::switches::number("NIRENDER_MAP_TILES_HOLD", 0))
 }
 
 static OPEN: MainCell<Vec<Open>> = MainCell::new(Vec::new());
@@ -91,7 +91,7 @@ static PAINTS: MainCell<Vec<(usize, usize)>> = MainCell::new(Vec::new());
 static ZEROS: MainCell<Vec<u8>> = MainCell::new(Vec::new());
 static LAST_TICKET: AtomicU32 = AtomicU32::new(0);
 
-static INSTALLED: AtomicBool = AtomicBool::new(false);
+static INSTALLED: crate::sync::InstallState = crate::sync::InstallState::new();
 static RENDER_MAP_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static PURGE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
@@ -113,12 +113,18 @@ static MOST_OPEN: AtomicUsize = AtomicUsize::new(0);
 
 /// Claims MWSE's four overrides, all or none. The plugin calls this when it is the host of the
 /// render link. Without the deferred paint the world map would get the zeros of an open tile.
+///
+/// # Safety
+///
+/// No condition of its own: `INSTALLED` (a `sync::InstallState`) lets one caller install at a
+/// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
-    if INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.begin() {
         return;
     }
-    if std::env::var("NIRENDER_MAP_TILES").is_ok_and(|value| value == "0") {
+    if crate::switches::on("NIRENDER_MAP_TILES") == Some(false) {
         crate::log!("map tiles: NIRENDER_MAP_TILES=0, the engine reads each tile");
+        INSTALLED.finish(false);
         return;
     }
     use crate::mwse_native::{claim_all, NATIVE_OVERRIDE_MAP_CELL_PAINT, NATIVE_OVERRIDE_MAP_TILE_READ, NATIVE_OVERRIDE_SAVE_PICTURE, NATIVE_OVERRIDE_TEXTURE_PURGE};
@@ -131,12 +137,13 @@ pub unsafe fn install() {
         Ok(claims) => claims,
         Err(error) => {
             crate::log!("map tiles: {error}: the engine reads each tile");
+            INSTALLED.finish(false);
             return;
         }
     };
     RENDER_MAP_ORIGINAL.store(claims[0].engine, Ordering::Relaxed);
     PURGE_ORIGINAL.store(claims[1].engine, Ordering::Relaxed);
-    INSTALLED.store(true, Ordering::Relaxed);
+    INSTALLED.finish(true);
     crate::log!("map tiles: the helper copies each tile of the local map on the GPU; the pixels come later");
     if hold() != 0 {
         crate::log!("map tiles: NIRENDER_MAP_TILES_HOLD={}: a tile stays open {} Presents at least", hold(), hold());
@@ -155,7 +162,7 @@ unsafe extern "thiscall" fn render_map_detour(this: usize, flag: u32) {
         return;
     }
     let copied = match MainThread::here() {
-        Some(t) if INSTALLED.load(Ordering::Relaxed) => copy(&t, this),
+        Some(t) if INSTALLED.is_installed() => copy(&t, this),
         _ => false,
     };
     if !copied {
@@ -329,7 +336,7 @@ unsafe fn run_paints(t: &MainThread) {
 
 /// After each Present, on the main thread: the tiles whose pixels came, and their paints.
 pub unsafe fn poll() {
-    if !INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.is_installed() {
         return;
     }
     let Some(t) = MainThread::here() else { return };
@@ -413,7 +420,7 @@ unsafe extern "C" fn save_shot_detour(filename: u32) -> u32 {
 
 /// The counts, for the log at the end of the stream.
 pub fn report() -> String {
-    if !INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.is_installed() {
         return "map tiles: the copy is off; the engine reads each tile".to_string();
     }
     let ms = |ticks: i64| ticks as f64 * 1000.0 / crate::capture::ticks_per_second() as f64;

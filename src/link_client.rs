@@ -1633,7 +1633,7 @@ unsafe fn render_screen_poly(args: &[usize]) {
 
 /// The `d3d8.dll` that is in the folder of the game. The Direct3D 8 of Windows has the same
 /// file name and is also in the process, because MGE XE loads it.
-unsafe fn host_module() -> usize {
+pub(crate) unsafe fn host_module() -> usize {
     let mut path = [0u16; 600];
     let len = win::GetModuleFileNameW(core::ptr::null_mut(), path.as_mut_ptr(), 512) as usize;
     let Some(slash) = path[..len].iter().rposition(|&c| c == b'\\' as u16) else { return 0 };

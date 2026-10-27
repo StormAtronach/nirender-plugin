@@ -77,6 +77,11 @@ const FLOAT_KEY_INTERP: usize = 0x70CFE0;
 
 /// The value of a track of float keys at `time`, as the engine's controllers take it. `index`
 /// is the key to search from; the call moves it.
+///
+/// # Safety
+///
+/// `keys` points at a live array of `count` float keys of the kind `kind`, as the engine's
+/// controllers keep them.
 #[track_caller]
 pub unsafe fn float_key_interp(time: f32, keys: usize, kind: i32, count: i32, index: &mut u32) -> f32 {
     let _call = crate::entry_trace::call_out();
@@ -86,6 +91,11 @@ pub unsafe fn float_key_interp(time: f32, keys: usize, kind: i32, count: i32, in
 // ---- call primitives
 
 /// Calls the `__thiscall` function at `addr` with `this` in ECX and no stack argument.
+///
+/// # Safety
+///
+/// `addr` is the address of a `__thiscall` function of the game that takes no stack argument, and
+/// `this` is valid for that function. The other conditions are those of the called function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn thiscall0(addr: usize, this: usize) -> u32 {
@@ -94,6 +104,12 @@ pub unsafe fn thiscall0(addr: usize, this: usize) -> u32 {
 }
 
 /// Calls the `__thiscall` function at `addr` with `this` in ECX and 1 stack argument.
+///
+/// # Safety
+///
+/// `addr` is the address of a `__thiscall` function of the game that takes 1 stack argument of 32
+/// bits, and `this` and `a` are valid for that function. The other conditions are those of the
+/// called function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn thiscall1(addr: usize, this: usize, a: u32) -> u32 {
@@ -102,6 +118,12 @@ pub unsafe fn thiscall1(addr: usize, this: usize, a: u32) -> u32 {
 }
 
 /// Calls the `__thiscall` function at `addr` with `this` in ECX and 2 stack arguments.
+///
+/// # Safety
+///
+/// `addr` is the address of a `__thiscall` function of the game that takes 2 stack arguments of 32
+/// bits, and `this` and the arguments are valid for that function. The other conditions are those
+/// of the called function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn thiscall2(addr: usize, this: usize, a: u32, b: u32) -> u32 {
@@ -110,6 +132,12 @@ pub unsafe fn thiscall2(addr: usize, this: usize, a: u32, b: u32) -> u32 {
 }
 
 /// Calls the `__thiscall` function at `addr` with `this` in ECX and 3 stack arguments.
+///
+/// # Safety
+///
+/// `addr` is the address of a `__thiscall` function of the game that takes 3 stack arguments of 32
+/// bits, and `this` and the arguments are valid for that function. The other conditions are those
+/// of the called function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn thiscall3(addr: usize, this: usize, a: u32, b: u32, c: u32) -> u32 {
@@ -118,6 +146,12 @@ pub unsafe fn thiscall3(addr: usize, this: usize, a: u32, b: u32, c: u32) -> u32
 }
 
 /// Calls the `__thiscall` function at `addr` with `this` in ECX and 4 stack arguments.
+///
+/// # Safety
+///
+/// `addr` is the address of a `__thiscall` function of the game that takes 4 stack arguments of 32
+/// bits, and `this` and the arguments are valid for that function. The other conditions are those
+/// of the called function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn thiscall4(addr: usize, this: usize, a: u32, b: u32, c: u32, d: u32) -> u32 {
@@ -126,6 +160,12 @@ pub unsafe fn thiscall4(addr: usize, this: usize, a: u32, b: u32, c: u32, d: u32
 }
 
 /// Calls the `__thiscall` function at `addr` with `this` in ECX and 5 stack arguments.
+///
+/// # Safety
+///
+/// `addr` is the address of a `__thiscall` function of the game that takes 5 stack arguments of 32
+/// bits, and `this` and the arguments are valid for that function. The other conditions are those
+/// of the called function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn thiscall5(addr: usize, this: usize, a: u32, b: u32, c: u32, d: u32, e: u32) -> u32 {
@@ -134,6 +174,11 @@ pub unsafe fn thiscall5(addr: usize, this: usize, a: u32, b: u32, c: u32, d: u32
 }
 
 /// Calls the `__cdecl` function at `addr` with no argument. The caller removes the arguments.
+///
+/// # Safety
+///
+/// `addr` is the address of a `__cdecl` function of the game that takes no argument. The other
+/// conditions are those of the called function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn cdecl0(addr: usize) -> u32 {
@@ -142,6 +187,11 @@ pub unsafe fn cdecl0(addr: usize) -> u32 {
 }
 
 /// Calls the `__cdecl` function at `addr` with 1 argument. The caller removes the arguments.
+///
+/// # Safety
+///
+/// `addr` is the address of a `__cdecl` function of the game that takes 1 argument of 32 bits, and
+/// `a` is valid for that function. The other conditions are those of the called function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn cdecl1(addr: usize, a: u32) -> u32 {
@@ -150,6 +200,12 @@ pub unsafe fn cdecl1(addr: usize, a: u32) -> u32 {
 }
 
 /// Calls the `__cdecl` function at `addr` with 2 arguments. The caller removes the arguments.
+///
+/// # Safety
+///
+/// `addr` is the address of a `__cdecl` function of the game that takes 2 arguments of 32 bits, and
+/// the arguments are valid for that function. The other conditions are those of the called
+/// function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn cdecl2(addr: usize, a: u32, b: u32) -> u32 {
@@ -158,6 +214,12 @@ pub unsafe fn cdecl2(addr: usize, a: u32, b: u32) -> u32 {
 }
 
 /// Calls the `__cdecl` function at `addr` with 3 arguments. The caller removes the arguments.
+///
+/// # Safety
+///
+/// `addr` is the address of a `__cdecl` function of the game that takes 3 arguments of 32 bits, and
+/// the arguments are valid for that function. The other conditions are those of the called
+/// function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn cdecl3(addr: usize, a: u32, b: u32, c: u32) -> u32 {
@@ -167,6 +229,10 @@ pub unsafe fn cdecl3(addr: usize, a: u32, b: u32, c: u32) -> u32 {
 
 /// The virtual function of `object` at `slot_offset` bytes in its vtable. The function reads
 /// the vtable pointer at +0 on each call.
+///
+/// # Safety
+///
+/// `object` points at a live object with a virtual table, and `slot_offset` is within that table.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn virtual_at(object: usize, slot_offset: usize) -> usize {
@@ -174,6 +240,11 @@ pub unsafe fn virtual_at(object: usize, slot_offset: usize) -> usize {
 }
 
 /// Calls the `__thiscall` virtual function of `object` at `slot_offset` with no stack argument.
+///
+/// # Safety
+///
+/// As for [`virtual_at`]; the slot holds a `__thiscall` function that takes no stack argument. The
+/// other conditions are those of the called function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn vcall0(object: usize, slot_offset: usize) -> u32 {
@@ -181,6 +252,11 @@ pub unsafe fn vcall0(object: usize, slot_offset: usize) -> u32 {
 }
 
 /// Calls the `__thiscall` virtual function of `object` at `slot_offset` with 1 stack argument.
+///
+/// # Safety
+///
+/// As for [`virtual_at`]; the slot holds a `__thiscall` function that takes 1 stack argument of 32
+/// bits. The other conditions are those of the called function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn vcall1(object: usize, slot_offset: usize, a: u32) -> u32 {
@@ -188,6 +264,11 @@ pub unsafe fn vcall1(object: usize, slot_offset: usize, a: u32) -> u32 {
 }
 
 /// Calls the `__thiscall` virtual function of `object` at `slot_offset` with 2 stack arguments.
+///
+/// # Safety
+///
+/// As for [`virtual_at`]; the slot holds a `__thiscall` function that takes 2 stack arguments of 32
+/// bits. The other conditions are those of the called function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn vcall2(object: usize, slot_offset: usize, a: u32, b: u32) -> u32 {
@@ -195,6 +276,11 @@ pub unsafe fn vcall2(object: usize, slot_offset: usize, a: u32, b: u32) -> u32 {
 }
 
 /// Calls the `__thiscall` virtual function of `object` at `slot_offset` with 3 stack arguments.
+///
+/// # Safety
+///
+/// As for [`virtual_at`]; the slot holds a `__thiscall` function that takes 3 stack arguments of 32
+/// bits. The other conditions are those of the called function.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn vcall3(object: usize, slot_offset: usize, a: u32, b: u32, c: u32) -> u32 {
@@ -208,6 +294,11 @@ const RENDERER_NODE_RENDERER: usize = 0;
 /// The fog property of the cell: `TES3::Game::fogProperty` (the game object at 0x7C6CDC,
 /// the property at 0xF0 of it, as MWSE has them). The weather writes its colour and
 /// density. 0 before the game object exists.
+///
+/// # Safety
+///
+/// The plugin runs in Morrowind.exe: the function reads the game's global at 0x7C6CDC, and the game
+/// object when it is not 0.
 #[track_caller]
 pub unsafe fn game_fog_property() -> usize {
     let game: usize = rd(0x7C6CDC, 0);
@@ -221,6 +312,11 @@ pub unsafe fn game_fog_property() -> usize {
 /// The renderer that the game draws with, or 0 before it exists. At the start of the game
 /// the world controller does not have the renderer yet. The list of renderers has it from
 /// its constructor on.
+///
+/// # Safety
+///
+/// The plugin runs in Morrowind.exe: the function reads the game's globals of the world controller
+/// and of the list of renderers, and the objects that they point at when they are not 0.
 #[track_caller]
 pub unsafe fn renderer() -> usize {
     let world_controller: usize = rd(WORLD_CONTROLLER, 0);
@@ -237,22 +333,36 @@ pub unsafe fn renderer() -> usize {
 }
 
 /// `operator new` of the C runtime of the game.
+///
+/// # Safety
+///
+/// No condition other than that the plugin runs in Morrowind.exe. The block is for
+/// [`operator_delete`].
 #[track_caller]
 pub unsafe fn operator_new(size: usize) -> usize {
     let _call = crate::entry_trace::call_out();
     transmute::<usize, unsafe extern "C" fn(usize) -> usize>(0x727692)(size)
 }
 
+/// # Safety
+///
+/// `property_state` points at a live `NiPropertyState`.
 #[track_caller]
 pub unsafe fn property_state_global_shade_property(property_state: usize) -> usize {
     thiscall0(0x6FE500, property_state) as usize
 }
 
+/// # Safety
+///
+/// `property_state` points at a live `NiPropertyState`.
 #[track_caller]
 pub unsafe fn property_state_global_dither_property(property_state: usize) -> usize {
     thiscall0(0x6FE4E0, property_state) as usize
 }
 
+/// # Safety
+///
+/// `property_state` points at a live `NiPropertyState`.
 #[track_caller]
 pub unsafe fn property_state_global_specular_property(property_state: usize) -> usize {
     thiscall0(0x6FE510, property_state) as usize
@@ -260,6 +370,10 @@ pub unsafe fn property_state_global_specular_property(property_state: usize) -> 
 
 /// Returns the material of the property state, after it moved a pending change of the
 /// material into its revision number.
+///
+/// # Safety
+///
+/// `property_state` points at a live `NiPropertyState`.
 #[track_caller]
 pub unsafe fn property_state_update_current_material_revision(property_state: usize) -> usize {
     thiscall0(0x6FE4C0, property_state) as usize
@@ -281,6 +395,11 @@ pub use crate::d3d::{device_set_render_state, device_set_texture_stage_state};
 // ---- C runtime
 
 /// 0x727530 `operator delete` of the C runtime of the game.
+///
+/// # Safety
+///
+/// `block` is 0 or a block from [`operator_new`] or another allocation of the game's C runtime, and
+/// nothing uses it after the call.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn operator_delete(block: usize) {
@@ -290,6 +409,11 @@ pub unsafe fn operator_delete(block: usize) {
 
 /// 0x7276B0 `eh vector constructor iterator`. It is `__stdcall`. It calls `ctor` for each of
 /// the `count` elements of `size` bytes. `dtor` is for the elements when a constructor throws.
+///
+/// # Safety
+///
+/// `array` points at room for `count` elements of `size` bytes; `ctor` is a `__thiscall`
+/// constructor of such an element, and `dtor` its destructor.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn eh_vector_constructor_iterator(array: usize, size: usize, count: u32, ctor: usize, dtor: usize) {
@@ -299,6 +423,11 @@ pub unsafe fn eh_vector_constructor_iterator(array: usize, size: usize, count: u
 
 /// 0x72759E `eh vector destructor iterator`. It is `__stdcall`. It calls `dtor` for each of
 /// the `count` elements of `size` bytes, from the last element to the first.
+///
+/// # Safety
+///
+/// `array` points at `count` live elements of `size` bytes, which nothing uses after the call;
+/// `dtor` is a `__thiscall` destructor of such an element.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn eh_vector_destructor_iterator(array: usize, size: usize, count: u32, dtor: usize) {
@@ -310,6 +439,11 @@ pub unsafe fn eh_vector_destructor_iterator(array: usize, size: usize, count: u3
 
 /// 0x6E9A00 `nullsub_36`: the debug print of the renderer, a single `retn`. This form is
 /// `__cdecl` with the text only.
+///
+/// # Safety
+///
+/// No condition: the called function is a single `retn`. It is `unsafe` because it calls the game's
+/// code.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn debug_print0(text: usize) {
@@ -318,6 +452,11 @@ pub unsafe fn debug_print0(text: usize) {
 }
 
 /// 0x6E9A00 `nullsub_36` as `__cdecl` with the format and 1 value.
+///
+/// # Safety
+///
+/// No condition: the called function is a single `retn`. It is `unsafe` because it calls the game's
+/// code.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn debug_print1(format: usize, a: usize) {
@@ -326,6 +465,11 @@ pub unsafe fn debug_print1(format: usize, a: usize) {
 }
 
 /// 0x6E9A00 `nullsub_36` as `__cdecl` with the format and 2 values.
+///
+/// # Safety
+///
+/// No condition: the called function is a single `retn`. It is `unsafe` because it calls the game's
+/// code.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn debug_print2(format: usize, a: usize, b: usize) {
@@ -335,6 +479,11 @@ pub unsafe fn debug_print2(format: usize, a: usize, b: usize) {
 
 /// 0x6E9A00 `nullsub_36` as the destructor of `NiBound`. This form is `__thiscall`. The bound
 /// is in ECX. It is a function of its own because the calling convention is different.
+///
+/// # Safety
+///
+/// No condition: the called function is a single `retn`. It is `unsafe` because it calls the game's
+/// code.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn ni_bound_dtor(bound: usize) {
@@ -344,6 +493,10 @@ pub unsafe fn ni_bound_dtor(bound: usize) {
 // ---- NiCriticalSection
 
 /// 0x693ED0 `NiCriticalSection::ctor`
+///
+/// # Safety
+///
+/// `section` points at room for a `NiCriticalSection` that is not constructed yet.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn critical_section_ctor(section: usize) {
@@ -351,6 +504,10 @@ pub unsafe fn critical_section_ctor(section: usize) {
 }
 
 /// 0x693EF0 `NiCriticalSection::dtor`
+///
+/// # Safety
+///
+/// `section` points at a constructed `NiCriticalSection` that nothing locks or uses after the call.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn critical_section_dtor(section: usize) {
@@ -359,6 +516,11 @@ pub unsafe fn critical_section_dtor(section: usize) {
 
 /// 0x693F00 `NiCriticalSection::Lock`. `name` is the address of the text that the game code
 /// gives for the place of the lock.
+///
+/// # Safety
+///
+/// `section` points at a constructed `NiCriticalSection`, and `name` at a C string that stays in
+/// memory while the lock is held.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn critical_section_lock(section: usize, name: usize) {
@@ -366,6 +528,10 @@ pub unsafe fn critical_section_lock(section: usize, name: usize) {
 }
 
 /// 0x693F10 `NiCriticalSection::Unlock`
+///
+/// # Safety
+///
+/// `section` points at a constructed `NiCriticalSection` that this thread locked.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn critical_section_unlock(section: usize) {
@@ -378,6 +544,11 @@ pub unsafe fn critical_section_unlock(section: usize) {
 
 /// 0x404630 `NiObject::release`. It takes one reference from the object. At zero it deletes
 /// the object.
+///
+/// # Safety
+///
+/// `object` points at a live `NiObject` of which the caller holds a reference; the object can be
+/// deleted by the call.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn ni_object_release(object: usize) {
@@ -385,6 +556,10 @@ pub unsafe fn ni_object_release(object: usize) {
 }
 
 /// 0x6E9ED0 `NiObjectNET::ctor`
+///
+/// # Safety
+///
+/// `object` points at room for a `NiObjectNET` that is not constructed yet.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn ni_object_net_ctor(object: usize) {
@@ -392,6 +567,10 @@ pub unsafe fn ni_object_net_ctor(object: usize) {
 }
 
 /// 0x471B00 `NiPointer::set`. `pointer` is the address of the `NiPointer`.
+///
+/// # Safety
+///
+/// `pointer` points at a `NiPointer`, and `object` is 0 or a live `NiRefObject`.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn ni_pointer_set(pointer: usize, object: usize) {
@@ -399,6 +578,10 @@ pub unsafe fn ni_pointer_set(pointer: usize, object: usize) {
 }
 
 /// 0x6EA9C0 `NiPointer::operator=`. `base` calls it. It is not the function at 0x712850.
+///
+/// # Safety
+///
+/// `pointer` points at a `NiPointer`, and `object` is 0 or a live `NiRefObject`.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn ni_pointer_operator_assign(pointer: usize, object: usize) {
@@ -407,6 +590,10 @@ pub unsafe fn ni_pointer_operator_assign(pointer: usize, object: usize) {
 
 /// 0x712850 `NiPointer::assign`. `texture_pipeline` calls it. It is not the function at
 /// 0x6EA9C0.
+///
+/// # Safety
+///
+/// `pointer` points at a `NiPointer`, and `from` is 0 or a live `NiRefObject`.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn ni_pointer_assign(pointer: usize, from: usize) {
@@ -414,6 +601,11 @@ pub unsafe fn ni_pointer_assign(pointer: usize, from: usize) {
 }
 
 /// 0x40A880 `NiPointer::dtor`. `pointer` is the address of the `NiPointer`.
+///
+/// # Safety
+///
+/// `pointer` points at a `NiPointer` that nothing uses after the call; the object that it holds is
+/// 0 or live.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn ni_pointer_dtor(pointer: usize) {
@@ -423,6 +615,10 @@ pub unsafe fn ni_pointer_dtor(pointer: usize) {
 // ---- NiPixelFormat and NiPixelData
 
 /// 0x6ED7C0 `NiPixelFormat::ctor_RGBA`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at room for a `NiPixelFormat`.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn pixel_format_ctor_rgba(this: usize, red: u32, green: u32, blue: u32, alpha: u32, bits: u32) -> usize {
@@ -430,6 +626,10 @@ pub unsafe fn pixel_format_ctor_rgba(this: usize, red: u32, green: u32, blue: u3
 }
 
 /// 0x6ED9D0 `NiPixelFormat::ctor_Palette`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at room for a `NiPixelFormat`.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn pixel_format_ctor_palette(this: usize, has_alpha: u32) -> usize {
@@ -437,6 +637,10 @@ pub unsafe fn pixel_format_ctor_palette(this: usize, has_alpha: u32) -> usize {
 }
 
 /// 0x6EDA40 `NiPixelFormat::ctor_Format`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at room for a `NiPixelFormat`.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn pixel_format_ctor_format(this: usize, format: u32) -> usize {
@@ -444,6 +648,10 @@ pub unsafe fn pixel_format_ctor_format(this: usize, format: u32) -> usize {
 }
 
 /// 0x6EDD30 `NiPixelFormat::ctor_BumpLuma`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at room for a `NiPixelFormat`.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn pixel_format_ctor_bump_luma(this: usize, red: u32, green: u32, blue: u32, bits: u32) -> usize {
@@ -451,6 +659,10 @@ pub unsafe fn pixel_format_ctor_bump_luma(this: usize, red: u32, green: u32, blu
 }
 
 /// 0x6BFDA0 `NiPixelFormat::copy`
+///
+/// # Safety
+///
+/// `to` and `from` point at `NiPixelFormat`s; `from` is constructed.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn pixel_format_copy(to: usize, from: usize) {
@@ -459,6 +671,11 @@ pub unsafe fn pixel_format_copy(to: usize, from: usize) {
 
 /// 0x6D4FC0 `NiPixelData::ctor_args`. `format` is the address of a `NiPixelFormat`. Returns
 /// `this`.
+///
+/// # Safety
+///
+/// `this` points at room for a `NiPixelData` that is not constructed yet, and `format` at a
+/// constructed `NiPixelFormat`.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn pixel_data_ctor_args(this: usize, width: u32, height: u32, format: usize, mip_map_levels: u32) -> usize {
@@ -466,6 +683,11 @@ pub unsafe fn pixel_data_ctor_args(this: usize, width: u32, height: u32, format:
 }
 
 /// 0x6F57A0 `NiImageConverter::GetImageConverter`. It is static and `__cdecl`.
+///
+/// # Safety
+///
+/// No condition other than that the plugin runs in Morrowind.exe. The result can be 0 before the
+/// game sets its image converter.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn get_image_converter() -> usize {
@@ -475,6 +697,10 @@ pub unsafe fn get_image_converter() -> usize {
 // ---- Direct3D helpers of the game
 
 /// 0x6C20A0 `GetNameForDirectXErrorCode`. It is `__cdecl`. Returns the address of a C string.
+///
+/// # Safety
+///
+/// No condition other than that the plugin runs in Morrowind.exe.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn directx_error_name(result: u32) -> usize {
@@ -482,6 +708,10 @@ pub unsafe fn directx_error_name(result: u32) -> usize {
 }
 
 /// 0x6B6DE0 `NiTexture::RendererData::dtor`
+///
+/// # Safety
+///
+/// `data` points at a live renderer data object of a texture that nothing uses after the call.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn texture_renderer_data_dtor(data: usize) {
@@ -490,6 +720,11 @@ pub unsafe fn texture_renderer_data_dtor(data: usize) {
 
 /// 0x6C28C0 `sub_6C28C0`. It releases `pD3DResource` of a `NiDX8Resource`. The destructors of
 /// the managers call this entry.
+///
+/// # Safety
+///
+/// `resource` points at a live `NiDX8Resource`; its `pD3DResource` is 0 or a live device resource,
+/// of which nothing uses this reference after the call.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn dx8_resource_release(resource: usize) {
@@ -498,6 +733,10 @@ pub unsafe fn dx8_resource_release(resource: usize) {
 
 /// 0x6BD490 `sub_6BD490`: a jump to 0x6C28C0. The `Recreate` functions call this entry. It is
 /// a function of its own because the call goes to a different address.
+///
+/// # Safety
+///
+/// As for [`dx8_resource_release`].
 #[inline(always)]
 #[track_caller]
 pub unsafe fn dx8_resource_release_thunk(resource: usize) {
@@ -506,6 +745,11 @@ pub unsafe fn dx8_resource_release_thunk(resource: usize) {
 
 /// 0x6BC8A0 `NiDX8TextureManager::clearHashMap` as a call of the game function. It removes
 /// every node of a `THashMap` and sets the count to 0. `textures::clear_hash_map` is its port.
+///
+/// # Safety
+///
+/// `map` points at a live `THashMap` whose nodes come from the game's allocation; nothing uses its
+/// nodes after the call.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn texture_manager_clear_hash_map(map: usize) {
@@ -514,6 +758,10 @@ pub unsafe fn texture_manager_clear_hash_map(map: usize) {
 
 /// 0x6B76E0 `NiDX8TexturePass::$1::ctor`: the constructor of a stage group of a texture pass.
 /// Returns `this`.
+///
+/// # Safety
+///
+/// `group` points at room for a stage group of a `NiDX8TexturePass` that is not constructed yet.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn texture_pass_stage_group_ctor(group: usize) -> usize {
@@ -523,6 +771,11 @@ pub unsafe fn texture_pass_stage_group_ctor(group: usize) -> usize {
 // ---- containers and math
 
 /// 0x6CB260 `TArray_of_pointer::SetAt`. `element` is the address of the value.
+///
+/// # Safety
+///
+/// `array` points at a live `TArray` of pointers, and `element` at the value to store; `index` is
+/// as the game's function takes it.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn array_set_at(array: usize, index: u32, element: usize) {
@@ -530,6 +783,10 @@ pub unsafe fn array_set_at(array: usize, index: u32, element: usize) {
 }
 
 /// 0x6CEE40 `TArray_of_pointer::SetSize`
+///
+/// # Safety
+///
+/// `array` points at a live `TArray` of pointers.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn array_set_size(array: usize, size: u32) {
@@ -538,6 +795,10 @@ pub unsafe fn array_set_size(array: usize, size: u32) {
 
 /// 0x6BBEF0 `NiTListAllocator::Data::ctor`. It allocates `count` items and chains them.
 /// Returns `block`.
+///
+/// # Safety
+///
+/// `block` points at room for a `NiTListAllocator::Data`.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn list_allocator_block_ctor(block: usize, count: u32) -> usize {
@@ -545,6 +806,10 @@ pub unsafe fn list_allocator_block_ctor(block: usize, count: u32) -> usize {
 }
 
 /// 0x6E7CD0 `matrix33::copy`
+///
+/// # Safety
+///
+/// `to` points at room for a 3 x 3 matrix of floats, and `from` at such a matrix.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn matrix33_copy(to: usize, from: usize) {
@@ -552,6 +817,10 @@ pub unsafe fn matrix33_copy(to: usize, from: usize) {
 }
 
 /// 0x6ED100 `NiBound_or_NiQuaternion::Copy`
+///
+/// # Safety
+///
+/// `to` points at room for a `NiBound`, and `from` at a `NiBound`.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn ni_bound_copy(to: usize, from: usize) {
@@ -559,6 +828,10 @@ pub unsafe fn ni_bound_copy(to: usize, from: usize) {
 }
 
 /// 0x6F25E0 `NiBound_or_NiPlane::ctor`
+///
+/// # Safety
+///
+/// `bound` points at room for a `NiBound`.
 #[inline(always)]
 #[track_caller]
 pub unsafe fn ni_bound_ctor(bound: usize) {

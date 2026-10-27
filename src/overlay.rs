@@ -85,6 +85,11 @@ unsafe fn largest_free(total: u64) -> u64 {
 /// The body of an `OVERLAY` record: the state, then the numbers of the process, then the
 /// time of the game thread for each frame in ms (in the stream, in the ports of the
 /// renderer, in waits for the host program).
+///
+/// # Safety
+///
+/// No condition: the function reads no engine memory. It is `unsafe` because of the calls of the
+/// Windows functions.
 pub unsafe fn body(stream_ms: f32, ports_ms: f32, wait_ms: f32) -> [u8; 64] {
     let mut memory = ProcessMemory { size: core::mem::size_of::<ProcessMemory>() as u32, ..Default::default() };
     K32GetProcessMemoryInfo(crate::win::GetCurrentProcess(), &mut memory, memory.size);

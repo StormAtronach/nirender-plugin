@@ -57,56 +57,97 @@ const SKIN_DATA_SKIN_PARTITION: usize = crate::gen::layouts::NiSkinData::skinPar
 // is a window from its `any_thread` hook to its `after` hook (`worker_events`), a write of
 // the main thread is a window of `CacheWrite`. An overlap starts inside one of them.
 
-static MAIN_IN_CACHE: AtomicBool = AtomicBool::new(false);
-static WORKER_REMOVING: AtomicU32 = AtomicU32::new(0);
-/// A main-thread write that started in a removal of the worker, and a removal of the worker
-/// that started in a main-thread write.
-static CROSSINGS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
-static REMOVALS: AtomicU32 = AtomicU32::new(0);
+/// The windows of the two threads in the geometry cache, and the crossings between them. The
+/// game has one ([`CACHE`]); a test has its own, which no other test touches.
+struct Crossings {
+    main_in_cache: AtomicBool,
+    worker_removing: AtomicU32,
+    /// A main-thread write that started in a removal of the worker, and a removal of the
+    /// worker that started in a main-thread write.
+    crossings: [AtomicU32; 2],
+    removals: AtomicU32,
+}
 
-/// A write of the geometry cache by the main thread, for the time of the guard.
-struct CacheWrite;
+static CACHE: Crossings = Crossings::new();
 
-impl CacheWrite {
-    fn enter() -> CacheWrite {
-        MAIN_IN_CACHE.store(true, Ordering::SeqCst);
-        if WORKER_REMOVING.load(Ordering::SeqCst) != 0 && CROSSINGS[0].fetch_add(1, Ordering::Relaxed) == 0 {
+impl Crossings {
+    const fn new() -> Crossings {
+        Crossings {
+            main_in_cache: AtomicBool::new(false),
+            worker_removing: AtomicU32::new(0),
+            crossings: [AtomicU32::new(0), AtomicU32::new(0)],
+            removals: AtomicU32::new(0),
+        }
+    }
+
+    /// A write of the cache by the main thread begins; it ends with the guard.
+    fn write(&self) -> CacheWrite<'_> {
+        self.main_in_cache.store(true, Ordering::SeqCst);
+        if self.worker_removing.load(Ordering::SeqCst) != 0 && self.crossings[0].fetch_add(1, Ordering::Relaxed) == 0 {
             crate::log!("geometry cache: a main-thread write began in a removal of the cell worker (the first)");
         }
-        CacheWrite
+        CacheWrite(self)
+    }
+
+    fn removal_begins(&self) {
+        self.worker_removing.fetch_add(1, Ordering::SeqCst);
+        self.removals.fetch_add(1, Ordering::Relaxed);
+        if self.main_in_cache.load(Ordering::SeqCst) && self.crossings[1].fetch_add(1, Ordering::Relaxed) == 0 {
+            crate::log!("geometry cache: a removal of the cell worker began in a main-thread write (the first)");
+        }
+    }
+
+    fn removal_ends(&self) {
+        self.worker_removing.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn report(&self) -> String {
+        format!(
+            "geometry cache: {} removals on the cell worker; crossings with a main-thread write: {} writes began in a removal, {} removals began in a write",
+            self.removals.load(Ordering::Relaxed),
+            self.crossings[0].load(Ordering::Relaxed),
+            self.crossings[1].load(Ordering::Relaxed)
+        )
     }
 }
 
-impl Drop for CacheWrite {
+/// A write of the geometry cache by the main thread, for the time of the guard.
+struct CacheWrite<'a>(&'a Crossings);
+
+impl CacheWrite<'static> {
+    /// A write of the game's cache ([`CACHE`]).
+    fn enter() -> CacheWrite<'static> {
+        CACHE.write()
+    }
+}
+
+impl Drop for CacheWrite<'_> {
     fn drop(&mut self) {
-        MAIN_IN_CACHE.store(false, Ordering::SeqCst);
+        self.0.main_in_cache.store(false, Ordering::SeqCst);
     }
 }
 
 /// A removal of geometry data begins on the cell worker (`worker_events`).
 pub fn worker_removal_begins() {
-    WORKER_REMOVING.fetch_add(1, Ordering::SeqCst);
-    REMOVALS.fetch_add(1, Ordering::Relaxed);
-    if MAIN_IN_CACHE.load(Ordering::SeqCst) && CROSSINGS[1].fetch_add(1, Ordering::Relaxed) == 0 {
-        crate::log!("geometry cache: a removal of the cell worker began in a main-thread write (the first)");
-    }
+    CACHE.removal_begins();
 }
 
 /// The `after` hook of `RemoveGeometryData`: a removal of the cell worker ends.
+///
+/// # Safety
+///
+/// Each call on the cell worker ends a removal that `worker_removal_begins` began on that thread,
+/// or the count of removals in progress goes below 0 (it wraps). On the main thread the function
+/// does nothing.
 pub unsafe fn worker_removal_ends() {
     if !crate::shadow::on_main_thread() {
-        WORKER_REMOVING.fetch_sub(1, Ordering::SeqCst);
+        CACHE.removal_ends();
     }
 }
 
 /// One line for the log: the removals of the worker and the crossings.
 pub fn crossings_report() -> String {
-    format!(
-        "geometry cache: {} removals on the cell worker; crossings with a main-thread write: {} writes began in a removal, {} removals began in a write",
-        REMOVALS.load(Ordering::Relaxed),
-        CROSSINGS[0].load(Ordering::Relaxed),
-        CROSSINGS[1].load(Ordering::Relaxed)
-    )
+    CACHE.report()
 }
 
 /// 0x6BDE50 `NiDX8VertexBufferManager::PackUntransformedVB`. Returns the vertex buffer.
@@ -269,6 +310,11 @@ unsafe fn destroy_geometry_buffer(buffer: usize) {
 }
 
 /// 0x6AF2D0 `NiDX8Renderer::PurgeSkinPartition`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`, and `partition` at a live skin partition whose buffer
+/// data is 0 or a buffer of this renderer.
 pub unsafe fn purge_skin_partition(this: usize, partition: usize) {
     crate::shadow::touch(&purge_skin_partition_port::STATE);
     let buffer: usize = rd(partition, Partition::bufferData);
@@ -296,6 +342,11 @@ unsafe fn keys(map: usize) -> Vec<u32> {
 /// Makes the renderer drop the buffers of each geometry and of each skin partition that it
 /// has buffers for. The game makes them again at the next draw of the object. This is not a
 /// function of the game; the capture uses it. Returns the two numbers.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` whose maps of buffers hold buffers that it made;
+/// nothing draws with them during the call (the game makes them again at the next draw).
 pub unsafe fn purge_all_geometry(this: usize) -> (u32, u32) {
     // The key of the first map is the number of a geometry data, not its address.
     let map = this + R::hashGeomBuffers;
@@ -316,6 +367,11 @@ pub unsafe fn purge_all_geometry(this: usize) -> (u32, u32) {
 }
 
 /// 0x6AF3A0 `NiDX8Renderer::PurgeGeometryData`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`, and `geom_data` at live geometry data (its number is
+/// read).
 pub unsafe fn purge_geometry_data(this: usize, geom_data: usize) {
     crate::shadow::touch(&purge_geometry_data_port::STATE);
     let key: u32 = rd(geom_data, NiGeometryData::uniqueID);
@@ -374,6 +430,11 @@ unsafe fn purge_geometry_data_regions(set: &mut Regions, this: usize, geom_data:
 
 /// 0x6AF4A0 `NiDX8Renderer::createGeometryBufferData`. Puts the buffer data of the geometry
 /// data into `*out`. Returns 1 when it made a new one.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `out` at a word that the function writes; `geom_data`
+/// is 0 or live geometry data.
 pub unsafe fn create_geometry_buffer_data(this: usize, out: usize, geom_data: usize) -> u8 {
     crate::shadow::touch(&create_geometry_buffer_data_port::STATE);
     let _write = CacheWrite::enter();
@@ -408,6 +469,11 @@ unsafe fn create_geometry_buffer_data_regions(set: &mut Regions, this: usize, ou
 /// 0x6AF930 `NiDX8Renderer::findCachedPartitionGeomBuffer`. Puts the buffer data of the
 /// partition into `*out`. Returns 1 when it made a new one. `*out` is an input too. With
 /// no entry in the map and a value in `*out`, the function makes nothing.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `out` at a word that the function reads and writes;
+/// `geom_data` and `skin` are 0 or live; `partition` points at a live skin partition of the skin.
 pub unsafe fn find_cached_partition_geom_buffer(this: usize, out: usize, geom_data: usize, skin: usize, partition: usize) -> u8 {
     crate::shadow::touch(&find_cached_partition_geom_buffer_port::STATE);
     let _write = CacheWrite::enter();
@@ -480,6 +546,12 @@ unsafe fn pack_kept(buffer: usize, geom_data: usize, active_vertices: u32, tri_l
 
 /// 0x6AF610 `NiDX8Renderer::packGeometryBuffers`. `shader` is a `NiD3DShaderInterface` or 0.
 /// Returns 0 when there is no buffer data or no geometry data. If not, it returns 1.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its buffer managers; `out` at a word that holds 0
+/// or a buffer data of this renderer; `geom_data` and `skin` are 0 or live; `shader` is 0 or a live
+/// `NiD3DShaderInterface`.
 pub unsafe fn pack_geometry_buffers(this: usize, out: usize, geom_data: usize, skin: usize, shader: usize, shader_data: u32) -> u8 {
     crate::shadow::touch(&pack_geometry_buffers_port::STATE);
     let buffer: usize = rd(out, 0);
@@ -609,6 +681,12 @@ unsafe fn pack_geometry_buffers_regions(set: &mut Regions, this: usize, out: usi
 
 /// 0x6AFAB0 `NiDX8Renderer::createPartitionGeomBuffer`. It packs the buffers of a skin partition.
 /// Returns 0 when there is no buffer data, geometry data or skin instance. If not, it returns 1.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its buffer managers; `out` at a word that holds 0
+/// or a buffer data of this renderer; `geom_data` and `skin` are 0 or live; `partition` points at a
+/// live skin partition of the skin.
 pub unsafe fn create_partition_geom_buffer(this: usize, out: usize, geom_data: usize, skin: usize, partition: usize) -> u8 {
     crate::shadow::touch(&create_partition_geom_buffer_port::STATE);
     let buffer: usize = rd(out, 0);
@@ -717,6 +795,12 @@ unsafe fn create_partition_geom_buffer_regions(set: &mut Regions, this: usize, o
 
 /// 0x6AFCC0 `NiDX8Renderer::PackScreenPolyGeomBuffer`. `near` and `distance` are floats that the
 /// game code moves as integers. Returns the buffer data in the renderer, or 0.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its vertex buffer manager; `vertices`,
+/// `tex_coords` and `colour` are the arrays of `count` entries that the engine passes. Nothing here
+/// checks them.
 pub unsafe fn pack_screen_poly_geom_buffer(this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize, near: u32, distance: u32) -> usize {
     crate::shadow::touch(&pack_screen_poly_geom_buffer_port::STATE);
     // For the results, the game code gives the stack slots of its two last arguments.
@@ -818,6 +902,11 @@ unsafe fn screen_polygon_record(t: &MainThread, this: usize, count: u32, vertice
 }
 
 /// 0x6ADD20 `NiDX8Renderer::RenderScreenPoly`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device; `vertices`, `tex_coords` and `colour`
+/// are the arrays of `count` entries that the engine passes. Nothing here checks them.
 pub unsafe fn render_screen_poly(t: &MainThread, this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize) {
     crate::shadow::touch(&render_screen_poly_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 || count == 0 {
@@ -858,6 +947,11 @@ unsafe fn render_screen_poly_regions(set: &mut Regions, this: usize, count: u32)
 /// 0x6AFD90 `NiDX8Renderer::precacheGeometryData`. It makes and fills the buffer data of a
 /// geometry data that has none. The function does not read `_extra`. Returns 1 when the geometry
 /// data has a buffer data at the end.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `geom_data` at live geometry data; `shader` is 0 or a
+/// live `NiD3DShaderInterface`; `indices`, `index_count` and `flags` are as the engine passes them.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn precache_geometry_data(this: usize, geom_data: usize, indices: u32, index_count: u32, flags: u32, _extra: usize, shader: usize, shader_data: u32) -> u8 {
     crate::shadow::touch(&precache_geometry_data_port::STATE);
@@ -956,6 +1050,12 @@ unsafe fn precache_geometry_data_regions(set: &mut Regions, this: usize, geom_da
 /// 0x6B0030 `NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer`. It makes the skin partitions
 /// when the skin data has none. Then it makes the buffer data of each partition, and stops at the
 /// first partition that has its buffer data. The function does not read `_property`.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `skin` is 0 or a live `NiSkinInstance` whose skin
+/// data, when set, is live (the function makes its partitions when it has none); `geom_data` points
+/// at the live geometry data of the skin; `shader` is 0 or a live `NiD3DShaderInterface`.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
     this: usize, geom_data: usize, skin: usize, flags: u32, _property: usize, shader: usize, shader_data: u32, per_partition: u32,
@@ -1103,6 +1203,11 @@ unsafe fn shader_of(property: usize) -> (usize, u32) {
 }
 
 /// 0x6AC420 `NiDX8Renderer::PrecacheGeometry`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `geometry` is 0 or a live `NiGeometry` with its model
+/// data; `property` is as the engine passes it (the shader is taken from it).
 pub unsafe fn precache_geometry(this: usize, geometry: usize, flags: u32, property: usize, per_partition: u32, per_vertex: u32) -> u8 {
     crate::shadow::touch(&precache_geometry_port::STATE);
     if geometry == 0 {
@@ -1223,6 +1328,13 @@ unsafe fn batches_skinned(this: usize, skin: usize) -> bool {
 }
 
 /// 0x6AE600 `NiDX8Renderer::BatchRenderShape`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `geom_data` at live geometry data (its virtual
+/// functions are called); `skin` is 0 or a live `NiSkinInstance`; `transform` and `bound` point at
+/// the shape's transform and bound, which stay live until the batch ends (the batch keeps their
+/// addresses).
 pub unsafe fn batch_render_shape(this: usize, geom_data: usize, skin: usize, transform: usize, bound: usize) {
     crate::shadow::touch(&batch_render_shape_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -1261,6 +1373,13 @@ pub unsafe fn batch_render_shape(this: usize, geom_data: usize, skin: usize, tra
 }
 
 /// 0x6AE8C0 `NiDX8Renderer::BatchRenderStrips`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `geom_data` at live strip data (its virtual functions
+/// are called); `skin` is 0 or a live `NiSkinInstance`; `transform` and `bound` point at the
+/// shape's transform and bound, which stay live until the batch ends (the batch keeps their
+/// addresses).
 pub unsafe fn batch_render_strips(this: usize, geom_data: usize, skin: usize, transform: usize, bound: usize) {
     crate::shadow::touch(&batch_render_strips_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -1419,25 +1538,28 @@ mod tests {
     use super::*;
 
     /// Both kinds of overlap are counted: a write that starts in a removal of the worker, and
-    /// a removal that starts in a write. (In a test no thread is the main thread, so the end
-    /// of a removal counts here.)
+    /// a removal that starts in a write. The test has its own counts: the other geometry tests
+    /// run in parallel and write the game's cache through the ports (a shared count failed
+    /// 83 of 300 runs of the geometry tests, 2026-10-27).
     #[test]
     fn the_crossings_of_the_geometry_cache_are_counted() {
-        let before = [CROSSINGS[0].load(Ordering::Relaxed), CROSSINGS[1].load(Ordering::Relaxed)];
+        let cache = Crossings::new();
+        let count = |kind: usize| cache.crossings[kind].load(Ordering::Relaxed);
         {
-            let _write = CacheWrite::enter();
-            worker_removal_begins();
+            let _write = cache.write();
+            cache.removal_begins();
         }
-        assert_eq!(CROSSINGS[1].load(Ordering::Relaxed), before[1] + 1);
+        assert_eq!((count(0), count(1)), (0, 1), "a removal that began in a write");
         {
-            let _write = CacheWrite::enter();
+            let _write = cache.write();
         }
-        assert_eq!(CROSSINGS[0].load(Ordering::Relaxed), before[0] + 1, "a write in the removal that is still open");
-        unsafe { worker_removal_ends() };
+        assert_eq!(count(0), 1, "a write in the removal that is still open");
+        cache.removal_ends();
         {
-            let _write = CacheWrite::enter();
+            let _write = cache.write();
         }
-        assert_eq!(CROSSINGS[0].load(Ordering::Relaxed), before[0] + 1, "no removal open: no crossing");
+        assert_eq!(count(0), 1, "no removal open: no crossing");
+        assert_eq!(cache.removals.load(Ordering::Relaxed), 1);
     }
 
     // A hash map whose key is a number. The bucket is the key modulo the bucket count.

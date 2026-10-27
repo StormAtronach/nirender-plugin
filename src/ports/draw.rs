@@ -517,6 +517,12 @@ pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, tran
 /// 0x6ACEF0 `NiDX8Renderer::RenderShape`. The port uses the skinning check that MWSE puts at
 /// +0x2F when the memory has that check. Unlike the engine, the port sends the shape record
 /// first and does not draw when `shape_record` returns true.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `geom_data` at live geometry data (its virtual
+/// functions are called); `skin` is 0 or a live `NiSkinInstance`; `transform` and `world_bound`
+/// point at the shape's transform and bound.
 pub unsafe fn render_shape(t: &MainThread, this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_shape_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -558,6 +564,12 @@ pub unsafe fn render_shape(t: &MainThread, this: usize, geom_data: usize, skin: 
 
 /// 0x6ACFC0 `NiDX8Renderer::RenderTriStrips`. Unlike the engine, the port sends the shape
 /// record first and does not draw when `shape_record` returns true.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `geom_data` at live strip data (its virtual functions
+/// are called); `skin` is 0 or a live `NiSkinInstance`; `transform` and `world_bound` point at the
+/// shape's transform and bound.
 pub unsafe fn render_tri_strips(t: &MainThread, this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_tri_strips_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -608,6 +620,12 @@ unsafe fn render_regions(set: &mut Regions, this: usize, geom_data: usize) {
 // ---------------------------------------------------------------------------------------
 
 /// 0x6AEB80 `NiDX8Renderer::DrawPrimitive`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its current property state and effect state set;
+/// `geom_buffer` is the renderer's geometry buffer of `geom_data`; the other arguments are as the
+/// engine passes them to `DrawPrimitive`. Nothing here checks them.
 pub unsafe fn draw_primitive(
     t: &MainThread,
     this: usize,
@@ -908,6 +926,12 @@ pub(crate) unsafe fn object_name(object: usize) -> String {
 /// 0x6ADE70 `NiDX8Renderer::DrawSkinnedPrimitive`. The port makes the skin partitions when
 /// the skin data has none. Then it fills the geometry buffer of each partition and draws the
 /// partitions.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `geom_data` at live geometry data; `skin` at a live
+/// `NiSkinInstance` with live skin data (the function makes its partitions when it has none);
+/// `transform` and `world_bound` point at the shape's transform and bound.
 pub unsafe fn draw_skinned_primitive(this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&draw_skinned_primitive_port::STATE);
     let skin_partition = ensure_skin_partitions(this, geom_data, skin);
@@ -960,6 +984,12 @@ pub unsafe fn draw_skinned_primitive(this: usize, geom_data: usize, skin: usize,
 
 /// 0x6AEF90 `NiDX8Renderer::DrawSkinnedPrimitive2`: draws the partitions of a skin. The game
 /// code does not read the last two arguments.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `skin` is 0 or a live `NiSkinInstance` whose skin
+/// data, when set, has 0 or live skin partitions; the other arguments are as the engine passes
+/// them. The last two are not read.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_skinned_primitive_2(
     t: &MainThread,
@@ -1185,6 +1215,12 @@ unsafe fn end_batch_draw(t: &MainThread, this: usize, geom_buffer: usize) {
 
 /// 0x6AE090 `NiDX8Renderer::EndBatch`: draws the batched objects with one set-up of the
 /// pass, then frees the list.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` whose list of batched objects is 0 or the list that
+/// its batch functions made: each entry's geometry buffer, data, skin, transform and bound stay
+/// live until the batch ends here.
 pub unsafe fn end_batch(t: &MainThread, this: usize) {
     crate::shadow::touch(&end_batch_port::STATE);
     let head: usize = rd(this, R::batchedObjectListHead);

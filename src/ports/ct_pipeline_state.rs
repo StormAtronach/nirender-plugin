@@ -1089,6 +1089,13 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
 /// a projected shadow with a clip plane. If not, it returns 0. The function uses `this`, the
 /// property state, the effect state and `texture_sets`. It does not use `has_normals` and the
 /// last four arguments.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` with its array of sub-passes (the count at
+/// `count_10`, the storage at `TArray_18_storage`, each entry 0 or a live sub-pass);
+/// `property_state` and `effect_state` are the draw's states as the game passes them to slot 8 of
+/// the pass. The other arguments are not read.
 #[cfg_attr(test, allow(dead_code))]
 pub unsafe fn set_ct_pipeline_state(
     this: usize,

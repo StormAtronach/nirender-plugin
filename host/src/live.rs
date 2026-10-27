@@ -34,6 +34,9 @@ const RING_HEAD: usize = 128;
 const RING_WRITTEN: usize = 8;
 const RING_READ: usize = 16;
 const RING_CLOSED: usize = 24;
+/// The game waits for a read of this program (1 while it does): the event `<ring>-read` is
+/// set after a read only then (`capture.rs` of the plugin, `RING_GAME_WAITING`).
+const RING_GAME_WAITING: usize = 72;
 /// The classes of the game that the helper draws itself, for the plugin ([`Player::takes`]).
 const RING_TAKES: usize = 32;
 /// 1 while this program waits for a record: the plugin sets the event of the ring
@@ -71,6 +74,10 @@ struct Ring {
     /// The event `<ring>-shown` of the pacing, set when this program has shown a frame; 0
     /// without the pacing.
     shown_event: isize,
+    /// The event `<ring>-read`, set after a read while the game says it waits for one
+    /// ([`RING_GAME_WAITING`]); 0 with a plugin that has none (the game's wait then ends by
+    /// its own time limit).
+    read_event: isize,
 }
 
 impl Ring {
@@ -94,7 +101,12 @@ impl Ring {
                 let mut shown_name = format!("{name}-shown").into_bytes();
                 shown_name.push(0);
                 let shown_event = unsafe { OpenEventA(0x1F0003, 0, shown_name.as_ptr()) };
-                return Ring { base, capacity, event, shown_event };
+                let mut read_name = format!("{name}-read").into_bytes();
+                read_name.push(0);
+                // SAFETY: the name is a NUL-ended byte string that lives for the call; a
+                // missing event gives 0, which the reader tests before each use.
+                let read_event = unsafe { OpenEventA(0x1F0003, 0, read_name.as_ptr()) };
+                return Ring { base, capacity, event, shown_event, read_event };
             }
             assert!(start.elapsed() < Duration::from_secs(60), "no shared memory with the name {name}");
             std::thread::sleep(Duration::from_millis(50));
@@ -191,7 +203,19 @@ impl Ring {
         let length = u32::from_le_bytes(head[4..8].try_into().unwrap()) as usize;
         data.resize(length, 0);
         self.copy_out(read + 8, data);
-        self.counter(RING_READ).store(read + 8 + length as u64, Ordering::Release);
+        self.counter(RING_READ).store(read + 8 + length as u64, Ordering::SeqCst);
+        // The game waits for a read: wake it. The store above and this load are SeqCst, as
+        // the game's store of the word and its load of the count are, so that one of the
+        // two sides sees the other's store.
+        // SAFETY: `base` maps the ring's head of RING_HEAD bytes for the life of the Ring, the
+        // word at RING_GAME_WAITING is 4-aligned inside it, and the game writes it only
+        // through an atomic of the same size.
+        let game_waiting = unsafe { &*(self.base.add(RING_GAME_WAITING) as *const std::sync::atomic::AtomicU32) };
+        if self.read_event != 0 && game_waiting.load(Ordering::SeqCst) != 0 {
+            // SAFETY: the event is a handle that OpenEventA gave and that is not closed while
+            // the Ring lives.
+            unsafe { SetEvent(self.read_event) };
+        }
         Some(tag)
     }
 }
@@ -400,6 +424,8 @@ struct App {
     data: Vec<u8>,
     frames: u32,
     first_frame: Option<Instant>,
+    /// When the memory report was written last (`MGE_XE_MEMORY_MINUTES`), or [`None`].
+    memory_reported: Option<Instant>,
     waited: Duration,
     /// All the time with no record to read, for the debug overlay: `waited` has only
     /// the waits that went back to the events of the window.
@@ -623,7 +649,7 @@ impl App {
             super::WindowTarget::Own(window) => Some(window.clone()),
             super::WindowTarget::Game(_) => None,
         };
-        let (renderer, surface) = Renderer::new(
+        let made = Renderer::new(
             self.backends,
             Some(target),
             wgpu::TextureFormat::Bgra8Unorm,
@@ -631,6 +657,15 @@ impl App {
             self.extension.as_ref().map_or(0, |extension| extension.texture_slots()),
             switches().samples.unwrap_or_else(|| self.extension.as_ref().map_or(1, |extension| extension.samples())),
         );
+        let (renderer, surface) = match made {
+            Ok(made) => made,
+            // No backend serves: the reason in the log and the box, then the exit code the
+            // plugin knows (the failure-path page, the code 20).
+            Err(refusals) => {
+                crate::request::refuse_live(&refusals);
+                std::process::exit(crate::stream_format::EXIT_GPU as i32);
+            }
+        };
         let surface = surface.expect("a surface");
         let vsync = self.extension.as_ref().is_some_and(|extension| extension.vsync());
         let present_mode = switches().present.unwrap_or_else(|| present_mode_of(vsync));
@@ -991,6 +1026,16 @@ impl ApplicationHandler for App {
             if self.frames % HELD_EVERY_FRAMES == 0 {
                 println!("frame {}: {}", self.frames, player.renderer.held_line());
             }
+            // wgpu's memory, at the first frame and every n minutes (risk 43).
+            let every = Duration::from_secs(u64::from(switches().memory_minutes) * 60);
+            if !every.is_zero() && self.memory_reported.is_none_or(|last| last.elapsed() >= every) {
+                self.memory_reported = Some(Instant::now());
+                let minutes = self.first_frame.map_or(0.0, |start| start.elapsed().as_secs_f64() / 60.0);
+                println!("memory: frame {}, minute {minutes:.1}", self.frames);
+                for line in super::gpu::memory_lines(&device) {
+                    println!("{line}");
+                }
+            }
             if self.frames_wanted != 0 && self.frames >= self.frames_wanted {
                 return self.finish(event_loop, "all the frames that were asked for");
             }
@@ -1082,6 +1127,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         data: Vec::new(),
         frames: 0,
         first_frame: None,
+        memory_reported: None,
         waited: Duration::ZERO,
         idle: Duration::ZERO,
         last_record: Instant::now(),

@@ -61,6 +61,12 @@ port_thiscall!(push_state_port, 0x6F3F40, "NiGeometry::pushStateToRenderer",
 
 /// Makes the shape's property state and effect state the renderer's current ones, with
 /// the references counted. A shape without a property state leaves the renderer's.
+///
+/// # Safety
+///
+/// `this` points at a live shape (its property state and effect state are read), and `renderer` at
+/// the live renderer, whose current states the function writes; the references of the states are
+/// counted on both sides.
 pub unsafe fn push_state_to_renderer(this: usize, renderer: usize) {
     crate::shadow::touch(&push_state_port::STATE);
     let property = rd::<usize>(this, G::spPropertyState);
@@ -177,6 +183,12 @@ port_thiscall!(tri_shape_display_port, 0x6E4F90, "NiTriShape::Display",
 
 /// The states, the accumulator, the controllers, then `RenderShape` of the renderer with
 /// the shape's data, skin, world transform and world bound; and the counts of the frame.
+///
+/// # Safety
+///
+/// `this` points at a live `NiTriShape` with its model data, and `camera` at a live camera whose
+/// renderer is set: the function takes the renderer from the camera and calls its virtual functions
+/// with the shape's data, skin, world transform and world bound.
 pub unsafe fn tri_shape_display(t: &MainThread, this: usize, camera: usize) {
     crate::shadow::touch(&tri_shape_display_port::STATE);
     // A shape the helper draws from its table: the plugin notes its changes, and the engine
@@ -204,6 +216,12 @@ port_thiscall!(tri_strips_display_port, 0x742660, "NiTriStrips::Display",
 
 /// As `NiTriShape::Display`, with `RenderTristrips`; the counts take the triangle count and
 /// the vertex count of the data as they are.
+///
+/// # Safety
+///
+/// `this` points at a live `NiTriStrips` with its model data, and `camera` at a live camera whose
+/// renderer is set: the function takes the renderer from the camera and calls its virtual functions
+/// with the shape's data, skin, world transform and world bound.
 pub unsafe fn tri_strips_display(t: &MainThread, this: usize, camera: usize) {
     crate::shadow::touch(&tri_strips_display_port::STATE);
     if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && retained_display(t, this, camera, crate::link::DRAW_STRIPS) {
@@ -232,6 +250,11 @@ port_thiscall!(particles_display_port, 0x6DD3E0, "NiParticles::Display",
 
 /// As `NiTriShape::Display`, with `RenderPoints` (no skin); the counts take the active
 /// particles for both.
+///
+/// # Safety
+///
+/// `this` points at a live `NiParticles` with its model data, and `camera` at a live camera whose
+/// renderer is set (the function takes it from the camera and calls its virtual functions).
 pub unsafe fn particles_display(this: usize, camera: usize) {
     crate::shadow::touch(&particles_display_port::STATE);
     let Some(renderer) = shape_display_start(this, camera) else { return };
@@ -254,6 +277,12 @@ port_thiscall!(auto_normal_particles_display_port, 0x6D3540, "NiAutoNormalPartic
 
 /// As `NiParticles::Display`, with the normal of each active particle set to the direction
 /// towards the camera first.
+///
+/// # Safety
+///
+/// `this` points at a live `NiAutoNormalParticles` with its model data, and `camera` at a live
+/// camera whose renderer is set. The normals of the data, when not 0, hold at least as many entries
+/// (12 bytes each) as the data's count of active particles: the function writes that many.
 pub unsafe fn auto_normal_particles_display(this: usize, camera: usize) {
     crate::shadow::touch(&auto_normal_particles_display_port::STATE);
     let Some(renderer) = shape_display_start(this, camera) else { return };
@@ -278,6 +307,11 @@ port_thiscall!(lines_display_port, 0x6DA850, "NiLines::Display",
     rust = lines_display);
 
 /// As `NiTriShape::Display`, with `RenderLines` (no skin) and no counts.
+///
+/// # Safety
+///
+/// `this` points at a live `NiLines` with its model data, and `camera` at a live camera whose
+/// renderer is set (the function takes it from the camera and calls its virtual functions).
 pub unsafe fn lines_display(this: usize, camera: usize) {
     crate::shadow::touch(&lines_display_port::STATE);
     let Some(renderer) = shape_display_start(this, camera) else { return };
@@ -298,6 +332,11 @@ port_thiscall!(geometry_dtor_port, 0x6F3DB0, "NiGeometry::dtor",
 
 /// The destructor of a geometry: the plugin forgets the shape (its retained instance of
 /// `instance_stream`), then the engine code runs.
+///
+/// # Safety
+///
+/// `this` points at a live geometry that the engine destroys: the plugin forgets its instance, then
+/// the engine function runs. The port is installed (the function calls its engine function).
 pub unsafe fn geometry_dtor(t: &MainThread, this: usize) {
     crate::shadow::touch(&geometry_dtor_port::STATE);
     crate::instance_stream::forget(t, this);

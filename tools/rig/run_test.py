@@ -96,10 +96,9 @@ def main():
         if "ERROR" in line:
             failures.append(line[:300])
     failures += run.mge_problems()
-    if os.path.isfile(run.log):
-        mismatches = [l for l in open(run.log, encoding="utf-8", errors="replace").read().splitlines() if l.startswith("MISMATCH")]
-        for line in mismatches[:20]:
-            print("  " + line[:400])
+    mismatches = [line for line in run.plugin_lines() if line.startswith("MISMATCH")]
+    for line in mismatches[:20]:
+        print("  " + line[:400])
     if args.fault:
         shadow_found = any("calls differ" in f for f in failures)
         frame_found = any("frame test menu live: FAIL" in f for f in failures)

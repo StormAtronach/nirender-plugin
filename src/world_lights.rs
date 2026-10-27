@@ -15,7 +15,7 @@
 //! too.
 
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -62,7 +62,7 @@ struct WorldSet {
 }
 
 static SET: Mutex<Option<WorldSet>> = Mutex::new(None);
-static INSTALLED: AtomicBool = AtomicBool::new(false);
+static INSTALLED: crate::sync::InstallState = crate::sync::InstallState::new();
 static PLACED: AtomicU64 = AtomicU64::new(0);
 static REMOVED: AtomicU64 = AtomicU64::new(0);
 /// The lights destroyed while in the set: the engine destroyed them without a removal.
@@ -79,21 +79,34 @@ fn with_set<R>(f: impl FnOnce(&mut WorldSet) -> R) -> Option<R> {
 
 /// Listens to MWSE's two events. The removal first: without it a light of an unloaded cell
 /// would stay in the set. A refusal leaves the plugin without the lights of the world: the
-/// helper's world mode then has no lights.
+/// helper's world mode then has no lights. A refused placement ends the removal's
+/// subscription too, so that a later try subscribes it once.
+///
+/// # Safety
+///
+/// No condition of its own: `INSTALLED` (a `sync::InstallState`) lets one caller install at a
+/// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
-    if INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.begin() {
         return;
     }
-    use crate::mwse_native::{subscribe, NATIVE_EVENT_LIGHT_PLACED, NATIVE_EVENT_LIGHT_REMOVED};
-    if let Err(error) = subscribe(NATIVE_EVENT_LIGHT_REMOVED, removed) {
-        crate::log!("world lights: {error}: no lights of the world");
-        return;
-    }
+    use crate::mwse_native::{subscribe, unsubscribe, NATIVE_EVENT_LIGHT_PLACED, NATIVE_EVENT_LIGHT_REMOVED};
+    let removal = match subscribe(NATIVE_EVENT_LIGHT_REMOVED, removed) {
+        Ok(handle) => handle,
+        Err(error) => {
+            crate::log!("world lights: {error}: no lights of the world");
+            INSTALLED.finish(false);
+            return;
+        }
+    };
     if let Err(error) = subscribe(NATIVE_EVENT_LIGHT_PLACED, placed) {
         crate::log!("world lights: {error}: no lights of the world");
+        // The removal goes too: a later try subscribes it again, not a second time.
+        unsubscribe(removal);
+        INSTALLED.finish(false);
         return;
     }
-    INSTALLED.store(true, Ordering::Relaxed);
+    INSTALLED.finish(true);
     crate::log!("world lights: MWSE reports each light placed in the world and each light removed");
 }
 
@@ -154,8 +167,16 @@ pub fn resend() {
 
 /// At the start of a world scene: the values of each light of the set that changed, then the
 /// keys of the lights that are on when the set changed.
+///
+/// # Safety
+///
+/// The lights of the set are live `NiLight`s. A light leaves the set at MWSE's removal event and at
+/// `NiDX8LightManager::RemoveLight` 0x6BB4E0. The second comes before the free of the light:
+/// `NiLight::dtor` 0x6F99F0 calls it through `NiRenderer_static::RemoveEffect` 0x6F5090 and
+/// `NiDX8Renderer::PurgeEffect` 0x6AC5D0, before `NiLight::deleting_dtor` 0x6F99D0 frees the
+/// light. \[I\] Every light class ends in `NiLight::dtor`. The game's data handler is 0 or live.
 pub unsafe fn send(t: &MainThread) {
-    if !INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.is_installed() {
         return;
     }
     // The lights are read under the lock; the records go after it.
@@ -192,6 +213,11 @@ pub unsafe fn send(t: &MainThread) {
 /// One line for each light of the set, for a check in a live session
 /// (`nirender.worldLights()`): the key, the position, the cell of the last placement with a
 /// cell, whether the last send had it on.
+///
+/// # Safety
+///
+/// The lights of the set are live `NiLight`s, as for [`send`], and the cell of each is 0 or a live
+/// cell whose name is 0 or a C string.
 pub unsafe fn describe() -> Vec<String> {
     let name_of = |cell: usize| -> String {
         if cell == 0 {

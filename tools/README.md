@@ -45,11 +45,11 @@ under the home folder.
 | `check_mwse_native.py` | The plugin's and MGE XE's copies of MWSE's native ABI against MWSE's header `MWSENativeApi.h`. |
 | `docs.py` | The rustdoc pages of the plugin, the host crate and the MGE XE helper, with the private items; fails on a broken link in a doc comment of our code; `target/docs.html` links the three (`--open`). `release.py` runs it. It runs cargo. |
 | `doc_links.py` | The names in backticks of the doc comments of one crate as links that rustdoc checks: it keeps the links that resolve and writes back the rest. Without `--apply` every file is restored. It runs cargo. |
-| `check_contract.py` | The render link contract: `contract/mge_render_link.h` against `src/link.rs`. |
+| `check_contract.py` | The render link contract: `contract/mge_render_link.h` against `src/link.rs` (the numbers and the struct sizes), and each function of d3d8.dll that the header declares is looked up by name in `src`; `--mge DIR` checks that d3d8.dll exports each of them (`d3d8/cpp/exports.def`); `--self-test` tests the parsing. |
 | `check_handshake.py` | The version handshake: the host crate reads the plugin's `src/stream_format.rs` (one STREAM_FORMAT); with `--mge`, MGE XE's MGE_EXTENSION_FORMAT equals the helper's EXTENSION_FORMAT. `checks.py` runs both. |
 | `check_comments_only.py` | That an edit changed comments only. |
 | `hand_offsets.py` | The engine field offsets written by hand outside `src/gen/layouts.rs`; `--check` fails on a file above its count in `hand_offsets.baseline`, `--update` lowers the counts. `checks.py` runs it. |
-| `clippy_baseline.py` | The Clippy warnings of each lint in the plugin, the host crate and the render-link workspace; `--check` fails on a lint above its count in `clippy.baseline` (counted 2026-10-27 at nirender a8faf74 and render-link 846ed77: 1119, 38 and 23), `--update` lowers the counts. `release.py` runs it. It runs cargo. |
+| `clippy_baseline.py` | The Clippy warnings of each lint in the plugin, the host crate and the render-link workspace; `--check` fails on a lint above its count in `clippy.baseline` (counted 2026-10-27 at nirender a8faf74 and render-link 846ed77: 1119, 38 and 23), `--update` lowers the counts. `--mge-host DIR` builds the render-link place against the host crate in DIR (cargo's `--config paths` override), for a render-link branch ahead of the main checkout's host crate; `--self-test` tests the arguments. `release.py` runs it without `--mge-host`. It runs cargo. |
 | `check_sharedse_layouts.py` | The IDA types of the layouts against MWSE's own (SharedSE `NI*.h`, MWSE `TES3*.h`): each `static_assert` size and each field offset MWSE writes down. `--all` for every struct MWSE asserts. `checks.py` runs it. |
 | `check_offset_moves.py` | That each offset moved into the generated layouts keeps its old value (the staged diff with `--cached`). `checks.py` runs it. |
 | `unused_shared.py` | The public items of the shared modules that no other code uses. |
@@ -77,7 +77,8 @@ under the home folder.
 | Tool | What it is |
 | --- | --- |
 | `nif40.py` | A reader and writer of NetImmerse 4.0.0.2 files for the blocks the test assets need. |
-| `make_test_nifs.py` | The test NIFs of the flag support: one file for each flag value the engine supports and the content does not use. |
+| `make_test_nifs.py` | The test NIFs of the flag support: one file for each flag value the engine supports and the content does not use; and two boxes with a BC7 texture, plain and sRGB. |
+| `bc7.py` | A small encoder and decoder of BC7 mode 6, for the BC7 textures of `make_test_nifs.py` (no other BC7 tool is installed); `--self-test` tests the round trip. |
 | `nif_block_census.py` | Which NIF block types occur in the game's BSAs, a mod folder or a test level. |
 | `nif_flag_census.py` | How many NIFs carry a flat-shading, specular or dither property, and with which flag. |
 

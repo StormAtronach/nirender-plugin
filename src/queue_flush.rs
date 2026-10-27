@@ -10,11 +10,11 @@
 //! accumulator of the current Click (`ports::base::is_main_accumulator`), the frame event
 //! `EVENT_QUEUE_FLUSHED` goes into the stream.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::main_thread::MainThread;
 
-static INSTALLED: AtomicBool = AtomicBool::new(false);
+static INSTALLED: crate::sync::InstallState = crate::sync::InstallState::new();
 /// The draws of an accumulator's queue that MWSE reported, and the events of the main queue.
 static FINISHED: AtomicU64 = AtomicU64::new(0);
 static EVENTS: AtomicU64 = AtomicU64::new(0);
@@ -22,20 +22,26 @@ static EVENTS: AtomicU64 = AtomicU64::new(0);
 /// True when the plugin listens to MWSE's event: the stream then carries the event, and its
 /// header says so (`capture::HEADER_QUEUE_FLUSH`).
 pub fn installed() -> bool {
-    INSTALLED.load(Ordering::Relaxed)
+    INSTALLED.is_installed()
 }
 
 /// Listens to MWSE's event. A refusal (an MWSE without the event) leaves the stream without
 /// the event: the helper then places the flush as an older capture has it.
+///
+/// # Safety
+///
+/// No condition of its own: `INSTALLED` (a `sync::InstallState`) lets one caller install at a
+/// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
-    if installed() {
+    if !INSTALLED.begin() {
         return;
     }
     if let Err(error) = crate::mwse_native::subscribe(crate::mwse_native::NATIVE_EVENT_ACCUMULATOR_FINISHED, accumulator_finished) {
         crate::log!("queue flush: {error}: the helper places the flush as before");
+        INSTALLED.finish(false);
         return;
     }
-    INSTALLED.store(true, Ordering::Relaxed);
+    INSTALLED.finish(true);
     crate::log!("queue flush: MWSE reports the end of each draw of an accumulator's queue");
 }
 

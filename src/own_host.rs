@@ -74,7 +74,7 @@ fn level_size(format: u32, width: u32, height: u32) -> (usize, u32) {
     let (width, height) = (width.max(1), height.max(1));
     let block = match format {
         0x3154_5844 => 8,
-        0x3254_5844..=0x3554_5844 => 16,
+        0x3254_5844..=0x3554_5844 | crate::d3d::D3DFMT_BC7 => 16,
         _ => 0,
     };
     if block != 0 {
@@ -543,7 +543,7 @@ static CACHED_READS: LockCell<u32> = LockCell::new(0);
 /// `NIRENDER_READ_CACHE=0` turns the cache of the reads off, for an A/B.
 fn read_cache_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| !std::env::var("NIRENDER_READ_CACHE").is_ok_and(|value| value == "0"))
+    *ON.get_or_init(|| crate::switches::on("NIRENDER_READ_CACHE") != Some(false))
 }
 
 /// Something can draw into `target` (a texture handle, or 0): its read is not kept.

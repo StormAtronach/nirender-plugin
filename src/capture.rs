@@ -86,7 +86,8 @@ fn header_abilities() -> u32 {
 pub mod tag {
     /// handle, flags, width, height, levels, D3D format, pixel format, pixel format tag, bytes
     /// for each pixel; then levels + 1 offsets, the widths and the heights of the levels; then
-    /// the pixels.
+    /// the pixels. A texture whose record would not fit the ring comes without the pixels
+    /// (the helper makes it with zeros), and each level follows as a [`TEXTURE_UPDATE`].
     pub const TEXTURE: u32 = 1;
     /// handle, offset, size; then the bytes that the game wrote into a buffer of the device.
     /// The plugin does not write it; an old capture file can hold it.
@@ -286,6 +287,7 @@ extern "system" {
 #[link(name = "user32")]
 extern "system" {
     fn PeekMessageA(message: *mut [u32; 7], window: usize, first: u32, last: u32, flags: u32) -> i32;
+    fn MsgWaitForMultipleObjects(count: u32, handles: *const isize, all: i32, milliseconds: u32, wake: u32) -> u32;
 }
 
 /// One step of a wait for the host program. The thread answers the window messages that
@@ -298,10 +300,31 @@ extern "system" {
 /// marked the game's window hung ("Not Responding") 5 seconds after it lost the focus, while the
 /// game ran (a test of 2026-10-27).
 pub(crate) unsafe fn wait_step() {
-    // PM_NOREMOVE.
+    look_at_messages();
+    Sleep(0);
+}
+
+/// A look at the queue of the game's windows: the sent messages are answered, no message is
+/// taken out (PM_NOREMOVE).
+///
+/// # Safety
+///
+/// Called on the game's thread, the owner of the windows.
+pub(crate) unsafe fn look_at_messages() {
     let mut message = [0u32; 7];
     PeekMessageA(&mut message, 0, 0, 0, 0);
-    Sleep(0);
+}
+
+/// One step of a wait for an answer of the helper that has no event (the pixel and the tile
+/// reads): asleep until a message or input comes for the game's windows, or 1 ms passes;
+/// then the sent messages are answered. The core is free while the game waits.
+///
+/// # Safety
+///
+/// Called on the game's thread, the owner of the windows.
+pub(crate) unsafe fn wait_a_moment() {
+    MsgWaitForMultipleObjects(0, core::ptr::null(), 0, 1, WAIT_WAKE_MASK);
+    look_at_messages();
 }
 
 /// The wake mask of a wait for the host program: QS_ALLINPUT. A sent message wakes the wait, so
@@ -383,6 +406,10 @@ pub(crate) const RING_DONE_TIME: usize = 56;
 /// from the end of a frame to the start of the next), written by the pacing: while the game
 /// writes a frame the helper waits for its records awake, and else it sleeps.
 pub(crate) const RING_NEXT_START: usize = 64;
+/// The game waits for the helper to read (1 while it does: for room in the ring, or for the
+/// frame before the last one at the end of a frame): the helper sets the event
+/// `<name>-read` after a read only then, and the game's wait ends on it.
+const RING_GAME_WAITING: usize = 72;
 /// The start of the frame of the game in progress, in ticks of the performance counter, for
 /// the age of the picture in the debug overlay: the end of the wait of the frame before
 /// ([`crate::pacing`] at the start of the frame, else after the wait at Present).
@@ -398,6 +425,13 @@ struct Ring {
     /// while the helper says it waits ([`RING_WAITING`]); the times it was set.
     event: isize,
     wakes: u64,
+    /// The event the game waits on for a read of the helper: `<name>-read`, set by the helper
+    /// after a read while the game says it waits ([`RING_GAME_WAITING`]); the waits of the
+    /// game on it, and those that the event ended (the others ended by the time limit of a
+    /// wait or by a message for the game's windows).
+    read_event: isize,
+    read_waits: u64,
+    read_wakes: u64,
     /// The time that the game waited for room, in ticks.
     waited: i64,
     /// The bytes that the game wrote up to the end of the frame before the last one, and the
@@ -409,6 +443,11 @@ struct Ring {
     /// The host program did not read at all for the time limit of a wait. The game does not
     /// wait again before the host program reads.
     host_late: bool,
+    /// The records that did not fit the ring and were dropped, and the largest of them in
+    /// bytes; the textures sent level by level because their one record would not fit.
+    dropped: u32,
+    largest_dropped: usize,
+    split_textures: u32,
 }
 
 impl Ring {
@@ -434,8 +473,11 @@ impl Ring {
         let mut event_name = format!("{name}-records").into_bytes();
         event_name.push(0);
         let event = CreateEventA(core::ptr::null(), 0, 0, event_name.as_ptr());
+        let mut read_name = format!("{name}-read").into_bytes();
+        read_name.push(0);
+        let read_event = CreateEventA(core::ptr::null(), 0, 0, read_name.as_ptr());
         crate::pacing::start(mapping, name);
-        Ok(Ring { mapping, base, capacity, event, wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false })
+        Ok(Ring { mapping, base, capacity, event, wakes: 0, read_event, read_waits: 0, read_wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false, dropped: 0, largest_dropped: 0, split_textures: 0 })
     }
 
     unsafe fn counter(&self, offset: usize) -> &core::sync::atomic::AtomicU64 {
@@ -449,12 +491,44 @@ impl Ring {
         core::ptr::copy_nonoverlapping(bytes.as_ptr().add(first), self.base.add(RING_HEAD), bytes.len() - first);
     }
 
+    /// One step of a wait for a read of the helper: asleep until the helper sets the read
+    /// event after a read, or a message or input comes for the game's windows, or 1 ms
+    /// passes; then the sent messages are answered ([`wait_step`]'s look). The loops around
+    /// it test their own condition and time limit, so a set that comes before the wait, or
+    /// a missed one, costs 1 ms at most and never a hang.
+    ///
+    /// # Safety
+    ///
+    /// The ring is open (`base` maps the shared memory) and this is the game's thread, whose
+    /// windows' messages the wait answers.
+    unsafe fn wait_for_read(&mut self) {
+        let waiting = &*(self.base.add(RING_GAME_WAITING) as *const core::sync::atomic::AtomicU32);
+        waiting.store(1, Ordering::SeqCst);
+        self.read_waits += 1;
+        // Without the event (CreateEventA failed) a wait on it would fail at once and the loop
+        // would spin: the wait is then on the messages alone, 1 ms at most. WAIT_OBJECT_0: the
+        // event ended the wait.
+        if self.read_event == 0 {
+            MsgWaitForMultipleObjects(0, core::ptr::null(), 0, 1, WAIT_WAKE_MASK);
+        } else if MsgWaitForMultipleObjects(1, &self.read_event, 0, 1, WAIT_WAKE_MASK) == 0 {
+            self.read_wakes += 1;
+        }
+        waiting.store(0, Ordering::SeqCst);
+        look_at_messages();
+    }
+
     /// Puts one record into the ring. Returns false when the host did not make room in time.
+    ///
+    /// # Safety
+    ///
+    /// The ring is open and this is the game's thread (the wait answers its windows' messages).
     unsafe fn push(&mut self, tag: u32, parts: &[&[u8]]) -> bool {
         let length: usize = parts.iter().map(|p| p.len()).sum();
         let total = 8 + length as u64;
         if total > self.capacity {
-            crate::log!("stream: a record of {length} bytes does not fit into the ring");
+            self.dropped += 1;
+            self.largest_dropped = self.largest_dropped.max(length);
+            crate::log!("stream: a record of {length} bytes does not fit into the ring of {} bytes and is dropped (NIRENDER_RING_MB raises the ring)", self.capacity);
             return true;
         }
         let written = self.counter(RING_WRITTEN).load(Ordering::Relaxed);
@@ -464,7 +538,7 @@ impl Ring {
                 if ticks() - start > RING_WAIT_SECONDS * ticks_per_second() {
                     return false;
                 }
-                wait_step();
+                self.wait_for_read();
             }
             self.waited += ticks() - start;
         }
@@ -493,6 +567,10 @@ impl Ring {
     /// The wait ends early only when the host program does not read at all for 50 ms. The
     /// game then runs without a wait until the host program reads again. A host program that
     /// reads, also a slow one, keeps the game at its rate.
+    ///
+    /// # Safety
+    ///
+    /// The ring is open and this is the game's thread (the wait answers its windows' messages).
     unsafe fn pace(&mut self) {
         let start = ticks();
         let limit = ticks_per_second() / 20;
@@ -501,7 +579,7 @@ impl Ring {
             self.host_late = false;
             let mut moved = start;
             while read < self.frame_before {
-                wait_step();
+                self.wait_for_read();
                 let now = self.counter(RING_READ).load(Ordering::Acquire);
                 if now != read {
                     read = now;
@@ -522,6 +600,7 @@ impl Ring {
         (self.base.add(RING_CLOSED) as *mut u32).write_volatile(1);
         UnmapViewOfFile(self.base);
         CloseHandle(self.mapping);
+        CloseHandle(self.read_event);
         crate::pacing::stop();
     }
 }
@@ -661,7 +740,7 @@ unsafe fn ask_pixels(lock: &DeviceLock, texture: u32) -> Option<(u32, u32)> {
             HELPER_SILENT.store(true, Ordering::Relaxed);
             return None;
         }
-        wait_step();
+        wait_a_moment();
     }
     reply.waited += ticks() - start;
     Some(((reply.base.add(4) as *const u32).read_volatile(), (reply.base.add(8) as *const u32).read_volatile()))
@@ -775,7 +854,7 @@ pub unsafe fn wait_tile(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
             HELPER_SILENT.store(true, Ordering::Relaxed);
             return None;
         }
-        wait_step();
+        wait_a_moment();
     }
 }
 
@@ -921,6 +1000,16 @@ pub fn recording() -> bool {
     RECORDING.load(Ordering::Relaxed)
 }
 
+/// Makes the capture file at `path`, and its folder first when the folder is missing (the
+/// captures of the key go into `nirender-captures\` of the game folder, which no install
+/// makes).
+fn create_capture_file(path: &str) -> Result<File, String> {
+    if let Some(folder) = std::path::Path::new(path).parent().filter(|folder| !folder.as_os_str().is_empty()) {
+        std::fs::create_dir_all(folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+    }
+    File::create(path).map_err(|error| format!("{path}: {error}"))
+}
+
 /// Starts a capture into `path`: `warmup` frames, then `frames` frames of record.
 pub unsafe fn start(t: &MainThread, path: &str, warmup: u32, frames: u32) -> Result<(), String> {
     let lock = crate::sync::device_lock();
@@ -930,7 +1019,7 @@ pub unsafe fn start(t: &MainThread, path: &str, warmup: u32, frames: u32) -> Res
     if active() {
         return Err("a capture is in progress".into());
     }
-    let file = File::create(path).map_err(|error| format!("{path}: {error}"))?;
+    let file = create_capture_file(path)?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     out.write_all(MAGIC).map_err(|error| error.to_string())?;
     begin(&lock, Sink::File(out), warmup, frames.max(1));
@@ -947,7 +1036,7 @@ pub unsafe fn start(t: &MainThread, path: &str, warmup: u32, frames: u32) -> Res
 /// records two frames at each stop into one file, and the textures and the geometry that
 /// the game makes between the stops are in the file once.
 unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Result<(), String> {
-    let file = File::create(path).map_err(|error| format!("{path}: {error}"))?;
+    let file = create_capture_file(path)?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     out.write_all(MAGIC).map_err(|error| error.to_string())?;
     let header = {
@@ -1151,12 +1240,22 @@ pub unsafe fn stop() {
         Some(Sink::File(mut out)) => s.failed |= out.flush().is_err(),
         Some(Sink::Ring(mut ring)) => {
             crate::log!(
-                "stream: the game waited {:.1} ms in all for room in the ring, and {:.1} ms in all for the host program at the ends of the frames; it woke the host program {} times",
+                "stream: the game waited {:.1} ms in all for room in the ring, and {:.1} ms in all for the host program at the ends of the frames; it woke the host program {} times; its {} waits for a read of the host program ended by the host program's event {} times",
                 ring.waited as f64 * 1000.0 / ticks_per_second() as f64,
                 ring.paced as f64 * 1000.0 / ticks_per_second() as f64,
-                ring.wakes
+                ring.wakes,
+                ring.read_waits,
+                ring.read_wakes
             );
             crate::log!("stream: {}", crate::sync::lock_wait_report());
+            if ring.split_textures > 0 || ring.dropped > 0 {
+                crate::log!(
+                    "stream: {} textures sent level by level (their one record did not fit the ring); {} records dropped for the ring's size, the largest {} bytes",
+                    ring.split_textures,
+                    ring.dropped,
+                    ring.largest_dropped
+                );
+            }
             ring.close();
             if let Some(mut reply) = s.reply.take() {
                 crate::log!("stream: {} pixel reads, the game waited {:.1} ms in all for them", reply.requests, reply.waited as f64 * 1000.0 / ticks_per_second() as f64);
@@ -1813,6 +1912,11 @@ pub unsafe fn stream_handle(address: u32) -> u32 {
 }
 
 /// A texture that the host made from these pixels.
+///
+/// # Safety
+///
+/// `texture` points at the tables and the pixels its counts and offsets describe, and the
+/// caller does not hold the device lock.
 pub unsafe fn texture(texture: &TextureV1, handle: usize) {
     if !recording() {
         return;
@@ -1833,7 +1937,75 @@ pub unsafe fn texture(texture: &TextureV1, handle: usize) {
         texture.bytes_per_pixel,
     ];
     let pixels = core::slice::from_raw_parts(texture.pixels, offsets[levels] as usize);
-    write(tag::TEXTURE, &[words(&head), words(offsets), words(widths), words(heights), pixels]);
+    let tables = [words(&head), words(offsets), words(widths), words(heights)];
+    let sizes: Vec<usize> = (0..levels).map(|level| (offsets[level + 1] - offsets[level]) as usize).collect();
+    let Some(plan) = ring_capacity().and_then(|capacity| level_plan(capacity, tables.iter().map(|t| t.len()).sum(), &sizes)) else {
+        write(tag::TEXTURE, &[tables[0], tables[1], tables[2], tables[3], pixels]);
+        return;
+    };
+    // Too large for one record: the texture without its pixels, then each level that fits
+    // as an update, as a texture the game writes level by level comes. The device lock is
+    // held over the records (it is reentrant: each write takes it again), so that no update
+    // of the game for this texture comes between them and is overwritten by a level here.
+    let _held = crate::sync::device_lock();
+    write(tag::TEXTURE, &[tables[0], tables[1], tables[2], tables[3]]);
+    let mut dropped = 0;
+    for level in 0..levels {
+        let bytes = &pixels[offsets[level] as usize..offsets[level + 1] as usize];
+        if plan[level] {
+            texture_update(handle, level as u32, widths[level], heights[level], texture.d3d_format, bytes);
+        } else {
+            dropped += 1;
+            crate::log!("stream: level {level} of the texture {handle:#x} ({} x {}, {} bytes) does not fit into the ring and is not sent (NIRENDER_RING_MB raises the ring)", widths[level], heights[level], bytes.len());
+        }
+    }
+    note_split(dropped, sizes.iter().copied().max().unwrap_or(0));
+}
+
+/// Whether a texture goes level by level: [`None`] when its one record (the tables and all
+/// the pixels, with the record's head) fits the ring; else, for each level, whether that
+/// level fits as an update record (its head is 24 bytes). A level that does not fit is
+/// dropped by the caller.
+fn level_plan(capacity: u64, table_bytes: usize, level_sizes: &[usize]) -> Option<Vec<bool>> {
+    const RECORD_HEAD: usize = 8;
+    const UPDATE_HEAD: usize = 24;
+    let whole = RECORD_HEAD + table_bytes + level_sizes.iter().sum::<usize>();
+    if whole as u64 <= capacity {
+        return None;
+    }
+    Some(level_sizes.iter().map(|size| (RECORD_HEAD + UPDATE_HEAD + size) as u64 <= capacity).collect())
+}
+
+/// The capacity of the ring in bytes; [`None`] without a ring (a file capture: a record of
+/// any size goes into the file).
+///
+/// # Safety
+///
+/// The caller does not hold the device lock: this takes it.
+unsafe fn ring_capacity() -> Option<u64> {
+    let lock = crate::sync::device_lock();
+    let s = state(&lock)?;
+    match s.out.as_ref() {
+        Some(Sink::Ring(ring)) => Some(ring.capacity),
+        _ => None,
+    }
+}
+
+/// Counts a texture sent level by level, and its levels that did not fit, for the report.
+///
+/// # Safety
+///
+/// The caller does not hold the device lock: this takes it.
+unsafe fn note_split(levels_dropped: u32, largest_level: usize) {
+    let lock = crate::sync::device_lock();
+    let Some(mut s) = state(&lock) else { return };
+    if let Some(Sink::Ring(ring)) = s.out.as_mut() {
+        ring.split_textures += 1;
+        ring.dropped += levels_dropped;
+        if levels_dropped > 0 {
+            ring.largest_dropped = ring.largest_dropped.max(largest_level);
+        }
+    }
 }
 
 /// The bytes that the game wrote into a level of a texture.
@@ -2012,6 +2184,29 @@ const BACK_BUFFER_SIZE: usize = crate::gen::layouts::NiDX8Renderer::d3dPresentPa
 const DEVICE_WINDOW: usize = crate::gen::layouts::NiDX8Renderer::d3dPresentParameters_hDeviceWindow;
 
 #[cfg(test)]
+mod capture_file_tests {
+    use super::*;
+
+    /// A capture into a folder that does not exist yet (the key's `nirender-captures\` at the
+    /// first press): the folder is made, then the file. A plain `File::create` fails there,
+    /// which is what the key met before.
+    #[test]
+    fn a_capture_file_gets_its_missing_folder() {
+        let root = std::env::temp_dir().join(format!("nirender-captures-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("nirender-captures").join("nirender-20261027-120000.nircap");
+        assert!(File::create(&path).is_err(), "the folder existed before the test");
+        let file = create_capture_file(path.to_str().unwrap());
+        assert!(file.is_ok(), "{file:?}");
+        drop(file);
+        assert!(path.is_file());
+        // A file in a folder that exists: as before.
+        assert!(create_capture_file(path.to_str().unwrap()).is_ok());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     /// A reply memory that grows has the next generation, the new capacity in its head, the
     /// number of the last answer and the counts.
@@ -2052,5 +2247,24 @@ mod tests {
         assert_eq!(header_format(&header), STREAM_FORMAT);
         assert_eq!(header_build_id(&header), crate::BUILD_ID);
         assert!(accept_header(&header, "a reader").is_ok());
+    }
+
+    /// A 4096 x 4096 ARGB texture with mips is 89 478 484 bytes of pixels: its one record does
+    /// not fit a 64 MiB ring, and its level 0 (64 MiB) misses the ring by the heads alone. In
+    /// a 128 MiB ring the one record fits. A level over the ring is the only thing dropped.
+    #[test]
+    fn a_texture_goes_level_by_level_when_its_record_does_not_fit() {
+        let mib = 1u64 << 20;
+        let levels: Vec<usize> = (0..13).map(|level| ((4096 >> level).max(1) as usize).pow(2) * 4).collect();
+        assert_eq!(levels.iter().sum::<usize>(), 89_478_484);
+        let tables = 36 + 14 * 4 + 13 * 4 * 2;
+        assert_eq!(super::level_plan(128 * mib, tables, &levels), None);
+        let plan = super::level_plan(64 * mib, tables, &levels).unwrap();
+        assert_eq!(plan[0], false);
+        assert!(plan[1..].iter().all(|fits| *fits));
+        let plan = super::level_plan(65 * mib, tables, &levels).unwrap();
+        assert!(plan.iter().all(|fits| *fits));
+        // A small texture always goes whole.
+        assert_eq!(super::level_plan(64 * mib, tables, &[256 * 256 * 4, 128 * 128 * 4]), None);
     }
 }

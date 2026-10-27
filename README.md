@@ -86,8 +86,14 @@ The run:
 - `NIRENDER_HOST_LOG=<path>`: the file for the text of the host program; without it,
   `nirender-host.log` in the folder of the game.
 - `NIRENDER_BACKEND=vulkan|dx12`: the backend of the host program.
-- `NIRENDER_RING_MB=<n>`: the size of the ring, default 64.
+- `NIRENDER_RING_MB=<n>`: the size of the ring in MB, 1 to 512, default 128 (a texture
+  level must fit it whole; a 4096 x 4096 ARGB level is 64 MiB); a value outside is named
+  in the plugin's log and 128 is taken.
 - `NIRENDER_PLUGIN_DLL=<path>`: the tools install that DLL for a run (one arm of an A/B); the runner's `--plugin-dll <path>` says the same without a variable.
+- `MGE_XE_MEMORY_MINUTES=<n>`: the helper's log gets a memory report at the first frame and
+  then every n minutes, as `memory:` lines: the GPU memory of wgpu's allocator by the kind of
+  object (the label, its numbers as `#`), and the counts of wgpu's objects; 0 or unset, none.
+  For a long run (risk 43).
 - `MGE_XE_BOX_SECONDS=<n>`: a message box of the plugin, of the helper or of MGE XE's
   d3d8.dll closes itself after n seconds, and its text is in that part's log as `box:` lines
   (always); unset or 0, the box waits for the click. The runner sets 5.
@@ -206,8 +212,9 @@ MGE-XE-G7 render-link worktree.
 - `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a child
   window of it: for an A/B of the mouse's lag.
 - `MGE_XE_CORES=0`: the threads of the helper are left to the scheduler.
-- `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n (at least 256), for the
-  test of a full room.
+- `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n, for the test of a full
+  room; below 256 the request refuses the adapter, for the test of `numidium.exe --probe`
+  and of the live start with a GPU the renderer cannot use (the exit code 20).
 - `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
   guard of the device's limit.
 - `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
