@@ -11,8 +11,10 @@
    b"NAME\0" or c"NAME"): the plugin uses each call of the contract.
 4. With --mge: each of those functions is an export of `d3d8/cpp/exports.def` there, and
    each `extern "C"` declaration or definition of it in `d3d8/cpp` has the header's return
-   type and parameter types (the names may differ), and no exception specification
-   (`noexcept`, `throw()`), which the C header cannot have. A file of d3d8.dll that sees both
+   type and parameter types (the names may differ). No `NAME(...)` of it there, in any form
+   (without `__cdecl`, in an `extern "C" { }` block, with `__declspec(dllexport)`), has an
+   exception specification (`noexcept`, `throw(...)`) after its closing parenthesis, which the
+   C header cannot have. A file of d3d8.dll that sees both
    declarations stops at a difference (C2382 on 2026-10-27, after the merge of step 3); d3d8's
    build reads the header from the main nirender-plugin checkout, so a build of a branch can
    miss it, and this check needs no compile.
@@ -88,19 +90,48 @@ def signatures(text, names, extern_c):
     return found
 
 
+def without_comments(text):
+    """`text` with each comment as spaces, its line ends kept: the positions and the line
+    numbers stay those of the file."""
+    def blank(match):
+        return re.sub(r"[^\n]", " ", match.group(0))
+    return re.sub(r"//[^\n]*|/\*.*?\*/", blank, text, flags=re.S)
+
+
+def exception_specifications(text, names):
+    """[(line, name, specification)] for each `NAME(...)` of `names` in `text` that an exception
+    specification follows, whatever comes before the name."""
+    code = without_comments(text)
+    found = []
+    for match in re.finditer(r"\b(%s)\s*\(" % "|".join(re.escape(n) for n in names), code):
+        depth, at = 0, match.end() - 1
+        while at < len(code):
+            if code[at] == "(":
+                depth += 1
+            elif code[at] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            at += 1
+        after = re.match(r"\s*(noexcept\b(?:\s*\([^)]*\))?|throw\s*\([^)]*\))", code[at + 1:])
+        if after:
+            found.append((code.count("\n", 0, match.start()) + 1, match.group(1), re.sub(r"\s+", "", after.group(1))))
+    return found
+
+
 def declaration_problems(header, cpp_files, names):
     """The differences between the header's declaration of each function and d3d8's."""
     problems = []
     contract = signatures(header, names, False)
     for path, text in cpp_files:
+        for line, name, specification in exception_specifications(text, names):
+            problems.append("%s:%d: %s is declared %s, and the contract (a C header) is not: a file that sees both stops (C2382)" % (path, line, name, specification))
         for name, found in signatures(text, names, True).items():
             want = contract.get(name)
             if not want:
                 continue
             returned, parameters, _ = want[0]
-            for got_returned, got_parameters, exception in found:
-                if exception:
-                    problems.append("%s: %s is declared %s, and the contract (a C header) is not: a file that sees both stops (C2382)" % (path, name, exception))
+            for got_returned, got_parameters, _ in found:
                 if (got_returned, got_parameters) != (returned, parameters):
                     problems.append("%s: %s is %s(%s), and the contract has %s(%s)" % (path, name, got_returned, ", ".join(got_parameters), returned, ", ".join(parameters)))
     return problems
@@ -158,6 +189,16 @@ def self_test():
     assert declaration_problems(contract, good, names) == [], declaration_problems(contract, good, names)
     noexcept = [("log.h", 'extern "C" void __cdecl MGE_LogLine(const char* text) noexcept;\n')]
     assert len(declaration_problems(contract, noexcept, names)) == 1 and "C2382" in declaration_problems(contract, noexcept, names)[0]
+    # The three forms that the signature pattern does not see: an exception specification in
+    # each is still found, with its line.
+    for form in ('extern "C" void MGE_LogLine(const char* text) noexcept;\n',
+                 'extern "C" {\nvoid __cdecl MGE_LogLine(const char* text) throw();\n}\n',
+                 'extern "C" __declspec(dllexport) void __cdecl MGE_LogLine(const char* text) noexcept(true) {\n'):
+        problems = declaration_problems(contract, [("form.h", form)], names)
+        assert len(problems) == 1 and "C2382" in problems[0], (form, problems)
+    assert exception_specifications('extern "C" {\nvoid __cdecl MGE_LogLine(const char* text) throw();\n}\n', names) == [(2, "MGE_LogLine", "throw()")]
+    # A call, a comment, and a nested parenthesis are no declaration with a specification.
+    assert exception_specifications('MGE_LogLine(text); // MGE_LogLine(x) noexcept\n/* MGE_LogLine(y) noexcept */\nMGE_LogLine((a));\n', names) == []
     other = [("log.cpp", 'extern "C" int __cdecl MGE_LogLine(const wchar_t* text) {\n')]
     assert len(declaration_problems(contract, other, names)) == 1
     assert parameter_types("const char* text") == ["const char*"] and parameter_types("void") == ["void"]
