@@ -84,14 +84,19 @@ pub unsafe fn install() {
     if !INSTALLED.begin() {
         return;
     }
-    use crate::mwse_native::{subscribe, NATIVE_EVENT_LIGHT_PLACED, NATIVE_EVENT_LIGHT_REMOVED};
-    if let Err(error) = subscribe(NATIVE_EVENT_LIGHT_REMOVED, removed) {
-        crate::log!("world lights: {error}: no lights of the world");
-        INSTALLED.finish(false);
-        return;
-    }
+    use crate::mwse_native::{subscribe, unsubscribe, NATIVE_EVENT_LIGHT_PLACED, NATIVE_EVENT_LIGHT_REMOVED};
+    let removal = match subscribe(NATIVE_EVENT_LIGHT_REMOVED, removed) {
+        Ok(handle) => handle,
+        Err(error) => {
+            crate::log!("world lights: {error}: no lights of the world");
+            INSTALLED.finish(false);
+            return;
+        }
+    };
     if let Err(error) = subscribe(NATIVE_EVENT_LIGHT_PLACED, placed) {
         crate::log!("world lights: {error}: no lights of the world");
+        // The removal goes too: a later try subscribes it again, not a second time.
+        unsubscribe(removal);
         INSTALLED.finish(false);
         return;
     }

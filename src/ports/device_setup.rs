@@ -1308,6 +1308,13 @@ pub unsafe fn create(
     let stencil = (shifted & 0xFFFF_FF00) | (shifted & 1);
     let state = render_state_create(rd(this, R::d3dDevice), caps, 1, 1, stencil);
     wr(this, R::renderState, state);
+    // A state of 0 (its port's `operator new` gave 0): the camera data, the light manager and
+    // the texture defaults below would write through it. Create ends as it does when the
+    // texture defaults fail.
+    if state == 0 {
+        crate::log!("renderer: no render state; Create gives no renderer");
+        return abandon(this);
+    }
 
     // left, right, top, bottom, near, far
     let frustum: [u32; 6] = [0xBF80_0000, 0x3F80_0000, 0x3F80_0000, 0xBF80_0000, 0x3DCC_CCCD, 0x3F80_0000];
@@ -1326,6 +1333,12 @@ pub unsafe fn create(
     }
     let pipeline = texture_pipeline::create(this, caps, rd(this, R::renderState), rd(this, R::textureManager), 1);
     wr(this, R::configurableTexturePipeline, pipeline);
+    // A pipeline of 0 (its `operator new` gave 0): the draws would use it. Create ends as it
+    // does when the texture defaults fail.
+    if pipeline == 0 {
+        crate::log!("renderer: no texture pipeline; Create gives no renderer");
+        return abandon(this);
+    }
     if rd::<u32>(this, R::d3dPresentParameters_MultiSampleType) != 0 {
         render_state::set_multisampling(rd(this, R::renderState), 1);
     }

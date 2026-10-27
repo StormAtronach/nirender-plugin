@@ -165,6 +165,18 @@ pub unsafe fn subscribe(event_id: u32, listener: Listener) -> Result<u32, String
     }
 }
 
+/// Ends a subscription that `subscribe` gave (its handle). Without MWSE's table nothing was
+/// subscribed, so nothing happens.
+///
+/// # Safety
+///
+/// On the main thread of the game, as every call of MWSE's table (MWSENativeApi.h).
+pub unsafe fn unsubscribe(handle: u32) {
+    if let Some(api) = api() {
+        (api.unsubscribe)(handle);
+    }
+}
+
 /// An override of MWSE that the plugin owns: the engine function, and the handle to give it
 /// back.
 #[derive(Clone, Copy)]

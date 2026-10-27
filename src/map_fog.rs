@@ -70,7 +70,7 @@ static GIVEN: LockCell<Option<HashMap<usize, (Box<[u32; 2]>, Vec<u8>)>>> = LockC
 /// The blob's texels could not be read: the module leaves the locks to the engine.
 static NO_BLOB: AtomicBool = AtomicBool::new(false);
 
-static INSTALLED: AtomicBool = AtomicBool::new(false);
+static INSTALLED: crate::sync::InstallState = crate::sync::InstallState::new();
 static RENDER_FOG_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static DRAW_BLOB_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static LOCK_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -94,11 +94,12 @@ fn check_on() -> bool {
 /// of a render target; MWSE's own fog cache locks through them too). The plugin calls this
 /// when it is the host of the render link.
 pub unsafe fn install() {
-    if INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.begin() {
         return;
     }
     if crate::switches::on("NIRENDER_MAP_FOG") == Some(false) {
         crate::log!("map fog: NIRENDER_MAP_FOG=0, the engine reads the fog from the GPU");
+        INSTALLED.finish(false);
         return;
     }
     use crate::mwse_native::{claim, claim_all, NATIVE_OVERRIDE_FOG_BLOB, NATIVE_OVERRIDE_FOG_RENDER, NATIVE_OVERRIDE_RENDER_TARGET_LOCK, NATIVE_OVERRIDE_RENDER_TARGET_UNLOCK};
@@ -113,14 +114,16 @@ pub unsafe fn install() {
         Err(error) => {
             // A copy that misses a draw would give old pixels: the locks stay the engine's.
             crate::log!("map fog: {error}: the engine reads the fog from the GPU");
+            INSTALLED.finish(false);
             return;
         }
     };
     UNLOCK_ORIGINAL.store(claims[0].engine, Ordering::Relaxed);
     RENDER_FOG_ORIGINAL.store(claims[1].engine, Ordering::Relaxed);
     DRAW_BLOB_ORIGINAL.store(claims[2].engine, Ordering::Relaxed);
-    // The copies follow the draws from now on; the locks use them only after this.
-    INSTALLED.store(true, Ordering::Relaxed);
+    // The copies follow the draws from now on; the locks use them only after this. A refused
+    // lock claim below keeps the copies on: the engine's locks read the GPU.
+    INSTALLED.finish(true);
     match claim(NATIVE_OVERRIDE_RENDER_TARGET_LOCK, lock_detour as *const () as usize) {
         Ok(lock) => LOCK_ORIGINAL.store(lock.engine, Ordering::Relaxed),
         Err(error) => {
@@ -470,7 +473,7 @@ unsafe fn check(lock: &crate::sync::DeviceLock, handle: u32) {
 
 /// The counts, for the log at the end of the stream.
 pub fn report() -> String {
-    if !INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.is_installed() {
         return "map fog: off; the engine reads the fog from the GPU".to_string();
     }
     let mut text = format!(
