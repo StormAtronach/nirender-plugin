@@ -158,6 +158,10 @@ The A/B:
   whose function is not the renderer's.
 - `NIRENDER_SKY=off` keeps the sky on the engine's records; `NIRENDER_SKY=count` also logs
   each sky shape once. The default: the sky's instances in the table.
+- `NIRENDER_WEATHER=on` puts the rain, snow and storm drops (class 9) into the table, drawn at
+  the engine's places as the sky is (`nirender.weatherDraws(false)` turns their draws back to
+  the engine's records in a session); `NIRENDER_WEATHER=count` logs each drop shape once. The
+  default (`off`): the engine's records, until the gate of the plan note's section 3.1.
 - `NIRENDER_MAP_FOG=0`: the engine reads the fog of war of the local map from the GPU; by
   default the plugin keeps a CPU copy (`src/map_fog.rs`).
 - `NIRENDER_MAP_TILES=0`: the engine reads each map tile from the GPU at once; by default the

@@ -1451,7 +1451,10 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     crate::capture::object(&draw, geometry_handle, material_handle);
     crate::instance_stream::consider(t, geometry, plain_world_shape && (points || crate::instance_stream::class_retained(t, draw.object_class, skin != 0)), skin != 0, points, draw.object_class, geometry_handle, material_handle, property_state, effect_state);
     if (CLASS_SKY_DOME..=CLASS_SUN_GLARE).contains(&draw.object_class) && crate::instance_stream::sky_census_on() {
-        crate::instance_stream::sky_census(t, geometry, draw.object_class, plain_world_shape, geometry_handle, material_handle, property_state, effect_state);
+        crate::instance_stream::sky_census(t, "sky", geometry, draw.object_class, plain_world_shape, geometry_handle, material_handle, property_state, effect_state);
+    }
+    if draw.object_class == CLASS_WEATHER_PARTICLES && crate::instance_stream::weather_census_on() {
+        crate::instance_stream::sky_census(t, "weather", geometry, draw.object_class, plain_world_shape, geometry_handle, material_handle, property_state, effect_state);
     }
 }
 
