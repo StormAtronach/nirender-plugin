@@ -124,6 +124,9 @@ The A/B:
   as the engine's records, live.
 - `MGE_XE_PARTICLE_QUADS=cpu` makes the quads of the particle systems on the CPU, not on the
   GPU.
+- `MGE_XE_DEPTH_FORMAT=24` keeps the depth of the frame in `Depth24PlusStencil8` when the
+  adapter has `Depth32FloatStencil8` (the format before 2026-10-27; the helper's log line
+  `depth:` names the format in use).
 - `NIRENDER_CONTROLLERS=0` keeps a shape with a controller on itself or on a property (a
   morpher, a UV, flip, alpha or colour controller) on the engine's path (the rule before).
 - `NIRENDER_SKIN_TABLE=0` keeps the skinned shapes on the engine's display, with the palette

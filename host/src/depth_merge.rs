@@ -45,7 +45,7 @@ struct Values { projections: vec4f, mode: vec4f }
 ";
 
 impl DepthMerge {
-    pub(crate) fn new(device: &wgpu::Device) -> DepthMerge {
+    pub(crate) fn new(device: &wgpu::Device, depth_format: wgpu::TextureFormat) -> DepthMerge {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("first-person depth merge"),
             entries: &[
@@ -72,7 +72,7 @@ impl DepthMerge {
             primitive: Default::default(),
             // The nearer of the two: the depth test keeps the world where it is nearer.
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
+                format: depth_format,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: Default::default(),

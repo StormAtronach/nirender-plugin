@@ -382,6 +382,7 @@ impl Player {
         WorldFacts {
             target_size: self.size_of_target(),
             samples: self.renderer.samples,
+            depth_format: self.renderer.depth_format,
             origin: self.stream.origin,
             view: self.stream.view,
             projection: self.stream.projection,
@@ -708,7 +709,7 @@ impl Player {
             return;
         };
         if let (Some(target), Some(encoder)) = (self.world_depth.as_ref(), self.encoder.as_mut()) {
-            let merge = self.renderer.depth_merge.get_or_insert_with(|| depth_merge::DepthMerge::new(&self.renderer.device));
+            let merge = self.renderer.depth_merge.get_or_insert_with(|| depth_merge::DepthMerge::new(&self.renderer.device, self.renderer.depth_format));
             let at = stamp(&self.renderer.stamps, encoder, StampKind::Outside, "first person depth merged into the world's");
             merge.merge(&self.renderer.device, encoder, &arms, &target.create_view(&Default::default()), projection, &world_projection);
             stamp_end(&self.renderer.stamps, encoder, at);

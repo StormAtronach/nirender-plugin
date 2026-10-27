@@ -338,13 +338,22 @@ impl Renderer {
             println!("window: the present modes of the surface are {:?}", capabilities.present_modes);
             present_modes = capabilities.present_modes;
         }
+        // The format of the depth: a float depth with a stencil when the adapter has it.
+        let float_depth = adapter.features().contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) && !switches().depth24;
+        let depth_format = if float_depth { wgpu::TextureFormat::Depth32FloatStencil8 } else { DEPTH_FORMAT };
+        println!(
+            "depth: {:?} (the adapter {} Depth32FloatStencil8{})",
+            depth_format,
+            if adapter.features().contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) { "has" } else { "lacks" },
+            if switches().depth24 { "; MGE_XE_DEPTH_FORMAT=24" } else { "" }
+        );
         // The samples for each pixel of the targets of the frame: the largest count up to the
         // wanted one that the adapter has for the colour format, with a resolve, and for the
         // depth format.
         let mut samples = samples.clamp(1, 8).next_power_of_two();
         while samples > 1 {
             let color = adapter.get_texture_format_features(target_format).flags;
-            let depth = adapter.get_texture_format_features(DEPTH_FORMAT).flags;
+            let depth = adapter.get_texture_format_features(depth_format).flags;
             if color.sample_count_supported(samples) && color.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE) && depth.sample_count_supported(samples) {
                 break;
             }
@@ -379,7 +388,8 @@ impl Renderer {
                             | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES
                             | wgpu::Features::INDIRECT_FIRST_INSTANCE
                             | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT))
-                    | array_features,
+                    | array_features
+                    | if float_depth { wgpu::Features::DEPTH32FLOAT_STENCIL8 } else { wgpu::Features::empty() },
                 // The largest texture that the adapter takes, up to 16384: an atlas of the
                 // distant land of MGE XE has that size.
                 // A post shader of MGE XE reads up to 22 textures: 10 of its own, the picture,
@@ -404,7 +414,7 @@ impl Renderer {
         .expect("no device");
         gpu::watch(&device, &info, surface.is_some());
 
-        let multisample = (samples > 1).then(|| multisample::Multisample::new(&device, target_format, samples));
+        let multisample = (samples > 1).then(|| multisample::Multisample::new(&device, target_format, depth_format, samples));
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
         // The text of the extension reads the record of the draw as `draw.field`; the record
         // is in the storage buffer of the frame (`draws[record]`, see shader.wgsl).
@@ -580,6 +590,7 @@ impl Renderer {
             present_modes,
             anisotropy: 1,
             samples,
+            depth_format,
             multisample,
             depth_merge: None,
             wireframe,
@@ -1102,7 +1113,7 @@ impl Renderer {
             },
             primitive: Default::default(),
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
+                format: self.depth_format,
                 depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: Default::default(),
@@ -1165,7 +1176,7 @@ impl Renderer {
     pub(crate) fn render_texture(&mut self, handle: u32, width: u32, height: u32) {
         let (width, height) = (width.max(1), height.max(1));
         let texture = target_texture(&self.device, width, height, self.target_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC);
-        let depth = target_texture(&self.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let depth = target_texture(&self.device, width, height, self.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT);
         let view = Rc::new(texture.create_view(&Default::default()));
         self.set_texture(handle, view.clone());
         self.texture_objects.remove(&handle);
@@ -1613,7 +1624,7 @@ impl Renderer {
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
+                    format: self.depth_format,
                     depth_write_enabled: Some(depth_on && key.depth[1] != 0),
                     depth_compare: Some(if depth_on { compare(key.depth[2]) } else { wgpu::CompareFunction::Always }),
                     stencil: if key.stencil[0] == 0 {

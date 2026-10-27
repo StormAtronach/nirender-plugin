@@ -14,7 +14,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use super::{copy_picture, option, save_picture, switches, target_texture, Player, Renderer, Status, DEPTH_FORMAT};
+use super::{copy_picture, option, save_picture, switches, target_texture, Player, Renderer, Status};
 
 extern "system" {
     fn OpenFileMappingA(access: u32, inherit: i32, name: *const u8) -> isize;
@@ -535,7 +535,7 @@ impl App {
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING;
         self.back_buffer = Some(target_texture(&player.renderer.device, width, height, player.renderer.target_format, usage));
         // An extension can read the depth in a pass that does not have it as a target.
-        let depth = target_texture(&player.renderer.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
+        let depth = target_texture(&player.renderer.device, width, height, player.renderer.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
         self.depth = Some(Rc::new(depth.create_view(&Default::default())));
     }
 

@@ -51,7 +51,7 @@ const COLOR_SHADER: &str = "
 ";
 
 impl Multisample {
-    pub(crate) fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat, samples: u32) -> Multisample {
+    pub(crate) fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, samples: u32) -> Multisample {
         let depth_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("depth resolve"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -69,7 +69,7 @@ impl Multisample {
             vertex: wgpu::VertexState { module: &depth_module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
             primitive: Default::default(),
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
+                format: depth_format,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: Default::default(),

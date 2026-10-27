@@ -373,7 +373,7 @@ impl Player {
             let (width, height) = (color.width(), color.height());
             if self.ms_color.as_ref().is_none_or(|ms| (ms.width(), ms.height(), ms.format()) != (width, height, color.format())) {
                 self.ms_color = Some(multisampled_texture(&self.renderer.device, width, height, color.format(), wgpu::TextureUsages::RENDER_ATTACHMENT, self.renderer.samples));
-                self.ms_depth = Some(multisampled_texture(&self.renderer.device, width, height, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, self.renderer.samples));
+                self.ms_depth = Some(multisampled_texture(&self.renderer.device, width, height, self.renderer.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, self.renderer.samples));
             }
             self.color = Some(Rc::new(self.ms_color.as_ref().unwrap().create_view(&Default::default())));
             self.depth = Some(Rc::new(self.ms_depth.as_ref().unwrap().create_view(&Default::default())));

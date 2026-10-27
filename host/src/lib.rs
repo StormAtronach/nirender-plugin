@@ -93,6 +93,8 @@ struct WorldFacts {
     origin: Option<[f64; 3]>,
     /// The samples for each pixel of the targets of the frame ([`Renderer::samples`]).
     samples: u32,
+    /// The format of the depth of the frame ([`Renderer::depth_format`]).
+    depth_format: wgpu::TextureFormat,
 }
 
 /// The position of the camera of a view matrix of Direct3D: minus its translation times its
@@ -109,7 +111,7 @@ impl WorldFacts {
             queue,
             commands,
             target_format,
-            depth_format: DEPTH_FORMAT,
+            depth_format: self.depth_format,
             target_size: self.target_size,
             samples: self.samples,
             view: self.view,
@@ -483,6 +485,10 @@ struct Renderer {
     /// The samples for each pixel of the targets of the frame ([`Extension::samples`], cut to
     /// what the adapter has), and the pipelines of the resolves with more than one.
     samples: u32,
+    /// The format of the depth of the frame: `Depth32FloatStencil8` when the adapter has it (the
+    /// one depth of the world view, notes/depth/design.md), else `Depth24PlusStencil8`. The
+    /// stencil is the engine's (its stencil shadows).
+    depth_format: wgpu::TextureFormat,
     multisample: Option<multisample::Multisample>,
     /// The pipeline that merges the depth of the first person into the depth of the world,
     /// made at its first use.
