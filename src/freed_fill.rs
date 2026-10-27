@@ -43,7 +43,7 @@ unsafe extern "C" fn fill_free(block: *mut u8) {
 }
 
 pub unsafe fn install() {
-    if !std::env::var("NIRENDER_FILL_FREED").is_ok_and(|v| v == "1") {
+    if crate::switches::on("NIRENDER_FILL_FREED") != Some(true) {
         return;
     }
     let name: Vec<u16> = "msvcrt.dll\0".encode_utf16().collect();

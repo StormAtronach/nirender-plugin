@@ -83,6 +83,7 @@ pub mod shadow;
 pub mod shape_stream;
 pub mod site;
 pub mod stream_format;
+pub mod switches;
 pub mod sync;
 pub mod win;
 pub mod x87;
