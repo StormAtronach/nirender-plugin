@@ -163,3 +163,14 @@ impl Multisample {
         pass.draw(0..3, 0..1);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_resolve_shaders_are_valid_wgsl() {
+        crate::assert_wgsl("depth resolve", &format!("{VERTEX}{}{DEPTH_SHADER}", crate::depth::wgsl()));
+        crate::assert_wgsl("colour load", &format!("{VERTEX}{COLOR_SHADER}"));
+    }
+}
