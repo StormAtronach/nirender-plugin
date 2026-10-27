@@ -51,7 +51,11 @@ The steps:
    so that a problem with them costs no build.
    Then the gate: the archive is unpacked into `target/release-gate` of the MGE XE repository
    and `tools/validate_retained.py baseline` replays the captures of the baseline on the
-   helper in it, the one that ships. A failed gate stops the release. Its result lines go
+   helper in it, the one that ships. A failed gate stops the release, and so does a baseline
+   whose accepted pictures were made on another adapter or driver than this machine's, or
+   name none: the pictures are the evidence of one GPU and one driver, so the baseline is
+   accepted again on the release machine first (`validate_retained.py baseline --accept`).
+   Its result lines go
    into the notes in place of the token `{gate}` of their Tested block; the filled notes are
    written to `dist/notes-<tag>.md` and published. The notes follow
    `tools/notes-template.md`: their Tested block must hold the token (or, with `--no-gate`,
@@ -211,7 +215,26 @@ def gate(folder, dry_run):
     lines = GATE_RESULT.findall(result.stdout)
     if result.returncode != 0 or not lines:
         stop("the gate failed on the packed helper (%s)" % ("; ".join(lines) or "no result line"), dry_run)
+    # The pictures are the evidence of one GPU and one driver: on another adapter a pass says
+    # nothing about this machine's build, and a fail is not a finding.
+    problem = adapter_problem(result.stdout)
+    if problem:
+        stop(problem, dry_run)
     return lines
+
+
+def adapter_problem(output):
+    """Why the gate's result is not the release's evidence, from the adapter line of
+    `validate_retained.py baseline`: the accepted pictures were made on another adapter or
+    driver (the pictures are the evidence of one GPU and one driver), or they name none.
+    None when the run's adapter is the accepted pictures' one."""
+    match = re.search(r"^\s*adapter: (.+?); the accepted pictures were made on (.+?), so a difference", output, re.MULTILINE)
+    if match:
+        return ("the baseline was accepted on %s; this machine has %s; accept the baseline again on this machine "
+                "(validate_retained.py baseline --accept) before the release" % (match.group(2), match.group(1)))
+    if re.search(r"^\s*adapter: .+; the accepted pictures name none", output, re.MULTILINE):
+        return "the accepted pictures of the baseline name no adapter; accept the baseline again on this machine (validate_retained.py baseline --accept) to record it before the release"
+    return None
 
 
 def gate_text(lines):
@@ -415,6 +438,12 @@ def self_test():
     assert leftover[-1] == "the token {gate} with --no-gate: write the gate's result by hand", leftover
     assert GATE_RESULT.findall("  ok   " + lines[0] + "\n  FAIL  1 of 2 pictures equal to the accepted ones in c\n") == [lines[0], "1 of 2 pictures equal to the accepted ones in c"]
     assert render_link_tag("v0.3.3") == "nirender-v0.3.3"
+    same = "       adapter: NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14), as the accepted pictures\n  ok   2 of 2 pictures equal to the accepted ones in a\n"
+    assert adapter_problem(same) is None
+    other = "       adapter: AMD Radeon RX 7800 XT (Vulkan, driver 24.9.1); the accepted pictures were made on NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14), so a difference can be the GPU's\n"
+    assert adapter_problem(other).startswith("the baseline was accepted on NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14); this machine has AMD Radeon RX 7800 XT (Vulkan, driver 24.9.1); accept the baseline again")
+    none = "       adapter: NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14); the accepted pictures name none (accept again to record it)\n"
+    assert adapter_problem(none).startswith("the accepted pictures of the baseline name no adapter")
     assert plugin_of_the_build(os.path.join("C:\\", "repos", "MGE-XE-G7-render-link")) == os.path.realpath(os.path.join("C:\\", "repos", "nirender-plugin"))
     good = "## Changes\n\n- a\n\n## Tested\n\n- {gate}\n- The live checks, run folder `20261027-120302-mge-findings-live2`: the loads wait.\n"
     assert tested_block_problems(good, gated=True) == []
