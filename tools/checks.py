@@ -50,9 +50,11 @@ CHECKS = {
     "release": (PLUGIN / "tools" / "release.py", PLUGIN, ["--self-test"]),
     # The argument handling of the runner (--plugin-dll, --log).
     "runner": (PLUGIN / "tools" / "run_own_device.py", PLUGIN, ["--self-test"]),
+    # The adapter record of the replay gate.
+    "gate": (PLUGIN / "tools" / "validate_retained.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner"],
+    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner", "gate"],
     "mge": ["mge readme", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
