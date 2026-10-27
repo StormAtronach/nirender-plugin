@@ -62,8 +62,22 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     if let Some(name) = option(&args, "--live") {
         return live::run(&name, backends, &args, extension);
     }
+    // `--depth-control k=<near scale>,sink=on|off,raise=<units>`: the fault injections of the
+    // distant land's depth for a replay (step 6 of the depth design); a live run has none.
+    if let Some(text) = option(&args, "--depth-control") {
+        match crate::depth::Control::parse(&text) {
+            Ok(control) => {
+                println!("depth control: {control:?}");
+                crate::depth::set_control(control);
+            }
+            Err(problem) => {
+                eprintln!("--depth-control {problem}");
+                std::process::exit(2);
+            }
+        }
+    }
     if args.len() < 3 {
-        eprintln!("use: nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N | --frames-at N,M,...] [--marks-every N]");
+        eprintln!("use: nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N | --frames-at N,M,...] [--marks-every N] [--depth-control k=1,sink=off,raise=50]");
         eprintln!("     nirender-host --live <name of the shared memory> [--backend vulkan|dx12] [--frames N] [--shot picture.png]");
         std::process::exit(2);
     }

@@ -258,6 +258,10 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     let float_depth = features.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) && !switches().depth24;
     let depth_format = if float_depth { wgpu::TextureFormat::Depth32FloatStencil8 } else { DEPTH_FORMAT };
     depth::set_reversed(float_depth && !switches().depth_plain);
+    depth::set_one_buffer(switches().one_depth);
+    if switches().one_depth && !depth::one_buffer() {
+        println!("depth: MGE_XE_ONE_DEPTH needs the reversed float depth; the land keeps its own depth");
+    }
     let mut samples = samples.clamp(1, 8).next_power_of_two();
     while samples > 1 {
         let color = adapter.get_texture_format_features(target_format).flags;

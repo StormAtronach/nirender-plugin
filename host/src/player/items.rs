@@ -449,8 +449,10 @@ impl Player {
             if self.parameters.as_ref().is_some_and(|p| p.post || p.hold || p.watched != 0) {
                 self.before_depth_kept = self.copy_depth(2, "depth: before the world").is_some();
             }
-            // The draws of the game start with a depth target of their own.
-            self.open_pass(crate::gpu::PassReason::WorldStart, None, Some(depth::clear(1.0)), None);
+            // The draws of the game start with a depth target of their own; with one depth
+            // buffer they test against the extension's draws, in a pass that keeps the depth.
+            let clear = (!depth::one_buffer()).then(|| depth::clear(1.0));
+            self.open_pass(crate::gpu::PassReason::WorldStart, None, clear, None);
         }
         let part = self.part_begin("the table's opaque slots");
         self.draw_retained_main(facts);
