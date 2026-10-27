@@ -1922,7 +1922,10 @@ pub unsafe fn texture(texture: &TextureV1, handle: usize) {
         return;
     };
     // Too large for one record: the texture without its pixels, then each level that fits
-    // as an update, as a texture the game writes level by level comes.
+    // as an update, as a texture the game writes level by level comes. The device lock is
+    // held over the records (it is reentrant: each write takes it again), so that no update
+    // of the game for this texture comes between them and is overwritten by a level here.
+    let _held = crate::sync::device_lock();
     write(tag::TEXTURE, &[tables[0], tables[1], tables[2], tables[3]]);
     let mut dropped = 0;
     for level in 0..levels {
