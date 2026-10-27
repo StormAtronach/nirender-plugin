@@ -475,6 +475,16 @@ mod tests {
     }
 
     #[test]
+    fn the_world_shader_of_tier_c_is_valid_wgsl() {
+        let source = tier_c_shader_source(&world_shader_source(&crate::extension::extension_shaders(None)));
+        crate::assert_wgsl("tier C", &source);
+        // The null test: the check fails on a broken line.
+        let broken = source.replacen("var t0: texture_2d<f32>;", "var t0: texture_2d<f32>", 1);
+        assert_ne!(broken, source);
+        assert!(std::panic::catch_unwind(|| crate::assert_wgsl("tier C, broken", &broken)).is_err());
+    }
+
+    #[test]
     fn tier_c_samples_six_fixed_pairs_and_no_array() {
         let source = tier_c_shader_source(&world_shader_source("fn extension_shade(in: VertexOut) -> vec4f { return draw.fog_color; }\n"));
         assert!(!source.contains("binding_array") && !source.contains("textures[") && !source.contains("samplers["));
