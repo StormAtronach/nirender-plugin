@@ -470,3 +470,31 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
     }
     handle
 }
+
+/// The words of a texture effect that [`note`] copies into a material record, with the
+/// source texture in place of its device texture: the state, the texture, the modes and the
+/// world projection. Equal words give the same material; all zeros for an effect that gives
+/// no stage.
+pub const EFFECT_SIGNATURE_WORDS: usize = 4 + crate::ports::texture_pass_b::EFFECT_STATIC_WORDS;
+
+/// See [`EFFECT_SIGNATURE_WORDS`].
+///
+/// # Safety
+///
+/// `renderer` points at the live `NiDX8Renderer`; `effect` is 0 or a live `NiTextureEffect`.
+pub unsafe fn effect_signature(renderer: usize, effect: usize) -> [u32; EFFECT_SIGNATURE_WORDS] {
+    let mut words = [0u32; EFFECT_SIGNATURE_WORDS];
+    if effect == 0 || rd::<u8>(effect, EFFECT_ENABLED) == 0 {
+        return words;
+    }
+    let texture: usize = rd(effect, EFFECT_TEXTURE);
+    if texture == 0 {
+        return words;
+    }
+    words[0] = texture as u32;
+    words[1] = rd(effect, EFFECT_CLAMP_MODE);
+    words[2] = rd(effect, EFFECT_FILTER_MODE);
+    words[3] = rd(effect, EFFECT_COORDINATE_MODE);
+    words[4..].copy_from_slice(&crate::ports::texture_pass_b::effect_static_words(renderer, effect));
+    words
+}
