@@ -52,6 +52,13 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
         Some("vulkan") => wgpu::Backends::VULKAN,
         _ => wgpu::Backends::PRIMARY,
     };
+    // `--probe`: the needs of the renderer against the backends, no window, the answer as
+    // lines and an exit code (`request::probe`). d3d8.dll runs it before it chooses the
+    // wgpu path.
+    if args.iter().any(|argument| argument == "--probe") {
+        let texture_slots = extension.as_ref().map_or(0, |extension| extension.texture_slots());
+        std::process::exit(crate::request::probe(backends, texture_slots));
+    }
     if let Some(name) = option(&args, "--live") {
         return live::run(&name, backends, &args, extension);
     }
@@ -122,7 +129,16 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
 
     // The samples of the extension's settings, as in the live mode; `MGE_XE_SAMPLES` is for a test.
     let samples = switches().samples.or(extension.as_ref().map(|extension| extension.samples())).unwrap_or(1);
-    let mut player = Player::new(Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, extension_shaders(extension.as_deref()), extension.as_ref().map_or(0, |extension| extension.texture_slots()), samples).0);
+    let renderer = match Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, extension_shaders(extension.as_deref()), extension.as_ref().map_or(0, |extension| extension.texture_slots()), samples) {
+        Ok((renderer, _)) => renderer,
+        Err(refusals) => {
+            for refusal in &refusals {
+                eprintln!("gpu: {refusal}");
+            }
+            std::process::exit(crate::stream_format::EXIT_GPU as i32);
+        }
+    };
+    let mut player = Player::new(renderer);
     // The filter of the extension's settings, as in the live mode; the argument is for a test.
     player.renderer.anisotropy =
         option(&args, "--anisotropy").and_then(|text| text.parse().ok()).or(extension.as_ref().map(|extension| extension.anisotropy())).unwrap_or(1);
