@@ -1,6 +1,6 @@
 //! The diagnostic and test switches of the helper, read from the environment once: none of
 //! them is a setting. The log gets one line with each switch that is set and its value at the
-//! start ([`log_set`]), so that a leftover variable of a test leaves a trace, and one line for
+//! start (`log_set`), so that a leftover variable of a test leaves a trace, and one line for
 //! each value that a read cannot take, which names the switch, the value and what is taken
 //! instead. README.md of the plugin names every switch, and `tools/check_readme.py` checks it.
 
