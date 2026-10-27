@@ -3,8 +3,11 @@
 -- the game is saved as "numidium-autosave", then the plugin shows its message box, which
 -- names the save. The plugin says so through `nirender.hostState()`, which is nil while the
 -- helper is well (no table, no garbage). The save is tried again at each frame for 10 s when
--- the engine refuses it (a load, a menu); with no game loaded there is nothing to save. The
--- plugin shows the box by itself when this file does not answer in 3 s.
+-- the engine refuses it (a load, a menu); with no game loaded there is nothing to save. No
+-- save is tried between the `load` event and its `loaded`: a save there could write a game
+-- that is only half loaded. The tries wait for the end of the load, in the same 10 s. The
+-- plugin shows the box by itself when this file does not ask in 3 s, or asks and does not
+-- answer in 15 s.
 
 local nirender = include("nirender")
 if not nirender then return end
@@ -13,6 +16,7 @@ local FILE = "numidium-autosave"
 local RETRY_SECONDS = 10
 
 local failure = nil
+local loading = false
 local onFrame
 
 local function answer(saveName, why)
@@ -26,6 +30,13 @@ onFrame = function()
         if not state then return end
         failure = { since = os.clock(), tries = 0 }
         mwse.log("[nirender] the renderer %s: the game is saved before the message", state.word)
+    end
+    if loading then
+        if os.clock() - failure.since > RETRY_SECONDS then
+            mwse.log("[nirender] the load did not end in %d s: no save", RETRY_SECONDS)
+            answer(nil, "during a load")
+        end
+        return
     end
     if not tes3.player then
         mwse.log("[nirender] no game is loaded: nothing to save")
@@ -44,3 +55,6 @@ onFrame = function()
 end
 
 event.register("enterFrame", onFrame)
+-- The lowest priority: a load that another handler blocks never starts, and has no `loaded`.
+event.register("load", function() loading = true end, { priority = -1000 })
+event.register("loaded", function() loading = false end)
