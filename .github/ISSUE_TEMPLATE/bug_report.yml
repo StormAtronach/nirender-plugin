@@ -1,0 +1,82 @@
+name: Bug report
+description: A crash, a hang, a wrong picture or a missing object with the wgpu renderer
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Read "When something is wrong" in `MGE XE Renderer Readme.md` of your archive first: it says how to make the capture file and where the log files are. The known issues of your build are in its release notes.
+  - type: checkboxes
+    id: known
+    attributes:
+      label: Before you report
+      options:
+        - label: I read the known issues in the release notes of my build (https://github.com/StormAtronach/nirender-plugin/releases) and my problem is not there.
+          required: true
+  - type: input
+    id: archive
+    attributes:
+      label: The archive you installed
+      description: The name of the 7z file, for example `MGE-XE-G7-v0.21.0-nirender-v0.3.2.7z`.
+      placeholder: MGE-XE-G7-v0.21.0-nirender-v0.3.2.7z
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: The versions from the logs
+      description: The first line of `nirender.log` and the first line of `nirender-host.log` (the Morrowind folder).
+      placeholder: "nirender v0.3.2; nirender-host v0.1.0, numidium v0.21.0"
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Graphics card, driver, backend, Windows
+      description: The line `adapter:` of `nirender-host.log` has the card, the backend (Vulkan or Direct3D 12) and the driver. Add your Windows version and the resolution.
+      placeholder: "adapter: NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14); Windows 11; 1920 x 1080 borderless"
+    validations:
+      required: true
+  - type: dropdown
+    id: manager
+    attributes:
+      label: How the game is installed
+      options:
+        - Mod Organizer 2 with Root Builder
+        - Mod Organizer 2 without Root Builder
+        - Files in the Morrowind folder, no mod manager
+        - Another mod manager (say which below)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you saw, and what you expected. Name the place (the cell, or the town and the direction of the view) and the time of day. Say whether it happens every time.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to see it
+      description: The steps, from the game start, that show the problem. A save game helps if you can attach one (a `.ess` file is small).
+  - type: checkboxes
+    id: files
+    attributes:
+      label: The files
+      description: Attach them to this report (drag them into the text box below, or zip them when they are large). All of them are in the Morrowind folder; with Mod Organizer 2 and Root Builder they are in `overwrite\Root` of the instance after the game has ended.
+      options:
+        - label: "`mgeXE.log`"
+        - label: "`MWSE.log`"
+        - label: "`nirender.log`"
+        - label: "`nirender-host.log`"
+        - label: "`mgeXE.toml`"
+        - label: "A capture `nirender-<date>.nircap`: press F11 at the place of the problem (for a wrong picture or a missing object). The file holds the pictures and the textures of that place."
+        - label: "`MWSE_MiniDump.dmp` (after a crash; copy it before you start the game again, the next start deletes it)"
+        - label: "A screenshot or a short video (for a wrong picture)"
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Attachments
+      description: Drop the files here.
