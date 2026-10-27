@@ -874,11 +874,19 @@ const RENDER_STATES_IN_RECORD: u32 = 256;
 /// Sends to the device the state that the game believes the device has, for the kinds in
 /// `kinds`. The Rust code made no call for them while the host had them.
 unsafe fn resync(t: &MainThread, kinds: u32) {
-    let mut s = state(t);
     let renderer = RENDERER.load(Ordering::Relaxed);
     if renderer == 0 {
         return;
     }
+    // A copy of the kept state: the device calls below note their values into the state
+    // again (`note_texture`, `note_transform`, `note_stream_source`, ...), so no guard of the
+    // state may be live across them.
+    let (textures_known, textures, transforms_known, texture_transforms, buffers, kept_buffers) = {
+        let s = state(t);
+        (s.textures_known, s.textures, s.transforms_known, s.texture_transforms, s.buffers, s.kept_buffers)
+    };
+    let mut textures_gone = 0u32;
+    let (mut vertex_buffer_gone, mut index_buffer_gone) = (false, false);
     let device: usize = rd(renderer, R::d3dDevice);
     let render_state: usize = rd(renderer, R::renderState);
     if kinds >> FACT_DEVICE_RENDER_STATES & 1 != 0 {
@@ -907,22 +915,21 @@ unsafe fn resync(t: &MainThread, kinds: u32) {
     let live = |kept: crate::own_host::Kept| if crate::own_host::active() { kept.live() } else { 0 };
     if kinds >> FACT_DEVICE_TEXTURES & 1 != 0 {
         for stage in 0..STATE_STAGES {
-            if s.textures_known >> stage & 1 != 0 {
-                let texture = live(s.textures[stage as usize]);
+            if textures_known >> stage & 1 != 0 {
+                let texture = live(textures[stage as usize]);
                 if texture != 0 {
                     crate::d3d::device_set_texture(device, stage, texture as usize);
                 } else {
-                    s.textures_known &= !(1 << stage);
+                    textures_gone |= 1 << stage;
                 }
             }
         }
     }
     if kinds >> FACT_DEVICE_TRANSFORMS & 1 != 0 {
         // Not the world matrices: the game sends them again for each draw.
-        let known = s.transforms_known;
         for stage in 0..STATE_STAGES {
-            if known >> (8 + stage) & 1 != 0 {
-                crate::d3d::device_set_transform(device, D3DTS_TEXTURE0 + stage, s.texture_transforms[stage as usize].as_ptr() as usize);
+            if transforms_known >> (8 + stage) & 1 != 0 {
+                crate::d3d::device_set_transform(device, D3DTS_TEXTURE0 + stage, texture_transforms[stage as usize].as_ptr() as usize);
             }
         }
     }
@@ -950,18 +957,26 @@ unsafe fn resync(t: &MainThread, kinds: u32) {
         }
     }
     if kinds >> FACT_DEVICE_BUFFERS & 1 != 0 {
-        let buffers = s.buffers;
-        if buffers[0] != 0 && live(s.kept_buffers[0]) == buffers[0] {
+        if buffers[0] != 0 && live(kept_buffers[0]) == buffers[0] {
             crate::d3d::device_set_stream_source(device, 0, buffers[0] as usize, buffers[1]);
             crate::d3d::device_set_vertex_shader(device, rd(render_state, RS::currentVertexShader));
         } else {
-            s.buffers[0] = 0;
+            vertex_buffer_gone = true;
         }
-        if buffers[3] != 0 && live(s.kept_buffers[1]) == buffers[3] {
+        if buffers[3] != 0 && live(kept_buffers[1]) == buffers[3] {
             crate::d3d::device_set_indices(device, buffers[3] as usize, buffers[4]);
         } else {
-            s.buffers[3] = 0;
+            index_buffer_gone = true;
         }
+    }
+    // The handles that are gone are forgotten, after the device calls.
+    let mut s = state(t);
+    s.textures_known &= !textures_gone;
+    if vertex_buffer_gone {
+        s.buffers[0] = 0;
+    }
+    if index_buffer_gone {
+        s.buffers[3] = 0;
     }
 }
 
