@@ -476,9 +476,9 @@ def main():
     # The manifest of the archive's files goes into it; then the archive's own SHA-256 goes
     # beside it and into the notes.
     unpacked = unpack(args.mge, asset)
-    manifest = os.path.join(args.mge, "target", "release-manifest", "MANIFEST.txt")
+    manifest = os.path.join(args.mge, "target", "MANIFEST.txt")
     write_text(manifest, manifest_text(os.path.basename(asset), provenance(args.mge, tag), file_digests(unpacked)))
-    add_to_archive(asset, [(manifest, "MANIFEST.txt")], os.path.dirname(manifest))
+    add_to_archive(asset, [(manifest, "MANIFEST.txt")], os.path.join(args.mge, "target", "release-manifest"))
     shutil.copy2(manifest, os.path.join(unpacked, "MANIFEST.txt"))
     digest = sha256_of(asset)
     checksum = asset + ".sha256"
