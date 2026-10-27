@@ -1892,12 +1892,15 @@ unsafe fn purge(in_view: usize) {
 /// The game showed a frame.
 unsafe fn frame_end(lock: &DeviceLock) {
     loading_tick();
+    // Before the stop: a helper that refused the stream at its HEADER stops reading, the ring
+    // fills and its push fails (the stop below); after the stop no frame end comes, so the
+    // helper's exit code would never be looked at (the D10 proof run, records entry 192).
+    #[cfg(not(test))]
+    crate::own_device::check_host();
     if STOP_ASKED.swap(false, Ordering::AcqRel) {
         stop();
         return;
     }
-    #[cfg(not(test))]
-    crate::own_device::check_host();
     // The messages of the host for MGE XE.
     let messages = state(&lock).and_then(|mut s| s.messages.as_mut().map(|messages| messages.take()));
     if let Some(messages) = messages {
