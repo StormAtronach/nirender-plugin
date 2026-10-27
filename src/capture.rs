@@ -61,6 +61,15 @@ pub const HEADER_ENVMAP_KNOWN: u32 = 64;
 /// Morrowind Code Patch's hook, `texture_pipeline::envmap_lit`).
 pub const HEADER_ENVMAP_LIT: u32 = 128;
 
+/// The HEADER record: the size of the picture, the window of the game, the abilities, the
+/// stream format and this build's id (`stream_format` has the layout). The first record of
+/// the ring and of each capture file: the helper compares the format before it reads on.
+fn header_record(width: u32, height: u32, window: u32) -> Vec<u8> {
+    let mut header = words(&[width, height, window, header_abilities(), crate::stream_format::STREAM_FORMAT]).to_vec();
+    header.extend_from_slice(&crate::stream_format::build_id_bytes(&crate::build_id()));
+    header
+}
+
 /// The abilities of the stream for the fourth word of the header.
 fn header_abilities() -> u32 {
     HEADER_QUEUE_MARKED
@@ -875,8 +884,8 @@ struct State {
     tee_dirty_geometry: HashSet<u32>,
     tee_dirty_material: HashSet<u32>,
     tee_only: bool,
-    /// The words of the header record of a direct stream, for the file.
-    header: [u32; 4],
+    /// The header record of a direct stream ([`header_record`]), for the file.
+    header: Vec<u8>,
     /// The geometry data and the skin instances of the draws of the warm-up.
     geometry: HashSet<(u32, u32)>,
     /// The image surfaces: surfaces in system memory, where the game changes pixels.
@@ -946,9 +955,9 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
         s.tee = Some((out, frames.max(1)));
         s.tee_hold = frames == 0;
         s.tee_only = true;
-        s.header
+        s.header.clone()
     };
-    write(tag::HEADER, &[words(&header)]);
+    write(tag::HEADER, &[&header]);
     write_kept(&lock);
     #[cfg(not(test))]
     crate::own_host::snapshot();
@@ -1078,10 +1087,11 @@ pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, 
         s.messages = Messages::create(name);
     }
     RECORDING.store(true, Ordering::Relaxed);
+    let header = header_record(width, height, window);
     if let Some(mut s) = state(&lock) {
-        s.header = [width, height, window, header_abilities()];
+        s.header = header.clone();
     }
-    write(tag::HEADER, &[words(&[width, height, window, header_abilities()])]);
+    write(tag::HEADER, &[&header]);
     write_kept(&lock);
     crate::log!("stream: start with the device, a ring of {megabytes} MB with the name {name}");
     Ok(())
@@ -1103,7 +1113,7 @@ unsafe fn begin(lock: &DeviceLock, out: Sink, warmup: u32, frames: u32) {
         tee_dirty_geometry: HashSet::new(),
         tee_dirty_material: HashSet::new(),
         tee_only: false,
-        header: [0; 4],
+        header: Vec::new(),
         geometry: HashSet::new(),
         image_surfaces: HashSet::new(),
         object: (0, 0),
@@ -1924,7 +1934,7 @@ unsafe fn frame_end(lock: &DeviceLock) {
                 let renderer = crate::engine::renderer();
                 let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
                 let window: u32 = if renderer != 0 { rd(renderer, DEVICE_WINDOW) } else { 0 };
-                write(tag::HEADER, &[words(&[size[0], size[1], window, header_abilities()])]);
+                write(tag::HEADER, &[&header_record(size[0], size[1], window)]);
                 write_kept(&lock);
                 // The purge at the next Present, outside the device lock, with the cell
                 // worker stalled (`run_pending_purge`).
@@ -2014,5 +2024,18 @@ mod tests {
         let expected: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(super::words(&values), &expected[..]);
         assert!(super::words(&[]).is_empty());
+    }
+
+    /// The HEADER record carries the stream format and this build's id after the four words
+    /// of before, and the helper's reader of the record takes them back.
+    #[test]
+    fn the_header_record_names_the_stream_format_and_the_build() {
+        use crate::stream_format::*;
+        let header = super::header_record(1920, 1080, 0x1234);
+        assert_eq!(header.len(), HEADER_BYTES);
+        assert_eq!(&header[..12], super::words(&[1920, 1080, 0x1234]));
+        assert_eq!(header_format(&header), STREAM_FORMAT);
+        assert_eq!(header_build_id(&header), crate::build_id());
+        assert!(accept_header(&header, "a reader").is_ok());
     }
 }

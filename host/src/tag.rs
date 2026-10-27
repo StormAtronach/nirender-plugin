@@ -78,6 +78,12 @@ pub const MORPH_TARGETS: u32 = 42;
 /// the handle, the unique id, the number of weights, then the weights.
 pub const MORPH_WEIGHTS: u32 = 43;
 
+/// A tag that this build knows, the two retired tags among them. A record of another tag
+/// comes from a plugin of another build: the player counts it (`Counts::unknown_records`).
+pub fn is_known(tag: u32) -> bool {
+    (1..=MORPH_WEIGHTS).contains(&tag)
+}
+
 /// The least length of a record of the tag that the player reads without a check of its
 /// own: a shorter record is skipped and counted (`Counts::short_records`), not read past
 /// its end. The lengths are those of the fixed parts the plugin writes (`src/capture.rs`

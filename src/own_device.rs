@@ -77,6 +77,12 @@ pub unsafe fn check_host() {
     GetExitCodeProcess(process, &mut code);
     CloseHandle(process);
     crate::log!("own device: the host program ended with the exit code {code:#x}; the window gets no new picture");
+    // The host program refused the stream: the parts of the renderer are from different
+    // builds. It named both in its log and in its own message box.
+    if code == crate::stream_format::EXIT_STREAM_FORMAT || code == crate::stream_format::EXIT_EXTENSION_FORMAT {
+        crate::log!("own device: the exit code says that the versions of the parts do not match (nirender-host.log names them); the host program showed the message");
+        return;
+    }
     const MB_ICONERROR: u32 = 0x10;
     const MB_SETFOREGROUND: u32 = 0x1_0000;
     const MB_TOPMOST: u32 = 0x4_0000;

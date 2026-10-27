@@ -45,8 +45,18 @@ use picture::*;
 mod cli;
 use cli::*;
 mod tag;
+// The one home of the stream format number, shared with the plugin crate (see the file).
+// Public: the program that has this crate as a part reads the exit codes.
+#[path = "../../src/stream_format.rs"]
+pub mod stream_format;
 mod extension;
 pub use extension::*;
+
+/// The name and the version of this crate, for the first line of the log and the message of
+/// a refused stream.
+pub fn build_id() -> String {
+    format!("nirender-host v{}", env!("CARGO_PKG_VERSION"))
+}
 mod replay;
 pub use replay::*;
 mod data;
