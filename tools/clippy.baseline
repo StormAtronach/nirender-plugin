@@ -1,0 +1,32 @@
+# The Clippy warnings of each lint in each place (tools/clippy_baseline.py). It only goes down.
+# Counted 2026-10-27 at nirender a8faf74 and render-link 846ed77.
+host clippy::chunks_exact_to_as_chunks 15
+host clippy::doc_lazy_continuation 3
+host clippy::manual_clamp 2
+host clippy::manual_is_multiple_of 7
+host clippy::needless_range_loop 3
+host clippy::too_many_arguments 4
+host clippy::type_complexity 2
+host clippy::unnecessary_cast 2
+plugin clippy::assign_op_pattern 6
+plugin clippy::chunks_exact_to_as_chunks 6
+plugin clippy::collapsible_if 1
+plugin clippy::double_comparisons 1
+plugin clippy::explicit_auto_deref 3
+plugin clippy::manual_c_str_literals 11
+plugin clippy::map_entry 1
+plugin clippy::missing_safety_doc 1012
+plugin clippy::needless_borrow 22
+plugin clippy::needless_late_init 1
+plugin clippy::needless_lifetimes 1
+plugin clippy::needless_range_loop 6
+plugin clippy::new_without_default 3
+plugin clippy::too_many_arguments 37
+plugin clippy::type_complexity 5
+plugin clippy::unnecessary_map_or 2
+plugin clippy::wrong_self_convention 1
+render-link clippy::chunks_exact_to_as_chunks 3
+render-link clippy::collapsible_if 13
+render-link clippy::manual_is_multiple_of 3
+render-link clippy::neg_cmp_op_on_partial_ord 2
+render-link clippy::unnecessary_map_or 2

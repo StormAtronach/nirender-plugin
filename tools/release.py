@@ -9,7 +9,9 @@ The steps:
    must not be there. The work of the two repositories must be committed and pushed: the
    tag of the release goes on the head of the default branch on GitHub.
 2. `tools/checks.py all` runs the content checks of both repositories; `tools/docs.py`
-   checks the doc comments of the plugin, the host crate and the helper (no broken link). `cargo xtask dist` in the MGE XE repository builds MGE XE and this plugin
+   checks the doc comments of the plugin, the host crate and the helper (no broken link).
+   `tools/clippy_baseline.py --check` stops the release when a Clippy lint has more warnings
+   than `tools/clippy.baseline` holds. `cargo xtask dist` in the MGE XE repository builds MGE XE and this plugin
    and packs the archive (`--max-perf` for the slow build of a final release).
 3. The archive goes up as `MGE-XE-G7-v<MGE XE>-nirender-v<plugin>.7z`, as a pre-release
    with the text of `--notes`. Each `--add SOURCE=PATH` puts a file into it first, at PATH
@@ -112,9 +114,10 @@ def main():
     cargo = shutil.which("cargo") or os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
     if not args.no_build:
         # The content checks of both repositories, then the doc comments of the three crates
-        # (no broken link).
+        # (no broken link), then no Clippy lint above its baseline.
         run([sys.executable, "-I", os.path.join(HERE, "checks.py"), "all"])
         run([sys.executable, "-I", os.path.join(HERE, "docs.py"), "--mge", args.mge])
+        run([sys.executable, "-I", os.path.join(HERE, "clippy_baseline.py"), "--check", "--mge", args.mge])
         run([cargo, "xtask", "dist"] + (["--max-perf"] if args.max_perf else []), cwd=args.mge)
     # The version of MGE XE is in the name of the archive that xtask packs.
     kind = "" if args.max_perf else "-test"
