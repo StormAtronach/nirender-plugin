@@ -110,10 +110,25 @@ PLUGIN_SOURCES = ("src/", "host/", "d3d8/", "mod/", "contract/", ".cargo/", "Car
 MGE_SOURCES = ("d3d8/", "dinput8/", "mgeHost64/", "mge-config/", "MGEXEgui/", "distantland/", "xtask/", "assets/", ".cargo/", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "license.txt")
 
 
-def untracked_in_sources(status_lines, sources):
-    """The untracked files of a `git status --porcelain --untracked-files=all` output that are
-    under one of the source paths (a folder ends with a slash; a file is named whole)."""
-    untracked = [line[3:] for line in status_lines if line.startswith("?? ")]
+def status_entries(porcelain_z):
+    """The entries of a `git status --porcelain -z --untracked-files=all` output: (state, path),
+    the path as git has it (no quotes: a name with a space or a special character is quoted in
+    the output without `-z`, and a quoted name passed the untracked stop). A rename carries
+    its old name as a second NUL-ended field, which is skipped."""
+    fields = porcelain_z.split("\0")
+    entries = []
+    index = 0
+    while index < len(fields) and fields[index]:
+        field = fields[index]
+        entries.append((field[:2], field[3:]))
+        index += 2 if field[0] in "RC" else 1
+    return entries
+
+
+def untracked_in_sources(entries, sources):
+    """The untracked files of the status entries that are under one of the source paths (a
+    folder ends with a slash; a file is named whole)."""
+    untracked = [path for state, path in entries if state == "??"]
     return [path for path in untracked if any(path.startswith(source) if source.endswith("/") else path == source for source in sources)]
 
 
@@ -129,8 +144,8 @@ def plugin_of_the_build(mge):
 def clean_and_pushed(repo, sources, dry_run):
     """Stops when the repository has work that is not committed or not pushed, or an
     untracked file under a path the build or the archive takes."""
-    status = run(["git", "-C", repo, "status", "--porcelain", "--untracked-files=all"], capture=True).splitlines()
-    if any(not line.startswith("?? ") for line in status):
+    status = status_entries(run(["git", "-C", repo, "status", "--porcelain", "-z", "--untracked-files=all"], capture=True))
+    if any(state != "??" for state, _ in status):
         stop("%s has changes that are not committed" % repo, dry_run)
     untracked = untracked_in_sources(status, sources)
     if untracked:
@@ -364,11 +379,15 @@ def license_additions(mge, plugin_url, plugin_tag, sources, stage):
 
 def self_test():
     """The tests of the pure parts: no git, no cargo, no GitHub."""
-    status = ["?? src/new.rs", "?? notes.txt", "?? host/src/lib2.rs", "?? Cargo.toml.bak", "?? Cargo.lock", " M src/lib.rs", "?? results/run/x.png"]
+    status = status_entries("?? src/new.rs\0?? notes.txt\0?? host/src/lib2.rs\0?? Cargo.toml.bak\0?? Cargo.lock\0 M src/lib.rs\0?? results/run/x.png\0")
     assert untracked_in_sources(status, PLUGIN_SOURCES) == ["src/new.rs", "host/src/lib2.rs", "Cargo.lock"], untracked_in_sources(status, PLUGIN_SOURCES)
-    assert untracked_in_sources(["?? docs/a.md", " M src/lib.rs"], MGE_SOURCES) == []
+    assert untracked_in_sources(status_entries("?? docs/a.md\0 M src/lib.rs\0"), MGE_SOURCES) == []
     # A file named whole matches itself only, not a longer name that starts with it.
-    assert untracked_in_sources(["?? Cargo.toml.orig"], PLUGIN_SOURCES) == []
+    assert untracked_in_sources(status_entries("?? Cargo.toml.orig\0"), PLUGIN_SOURCES) == []
+    # A name with a space is not quoted with -z, and a rename's old name is skipped.
+    renamed = status_entries("?? src/new file.rs\0R  src/b.rs\0src/a.rs\0?? mod/x y.lua\0")
+    assert renamed == [("??", "src/new file.rs"), ("R ", "src/b.rs"), ("??", "mod/x y.lua")], renamed
+    assert untracked_in_sources(renamed, PLUGIN_SOURCES) == ["src/new file.rs", "mod/x y.lua"]
     lines = ["2 of 2 pictures equal to the accepted ones in a", "206 of 206 pictures equal to the accepted ones in b"]
     assert gate_text(lines) == "the capture gate: 2 of 2 pictures equal to the accepted ones; 206 of 206 pictures equal to the accepted ones"
     assert fill_tokens("- {gate}\n- SHA-256 `{sha256}`\n", {GATE_TOKEN: "g", SHA_TOKEN: "abc"}) == "- g\n- SHA-256 `abc`\n"
