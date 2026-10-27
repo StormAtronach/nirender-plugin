@@ -13,8 +13,10 @@ The checks of each list:
 - `check_contract.py`: `contract/mge_render_link.h` against `src/link.rs`.
 - `check_mwse_native.py`: the plugin's and MGE XE's copies of MWSE's native ABI against MWSE's
   header.
-- `check_handshake.py`: the host crate reads the plugin's `src/stream_format.rs`; with `--mge`
-  (the MGE XE list): MGE_EXTENSION_FORMAT of mgeversion.h equals the helper's EXTENSION_FORMAT.
+- `check_handshake.py`: the host crate reads the plugin's `src/stream_format.rs`, and no
+  constant of it has a second definition in the two crates; with `--mge` (the MGE XE list):
+  MGE_EXTENSION_FORMAT of mgeversion.h equals the helper's EXTENSION_FORMAT, and mgeHost64 has
+  no copy of a constant of `src/stream_format.rs`.
 - `build_module_map.py` (docs): every module of ours has a `//!` header.
 - `check_names.py` (docs): no skill names a switch or a Lua call the code lost.
 
@@ -38,8 +40,10 @@ CHECKS = {
     # MGE XE's switches against its RENDERER.md.
     "mge readme": (PLUGIN / "tools" / "check_readme.py", REPOS / "MGE-XE-G7-render-link", ["--mge"]),
     "contract": (PLUGIN / "tools" / "check_contract.py", PLUGIN),
-    # The version handshake: one home for each format number.
+    # The version handshake: one home for each format number and each layout constant of the
+    # stream.
     "handshake": (PLUGIN / "tools" / "check_handshake.py", PLUGIN),
+    "handshake search": (PLUGIN / "tools" / "check_handshake.py", PLUGIN, ["--self-test"]),
     "mge handshake": (PLUGIN / "tools" / "check_handshake.py", REPOS / "MGE-XE-G7-render-link", ["--mge"]),
     "mwse native": (PLUGIN / "tools" / "check_mwse_native.py", MWSE_HEADER),
     "module headers": (STATE / "build_module_map.py", STATE),
@@ -65,7 +69,7 @@ CHECKS = {
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "handshake", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner", "gate", "hooks", "fuzz"],
+    "plugin": ["readme", "contract", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner", "gate", "hooks", "fuzz"],
     "mge": ["mge readme", "mge handshake", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))

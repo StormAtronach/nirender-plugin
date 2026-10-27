@@ -4,7 +4,10 @@
     python -I tools/check_handshake.py --mge DIR  # MGE XE: the extension format
 
 This repository: `host/src/lib.rs` reads `src/stream_format.rs` as a `#[path]` module, so the
-plugin and the host crate compare one STREAM_FORMAT. MGE XE: MGE_EXTENSION_FORMAT in
+plugin and the host crate compare one STREAM_FORMAT. The file is also the one home of the
+layout of the HEADER record and of the shared memories (the ring head words, the reply, tile
+and message memories) and of the exit codes: no constant of it may have a second definition
+in the two crates, or with --mge in mgeHost64. MGE XE: MGE_EXTENSION_FORMAT in
 `d3d8/cpp/mge/mgeversion.h` equals EXTENSION_FORMAT in `mgeHost64/src/renderer.rs` (a unit
 test of mgeHost64 compares them too; this check needs no compile). `checks.py` runs both.
 The design: handshake-design.md of the Numidium notes (2026-10-27).
@@ -31,25 +34,64 @@ def number(text, pattern, what):
     return int(found.group(1))
 
 
+HOME = os.path.join(REPO, "src", "stream_format.rs")
+
+
+def home_names():
+    """The constants of src/stream_format.rs: each has its one home there."""
+    return set(re.findall(r"^pub const ([A-Z][A-Z0-9_]*)\s*:", read(HOME), re.MULTILINE))
+
+
+def second_definitions(text, names):
+    """The names of `names` that `text` defines again, as a const or a static."""
+    if not names:
+        return []
+    pattern = re.compile(r"\b(?:const|static)\s+(%s)\s*:" % "|".join(sorted(names)))
+    return sorted(set(pattern.findall(text)))
+
+
+def check_folders(base, folders, names):
+    """A problem for each second definition of a home constant in the .rs files of `folders`."""
+    problems = []
+    for folder in folders:
+        for root, _, files in os.walk(os.path.join(base, folder)):
+            if os.sep + "target" in root:
+                continue
+            for name in files:
+                path = os.path.join(root, name)
+                if not name.endswith(".rs") or os.path.samefile(path, HOME):
+                    continue
+                for constant in second_definitions(read(path), names):
+                    problems.append("%s defines %s of its own: its one home is src/stream_format.rs" % (os.path.relpath(path, base).replace("\\", "/"), constant))
+    return problems
+
+
 def check_plugin():
     problems = []
-    home = os.path.join(REPO, "src", "stream_format.rs")
-    if not os.path.isfile(home):
-        problems.append("src/stream_format.rs, the home of STREAM_FORMAT, is missing")
+    if not os.path.isfile(HOME):
+        return ["src/stream_format.rs, the home of STREAM_FORMAT, is missing"]
     host = read(os.path.join(REPO, "host", "src", "lib.rs"))
     if '#[path = "../../src/stream_format.rs"]' not in host:
         problems.append("host/src/lib.rs does not read src/stream_format.rs as a #[path] module")
-    # One definition only: a second `const STREAM_FORMAT` anywhere in the two crates would
-    # be a second home that can drift.
-    for folder in ("src", os.path.join("host", "src")):
-        for root, _, names in os.walk(os.path.join(REPO, folder)):
-            for name in names:
-                path = os.path.join(root, name)
-                if not name.endswith(".rs") or os.path.samefile(path, home):
-                    continue
-                if re.search(r"\bconst\s+STREAM_FORMAT\b", read(path)):
-                    problems.append("%s defines a STREAM_FORMAT of its own" % os.path.relpath(path, REPO).replace("\\", "/"))
+    names = home_names()
+    if "STREAM_FORMAT" not in names:
+        problems.append("src/stream_format.rs has no STREAM_FORMAT")
+    # One definition only: a second definition anywhere in the two crates would be a second
+    # home that can drift.
+    problems += check_folders(REPO, ("src", os.path.join("host", "src")), names)
     return problems
+
+
+def self_test():
+    """The tests of the search: no files read but the home."""
+    names = {"RING_READ", "STREAM_FORMAT", "TILE_HEAD"}
+    assert second_definitions("const RING_READ: usize = 16;", names) == ["RING_READ"]
+    assert second_definitions("pub(crate) const TILE_HEAD: usize = 16;\npub const STREAM_FORMAT: u32 = 1;", names) == ["STREAM_FORMAT", "TILE_HEAD"]
+    assert second_definitions("static RING_READ: AtomicU64 = AtomicU64::new(0);", names) == ["RING_READ"]
+    # A use is no definition, nor a longer name.
+    assert second_definitions("let at = RING_READ; const RING_READ_BEFORE: usize = 0;", names) == []
+    assert {"RING_READ", "RING_ENDING", "HEADER_ABILITIES_AT", "MESSAGES_MAGIC", "STREAM_FORMAT"} <= home_names()
+    print("check_handshake self-test: ok")
 
 
 def check_mge(mge):
@@ -57,15 +99,23 @@ def check_mge(mge):
     renderer = read(os.path.join(mge, "mgeHost64", "src", "renderer.rs"))
     cpp = number(header, r"^#define MGE_EXTENSION_FORMAT (\d+)", "MGE_EXTENSION_FORMAT in mgeversion.h")
     rust = number(renderer, r"^const EXTENSION_FORMAT: u32 = (\d+);", "EXTENSION_FORMAT in renderer.rs")
+    problems = []
     if cpp != rust:
-        return ["MGE_EXTENSION_FORMAT is %d in mgeversion.h and EXTENSION_FORMAT %d in renderer.rs" % (cpp, rust)]
-    return []
+        problems.append("MGE_EXTENSION_FORMAT is %d in mgeversion.h and EXTENSION_FORMAT %d in renderer.rs" % (cpp, rust))
+    # mgeHost64 reads the stream's constants through the host crate, never as a copy.
+    problems += check_folders(mge, (os.path.join("mgeHost64", "src"),), home_names())
+    return problems
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mge", nargs="?", const=MGE, help="check MGE XE's extension format in this folder (default: the render-link worktree)")
+    ap.add_argument("--mge", nargs="?", const=MGE, help="check MGE XE's extension format, and that mgeHost64 has no copy of a constant "
+                    "of src/stream_format.rs, in this folder (default: the render-link worktree)")
+    ap.add_argument("--self-test", action="store_true", help="the tests of the search for a second definition")
     args = ap.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
     problems = check_mge(args.mge) if args.mge else check_plugin()
     for problem in problems:
         print(problem)
