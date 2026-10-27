@@ -219,8 +219,19 @@ pub fn work() -> [u64; 4] {
     ]
 }
 
-#[cfg(windows)]
 fn lost_message() {
+    message_box(
+        "The graphics device was lost: the driver was reset, or it stopped.\n\n\
+         The wgpu renderer of MGE XE cannot draw any more. Quit the game and start it again.\n\n\
+         The log of the renderer (nirender-host.log in the folder of the game) has the details.",
+    );
+}
+
+/// Shows `text` to the player in a box with the caption "MGE XE", and waits until it is
+/// closed. For what ends the drawing: a lost device, a stream of another build. Public for
+/// the extension's own refusals.
+#[cfg(windows)]
+pub fn message_box(text: &str) {
     #[link(name = "user32")]
     extern "system" {
         fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
@@ -229,14 +240,11 @@ fn lost_message() {
     const MB_SETFOREGROUND: u32 = 0x1_0000;
     const MB_TOPMOST: u32 = 0x4_0000;
     let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let text = wide(
-        "The graphics device was lost: the driver was reset, or it stopped.\n\n\
-         The wgpu renderer of MGE XE cannot draw any more. Quit the game and start it again.\n\n\
-         The log of the renderer (nirender-host.log in the folder of the game) has the details.",
-    );
+    let text = wide(text);
     let caption = wide("MGE XE");
+    // SAFETY: both strings are zero-ended UTF-16 that live until the call returns.
     unsafe { MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST) };
 }
 
 #[cfg(not(windows))]
-fn lost_message() {}
+pub fn message_box(_text: &str) {}

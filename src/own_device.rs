@@ -77,6 +77,12 @@ pub unsafe fn check_host() {
     GetExitCodeProcess(process, &mut code);
     CloseHandle(process);
     crate::log!("own device: the host program ended with the exit code {code:#x}; the window gets no new picture");
+    // The host program ended on a refusal of its own (a stream of another build, no device):
+    // it named the reason in its log and in its own message box.
+    if crate::stream_format::helper_said_why(code) {
+        crate::log!("own device: the exit code is a refusal of the host program, which showed its message (nirender-host.log has the reason)");
+        return;
+    }
     const MB_ICONERROR: u32 = 0x10;
     const MB_SETFOREGROUND: u32 = 0x1_0000;
     const MB_TOPMOST: u32 = 0x4_0000;
@@ -477,6 +483,13 @@ pub unsafe extern "C" fn nirender_stream_extension(id: u32, data: *const u8, len
     if !data.is_null() && length != 0 && length < (1 << 20) {
         crate::capture::extension(id, core::slice::from_raw_parts(data, length as usize));
     }
+}
+
+/// The build id of this plugin, zero-ended, for the log of the `d3d8.dll` of MGE XE at the
+/// plugin's load. A plugin without this export is from before the handshake.
+#[no_mangle]
+pub extern "C" fn nirender_build_id() -> *const u8 {
+    crate::BUILD_ID_C.as_ptr()
 }
 
 /// The `Direct3DCreate8` of the plugin. The `d3d8.dll` of this repository calls it.

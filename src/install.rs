@@ -156,7 +156,7 @@ pub unsafe fn install() -> Result<String, String> {
         crate::log!("{message}");
         return Err(message);
     }
-    crate::log!("nirender v{}", env!("CARGO_PKG_VERSION"));
+    crate::log!("{}", crate::BUILD_ID);
     shadow::set_main_thread();
     shadow::calibrate_stamps();
     crate::log!("{}", crate::cores::prefer_performance_cores());

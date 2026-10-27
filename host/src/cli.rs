@@ -41,7 +41,7 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     if let Some(path) = option(&args, "--log") {
         log_to(&path);
     }
-    println!("nirender-host v{}{}", env!("CARGO_PKG_VERSION"), extension.as_ref().map_or(String::new(), |e| format!(", {}", e.name())));
+    println!("{}", live::reader_build(extension.as_deref()));
     let backends = match option(&args, "--backend").as_deref() {
         Some("dx12") => wgpu::Backends::DX12,
         Some("vulkan") => wgpu::Backends::VULKAN,
@@ -89,6 +89,12 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     for (tag, data) in &records {
         if *tag == tag::HEADER {
             (width, height) = (word(data, 0), word(data, 4));
+            // A capture of another stream format plays on: the gate's accepted captures are
+            // from before the number. The line says that the picture can differ.
+            let format = stream_format::header_format(data);
+            if format != stream_format::STREAM_FORMAT {
+                println!("capture of the stream format {format} ({}); this build reads the format {}: the picture can differ", stream_format::header_build_id(data), stream_format::STREAM_FORMAT);
+            }
             break;
         }
         if *tag == tag::CALL && word(data, 0) == CALL_VIEWPORT {

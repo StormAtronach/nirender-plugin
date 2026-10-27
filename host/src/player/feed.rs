@@ -333,6 +333,14 @@ impl Player {
                 },
                 _ => {}
             },
+            _ if !tag::is_known(tag) => {
+                let counts = &mut self.renderer.counts;
+                if counts.unknown_records == 0 {
+                    counts.unknown_tag = tag;
+                    println!("record of the tag {tag}, which this build does not know: skipped (the plugin is another build)");
+                }
+                counts.unknown_records += 1;
+            }
             _ => {}
         }
         false
