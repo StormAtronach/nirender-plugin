@@ -27,6 +27,10 @@ pub const SLOT_DTOR_KEY_VALUE_PAIR: usize = crate::gen::layouts::InterfaceTHashM
 // ---- the virtual functions
 
 /// `THashMap::hashKey` through the vtable, slot 0x04. Returns the bucket index of `key`.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap`: the function calls its virtual table.
 #[inline(always)]
 pub unsafe fn hash_key(map: usize, key: u32) -> u32 {
     vcall1(map, SLOT_HASH_KEY, key)
@@ -34,18 +38,32 @@ pub unsafe fn hash_key(map: usize, key: u32) -> u32 {
 
 /// `THashMap::cmpKey` through the vtable, slot 0x08. The result of the game function is in
 /// AL, thus only the low byte counts.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap`: the function calls its virtual table.
 #[inline(always)]
 pub unsafe fn cmp_key(map: usize, a: u32, b: u32) -> bool {
     vcall2(map, SLOT_CMP_KEY, a, b) as u8 != 0
 }
 
 /// `THashMap::makeKeyValuePair` through the vtable, slot 0x0C.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap`, and `node` at a node of `HN::SIZE` bytes that the
+/// map's `makeKeyValuePair` fills.
 #[inline(always)]
 pub unsafe fn make_key_value_pair(map: usize, node: usize, key: u32, value: usize) {
     vcall3(map, SLOT_MAKE_KEY_VALUE_PAIR, node as u32, key, value as u32);
 }
 
 /// `THashMap::dtorKeyValuePair` through the vtable, slot 0x10.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap`, and `node` at one of its nodes whose pair nothing uses
+/// after the call.
 #[inline(always)]
 pub unsafe fn dtor_key_value_pair(map: usize, node: usize) {
     vcall1(map, SLOT_DTOR_KEY_VALUE_PAIR, node as u32);
@@ -54,6 +72,11 @@ pub unsafe fn dtor_key_value_pair(map: usize, node: usize) {
 // ---- iteration
 
 /// The first node of bucket `bucket`, or 0. It reads `arrayBuckets` of the map on each call.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap`, and `bucket` is below its bucket count, which nothing
+/// here checks.
 #[inline(always)]
 pub unsafe fn bucket_head(map: usize, bucket: usize) -> usize {
     rd(rd::<usize>(map, HM::arrayBuckets), bucket * 4)
@@ -61,6 +84,10 @@ pub unsafe fn bucket_head(map: usize, bucket: usize) -> usize {
 
 /// The first node of the map: the head of the first bucket that has a node. The result is 0
 /// for a map without nodes. It makes no virtual call.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its array of `bucketCount` buckets.
 #[inline(always)]
 pub unsafe fn first(map: usize) -> usize {
     let count: u32 = rd(map, HM::bucketCount);
@@ -83,6 +110,11 @@ pub unsafe fn first(map: usize) -> usize {
 
 /// The head of the first bucket with a node after the bucket of `key`, or 0. It calls
 /// `hashKey` one time, also when the bucket of `key` is the last bucket.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its array of `bucketCount`
+/// buckets.
 #[inline(always)]
 pub unsafe fn next_bucket(map: usize, key: u32) -> usize {
     let mut index = hash_key(map, key).wrapping_add(1);
@@ -107,6 +139,11 @@ pub unsafe fn next_bucket(map: usize, key: u32) -> usize {
 /// At the end of the bucket it is `next_bucket` for the key of `node`, which calls `hashKey`.
 /// Call it at the place where the game code makes that step, before or after the work on the
 /// node.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, and `node` at a
+/// live node of it.
 #[inline(always)]
 pub unsafe fn next(map: usize, node: usize) -> usize {
     let next: usize = rd(node, HN::nextNode);
@@ -122,6 +159,11 @@ pub unsafe fn next(map: usize, node: usize) -> usize {
 /// The bucket index of `key` and the node of `key`. The node is 0 when the map has no such
 /// key. It calls `hashKey` one time, then `cmpKey(key, key of the node)` for each node of the
 /// bucket until one is equal.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, whose nodes are
+/// live.
 #[inline(always)]
 pub unsafe fn find_in_bucket(map: usize, key: u32) -> (usize, usize) {
     let bucket = hash_key(map, key) as usize;
@@ -136,6 +178,11 @@ pub unsafe fn find_in_bucket(map: usize, key: u32) -> (usize, usize) {
 }
 
 /// The node of `key`, or 0. It makes the calls of `find_in_bucket`.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, whose nodes are
+/// live.
 #[inline(always)]
 pub unsafe fn find(map: usize, key: u32) -> usize {
     find_in_bucket(map, key).1
@@ -143,6 +190,11 @@ pub unsafe fn find(map: usize, key: u32) -> usize {
 
 /// The value that the map has for `key`, or 0 when the map has no such key. It makes the
 /// calls of `find_in_bucket`.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, whose nodes are
+/// live.
 #[inline(always)]
 pub unsafe fn find_value(map: usize, key: u32) -> usize {
     let node = find(map, key);
@@ -160,6 +212,11 @@ pub unsafe fn find_value(map: usize, key: u32) -> usize {
 /// With a node for `key`: `dtorKeyValuePair` for the node, then `makeKeyValuePair`. Without
 /// one: `operator_new(0xC)`, `makeKeyValuePair` for the new node, the old head of the bucket
 /// goes to `nextNode` of the new node, the new node becomes the head, the count goes up by 1.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, whose nodes are
+/// live; `operator_new` gives a block of `HN::SIZE` bytes, not 0: the function does not test it.
 #[inline(always)]
 pub unsafe fn set_with(map: usize, key: u32, value: usize, operator_new: impl FnOnce(usize) -> usize) {
     let (bucket, node) = find_in_bucket(map, key);
@@ -177,6 +234,11 @@ pub unsafe fn set_with(map: usize, key: u32, value: usize, operator_new: impl Fn
 
 /// `THashMap::SetAt` as the game code has it inline. It gets a new node from `operator new`
 /// (0x727692). See `set_with` for the order of the calls and the writes.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, whose nodes are
+/// live; the engine's `operator new` does not fail, since the function does not test the new node.
 #[inline(always)]
 pub unsafe fn set(map: usize, key: u32, value: usize) {
     set_with(map, key, value, |size| engine::operator_new(size));
@@ -187,6 +249,11 @@ pub unsafe fn set(map: usize, key: u32, value: usize) {
 /// Takes the node of `key` out of its bucket. Returns the node, or 0 when the map has no such
 /// key. It writes the head of the bucket or `nextNode` of the node before. It does not
 /// destroy the node and it does not change the count.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, whose nodes are
+/// live. The node it returns is out of the map, and the caller frees it.
 #[inline(always)]
 pub unsafe fn unlink(map: usize, key: u32) -> usize {
     let bucket = hash_key(map, key) as usize;
@@ -215,6 +282,11 @@ pub unsafe fn unlink(map: usize, key: u32) -> usize {
 /// `THashMap::RemoveAt` as the game code has it inline, with the allocator as an argument. It
 /// does `unlink`. With a node: `dtorKeyValuePair`, `operator_delete(node)`, the count goes
 /// down by 1. Returns true when the map had the key.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, whose nodes are
+/// live, and `operator_delete` frees a node of the allocation that the map's nodes come from.
 #[inline(always)]
 pub unsafe fn remove_with(map: usize, key: u32, operator_delete: impl FnOnce(usize)) -> bool {
     let node = unlink(map, key);
@@ -229,6 +301,11 @@ pub unsafe fn remove_with(map: usize, key: u32, operator_delete: impl FnOnce(usi
 
 /// `THashMap::RemoveAt` as the game code has it inline. It frees the node with
 /// `operator delete` (0x727530). See `remove_with`.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, whose nodes
+/// come from the engine's `operator new` (0x727692).
 #[inline(always)]
 pub unsafe fn remove(map: usize, key: u32) -> bool {
     remove_with(map, key, |node| engine::operator_delete(node))
@@ -238,6 +315,12 @@ pub unsafe fn remove(map: usize, key: u32) -> bool {
 /// head: the next node becomes the head, then `dtorKeyValuePair`, then `operator_delete` for
 /// the old head. It does not write the count: the caller does that. It does nothing for a map
 /// with a bucket count of 0.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, and
+/// `operator_delete` frees a node of the allocation that its nodes come from; nothing uses the
+/// nodes after the call, and the caller writes the count.
 #[inline(always)]
 pub unsafe fn drain_with(map: usize, mut operator_delete: impl FnMut(usize)) {
     if rd::<u32>(map, HM::bucketCount) == 0 {
@@ -263,6 +346,12 @@ pub unsafe fn drain_with(map: usize, mut operator_delete: impl FnMut(usize)) {
 
 /// Removes every node and frees each with `operator delete` (0x727530). The caller writes the
 /// count. See `drain_with`.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, whose nodes
+/// come from the engine's `operator new`; nothing uses the nodes after the call, and the caller
+/// writes the count.
 #[inline(always)]
 pub unsafe fn drain(map: usize) {
     drain_with(map, |node| engine::operator_delete(node));
@@ -270,6 +359,12 @@ pub unsafe fn drain(map: usize) {
 
 /// `drain_with`, then the count becomes 0. The write of the count is the last write. It is
 /// also done for a map with a bucket count of 0.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, and
+/// `operator_delete` frees a node of the allocation that its nodes come from; nothing uses the
+/// nodes after the call.
 #[inline(always)]
 pub unsafe fn drain_and_zero_count_with(map: usize, operator_delete: impl FnMut(usize)) {
     drain_with(map, operator_delete);
@@ -279,6 +374,11 @@ pub unsafe fn drain_and_zero_count_with(map: usize, operator_delete: impl FnMut(
 /// Removes every node with `operator delete` (0x727530), then the count becomes 0. This is
 /// the body of `NiDX8TextureManager::clearHashMap` (0x6BC8A0) where the game code has it
 /// inline.
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` with its virtual table and its buckets, whose nodes
+/// come from the engine's `operator new`; nothing uses the nodes after the call.
 #[inline(always)]
 pub unsafe fn drain_and_zero_count(map: usize) {
     drain_and_zero_count_with(map, |node| engine::operator_delete(node));
