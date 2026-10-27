@@ -16,7 +16,8 @@ The checks of each list:
 - `check_names.py` (docs): no skill names a switch or a Lua call the code lost.
 
 Each takes well under a second. A check whose repository is not on this machine is skipped
-with a line. The exit code is 1 when a check fails; its output is printed. `tools/docs.py`
+with a line; with `--strict` (release.py) such a check is a failure, since a release needs
+every check. The exit code is 1 when a check fails; its output is printed. `tools/docs.py`
 compiles, so it is not here: release.py runs it. `tools/install_hooks.py` writes the hooks.
 """
 import os
@@ -61,15 +62,22 @@ LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 
 
 def main(argv):
-    which = argv[0] if argv else "all"
+    # `--strict`: a check that would be skipped is a failure (a release needs every check).
+    strict = "--strict" in argv
+    names = [argument for argument in argv if argument != "--strict"]
+    which = names[0] if names else "all"
     if which not in LISTS:
-        raise SystemExit("usage: checks.py plugin|mge|all")
+        raise SystemExit("usage: checks.py plugin|mge|all [--strict]")
     failed, passed, skipped = [], [], []
     for name in LISTS[which]:
         script, needs, *rest = CHECKS[name]
         args = rest[0] if rest else []
         if not script.exists() or not needs.exists():
-            skipped.append(name)
+            if strict:
+                failed.append(name)
+                print("== the check '%s' cannot run (--strict): %s is not on this machine" % (name, script if not script.exists() else needs))
+            else:
+                skipped.append(name)
             continue
         run = subprocess.run([sys.executable, "-I", str(script), *args], cwd=script.parent, capture_output=True, text=True,
                              encoding="utf-8", errors="replace", env=dict(os.environ, PYTHONIOENCODING="utf-8"))

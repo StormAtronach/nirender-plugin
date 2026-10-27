@@ -38,7 +38,7 @@ under the home folder.
 | --- | --- |
 | `validate_retained.py` | The checks of the retained pipeline, one stage at a time: `capture`, `baseline`, `only`, `clusters`, `weathers`, `tour`. The gate of a change. The baseline stage records the adapter of the accepted pictures (`accepted/adapter.txt`) and names it with the result; `--self-test` tests its pure parts (`checks.py` does). |
 | `validate_tour.py` | The stops of a tour of a test level replayed and compared with a baseline. |
-| `checks.py` | The content checks that need no compile, as one list for each repository (`plugin`, `mge`, `all`): the readme, the contract, MWSE's native ABI, the module headers and the skills' names. The commit hooks and `release.py` run it. |
+| `checks.py` | The content checks that need no compile, as one list for each repository (`plugin`, `mge`, `all`): the readme, the contract, MWSE's native ABI, the module headers and the skills' names, and the self-tests of the tools. The commit hooks and `release.py` run it; with `--strict` (release.py) a check that cannot run on this machine is a failure. |
 | `install_hooks.py` | Writes the pre-commit hooks that run `checks.py`: this repository, the MGE XE render-link worktree, and the docs repository (through its own `--install-hook`). `git commit --no-verify` skips a hook once. |
 | `check_readme.py` | README.md against the code: every switch the code reads, every path README names, a row here for every tool. |
 | `check_mwse_native.py` | The plugin's and MGE XE's copies of MWSE's native ABI against MWSE's header `MWSENativeApi.h`. |

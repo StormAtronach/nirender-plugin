@@ -13,7 +13,8 @@ The steps:
    under a path that the build reads or the archive takes (the source folders, the
    manifests, the assets: `PLUGIN_SOURCES`, `MGE_SOURCES`) stops the release with its name,
    since it would go into the binaries without being in the tag.
-2. `tools/checks.py all` runs the content checks of both repositories; `tools/docs.py`
+2. `tools/checks.py all --strict` runs the content checks of both repositories (a check
+   whose repository is not on this machine is a failure, not a skip); `tools/docs.py`
    checks the doc comments of the plugin, the host crate and the helper (no broken link).
    `tools/clippy_baseline.py --check` stops the release when a Clippy lint has more warnings
    than `tools/clippy.baseline` holds. Then `cargo test` runs in the plugin, in the host crate
@@ -454,7 +455,7 @@ def main():
     if not args.no_build:
         # The content checks of both repositories, then the doc comments of the three crates
         # (no broken link), then no Clippy lint above its baseline.
-        run([sys.executable, "-I", os.path.join(HERE, "checks.py"), "all"])
+        run([sys.executable, "-I", os.path.join(HERE, "checks.py"), "all", "--strict"])
         run([sys.executable, "-I", os.path.join(HERE, "docs.py"), "--mge", args.mge])
         run([sys.executable, "-I", os.path.join(HERE, "clippy_baseline.py"), "--check", "--mge", args.mge])
         unit_tests(args.mge)
