@@ -27,7 +27,8 @@ jpeg-encoder = "0.7.1"
 png = "0.18"
 pollster = "0.3"
 rustc-hash = "2"
-wgpu = { version = "30", features = ["static-dxc"] }
+# `counters`: the counts of wgpu's objects for the memory report (`gpu::memory_lines`).
+wgpu = { version = "30", features = ["static-dxc", "counters"] }
 winit = "0.30"
 
 # A link in a doc comment that rustdoc cannot resolve fails the doc build (`tools/docs.py`).
