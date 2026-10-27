@@ -245,7 +245,7 @@ pub unsafe fn set_with(map: usize, key: u32, value: usize, operator_new: impl Fn
 /// # Safety
 ///
 /// `map` points at a live engine `THashMap` with its virtual table and its buckets, whose nodes are
-/// live; the engine's `operator new` does not fail, since the function does not test the new node.
+/// live; `operator new` gives a block or 0: `set_with` tests it.
 #[inline(always)]
 pub unsafe fn set(map: usize, key: u32, value: usize) {
     set_with(map, key, value, |size| engine::operator_new(size));
