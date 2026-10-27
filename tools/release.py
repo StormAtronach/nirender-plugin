@@ -481,6 +481,9 @@ def main():
     mge_tag = render_link_tag(tag)
     if run(["git", "-C", args.mge, "tag", "--list", mge_tag], capture=True).strip():
         stop("the MGE XE repository has the tag %s already: set a new version in Cargo.toml" % mge_tag, args.dry_run)
+    # A tag on origin that is not here would fail the push after the release is out.
+    if run(["git", "-C", args.mge, "ls-remote", "--tags", "origin", "refs/tags/" + mge_tag], capture=True).strip():
+        stop("origin of the MGE XE repository has the tag %s already: set a new version in Cargo.toml" % mge_tag, args.dry_run)
     for repo, source_paths in ((PLUGIN, PLUGIN_SOURCES), (args.mge, MGE_SOURCES)):
         clean_and_pushed(repo, source_paths, args.dry_run)
 
@@ -538,7 +541,10 @@ def main():
     # The commit of MGE XE that the archive was built from gets the release's tag too; it
     # goes up with the release, never before it.
     run(["git", "-C", args.mge, "tag", mge_tag])
-    run(["git", "-C", args.mge, "push", "origin", mge_tag])
+    pushed = subprocess.run(["git", "-C", args.mge, "push", "origin", mge_tag])
+    if pushed.returncode != 0:
+        # The release is out; the tag is here. Say what to run, instead of a silent miss.
+        raise SystemExit("the release %s is out, but the push of the MGE XE tag failed (%d); run by hand: git -C \"%s\" push origin %s" % (tag, pushed.returncode, args.mge, mge_tag))
     print("the MGE XE repository is tagged %s" % mge_tag)
     if not args.keep_old:
         for old in tags:
