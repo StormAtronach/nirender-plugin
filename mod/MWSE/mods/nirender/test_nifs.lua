@@ -15,4 +15,6 @@ return {
     { id = "@nif_x_node_lod", mesh = "@_nifx\\node_lod.nif" },
     { id = "@nif_x_node_bsp", mesh = "@_nifx\\node_bsp.nif" },
     { id = "@nif_x_node_sortadjust", mesh = "@_nifx\\node_sortadjust.nif" },
+    { id = "@nif_x_bc7", mesh = "@_nifx\\bc7.nif" },
+    { id = "@nif_x_bc7_srgb", mesh = "@_nifx\\bc7_srgb.nif" },
 }
