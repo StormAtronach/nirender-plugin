@@ -1,16 +1,20 @@
 """Writes the third-party notices of the crates inside the shipped programs.
 
     python -I tools/third_party_notices.py --out FILE [--mge DIR] [--root NAME ...]
+    python -I tools/third_party_notices.py --self-test
 
-`cargo metadata` of the MGE XE workspace (its lock file is the one that numidium.exe and
-MGEXEgui.exe are built with; the host crate's own lock serves only the test program
-nirender-host.exe, which is not shipped) names the manifest folder of each crate in the
-registry or in a git checkout. The license files beside the manifest (LICENSE*, COPYING*,
-NOTICE*, UNLICENSE, and the font licences in a `fonts` folder) go into the file, each
-distinct text once, and each crate names its texts. A crate without a license file gets
-the standard text of its license id with its authors; a crate whose id has no standard
-text here gets the address of the id. The roots are `mgeHost64` (numidium.exe) and
-`MGEXEgui` by default; `d3d8` and `dinput8` have a subset of the same crates.
+`cargo metadata` of the MGE XE workspace, for the Windows target (its lock file is the one
+that numidium.exe and MGEXEgui.exe are built with; the host crate's own lock serves only the
+test program nirender-host.exe, which is not shipped), names the manifest folder of each
+crate in the registry or in a git checkout. Only the normal dependencies count: a crate that
+serves the build or the tests only (a build dependency, a dev dependency) is not in a program.
+The license files beside the manifest (LICENSE*, COPYING*, NOTICE*, UNLICENSE, and the font
+licenses in a `fonts` folder) go into the file, each distinct text once, and each crate
+names its texts. A crate without a license file gets the standard text of its license id
+with its authors, or the Apache-2.0 text of another crate; a crate with neither stops the
+run and names itself. The output is sorted and carries no date. The roots are `mgeHost64`
+(numidium.exe) and `MGEXEgui` by default; `d3d8` and `dinput8` have a subset of the same
+crates.
 
 `release.py` runs it and puts the file into the archive as THIRD-PARTY-NOTICES.txt.
 """
@@ -24,6 +28,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
 MGE = os.path.join(os.path.dirname(PLUGIN), "MGE-XE-G7-render-link")
+TARGET = "x86_64-pc-windows-msvc"
 LICENSE_NAMES = ("LICENSE", "LICENCE", "COPYING", "NOTICE", "UNLICENSE", "OFL", "UFL")
 
 # The standard texts of the licenses that crates without a license file use, with the
@@ -94,16 +99,20 @@ STANDARD = {"MIT": MIT, "Zlib": ZLIB, "BSL-1.0": BSL}
 
 def metadata(mge):
     cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
-    result = subprocess.run([cargo if os.path.isfile(cargo) else "cargo", "metadata", "--format-version", "1", "--locked"], cwd=mge, capture_output=True, text=True, encoding="utf-8")
+    command = [cargo if os.path.isfile(cargo) else "cargo", "metadata", "--format-version", "1", "--locked", "--filter-platform", TARGET]
+    result = subprocess.run(command, cwd=mge, capture_output=True, text=True, encoding="utf-8")
     if result.returncode != 0:
         raise SystemExit("cargo metadata failed in %s:\n%s" % (mge, result.stderr))
     return json.loads(result.stdout)
 
 
 def reachable(meta, roots):
-    """The packages of the resolve graph under the roots, workspace members left out."""
+    """The packages that the programs of the roots are built from: the normal dependencies,
+    followed from the roots; workspace members left out."""
     by_id = {p["id"]: p for p in meta["packages"]}
-    deps = {n["id"]: [d["pkg"] for d in n["deps"]] for n in meta["resolve"]["nodes"]}
+    normal = {}
+    for node in meta["resolve"]["nodes"]:
+        normal[node["id"]] = [d["pkg"] for d in node["deps"] if any(kind["kind"] is None for kind in d["dep_kinds"])]
     starts = [p["id"] for p in meta["packages"] if p["name"] in roots and p["source"] is None]
     missing = set(roots) - {by_id[s]["name"] for s in starts}
     if missing:
@@ -115,7 +124,7 @@ def reachable(meta, roots):
         if pid in seen:
             continue
         seen.add(pid)
-        stack.extend(deps.get(pid, []))
+        stack.extend(normal.get(pid, []))
     return sorted((by_id[pid] for pid in seen if by_id[pid]["source"]), key=lambda p: (p["name"].lower(), p["version"]))
 
 
@@ -137,19 +146,21 @@ def license_files(folder):
 
 def read_text(path):
     data = open(path, "rb").read()
-    for encoding in ("utf-8-sig", "latin-1"):
-        try:
-            return data.decode(encoding).replace("\r\n", "\n").strip() + "\n"
-        except UnicodeDecodeError:
-            pass
-    return data.decode("utf-8", "replace")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
+    return text.replace("\r\n", "\n").strip() + "\n"
+
+
+def license_ids(expression):
+    return [t.strip("() ") for t in expression.replace(" OR ", "|").replace(" AND ", "|").replace("/", "|").split("|")]
 
 
 def notices(meta, roots):
     """The text of the notices file."""
     packages = reachable(meta, roots)
     texts = {}  # the hash of a text: (its number, the text)
-    rows = []
 
     def number_of(text):
         key = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -157,52 +168,52 @@ def notices(meta, roots):
             texts[key] = (len(texts) + 1, text)
         return texts[key][0]
 
+    # Each crate: the numbers of its texts and what they are.
+    rows = {}
     apache = None
-    without = []
     for p in packages:
         files = license_files(os.path.dirname(p["manifest_path"]))
-        numbers = [number_of(read_text(path)) for path in files]
+        rows[p["id"]] = ([number_of(read_text(path)) for path in files], [os.path.basename(path) for path in files])
         for path in files:
             if apache is None and os.path.basename(path).upper().startswith("LICENSE-APACHE"):
-                apache = read_text(path)
-        rows.append((p, numbers, [os.path.basename(path) for path in files]))
-        if not files:
-            without.append(p)
-    # A crate without a license file: the standard text of one license it offers. A crate
-    # that offers none of the standard texts stops the run: its license is unknown here.
+                apache = (read_text(path), p["name"])
+    # A crate without a license file: the standard text of one license it offers, or the
+    # Apache-2.0 text of another crate. A crate that offers neither stops the run.
     unknown = []
-    for p in without:
+    for p in packages:
+        numbers, names = rows[p["id"]]
+        if names:
+            continue
         expression = p.get("license") or ""
         authors = ", ".join(p.get("authors") or []) or "the authors of " + p["name"]
-        ids = [t.strip("() ") for t in expression.replace(" OR ", "|").replace(" AND ", "|").replace("/", "|").split("|")]
+        ids = license_ids(expression)
         chosen = next((i for i in ids if i in STANDARD), None)
         if chosen:
-            text = STANDARD[chosen].format(authors=authors)
+            numbers.append(number_of(STANDARD[chosen].format(authors=authors)))
+            names.append("the standard %s text" % chosen)
         elif "Apache-2.0" in ids and apache:
-            text = apache
+            numbers.append(number_of(apache[0]))
+            names.append("the Apache-2.0 text of %s" % apache[1])
         else:
             unknown.append("%s %s (%s, %s)" % (p["name"], p["version"], expression or "no license named", os.path.dirname(p["manifest_path"])))
-            continue
-        for row in rows:
-            if row[0] is p:
-                row[1].append(number_of(text))
-                row[2].append("the standard text")
     if unknown:
         raise SystemExit("no license file and no standard text for: " + "; ".join(unknown))
     out = []
     out.append("THIRD-PARTY NOTICES\n")
     out.append("The programs of this archive built from Rust (numidium.exe, MGEXEgui.exe, d3d8.dll, dinput8.dll)")
-    out.append("contain the crates below, under the licenses named. The crates are those of the lock file of")
-    out.append("MGE XE G7 under the programs %s; a program uses a subset of them." % " and ".join(roots))
+    out.append("are built from the crates below, under the licenses named: the normal dependencies of the")
+    out.append("programs %s in the lock file of MGE XE G7, for Windows. A program uses a subset of them," % " and ".join(roots))
+    out.append("and a crate that only serves the compile (a macro) leaves no code in a program.")
     out.append("Each crate names its license texts by number; the texts are after the list, each once.")
     out.append("Written by tools/third_party_notices.py of nirender-plugin from `cargo metadata`.\n")
-    out.append("%d crates, %d distinct license texts.\n" % (len(rows), len(texts)))
+    out.append("%d crates, %d distinct license texts.\n" % (len(packages), len(texts)))
     out.append("THE CRATES\n")
-    for p, numbers, names in rows:
+    for p in packages:
+        numbers, names = rows[p["id"]]
         where = p.get("repository") or p["source"]
         out.append("%s %s\n  license: %s\n  authors: %s\n  from: %s\n  texts: %s (%s)" % (
             p["name"], p["version"], p.get("license") or "not named in the crate", ", ".join(p.get("authors") or []) or "not named",
-            where, ", ".join(str(n) for n in numbers) or "none", ", ".join(names) or "no file"))
+            where, ", ".join(str(n) for n in numbers), ", ".join(names)))
     out.append("\nTHE LICENSE TEXTS\n")
     for number, text in sorted(texts.values()):
         out.append("=" * 78)
@@ -213,36 +224,49 @@ def notices(meta, roots):
 
 
 def self_test():
-    """A fixture of three crates in a temporary folder: one with two license files, one with
-    none and the standard MIT text, one with none and no standard text, which must stop the run."""
+    """A fixture in a temporary folder: a crate with two license files, one with none and the
+    standard MIT text, one with none and the Apache-2.0 text of the first, a dev dependency
+    and a build dependency that must not appear, and one with no file and no standard text,
+    which must stop the run."""
     import tempfile
 
-    def package(name, source, license, authors, files):
+    def package(name, license, authors, files):
         folder = os.path.join(root, name)
         os.makedirs(folder)
         for file_name, text in files.items():
             with open(os.path.join(folder, file_name), "w", encoding="utf-8") as out:
                 out.write(text)
-        return {"id": name, "name": name, "version": "1.0.0", "source": source, "license": license, "authors": authors, "repository": None, "manifest_path": os.path.join(folder, "Cargo.toml")}
+        return {"id": name, "name": name, "version": "1.0.0", "source": None if name == "app" else "registry+x", "license": license, "authors": authors, "repository": None, "manifest_path": os.path.join(folder, "Cargo.toml")}
+
+    def dep(name, kind=None):
+        return {"pkg": name, "dep_kinds": [{"kind": kind, "target": None}]}
 
     with tempfile.TemporaryDirectory() as root:
         meta = {"packages": [
-            package("app", None, None, [], {}),
-            package("two-files", "registry+x", "MIT OR Apache-2.0", ["A. Author"], {"LICENSE-MIT": "the mit text of two-files\n", "LICENSE-APACHE": "the apache text\n"}),
-            package("no-file", "registry+x", "MIT", ["B. Author"], {}),
+            package("app", None, [], {}),
+            package("two-files", "MIT OR Apache-2.0", ["A. Author"], {"LICENSE-MIT": "the mit text of two-files\n", "LICENSE-APACHE": "the apache text\n"}),
+            package("no-file", "MIT", ["B. Author"], {}),
+            package("apache-only", "Apache-2.0", ["C. Author"], {}),
+            package("for-tests", "MIT", [], {}),
+            package("for-build", "MIT", [], {}),
         ], "resolve": {"nodes": [
-            {"id": "app", "deps": [{"pkg": "two-files"}, {"pkg": "no-file"}]},
+            {"id": "app", "deps": [dep("two-files"), dep("no-file"), dep("apache-only"), dep("for-tests", "dev"), dep("for-build", "build")]},
             {"id": "two-files", "deps": []},
             {"id": "no-file", "deps": []},
+            {"id": "apache-only", "deps": []},
+            {"id": "for-tests", "deps": []},
+            {"id": "for-build", "deps": []},
         ]}}
         text = notices(meta, ["app"])
-        assert "2 crates, 3 distinct license texts." in text, text
-        assert "no-file 1.0.0\n  license: MIT\n  authors: B. Author\n  from: registry+x\n  texts: 3 (the standard text)" in text, text
+        assert "3 crates, 3 distinct license texts." in text, text
+        assert "for-tests" not in text and "for-build" not in text, text
+        assert "apache-only 1.0.0\n  license: Apache-2.0\n  authors: C. Author\n  from: registry+x\n  texts: 1 (the Apache-2.0 text of two-files)" in text, text
+        assert "no-file 1.0.0\n  license: MIT\n  authors: B. Author\n  from: registry+x\n  texts: 3 (the standard MIT text)" in text, text
         assert "two-files 1.0.0\n  license: MIT OR Apache-2.0\n  authors: A. Author\n  from: registry+x\n  texts: 1, 2 (LICENSE-APACHE, LICENSE-MIT)" in text, text
         assert "Copyright (c) B. Author" in text and "the mit text of two-files" in text, text
         assert text == notices(meta, ["app"]), "the output is not deterministic"
-        meta["packages"].append(package("odd", "registry+x", "EUPL-1.2", [], {}))
-        meta["resolve"]["nodes"][0]["deps"].append({"pkg": "odd"})
+        meta["packages"].append(package("odd", "EUPL-1.2", [], {}))
+        meta["resolve"]["nodes"][0]["deps"].append(dep("odd"))
         meta["resolve"]["nodes"].append({"id": "odd", "deps": []})
         try:
             notices(meta, ["app"])
