@@ -622,6 +622,9 @@ struct Renderer {
     index_pool: pool::Pool,
     retired: Vec<pool::Range>,
     retired_indexes: Vec<pool::Range>,
+    /// The number of the frame, 1 for the first: a geometry keeps the frame of its last draw
+    /// (`Geometry::drawn_in`).
+    geometry_frame: u32,
     /// The index buffer of the quads of the particle systems, as the game keeps one: the
     /// number of quads it has, and the buffer. It grows to the largest system seen.
     quad_indexes: Option<(u32, Rc<wgpu::Buffer>)>,

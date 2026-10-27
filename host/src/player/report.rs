@@ -56,10 +56,11 @@ impl Player {
         let c = &self.renderer.counts;
         println!("draws {} in {} pipeline runs, pipelines {}, textures {}, samplers {}", c.draws, c.pipeline_runs, self.renderer.pipelines.len(), c.textures, self.renderer.samplers.len());
         println!(
-            "geometry: {} records ({:.1} MB; {} of a known geometry written into its ranges), {} draws from them, {} records that did not parse, {} draws of more index entries than their geometry has",
+            "geometry: {} records ({:.1} MB; {} of a known geometry written into its ranges, {} into new ranges because a draw of the frame named the old), {} draws from them, {} records that did not parse, {} draws of more index entries than their geometry has",
             c.geometry_records,
             c.geometry_bytes as f64 / 1e6,
             c.geometry_in_place,
+            c.geometry_drawn_in_frame,
             c.geometry_draws,
             c.geometry_bad,
             c.geometry_short

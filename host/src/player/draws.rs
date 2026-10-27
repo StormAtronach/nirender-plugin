@@ -249,7 +249,11 @@ impl Player {
             println!("key dump record path: fvf {} stride {} topology {} blend {:?} depth {:?} cull {} fill {} color_write {} stencil {:?} reference {} textures {:?} samplers {:?} stages {} passes {} range {}+{} base {}", key.fvf, key.stride, key.topology, key.blend, key.depth, key.cull, key.fill, key.color_write, key.stencil, stencil_reference, pass.stages.iter().map(|s| s.texture).collect::<Vec<_>>(), pass.stages.iter().map(|s| s.sampler).collect::<Vec<_>>(), pass.stages.len(), derived.passes.len(), first_index, indexes, self.stream.shape.geometry);
         }
         // The buffers of the geometry record of the shape.
-        let Some((vertex_buffer, index_buffer, base_vertex, geometry_first)) = renderer.geometries.get(&shape.geometry).filter(|g| first_index + indexes <= g.entries).map(|g| (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index)) else {
+        let frame = renderer.geometry_frame;
+        let Some((vertex_buffer, index_buffer, base_vertex, geometry_first)) = renderer.geometries.get_mut(&shape.geometry).filter(|g| first_index + indexes <= g.entries).map(|g| {
+            g.drawn_in = frame;
+            (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index)
+        }) else {
             renderer.counts.geometry_short += 1;
             return;
         };

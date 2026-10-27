@@ -661,6 +661,7 @@ impl Renderer {
             index_pool: pool::Pool::new("game indexes", wgpu::BufferUsages::INDEX, INDEX_CHUNK),
             retired: Vec::new(),
             retired_indexes: Vec::new(),
+            geometry_frame: 1,
             quad_indexes: None,
             particle_quads: None,
             morphs: None,
@@ -1281,7 +1282,13 @@ impl Renderer {
         self.counts.geometry_bytes += data.len() as u64;
         let (vertex_bytes, index_bytes) = (&data[vertex_at..index_at], &data[index_at..index_end]);
         let same_layout = self.geometries.get(&handle).filter(|old| old.unique == Some(word(data, 4)) && old.fvf == fvf && old.stride == stride && old.entries == entries && old.strips == strip_lengths);
-        if let Some((Some(vertex_range), Some(index_range))) = same_layout.map(|old| (old.vertex_range.as_ref(), old.index_range.as_ref())) {
+        // A draw of this frame named the ranges already (the screen polygon of each blob of the
+        // fog of war): the write would land before that draw too.
+        let drawn_in_frame = same_layout.is_some_and(|old| old.drawn_in == self.geometry_frame);
+        if drawn_in_frame {
+            self.counts.geometry_drawn_in_frame += 1;
+        }
+        if let Some((Some(vertex_range), Some(index_range))) = same_layout.filter(|_| !drawn_in_frame).map(|old| (old.vertex_range.as_ref(), old.index_range.as_ref())) {
             let fits = |range: &pool::Range, bytes: &[u8]| (bytes.len() as u64).next_multiple_of(4).max(4) == range.size;
             if fits(vertex_range, vertex_bytes) && fits(index_range, index_bytes) {
                 pool::Pool::rewrite(&self.queue, vertex_range, vertex_bytes);
@@ -1306,6 +1313,7 @@ impl Renderer {
             index_range: Some(index_range),
             unique: Some(word(data, 4)),
             uv: None,
+            drawn_in: 0,
         };
         self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
@@ -1473,7 +1481,7 @@ impl Renderer {
             let (vertex, base_vertex) = quads.add(&device, particles, sum, difference);
             self.counts.shape_particles += 1;
             // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-            let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: count as u32 * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex, first_index: 0, unique: None, uv: None };
+            let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: count as u32 * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex, first_index: 0, unique: None, uv: None, drawn_in: 0 };
             self.put_geometry(handle, geometry);
             self.counts.times[TIME_BUFFERS] += clock.elapsed();
             return;
@@ -1504,7 +1512,7 @@ impl Renderer {
         let vertex = Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("particles"), contents: &bytes, usage: wgpu::BufferUsages::VERTEX }));
         self.counts.shape_particles += 1;
         // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: 0, first_index: 0, unique: None, uv: None };
+        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: 0, first_index: 0, unique: None, uv: None, drawn_in: 0 };
         self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
     }

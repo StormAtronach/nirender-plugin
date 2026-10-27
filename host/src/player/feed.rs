@@ -883,7 +883,11 @@ impl Player {
         let Some((true, fog_range)) = self.parameters.as_ref().map(|p| (p.hold, p.fog_range)) else { return false };
         let shape = &self.stream.shape;
         let Some(layout) = VertexLayout::of(shape.fvf, shape.stride) else { return false };
-        let Some((vertices, indexes, base_vertex, geometry_first)) = self.renderer.geometries.get(&shape.geometry).filter(|g| entries <= g.entries).map(|g| (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index)) else {
+        let frame = self.renderer.geometry_frame;
+        let Some((vertices, indexes, base_vertex, geometry_first)) = self.renderer.geometries.get_mut(&shape.geometry).filter(|g| entries <= g.entries).map(|g| {
+            g.drawn_in = frame;
+            (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index)
+        }) else {
             return false;
         };
         let pass = Pass::new(derived, 0, m, &self.renderer.textures, effects);

@@ -30,6 +30,11 @@ pub(crate) struct Geometry {
     /// The UV controller of the data, when the plugin sends its steps
     /// ([`crate::tag::GEOMETRY_UV`]): the draws take the step from the held vertices.
     pub(crate) uv: Option<crate::uv_animation::UvAnimation>,
+    /// The frame of the last draw of a record that names the ranges
+    /// ([`Renderer::geometry_frame`]), 0 for none. A new version of the geometry in the same
+    /// frame takes new ranges: a write into the ranges lands before all draws of the frame's
+    /// one submit, also those recorded before it.
+    pub(crate) drawn_in: u32,
 }
 
 pub(crate) const COMMAND_TRANSFORM: u32 = 3;
@@ -367,6 +372,9 @@ pub(crate) struct Counts {
     pub(crate) geometry_records: u32,
     /// The records of a known geometry with the same layout, written into its ranges.
     pub(crate) geometry_in_place: u32,
+    /// The records of a known geometry with the same layout that a draw of the same frame
+    /// named already: written into new ranges.
+    pub(crate) geometry_drawn_in_frame: u32,
     /// The `GEOMETRY_UV` records: with the state of the vertices just sent, with a new state,
     /// and those of a geometry not held (or of another unique id).
     pub(crate) uv_bases: u32,
