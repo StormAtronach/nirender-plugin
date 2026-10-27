@@ -85,8 +85,14 @@ PLUGIN = os.path.dirname(HERE)
 MGE = os.path.join(os.path.dirname(PLUGIN), "MGE-XE-G7-render-link")
 
 
+# The environment of every program the tool starts: the shell's, without RUSTUP_TOOLCHAIN, so
+# that each tree builds with the toolchain its rust-toolchain.toml pins (the tests, the Clippy
+# baseline, the docs check and `cargo xtask dist` alike).
+ENVIRONMENT = {key: value for key, value in os.environ.items() if key != "RUSTUP_TOOLCHAIN"}
+
+
 def run(command, cwd=None, capture=False, env=None):
-    result = subprocess.run(command, cwd=cwd, capture_output=capture, text=True, env=env)
+    result = subprocess.run(command, cwd=cwd, capture_output=capture, text=True, env=env or ENVIRONMENT)
     if result.returncode != 0:
         raise SystemExit("failed (%d): %s%s" % (result.returncode, " ".join(command), "\n" + result.stderr if capture else ""))
     return result.stdout if capture else ""
@@ -165,12 +171,15 @@ def unit_tests(mge):
     reads it from the working folder; the plugin and MGE XE pin the same dated nightly, the
     host crate has none and takes the plugin's), and the version is printed first. A failed
     test stops the release."""
-    environment = {key: value for key, value in os.environ.items() if key != "RUSTUP_TOOLCHAIN"}
     trees = [("the plugin", PLUGIN, []), ("the host crate", os.path.join(PLUGIN, "host"), []), ("the helper", mge, ["-p", "mgeHost64"])]
     for name, folder, extra in trees:
-        version = run(["rustc", "--version"], cwd=folder, capture=True, env=environment).strip()
-        print("the tests of %s, with %s" % (name, version), flush=True)
-        run(["cargo", "test"] + extra, cwd=folder, env=environment)
+        print("the tests of %s, with %s" % (name, compiler_version(folder)), flush=True)
+        run(["cargo", "test"] + extra, cwd=folder)
+
+
+def compiler_version(folder):
+    """The `rustc --version` of a tree: the toolchain its rust-toolchain.toml pins."""
+    return run(["rustc", "--version"], cwd=folder, capture=True).strip()
 
 
 GATE_TOKEN = "{gate}"
@@ -197,7 +206,7 @@ def gate(folder, dry_run):
     in bin). Returns the result lines ("N of M pictures equal to the accepted ones in ...");
     a failed gate stops the release."""
     print("the gate on the helper of %s" % folder, flush=True)
-    result = subprocess.run([sys.executable, "-I", os.path.join(HERE, "validate_retained.py"), "baseline", "--mge-build", folder], capture_output=True, text=True, cwd=PLUGIN)
+    result = subprocess.run([sys.executable, "-I", os.path.join(HERE, "validate_retained.py"), "baseline", "--mge-build", folder], capture_output=True, text=True, cwd=PLUGIN, env=ENVIRONMENT)
     print(result.stdout + result.stderr, flush=True)
     lines = GATE_RESULT.findall(result.stdout)
     if result.returncode != 0 or not lines:
@@ -265,11 +274,9 @@ def manifest_text(archive, provenance, entries):
 
 def provenance(mge, plugin_tag):
     """The commits of the two repositories and the compiler of the MGE XE tree, in one line."""
-    environment = {key: value for key, value in os.environ.items() if key != "RUSTUP_TOOLCHAIN"}
     mge_commit = run(["git", "-C", mge, "rev-parse", "--short", "HEAD"], capture=True).strip()
     plugin_commit = run(["git", "-C", PLUGIN, "rev-parse", "--short", "HEAD"], capture=True).strip()
-    compiler = run(["rustc", "--version"], cwd=mge, capture=True, env=environment).strip()
-    return "MGE XE G7 at %s; nirender at %s (the tag %s); built with %s." % (mge_commit, plugin_commit, plugin_tag, compiler)
+    return "MGE XE G7 at %s; nirender at %s (the tag %s); built with %s." % (mge_commit, plugin_commit, plugin_tag, compiler_version(mge))
 
 
 def write_text(path, text):
@@ -546,7 +553,7 @@ def main():
     # The commit of MGE XE that the archive was built from gets the release's tag too; it
     # goes up with the release, never before it.
     run(["git", "-C", args.mge, "tag", mge_tag])
-    pushed = subprocess.run(["git", "-C", args.mge, "push", "origin", mge_tag])
+    pushed = subprocess.run(["git", "-C", args.mge, "push", "origin", mge_tag], env=ENVIRONMENT)
     if pushed.returncode != 0:
         # The release is out; the tag is here. Say what to run, instead of a silent miss.
         raise SystemExit("the release %s is out, but the push of the MGE XE tag failed (%d); run by hand: git -C \"%s\" push origin %s" % (tag, pushed.returncode, args.mge, mge_tag))
