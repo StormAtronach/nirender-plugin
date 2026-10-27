@@ -82,6 +82,12 @@ pub fn entry_thunk_code(at: usize, detour: usize, stack_args: usize, cleanup: Cl
 
 /// Installs a detour on the engine function at `ea`. Returns the address to call for the
 /// engine function itself.
+///
+/// # Safety
+///
+/// `ea` is the entry of the game function that the table names. `detour` is a function of the ABI
+/// that `stack_args` and `cleanup` give. No other thread runs the first bytes of the function while
+/// the call writes the jump: the jump is written without a pause of the other threads.
 pub unsafe fn install(ea: usize, detour: usize, stack_args: usize, cleanup: Cleanup) -> Result<usize, String> {
     let func = find(ea).ok_or_else(|| format!("0x{ea:x} is not in the function table"))?;
     if !func.pic {
@@ -95,6 +101,12 @@ pub unsafe fn install(ea: usize, detour: usize, stack_args: usize, cleanup: Clea
 /// instructions that the jump displaces. When the function is shorter than the jump, `head`
 /// holds all of the function. `relocs` are the offsets in `head` of the 32-bit relative
 /// targets of calls and jumps.
+///
+/// # Safety
+///
+/// As for [`install`]; `ea` points at at least 16 readable bytes of code, `head` holds whole
+/// instructions, and each offset of `relocs` is the place of a 32-bit relative target inside
+/// `head`.
 pub unsafe fn install_raw(
     ea: usize,
     head: &[u8],
