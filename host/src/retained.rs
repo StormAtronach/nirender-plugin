@@ -1733,7 +1733,7 @@ impl Player {
         };
         let mut data = SceneData {
             view: self.retained.scene_view(&facts.view, facts.origin),
-            projection: facts.projection,
+            projection: crate::depth::gpu_projection(&facts.projection),
             fog_color: color(fog[0]),
             fog: [f32::from_bits(fog[1]), f32::from_bits(fog[2]), 1.0, (fog[3] != 0) as u32 as f32],
             scene_ambient: ambient,
@@ -1790,7 +1790,7 @@ impl Player {
                 if let (Some(layout), Some(derived), Some(m)) = (VertexLayout::of(key.fvf, key.stride), derived, m) {
                     let mut data = s.data;
                     data.view = view;
-                    data.projection = facts.projection;
+                    data.projection = crate::depth::gpu_projection(&facts.projection);
                     out.push(HeldDraw {
                         facts: claim,
                         vertices: bucket.vertices.clone(),
@@ -2334,7 +2334,7 @@ impl Replayer<'_> {
         }
         scene.view = self.retained.replay_view(&scene.view, view.view, view.world);
         if let Some(projection) = view.projection {
-            scene.projection = projection;
+            scene.projection = crate::depth::gpu_projection(&projection);
         }
         scene.pixel = [1.0 / view.target_size.0.max(1) as f32, -1.0 / view.target_size.1.max(1) as f32, 0.0, 0.0];
         scene.clip_plane = view.clip_plane.map_or([0.0; 4], |p| self.retained.plane_of(p));

@@ -37,7 +37,7 @@ const DEPTH_SHADER: &str = "
     var nearest = textureLoad(samples, at, 0);
     let count = i32(textureNumSamples(samples));
     for (var s = 1; s < count; s++) {
-        nearest = min(nearest, textureLoad(samples, at, s));
+        nearest = depth_nearer(nearest, textureLoad(samples, at, s));
     }
     return nearest;
 }
@@ -61,7 +61,7 @@ impl Multisample {
                 count: None,
             }],
         });
-        let depth_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("depth resolve"), source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{DEPTH_SHADER}").into()) });
+        let depth_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("depth resolve"), source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{}{DEPTH_SHADER}", depth::wgsl()).into()) });
         let depth_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("depth resolve"), bind_group_layouts: &[Some(&depth_layout)], immediate_size: 0 });
         let depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("depth resolve"),
@@ -124,7 +124,7 @@ impl Multisample {
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: target,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(depth::clear(1.0)), store: wgpu::StoreOp::Store }),
                 stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Discard }),
             }),
             timestamp_writes: None,

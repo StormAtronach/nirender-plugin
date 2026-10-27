@@ -450,7 +450,7 @@ impl Player {
                 self.before_depth_kept = self.copy_depth(2, "depth: before the world").is_some();
             }
             // The draws of the game start with a depth target of their own.
-            self.open_pass(crate::gpu::PassReason::WorldStart, None, Some(1.0), None);
+            self.open_pass(crate::gpu::PassReason::WorldStart, None, Some(depth::clear(1.0)), None);
         }
         let part = self.part_begin("the table's opaque slots");
         self.draw_retained_main(facts);

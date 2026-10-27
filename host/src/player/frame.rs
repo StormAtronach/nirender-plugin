@@ -386,7 +386,7 @@ impl Player {
         if keep {
             self.open_pass(crate::gpu::PassReason::FrameStart, None, None, None);
         } else {
-            self.open_pass(crate::gpu::PassReason::FrameStart, Some(wgpu::Color::BLACK), Some(1.0), Some(0));
+            self.open_pass(crate::gpu::PassReason::FrameStart, Some(wgpu::Color::BLACK), Some(depth::clear(1.0)), Some(0));
         }
     }
 

@@ -108,7 +108,7 @@ impl Stream {
             data.view[13] = 0.0;
             data.view[14] = 0.0;
         }
-        data.projection = self.projection;
+        data.projection = crate::depth::gpu_projection(&self.projection);
         if let Some((rectangle, _)) = self.viewport {
             data.pixel = [1.0 / rectangle[2].max(1.0), -1.0 / rectangle[3].max(1.0), 0.0, 0.0];
         }

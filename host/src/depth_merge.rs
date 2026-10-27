@@ -62,7 +62,7 @@ impl DepthMerge {
                 },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("first-person depth merge"), source: wgpu::ShaderSource::Wgsl(format!("{}{}", depth::WGSL, SHADER).into()) });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("first-person depth merge"), source: wgpu::ShaderSource::Wgsl(format!("{}{}", depth::wgsl(), SHADER).into()) });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("first-person depth merge"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("first-person depth merge"),
@@ -73,7 +73,7 @@ impl DepthMerge {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: depth_format,
                 depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
+                depth_compare: Some(depth::compare(wgpu::CompareFunction::Less)),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),

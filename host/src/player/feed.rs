@@ -305,7 +305,8 @@ impl Player {
                             let c = color(word(arguments, 12));
                             wgpu::Color { r: c[0] as f64, g: c[1] as f64, b: c[2] as f64, a: 1.0 }
                         });
-                        let clear_depth = (flags & 2 != 0).then(|| float(arguments, 16));
+                        // The game's value, in the convention of the depth (`depth::clear`).
+                        let clear_depth = (flags & 2 != 0).then(|| depth::clear(float(arguments, 16)));
                         let clear_stencil = (flags & 4 != 0).then(|| word(arguments, 20));
                         if clear_depth.is_some() {
                             for step in self.plan.depth_clear() {

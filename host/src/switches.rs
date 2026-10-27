@@ -44,6 +44,9 @@ pub(crate) struct Switches {
     /// `MGE_XE_DEPTH_FORMAT=24`: the depth of the frame in `Depth24PlusStencil8` even when the
     /// adapter has `Depth32FloatStencil8`: for an A/B of the format and the test of its fallback.
     pub(crate) depth24: bool,
+    /// `MGE_XE_DEPTH_REVERSED=0`: the float depth of the frame keeps the plain convention (near
+    /// 0, far 1): for an A/B of the reversed depth (`depth::reversed`).
+    pub(crate) depth_plain: bool,
     /// `MGE_XE_PARTICLE_QUADS=cpu`: the quads of the particle systems made on the CPU, as
     /// before the compute pass of `particle_quads`: for its A/B.
     pub(crate) particle_quads_cpu: bool,
@@ -93,6 +96,7 @@ impl Switches {
             record_limit: var("MGE_XE_RECORD_LIMIT").and_then(|v| v.parse::<usize>().ok()).map(|n| n.max(1024)),
             samples: var("MGE_XE_SAMPLES").and_then(|v| v.parse::<u32>().ok()).map(|n| n.clamp(1, 8)),
             depth24: is("MGE_XE_DEPTH_FORMAT", "24"),
+            depth_plain: is("MGE_XE_DEPTH_REVERSED", "0"),
             particle_quads_cpu: is("MGE_XE_PARTICLE_QUADS", "cpu"),
             instance_upload_all: is("MGE_XE_INSTANCE_UPLOAD", "all"),
             lazy_pass: on_unless_0("MGE_XE_LAZY_PASS"),

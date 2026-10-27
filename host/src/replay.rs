@@ -149,7 +149,7 @@ impl Replay for Replayer<'_> {
                 data.view = multiply64(&change, &old).map(|v| v as f32);
             }
             if let Some(projection) = view.projection {
-                data.projection = projection;
+                data.projection = crate::depth::gpu_projection(&projection);
             }
             data.pixel = [1.0 / view.target_size.0.max(1) as f32, -1.0 / view.target_size.1.max(1) as f32, 0.0, 0.0];
             if let Some(plane) = view.clip_plane {

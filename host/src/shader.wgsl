@@ -442,8 +442,9 @@ fn vs(in: VertexIn) -> VertexOut {
         out.world_position = transpose(mat3x3f(v[0].xyz, v[1].xyz, v[2].xyz)) * view_position.xyz;
     }
     if (draw_counts_w() & 4u) != 0u {
-        // The dome is behind all other things.
-        out.clip.z = 0.999999 * out.clip.w;
+        // The dome is behind all other things: just in front of the far plane (0 when the
+        // depth is reversed).
+        out.clip.z = select(0.999999, 0.000001, DEPTH_REVERSED) * out.clip.w;
     }
     // With bit 128 the extension makes the light for each pixel, and this stage makes none.
     // A draw that the extension only finishes (bit 1 alone: its fog, its shadow) keeps the

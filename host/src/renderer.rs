@@ -341,11 +341,16 @@ impl Renderer {
         // The format of the depth: a float depth with a stencil when the adapter has it.
         let float_depth = adapter.features().contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) && !switches().depth24;
         let depth_format = if float_depth { wgpu::TextureFormat::Depth32FloatStencil8 } else { DEPTH_FORMAT };
+        // A float depth is reversed: near 1, far 0 (`depth`). A fixed-point depth gains
+        // nothing from it.
+        depth::set_reversed(float_depth && !switches().depth_plain);
         println!(
-            "depth: {:?} (the adapter {} Depth32FloatStencil8{})",
+            "depth: {:?}, {} (the adapter {} Depth32FloatStencil8{}{})",
             depth_format,
+            if depth::reversed() { "reversed" } else { "plain" },
             if adapter.features().contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) { "has" } else { "lacks" },
-            if switches().depth24 { "; MGE_XE_DEPTH_FORMAT=24" } else { "" }
+            if switches().depth24 { "; MGE_XE_DEPTH_FORMAT=24" } else { "" },
+            if switches().depth_plain { "; MGE_XE_DEPTH_REVERSED=0" } else { "" }
         );
         // The samples for each pixel of the targets of the frame: the largest count up to the
         // wanted one that the adapter has for the colour format, with a resolve, and for the
@@ -420,7 +425,8 @@ impl Renderer {
         // is in the storage buffer of the frame (`draws[record]`, see shader.wgsl).
         let extension_shader = retained::rewrite_extension_text(&extension_shader.replace("draw.", "draws[record]."));
         let text = include_str!("shader.wgsl").to_string();
-        let source = format!("{text}\n{extension_shader}");
+        // The depth functions after the text: it begins with its `enable` directives.
+        let source = format!("{text}\n{}\n{extension_shader}", depth::wgsl());
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let array_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("draw texture arrays"),
@@ -1626,7 +1632,7 @@ impl Renderer {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: self.depth_format,
                     depth_write_enabled: Some(depth_on && key.depth[1] != 0),
-                    depth_compare: Some(if depth_on { compare(key.depth[2]) } else { wgpu::CompareFunction::Always }),
+                    depth_compare: Some(if depth_on { depth::compare(compare(key.depth[2])) } else { wgpu::CompareFunction::Always }),
                     stencil: if key.stencil[0] == 0 {
                         Default::default()
                     } else {
