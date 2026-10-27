@@ -218,6 +218,9 @@ MGE-XE-G7 render-link worktree.
   over the setting of the extension.
 - `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the setting
   of the extension: for an A/B of the mouse's lag.
+- `MGE_XE_WAIT_YIELDS=<n>`: the looks with a yield before the helper blocks on the ring's event
+  when no record waits (256 without it); 0 blocks at once, also while the game writes its
+  frame. For the A/B of the helper's CPU in its wait for the game.
 - `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over the vsync
   setting of the extension (`graphics.vsync` of mgeXE.toml: FIFO with vsync on, else
   `AutoNoVsync`).

@@ -54,6 +54,30 @@ pub(crate) fn announce_exit(code: u32) {
     }
 }
 
+/// What the wait for a record does after a look that found none.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum LookAction {
+    /// A yield, then the next look.
+    Yield,
+    /// The game writes its frame: the looks with a yield start again.
+    Again,
+    /// A block on the ring's event.
+    Block,
+}
+
+/// The action after the `looks`-th look with no record (from 1), with `yields` looks that
+/// yield (`MGE_XE_WAIT_YIELDS`, 256): `yields` yields, then a block, or the yields again
+/// while the game writes (`game_writes`, read only then). With 0 the wait blocks at once.
+fn look_action(looks: u32, yields: u32, game_writes: impl FnOnce() -> bool) -> LookAction {
+    if looks <= yields {
+        LookAction::Yield
+    } else if yields > 0 && game_writes() {
+        LookAction::Again
+    } else {
+        LookAction::Block
+    }
+}
+
 /// Where the game is when this program has no record: [`Ring::game_phase`].
 #[derive(Clone, Copy, PartialEq)]
 enum GamePhase {
@@ -761,11 +785,12 @@ impl ApplicationHandler for App {
         let waiting = Instant::now();
         let mut idle_since: Option<Instant> = None;
         // The clock is read once in 256 spins: a read in each spin is too costly. The
-        // first 256 looks for a record yield; after them this
+        // first looks for a record yield (256, or `MGE_XE_WAIT_YIELDS`); after them this
         // program blocks on the event, so that the game wakes it only at a real gap
         // (between the frames), not after every record.
         let mut spins: u32 = 0;
         let mut looks: u32 = 0;
+        let yields = switches().wait_yields.unwrap_or(256);
         loop {
             // The device is lost: nothing draws any more. The records are read and dropped,
             // so that the game does not wait for this program. A request that the game waits
@@ -833,15 +858,14 @@ impl ApplicationHandler for App {
                     return;
                 }
                 looks += 1;
-                if looks < 256 {
-                    std::thread::yield_now();
-                } else {
-                    let phase = self.ring.game_phase();
-                    if phase == GamePhase::Writes {
-                        // The game writes the frame now: the next record comes soon. Wait
-                        // awake, and look at the phase again in 256 looks.
-                        looks = 0;
-                    } else {
+                // While the game writes the frame, the next record comes soon: the wait
+                // stays awake and looks at the phase again after the same yields.
+                let game_writes = || self.ring.game_phase() == GamePhase::Writes;
+                match look_action(looks, yields, game_writes) {
+                    LookAction::Yield => std::thread::yield_now(),
+                    LookAction::Again => looks = 0,
+                    LookAction::Block => {
+                        let phase = self.ring.game_phase();
                         self.blocks[phase as usize] += 1;
                         self.ring.wait_for_record();
                     }
@@ -1163,6 +1187,31 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
 
 #[cfg(test)]
 mod tests {
+    use super::{LookAction, look_action};
+
+    /// The actions of the looks 1, 2, ... until the first that is not a yield.
+    fn looks_until_not_yield(yields: u32, game_writes: bool) -> (u32, LookAction) {
+        let mut looks = 0;
+        loop {
+            looks += 1;
+            let action = look_action(looks, yields, || game_writes);
+            if action != LookAction::Yield {
+                return (looks - 1, action);
+            }
+        }
+    }
+
+    #[test]
+    fn n_wait_yields_are_n_yields_then_a_block_or_the_yields_again() {
+        for yields in [1, 2, 32, 256] {
+            assert_eq!(looks_until_not_yield(yields, false), (yields, LookAction::Block), "yields {yields}");
+            // While the game writes: the same yields again, never a look with no yield.
+            assert_eq!(looks_until_not_yield(yields, true), (yields, LookAction::Again), "yields {yields}");
+        }
+        // 0 blocks at once, also while the game writes, without a look at the phase.
+        assert_eq!(look_action(1, 0, || panic!("the phase is not read")), LookAction::Block);
+    }
+
     #[test]
     fn an_announced_exit_goes_into_the_ring_word_when_a_ring_is_open() {
         // No ring: nothing is written, and nothing fails.

@@ -79,6 +79,10 @@ pub(crate) struct Switches {
     /// setting of the extension ([`crate::Extension::frame_latency`]): for an A/B of the
     /// mouse's lag.
     pub(crate) frame_latency: Option<u32>,
+    /// `MGE_XE_WAIT_YIELDS=<n>`: the looks with a yield before this program blocks on the
+    /// ring's event when no record waits (256 without it); 0 blocks at once, also while the
+    /// game writes its frame. For the A/B of the helper's CPU in the wait.
+    pub(crate) wait_yields: Option<u32>,
     /// `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over
     /// the setting of the extension ([`crate::Extension::vsync`]), for a test.
     pub(crate) present: Option<wgpu::PresentMode>,
@@ -132,6 +136,7 @@ impl Switches {
             lazy_pass: read.on("MGE_XE_LAZY_PASS") != Some(false),
             pass_groups: read.on("MGE_XE_PASS_GROUPS") != Some(false),
             frame_latency: read.number::<u32>("MGE_XE_FRAME_LATENCY").map(|n| n.clamp(1, 3)),
+            wait_yields: read.number::<u32>("MGE_XE_WAIT_YIELDS"),
             present: read.choice("MGE_XE_PRESENT", &["immediate", "mailbox", "fifo", "auto"]).map(|mode| match mode {
                 "immediate" => Immediate,
                 "mailbox" => Mailbox,
