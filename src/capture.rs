@@ -287,6 +287,7 @@ extern "system" {
 #[link(name = "user32")]
 extern "system" {
     fn PeekMessageA(message: *mut [u32; 7], window: usize, first: u32, last: u32, flags: u32) -> i32;
+    fn MsgWaitForMultipleObjects(count: u32, handles: *const isize, all: i32, milliseconds: u32, wake: u32) -> u32;
 }
 
 /// One step of a wait for the host program. The thread answers the window messages that
@@ -299,10 +300,23 @@ extern "system" {
 /// marked the game's window hung ("Not Responding") 5 seconds after it lost the focus, while the
 /// game ran (a test of 2026-10-27).
 pub(crate) unsafe fn wait_step() {
-    // PM_NOREMOVE.
+    look_at_messages();
+    Sleep(0);
+}
+
+/// A look at the queue of the game's windows: the sent messages are answered, no message is
+/// taken out (PM_NOREMOVE).
+pub(crate) unsafe fn look_at_messages() {
     let mut message = [0u32; 7];
     PeekMessageA(&mut message, 0, 0, 0, 0);
-    Sleep(0);
+}
+
+/// One step of a wait for an answer of the helper that has no event (the pixel and the tile
+/// reads): asleep until a message or input comes for the game's windows, or 1 ms passes;
+/// then the sent messages are answered. The core is free while the game waits.
+pub(crate) unsafe fn wait_a_moment() {
+    MsgWaitForMultipleObjects(0, core::ptr::null(), 0, 1, WAIT_WAKE_MASK);
+    look_at_messages();
 }
 
 /// The wake mask of a wait for the host program: QS_ALLINPUT. A sent message wakes the wait, so
@@ -384,6 +398,10 @@ pub(crate) const RING_DONE_TIME: usize = 56;
 /// from the end of a frame to the start of the next), written by the pacing: while the game
 /// writes a frame the helper waits for its records awake, and else it sleeps.
 pub(crate) const RING_NEXT_START: usize = 64;
+/// The game waits for the helper to read (1 while it does: for room in the ring, or for the
+/// frame before the last one at the end of a frame): the helper sets the event
+/// `<name>-read` after a read only then, and the game's wait ends on it.
+const RING_GAME_WAITING: usize = 72;
 /// The start of the frame of the game in progress, in ticks of the performance counter, for
 /// the age of the picture in the debug overlay: the end of the wait of the frame before
 /// ([`crate::pacing`] at the start of the frame, else after the wait at Present).
@@ -399,6 +417,13 @@ struct Ring {
     /// while the helper says it waits ([`RING_WAITING`]); the times it was set.
     event: isize,
     wakes: u64,
+    /// The event the game waits on for a read of the helper: `<name>-read`, set by the helper
+    /// after a read while the game says it waits ([`RING_GAME_WAITING`]); the waits of the
+    /// game on it, and those that the event ended (the others ended by the time limit of a
+    /// wait or by a message for the game's windows).
+    read_event: isize,
+    read_waits: u64,
+    read_wakes: u64,
     /// The time that the game waited for room, in ticks.
     waited: i64,
     /// The bytes that the game wrote up to the end of the frame before the last one, and the
@@ -440,8 +465,11 @@ impl Ring {
         let mut event_name = format!("{name}-records").into_bytes();
         event_name.push(0);
         let event = CreateEventA(core::ptr::null(), 0, 0, event_name.as_ptr());
+        let mut read_name = format!("{name}-read").into_bytes();
+        read_name.push(0);
+        let read_event = CreateEventA(core::ptr::null(), 0, 0, read_name.as_ptr());
         crate::pacing::start(mapping, name);
-        Ok(Ring { mapping, base, capacity, event, wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false, dropped: 0, largest_dropped: 0, split_textures: 0 })
+        Ok(Ring { mapping, base, capacity, event, wakes: 0, read_event, read_waits: 0, read_wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false, dropped: 0, largest_dropped: 0, split_textures: 0 })
     }
 
     unsafe fn counter(&self, offset: usize) -> &core::sync::atomic::AtomicU64 {
@@ -453,6 +481,23 @@ impl Ring {
         let first = bytes.len().min(self.capacity as usize - start);
         core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.base.add(RING_HEAD + start), first);
         core::ptr::copy_nonoverlapping(bytes.as_ptr().add(first), self.base.add(RING_HEAD), bytes.len() - first);
+    }
+
+    /// One step of a wait for a read of the helper: asleep until the helper sets the read
+    /// event after a read, or a message or input comes for the game's windows, or 1 ms
+    /// passes; then the sent messages are answered ([`wait_step`]'s look). The loops around
+    /// it test their own condition and time limit, so a set that comes before the wait, or
+    /// a missed one, costs 1 ms at most and never a hang.
+    unsafe fn wait_for_read(&mut self) {
+        let waiting = &*(self.base.add(RING_GAME_WAITING) as *const core::sync::atomic::AtomicU32);
+        waiting.store(1, Ordering::SeqCst);
+        self.read_waits += 1;
+        // WAIT_OBJECT_0: the event ended the wait.
+        if MsgWaitForMultipleObjects(1, &self.read_event, 0, 1, WAIT_WAKE_MASK) == 0 {
+            self.read_wakes += 1;
+        }
+        waiting.store(0, Ordering::SeqCst);
+        look_at_messages();
     }
 
     /// Puts one record into the ring. Returns false when the host did not make room in time.
@@ -472,7 +517,7 @@ impl Ring {
                 if ticks() - start > RING_WAIT_SECONDS * ticks_per_second() {
                     return false;
                 }
-                wait_step();
+                self.wait_for_read();
             }
             self.waited += ticks() - start;
         }
@@ -509,7 +554,7 @@ impl Ring {
             self.host_late = false;
             let mut moved = start;
             while read < self.frame_before {
-                wait_step();
+                self.wait_for_read();
                 let now = self.counter(RING_READ).load(Ordering::Acquire);
                 if now != read {
                     read = now;
@@ -530,6 +575,7 @@ impl Ring {
         (self.base.add(RING_CLOSED) as *mut u32).write_volatile(1);
         UnmapViewOfFile(self.base);
         CloseHandle(self.mapping);
+        CloseHandle(self.read_event);
         crate::pacing::stop();
     }
 }
@@ -669,7 +715,7 @@ unsafe fn ask_pixels(lock: &DeviceLock, texture: u32) -> Option<(u32, u32)> {
             HELPER_SILENT.store(true, Ordering::Relaxed);
             return None;
         }
-        wait_step();
+        wait_a_moment();
     }
     reply.waited += ticks() - start;
     Some(((reply.base.add(4) as *const u32).read_volatile(), (reply.base.add(8) as *const u32).read_volatile()))
@@ -783,7 +829,7 @@ pub unsafe fn wait_tile(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
             HELPER_SILENT.store(true, Ordering::Relaxed);
             return None;
         }
-        wait_step();
+        wait_a_moment();
     }
 }
 
@@ -1159,10 +1205,12 @@ pub unsafe fn stop() {
         Some(Sink::File(mut out)) => s.failed |= out.flush().is_err(),
         Some(Sink::Ring(mut ring)) => {
             crate::log!(
-                "stream: the game waited {:.1} ms in all for room in the ring, and {:.1} ms in all for the host program at the ends of the frames; it woke the host program {} times",
+                "stream: the game waited {:.1} ms in all for room in the ring, and {:.1} ms in all for the host program at the ends of the frames; it woke the host program {} times; its {} waits for a read of the host program ended by the host program's event {} times",
                 ring.waited as f64 * 1000.0 / ticks_per_second() as f64,
                 ring.paced as f64 * 1000.0 / ticks_per_second() as f64,
-                ring.wakes
+                ring.wakes,
+                ring.read_waits,
+                ring.read_wakes
             );
             crate::log!("stream: {}", crate::sync::lock_wait_report());
             if ring.split_textures > 0 || ring.dropped > 0 {

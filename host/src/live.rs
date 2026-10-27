@@ -34,6 +34,9 @@ const RING_HEAD: usize = 128;
 const RING_WRITTEN: usize = 8;
 const RING_READ: usize = 16;
 const RING_CLOSED: usize = 24;
+/// The game waits for a read of this program (1 while it does): the event `<ring>-read` is
+/// set after a read only then (`capture.rs` of the plugin, `RING_GAME_WAITING`).
+const RING_GAME_WAITING: usize = 72;
 /// The classes of the game that the helper draws itself, for the plugin ([`Player::takes`]).
 const RING_TAKES: usize = 32;
 /// 1 while this program waits for a record: the plugin sets the event of the ring
@@ -71,6 +74,10 @@ struct Ring {
     /// The event `<ring>-shown` of the pacing, set when this program has shown a frame; 0
     /// without the pacing.
     shown_event: isize,
+    /// The event `<ring>-read`, set after a read while the game says it waits for one
+    /// ([`RING_GAME_WAITING`]); 0 with a plugin that has none (the game's wait then ends by
+    /// its own time limit).
+    read_event: isize,
 }
 
 impl Ring {
@@ -94,7 +101,10 @@ impl Ring {
                 let mut shown_name = format!("{name}-shown").into_bytes();
                 shown_name.push(0);
                 let shown_event = unsafe { OpenEventA(0x1F0003, 0, shown_name.as_ptr()) };
-                return Ring { base, capacity, event, shown_event };
+                let mut read_name = format!("{name}-read").into_bytes();
+                read_name.push(0);
+                let read_event = unsafe { OpenEventA(0x1F0003, 0, read_name.as_ptr()) };
+                return Ring { base, capacity, event, shown_event, read_event };
             }
             assert!(start.elapsed() < Duration::from_secs(60), "no shared memory with the name {name}");
             std::thread::sleep(Duration::from_millis(50));
@@ -191,7 +201,13 @@ impl Ring {
         let length = u32::from_le_bytes(head[4..8].try_into().unwrap()) as usize;
         data.resize(length, 0);
         self.copy_out(read + 8, data);
-        self.counter(RING_READ).store(read + 8 + length as u64, Ordering::Release);
+        self.counter(RING_READ).store(read + 8 + length as u64, Ordering::SeqCst);
+        // The game waits for a read: wake it. The store above and this load are SeqCst, as
+        // the game's store of the word and its load of the count are, so that one of the
+        // two sides sees the other's store.
+        if self.read_event != 0 && unsafe { &*(self.base.add(RING_GAME_WAITING) as *const std::sync::atomic::AtomicU32) }.load(Ordering::SeqCst) != 0 {
+            unsafe { SetEvent(self.read_event) };
+        }
         Some(tag)
     }
 }
