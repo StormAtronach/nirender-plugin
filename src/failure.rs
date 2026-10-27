@@ -13,8 +13,10 @@
 //! [`LUA_ANSWER_SECONDS`] (an error in its handler at each frame), `after_present` shows the
 //! box itself, with "No save was possible".
 //!
-//! The box runs on a thread of its own (`show`): the game's thread goes on and takes Alt+F4 at
-//! once. `MGE_XE_BOX_SECONDS=<n>` closes it after n seconds, for a test.
+//! The box runs on a thread of its own (`show`), and it is a stop box: when it closes (one OK,
+//! one Alt+F4 on it, or the time of `MGE_XE_BOX_SECONDS=<n>` in a test) its thread posts
+//! `WM_CLOSE` to the game's window, and the game closes as from its own close button (the
+//! failure-path design, section 5 "The close rule"). The save is made before the box.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -26,6 +28,7 @@ use crate::stream_format::{EXIT_NOT_ANSWERING, EXIT_STALLED, STALL_SECONDS};
 #[link(name = "user32")]
 extern "system" {
     fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
+    fn PostMessageW(window: isize, message: u32, w: usize, l: isize) -> i32;
 }
 
 /// `MessageBoxTimeoutW` of user32: a box that closes itself after the milliseconds. Exported
@@ -214,12 +217,27 @@ fn show(text: &str) {
                 (_, Some(with_timeout)) => with_timeout(0, text.as_ptr(), caption.as_ptr(), kind, 0, seconds * 1000),
                 (_, None) => {
                     crate::log!("box: not shown: this Windows has no MessageBoxTimeoutW");
-                    return;
+                    0
                 }
             }
         };
         crate::log!("{}", closed_line(shown.elapsed(), seconds));
+        close_the_game();
     });
+}
+
+/// The stop box closed: the game closes, as from its own close button. The game is blind
+/// after the failure, and the save is made before the box.
+fn close_the_game() {
+    const WM_CLOSE: u32 = 0x10;
+    let window = crate::own_device::game_window();
+    if window == 0 {
+        crate::log!("box: the game has no window to close");
+        return;
+    }
+    // SAFETY: a post of a message to a window of this process; a window that is gone takes none.
+    let posted = unsafe { PostMessageW(window as isize, WM_CLOSE, 0, 0) } != 0;
+    crate::log!("box: the game is closed ({})", if posted { "WM_CLOSE to its window" } else { "the post failed" });
 }
 
 /// The log line after the box: a box with a time limit that stayed up for the limit was
@@ -242,13 +260,13 @@ unsafe fn message_box_timeout() -> Option<MessageBoxTimeout> {
     (!function.is_null()).then(|| core::mem::transmute::<*mut core::ffi::c_void, MessageBoxTimeout>(function))
 }
 
-/// The NOW line of the box: what the player does. The game has no picture any more, so its
-/// menu cannot be seen: the close of the window (Alt+F4) is the way out.
+/// The NOW line of the box: what the player does. The game has no picture any more: the box
+/// closes the game when it closes.
 fn now_line(save: Option<&str>, why: Option<&str>) -> String {
     match (save, why) {
-        (Some(save), _) => format!("The game was saved as \"{save}\": close the game with Alt+F4 (the menu cannot be seen), start it again and load it."),
-        (None, Some(why)) => format!("No save was possible {why}: close the game with Alt+F4 and start it again."),
-        (None, None) => "No save was possible: close the game with Alt+F4 and start it again.".to_string(),
+        (Some(save), _) => format!("The game was saved as \"{save}\". Close this box: the game closes. Start it again and load the save."),
+        (None, Some(why)) => format!("No save was possible {why}. Close this box: the game closes. Start it again."),
+        (None, None) => "No save was possible. Close this box: the game closes. Start it again.".to_string(),
     }
 }
 
@@ -286,10 +304,10 @@ mod tests {
     fn the_box_has_the_four_parts() {
         let text = box_text(Cause::Stalled, &now_line(Some("MGE XE autosave 2026-10-27 12:00"), None));
         assert!(text.starts_with("The wgpu renderer of MGE XE (numidium.exe) has stopped.\nIt stalled for 5 s (exit code 30).\n\n"));
-        assert!(text.contains("The game was saved as \"MGE XE autosave 2026-10-27 12:00\": close the game with Alt+F4 (the menu cannot be seen), start it again and load it."));
+        assert!(text.contains("The game was saved as \"MGE XE autosave 2026-10-27 12:00\". Close this box: the game closes. Start it again and load the save."));
         assert!(text.ends_with("the minidump numidium.dmp after a crash of the renderer."));
-        assert_eq!(now_line(None, Some("in this state")), "No save was possible in this state: close the game with Alt+F4 and start it again.");
-        assert_eq!(now_line(None, None), "No save was possible: close the game with Alt+F4 and start it again.");
+        assert_eq!(now_line(None, Some("in this state")), "No save was possible in this state. Close this box: the game closes. Start it again.");
+        assert_eq!(now_line(None, None), "No save was possible. Close this box: the game closes. Start it again.");
     }
 
     #[test]

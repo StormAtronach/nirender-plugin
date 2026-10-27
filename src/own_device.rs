@@ -61,6 +61,14 @@ extern "system" {
 /// file.
 static HOST_PROCESS: AtomicIsize = AtomicIsize::new(0);
 static HOST_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// The window of the game that the device draws into, from the start of the stream, or 0:
+/// a stop box closes it when the box closes (`failure.rs`).
+static GAME_WINDOW: AtomicUsize = AtomicUsize::new(0);
+
+/// The window of the game, or 0 before the device is made.
+pub fn game_window() -> usize {
+    GAME_WINDOW.load(Ordering::Relaxed)
+}
 
 /// The game showed a frame. When the host program has ended, no new picture goes into the
 /// window: the plugin logs the exit code and starts the failure path (`failure`: the
@@ -421,6 +429,7 @@ unsafe fn device_window(s: &State) -> u32 {
 /// NIRENDER_HOST_EXE names, or the one in the folder of this plugin.
 unsafe fn start_stream(s: &State) {
     crate::own_host::activate();
+    GAME_WINDOW.store(device_window(s) as usize, Ordering::Relaxed);
     let name = format!("nirender-{}", GetCurrentProcessId());
     let megabytes = std::env::var("NIRENDER_RING_MB").ok().and_then(|text| text.parse().ok()).unwrap_or(64);
     if let Err(problem) = crate::capture::start_direct(&name, megabytes, s.parameters[0], s.parameters[1], device_window(s)) {
