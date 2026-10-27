@@ -32,6 +32,7 @@ Test build of MGE XE G7 with the wgpu renderer. Read `MGE XE Renderer Readme.md`
 Windows 11, NVIDIA RTX 5070, 1920 x 1080, Vulkan, started from Mod Organizer, with the files of this archive (its plugin and its MWSE.dll):
 
 - {gate}
+  (release.py fills the token; with `--no-gate` write the line yourself as "the capture gate (run by hand): N of M pictures equal to the accepted ones")
 - The live checks through the mwse-mcp bridge, in one game session, run folder `YYYYmmdd-HHMMSS-label` under `nirender-plugin/results`: what was checked and what it showed.
 
 ### Sources

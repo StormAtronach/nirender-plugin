@@ -54,8 +54,8 @@ The steps:
    helper in it, the one that ships. A failed gate stops the release. Its result lines go
    into the notes in place of the token `{gate}` of their Tested block; the filled notes are
    written to `dist/notes-<tag>.md` and published. The notes follow
-   `tools/notes-template.md`: their Tested block must hold the token (or the gate's result
-   line, with `--no-gate`) and the run folder of the live checks through the mwse-mcp
+   `tools/notes-template.md`: their Tested block must hold the token (or, with `--no-gate`,
+   the gate's result line marked "run by hand") and the run folder of the live checks through the mwse-mcp
    bridge (`YYYYmmdd-HHMMSS-label` under `results`), written by hand; a release stops at
    the start without them. `--no-gate` skips the gate.
    Before the gate, the archive gets `MANIFEST.txt`: the commits of the two repositories, the
@@ -174,7 +174,10 @@ def unit_tests(mge):
 
 
 GATE_TOKEN = "{gate}"
-GATE_RESULT = re.compile(r"\d+ of \d+ pictures equal to the accepted ones in \S+")
+GATE_RESULT = re.compile(r"\d+ of \d+ pictures equal to the accepted ones(?: in \S+)?")
+# A gate result written by hand into the notes (with `--no-gate`) carries this mark, so that
+# it does not read like the tool's.
+BY_HAND = "run by hand"
 
 
 def unpack(mge, asset):
@@ -305,8 +308,8 @@ def tested_block_problems(notes, gated):
         problems.append("no 'Tested' heading")
     if gated and GATE_TOKEN not in block:
         problems.append("no %s token for the gate's result" % GATE_TOKEN)
-    if not gated and not GATE_RESULT.search(block):
-        problems.append("no result line of the gate (N of M pictures equal to the accepted ones in ...)")
+    if not gated and not (GATE_RESULT.search(block) and BY_HAND in block):
+        problems.append("no result line of the gate marked (%s): N of M pictures equal to the accepted ones" % BY_HAND)
     if not RUN_FOLDER.search(block):
         problems.append("no run folder of the live checks (YYYYmmdd-HHMMSS-label)")
     return problems
@@ -403,10 +406,12 @@ def self_test():
     assert plugin_of_the_build(os.path.join("C:\\", "repos", "MGE-XE-G7-render-link")) == os.path.realpath(os.path.join("C:\\", "repos", "nirender-plugin"))
     good = "## Changes\n\n- a\n\n## Tested\n\n- {gate}\n- The live checks, run folder `20261027-120302-mge-findings-live2`: the loads wait.\n"
     assert tested_block_problems(good, gated=True) == []
-    by_hand = good.replace("{gate}", "the capture gate: 206 of 206 pictures equal to the accepted ones in now")
+    by_hand = good.replace("{gate}", "the capture gate (run by hand): 206 of 206 pictures equal to the accepted ones")
     assert tested_block_problems(by_hand, gated=False) == []
     assert tested_block_problems(by_hand, gated=True) == ["no {gate} token for the gate's result"]
-    assert tested_block_problems(good, gated=False) == ["no result line of the gate (N of M pictures equal to the accepted ones in ...)"]
+    unmarked = good.replace("{gate}", "the capture gate: 206 of 206 pictures equal to the accepted ones in now")
+    assert tested_block_problems(unmarked, gated=False) == ["no result line of the gate marked (run by hand): N of M pictures equal to the accepted ones"]
+    assert tested_block_problems(good, gated=False) == ["no result line of the gate marked (run by hand): N of M pictures equal to the accepted ones"]
     assert tested_block_problems("## Tested\n\n- {gate}\n", gated=True) == ["no run folder of the live checks (YYYYmmdd-HHMMSS-label)"]
     # The token and the folder count inside the Tested block only.
     assert len(tested_block_problems("- {gate} 20261027-120302-x\n\n## Changes\n", gated=True)) == 3
