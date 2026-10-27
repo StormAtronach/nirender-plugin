@@ -55,6 +55,11 @@ The steps:
    line, with `--no-gate`) and the run folder of the live checks through the mwse-mcp
    bridge (`YYYYmmdd-HHMMSS-label` under `results`), written by hand; a release stops at
    the start without them. `--no-gate` skips the gate.
+   Before the gate, the archive gets `MANIFEST.txt`: the commits of the two repositories, the
+   compiler, and the SHA-256, the size and the path of each of its files. Then the SHA-256 of
+   the archive itself goes beside it as `<archive>.sha256` (the format of `sha256sum`), up
+   with the release as a second asset, and into the notes in place of the token `{sha256}`,
+   so that a player can check a download.
 4. All other releases of the repository are deleted, so that a tester finds one build only.
    Their tags stay. `--keep-old` leaves the releases.
 
@@ -64,6 +69,7 @@ checks of step 1 then only print what would stop a release. A test of the archiv
 The tool starts no game.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -141,17 +147,23 @@ GATE_TOKEN = "{gate}"
 GATE_RESULT = re.compile(r"\d+ of \d+ pictures equal to the accepted ones in \S+")
 
 
-def gate(mge, asset, dry_run):
-    """Unpacks the archive into `<mge>/target/release-gate` and replays the captures of the
-    baseline on the helper in it (`validate_retained.py baseline --mge-build <that folder>`:
-    the helper that ships, not the one in bin). Returns the result lines ("N of M pictures
-    equal to the accepted ones in ..."); a failed gate stops the release."""
+def unpack(mge, asset):
+    """Unpacks the archive into `<mge>/target/release-gate` (made anew) and returns that
+    folder: the files that ship, for the manifest and for the gate."""
     folder = os.path.join(mge, "target", "release-gate")
     if os.path.isdir(folder):
         shutil.rmtree(folder)
     run([seven_zip(), "x", "-y", "-o" + folder, asset], capture=True)
     assert os.path.isfile(os.path.join(folder, "numidium.exe")), "the archive has no numidium.exe at its root"
-    print("the gate on the helper of %s" % asset, flush=True)
+    return folder
+
+
+def gate(folder, dry_run):
+    """Replays the captures of the baseline on the helper in the unpacked archive
+    (`validate_retained.py baseline --mge-build <folder>`: the helper that ships, not the one
+    in bin). Returns the result lines ("N of M pictures equal to the accepted ones in ...");
+    a failed gate stops the release."""
+    print("the gate on the helper of %s" % folder, flush=True)
     result = subprocess.run([sys.executable, "-I", os.path.join(HERE, "validate_retained.py"), "baseline", "--mge-build", folder], capture_output=True, text=True, cwd=PLUGIN)
     print(result.stdout + result.stderr, flush=True)
     lines = GATE_RESULT.findall(result.stdout)
@@ -160,14 +172,91 @@ def gate(mge, asset, dry_run):
     return lines
 
 
-def fill_gate(notes, lines):
-    """The notes with the gate's result lines in place of the token `{gate}` of their Tested
-    block, without the local folders the lines end with ("in <path>"); None when the notes
-    have no token."""
-    if GATE_TOKEN not in notes:
-        return None
-    counts = [re.sub(r" in \S+$", "", line) for line in lines]
-    return notes.replace(GATE_TOKEN, "the capture gate: " + "; ".join(counts))
+def gate_text(lines):
+    """The gate's result for the notes: its result lines without the local folders they end
+    with ("in <path>")."""
+    return "the capture gate: " + "; ".join(re.sub(r" in \S+$", "", line) for line in lines)
+
+
+SHA_TOKEN = "{sha256}"
+
+
+def fill_tokens(notes, values):
+    """The notes with each token (`{gate}`, `{sha256}`) replaced by its value."""
+    for token, value in values.items():
+        notes = notes.replace(token, value)
+    return notes
+
+
+def notes_problems(notes, gated):
+    """What is missing from the notes: the Tested block's parts, and the token `{sha256}`
+    for the archive's checksum."""
+    problems = tested_block_problems(notes, gated)
+    if SHA_TOKEN not in notes:
+        problems.append("no %s token for the archive's SHA-256" % SHA_TOKEN)
+    return problems
+
+
+def sha256_of(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for block in iter(lambda: source.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def checksum_line(digest, name):
+    """One line in the format of `sha256sum`, which checks it: `sha256sum -c <file>`."""
+    return "%s  %s\n" % (digest, name)
+
+
+def file_digests(folder):
+    """Each file under `folder`: its path from the folder with slashes, its size and its
+    SHA-256, sorted by path."""
+    entries = []
+    for root, _, names in os.walk(folder):
+        for name in names:
+            path = os.path.join(root, name)
+            entries.append((os.path.relpath(path, folder).replace("\\", "/"), os.path.getsize(path), sha256_of(path)))
+    return sorted(entries)
+
+
+def manifest_text(archive, provenance, entries):
+    """The text of MANIFEST.txt: the archive's name, where its parts come from (`provenance`:
+    a line of text), then one line for each file: its SHA-256, its size in bytes and its
+    path from the root of the archive."""
+    lines = ["THE FILES OF " + archive, "", provenance, "", "Each file: its SHA-256, its size in bytes, its path from the root of the archive.", ""]
+    lines += ["%s  %d  %s" % (digest, size, path) for path, size, digest in entries]
+    return "\n".join(lines) + "\n"
+
+
+def provenance(mge, plugin_tag):
+    """The commits of the two repositories and the compiler of the MGE XE tree, in one line."""
+    environment = {key: value for key, value in os.environ.items() if key != "RUSTUP_TOOLCHAIN"}
+    mge_commit = run(["git", "-C", mge, "rev-parse", "--short", "HEAD"], capture=True).strip()
+    plugin_commit = run(["git", "-C", PLUGIN, "rev-parse", "--short", "HEAD"], capture=True).strip()
+    compiler = run(["rustc", "--version"], cwd=mge, capture=True, env=environment).strip()
+    return "MGE XE G7 at %s; nirender at %s (the tag %s); built with %s." % (mge_commit, plugin_commit, plugin_tag, compiler)
+
+
+def write_text(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as out:
+        out.write(text)
+
+
+def add_to_archive(asset, additions, stage):
+    """Puts each (source, path) of `additions` into the archive at `path` from its root: the
+    files go into `stage`, a folder laid out as the archive, and 7-Zip adds its entries."""
+    if os.path.isdir(stage):
+        shutil.rmtree(stage)
+    for source, path in additions:
+        os.makedirs(os.path.dirname(os.path.join(stage, path)) or stage, exist_ok=True)
+        shutil.copy2(source, os.path.join(stage, path))
+    tops = sorted({path.split("/")[0] for _, path in additions})
+    run([seven_zip(), "a", "-t7z", "-mx=9", asset] + tops, cwd=stage)
+    for source, path in additions:
+        print("added %s as %s" % (source, path))
 
 
 RUN_FOLDER = re.compile(r"\b\d{8}-\d{6}-[A-Za-z0-9][A-Za-z0-9-]*")
@@ -266,8 +355,15 @@ def self_test():
     # A file named whole matches itself only, not a longer name that starts with it.
     assert untracked_in_sources(["?? Cargo.toml.orig"], PLUGIN_SOURCES) == []
     lines = ["2 of 2 pictures equal to the accepted ones in a", "206 of 206 pictures equal to the accepted ones in b"]
-    assert fill_gate("## Tested\n\n- {gate}\n", lines) == "## Tested\n\n- the capture gate: 2 of 2 pictures equal to the accepted ones; 206 of 206 pictures equal to the accepted ones\n"
-    assert fill_gate("## Tested\n\n- the gate by hand\n", lines) is None
+    assert gate_text(lines) == "the capture gate: 2 of 2 pictures equal to the accepted ones; 206 of 206 pictures equal to the accepted ones"
+    assert fill_tokens("- {gate}\n- SHA-256 `{sha256}`\n", {GATE_TOKEN: "g", SHA_TOKEN: "abc"}) == "- g\n- SHA-256 `abc`\n"
+    assert fill_tokens("- the gate by hand\n", {GATE_TOKEN: "g"}) == "- the gate by hand\n"
+    assert checksum_line("ab" * 32, "x.7z") == "ab" * 32 + "  x.7z\n"
+    manifest = manifest_text("x.7z", "MGE XE G7 at 1; nirender at 2.", [("Data Files/a.dds", 12, "cd" * 32), ("d3d8.dll", 3, "ef" * 32)])
+    assert manifest.startswith("THE FILES OF x.7z\n\nMGE XE G7 at 1; nirender at 2.\n\n")
+    assert manifest.endswith("\n%s  12  Data Files/a.dds\n%s  3  d3d8.dll\n" % ("cd" * 32, "ef" * 32)), manifest
+    assert notes_problems("## Tested\n\n- {gate}\n- run 20261027-120302-x\n", gated=True) == ["no {sha256} token for the archive's SHA-256"]
+    assert notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- run 20261027-120302-x\n", gated=True) == []
     assert GATE_RESULT.findall("  ok   " + lines[0] + "\n  FAIL  1 of 2 pictures equal to the accepted ones in c\n") == [lines[0], "1 of 2 pictures equal to the accepted ones in c"]
     assert render_link_tag("v0.3.3") == "nirender-v0.3.3"
     good = "## Changes\n\n- a\n\n## Tested\n\n- {gate}\n- The live checks, run folder `20261027-120302-mge-findings-live2`: the loads wait.\n"
@@ -305,9 +401,9 @@ def main():
 
     assert os.path.isfile(args.notes), args.notes
     notes = open(args.notes, encoding="utf-8").read()
-    problems = tested_block_problems(notes, gated=not args.no_gate)
+    problems = notes_problems(notes, gated=not args.no_gate)
     if problems:
-        stop("the notes' Tested block (tools/notes-template.md): %s" % "; ".join(problems), args.dry_run)
+        stop("the notes (tools/notes-template.md): %s" % "; ".join(problems), args.dry_run)
     sources = []
     for item in args.source:
         name, _, rest = item.partition("=")
@@ -371,38 +467,36 @@ def main():
     asset = os.path.join(args.mge, "dist", "MGE-XE-G7-v%s-nirender-%s.7z" % (mge_version, tag))
     shutil.copy2(os.path.join(args.mge, "dist", packed[0]), asset)
     if additions:
-        # The files go into a folder laid out as the archive, and 7-Zip adds its entries.
-        stage = os.path.join(args.mge, "target", "release-additions")
-        if os.path.isdir(stage):
-            shutil.rmtree(stage)
-        for source, path in additions:
-            os.makedirs(os.path.dirname(os.path.join(stage, path)) or stage, exist_ok=True)
-            shutil.copy2(source, os.path.join(stage, path))
-        tops = sorted({path.split("/")[0] for _, path in additions})
-        run([seven_zip(), "a", "-t7z", "-mx=9", asset] + tops, cwd=stage)
-        for source, path in additions:
-            print("added %s as %s" % (source, path))
+        add_to_archive(asset, additions, os.path.join(args.mge, "target", "release-additions"))
+
+    # The manifest of the archive's files goes into it; then the archive's own SHA-256 goes
+    # beside it and into the notes.
+    unpacked = unpack(args.mge, asset)
+    manifest = os.path.join(args.mge, "target", "release-manifest", "MANIFEST.txt")
+    write_text(manifest, manifest_text(os.path.basename(asset), provenance(args.mge, tag), file_digests(unpacked)))
+    add_to_archive(asset, [(manifest, "MANIFEST.txt")], os.path.dirname(manifest))
+    shutil.copy2(manifest, os.path.join(unpacked, "MANIFEST.txt"))
+    digest = sha256_of(asset)
+    checksum = asset + ".sha256"
+    write_text(checksum, checksum_line(digest, os.path.basename(asset)))
+    print("SHA-256 of %s: %s (in %s)" % (os.path.basename(asset), digest, checksum))
 
     # The gate on the helper that ships, and its result into the notes.
-    notes_path = args.notes
+    values = {SHA_TOKEN: digest}
     if args.no_gate:
         if GATE_TOKEN in notes:
             stop("--no-gate: the notes still have the token %s; write the gate's result by hand" % GATE_TOKEN, args.dry_run)
     else:
-        filled = fill_gate(notes, gate(args.mge, asset, args.dry_run))
-        if filled is None:
-            stop("the notes have no %s token in their Tested block for the gate's result" % GATE_TOKEN, args.dry_run)
-        else:
-            notes_path = os.path.join(args.mge, "dist", "notes-%s.md" % tag)
-            with open(notes_path, "w", encoding="utf-8", newline="\n") as out:
-                out.write(filled)
-            print("the notes with the gate's result: %s" % notes_path)
+        values[GATE_TOKEN] = gate_text(gate(unpacked, args.dry_run))
+    notes_path = os.path.join(args.mge, "dist", "notes-%s.md" % tag)
+    write_text(notes_path, fill_tokens(notes, values))
+    print("the notes with the checksum and the gate's result: %s" % notes_path)
 
     title = "Test build: MGE XE G7 %s with nirender %s" % (mge_version, plugin_version)
     if args.dry_run:
         print("dry run: the archive %s; not published (%s); no release deleted; the MGE XE tag %s not made" % (asset, title, mge_tag))
         return 0
-    print(run(["gh", "release", "create", tag, "--repo", args.repo, "--prerelease", "--title", title, "--notes-file", notes_path, asset], capture=True).strip())
+    print(run(["gh", "release", "create", tag, "--repo", args.repo, "--prerelease", "--title", title, "--notes-file", notes_path, asset, checksum], capture=True).strip())
     # The commit of MGE XE that the archive was built from gets the release's tag too; it
     # goes up with the release, never before it.
     run(["git", "-C", args.mge, "tag", mge_tag])
