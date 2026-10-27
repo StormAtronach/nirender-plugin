@@ -281,11 +281,8 @@ struct Tables {
     /// Risk 34, for a while: the shapes other than sorted blends that the engine did not
     /// display in a world scene and that `scene_end` left visible because an engine plane
     /// puts them out of view, by that plane ([`PLANE_NAMES`]): the helper's own frustum
-    /// decides for them, and a wider one draws what the engine does not.
+    /// decides for them, and a wider one draws in the main view what the engine does not.
     undisplayed_left: [u64; 7],
-    /// The same for the sorted blends, which `scene_end` hides: what a hide only by the far
-    /// plane would keep for the other views (the water's mirror).
-    undisplayed_blends_out: [u64; 7],
     /// The texture effects of the instances ([`EffectWatch`]), and the notes of the material
     /// of a sent instance because one of its effects changed.
     effects: HashMap<usize, EffectWatch>,
@@ -373,7 +370,6 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         scene_values: (0, None),
         scene_mixed: 0,
         undisplayed_left: [0; 7],
-        undisplayed_blends_out: [0; 7],
         effects: HashMap::default(),
         effect_notes: 0,
         texture_notes: 0,
@@ -529,16 +525,15 @@ pub unsafe fn scene_end(mt: &MainThread) {
         }
         let bound = if instance.skinned { instance.posed_bound.as_ptr() } else { instance.bound.as_ptr() } as usize;
         let outside = rejecting_plane(planes.iter().map(|&plane| thiscall1(WHICH_SIDE, bound, plane as u32)));
-        // A sorted blend the engine did not display goes hidden whatever the view, until its
-        // next display: the helper draws the blends the engine draws, each at its place in
-        // the engine's queue (risk 34). Another shape out of the engine's view stays visible
-        // and the helper's frustum decides; counted by the plane that puts it out.
-        if let Some(plane) = left_visible(outside, instance.sorted_blend) {
-            t.undisplayed_left[plane.min(PLANE_NAMES.len() - 1)] += 1;
-            continue;
-        }
+        // Out of the engine camera's view the instance stays visible and each view of the
+        // helper culls it with its own frustum. A sorted blend the engine did not display
+        // has no place in the frame, and the helper's main view does not draw it (risk 34);
+        // for a while the other shapes left so are counted by the plane that puts them out.
         if let Some(plane) = outside {
-            t.undisplayed_blends_out[plane.min(PLANE_NAMES.len() - 1)] += 1;
+            if !instance.sorted_blend {
+                t.undisplayed_left[plane.min(PLANE_NAMES.len() - 1)] += 1;
+            }
+            continue;
         }
         instance.visible = false;
         capture::instance_state(instance.id, false);
@@ -546,12 +541,6 @@ pub unsafe fn scene_end(mt: &MainThread) {
     }
 }
 
-
-/// An undisplayed instance stays visible only when it is not a sorted blend and an engine
-/// plane puts it out of view: that plane. [`None`]: it goes hidden.
-fn left_visible(outside: Option<usize>, sorted_blend: bool) -> Option<usize> {
-    outside.filter(|_| !sorted_blend)
-}
 
 /// The first plane whose side (`NiBound::WhichSide`) is 2, outside: the plane that puts the
 /// bound out of view; [`None`] in view.
@@ -2107,10 +2096,9 @@ pub unsafe fn report(mt: &MainThread) -> String {
             crate::material_stream::GROUP_NAMES.iter().zip(t.periodic_changes).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
         )
         + &format!(
-            "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk; shapes other than sorted blends the engine did not display, left visible by the plane that puts them out of the engine's view: {}; sorted blends the engine did not display, hidden while out of its view, by that plane: {}\n",
+            "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk; shapes other than sorted blends the engine did not display, left visible by the plane that puts them out of the engine's view: {}\n",
             queue_counts[0], queue_counts[1], queue_counts[2], walk_places,
-            PLANE_NAMES.iter().zip(t.undisplayed_left).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", "),
-            PLANE_NAMES.iter().zip(t.undisplayed_blends_out).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
+            PLANE_NAMES.iter().zip(t.undisplayed_left).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
         )
         + &{
             let engine = crate::shape_stream::engine_particle_records(mt);
@@ -2179,16 +2167,6 @@ mod tests {
         // Side 2 is outside: the far plane (index 1) before the top one.
         assert_eq!(rejecting_plane([0u32, 2, 0, 0, 2, 0].into_iter()), Some(1));
         assert_eq!(PLANE_NAMES[1], "far");
-    }
-
-    #[test]
-    fn an_undisplayed_sorted_blend_goes_hidden_whatever_the_view() {
-        // A sorted blend: hidden in view and out of view (risk 34).
-        assert_eq!(left_visible(None, true), None);
-        assert_eq!(left_visible(Some(1), true), None);
-        // Another shape: hidden in view; out of view it stays, with the plane counted.
-        assert_eq!(left_visible(None, false), None);
-        assert_eq!(left_visible(Some(1), false), Some(1));
     }
 
     #[test]

@@ -1953,6 +1953,13 @@ impl Player {
         if placed.is_empty() {
             self.renderer.counts.sorted_without_place_no_places += kept.len() as u64;
         }
+        // Risk 34: the engine's queue takes every blend the engine displays and the plugin
+        // writes its place, so a kept blend without one was not displayed by the engine in
+        // this frame: the main view does not draw it. A stream without the places (an older
+        // capture) keeps them between the engine's blends by depth. The other views (the
+        // water's mirror, the shadow layers) cull with their own frustum.
+        let kept = if self.stream.queue_marked { Vec::new() } else { kept };
+        self.renderer.counts.sorted_without_place_drawn += kept.len() as u64;
         // An item after the world end (the engine flushed its queue in a later scene): the
         // post-processing reads the copy of the world depth, so what these blends write goes
         // into it ([`late_depth`]): the depth before the run here, after it at the end.
