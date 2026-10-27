@@ -559,11 +559,19 @@ pub unsafe fn dtor(this: usize) {
 }
 
 /// 0x6B8FF0 `NiDX8ConfigurableTexturePipeline::create`
+///
+/// When `operator new` gives 0, the game's code goes on with a pipeline of 0 and writes
+/// through it (0x6B9063 with `flag`, else in `initFilteringAndAddressCaps`). The port logs it and
+/// returns that 0, the value the game's code has in hand, and writes nothing through it.
 pub unsafe fn create(renderer: usize, caps: usize, rs: usize, texture_manager: usize, flag: u8) -> usize {
     crate::shadow::touch(&create_port::STATE);
     engine::debug_print0(STR_CREATION_ATTEMPT);
     let memory = engine::operator_new(CTP::SIZE);
-    let this = if memory != 0 { ctor(memory, renderer, caps, rs, texture_manager, flag) } else { 0 };
+    if memory == 0 {
+        crate::log!("texture pipeline: operator new gave 0 for {} bytes; no texture pipeline (the game's code would write through 0)", CTP::SIZE);
+        return 0;
+    }
+    let this = ctor(memory, renderer, caps, rs, texture_manager, flag);
     if flag != 0 {
         wr::<u32>(this, CTP_FLAGS, rd::<u32>(this, CTP_FLAGS) | 0x40);
     }

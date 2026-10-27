@@ -311,7 +311,7 @@ unsafe fn hangs_from_copied_root(eye: &EyePair, camera: usize) -> bool {
 
 /// The module compares its matrices with the matrices of the hooks of the host.
 static COMPARE: AtomicBool = AtomicBool::new(false);
-static INSTALLED: AtomicBool = AtomicBool::new(false);
+static INSTALLED: crate::sync::InstallState = crate::sync::InstallState::new();
 /// The origin of the scene in progress: the exact position of its camera. [`None`] when the
 /// camera is not the world camera or the arm camera.
 static ORIGIN: MainCell<Option<[f64; 3]>> = MainCell::new(None);
@@ -340,16 +340,16 @@ pub unsafe fn set_compare(on: bool) -> Result<(), String> {
 /// Listens to MWSE's event for the eye. The other steps need no hook: the draw ports call
 /// this module.
 pub unsafe fn install() -> Result<(), String> {
-    if INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.begin() {
         return Ok(());
     }
-    crate::mwse_native::subscribe(crate::mwse_native::NATIVE_EVENT_CAMERA_TRANSFORMS_UPDATED, camera_transforms_updated)?;
-    INSTALLED.store(true, Ordering::Relaxed);
-    Ok(())
+    let result = crate::mwse_native::subscribe(crate::mwse_native::NATIVE_EVENT_CAMERA_TRANSFORMS_UPDATED, camera_transforms_updated);
+    INSTALLED.finish(result.is_ok());
+    result.map(|_| ())
 }
 
 pub(crate) fn own() -> bool {
-    INSTALLED.load(Ordering::Relaxed) && crate::link_client::client_camera_space() && crate::shadow::leg() != crate::shadow::Leg::Rust
+    INSTALLED.is_installed() && crate::link_client::client_camera_space() && crate::shadow::leg() != crate::shadow::Leg::Rust
 }
 
 fn compare() -> bool {
@@ -368,7 +368,7 @@ pub fn pending(t: &MainThread) -> bool {
 pub unsafe fn scene_begin(t: &MainThread, world_location: usize) -> Option<[f64; 3]> {
     *ORIGIN.get(t) = None;
     *ORIGIN_CHECKED.get(t) = false;
-    if !INSTALLED.load(Ordering::Relaxed) || world_location == 0 {
+    if !INSTALLED.is_installed() || world_location == 0 {
         return None;
     }
     // `NiCamera::Click` gives the address of the world translation of the camera.
@@ -627,10 +627,14 @@ pub const BONE_BYTES: usize = 9 * 4 + 3 * 8;
 /// The bones of a skinned shape for the record `INSTANCE_BONES`: for each bone of the skin
 /// the matrix of its rotation and scale (9 floats, by columns, as the palette has them) and
 /// its exact translation in the world (3 doubles), from the shape's exact transform. Returns
-/// the number of bones, or what is missing when the data of the skin is not complete.
+/// the number of bones, or what is missing when the data of the skin is not complete. A shape
+/// of 0 is missing data too: the function reads nothing through it (not the game's code).
 pub unsafe fn skin_bones(t: &MainThread, shape: usize, skin: usize, out: &mut Vec<u8>) -> Result<u32, &'static str> {
     let start = crate::capture::ticks();
     out.clear();
+    if shape == 0 {
+        return Err("no shape");
+    }
     let mut count = 0u32;
     skin_transforms(t, skin, &exact_transform(t, shape), |palette| {
         let scale = palette.s as f32;
@@ -744,6 +748,15 @@ pub unsafe fn report(t: &MainThread, reset: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shape of 0 gives "no shape" and reads nothing, with or without a skin.
+    #[test]
+    fn skin_bones_of_no_shape_is_missing_data() {
+        let t = MainThread::for_test();
+        let mut out = vec![1u8, 2, 3];
+        assert_eq!(unsafe { skin_bones(&t, 0, 0, &mut out) }, Err("no shape"));
+        assert!(out.is_empty());
+    }
 
     #[test]
     fn float_step_is_one_unit_in_the_last_place() {
