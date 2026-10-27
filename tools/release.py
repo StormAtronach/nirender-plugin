@@ -1,7 +1,8 @@
 """Makes a test build release on GitHub, and removes the releases before it.
 
     python tools/release.py --notes <file.md> [--max-perf] [--mge DIR] [--repo OWNER/NAME]
-        [--keep-old] [--no-build] [--add SOURCE=PATH ...] [--add-dir SOURCE=PATH ...]
+        [--keep-old] [--no-build] [--dry-run] [--add SOURCE=PATH ...] [--add-dir SOURCE=PATH ...]
+        [--source NAME=URL@COMMIT ...]
 
 The steps:
 
@@ -28,9 +29,13 @@ The steps:
    `tools/third_party_notices.py` from the MGE XE lock file), and `SOURCES.txt`, which names
    each part of the archive with its license and its source repository at its commit. The
    MGE XE and nirender commits come from the two repositories; each `--source NAME=URL@COMMIT`
-   adds a part whose binary comes from `--add` or `--add-dir`, for example
+   names a part whose files come from `--add` or `--add-dir`, for example
    `--source "MWSE.dll=https://github.com/StormAtronach/MWSE@652cb8ae31"` and
    `--source "True Water=https://github.com/StormAtronach/MWSE-water-volumes@208499f"`.
+   A release stops when it has fewer `--source` than `--add` and `--add-dir` arguments:
+   SOURCES.txt is the written offer of the source of the GPL binaries in the archive, and no
+   later step would catch a part without one. The license files are made before the build,
+   so that a problem with them costs no build.
 4. All other releases of the repository are deleted, so that a tester finds one build only.
    Their tags stay. `--keep-old` leaves the releases.
 
@@ -85,13 +90,14 @@ def sources_text(mge_url, mge_commit, plugin_url, plugin_tag, plugin_commit, sou
     """The text of SOURCES.txt: each part of the archive, its license and its source at its
     commit. `sources` is a list of (name, url, commit) for the parts added from outside the
     two repositories."""
+    outside = " and ".join(name for name, _, _ in sources)
     lines = [
         "THE SOURCES OF THIS ARCHIVE",
         "",
         "Each part of the archive, its license, and its complete source at the commit it was",
         "built from. The license texts are in the archive: COPYING-GPL-2.0.txt (the GNU General",
         "Public License, version 2), LICENSE-nirender.txt (MIT), THIRD-PARTY-NOTICES.txt (the",
-        "crates inside the programs), and the two files of True Water.",
+        "crates inside the programs)%s." % (", and the license files of " + outside if outside else ""),
         "",
         "MGE XE G7 (d3d8.dll, dinput8.dll, MGEXEgui.exe, the MGE XE part of numidium.exe, the",
         "shaders, textures, meshes, the esp and the MGE XE Options mod): GNU General Public",
@@ -154,6 +160,13 @@ def main():
         url, _, commit = rest.rpartition("@")
         assert name and url and commit, "--source needs NAME=URL@COMMIT: %s" % item
         sources.append((name, url, commit))
+    # Every part added from outside the two repositories is named in SOURCES.txt: it is the
+    # written offer of the source of a GPL binary, and nothing later would catch its absence.
+    outside = args.add + args.add_dir
+    if len(sources) < len(outside):
+        raise SystemExit("\n".join(
+            ["%s has no --source NAME=URL@COMMIT; SOURCES.txt must name every part added from outside the two repositories (%d parts, %d --source)" % (item, len(outside), len(sources)) for item in outside]
+        ))
     additions = []
     for item in args.add:
         source, _, path = item.partition("=")
@@ -180,6 +193,10 @@ def main():
     for repo in (PLUGIN, args.mge):
         clean_and_pushed(repo, args.dry_run)
 
+    # The license texts, the notices of the crates and the sources of the parts: before the
+    # build, so that a stop here costs no build.
+    additions += license_additions(args.mge, "https://github.com/" + args.repo, tag, sources, os.path.join(args.mge, "target", "release-licenses"))
+
     cargo = shutil.which("cargo") or os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
     if not args.no_build:
         # The content checks of both repositories, then the doc comments of the three crates
@@ -195,8 +212,6 @@ def main():
     mge_version = re.match(r"MGE-XE-G7-v([0-9.]+)", packed[0]).group(1)
     asset = os.path.join(args.mge, "dist", "MGE-XE-G7-v%s-nirender-%s.7z" % (mge_version, tag))
     shutil.copy2(os.path.join(args.mge, "dist", packed[0]), asset)
-    # The license texts, the notices of the crates and the sources of the parts.
-    additions += license_additions(args.mge, "https://github.com/" + args.repo, tag, sources, os.path.join(args.mge, "target", "release-licenses"))
     if additions:
         # The files go into a folder laid out as the archive, and 7-Zip adds its entries.
         stage = os.path.join(args.mge, "target", "release-additions")
