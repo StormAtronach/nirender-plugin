@@ -58,11 +58,12 @@ pub fn fixed_limits() -> wgpu::Limits {
 /// the device gets them, so that wgpu's validation refuses anything above them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OldGpu {
-    /// `least`: the least adapter that the request takes: the limits that the request asks
-    /// for ([`fixed_limits`]: wgpu's defaults with 32 sampled textures in a stage; textures of
-    /// 8192, buffers of 256 MiB and storage bindings of 128 MiB). A real adapter of tier C (on
-    /// Direct3D 12, resource binding tier 2, NVIDIA Kepler; wgpu 30 offers no tier 1 adapter)
-    /// is above it in each limit.
+    /// `least`: the limits that the request asks for ([`fixed_limits`]: wgpu's defaults with
+    /// 32 sampled textures in a stage; buffers of 256 MiB and storage bindings of 128 MiB),
+    /// with textures of 16384, as every Direct3D 12 adapter of wgpu has (the atlas of MGE XE's
+    /// distant statics is 16384 wide). A real adapter of tier C (on Direct3D 12, resource
+    /// binding tier 2, NVIDIA Kepler; wgpu 30 offers no tier 1 adapter) is above it in each
+    /// limit.
     Least,
     /// `downlevel`: wgpu's downlevel limits (textures of 2048, 4 storage buffers in a stage),
     /// a class of adapter below the backends of the renderer: the request names the lacks.
@@ -80,7 +81,7 @@ impl OldGpu {
     /// The limits of the profile, at most the adapter's.
     fn limits(self, adapter: &wgpu::Limits) -> wgpu::Limits {
         let profile = match self {
-            OldGpu::Least => fixed_limits(),
+            OldGpu::Least => wgpu::Limits { max_texture_dimension_2d: 16384, ..fixed_limits() },
             OldGpu::Downlevel => wgpu::Limits::downlevel_defaults(),
         };
         profile.or_worse_values_from(adapter)
@@ -565,7 +566,7 @@ mod tests {
     fn the_old_gpu_profiles_cut_the_adapter_and_the_least_one_passes() {
         let large = wgpu::Limits { max_texture_dimension_2d: 32768, max_storage_buffer_binding_size: 1 << 32, max_sampled_textures_per_shader_stage: 1 << 20, ..wgpu::Limits::default() };
         let least = OldGpu::Least.limits(&large);
-        assert_eq!(least.max_texture_dimension_2d, 8192);
+        assert_eq!(least.max_texture_dimension_2d, 16384);
         assert_eq!(least.max_storage_buffer_binding_size, 128 << 20);
         assert_eq!(least.max_sampled_textures_per_shader_stage, SAMPLED_TEXTURES);
         assert!(fixed_limits().check_limits(&least), "the request does not take its least adapter");

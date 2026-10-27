@@ -99,8 +99,9 @@ The run:
   old one, for a test of the path of old hardware on any machine: the BC compression and the
   line mode are the only features (texture tier C, no float depth, no time stamps, no first
   instance or count of indirect draws), and the device has the limits of the profile, so that
-  wgpu refuses anything above them. `least`: the least that the renderer asks for (textures of
-  8192, 32 sampled textures in a stage, wgpu's defaults for the rest). `downlevel`: wgpu's
+  wgpu refuses anything above them. `least`: the least that the renderer asks for (32 sampled
+  textures in a stage, wgpu's defaults for the rest), with textures of 16384 as every
+  Direct3D 12 card has. `downlevel`: wgpu's
   downlevel limits, which the probe refuses with the lacks named. The log and the probe's line
   say `MGE_XE_OLD_GPU=<profile>`.
 - `MGE_XE_MEMORY_MINUTES=<n>`: the helper's log gets a memory report at the first frame and
