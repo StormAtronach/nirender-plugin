@@ -409,15 +409,17 @@ struct Ring {
 /// The rule of a stalled host program, at the end of each frame: `read` is the bytes that the
 /// host program has read, `read_before` the same at the frame before, `pending` whether
 /// records wait for it, `still_since` the ticks since which the count has not moved (0 for
-/// none), `now` the ticks. Gives the new `still_since`, and true when the count has not moved
-/// for [`RING_WAIT_SECONDS`] while records waited: the host program is stalled. A full ring
-/// waits the same time in `push`; this rule finds a stall before the ring is full.
-fn host_still(read: u64, read_before: u64, pending: bool, still_since: i64, now: i64) -> (i64, bool) {
+/// none), `now` the ticks, `limit` the seconds the host program has
+/// (`stream_format::not_answering_limit` of its allowance word). Gives the new `still_since`,
+/// and true when the count has not moved for the limit while records waited: the host
+/// program is stalled. This rule finds a stall before the ring is full; a full ring waits
+/// [`RING_WAIT_SECONDS`] in `push`.
+fn host_still(read: u64, read_before: u64, pending: bool, still_since: i64, now: i64, limit: u64) -> (i64, bool) {
     if !pending || read != read_before {
         return (0, false);
     }
     let since = if still_since == 0 { now } else { still_since };
-    (since, now - since > RING_WAIT_SECONDS * ticks_per_second())
+    (since, now - since > limit as i64 * ticks_per_second())
 }
 
 impl Ring {
@@ -522,13 +524,19 @@ impl Ring {
             }
             self.paced += ticks() - start;
         }
-        let (still_since, stalled) = host_still(read, self.read_before, read < self.frame_before, self.still_since, start);
+        // The limit of a stall: the allowance that the helper writes for a step of its frame
+        // thread (5 s, 30 s while it loads) and 5 s more, so that its watchdog acts first; 60 s
+        // before its frames start.
+        let allowance = (*(self.base.add(crate::stream_format::RING_ALLOWANCE) as *const core::sync::atomic::AtomicU32)).load(Ordering::Acquire);
+        let limit = crate::stream_format::not_answering_limit(allowance);
+        let (still_since, stalled) = host_still(read, self.read_before, read < self.frame_before, self.still_since, start, limit);
         self.still_since = still_since;
         if stalled && !self.ended {
             // The host program is ended with the code that names the reason: `check_host`
             // finds the code at the next frame end and runs the failure path.
             self.ended = true;
-            crate::log!("stream: the host program read no record for {RING_WAIT_SECONDS} s while records waited; it is ended");
+            crate::log!("stream: the host program read no record for {limit} s while records waited (its allowance {allowance} s); it is ended");
+            crate::failure::not_answering_after(limit);
             crate::own_device::end_host(crate::stream_format::EXIT_NOT_ANSWERING);
         }
         self.read_before = read;
@@ -1457,6 +1465,7 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
                 s.failed = true;
                 // The host program is ended with the code that names the reason: the main
                 // thread finds the code at its frame end and runs the failure path.
+                crate::failure::not_answering_after(RING_WAIT_SECONDS as u64);
                 crate::own_device::end_host(crate::stream_format::EXIT_NOT_ANSWERING);
                 // The main thread ends the stream at the end of its frame: `stop` walks the
                 // tables the main thread owns and unmaps the ring it reads, and a writer can
@@ -1909,6 +1918,15 @@ unsafe fn purge(in_view: usize) {
     }
 }
 
+/// The host program ended, or draws no more: the ring is failed, so that no write waits for
+/// room in it, and the main thread ends the stream at its next frame end (`STOP_ASKED`).
+unsafe fn host_gone(lock: &DeviceLock) {
+    if let Some(mut s) = state(lock) {
+        s.failed = true;
+    }
+    STOP_ASKED.store(true, Ordering::Release);
+}
+
 /// The game showed a frame.
 unsafe fn frame_end(lock: &DeviceLock) {
     loading_tick();
@@ -1916,8 +1934,12 @@ unsafe fn frame_end(lock: &DeviceLock) {
         stop();
     }
     // Also after a stop: a host program that was ended for a stall has its exit code now.
+    // A host program that ended reads no record again: no write waits for it in a full ring
+    // (`write` returns at a failed ring), and the stream ends at the next frame end.
     #[cfg(not(test))]
-    crate::own_device::check_host();
+    if crate::own_device::check_host() {
+        host_gone(lock);
+    }
     // The messages of the host for MGE XE.
     let messages = state(&lock).and_then(|mut s| s.messages.as_mut().map(|messages| messages.take()));
     if let Some(messages) = messages {
@@ -1926,7 +1948,7 @@ unsafe fn frame_end(lock: &DeviceLock) {
             // stream ends at the next frame, and the failure path runs.
             if id == crate::stream_format::MESSAGE_LOST_DEVICE {
                 crate::failure::found(crate::failure::Cause::LostDevice);
-                STOP_ASKED.store(true, Ordering::Release);
+                host_gone(lock);
                 continue;
             }
             #[cfg(not(test))]
@@ -2031,15 +2053,17 @@ mod stall_tests {
     fn a_count_that_does_not_move_while_records_wait_is_a_stall_after_the_limit() {
         let second = ticks_per_second();
         // The count moves: no stall, and no start of one.
-        assert_eq!(host_still(200, 100, true, 0, 10 * second), (0, false));
+        assert_eq!(host_still(200, 100, true, 0, 10 * second, 10), (0, false));
         // The count stands while records wait: the stall starts now.
-        assert_eq!(host_still(200, 200, true, 0, 10 * second), (10 * second, false));
+        assert_eq!(host_still(200, 200, true, 0, 10 * second, 10), (10 * second, false));
         // Still standing, under the limit.
-        assert_eq!(host_still(200, 200, true, 10 * second, 19 * second), (10 * second, false));
+        assert_eq!(host_still(200, 200, true, 10 * second, 19 * second, 10), (10 * second, false));
         // Over the limit.
-        assert_eq!(host_still(200, 200, true, 10 * second, 21 * second), (10 * second, true));
+        assert_eq!(host_still(200, 200, true, 10 * second, 21 * second, 10), (10 * second, true));
+        // The limit of a load (35 s): the same stand is no stall yet.
+        assert_eq!(host_still(200, 200, true, 10 * second, 21 * second, 35), (10 * second, false));
         // Nothing waits for the host program: no stall, whatever the count.
-        assert_eq!(host_still(200, 200, false, 10 * second, 30 * second), (0, false));
+        assert_eq!(host_still(200, 200, false, 10 * second, 30 * second, 10), (0, false));
     }
 }
 

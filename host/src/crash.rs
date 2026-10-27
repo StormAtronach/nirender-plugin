@@ -95,7 +95,6 @@ extern "system" {
     fn OpenThread(access: u32, inherit: i32, thread_id: u32) -> isize;
     fn SuspendThread(thread: isize) -> u32;
     fn GetThreadContext(thread: isize, context: *mut Context) -> i32;
-    fn CloseHandle(handle: isize) -> i32;
     fn RtlCaptureContext(context: *mut Context);
     fn RtlCaptureStackBackTrace(skip: u32, count: u32, frames: *mut *mut c_void, hash: *mut u32) -> u16;
     fn GetModuleHandleExW(flags: u32, address: *const c_void, module: *mut *mut c_void) -> i32;
@@ -105,6 +104,10 @@ extern "system" {
     fn GetCurrentProcessId() -> u32;
     fn GetCurrentThreadId() -> u32;
     fn GetLastError() -> u32;
+    fn GetStdHandle(which: u32) -> isize;
+    fn WriteFile(file: isize, bytes: *const u8, length: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
+    fn TerminateProcess(process: isize, code: u32) -> i32;
+    fn Sleep(milliseconds: u32);
 }
 
 #[link(name = "dbghelp")]
@@ -146,9 +149,14 @@ const EXCEPTION_EXECUTE_HANDLER: i32 = 1;
 
 /// The path of the minidump, set by [`install`].
 static DUMP: OnceLock<PathBuf> = OnceLock::new();
-/// The file name of this program, taken at [`install`]: the crash handlers read no more
-/// than they must.
-static PROGRAM: OnceLock<String> = OnceLock::new();
+/// The file name of this program as UTF-16 in lower case (ASCII), taken at [`install`]: the
+/// callback of the dump writer compares the modules with it and allocates nothing.
+static PROGRAM: OnceLock<Vec<u16>> = OnceLock::new();
+/// The seconds that the stall dump may take: then the program ends without it (the dump
+/// writer can wait for a lock that the suspended frame thread holds, [I]).
+const STALL_DUMP_SECONDS: u32 = 10;
+/// STD_OUTPUT_HANDLE.
+const STD_OUTPUT: u32 = -11i32 as u32;
 
 /// Keeps the file at `path` as `<path>.1` (`nirender-host.log.1` for `nirender-host.log`),
 /// in place of the one of the run before that: a player who starts the game again after a
@@ -182,7 +190,7 @@ pub(crate) fn dump_path(log: Option<&str>) -> PathBuf {
 pub(crate) fn install(dump: PathBuf) {
     let _ = DUMP.set(dump);
     let program = std::env::current_exe().ok().and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().into_owned()));
-    let _ = PROGRAM.set(program.unwrap_or_default());
+    let _ = PROGRAM.set(program.unwrap_or_default().encode_utf16().map(lower).collect());
     std::panic::set_hook(Box::new(|info| {
         println!("panic: {info}");
         for line in backtrace() {
@@ -222,32 +230,52 @@ unsafe extern "system" fn filter(pointers: *mut ExceptionPointers) -> i32 {
 
 /// Writes the minidump with the context of the stalled frame thread `frame_thread` as its
 /// exception (the code [`STALL_EXCEPTION`]), from the watchdog thread, so that a debugger
-/// opens it on the stalled thread. The frame thread stays suspended: the program ends.
-pub(crate) fn stall_dump(frame_thread: u32) -> Result<&'static Path, String> {
-    let Some(path) = DUMP.get() else {
-        return Err("no path for it: the crash data was not installed".to_string());
-    };
-    // SAFETY: the id names a thread of this process, and the handle is closed after the
-    // dump; the context has the size and the alignment of CONTEXT, with its flags set.
+/// opens it on the stalled thread, and ends the program with `exit_code`. Everything that
+/// allocates comes before the frame thread is suspended (the file, a thread that ends the
+/// program after [`STALL_DUMP_SECONDS`]): a thread suspended inside an allocation or a print
+/// holds its lock. After the suspend: the dump to the raw handle, one fixed line to the raw
+/// handle of the log, and `TerminateProcess`.
+pub(crate) fn stall_dump_and_end(frame_thread: u32, exit_code: u32) -> ! {
+    let file = DUMP.get().and_then(|path| std::fs::File::create(path).ok());
+    // The last resort: the dump writer may wait for a lock that the suspended thread holds.
+    std::thread::spawn(move || {
+        // SAFETY: a sleep, then the end of this process.
+        unsafe {
+            Sleep(STALL_DUMP_SECONDS * 1000);
+            TerminateProcess(GetCurrentProcess(), exit_code);
+        }
+    });
+    // SAFETY: the id names a thread of this process; the context has the size and the
+    // alignment of CONTEXT, with its flags set; the handles live until the process ends.
     unsafe {
-        let thread = OpenThread(THREAD_ALL_ACCESS, 0, frame_thread);
-        if thread == 0 {
-            return Err(format!("the frame thread {frame_thread} cannot be opened, error {}", GetLastError()));
-        }
-        let mut context = Context([0; 1232]);
-        context.0[CONTEXT_FLAGS_AT..CONTEXT_FLAGS_AT + 4].copy_from_slice(&CONTEXT_FULL.to_le_bytes());
-        let taken = SuspendThread(thread) != u32::MAX && GetThreadContext(thread, &mut context) != 0;
-        if !taken {
-            CloseHandle(thread);
-            return Err(format!("the context of the frame thread {frame_thread} cannot be read, error {}", GetLastError()));
-        }
-        let rip = usize::from_le_bytes(context.0[RIP_AT..RIP_AT + 8].try_into().expect("8 bytes of the context"));
-
-        let mut record = ExceptionRecord { code: STALL_EXCEPTION, flags: 0, record: core::ptr::null_mut(), address: rip as *mut c_void, parameters: 0, information: [0; 15] };
-        let mut pointers = ExceptionPointers { record: &mut record, context: &mut context as *mut Context as *mut c_void };
-        let written = write_dump_at(path, frame_thread, &mut pointers);
-        CloseHandle(thread);
-        written.map(|()| path.as_path())
+        let line: &[u8] = match file.as_ref() {
+            None => b"no minidump: the file cannot be made\n",
+            Some(file) => {
+                let thread = OpenThread(THREAD_ALL_ACCESS, 0, frame_thread);
+                let mut context = Context([0; 1232]);
+                context.0[CONTEXT_FLAGS_AT..CONTEXT_FLAGS_AT + 4].copy_from_slice(&CONTEXT_FULL.to_le_bytes());
+                let taken = thread != 0 && SuspendThread(thread) != u32::MAX && GetThreadContext(thread, &mut context) != 0;
+                if !taken {
+                    b"no minidump: the context of the frame thread cannot be read\n"
+                } else {
+                    let rip = usize::from_le_bytes(context.0[RIP_AT..RIP_AT + 8].try_into().unwrap_or_default());
+                    let mut record = ExceptionRecord { code: STALL_EXCEPTION, flags: 0, record: core::ptr::null_mut(), address: rip as *mut c_void, parameters: 0, information: [0; 15] };
+                    let mut pointers = ExceptionPointers { record: &mut record, context: &mut context as *mut Context as *mut c_void };
+                    if dump_to(file.as_raw_handle(), frame_thread, &mut pointers) {
+                        b"minidump: written (the frame thread's context)\n"
+                    } else {
+                        b"no minidump: MiniDumpWriteDump failed\n"
+                    }
+                }
+            }
+        };
+        let mut written = 0u32;
+        WriteFile(GetStdHandle(STD_OUTPUT), line.as_ptr(), line.len() as u32, &mut written, core::ptr::null_mut());
+        TerminateProcess(GetCurrentProcess(), exit_code);
+    }
+    // `TerminateProcess` of this process does not return.
+    loop {
+        core::hint::spin_loop();
     }
 }
 
@@ -300,20 +328,25 @@ fn place(address: usize) -> String {
 /// when there is one (`pointers` null: none).
 fn write_dump_at(path: &Path, thread: u32, pointers: *mut ExceptionPointers) -> Result<(), String> {
     let file = std::fs::File::create(path).map_err(|problem| format!("{}: {problem}", path.display()))?;
-    // SAFETY: the process is the current one; `pointers` is an exception of `thread` that
-    // lives for the call, or null for a dump without an exception; the file is open for
-    // writing; the callback is a plain function of this program.
-    let written = unsafe {
-        let information = MinidumpExceptionInformation { thread, pointers, client_pointers: 0 };
-        let exception = if pointers.is_null() { core::ptr::null() } else { &information as *const _ };
-        let callback = MinidumpCallbackInformation { routine: Some(module_data_of_this_program), parameter: core::ptr::null_mut() };
-        MiniDumpWriteDump(GetCurrentProcess() as *mut c_void, GetCurrentProcessId(), file.as_raw_handle(), DUMP_KIND, exception, core::ptr::null(), &callback as *const _ as *const c_void)
-    };
-    if written == 0 {
+    if !dump_to(file.as_raw_handle(), thread, pointers) {
         // SAFETY: a plain read of the thread's last error.
         return Err(format!("{}: MiniDumpWriteDump failed, error {}", path.display(), unsafe { GetLastError() }));
     }
     Ok(())
+}
+
+/// Writes the minidump of the process into the open file `file`, with the exception of the
+/// thread `thread` when there is one (`pointers` null: none). Allocates nothing itself.
+fn dump_to(file: std::os::windows::io::RawHandle, thread: u32, pointers: *mut ExceptionPointers) -> bool {
+    // SAFETY: the process is the current one; `pointers` is an exception of `thread` that
+    // lives for the call, or null for a dump without an exception; the file is open for
+    // writing; the callback is a plain function of this program.
+    unsafe {
+        let information = MinidumpExceptionInformation { thread, pointers, client_pointers: 0 };
+        let exception = if pointers.is_null() { core::ptr::null() } else { &information as *const _ };
+        let callback = MinidumpCallbackInformation { routine: Some(module_data_of_this_program), parameter: core::ptr::null_mut() };
+        MiniDumpWriteDump(GetCurrentProcess() as *mut c_void, GetCurrentProcessId(), file, DUMP_KIND, exception, core::ptr::null(), &callback as *const _ as *const c_void) != 0
+    }
 }
 
 /// The callback of the dump writer: every thread and module goes in, but the data segments
@@ -337,14 +370,27 @@ unsafe extern "system" fn module_data_of_this_program(_parameter: *mut c_void, i
 }
 
 /// Whether the module at `path` (a UTF-16 text that ends with 0) is the file of this program.
+/// Allocates nothing: it runs in the dump writer, also after the frame thread is suspended.
 unsafe fn is_this_program(path: *const u16) -> bool {
     let mut length = 0;
     while *path.add(length) != 0 {
         length += 1;
     }
-    let path = String::from_utf16_lossy(core::slice::from_raw_parts(path, length));
-    let file = path.rsplit(['\\', '/']).next().unwrap_or(&path);
-    PROGRAM.get().is_some_and(|program| program.eq_ignore_ascii_case(file))
+    let path = core::slice::from_raw_parts(path, length);
+    PROGRAM.get().is_some_and(|program| same_file(path, program))
+}
+
+/// Whether the file part of `path` (after its last `\\` or `/`) is `program`, which is in
+/// lower case: the case of ASCII letters does not count.
+fn same_file(path: &[u16], program: &[u16]) -> bool {
+    let start = path.iter().rposition(|&unit| unit == u16::from(b'\\') || unit == u16::from(b'/')).map_or(0, |at| at + 1);
+    let file = &path[start..];
+    file.len() == program.len() && file.iter().zip(program).all(|(&unit, &want)| lower(unit) == want)
+}
+
+/// The lower case of an ASCII letter in UTF-16; any other unit as it is.
+fn lower(unit: u16) -> u16 {
+    if (u16::from(b'A')..=u16::from(b'Z')).contains(&unit) { unit + 32 } else { unit }
 }
 
 fn report(dump: Result<&Path, String>) {
@@ -357,6 +403,16 @@ fn report(dump: Result<&Path, String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_module_is_this_program_by_its_file_name_in_any_case() {
+        let program: Vec<u16> = "numidium.exe".encode_utf16().collect();
+        let wide = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+        assert!(same_file(&wide("D:\\Game\\Numidium.EXE"), &program));
+        assert!(same_file(&wide("numidium.exe"), &program));
+        assert!(!same_file(&wide("D:\\Game\\nvoglv64.dll"), &program));
+        assert!(!same_file(&wide("D:\\Game\\numidium.exe.bak"), &program));
+    }
 
     #[test]
     fn rotate_keeps_the_log_of_the_run_before() {

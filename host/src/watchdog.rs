@@ -1,11 +1,13 @@
 //! The watchdog of the frame thread. A step of the frame thread (the feed of one record of
 //! the stream, with the work of the frame's end when the record ends a frame) that does not
 //! finish in [`STALL_SECONDS`] is a stall: a call of the driver that does not return, a wait
-//! that nothing ends. The watchdog thread then writes numidium.dmp with the context of the
-//! frame thread (`crash::stall_dump`), says so in the log and ends the program with the exit
-//! code [`EXIT_STALLED`]; the plugin finds the code at the end of its frame and runs the
-//! failure path. While the extension loads ([`crate::Extension::loading`]) a step may take
-//! [`LOADING_SECONDS`]: a load of the distant land can hold a frame for seconds.
+//! that nothing ends. The watchdog thread then says so in the log, writes numidium.dmp with
+//! the context of the frame thread and ends the program with the exit code [`EXIT_STALLED`]
+//! (`crash::stall_dump_and_end`); the plugin finds the code at the end of its frame and runs
+//! the failure path. While the extension loads ([`crate::Extension::loading`]) a step may take
+//! [`LOADING_SECONDS`]: a load of the distant land can hold a frame for seconds. The helper
+//! writes its allowance of the moment into the ring head ([`allowance`],
+//! `stream_format::RING_ALLOWANCE`), so that the plugin's own limit is always later.
 //! `MGE_XE_WATCHDOG=0` leaves the watchdog off, for a test of the plugin's own limit.
 //!
 //! The frame thread does two atomic writes for each step and reads no clock; the watchdog
@@ -15,10 +17,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use crate::stream_format::{EXIT_STALLED, STALL_SECONDS};
+use crate::stream_format::{EXIT_STALLED, LOADING_SECONDS, STALL_SECONDS};
 
-/// The seconds a step may take while the extension loads.
-pub const LOADING_SECONDS: u64 = 30;
 /// The time between two looks of the watchdog thread.
 const LOOK_MS: u64 = 250;
 
@@ -47,6 +47,12 @@ impl Drop for Step {
 /// Tells the watchdog whether the extension loads, from the frame thread.
 pub(crate) fn loading(on: bool) {
     LOADING.store(on, Ordering::Relaxed);
+}
+
+/// The seconds a step of the frame thread may take now: the word that the helper writes into
+/// the ring head for the plugin.
+pub(crate) fn allowance() -> u32 {
+    if LOADING.load(Ordering::Relaxed) { LOADING_SECONDS as u32 } else { STALL_SECONDS as u32 }
 }
 
 /// What the watchdog saw at one look.
@@ -98,16 +104,14 @@ pub(crate) fn start() {
         .expect("the watchdog thread");
 }
 
-/// The frame thread stalled: the dump, the log line, the end of the program.
+/// The frame thread stalled: the log line first, then the dump and the end of the program.
+/// The line is printed before the frame thread is suspended: a thread suspended inside a
+/// print or an allocation holds its lock, and a print after it would wait for ever.
 fn stalled(frame_thread: u32, seconds: u64) -> ! {
     use std::io::Write;
-    println!("stalled for {seconds} s: the frame thread made no progress in a step; the program ends with the exit code {EXIT_STALLED}");
-    match crate::crash::stall_dump(frame_thread) {
-        Ok(path) => println!("minidump: {}", path.display()),
-        Err(problem) => println!("no minidump: {problem}"),
-    }
+    println!("stalled for {seconds} s: the frame thread made no progress in a step; a minidump, then the program ends with the exit code {EXIT_STALLED}");
     let _ = std::io::stdout().flush();
-    std::process::exit(EXIT_STALLED as i32)
+    crate::crash::stall_dump_and_end(frame_thread, EXIT_STALLED)
 }
 
 #[link(name = "kernel32")]

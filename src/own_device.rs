@@ -68,11 +68,12 @@ static HOST_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// named in its own box. The host program ends after the game at the end of a session, so
 /// this finds a crash, its watchdog, `end_host` or a kill only. A device that the host
 /// program lost does not end it: the host program says so in a message (`capture.rs`).
-pub unsafe fn check_host() {
+/// Returns true when the host program has ended: the stream then ends.
+pub unsafe fn check_host() -> bool {
     let process = HOST_PROCESS.load(Ordering::Relaxed);
     // WAIT_OBJECT_0: the process has ended.
     if process == 0 || WaitForSingleObject(process, 0) != 0 {
-        return;
+        return false;
     }
     HOST_PROCESS.store(0, Ordering::Relaxed);
     let mut code = 0u32;
@@ -83,9 +84,10 @@ pub unsafe fn check_host() {
     // it named the reason in its log and in its own message box.
     if crate::stream_format::helper_said_why(code) {
         crate::log!("own device: the exit code is a refusal of the host program, which showed its message (nirender-host.log has the reason)");
-        return;
+        return true;
     }
     crate::failure::found(crate::failure::Cause::of_exit_code(code));
+    true
 }
 
 /// Ends the host program with the exit code `code`, when it runs: for a host program that

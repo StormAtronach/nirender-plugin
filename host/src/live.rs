@@ -101,6 +101,13 @@ impl Ring {
         }
     }
 
+    /// Tells the plugin the seconds that a step of the frame thread may take now
+    /// (`watchdog::allowance`): the plugin ends this program only after them and 5 s more
+    /// (`stream_format::RING_ALLOWANCE`).
+    fn set_allowance(&self, seconds: u32) {
+        unsafe { (*(self.base.add(super::stream_format::RING_ALLOWANCE) as *const std::sync::atomic::AtomicU32)).store(seconds, Ordering::Release) };
+    }
+
     /// Tells the plugin the classes of the game that the helper draws itself, and the
     /// reach of the shadow map.
     fn set_takes(&self, classes: u32, shadow_reach: f32) {
@@ -668,6 +675,9 @@ impl App {
         self.window = own;
         let (width, height) = self.window_size();
         self.configure(width, height);
+        // The frames start: from now the plugin gives a step the allowance and 5 s (before,
+        // the device and the shaders are made, and it gives 60 s).
+        self.ring.set_allowance(super::watchdog::allowance());
     }
 
     /// The size of the inside of the window: of this program's window, else of the game's.
@@ -743,7 +753,8 @@ impl ApplicationHandler for App {
             // for gets the answer "no pixels" at once.
             if super::gpu::lost() {
                 // The game process runs the failure path on the message (the plugin's
-                // `failure.rs`): the autosave, then its box. This program shows none.
+                // `failure.rs`): the autosave, then its box. This program shows none. A
+                // replay has no message memory: the loss is the log line of `gpu.rs` only.
                 if let (Some(messages), false) = (self.messages.as_mut(), self.lost_told) {
                     messages.put(super::stream_format::MESSAGE_LOST_DEVICE, &1u32.to_le_bytes());
                     self.lost_told = true;
@@ -972,6 +983,7 @@ impl ApplicationHandler for App {
                 if let Some(extension) = player.extension.as_mut() {
                     extension.after_frame(&scene);
                     super::watchdog::loading(extension.loading());
+                    self.ring.set_allowance(super::watchdog::allowance());
                 }
             }
             // The messages of the extension for its part in the game process.
