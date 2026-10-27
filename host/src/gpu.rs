@@ -222,7 +222,7 @@ pub fn work() -> [u64; 4] {
 fn lost_message() {
     message_box(
         "The graphics device was lost: the driver was reset, or it stopped.\n\n\
-         The wgpu renderer of MGE XE cannot draw any more. Quit the game and start it again.\n\n\
+         The wgpu renderer of MGE XE cannot draw any more: close the game with Alt+F4.\n\n\
          The log of the renderer (nirender-host.log in the folder of the game) has the details.",
     );
 }
@@ -259,7 +259,6 @@ pub fn message_box(text: &str) {
     const MB_ICONERROR: u32 = 0x10;
     const MB_SETFOREGROUND: u32 = 0x1_0000;
     const MB_TOPMOST: u32 = 0x4_0000;
-    const TIMED_OUT: i32 = 32000;
     for line in text.lines() {
         println!("box: {line}");
     }
@@ -269,11 +268,12 @@ pub fn message_box(text: &str) {
     let owner = OWNER_WINDOW.load(Ordering::Relaxed);
     let flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
     let seconds = crate::switches().box_seconds;
+    let started = Instant::now();
     // SAFETY: the strings are zero-ended UTF-16 that live until the call returns; the
     // function taken from user32 has the signature of MessageBoxTimeoutW.
-    let answer = unsafe {
+    unsafe {
         if seconds == 0 {
-            MessageBoxW(owner, text.as_ptr(), caption.as_ptr(), flags)
+            MessageBoxW(owner, text.as_ptr(), caption.as_ptr(), flags);
         } else {
             let user32 = GetModuleHandleW(wide("user32.dll").as_ptr());
             let timed = GetProcAddress(user32, c"MessageBoxTimeoutW".as_ptr().cast());
@@ -282,10 +282,12 @@ pub fn message_box(text: &str) {
                 return;
             }
             let timed: MessageBoxTimeout = std::mem::transmute(timed);
-            timed(owner, text.as_ptr(), caption.as_ptr(), flags, 0, seconds * 1000)
+            timed(owner, text.as_ptr(), caption.as_ptr(), flags, 0, seconds * 1000);
         }
-    };
-    if answer == TIMED_OUT {
+    }
+    // The elapsed time tells a timeout from a click: MessageBoxTimeoutW answers IDOK on the
+    // timeout on this machine, not the documented 32000 [V Rob's run, 2026-10-27].
+    if seconds != 0 && started.elapsed() >= std::time::Duration::from_secs(u64::from(seconds)) {
         println!("box: closed after {seconds} s, no click");
     } else {
         println!("box: closed by a click");

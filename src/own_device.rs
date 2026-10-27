@@ -87,7 +87,7 @@ pub unsafe fn check_host() {
     let name = HOST_NAME.get().map(String::as_str).unwrap_or("the host program");
     message_box(&format!(
         "The wgpu renderer of MGE XE ({name}) has stopped (exit code {code:#x}).\n\n\
-         The game cannot show a new picture. Quit the game and start it again.\n\n\
+         The game cannot show a new picture: close it with Alt+F4.\n\n\
          The logs nirender-host.log and nirender.log in the folder of the game have the details."
     ));
 }
@@ -108,7 +108,6 @@ pub unsafe fn message_box(text: &str) {
     const MB_ICONERROR: u32 = 0x10;
     const MB_SETFOREGROUND: u32 = 0x1_0000;
     const MB_TOPMOST: u32 = 0x4_0000;
-    const TIMED_OUT: i32 = 32000;
     for line in text.lines() {
         crate::log!("box: {line}");
     }
@@ -117,8 +116,9 @@ pub unsafe fn message_box(text: &str) {
     let caption = wide("MGE XE");
     let flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
     let seconds: u32 = std::env::var("MGE_XE_BOX_SECONDS").ok().and_then(|value| value.trim().parse().ok()).unwrap_or(0);
-    let answer = if seconds == 0 {
-        MessageBoxW(0, text.as_ptr(), caption.as_ptr(), flags)
+    let started = std::time::Instant::now();
+    if seconds == 0 {
+        MessageBoxW(0, text.as_ptr(), caption.as_ptr(), flags);
     } else {
         let user32 = GetModuleHandleA(c"user32.dll".as_ptr().cast());
         let timed = crate::win::GetProcAddress(user32 as *mut core::ffi::c_void, c"MessageBoxTimeoutW".as_ptr().cast());
@@ -128,9 +128,11 @@ pub unsafe fn message_box(text: &str) {
         }
         // SAFETY: the function taken from user32 has the signature of MessageBoxTimeoutW.
         let timed: MessageBoxTimeout = core::mem::transmute(timed);
-        timed(0, text.as_ptr(), caption.as_ptr(), flags, 0, seconds * 1000)
-    };
-    if answer == TIMED_OUT {
+        timed(0, text.as_ptr(), caption.as_ptr(), flags, 0, seconds * 1000);
+    }
+    // The elapsed time tells a timeout from a click: MessageBoxTimeoutW answers IDOK on the
+    // timeout on this machine, not the documented 32000 [V Rob's run, 2026-10-27].
+    if seconds != 0 && started.elapsed() >= std::time::Duration::from_secs(u64::from(seconds)) {
         crate::log!("box: closed after {seconds} s, no click");
     } else {
         crate::log!("box: closed by a click");
