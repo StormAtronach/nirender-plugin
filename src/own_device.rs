@@ -33,7 +33,6 @@ const NOT_AVAILABLE: u32 = 0x8876_086A;
 extern "system" {
     fn EnumDisplaySettingsA(device: *const u8, mode: u32, out: *mut u8) -> i32;
     fn MonitorFromWindow(window: usize, flags: u32) -> usize;
-    fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
 }
 
 extern "system" {
@@ -54,6 +53,7 @@ extern "system" {
     ) -> i32;
     fn CloseHandle(handle: isize) -> i32;
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
+    fn TerminateProcess(process: isize, code: u32) -> i32;
     fn GetExitCodeProcess(process: isize, code: *mut u32) -> i32;
 }
 
@@ -63,9 +63,11 @@ static HOST_PROCESS: AtomicIsize = AtomicIsize::new(0);
 static HOST_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// The game showed a frame. When the host program has ended, no new picture goes into the
-/// window: the plugin says so one time, in its log and in a message box. The host program
-/// ends after the game at the end of a session, so this finds a crash or a kill only. A
-/// device that the host program lost does not end it: the host program shows its own box.
+/// window: the plugin logs the exit code and starts the failure path (`failure`: the
+/// autosave, then the box), unless the host program ended on a refusal of its own, which it
+/// named in its own box. The host program ends after the game at the end of a session, so
+/// this finds a crash, its watchdog, `end_host` or a kill only. A device that the host
+/// program lost does not end it: the host program says so in a message (`capture.rs`).
 pub unsafe fn check_host() {
     let process = HOST_PROCESS.load(Ordering::Relaxed);
     // WAIT_OBJECT_0: the process has ended.
@@ -77,19 +79,27 @@ pub unsafe fn check_host() {
     GetExitCodeProcess(process, &mut code);
     CloseHandle(process);
     crate::log!("own device: the host program ended with the exit code {code:#x}; the window gets no new picture");
-    const MB_ICONERROR: u32 = 0x10;
-    const MB_SETFOREGROUND: u32 = 0x1_0000;
-    const MB_TOPMOST: u32 = 0x4_0000;
-    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let name = HOST_NAME.get().map(String::as_str).unwrap_or("the host program");
-    let text = wide(&format!(
-        "The wgpu renderer of MGE XE ({name}) has stopped (exit code {code:#x}).\n\n\
-         The game cannot show a new picture. Quit the game and start it again.\n\n\
-         The folder of the game has the details: the logs nirender-host.log, nirender.log and \
-         mgeHost64.log, and the minidump numidium.dmp after a crash of the renderer."
-    ));
-    let caption = wide("MGE XE");
-    MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+    // The host program ended on a refusal of its own (a stream of another build, no device):
+    // it named the reason in its log and in its own message box.
+    if crate::stream_format::helper_said_why(code) {
+        crate::log!("own device: the exit code is a refusal of the host program, which showed its message (nirender-host.log has the reason)");
+        return;
+    }
+    crate::failure::found(crate::failure::Cause::of_exit_code(code));
+}
+
+/// Ends the host program with the exit code `code`, when it runs: for a host program that
+/// reads no record (the ring wait of `capture.rs`). `check_host` then finds the code.
+///
+/// # Safety
+///
+/// The process handle of `HOST_PROCESS` is one that `start_stream` made and `check_host` has
+/// not closed: the handle stays open until `check_host` finds the end.
+pub unsafe fn end_host(code: u32) {
+    let process = HOST_PROCESS.load(Ordering::Relaxed);
+    if process != 0 && TerminateProcess(process, code) != 0 {
+        crate::log!("own device: the host program is ended with the exit code {code}");
+    }
 }
 
 /// The D3DCAPS8 of the device of the testing computer (MGE XE on DXVK), from

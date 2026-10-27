@@ -1428,6 +1428,9 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
             if !ring.push(tag, parts) {
                 crate::log!("stream: the host did not read for {RING_WAIT_SECONDS} s; the stream ends");
                 s.failed = true;
+                // The host program is ended with the code that names the reason: the main
+                // thread finds the code at its frame end and runs the failure path.
+                crate::own_device::end_host(crate::stream_format::EXIT_NOT_ANSWERING);
                 // The main thread ends the stream at the end of its frame: `stop` walks the
                 // tables the main thread owns and unmaps the ring it reads, and a writer can
                 // be on another thread (the engine's cell worker makes textures) or hold
@@ -1884,14 +1887,21 @@ unsafe fn frame_end(lock: &DeviceLock) {
     loading_tick();
     if STOP_ASKED.swap(false, Ordering::AcqRel) {
         stop();
-        return;
     }
+    // Also after a stop: a host program that was ended for a stall has its exit code now.
     #[cfg(not(test))]
     crate::own_device::check_host();
     // The messages of the host for MGE XE.
     let messages = state(&lock).and_then(|mut s| s.messages.as_mut().map(|messages| messages.take()));
     if let Some(messages) = messages {
         for (id, bytes) in messages {
+            // The host program lost its graphics device: it lives, and draws no more. The
+            // stream ends at the next frame, and the failure path runs.
+            if id == crate::stream_format::MESSAGE_LOST_DEVICE {
+                crate::failure::found(crate::failure::Cause::LostDevice);
+                STOP_ASKED.store(true, Ordering::Release);
+                continue;
+            }
             #[cfg(not(test))]
             crate::link_client::stream_message(id, &bytes);
             #[cfg(test)]

@@ -46,6 +46,9 @@ mod cli;
 use cli::*;
 mod crash;
 pub use crash::rotate_log;
+#[path = "../../src/stream_format.rs"]
+pub mod stream_format;
+mod watchdog;
 mod tag;
 mod extension;
 pub use extension::*;

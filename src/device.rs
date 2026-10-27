@@ -469,6 +469,7 @@ unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
     // only after the device lock is free (`link_client::after_present`).
     if slot == SLOT_PRESENT {
         crate::link_client::after_present();
+        crate::failure::after_present();
     }
     result
 }

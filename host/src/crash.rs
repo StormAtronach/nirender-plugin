@@ -92,6 +92,10 @@ type Filter = unsafe extern "system" fn(*mut ExceptionPointers) -> i32;
 
 #[link(name = "kernel32")]
 extern "system" {
+    fn OpenThread(access: u32, inherit: i32, thread_id: u32) -> isize;
+    fn SuspendThread(thread: isize) -> u32;
+    fn GetThreadContext(thread: isize, context: *mut Context) -> i32;
+    fn CloseHandle(handle: isize) -> i32;
     fn RtlCaptureContext(context: *mut Context);
     fn RtlCaptureStackBackTrace(skip: u32, count: u32, frames: *mut *mut c_void, hash: *mut u32) -> u16;
     fn GetModuleHandleExW(flags: u32, address: *const c_void, module: *mut *mut c_void) -> i32;
@@ -130,6 +134,13 @@ const DUMP_KIND: u32 = 0x1825;
 /// The code of the exception that the panic hook puts into the dump: a user code (the error
 /// bits, then the letters N, I, R).
 const PANIC_EXCEPTION: u32 = 0xE04E_4952;
+/// The code of the exception of a stall in the dump of the watchdog (the letters N, I, S).
+const STALL_EXCEPTION: u32 = 0xE04E_4953;
+/// CONTEXT_FULL of x64, the flags that `GetThreadContext` reads at byte 48 of the context.
+const CONTEXT_FULL: u32 = 0x10_000B;
+const CONTEXT_FLAGS_AT: usize = 48;
+/// THREAD_ALL_ACCESS.
+const THREAD_ALL_ACCESS: u32 = 0x1F_FFFF;
 /// The filter's answer: the program ends.
 const EXCEPTION_EXECUTE_HANDLER: i32 = 1;
 
@@ -207,6 +218,37 @@ unsafe extern "system" fn filter(pointers: *mut ExceptionPointers) -> i32 {
     report(dump);
     let _ = std::io::stdout().flush();
     EXCEPTION_EXECUTE_HANDLER
+}
+
+/// Writes the minidump with the context of the stalled frame thread `frame_thread` as its
+/// exception (the code [`STALL_EXCEPTION`]), from the watchdog thread, so that a debugger
+/// opens it on the stalled thread. The frame thread stays suspended: the program ends.
+pub(crate) fn stall_dump(frame_thread: u32) -> Result<&'static Path, String> {
+    let Some(path) = DUMP.get() else {
+        return Err("no path for it: the crash data was not installed".to_string());
+    };
+    // SAFETY: the id names a thread of this process, and the handle is closed after the
+    // dump; the context has the size and the alignment of CONTEXT, with its flags set.
+    unsafe {
+        let thread = OpenThread(THREAD_ALL_ACCESS, 0, frame_thread);
+        if thread == 0 {
+            return Err(format!("the frame thread {frame_thread} cannot be opened, error {}", GetLastError()));
+        }
+        let mut context = Context([0; 1232]);
+        context.0[CONTEXT_FLAGS_AT..CONTEXT_FLAGS_AT + 4].copy_from_slice(&CONTEXT_FULL.to_le_bytes());
+        let taken = SuspendThread(thread) != u32::MAX && GetThreadContext(thread, &mut context) != 0;
+        if !taken {
+            CloseHandle(thread);
+            return Err(format!("the context of the frame thread {frame_thread} cannot be read, error {}", GetLastError()));
+        }
+        let rip = usize::from_le_bytes(context.0[RIP_AT..RIP_AT + 8].try_into().expect("8 bytes of the context"));
+
+        let mut record = ExceptionRecord { code: STALL_EXCEPTION, flags: 0, record: core::ptr::null_mut(), address: rip as *mut c_void, parameters: 0, information: [0; 15] };
+        let mut pointers = ExceptionPointers { record: &mut record, context: &mut context as *mut Context as *mut c_void };
+        let written = write_dump_at(path, frame_thread, &mut pointers);
+        CloseHandle(thread);
+        written.map(|()| path.as_path())
+    }
 }
 
 /// Writes the minidump of the process at `path` with the place of the caller as its

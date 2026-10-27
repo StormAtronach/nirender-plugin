@@ -417,7 +417,7 @@ impl Renderer {
             },
         ))
         .expect("no device");
-        gpu::watch(&device, &info, surface.is_some());
+        gpu::watch(&device, &info);
 
         let multisample = (samples > 1).then(|| multisample::Multisample::new(&device, target_format, depth_format, samples));
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);

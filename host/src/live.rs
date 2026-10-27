@@ -393,6 +393,8 @@ struct App {
     back_buffer: Option<wgpu::Texture>,
     /// A frame of the game is in progress.
     in_frame: bool,
+    /// The game process was told that the device is lost.
+    lost_told: bool,
     /// The frames that the window did not take: its surface gave no picture.
     not_shown: u32,
     /// The status of the surface when the window last gave no picture, or an empty text.
@@ -740,6 +742,13 @@ impl ApplicationHandler for App {
             // so that the game does not wait for this program. A request that the game waits
             // for gets the answer "no pixels" at once.
             if super::gpu::lost() {
+                // The game process runs the failure path on the message (the plugin's
+                // `failure.rs`): the autosave, then its box. This program shows none.
+                if let (Some(messages), false) = (self.messages.as_mut(), self.lost_told) {
+                    messages.put(super::stream_format::MESSAGE_LOST_DEVICE, &1u32.to_le_bytes());
+                    self.lost_told = true;
+                    println!("gpu: the game process is told that the device is lost");
+                }
                 if let Some(player) = self.player.as_mut() {
                     player.fail_tile_reads();
                 }
@@ -818,6 +827,9 @@ impl ApplicationHandler for App {
             let slot = &mut self.by_tag[(tag as usize).min(TAG_SLOTS - 1)];
             slot.0 += 1;
             slot.1 += 8 + self.data.len() as u64;
+            // The feed of the record, with the work of the frame's end, is one step of the
+            // watchdog: it ends at the end of this loop's body, before the next wait.
+            let _step = super::watchdog::Step::begin();
             let player = self.player.as_mut().unwrap();
             let clock = super::ticks::Clock::now();
             // The times of the frame in the game, and the time of this read: for the age
@@ -959,6 +971,7 @@ impl ApplicationHandler for App {
                 let scene = facts.view(&device, &queue, &commands, player.renderer.target_format);
                 if let Some(extension) = player.extension.as_mut() {
                     extension.after_frame(&scene);
+                    super::watchdog::loading(extension.loading());
                 }
             }
             // The messages of the extension for its part in the game process.
@@ -1018,6 +1031,12 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
     let game_window = if data.len() >= 12 { super::word(&data, 8) as isize } else { 0 };
     let embed = args.iter().any(|a| a == "--embed");
     println!("picture {} x {}, window of the game {game_window:#x}{}", size.0, size.1, if embed { ", the host goes into it" } else { "" });
+    // This thread is the frame thread: the watchdog ends the program when a step of it stalls.
+    if switches().watchdog {
+        super::watchdog::start();
+    } else {
+        println!("watchdog: off (MGE_XE_WATCHDOG=0)");
+    }
     let mut app = App {
         ring,
         reply: Reply::open(name),
@@ -1045,6 +1064,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         gamma: None,
         depth: None,
         in_frame: false,
+        lost_told: false,
         not_shown: 0,
         surface_status: "",
         data: Vec::new(),

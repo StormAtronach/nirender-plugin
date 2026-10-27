@@ -4,8 +4,8 @@
 //! - wgpu ends the program at an error that no error scope takes. Here the log names the
 //!   error (with the label of the object) and the program goes on: the draw or the pass that
 //!   has the error does nothing.
-//! - A lost device (a reset of the driver) ends all drawing. The log says so, and with a
-//!   window a message box tells the player.
+//! - A lost device (a reset of the driver) ends all drawing. The log says so, and the live
+//!   loop tells the game process (`live.rs`), whose plugin saves the game and shows the box.
 //! - `submit` and `frame_group` count the submits to the queue and the bind groups that are
 //!   made for one frame, with their CPU time, for the marks of a scenario.
 
@@ -25,9 +25,8 @@ static GROUP_NANOS: AtomicU64 = AtomicU64::new(0);
 /// The errors that the log shows in full. After them, one line for each 1000.
 const ERRORS_SHOWN: u64 = 20;
 
-/// Sets the handlers of the errors and of the loss of `device`. `window`: the program draws
-/// into a window, and a lost device gets a message box.
-pub fn watch(device: &wgpu::Device, adapter: &wgpu::AdapterInfo, window: bool) {
+/// Sets the handlers of the errors and of the loss of `device`.
+pub fn watch(device: &wgpu::Device, adapter: &wgpu::AdapterInfo) {
     let name = format!("{} ({:?}, driver {} {})", adapter.name, adapter.backend, adapter.driver, adapter.driver_info);
     device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
         let count = ERRORS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -53,9 +52,6 @@ pub fn watch(device: &wgpu::Device, adapter: &wgpu::AdapterInfo, window: bool) {
         }
         LOST.store(true, Ordering::Relaxed);
         println!("gpu: the device is lost ({reason:?}): {message}");
-        if window {
-            std::thread::spawn(lost_message);
-        }
     });
 }
 
@@ -218,25 +214,3 @@ pub fn work() -> [u64; 4] {
         GROUP_NANOS.load(Ordering::Relaxed),
     ]
 }
-
-#[cfg(windows)]
-fn lost_message() {
-    #[link(name = "user32")]
-    extern "system" {
-        fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
-    }
-    const MB_ICONERROR: u32 = 0x10;
-    const MB_SETFOREGROUND: u32 = 0x1_0000;
-    const MB_TOPMOST: u32 = 0x4_0000;
-    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let text = wide(
-        "The graphics device was lost: the driver was reset, or it stopped.\n\n\
-         The wgpu renderer of MGE XE cannot draw any more. Quit the game and start it again.\n\n\
-         The log of the renderer (nirender-host.log in the folder of the game) has the details.",
-    );
-    let caption = wide("MGE XE");
-    unsafe { MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST) };
-}
-
-#[cfg(not(windows))]
-fn lost_message() {}
