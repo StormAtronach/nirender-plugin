@@ -444,6 +444,18 @@ fn tag_line(counts: &[(u64, u64)]) -> String {
     parts.join("; ")
 }
 
+/// The present mode for the setting of the extension ([`crate::Extension::vsync`]): with
+/// vsync the window waits for the refresh of the screen (FIFO, the frame rate capped at the
+/// refresh rate); without it the window shows a frame when the game gives one
+/// (`AutoNoVsync`: immediate, mailbox or FIFO, the first that the surface has).
+fn present_mode_of(vsync: bool) -> wgpu::PresentMode {
+    if vsync {
+        wgpu::PresentMode::Fifo
+    } else {
+        wgpu::PresentMode::AutoNoVsync
+    }
+}
+
 /// The present mode that wgpu takes for `asked` with the modes of the surface: an automatic
 /// mode is the first that the surface has of its list (`AutoNoVsync`: immediate, mailbox,
 /// FIFO; `AutoVsync`: FIFO relaxed, FIFO).
@@ -629,8 +641,8 @@ impl App {
             }
         };
         let surface = surface.expect("a surface");
-        // The host shows a frame when the game gives one. It does not wait for the screen.
-        let present_mode = switches().present.unwrap_or(wgpu::PresentMode::AutoNoVsync);
+        let vsync = self.extension.as_ref().is_some_and(|extension| extension.vsync());
+        let present_mode = switches().present.unwrap_or_else(|| present_mode_of(vsync));
         let frame_latency = switches().frame_latency.unwrap_or_else(|| self.extension.as_ref().map_or(2, |extension| extension.frame_latency()).clamp(1, 3));
         println!(
             "window: present mode {:?} ({present_mode:?} asked), {frame_latency} frames may wait for the GPU",
@@ -1100,6 +1112,15 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vsync_waits_for_the_screen() {
+        assert_eq!(present_mode_of(true), wgpu::PresentMode::Fifo);
+        assert_eq!(present_mode_of(false), wgpu::PresentMode::AutoNoVsync);
+        // A surface without an immediate mode shows a frame at the next refresh in both.
+        assert_eq!(chosen_present_mode(present_mode_of(false), &[wgpu::PresentMode::Fifo]), wgpu::PresentMode::Fifo);
+        assert_eq!(chosen_present_mode(present_mode_of(false), &[wgpu::PresentMode::Fifo, wgpu::PresentMode::Immediate]), wgpu::PresentMode::Immediate);
+    }
 
     /// A reply memory of 16 pixel bytes and 16 bytes after it that must stay 0xAA.
     fn memory() -> Vec<u8> {

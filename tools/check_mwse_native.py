@@ -21,13 +21,16 @@ from common import REPO  # noqa: E402
 
 DEFAULT_HEADER = os.path.join(os.path.dirname(REPO), "MWSE", "MWSE", "MWSE", "MWSENativeApi.h")
 RUST = os.path.join(REPO, "src", "mwse_native.rs")
-COPIES = [os.path.join(os.path.dirname(REPO), "MGE-XE-G7-render-link", "d3d8", "cpp", "mwse", "MWSENativeApi.h")]
+DEFAULT_MGE = os.path.join(os.path.dirname(REPO), "MGE-XE-G7-render-link")
+COPY_IN_MGE = os.path.join("d3d8", "cpp", "mwse", "MWSENativeApi.h")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--header", default=DEFAULT_HEADER)
+    parser.add_argument("--mge", default=DEFAULT_MGE, help="the MGE XE tree whose copy of the header is checked (the render-link sibling without this)")
     args = parser.parse_args()
+    copies = [os.path.join(args.mge, COPY_IN_MGE)]
 
     # The working copy can have CRLF line ends: the patterns end at "$" of a line.
     text = open(args.header, "rb").read().decode("ascii").replace("\r\n", "\n")
@@ -43,7 +46,7 @@ def main():
         elif rust_consts[name] != int(value, 0):
             problems.append("MWSE_%s is %s in the header and %d in mwse_native.rs" % (name, value, rust_consts[name]))
 
-    for copy in COPIES:
+    for copy in copies:
         if not os.path.exists(copy):
             problems.append("no copy at %s" % copy)
         elif open(copy, "rb").read().replace(b"\r\n", b"\n") != text.replace("\r\n", "\n").encode("ascii"):

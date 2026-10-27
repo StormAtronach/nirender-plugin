@@ -4,6 +4,14 @@ and the game gets the Direct3D 8 of the plugin. The host program draws the only 
 the window of the game.
 
     python tools/run_own_device.py --label owndevice [--backend vulkan]
+        [--plugin-dll <akulakhan.dll>] [--log <file.txt>]
+    python -I tools/run_own_device.py --self-test    # the tests of the argument handling
+
+The command of a run takes no variable prefix, redirect or chained command, so that one
+allow rule of a session covers every run: `--plugin-dll` names the plugin DLL of the run
+(the variable `NIRENDER_PLUGIN_DLL` is the fallback, then the release build of this
+repository), and `--log` names a file that gets the runner's own output, written to the
+console too (the programs the runner starts write to the console only).
 
 The files of the run are in mods of the harness that are on for the run only (session.py):
 "Harness - MGE XE" (d3d8.dll, numidium.exe), "Harness - config" (mgeXE.toml of the run) and
@@ -16,8 +24,10 @@ import os
 import subprocess
 import sys
 
-import session
-from common import REPO
+# The modules of this folder, also under `python -I` (checks.py runs the self-test so).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import session  # noqa: E402
+from common import REPO  # noqa: E402
 
 TAG = "[nirender.owndevice] "
 HOST_DIR = os.path.join(REPO, "host")
@@ -32,9 +42,55 @@ EXE_MOD = session.harness.RUN_MOD_PREFIX + "exe"
 BRIDGE_DIR = os.path.join(session.harness.MO2_ROOT, "mods", "mwseMCP")
 
 
+class Tee:
+    """A stream that writes to the console and to the log file of the run (`--log`)."""
+
+    def __init__(self, console, log):
+        self.console = console
+        self.log = log
+
+    def write(self, text):
+        self.console.write(text)
+        self.log.write(text)
+
+    def flush(self):
+        self.console.flush()
+        self.log.flush()
+
+
+def plugin_dll_of(argument, environment, default):
+    """The plugin DLL of a run and where it came from: `--plugin-dll`, else the variable
+    `NIRENDER_PLUGIN_DLL`, else the release build of this repository."""
+    if argument:
+        return argument, "--plugin-dll"
+    if environment.get("NIRENDER_PLUGIN_DLL"):
+        return environment["NIRENDER_PLUGIN_DLL"], "NIRENDER_PLUGIN_DLL"
+    return default, "the release build of this repository"
+
+
+def self_test():
+    """The tests of the argument handling: no game, no build."""
+    build = os.path.join("target", "akulakhan.dll")
+    assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/a.dll", "--plugin-dll")
+    assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
+    assert plugin_dll_of(None, {}, build) == (build, "the release build of this repository")
+    assert plugin_dll_of("", {}, build)[0] == build
+    import io
+
+    console, log = io.StringIO(), io.StringIO()
+    tee = Tee(console, log)
+    print("a line", file=tee)
+    tee.flush()
+    assert console.getvalue() == "a line\n" and log.getvalue() == "a line\n"
+    print("run_own_device self-test: ok")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--label", default="owndevice")
+    ap.add_argument("--plugin-dll", help="the plugin DLL of the run (else the variable NIRENDER_PLUGIN_DLL, else the release build of this repository)")
+    ap.add_argument("--log", help="a file that gets the runner's output, written to the console too; no shell redirect needed")
+    ap.add_argument("--self-test", action="store_true", help="the tests of the argument handling: no game, no build")
     ap.add_argument("--save", default="quiksave.ess", help="the save to load; \"\" starts a new game instead (the films of the game play)")
     ap.add_argument("--interior", default="Balmora, Guild of Mages")
     ap.add_argument("--exterior", default="Balmora")
@@ -103,6 +159,17 @@ def main():
                     "without a change to the instance")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
+    if args.log:
+        # The runner's own lines go to the console and to the file; the file is the one a
+        # shell redirect wrote before.
+        log = open(args.log, "w", encoding="utf-8", buffering=1)
+        sys.stdout = Tee(sys.stdout, log)
+        sys.stderr = Tee(sys.stderr, log)
+    session.DLL, source = plugin_dll_of(args.plugin_dll, os.environ, session.DLL)
+    print("plugin DLL: %s (%s)" % (session.DLL, source), flush=True)
     extra_files = [entry.split("=", 1) for entry in args.add_file]
     if any(len(pair) != 2 for pair in extra_files):
         raise SystemExit("--add-file takes SOURCE=PATH")

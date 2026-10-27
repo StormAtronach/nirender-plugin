@@ -44,6 +44,8 @@ mod picture;
 use picture::*;
 mod cli;
 use cli::*;
+mod crash;
+pub use crash::rotate_log;
 mod tag;
 // The one home of the stream format number, shared with the plugin crate (see the file).
 // Public: the program that has this crate as a part reads the exit codes.
