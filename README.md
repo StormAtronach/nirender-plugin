@@ -96,8 +96,8 @@ The run:
   adapter without them). The helper's log and the probe say `texture tier: a` or `c`. Tier
   `a` forced on an adapter without the arrays is a refusal (the code 20).
 - `MGE_XE_OLD_GPU=least|downlevel`: the helper and its probe take the graphics card as an
-  old one, for a test of the path of old hardware on any machine: the BC compression is the
-  only feature (texture tier C, no float depth, no line mode, no time stamps, no first
+  old one, for a test of the path of old hardware on any machine: the BC compression and the
+  line mode are the only features (texture tier C, no float depth, no time stamps, no first
   instance or count of indirect draws), and the device has the limits of the profile, so that
   wgpu refuses anything above them. `least`: the least that the renderer asks for (textures of
   8192, 32 sampled textures in a stage, wgpu's defaults for the rest). `downlevel`: wgpu's

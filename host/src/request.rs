@@ -86,11 +86,12 @@ impl OldGpu {
         profile.or_worse_values_from(adapter)
     }
 
-    /// The features of the profile: the BC compression only. No binding arrays (texture tier
-    /// C), no float depth, no line mode, no time stamps, no first instance or count of indirect
+    /// The features of the profile: the BC compression and the line mode, which every Direct3D
+    /// 12 adapter of wgpu has, and a Vulkan adapter with `fillModeNonSolid`. No binding arrays
+    /// (texture tier C), no float depth, no time stamps, no first instance or count of indirect
     /// draws.
     fn features(self) -> wgpu::Features {
-        wgpu::Features::TEXTURE_COMPRESSION_BC
+        wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::POLYGON_MODE_LINE
     }
 }
 
@@ -199,7 +200,7 @@ impl Request {
         println!("multisampling: {} samples for each pixel of the frame", self.samples);
         if let Some(old) = switches().old_gpu {
             println!(
-                "old graphics card: MGE_XE_OLD_GPU={}: the BC compression the only feature; textures up to {}, {} sampled textures in a stage, {} storage buffers in a stage, storage bindings of {} MiB",
+                "old graphics card: MGE_XE_OLD_GPU={}: the features the BC compression and the line mode; textures up to {}, {} sampled textures in a stage, {} storage buffers in a stage, storage bindings of {} MiB",
                 old.name(),
                 self.limits.max_texture_dimension_2d,
                 self.limits.max_sampled_textures_per_shader_stage,
@@ -575,7 +576,7 @@ mod tests {
         let mut lacks = Vec::new();
         fixed_limits().check_limits_with_fail_fn(&OldGpu::Downlevel.limits(&large), false, |name, _, _| lacks.push(name));
         assert!(lacks.contains(&"max_storage_buffers_per_shader_stage") && lacks.contains(&"max_texture_dimension_2d"), "{lacks:?}");
-        assert_eq!(OldGpu::Least.features(), wgpu::Features::TEXTURE_COMPRESSION_BC);
+        assert_eq!(OldGpu::Least.features(), wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::POLYGON_MODE_LINE);
     }
 
     #[test]
