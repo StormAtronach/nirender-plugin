@@ -115,7 +115,8 @@ impl Switches {
                 _ => None,
             },
             game_window: is("MGE_XE_WINDOW", "game"),
-            box_seconds: var("MGE_XE_BOX_SECONDS").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0),
+            // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
+            box_seconds: var("MGE_XE_BOX_SECONDS").and_then(|v| v.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600)),
         }
     }
 }

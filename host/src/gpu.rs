@@ -228,8 +228,11 @@ fn lost_message() {
 }
 
 /// The window that owns the boxes of this program: the game's window in the live mode, so
-/// that a box stays above it (an owned window is above its owner); 0 for a replay and for the
-/// program on its own.
+/// that a box stays above it (an owned window is above its owner; the owner saw the box come
+/// to the front in run 2b of records entry 192); 0 for a replay and for the program on its
+/// own. An owner in another process joins the input of the two threads: the box answers only
+/// while the game's thread takes its messages; the game's thread still runs its frames after
+/// a refusal (the plugin waits for the ring with a time limit), so it does \[I\].
 static OWNER_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
 /// Names the window that owns the boxes ([`message_box`]).
@@ -302,11 +305,9 @@ pub fn message_box(text: &str) {
 }
 
 /// Ends this program at once with `code`, for a refusal: TerminateProcess, not the orderly
-/// exit. In the live check of 2026-10-27 (run 2b) `std::process::exit` after the box of a
-/// refused stream did not end the helper while its loader thread ran, and the plugin never
-/// saw the exit code [I: the exit waits on a lock that the thread holds]. TerminateProcess
-/// drops what stdout still buffers, so the log is flushed first: the box lines and the
-/// refusal lines must be in the file.
+/// exit, so that no thread of the program (the loader, the device) can hold the end. The
+/// plugin reads the code. TerminateProcess drops what stdout still buffers, so the log is
+/// flushed first: the box lines and the refusal lines must be in the file.
 #[cfg(windows)]
 pub fn exit_now(code: u32) -> ! {
     use std::io::Write;
