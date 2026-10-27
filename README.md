@@ -101,9 +101,9 @@ The run:
   instance or count of indirect draws), and the device has the limits of the profile, so that
   wgpu refuses anything above them. `least`: the least that the renderer asks for (32 sampled
   textures in a stage, wgpu's defaults for the rest), with textures of 16384 as every
-  Direct3D 12 card has. `downlevel`: wgpu's
-  downlevel limits, which the probe refuses with the lacks named. The log and the probe's line
-  say `MGE_XE_OLD_GPU=<profile>`.
+  Direct3D 12 card has. `downlevel`: wgpu's downlevel limits, which the probe refuses with the
+  lacks named. The log and the probe's line say `MGE_XE_OLD_GPU=<profile>`. Not emulated: the
+  sample counts of multisampling and the formats' capabilities stay those of the real card.
 - `MGE_XE_MEMORY_MINUTES=<n>`: the helper's log gets a memory report at the first frame and
   then every n minutes, as `memory:` lines: the GPU memory of wgpu's allocator by the kind of
   object (the label, its numbers as `#`), and the counts of wgpu's objects; 0 or unset, none.
