@@ -117,7 +117,7 @@ pub unsafe fn message_box(text: &str) {
     let caption = wide("MGE XE");
     let flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
     // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
-    let seconds: u32 = std::env::var("MGE_XE_BOX_SECONDS").ok().and_then(|value| value.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600));
+    let seconds: u32 = crate::switches::parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |value| value.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600));
     let started = std::time::Instant::now();
     if seconds == 0 {
         MessageBoxW(0, text.as_ptr(), caption.as_ptr(), flags);
@@ -462,7 +462,7 @@ unsafe fn start_stream(s: &State) {
     // 128 MB: a record must fit the ring whole, and the largest level of a texture of a
     // modded install is 64 MiB (4096 x 4096 ARGB, or 8192 x 8192 DXT5), which a 64 MB ring
     // misses by the record's head. A level over the ring is dropped and counted.
-    let megabytes = std::env::var("NIRENDER_RING_MB").ok().and_then(|text| text.parse().ok()).unwrap_or(128);
+    let megabytes = crate::switches::number_from_to("NIRENDER_RING_MB", 128, 1, 512);
     // A ring that the system cannot give (its commit charge) is tried once at 64 MB, the
     // size of before; a failed `start_direct` has started nothing.
     let started = crate::capture::start_direct(&name, megabytes, s.parameters[0], s.parameters[1], device_window(s)).or_else(|problem| {
@@ -476,7 +476,7 @@ unsafe fn start_stream(s: &State) {
         crate::log!("own device: no stream: {problem}");
         return;
     }
-    let program = std::env::var("NIRENDER_HOST_EXE").ok().filter(|path| std::path::Path::new(path).is_file()).or_else(|| {
+    let program = crate::switches::text("NIRENDER_HOST_EXE").filter(|path| std::path::Path::new(path).is_file()).or_else(|| {
         let mut module = 0usize;
         let mut path = [0u8; 600];
         // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
@@ -490,16 +490,16 @@ unsafe fn start_stream(s: &State) {
         return;
     };
     let mut command = format!("\"{program}\" --live {name} --embed");
-    if let Ok(backend) = std::env::var("NIRENDER_BACKEND") {
+    if let Some(backend) = crate::switches::choice("NIRENDER_BACKEND", &["vulkan", "dx12"]) {
         command.push_str(&format!(" --backend {backend}"));
     }
     // More arguments for the host program, for a test.
-    if let Ok(more) = std::env::var("NIRENDER_HOST_ARGS") {
+    if let Some(more) = crate::switches::text("NIRENDER_HOST_ARGS") {
         command.push_str(&format!(" {more}"));
     }
     // The text of the host program goes into a file: the one that NIRENDER_HOST_LOG names, or
     // nirender-host.log in the folder of the game.
-    let log = std::env::var("NIRENDER_HOST_LOG").unwrap_or_else(|_| "nirender-host.log".into());
+    let log = crate::switches::text("NIRENDER_HOST_LOG").unwrap_or_else(|| "nirender-host.log".into());
     let log = std::path::absolute(&log).map(|path| path.to_string_lossy().into_owned()).unwrap_or(log);
     command.push_str(&format!(" --log \"{log}\""));
     let mut line = command.clone().into_bytes();

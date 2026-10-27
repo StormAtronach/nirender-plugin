@@ -87,7 +87,7 @@ static CHECK_TESTS_OFF: AtomicU32 = AtomicU32::new(0);
 
 fn check_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("NIRENDER_FOG_CHECK").is_ok_and(|value| value == "1"))
+    *ON.get_or_init(|| crate::switches::on("NIRENDER_FOG_CHECK") == Some(true))
 }
 
 /// Claims MWSE's four overrides (the render of the fog, a blob of it, the lock and the unlock
@@ -97,7 +97,7 @@ pub unsafe fn install() {
     if INSTALLED.load(Ordering::Relaxed) {
         return;
     }
-    if std::env::var("NIRENDER_MAP_FOG").is_ok_and(|value| value == "0") {
+    if crate::switches::on("NIRENDER_MAP_FOG") == Some(false) {
         crate::log!("map fog: NIRENDER_MAP_FOG=0, the engine reads the fog from the GPU");
         return;
     }
@@ -292,7 +292,7 @@ unsafe fn read_blob(lock: &crate::sync::DeviceLock) -> bool {
             (DXT1, _) if width % 4 == 0 && height % 4 == 0 && level.len() >= (width / 4 * height / 4 * 8) as usize => Some(decode_dxt1(width, height, level)),
             _ => None,
         };
-        if let Ok(folder) = std::env::var("NIRENDER_FOG_DUMP") {
+        if let Some(folder) = crate::switches::text("NIRENDER_FOG_DUMP") {
             let _ = std::fs::write(format!("{folder}/blob-level0-{d3d_format:#x}.bin"), level);
         }
         if let Some(texels) = texels {
@@ -447,7 +447,7 @@ unsafe fn check(lock: &crate::sync::DeviceLock, handle: u32) {
     // pixel (blue first), for a look.
     static DUMPED: AtomicU32 = AtomicU32::new(0);
     if off != 0 {
-        if let Ok(folder) = std::env::var("NIRENDER_FOG_DUMP") {
+        if let Some(folder) = crate::switches::text("NIRENDER_FOG_DUMP") {
             let n = DUMPED.fetch_add(1, Ordering::Relaxed);
             if n < 8 {
                 let _ = std::fs::write(format!("{folder}/fog-{n}-{width}x{height}-gpu.raw"), pixels);

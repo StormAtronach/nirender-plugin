@@ -20,12 +20,25 @@ pub fn open(path: &str) {
 pub fn write(line: &str) {
     let mut guard = LOG.lock().unwrap();
     if guard.is_none() {
-        *guard = open_new("nirender.log");
+        *guard = open_new(&default_path());
     }
     if let Some(file) = guard.as_mut() {
         let _ = writeln!(file, "{}", line);
         let _ = file.flush();
     }
+}
+
+/// The log of a line written before any `open`: `nirender.log` in the folder of the game. A
+/// test build writes it into a folder of its own under the temporary folder, so that
+/// `cargo test` leaves the checkout clean (before, every test that logs left `nirender.log`
+/// and its rotated `nirender.log.1` in the repository's root).
+fn default_path() -> String {
+    if cfg!(test) {
+        let folder = std::env::temp_dir().join("nirender-test-log");
+        let _ = std::fs::create_dir_all(&folder);
+        return folder.join("nirender.log").to_string_lossy().into_owned();
+    }
+    "nirender.log".to_string()
 }
 
 /// A new, empty log at `path`; the log of the run before goes to `<path>.1`.
@@ -76,5 +89,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&before).unwrap(), "run 2");
 
         std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    /// A test build's log is under the temporary folder, never in the current folder (the
+    /// checkout's root under `cargo test`).
+    #[test]
+    fn a_test_build_logs_under_the_temporary_folder() {
+        let path = std::path::PathBuf::from(default_path());
+        assert!(path.starts_with(std::env::temp_dir()), "{}", path.display());
+        assert!(path.parent().is_some_and(|folder| folder.is_dir()));
     }
 }
