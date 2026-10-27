@@ -547,6 +547,7 @@ pub unsafe fn frame_call(call: u32, args: &[u32]) -> Option<u32> {
 /// of `device.rs` then see none of them (the frame hook of the rig, the census of the
 /// callers, the forced reset).
 pub fn frame_calls_linked() -> bool {
+    // SAFETY: HOST is 0 or the address of the &'static table that set_host stored.
     KINDS.load(Ordering::Relaxed) & KIND_FRAME != 0 && unsafe { host() }.is_some()
 }
 
