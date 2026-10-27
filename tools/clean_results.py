@@ -5,7 +5,8 @@ The runs of `run_own_device.py` keep every picture, log and capture in
 the evidence of a recorded result. Each run folder gets one of four treatments:
 
 - cited: its name is in the docs (`--docs`) or in a commit message of the repos (`--repos`),
-  where a record, a progress page or a commit gives it as evidence. Kept whole.
+  where a record, a progress page or a commit gives it as evidence. Kept whole. The short form
+  `-HHMMSS-label` (the records use it after a first full name of the same day) counts too.
 - recent: younger than `--logs-days` days and not cited. Only its text files stay (the logs,
   the tables, the settings: the numbers can be read again); the pictures, captures and film
   frames go, and a file `trimmed.txt` lists them.
@@ -36,7 +37,8 @@ RESULTS = os.path.join(HERE, "..", "results")
 DOCS = os.path.join(REPOS_ROOT, "moreFPS", "docs")
 REPOS = [os.path.join(REPOS_ROOT, name) for name in ("nirender-plugin", "MGE-XE-G7-render-link", os.path.join("MWSE", "MWSE"), "moreFPS")]
 RUN = re.compile(r"^(\d{8}-\d{6})-.+$")
-CITATION = re.compile(r"\d{8}-\d{6}-[\w.-]+")
+# A full run name, or the short form `-HHMMSS-label` with no word character before it.
+CITATION = re.compile(r"\d{8}-\d{6}-[\w.-]+|(?<!\w)-\d{6}-[\w.-]+")
 DOC_TEXT = (".md", ".tsv", ".txt", ".py", ".sh", ".lua", ".json", ".csv")
 # The files of a run that stay when it is trimmed.
 KEPT_TEXT = (".log", ".txt", ".tsv", ".toml", ".json", ".lua", ".csv", ".md")
@@ -79,8 +81,10 @@ def citations(docs, repos):
 
 
 def cited(name, names):
-    # A citation can carry a trailing part (a file name, a dot): match its start.
-    return any(text == name or text.startswith(name) for text in names)
+    # A citation can carry a trailing part (a file name, a dot): match its start. A short
+    # citation matches the name without its date.
+    short = name[8:]
+    return any(text.startswith(short if text.startswith("-") else name) for text in names)
 
 
 def writable(function, path, _):
