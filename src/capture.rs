@@ -306,6 +306,10 @@ pub(crate) unsafe fn wait_step() {
 
 /// A look at the queue of the game's windows: the sent messages are answered, no message is
 /// taken out (PM_NOREMOVE).
+///
+/// # Safety
+///
+/// Called on the game's thread, the owner of the windows.
 pub(crate) unsafe fn look_at_messages() {
     let mut message = [0u32; 7];
     PeekMessageA(&mut message, 0, 0, 0, 0);
@@ -314,6 +318,10 @@ pub(crate) unsafe fn look_at_messages() {
 /// One step of a wait for an answer of the helper that has no event (the pixel and the tile
 /// reads): asleep until a message or input comes for the game's windows, or 1 ms passes;
 /// then the sent messages are answered. The core is free while the game waits.
+///
+/// # Safety
+///
+/// Called on the game's thread, the owner of the windows.
 pub(crate) unsafe fn wait_a_moment() {
     MsgWaitForMultipleObjects(0, core::ptr::null(), 0, 1, WAIT_WAKE_MASK);
     look_at_messages();
@@ -488,6 +496,11 @@ impl Ring {
     /// passes; then the sent messages are answered ([`wait_step`]'s look). The loops around
     /// it test their own condition and time limit, so a set that comes before the wait, or
     /// a missed one, costs 1 ms at most and never a hang.
+    ///
+    /// # Safety
+    ///
+    /// The ring is open (`base` maps the shared memory) and this is the game's thread, whose
+    /// windows' messages the wait answers.
     unsafe fn wait_for_read(&mut self) {
         let waiting = &*(self.base.add(RING_GAME_WAITING) as *const core::sync::atomic::AtomicU32);
         waiting.store(1, Ordering::SeqCst);
@@ -501,6 +514,10 @@ impl Ring {
     }
 
     /// Puts one record into the ring. Returns false when the host did not make room in time.
+    ///
+    /// # Safety
+    ///
+    /// The ring is open and this is the game's thread (the wait answers its windows' messages).
     unsafe fn push(&mut self, tag: u32, parts: &[&[u8]]) -> bool {
         let length: usize = parts.iter().map(|p| p.len()).sum();
         let total = 8 + length as u64;
@@ -546,6 +563,10 @@ impl Ring {
     /// The wait ends early only when the host program does not read at all for 50 ms. The
     /// game then runs without a wait until the host program reads again. A host program that
     /// reads, also a slow one, keeps the game at its rate.
+    ///
+    /// # Safety
+    ///
+    /// The ring is open and this is the game's thread (the wait answers its windows' messages).
     unsafe fn pace(&mut self) {
         let start = ticks();
         let limit = ticks_per_second() / 20;
@@ -1865,6 +1886,11 @@ pub unsafe fn stream_handle(address: u32) -> u32 {
 }
 
 /// A texture that the host made from these pixels.
+///
+/// # Safety
+///
+/// `texture` points at the tables and the pixels its counts and offsets describe, and the
+/// caller does not hold the device lock.
 pub unsafe fn texture(texture: &TextureV1, handle: usize) {
     if !recording() {
         return;
@@ -1923,6 +1949,10 @@ fn level_plan(capacity: u64, table_bytes: usize, level_sizes: &[usize]) -> Optio
 
 /// The capacity of the ring in bytes; [`None`] without a ring (a file capture: a record of
 /// any size goes into the file).
+///
+/// # Safety
+///
+/// The caller does not hold the device lock: this takes it.
 unsafe fn ring_capacity() -> Option<u64> {
     let lock = crate::sync::device_lock();
     let s = state(&lock)?;
@@ -1933,6 +1963,10 @@ unsafe fn ring_capacity() -> Option<u64> {
 }
 
 /// Counts a texture sent level by level, and its levels that did not fit, for the report.
+///
+/// # Safety
+///
+/// The caller does not hold the device lock: this takes it.
 unsafe fn note_split(levels_dropped: u32, largest_level: usize) {
     let lock = crate::sync::device_lock();
     let Some(mut s) = state(&lock) else { return };
