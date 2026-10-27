@@ -6,8 +6,10 @@
 This repository: `host/src/lib.rs` reads `src/stream_format.rs` as a `#[path]` module, so the
 plugin and the host crate compare one STREAM_FORMAT. The file is also the one home of the
 layout of the HEADER record and of the shared memories (the ring head words, the reply, tile
-and message memories) and of the exit codes: no constant of it may have a second definition
-in the two crates, or with --mge in mgeHost64. MGE XE: MGE_EXTENSION_FORMAT in
+and message memories), of the suffixes of the names of a stream's events and memories, and of
+the exit codes: no constant of it may have a second definition in the two crates, or with
+--mge in mgeHost64, and no name suffix may come back as a literal. MGE XE:
+MGE_EXTENSION_FORMAT in
 `d3d8/cpp/mge/mgeversion.h` equals EXTENSION_FORMAT in `mgeHost64/src/renderer.rs` (a unit
 test of mgeHost64 compares them too; this check needs no compile). `checks.py` runs both.
 The design: handshake-design.md of the Numidium notes (2026-10-27).
@@ -42,6 +44,23 @@ def home_names():
     return set(re.findall(r"^pub const ([A-Z][A-Z0-9_]*)\s*:", read(HOME), re.MULTILINE))
 
 
+def home_strings():
+    """The string constants of src/stream_format.rs (the suffixes of the names of a stream's
+    events and memories), as {value: name}."""
+    return {value: name for name, value in re.findall(r'^pub const ([A-Z][A-Z0-9_]*)\s*:\s*&str\s*=\s*"([^"]+)"', read(HOME), re.MULTILINE)}
+
+
+def literal_copies(text, strings):
+    """The names of `strings` whose value `text` writes as a literal right after a `"` or
+    after a `}` of a format string (`"{name}-read"`), and ends with a `"` or a `{`: a copy of
+    the name that the home constant should give."""
+    found = set()
+    for value, name in strings.items():
+        if re.search(r'(?<=["}])%s(?=["{])' % re.escape(value), text):
+            found.add(name)
+    return sorted(found)
+
+
 def second_definitions(text, names):
     """The names of `names` that `text` defines again, as a const or a static."""
     if not names:
@@ -51,8 +70,10 @@ def second_definitions(text, names):
 
 
 def check_folders(base, folders, names):
-    """A problem for each second definition of a home constant in the .rs files of `folders`."""
+    """A problem for each second definition of a home constant in the .rs files of `folders`,
+    and for each literal copy of a home string."""
     problems = []
+    strings = home_strings()
     for folder in folders:
         for root, _, files in os.walk(os.path.join(base, folder)):
             if os.sep + "target" in root:
@@ -61,8 +82,12 @@ def check_folders(base, folders, names):
                 path = os.path.join(root, name)
                 if not name.endswith(".rs") or os.path.samefile(path, HOME):
                     continue
-                for constant in second_definitions(read(path), names):
-                    problems.append("%s defines %s of its own: its one home is src/stream_format.rs" % (os.path.relpath(path, base).replace("\\", "/"), constant))
+                text = read(path)
+                where = os.path.relpath(path, base).replace("\\", "/")
+                for constant in second_definitions(text, names):
+                    problems.append("%s defines %s of its own: its one home is src/stream_format.rs" % (where, constant))
+                for constant in literal_copies(text, strings):
+                    problems.append("%s writes the value of %s as a literal: use the constant of src/stream_format.rs" % (where, constant))
     return problems
 
 
@@ -91,6 +116,14 @@ def self_test():
     # A use is no definition, nor a longer name.
     assert second_definitions("let at = RING_READ; const RING_READ_BEFORE: usize = 0;", names) == []
     assert {"RING_READ", "RING_ENDING", "HEADER_ABILITIES_AT", "MESSAGES_MAGIC", "STREAM_FORMAT"} <= home_names()
+    strings = {"-read": "READ_EVENT", ".reply": "REPLY_MEMORY"}
+    assert literal_copies('format!("{name}-read")', strings) == ["READ_EVENT"]
+    assert literal_copies('format!("{ring}.reply{generation}")', strings) == ["REPLY_MEMORY"]
+    assert literal_copies('let suffix = ".reply";', strings) == ["REPLY_MEMORY"]
+    # A longer word or a use of the constant is no copy.
+    assert literal_copies('println!("{name}-ready"); format!("{name}{READ_EVENT}")', strings) == []
+    assert literal_copies('"the pipeline-read"', strings) == []
+    assert home_strings()["-records"] == "RECORDS_EVENT" and len(home_strings()) == 6
     print("check_handshake self-test: ok")
 
 
