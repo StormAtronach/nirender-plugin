@@ -278,155 +278,26 @@ impl Renderer {
             .collect()
     }
 
-    /// Makes the device. With a window, also the surface of the window, and the format of
-    /// the target is a format of that surface.
+    /// Makes the device through the one request of the crate (`request`). With a window,
+    /// also the surface of the window, and the format of the target is a format of that
+    /// surface. When no backend serves, the refusals come back for the caller to show and
+    /// to end the program with `EXIT_GPU`.
     pub(crate) fn new(
         backends: wgpu::Backends,
         window: Option<WindowTarget>,
-        mut target_format: wgpu::TextureFormat,
+        target_format: wgpu::TextureFormat,
         extension_shader: String,
         texture_slots: u32,
         samples: u32,
-    ) -> (Renderer, Option<wgpu::Surface<'static>>) {
-        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        descriptor.backends = backends;
-        // The WGPU_* variables of the environment can change the flags, for a test (for
-        // example WGPU_VALIDATION_INDIRECT_CALL=0).
-        // The arguments of the indirect draws are this program's own: no validation of them
-        // by a compute pass (`WGPU_VALIDATION_INDIRECT_CALL=1` puts it back).
-        descriptor.flags.remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
-        descriptor.flags = descriptor.flags.with_env();
-        // The new shader compiler of Direct3D, a part of this program: the old one is slow.
-        descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::StaticDxc;
-        let instance = wgpu::Instance::new(descriptor);
-        let surface = window.map(|window| match window {
-            WindowTarget::Own(window) => instance.create_surface(window).expect("a surface for the window"),
-            // The game's window lives until the game ends, and this program ends with it.
-            WindowTarget::Game(handle) => unsafe {
-                use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
-                extern "system" {
-                    fn GetWindowLongPtrW(window: isize, index: i32) -> isize;
-                }
-                // Vulkan wants the module of the window (GWLP_HINSTANCE).
-                let mut window = Win32WindowHandle::new(handle);
-                window.hinstance = std::num::NonZeroIsize::new(GetWindowLongPtrW(handle.get(), -6));
-                instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                    raw_display_handle: Some(RawDisplayHandle::Windows(WindowsDisplayHandle::new())),
-                    raw_window_handle: RawWindowHandle::Win32(window),
-                })
-            }
-            .expect("a surface on the window of the game"),
-        });
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: surface.as_ref(),
-            force_fallback_adapter: false,
-            ..Default::default()
-        }))
-        .expect("no graphics adapter for this backend");
-        let info = adapter.get_info();
-        println!("adapter: {} ({:?}, driver {} {})", info.name, info.backend, info.driver, info.driver_info);
-        let mut surface_usages = wgpu::TextureUsages::empty();
-        let mut present_modes = Vec::new();
-        if let Some(surface) = surface.as_ref() {
-            // The game gives colours that are ready for the screen: no sRGB format.
-            let capabilities = surface.get_capabilities(&adapter);
-            if !capabilities.formats.contains(&target_format) {
-                target_format = capabilities.formats.iter().copied().find(|format| !format.is_srgb()).unwrap_or(capabilities.formats[0]);
-            }
-            surface_usages = capabilities.usages;
-            println!("window: the present modes of the surface are {:?}", capabilities.present_modes);
-            present_modes = capabilities.present_modes;
-        }
-        // The format of the depth: a float depth with a stencil when the adapter has it.
-        let float_depth = adapter.features().contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) && !switches().depth24;
-        let depth_format = if float_depth { wgpu::TextureFormat::Depth32FloatStencil8 } else { DEPTH_FORMAT };
-        // A float depth is reversed: near 1, far 0 (`depth`). A fixed-point depth gains
-        // nothing from it.
-        depth::set_reversed(float_depth && !switches().depth_plain);
-        println!(
-            "depth: {:?}, {} (the adapter {} Depth32FloatStencil8{}{})",
-            depth_format,
-            if depth::reversed() { "reversed" } else { "plain" },
-            if adapter.features().contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) { "has" } else { "lacks" },
-            if switches().depth24 { "; MGE_XE_DEPTH_FORMAT=24" } else { "" },
-            if switches().depth_plain { "; MGE_XE_DEPTH_REVERSED=0" } else { "" }
-        );
-        // The samples for each pixel of the targets of the frame: the largest count up to the
-        // wanted one that the adapter has for the colour format, with a resolve, and for the
-        // depth format.
-        let mut samples = samples.clamp(1, 8).next_power_of_two();
-        while samples > 1 {
-            let color = adapter.get_texture_format_features(target_format).flags;
-            let depth = adapter.get_texture_format_features(depth_format).flags;
-            if color.sample_count_supported(samples) && color.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE) && depth.sample_count_supported(samples) {
-                break;
-            }
-            samples /= 2;
-        }
-        println!("multisampling: {samples} samples for each pixel of the frame");
-        // The textures and the samplers of a frame are in binding arrays. The adapter must
-        // have them; without them this program stops here with the reason, and the game
-        // side is for Direct3D 9 (`[runtime] renderer_wgpu = false`).
-        let array_features = wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
-        // The samplers of the array count in the elements of the arrays too.
-        // The room of the texture arrays: the setting of the extension (0 automatic), the test
-        // switch MGE_XE_ARRAY_CAP over it, at most the adapter's room.
-        let wanted = switches::switches().array_cap.unwrap_or(if texture_slots == 0 { AUTO_TEXTURE_SLOTS } else { texture_slots.max(MIN_TEXTURE_SLOTS) });
-        let array_cap = adapter.limits().max_binding_array_elements_per_shader_stage.saturating_sub(SAMPLER_CAP).min(wanted);
-        let sampler_cap = adapter.limits().max_binding_array_sampler_elements_per_shader_stage.min(SAMPLER_CAP);
-        println!("texture arrays: the adapter has the features: {}, room for {} textures and {} samplers", adapter.features().contains(array_features), array_cap, sampler_cap);
-        assert!(
-            adapter.features().contains(array_features) && array_cap >= MIN_TEXTURE_SLOTS && sampler_cap >= 8,
-            "this adapter lacks the binding arrays of textures (the features TEXTURE_BINDING_ARRAY, SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING, PARTIALLY_BOUND_BINDING_ARRAY, room for 256 textures and 8 samplers): the wgpu renderer needs them; set [runtime] renderer_wgpu = false for Direct3D 9"
-        );
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("nirender"),
-                // The draws of an extension from the GPU (the distant statics of MGE XE) need the
-                // first instance and the count of indirect draws, when the adapter has them.
-                required_features: wgpu::Features::TEXTURE_COMPRESSION_BC
-                    | (adapter.features()
-                        & (wgpu::Features::POLYGON_MODE_LINE
-                            | wgpu::Features::TIMESTAMP_QUERY
-                            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
-                            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES
-                            | wgpu::Features::INDIRECT_FIRST_INSTANCE
-                            | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT))
-                    | array_features
-                    | if float_depth { wgpu::Features::DEPTH32FLOAT_STENCIL8 } else { wgpu::Features::empty() },
-                // The largest texture that the adapter takes, up to 16384: an atlas of the
-                // distant land of MGE XE has that size.
-                // A post shader of MGE XE reads up to 22 textures: 10 of its own, the picture,
-                // the depth, the waves, and the outputs of its passes.
-                required_limits: wgpu::Limits {
-                    max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d.min(16384),
-                    max_sampled_textures_per_shader_stage: adapter.limits().max_sampled_textures_per_shader_stage.min(32),
-                    // One buffer for the geometry of many meshes of an extension (the pool of
-                    // the distant statics of MGE XE).
-                    max_buffer_size: adapter.limits().max_buffer_size,
-                    // The records of the draws are one storage binding: the adapter's room, not
-                    // the default of 128 MiB. `record_limit` guards it.
-                    max_storage_buffer_binding_size: adapter.limits().max_storage_buffer_binding_size,
-                    max_binding_array_elements_per_shader_stage: array_cap + sampler_cap,
-                    max_binding_array_sampler_elements_per_shader_stage: sampler_cap,
-                    ..wgpu::Limits::default()
-                },
-                memory_hints: wgpu::MemoryHints::default(),
-                ..Default::default()
-            },
-        ))
-        .expect("no device");
+    ) -> Result<(Renderer, Option<wgpu::Surface<'static>>), Vec<request::Refusal>> {
+        let request = request::request(backends, window, target_format, texture_slots, samples)?;
+        request.report();
+        let request::Request { adapter: _, info, surface, device, queue, target_format, surface_usages, present_modes, depth_format, samples, array_cap, sampler_cap, .. } = request;
         gpu::watch(&device, &info, surface.is_some());
 
         let multisample = (samples > 1).then(|| multisample::Multisample::new(&device, target_format, depth_format, samples));
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
-        // The text of the extension reads the record of the draw as `draw.field`; the record
-        // is in the storage buffer of the frame (`draws[record]`, see shader.wgsl).
-        let extension_shader = retained::rewrite_extension_text(&extension_shader.replace("draw.", "draws[record]."));
-        let text = include_str!("shader.wgsl").to_string();
-        // The depth functions after the text: it begins with its `enable` directives.
-        let source = format!("{text}\n{}\n{extension_shader}", depth::wgsl());
+        let source = request::world_shader_source(&extension_shader);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let array_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("draw texture arrays"),
@@ -674,7 +545,7 @@ impl Renderer {
             counts: Counts::default(),
             commands: Rc::new(FrameCommands::with_stamps(stamps.clone())),
         };
-        (renderer, surface)
+        Ok((renderer, surface))
     }
 
     /// The arrays of the textures and the samplers at the start of a frame. They stay from

@@ -611,7 +611,7 @@ impl App {
             super::WindowTarget::Own(window) => Some(window.clone()),
             super::WindowTarget::Game(_) => None,
         };
-        let (renderer, surface) = Renderer::new(
+        let made = Renderer::new(
             self.backends,
             Some(target),
             wgpu::TextureFormat::Bgra8Unorm,
@@ -619,6 +619,15 @@ impl App {
             self.extension.as_ref().map_or(0, |extension| extension.texture_slots()),
             switches().samples.unwrap_or_else(|| self.extension.as_ref().map_or(1, |extension| extension.samples())),
         );
+        let (renderer, surface) = match made {
+            Ok(made) => made,
+            // No backend serves: the reason in the log and the box, then the exit code the
+            // plugin knows (the failure-path page, the code 20).
+            Err(refusals) => {
+                crate::request::refuse_live(&refusals);
+                std::process::exit(crate::request::EXIT_GPU);
+            }
+        };
         let surface = surface.expect("a surface");
         // The host shows a frame when the game gives one. It does not wait for the screen.
         let present_mode = switches().present.unwrap_or(wgpu::PresentMode::AutoNoVsync);
