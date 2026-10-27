@@ -45,9 +45,11 @@ CHECKS = {
     "sharedse layouts": (PLUGIN / "tools" / "check_sharedse_layouts.py", REPOS / "MWSE" / "MWSE" / "SharedSE"),
     # The fixture test of the third-party notices writer of the release archive.
     "notices": (PLUGIN / "tools" / "third_party_notices.py", PLUGIN, ["--self-test"]),
+    # The argument handling of the runner (--plugin-dll, --log).
+    "runner": (PLUGIN / "tools" / "run_own_device.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices"],
+    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "runner"],
     "mge": ["mge readme", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
