@@ -69,6 +69,9 @@ mod engine;
 mod player;
 use engine::{plan, scene};
 mod retained;
+/// For the check of the world shader without a GPU in the helper of MGE XE (`shader_check`
+/// of mgeHost64): the text of an extension as the shader module takes it.
+pub use retained::rewrite_extension_text;
 mod uv_animation;
 mod morph;
 pub mod stamps;
