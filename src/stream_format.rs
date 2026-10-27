@@ -14,8 +14,11 @@
 //! record; name the bump in the commit message. A new word in the free area of the ring head,
 //! read as 0 from an older writer whose 0 means the behaviour before the word, needs none.
 //!
-//! The file is also the one home of the exit codes of the helper that the plugin reads and of
-//! the ids of the messages of the helper for the game process.
+//! The file is also the one home of the exit codes of the helper that the plugin reads, of
+//! the ids of the messages of the helper for the game process, and of the layout of the
+//! HEADER record and of the shared memories of a stream (the ring, the reply memory, the
+//! tile memory, the message memory). `tools/check_handshake.py` refuses a second definition
+//! of any constant of this file in the two crates and in mgeHost64.
 //!
 //! The exit codes of numidium.exe (the failure-path design, section 4):
 //!
@@ -33,8 +36,8 @@
 //! plugin adds no second box ([`helper_said_why`]); for the rest the plugin runs the failure
 //! path (`failure.rs`: the autosave, then its box).
 //!
-//! The words of the head of the ring (128 bytes; the constants have two copies, `capture.rs`
-//! of the plugin and `live.rs` of the host crate, to be moved here after the merges):
+//! The words of the head of the ring ([`RING_HEAD`] bytes; each has its constant below, the
+//! one home of its offset for the plugin and the host crate):
 //!
 //! | offset | type | writer | word |
 //! | --- | --- | --- | --- |
@@ -62,10 +65,116 @@ pub const STREAM_FORMAT: u32 = 1;
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
 /// game, the abilities of the stream, the stream format, then the build id of the plugin as
 /// ASCII, zero-padded. A HEADER of 16 bytes comes from a plugin before the handshake.
+pub const HEADER_WIDTH_AT: usize = 0;
+pub const HEADER_HEIGHT_AT: usize = 4;
+pub const HEADER_WINDOW_AT: usize = 8;
+pub const HEADER_ABILITIES_AT: usize = 12;
 pub const HEADER_FORMAT_AT: usize = 16;
 pub const HEADER_BUILD_ID_AT: usize = 20;
 pub const HEADER_BUILD_ID_BYTES: usize = 64;
 pub const HEADER_BYTES: usize = HEADER_BUILD_ID_AT + HEADER_BUILD_ID_BYTES;
+
+/// A bit of the abilities word of the HEADER: the shape records carry the flag
+/// `shape_stream::QUEUED` for the draws of the engine's main sorted queue.
+pub const HEADER_QUEUE_MARKED: u32 = 1;
+/// A bit of the same word: the world camera's Click marks the end of the sky's walk with the
+/// frame event `link::EVENT_WORLD_WALK` (`world_walk`); the host starts the world there.
+pub const HEADER_WORLD_WALK: u32 = 2;
+/// A bit of the same word: the scene records carry `link::SCENE_BACK_BUFFER`.
+pub const HEADER_SCENE_TARGET: u32 = 4;
+/// A bit of the same word: the end of the flush of the main sorted queue comes as the frame
+/// event `link::EVENT_QUEUE_FLUSHED` (`queue_flush`).
+pub const HEADER_QUEUE_FLUSH: u32 = 8;
+/// A bit of the same word: a retained blend that the engine draws in its walk has its place
+/// there as the record `INSTANCE_WALK`.
+pub const HEADER_WALK_PLACES: u32 = 16;
+/// A bit of the same word: the scene records carry `link::SCENE_WIREFRAME`.
+pub const HEADER_SCENE_WIREFRAME: u32 = 32;
+/// A bit of the same word: the header says how the game combines an environment map
+/// ([`HEADER_ENVMAP_LIT`]).
+pub const HEADER_ENVMAP_KNOWN: u32 = 64;
+/// A bit of the same word: the game's environment map stages take the lit colour (the
+/// Morrowind Code Patch's hook, `texture_pipeline::envmap_lit` of the plugin).
+pub const HEADER_ENVMAP_LIT: u32 = 128;
+
+// The shared memories of a stream. The plugin makes each one, named after the ring; the
+// helper opens it. The words of the ring head are in the table at the head of this file.
+
+/// The first word of the ring head: the plugin made this memory.
+pub const RING_MAGIC: u32 = 0x474E_5232;
+/// The bytes of the ring head: the data starts here. A record can go around the end of the
+/// data.
+pub const RING_HEAD: usize = 128;
+/// The number of data bytes (u32).
+pub const RING_CAPACITY: usize = 4;
+/// The bytes that the game wrote (u64).
+pub const RING_WRITTEN: usize = 8;
+/// The bytes that the helper read (u64).
+pub const RING_READ: usize = 16;
+/// 1 when the game closed the stream (u32).
+pub const RING_CLOSED: usize = 24;
+/// The classes of the game that the helper draws itself (one bit for each `CLASS_*`),
+/// written by the helper at each frame, read by the plugin (`helper_takes`).
+pub const RING_TAKES: usize = 32;
+/// The helper waits for a record (1 while it does): the game sets the event of the ring
+/// after a write only then.
+pub const RING_WAITING: usize = 36;
+/// The reach of the helper's shadow map in units of the world (the bits of an f32; 0
+/// without shadows), for the animation policy of the plugin (`animation`).
+pub const RING_SHADOW_REACH: usize = 40;
+/// The helper's busy time for each frame, in microseconds (u32), written at each frame it
+/// shows, for the pacing of the game (`pacing` of the plugin).
+pub const RING_BUSY: usize = 44;
+/// The bytes that the helper had read at the end of the last frame that it showed (u64).
+pub const RING_DONE_AT: usize = 48;
+/// The time when the helper showed that frame, in ticks of the performance counter (u64).
+pub const RING_DONE_TIME: usize = 56;
+/// When the game starts its next frame (i64, ticks of the performance counter; `i64::MAX`
+/// from the end of a frame to the start of the next), written by the pacing: while the game
+/// writes a frame the helper waits for its records awake, and else it sleeps.
+pub const RING_NEXT_START: usize = 64;
+/// The game waits for the helper to read (1 while it does: for room in the ring, or for the
+/// frame before the last one at the end of a frame): the helper sets the event
+/// `<name>-read` after a read only then, and the game's wait ends on it.
+pub const RING_GAME_WAITING: usize = 72;
+
+/// The reply memory (`<ring>.reply`, `.reply<generation>` after it grew): the helper's answer
+/// to a `READ_PIXELS` record. The number of the request (u32; the helper writes it last).
+pub const REPLY_REQUEST: usize = 0;
+/// The width and the height of the answer (u32 each); a width of 0: no such target.
+pub const REPLY_WIDTH: usize = 4;
+pub const REPLY_HEIGHT: usize = 8;
+/// The number of pixel bytes that the memory holds (u32; the plugin writes it).
+pub const REPLY_CAPACITY: usize = 12;
+/// The bytes of the head: the pixels start here, 4 bytes each, blue first.
+pub const REPLY_HEAD: usize = 16;
+
+/// The tile memory (`<ring>.tiles`): the pixels of a `COPY_TILE` read, in the slot of its
+/// ticket (the ticket modulo [`TILE_SLOTS`]). The plugin has at most this many tickets open,
+/// so a slot is free when the helper writes it.
+pub const TILE_SLOTS: usize = 8;
+/// The pixel bytes of a slot: a tile of 512 x 512 at most.
+pub const TILE_BYTES: usize = 512 * 512 * 4;
+/// The words of the head of a slot (u32 each): the ticket (the helper writes it last), the
+/// width (0: no pixels for the ticket), the height, one unused word.
+pub const TILE_TICKET: usize = 0;
+pub const TILE_WIDTH: usize = 4;
+pub const TILE_HEIGHT: usize = 8;
+/// The bytes of the head of a slot: its pixels start here, 4 bytes each, blue first. A slot
+/// is `TILE_HEAD + TILE_BYTES` bytes.
+pub const TILE_HEAD: usize = 16;
+
+/// The message memory (`<ring>.messages`): the messages of the helper's extension for the
+/// game process, records of the number, the length and the bytes, which can go around the
+/// end of the data. The first word of its head.
+pub const MESSAGES_MAGIC: u32 = 0x4753_4D31;
+/// The number of data bytes (u32; the plugin writes it).
+pub const MESSAGES_CAPACITY: usize = 4;
+/// The bytes that the helper wrote (u64), and that the game read (u64).
+pub const MESSAGES_WRITTEN: usize = 8;
+pub const MESSAGES_READ: usize = 16;
+/// The bytes of the head: the data starts here.
+pub const MESSAGES_HEAD: usize = 32;
 
 /// The exit codes of the helper when the parts do not match. The helper's own table: 0 ok,
 /// 1 to 9 its IPC host mode (`error.rs` of mgeHost64), 10 to 29 a refusal with a message box
@@ -262,6 +371,51 @@ mod tests {
         // The IPC host mode's codes, a stall and the codes of Windows for a crash are not.
         assert!(!helper_said_why(0) && !helper_said_why(3) && !helper_said_why(30) && !helper_said_why(EXIT_PANIC));
         assert!(!helper_said_why(EXIT_STALLED) && !helper_said_why(EXIT_NOT_ANSWERING));
+    }
+
+    /// The words of one head, as (offset, bytes): each is aligned to its size, none overlaps
+    /// another, and all end before `head`. Gives the end of the last word.
+    fn words_fit(words: &[(usize, usize)], head: usize) -> usize {
+        let mut sorted = words.to_vec();
+        sorted.sort();
+        let mut end = 0;
+        for &(offset, bytes) in &sorted {
+            assert_eq!(offset % bytes, 0, "the word at {offset} is not aligned to its {bytes} bytes");
+            assert!(offset >= end, "the word at {offset} overlaps the word before it");
+            end = offset + bytes;
+        }
+        assert!(end <= head, "the words end at {end}, after the head of {head} bytes");
+        end
+    }
+
+    #[test]
+    fn the_words_of_each_shared_memory_fit_its_head() {
+        let magic = (0, 4);
+        let ring = [
+            magic,
+            (RING_CAPACITY, 4),
+            (RING_WRITTEN, 8),
+            (RING_READ, 8),
+            (RING_CLOSED, 4),
+            (RING_TAKES, 4),
+            (RING_WAITING, 4),
+            (RING_SHADOW_REACH, 4),
+            (RING_BUSY, 4),
+            (RING_DONE_AT, 8),
+            (RING_DONE_TIME, 8),
+            (RING_NEXT_START, 8),
+            (RING_GAME_WAITING, 4),
+            (RING_ALLOWANCE, 4),
+            (RING_ENDING, 4),
+        ];
+        // The free area of the head (the doc of this file) starts after the last word.
+        assert_eq!(words_fit(&ring, RING_HEAD), 84);
+        words_fit(&[(REPLY_REQUEST, 4), (REPLY_WIDTH, 4), (REPLY_HEIGHT, 4), (REPLY_CAPACITY, 4)], REPLY_HEAD);
+        words_fit(&[(TILE_TICKET, 4), (TILE_WIDTH, 4), (TILE_HEIGHT, 4)], TILE_HEAD);
+        words_fit(&[magic, (MESSAGES_CAPACITY, 4), (MESSAGES_WRITTEN, 8), (MESSAGES_READ, 8)], MESSAGES_HEAD);
+        // The HEADER record: its words one after the other, then the build id.
+        let header = [(HEADER_WIDTH_AT, 4), (HEADER_HEIGHT_AT, 4), (HEADER_WINDOW_AT, 4), (HEADER_ABILITIES_AT, 4), (HEADER_FORMAT_AT, 4)];
+        assert_eq!(words_fit(&header, HEADER_BYTES), HEADER_BUILD_ID_AT);
     }
 
     #[test]

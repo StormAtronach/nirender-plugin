@@ -2,6 +2,10 @@
 //! the game (the shape, the instance and the held-shape records, the screen draws).
 
 use crate::*;
+use crate::stream_format::{
+    HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET,
+    HEADER_SCENE_WIREFRAME, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
+};
 
 /// The generation of the reply memory that a `READ_PIXELS` record names: 0 in a record of a
 /// plugin before the third word.
@@ -29,8 +33,8 @@ impl Player {
         let move_check = self.move_check.take();
         match tag {
             tag::HEADER => {
-                self.size = (word(data, 0), word(data, 4));
-                let abilities = if data.len() >= 16 { word(data, 12) } else { 0 };
+                self.size = (word(data, HEADER_WIDTH_AT), word(data, HEADER_HEIGHT_AT));
+                let abilities = if data.len() >= HEADER_ABILITIES_AT + 4 { word(data, HEADER_ABILITIES_AT) } else { 0 };
                 self.stream.queue_marked = abilities & HEADER_QUEUE_MARKED != 0;
                 self.stream.world_walk = abilities & HEADER_WORLD_WALK != 0;
                 self.stream.scene_target = abilities & HEADER_SCENE_TARGET != 0;

@@ -16,7 +16,8 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use crate::capture::{ticks, ticks_per_second, wait_step, RING_BUSY, RING_DONE_AT, RING_DONE_TIME, RING_HEAD, RING_NEXT_START};
+use crate::capture::{ticks, ticks_per_second, wait_step};
+use crate::stream_format::{RING_BUSY, RING_DONE_AT, RING_DONE_TIME, RING_HEAD, RING_NEXT_START};
 
 extern "system" {
     fn MapViewOfFile(mapping: isize, access: u32, offset_high: u32, offset_low: u32, bytes: usize) -> *mut u8;

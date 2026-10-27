@@ -35,31 +35,15 @@ use crate::checked::Open;
 use crate::main_thread::MainThread;
 use crate::sync::{DeviceLock, LockCell};
 use crate::mem::rd;
+// The layout of the HEADER record and of the shared memories: their one home.
+use crate::stream_format::{
+    HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET, HEADER_SCENE_WIREFRAME,
+    HEADER_WALK_PLACES, HEADER_WORLD_WALK, MESSAGES_CAPACITY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_READ, MESSAGES_WRITTEN, REPLY_CAPACITY,
+    REPLY_HEAD, REPLY_HEIGHT, REPLY_REQUEST, REPLY_WIDTH, RING_CAPACITY, RING_CLOSED, RING_GAME_WAITING, RING_HEAD, RING_MAGIC, RING_READ,
+    RING_SHADOW_REACH, RING_TAKES, RING_WAITING, RING_WRITTEN, TILE_BYTES, TILE_HEAD, TILE_HEIGHT, TILE_SLOTS, TILE_TICKET, TILE_WIDTH,
+};
 
 pub const MAGIC: &[u8; 8] = b"NIRCAP01";
-
-/// A bit of the fourth word of the header: the shape records carry the flag
-/// `shape_stream::QUEUED` for the draws of the engine's main sorted queue.
-pub const HEADER_QUEUE_MARKED: u32 = 1;
-/// A bit of the same word: the world camera's Click marks the end of the sky's walk with the
-/// frame event `link::EVENT_WORLD_WALK` (`world_walk`); the host starts the world there.
-pub const HEADER_WORLD_WALK: u32 = 2;
-/// A bit of the same word: the scene records carry `link::SCENE_BACK_BUFFER`.
-pub const HEADER_SCENE_TARGET: u32 = 4;
-/// A bit of the same word: the end of the flush of the main sorted queue comes as the frame
-/// event `link::EVENT_QUEUE_FLUSHED` (`queue_flush`).
-pub const HEADER_QUEUE_FLUSH: u32 = 8;
-/// A bit of the same word: a retained blend that the engine draws in its walk has its place
-/// there as [`tag::INSTANCE_WALK`].
-pub const HEADER_WALK_PLACES: u32 = 16;
-/// A bit of the same word: the scene records carry `link::SCENE_WIREFRAME`.
-pub const HEADER_SCENE_WIREFRAME: u32 = 32;
-/// A bit of the same word: the header says how the game combines an environment map
-/// ([`HEADER_ENVMAP_LIT`]).
-pub const HEADER_ENVMAP_KNOWN: u32 = 64;
-/// A bit of the same word: the game's environment map stages take the lit colour (the
-/// Morrowind Code Patch's hook, `texture_pipeline::envmap_lit`).
-pub const HEADER_ENVMAP_LIT: u32 = 128;
 
 /// The HEADER record: the size of the picture, the window of the game, the abilities, the
 /// stream format and this build's id (`stream_format` has the layout). The first record of
@@ -378,38 +362,6 @@ pub(crate) fn ticks_per_second() -> i64 {
     frequency.max(1)
 }
 
-/// The head of the shared memory: [`RING_MAGIC`], the number of data bytes, the bytes that the
-/// game wrote (u64), the bytes that the host read (u64), and 1 when the game closed the
-/// stream. The data starts at [`RING_HEAD`]. A record can go around the end of the data.
-pub const RING_MAGIC: u32 = 0x474E_5232;
-pub const RING_HEAD: usize = 128;
-const RING_WRITTEN: usize = 8;
-const RING_READ: usize = 16;
-const RING_CLOSED: usize = 24;
-/// The classes of the game that the helper draws itself (one bit for each `CLASS_*`),
-/// written by the helper at each frame, read by the plugin (`helper_takes`).
-pub const RING_TAKES: usize = 32;
-/// The helper waits for a record (1 while it does): the game sets the event of the ring
-/// after a write only then.
-const RING_WAITING: usize = 36;
-/// The reach of the helper's shadow map in units of the world (the bits of an f32; 0
-/// without shadows), for the animation policy of the plugin (`animation`).
-pub const RING_SHADOW_REACH: usize = 40;
-/// The helper's busy time for each frame, in microseconds (u32), written at each frame it
-/// shows, for the pacing of the game ([`crate::pacing`]).
-pub(crate) const RING_BUSY: usize = 44;
-/// The bytes that the helper had read at the end of the last frame that it showed (u64), and
-/// the time when it showed it, in ticks of the performance counter (u64).
-pub(crate) const RING_DONE_AT: usize = 48;
-pub(crate) const RING_DONE_TIME: usize = 56;
-/// When the game starts its next frame (i64, ticks of the performance counter; `i64::MAX`
-/// from the end of a frame to the start of the next), written by the pacing: while the game
-/// writes a frame the helper waits for its records awake, and else it sleeps.
-pub(crate) const RING_NEXT_START: usize = 64;
-/// The game waits for the helper to read (1 while it does: for room in the ring, or for the
-/// frame before the last one at the end of a frame): the helper sets the event
-/// `<name>-read` after a read only then, and the game's wait ends on it.
-const RING_GAME_WAITING: usize = 72;
 /// The start of the frame of the game in progress, in ticks of the performance counter, for
 /// the age of the picture in the debug overlay: the end of the wait of the frame before
 /// ([`crate::pacing`] at the start of the frame, else after the wait at Present).
@@ -521,7 +473,7 @@ impl Ring {
         }
         core::ptr::write_bytes(base, 0, RING_HEAD);
         (base as *mut u32).write(RING_MAGIC);
-        (base.add(4) as *mut u32).write(capacity as u32);
+        (base.add(RING_CAPACITY) as *mut u32).write(capacity as u32);
         // An event that resets itself: one wait takes one set.
         let mut event_name = format!("{name}-records").into_bytes();
         event_name.push(0);
@@ -699,15 +651,11 @@ impl Ring {
     }
 }
 
-/// The reply memory of a stream: shared memory with the name of the ring and `.reply`, or
-/// `.reply<generation>` after it grew. The host writes the answer to a `READ_PIXELS` record
-/// into it: the number of the request (the host writes it last), the width, the height, the
-/// number of pixel bytes that the memory holds (this side writes it), and then the pixels with
-/// 4 bytes each, blue first. A width of 0 says that the host has no such target. Pixels that
-/// do not fit get their width and height and no pixels: this side makes a larger memory with
-/// the next generation and asks again. The record names the generation of the memory.
-pub const REPLY_HEAD: usize = 16;
-const REPLY_CAPACITY: usize = 12;
+// The reply memory of a stream (its layout: `stream_format`, `REPLY_*`): the host writes the
+// answer to a `READ_PIXELS` record into it. Pixels that do not fit get their width and height
+// and no pixels: this side makes a larger memory with the next generation and asks again. The
+// record names the generation of the memory.
+
 /// The game waits this long for an answer.
 const REPLY_WAIT_SECONDS: i64 = 5;
 /// The host program did not answer a pixel read or a tile read in time: a hung or ended
@@ -769,7 +717,7 @@ impl Reply {
     unsafe fn grow(&mut self, size: usize) -> bool {
         let Some(mut larger) = Reply::create_generation(&self.name, size, self.generation + 1) else { return false };
         // The number of the last answer, so that a silent helper is found as before.
-        (larger.base as *mut u32).write_volatile((self.base as *const u32).read_volatile());
+        (larger.base.add(REPLY_REQUEST) as *mut u32).write_volatile((self.base.add(REPLY_REQUEST) as *const u32).read_volatile());
         (larger.requests, larger.waited) = (self.requests, self.waited);
         self.close();
         crate::log!("stream: the reply memory grew from {} to {} pixel bytes (generation {})", self.capacity, size, larger.generation);
@@ -824,7 +772,7 @@ unsafe fn ask_pixels(lock: &DeviceLock, texture: u32) -> Option<(u32, u32)> {
     let mut s = state(lock)?;
     let reply = s.reply.as_mut()?;
     let start = ticks();
-    while (reply.base as *const u32).read_volatile() != request {
+    while (reply.base.add(REPLY_REQUEST) as *const u32).read_volatile() != request {
         // A silent helper gets one look, not a wait: the game must not hang on it.
         if HELPER_SILENT.load(Ordering::Relaxed) {
             return None;
@@ -837,19 +785,11 @@ unsafe fn ask_pixels(lock: &DeviceLock, texture: u32) -> Option<(u32, u32)> {
         wait_a_moment();
     }
     reply.waited += ticks() - start;
-    Some(((reply.base.add(4) as *const u32).read_volatile(), (reply.base.add(8) as *const u32).read_volatile()))
+    Some(((reply.base.add(REPLY_WIDTH) as *const u32).read_volatile(), (reply.base.add(REPLY_HEIGHT) as *const u32).read_volatile()))
 }
 
-/// The tile memory of a stream: shared memory with the name of the ring and `.tiles`. The
-/// host writes the pixels of a `COPY_TILE` read into the slot of its ticket (the ticket
-/// modulo [`TILE_SLOTS`]): in the head of the slot the ticket (the host writes it last), the
-/// width, the height and one unused word, then the pixels with 4 bytes each, blue first. A
-/// width of 0 says that the host has no pixels for the ticket. The plugin has at most
-/// [`TILE_SLOTS`] tickets open, so a slot is free when the host writes it.
-pub const TILE_SLOTS: usize = 8;
-/// The largest tile: 512 x 512.
-pub const TILE_BYTES: usize = 512 * 512 * 4;
-const TILE_HEAD: usize = 16;
+// The tile memory of a stream (its layout: `stream_format`, `TILE_*`): the host writes the
+// pixels of a `COPY_TILE` read into the slot of its ticket.
 
 struct Tiles {
     mapping: isize,
@@ -914,10 +854,10 @@ pub unsafe fn tile_pixels(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
     let s = state(&lock)?;
     let tiles = s.tiles.as_ref()?;
     let slot = tiles.slot(ticket);
-    if (*(slot as *const core::sync::atomic::AtomicU32)).load(Ordering::Acquire) != ticket {
+    if (*(slot.add(TILE_TICKET) as *const core::sync::atomic::AtomicU32)).load(Ordering::Acquire) != ticket {
         return None;
     }
-    let (width, height) = ((slot.add(4) as *const u32).read_volatile(), (slot.add(8) as *const u32).read_volatile());
+    let (width, height) = ((slot.add(TILE_WIDTH) as *const u32).read_volatile(), (slot.add(TILE_HEIGHT) as *const u32).read_volatile());
     if HELPER_SILENT.swap(false, Ordering::Relaxed) {
         crate::log!("stream: the host program answers the tile reads again");
     }
@@ -952,14 +892,11 @@ pub unsafe fn wait_tile(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
     }
 }
 
-/// The message memory of a stream: shared memory with the name of the ring and `.messages`.
-/// The host writes messages of its extension into it (`Extension::messages` of the crate):
-/// records of the number, the length and the bytes, which can go around the end of the data.
-/// The head: [`MESSAGES_MAGIC`], the number of data bytes, the bytes that the host wrote (u64),
-/// the bytes that the game read (u64). The plugin reads them at the end of each frame and
-/// gives each one to MGE XE (`link_client::stream_message`).
-pub const MESSAGES_MAGIC: u32 = 0x4753_4D31;
-const MESSAGES_HEAD: usize = 32;
+// The message memory of a stream (its layout: `stream_format`, `MESSAGES_*`): the host writes
+// messages of its extension into it (`Extension::messages` of the crate). The plugin reads
+// them at the end of each frame and gives each one to MGE XE (`link_client::stream_message`).
+
+/// The data bytes of the message memory that the plugin makes.
 const MESSAGES_BYTES: usize = 64 * 1024;
 
 struct Messages {
@@ -981,7 +918,7 @@ impl Messages {
             return None;
         }
         core::ptr::write_bytes(base, 0, MESSAGES_HEAD);
-        (base.add(4) as *mut u32).write(MESSAGES_BYTES as u32);
+        (base.add(MESSAGES_CAPACITY) as *mut u32).write(MESSAGES_BYTES as u32);
         (base as *mut u32).write_volatile(MESSAGES_MAGIC);
         Some(Messages { mapping, base })
     }
@@ -992,8 +929,8 @@ impl Messages {
 
     /// The messages that the host wrote since the last call.
     unsafe fn take(&mut self) -> Vec<(u32, Vec<u8>)> {
-        let written = self.counter(8).load(Ordering::Acquire);
-        let mut read = self.counter(16).load(Ordering::Relaxed);
+        let written = self.counter(MESSAGES_WRITTEN).load(Ordering::Acquire);
+        let mut read = self.counter(MESSAGES_READ).load(Ordering::Relaxed);
         let mut out = Vec::new();
         let byte = |at: u64| self.base.add(MESSAGES_HEAD + (at % MESSAGES_BYTES as u64) as usize).read();
         let word = |at: u64| u32::from_le_bytes([byte(at), byte(at + 1), byte(at + 2), byte(at + 3)]);
@@ -1005,7 +942,7 @@ impl Messages {
             out.push((id, (0..length).map(|n| byte(read + 8 + n)).collect()));
             read += 8 + length;
         }
-        self.counter(16).store(read, Ordering::Release);
+        self.counter(MESSAGES_READ).store(read, Ordering::Release);
         out
     }
 
@@ -2337,12 +2274,12 @@ mod tests {
         unsafe {
             let ring = format!("nirender-test-grow-{}", std::process::id());
             let mut reply = super::Reply::create(&ring, 64).unwrap();
-            (reply.base as *mut u32).write_volatile(5);
+            (reply.base.add(super::REPLY_REQUEST) as *mut u32).write_volatile(5);
             reply.requests = 5;
             assert!(reply.grow(256));
             assert_eq!((reply.generation, reply.capacity, reply.requests), (1, 256, 5));
             assert_eq!((reply.base.add(super::REPLY_CAPACITY) as *const u32).read_volatile(), 256);
-            assert_eq!((reply.base as *const u32).read_volatile(), 5);
+            assert_eq!((reply.base.add(super::REPLY_REQUEST) as *const u32).read_volatile(), 5);
             assert_eq!(super::reply_name(&ring, 1), format!("{ring}.reply1"));
             reply.close();
         }
