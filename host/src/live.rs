@@ -761,11 +761,12 @@ impl ApplicationHandler for App {
         let waiting = Instant::now();
         let mut idle_since: Option<Instant> = None;
         // The clock is read once in 256 spins: a read in each spin is too costly. The
-        // first 256 looks for a record yield; after them this
+        // first looks for a record yield (256, or `MGE_XE_WAIT_YIELDS`); after them this
         // program blocks on the event, so that the game wakes it only at a real gap
         // (between the frames), not after every record.
         let mut spins: u32 = 0;
         let mut looks: u32 = 0;
+        let yields = switches().wait_yields.unwrap_or(256);
         loop {
             // The device is lost: nothing draws any more. The records are read and dropped,
             // so that the game does not wait for this program. A request that the game waits
@@ -833,13 +834,13 @@ impl ApplicationHandler for App {
                     return;
                 }
                 looks += 1;
-                if looks < 256 {
+                if looks < yields {
                     std::thread::yield_now();
                 } else {
                     let phase = self.ring.game_phase();
-                    if phase == GamePhase::Writes {
+                    if phase == GamePhase::Writes && yields > 0 {
                         // The game writes the frame now: the next record comes soon. Wait
-                        // awake, and look at the phase again in 256 looks.
+                        // awake, and look at the phase again after the same looks.
                         looks = 0;
                     } else {
                         self.blocks[phase as usize] += 1;
