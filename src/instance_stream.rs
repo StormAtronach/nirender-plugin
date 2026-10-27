@@ -191,11 +191,45 @@ struct Instance {
     /// The frame in which the engine's main sorted queue took the shape (`queue_blend`), or
     /// [`u32::MAX`].
     queued: u32,
+    /// Its environment map and fog map at its last note of the material: the address and
+    /// the version of each ([`EffectWatch`]). Another version means another material.
+    effect_versions: [(usize, u32); 2],
     /// A particle system (a `RenderPoints` draw): its particles go as an `INSTANCE_PARTICLES`
     /// record before each `INSTANCE_DRAW`, at the place of the engine's draw, and the table
     /// never draws it by itself (particles plan, step 2).
     points: bool,
 }
+
+/// A texture effect of the table's instances (an environment or a fog map), by its address:
+/// its words as the material record copies them, read at most once a frame, and a version
+/// that grows when they change. The effect has no controller (else its shapes are not
+/// retained), but its projection follows its world transform
+/// (`NiTextureEffect::UpdateWorldData` 0x6E3970 calls `UpdateProjection` 0x6E37C0), so a
+/// move of a node above it changes the material of every shape it lights.
+#[derive(Default)]
+struct EffectWatch {
+    words: [u32; crate::material_stream::EFFECT_SIGNATURE_WORDS],
+    version: u32,
+    frame: u32,
+}
+
+impl EffectWatch {
+    /// The version of the effect in `frame`: `read` gives its words, at most once a frame.
+    fn observe(&mut self, frame: u32, read: impl FnOnce() -> [u32; crate::material_stream::EFFECT_SIGNATURE_WORDS]) -> u32 {
+        if self.version == 0 || self.frame != frame {
+            self.frame = frame;
+            let words = read();
+            if self.version == 0 || words != self.words {
+                self.words = words;
+                self.version = self.version.wrapping_add(1).max(1);
+            }
+        }
+        self.version
+    }
+}
+
+/// The frames an effect stays in the watch list without a display of a shape it lights.
+const EFFECT_FRAMES: u32 = 4096;
 
 /// The property slots of `NiPropertyState` from `propAlpha` (+0x08) to `field_30` (+0x30).
 const PROPERTY_SLOTS: usize = 11;
@@ -227,6 +261,10 @@ struct Tables {
     scene_frame: u32,
     scene_values: (u32, Option<[u32; 4]>),
     scene_mixed: u64,
+    /// The texture effects of the instances ([`EffectWatch`]), and the notes of the material
+    /// of a sent instance because one of its effects changed.
+    effects: HashMap<usize, EffectWatch>,
+    effect_notes: u64,
     /// The landscape (class 11) is retained too (`NIRENDER_LANDSCAPE=0` keeps it out).
     landscape: bool,
     /// The shapes of class 0 (under no root the classes know: the actors and their parts, and
@@ -303,6 +341,8 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         scene_frame: u32::MAX,
         scene_values: (0, None),
         scene_mixed: 0,
+        effects: HashMap::default(),
+        effect_notes: 0,
         landscape: crate::switches::on("NIRENDER_LANDSCAPE") != Some(false),
         actors: crate::switches::on("NIRENDER_ACTORS") != Some(false),
         animated: crate::switches::on("NIRENDER_ANIMATED") != Some(false),
@@ -560,6 +600,12 @@ pub unsafe fn frame_tick(mt: &MainThread) {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     t.frame = t.frame.wrapping_add(1);
+    // An effect that lit no displayed shape for a while goes; its address can be another
+    // object's by now, and a watch made again reads it anew.
+    if t.frame % EFFECT_FRAMES == 0 {
+        let now = t.frame;
+        t.effects.retain(|_, watch| now.wrapping_sub(watch.frame) < EFFECT_FRAMES);
+    }
 }
 
 /// The shape is deleted (the destructor of `NiGeometry`): its instance goes, with a record
@@ -666,7 +712,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], queued: u32::MAX, points });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], effect_versions: [(0, 0); 2], queued: u32::MAX, points });
     t.pending = Some((shape, id));
 }
 
@@ -1633,14 +1679,23 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     }
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
+    // The texture effects of the shape, read while the shape displays (it holds its effect
+    // state): each at most once a frame, whatever number of shapes it lights.
+    let effects = if effect_state != 0 { [rd::<usize>(effect_state, DES::environmentMap), rd(effect_state, DES::fogMap)] } else { [0; 2] };
+    let effect_versions = effects.map(|effect| {
+        let version = if effect == 0 { 0 } else { t.effects.entry(effect).or_default().observe(frame, || crate::material_stream::effect_signature(renderer, effect)) };
+        (effect, version)
+    });
     let Some(instance) = t.instances.get_mut(&shape) else {
         mark(shape, false);
         return false;
     };
+    let effects_changed = instance.effect_versions != effect_versions;
     // The handles, when due: every 64th frame, after a change of the device textures, for
     // a record that must go again (the start of a capture), and at every display of a
     // live shape (a new revision of the data sends the geometry again under its handle).
-    let due = note_every() || instance.live || !instance.sent || instance.generation != generation || id.wrapping_add(frame) % CHECK_FRAMES == 0;
+    // And when an effect of the shape changed: its material record copies the effect.
+    let due = note_every() || instance.live || !instance.sent || effects_changed || instance.generation != generation || id.wrapping_add(frame) % CHECK_FRAMES == 0;
     if due {
         COST_NOTES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         // A skinned geometry is packed with the bone influences of its skin.
@@ -1659,6 +1714,10 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
             return false;
         }
         instance.generation = generation;
+        if effects_changed && instance.sent && instance.effect_versions != [(0, 0); 2] {
+            t.effect_notes += 1;
+        }
+        instance.effect_versions = effect_versions;
         if instance.geometry != geometry || instance.material != material {
             instance.geometry = geometry;
             instance.material = material;
@@ -1941,8 +2000,8 @@ pub unsafe fn report(mt: &MainThread) -> String {
         t.states
     ) + "\n"
         + &format!(
-            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {}, shapes hit {}\n",
-            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], change_notes[0], change_notes[1], change_notes[2]
+            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {}, shapes hit {}; texture effects watched {}, materials noted again for a changed effect {}\n",
+            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], change_notes[0], change_notes[1], change_notes[2], t.effects.len(), t.effect_notes
         )
         + &format!(
             "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk\n",
@@ -1970,4 +2029,35 @@ pub unsafe fn report(mt: &MainThread) -> String {
         + "\n" + &crate::worker_events::report()
         + "\n" + &crate::freed_fill::report()
         + "\n" + &crate::camera_space::skin_report(mt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::material_stream::EFFECT_SIGNATURE_WORDS;
+
+    #[test]
+    fn an_effect_watch_grows_its_version_only_when_the_words_change() {
+        let mut watch = EffectWatch::default();
+        let mut words = [0u32; EFFECT_SIGNATURE_WORDS];
+        words[4] = 0.5f32.to_bits();
+        let first = watch.observe(1, || words);
+        assert_ne!(first, 0);
+        // The same words in the next frame: the same version, so no note.
+        assert_eq!(watch.observe(2, || words), first);
+        // The projection turned: a new version, so the material is noted again.
+        let mut turned = words;
+        turned[4] = 0.0f32.to_bits();
+        turned[5] = 0.5f32.to_bits();
+        let second = watch.observe(3, || turned);
+        assert_ne!(second, first);
+        // Read at most once a frame: a second read in frame 3 is not made.
+        assert_eq!(watch.observe(3, || panic!("read twice in a frame")), second);
+    }
+
+    #[test]
+    fn an_effect_that_gives_no_stage_still_has_a_version() {
+        let mut watch = EffectWatch::default();
+        assert_ne!(watch.observe(0, || [0; EFFECT_SIGNATURE_WORDS]), 0);
+    }
 }
