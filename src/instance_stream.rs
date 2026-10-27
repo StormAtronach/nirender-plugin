@@ -602,7 +602,7 @@ pub unsafe fn frame_tick(mt: &MainThread) {
     t.frame = t.frame.wrapping_add(1);
     // An effect that lit no displayed shape for a while goes; its address can be another
     // object's by now, and a watch made again reads it anew.
-    if t.frame % EFFECT_FRAMES == 0 {
+    if t.frame.is_multiple_of(EFFECT_FRAMES) {
         let now = t.frame;
         t.effects.retain(|_, watch| now.wrapping_sub(watch.frame) < EFFECT_FRAMES);
     }
