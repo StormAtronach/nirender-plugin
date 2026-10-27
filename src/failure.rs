@@ -8,9 +8,9 @@
 //! device lock). The Lua side of the plugin's mod (failure.lua) asks `host_state` at each
 //! frame, saves the game (`tes3.saveGame`, tried again for 10 s when the engine refuses) and
 //! calls `handled` with the name of the save: the box goes up then, on the main thread,
-//! outside the lock. When no Lua call came [`LUA_WAIT_SECONDS`] after the cause was found
+//! outside the lock. When no Lua call came `LUA_WAIT_SECONDS` after the cause was found
 //! (the mod is missing), or the Lua side asked and did not answer in
-//! [`LUA_ANSWER_SECONDS`] (an error in its handler at each frame), `after_present` shows the
+//! `LUA_ANSWER_SECONDS` (an error in its handler at each frame), `after_present` shows the
 //! box itself, with "No save was possible".
 //!
 //! The box runs on a thread of its own (`show`), and it is a stop box: when it closes (one OK,
