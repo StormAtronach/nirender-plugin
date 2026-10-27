@@ -183,7 +183,8 @@ struct LinkState {
     /// The transforms that the copies have: bit n is world matrix n, bit 8 + n is the
     /// texture transform of stage n.
     transforms_known: u32,
-    textures: [u32; STATE_STAGES as usize],
+    /// The texture of each stage, with the serial of its object (`own_host::Kept`).
+    textures: [crate::own_host::Kept; STATE_STAGES as usize],
     texture_transforms: [[f32; 16]; STATE_STAGES as usize],
     /// The space of the world matrices in `worlds`: bit n is 1 when matrix n is relative
     /// to the camera.
@@ -193,6 +194,8 @@ struct LinkState {
     /// The buffers that the Rust code sent to the device last: vertex buffer, stride,
     /// vertex format, index buffer, base vertex index.
     buffers: [u32; 5],
+    /// The vertex buffer and the index buffer of `buffers`, with the serials of their objects.
+    kept_buffers: [crate::own_host::Kept; 2],
     /// The copy of the device's vtable with the draw functions of the link (`draw_vtable`).
     draw_vtable: [usize; DEVICE_METHODS],
 }
@@ -203,11 +206,12 @@ static STATE: MainCell<LinkState> = MainCell::new(LinkState {
     lights: [LightV1 { light: 0, device_index: 0, light_type: 0, radius: 0.0 }; MAX_LIGHTS],
     worlds: [[0.0; 16]; 4],
     transforms_known: 0,
-    textures: [0; STATE_STAGES as usize],
+    textures: [crate::own_host::Kept::NONE; STATE_STAGES as usize],
     texture_transforms: [[0.0; 16]; STATE_STAGES as usize],
     world_relative: 0,
     textures_known: 0,
     buffers: [0; 5],
+    kept_buffers: [crate::own_host::Kept::NONE; 2],
     draw_vtable: [0; DEVICE_METHODS],
 });
 
@@ -836,9 +840,10 @@ pub unsafe fn note_stream_source(buffer: usize, stride: u32) {
         crate::sync::off_thread("link", "stream source");
         return;
     };
-    let buffers = &mut state(&t).buffers;
-    buffers[0] = buffer as u32;
-    buffers[1] = stride;
+    let mut s = state(&t);
+    s.buffers[0] = buffer as u32;
+    s.buffers[1] = stride;
+    s.kept_buffers[0] = crate::own_host::Kept::of(buffer as u32);
 }
 
 #[inline]
@@ -856,9 +861,10 @@ pub unsafe fn note_indices(buffer: usize, base_vertex: u32) {
         crate::sync::off_thread("link", "indices");
         return;
     };
-    let buffers = &mut state(&t).buffers;
-    buffers[3] = buffer as u32;
-    buffers[4] = base_vertex;
+    let mut s = state(&t);
+    s.buffers[3] = buffer as u32;
+    s.buffers[4] = base_vertex;
+    s.kept_buffers[1] = crate::own_host::Kept::of(buffer as u32);
 }
 
 /// The number of render-state settings in the game's record (`NiDX8RenderState`, 0x1F8 to
@@ -894,15 +900,16 @@ unsafe fn resync(t: &MainThread, kinds: u32) {
         }
     }
     // The kept texture and buffer handles go to the device again only when the own host
-    // still has them alive: while the host took these kinds nothing held them, and the game
-    // or the cell worker can have released them. A handle that is gone is forgotten; the
-    // game's next draw sets what it needs.
-    let live = |handle: u32| crate::own_host::active() && crate::own_host::is_live(handle as usize);
+    // still has the same objects alive: while the host took these kinds nothing held them,
+    // and the game or the cell worker can have released them, and a later object can have
+    // their address (`own_host::Kept`). A handle that is gone is forgotten; the game's next
+    // draw sets what it needs.
+    let live = |kept: crate::own_host::Kept| if crate::own_host::active() { kept.live() } else { 0 };
     if kinds >> FACT_DEVICE_TEXTURES & 1 != 0 {
         for stage in 0..STATE_STAGES {
             if s.textures_known >> stage & 1 != 0 {
-                let texture = s.textures[stage as usize];
-                if live(texture) {
+                let texture = live(s.textures[stage as usize]);
+                if texture != 0 {
                     crate::d3d::device_set_texture(device, stage, texture as usize);
                 } else {
                     s.textures_known &= !(1 << stage);
@@ -944,13 +951,13 @@ unsafe fn resync(t: &MainThread, kinds: u32) {
     }
     if kinds >> FACT_DEVICE_BUFFERS & 1 != 0 {
         let buffers = s.buffers;
-        if buffers[0] != 0 && live(buffers[0]) {
+        if buffers[0] != 0 && live(s.kept_buffers[0]) == buffers[0] {
             crate::d3d::device_set_stream_source(device, 0, buffers[0] as usize, buffers[1]);
             crate::d3d::device_set_vertex_shader(device, rd(render_state, RS::currentVertexShader));
         } else {
             s.buffers[0] = 0;
         }
-        if buffers[3] != 0 && live(buffers[3]) {
+        if buffers[3] != 0 && live(s.kept_buffers[1]) == buffers[3] {
             crate::d3d::device_set_indices(device, buffers[3] as usize, buffers[4]);
         } else {
             s.buffers[3] = 0;
@@ -986,7 +993,7 @@ pub unsafe fn note_texture(stage: u32, texture: usize) {
             return;
         };
         let mut s = state(&t);
-        s.textures[stage as usize] = texture as u32;
+        s.textures[stage as usize] = crate::own_host::Kept::of(texture as u32);
         s.textures_known |= 1 << stage;
     }
 }
@@ -1526,7 +1533,7 @@ pub unsafe fn draw_state(
         world_relative_mask: s.world_relative,
         world: s.worlds[0],
         blend_worlds: [s.worlds[1], s.worlds[2], s.worlds[3]],
-        textures: s.textures,
+        textures: s.textures.map(|kept| kept.handle),
         texture_transforms: s.texture_transforms,
     };
     if !skinned {

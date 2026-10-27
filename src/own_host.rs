@@ -94,13 +94,6 @@ fn level_size(format: u32, width: u32, height: u32) -> (usize, u32) {
 /// The resources that are alive, for a snapshot. Under the device lock.
 static LIVE: LockCell<Vec<usize>> = LockCell::new(Vec::new());
 
-/// True when `handle` is an object of this host that is still alive: a handle the plugin
-/// kept can have been released since.
-pub unsafe fn is_live(handle: usize) -> bool {
-    let lock = crate::sync::device_lock();
-    handle != 0 && LIVE.get(&lock).contains(&handle)
-}
-
 /// Writes each resource that is alive into the capture: its creation and its bytes. For a
 /// capture file that starts in the middle of a stream. A texture whose pixels came from the
 /// pixel data of the game (the port of the texture loader writes them, with no lock) has no
@@ -223,6 +216,37 @@ pub unsafe fn serial_of(address: u32) -> u32 {
     match own(address) {
         Some(o) if !matches!(o.kind, Kind::VertexBuffer | Kind::IndexBuffer) => o.serial,
         _ => address,
+    }
+}
+
+/// A handle that a device keeps from a Set call (a stage texture, a stream, the indices, a
+/// target), with the serial of its object at that call. The device holds no count on it, so
+/// the object can be released and its address taken by a later object: [`Kept::live`] gives
+/// the handle only while the same object lives.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct Kept {
+    pub handle: u32,
+    serial: u32,
+}
+
+impl Kept {
+    /// No handle.
+    pub const NONE: Kept = Kept { handle: 0, serial: 0 };
+
+    /// A handle that the game sets now: its object is alive (0 for a value that is not an
+    /// object of this host).
+    pub unsafe fn of(handle: u32) -> Kept {
+        Kept { handle, serial: own(handle).map_or(0, |o| o.serial) }
+    }
+
+    /// The handle while the object of the Set call is alive, else 0.
+    pub unsafe fn live(self) -> u32 {
+        if self.handle == 0 || self.serial == 0 {
+            return 0;
+        }
+        let lock = crate::sync::device_lock();
+        let alive = LIVE.get(&lock).contains(&(self.handle as usize)) && (*(self.handle as usize as *const Object)).serial == self.serial;
+        if alive { self.handle } else { 0 }
     }
 }
 

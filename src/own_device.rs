@@ -20,6 +20,7 @@
 use core::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 
 use crate::checked::Open;
+use crate::own_host::Kept;
 use crate::sync::{DeviceLock, LockCell};
 use crate::link::*;
 
@@ -124,14 +125,14 @@ struct State {
     viewport: [u32; 6],
     render_states: [u32; 256],
     stage_states: [[u32; 32]; 8],
-    textures: [u32; 8],
+    textures: [Kept; 8],
     /// The transforms by their D3DTRANSFORMSTATETYPE: the view 2, the projection 3, the
     /// textures 16 to 23, the worlds from 256.
     transforms: Vec<(u32, [f32; 16])>,
     vertex_shader: u32,
-    stream: (u32, u32),
-    indices: (u32, u32),
-    render_target: u32,
+    stream: (Kept, u32),
+    indices: (Kept, u32),
+    render_target: Kept,
     /// The display modes: width, height, refresh rate.
     modes: Vec<[u32; 3]>,
     current_mode: [u32; 3],
@@ -150,12 +151,12 @@ fn state<'a>(lock: &'a DeviceLock) -> Open<'a, State> {
         viewport: [0, 0, 640, 480, 0, 1.0f32.to_bits()],
         render_states: [0; 256],
         stage_states: [[0; 32]; 8],
-        textures: [0; 8],
+        textures: [Kept::default(); 8],
         transforms: Vec::new(),
         vertex_shader: 0,
-        stream: (0, 0),
-        indices: (0, 0),
-        render_target: 0,
+        stream: (Kept::default(), 0),
+        indices: (Kept::default(), 0),
+        render_target: Kept::default(),
         modes: Vec::new(),
         current_mode: [640, 480, 60],
     }))
@@ -518,18 +519,6 @@ pub unsafe extern "C" fn nirender_direct3d_create8(_sdk_version: u32) -> usize {
 
 // ---- IDirect3DDevice8
 
-/// A handle this device keeps from a Set call, as a getter returns it: the handle while the
-/// own host has it alive, else 0. The device holds no count on what it keeps (unlike
-/// Direct3D 8), so the resource can have been released since. A count added through a
-/// released handle writes into freed memory.
-unsafe fn held(object: u32) -> u32 {
-    if object != 0 && crate::own_host::is_live(object as usize) {
-        object
-    } else {
-        0
-    }
-}
-
 /// Adds a reference to a resource through its method table (`AddRef`, slot 1).
 unsafe fn resource_add_reference(object: u32) {
     if object != 0 {
@@ -611,12 +600,12 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
         27 => call(CALL_CREATE_IMAGE_SURFACE, a),
         28 => call(CALL_COPY_PIXELS, a),
         31 => {
-            s.render_target = a[0];
+            s.render_target = Kept::of(a[0]);
             call(CALL_RENDER_TARGET, a)
         }
         32 => {
             // GetRenderTarget
-            let target = held(s.render_target);
+            let target = s.render_target.live();
             if target != 0 {
                 resource_add_reference(target);
                 put(a[0], &[target])
@@ -682,13 +671,17 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
         59 => put(a[0], &[0, 0]),
         60 => {
             // GetTexture(stage, address)
-            let texture = held(s.textures.get(a[0] as usize).copied().unwrap_or(0));
+            // A handle this device kept, as a getter returns it: the handle while its object
+            // lives (`Kept::live`). The device holds no count on what it keeps (unlike Direct3D
+            // 8), so the object can have been released since, and its address taken by
+            // another. A count added through a released handle writes into freed memory.
+            let texture = s.textures.get(a[0] as usize).map_or(0, |kept| kept.live());
             resource_add_reference(texture);
             put(a[1], &[texture])
         }
         61 => {
             if let Some(texture) = s.textures.get_mut(a[0] as usize) {
-                *texture = a[1];
+                *texture = Kept::of(a[1]);
             }
             OK
         }
@@ -719,7 +712,7 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
             let length = crate::device::vertex_count(a[0], a[1]) * a[3];
             if a[2] != 0 && length != 0 {
                 let vertices = core::slice::from_raw_parts(a[2] as usize as *const u8, length as usize);
-                crate::capture::draw_up(s.textures[0], s.vertex_shader, a[3], a[0], a[1], vertices);
+                crate::capture::draw_up(s.textures[0].live(), s.vertex_shader, a[3], a[0], a[1], vertices);
             }
             OK
         }
@@ -736,26 +729,26 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
         83 => {
             // SetStreamSource(stream, buffer, stride)
             if a[0] == 0 {
-                s.stream = (a[1], a[2]);
+                s.stream = (Kept::of(a[1]), a[2]);
                 #[cfg(feature = "rig")]
                 crate::resource::wrap(a[1] as usize);
             }
             OK
         }
         84 => {
-            let stream = held(s.stream.0);
+            let stream = s.stream.0.live();
             resource_add_reference(stream);
             put(a[1], &[stream]);
             put(a[2], &[s.stream.1])
         }
         85 => {
-            s.indices = (a[0], a[1]);
+            s.indices = (Kept::of(a[0]), a[1]);
             #[cfg(feature = "rig")]
             crate::resource::wrap(a[0] as usize);
             OK
         }
         86 => {
-            let indices = held(s.indices.0);
+            let indices = s.indices.0.live();
             resource_add_reference(indices);
             put(a[0], &[indices]);
             put(a[1], &[s.indices.1])
