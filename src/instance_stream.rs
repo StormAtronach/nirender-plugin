@@ -86,7 +86,14 @@ const RTTI_NAME: usize = NiRTTI::name;
 const RTTI_BASE: usize = NiRTTI::baseRTTI;
 /// The most nodes above a shape that the walk looks at.
 const MAX_DEPTH: usize = 32;
-/// The frames between two checks of the handles of an instance.
+/// The frames between two checks of the handles of an instance. This note is a safety net for
+/// changes of a retained shape's material that no event reports. Followed by events: the
+/// property and effect states (`recheck`), the Lua changes (`note_change`), the live
+/// controllers (each display), a texture effect's words ([`EffectWatch`]), the freed textures
+/// ([`note_materials_again`]). Left to the net: a map's texture swapped in place without a Lua
+/// note (59 of the 1051 changes it caught in the captures of 2026-10-27). The rechecks line
+/// counts what the net finds, by group (`periodic_changes`). A group leaves the net only when
+/// an event covers every path that writes it, never because a run counted 0.
 const CHECK_FRAMES: u32 = 64;
 
 /// The node kinds that keep a shape under them on the engine's path. A sort adjust node
