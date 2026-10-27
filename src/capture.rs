@@ -1000,6 +1000,16 @@ pub fn recording() -> bool {
     RECORDING.load(Ordering::Relaxed)
 }
 
+/// Makes the capture file at `path`, and its folder first when the folder is missing (the
+/// captures of the key go into `nirender-captures\` of the game folder, which no install
+/// makes).
+fn create_capture_file(path: &str) -> Result<File, String> {
+    if let Some(folder) = std::path::Path::new(path).parent().filter(|folder| !folder.as_os_str().is_empty()) {
+        std::fs::create_dir_all(folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+    }
+    File::create(path).map_err(|error| format!("{path}: {error}"))
+}
+
 /// Starts a capture into `path`: `warmup` frames, then `frames` frames of record.
 pub unsafe fn start(t: &MainThread, path: &str, warmup: u32, frames: u32) -> Result<(), String> {
     let lock = crate::sync::device_lock();
@@ -1009,7 +1019,7 @@ pub unsafe fn start(t: &MainThread, path: &str, warmup: u32, frames: u32) -> Res
     if active() {
         return Err("a capture is in progress".into());
     }
-    let file = File::create(path).map_err(|error| format!("{path}: {error}"))?;
+    let file = create_capture_file(path)?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     out.write_all(MAGIC).map_err(|error| error.to_string())?;
     begin(&lock, Sink::File(out), warmup, frames.max(1));
@@ -1026,7 +1036,7 @@ pub unsafe fn start(t: &MainThread, path: &str, warmup: u32, frames: u32) -> Res
 /// records two frames at each stop into one file, and the textures and the geometry that
 /// the game makes between the stops are in the file once.
 unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Result<(), String> {
-    let file = File::create(path).map_err(|error| format!("{path}: {error}"))?;
+    let file = create_capture_file(path)?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     out.write_all(MAGIC).map_err(|error| error.to_string())?;
     let header = {
@@ -2160,6 +2170,29 @@ unsafe fn frame_end(lock: &DeviceLock) {
 /// `NiDX8Renderer::d3dPresentParameters`: the width and the height of the back buffer.
 const BACK_BUFFER_SIZE: usize = crate::gen::layouts::NiDX8Renderer::d3dPresentParameters;
 const DEVICE_WINDOW: usize = crate::gen::layouts::NiDX8Renderer::d3dPresentParameters_hDeviceWindow;
+
+#[cfg(test)]
+mod capture_file_tests {
+    use super::*;
+
+    /// A capture into a folder that does not exist yet (the key's `nirender-captures\` at the
+    /// first press): the folder is made, then the file. A plain `File::create` fails there,
+    /// which is what the key met before.
+    #[test]
+    fn a_capture_file_gets_its_missing_folder() {
+        let root = std::env::temp_dir().join(format!("nirender-captures-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("nirender-captures").join("nirender-20261027-120000.nircap");
+        assert!(File::create(&path).is_err(), "the folder existed before the test");
+        let file = create_capture_file(path.to_str().unwrap());
+        assert!(file.is_ok(), "{file:?}");
+        drop(file);
+        assert!(path.is_file());
+        // A file in a folder that exists: as before.
+        assert!(create_capture_file(path.to_str().unwrap()).is_ok());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}
 
 #[cfg(test)]
 mod tests {
