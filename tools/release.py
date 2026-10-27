@@ -13,8 +13,9 @@ The steps:
    `tools/clippy_baseline.py --check` stops the release when a Clippy lint has more warnings
    than `tools/clippy.baseline` holds. `cargo xtask dist` in the MGE XE repository builds MGE XE and this plugin
    and packs the archive (`--max-perf` for the slow build of a final release).
-3. The archive goes up as `MGE-XE-G7-v<MGE XE>-nirender-v<plugin>.7z`, as a pre-release
-   with the text of `--notes`. Each `--add SOURCE=PATH` puts a file into it first, at PATH
+3. The tool prints the commit of each repository: the build id that the binaries of the
+   archive log on their first line, for the notes. The archive goes up as
+   `MGE-XE-G7-v<MGE XE>-nirender-v<plugin>.7z`, as a pre-release with the text of `--notes`. Each `--add SOURCE=PATH` puts a file into it first, at PATH
    from the archive's root (the Morrowind folder): for example the MWSE.dll with the native
    ABI that the plugin needs (`--add E:/nirender-keep/mwse/08f7d20ed4/MWSE.dll=MWSE.dll`).
    Each `--add-dir SOURCE=PATH` puts every file of the folder SOURCE into it, at PATH (`.`
@@ -139,6 +140,12 @@ def main():
         run([seven, "a", "-t7z", "-mx=9", asset] + tops, cwd=stage)
         for source, path in additions:
             print("added %s as %s" % (source, path))
+
+    # The commit of each repository: the build id that its binaries log, for the "Builds"
+    # block of the notes (the trees are clean and pushed, so no id is "-dirty").
+    for name, repo in (("nirender", PLUGIN), ("MGE XE G7", args.mge)):
+        describe = run(["git", "-C", repo, "describe", "--always", "--dirty", "--exclude", "*"], capture=True).strip()
+        print("build id: %s %s" % (name, describe))
 
     title = "Test build: MGE XE G7 %s with nirender %s" % (mge_version, plugin_version)
     if args.dry_run:

@@ -44,6 +44,7 @@ under the home folder.
 | `docs.py` | The rustdoc pages of the plugin, the host crate and the MGE XE helper, with the private items; fails on a broken link in a doc comment of our code; `target/docs.html` links the three (`--open`). `release.py` runs it. It runs cargo. |
 | `doc_links.py` | The names in backticks of the doc comments of one crate as links that rustdoc checks: it keeps the links that resolve and writes back the rest. Without `--apply` every file is restored. It runs cargo. |
 | `check_contract.py` | The render link contract: `contract/mge_render_link.h` against `src/link.rs`. |
+| `check_handshake.py` | The version handshake: the host crate reads the plugin's `src/stream_format.rs` (one STREAM_FORMAT); with `--mge`, MGE XE's MGE_EXTENSION_FORMAT equals the helper's EXTENSION_FORMAT. `checks.py` runs both. |
 | `check_comments_only.py` | That an edit changed comments only. |
 | `hand_offsets.py` | The engine field offsets written by hand outside `src/gen/layouts.rs`; `--check` fails on a file above its count in `hand_offsets.baseline`, `--update` lowers the counts. `checks.py` runs it. |
 | `clippy_baseline.py` | The Clippy warnings of each lint in the plugin, the host crate and the render-link workspace; `--check` fails on a lint above its count in `clippy.baseline` (counted 2026-10-27 at nirender a8faf74 and render-link 846ed77: 1119, 38 and 23), `--update` lowers the counts. `release.py` runs it. It runs cargo. |
