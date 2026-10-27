@@ -46,6 +46,40 @@ struct MinidumpExceptionInformation {
     client_pointers: i32,
 }
 
+/// MINIDUMP_CALLBACK_INFORMATION, packed to 4 bytes as the other minidump structures.
+#[repr(C, packed(4))]
+struct MinidumpCallbackInformation {
+    routine: Option<Callback>,
+    parameter: *mut c_void,
+}
+
+/// The head of MINIDUMP_CALLBACK_INPUT (packed to 4 bytes): the process id, its handle, the
+/// kind of the call; then the data of the kind, for a module its full path first.
+#[repr(C, packed(4))]
+struct MinidumpCallbackInput {
+    process_id: u32,
+    process: *mut c_void,
+    kind: u32,
+    module_path: *const u16,
+}
+
+/// MINIDUMP_CALLBACK_OUTPUT for a module: the flags of what the dump writes of it.
+#[repr(C, packed(4))]
+struct MinidumpCallbackOutput {
+    module_write_flags: u32,
+}
+
+type Callback = unsafe extern "system" fn(*mut c_void, *const MinidumpCallbackInput, *mut MinidumpCallbackOutput) -> i32;
+
+/// The kinds of the call of the dump writer (MINIDUMP_CALLBACK_TYPE).
+const MODULE_CALLBACK: u32 = 0;
+const THREAD_CALLBACK: u32 = 1;
+const THREAD_EX_CALLBACK: u32 = 2;
+const INCLUDE_THREAD_CALLBACK: u32 = 3;
+const INCLUDE_MODULE_CALLBACK: u32 = 4;
+/// ModuleWriteDataSeg: the data segments of a module go into the dump.
+const MODULE_WRITE_DATA_SEG: u32 = 0x2;
+
 /// CONTEXT of x64: 1232 bytes, aligned to 16. The program counter (Rip) is at byte 248.
 #[repr(C, align(16))]
 struct Context([u8; 1232]);
@@ -84,9 +118,12 @@ extern "system" {
 const MODULE_OF_ADDRESS: u32 = 6;
 /// The most frames that `RtlCaptureStackBackTrace` takes on every version of Windows.
 const MOST_FRAMES: usize = 62;
-/// What the minidump holds: the stacks, the data segments of the modules, the handles, the
-/// memory map, the threads' times and the unloaded modules. Not the heap: a player can send
-/// the file (a dump with the memory that the stacks point to was 40 MB on 2026-10-27).
+/// What the minidump holds: the stacks, the data segments of this program (the callback
+/// leaves the other modules' out), the handles, the memory map, the threads' times and the
+/// unloaded modules. Not the heap. A player must be able to attach the file to a bug report
+/// (25 MB at most on GitHub): with the data segments of every module, the graphics driver's
+/// among them, a dump was 40 MB on 2026-10-27, with or without the memory that the stacks
+/// point to.
 const DUMP_KIND: u32 = 0x1825;
 /// The code of the exception that the panic hook puts into the dump: a user code (the error
 /// bits, then the letters N, I, R).
@@ -213,17 +250,50 @@ fn write_dump_at(path: &Path, thread: u32, pointers: *mut ExceptionPointers) -> 
     let file = std::fs::File::create(path).map_err(|problem| format!("{}: {problem}", path.display()))?;
     // SAFETY: the process is the current one; `pointers` is an exception of `thread` that
     // lives for the call, or null for a dump without an exception; the file is open for
-    // writing.
+    // writing; the callback is a plain function of this program.
     let written = unsafe {
         let information = MinidumpExceptionInformation { thread, pointers, client_pointers: 0 };
         let exception = if pointers.is_null() { core::ptr::null() } else { &information as *const _ };
-        MiniDumpWriteDump(GetCurrentProcess() as *mut c_void, GetCurrentProcessId(), file.as_raw_handle(), DUMP_KIND, exception, core::ptr::null(), core::ptr::null())
+        let callback = MinidumpCallbackInformation { routine: Some(module_data_of_this_program), parameter: core::ptr::null_mut() };
+        MiniDumpWriteDump(GetCurrentProcess() as *mut c_void, GetCurrentProcessId(), file.as_raw_handle(), DUMP_KIND, exception, core::ptr::null(), &callback as *const _ as *const c_void)
     };
     if written == 0 {
         // SAFETY: a plain read of the thread's last error.
         return Err(format!("{}: MiniDumpWriteDump failed, error {}", path.display(), unsafe { GetLastError() }));
     }
     Ok(())
+}
+
+/// The callback of the dump writer: every thread and module goes in, but the data segments
+/// of the modules that are not this program stay out of the dump (the graphics driver's
+/// DLLs have tens of MB of them).
+unsafe extern "system" fn module_data_of_this_program(_parameter: *mut c_void, input: *const MinidumpCallbackInput, output: *mut MinidumpCallbackOutput) -> i32 {
+    if input.is_null() || output.is_null() {
+        return 0;
+    }
+    match (*input).kind {
+        MODULE_CALLBACK => {
+            let path = (*input).module_path;
+            if !path.is_null() && !is_this_program(path) {
+                (*output).module_write_flags &= !MODULE_WRITE_DATA_SEG;
+            }
+            1
+        }
+        THREAD_CALLBACK | THREAD_EX_CALLBACK | INCLUDE_THREAD_CALLBACK | INCLUDE_MODULE_CALLBACK => 1,
+        _ => 0,
+    }
+}
+
+/// Whether the module at `path` (a UTF-16 text that ends with 0) is the file of this program.
+unsafe fn is_this_program(path: *const u16) -> bool {
+    let mut length = 0;
+    while *path.add(length) != 0 {
+        length += 1;
+    }
+    let path = String::from_utf16_lossy(core::slice::from_raw_parts(path, length));
+    let file = path.rsplit(['\\', '/']).next().unwrap_or(&path);
+    let program = std::env::current_exe().ok().and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().into_owned()));
+    program.is_some_and(|program| program.eq_ignore_ascii_case(file))
 }
 
 fn report(dump: Result<&Path, String>) {
