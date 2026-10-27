@@ -54,11 +54,20 @@ fn versions<'a>(t: &'a MainThread) -> Open<'a, Vec<Option<Sent>>> {
 
 /// Forgets the lights: the next draw with each sends it again. For the start of a capture
 /// file, and for the frames of a file that held.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn reset(t: &MainThread) {
     versions(t).clear();
     crate::world_lights::resend();
 }
 
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn report(t: &MainThread) -> String {
     format!(
         "lights: {} records, {} gone records, {} lights known",
@@ -71,6 +80,11 @@ pub unsafe fn report(t: &MainThread) -> String {
 /// The light with this key was destroyed (`NiDX8LightManager::RemoveLight`): the engine gives
 /// the key to the next light it makes. Sends a `LIGHT_GONE` record when a `LIGHT` record went
 /// for the key, so that the next light with the key goes as new.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn forget(t: &MainThread, key: u32) {
     if let Some(radius) = RADII.get(t).get_mut(key as usize) {
         *radius = 0.0;
@@ -86,6 +100,11 @@ pub unsafe fn forget(t: &MainThread, key: u32) {
 /// Notes one light by its key, its device values and the radius of the game: sends a record
 /// when they are new or changed. For a light of a shape the engine does not display
 /// (`instance_stream`). True when a record went.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn note_values(t: &MainThread, key: u32, values: &[u32; 26], radius: f32) -> bool {
     if key as usize >= MOST_INDEX {
         return false;
@@ -110,6 +129,12 @@ pub const COLOUR_WORDS: core::ops::Range<usize> = 1..13;
 
 /// Notes the lights of the light manager of the renderer, as the state of the draw has
 /// them: sends the ones that are new or changed, and returns the keys of all of them.
+///
+/// # Safety
+///
+/// `renderer` points at the live `NiDX8Renderer` with its light manager. The manager's critical
+/// section is initialized: the function holds it while it walks the list. The lights of the list
+/// are each 0 or a live `NiLight`, and the entries of the manager's map are live.
 #[track_caller]
 pub unsafe fn note<'a>(t: &'a MainThread, renderer: usize) -> Open<'a, [u32]> {
     let mut keys = KEYS.get(t);

@@ -114,9 +114,9 @@ elseif ownDevice then
         causes[#causes + 1] = string.format("the Morrowind Code Patch option \"%s\" (%s)", option.name, state)
         mwse.log("[nirender] the renderer is refused because of the Morrowind Code Patch option \"%s\" (feature %d), which is %s", option.name, option.id, state)
     end
-    local message = "MGE XE: the wgpu renderer is off for this session. See MWSE.log and nirender.log in the Morrowind folder."
+    local message = "MGE XE: the wgpu renderer is off for this session. See MWSE.log, and the lines of mgeXE.log that start with \"nirender: \", in the Morrowind folder."
     if #causes > 0 then
-        message = string.format("MGE XE: the wgpu renderer is off for this session. The cause is %s: change it with the Code Patch, or tell us. See nirender.log in the Morrowind folder.",
+        message = string.format("MGE XE: the wgpu renderer is off for this session. The cause is %s: change it with the Code Patch, or tell us. See the lines of mgeXE.log that start with \"nirender: \", in the Morrowind folder.",
             table.concat(causes, " and "))
     end
     event.register("loaded", function()
@@ -137,12 +137,13 @@ local function keyOf(setting, value)
 end
 
 -- A capture of the next frames for a bug report: the key of the configuration ("none" for
--- no key) writes nirender-<date>.nircap into the folder of the game.
+-- no key) writes nirender-<date>.nircap into the folder nirender-captures of the game folder
+-- (the plugin makes the folder), so that the captures stay out of the game folder's root.
 local captureKey = ownDevice and installed and keyOf("captureKey", config.captureKey)
 if captureKey then
     event.register("keyDown", function(e)
         if e.keyCode ~= captureKey or e.isAltDown or e.isControlDown or e.isShiftDown then return end
-        local path = string.format("nirender-%s.nircap", os.date("%Y%m%d-%H%M%S"))
+        local path = string.format("nirender-captures\\nirender-%s.nircap", os.date("%Y%m%d-%H%M%S"))
         local ok, problem = nirender.capture(path, 0, 3)
         tes3.messageBox(ok and ("nirender: 3 frames go into " .. path) or ("nirender: no capture: " .. tostring(problem)))
     end)

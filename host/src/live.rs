@@ -420,6 +420,8 @@ struct App {
     data: Vec<u8>,
     frames: u32,
     first_frame: Option<Instant>,
+    /// When the memory report was written last (`MGE_XE_MEMORY_MINUTES`), or [`None`].
+    memory_reported: Option<Instant>,
     waited: Duration,
     /// All the time with no record to read, for the debug overlay: `waited` has only
     /// the waits that went back to the events of the window.
@@ -1033,6 +1035,16 @@ impl ApplicationHandler for App {
             if self.frames % HELD_EVERY_FRAMES == 0 {
                 println!("frame {}: {}", self.frames, player.renderer.held_line());
             }
+            // wgpu's memory, at the first frame and every n minutes (risk 43).
+            let every = Duration::from_secs(u64::from(switches().memory_minutes) * 60);
+            if !every.is_zero() && self.memory_reported.is_none_or(|last| last.elapsed() >= every) {
+                self.memory_reported = Some(Instant::now());
+                let minutes = self.first_frame.map_or(0.0, |start| start.elapsed().as_secs_f64() / 60.0);
+                println!("memory: frame {}, minute {minutes:.1}", self.frames);
+                for line in super::gpu::memory_lines(&device) {
+                    println!("{line}");
+                }
+            }
             if self.frames_wanted != 0 && self.frames >= self.frames_wanted {
                 return self.finish(event_loop, "all the frames that were asked for");
             }
@@ -1130,6 +1142,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         data: Vec::new(),
         frames: 0,
         first_frame: None,
+        memory_reported: None,
         waited: Duration::ZERO,
         idle: Duration::ZERO,
         last_record: Instant::now(),

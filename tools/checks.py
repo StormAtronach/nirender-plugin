@@ -40,6 +40,8 @@ CHECKS = {
     # MGE XE's switches against its RENDERER.md.
     "mge readme": (PLUGIN / "tools" / "check_readme.py", REPOS / "MGE-XE-G7-render-link", ["--mge"]),
     "contract": (PLUGIN / "tools" / "check_contract.py", PLUGIN),
+    "contract parsing": (PLUGIN / "tools" / "check_contract.py", PLUGIN, ["--self-test"]),
+    "mge contract": (PLUGIN / "tools" / "check_contract.py", REPOS / "MGE-XE-G7-render-link", ["--mge"]),
     # The version handshake: one home for each format number and each layout constant of the
     # stream.
     "handshake": (PLUGIN / "tools" / "check_handshake.py", PLUGIN),
@@ -61,6 +63,7 @@ CHECKS = {
     "release": (PLUGIN / "tools" / "release.py", PLUGIN, ["--self-test"]),
     # The argument handling of the runner (--plugin-dll, --log).
     "runner": (PLUGIN / "tools" / "run_own_device.py", PLUGIN, ["--self-test"]),
+    "clippy arguments": (PLUGIN / "tools" / "clippy_baseline.py", PLUGIN, ["--self-test"]),
     # The adapter record of the replay gate.
     "gate": (PLUGIN / "tools" / "validate_retained.py", PLUGIN, ["--self-test"]),
     # The hook texts: the checks of the tree the commit is in.
@@ -69,8 +72,8 @@ CHECKS = {
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner", "gate", "hooks", "fuzz"],
-    "mge": ["mge readme", "mge handshake", "mwse native", "module headers", "skill names"],
+    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner", "clippy arguments", "gate", "hooks", "fuzz"],
+    "mge": ["mge readme", "mge handshake", "mge contract", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 

@@ -49,6 +49,16 @@ pub(crate) fn compare(value: u32) -> wgpu::CompareFunction {
     }
 }
 
+/// 'BC7 ', MGE XE's FourCC of a BC7 texture (`MGE_D3DFMT_BC7`); the plugin sends it for a
+/// texture that MGE XE's DDS reader patch marks as BC7.
+pub(crate) const D3DFMT_BC7: u32 = 0x2037_4342;
+
+/// True for a block format that [`decode_dxt`] can make pixels of: the DXT formats. A BC7
+/// texture of a size that the GPU cannot take as blocks has no such way.
+pub(crate) fn cpu_decodes(d3d_format: u32) -> bool {
+    matches!(d3d_format, 0x3154_5844 | 0x3254_5844 | 0x3354_5844 | 0x3454_5844 | 0x3554_5844)
+}
+
 /// The format of the GPU for a D3DFORMAT, the bytes of one of its blocks (0 for a format
 /// without blocks), and the bytes of a pixel in the stream. [`None`] for a format that this
 /// program does not make.
@@ -57,6 +67,9 @@ pub(crate) fn texture_format(d3d_format: u32) -> Option<(wgpu::TextureFormat, us
         0x3154_5844 => (wgpu::TextureFormat::Bc1RgbaUnorm, 8, 0),
         0x3354_5844 => (wgpu::TextureFormat::Bc2RgbaUnorm, 16, 0),
         0x3554_5844 => (wgpu::TextureFormat::Bc3RgbaUnorm, 16, 0),
+        // MGE XE's BC7 ('BC7 '): DXGI_FORMAT_BC7_UNORM and its sRGB form both, as MGE XE's
+        // Direct3D 9 path shows them (the engine treats the texels as stored).
+        D3DFMT_BC7 => (wgpu::TextureFormat::Bc7RgbaUnorm, 16, 0),
         21 | 22 => (wgpu::TextureFormat::Bgra8Unorm, 0, 4),
         // D3DFMT_R5G6B5, X1R5G5B5, A1R5G5B5 and A4R4G4B4: this program makes 4 bytes of them.
         23..=26 => (wgpu::TextureFormat::Bgra8Unorm, 0, 2),
@@ -273,3 +286,19 @@ pub(crate) const INPUT_FORMATS: [wgpu::VertexFormat; 9] = {
     use wgpu::VertexFormat::*;
     [Float32x3, Float32x3, Unorm8x4, Float32x2, Float32x2, Float32x2, Float32x2, Float32x3, Uint8x4]
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bc7_is_a_block_format_of_16_bytes_that_the_cpu_does_not_decode() {
+        assert_eq!(texture_format(D3DFMT_BC7), Some((wgpu::TextureFormat::Bc7RgbaUnorm, 16, 0)));
+        assert!(!cpu_decodes(D3DFMT_BC7));
+        for dxt in [0x3154_5844, 0x3254_5844, 0x3354_5844, 0x3454_5844, 0x3554_5844] {
+            assert!(cpu_decodes(dxt));
+        }
+        // A value between the DXT FourCCs is no DXT format.
+        assert!(!cpu_decodes(0x3200_0000));
+    }
+}

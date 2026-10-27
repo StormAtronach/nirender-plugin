@@ -42,9 +42,12 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+from common import BUILD_PARTS, build_missing, plugin_lines  # noqa: E402
 PY = sys.executable
 PLACES = {
     "seyda": ["--exterior", "Seyda Neen", "--position=-12288,-69632,74", "--yaw", "0"],
@@ -98,8 +101,7 @@ def check(condition, text):
 
 def plugin_report(folder):
     """The line of the shape records in the log of the plugin, or ""."""
-    path = os.path.join(folder, "nirender.log")
-    lines = [line for line in open(path, errors="replace").read().splitlines() if "shapes: " in line and "draws without a record" in line] if os.path.isfile(path) else []
+    lines = [line for line in plugin_lines(folder) if "shapes: " in line and "draws without a record" in line]
     return lines[-1] if lines else ""
 
 
@@ -169,6 +171,13 @@ def self_test():
     assert adapter_note(None, same).endswith("(accept again to record it)")
     assert "can be the GPU's" in adapter_note("AMD Radeon (Vulkan, driver 1)", same)
     assert adapter_note(same, None) == "adapter: not printed by the helper"
+    # A build folder with the helper only (a cargo target folder) lacks the Data Files.
+    with tempfile.TemporaryDirectory() as build:
+        open(os.path.join(build, "numidium.exe"), "wb").close()
+        assert build_missing(build) == list(BUILD_PARTS[1:])
+        for part in BUILD_PARTS[1:]:
+            os.makedirs(os.path.join(build, part))
+        assert build_missing(build) == []
     print("validate_retained self-test: ok")
 
 
@@ -176,6 +185,9 @@ def stage_baseline(baseline, accept, mge_build):
     """The captures of the baseline folder against their accepted pictures, in the order of
     the draws of the game, as a player has them."""
     print("baseline %s" % baseline, flush=True)
+    missing = build_missing(mge_build)
+    if missing:
+        return check(False, "the build folder %s has no %s: its replays would draw other pictures" % (mge_build, ", ".join(missing)))
     captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
     if not captures:
         return check(False, "no capture in the baseline folder")

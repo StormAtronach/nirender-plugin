@@ -68,6 +68,11 @@ static CODE_PATCH_FLAGS: core::sync::atomic::AtomicUsize = core::sync::atomic::A
 /// into the alpha of the material of each part. It reads the alpha of the picture back to
 /// find the part under the pointer. The helper makes the same draws for a record with
 /// [`CODE_PATCH_PICTURE`].
+///
+/// # Safety
+///
+/// The plugin runs in Morrowind.exe: the function reads the game's code at 0x5CD38C and, when the
+/// Code Patch's function is there, its flag byte.
 pub unsafe fn code_patch_picture() -> bool {
     use core::sync::atomic::Ordering;
     const CALL: usize = 0x5CD38C;
@@ -91,6 +96,11 @@ pub unsafe fn code_patch_picture() -> bool {
 /// for its fog property: [`None`] when the fog is off for the draw (the property is off, or
 /// its mode is not one of the two the device fog has); else the colour, the start, the end
 /// (the bits of the floats) and the range fog flag.
+///
+/// # Safety
+///
+/// `renderer` points at the live `NiDX8Renderer` with its render state, and `property_state` at a
+/// live `NiPropertyState`; its fog property is 0 or live.
 pub unsafe fn fog_values(renderer: usize, property_state: usize) -> Option<[u32; 4]> {
     use crate::gen::layouts::NiPropertyState as PS;
     fog_values_of(renderer, rd(property_state, PS::propFog))
@@ -98,6 +108,11 @@ pub unsafe fn fog_values(renderer: usize, property_state: usize) -> Option<[u32;
 
 /// The fog words of one fog property (the cell's, or a shape's own), with the render
 /// state of the renderer for the range.
+///
+/// # Safety
+///
+/// `renderer` points at the live `NiDX8Renderer` with its render state, and `fog` is 0 or a live
+/// `NiFogProperty`.
 pub unsafe fn fog_values_of(renderer: usize, fog: usize) -> Option<[u32; 4]> {
     use crate::gen::layouts::{NiDX8RenderState as RS, NiDX8Renderer as R, NiFogProperty};
     if fog == 0 {
@@ -145,12 +160,22 @@ static POINTS_PENDING: MainCell<bool> = MainCell::new(false);
 
 /// Notes the particle draw in progress: true for a scene of the world camera, the scene kind,
 /// the draw flags of the link and the shape.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn note_points_scene(t: &MainThread, world_camera: bool, scene_kind: u32, draw_flags: u32, shape: usize) {
     *POINTS_DRAW.get(t) = (world_camera, scene_kind, draw_flags, shape);
 }
 
 /// The counts of `ENGINE_PARTICLES`: in the scenes of the world camera, in other scenes, and
 /// the frames with one in a scene of the world camera.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn engine_particle_records(t: &MainThread) -> [u64; 3] {
     *ENGINE_PARTICLES.get(t)
 }
@@ -204,6 +229,11 @@ static OBJECT: MainCell<(u32, u32, usize)> = MainCell::new((0, 0, 0));
 
 /// Notes the handles of the object of the draws that follow, with its draw kind, its class
 /// and its geometry data.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `geometry_data` is kept as a
+/// number and not read.
 pub unsafe fn note_handles(t: &MainThread, geometry: u32, material: u32, kind: u32, class: u32, geometry_data: usize) {
     *HANDLES.get(t) = (geometry, material);
     *OBJECT.get(t) = (kind, class, geometry_data);
@@ -211,6 +241,11 @@ pub unsafe fn note_handles(t: &MainThread, geometry: u32, material: u32, kind: u
 
 /// Notes the geometry of the draw in progress, for a draw whose geometry the port packs
 /// itself (a screen polygon): the object record of the link had none.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn note_geometry(t: &MainThread, geometry: u32) {
     (*HANDLES.get(t)).0 = geometry;
 }
@@ -219,6 +254,10 @@ pub unsafe fn note_geometry(t: &MainThread, geometry: u32) {
 /// manager, the effect state, the texturing and the vertex colour properties. Each draw
 /// function of the renderer makes this call before its draw; a port makes it at its own
 /// call site before the record.
+///
+/// # Safety
+///
+/// `renderer` points at the live `NiDX8Renderer` whose current property state is live.
 pub unsafe fn light_state_arguments(renderer: usize) -> (usize, usize, usize, usize) {
     use crate::gen::layouts::{NiDX8Renderer as R, NiPropertyState as PS};
     let property_state: usize = rd(renderer, R::currentPropertyState);
@@ -226,11 +265,19 @@ pub unsafe fn light_state_arguments(renderer: usize) -> (usize, usize, usize, us
 }
 
 /// `D3DRS_AMBIENT` (139) as the render state record of the renderer has it.
+///
+/// # Safety
+///
+/// `renderer` points at the live `NiDX8Renderer` with its render state.
 pub unsafe fn ambient(renderer: usize) -> u32 {
     use crate::gen::layouts::{NiDX8RenderState as RS, NiDX8Renderer as R};
     rd(rd::<usize>(renderer, R::renderState), RS::renderStateSettings + 139 * 8)
 }
 
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn report(t: &MainThread) -> String {
     let without = *WITHOUT.get(t);
     format!(
@@ -254,6 +301,11 @@ static SOFTWARE_SKINNED: MainCell<u64> = MainCell::new(0);
 
 /// Counts a skinned draw that the game skins in software, and writes the first ones to the
 /// log with the reason and the picture flag of the Code Patch.
+///
+/// # Safety
+///
+/// The plugin runs in Morrowind.exe: the function can read the game's code as
+/// [`code_patch_picture`] does.
 pub unsafe fn software_skinned(t: &MainThread, why: &str) {
     if !on() {
         return;
@@ -267,6 +319,11 @@ pub unsafe fn software_skinned(t: &MainThread, why: &str) {
 
 /// Counts a skinned draw that gets no record because the palette of its skin cannot be made
 /// (`camera_space::skin_palette`), and writes the first ones to the log with the reason.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn without_palette(t: &MainThread, why: &str) {
     if !on() {
         return;
@@ -308,6 +365,12 @@ unsafe fn without(t: &MainThread, reason: usize) {
 /// draw was set, with the camera-relative mask of the plugin; for a skinned shape `palette`
 /// has the matrix of each bone of the skin instead. Returns true when the ports of the
 /// pipeline must not run for this draw.
+///
+/// # Safety
+///
+/// `renderer` points at the live `NiDX8Renderer` of the draw in progress. The conditions of
+/// [`crate::light_stream::note`] hold for it, and its current effect state is 0 or live, with its
+/// environment map and fog map each 0 or a live `NiTextureEffect`.
 pub unsafe fn send(t: &MainThread, renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>, palette: &[[f32; 16]]) -> bool {
     let (geometry, _) = *HANDLES.get(t);
     if geometry == 0 {
@@ -324,6 +387,10 @@ pub unsafe fn send(t: &MainThread, renderer: usize, world: [f32; 16], relative: 
 /// Sends the record of the lines that are about to be drawn (`RenderLines`), with the flag
 /// [`LINES`]; the geometry is the lines data, noted by the link. Returns true when the
 /// pipeline of the device must not run for the draw.
+///
+/// # Safety
+///
+/// As for [`send`].
 pub unsafe fn send_lines(t: &MainThread, renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>) -> bool {
     let (geometry, _) = *HANDLES.get(t);
     if geometry == 0 {
@@ -337,6 +404,10 @@ pub unsafe fn send_lines(t: &MainThread, renderer: usize, world: [f32; 16], rela
 /// the flag [`PARTICLES`]. `key` is the particle data of the game; `right` and `up` are the
 /// axes of the camera in the model space of the draw; `particles` has [`PARTICLE_BYTES`] for
 /// each particle. Returns true when the pipeline of the device must not run for the draw.
+///
+/// # Safety
+///
+/// As for [`send`]. `particles` holds whole particles of [`PARTICLE_BYTES`] each.
 pub unsafe fn send_particles(t: &MainThread, 
     renderer: usize,
     key: u32,
@@ -496,6 +567,11 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
 
 /// The colours of the material of a property state, for `send`: ambient, diffuse, specular,
 /// emissive (3 each), shininess, alpha, as the bits of the floats.
+///
+/// # Safety
+///
+/// `property_state` points at a live `NiPropertyState`; its material is 0 or a live
+/// `NiMaterialProperty`.
 pub unsafe fn material_values(property_state: usize) -> [u32; 14] {
     use crate::gen::layouts::NiMaterialProperty as MP;
     let material = crate::engine::property_state_update_current_material_revision(property_state);
@@ -511,6 +587,10 @@ pub unsafe fn material_values(property_state: usize) -> [u32; 14] {
 }
 
 /// The world matrix of the renderer, for `send`.
+///
+/// # Safety
+///
+/// `renderer` points at the live `NiDX8Renderer`.
 pub unsafe fn current_world(renderer: usize) -> [f32; 16] {
     rd(renderer, crate::gen::layouts::NiDX8Renderer::currentWorldMatrix)
 }

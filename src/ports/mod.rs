@@ -23,6 +23,15 @@ macro_rules! port_impl {
                 $ename, $addr, $stack_args, $crate::hook::Cleanup::$cleanup, detour_addr);
 
             /// The engine function.
+            ///
+            /// # Safety
+            ///
+            /// The port is installed: `STATE.orig` is 0 until its detour is in place, and a
+            /// call before then jumps to address 0. The arguments are the ones the engine
+            /// function at the port's address takes, as valid as the game passes them (a
+            /// `this` or a pointer to a live engine object of its class); nothing here checks
+            /// them. Which thread may call the engine function is its own rule, not known
+            /// here; the detour calls it with the game's own arguments on the game's thread.
             #[track_caller]
             pub unsafe fn engine($($p: $pt),*) -> u32 {
                 let _call = $crate::entry_trace::call_out();
@@ -114,6 +123,14 @@ macro_rules! port_thiscall_float {
                 $crate::shadow::PortState::new($ename, $addr, 0, $crate::hook::Cleanup::Callee, detour_addr);
 
             /// The engine function.
+            ///
+            /// # Safety
+            ///
+            /// The port is installed: `STATE.orig` is 0 until its detour is in place, and a
+            /// call before then jumps to address 0. `this` points at a live engine object of
+            /// the class of the function at the port's address, as the game passes it;
+            /// nothing here checks it. Which thread may call it is the engine function's own
+            /// rule, not known here; the detour calls it on the game's thread.
             #[track_caller]
             pub unsafe fn engine($this: usize) -> f32 {
                 let _call = $crate::entry_trace::call_out();

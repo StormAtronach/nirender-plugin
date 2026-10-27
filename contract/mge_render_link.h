@@ -572,6 +572,12 @@ const MgeRenderLinkHostV1* __cdecl MGE_RenderLinkConnect(uint32_t clientVersion)
 // camera object that `scene->camera` names (the same process); the eye is `cameraOrigin`.
 void __cdecl MGE_StreamSceneBegin(const MgeLinkSceneV1* scene);
 
+// The plugin's lines in MGE XE's log (mgeXE.log): d3d8.dll writes each line of `text` (a text
+// can have more than one, at its '\n') as "nirender: <line>", with no limit of length. Any
+// thread may call it. The plugin finds it by name at its first line; without it the plugin
+// writes its own nirender.log.
+void __cdecl MGE_LogLine(const char* text);
+
 #ifdef __cplusplus
 }
 #endif

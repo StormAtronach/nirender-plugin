@@ -367,6 +367,11 @@ unsafe fn free_geom_buffer(buffer: usize) {
 // ---------------------------------------------------------------------------------------
 
 /// 0x6A99E0 `NiDX8Renderer::CreateD3D`. Returns the `IDirect3D8` of the game.
+///
+/// # Safety
+///
+/// The engine's word of the `IDirect3D8` (`DIRECT3D`) holds 0 or the live object; with 0 the
+/// function loads `d3d8.dll` and makes it.
 pub unsafe fn create_d3d() -> usize {
     crate::shadow::touch(&create_d3d_port::STATE);
     let direct3d: usize = rd(DIRECT3D, 0);
@@ -382,6 +387,11 @@ pub unsafe fn create_d3d() -> usize {
 }
 
 /// 0x6A9A50 `NiDX8Renderer::ReleaseD3D`. Returns 0.
+///
+/// # Safety
+///
+/// The engine's word of the `IDirect3D8` holds 0 or the live object, which nothing uses after the
+/// call.
 pub unsafe fn release_d3d() -> u32 {
     crate::shadow::touch(&release_d3d_port::STATE);
     let direct3d: usize = rd(DIRECT3D, 0);
@@ -393,12 +403,21 @@ pub unsafe fn release_d3d() -> u32 {
 }
 
 /// 0x6A9C50 `NiDX8Renderer::GetRTTI`
+///
+/// # Safety
+///
+/// No condition: the function returns a constant. It is `unsafe` as every port function is.
 pub unsafe fn get_rtti(_this: usize) -> usize {
     crate::shadow::touch(&get_rtti_port::STATE);
     RTTI_NI_DX8_RENDERER
 }
 
 /// 0x6B0FC0 `NiDX8Renderer_static::GetAdapters`. Returns a new `NiDX8SystemDesc` or 0.
+///
+/// # Safety
+///
+/// The engine's word of the `IDirect3D8` holds 0 or the live object; the caller owns the
+/// `NiDX8SystemDesc` that the function returns.
 pub unsafe fn get_adapters() -> usize {
     crate::shadow::touch(&get_adapters_port::STATE);
     if rd::<usize>(DIRECT3D, 0) == 0 {
@@ -434,6 +453,11 @@ unsafe fn get_adapters_regions(set: &mut Regions) {
 /// the game. The game code compares the format as a signed number. Then it compares the
 /// format as an unsigned number in the two tables. Both orders give "UNKNOWN" for a value
 /// that is not in the list.
+///
+/// # Safety
+///
+/// No condition: the function returns the address of a name in the game's data, which the caller
+/// reads as a C string.
 pub unsafe fn d3dformat_to_string(format: u32) -> usize {
     crate::shadow::touch(&d3dformat_to_string_port::STATE);
     match format {
@@ -652,6 +676,11 @@ unsafe fn initialize_present_params_on(
 
 /// 0x6AB470 `NiDX8Renderer::InitializePresentParams`: fills `d3dPresentParameters`.
 /// Returns 0 when the adapter has no format or mode for the request.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its system description of the adapters; the
+/// engine's `IDirect3D8` is live.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn initialize_present_params(
     this: usize,
@@ -696,6 +725,12 @@ unsafe fn initialize_present_params_regions(set: &mut Regions, this: usize) {
 
 /// 0x6AB960 `NiDX8Renderer::validateDeviceCaps`. It sets the capability flags (`GetFlags`),
 /// the number of hardware bones and the flag that tells if cube maps can have mip maps.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with a selected device description: the function reads
+/// the description's capabilities before it tests the description for 0, as the game's code does,
+/// so a null description is read through.
 pub unsafe fn validate_device_caps(this: usize) -> u8 {
     crate::shadow::touch(&validate_device_caps_port::STATE);
     let device_desc = selected_device_desc(this);
@@ -790,6 +825,11 @@ unsafe fn write_behavior_text(this: usize, empty: usize, texts: [usize; 5]) {
 
 /// 0x6ABBA0 `NiDX8Renderer::GetDriverInfo`. It writes a text of the form
 /// "description (HAL-PURE MT HWVP)" into `driverDesc`. It returns `driverDesc`.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`, and the engine's `IDirect3D8` is live: the function
+/// asks it for the identifier of the renderer's adapter.
 pub unsafe fn get_driver_info(this: usize) -> usize {
     crate::shadow::touch(&get_driver_info_port::STATE);
     let description = this + R::driverDesc;
@@ -858,6 +898,11 @@ unsafe fn probe_pixel_format(index: u32) -> Option<usize> {
 /// `resource_type` with the format of the back buffer. The value 3 is a texture and 5 is a
 /// cube texture. It puts one `NiDX8PixelFormat` into `formats` for each format the device
 /// has, and 0 for the others. The game code does not read the second argument.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with the pixel format of its back buffer set, and
+/// `formats` at room for the 14 entries of a group.
 pub unsafe fn probe_texture_formats(this: usize, formats: usize, _unused: u32, resource_type: u32) {
     crate::shadow::touch(&probe_texture_formats_port::STATE);
     let backbuffer_format: usize = rd(this, R::backbufferRenderTarget_DX8PixelFormat);
@@ -941,6 +986,11 @@ unsafe fn default_texture_format(this: usize, group: usize) -> usize {
 /// 0x6ABA70 `NiDX8Renderer::createDefaultTextures`. For each of the four groups it sets the
 /// default format and makes a white 4 x 4 [`NiPixelData`] in that format. The return value
 /// tells if the first group has a format.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its texture formats made
+/// (`probe_texture_formats`).
 pub unsafe fn create_default_textures(this: usize) -> u8 {
     crate::shadow::touch(&create_default_textures_port::STATE);
     for group in 0..FORMAT_GROUPS {
@@ -968,6 +1018,11 @@ pub unsafe fn create_default_textures(this: usize) -> u8 {
 
 /// 0x6AB8C0 `NiDX8Renderer::initializeTextureDefaults`. It makes the texture formats of the
 /// device, the default textures and the depth format for each format of the second group.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device and the pixel format of its back
+/// buffer.
 pub unsafe fn initialize_texture_defaults(this: usize) -> u8 {
     crate::shadow::touch(&initialize_texture_defaults_port::STATE);
     let formats = this + R::arrayArrayTextureFormats;
@@ -1179,6 +1234,11 @@ unsafe fn make_format_with_setter(format: usize, d3d_format: u32) {
 /// `device_caps` is the first device choice: 0 is pure hardware, 1 is hardware, 2 is mixed,
 /// 3 is software vertex processing and 4 is the reference device. When a choice fails, the
 /// port tries the next choice, up to 3.
+///
+/// # Safety
+///
+/// The windows are the game's; `adapter` is an adapter of the system; the other values are as the
+/// engine passes them. The engine's word of the `IDirect3D8` holds 0 or the live object.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn create(
     width: u32,
@@ -1308,6 +1368,13 @@ pub unsafe fn create(
     let stencil = (shifted & 0xFFFF_FF00) | (shifted & 1);
     let state = render_state_create(rd(this, R::d3dDevice), caps, 1, 1, stencil);
     wr(this, R::renderState, state);
+    // A state of 0 (its port's `operator new` gave 0): the camera data, the light manager and
+    // the texture defaults below would write through it. Create ends as it does when the
+    // texture defaults fail.
+    if state == 0 {
+        crate::log!("renderer: no render state; Create gives no renderer");
+        return abandon(this);
+    }
 
     // left, right, top, bottom, near, far
     let frustum: [u32; 6] = [0xBF80_0000, 0x3F80_0000, 0x3F80_0000, 0xBF80_0000, 0x3DCC_CCCD, 0x3F80_0000];
@@ -1326,6 +1393,12 @@ pub unsafe fn create(
     }
     let pipeline = texture_pipeline::create(this, caps, rd(this, R::renderState), rd(this, R::textureManager), 1);
     wr(this, R::configurableTexturePipeline, pipeline);
+    // A pipeline of 0 (its `operator new` gave 0): the draws would use it. Create ends as it
+    // does when the texture defaults fail.
+    if pipeline == 0 {
+        crate::log!("renderer: no texture pipeline; Create gives no renderer");
+        return abandon(this);
+    }
     if rd::<u32>(this, R::d3dPresentParameters_MultiSampleType) != 0 {
         render_state::set_multisampling(rd(this, R::renderState), 1);
     }
@@ -1405,6 +1478,11 @@ unsafe fn take_back_buffer_format(this: usize) -> usize {
 /// 0x6AAE80 `NiDX8Renderer::Recreate`. It resets a lost device. It releases each object of
 /// the default pool first and makes it again after `Reset`. It returns 0 when `Reset` fails
 /// or when it cannot make the texture formats.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device and its managers; nothing uses the
+/// objects of the default pool during the call (the function releases them and makes them again).
 pub unsafe fn recreate(this: usize) -> u8 {
     crate::shadow::touch(&recreate_port::STATE);
     light_manager::release_lights(rd(this, R::lightManager));
@@ -1475,13 +1553,21 @@ unsafe fn delete_member(this: usize, offset: usize) {
 }
 
 /// 0x6A9E10 `NiDX8Renderer::dtor`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` that nothing uses after the call.
 pub unsafe fn dtor(this: usize) {
     crate::shadow::touch(&dtor_port::STATE);
     wr(this, R::vtbl, VTBL_NI_DX8_RENDERER);
     if rd::<usize>(this, R::d3dDevice) != 0 {
-        // Nothing stays bound to the device.
+        // Nothing stays bound to the device. A renderer that Create abandoned for a render state
+        // of 0 has no state: the game's code (0x6A9E10) reads through it; the port skips the
+        // loop.
         let mut stage = 0u32;
-        if rd::<u32>(MAX_TEXTURE_BLEND_STAGES, 0) > 0 {
+        if rd::<usize>(this, R::renderState) == 0 {
+            crate::log!("renderer: destroyed with no render state; no texture stage to unbind");
+        } else if rd::<u32>(MAX_TEXTURE_BLEND_STAGES, 0) > 0 {
             loop {
                 let state: usize = rd(this, R::renderState);
                 let slot = RS::texturePerStage + stage as usize * 4;
@@ -1646,6 +1732,11 @@ pub unsafe fn dtor(this: usize) {
 }
 
 /// 0x6A9D80 `NiDX8Renderer::deleting_dtor`. Bit 0 of `flags` means "free the memory".
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` that nothing uses after the call; with bit 0 of
+/// `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn deleting_dtor(this: usize, flags: u8) -> usize {
     crate::shadow::touch(&deleting_dtor_port::STATE);
     dtor(this);
@@ -1664,6 +1755,12 @@ pub unsafe fn deleting_dtor(this: usize, flags: u8) -> usize {
 ///
 /// The port deletes the system description at the end, so the map has pointers into freed
 /// memory. The game does the same.
+///
+/// # Safety
+///
+/// `game` points at the live `TES3Game` with its map of adapters. After the call nothing reads the
+/// adapter descriptions of the map: they point into the system description that the function frees,
+/// as in the game.
 pub unsafe fn video_adapter_enum(game: usize) {
     crate::shadow::touch(&video_adapter_enum_port::STATE);
     let map = game + GAME_ADAPTER_MAP;

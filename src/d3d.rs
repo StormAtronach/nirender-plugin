@@ -136,6 +136,10 @@ pub const SURFACE_UNLOCK_RECT: usize = 0x28;
 
 /// `IUnknown::AddRef` through the vtable of the object, slot 0x04.
 /// It is for each COM object: a device, a buffer, a texture or a surface.
+///
+/// # Safety
+///
+/// `object` points at a live Direct3D 8 COM object: a device, a buffer, a texture or a surface.
 #[inline(always)]
 pub unsafe fn com_add_ref(object: usize) -> u32 {
     if let Some(result) = crate::link_client::object_call(0, &[object as u32]) {
@@ -147,6 +151,10 @@ pub unsafe fn com_add_ref(object: usize) -> u32 {
 
 /// `IUnknown::Release` through the vtable of the object, slot 0x08.
 /// It is for each COM object: a device, a buffer, a texture or a surface.
+///
+/// # Safety
+///
+/// `object` points at a live Direct3D 8 COM object: a device, a buffer, a texture or a surface.
 #[inline(always)]
 pub unsafe fn com_release(object: usize) -> u32 {
     if let Some(result) = crate::link_client::object_call(1, &[object as u32]) {
@@ -157,6 +165,10 @@ pub unsafe fn com_release(object: usize) -> u32 {
 }
 
 /// `IDirect3D8::GetAdapterCount` through the vtable of the object, slot 0x10.
+///
+/// # Safety
+///
+/// `d3d` points at a live `IDirect3D8`.
 #[inline(always)]
 pub unsafe fn d3d_get_adapter_count(d3d: usize) -> u32 {
     let f: unsafe extern "system" fn(usize) -> u32 = transmute(virtual_at(d3d, D3D_GET_ADAPTER_COUNT));
@@ -164,6 +176,11 @@ pub unsafe fn d3d_get_adapter_count(d3d: usize) -> u32 {
 }
 
 /// `IDirect3D8::GetAdapterIdentifier` through the vtable of the object, slot 0x14.
+///
+/// # Safety
+///
+/// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
+/// `IDirect3D8::GetAdapterIdentifier`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn d3d_get_adapter_identifier(d3d: usize, adapter: u32, flags: u32, identifier: usize) -> u32 {
     let f: unsafe extern "system" fn(usize, u32, u32, usize) -> u32 = transmute(virtual_at(d3d, D3D_GET_ADAPTER_IDENTIFIER));
@@ -171,6 +188,11 @@ pub unsafe fn d3d_get_adapter_identifier(d3d: usize, adapter: u32, flags: u32, i
 }
 
 /// `IDirect3D8::GetAdapterModeCount` through the vtable of the object, slot 0x18.
+///
+/// # Safety
+///
+/// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
+/// `IDirect3D8::GetAdapterModeCount`.
 #[inline(always)]
 pub unsafe fn d3d_get_adapter_mode_count(d3d: usize, adapter: u32) -> u32 {
     let f: unsafe extern "system" fn(usize, u32) -> u32 = transmute(virtual_at(d3d, D3D_GET_ADAPTER_MODE_COUNT));
@@ -178,6 +200,11 @@ pub unsafe fn d3d_get_adapter_mode_count(d3d: usize, adapter: u32) -> u32 {
 }
 
 /// `IDirect3D8::EnumAdapterModes` through the vtable of the object, slot 0x1C.
+///
+/// # Safety
+///
+/// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
+/// `IDirect3D8::EnumAdapterModes`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn d3d_enum_adapter_modes(d3d: usize, adapter: u32, mode: u32, out: usize) -> u32 {
     let f: unsafe extern "system" fn(usize, u32, u32, usize) -> u32 = transmute(virtual_at(d3d, D3D_ENUM_ADAPTER_MODES));
@@ -185,6 +212,11 @@ pub unsafe fn d3d_enum_adapter_modes(d3d: usize, adapter: u32, mode: u32, out: u
 }
 
 /// `IDirect3D8::GetAdapterDisplayMode` through the vtable of the object, slot 0x20.
+///
+/// # Safety
+///
+/// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
+/// `IDirect3D8::GetAdapterDisplayMode`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn d3d_get_adapter_display_mode(d3d: usize, adapter: u32, out: usize) -> u32 {
     let f: unsafe extern "system" fn(usize, u32, usize) -> u32 = transmute(virtual_at(d3d, D3D_GET_ADAPTER_DISPLAY_MODE));
@@ -192,6 +224,11 @@ pub unsafe fn d3d_get_adapter_display_mode(d3d: usize, adapter: u32, out: usize)
 }
 
 /// `IDirect3D8::CheckDeviceType` through the vtable of the object, slot 0x24.
+///
+/// # Safety
+///
+/// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
+/// `IDirect3D8::CheckDeviceType`.
 #[inline(always)]
 pub unsafe fn d3d_check_device_type(d3d: usize, adapter: u32, device_type: u32, display_format: u32, back_buffer_format: u32, windowed: u32) -> u32 {
     let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(d3d, D3D_CHECK_DEVICE_TYPE));
@@ -199,6 +236,11 @@ pub unsafe fn d3d_check_device_type(d3d: usize, adapter: u32, device_type: u32, 
 }
 
 /// `IDirect3D8::CheckDeviceFormat` through the vtable of the object, slot 0x28.
+///
+/// # Safety
+///
+/// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
+/// `IDirect3D8::CheckDeviceFormat`.
 #[inline(always)]
 pub unsafe fn d3d_check_device_format(d3d: usize, adapter: u32, device_type: u32, adapter_format: u32, usage: u32, resource_type: u32, format: u32) -> u32 {
     let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(d3d, D3D_CHECK_DEVICE_FORMAT));
@@ -206,6 +248,11 @@ pub unsafe fn d3d_check_device_format(d3d: usize, adapter: u32, device_type: u32
 }
 
 /// `IDirect3D8::CheckDeviceMultiSampleType` through the vtable of the object, slot 0x2C.
+///
+/// # Safety
+///
+/// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
+/// `IDirect3D8::CheckDeviceMultiSampleType`.
 #[inline(always)]
 pub unsafe fn d3d_check_device_multi_sample_type(d3d: usize, adapter: u32, device_type: u32, format: u32, windowed: u32, samples: u32) -> u32 {
     let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(d3d, D3D_CHECK_DEVICE_MULTI_SAMPLE_TYPE));
@@ -213,6 +260,11 @@ pub unsafe fn d3d_check_device_multi_sample_type(d3d: usize, adapter: u32, devic
 }
 
 /// `IDirect3D8::CheckDepthStencilMatch` through the vtable of the object, slot 0x30.
+///
+/// # Safety
+///
+/// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
+/// `IDirect3D8::CheckDepthStencilMatch`.
 #[inline(always)]
 pub unsafe fn d3d_check_depth_stencil_match(d3d: usize, adapter: u32, device_type: u32, adapter_format: u32, target_format: u32, depth_format: u32) -> u32 {
     let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(d3d, D3D_CHECK_DEPTH_STENCIL_MATCH));
@@ -220,6 +272,11 @@ pub unsafe fn d3d_check_depth_stencil_match(d3d: usize, adapter: u32, device_typ
 }
 
 /// `IDirect3D8::GetDeviceCaps` through the vtable of the object, slot 0x34.
+///
+/// # Safety
+///
+/// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
+/// `IDirect3D8::GetDeviceCaps`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn d3d_get_device_caps(d3d: usize, adapter: u32, device_type: u32, caps: usize) -> u32 {
     let f: unsafe extern "system" fn(usize, u32, u32, usize) -> u32 = transmute(virtual_at(d3d, D3D_GET_DEVICE_CAPS));
@@ -227,6 +284,11 @@ pub unsafe fn d3d_get_device_caps(d3d: usize, adapter: u32, device_type: u32, ca
 }
 
 /// `IDirect3D8::CreateDevice` through the vtable of the object, slot 0x3C.
+///
+/// # Safety
+///
+/// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
+/// `IDirect3D8::CreateDevice`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn d3d_create_device(d3d: usize, adapter: u32, device_type: u32, focus_window: u32, behavior_flags: u32, parameters: usize, device: usize) -> u32 {
     let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize, usize) -> u32 = transmute(virtual_at(d3d, D3D_CREATE_DEVICE));
@@ -234,6 +296,10 @@ pub unsafe fn d3d_create_device(d3d: usize, adapter: u32, device_type: u32, focu
 }
 
 /// `IDirect3DDevice8::AddRef` through the vtable of the object, slot 0x04.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`.
 #[inline(always)]
 pub unsafe fn device_add_ref(device: usize) -> u32 {
     let f: unsafe extern "system" fn(usize) -> u32 = transmute(virtual_at(device, DEVICE_ADD_REF));
@@ -241,6 +307,10 @@ pub unsafe fn device_add_ref(device: usize) -> u32 {
 }
 
 /// `IDirect3DDevice8::Release` through the vtable of the object, slot 0x08.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`.
 #[inline(always)]
 pub unsafe fn device_release(device: usize) -> u32 {
     let f: unsafe extern "system" fn(usize) -> u32 = transmute(virtual_at(device, DEVICE_RELEASE));
@@ -248,6 +318,10 @@ pub unsafe fn device_release(device: usize) -> u32 {
 }
 
 /// `IDirect3DDevice8::TestCooperativeLevel` through the vtable of the object, slot 0x0C.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`.
 #[inline(always)]
 pub unsafe fn device_test_cooperative_level(device: usize) -> u32 {
     if let Some(result) = crate::link_client::frame_call(crate::link::CALL_TEST_DEVICE, &[]) {
@@ -258,6 +332,11 @@ pub unsafe fn device_test_cooperative_level(device: usize) -> u32 {
 }
 
 /// `IDirect3DDevice8::ResourceManagerDiscardBytes` through the vtable of the object, slot 0x14.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::ResourceManagerDiscardBytes`.
 #[inline(always)]
 pub unsafe fn device_resource_manager_discard_bytes(device: usize, bytes: u32) -> u32 {
     if let Some(result) = crate::link_client::target_call(crate::link::CALL_DISCARD_BYTES, &[bytes]) {
@@ -268,6 +347,11 @@ pub unsafe fn device_resource_manager_discard_bytes(device: usize, bytes: u32) -
 }
 
 /// `IDirect3DDevice8::Reset` through the vtable of the object, slot 0x38.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::Reset`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_reset(device: usize, parameters: usize) -> u32 {
     let f: unsafe extern "system" fn(usize, usize) -> u32 = transmute(virtual_at(device, DEVICE_RESET));
@@ -275,6 +359,11 @@ pub unsafe fn device_reset(device: usize, parameters: usize) -> u32 {
 }
 
 /// `IDirect3DDevice8::Present` through the vtable of the object, slot 0x3C.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::Present`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_present(device: usize, source_rect: usize, dest_rect: usize, window: u32, dirty_region: usize) -> u32 {
     let args = [source_rect as u32, dest_rect as u32, window, dirty_region as u32];
@@ -286,6 +375,11 @@ pub unsafe fn device_present(device: usize, source_rect: usize, dest_rect: usize
 }
 
 /// `IDirect3DDevice8::CreateTexture` through the vtable of the object, slot 0x50.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::CreateTexture`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_create_texture(device: usize, width: u32, height: u32, levels: u32, usage: u32, format: u32, pool: u32, out: usize) -> u32 {
     let args = [width, height, levels, usage, format, pool, out as u32];
@@ -297,6 +391,11 @@ pub unsafe fn device_create_texture(device: usize, width: u32, height: u32, leve
 }
 
 /// `IDirect3DDevice8::CreateCubeTexture` through the vtable of the object, slot 0x58.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::CreateCubeTexture`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_create_cube_texture(device: usize, edge: u32, levels: u32, usage: u32, format: u32, pool: u32, out: usize) -> u32 {
     let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_CREATE_CUBE_TEXTURE));
@@ -304,6 +403,11 @@ pub unsafe fn device_create_cube_texture(device: usize, edge: u32, levels: u32, 
 }
 
 /// `IDirect3DDevice8::CreateVertexBuffer` through the vtable of the object, slot 0x5C.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::CreateVertexBuffer`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_create_vertex_buffer(device: usize, length: u32, usage: u32, fvf: u32, pool: u32, out: usize) -> u32 {
     if let Some(result) = crate::link_client::buffer_call(crate::link::CALL_CREATE_VERTEX_BUFFER, &[length, usage, fvf, pool, out as u32]) {
@@ -314,6 +418,11 @@ pub unsafe fn device_create_vertex_buffer(device: usize, length: u32, usage: u32
 }
 
 /// `IDirect3DDevice8::CreateIndexBuffer` through the vtable of the object, slot 0x60.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::CreateIndexBuffer`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_create_index_buffer(device: usize, length: u32, usage: u32, format: u32, pool: u32, out: usize) -> u32 {
     if let Some(result) = crate::link_client::buffer_call(crate::link::CALL_CREATE_INDEX_BUFFER, &[length, usage, format, pool, out as u32]) {
@@ -324,6 +433,11 @@ pub unsafe fn device_create_index_buffer(device: usize, length: u32, usage: u32,
 }
 
 /// `IDirect3DDevice8::CreateImageSurface` through the vtable of the object, slot 0x6C.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::CreateImageSurface`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_create_image_surface(device: usize, width: u32, height: u32, format: u32, out: usize) -> u32 {
     if let Some(result) = crate::link_client::target_call(crate::link::CALL_CREATE_IMAGE_SURFACE, &[width, height, format, out as u32]) {
@@ -334,6 +448,11 @@ pub unsafe fn device_create_image_surface(device: usize, width: u32, height: u32
 }
 
 /// `IDirect3DDevice8::CopyRects` through the vtable of the object, slot 0x70.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::CopyRects`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_copy_rects(device: usize, source: usize, rects: usize, count: u32, dest: usize, points: usize) -> u32 {
     let args = [source as u32, rects as u32, count, dest as u32, points as u32];
@@ -345,6 +464,11 @@ pub unsafe fn device_copy_rects(device: usize, source: usize, rects: usize, coun
 }
 
 /// `IDirect3DDevice8::SetRenderTarget` through the vtable of the object, slot 0x7C.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::SetRenderTarget`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_set_render_target(device: usize, target: usize, depth_stencil: usize) -> u32 {
     if let Some(result) = crate::link_client::frame_call(crate::link::CALL_RENDER_TARGET, &[target as u32, depth_stencil as u32]) {
@@ -355,6 +479,11 @@ pub unsafe fn device_set_render_target(device: usize, target: usize, depth_stenc
 }
 
 /// `IDirect3DDevice8::GetRenderTarget` through the vtable of the object, slot 0x80.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::GetRenderTarget`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_get_render_target(device: usize, out: usize) -> u32 {
     if let Some(result) = crate::link_client::target_call(crate::link::CALL_GET_RENDER_TARGET, &[out as u32]) {
@@ -365,6 +494,11 @@ pub unsafe fn device_get_render_target(device: usize, out: usize) -> u32 {
 }
 
 /// `IDirect3DDevice8::GetDepthStencilSurface` through the vtable of the object, slot 0x84.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::GetDepthStencilSurface`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_get_depth_stencil_surface(device: usize, out: usize) -> u32 {
     if let Some(result) = crate::link_client::target_call(crate::link::CALL_GET_DEPTH_BUFFER, &[out as u32]) {
@@ -375,6 +509,10 @@ pub unsafe fn device_get_depth_stencil_surface(device: usize, out: usize) -> u32
 }
 
 /// `IDirect3DDevice8::BeginScene` through the vtable of the object, slot 0x88.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`.
 #[inline(always)]
 pub unsafe fn device_begin_scene(device: usize) -> u32 {
     if let Some(result) = crate::link_client::frame_call(crate::link::CALL_BEGIN_SCENE, &[]) {
@@ -385,6 +523,10 @@ pub unsafe fn device_begin_scene(device: usize) -> u32 {
 }
 
 /// `IDirect3DDevice8::EndScene` through the vtable of the object, slot 0x8C.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`.
 #[inline(always)]
 pub unsafe fn device_end_scene(device: usize) -> u32 {
     if let Some(result) = crate::link_client::frame_call(crate::link::CALL_END_SCENE, &[]) {
@@ -396,6 +538,11 @@ pub unsafe fn device_end_scene(device: usize) -> u32 {
 
 /// `IDirect3DDevice8::Clear` through the vtable of the object, slot 0x90.
 /// `z` is the bits of the float.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::Clear`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_clear(device: usize, count: u32, rects: usize, flags: u32, color: u32, z: u32, stencil: u32) -> u32 {
     if let Some(result) = crate::link_client::frame_call(crate::link::CALL_CLEAR, &[count, rects as u32, flags, color, z, stencil]) {
@@ -406,6 +553,11 @@ pub unsafe fn device_clear(device: usize, count: u32, rects: usize, flags: u32, 
 }
 
 /// `IDirect3DDevice8::SetTransform` through the vtable of the object, slot 0x94.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::SetTransform`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_set_transform(device: usize, state: u32, matrix: usize) -> u32 {
     crate::link_client::note_transform(state, matrix);
@@ -417,6 +569,11 @@ pub unsafe fn device_set_transform(device: usize, state: u32, matrix: usize) -> 
 }
 
 /// `IDirect3DDevice8::SetViewport` through the vtable of the object, slot 0xA0.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::SetViewport`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_set_viewport(device: usize, viewport: usize) -> u32 {
     if let Some(result) = crate::link_client::frame_call(crate::link::CALL_VIEWPORT, &[viewport as u32]) {
@@ -427,6 +584,11 @@ pub unsafe fn device_set_viewport(device: usize, viewport: usize) -> u32 {
 }
 
 /// `IDirect3DDevice8::SetLight` through the vtable of the object, slot 0xB0.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::SetLight`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_set_light(device: usize, index: u32, light: usize) -> u32 {
     if crate::link_client::skip_lights() {
@@ -437,6 +599,11 @@ pub unsafe fn device_set_light(device: usize, index: u32, light: usize) -> u32 {
 }
 
 /// `IDirect3DDevice8::LightEnable` through the vtable of the object, slot 0xB8.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::LightEnable`.
 #[inline(always)]
 pub unsafe fn device_light_enable(device: usize, index: u32, enable: u32) -> u32 {
     if crate::link_client::skip_lights() {
@@ -448,6 +615,11 @@ pub unsafe fn device_light_enable(device: usize, index: u32, enable: u32) -> u32
 
 /// `IDirect3DDevice8::SetMaterial` through the vtable of the device. `material` is the
 /// address of a `D3DMATERIAL8`.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::SetMaterial`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_set_material(device: usize, material: usize) -> u32 {
     if crate::link_client::skip_material() {
@@ -458,6 +630,11 @@ pub unsafe fn device_set_material(device: usize, material: usize) -> u32 {
 }
 
 /// `IDirect3DDevice8::SetRenderState` through the vtable of the device, as the game code calls it.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::SetRenderState`.
 #[inline(always)]
 pub unsafe fn device_set_render_state(device: usize, state: u32, value: u32) -> u32 {
     // With the deliberate fault 1, D3DCMP_LESSEQUAL (4) of D3DRS_ZFUNC becomes D3DCMP_LESS (2).
@@ -472,6 +649,11 @@ pub unsafe fn device_set_render_state(device: usize, state: u32, value: u32) -> 
 }
 
 /// `IDirect3DDevice8::SetTexture` through the vtable of the object, slot 0xF4.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::SetTexture`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_set_texture(device: usize, stage: u32, texture: usize) -> u32 {
     crate::link_client::note_texture(stage, texture);
@@ -483,6 +665,11 @@ pub unsafe fn device_set_texture(device: usize, stage: u32, texture: usize) -> u
 }
 
 /// `IDirect3DDevice8::SetTextureStageState` through the vtable of the device.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::SetTextureStageState`.
 #[inline(always)]
 pub unsafe fn device_set_texture_stage_state(device: usize, stage: u32, state: u32, value: u32) -> u32 {
     crate::link_client::note_stage_state(state);
@@ -495,6 +682,11 @@ pub unsafe fn device_set_texture_stage_state(device: usize, stage: u32, state: u
 }
 
 /// `IDirect3DDevice8::DrawPrimitive` through the vtable of the object, slot 0x118.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::DrawPrimitive`.
 #[inline(always)]
 pub unsafe fn device_draw_primitive(device: usize, primitive_type: u32, start_vertex: u32, primitives: u32) -> u32 {
     if crate::link_client::draw(primitive_type, start_vertex, primitives) {
@@ -505,6 +697,11 @@ pub unsafe fn device_draw_primitive(device: usize, primitive_type: u32, start_ve
 }
 
 /// `IDirect3DDevice8::DrawIndexedPrimitive` through the vtable of the object, slot 0x11C.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::DrawIndexedPrimitive`.
 #[inline(always)]
 pub unsafe fn device_draw_indexed_primitive(device: usize, primitive_type: u32, min_index: u32, vertices: u32, start_index: u32, primitives: u32) -> u32 {
     if crate::link_client::draw_indexed(primitive_type, min_index, vertices, start_index, primitives) {
@@ -515,6 +712,11 @@ pub unsafe fn device_draw_indexed_primitive(device: usize, primitive_type: u32, 
 }
 
 /// `IDirect3DDevice8::SetVertexShader` through the vtable of the object, slot 0x130.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::SetVertexShader`.
 #[inline(always)]
 pub unsafe fn device_set_vertex_shader(device: usize, handle: u32) -> u32 {
     crate::link_client::note_vertex_shader(handle);
@@ -526,6 +728,11 @@ pub unsafe fn device_set_vertex_shader(device: usize, handle: u32) -> u32 {
 }
 
 /// `IDirect3DDevice8::SetStreamSource` through the vtable of the object, slot 0x14C.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::SetStreamSource`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_set_stream_source(device: usize, stream: u32, buffer: usize, stride: u32) -> u32 {
     if stream == 0 {
@@ -539,6 +746,11 @@ pub unsafe fn device_set_stream_source(device: usize, stream: u32, buffer: usize
 }
 
 /// `IDirect3DDevice8::SetIndices` through the vtable of the object, slot 0x154.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::SetIndices`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_set_indices(device: usize, buffer: usize, base_vertex: u32) -> u32 {
     crate::link_client::note_indices(buffer, base_vertex);
@@ -550,6 +762,11 @@ pub unsafe fn device_set_indices(device: usize, buffer: usize, base_vertex: u32)
 }
 
 /// `IDirect3DDevice8::SetPixelShader` through the vtable of the object, slot 0x160.
+///
+/// # Safety
+///
+/// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
+/// `IDirect3DDevice8::SetPixelShader`.
 #[inline(always)]
 pub unsafe fn device_set_pixel_shader(device: usize, handle: u32) -> u32 {
     let f: unsafe extern "system" fn(usize, u32) -> u32 = transmute(virtual_at(device, DEVICE_SET_PIXEL_SHADER));
@@ -558,6 +775,12 @@ pub unsafe fn device_set_pixel_shader(device: usize, handle: u32) -> u32 {
 
 /// `IDirect3DVertexBuffer8::Lock` through the vtable of the object, slot 0x2C.
 /// `IDirect3DIndexBuffer8::Lock` has the same slot and the same arguments.
+///
+/// # Safety
+///
+/// `buffer` points at a live `IDirect3DVertexBuffer8` or `IDirect3DIndexBuffer8`, and the other
+/// arguments are valid for `IDirect3DVertexBuffer8::Lock`: an address is 0 only where the method
+/// permits it.
 #[inline(always)]
 pub unsafe fn buffer_lock(buffer: usize, offset: u32, size: u32, out: usize, flags: u32) -> u32 {
     if let Some(result) = crate::link_client::object_call(2, &[buffer as u32, offset, size, out as u32, flags]) {
@@ -569,6 +792,10 @@ pub unsafe fn buffer_lock(buffer: usize, offset: u32, size: u32, out: usize, fla
 
 /// `IDirect3DVertexBuffer8::Unlock` through the vtable of the object, slot 0x30.
 /// `IDirect3DIndexBuffer8::Unlock` has the same slot.
+///
+/// # Safety
+///
+/// `buffer` points at a live `IDirect3DVertexBuffer8` or `IDirect3DIndexBuffer8`.
 #[inline(always)]
 pub unsafe fn buffer_unlock(buffer: usize) -> u32 {
     if let Some(result) = crate::link_client::object_call(3, &[buffer as u32]) {
@@ -580,6 +807,12 @@ pub unsafe fn buffer_unlock(buffer: usize) -> u32 {
 
 /// `IDirect3DVertexBuffer8::GetDesc` through the vtable of the object, slot 0x34.
 /// `IDirect3DIndexBuffer8::GetDesc` has the same slot.
+///
+/// # Safety
+///
+/// `buffer` points at a live `IDirect3DVertexBuffer8` or `IDirect3DIndexBuffer8`, and the other
+/// arguments are valid for `IDirect3DVertexBuffer8::GetDesc`: an address is 0 only where the method
+/// permits it.
 #[inline(always)]
 pub unsafe fn buffer_get_desc(buffer: usize, desc: usize) -> u32 {
     if let Some(result) = crate::link_client::object_call(4, &[buffer as u32, desc as u32]) {
@@ -590,6 +823,11 @@ pub unsafe fn buffer_get_desc(buffer: usize, desc: usize) -> u32 {
 }
 
 /// `IDirect3DTexture8::GetSurfaceLevel` through the vtable of the object, slot 0x3C.
+///
+/// # Safety
+///
+/// `texture` points at a live `IDirect3DTexture8`, and the other arguments are valid for
+/// `IDirect3DTexture8::GetSurfaceLevel`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn texture_get_surface_level(texture: usize, level: u32, out: usize) -> u32 {
     if let Some(result) = crate::link_client::object_call(5, &[texture as u32, level, out as u32]) {
@@ -601,6 +839,11 @@ pub unsafe fn texture_get_surface_level(texture: usize, level: u32, out: usize) 
 
 /// `IDirect3DCubeTexture8::GetCubeMapSurface` through the vtable of the object, slot 0x3C.
 /// The slot is the slot of `IDirect3DTexture8::GetSurfaceLevel`. The arguments are different.
+///
+/// # Safety
+///
+/// `texture` points at a live `IDirect3DCubeTexture8`, and the other arguments are valid for
+/// `IDirect3DCubeTexture8::GetCubeMapSurface`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn cube_texture_get_cube_map_surface(texture: usize, face: u32, level: u32, out: usize) -> u32 {
     if let Some(result) = crate::link_client::object_call(6, &[texture as u32, face, level, out as u32]) {
@@ -611,6 +854,11 @@ pub unsafe fn cube_texture_get_cube_map_surface(texture: usize, face: u32, level
 }
 
 /// `IDirect3DSurface8::GetDesc` through the vtable of the object, slot 0x20.
+///
+/// # Safety
+///
+/// `surface` points at a live `IDirect3DSurface8`, and the other arguments are valid for
+/// `IDirect3DSurface8::GetDesc`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn surface_get_desc(surface: usize, desc: usize) -> u32 {
     if let Some(result) = crate::link_client::object_call(7, &[surface as u32, desc as u32]) {
@@ -621,6 +869,11 @@ pub unsafe fn surface_get_desc(surface: usize, desc: usize) -> u32 {
 }
 
 /// `IDirect3DSurface8::LockRect` through the vtable of the object, slot 0x24.
+///
+/// # Safety
+///
+/// `surface` points at a live `IDirect3DSurface8`, and the other arguments are valid for
+/// `IDirect3DSurface8::LockRect`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn surface_lock_rect(surface: usize, locked: usize, rect: usize, flags: u32) -> u32 {
     if let Some(result) = crate::link_client::object_call(8, &[surface as u32, locked as u32, rect as u32, flags]) {
@@ -631,6 +884,10 @@ pub unsafe fn surface_lock_rect(surface: usize, locked: usize, rect: usize, flag
 }
 
 /// `IDirect3DSurface8::UnlockRect` through the vtable of the object, slot 0x28.
+///
+/// # Safety
+///
+/// `surface` points at a live `IDirect3DSurface8`.
 #[inline(always)]
 pub unsafe fn surface_unlock_rect(surface: usize) -> u32 {
     if let Some(result) = crate::link_client::object_call(9, &[surface as u32]) {
@@ -743,6 +1000,16 @@ pub const D3DFMT_DXT2: u32 = 0x3254_5844;
 pub const D3DFMT_DXT3: u32 = 0x3354_5844;
 pub const D3DFMT_DXT4: u32 = 0x3454_5844;
 pub const D3DFMT_DXT5: u32 = 0x3554_5844;
+/// 'BC7 ', MGE XE's FourCC of a BC7 texture (`MGE_D3DFMT_BC7`, d3d8/cpp/mge/bc7format.h): the
+/// blocks of 16 bytes of DXGI_FORMAT_BC7_UNORM and of its sRGB form. MGE XE's DDS reader
+/// patch marks such a texture as pixel format 8 with this tag in `channelMasks[0]`.
+pub const D3DFMT_BC7: u32 = 0x2037_4342;
+
+/// True for the `NiPixelFormat` of a BC7 texture as MGE XE's DDS reader patch marks it: the
+/// format 8 (the 16-byte blocks of DXT5) with [`D3DFMT_BC7`] in its first channel mask.
+pub fn is_bc7(pixel_format: u32, first_channel_mask: u32) -> bool {
+    pixel_format == 8 && first_channel_mask == D3DFMT_BC7
+}
 pub const D3DFMT_YUY2: u32 = 0x3259_5559;
 pub const D3DFMT_UYVY: u32 = 0x5956_5955;
 
@@ -976,5 +1243,15 @@ mod tests {
         // The fault is off in the unit tests, thus the two values go to the device as they are.
         assert_eq!(fault(), 0);
         assert_eq!(CALLS.with(|calls| calls.borrow().clone()), [[o as u32, 23, 4], [o as u32, 25, 4]]);
+    }
+
+    #[test]
+    fn only_the_dxt5_format_with_the_bc7_tag_is_bc7() {
+        assert!(is_bc7(8, D3DFMT_BC7));
+        // DXT5 without the tag (the reader clears the mask of a compressed format), the tag on
+        // another format, and the FourCC of DXT5 in the mask are not BC7.
+        assert!(!is_bc7(8, 0));
+        assert!(!is_bc7(6, D3DFMT_BC7));
+        assert!(!is_bc7(8, D3DFMT_DXT5));
     }
 }

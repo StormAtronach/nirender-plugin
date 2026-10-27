@@ -27,6 +27,11 @@ pub fn installed() -> bool {
 
 /// Listens to MWSE's event. A refusal (an MWSE without the event) leaves the stream without
 /// the event: the helper then places the flush as an older capture has it.
+///
+/// # Safety
+///
+/// No condition of its own: `INSTALLED` (a `sync::InstallState`) lets one caller install at a
+/// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
     if !INSTALLED.begin() {
         return;

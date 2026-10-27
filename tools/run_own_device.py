@@ -149,6 +149,22 @@ def self_test():
     assert environment == {"MGE_XE_WATCHDOG": "1", "MGE_XE_BOX_SECONDS": "5"}
     import io
 
+    # The plugin's lines of a run: from mgeXE.log with the export, else from nirender.log.
+    import shutil
+    import tempfile
+
+    folder = tempfile.mkdtemp(prefix="nirender-lines-")
+    assert session.common.plugin_lines(folder) == []
+    with open(os.path.join(folder, "nirender.log"), "w", encoding="utf-8") as own:
+        own.write("own device: from the file\n")
+    assert session.common.plugin_lines(folder) == ["own device: from the file"]
+    with open(os.path.join(folder, "mgeXE.log"), "w", encoding="utf-8", newline="") as mge:
+        mge.write("MGE-XE G7\r\nnirender: own device: made\r\nnirender: MISMATCH a call\r\n>> Using the wgpu renderer\r\n")
+    assert session.common.plugin_lines(folder) == ["own device: made", "MISMATCH a call"], session.common.plugin_lines(folder)
+    with open(os.path.join(folder, "mgeXE.log"), "w", encoding="utf-8") as mge:
+        mge.write("MGE-XE G7 without the plugin's lines\n")
+    assert session.common.plugin_lines(folder) == ["own device: from the file"]
+    shutil.rmtree(folder)
     console, log = io.StringIO(), io.StringIO()
     tee = Tee(console, log)
     print("a line", file=tee)
@@ -374,12 +390,15 @@ def main():
         print("  " + open(run.path("host.txt"), errors="replace").read().strip().replace("\n", "\n  ")[-3000:])
     else:
         print("\nhost: no text; the host program did not start")
-    # The plugin writes into nirender.log of the game folder until Lua names the log of the run.
-    for path in (os.path.join(session.harness.GAME_DIR, "nirender.log"), run.log):
-        if os.path.isfile(path) and os.path.getmtime(path) > run.started:
-            for line in open(path, encoding="utf-8", errors="replace"):
-                if line.startswith(("own device", "stream:", "capture: end", "own host", "install:", "link:")):
-                    print("plugin: " + line.strip()[:240])
+    # The plugin's lines: in mgeXE.log with MGE XE's d3d8.dll. Without its export the plugin
+    # writes into nirender.log of the game folder until Lua names the log of the run.
+    lines = run.plugin_lines()
+    game_log = os.path.join(session.harness.GAME_DIR, "nirender.log")
+    if os.path.isfile(game_log) and os.path.getmtime(game_log) > run.started:
+        lines = open(game_log, encoding="utf-8", errors="replace").read().splitlines() + lines
+    for line in lines:
+        if line.startswith(("own device", "stream:", "capture: end", "own host", "install:", "link:")):
+            print("plugin: " + line.strip()[:240])
     print("pictures in " + run.dir)
     # The size of the run and of every run kept (the owner, 2026-10-18: the results folder
     # had grown to hundreds of GB unnoticed). The runner deletes nothing; the line says when

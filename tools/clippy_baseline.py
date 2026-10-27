@@ -12,12 +12,17 @@ The baseline only goes down: raise a line by hand, with the reason in the commit
 new toolchain can add lints; see `rust-toolchain.toml` of each folder).
 
 Clippy compiles: ask for a build slot first. `--mge` names another render-link folder.
+`--mge-host DIR` builds the render-link place against the host crate in DIR, through cargo's
+`--config paths=[...]` override, which leaves the render-link tree as it is: for a render-link
+branch whose code needs a host crate that the main checkout does not have yet. release.py runs
+without it. `--self-test` tests the arguments (no cargo).
 """
 import argparse
 import collections
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -27,11 +32,25 @@ MGE = os.path.join(os.path.dirname(PLUGIN), "MGE-XE-G7-render-link")
 BASELINE = os.path.join(HERE, "clippy.baseline")
 
 
-def places(mge):
+def host_override(host):
+    """The cargo arguments that build against the host crate in the folder `host`."""
+    path = os.path.abspath(host).replace("\\", "/")
+    if "'" in path:
+        raise SystemExit("--mge-host: a path with a quote cannot go into cargo's --config: %s" % path)
+    manifest = os.path.join(host, "Cargo.toml")
+    package = open(manifest, encoding="utf-8").read() if os.path.isfile(manifest) else ""
+    if not re.search(r'^name\s*=\s*"nirender-host"', package, re.MULTILINE):
+        raise SystemExit("--mge-host: %s is not the folder of the crate nirender-host (nirender-plugin's host)" % host)
+    return ["--config", "paths=['%s']" % path]
+
+
+def places(mge, host=None):
+    """The places, as {name: (folder, cargo arguments)}; with `host`, the render-link place
+    builds against that host crate."""
     return {
         "plugin": (PLUGIN, []),
         "host": (os.path.join(PLUGIN, "host"), []),
-        "render-link": (mge, ["--workspace"]),
+        "render-link": (mge, ["--workspace"] + (host_override(host) if host else [])),
     }
 
 
@@ -57,10 +76,10 @@ def count_warnings(folder, args):
     return counts
 
 
-def scan(mge):
+def scan(mge, host=None):
     """{(place, lint): count} of all places; None when a place does not compile."""
     found = {}
-    for place, (folder, args) in places(mge).items():
+    for place, (folder, args) in places(mge, host).items():
         counts = count_warnings(folder, args)
         if counts is None:
             print("clippy: %s does not compile" % place)
@@ -94,14 +113,43 @@ def write_baseline(found, mge):
             out.write("%s %s %d\n" % (place, lint, count))
 
 
+def self_test():
+    """The tests of the arguments: no cargo."""
+    host = os.path.join(PLUGIN, "host")
+    assert places("E:/mge")["render-link"] == ("E:/mge", ["--workspace"])
+    assert places("E:/mge")["plugin"] == (PLUGIN, []) and places("E:/mge")["host"] == (host, [])
+    folder, args = places("E:/mge", host)["render-link"]
+    assert folder == "E:/mge" and args[:2] == ["--workspace", "--config"], args
+    assert args[2] == "paths=['%s']" % os.path.abspath(host).replace("\\", "/") and "\\" not in args[2], args
+    # The other places keep their own build.
+    assert places("E:/mge", host)["host"] == (host, [])
+    for bad in (PLUGIN, os.path.join(PLUGIN, "no-such-folder")):
+        try:
+            host_override(bad)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("--mge-host %s was taken" % bad)
+    print("clippy_baseline self-test: ok")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mge", default=MGE, help="the MGE XE render-link repository")
+    ap.add_argument("--mge-host", help="the folder of a host crate (nirender-plugin's host) that the render-link place builds against, "
+                    "through cargo's --config paths override; without it, the path of render-link's Cargo.toml")
     ap.add_argument("--check", action="store_true", help="fail when a lint has more warnings than its baseline")
     ap.add_argument("--update", action="store_true", help="lower the baseline to the counts of this run")
+    ap.add_argument("--self-test", action="store_true", help="the tests of the arguments: no cargo")
     args = ap.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
+    if args.update and args.mge_host:
+        # The baseline is counted on the layout of a release, the one that release.py checks.
+        raise SystemExit("--update counts the baseline without --mge-host: the layout that release.py checks")
 
-    found = scan(args.mge)
+    found = scan(args.mge, args.mge_host)
     if found is None:
         return 1
     if args.update:

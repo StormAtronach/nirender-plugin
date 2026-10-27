@@ -74,7 +74,7 @@ fn level_size(format: u32, width: u32, height: u32) -> (usize, u32) {
     let (width, height) = (width.max(1), height.max(1));
     let block = match format {
         0x3154_5844 => 8,
-        0x3254_5844..=0x3554_5844 => 16,
+        0x3254_5844..=0x3554_5844 | crate::d3d::D3DFMT_BC7 => 16,
         _ => 0,
     };
     if block != 0 {

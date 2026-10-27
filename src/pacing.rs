@@ -13,7 +13,7 @@
 //! `NIRENDER_PACE=0` turns the pacing off.
 
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::capture::{ticks, ticks_per_second, wait_step};
@@ -66,32 +66,39 @@ struct Pacer {
 unsafe impl Send for Pacer {}
 
 static PACER: Mutex<Option<Pacer>> = Mutex::new(None);
-static INSTALLED: AtomicBool = AtomicBool::new(false);
+static INSTALLED: crate::sync::InstallState = crate::sync::InstallState::new();
 /// The time that the game waited at the starts of the frames, in ticks.
 static WAITED: AtomicI64 = AtomicI64::new(0);
 
 /// Listens to MWSE's start of a frame. A refusal leaves the game without the pacing: its wait
 /// at Present stays.
+///
+/// # Safety
+///
+/// No condition of its own: `INSTALLED` (a `sync::InstallState`) lets one caller install at a
+/// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
-    if INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.begin() {
         return;
     }
     if crate::switches::on("NIRENDER_PACE") == Some(false) {
         crate::log!("pacing: NIRENDER_PACE=0, no pacing of the game to the helper");
+        INSTALLED.finish(false);
         return;
     }
     use crate::mwse_native::{subscribe, NATIVE_EVENT_FRAME_STARTED};
     if let Err(error) = subscribe(NATIVE_EVENT_FRAME_STARTED, started) {
         crate::log!("pacing: {error}: no pacing of the game to the helper");
+        INSTALLED.finish(false);
         return;
     }
-    INSTALLED.store(true, Ordering::Relaxed);
+    INSTALLED.finish(true);
     crate::log!("pacing: the game waits for the helper at the start of each frame (MWSE event 8), lead {} us", lead_us());
 }
 
 /// A stream to the helper starts: the pacer maps the head of its ring `name`.
 pub unsafe fn start(mapping: isize, name: &str) {
-    if !INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.is_installed() {
         return;
     }
     // FILE_MAP_ALL_ACCESS

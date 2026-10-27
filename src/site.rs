@@ -16,6 +16,10 @@ use crate::gen::funcs::Func;
 /// True when the instruction at `site` is a `call rel32`. The Morrowind Code Patch puts the
 /// call of one of its functions at some places where the game calls a method of the device.
 /// Without that option of the Code Patch, the game code has its own instruction there.
+///
+/// # Safety
+///
+/// `site` points at a readable byte of the game's code.
 #[cfg(not(test))]
 #[inline(always)]
 pub unsafe fn is_call(site: usize) -> bool {
@@ -29,6 +33,10 @@ pub unsafe fn is_call(_site: usize) -> bool {
 }
 
 /// The target of the `call rel32` at `site`, as it is in memory now.
+///
+/// # Safety
+///
+/// `site` points at a `call rel32` in readable memory: five bytes, the first of them 0xE8.
 #[inline(always)]
 pub unsafe fn call_target(site: usize) -> usize {
     debug_assert_eq!(*(site as *const u8), 0xE8);

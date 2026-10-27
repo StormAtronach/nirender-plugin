@@ -21,7 +21,7 @@ import subprocess
 import sys
 
 import session
-from common import SIBLINGS, local
+from common import SIBLINGS, build_missing, local
 
 MGE_BUILD = local("mge_build", os.path.join(SIBLINGS, "MGE-XE-G7-render-link", "bin", "MSVC-Release"))
 CONFIG_ROOT = local("config_root", os.path.join(session.harness.MO2_ROOT, "mods", "Configuration", "Root"))
@@ -43,6 +43,10 @@ def main():
     ap.add_argument("--anisotropy", type=int, default=None, help="the anisotropic filter of the textures the game filters (1 without this)")
     ap.add_argument("--marks-every", type=int, default=None, help="a mark after every N frames: the helper's time for each frame by part")
     args = ap.parse_args()
+    missing = build_missing(args.mge_build)
+    if missing:
+        sys.stderr.write("replay: the build folder %s has no %s: a replay without them draws another picture\n" % (args.mge_build, ", ".join(missing)))
+        return 2
     exe = os.path.join(args.mge_build, "numidium.exe")
     command = [exe, "--replay", os.path.abspath(args.capture), os.path.abspath(args.picture), "--backend", args.backend]
     if args.frames_at:
