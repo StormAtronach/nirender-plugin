@@ -344,8 +344,8 @@ def main():
     mge_tag = render_link_tag(tag)
     if run(["git", "-C", args.mge, "tag", "--list", mge_tag], capture=True).strip():
         stop("the MGE XE repository has the tag %s already: set a new version in Cargo.toml" % mge_tag, args.dry_run)
-    for repo, sources in ((PLUGIN, PLUGIN_SOURCES), (args.mge, MGE_SOURCES)):
-        clean_and_pushed(repo, sources, args.dry_run)
+    for repo, source_paths in ((PLUGIN, PLUGIN_SOURCES), (args.mge, MGE_SOURCES)):
+        clean_and_pushed(repo, source_paths, args.dry_run)
 
     # The license texts, the notices of the crates and the sources of the parts: before the
     # build, so that a stop here costs no build.
