@@ -81,6 +81,37 @@ static RECORDS: MainCell<u64> = MainCell::new(0);
 static BYTES: MainCell<u64> = MainCell::new(0);
 /// The `GEOMETRY_GONE` records sent.
 static GONE: MainCell<u64> = MainCell::new(0);
+/// The handles of the stream, by the address and the unique id of a geometry data: a serial
+/// made at its first note and kept until its destructor ([`gone`]). The engine gives each
+/// data a unique id from a counter that only its constructors touch (`NiGeometryData::ctor`
+/// 0x6EF2C0, `ctor_args` 0x6EF1E0), but an address comes back for a later data: a handle of
+/// the stream must not, or an instance of the old data takes the new one (the helper's
+/// orphans of a gone geometry). A screen polygon has the unique id 0: its vertex array keeps
+/// one serial, and its record goes again at each draw.
+static SERIALS: MainCell<Option<HashMap<(u32, u32), u32>>> = MainCell::new(None);
+/// The serial of the next geometry: 1 for the first, never 0 (no geometry).
+static NEXT_SERIAL: MainCell<u32> = MainCell::new(1);
+
+#[track_caller]
+fn serials<'a>(t: &'a MainThread) -> Open<'a, HashMap<(u32, u32), u32>> {
+    SERIALS.get(t).map(|serials| serials.get_or_insert_with(HashMap::new))
+}
+
+/// The handle of a geometry data in the stream: its serial ([`SERIALS`]), made now for a data
+/// the stream has not named yet.
+pub unsafe fn stream_handle(t: &MainThread, address: u32, unique: u32) -> u32 {
+    if let Some(&serial) = serials(t).get(&(address, unique)) {
+        return serial;
+    }
+    let serial = {
+        let mut next = NEXT_SERIAL.get(t);
+        let serial = *next;
+        *next = next.wrapping_add(1).max(1);
+        serial
+    };
+    serials(t).insert((address, unique), serial);
+    serial
+}
 
 #[track_caller]
 fn versions<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Sent>> {
@@ -122,9 +153,9 @@ pub unsafe fn reset(t: &MainThread) {
 
 /// A geometry data was destroyed (`NiRenderer_static::RemoveGeometryData`, from its
 /// destructor): its version goes when it has this unique id, and the helper gets a
-/// `GEOMETRY_GONE` record. The record goes also for a data that was not sent or was
-/// forgotten by `prune`: the helper can still hold it, and it ignores a handle it does not
-/// hold.
+/// `GEOMETRY_GONE` record with its serial. The record goes also for a data that was
+/// forgotten by `prune`: the helper can still hold it. A data that the stream never named
+/// has no serial and no record.
 pub unsafe fn gone(t: &MainThread, handle: u32, unique: u32) {
     let mut map = versions(t);
     if map.get(&handle).is_some_and(|sent| sent.version.unique == unique) {
@@ -135,13 +166,17 @@ pub unsafe fn gone(t: &MainThread, handle: u32, unique: u32) {
             sent_targets.remove(&handle);
         }
     }
-    *GONE.get(t) += 1;
-    crate::capture::geometry_gone(handle, unique);
+    let serial = serials(t).remove(&(handle, unique));
+    if let Some(serial) = serial {
+        *GONE.get(t) += 1;
+        crate::capture::geometry_gone(serial, unique);
+    }
 }
 
-/// Forgets these geometries: the next draw of each sends it again.
+/// Forgets these geometries, by their serials: the next draw of each sends it again.
 pub unsafe fn forget(t: &MainThread, handles: &[u32]) {
-    for handle in handles {
+    let addresses: Vec<u32> = serials(t).iter().filter(|(_, serial)| handles.contains(serial)).map(|(&(address, _), _)| address).collect();
+    for handle in &addresses {
         versions(t).remove(handle);
     }
 }
@@ -494,8 +529,9 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         return 0;
     }
     let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: active, entries, skin_data: skin_data as u32 };
+    let stream = stream_handle(t, handle, version.unique);
     if known(t, handle, version) {
-        return handle;
+        return stream;
     }
     if census_on() {
         census_note(t, handle, version, geom_data, skin, shape);
@@ -509,13 +545,13 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
             sent.uv_set == Some(uv.set) && before.unique == version.unique && before.vertices == version.vertices && before.entries == version.entries && before.skin_data == version.skin_data
         });
         if step {
-            send_uv(handle, version.unique, &uv, false);
+            send_uv(stream, version.unique, &uv, false);
             *UV_STEPS.get(t) += 1;
             if uv_mode() == UvMode::Check {
                 check_uv(t, handle, geom_data, &uv);
             } else {
                 versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: Some(uv.set), morph: false });
-                return handle;
+                return stream;
             }
         }
     }
@@ -530,13 +566,13 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         if step {
             let weights = &mut *MORPH_SCRATCH.get(t);
             morph_weights(morph, weights);
-            crate::capture::morph_weights(&[handle, version.unique, weights.len() as u32], weights);
+            crate::capture::morph_weights(&[stream, version.unique, weights.len() as u32], weights);
             *MORPH_STEPS.get(t) += 1;
             if morph_mode() == MorphMode::Check {
                 check_morph(t, morph, weights, geom_data);
             } else {
                 versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: None, morph: true });
-                return handle;
+                return stream;
             }
         }
     }
@@ -625,9 +661,9 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
     if strip_count != 0 {
         lengths[..strip_count as usize * 2].copy_from_slice(core::slice::from_raw_parts(strip_lengths as *const u8, strip_count as usize * 2));
     }
-    send(t, handle, version, fvf, stride as u32, strip_count, &lengths, &bytes, index_bytes);
+    send(t, handle, stream, version, fvf, stride as u32, strip_count, &lengths, &bytes, index_bytes);
     if let Some(uv) = uv {
-        send_uv(handle, version.unique, &uv, true);
+        send_uv(stream, version.unique, &uv, true);
         if let Some(sent) = versions(t).get_mut(&handle) {
             sent.uv_set = Some(uv.set);
         }
@@ -639,13 +675,13 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         let mut morph_sent = MORPH_SENT.get(t);
         let sent_targets = morph_sent.get_or_insert_with(Default::default);
         if sent_targets.insert(handle, version.unique) != Some(version.unique) {
-            send_morph_targets(handle, version.unique, &morph);
+            send_morph_targets(stream, version.unique, &morph);
         }
         if let Some(sent) = versions(t).get_mut(&handle) {
             sent.morph = true;
         }
     }
-    handle
+    stream
 }
 
 /// `NiRTTI` of `NiGeomMorpherController` (`GetRTTI` 0x717900), and its flag that makes the
@@ -1103,8 +1139,8 @@ pub unsafe fn census_report(t: &MainThread) -> Vec<String> {
 
 /// Sends a geometry record and notes its version. `lengths` has the strip lengths, padded
 /// to 4 bytes.
-unsafe fn send(t: &MainThread, handle: u32, version: Version, fvf: u32, stride: u32, strip_count: u32, lengths: &[u8], bytes: &[u8], index_bytes: &[u8]) {
-    crate::capture::geometry(&[handle, version.unique, version.revision as u32, fvf, stride, version.vertices, version.entries, strip_count], lengths, bytes, index_bytes);
+unsafe fn send(t: &MainThread, handle: u32, stream: u32, version: Version, fvf: u32, stride: u32, strip_count: u32, lengths: &[u8], bytes: &[u8], index_bytes: &[u8]) {
+    crate::capture::geometry(&[stream, version.unique, version.revision as u32, fvf, stride, version.vertices, version.entries, strip_count], lengths, bytes, index_bytes);
     versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: None, morph: false });
     *RECORDS.get(t) += 1;
     *BYTES.get(t) += (32 + lengths.len() + bytes.len() + index_bytes.len()) as u64;
@@ -1151,8 +1187,9 @@ unsafe fn note_lines(t: &MainThread, geom_data: usize) -> u32 {
     }
     let handle = geom_data as u32;
     let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: count as u32, entries: indexes.len() as u32, skin_data: 0 };
+    let stream = stream_handle(t, handle, version.unique);
     if known(t, handle, version) {
-        return handle;
+        return stream;
     }
     let colours: usize = rd(geom_data, GD::colors);
     let coords: usize = rd(geom_data, GD::textureCoords);
@@ -1168,8 +1205,8 @@ unsafe fn note_lines(t: &MainThread, geom_data: usize) -> u32 {
         }
     }
     let index_bytes: Vec<u8> = indexes.iter().flat_map(|i| i.to_le_bytes()).collect();
-    send(t, handle, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes);
-    handle
+    send(t, handle, stream, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes);
+    stream
 }
 
 /// The geometry of a screen polygon (`RenderScreenPoly`) for this draw, as
@@ -1177,8 +1214,8 @@ unsafe fn note_lines(t: &MainThread, geom_data: usize) -> u32 {
 /// with `d = distance * z + near` (the polygon is at that depth under the screen projection
 /// of the renderer), then its colour and its texture coordinate when the polygon has them.
 /// The fan of the polygon is a triangle list in the record. The record goes out at each
-/// draw: the vertices of a polygon can change. Returns the handle, the vertex array of the
-/// polygon, or 0 for a polygon with fewer than three vertices.
+/// draw: the vertices of a polygon can change. Returns the handle (the serial of the vertex
+/// array of the polygon), or 0 for a polygon with fewer than three vertices.
 ///
 /// The game keeps `d` on the x87 stack (64-bit mantissa); this code uses an `f64`, so a
 /// rounding can differ.
@@ -1206,10 +1243,11 @@ pub unsafe fn note_screen_polygon(t: &MainThread, count: u32, vertices: usize, t
     let index_bytes: Vec<u8> = indexes.iter().flat_map(|i| i.to_le_bytes()).collect();
     let handle = vertices as u32;
     let version = Version { unique: 0, revision: 0, vertices: count as u32, entries: indexes.len() as u32, skin_data: 0 };
-    send(t, handle, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes);
+    let stream = stream_handle(t, handle, 0);
+    send(t, handle, stream, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes);
     // The next draw of the polygon sends it again.
     versions(t).remove(&handle);
-    handle
+    stream
 }
 
 /// The bone influences of each vertex of a skinned geometry, from the partitions of its

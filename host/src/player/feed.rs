@@ -77,8 +77,7 @@ impl Player {
                 if in_place && had_uv {
                     self.geometry_uv(handle, None);
                 }
-                // A handle whose instances left the table at a gone geometry puts them back.
-                if (known && !in_place) || self.orphaned.remove(&handle) {
+                if known && !in_place {
                     self.geometry_changed(handle);
                 }
             }
@@ -485,16 +484,18 @@ impl Player {
     /// one leaves the table before the ranges of the geometry go back to the pools, because
     /// its slot holds those ranges. The plugin sends an instance's delete before the delete of
     /// its geometry, so this finds an instance only when a shape got other data while it lived
-    /// (`counts.geometry_orphans`). One scan of the records for each frame with such deletes.
+    /// (`counts.geometry_orphans`). A handle is the serial of one geometry data, so a later
+    /// data never comes under it: the plugin sends the instance again with the handle of its
+    /// new data (at its next check of the handles). One scan of the records for each frame
+    /// with such deletes.
     pub(crate) fn orphans_of_gone_geometry(&mut self) {
         if self.gone_geometries.is_empty() {
             return;
         }
         let gone = std::mem::take(&mut self.gone_geometries);
-        let orphans: Vec<(u32, u32)> = gone.iter().flat_map(|&handle| self.instances_of(handle).into_iter().map(move |(id, _)| (id, handle))).collect();
-        for (id, handle) in orphans {
+        let orphans: Vec<u32> = gone.iter().flat_map(|&handle| self.instances_of(handle).into_iter().map(|(id, _)| id)).collect();
+        for id in orphans {
             self.retained_remove(id);
-            self.orphaned.insert(handle);
             self.renderer.counts.geometry_orphans += 1;
         }
     }

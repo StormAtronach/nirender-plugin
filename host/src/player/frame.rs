@@ -68,7 +68,6 @@ impl Player {
             gamma_ramp: None,
             gamma_new: false,
             gone_geometries: Default::default(),
-            orphaned: Default::default(),
             gone_materials: Vec::new(),
             gone_materials_new: false,
             film_shot: None,

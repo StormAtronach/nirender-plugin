@@ -670,9 +670,6 @@ struct Player {
     /// frame, before their ranges go back to the pools, the instances that still name one
     /// leave the table (`orphans_of_gone_geometry`).
     gone_geometries: FxHashSet<u32>,
-    /// The handles of such instances: a geometry that comes under one of them again puts its
-    /// instances back.
-    orphaned: FxHashSet<u32>,
     /// The materials of `MATERIAL_GONE` records that wait for their removal: a material that
     /// an instance still names stays until the plugin notes that instance's handles again
     /// (`drop_gone_materials`). True when a record came since the last scan.

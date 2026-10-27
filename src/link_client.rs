@@ -1406,9 +1406,16 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     if skin_data != 0 && geometry_data != 0 && crate::capture::recording() && crate::geometry_stream::needs_partitions(skin_data) {
         crate::ports::draw::ensure_skin_partitions(this, geometry_data, skin);
     }
-    // A particle instance's geometry is the key of its particles (the address of the data),
-    // as its shape record and its `INSTANCE_PARTICLES` records name it.
-    let geometry_handle = if points { geometry_data as u32 } else { crate::geometry_stream::note(t, kind, geometry_data, skin, geometry) };
+    // A particle instance's geometry is the key of its particles (the serial of the data,
+    // `geometry_stream::stream_handle`), as its shape record and its `INSTANCE_PARTICLES`
+    // records name it.
+    let geometry_handle = if !points {
+        crate::geometry_stream::note(t, kind, geometry_data, skin, geometry)
+    } else if geometry_data != 0 {
+        crate::geometry_stream::stream_handle(t, geometry_data as u32, rd(geometry_data, crate::gen::layouts::NiGeometryData::uniqueID))
+    } else {
+        0
+    };
     let material_handle = crate::material_stream::note(t, this, property_state, effect_state);
     crate::shape_stream::note_handles(t, geometry_handle, material_handle, kind, draw.object_class, geometry_data);
     crate::capture::object(&draw, geometry_handle, material_handle);
