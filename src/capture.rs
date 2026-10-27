@@ -505,8 +505,12 @@ impl Ring {
         let waiting = &*(self.base.add(RING_GAME_WAITING) as *const core::sync::atomic::AtomicU32);
         waiting.store(1, Ordering::SeqCst);
         self.read_waits += 1;
-        // WAIT_OBJECT_0: the event ended the wait.
-        if MsgWaitForMultipleObjects(1, &self.read_event, 0, 1, WAIT_WAKE_MASK) == 0 {
+        // Without the event (CreateEventA failed) a wait on it would fail at once and the loop
+        // would spin: the wait is then on the messages alone, 1 ms at most. WAIT_OBJECT_0: the
+        // event ended the wait.
+        if self.read_event == 0 {
+            MsgWaitForMultipleObjects(0, core::ptr::null(), 0, 1, WAIT_WAKE_MASK);
+        } else if MsgWaitForMultipleObjects(1, &self.read_event, 0, 1, WAIT_WAKE_MASK) == 0 {
             self.read_wakes += 1;
         }
         waiting.store(0, Ordering::SeqCst);
