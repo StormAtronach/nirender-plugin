@@ -11,9 +11,11 @@ extern "system" {
     fn SetStdHandle(which: u32, handle: *mut core::ffi::c_void) -> i32;
 }
 
-/// Sends the text of this program, and the text of a failure, into a file.
+/// Sends the text of this program, and the text of a failure, into a file. The file of the
+/// run before is kept as `<path>.1`.
 pub(crate) fn log_to(path: &str) {
     use std::os::windows::io::IntoRawHandle;
+    crate::crash::rotate_log(std::path::Path::new(path));
     if let Ok(file) = std::fs::File::create(path) {
         let handle = file.into_raw_handle();
         // STD_OUTPUT_HANDLE and STD_ERROR_HANDLE
@@ -38,9 +40,11 @@ pub fn run(args: Vec<String>) {
 /// `run` with a program that draws more than the game does: in the live mode, and for a
 /// capture file.
 pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
-    if let Some(path) = option(&args, "--log") {
-        log_to(&path);
+    let log = option(&args, "--log");
+    if let Some(path) = &log {
+        log_to(path);
     }
+    crate::crash::install(crate::crash::dump_path(log.as_deref()));
     println!("nirender-host v{}{}", env!("CARGO_PKG_VERSION"), extension.as_ref().map_or(String::new(), |e| format!(", {}", e.name())));
     let backends = match option(&args, "--backend").as_deref() {
         Some("dx12") => wgpu::Backends::DX12,

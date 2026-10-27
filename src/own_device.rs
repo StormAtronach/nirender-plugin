@@ -85,7 +85,8 @@ pub unsafe fn check_host() {
     let text = wide(&format!(
         "The wgpu renderer of MGE XE ({name}) has stopped (exit code {code:#x}).\n\n\
          The game cannot show a new picture. Quit the game and start it again.\n\n\
-         The logs nirender-host.log and nirender.log in the folder of the game have the details."
+         The folder of the game has the details: the logs nirender-host.log, nirender.log and \
+         mgeHost64.log, and the minidump numidium.dmp after a crash of the renderer."
     ));
     let caption = wide("MGE XE");
     MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);

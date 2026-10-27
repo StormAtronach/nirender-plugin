@@ -44,6 +44,8 @@ mod picture;
 use picture::*;
 mod cli;
 use cli::*;
+mod crash;
+pub use crash::rotate_log;
 mod tag;
 mod extension;
 pub use extension::*;
