@@ -72,6 +72,8 @@ MGE_OPTION = {"mge readme": "--mge-dir", "mwse native": "--mge", "module headers
 def main(argv):
     # `--strict`: a check that would be skipped is a failure (a release needs every check).
     strict = "--strict" in argv
+    if "--mge" in argv and argv.index("--mge") + 1 >= len(argv):
+        raise SystemExit("usage: checks.py plugin|mge|all [--strict] [--mge DIR]: --mge needs the folder of the MGE XE tree")
     mge = argv[argv.index("--mge") + 1] if "--mge" in argv else None
     names = [argument for index, argument in enumerate(argv) if argument not in ("--strict", "--mge") and (index == 0 or argv[index - 1] != "--mge")]
     which = names[0] if names else "all"
