@@ -160,6 +160,9 @@ pub unsafe fn find_value(map: usize, key: u32) -> usize {
 /// With a node for `key`: `dtorKeyValuePair` for the node, then `makeKeyValuePair`. Without
 /// one: `operator_new(0xC)`, `makeKeyValuePair` for the new node, the old head of the bucket
 /// goes to `nextNode` of the new node, the new node becomes the head, the count goes up by 1.
+///
+/// When the allocator gives 0, the game's inline code writes the pair through 0. The port logs
+/// it and leaves the map as it was: the key gets no value.
 #[inline(always)]
 pub unsafe fn set_with(map: usize, key: u32, value: usize, operator_new: impl FnOnce(usize) -> usize) {
     let (bucket, node) = find_in_bucket(map, key);
@@ -168,6 +171,10 @@ pub unsafe fn set_with(map: usize, key: u32, value: usize, operator_new: impl Fn
         make_key_value_pair(map, node, key, value);
     } else {
         let node = operator_new(HN::SIZE);
+        if node == 0 {
+            crate::log!("hash map: operator new gave 0 for a node; the key {key:#x} is not set (the game's code would write through 0)");
+            return;
+        }
         make_key_value_pair(map, node, key, value);
         wr::<usize>(node, HN::nextNode, bucket_head(map, bucket));
         wr(rd::<usize>(map, HM::arrayBuckets), bucket * 4, node);
@@ -421,6 +428,26 @@ mod tests {
             assert_eq!(find_in_bucket(at, 2), (2, map.buckets[2]));
             assert_eq!(find_in_bucket(at, 7), (3, 0));
             assert_eq!(bucket_head(at, 1), find(at, 5));
+        }
+    }
+
+    /// An allocator that gives 0 leaves the map as it was: no pair is made, no node goes into a
+    /// bucket and the count stays.
+    #[test]
+    fn set_with_an_allocator_that_gives_0_leaves_the_map_as_it_was() {
+        let mut map = Map::new();
+        let at = map.at();
+        unsafe {
+            map.insert(1, 100);
+            calls();
+            set_with(at, 5, 500, |size| {
+                note(Call::New(size));
+                0
+            });
+            assert_eq!(calls(), [Call::Hash(5), Call::Cmp(5, 1), Call::New(HN::SIZE)]);
+            assert_eq!(map.keys(1), [1]);
+            assert_eq!(map.count(), 1);
+            assert_eq!(find(at, 5), 0);
         }
     }
 

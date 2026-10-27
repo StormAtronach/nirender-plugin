@@ -23,9 +23,9 @@
 //! | --- | --- |
 //! | 0 | ended as asked |
 //! | 1 to 9 | its IPC host mode (`error.rs` of mgeHost64) |
-//! | 10 to 29 | a refusal with a message box of its own: 10 the stream format, 11 the extension format, 20 the device or the window (`feature/version-handshake`) |
+//! | 10 to 29 | a refusal with a message box of its own: 10 the stream format, 11 the extension format, 20 the GPU or the window ([`EXIT_GPU`]) |
 //! | 30 | the watchdog of the helper: its frame thread made no progress for [`STALL_SECONDS`]; numidium.dmp written |
-//! | 31 | the plugin ended the helper after 10 s without a read of the ring |
+//! | 31 | the plugin ended the helper: no read of the ring for [`not_answering_limit`] of its allowance |
 //! | 0xc0000409 | a Rust panic (the fast fail of the abort); numidium.dmp written by the panic hook |
 //! | other 0xC... | an exception (0xc0000005 an access violation); numidium.dmp written by the exception filter |
 //!
@@ -73,6 +73,11 @@ pub const HEADER_BYTES: usize = HEADER_BUILD_ID_AT + HEADER_BUILD_ID_BYTES;
 /// [`helper_said_why`]: the helper showed its message, the plugin shows none.
 pub const EXIT_STREAM_FORMAT: u32 = 10;
 pub const EXIT_EXTENSION_FORMAT: u32 = 11;
+/// The GPU or the window cannot be used: no adapter on any backend, no binding arrays with
+/// their room, no BC compression, too few sampled textures, no surface. The live start and
+/// `--probe` exit with it; d3d8.dll reads it from the probe as `MGE_PROBE_EXIT_GPU` of
+/// `mgeversion.h` (a unit test of mgeHost64 compares the two).
+pub const EXIT_GPU: u32 = 20;
 
 /// The watchdog of the helper found its frame thread stalled and ended the program.
 pub const EXIT_STALLED: u32 = 30;
