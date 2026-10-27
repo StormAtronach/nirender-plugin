@@ -179,7 +179,9 @@ fn by_texture<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Vec<u32>>> {
 
 /// The records that name a device texture that was freed go: each gets a `MATERIAL_GONE`
 /// record, and a later draw with the same content sends it again. A new texture at the same
-/// address has another serial (`own_host::serial_of`), so its records are others.
+/// address has another serial (`own_host::serial_of`), so its records are others. The table's
+/// instances that use one of them note their material again at their next display
+/// (`instance_stream::note_materials_again`).
 ///
 /// # Safety
 ///
@@ -187,14 +189,19 @@ fn by_texture<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Vec<u32>>> {
 /// thread.
 pub unsafe fn drain_freed_textures(t: &MainThread) {
     let freed = crate::own_host::take_freed_textures();
+    let mut gone = Vec::new();
     for texture in freed {
         let Some(handles) = by_texture(t).remove(&texture) else { continue };
         for handle in handles {
             if unsend(t, handle) {
                 crate::capture::material_gone(handle);
                 *GONE.get(t) += 1;
+                gone.push(handle);
             }
         }
+    }
+    if !gone.is_empty() {
+        crate::instance_stream::note_materials_again(t, &gone);
     }
 }
 

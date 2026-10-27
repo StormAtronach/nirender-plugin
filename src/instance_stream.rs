@@ -265,6 +265,8 @@ struct Tables {
     /// of a sent instance because one of its effects changed.
     effects: HashMap<usize, EffectWatch>,
     effect_notes: u64,
+    /// The instances marked for a new note because their material named a freed texture.
+    texture_notes: u64,
     /// The landscape (class 11) is retained too (`NIRENDER_LANDSCAPE=0` keeps it out).
     landscape: bool,
     /// The shapes of class 0 (under no root the classes know: the actors and their parts, and
@@ -343,6 +345,7 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         scene_mixed: 0,
         effects: HashMap::default(),
         effect_notes: 0,
+        texture_notes: 0,
         landscape: crate::switches::on("NIRENDER_LANDSCAPE") != Some(false),
         actors: crate::switches::on("NIRENDER_ACTORS") != Some(false),
         animated: crate::switches::on("NIRENDER_ANIMATED") != Some(false),
@@ -1454,6 +1457,33 @@ unsafe fn apply_changes(mt: &MainThread) {
     changed.clear();
 }
 
+/// The materials of these handles named a device texture that was freed
+/// (`material_stream::drain_freed_textures`): the instances that use one note their material
+/// again at their next display, as at a change of the device textures. Before, they waited
+/// for the note of every 64th frame, and the helper drew them with the freed texture until
+/// then (a pinned slot keeps its view while an instance uses it).
+pub fn note_materials_again(mt: &MainThread, materials: &[u32]) {
+    let gone: HashSet<u32> = materials.iter().copied().collect();
+    let mut tables_open = tables(mt);
+    let t = &mut *tables_open;
+    let generation = t.generation;
+    let marked = mark_for_note(t.instances.values_mut().map(|i| (i.material, &mut i.generation)), &gone, generation);
+    t.texture_notes += marked;
+}
+
+/// Gives each instance whose material is in `gone` another generation than `generation`, so
+/// that its next display notes its handles (`display_work`). Returns their number.
+fn mark_for_note<'a>(instances: impl Iterator<Item = (u32, &'a mut u32)>, gone: &HashSet<u32>, generation: u32) -> u64 {
+    let mut marked = 0;
+    for (material, instance_generation) in instances {
+        if gone.contains(&material) {
+            *instance_generation = generation.wrapping_sub(1);
+            marked += 1;
+        }
+    }
+    marked
+}
+
 /// A shape got a new property state or effect state (`ports::state_update`): its retained
 /// instance, if it has one, is classified again and noted at its next display.
 pub unsafe fn recheck(mt: &MainThread, shape: usize, cause: Recheck) {
@@ -2000,8 +2030,8 @@ pub unsafe fn report(mt: &MainThread) -> String {
         t.states
     ) + "\n"
         + &format!(
-            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {}, shapes hit {}; texture effects watched {}, materials noted again for a changed effect {}\n",
-            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], change_notes[0], change_notes[1], change_notes[2], t.effects.len(), t.effect_notes
+            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {}, shapes hit {}; texture effects watched {}, materials noted again for a changed effect {}, for a freed texture {}\n",
+            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], change_notes[0], change_notes[1], change_notes[2], t.effects.len(), t.effect_notes, t.texture_notes
         )
         + &format!(
             "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk\n",
@@ -2053,6 +2083,19 @@ mod tests {
         assert_ne!(second, first);
         // Read at most once a frame: a second read in frame 3 is not made.
         assert_eq!(watch.observe(3, || panic!("read twice in a frame")), second);
+    }
+
+    #[test]
+    fn a_freed_texture_marks_only_the_instances_of_its_materials() {
+        let gone: HashSet<u32> = [7u32, 9].into_iter().collect();
+        let mut instances = vec![(7u32, 5u32), (8, 5), (9, 4)];
+        let marked = mark_for_note(instances.iter_mut().map(|(m, g)| (*m, g)), &gone, 5);
+        assert_eq!(marked, 2);
+        // Material 7 and 9: another generation than the tables', so a note at the next display.
+        assert_ne!(instances[0].1, 5);
+        assert_ne!(instances[2].1, 5);
+        // Material 8 named no freed texture: unchanged.
+        assert_eq!(instances[1].1, 5);
     }
 
     #[test]
