@@ -105,6 +105,8 @@ impl Ring {
     /// (`watchdog::allowance`): the plugin ends this program only after them and 5 s more
     /// (`stream_format::RING_ALLOWANCE`).
     fn set_allowance(&self, seconds: u32) {
+        // SAFETY: the head of the ring is mapped for the life of the `Ring`, and the offset 76
+        // of the word is 4-aligned within it, as an `AtomicU32` needs.
         unsafe { (*(self.base.add(super::stream_format::RING_ALLOWANCE) as *const std::sync::atomic::AtomicU32)).store(seconds, Ordering::Release) };
     }
 
