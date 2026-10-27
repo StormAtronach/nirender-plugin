@@ -101,6 +101,7 @@ extern "system" {
     fn GetCurrentProcessId() -> u32;
     fn GetCurrentThreadId() -> u32;
     fn GetLastError() -> u32;
+    fn LoadLibraryW(name: *const u16) -> *mut c_void;
 }
 
 #[link(name = "dbghelp")]
@@ -169,6 +170,7 @@ pub(crate) fn dump_path(log: Option<&str>) -> PathBuf {
 /// Puts the panic hook and the exception filter of the process on. A crash writes the
 /// minidump at `dump`, after its lines in the log.
 pub(crate) fn install(dump: PathBuf) {
+    hold_dump_libraries();
     let _ = DUMP.set(dump);
     let program = std::env::current_exe().ok().and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().into_owned()));
     let _ = PROGRAM.set(program.unwrap_or_default());
@@ -186,6 +188,28 @@ pub(crate) fn install(dump: PathBuf) {
     }));
     // SAFETY: the filter is a plain function of this program; it stays for the program's life.
     unsafe { SetUnhandledExceptionFilter(Some(filter)) };
+}
+
+/// The DLLs that the dump writer (dbgcore) loads at each dump and unloads after it, on
+/// Windows 11 (seen with cdb, 2026-10-27).
+const DUMP_LIBRARIES: [&str; 6] = ["advapi32.dll", "msvcrt.dll", "sechost.dll", "psapi.dll", "version.dll", "verifier.dll"];
+
+/// Loads the DLLs of [`DUMP_LIBRARIES`] for the program's life, so that a dump finds them
+/// loaded. `MiniDumpWriteDump` of the own process suspends every other thread, then loads
+/// these DLLs. A thread suspended inside the loader (a thread that starts or ends, a DLL
+/// that loads) holds the loader, and a load that must wait for it waits forever: the dump
+/// never ends, and no thread of the process can end it. The load of a DLL that is already
+/// loaded does not wait (a reproducer of 100 dumps a run with 16 threads that start threads,
+/// 2026-10-27: 9 of 20 runs hung without this, 0 of 50 with it; with dbghelp and dbgcore
+/// alone held, 3 of 10, since the program loads those two at its start in any case). On
+/// another Windows version the list can differ; a DLL that is not there is left out.
+fn hold_dump_libraries() {
+    for name in DUMP_LIBRARIES {
+        let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        // SAFETY: the name is a NUL-ended UTF-16 string that lives for the call. The handle
+        // is never freed: the DLL stays loaded until the program ends.
+        unsafe { LoadLibraryW(wide.as_ptr()) };
+    }
 }
 
 /// The unhandled exception filter: the exception and the backtrace go into the log, then the
@@ -348,8 +372,11 @@ mod tests {
         assert_eq!(dump_path(None).parent(), Some(Path::new(".")));
     }
 
+    /// The other tests run on threads that start while the dump runs: without the DLLs of the
+    /// dump held, the dump could wait for the loader forever (see `hold_dump_libraries`).
     #[test]
     fn a_dump_of_this_process_is_written() {
+        hold_dump_libraries();
         let folder = std::env::temp_dir().join(format!("nirender-host-dump-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join("test.dmp");
@@ -374,5 +401,19 @@ mod tests {
         assert!(!lines.is_empty());
         let module = lines[0].split('+').next().unwrap();
         assert!(module.ends_with(".exe"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn the_libraries_of_the_dump_stay_loaded() {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetModuleHandleW(name: *const u16) -> isize;
+        }
+        hold_dump_libraries();
+        for name in DUMP_LIBRARIES {
+            let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+            // SAFETY: a NUL-ended name; the call takes no reference.
+            assert_ne!(unsafe { GetModuleHandleW(wide.as_ptr()) }, 0, "{name} is not loaded");
+        }
     }
 }
