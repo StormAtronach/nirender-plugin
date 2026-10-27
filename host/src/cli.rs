@@ -118,7 +118,7 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
             for refusal in &refusals {
                 eprintln!("gpu: {refusal}");
             }
-            std::process::exit(crate::request::EXIT_GPU);
+            std::process::exit(crate::stream_format::EXIT_GPU as i32);
         }
     };
     let mut player = Player::new(renderer);

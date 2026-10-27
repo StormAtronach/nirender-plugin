@@ -625,7 +625,7 @@ impl App {
             // plugin knows (the failure-path page, the code 20).
             Err(refusals) => {
                 crate::request::refuse_live(&refusals);
-                std::process::exit(crate::request::EXIT_GPU);
+                std::process::exit(crate::stream_format::EXIT_GPU as i32);
             }
         };
         let surface = surface.expect("a surface");

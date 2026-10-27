@@ -10,18 +10,14 @@
 //! takes what the adapter has, with a fallback (the float depth, the samples, the line mode,
 //! the indirect draws). A refusal names the backend, the adapter and the lack with its
 //! number. The backends are tried in an order: with `auto`, Vulkan then Direct3D 12; a named
-//! backend first, then the other, with a line. The exit code of a refusal is [`EXIT_GPU`] in
+//! backend first, then the other, with a line. The exit code of a refusal is `EXIT_GPU` of
+//! `stream_format.rs` in
 //! the live mode and in the probe (the failure-path page of the project, section 4).
 
 use crate::data::{AUTO_TEXTURE_SLOTS, DEPTH_FORMAT, MIN_TEXTURE_SLOTS, SAMPLER_CAP};
+use crate::stream_format::EXIT_GPU;
 use crate::switches::switches;
-use crate::{depth, retained, WindowTarget};
-
-/// The exit code of the helper when the GPU or the window cannot be used, in the live mode
-/// and in the probe. It moves into `stream_format.rs`, the one table of the exit codes, when
-/// the handshake branch merges; the plugin's `helper_said_why` counts the codes 10 to 29, so
-/// it shows no second box for this one.
-pub const EXIT_GPU: i32 = 20;
+use crate::{depth, gpu, retained, WindowTarget};
 
 /// The sampled textures of one stage the renderer requires: a post shader of MGE XE reads up
 /// to 22 (10 of its own, the picture, the depth, the waves, the outputs of its passes), and a
@@ -309,7 +305,7 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
 /// `numidium.exe --probe`: asks the backends in their order, without a window, up to the
 /// first that serves, as the live start does, and prints one line for each asked, the
 /// answer, and the time it took. The last line before the exit is `probe: use <backend>`
-/// or `probe: none: <the refusals>`; the exit code is 0 or [`EXIT_GPU`]. The lines go to
+/// or `probe: none: <the refusals>`; the exit code is 0 or `EXIT_GPU`. The lines go to
 /// the standard output, which d3d8.dll reads through a pipe. One backend takes about 0.3 s
 /// on the owner's machine, both about 0.6 s: the first that serves ends the probe.
 pub fn probe(backends: wgpu::Backends, texture_slots: u32) -> i32 {
@@ -345,7 +341,7 @@ pub fn probe(backends: wgpu::Backends, texture_slots: u32) -> i32 {
         }
         None => {
             println!("probe: none: {}", refusals.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "));
-            EXIT_GPU
+            EXIT_GPU as i32
         }
     };
     println!("probe: {:.2} s", started.elapsed().as_secs_f64());
@@ -364,36 +360,7 @@ pub(crate) fn refuse_live(refusals: &[Refusal]) {
         "The wgpu renderer of MGE XE cannot use this graphics device.\n{}\nQuit the game; set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\nnirender-host.log in the folder of the game has the details.",
         why.join("\n")
     );
-    message_box(&text);
-}
-
-// The box of the helper. The handshake branch adds `gpu::message_box` with this signature
-// (and the harness mode MGE_XE_BOX_SECONDS); this copy goes away at its merge, and
-// `refuse_live` calls that one.
-#[cfg(windows)]
-fn message_box(text: &str) {
-    #[link(name = "user32")]
-    extern "system" {
-        fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
-    }
-    const MB_ICONERROR: u32 = 0x10;
-    const MB_SETFOREGROUND: u32 = 0x1_0000;
-    const MB_TOPMOST: u32 = 0x4_0000;
-    for line in text.lines() {
-        println!("box: {line}");
-    }
-    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let text = wide(text);
-    let caption = wide("MGE XE");
-    // SAFETY: both strings end with a zero and live through the call.
-    unsafe { MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST) };
-}
-
-#[cfg(not(windows))]
-fn message_box(text: &str) {
-    for line in text.lines() {
-        println!("box: {line}");
-    }
+    gpu::message_box(&text);
 }
 
 #[cfg(test)]

@@ -81,7 +81,7 @@ mod retained;
 mod request;
 /// The request of the GPU and what a check of a shader without a GPU takes from it (the
 /// helper of MGE XE, `shader_check` of mgeHost64), the probe, and the exit code of a refusal.
-pub use request::{fixed_limits, probe, required_features, world_shader_source, Refusal, ARRAY_SAMPLERS, ARRAY_TEXTURES, EXIT_GPU, SAMPLED_TEXTURES};
+pub use request::{fixed_limits, probe, required_features, world_shader_source, Refusal, ARRAY_SAMPLERS, ARRAY_TEXTURES, SAMPLED_TEXTURES};
 mod uv_animation;
 mod morph;
 pub mod stamps;
