@@ -283,14 +283,22 @@ extern "system" {
 /// other threads sent to its windows, and then gives its time away.
 ///
 /// The host's window is a child of the game's window, so Windows sends messages to the game
-/// thread and waits for the answers. A wait that only sleeps makes a deadlock. With these
-/// flags `PeekMessage` answers the sent messages and takes no message out of the queue.
+/// thread and waits for the answers. A wait that only sleeps makes a deadlock. `PeekMessage`
+/// answers the sent messages and takes no message out of the queue. It looks at all messages,
+/// not only the sent ones: with a look and a wake mask for the sent messages only, Windows
+/// marked the game's window hung ("Not Responding") 5 seconds after it lost the focus, while the
+/// game ran (a test of 2026-10-27).
 pub(crate) unsafe fn wait_step() {
-    // PM_NOREMOVE with PM_QS_SENDMESSAGE: QS_SENDMESSAGE (0x40) in the high word.
+    // PM_NOREMOVE.
     let mut message = [0u32; 7];
-    PeekMessageA(&mut message, 0, 0, 0, 0x0040_0000);
+    PeekMessageA(&mut message, 0, 0, 0, 0);
     Sleep(0);
 }
+
+/// The wake mask of a wait for the host program: QS_ALLINPUT. A sent message wakes the wait, so
+/// that the thread can answer it ([`wait_step`]); input wakes it too, so that Windows sees a
+/// thread that waits for its input and does not count it as hung.
+pub(crate) const WAIT_WAKE_MASK: u32 = 0x04FF;
 
 /// The game loads its data: from its start to the "initialized" event of MWSE.
 static LOADING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);

@@ -178,11 +178,10 @@ impl Pacer {
             if ticks() - start > second / 20 {
                 return self.begin(start);
             }
-            // Asleep until the helper sets the event or sends a message to the game's windows;
-            // 1 ms at most. A set before the wait stays set for it.
+            // Asleep until the helper sets the event, or a message or input comes for the game's
+            // windows; 1 ms at most. A set before the wait stays set for it.
             if self.shown != 0 {
-                // QS_SENDMESSAGE
-                MsgWaitForMultipleObjects(1, &self.shown, 0, 1, 0x40);
+                MsgWaitForMultipleObjects(1, &self.shown, 0, 1, crate::capture::WAIT_WAKE_MASK);
             }
             wait_step();
         }
@@ -220,8 +219,8 @@ impl Pacer {
         crate::capture::FRAME_START.store(now, Ordering::Relaxed);
     }
 
-    /// Waits until `target` (ticks). More than 1 ms before it, on the timer, which a message
-    /// sent to the game's windows also wakes; the rest spins.
+    /// Waits until `target` (ticks). More than 1 ms before it, on the timer, which a message or
+    /// input for the game's windows also wakes; the rest spins.
     unsafe fn wait_until(&self, target: i64) {
         let second = ticks_per_second();
         loop {
@@ -233,8 +232,7 @@ impl Pacer {
                 // In 100 ns units; negative: from now. Wake 0.5 ms early.
                 let due = -((left - second / 2000) * 10_000_000 / second);
                 SetWaitableTimer(self.timer, &due, 0, 0, 0, 0);
-                // QS_SENDMESSAGE
-                MsgWaitForMultipleObjects(1, &self.timer, 0, 0xFFFF_FFFF, 0x40);
+                MsgWaitForMultipleObjects(1, &self.timer, 0, 0xFFFF_FFFF, crate::capture::WAIT_WAKE_MASK);
             }
             wait_step();
         }
