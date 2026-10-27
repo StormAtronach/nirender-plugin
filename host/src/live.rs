@@ -103,6 +103,8 @@ impl Ring {
                 let shown_event = unsafe { OpenEventA(0x1F0003, 0, shown_name.as_ptr()) };
                 let mut read_name = format!("{name}-read").into_bytes();
                 read_name.push(0);
+                // SAFETY: the name is a NUL-ended byte string that lives for the call; a
+                // missing event gives 0, which the reader tests before each use.
                 let read_event = unsafe { OpenEventA(0x1F0003, 0, read_name.as_ptr()) };
                 return Ring { base, capacity, event, shown_event, read_event };
             }
@@ -205,7 +207,13 @@ impl Ring {
         // The game waits for a read: wake it. The store above and this load are SeqCst, as
         // the game's store of the word and its load of the count are, so that one of the
         // two sides sees the other's store.
-        if self.read_event != 0 && unsafe { &*(self.base.add(RING_GAME_WAITING) as *const std::sync::atomic::AtomicU32) }.load(Ordering::SeqCst) != 0 {
+        // SAFETY: `base` maps the ring's head of RING_HEAD bytes for the life of the Ring, the
+        // word at RING_GAME_WAITING is 4-aligned inside it, and the game writes it only
+        // through an atomic of the same size.
+        let game_waiting = unsafe { &*(self.base.add(RING_GAME_WAITING) as *const std::sync::atomic::AtomicU32) };
+        if self.read_event != 0 && game_waiting.load(Ordering::SeqCst) != 0 {
+            // SAFETY: the event is a handle that OpenEventA gave and that is not closed while
+            // the Ring lives.
             unsafe { SetEvent(self.read_event) };
         }
         Some(tag)
