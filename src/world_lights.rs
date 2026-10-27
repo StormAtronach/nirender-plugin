@@ -80,6 +80,10 @@ fn with_set<R>(f: impl FnOnce(&mut WorldSet) -> R) -> Option<R> {
 /// Listens to MWSE's two events. The removal first: without it a light of an unloaded cell
 /// would stay in the set. A refusal leaves the plugin without the lights of the world: the
 /// helper's world mode then has no lights.
+///
+/// # Safety
+///
+/// One thread at a time calls this: the test of `INSTALLED` and its store are not one atomic step.
 pub unsafe fn install() {
     if INSTALLED.load(Ordering::Relaxed) {
         return;
@@ -154,6 +158,12 @@ pub fn resend() {
 
 /// At the start of a world scene: the values of each light of the set that changed, then the
 /// keys of the lights that are on when the set changed.
+///
+/// # Safety
+///
+/// The lights of the set are live `NiLight`s. A light leaves the set at MWSE's removal event and at
+/// `NiDX8LightManager::RemoveLight`; that both come before the game frees the light is not known
+/// from this module. The game's data handler is 0 or live.
 pub unsafe fn send(t: &MainThread) {
     if !INSTALLED.load(Ordering::Relaxed) {
         return;
@@ -192,6 +202,11 @@ pub unsafe fn send(t: &MainThread) {
 /// One line for each light of the set, for a check in a live session
 /// (`nirender.worldLights()`): the key, the position, the cell of the last placement with a
 /// cell, whether the last send had it on.
+///
+/// # Safety
+///
+/// The lights of the set are live `NiLight`s, as for [`send`], and the cell of each is 0 or a live
+/// cell whose name is 0 or a C string.
 pub unsafe fn describe() -> Vec<String> {
     let name_of = |cell: usize| -> String {
         if cell == 0 {

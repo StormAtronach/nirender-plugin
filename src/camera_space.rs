@@ -331,6 +331,10 @@ unsafe fn count(t: &MainThread, index: usize) {
 }
 
 /// Turns the comparison on or off. Listens for the eye at the first use.
+///
+/// # Safety
+///
+/// As for [`install`].
 pub unsafe fn set_compare(on: bool) -> Result<(), String> {
     install()?;
     COMPARE.store(on, Ordering::Relaxed);
@@ -339,6 +343,10 @@ pub unsafe fn set_compare(on: bool) -> Result<(), String> {
 
 /// Listens to MWSE's event for the eye. The other steps need no hook: the draw ports call
 /// this module.
+///
+/// # Safety
+///
+/// One thread at a time calls this: the test of `INSTALLED` and its store are not one atomic step.
 pub unsafe fn install() -> Result<(), String> {
     if INSTALLED.load(Ordering::Relaxed) {
         return Ok(());
@@ -365,6 +373,12 @@ pub fn pending(t: &MainThread) -> bool {
 /// A scene starts with the camera whose world translation is at `world_location`. Returns
 /// the origin for the scene packet: the exact position of the camera, or [`None`] when the
 /// scene of this camera is not relative.
+///
+/// # Safety
+///
+/// `world_location` is 0 or the address of the world translation of a live `NiCamera`, as
+/// `NiCamera::Click` gives it; the cameras of the world controller and their parent chains are
+/// live.
 pub unsafe fn scene_begin(t: &MainThread, world_location: usize) -> Option<[f64; 3]> {
     *ORIGIN.get(t) = None;
     *ORIGIN_CHECKED.get(t) = false;
@@ -397,6 +411,11 @@ pub fn frame(t: &MainThread) -> u32 {
 }
 
 /// The frame ends.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn frame_end(t: &MainThread) {
     let mut frame = FRAME.get(t);
     *frame = frame.wrapping_add(1);
@@ -406,6 +425,11 @@ pub unsafe fn frame_end(t: &MainThread) {
 
 /// `RenderShape` or `RenderTriStrips` starts for the geometry with this world transform. 0
 /// for a draw that is not of a geometry.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `transform` is kept as a number
+/// and not read here.
 pub unsafe fn geometry_begin(t: &MainThread, transform: usize) {
     *GEOMETRY_TRANSFORM.get(t) = transform;
 }
@@ -439,6 +463,11 @@ unsafe fn rigid_relative(t: &MainThread, transform: usize, origin: &[f64; 3]) ->
 /// Called in place of the call of `SetModelTransform` at a draw site. Returns true when this
 /// module set the world matrix. On false the caller makes the call of the game.
 /// `geometry_site`: the site is in a draw of a geometry (`DrawPrimitive`).
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device, and `transform` is 0 or the world
+/// transform of a live `NiAVObject` whose parent chain is live.
 pub unsafe fn take_model_transform(t: &MainThread, this: usize, transform: usize, geometry_site: bool) -> bool {
     if !own() || !geometry_site || transform == 0 || transform != *GEOMETRY_TRANSFORM.get(t) {
         return false;
@@ -454,6 +483,11 @@ pub unsafe fn take_model_transform(t: &MainThread, this: usize, transform: usize
 
 /// Called after the call of `SetModelTransform` at a draw site. In the compare mode it
 /// counts if the matrix of the host is the matrix of this module.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`, and `transform` is 0 or the world transform of a live
+/// `NiAVObject` whose parent chain is live.
 pub unsafe fn check_model_transform(t: &MainThread, this: usize, transform: usize, geometry_site: bool) {
     if !compare() {
         return;
@@ -538,6 +572,11 @@ unsafe fn skinned_relative(t: &MainThread,
 /// world matrix of the device (as `write_world_matrix` makes one), relative to the origin
 /// when this module owns the matrices. Returns whether the matrices are relative, or what
 /// is missing when the data of the skin is not complete.
+///
+/// # Safety
+///
+/// `skin` is 0 or a live `NiSkinInstance` with its skin data and its bones, and `transform` is 0 or
+/// the world transform of a live `NiAVObject` whose parent chain is live.
 pub unsafe fn skin_palette(t: &MainThread, skin: usize, transform: usize, geometry_site: bool, out: &mut Vec<[f32; 16]>) -> Result<bool, &'static str> {
     let start = crate::capture::ticks();
     let result = build_skin_palette(t, skin, transform, geometry_site, out);
@@ -588,6 +627,10 @@ unsafe fn note_skin(t: &MainThread, skin: usize, matrices: usize, ticks: i64) {
     }
 }
 
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn skin_report(t: &MainThread) -> String {
     let measure = &*SKIN_MEASURE.get(t);
     let ms = measure.ticks as f64 * 1000.0 / crate::capture::ticks_per_second() as f64;
@@ -628,6 +671,11 @@ pub const BONE_BYTES: usize = 9 * 4 + 3 * 8;
 /// the matrix of its rotation and scale (9 floats, by columns, as the palette has them) and
 /// its exact translation in the world (3 doubles), from the shape's exact transform. Returns
 /// the number of bones, or what is missing when the data of the skin is not complete.
+///
+/// # Safety
+///
+/// `shape` points at a live `NiAVObject` whose parent chain is live: the function reads it without
+/// a test for 0. `skin` is 0 or a live `NiSkinInstance` with its skin data and its bones.
 pub unsafe fn skin_bones(t: &MainThread, shape: usize, skin: usize, out: &mut Vec<u8>) -> Result<u32, &'static str> {
     let start = crate::capture::ticks();
     out.clear();
@@ -688,6 +736,12 @@ unsafe fn skin_transforms(t: &MainThread, skin: usize, shape: &DTransform, mut e
 
 /// Called in place of the call of `SetSkinnedModelTransforms` at a draw site. Returns true
 /// when this module set the world matrices of the bones.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device; `skin` and `partition` are each 0 or
+/// a live `NiSkinInstance` with its data and bones and a live skin partition of it; `transform` is
+/// 0 or the world transform of a live `NiAVObject` whose parent chain is live.
 pub unsafe fn take_skinned_transforms(t: &MainThread, this: usize, skin: usize, partition: usize, transform: usize, geometry_site: bool) -> bool {
     if !own() {
         return false;
@@ -707,6 +761,10 @@ pub unsafe fn take_skinned_transforms(t: &MainThread, this: usize, skin: usize, 
 
 /// Called after the call of `SetSkinnedModelTransforms` at a draw site. In the compare mode
 /// it counts if the first four matrices of the host are the matrices of this module.
+///
+/// # Safety
+///
+/// As for [`take_skinned_transforms`], without the renderer.
 pub unsafe fn check_skinned_transforms(t: &MainThread, skin: usize, partition: usize, transform: usize, geometry_site: bool) {
     if !compare() {
         return;
@@ -729,6 +787,11 @@ pub unsafe fn check_skinned_transforms(t: &MainThread, skin: usize, partition: u
 }
 
 /// The counters as one line of text.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn report(t: &MainThread, reset: bool) -> String {
     let counts = &mut *COUNTS.get(t);
     let text = format!(

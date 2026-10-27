@@ -38,6 +38,11 @@ pub fn expected(func: &Func) -> &'static [u8] {
 }
 
 /// Every run of changed bytes in the functions of the table.
+///
+/// # Safety
+///
+/// The function table matches the loaded Morrowind.exe: each function of it is readable memory of
+/// `size` bytes at `ea`.
 pub unsafe fn changes() -> Vec<Change> {
     let mut out = Vec::new();
     for func in FUNCS.iter() {
@@ -56,6 +61,11 @@ extern "system" {
 }
 
 /// The file name of the module that holds `address`, or "?" for memory outside any module.
+///
+/// # Safety
+///
+/// No condition: any value of `address` is allowed. It is `unsafe` because of the calls of the
+/// Windows functions.
 pub unsafe fn module_of(address: usize) -> String {
     let mut module = 0usize;
     // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | UNCHANGED_REFCOUNT
@@ -70,6 +80,11 @@ pub unsafe fn module_of(address: usize) -> String {
 
 /// One line for a change. It gives the address, the bytes, and the target of a new call or
 /// jump.
+///
+/// # Safety
+///
+/// `change` came from [`changes`], so its function and run are readable memory of the loaded
+/// Morrowind.exe.
 pub unsafe fn describe(change: &Change) -> String {
     let at = change.func.ea + change.offset;
     let shown = change.len.min(12);

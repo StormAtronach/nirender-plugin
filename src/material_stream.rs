@@ -107,6 +107,10 @@ pub fn set_nif_shading(on: bool) {
     NIF_SHADING.store(on, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn last_modelled(t: &MainThread) -> bool {
     *LAST_FLAGS.get(t) & (PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0
 }
@@ -123,6 +127,11 @@ fn unsend(t: &MainThread, handle: u32) -> bool {
 
 /// Forgets the records that were sent: for a capture file from the stream. The handles keep
 /// their contents.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn reset(t: &MainThread) {
     for h in handles(t).values_mut() {
         h.sent = false;
@@ -131,6 +140,11 @@ pub unsafe fn reset(t: &MainThread) {
 }
 
 /// Forgets these records: the next draw with each content sends it again.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn forget(t: &MainThread, handles: &[u32]) {
     for &handle in handles {
         unsend(t, handle);
@@ -166,6 +180,11 @@ fn by_texture<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Vec<u32>>> {
 /// The records that name a device texture that was freed go: each gets a `MATERIAL_GONE`
 /// record, and a later draw with the same content sends it again. A new texture at the same
 /// address has another serial (`own_host::serial_of`), so its records are others.
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn drain_freed_textures(t: &MainThread) {
     let freed = crate::own_host::take_freed_textures();
     for texture in freed {
@@ -179,6 +198,10 @@ pub unsafe fn drain_freed_textures(t: &MainThread) {
     }
 }
 
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory. `t` is the proof of the main
+/// thread.
 pub unsafe fn report(t: &MainThread) -> String {
     let (sent, all) = {
         let table = handles(t);
@@ -239,6 +262,13 @@ fn hash(words: &[u32]) -> (u32, u32) {
 
 /// Notes the material of a shape that is about to be drawn: sends its record when the
 /// content is new. Returns the handle (the hash), or 0 without a property state.
+///
+/// # Safety
+///
+/// `renderer` points at the live `NiDX8Renderer`; `property_state` is 0 or a live `NiPropertyState`
+/// whose properties are each 0 or live, with live maps and textures; `effect_state` is 0 or a live
+/// dynamic effect state whose effects are each 0 or live. The function reads at most 64 effects of
+/// each list.
 pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effect_state: usize) -> u32 {
     if !crate::capture::recording() || property_state == 0 {
         return 0;

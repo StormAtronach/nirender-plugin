@@ -27,6 +27,11 @@ pub fn installed() -> bool {
 
 /// Listens to MWSE's event. A refusal (an MWSE without the event) leaves the stream without
 /// the event: the helper then places the flush as an older capture has it.
+///
+/// # Safety
+///
+/// One thread at a time calls this: the test of the installed flag and its store are not one atomic
+/// step.
 pub unsafe fn install() {
     if installed() {
         return;
