@@ -12,8 +12,12 @@ The steps:
 2. `tools/checks.py all` runs the content checks of both repositories; `tools/docs.py`
    checks the doc comments of the plugin, the host crate and the helper (no broken link).
    `tools/clippy_baseline.py --check` stops the release when a Clippy lint has more warnings
-   than `tools/clippy.baseline` holds. `cargo xtask dist` in the MGE XE repository builds MGE XE and this plugin
-   and packs the archive (`--max-perf` for the slow build of a final release).
+   than `tools/clippy.baseline` holds. Then `cargo test` runs in the plugin, in the host crate
+   and for the helper (`-p mgeHost64` in the MGE XE repository), each with the toolchain its
+   tree pins (the version is printed); a failed test stops the release. `cargo xtask dist`
+   in the MGE XE repository builds MGE XE and this plugin and packs the archive (`--max-perf`
+   for the slow build of a final release). `--no-build` skips all of step 2 and takes the
+   archive that is in dist.
 3. The archive goes up as `MGE-XE-G7-v<MGE XE>-nirender-v<plugin>.7z`, as a pre-release
    with the text of `--notes`. Each `--add SOURCE=PATH` puts a file into it first, at PATH
    from the archive's root (the Morrowind folder): for example the MWSE.dll with the native
@@ -57,8 +61,8 @@ PLUGIN = os.path.dirname(HERE)
 MGE = os.path.join(os.path.dirname(PLUGIN), "MGE-XE-G7-render-link")
 
 
-def run(command, cwd=None, capture=False):
-    result = subprocess.run(command, cwd=cwd, capture_output=capture, text=True)
+def run(command, cwd=None, capture=False, env=None):
+    result = subprocess.run(command, cwd=cwd, capture_output=capture, text=True, env=env)
     if result.returncode != 0:
         raise SystemExit("failed (%d): %s%s" % (result.returncode, " ".join(command), "\n" + result.stderr if capture else ""))
     return result.stdout if capture else ""
@@ -84,6 +88,19 @@ def clean_and_pushed(repo, dry_run):
     ahead = run(["git", "-C", repo, "rev-list", "--count", "@{upstream}..HEAD"], capture=True).strip()
     if ahead != "0":
         stop("%s has %s commits that are not pushed" % (repo, ahead), dry_run)
+
+
+def unit_tests(mge):
+    """Runs `cargo test` in the plugin, in the host crate and for the helper in the MGE XE
+    repository. Each tree builds with the toolchain its own rust-toolchain.toml pins (rustup
+    reads it from the working folder; the plugin's is stable, MGE XE's a dated nightly), and
+    the version is printed first. A failed test stops the release."""
+    environment = {key: value for key, value in os.environ.items() if key != "RUSTUP_TOOLCHAIN"}
+    trees = [("the plugin", PLUGIN, []), ("the host crate", os.path.join(PLUGIN, "host"), []), ("the helper", mge, ["-p", "mgeHost64"])]
+    for name, folder, extra in trees:
+        version = run(["rustc", "--version"], cwd=folder, capture=True, env=environment).strip()
+        print("the tests of %s, with %s" % (name, version), flush=True)
+        run(["cargo", "test"] + extra, cwd=folder, env=environment)
 
 
 def sources_text(mge_url, mge_commit, plugin_url, plugin_tag, plugin_commit, sources):
@@ -204,6 +221,7 @@ def main():
         run([sys.executable, "-I", os.path.join(HERE, "checks.py"), "all"])
         run([sys.executable, "-I", os.path.join(HERE, "docs.py"), "--mge", args.mge])
         run([sys.executable, "-I", os.path.join(HERE, "clippy_baseline.py"), "--check", "--mge", args.mge])
+        unit_tests(args.mge)
         run([cargo, "xtask", "dist"] + (["--max-perf"] if args.max_perf else []), cwd=args.mge)
     # The version of MGE XE is in the name of the archive that xtask packs.
     kind = "" if args.max_perf else "-test"
