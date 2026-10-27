@@ -101,7 +101,11 @@ extern "system" {
     fn GetCurrentProcessId() -> u32;
     fn GetCurrentThreadId() -> u32;
     fn GetLastError() -> u32;
+    fn LoadLibraryExW(name: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
 }
+
+/// LOAD_LIBRARY_SEARCH_SYSTEM32: the load looks in System32 only.
+const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x800;
 
 #[link(name = "dbghelp")]
 extern "system" {
@@ -169,6 +173,7 @@ pub(crate) fn dump_path(log: Option<&str>) -> PathBuf {
 /// Puts the panic hook and the exception filter of the process on. A crash writes the
 /// minidump at `dump`, after its lines in the log.
 pub(crate) fn install(dump: PathBuf) {
+    hold_dump_libraries();
     let _ = DUMP.set(dump);
     let program = std::env::current_exe().ok().and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().into_owned()));
     let _ = PROGRAM.set(program.unwrap_or_default());
@@ -186,6 +191,33 @@ pub(crate) fn install(dump: PathBuf) {
     }));
     // SAFETY: the filter is a plain function of this program; it stays for the program's life.
     unsafe { SetUnhandledExceptionFilter(Some(filter)) };
+}
+
+/// The DLLs that the dump writer (dbgcore) loads at each dump and unloads after it, on
+/// Windows 11 (seen with cdb, 2026-10-27).
+const DUMP_LIBRARIES: [&str; 6] = ["advapi32.dll", "msvcrt.dll", "sechost.dll", "psapi.dll", "version.dll", "verifier.dll"];
+
+/// Loads the DLLs of [`DUMP_LIBRARIES`] for the program's life, so that a dump finds them
+/// loaded. `MiniDumpWriteDump` of the own process suspends every other thread, then loads
+/// these DLLs. A thread suspended inside the loader (a thread that starts or ends, a DLL
+/// that loads) holds the loader, and a load that must wait for it waits forever: the dump
+/// never ends, and no thread of the process can end it. The load of a DLL that is already
+/// loaded does not wait (a reproducer of 100 dumps a run with 16 threads that start threads,
+/// 2026-10-27: 9 of 20 runs hung without this, 0 of 50 with it; with dbghelp and dbgcore
+/// alone held, 3 of 10, since the program loads those two at its start in any case). On
+/// another Windows version the list can differ; a DLL that is not there is left out, and the
+/// test `the_dump_writer_loads_no_dll` names a DLL that the list lacks.
+///
+/// Each DLL comes from System32 only: version.dll and verifier.dll are not KnownDLLs, and a
+/// bare name would find a DLL of that name in the folder of numidium.exe (the game's folder,
+/// where version.dll is a common name of a mod's proxy) first.
+fn hold_dump_libraries() {
+    for name in DUMP_LIBRARIES {
+        let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        // SAFETY: the name is a NUL-ended UTF-16 string that lives for the call. The handle
+        // is never freed: the DLL stays loaded until the program ends.
+        unsafe { LoadLibraryExW(wide.as_ptr(), core::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) };
+    }
 }
 
 /// The unhandled exception filter: the exception and the backtrace go into the log, then the
@@ -348,8 +380,11 @@ mod tests {
         assert_eq!(dump_path(None).parent(), Some(Path::new(".")));
     }
 
+    /// The other tests run on threads that start while the dump runs: without the DLLs of the
+    /// dump held, the dump could wait for the loader forever (see `hold_dump_libraries`).
     #[test]
     fn a_dump_of_this_process_is_written() {
+        hold_dump_libraries();
         let folder = std::env::temp_dir().join(format!("nirender-host-dump-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join("test.dmp");
@@ -374,5 +409,127 @@ mod tests {
         assert!(!lines.is_empty());
         let module = lines[0].split('+').next().unwrap();
         assert!(module.ends_with(".exe"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn the_libraries_of_the_dump_stay_loaded() {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetModuleHandleW(name: *const u16) -> isize;
+        }
+        hold_dump_libraries();
+        for name in DUMP_LIBRARIES {
+            let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+            // SAFETY: a NUL-ended name; the call takes no reference.
+            assert_ne!(unsafe { GetModuleHandleW(wide.as_ptr()) }, 0, "{name} is not loaded");
+        }
+    }
+
+    /// UNICODE_STRING.
+    #[repr(C)]
+    struct UnicodeString {
+        length: u16,
+        maximum: u16,
+        buffer: *const u16,
+    }
+
+    /// LDR_DLL_NOTIFICATION_DATA: the same head for a load and an unload.
+    #[repr(C)]
+    struct DllNotification {
+        flags: u32,
+        full_name: *const UnicodeString,
+        base_name: *const UnicodeString,
+        base: *mut c_void,
+        size: u32,
+    }
+
+    type DllNotify = unsafe extern "system" fn(reason: u32, data: *const DllNotification, context: *mut c_void);
+    type Register = unsafe extern "system" fn(flags: u32, notify: DllNotify, context: *mut c_void, cookie: *mut *mut c_void) -> i32;
+    type Unregister = unsafe extern "system" fn(cookie: *mut c_void) -> i32;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleA(name: *const u8) -> isize;
+        // The signature of gpu.rs's declaration.
+        fn GetProcAddress(module: isize, name: *const u8) -> *const c_void;
+    }
+
+    /// A function of ntdll by its name. The import library of ntdll does not have the
+    /// notification functions of the loader.
+    fn ntdll_function(name: &core::ffi::CStr) -> *const c_void {
+        // SAFETY: NUL-ended names; ntdll is in every process.
+        let function = unsafe { GetProcAddress(GetModuleHandleA(c"ntdll.dll".as_ptr().cast()), name.as_ptr().cast()) };
+        assert!(!function.is_null(), "ntdll has no {name:?}");
+        function
+    }
+
+    /// LDR_DLL_NOTIFICATION_REASON_LOADED.
+    const DLL_LOADED: u32 = 1;
+    /// The most loads and the most characters of a name that the recorder keeps.
+    const MOST_LOADS: usize = 16;
+    const MOST_NAME: usize = 64;
+
+    /// The DLLs loaded on the watched thread: fixed room, since the loader calls the recorder
+    /// while the dump writer has the other threads suspended (one of them can hold the heap).
+    struct Loads {
+        names: [[u16; MOST_NAME]; MOST_LOADS],
+        count: usize,
+    }
+
+    static LOADS: std::sync::Mutex<Loads> = std::sync::Mutex::new(Loads { names: [[0; MOST_NAME]; MOST_LOADS], count: 0 });
+    static WATCHED_THREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    unsafe extern "system" fn record_load(reason: u32, data: *const DllNotification, _context: *mut c_void) {
+        if reason != DLL_LOADED || data.is_null() || GetCurrentThreadId() != WATCHED_THREAD.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let name = &*(*data).base_name;
+        let length = (usize::from(name.length) / 2).min(MOST_NAME);
+        if let Ok(mut loads) = LOADS.lock() {
+            if loads.count < MOST_LOADS {
+                let at = loads.count;
+                loads.names[at][..length].copy_from_slice(core::slice::from_raw_parts(name.buffer, length));
+                loads.count += 1;
+            }
+        }
+    }
+
+    /// The dump writer finds every DLL it needs loaded (`hold_dump_libraries`): no DLL loads on
+    /// the thread of a dump. A DLL that loads there is one that the list lacks on this
+    /// Windows, and the test names it. Without the hold it names the six.
+    #[test]
+    fn the_dump_writer_loads_no_dll() {
+        hold_dump_libraries();
+        let folder = std::env::temp_dir().join(format!("nirender-host-loads-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("test.dmp");
+
+        // SAFETY: a plain read of the id of this thread.
+        let thread = unsafe { GetCurrentThreadId() };
+        WATCHED_THREAD.store(thread, std::sync::atomic::Ordering::SeqCst);
+        // SAFETY: the two functions of ntdll have these signatures (LdrRegisterDllNotification,
+        // LdrUnregisterDllNotification, documented by Microsoft).
+        let (register, unregister) = unsafe {
+            (
+                core::mem::transmute::<*const c_void, Register>(ntdll_function(c"LdrRegisterDllNotification")),
+                core::mem::transmute::<*const c_void, Unregister>(ntdll_function(c"LdrUnregisterDllNotification")),
+            )
+        };
+        let mut cookie = core::ptr::null_mut();
+        // SAFETY: the recorder is a plain function of this program; the registration ends below.
+        assert_eq!(unsafe { register(0, record_load, core::ptr::null_mut(), &mut cookie) }, 0);
+        let written = write_dump_at(&path, thread, core::ptr::null_mut());
+        // SAFETY: the cookie of the registration above.
+        unsafe { unregister(cookie) };
+        WATCHED_THREAD.store(0, std::sync::atomic::Ordering::SeqCst);
+        written.unwrap();
+
+        let loads = LOADS.lock().unwrap();
+        let names: Vec<String> = loads.names[..loads.count]
+            .iter()
+            .map(|name| String::from_utf16_lossy(&name[..name.iter().position(|&c| c == 0).unwrap_or(MOST_NAME)]))
+            .collect();
+        assert!(names.is_empty(), "the dump writer loaded DLLs that hold_dump_libraries lacks: {names:?}");
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 }
