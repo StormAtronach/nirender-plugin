@@ -87,7 +87,7 @@ The run:
   `nirender-host.log` in the folder of the game.
 - `NIRENDER_BACKEND=vulkan|dx12`: the backend of the host program.
 - `NIRENDER_RING_MB=<n>`: the size of the ring, default 64.
-- `NIRENDER_PLUGIN_DLL=<path>`: the tools install that DLL for a run (one arm of an A/B).
+- `NIRENDER_PLUGIN_DLL=<path>`: the tools install that DLL for a run (one arm of an A/B); the runner's `--plugin-dll <path>` says the same without a variable.
 - `NIRENDER_FOREGROUND=1`: the tools run the game in the foreground; a run is a background
   run without it. For a background run the runner stages a copy of the instance's MWSE.json
   with MWSE's setting `RunInBackground = true` into the run mod; the mod patches nothing.

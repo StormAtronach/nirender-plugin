@@ -48,9 +48,11 @@ CHECKS = {
     # The tests of the pure parts of the release tool (the untracked-file stop, the tag name,
     # the notes' Tested block).
     "release": (PLUGIN / "tools" / "release.py", PLUGIN, ["--self-test"]),
+    # The argument handling of the runner (--plugin-dll, --log).
+    "runner": (PLUGIN / "tools" / "run_own_device.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release"],
+    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner"],
     "mge": ["mge readme", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
