@@ -459,8 +459,20 @@ unsafe fn device_window(s: &State) -> u32 {
 unsafe fn start_stream(s: &State) {
     crate::own_host::activate();
     let name = format!("nirender-{}", GetCurrentProcessId());
-    let megabytes = crate::switches::number_from_to("NIRENDER_RING_MB", 64, 1, 512);
-    if let Err(problem) = crate::capture::start_direct(&name, megabytes, s.parameters[0], s.parameters[1], device_window(s)) {
+    // 128 MB: a record must fit the ring whole, and the largest level of a texture of a
+    // modded install is 64 MiB (4096 x 4096 ARGB, or 8192 x 8192 DXT5), which a 64 MB ring
+    // misses by the record's head. A level over the ring is dropped and counted.
+    let megabytes = crate::switches::number_from_to("NIRENDER_RING_MB", 128, 1, 512);
+    // A ring that the system cannot give (its commit charge) is tried once at 64 MB, the
+    // size of before; a failed `start_direct` has started nothing.
+    let started = crate::capture::start_direct(&name, megabytes, s.parameters[0], s.parameters[1], device_window(s)).or_else(|problem| {
+        if megabytes <= 64 {
+            return Err(problem);
+        }
+        crate::log!("own device: no ring of {megabytes} MB ({problem}); a ring of 64 MB is tried, and a texture level over it is dropped");
+        crate::capture::start_direct(&name, 64, s.parameters[0], s.parameters[1], device_window(s))
+    });
+    if let Err(problem) = started {
         crate::log!("own device: no stream: {problem}");
         return;
     }
