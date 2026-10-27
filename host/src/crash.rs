@@ -178,9 +178,13 @@ pub fn hold_next_dump() {
     HOLD_DUMP.store(true, Ordering::Release);
 }
 
-/// Holds this thread for good when [`hold_next_dump`] asked for it.
+/// Holds this thread for good when [`hold_next_dump`] asked for it. A dump that hangs has
+/// suspended the watchdog's thread too, so the hold disarms the watchdog: else it would end
+/// the program after its limit with the code 30, and the test would not reach the plugin's
+/// limit.
 fn hold_if_asked() {
     if HOLD_DUMP.load(Ordering::Acquire) {
+        crate::watchdog::disarm();
         println!("crash: the dump is held (a test: hold_next_dump); the plugin ends this program");
         let _ = std::io::stdout().flush();
         loop {
