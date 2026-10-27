@@ -3,6 +3,7 @@
     python -I tools/checks.py plugin    # the hook of this repository
     python -I tools/checks.py mge       # the hook of the MGE XE render-link worktree
     python -I tools/checks.py all       # both lists once (release.py)
+    python -I tools/checks.py mge --mge DIR    # the mge list against another MGE XE tree (a worktree's hook)
 
 The checks of each list:
 
@@ -61,17 +62,27 @@ LISTS = {
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 
 
+# The option that gives each check of the MGE XE tree another tree than the render-link sibling
+# (`checks.py mge --mge DIR`: the pre-commit hook of a worktree).
+MGE_OPTION = {"mge readme": "--mge-dir", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge"}
+
+
 def main(argv):
     # `--strict`: a check that would be skipped is a failure (a release needs every check).
     strict = "--strict" in argv
-    names = [argument for argument in argv if argument != "--strict"]
+    mge = argv[argv.index("--mge") + 1] if "--mge" in argv else None
+    names = [argument for index, argument in enumerate(argv) if argument not in ("--strict", "--mge") and (index == 0 or argv[index - 1] != "--mge")]
     which = names[0] if names else "all"
     if which not in LISTS:
-        raise SystemExit("usage: checks.py plugin|mge|all [--strict]")
+        raise SystemExit("usage: checks.py plugin|mge|all [--strict] [--mge DIR]")
     failed, passed, skipped = [], [], []
     for name in LISTS[which]:
         script, needs, *rest = CHECKS[name]
-        args = rest[0] if rest else []
+        args = list(rest[0]) if rest else []
+        if mge and name in MGE_OPTION:
+            args += [MGE_OPTION[name], mge]
+            if needs == REPOS / "MGE-XE-G7-render-link":
+                needs = Path(mge)
         if not script.exists() or not needs.exists():
             if strict:
                 failed.append(name)
