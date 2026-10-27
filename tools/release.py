@@ -12,7 +12,9 @@ The steps:
    tag of the release goes on the head of the default branch on GitHub. An untracked file
    under a path that the build reads or the archive takes (the source folders, the
    manifests, the assets: `PLUGIN_SOURCES`, `MGE_SOURCES`) stops the release with its name,
-   since it would go into the binaries without being in the tag.
+   since it would go into the binaries without being in the tag. The tool must run from the
+   nirender-plugin that the build takes, the sibling of the MGE XE tree (xtask's
+   `plugin_dir`, mgeHost64's path dependency); from a worktree it stops.
 2. `tools/checks.py all --strict` runs the content checks of both repositories (a check
    whose repository is not on this machine is a failure, not a skip); `tools/docs.py`
    checks the doc comments of the plugin, the host crate and the helper (no broken link).
@@ -113,6 +115,15 @@ def untracked_in_sources(status_lines, sources):
     under one of the source paths (a folder ends with a slash; a file is named whole)."""
     untracked = [line[3:] for line in status_lines if line.startswith("?? ")]
     return [path for path in untracked if any(path.startswith(source) if source.endswith("/") else path == source for source in sources)]
+
+
+def plugin_of_the_build(mge):
+    """The nirender-plugin that a build of `mge` takes: `cargo xtask dist` builds the sibling
+    `nirender-plugin` of the MGE XE tree (xtask's `plugin_dir`), and mgeHost64 compiles the
+    host crate from `../../nirender-plugin/host` (its Cargo.toml). A release must run from
+    that checkout, or the archive holds another checkout's plugin while MANIFEST.txt and the
+    tag name this one."""
+    return os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(mge)), "nirender-plugin"))
 
 
 def clean_and_pushed(repo, sources, dry_run):
@@ -370,6 +381,7 @@ def self_test():
     assert notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- run 20261027-120302-x\n", gated=True) == []
     assert GATE_RESULT.findall("  ok   " + lines[0] + "\n  FAIL  1 of 2 pictures equal to the accepted ones in c\n") == [lines[0], "1 of 2 pictures equal to the accepted ones in c"]
     assert render_link_tag("v0.3.3") == "nirender-v0.3.3"
+    assert plugin_of_the_build(os.path.join("C:\\", "repos", "MGE-XE-G7-render-link")) == os.path.realpath(os.path.join("C:\\", "repos", "nirender-plugin"))
     good = "## Changes\n\n- a\n\n## Tested\n\n- {gate}\n- The live checks, run folder `20261027-120302-mge-findings-live2`: the loads wait.\n"
     assert tested_block_problems(good, gated=True) == []
     by_hand = good.replace("{gate}", "the capture gate: 206 of 206 pictures equal to the accepted ones in now")
@@ -444,6 +456,9 @@ def main():
     tags = [release["tagName"] for release in releases]
     if tag in tags:
         stop("the release %s is there already: set a new version in Cargo.toml" % tag, args.dry_run)
+    expected_plugin = plugin_of_the_build(args.mge)
+    if os.path.realpath(PLUGIN) != expected_plugin:
+        stop("this tool runs from %s, but a build of %s takes the plugin from %s (xtask's plugin_dir, mgeHost64's path dependency): the archive would hold that checkout's plugin while MANIFEST.txt and the tag name this one; run the release from that checkout" % (PLUGIN, args.mge, expected_plugin), args.dry_run)
     mge_tag = render_link_tag(tag)
     if run(["git", "-C", args.mge, "tag", "--list", mge_tag], capture=True).strip():
         stop("the MGE XE repository has the tag %s already: set a new version in Cargo.toml" % mge_tag, args.dry_run)
