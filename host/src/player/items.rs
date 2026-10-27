@@ -203,10 +203,10 @@ impl Player {
     /// gets a copy of its record with its slots in the small group, and copies of its
     /// instances that name it, in the records and instances of the frame before their one
     /// upload: the first instance of the copy, for each item. Nothing with
-    /// `MGE_XE_PASS_GROUPS=0`.
+    /// `MGE_XE_PASS_GROUPS=0`, or in tier C (no arrays: each draw has its own group).
     pub(crate) fn mark_small_draws(&mut self, items: &[Item]) -> Vec<Option<u32>> {
         self.small_arrays = None;
-        if !switches().pass_groups {
+        if !switches().pass_groups || self.renderer.tier == crate::request::TextureTier::C {
             return Vec::new();
         }
         let (mut world, mut posted, mut target) = (self.phase_world, self.phase_posted, self.pass_target);

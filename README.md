@@ -90,6 +90,11 @@ The run:
   level must fit it whole; a 4096 x 4096 ARGB level is 64 MiB); a value outside is named
   in the plugin's log and 128 is taken.
 - `NIRENDER_PLUGIN_DLL=<path>`: the tools install that DLL for a run (one arm of an A/B); the runner's `--plugin-dll <path>` says the same without a variable.
+- `MGE_XE_TEXTURE_TIER=a|c`: the texture binding tier of the helper, for an A/B on one
+  machine. `a`: the binding arrays (the default when the adapter has them). `c`: no binding
+  arrays, a small group of the 6 textures and 6 samplers of each set (the default on an
+  adapter without them). The helper's log and the probe say `texture tier: a` or `c`. Tier
+  `a` forced on an adapter without the arrays is a refusal (the code 20).
 - `MGE_XE_MEMORY_MINUTES=<n>`: the helper's log gets a memory report at the first frame and
   then every n minutes, as `memory:` lines: the GPU memory of wgpu's allocator by the kind of
   object (the label, its numbers as `#`), and the counts of wgpu's objects; 0 or unset, none.

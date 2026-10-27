@@ -109,6 +109,10 @@ struct Bucket {
     stencil: u32,
     vertices: Rc<wgpu::Buffer>,
     indexes: Rc<wgpu::Buffer>,
+    /// The texture handle and the sampler state of each stage, as in its key: tier C binds
+    /// their group before each call of the bucket (`Renderer::stage_group`).
+    textures: [u32; STAGES],
+    samplers: [[u32; 5]; STAGES],
     slots: Vec<u32>,
 }
 
@@ -1208,6 +1212,7 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
     }
     set.counts.views += 1;
     let mut arrays_bound = false;
+    let mut stages_bound: Option<Rc<wgpu::BindGroup>> = None;
     let mut shared_bound = false;
     let mut frame_bound = false;
     let order = if view.sorted == Sorted::Only {
@@ -1259,11 +1264,19 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             pass.set_bind_group(0, &*renderer.frame_group, &[view.scene_slot * SCENE_SIZE as u32]);
             frame_bound = true;
         }
-        if !arrays_bound {
+        // Scene slot 0 is the main view of the table; a replay has a slot of its own.
+        let origin = if view.scene_slot == 0 { crate::gpu::BindOrigin::Table } else { crate::gpu::BindOrigin::Replay };
+        if renderer.tier == crate::request::TextureTier::C {
+            let group = renderer.stage_group(bucket.textures, bucket.samplers, view.target);
+            if !stages_bound.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &group)) {
+                pass.set_bind_group(1, &*group, &[]);
+                crate::gpu::note_array_bind(origin);
+                stages_bound = Some(group);
+            }
+        } else if !arrays_bound {
             let group = renderer.array_group_for(view.target);
             pass.set_bind_group(1, &*group, &[]);
-            // Scene slot 0 is the main view of the table; a replay has a slot of its own.
-            crate::gpu::note_array_bind(if view.scene_slot == 0 { crate::gpu::BindOrigin::Table } else { crate::gpu::BindOrigin::Replay });
+            crate::gpu::note_array_bind(origin);
             arrays_bound = true;
         }
         pass.set_vertex_buffer(0, bucket.vertices.slice(..));
@@ -1655,7 +1668,9 @@ impl Player {
             // the next frame puts the pinned slots back (`retained_settle_late`).
             let mut pinned_slots = [[0u32; 2]; STAGES];
             let mut late = false;
-            for stage in 0..STAGES {
+            // Tier C has no arrays: the group of the bucket holds the textures.
+            let pin_stages = if self.renderer.tier == crate::request::TextureTier::A { STAGES } else { 0 };
+            for stage in 0..pin_stages {
                 let mut texture = self.renderer.pin_texture(handles[stage]);
                 if texture != 0 {
                     pinned[stage] = handles[stage];
@@ -1681,7 +1696,7 @@ impl Player {
             let bucket = match set.bucket_of.get(&bucket_key) {
                 Some(&b) => b,
                 None => {
-                    set.buckets.push(Bucket { class: r.class, key, stencil: stencil[2], vertices: vertex.clone(), indexes: index.clone(), slots: Vec::new() });
+                    set.buckets.push(Bucket { class: r.class, key, stencil: stencil[2], vertices: vertex.clone(), indexes: index.clone(), textures: handles, samplers: sampler_values, slots: Vec::new() });
                     let b = (set.buckets.len() - 1) as u32;
                     set.bucket_of.insert(bucket_key, b);
                     b

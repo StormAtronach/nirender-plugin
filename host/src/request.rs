@@ -14,7 +14,7 @@
 //! `stream_format.rs` in
 //! the live mode and in the probe (the failure-path page of the project, section 4).
 
-use crate::data::{AUTO_TEXTURE_SLOTS, DEPTH_FORMAT, MIN_TEXTURE_SLOTS, SAMPLER_CAP};
+use crate::data::{AUTO_TEXTURE_SLOTS, DEPTH_FORMAT, MIN_TEXTURE_SLOTS, SAMPLER_CAP, STAGES};
 use crate::stream_format::EXIT_GPU;
 use crate::switches::switches;
 use crate::{depth, gpu, retained, WindowTarget};
@@ -29,11 +29,20 @@ pub const ARRAY_TEXTURES: u32 = MIN_TEXTURE_SLOTS;
 /// The room for samplers in the binding arrays of a frame that the renderer requires.
 pub const ARRAY_SAMPLERS: u32 = 8;
 
-/// The features the request requires of every adapter. The optional ones of the request
-/// (the line mode, the timestamps, the indirect draws, the float depth) are taken when the
-/// adapter has them; they map to no capability of a shader.
+/// The features the request requires of every adapter: those of tier C, which has no
+/// binding arrays. The optional ones of the request (the line mode, the timestamps, the
+/// indirect draws, the float depth) are taken when the adapter has them; they map to no
+/// capability of a shader.
 pub fn required_features() -> wgpu::Features {
-    wgpu::Features::TEXTURE_COMPRESSION_BC | array_features()
+    required_features_of(TextureTier::C)
+}
+
+/// The features that the request requires for a tier: the arrays only for tier A.
+pub fn required_features_of(tier: TextureTier) -> wgpu::Features {
+    match tier {
+        TextureTier::A => wgpu::Features::TEXTURE_COMPRESSION_BC | array_features(),
+        TextureTier::C => wgpu::Features::TEXTURE_COMPRESSION_BC,
+    }
 }
 
 /// The limits of the request that do not depend on the adapter: what a check of a shader
@@ -41,6 +50,54 @@ pub fn required_features() -> wgpu::Features {
 /// the room of the arrays) from the adapter.
 pub fn fixed_limits() -> wgpu::Limits {
     wgpu::Limits { max_sampled_textures_per_shader_stage: SAMPLED_TEXTURES, ..wgpu::Limits::default() }
+}
+
+/// How the world shader takes the textures of a draw (milestone 12, the texture binding tiers:
+/// the design `notes/designs-2026-10/texture-tiers-design.md` of the Numidium project).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureTier {
+    /// The binding arrays of the frame: one group for the draws of a pass; a draw's record names
+    /// the slot of each stage's texture and sampler. The adapter needs `array_features` and
+    /// the room of [`ARRAY_TEXTURES`] and [`ARRAY_SAMPLERS`].
+    A,
+    /// No binding arrays: a group of the 6 textures and the 6 samplers of the stages for each
+    /// set (`Renderer::stage_group`), bound before each draw or call of the table that takes
+    /// another set. For an adapter without the arrays.
+    C,
+}
+
+impl TextureTier {
+    pub fn name(self) -> &'static str {
+        match self {
+            TextureTier::A => "a",
+            TextureTier::C => "c",
+        }
+    }
+}
+
+/// The world shader of tier C: the source of tier A with the two binding arrays of group 1
+/// replaced by 6 textures (`t0` to `t5`, bindings 0 to 5) and 6 samplers (`s0` to `s5`,
+/// bindings 6 to 11), and each stage sampling its own pair. Every stage of a draw samples
+/// its pair: an unused stage has the white texture and a plain sampler in its group.
+pub fn tier_c_shader_source(source: &str) -> String {
+    let mut out = source.replacen("enable wgpu_binding_array;\n", "", 1);
+    let arrays = "@group(1) @binding(0) var textures: binding_array<texture_2d<f32>>;\n@group(1) @binding(1) var samplers: binding_array<sampler>;\n";
+    assert!(out.contains(arrays), "the binding arrays of group 1 are not in the world shader");
+    let mut fixed = String::new();
+    for stage in 0..STAGES {
+        fixed += &format!("@group(1) @binding({stage}) var t{stage}: texture_2d<f32>;\n");
+    }
+    for stage in 0..STAGES {
+        fixed += &format!("@group(1) @binding({}) var s{stage}: sampler;\n", STAGES + stage);
+    }
+    out = out.replacen(arrays, &fixed, 1);
+    for stage in 0..STAGES {
+        let indexed = format!("textures[draws[record].stages[{stage}].slots.x], samplers[draws[record].stages[{stage}].slots.y]");
+        assert_eq!(out.matches(&indexed).count(), 1, "stage {stage} does not sample the arrays once");
+        out = out.replacen(&indexed, &format!("t{stage}, s{stage}"), 1);
+    }
+    assert!(!out.contains("textures[") && !out.contains("samplers["), "the world shader reads the arrays in another place");
+    out
 }
 
 /// The source of the world shader with the text of an extension (its sky and draw parts):
@@ -75,6 +132,8 @@ pub(crate) struct Request {
     /// The room of the texture array and of the sampler array of a frame.
     pub array_cap: u32,
     pub sampler_cap: u32,
+    /// How the world shader takes the textures ([`TextureTier`]).
+    pub tier: TextureTier,
 }
 
 impl Request {
@@ -93,7 +152,10 @@ impl Request {
             if switches().depth_plain { "; MGE_XE_DEPTH_REVERSED=0" } else { "" }
         );
         println!("multisampling: {} samples for each pixel of the frame", self.samples);
-        println!("texture arrays: room for {} textures and {} samplers", self.array_cap, self.sampler_cap);
+        match self.tier {
+            TextureTier::A => println!("texture tier: a (binding arrays: room for {} textures and {} samplers)", self.array_cap, self.sampler_cap),
+            TextureTier::C => println!("texture tier: c (a group of {STAGES} textures and {STAGES} samplers for each set; no binding arrays)"),
+        }
     }
 }
 
@@ -208,6 +270,8 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     let features = adapter.features();
     let limits = adapter.limits();
     let mut lacks = Vec::new();
+    // The arrays' lacks: a refusal for tier A forced; else they give tier C.
+    let mut array_lacks = Vec::new();
     if !features.contains(array_features()) {
         let missing: Vec<&str> = [
             (wgpu::Features::TEXTURE_BINDING_ARRAY, "TEXTURE_BINDING_ARRAY"),
@@ -218,7 +282,7 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
         .filter(|(feature, _)| !features.contains(*feature))
         .map(|(_, name)| *name)
         .collect();
-        lacks.push(format!("the binding arrays of textures ({})", missing.join(", ")));
+        array_lacks.push(format!("the binding arrays of textures ({})", missing.join(", ")));
     }
     // The room of the texture arrays: the setting of the extension (0 automatic), the test
     // switch MGE_XE_ARRAY_CAP over it, at most the adapter's room. The samplers of the
@@ -227,8 +291,19 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     let array_cap = limits.max_binding_array_elements_per_shader_stage.saturating_sub(SAMPLER_CAP).min(wanted);
     let sampler_cap = limits.max_binding_array_sampler_elements_per_shader_stage.min(SAMPLER_CAP);
     if array_cap < ARRAY_TEXTURES || sampler_cap < ARRAY_SAMPLERS {
-        lacks.push(format!("room in the binding arrays: has {array_cap} textures and {sampler_cap} samplers, needs {ARRAY_TEXTURES} and {ARRAY_SAMPLERS}"));
+        array_lacks.push(format!("room in the binding arrays: has {array_cap} textures and {sampler_cap} samplers, needs {ARRAY_TEXTURES} and {ARRAY_SAMPLERS}"));
     }
+    // `MGE_XE_TEXTURE_TIER=a|c` forces a tier; else tier A when the adapter has the arrays.
+    let tier = match switches().texture_tier {
+        Some(TextureTier::A) => {
+            lacks.append(&mut array_lacks);
+            TextureTier::A
+        }
+        Some(TextureTier::C) => TextureTier::C,
+        None if array_lacks.is_empty() => TextureTier::A,
+        None => TextureTier::C,
+    };
+    let (array_cap, sampler_cap) = if tier == TextureTier::A { (array_cap, sampler_cap) } else { (0, 0) };
     if !features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC) {
         lacks.push("the BC texture compression (TEXTURE_COMPRESSION_BC)".to_string());
     }
@@ -276,7 +351,7 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
         label: Some("nirender"),
         // The draws of an extension from the GPU (the distant statics of MGE XE) need the
         // first instance and the count of indirect draws, when the adapter has them.
-        required_features: required_features()
+        required_features: required_features_of(tier)
             | (features
                 & (wgpu::Features::POLYGON_MODE_LINE
                     | wgpu::Features::TIMESTAMP_QUERY
@@ -294,6 +369,7 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
             max_texture_dimension_2d: limits.max_texture_dimension_2d.min(16384),
             max_buffer_size: limits.max_buffer_size,
             max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
+            // Tier C asks for no room in binding arrays.
             max_binding_array_elements_per_shader_stage: array_cap + sampler_cap,
             max_binding_array_sampler_elements_per_shader_stage: sampler_cap,
             ..fixed_limits()
@@ -303,7 +379,7 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     }))
     .map_err(|error| refuse(name.clone(), format!("no device: {error}")))?;
 
-    Ok(Request { adapter, info, surface, device, queue, target_format, surface_usages, present_modes, depth_format, samples, array_cap, sampler_cap })
+    Ok(Request { adapter, info, surface, device, queue, target_format, surface_usages, present_modes, depth_format, samples, array_cap, sampler_cap, tier })
 }
 
 /// `numidium.exe --probe`: asks the backends in their order, without a window, up to the
@@ -321,9 +397,10 @@ pub fn probe(backends: wgpu::Backends, texture_slots: u32) -> i32 {
         match try_backend(backend, None, wgpu::TextureFormat::Bgra8Unorm, texture_slots, 1) {
             Ok(request) => {
                 println!(
-                    "probe: {}: {}: ok; binding arrays {} textures and {} samplers (needs {ARRAY_TEXTURES} and {ARRAY_SAMPLERS}), BC yes, sampled textures {} (needs {SAMPLED_TEXTURES}), depth {:?}",
+                    "probe: {}: {}: ok; texture tier: {}; binding arrays {} textures and {} samplers (tier a needs {ARRAY_TEXTURES} and {ARRAY_SAMPLERS}), BC yes, sampled textures {} (needs {SAMPLED_TEXTURES}), depth {:?}",
                     backend_name(backend),
                     adapter_line(&request.info),
+                    request.tier.name(),
                     request.array_cap,
                     request.sampler_cap,
                     request.adapter.limits().max_sampled_textures_per_shader_stage,
@@ -391,8 +468,48 @@ mod tests {
     fn the_fixed_limits_carry_the_sampled_textures_and_the_features_the_arrays() {
         assert_eq!(fixed_limits().max_sampled_textures_per_shader_stage, SAMPLED_TEXTURES);
         assert_eq!(fixed_limits().max_bind_groups, wgpu::Limits::default().max_bind_groups);
-        assert!(required_features().contains(wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::TEXTURE_COMPRESSION_BC));
+        assert!(required_features_of(TextureTier::A).contains(wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::TEXTURE_COMPRESSION_BC));
+        // Every adapter: tier C, without the arrays.
+        assert_eq!(required_features(), wgpu::Features::TEXTURE_COMPRESSION_BC);
         assert!(!required_features().contains(wgpu::Features::DEPTH32FLOAT_STENCIL8));
+    }
+
+    #[test]
+    fn the_world_shader_of_tier_c_is_valid_wgsl() {
+        let source = tier_c_shader_source(&world_shader_source(&crate::extension::extension_shaders(None)));
+        crate::assert_wgsl("tier C", &source);
+        // The null test: the check fails on a broken line.
+        let broken = source.replacen("var t0: texture_2d<f32>;", "var t0: texture_2d<f32>", 1);
+        assert_ne!(broken, source);
+        assert!(std::panic::catch_unwind(|| crate::assert_wgsl("tier C, broken", &broken)).is_err());
+    }
+
+    #[test]
+    fn tier_c_samples_six_fixed_pairs_and_no_array() {
+        let source = tier_c_shader_source(&world_shader_source("fn extension_shade(in: VertexOut) -> vec4f { return draw.fog_color; }\n"));
+        assert!(!source.contains("binding_array") && !source.contains("textures[") && !source.contains("samplers["));
+        for stage in 0..STAGES {
+            assert!(source.contains(&format!("@group(1) @binding({stage}) var t{stage}: texture_2d<f32>;")));
+            assert!(source.contains(&format!("@group(1) @binding({}) var s{stage}: sampler;", STAGES + stage)));
+            assert!(source.contains(&format!("textureSample(t{stage}, s{stage}, ")), "stage {stage}");
+        }
+    }
+
+    /// The world shader of tier C on a device with only tier C's features (no binding arrays):
+    /// the module is made without an error. Needs a GPU:
+    /// `cargo test -p nirender-host -- --ignored tier_c_shader`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn tier_c_shader_validates_on_a_device_without_the_arrays() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let descriptor = wgpu::DeviceDescriptor { required_features: required_features_of(TextureTier::C), required_limits: fixed_limits(), ..Default::default() };
+        let (device, _queue) = pollster::block_on(adapter.request_device(&descriptor)).expect("a device");
+        let source = tier_c_shader_source(&world_shader_source(&crate::extension::extension_shaders(None)));
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let _module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("tier c"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let error = pollster::block_on(scope.pop());
+        assert!(error.is_none(), "{error:?}");
     }
 
     #[test]

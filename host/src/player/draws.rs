@@ -51,6 +51,7 @@ impl Player {
         }
         let arrays = match small {
             Some((group, _)) => group.clone(),
+            None if renderer.tier == crate::request::TextureTier::C => renderer.stage_group(draw.texture_handles, draw.sampler_values, self.pass_target),
             None => renderer.array_group_for(self.pass_target),
         };
         let small = small.is_some();
@@ -373,6 +374,7 @@ impl Player {
             vertices: vertex_buffer,
             indexes: index_buffer,
             texture_handles: handles,
+            sampler_values,
             range: (geometry_first + first_index, indexes),
             base_vertex,
             instances: (instance, 1),

@@ -82,9 +82,11 @@ mod player;
 use engine::{plan, scene};
 mod retained;
 mod request;
+mod stage_groups;
+use stage_groups::{StageGroups, StageKey};
 /// The request of the GPU and what a check of a shader without a GPU takes from it (the
 /// helper of MGE XE, `shader_check` of mgeHost64), the probe, and the exit code of a refusal.
-pub use request::{fixed_limits, probe, required_features, world_shader_source, Refusal, ARRAY_SAMPLERS, ARRAY_TEXTURES, SAMPLED_TEXTURES};
+pub use request::{fixed_limits, probe, required_features, required_features_of, tier_c_shader_source, world_shader_source, Refusal, TextureTier, ARRAY_SAMPLERS, ARRAY_TEXTURES, SAMPLED_TEXTURES};
 mod uv_animation;
 mod morph;
 pub mod stamps;
@@ -627,6 +629,12 @@ struct Renderer {
     frame_samplers: Vec<Rc<wgpu::Sampler>>,
     array_group: Option<Rc<wgpu::BindGroup>>,
     array_variants: FxHashMap<u32, Rc<wgpu::BindGroup>>,
+    /// How the world shader takes the textures (tier A: the arrays above; tier C: the groups
+    /// below; `request::TextureTier`).
+    pub(crate) tier: request::TextureTier,
+    /// Tier C: the group of each set of the 6 textures and the 6 samplers of the stages
+    /// (`Renderer::stage_group`).
+    stage_groups: StageGroups<Rc<wgpu::BindGroup>>,
     /// The geometry records, by the geometry data of the game; their vertices and indexes
     /// in pools (`pool`), and the ranges of records replaced in this frame, given back at
     /// the start of the next.
