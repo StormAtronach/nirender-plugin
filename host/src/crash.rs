@@ -166,7 +166,7 @@ static DUMP: OnceLock<PathBuf> = OnceLock::new();
 /// callback of the dump writer compares the modules with it and allocates nothing.
 static PROGRAM: OnceLock<Vec<u16>> = OnceLock::new();
 /// The seconds that the stall dump may take: then the program ends without it (the dump
-/// writer can wait for a lock that the suspended frame thread holds, [I]).
+/// writer can wait for a lock that the suspended frame thread holds, \[I\]).
 const STALL_DUMP_SECONDS: u32 = 10;
 /// STD_OUTPUT_HANDLE.
 const STD_OUTPUT: u32 = -11i32 as u32;

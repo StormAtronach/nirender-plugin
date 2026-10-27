@@ -105,6 +105,9 @@ pub(crate) struct Switches {
     /// ([`crate::request::TextureTier`]); unset, tier A when the adapter has the binding arrays,
     /// else tier C.
     pub(crate) texture_tier: Option<crate::request::TextureTier>,
+    /// `MGE_XE_OLD_GPU=least|downlevel`: the adapter taken as an old graphics card in the
+    /// request and the probe ([`crate::request::OldGpu`]); unset, the adapter as it is.
+    pub(crate) old_gpu: Option<crate::request::OldGpu>,
     /// `MGE_XE_MEMORY_MINUTES=<n>`: in the live mode the log gets the memory report
     /// ([`crate::gpu::memory_lines`]) at the first frame and then every n minutes; 0 or unset:
     /// none. For a long run (risk 43).
@@ -150,6 +153,7 @@ impl Switches {
             // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
             box_seconds: read.parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |v| v.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600)),
             texture_tier: read.choice("MGE_XE_TEXTURE_TIER", &["a", "c"]).map(|tier| if tier == "a" { crate::request::TextureTier::A } else { crate::request::TextureTier::C }),
+            old_gpu: read.choice("MGE_XE_OLD_GPU", &["least", "downlevel"]).map(|old| if old == "least" { crate::request::OldGpu::Least } else { crate::request::OldGpu::Downlevel }),
             memory_minutes: read.number("MGE_XE_MEMORY_MINUTES").unwrap_or(0),
         };
         read.report();

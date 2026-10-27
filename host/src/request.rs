@@ -52,6 +52,50 @@ pub fn fixed_limits() -> wgpu::Limits {
     wgpu::Limits { max_sampled_textures_per_shader_stage: SAMPLED_TEXTURES, ..wgpu::Limits::default() }
 }
 
+/// `MGE_XE_OLD_GPU=least|downlevel`: the adapter taken as an old graphics card, for a test of
+/// the path of old hardware on any machine. The request and the probe see the features and the
+/// limits of the profile in the place of the adapter's (each limit at most the adapter's), and
+/// the device gets them, so that wgpu's validation refuses anything above them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OldGpu {
+    /// `least`: the limits that the request asks for ([`fixed_limits`]: wgpu's defaults with
+    /// 32 sampled textures in a stage; buffers of 256 MiB and storage bindings of 128 MiB),
+    /// with textures of 16384, as every Direct3D 12 adapter of wgpu has (the atlas of MGE XE's
+    /// distant statics is 16384 wide). A real adapter of tier C (on Direct3D 12, resource
+    /// binding tier 2, NVIDIA Kepler; wgpu 30 offers no tier 1 adapter) is above it in each
+    /// limit.
+    Least,
+    /// `downlevel`: wgpu's downlevel limits (textures of 2048, 4 storage buffers in a stage),
+    /// a class of adapter below the backends of the renderer: the request names the lacks.
+    Downlevel,
+}
+
+impl OldGpu {
+    pub fn name(self) -> &'static str {
+        match self {
+            OldGpu::Least => "least",
+            OldGpu::Downlevel => "downlevel",
+        }
+    }
+
+    /// The limits of the profile, at most the adapter's.
+    fn limits(self, adapter: &wgpu::Limits) -> wgpu::Limits {
+        let profile = match self {
+            OldGpu::Least => wgpu::Limits { max_texture_dimension_2d: 16384, ..fixed_limits() },
+            OldGpu::Downlevel => wgpu::Limits::downlevel_defaults(),
+        };
+        profile.or_worse_values_from(adapter)
+    }
+
+    /// The features of the profile: the BC compression and the line mode, which every Direct3D
+    /// 12 adapter of wgpu has, and a Vulkan adapter with `fillModeNonSolid`. No binding arrays
+    /// (texture tier C), no float depth, no time stamps, no first instance or count of indirect
+    /// draws.
+    fn features(self) -> wgpu::Features {
+        wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::POLYGON_MODE_LINE
+    }
+}
+
 /// How the world shader takes the textures of a draw (milestone 12, the texture binding tiers:
 /// the design `notes/designs-2026-10/texture-tiers-design.md` of the Numidium project).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -116,7 +160,6 @@ fn array_features() -> wgpu::Features {
 /// A backend, an adapter and a device that have what the renderer needs, with the choices
 /// made from what the adapter has.
 pub(crate) struct Request {
-    pub adapter: wgpu::Adapter,
     pub info: wgpu::AdapterInfo,
     pub surface: Option<wgpu::Surface<'static>>,
     pub device: wgpu::Device,
@@ -134,6 +177,10 @@ pub(crate) struct Request {
     pub sampler_cap: u32,
     /// How the world shader takes the textures ([`TextureTier`]).
     pub tier: TextureTier,
+    /// The features and the limits of the adapter as the request took them: with
+    /// `MGE_XE_OLD_GPU`, those of the profile ([`OldGpu`]).
+    pub features: wgpu::Features,
+    pub limits: wgpu::Limits,
 }
 
 impl Request {
@@ -147,11 +194,21 @@ impl Request {
             "depth: {:?}, {} (the adapter {} Depth32FloatStencil8{}{})",
             self.depth_format,
             if depth::reversed() { "reversed" } else { "plain" },
-            if self.adapter.features().contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) { "has" } else { "lacks" },
+            if self.features.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) { "has" } else { "lacks" },
             if switches().depth24 { "; MGE_XE_DEPTH_FORMAT=24" } else { "" },
             if switches().depth_plain { "; MGE_XE_DEPTH_REVERSED=0" } else { "" }
         );
         println!("multisampling: {} samples for each pixel of the frame", self.samples);
+        if let Some(old) = switches().old_gpu {
+            println!(
+                "old graphics card: MGE_XE_OLD_GPU={}: the features the BC compression and the line mode; textures up to {}, {} sampled textures in a stage, {} storage buffers in a stage, storage bindings of {} MiB",
+                old.name(),
+                self.limits.max_texture_dimension_2d,
+                self.limits.max_sampled_textures_per_shader_stage,
+                self.limits.max_storage_buffers_per_shader_stage,
+                self.limits.max_storage_buffer_binding_size >> 20
+            );
+        }
         match self.tier {
             TextureTier::A => println!("texture tier: a (binding arrays: room for {} textures and {} samplers)", self.array_cap, self.sampler_cap),
             TextureTier::C => println!("texture tier: c (a group of {STAGES} textures and {STAGES} samplers for each set; no binding arrays)"),
@@ -266,9 +323,11 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     let info = adapter.get_info();
     let name = Some(adapter_line(&info));
 
-    // The needs, each with its number.
-    let features = adapter.features();
-    let limits = adapter.limits();
+    // The needs, each with its number. `MGE_XE_OLD_GPU` takes the adapter as an old card.
+    let (features, limits) = match switches().old_gpu {
+        Some(old) => (adapter.features() & old.features(), old.limits(&adapter.limits())),
+        None => (adapter.features(), adapter.limits()),
+    };
     let mut lacks = Vec::new();
     // The arrays' lacks: a refusal for tier A forced; else they give tier C.
     let mut array_lacks = Vec::new();
@@ -310,8 +369,15 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     if limits.max_sampled_textures_per_shader_stage < SAMPLED_TEXTURES {
         lacks.push(format!("sampled textures in one stage: has {}, needs {SAMPLED_TEXTURES}", limits.max_sampled_textures_per_shader_stage));
     }
+    // The other limits that the request asks for whatever the adapter (a device without them
+    // is refused at its request).
+    fixed_limits().check_limits_with_fail_fn(&limits, false, |name, needs, has| {
+        if name != "max_sampled_textures_per_shader_stage" {
+            lacks.push(format!("{name}: has {has}, needs {needs}"));
+        }
+    });
     if !lacks.is_empty() {
-        return Err(refuse(name, format!("lacks {}", lacks.join("; "))));
+        return Err(refuse(name, lacks_text(backend, &lacks)));
     }
 
     // The choices from what the adapter has.
@@ -379,8 +445,22 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     }))
     .map_err(|error| refuse(name.clone(), format!("no device: {error}")))?;
 
-    Ok(Request { adapter, info, surface, device, queue, target_format, surface_usages, present_modes, depth_format, samples, array_cap, sampler_cap, tier })
+    Ok(Request { info, surface, device, queue, target_format, surface_usages, present_modes, depth_format, samples, array_cap, sampler_cap, tier, features, limits })
 }
+
+/// The lacks that the refusal names: the first [`LACKS_NAMED`], then their count. The probe's
+/// lines and the box of d3d8.dll have a limit of length; all the lacks go into a line of their
+/// own, which does not start with `probe: ` (d3d8.dll leaves such lines out of mgeXE.log).
+fn lacks_text(backend: wgpu::Backends, lacks: &[String]) -> String {
+    if lacks.len() <= LACKS_NAMED {
+        return format!("lacks {}", lacks.join("; "));
+    }
+    println!("{}: all the lacks: {}", backend_name(backend), lacks.join("; "));
+    format!("lacks {}; and {} more", lacks[..LACKS_NAMED].join("; "), lacks.len() - LACKS_NAMED)
+}
+
+/// The lacks that a refusal names before their count ([`lacks_text`]).
+const LACKS_NAMED: usize = 3;
 
 /// `numidium.exe --probe`: asks the backends in their order, without a window, up to the
 /// first that serves, as the live start does, and prints one line for each asked, the
@@ -397,13 +477,14 @@ pub fn probe(backends: wgpu::Backends, texture_slots: u32) -> i32 {
         match try_backend(backend, None, wgpu::TextureFormat::Bgra8Unorm, texture_slots, 1) {
             Ok(request) => {
                 println!(
-                    "probe: {}: {}: ok; texture tier: {}; binding arrays {} textures and {} samplers (tier a needs {ARRAY_TEXTURES} and {ARRAY_SAMPLERS}), BC yes, sampled textures {} (needs {SAMPLED_TEXTURES}), depth {:?}",
+                    "probe: {}: {}: ok; texture tier: {}{}; binding arrays {} textures and {} samplers (tier a needs {ARRAY_TEXTURES} and {ARRAY_SAMPLERS}), BC yes, sampled textures {} (needs {SAMPLED_TEXTURES}), depth {:?}",
                     backend_name(backend),
                     adapter_line(&request.info),
                     request.tier.name(),
+                    switches().old_gpu.map(|old| format!(" (MGE_XE_OLD_GPU={})", old.name())).unwrap_or_default(),
                     request.array_cap,
                     request.sampler_cap,
-                    request.adapter.limits().max_sampled_textures_per_shader_stage,
+                    request.limits.max_sampled_textures_per_shader_stage,
                     request.depth_format
                 );
                 usable = Some(backend);
@@ -472,6 +553,31 @@ mod tests {
         // Every adapter: tier C, without the arrays.
         assert_eq!(required_features(), wgpu::Features::TEXTURE_COMPRESSION_BC);
         assert!(!required_features().contains(wgpu::Features::DEPTH32FLOAT_STENCIL8));
+    }
+
+    #[test]
+    fn a_refusal_names_three_lacks_and_counts_the_rest() {
+        let lacks: Vec<String> = (1..=5).map(|n| format!("lack {n}")).collect();
+        assert_eq!(lacks_text(wgpu::Backends::VULKAN, &lacks), "lacks lack 1; lack 2; lack 3; and 2 more");
+        assert_eq!(lacks_text(wgpu::Backends::VULKAN, &lacks[..3]), "lacks lack 1; lack 2; lack 3");
+    }
+
+    #[test]
+    fn the_old_gpu_profiles_cut_the_adapter_and_the_least_one_passes() {
+        let large = wgpu::Limits { max_texture_dimension_2d: 32768, max_storage_buffer_binding_size: 1 << 32, max_sampled_textures_per_shader_stage: 1 << 20, ..wgpu::Limits::default() };
+        let least = OldGpu::Least.limits(&large);
+        assert_eq!(least.max_texture_dimension_2d, 16384);
+        assert_eq!(least.max_storage_buffer_binding_size, 128 << 20);
+        assert_eq!(least.max_sampled_textures_per_shader_stage, SAMPLED_TEXTURES);
+        assert!(fixed_limits().check_limits(&least), "the request does not take its least adapter");
+        // A profile is never above the adapter.
+        let small = wgpu::Limits { max_texture_dimension_2d: 4096, ..fixed_limits() };
+        assert_eq!(OldGpu::Least.limits(&small).max_texture_dimension_2d, 4096);
+        // The downlevel profile lacks some of what the request asks for, by name.
+        let mut lacks = Vec::new();
+        fixed_limits().check_limits_with_fail_fn(&OldGpu::Downlevel.limits(&large), false, |name, _, _| lacks.push(name));
+        assert!(lacks.contains(&"max_storage_buffers_per_shader_stage") && lacks.contains(&"max_texture_dimension_2d"), "{lacks:?}");
+        assert_eq!(OldGpu::Least.features(), wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::POLYGON_MODE_LINE);
     }
 
     #[test]
