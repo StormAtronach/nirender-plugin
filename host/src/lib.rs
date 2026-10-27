@@ -38,6 +38,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 pub mod depth;
 mod depth_merge;
 mod gamma;
+mod late_depth;
 mod live;
 mod multisample;
 mod picture;
@@ -861,6 +862,11 @@ struct Player {
     world_depth: Option<wgpu::Texture>,
     world_depth_kept: bool,
     world_depth_projection: Option<[f32; 16]>,
+    /// The depth of the frame before and after a late sorted run, and the pass that puts what
+    /// the run wrote into the copy of the world depth ([`late_depth`]).
+    late_before: Option<wgpu::Texture>,
+    late_after: Option<wgpu::Texture>,
+    late_depth: Option<late_depth::LateDepth>,
     first_person_drawn: bool,
     /// The depth of the draws of [`Extension::before_world`], for [`Extension::post`]: the
     /// renderer clears the depth after them.
