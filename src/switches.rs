@@ -78,9 +78,11 @@ fn bad_value_line(name: &str, value: &str, expected: &str, taken: &str) -> Strin
     format!("switch {name}={value}: not {expected}; {taken}")
 }
 
-/// One log line with every switch that is set, for the start of the log.
+/// One log line with every switch that is set, for the start of the log. A name or a value
+/// that is not Unicode is shown lossily (`vars` would panic on it).
 pub fn log_set() {
-    crate::log!("{}", set_line(std::env::vars()));
+    let variables = std::env::vars_os().map(|(name, value)| (name.to_string_lossy().into_owned(), value.to_string_lossy().into_owned()));
+    crate::log!("{}", set_line(variables));
 }
 
 /// The switches among `variables`, in the order of their names.
@@ -98,6 +100,12 @@ fn set_line(variables: impl Iterator<Item = (String, String)>) -> String {
 mod tests {
     use super::*;
 
+    /// A name of a test switch, from the prefix: a name in quotes would look like a read of
+    /// the code to `tools/check_readme.py`, which wants every read in README.md.
+    fn test_switch(suffix: &str) -> String {
+        format!("{}TEST_SWITCH_{suffix}", PREFIXES[0])
+    }
+
     #[test]
     fn on_takes_1_and_0_only() {
         assert_eq!(parse_on("1"), Some(true));
@@ -108,35 +116,38 @@ mod tests {
 
     #[test]
     fn a_set_switch_is_read_through_each_form() {
-        std::env::set_var("NIRENDER_TEST_SWITCH_ON", "1");
-        std::env::set_var("NIRENDER_TEST_SWITCH_NUMBER", "12");
-        std::env::set_var("NIRENDER_TEST_SWITCH_CHOICE", "check");
-        assert_eq!(on("NIRENDER_TEST_SWITCH_ON"), Some(true));
-        assert_eq!(on("NIRENDER_TEST_SWITCH_NOT_SET"), None);
-        assert_eq!(number("NIRENDER_TEST_SWITCH_NUMBER", 3u32), 12);
-        assert_eq!(number("NIRENDER_TEST_SWITCH_NOT_SET", 3u32), 3);
-        assert_eq!(number_from_to("NIRENDER_TEST_SWITCH_NUMBER", 64u32, 1, 4096), 12);
-        assert_eq!(choice("NIRENDER_TEST_SWITCH_CHOICE", &["0", "check"]), Some("check"));
-        assert_eq!(parsed("NIRENDER_TEST_SWITCH_CHOICE", "check", |value| (value == "check").then_some(7)), Some(7));
+        let (on_name, number_name, choice_name, not_set) = (test_switch("ON"), test_switch("NUMBER"), test_switch("CHOICE"), test_switch("NOT_SET"));
+        std::env::set_var(&on_name, "1");
+        std::env::set_var(&number_name, "12");
+        std::env::set_var(&choice_name, "check");
+        assert_eq!(on(&on_name), Some(true));
+        assert_eq!(on(&not_set), None);
+        assert_eq!(number(&number_name, 3u32), 12);
+        assert_eq!(number(&not_set, 3u32), 3);
+        assert_eq!(number_from_to(&number_name, 64u32, 1, 512), 12);
+        assert_eq!(choice(&choice_name, &["0", "check"]), Some("check"));
+        assert_eq!(parsed(&choice_name, "check", |value| (value == "check").then_some(7)), Some(7));
     }
 
     #[test]
     fn a_bad_value_gives_the_default_and_a_line() {
-        std::env::set_var("NIRENDER_TEST_SWITCH_BAD", "many");
-        assert_eq!(on("NIRENDER_TEST_SWITCH_BAD"), None);
-        assert_eq!(number("NIRENDER_TEST_SWITCH_BAD", 3u32), 3);
-        assert_eq!(number_from_to("NIRENDER_TEST_SWITCH_BAD", 64u32, 1, 4096), 64);
-        assert_eq!(choice("NIRENDER_TEST_SWITCH_BAD", &["0", "check"]), None);
-        std::env::set_var("NIRENDER_TEST_SWITCH_LARGE", "5000");
-        assert_eq!(number_from_to("NIRENDER_TEST_SWITCH_LARGE", 64u32, 1, 4096), 64);
-        assert_eq!(bad_value_line("NIRENDER_X", "many", "1 or 0", "not set"), "switch NIRENDER_X=many: not 1 or 0; not set");
+        let (bad, large) = (test_switch("BAD"), test_switch("LARGE"));
+        std::env::set_var(&bad, "many");
+        assert_eq!(on(&bad), None);
+        assert_eq!(number(&bad, 3u32), 3);
+        assert_eq!(number_from_to(&bad, 64u32, 1, 512), 64);
+        assert_eq!(choice(&bad, &["0", "check"]), None);
+        std::env::set_var(&large, "5000");
+        assert_eq!(number_from_to(&large, 64u32, 1, 512), 64);
+        assert_eq!(bad_value_line(&test_switch("X"), "many", "1 or 0", "not set"), format!("switch {}: not 1 or 0; not set", format!("{}=many", test_switch("X"))));
     }
 
     #[test]
     fn the_set_line_names_the_switches_in_order() {
-        let variables = [("PATH", "x"), ("NIRENDER_B", "2"), ("MGE_XE_A", "1"), ("HOME", "y")];
+        let (b, a) = (format!("{}B", PREFIXES[0]), format!("{}A", PREFIXES[1]));
+        let variables = [("PATH", "x"), (b.as_str(), "2"), (a.as_str(), "1"), ("HOME", "y")];
         let line = set_line(variables.iter().map(|(name, value)| (name.to_string(), value.to_string())));
-        assert_eq!(line, "switches set: MGE_XE_A=1, NIRENDER_B=2");
+        assert_eq!(line, format!("switches set: {a}=1, {b}=2"));
         assert_eq!(set_line(std::iter::empty()), "switches: none set");
     }
 }

@@ -409,7 +409,7 @@ unsafe fn device_window(s: &State) -> u32 {
 unsafe fn start_stream(s: &State) {
     crate::own_host::activate();
     let name = format!("nirender-{}", GetCurrentProcessId());
-    let megabytes = crate::switches::number_from_to("NIRENDER_RING_MB", 64, 1, 4096);
+    let megabytes = crate::switches::number_from_to("NIRENDER_RING_MB", 64, 1, 512);
     if let Err(problem) = crate::capture::start_direct(&name, megabytes, s.parameters[0], s.parameters[1], device_window(s)) {
         crate::log!("own device: no stream: {problem}");
         return;

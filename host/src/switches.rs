@@ -4,7 +4,9 @@
 //! each value that a read cannot take, which names the switch, the value and what is taken
 //! instead. README.md of the plugin names every switch, and `tools/check_readme.py` checks it.
 
+use core::fmt::Display;
 use core::str::FromStr;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use crate::wgpu;
@@ -155,12 +157,17 @@ impl Read {
     }
 
     /// The value of a switch through `parse`; a value that `parse` refuses gives a line that
-    /// names `expected`, the values that it takes.
+    /// names `expected`, the values that it takes, and "not set" as what is taken.
     fn parsed<T>(&mut self, name: &str, expected: &str, parse: impl FnOnce(&str) -> Option<T>) -> Option<T> {
+        self.parsed_or(name, expected, "not set", parse)
+    }
+
+    /// `parsed`, with `taken` as what the line names in place of the bad value.
+    fn parsed_or<T>(&mut self, name: &str, expected: &str, taken: &str, parse: impl FnOnce(&str) -> Option<T>) -> Option<T> {
         let value = self.text(name)?;
         let parsed = parse(&value);
         if parsed.is_none() {
-            self.problems.push(bad_value_line(name, &value, expected));
+            self.problems.push(bad_value_line(name, &value, expected, taken));
         }
         parsed
     }
@@ -185,8 +192,19 @@ pub fn on(name: &str) -> Option<bool> {
 }
 
 /// A number; a value that is not one is named in the log at once, and `default` is taken.
-pub fn number<T: FromStr>(name: &str, default: T) -> T {
-    read_now(|read| read.number(name)).unwrap_or(default)
+pub fn number<T: FromStr + Display>(name: &str, default: T) -> T {
+    read_now(|read| read.parsed_or(name, "a number", &default.to_string(), |value| value.parse().ok())).unwrap_or(default)
+}
+
+/// The path that a switch names, when it is set: a path is read as it is, not as Unicode.
+pub fn path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).map(PathBuf::from)
+}
+
+/// The time stamps of the parts of the frame are on (`MGE_XE_GPU_TIME=1`): one read for
+/// the renderer and the extension.
+pub fn gpu_time() -> bool {
+    switches().gpu_time
 }
 
 /// One of the values in `allowed`: `None` when the switch is not set, or when it has another
@@ -218,8 +236,8 @@ fn parse_on(value: &str) -> Option<bool> {
     }
 }
 
-fn bad_value_line(name: &str, value: &str, expected: &str) -> String {
-    format!("switch {name}={value}: not {expected}; not set")
+fn bad_value_line(name: &str, value: &str, expected: &str, taken: &str) -> String {
+    format!("switch {name}={value}: not {expected}; {taken}")
 }
 
 /// The switches of the process, read at the first call.
@@ -229,9 +247,11 @@ pub(crate) fn switches() -> &'static Switches {
 }
 
 /// One log line with every switch that is set, for the start of the log, then the lines
-/// about the values that the reads cannot take.
+/// about the values that the reads cannot take. A name or a value that is not Unicode is
+/// shown lossily (`vars` would panic on it).
 pub(crate) fn log_set() {
-    println!("{}", set_line(std::env::vars()));
+    let variables = std::env::vars_os().map(|(name, value)| (name.to_string_lossy().into_owned(), value.to_string_lossy().into_owned()));
+    println!("{}", set_line(variables));
     let _ = switches();
 }
 
@@ -257,49 +277,60 @@ mod tests {
         assert_eq!(parse_on("yes"), None);
     }
 
+    /// A name of a test switch, from the prefix: a name in quotes would look like a read of
+    /// the code to `tools/check_readme.py`, which wants every read in README.md.
+    fn test_switch(suffix: &str) -> String {
+        format!("{}TEST_SWITCH_{suffix}", PREFIXES[1])
+    }
+
     #[test]
     fn a_read_takes_good_values_and_names_bad_ones() {
-        std::env::set_var("MGE_XE_TEST_SWITCH_ON", "1");
-        std::env::set_var("MGE_XE_TEST_SWITCH_NUMBER", "12");
-        std::env::set_var("MGE_XE_TEST_SWITCH_CHOICE", "fifo");
-        std::env::set_var("MGE_XE_TEST_SWITCH_BAD", "many");
+        let (on_name, number_name, choice_name, bad) = (test_switch("ON"), test_switch("NUMBER"), test_switch("CHOICE"), test_switch("BAD"));
+        std::env::set_var(&on_name, "1");
+        std::env::set_var(&number_name, "12");
+        std::env::set_var(&choice_name, "fifo");
+        std::env::set_var(&bad, "many");
         let mut read = Read::default();
-        assert_eq!(read.on("MGE_XE_TEST_SWITCH_ON"), Some(true));
-        assert_eq!(read.on("MGE_XE_TEST_SWITCH_NOT_SET"), None);
-        assert_eq!(read.number::<u32>("MGE_XE_TEST_SWITCH_NUMBER"), Some(12));
-        assert_eq!(read.choice("MGE_XE_TEST_SWITCH_CHOICE", &["fifo", "auto"]), Some("fifo"));
+        assert_eq!(read.on(&on_name), Some(true));
+        assert_eq!(read.on(&test_switch("NOT_SET")), None);
+        assert_eq!(read.number::<u32>(&number_name), Some(12));
+        assert_eq!(read.choice(&choice_name, &["fifo", "auto"]), Some("fifo"));
         assert!(read.problems.is_empty());
 
-        assert_eq!(read.on("MGE_XE_TEST_SWITCH_BAD"), None);
-        assert_eq!(read.number::<u32>("MGE_XE_TEST_SWITCH_BAD"), None);
-        assert_eq!(read.choice("MGE_XE_TEST_SWITCH_BAD", &["fifo", "auto"]), None);
+        assert_eq!(read.on(&bad), None);
+        assert_eq!(read.number::<u32>(&bad), None);
+        assert_eq!(read.choice(&bad, &["fifo", "auto"]), None);
         assert_eq!(
             read.problems,
             [
-                "switch MGE_XE_TEST_SWITCH_BAD=many: not 1 or 0; not set",
-                "switch MGE_XE_TEST_SWITCH_BAD=many: not a number; not set",
-                "switch MGE_XE_TEST_SWITCH_BAD=many: not fifo, auto; not set",
+                format!("switch {bad}=many: not 1 or 0; not set"),
+                format!("switch {bad}=many: not a number; not set"),
+                format!("switch {bad}=many: not fifo, auto; not set"),
             ]
         );
     }
 
     #[test]
     fn a_read_of_a_program_gives_the_default_for_a_bad_value() {
-        std::env::set_var("MGE_XE_TEST_SWITCH_DEBUG", "0.5");
-        std::env::set_var("MGE_XE_TEST_SWITCH_WORDS", "many");
-        assert_eq!(number("MGE_XE_TEST_SWITCH_DEBUG", 0.0), 0.5);
-        assert_eq!(number("MGE_XE_TEST_SWITCH_WORDS", 0.0), 0.0);
-        assert_eq!(number("MGE_XE_TEST_SWITCH_NOT_SET", 0.0), 0.0);
-        assert_eq!(on("MGE_XE_TEST_SWITCH_WORDS"), None);
-        assert_eq!(choice("MGE_XE_TEST_SWITCH_WORDS", &["cpu", "gpu"]), None);
-        assert_eq!(text("MGE_XE_TEST_SWITCH_WORDS").as_deref(), Some("many"));
+        let (debug, words) = (test_switch("DEBUG"), test_switch("WORDS"));
+        std::env::set_var(&debug, "0.5");
+        std::env::set_var(&words, "many");
+        assert_eq!(number(&debug, 0.0), 0.5);
+        assert_eq!(number(&words, 0.0), 0.0);
+        assert_eq!(number(&test_switch("NOT_SET"), 0.0), 0.0);
+        assert_eq!(on(&words), None);
+        assert_eq!(choice(&words, &["cpu", "gpu"]), None);
+        assert_eq!(text(&words).as_deref(), Some("many"));
+        assert_eq!(path(&words).as_deref(), Some(std::path::Path::new("many")));
+        assert_eq!(bad_value_line(&words, "many", "a number", "0"), format!("switch {words}=many: not a number; 0"));
     }
 
     #[test]
     fn the_set_line_names_the_switches_in_order() {
-        let variables = [("PATH", "x"), ("NIRENDER_B", "2"), ("MGE_XE_A", "1"), ("HOME", "y")];
+        let (b, a) = (format!("{}B", PREFIXES[0]), format!("{}A", PREFIXES[1]));
+        let variables = [("PATH", "x"), (b.as_str(), "2"), (a.as_str(), "1"), ("HOME", "y")];
         let line = set_line(variables.iter().map(|(name, value)| (name.to_string(), value.to_string())));
-        assert_eq!(line, "switches set: MGE_XE_A=1, NIRENDER_B=2");
+        assert_eq!(line, format!("switches set: {a}=1, {b}=2"));
         assert_eq!(set_line(std::iter::empty()), "switches: none set");
     }
 }
