@@ -88,8 +88,9 @@ pub unsafe fn check_host() {
     message_box(&format!(
         "The wgpu renderer of MGE XE ({name}) has stopped (exit code {code:#x}).\n\n\
          The game cannot show a new picture: close it with Alt+F4.\n\n\
-         The folder of the game has the details: the logs nirender-host.log, nirender.log and \
-         mgeHost64.log, and the minidump numidium.dmp after a crash of the renderer."
+         The folder of the game has the details: the logs nirender-host.log, mgeXE.log (its lines \
+         that start with \"nirender: \") and mgeHost64.log, and the minidump numidium.dmp after a crash \
+         of the renderer."
     ));
 }
 
