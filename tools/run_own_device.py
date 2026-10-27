@@ -68,6 +68,18 @@ def plugin_dll_of(argument, environment, default):
     return default, "the release build of this repository"
 
 
+def env_of(entries):
+    """The variables of `--env NAME=VALUE`, in their order: a later value of a name wins. The
+    value is all after the first `=`."""
+    variables = {}
+    for entry in entries:
+        name, equals, value = entry.partition("=")
+        if not equals or not name:
+            raise SystemExit("--env takes NAME=VALUE, not %r" % entry)
+        variables[name] = value
+    return variables
+
+
 def self_test():
     """The tests of the argument handling: no game, no build."""
     build = os.path.join("target", "akulakhan.dll")
@@ -75,6 +87,23 @@ def self_test():
     assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
     assert plugin_dll_of(None, {}, build) == (build, "the release build of this repository")
     assert plugin_dll_of("", {}, build)[0] == build
+    assert env_of([]) == {}
+    assert env_of(["MGE_XE_BOX_SECONDS=90", "A=1=2", "B=", "A=3"]) == {"MGE_XE_BOX_SECONDS": "90", "A": "3", "B": ""}
+    for bad in ("NOVALUE", "=1"):
+        try:
+            env_of([bad])
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("--env %s was taken" % bad)
+    # An --env value of the box time wins over the runner's default of 5 s, as in main.
+    environment = {}
+    environment.update(env_of(["MGE_XE_BOX_SECONDS=90"]))
+    environment.setdefault("MGE_XE_BOX_SECONDS", "5")
+    assert environment["MGE_XE_BOX_SECONDS"] == "90"
+    environment = {}
+    environment.setdefault("MGE_XE_BOX_SECONDS", "5")
+    assert environment["MGE_XE_BOX_SECONDS"] == "5"
     import io
 
     console, log = io.StringIO(), io.StringIO()
@@ -157,11 +186,18 @@ def main():
                     "a test texture or mesh; the run's mod wins over the instance's mods")
     ap.add_argument("--mwse-dll", help="another MWSE.dll for this run only (as --add-file <it>=Root/MWSE.dll): an A/B of an MWSE build "
                     "without a change to the instance")
+    ap.add_argument("--env", action="append", default=[], metavar="NAME=VALUE",
+                    help="a variable for the game's process (the plugin, the helper and MGE XE read it), for this run only; "
+                    "again for more. It wins over the runner's default box time (MGE_XE_BOX_SECONDS=5); the variables "
+                    "that the runner sets for the run itself (NIRENDER_HOST_LOG, NIRENDER_BACKEND, NIRENDER_HOST_ARGS, "
+                    "NIRENDER_HOST_EXE) win over it")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
     if args.self_test:
         self_test()
         return 0
+    # The game is started from this process: its variables go into the game's environment.
+    os.environ.update(env_of(args.env))
     if args.log:
         # The runner's own lines go to the console and to the file; the file is the one a
         # shell redirect wrote before.
