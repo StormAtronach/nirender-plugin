@@ -236,6 +236,8 @@ def notes_problems(notes, gated):
     problems = tested_block_problems(notes, gated)
     if SHA_TOKEN not in notes:
         problems.append("no %s token for the archive's SHA-256" % SHA_TOKEN)
+    if not gated and GATE_TOKEN in notes:
+        problems.append("the token %s with --no-gate: write the gate's result by hand" % GATE_TOKEN)
     return problems
 
 
@@ -408,6 +410,9 @@ def self_test():
     assert manifest.endswith("\n%s  12  Data Files/a.dds\n%s  3  d3d8.dll\n" % ("cd" * 32, "ef" * 32)), manifest
     assert notes_problems("## Tested\n\n- {gate}\n- run 20261027-120302-x\n", gated=True) == ["no {sha256} token for the archive's SHA-256"]
     assert notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- run 20261027-120302-x\n", gated=True) == []
+    # With --no-gate a leftover token is found at the start, not after the build.
+    leftover = notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- run 20261027-120302-x\n", gated=False)
+    assert leftover[-1] == "the token {gate} with --no-gate: write the gate's result by hand", leftover
     assert GATE_RESULT.findall("  ok   " + lines[0] + "\n  FAIL  1 of 2 pictures equal to the accepted ones in c\n") == [lines[0], "1 of 2 pictures equal to the accepted ones in c"]
     assert render_link_tag("v0.3.3") == "nirender-v0.3.3"
     assert plugin_of_the_build(os.path.join("C:\\", "repos", "MGE-XE-G7-render-link")) == os.path.realpath(os.path.join("C:\\", "repos", "nirender-plugin"))
@@ -536,10 +541,7 @@ def main():
 
     # The gate on the helper that ships, and its result into the notes.
     values = {SHA_TOKEN: digest}
-    if args.no_gate:
-        if GATE_TOKEN in notes:
-            stop("--no-gate: the notes still have the token %s; write the gate's result by hand" % GATE_TOKEN, args.dry_run)
-    else:
+    if not args.no_gate:
         values[GATE_TOKEN] = gate_text(gate(unpacked, args.dry_run))
     notes_path = os.path.join(args.mge, "dist", "notes-%s.md" % tag)
     write_text(notes_path, fill_tokens(notes, values))
