@@ -15,11 +15,10 @@
 
 use core::ffi::c_void;
 
-use crate::win::{GetModuleFileNameW, RtlCaptureStackBackTrace};
+use crate::win::{GetModuleFileNameW, GetModuleHandleExW, RtlCaptureStackBackTrace};
 
 #[link(name = "kernel32")]
 extern "system" {
-    fn GetModuleHandleExW(flags: u32, address: *const c_void, module: *mut *mut c_void) -> i32;
     fn RaiseException(code: u32, flags: u32, count: u32, arguments: *const usize);
 }
 
@@ -43,6 +42,7 @@ pub fn install_panic_hook() {
         for line in backtrace() {
             crate::log!("  {line}");
         }
+        crate::log!("a release build of the plugin keeps no frame pointers: the backtrace above can be short; the crash log and the minidump of MWSE have the whole stack");
         crate::log!("the crash logger of MWSE takes it from here: MWSE.log and MWSE_MiniDump.dmp");
         raise_for_crash_logger(&message);
     }));

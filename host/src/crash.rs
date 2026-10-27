@@ -7,6 +7,8 @@
 //! message and the backtrace went into the log. A crash that is not a panic (an access
 //! violation in a driver, for example) comes to the unhandled exception filter of the
 //! process, which writes the same minidump, with the exception in it, and a line in the log.
+//! A stack overflow is the exception: the runtime ends the program on its guard page before
+//! any filter runs, so it leaves the log line of the runtime and no dump.
 //!
 //! The frames of the backtrace are `module+offset` lines. The program ships without its pdb
 //! (the owner's rule), so no name is in the log; the pdb of the same build resolves the
@@ -133,6 +135,9 @@ const EXCEPTION_EXECUTE_HANDLER: i32 = 1;
 
 /// The path of the minidump, set by [`install`].
 static DUMP: OnceLock<PathBuf> = OnceLock::new();
+/// The file name of this program, taken at [`install`]: the crash handlers read no more
+/// than they must.
+static PROGRAM: OnceLock<String> = OnceLock::new();
 
 /// Keeps the file at `path` as `<path>.1` (`nirender-host.log.1` for `nirender-host.log`),
 /// in place of the one of the run before that: a player who starts the game again after a
@@ -140,8 +145,11 @@ static DUMP: OnceLock<PathBuf> = OnceLock::new();
 pub fn rotate_log(path: &Path) {
     let mut before = path.as_os_str().to_owned();
     before.push(".1");
-    let _ = std::fs::remove_file(&before);
-    let _ = std::fs::rename(path, &before);
+    // A rename replaces the file of the run before that. When it fails (the file is open
+    // in another program), a copy keeps the log at least.
+    if std::fs::rename(path, &before).is_err() {
+        let _ = std::fs::copy(path, &before);
+    }
 }
 
 /// The path of the minidump: the name of this program with `.dmp`, in the folder of the log
@@ -162,6 +170,8 @@ pub(crate) fn dump_path(log: Option<&str>) -> PathBuf {
 /// minidump at `dump`, after its lines in the log.
 pub(crate) fn install(dump: PathBuf) {
     let _ = DUMP.set(dump);
+    let program = std::env::current_exe().ok().and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().into_owned()));
+    let _ = PROGRAM.set(program.unwrap_or_default());
     std::panic::set_hook(Box::new(|info| {
         println!("panic: {info}");
         for line in backtrace() {
@@ -292,8 +302,7 @@ unsafe fn is_this_program(path: *const u16) -> bool {
     }
     let path = String::from_utf16_lossy(core::slice::from_raw_parts(path, length));
     let file = path.rsplit(['\\', '/']).next().unwrap_or(&path);
-    let program = std::env::current_exe().ok().and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().into_owned()));
-    program.is_some_and(|program| program.eq_ignore_ascii_case(file))
+    PROGRAM.get().is_some_and(|program| program.eq_ignore_ascii_case(file))
 }
 
 fn report(dump: Result<&Path, String>) {
@@ -351,13 +360,10 @@ mod tests {
         let head = std::fs::read(&path).unwrap();
         assert_eq!(&head[..4], b"MDMP", "the signature of a minidump");
 
-        // With the place of the caller as the exception: `NIRENDER_KEEP_TEST_DUMP` names a
-        // folder that keeps it, for a look in a debugger.
+        // With the place of the caller as the exception (cdb opened such a dump on the stack
+        // of the test, 2026-10-27).
         write_dump_here(&path).unwrap();
         assert_eq!(&std::fs::read(&path).unwrap()[..4], b"MDMP");
-        if let Ok(keep) = std::env::var("NIRENDER_KEEP_TEST_DUMP") {
-            std::fs::copy(&path, Path::new(&keep).join("test-here.dmp")).unwrap();
-        }
 
         std::fs::remove_dir_all(&folder).unwrap();
     }

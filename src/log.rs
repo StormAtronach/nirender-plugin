@@ -37,8 +37,11 @@ fn open_new(path: &str) -> Option<File> {
 /// Keeps the file at `path` as `<path>.1`, in place of the one of the run before that.
 pub fn rotate(path: &str) {
     let before = format!("{path}.1");
-    let _ = std::fs::remove_file(&before);
-    let _ = std::fs::rename(path, &before);
+    // A rename replaces the file of the run before that. When it fails (the file is open
+    // in another program), a copy keeps the log at least.
+    if std::fs::rename(path, &before).is_err() {
+        let _ = std::fs::copy(path, &before);
+    }
 }
 
 #[macro_export]
