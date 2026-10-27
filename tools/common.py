@@ -31,6 +31,19 @@ def plugin_lines(folder):
     return open(own, encoding="utf-8", errors="replace").read().splitlines() if os.path.isfile(own) else []
 
 
+# What a replay reads from an MGE XE build folder: the helper, MGE XE's shaders (the post
+# chain, the water) and its textures (the waves, the noise of the ambient occlusion). Without
+# the Data Files the helper draws on and only logs the files it did not find, so the picture
+# is another one.
+BUILD_PARTS = ("numidium.exe", os.path.join("Data Files", "shaders"), os.path.join("Data Files", "textures", "MGE"))
+
+
+def build_missing(mge_build):
+    """The parts of `BUILD_PARTS` that the build folder `mge_build` lacks: an empty list when
+    a replay can use it."""
+    return [part for part in BUILD_PARTS if not os.path.exists(os.path.join(mge_build, part))]
+
+
 def local(key, default):
     """A place of this machine that a tool needs and the repo does not hold: the key of
     `local.json` at the repo root (not tracked; `local.example.json` names the keys), else
