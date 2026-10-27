@@ -276,9 +276,15 @@ unsafe fn particles_record(t: &MainThread, this: usize, geometry_data: usize, co
         particles.extend_from_slice(&rd::<[u8; 4]>(sizes, i * 4));
         particles.extend_from_slice(&if colors != 0 { rd::<[u8; 4]>(colors, i * 4) } else { [0xFF; 4] });
     }
-    crate::shape_stream::send_particles(t, 
+    // The key is the serial of the data, as the particle instance names it (`link_client`).
+    let key = if geometry_data != 0 {
+        crate::geometry_stream::stream_handle(t, geometry_data as u32, rd(geometry_data, crate::gen::layouts::NiGeometryData::uniqueID))
+    } else {
+        0
+    };
+    crate::shape_stream::send_particles(t,
         this,
-        geometry_data as u32,
+        key,
         crate::shape_stream::current_world(this),
         crate::link_client::world_is_relative(t),
         crate::shape_stream::ambient(this),
