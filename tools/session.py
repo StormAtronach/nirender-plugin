@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 
+import common  # noqa: E402
 from common import REPO, SIBLINGS, local
 
 HARNESS_DIR = local("harness", os.path.join(SIBLINGS, "moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
@@ -188,6 +189,10 @@ class Run:
                 shutil.copy2(path, self.path("mgeXE.log"))
                 break
         return done
+
+    def plugin_lines(self):
+        """The plugin's lines of this run (`common.plugin_lines`)."""
+        return common.plugin_lines(self.dir)
 
     def progress_lines(self, tag):
         if not os.path.isfile(self.progress):

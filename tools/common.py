@@ -12,6 +12,25 @@ REPO = os.path.dirname(HERE)
 SIBLINGS = os.path.dirname(REPO)
 
 
+# The prefix of the plugin's lines in MGE XE's log (`MGE_LogLine` of d3d8.dll).
+PLUGIN_PREFIX = "nirender: "
+
+
+def plugin_lines(folder):
+    """The plugin's lines of the run in `folder`, without their line ends. With the d3d8.dll of
+    MGE XE they are the lines of the folder's `mgeXE.log` (which the session copies there after
+    the game) that start with `nirender: `, without the prefix; without that export (an older
+    d3d8.dll, the d3d8.dll of this repository) they are the plugin's own `nirender.log` of the
+    folder (the run spec's logFile)."""
+    mge = os.path.join(folder, "mgeXE.log")
+    if os.path.isfile(mge):
+        lines = [line[len(PLUGIN_PREFIX):] for line in open(mge, encoding="utf-8", errors="replace").read().splitlines() if line.startswith(PLUGIN_PREFIX)]
+        if lines:
+            return lines
+    own = os.path.join(folder, "nirender.log")
+    return open(own, encoding="utf-8", errors="replace").read().splitlines() if os.path.isfile(own) else []
+
+
 def local(key, default):
     """A place of this machine that a tool needs and the repo does not hold: the key of
     `local.json` at the repo root (not tracked; `local.example.json` names the keys), else

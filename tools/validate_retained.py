@@ -45,6 +45,8 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+from common import plugin_lines  # noqa: E402
 PY = sys.executable
 PLACES = {
     "seyda": ["--exterior", "Seyda Neen", "--position=-12288,-69632,74", "--yaw", "0"],
@@ -98,8 +100,7 @@ def check(condition, text):
 
 def plugin_report(folder):
     """The line of the shape records in the log of the plugin, or ""."""
-    path = os.path.join(folder, "nirender.log")
-    lines = [line for line in open(path, errors="replace").read().splitlines() if "shapes: " in line and "draws without a record" in line] if os.path.isfile(path) else []
+    lines = [line for line in plugin_lines(folder) if "shapes: " in line and "draws without a record" in line]
     return lines[-1] if lines else ""
 
 
