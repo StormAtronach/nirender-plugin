@@ -1040,7 +1040,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
             for line in message.lines() {
                 println!("{line}");
             }
-            super::gpu::message_box(&format!("{message}\n\nThe game shows no new picture; quit it. nirender-host.log has the details."));
+            super::gpu::message_box(&format!("{message}\n\nThe game shows no new picture: close it with Alt+F4. nirender-host.log has the details."));
             std::process::exit(super::stream_format::EXIT_STREAM_FORMAT as i32);
         }
     }
