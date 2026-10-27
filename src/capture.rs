@@ -400,6 +400,24 @@ struct Ring {
     /// The host program did not read at all for the time limit of a wait. The game does not
     /// wait again before the host program reads.
     host_late: bool,
+    /// The ticks since which the host program read nothing while records waited, or 0.
+    still_since: i64,
+    /// The host program was ended for a stall (`EXIT_NOT_ANSWERING`): one time.
+    ended: bool,
+}
+
+/// The rule of a stalled host program, at the end of each frame: `read` is the bytes that the
+/// host program has read, `read_before` the same at the frame before, `pending` whether
+/// records wait for it, `still_since` the ticks since which the count has not moved (0 for
+/// none), `now` the ticks. Gives the new `still_since`, and true when the count has not moved
+/// for [`RING_WAIT_SECONDS`] while records waited: the host program is stalled. A full ring
+/// waits the same time in `push`; this rule finds a stall before the ring is full.
+fn host_still(read: u64, read_before: u64, pending: bool, still_since: i64, now: i64) -> (i64, bool) {
+    if !pending || read != read_before {
+        return (0, false);
+    }
+    let since = if still_since == 0 { now } else { still_since };
+    (since, now - since > RING_WAIT_SECONDS * ticks_per_second())
 }
 
 impl Ring {
@@ -426,7 +444,7 @@ impl Ring {
         event_name.push(0);
         let event = CreateEventA(core::ptr::null(), 0, 0, event_name.as_ptr());
         crate::pacing::start(mapping, name);
-        Ok(Ring { mapping, base, capacity, event, wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false })
+        Ok(Ring { mapping, base, capacity, event, wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false, still_since: 0, ended: false })
     }
 
     unsafe fn counter(&self, offset: usize) -> &core::sync::atomic::AtomicU64 {
@@ -503,6 +521,15 @@ impl Ring {
                 }
             }
             self.paced += ticks() - start;
+        }
+        let (still_since, stalled) = host_still(read, self.read_before, read < self.frame_before, self.still_since, start);
+        self.still_since = still_since;
+        if stalled && !self.ended {
+            // The host program is ended with the code that names the reason: `check_host`
+            // finds the code at the next frame end and runs the failure path.
+            self.ended = true;
+            crate::log!("stream: the host program read no record for {RING_WAIT_SECONDS} s while records waited; it is ended");
+            crate::own_device::end_host(crate::stream_format::EXIT_NOT_ANSWERING);
         }
         self.read_before = read;
         self.frame_before = self.counter(RING_WRITTEN).load(Ordering::Relaxed);
@@ -1995,6 +2022,26 @@ unsafe fn frame_end(lock: &DeviceLock) {
 /// `NiDX8Renderer::d3dPresentParameters`: the width and the height of the back buffer.
 const BACK_BUFFER_SIZE: usize = crate::gen::layouts::NiDX8Renderer::d3dPresentParameters;
 const DEVICE_WINDOW: usize = crate::gen::layouts::NiDX8Renderer::d3dPresentParameters_hDeviceWindow;
+
+#[cfg(test)]
+mod stall_tests {
+    use super::*;
+
+    #[test]
+    fn a_count_that_does_not_move_while_records_wait_is_a_stall_after_the_limit() {
+        let second = ticks_per_second();
+        // The count moves: no stall, and no start of one.
+        assert_eq!(host_still(200, 100, true, 0, 10 * second), (0, false));
+        // The count stands while records wait: the stall starts now.
+        assert_eq!(host_still(200, 200, true, 0, 10 * second), (10 * second, false));
+        // Still standing, under the limit.
+        assert_eq!(host_still(200, 200, true, 10 * second, 19 * second), (10 * second, false));
+        // Over the limit.
+        assert_eq!(host_still(200, 200, true, 10 * second, 21 * second), (10 * second, true));
+        // Nothing waits for the host program: no stall, whatever the count.
+        assert_eq!(host_still(200, 200, false, 10 * second, 30 * second), (0, false));
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -16,6 +16,7 @@
 //! closes it after n seconds, for a test.
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::capture::{ticks, ticks_per_second};
 use crate::stream_format::{EXIT_NOT_ANSWERING, EXIT_STALLED, STALL_SECONDS};
@@ -25,11 +26,11 @@ extern "system" {
     fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
 }
 
-/// `MessageBoxTimeoutW` of user32: a box that closes itself after the milliseconds, with the
-/// answer [`MB_TIMEDOUT`]. Exported since Windows XP, not in the documented API: taken by
-/// `GetProcAddress` (the failure-path design, section 5.1).
+/// `MessageBoxTimeoutW` of user32: a box that closes itself after the milliseconds. Exported
+/// since Windows XP, not in the documented API: taken by `GetProcAddress` (the failure-path
+/// design, section 5.1). Its answer on the time limit is not trusted: the elapsed time says
+/// what closed the box (`closed_line`).
 type MessageBoxTimeout = unsafe extern "system" fn(isize, *const u16, *const u16, u32, u16, u32) -> i32;
-const MB_TIMEDOUT: i32 = 32000;
 
 /// The caption of the box, and the name of its window for the switch that closes it.
 const CAPTION: &str = "MGE XE";
@@ -158,9 +159,10 @@ fn show(failure: &mut Failure, now: &str) {
     const MB_SETFOREGROUND: u32 = 0x1_0000;
     const MB_TOPMOST: u32 = 0x4_0000;
     let kind = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
+    let shown = Instant::now();
     // SAFETY: both strings are zero-ended UTF-16 that live until the call returns; the
     // function of user32 has the signature of `MessageBoxTimeout` when it is there.
-    let answer = unsafe {
+    unsafe {
         match (seconds, message_box_timeout()) {
             (0, _) => MessageBoxW(0, text.as_ptr(), caption.as_ptr(), kind),
             (_, Some(with_timeout)) => with_timeout(0, text.as_ptr(), caption.as_ptr(), kind, 0, seconds * 1000),
@@ -170,10 +172,18 @@ fn show(failure: &mut Failure, now: &str) {
             }
         }
     };
-    if answer == MB_TIMEDOUT {
-        crate::log!("box: closed after {seconds} s, no click");
+    crate::log!("{}", closed_line(shown.elapsed(), seconds));
+}
+
+/// The log line after the box: a box with a time limit that stayed up for the limit was
+/// closed by the time, whatever its answer (`MessageBoxTimeoutW` gave the OK answer on the
+/// time limit in the run 20261027-130530-c1-stall).
+fn closed_line(waited: Duration, limit_seconds: u32) -> String {
+    let limit = Duration::from_secs(u64::from(limit_seconds));
+    if limit_seconds > 0 && waited + Duration::from_millis(500) >= limit {
+        format!("box: closed after {limit_seconds} s, no click (the time limit)")
     } else {
-        crate::log!("box: closed by a click");
+        format!("box: closed by a click after {:.1} s", waited.as_secs_f64())
     }
 }
 
@@ -185,12 +195,13 @@ unsafe fn message_box_timeout() -> Option<MessageBoxTimeout> {
     (!function.is_null()).then(|| core::mem::transmute::<*mut core::ffi::c_void, MessageBoxTimeout>(function))
 }
 
-/// The NOW line of the box: what the player does.
+/// The NOW line of the box: what the player does. The game has no picture any more, so its
+/// menu cannot be seen: the close of the window (Alt+F4) is the way out.
 fn now_line(save: Option<&str>, why: Option<&str>) -> String {
     match (save, why) {
-        (Some(save), _) => format!("The game was saved as \"{save}\": quit the game, start it again and load it."),
-        (None, Some(why)) => format!("No save was possible {why}: quit the game and start it again."),
-        (None, None) => "No save was possible: quit the game and start it again.".to_string(),
+        (Some(save), _) => format!("The game was saved as \"{save}\": close the game with Alt+F4 (the menu cannot be seen), start it again and load it."),
+        (None, Some(why)) => format!("No save was possible {why}: close the game with Alt+F4 and start it again."),
+        (None, None) => "No save was possible: close the game with Alt+F4 and start it again.".to_string(),
     }
 }
 
@@ -225,10 +236,18 @@ mod tests {
     fn the_box_has_the_four_parts() {
         let text = box_text(Cause::Stalled, &now_line(Some("MGE XE autosave 2026-10-27 12:00"), None));
         assert!(text.starts_with("The wgpu renderer of MGE XE (numidium.exe) has stopped.\nIt stalled for 5 s (exit code 30).\n\n"));
-        assert!(text.contains("The game was saved as \"MGE XE autosave 2026-10-27 12:00\": quit the game, start it again and load it."));
+        assert!(text.contains("The game was saved as \"MGE XE autosave 2026-10-27 12:00\": close the game with Alt+F4 (the menu cannot be seen), start it again and load it."));
         assert!(text.ends_with("the minidump numidium.dmp after a crash of the renderer."));
-        assert_eq!(now_line(None, Some("in this state")), "No save was possible in this state: quit the game and start it again.");
-        assert_eq!(now_line(None, None), "No save was possible: quit the game and start it again.");
+        assert_eq!(now_line(None, Some("in this state")), "No save was possible in this state: close the game with Alt+F4 and start it again.");
+        assert_eq!(now_line(None, None), "No save was possible: close the game with Alt+F4 and start it again.");
+    }
+
+    #[test]
+    fn the_time_limit_closes_the_box_whatever_its_answer() {
+        assert_eq!(closed_line(Duration::from_millis(15_200), 15), "box: closed after 15 s, no click (the time limit)");
+        assert_eq!(closed_line(Duration::from_millis(14_600), 15), "box: closed after 15 s, no click (the time limit)");
+        assert_eq!(closed_line(Duration::from_millis(3_200), 15), "box: closed by a click after 3.2 s");
+        assert_eq!(closed_line(Duration::from_millis(20_000), 0), "box: closed by a click after 20.0 s");
     }
 
     #[test]
