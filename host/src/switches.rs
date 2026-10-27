@@ -71,6 +71,10 @@ pub(crate) struct Switches {
     /// `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a
     /// child window of it: for an A/B of the mouse's lag.
     pub(crate) game_window: bool,
+    /// `MGE_XE_BOX_SECONDS=<n>`: a message box of this program closes itself after n seconds
+    /// (the harness mode of the boxes, [`crate::gpu::message_box`]); 0 or unset: the box waits
+    /// for the click. The plugin and MGE XE's d3d8.dll read the same variable for their boxes.
+    pub(crate) box_seconds: u32,
 }
 
 impl Switches {
@@ -110,6 +114,7 @@ impl Switches {
                 _ => None,
             },
             game_window: is("MGE_XE_WINDOW", "game"),
+            box_seconds: var("MGE_XE_BOX_SECONDS").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0),
         }
     }
 }

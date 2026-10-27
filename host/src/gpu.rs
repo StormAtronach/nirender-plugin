@@ -227,24 +227,74 @@ fn lost_message() {
     );
 }
 
-/// Shows `text` to the player in a box with the caption "MGE XE", and waits until it is
-/// closed. For what ends the drawing: a lost device, a stream of another build. Public for
-/// the extension's own refusals.
+/// The window that owns the boxes of this program: the game's window in the live mode, so
+/// that a box stays above it (an owned window is above its owner); 0 for a replay and for the
+/// program on its own.
+static OWNER_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Names the window that owns the boxes ([`message_box`]).
+pub fn set_owner_window(window: isize) {
+    OWNER_WINDOW.store(window, Ordering::Relaxed);
+}
+
+/// Shows `text` to the player in a box with the caption "MGE XE", owned by the game's window,
+/// and waits until it is closed. For what ends the drawing: a lost device, a stream of another
+/// build. Public for the extension's own refusals. The rule of every box of the three parts
+/// (the failure-path design of the Numidium docs, sections 5 and 5.1; the plugin's and
+/// d3d8.dll's boxes follow it too): each line goes to the log first as "box: "; with
+/// `MGE_XE_BOX_SECONDS=<n>` the box closes itself after n seconds, through MessageBoxTimeoutW
+/// of user32 (not in the documented API, so taken by GetProcAddress; without it the box is
+/// only logged); without the switch it waits for the click.
 #[cfg(windows)]
 pub fn message_box(text: &str) {
     #[link(name = "user32")]
     extern "system" {
         fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
     }
+    extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> isize;
+        fn GetProcAddress(module: isize, name: *const u8) -> *const core::ffi::c_void;
+    }
+    type MessageBoxTimeout = unsafe extern "system" fn(isize, *const u16, *const u16, u32, u16, u32) -> i32;
     const MB_ICONERROR: u32 = 0x10;
     const MB_SETFOREGROUND: u32 = 0x1_0000;
     const MB_TOPMOST: u32 = 0x4_0000;
+    const TIMED_OUT: i32 = 32000;
+    for line in text.lines() {
+        println!("box: {line}");
+    }
     let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let text = wide(text);
     let caption = wide("MGE XE");
-    // SAFETY: both strings are zero-ended UTF-16 that live until the call returns.
-    unsafe { MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST) };
+    let owner = OWNER_WINDOW.load(Ordering::Relaxed);
+    let flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
+    let seconds = crate::switches().box_seconds;
+    // SAFETY: the strings are zero-ended UTF-16 that live until the call returns; the
+    // function taken from user32 has the signature of MessageBoxTimeoutW.
+    let answer = unsafe {
+        if seconds == 0 {
+            MessageBoxW(owner, text.as_ptr(), caption.as_ptr(), flags)
+        } else {
+            let user32 = GetModuleHandleW(wide("user32.dll").as_ptr());
+            let timed = GetProcAddress(user32, c"MessageBoxTimeoutW".as_ptr().cast());
+            if timed.is_null() {
+                println!("box: not shown: this Windows has no MessageBoxTimeoutW");
+                return;
+            }
+            let timed: MessageBoxTimeout = std::mem::transmute(timed);
+            timed(owner, text.as_ptr(), caption.as_ptr(), flags, 0, seconds * 1000)
+        }
+    };
+    if answer == TIMED_OUT {
+        println!("box: closed after {seconds} s, no click");
+    } else {
+        println!("box: closed by a click");
+    }
 }
 
 #[cfg(not(windows))]
-pub fn message_box(_text: &str) {}
+pub fn message_box(text: &str) {
+    for line in text.lines() {
+        println!("box: {line}");
+    }
+}

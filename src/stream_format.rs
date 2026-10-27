@@ -20,7 +20,7 @@ pub const STREAM_FORMAT: u32 = 1;
 /// ASCII, zero-padded. A HEADER of 16 bytes comes from a plugin before the handshake.
 pub const HEADER_FORMAT_AT: usize = 16;
 pub const HEADER_BUILD_ID_AT: usize = 20;
-pub const HEADER_BUILD_ID_BYTES: usize = 32;
+pub const HEADER_BUILD_ID_BYTES: usize = 64;
 pub const HEADER_BYTES: usize = HEADER_BUILD_ID_AT + HEADER_BUILD_ID_BYTES;
 
 /// The exit codes of the helper when the parts do not match. The helper's own table: 0 ok,
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn the_build_id_is_cut_to_its_field_and_zero_padded() {
-        let long = "x".repeat(40);
+        let long = "x".repeat(HEADER_BUILD_ID_BYTES + 8);
         let bytes = build_id_bytes(&long);
         assert!(bytes.iter().all(|&byte| byte == b'x'));
         let short = build_id_bytes("v1 abc");
