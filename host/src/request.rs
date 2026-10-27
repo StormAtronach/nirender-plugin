@@ -198,7 +198,14 @@ impl Request {
         );
         println!("multisampling: {} samples for each pixel of the frame", self.samples);
         if let Some(old) = switches().old_gpu {
-            println!("old graphics card: MGE_XE_OLD_GPU={}: the features {:?}, the limits of the profile", old.name(), self.features);
+            println!(
+                "old graphics card: MGE_XE_OLD_GPU={}: the BC compression the only feature; textures up to {}, {} sampled textures in a stage, {} storage buffers in a stage, storage bindings of {} MiB",
+                old.name(),
+                self.limits.max_texture_dimension_2d,
+                self.limits.max_sampled_textures_per_shader_stage,
+                self.limits.max_storage_buffers_per_shader_stage,
+                self.limits.max_storage_buffer_binding_size >> 20
+            );
         }
         match self.tier {
             TextureTier::A => println!("texture tier: a (binding arrays: room for {} textures and {} samplers)", self.array_cap, self.sampler_cap),
@@ -368,7 +375,7 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
         }
     });
     if !lacks.is_empty() {
-        return Err(refuse(name, format!("lacks {}", lacks.join("; "))));
+        return Err(refuse(name, lacks_text(backend, &lacks)));
     }
 
     // The choices from what the adapter has.
@@ -438,6 +445,20 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
 
     Ok(Request { info, surface, device, queue, target_format, surface_usages, present_modes, depth_format, samples, array_cap, sampler_cap, tier, features, limits })
 }
+
+/// The lacks that the refusal names: the first [`LACKS_NAMED`], then their count. The probe's
+/// lines and the box of d3d8.dll have a limit of length; all the lacks go into a line of their
+/// own, which does not start with `probe: ` (d3d8.dll leaves such lines out of mgeXE.log).
+fn lacks_text(backend: wgpu::Backends, lacks: &[String]) -> String {
+    if lacks.len() <= LACKS_NAMED {
+        return format!("lacks {}", lacks.join("; "));
+    }
+    println!("{}: all the lacks: {}", backend_name(backend), lacks.join("; "));
+    format!("lacks {}; and {} more", lacks[..LACKS_NAMED].join("; "), lacks.len() - LACKS_NAMED)
+}
+
+/// The lacks that a refusal names before their count ([`lacks_text`]).
+const LACKS_NAMED: usize = 3;
 
 /// `numidium.exe --probe`: asks the backends in their order, without a window, up to the
 /// first that serves, as the live start does, and prints one line for each asked, the
@@ -530,6 +551,13 @@ mod tests {
         // Every adapter: tier C, without the arrays.
         assert_eq!(required_features(), wgpu::Features::TEXTURE_COMPRESSION_BC);
         assert!(!required_features().contains(wgpu::Features::DEPTH32FLOAT_STENCIL8));
+    }
+
+    #[test]
+    fn a_refusal_names_three_lacks_and_counts_the_rest() {
+        let lacks: Vec<String> = (1..=5).map(|n| format!("lack {n}")).collect();
+        assert_eq!(lacks_text(wgpu::Backends::VULKAN, &lacks), "lacks lack 1; lack 2; lack 3; and 2 more");
+        assert_eq!(lacks_text(wgpu::Backends::VULKAN, &lacks[..3]), "lacks lack 1; lack 2; lack 3");
     }
 
     #[test]
