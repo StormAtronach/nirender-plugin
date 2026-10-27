@@ -79,6 +79,12 @@ const STATE_FIRST: usize = NiPropertyState::propAlpha;
 const STATE_COUNT: usize = 12;
 /// A u16; bit 0 of the alpha property is the blend.
 const PROPERTY_FLAGS: usize = NiProperty::flags;
+/// The bits of an alpha property's flags: blending, and the no-sorter hint (bit 13).
+const ALPHA_BLEND: u16 = 1;
+const ALPHA_NO_SORTER: u16 = 0x2000;
+/// The engine camera's culling planes in their order (`NiCamera::UpdateWorldData` 0x6CC940),
+/// then any plane after the six.
+const PLANE_NAMES: [&str; 7] = ["near", "far", "left", "right", "top", "bottom", "another"];
 /// The display of a shape calls it for each of its controllers before the draw (a morpher
 /// writes its vertices then).
 const SLOT_ON_PRE_DISPLAY: usize = InterfaceNiTimeController::OnPreDisplay;
@@ -201,6 +207,10 @@ struct Instance {
     /// Its environment map and fog map at its last note of the material: the address and
     /// the version of each ([`EffectWatch`]). Another version means another material.
     effect_versions: [(usize, u32); 2],
+    /// At its last display its alpha property blends without the no-sorter bit: the engine's
+    /// main queue sorts it (`NiAlphaAccumulator::RegisterObject` 0x429B90), and so does the
+    /// helper's table.
+    sorted_blend: bool,
     /// A particle system (a `RenderPoints` draw): its particles go as an `INSTANCE_PARTICLES`
     /// record before each `INSTANCE_DRAW`, at the place of the engine's draw, and the table
     /// never draws it by itself (particles plan, step 2).
@@ -268,6 +278,11 @@ struct Tables {
     scene_frame: u32,
     scene_values: (u32, Option<[u32; 4]>),
     scene_mixed: u64,
+    /// Risk 34, for a while: the shapes other than sorted blends that the engine did not
+    /// display in a world scene and that `scene_end` left visible because an engine plane
+    /// puts them out of view, by that plane ([`PLANE_NAMES`]): the helper's own frustum
+    /// decides for them, and a wider one draws what the engine does not.
+    undisplayed_left: [u64; 7],
     /// The texture effects of the instances ([`EffectWatch`]), and the notes of the material
     /// of a sent instance because one of its effects changed.
     effects: HashMap<usize, EffectWatch>,
@@ -354,6 +369,7 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         scene_frame: u32::MAX,
         scene_values: (0, None),
         scene_mixed: 0,
+        undisplayed_left: [0; 7],
         effects: HashMap::default(),
         effect_notes: 0,
         texture_notes: 0,
@@ -508,15 +524,33 @@ pub unsafe fn scene_end(mt: &MainThread) {
             continue;
         }
         let bound = if instance.skinned { instance.posed_bound.as_ptr() } else { instance.bound.as_ptr() } as usize;
-        let in_view = planes.iter().all(|&plane| thiscall1(WHICH_SIDE, bound, plane as u32) != 2);
-        if in_view {
-            instance.visible = false;
-            capture::instance_state(instance.id, false);
-            t.states += 1;
+        let outside = rejecting_plane(planes.iter().map(|&plane| thiscall1(WHICH_SIDE, bound, plane as u32)));
+        // A sorted blend the engine did not display goes hidden whatever the view, until its
+        // next display: the helper draws the blends the engine draws, each at its place in
+        // the engine's queue (risk 34). Another shape out of the engine's view stays visible
+        // and the helper's frustum decides; counted by the plane that puts it out.
+        if let Some(plane) = left_visible(outside, instance.sorted_blend) {
+            t.undisplayed_left[plane.min(PLANE_NAMES.len() - 1)] += 1;
+            continue;
         }
+        instance.visible = false;
+        capture::instance_state(instance.id, false);
+        t.states += 1;
     }
 }
 
+
+/// An undisplayed instance stays visible only when it is not a sorted blend and an engine
+/// plane puts it out of view: that plane. [`None`]: it goes hidden.
+fn left_visible(outside: Option<usize>, sorted_blend: bool) -> Option<usize> {
+    outside.filter(|_| !sorted_blend)
+}
+
+/// The first plane whose side (`NiBound::WhichSide`) is 2, outside: the plane that puts the
+/// bound out of view; [`None`] in view.
+fn rejecting_plane(sides: impl Iterator<Item = u32>) -> Option<usize> {
+    sides.enumerate().find(|&(_, side)| side == 2).map(|(index, _)| index)
+}
 
 /// The helper draws the skinned instances from its table: mode gpu, and the switch on.
 unsafe fn table_draws_skins(t: &Tables) -> bool {
@@ -733,7 +767,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], effect_versions: [(0, 0); 2], queued: u32::MAX, points });
+    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points });
     t.pending = Some((shape, id));
 }
 
@@ -1713,6 +1747,10 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         }
         // The copy of the properties for `apply_changes` (the shape is alive here).
         instance.properties = if property_state != 0 { core::array::from_fn(|i| rd(property_state, PS::propAlpha + i * 4)) } else { [0; PROPERTY_SLOTS] };
+        instance.sorted_blend = instance.properties[0] != 0 && {
+            let flags = rd::<u16>(instance.properties[0], PROPERTY_FLAGS);
+            flags & ALPHA_BLEND != 0 && flags & ALPHA_NO_SORTER == 0
+        };
         (frame, generation, instance.id, instance.live)
     };
     // The controllers of a live shape run before its draw, as the engine's display runs
@@ -2062,8 +2100,9 @@ pub unsafe fn report(mt: &MainThread) -> String {
             crate::material_stream::GROUP_NAMES.iter().zip(t.periodic_changes).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
         )
         + &format!(
-            "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk\n",
-            queue_counts[0], queue_counts[1], queue_counts[2], walk_places
+            "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk; shapes other than sorted blends the engine did not display, left visible by the plane that puts them out of the engine's view: {}\n",
+            queue_counts[0], queue_counts[1], queue_counts[2], walk_places,
+            PLANE_NAMES.iter().zip(t.undisplayed_left).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
         )
         + &{
             let engine = crate::shape_stream::engine_particle_records(mt);
@@ -2124,6 +2163,24 @@ mod tests {
         assert_ne!(instances[2].1, 5);
         // Material 8 named no freed texture: unchanged.
         assert_eq!(instances[1].1, 5);
+    }
+
+    #[test]
+    fn the_first_plane_with_the_bound_outside_is_named() {
+        assert_eq!(rejecting_plane([0u32, 1, 0, 0, 0, 0].into_iter()), None);
+        // Side 2 is outside: the far plane (index 1) before the top one.
+        assert_eq!(rejecting_plane([0u32, 2, 0, 0, 2, 0].into_iter()), Some(1));
+        assert_eq!(PLANE_NAMES[1], "far");
+    }
+
+    #[test]
+    fn an_undisplayed_sorted_blend_goes_hidden_whatever_the_view() {
+        // A sorted blend: hidden in view and out of view (risk 34).
+        assert_eq!(left_visible(None, true), None);
+        assert_eq!(left_visible(Some(1), true), None);
+        // Another shape: hidden in view; out of view it stays, with the plane counted.
+        assert_eq!(left_visible(None, false), None);
+        assert_eq!(left_visible(Some(1), false), Some(1));
     }
 
     #[test]
