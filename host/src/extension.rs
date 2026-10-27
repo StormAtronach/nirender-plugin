@@ -468,6 +468,14 @@ pub trait Extension {
         2
     }
 
+    /// Whether the window waits for the refresh of the screen before it shows a frame, from
+    /// the settings of the extension: the frame rate is then capped at the refresh rate.
+    /// Without it, the window shows a frame when the game gives one. The window asks one
+    /// time, when it is made; `MGE_XE_PRESENT` overrides it for a test.
+    fn vsync(&self) -> bool {
+        false
+    }
+
     /// The room of the texture arrays from the settings of the extension: 0 is automatic
     /// (the adapter's room, at most `AUTO_TEXTURE_SLOTS`), another number the most slots
     /// (at least `MIN_TEXTURE_SLOTS`, at most the adapter's room). The renderer asks one time,

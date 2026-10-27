@@ -78,6 +78,22 @@ pub const MORPH_TARGETS: u32 = 42;
 /// the handle, the unique id, the number of weights, then the weights.
 pub const MORPH_WEIGHTS: u32 = 43;
 
+/// Every tag of this build, the two retired ones (2 and 7) among them. A new tag goes here
+/// with its constant, read by the player or not: a test asks that each constant is here.
+pub const KNOWN: [u32; 43] = [
+    TEXTURE, 2, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, 7, COMMAND, CALL, FRAME_END, HEADER, TEXTURE_UPDATE,
+    READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW,
+    INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED,
+    INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE,
+    MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS,
+];
+
+/// A tag that this build knows ([`KNOWN`]). A record of another tag comes from a plugin of
+/// another build: the player counts it (`Counts::unknown_records`).
+pub fn is_known(tag: u32) -> bool {
+    KNOWN.contains(&tag)
+}
+
 /// The least length of a record of the tag that the player reads without a check of its
 /// own: a shorter record is skipped and counted (`Counts::short_records`), not read past
 /// its end. The lengths are those of the fixed parts the plugin writes (`src/capture.rs`
@@ -141,6 +157,23 @@ mod tests {
         for tag in [SCENE_END, FRAME_END, SHOT, MARK, OVERLAY, TEXTURE, TEXTURE_UPDATE, 0, 2, 7, 99] {
             assert_eq!(least_length(tag), 0, "tag {tag}");
         }
+    }
+
+    /// Each `pub const` tag of this file is in [`KNOWN`], so that a new tag the player does
+    /// not read is not counted as a record of another build.
+    #[test]
+    fn every_tag_constant_is_known() {
+        let source = include_str!("tag.rs");
+        let constants: Vec<u32> = source
+            .lines()
+            .filter_map(|line| line.strip_prefix("pub const ")?.split_once(": u32 = "))
+            .filter_map(|(_, value)| value.trim_end_matches(';').parse().ok())
+            .collect();
+        assert!(constants.len() >= 41, "the tag constants were not found");
+        for tag in constants {
+            assert!(is_known(tag), "tag {tag} is a constant but not in KNOWN");
+        }
+        assert!(!is_known(0) && !is_known(44));
     }
 
     #[test]

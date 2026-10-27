@@ -3,6 +3,7 @@ once and a failed stage stops the run, so a problem shows after one game run (ab
 minutes) and not after all of them.
 
     python tools/validate_retained.py [stage ...] [--mge-build DIR] [--places seyda,narsis]
+    python -I tools/validate_retained.py --self-test    # the tests of the pure parts, no game
 
 The helper draws from the records only, so a picture has no second path to compare with on
 the same capture. The reference of a change of the helper is a baseline: captures that are
@@ -19,7 +20,10 @@ Stages (capture, baseline and only by default, in this order):
            with `accepted/<name>.png` there. --accept
            writes the pictures instead: for a new baseline, or after a change that is
            meant to change them. A tour run in `tour/` of the baseline folder is replayed
-           and compared the same way (`tour/accepted`).
+           and compared the same way (`tour/accepted`). The adapter of the replays (the
+           GPU, the backend, the driver, as the helper prints it) is written with the
+           accepted pictures (`accepted/adapter.txt`) and printed with the result; a
+           compare on another adapter says so, since the pictures can differ by the GPU.
   only     a run with the rate step: prints the frame rate, the time of the ports for each
            frame and the busy time of the helper. With --gpu-time the helper writes GPU
            time stamps (they cost it about 0.4 ms a frame).
@@ -133,6 +137,41 @@ def stage_capture(place, mge_build):
     return ok
 
 
+ADAPTER_FILE = "adapter.txt"
+
+
+def adapter_of(output):
+    """The adapter line of the helper's output ("adapter: <GPU> (<backend>, driver ...)"),
+    without the prefix; None when the output has none."""
+    match = re.search(r"^adapter: (.+?)\s*$", output, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def adapter_note(recorded, now):
+    """What to say about the adapter of a compare: the one of the run, and whether the
+    accepted pictures were made on it."""
+    if now is None:
+        return "adapter: not printed by the helper"
+    if recorded is None:
+        return "adapter: %s; the accepted pictures name none (accept again to record it)" % now
+    if recorded != now:
+        return "adapter: %s; the accepted pictures were made on %s, so a difference can be the GPU's" % (now, recorded)
+    return "adapter: %s, as the accepted pictures" % now
+
+
+def self_test():
+    """The tests of the pure parts: no game, no replay."""
+    output = "distant land: on\nadapter: NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)\nframe 1\n"
+    assert adapter_of(output) == "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
+    assert adapter_of("no such line\n") is None
+    same = "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
+    assert adapter_note(same, same) == "adapter: %s, as the accepted pictures" % same
+    assert adapter_note(None, same).endswith("(accept again to record it)")
+    assert "can be the GPU's" in adapter_note("AMD Radeon (Vulkan, driver 1)", same)
+    assert adapter_note(same, None) == "adapter: not printed by the helper"
+    print("validate_retained self-test: ok")
+
+
 def stage_baseline(baseline, accept, mge_build):
     """The captures of the baseline folder against their accepted pictures, in the order of
     the draws of the game, as a player has them."""
@@ -144,14 +183,25 @@ def stage_baseline(baseline, accept, mge_build):
     accepted = os.path.join(baseline, "accepted")
     out = accepted if accept else os.path.join(baseline, "now")
     os.makedirs(out, exist_ok=True)
+    adapter = None
     for capture in captures:
-        run([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, capture[:-7] + ".png"), "--frame", "1", "--mge-build", mge_build], env)
+        output = run([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, capture[:-7] + ".png"), "--frame", "1", "--mge-build", mge_build], env)
+        adapter = adapter or adapter_of(output)
     tour = os.path.join(baseline, "tour")
     tour_out = os.path.join(tour, "accepted" if accept else "now")
     if os.path.isdir(tour):
         run([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env)
+    adapter_path = os.path.join(accepted, ADAPTER_FILE)
     if accept:
-        return check(True, "%d pictures accepted%s" % (len(captures), ", and the tour" if os.path.isdir(tour) else ""))
+        if adapter:
+            with open(adapter_path, "w", encoding="utf-8", newline="\n") as out_file:
+                out_file.write(adapter + "\n")
+        elif os.path.isfile(adapter_path):
+            # No adapter printed this time: an old record would name the wrong one.
+            os.remove(adapter_path)
+        return check(True, "%d pictures accepted%s, on %s" % (len(captures), ", and the tour" if os.path.isdir(tour) else "", adapter or "an adapter the helper did not print"))
+    recorded = open(adapter_path, encoding="utf-8").read().strip() if os.path.isfile(adapter_path) else None
+    print("       " + adapter_note(recorded, adapter), flush=True)
     sys.path.insert(0, HERE)
     import picture_diff
 
@@ -290,7 +340,11 @@ def main():
     ap.add_argument("--gpu-time", action="store_true", help="the helper writes GPU time stamps in the only stage")
     ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off for the runs")
     ap.add_argument("--weather", type=int, default=None, help="the weather of the runs, 0 clear to 9 blizzard (the game's without this)")
+    ap.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no game, no replay")
     args = ap.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
     if args.disable_mod:
         RUNNER_ARGS.extend(["--disable-mod", args.disable_mod])
     if args.weather is not None:

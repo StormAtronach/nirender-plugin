@@ -391,6 +391,10 @@ pub(crate) struct Counts {
     pub(crate) material_records: u32,
     /// The records shorter than the fixed part of their tag ([`tag::least_length`]), skipped.
     pub(crate) short_records: u32,
+    /// The records of a tag this build does not know ([`tag::is_known`]), skipped, and the
+    /// first such tag.
+    pub(crate) unknown_records: u32,
+    pub(crate) unknown_tag: u32,
     /// The shape records, the draws made from them, and the records without a geometry or
     /// a material.
     pub(crate) shape_records: u32,

@@ -444,6 +444,18 @@ fn tag_line(counts: &[(u64, u64)]) -> String {
     parts.join("; ")
 }
 
+/// The present mode for the setting of the extension ([`crate::Extension::vsync`]): with
+/// vsync the window waits for the refresh of the screen (FIFO, the frame rate capped at the
+/// refresh rate); without it the window shows a frame when the game gives one
+/// (`AutoNoVsync`: immediate, mailbox or FIFO, the first that the surface has).
+fn present_mode_of(vsync: bool) -> wgpu::PresentMode {
+    if vsync {
+        wgpu::PresentMode::Fifo
+    } else {
+        wgpu::PresentMode::AutoNoVsync
+    }
+}
+
 /// The present mode that wgpu takes for `asked` with the modes of the surface: an automatic
 /// mode is the first that the surface has of its list (`AutoNoVsync`: immediate, mailbox,
 /// FIFO; `AutoVsync`: FIFO relaxed, FIFO).
@@ -620,8 +632,8 @@ impl App {
             switches().samples.unwrap_or_else(|| self.extension.as_ref().map_or(1, |extension| extension.samples())),
         );
         let surface = surface.expect("a surface");
-        // The host shows a frame when the game gives one. It does not wait for the screen.
-        let present_mode = switches().present.unwrap_or(wgpu::PresentMode::AutoNoVsync);
+        let vsync = self.extension.as_ref().is_some_and(|extension| extension.vsync());
+        let present_mode = switches().present.unwrap_or_else(|| present_mode_of(vsync));
         let frame_latency = switches().frame_latency.unwrap_or_else(|| self.extension.as_ref().map_or(2, |extension| extension.frame_latency()).clamp(1, 3));
         println!(
             "window: present mode {:?} ({present_mode:?} asked), {frame_latency} frames may wait for the GPU",
@@ -987,6 +999,23 @@ impl ApplicationHandler for App {
     }
 }
 
+/// The file name of this program, for a message to the player: numidium.exe as the helper
+/// of MGE XE, nirender-host.exe on its own.
+fn program_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "the host program".to_string())
+}
+
+/// The builds that read the stream: this crate's, and the program's that has it as a part.
+pub(crate) fn reader_build(extension: Option<&dyn super::Extension>) -> String {
+    match extension.map(|extension| extension.name()).filter(|name| !name.is_empty()) {
+        Some(name) => format!("{}, {name}", super::BUILD_ID),
+        None => super::BUILD_ID.to_string(),
+    }
+}
+
 pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Option<Box<dyn super::Extension>>) {
     println!("{}", super::cores::prefer_performance_cores());
     let ring = Ring::open(name);
@@ -1002,8 +1031,23 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         std::thread::sleep(Duration::from_millis(5));
     };
     assert_eq!(tag, super::tag::HEADER, "the first record is not the head of the stream");
-    let size = (super::word(&data, 0).max(64), super::word(&data, 4).max(64));
+    // The window of the game owns the boxes of this program, the one of a refused stream too.
     let game_window = if data.len() >= 12 { super::word(&data, 8) as isize } else { 0 };
+    super::gpu::set_owner_window(game_window);
+    // The stream format of the plugin against this build's, before any record is read. A
+    // difference ends this program: the plugin reads the exit code and shows no second box.
+    let reader = format!("{} ({})", program_name(), reader_build(extension.as_deref()));
+    match super::stream_format::accept_header(&data, &reader) {
+        Ok(writer) => println!("stream format {}, the plugin {}", writer.format, writer.build_id),
+        Err(message) => {
+            for line in message.lines() {
+                println!("{line}");
+            }
+            super::gpu::message_box(&format!("{message}\n\nThe game shows no new picture: close it with Alt+F4. nirender-host.log has the details."));
+            super::gpu::exit_now(super::stream_format::EXIT_STREAM_FORMAT);
+        }
+    }
+    let size = (super::word(&data, 0).max(64), super::word(&data, 4).max(64));
     let embed = args.iter().any(|a| a == "--embed");
     println!("picture {} x {}, window of the game {game_window:#x}{}", size.0, size.1, if embed { ", the host goes into it" } else { "" });
     let mut app = App {
@@ -1059,6 +1103,15 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vsync_waits_for_the_screen() {
+        assert_eq!(present_mode_of(true), wgpu::PresentMode::Fifo);
+        assert_eq!(present_mode_of(false), wgpu::PresentMode::AutoNoVsync);
+        // A surface without an immediate mode shows a frame at the next refresh in both.
+        assert_eq!(chosen_present_mode(present_mode_of(false), &[wgpu::PresentMode::Fifo]), wgpu::PresentMode::Fifo);
+        assert_eq!(chosen_present_mode(present_mode_of(false), &[wgpu::PresentMode::Fifo, wgpu::PresentMode::Immediate]), wgpu::PresentMode::Immediate);
+    }
 
     /// A reply memory of 16 pixel bytes and 16 bytes after it that must stay 0xAA.
     fn memory() -> Vec<u8> {

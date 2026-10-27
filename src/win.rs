@@ -15,6 +15,7 @@ extern "system" {
     pub fn GetCurrentThreadId() -> u32;
     pub fn GetModuleFileNameW(module: *mut c_void, name: *mut u16, size: u32) -> u32;
     pub fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+    pub fn GetModuleHandleExW(flags: u32, address: *const c_void, module: *mut *mut c_void) -> i32;
     pub fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
     /// The return addresses of the calling thread's stack (the frame chain), `skip` frames
     /// from the top left out; returns the count written into `frames`.

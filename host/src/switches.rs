@@ -75,7 +75,7 @@ pub(crate) struct Switches {
     /// mouse's lag.
     pub(crate) frame_latency: Option<u32>,
     /// `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over
-    /// `AutoNoVsync`, for a test.
+    /// the setting of the extension ([`crate::Extension::vsync`]), for a test.
     pub(crate) present: Option<wgpu::PresentMode>,
     /// `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a
     /// child window of it: for an A/B of the mouse's lag.
@@ -85,6 +85,10 @@ pub(crate) struct Switches {
     pub(crate) force_growth: u32,
     /// `NIRENDER_GROWTH_SHOTS=<prefix>`: a picture after each forced growth, at that prefix.
     pub(crate) growth_shots: Option<String>,
+    /// `MGE_XE_BOX_SECONDS=<n>`: a message box of this program closes itself after n seconds
+    /// (the harness mode of the boxes, [`crate::gpu::message_box`]); 0 or unset: the box waits
+    /// for the click. The plugin and MGE XE's d3d8.dll read the same variable for their boxes.
+    pub(crate) box_seconds: u32,
 }
 
 impl Switches {
@@ -120,6 +124,8 @@ impl Switches {
             game_window: read.choice("MGE_XE_WINDOW", &["game", "child"]) == Some("game"),
             force_growth: read.number("NIRENDER_FORCE_GROWTH").unwrap_or(0),
             growth_shots: read.text("NIRENDER_GROWTH_SHOTS"),
+            // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
+            box_seconds: read.parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |v| v.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600)),
         };
         read.report();
         switches

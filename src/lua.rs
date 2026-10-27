@@ -205,9 +205,16 @@ unsafe extern "C" fn overlay(l: LuaState) -> i32 {
 /// command goes into the stream as data of an extension, with the number 5; a renderer
 /// without parameters does nothing with it. The parameters window of the MGE XE options
 /// sends these from its sliders (the row "water (renderer)" of its shader list).
+///
+/// `crash panic plugin` is a panic of the plugin on purpose, for a test of its crash data
+/// (`crash`); the helper takes `crash panic` and `crash fault` the same way.
 unsafe extern "C" fn tune(l: LuaState) -> i32 {
     const TUNE: u32 = 5;
-    crate::capture::extension(TUNE, arg_str(l, 1).unwrap_or_default().as_bytes());
+    let command = arg_str(l, 1).unwrap_or_default();
+    if command.trim() == "crash panic plugin" {
+        panic!("a panic asked by nirender.tune");
+    }
+    crate::capture::extension(TUNE, command.as_bytes());
     0
 }
 

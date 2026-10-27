@@ -11,9 +11,11 @@ extern "system" {
     fn SetStdHandle(which: u32, handle: *mut core::ffi::c_void) -> i32;
 }
 
-/// Sends the text of this program, and the text of a failure, into a file.
+/// Sends the text of this program, and the text of a failure, into a file. The file of the
+/// run before is kept as `<path>.1`.
 pub(crate) fn log_to(path: &str) {
     use std::os::windows::io::IntoRawHandle;
+    crate::crash::rotate_log(std::path::Path::new(path));
     if let Ok(file) = std::fs::File::create(path) {
         let handle = file.into_raw_handle();
         // STD_OUTPUT_HANDLE and STD_ERROR_HANDLE
@@ -38,10 +40,12 @@ pub fn run(args: Vec<String>) {
 /// `run` with a program that draws more than the game does: in the live mode, and for a
 /// capture file.
 pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
-    if let Some(path) = option(&args, "--log") {
-        log_to(&path);
+    let log = option(&args, "--log");
+    if let Some(path) = &log {
+        log_to(path);
     }
-    println!("nirender-host v{}{}", env!("CARGO_PKG_VERSION"), extension.as_ref().map_or(String::new(), |e| format!(", {}", e.name())));
+    crate::crash::install(crate::crash::dump_path(log.as_deref()));
+    println!("{}", live::reader_build(extension.as_deref()));
     switches::log_set();
     let backends = match option(&args, "--backend").as_deref() {
         Some("dx12") => wgpu::Backends::DX12,
@@ -83,6 +87,12 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     for (tag, data) in &records {
         if *tag == tag::HEADER {
             (width, height) = (word(data, 0), word(data, 4));
+            // A capture of another stream format plays on: the gate's accepted captures are
+            // from before the number. The line says that the picture can differ.
+            let format = stream_format::header_format(data);
+            if format != stream_format::STREAM_FORMAT {
+                println!("capture of the stream format {format} ({}); this build reads the format {}: the picture can differ", stream_format::header_build_id(data), stream_format::STREAM_FORMAT);
+            }
             break;
         }
         if *tag == tag::CALL && word(data, 0) == CALL_VIEWPORT {
