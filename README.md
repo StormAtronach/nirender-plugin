@@ -178,6 +178,45 @@ The instruments and the tests:
   test that checks every Morrowind Code Patch record inside a ported function
   (`src/install.rs`); without them the test uses the paths of this machine.
 
+The helper's diagnostic and test switches (`host/src/switches.rs`, read once; none is a
+setting). The three of the A/B list above (`MGE_XE_PARTICLE_QUADS`, `MGE_XE_DEPTH_FORMAT`,
+`MGE_XE_DEPTH_REVERSED`) are there too. MGE XE's own switches are in the RENDERER.md of the
+MGE-XE-G7 render-link worktree.
+
+- `MGE_XE_RETAINED=0`: the table draws nothing. With a capture of the plugin's mode `dual`
+  (and the engine's walk), the engine's own draws of the same capture: the reference of a
+  debug toggle.
+- `MGE_XE_CLUSTERS=1` or `0`: the clusters of the lights on or off, over the setting. The
+  baseline gate replays with both.
+- `MGE_XE_LIGHTS=world`: a lit draw of the world takes the point lights of the world that
+  reach its pixel (the clusters of `WORLD_LIGHTS`), not the lights the engine chose for it.
+- `MGE_XE_INDIRECT=0`: one draw call for each retained draw, no indirect runs: it rules the
+  indirect runs out when a picture is wrong, and goes around a driver's fault in them.
+- `MGE_XE_INSTANCE_UPLOAD=all`: the retained segment of the instances goes up whole when more
+  than 64 slots changed in a frame, as before the copy of `retained_upload`.
+- `MGE_XE_LAZY_PASS=0`: a pass on the game's targets begins when it is asked for, and a clear
+  does not carry into the next pass, as before `Player::begin_pass`.
+- `MGE_XE_PASS_GROUPS=0`: the game's draws before the world and after the post chain bind the
+  whole group of the texture arrays, as before `Renderer::small_array_group`.
+- `MGE_XE_SAMPLES=<n>`: the samples for each pixel of the targets of the frame (1, 2, 4 or 8),
+  over the setting of the extension.
+- `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the setting
+  of the extension: for an A/B of the mouse's lag.
+- `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over
+  `AutoNoVsync`.
+- `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a child
+  window of it: for an A/B of the mouse's lag.
+- `MGE_XE_CORES=0`: the threads of the helper are left to the scheduler.
+- `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n (at least 256), for the
+  test of a full room.
+- `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
+  guard of the device's limit.
+- `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
+- `MGE_XE_RUNS_DUMP=1`: the runs of the table of each frame.
+- `MGE_XE_DRAW_DUMP=<geometry handle, hex>`: the words of each draw of that geometry.
+- `MGE_XE_REPLAY_DEBUG=1`: a line for each draw a replay issues, and the values of the
+  world's start.
+
 ## Where the plan is
 
 The plan and the record of each step are in the docs repo:

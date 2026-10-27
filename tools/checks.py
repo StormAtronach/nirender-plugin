@@ -6,8 +6,9 @@
 
 The checks of each list:
 
-- `check_readme.py`: every switch the code reads is in README.md; every path README names
-  exists.
+- `check_readme.py`: every switch the code reads is in README.md, and every switch README.md
+  names is read; every path README names exists. With `--mge` (the MGE XE list): MGE XE's
+  switches against its RENDERER.md.
 - `check_contract.py`: `contract/mge_render_link.h` against `src/link.rs`.
 - `check_mwse_native.py`: the plugin's and MGE XE's copies of MWSE's native ABI against MWSE's
   header.
@@ -30,6 +31,8 @@ MWSE_HEADER = REPOS / "MWSE" / "MWSE" / "MWSE" / "MWSENativeApi.h"
 
 CHECKS = {
     "readme": (PLUGIN / "tools" / "check_readme.py", PLUGIN),
+    # MGE XE's switches against its RENDERER.md.
+    "mge readme": (PLUGIN / "tools" / "check_readme.py", REPOS / "MGE-XE-G7-render-link", ["--mge"]),
     "contract": (PLUGIN / "tools" / "check_contract.py", PLUGIN),
     "mwse native": (PLUGIN / "tools" / "check_mwse_native.py", MWSE_HEADER),
     "module headers": (STATE / "build_module_map.py", STATE),
@@ -43,7 +46,7 @@ CHECKS = {
 }
 LISTS = {
     "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts"],
-    "mge": ["mwse native", "module headers", "skill names"],
+    "mge": ["mge readme", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 
