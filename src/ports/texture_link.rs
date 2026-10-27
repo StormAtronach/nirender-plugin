@@ -158,6 +158,13 @@ impl Drop for InProgress {
 
 /// 0x6BFA50 `NiDX8SourceTextureData_static::Create` (cdecl). Returns the new
 /// `NiDX8SourceTextureData`.
+///
+/// # Safety
+///
+/// `texture` points at a live `NiSourceTexture` (its file name, pixel data and format preferences
+/// are read), and `renderer` at the live renderer that the source texture data is made for. When
+/// the texture names a file, the engine's image converter is set: the function reads the file
+/// through it.
 pub unsafe fn create(t: &MainThread, texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&create_port::STATE);
     // The engine's error menu for a file that cannot be read draws frames, and a frame can

@@ -219,6 +219,10 @@ unsafe fn append_renderer_data(data: usize) {
 // ---------------------------------------------------------------------------------------
 
 /// 0x6AB410 `NiDX8PixelFormat::ctor`. It writes the [`NiPixelFormat`] part only. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8PixelFormat` that is not constructed yet.
 pub unsafe fn pixel_format_ctor(this: usize) -> usize {
     crate::shadow::touch(&pixel_format_ctor_port::STATE);
     wr::<u32>(this, PF::bitsPerPixel, 8);
@@ -263,6 +267,10 @@ fn format_ctor_for(d3d_format: u32) -> FormatCtor {
 
 /// 0x4B52D0 `NiDX8PixelFormat::setPixelFormat`. Returns what the constructor of
 /// [`NiPixelFormat`] returns.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8PixelFormat`.
 pub unsafe fn set_pixel_format(this: usize, d3d_format: u32) -> usize {
     crate::shadow::touch(&set_pixel_format_port::STATE);
     wr(this, PF::d3dFormat, d3d_format);
@@ -312,6 +320,11 @@ fn d3d_format_for(format: u32, bits_per_pixel: u8, layout: impl FnOnce() -> u32)
 }
 
 /// 0x6B0E20 `NiGetD3DFormatForNiPixelFormat` (cdecl). Returns a `D3DFORMAT`, 0 for none.
+///
+/// # Safety
+///
+/// `format` points at a live `NiPixelFormat`; the engine's compare mask and shift and its import of
+/// `OutputDebugStringA` are in memory.
 pub unsafe fn get_d3d_format_for_pixel_format(format: usize) -> u32 {
     crate::shadow::touch(&get_d3d_format_for_pixel_format_port::STATE);
     let layout = || (rd::<u32>(format, NiPixelFormat::compareBits) & rd::<u32>(COMPARE_MASK_C, 0)).wrapping_shr(rd(COMPARE_SHIFT_C, 0));
@@ -328,6 +341,11 @@ pub unsafe fn get_d3d_format_for_pixel_format(format: usize) -> u32 {
 // ---------------------------------------------------------------------------------------
 
 /// 0x6A9DA0 `NiDX8RenderTarget::dtor`: runs the destructors of its two `NiPointer` members.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderTarget` that nothing uses after the call; its two pointers
+/// hold 0 or live objects, which the function releases.
 pub unsafe fn render_target_dtor(this: usize) {
     crate::shadow::touch(&render_target_dtor_port::STATE);
     let object: usize = rd(this, RT::field_18);
@@ -358,6 +376,11 @@ unsafe fn render_target_dtor_regions(set: &mut Regions, this: usize) {
 
 /// 0x6C07D0 `NiDX8TextureRenderTarget::dtor` (cdecl): releases the objects of a render target
 /// of a texture and frees the render target.
+///
+/// # Safety
+///
+/// `target` is 0, or a live render target of a texture from the engine's allocation that nothing
+/// uses after the call: the function frees it.
 pub unsafe fn texture_render_target_dtor(target: usize) {
     crate::shadow::touch(&texture_render_target_dtor_port::STATE);
     if target == 0 {
@@ -405,6 +428,11 @@ unsafe fn texture_render_target_dtor_regions(set: &mut Regions, target: usize) {
 // ---------------------------------------------------------------------------------------
 
 /// 0x6C0480 `NiDX8RenderedTextureData::ctor`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8RenderedTextureData` that is not constructed yet;
+/// `texture` at a live `NiRenderedTexture`, and `renderer` at the live `NiDX8Renderer`.
 pub unsafe fn rendered_texture_data_ctor(this: usize, texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&rendered_texture_data_ctor_port::STATE);
     texture_data_ctor_args(this, texture, renderer);
@@ -418,6 +446,11 @@ pub unsafe fn rendered_texture_data_ctor(this: usize, texture: usize, renderer: 
 /// 0x6C05D0 `NiDX8RenderedTextureData::CreateSurf`: makes the render target texture.
 /// Returns the `NiDX8PixelFormat` of the renderer it used, or 0. `out_format` gets the index
 /// of that format.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderedTextureData` with its renderer; `texture` is 0 or a live
+/// `NiRenderedTexture`; `out_format` points at a word that the function writes.
 pub unsafe fn rendered_texture_data_create_surf(this: usize, texture: usize, out_format: usize) -> usize {
     crate::shadow::touch(&rendered_texture_data_create_surf_port::STATE);
     if texture == 0 {
@@ -482,6 +515,11 @@ unsafe fn rendered_texture_data_create_surf_regions(set: &mut Regions, this: usi
 /// 0x6C01B0 `NiDX8RenderedTextureData::Create` (cdecl, static): makes the renderer data of a
 /// `NiRenderedTexture`, with its texture, its depth buffer and its render target. Returns 0
 /// when it cannot make a device object.
+///
+/// # Safety
+///
+/// `texture` points at a live `NiRenderedTexture`, and `renderer` at the live `NiDX8Renderer` with
+/// its device.
 pub unsafe fn rendered_texture_data_create(texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&rendered_texture_data_create_port::STATE);
     let data = engine::operator_new(RTD::SIZE);
@@ -576,6 +614,11 @@ pub unsafe fn rendered_texture_data_create(texture: usize, renderer: usize) -> u
 }
 
 /// 0x6C0520 `NiDX8RenderedTextureData::dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderedTextureData` with its renderer, that nothing uses after
+/// the call.
 pub unsafe fn rendered_texture_data_dtor(this: usize) {
     crate::shadow::touch(&rendered_texture_data_dtor_port::STATE);
     wr::<usize>(this, RTD::vtbl_vtbl, VTBL_RENDERED_TEXTURE_DATA);
@@ -604,6 +647,12 @@ unsafe fn rendered_texture_data_dtor_regions(set: &mut Regions, this: usize, siz
 }
 
 /// 0x6C0500 `NiDX8RenderedTextureData::deleting_dtor`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderedTextureData` with its renderer, that nothing uses after
+/// the call; with bit 0 of `flags` it is a block of the engine's allocation, which the function
+/// frees.
 pub unsafe fn rendered_texture_data_deleting_dtor(this: usize, flags: u8) -> usize {
     crate::shadow::touch(&rendered_texture_data_deleting_dtor_port::STATE);
     rendered_texture_data_dtor(this);
@@ -614,18 +663,30 @@ pub unsafe fn rendered_texture_data_deleting_dtor(this: usize, flags: u8) -> usi
 }
 
 /// 0x6C05B0 `NiDX8RenderedTextureData::GetD3DTexture`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderedTextureData`.
 pub unsafe fn rendered_texture_data_get_d3d_texture(this: usize) -> usize {
     crate::shadow::touch(&rendered_texture_data_get_d3d_texture_port::STATE);
     rd(this, RTD::d3dTexture)
 }
 
 /// 0x6C05C0 `NiDX8RenderedTextureData::IsLoaded`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderedTextureData`.
 pub unsafe fn rendered_texture_data_is_loaded(this: usize) -> u8 {
     crate::shadow::touch(&rendered_texture_data_is_loaded_port::STATE);
     (rd::<usize>(this, RTD::d3dTexture) != 0) as u8
 }
 
 /// 0x6C09A0 `NiDX8RenderedTextureData::GetTarget`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderedTextureData`.
 pub unsafe fn rendered_texture_data_get_target(this: usize) -> usize {
     crate::shadow::touch(&rendered_texture_data_get_target_port::STATE);
     rd(this, RTD::target)
@@ -638,6 +699,11 @@ pub unsafe fn rendered_texture_data_get_target(this: usize) -> usize {
 /// 0x6C09D0 `NiDX8RenderedCubeMapData::ctor` in the database. It is the static `Create`
 /// (cdecl). It makes the renderer data of a `NiRenderedCubeMap` with a render target for each
 /// face.
+///
+/// # Safety
+///
+/// `texture` points at a live `NiRenderedCubeMap`, and `renderer` at the live `NiDX8Renderer` with
+/// its device.
 pub unsafe fn rendered_cube_map_data_create(texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&rendered_cube_map_data_create_port::STATE);
     let data = engine::operator_new(RENDERED_CUBE_SIZE);
@@ -682,6 +748,10 @@ pub unsafe fn rendered_cube_map_data_create(texture: usize, renderer: usize) -> 
 }
 
 /// 0x6C0B20 `NiDX8RenderedCubeMapData::dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderedCubeMapData` that nothing uses after the call.
 pub unsafe fn rendered_cube_map_data_dtor(this: usize) {
     crate::shadow::touch(&rendered_cube_map_data_dtor_port::STATE);
     wr::<usize>(this, RTD::vtbl_vtbl, VTBL_RENDERED_CUBE_MAP_DATA);
@@ -712,6 +782,11 @@ unsafe fn rendered_cube_map_data_dtor_regions(set: &mut Regions, this: usize) {
 }
 
 /// 0x6C0B00 `NiDX8RenderedCubeMapData::deleting_dtor`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderedCubeMapData` that nothing uses after the call; with bit 0
+/// of `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn rendered_cube_map_data_deleting_dtor(this: usize, flags: u8) -> usize {
     crate::shadow::touch(&rendered_cube_map_data_deleting_dtor_port::STATE);
     rendered_cube_map_data_dtor(this);
@@ -722,12 +797,20 @@ pub unsafe fn rendered_cube_map_data_deleting_dtor(this: usize, flags: u8) -> us
 }
 
 /// 0x6C0BB0 `NiDX8RenderedCubeMapData::GetD3DTexture`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderedCubeMapData`.
 pub unsafe fn rendered_cube_map_data_get_d3d_texture(this: usize) -> usize {
     crate::shadow::touch(&rendered_cube_map_data_get_d3d_texture_port::STATE);
     rd(this, RENDERED_CUBE_TEXTURE)
 }
 
 /// 0x6C0BC0 `NiDX8RenderedCubeMapData::IsLoaded`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderedCubeMapData`.
 pub unsafe fn rendered_cube_map_data_is_loaded(this: usize) -> u8 {
     crate::shadow::touch(&rendered_cube_map_data_is_loaded_port::STATE);
     (rd::<usize>(this, RENDERED_CUBE_TEXTURE) != 0) as u8
@@ -735,6 +818,11 @@ pub unsafe fn rendered_cube_map_data_is_loaded(this: usize) -> u8 {
 
 /// 0x6C0BD0 `NiDX8RenderedCubeMapData::GetTarget`: the target of the current face of the
 /// cube map.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderedCubeMapData` whose cube map is set and whose current face
+/// is below 6, which nothing here checks.
 pub unsafe fn rendered_cube_map_data_get_target(this: usize) -> usize {
     crate::shadow::touch(&rendered_cube_map_data_get_target_port::STATE);
     let face: u32 = rd(rd(this, RTD::vtbl_sgTexture), RENDERED_CUBE_MAP_CURRENT_FACE);
@@ -776,6 +864,11 @@ unsafe fn copy_face(this: usize, texture_slot: usize, face: u32, pixel_data: usi
 /// 0x6C10A0 `NiDX8SourceCubeMapData::Create` (cdecl, static): makes the renderer data of a
 /// `NiSourceCubeMap`. The six faces must be square and of one size that is a power of two.
 /// They must have the same number of levels and the same format.
+///
+/// # Safety
+///
+/// `texture` points at a live `NiSourceCubeMap` with the pixel data of its six faces, and
+/// `renderer` at the live `NiDX8Renderer` with its device.
 pub unsafe fn source_cube_map_data_create(texture: usize, renderer: usize) -> usize {
     crate::shadow::touch(&source_cube_map_data_create_port::STATE);
     let data = engine::operator_new(SOURCE_CUBE_SIZE);
@@ -926,6 +1019,10 @@ pub unsafe fn source_cube_map_data_create(texture: usize, renderer: usize) -> us
 }
 
 /// 0x6C15B0 `NiDX8SourceCubeMapData::dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8SourceCubeMapData` that nothing uses after the call.
 pub unsafe fn source_cube_map_data_dtor(this: usize) {
     crate::shadow::touch(&source_cube_map_data_dtor_port::STATE);
     wr::<usize>(this, STD::vtbl_vtbl, VTBL_SOURCE_CUBE_MAP_DATA);
@@ -953,6 +1050,11 @@ unsafe fn source_cube_map_data_dtor_regions(set: &mut Regions, this: usize) {
 }
 
 /// 0x6C1610 `NiDX8SourceCubeMapData::deleting_dtor`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8SourceCubeMapData` that nothing uses after the call; with bit 0 of
+/// `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn source_cube_map_data_deleting_dtor(this: usize, flags: u8) -> usize {
     crate::shadow::touch(&source_cube_map_data_deleting_dtor_port::STATE);
     source_cube_map_data_dtor(this);
@@ -963,12 +1065,20 @@ pub unsafe fn source_cube_map_data_deleting_dtor(this: usize, flags: u8) -> usiz
 }
 
 /// 0x6C1630 `NiDX8SourceCubeMapData::GetD3DTexture`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8SourceCubeMapData`.
 pub unsafe fn source_cube_map_data_get_d3d_texture(this: usize) -> usize {
     crate::shadow::touch(&source_cube_map_data_get_d3d_texture_port::STATE);
     rd(this, SOURCE_CUBE_TEXTURE)
 }
 
 /// 0x6C1640 `NiDX8SourceCubeMapData::IsLoaded`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8SourceCubeMapData`.
 pub unsafe fn source_cube_map_data_is_loaded(this: usize) -> u8 {
     crate::shadow::touch(&source_cube_map_data_is_loaded_port::STATE);
     (rd::<usize>(this, SOURCE_CUBE_TEXTURE) != 0) as u8
@@ -988,6 +1098,11 @@ unsafe fn first_face_pixel_data(texture: usize) -> usize {
 /// 0x6C1650 `NiDX8SourceCubeMapData::Update`: copies again each face whose pixel data has a
 /// new revision, and all faces when the palette changed. The game code leaves no result in
 /// EAX.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8SourceCubeMapData` whose texture is a live `NiSourceCubeMap` with
+/// the pixel data of its faces.
 pub unsafe fn source_cube_map_data_update(this: usize) {
     crate::shadow::touch(&source_cube_map_data_update_port::STATE);
     let mut palette_changed = false;
@@ -1066,6 +1181,11 @@ unsafe fn source_cube_map_data_update_regions(set: &mut Regions, this: usize) {
 /// It takes the textures from the list of the textures that are alive. The map of rendered
 /// textures of the renderer is no source for this: no function takes a texture out of that
 /// map when the texture dies, so the map can have textures that are gone.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device; the textures of the list of live
+/// textures stay live during the call, and nothing needs their pictures, which are lost.
 pub unsafe fn remake_rendered_textures(this: usize) -> u32 {
     let list = crate::ports::textures::textures_with_data(VTBL_RENDERED_TEXTURE_DATA as u32);
     for &texture in &list {
@@ -1077,6 +1197,11 @@ pub unsafe fn remake_rendered_textures(this: usize) -> u32 {
 
 /// 0x6B03B0 `NiDX8Renderer::CreateRenderedTextureRendererData`. Returns 1 when the texture
 /// has renderer data.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device, and `texture` at a live
+/// `NiRenderedTexture`.
 pub unsafe fn create_rendered_texture_renderer_data(this: usize, texture: usize) -> u8 {
     crate::shadow::touch(&create_rendered_texture_renderer_data_port::STATE);
     if rd::<usize>(texture, NiTexture::rendererData) != 0 {
@@ -1100,6 +1225,11 @@ unsafe fn create_rendered_texture_renderer_data_regions(set: &mut Regions, textu
 
 /// 0x6B0480 `NiDX8Renderer::CreateRenderedCubeMapRendererData`. Returns 1 when the cube map
 /// has renderer data.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device, and `texture` at a live
+/// `NiRenderedCubeMap`.
 pub unsafe fn create_rendered_cube_map_renderer_data(this: usize, texture: usize) -> u8 {
     crate::shadow::touch(&create_rendered_cube_map_renderer_data_port::STATE);
     let map = this + R::hashmap_maybeRenderedCubemaps;
@@ -1164,6 +1294,11 @@ unsafe fn copy_row(to: usize, from: usize, bytes: u32) {
 /// 0x6AC050 `NiDX8Renderer::TakeScreenshot`: returns a new `NiPixelData` with a part of the
 /// back buffer, or 0. `rect` is a `NiRect<unsigned int>`, or 0 for the full back buffer. The
 /// game code gives the width and the height as the right and bottom of the rectangle it locks.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device, its back buffer and its pixel format;
+/// `rect` is 0 or a live `NiRect<unsigned int>`.
 pub unsafe fn take_screenshot(this: usize, rect: usize) -> usize {
     crate::shadow::touch(&take_screenshot_port::STATE);
     let Some([left, top, width, height]) = screenshot_area_of(this, rect) else {
@@ -1220,6 +1355,11 @@ fn blt_source_rect(rect: Option<[u32; 4]>, source: [u32; 2], buffer: [u32; 2], d
 }
 
 /// 0x6AC1D0 `NiDX8Renderer::ImageBlt`: copies a part of a `NiBltSource` to the back buffer.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its back buffer; `source` is 0 or a live
+/// `NiBltSource`; `rect`, `dest_x` and `dest_y` are as the engine passes them.
 pub unsafe fn image_blt(this: usize, source: usize, rect: usize, dest_x: u32, dest_y: u32) {
     crate::shadow::touch(&image_blt_port::STATE);
     if source == 0 {

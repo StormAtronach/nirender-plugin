@@ -410,6 +410,11 @@ unsafe fn new_index_buffer(device: usize, size: u32, usage: u32, pool: u32) -> u
 // ---- NiDX8IndexBufferManager
 
 /// 0x6BC970 `NiDX8IndexBufferManager::ctor`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8IndexBufferManager` that is not constructed yet,
+/// and `device` at the plugin's device, whose reference the manager counts.
 pub unsafe fn index_manager_ctor(this: usize, device: usize) -> usize {
     crate::shadow::touch(&index_manager_ctor_port::STATE);
     wr(this, IM::vtbl, VTBL_NI_REF_OBJECT);
@@ -432,6 +437,11 @@ pub unsafe fn index_manager_ctor(this: usize, device: usize) -> usize {
 }
 
 /// 0x6BCBA0 `NiDX8IndexBufferManager::dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8IndexBufferManager` with its device, that nothing uses after the
+/// call: the function releases its buffers.
 pub unsafe fn index_manager_dtor(this: usize) {
     crate::shadow::touch(&index_manager_dtor_port::STATE);
     wr(this, IM::vtbl, VTBL_INDEX_BUFFER_MANAGER);
@@ -463,6 +473,11 @@ pub unsafe fn index_manager_dtor(this: usize) {
 }
 
 /// 0x6BCB80 `NiDX8IndexBufferManager::deleting_dtor`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8IndexBufferManager` that nothing uses after the call; with bit 0
+/// of `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn index_manager_deleting_dtor(this: usize, flags: u8) -> usize {
     crate::shadow::touch(&index_manager_deleting_dtor_port::STATE);
     index_manager_dtor(this);
@@ -474,6 +489,12 @@ pub unsafe fn index_manager_deleting_dtor(this: usize, flags: u8) -> usize {
 
 /// 0x6BCE80 `NiDX8IndexBufferManager::createIndexBuffer`. It puts the indices of a shape into a 16 bit
 /// index buffer. It uses `index_buffer` again when that buffer fits.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8IndexBufferManager`; `indices` is 0 or `index_count` indices;
+/// `index_buffer` is 0 or an index buffer of the device; `out_buffer_size` points at a word that
+/// the function can write.
 pub unsafe fn create_index_buffer(this: usize, indices: usize, index_count: u32, index_buffer: usize, out_buffer_size: usize, pool: u32, usage: u32) -> usize {
     crate::shadow::touch(&create_index_buffer_port::STATE);
     if rd::<usize>(this, IM::device) == 0 {
@@ -507,6 +528,10 @@ pub unsafe fn create_index_buffer(this: usize, indices: usize, index_count: u32,
 /// 0x6BCFE0 `NiDX8IndexBufferManager::getOrBuildQuadIndexBuffer`. It gives the index buffer of
 /// `quads` quads, with two triangles for each quad. With `fill`, it writes the indices also when the
 /// buffer of the manager fits.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8IndexBufferManager`.
 pub unsafe fn get_or_build_quad_index_buffer(this: usize, quads: u32, fill: u8, usage: u32, pool: u32) -> usize {
     crate::shadow::touch(&get_or_build_quad_index_buffer_port::STATE);
     if rd::<usize>(this, IM::device) == 0 {
@@ -566,6 +591,11 @@ pub unsafe fn get_or_build_quad_index_buffer(this: usize, quads: u32, fill: u8, 
 
 /// 0x6BD190 `NiDX8IndexBufferManager::buildLineSegmentIndexBuffer`. It makes a line from each vertex
 /// with a flag to the next vertex. The last vertex connects to the first vertex.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8IndexBufferManager`; `flags` is 0 or `vertex_count` flags;
+/// `out_index_count` points at a word that the function writes.
 pub unsafe fn build_line_segment_index_buffer(this: usize, vertex_count: u32, flags: usize, out_index_count: usize, usage: u32, pool: u32) -> usize {
     crate::shadow::touch(&build_line_segment_index_buffer_port::STATE);
     if rd::<usize>(this, IM::device) == 0 {
@@ -631,6 +661,11 @@ pub unsafe fn build_line_segment_index_buffer(this: usize, vertex_count: u32, fl
 }
 
 /// 0x6BD370 `NiDX8IndexBufferManager::Recreate`. It empties the first map.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8IndexBufferManager`; nothing uses the buffers of its first map
+/// after the call.
 pub unsafe fn index_manager_recreate(this: usize) {
     crate::shadow::touch(&index_manager_recreate_port::STATE);
     let map = this + IM::hashmap_1C;
@@ -639,6 +674,10 @@ pub unsafe fn index_manager_recreate(this: usize) {
 }
 
 /// 0x6BD560 `NiDX8IndexBufferManager::HashMap::dtor`
+///
+/// # Safety
+///
+/// `map` points at a live hash map of the index buffer manager that nothing uses after the call.
 pub unsafe fn index_map_dtor(map: usize) {
     crate::shadow::touch(&index_map_dtor_port::STATE);
     map_dtor_body(map, eng::vtbl_index_map());
@@ -647,6 +686,11 @@ pub unsafe fn index_map_dtor(map: usize) {
 // ---- NiDX8VertexBufferManager
 
 /// 0x6BD780 `NiDX8VertexBufferManager::ctor`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8VertexBufferManager` that is not constructed yet,
+/// and `device` at the plugin's device, whose reference the manager counts.
 pub unsafe fn vertex_manager_ctor(this: usize, device: usize) -> usize {
     crate::shadow::touch(&vertex_manager_ctor_port::STATE);
     wr(this, VM::vtbl, VTBL_NI_REF_OBJECT);
@@ -665,6 +709,11 @@ pub unsafe fn vertex_manager_ctor(this: usize, device: usize) -> usize {
 }
 
 /// 0x6BD9B0 `NiDX8VertexBufferManager::dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8VertexBufferManager` that nothing uses after the call; its device
+/// is 0 or live, and the function releases it when it is not 0.
 pub unsafe fn vertex_manager_dtor(this: usize) {
     crate::shadow::touch(&vertex_manager_dtor_port::STATE);
     wr(this, VM::vtbl, VTBL_VERTEX_BUFFER_MANAGER);
@@ -691,6 +740,11 @@ pub unsafe fn vertex_manager_dtor(this: usize) {
 }
 
 /// 0x6BD990 `NiDX8VertexBufferManager::deleting_dtor`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8VertexBufferManager` with its device, that nothing uses after the
+/// call; with bit 0 of `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn vertex_manager_deleting_dtor(this: usize, flags: u8) -> usize {
     crate::shadow::touch(&vertex_manager_deleting_dtor_port::STATE);
     vertex_manager_dtor(this);
@@ -701,6 +755,10 @@ pub unsafe fn vertex_manager_deleting_dtor(this: usize, flags: u8) -> usize {
 }
 
 /// 0x6C28A0 `NiDX8VBResource::ctor`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8VBResource` that is not constructed yet.
 pub unsafe fn vb_resource_ctor(this: usize) -> usize {
     crate::shadow::touch(&vb_resource_ctor_port::STATE);
     wr::<u32>(this, VR::resourceId, 0xFFFF_FFFF);
@@ -723,6 +781,10 @@ fn pool_map(pool: u32) -> Option<usize> {
 
 /// 0x6BE690 `NiDX8VertexBufferManager::GetVBInfo`. It gives the `VBInfo` of a usage and a vertex
 /// format in the map of the pool. It makes the `VBInfo` when the map has none.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8VertexBufferManager`.
 pub unsafe fn get_vb_info(this: usize, usage: u32, fvf: u32, pool: u32) -> usize {
     crate::shadow::touch(&get_vb_info_port::STATE);
     let key = usage.wrapping_shl(16) | fvf;
@@ -750,6 +812,11 @@ pub unsafe fn get_vb_info(this: usize, usage: u32, fvf: u32, pool: u32) -> usize
 }
 
 /// 0x6BEA90 `NiDX8VertexBufferManager::FVFUsageHash::insert`
+///
+/// # Safety
+///
+/// `map` points at a live engine `THashMap` of the manager; the engine's `operator new` does not
+/// fail (`hash_map::set_with` does not test the new node).
 pub unsafe fn fvf_usage_hash_insert(map: usize, key: u32, value: usize) {
     crate::shadow::touch(&fvf_usage_hash_insert_port::STATE);
     hash_map::set_with(map, key, value, |size| eng::operator_new(size));
@@ -757,6 +824,10 @@ pub unsafe fn fvf_usage_hash_insert(map: usize, key: u32, value: usize) {
 
 /// 0x6BDC70 `NiDX8VertexBufferManager::CreateVertexBuffer`. It gives the next of the five buffers of
 /// a usage, format and pool. It releases a buffer that is too small and makes it again.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8VertexBufferManager`.
 pub unsafe fn create_vertex_buffer(this: usize, byte_count: u32, usage: u32, fvf: u32, pool: u32) -> usize {
     crate::shadow::touch(&create_vertex_buffer_port::STATE);
     if rd::<usize>(this, VM::device) == 0 {
@@ -819,6 +890,13 @@ pub unsafe fn create_vertex_buffer(this: usize, byte_count: u32, usage: u32, fvf
 /// and texture coordinates of a shape, one after the other in each vertex. It uses `previous_vb`
 /// again when its description fits. With a skin instance, the positions and normals come from
 /// `NiSkinInstance::Deform`. Then `refill` tells if the function writes the remaining data too.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8VertexBufferManager` with its device; `geometry` at live geometry
+/// data whose arrays hold its active vertices; `previous_vb` is 0 or a vertex buffer of the
+/// manager; `skin` is 0 or a live `NiSkinInstance`; `out_buffer_size`, `out_stride` and `out_fvf`
+/// point at words that the function writes.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn pack_untransformed_vb(
     this: usize,
@@ -973,6 +1051,12 @@ pub unsafe fn pack_untransformed_vb(
 /// 0x6BE180 `NiDX8VertexBufferManager::PackScreenPolyVB`. It writes the vertices of a screen polygon
 /// and scales each vertex by its depth. `frustum_near` and `frustum_distance` are the bits of the
 /// floats.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8VertexBufferManager`; `vertices` holds `vertex_count` positions;
+/// `tex_coords` and `colors` are 0 or hold `vertex_count` entries; `out_fvf` and `out_stride` point
+/// at words that the function writes.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn pack_screen_poly_vb(
     this: usize,
@@ -1048,6 +1132,11 @@ pub unsafe fn pack_screen_poly_vb(
 }
 
 /// 0x6BE910 `NiDX8VertexBufferManager::Recreate`. It empties the map of the default pool.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8VertexBufferManager`; nothing uses the buffers of the map of the
+/// default pool after the call.
 pub unsafe fn vertex_manager_recreate(this: usize) {
     crate::shadow::touch(&vertex_manager_recreate_port::STATE);
     let map = this + VM::hashmap_C;
@@ -1056,12 +1145,21 @@ pub unsafe fn vertex_manager_recreate(this: usize) {
 }
 
 /// 0x6BEA30 `NiDX8VertexBufferManager::HashMap::dtor`
+///
+/// # Safety
+///
+/// `map` points at a live hash map of the vertex buffer manager that nothing uses after the call.
 pub unsafe fn vertex_map_dtor(map: usize) {
     crate::shadow::touch(&vertex_map_dtor_port::STATE);
     map_dtor_body(map, eng::vtbl_vertex_map());
 }
 
 /// 0x6BEB20 `NiDX8VertexBufferManager::Hash::deleting_dtor`. Returns `this`.
+///
+/// # Safety
+///
+/// `map` points at a live hash map of the vertex buffer manager that nothing uses after the call;
+/// with bit 0 of `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn vertex_map_deleting_dtor(map: usize, flags: u8) -> usize {
     crate::shadow::touch(&vertex_map_deleting_dtor_port::STATE);
     map_dtor_body(map, eng::vtbl_vertex_map());
@@ -1075,6 +1173,11 @@ pub unsafe fn vertex_map_deleting_dtor(map: usize, flags: u8) -> usize {
 
 /// 0x6BEE00 `NiD3DShaderInterface::compileVertexShader`. It keeps the function and the usage of
 /// shader `index` and makes the shader. Returns the handle, or 0 when there is none.
+///
+/// # Safety
+///
+/// `this` points at a live `NiD3DShaderInterface` with its arrays of shader functions, usages and
+/// handles.
 pub unsafe fn compile_vertex_shader(this: usize, shader_function: u32, shader_usage: u32, index: u32) -> u32 {
     crate::shadow::touch(&compile_vertex_shader_port::STATE);
     let mut handle: u32 = 0;
@@ -1161,6 +1264,13 @@ pub unsafe fn compile_vertex_shader(this: usize, shader_function: u32, shader_us
 
 /// 0x6BF0B0 `NiD3DShaderInterface::buildVertexBuffer`. It makes the vertex buffer of a shape for
 /// vertex declaration `declaration_index`. It gives the stride and the shader handle.
+///
+/// # Safety
+///
+/// `this` points at a live `NiD3DShaderInterface`; `geometry` at live geometry data; `skin` is 0 or
+/// a live `NiSkinInstance`, and `partition` 0 or a live skin partition of it; `previous_vb` is 0 or
+/// a vertex buffer; `out_buffer_size`, `out_stride` and `out_shader` point at words that the
+/// function writes; `renderer_data` and `declaration_index` are as the engine passes them.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn build_vertex_buffer(
     this: usize,

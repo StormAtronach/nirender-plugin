@@ -44,6 +44,10 @@ pub(crate) unsafe fn set_if_changed(this: usize, state: u32, value: u32) {
 }
 
 /// 0x65EEB0 `NiRenderStateSetting::SetValue`
+///
+/// # Safety
+///
+/// `setting` points at a live `NiRenderStateSetting`: two words, the value and the saved value.
 pub unsafe fn setting_set_value(setting: usize, value: u32, save: u8) {
     crate::shadow::touch(&setting_set_value_port::STATE);
     if save != 0 {
@@ -53,6 +57,11 @@ pub unsafe fn setting_set_value(setting: usize, value: u32, save: u8) {
 }
 
 /// 0x65ED60 `NiRenderState::SetRenderState`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderState` with its device; `state` is below 256, the number of
+/// its render state settings, which nothing here checks.
 pub unsafe fn set_render_state(this: usize, state: u32, value: u32, save: u8) {
     crate::shadow::touch(&set_render_state_port::STATE);
     let now = current(this, state);
@@ -66,6 +75,11 @@ pub unsafe fn set_render_state(this: usize, state: u32, value: u32, save: u8) {
 }
 
 /// 0x65EDE0 `NiDX8RenderState::setTextureStageStateWithSave`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderState` with its device; `stage` is below 8 and `state` below
+/// 32, the stages and the states of its settings, which nothing here checks.
 pub unsafe fn set_texture_stage_state_with_save(this: usize, stage: u32, state: u32, value: u32, save: u8) {
     crate::shadow::touch(&set_texture_stage_state_with_save_port::STATE);
     let setting = this + RS::maybe_textureStageStateSettings + (state.wrapping_add(stage.wrapping_mul(32))) as usize * 8;
@@ -80,12 +94,20 @@ pub unsafe fn set_texture_stage_state_with_save(this: usize, stage: u32, state: 
 }
 
 /// 0x6B8410 `NiDX8RenderState::setMultisampling`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderState` with its device.
 pub unsafe fn set_multisampling(this: usize, enable: u8) {
     crate::shadow::touch(&set_multisampling_port::STATE);
     set_if_changed(this, D3DRS_MULTISAMPLEANTIALIAS, (enable != 0) as u32);
 }
 
 /// 0x6B8440 `NiDX8RenderState::setZBufferEnable`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderState` with its device.
 pub unsafe fn set_z_buffer_enable(this: usize, use_w_buffer: u8) {
     crate::shadow::touch(&set_z_buffer_enable_port::STATE);
     let mut value = 1; // D3DZB_TRUE
@@ -96,6 +118,10 @@ pub unsafe fn set_z_buffer_enable(this: usize, use_w_buffer: u8) {
 }
 
 /// 0x6B85F0 `NiDX8RenderState::nextFrame`. The game code leaves 0 in EAX.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderState`.
 pub unsafe fn next_frame(this: usize) -> u32 {
     crate::shadow::touch(&next_frame_port::STATE);
     wr::<u32>(this, RS::currentFogProperty, 0);
@@ -104,6 +130,11 @@ pub unsafe fn next_frame(this: usize) -> u32 {
 }
 
 /// 0x6B8610 `NiDX8RenderState::resetTextureStateStates`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderState`; the engine's table of the initial stage states
+/// (`TEXTURE_STAGE_STATE_INITIAL`, 32 words) is in memory.
 pub unsafe fn reset_texture_stage_states(this: usize) {
     crate::shadow::touch(&reset_texture_stage_states_port::STATE);
     for stage in 0u32..8 {
@@ -125,6 +156,11 @@ pub unsafe fn reset_texture_stage_states(this: usize) {
 }
 
 /// 0x6B8480 `NiDX8RenderState::updateAlphaStates`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderState` with its device, and `alpha_property` at a live
+/// `NiAlphaProperty`.
 pub unsafe fn update_alpha_states(this: usize, alpha_property: usize) {
     crate::shadow::touch(&update_alpha_states_port::STATE);
     if alpha_property == rd::<usize>(this, RS::currentAlphaProperty) && rd::<u8>(this, RS::changed) == 0 {
@@ -155,6 +191,11 @@ pub unsafe fn update_alpha_states(this: usize, alpha_property: usize) {
 }
 
 /// 0x6B8A00 `NiDX8RenderState::updateFogStates`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderState` with its device, and `fog_property` at a live
+/// `NiFogProperty`.
 pub unsafe fn update_fog_states(this: usize, fog_property: usize) {
     crate::shadow::touch(&update_fog_states_port::STATE);
     if fog_property == rd::<usize>(this, RS::currentFogProperty) && rd::<u8>(this, RS::changed) == 0 {
@@ -195,6 +236,12 @@ pub unsafe fn update_fog_states(this: usize, fog_property: usize) {
 
 /// 0x6B8C10 `NiDX8RenderState::setStencilStates`. The port also sets the cull mode. The cull
 /// mode comes from the draw mode of the stencil property.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderState` with its device, and `stencil` at a live
+/// `NiStencilProperty` whose test function, actions and draw mode are within the state's mapping
+/// tables: the function indexes the tables with them, which nothing here checks.
 pub unsafe fn set_stencil_states(this: usize, stencil: usize) {
     crate::shadow::touch(&set_stencil_states_port::STATE);
     let enabled = rd::<u8>(stencil, NiStencilProperty::enabled);
@@ -218,6 +265,12 @@ pub unsafe fn set_stencil_states(this: usize, stencil: usize) {
 }
 
 /// 0x6B82A0 `NiDX8RenderState::updateD3DState`. The port sets every render state of one property state.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8RenderState` with its device, and `property_state` at a live
+/// `NiPropertyState` whose properties (wireframe, alpha, z buffer, fog, stencil, and the global
+/// ones the engine's helpers give) are all set and live, as the engine's states hold them.
 pub unsafe fn update_d3d_state(this: usize, property_state: usize) {
     crate::shadow::touch(&update_d3d_state_port::STATE);
     let flags_of = |property: usize| rd::<u8>(property, PROPERTY_FLAGS) as u32;

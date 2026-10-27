@@ -300,6 +300,12 @@ unsafe fn particles_record(t: &MainThread, this: usize, geometry_data: usize, co
 /// 0x6AD0A0 `NiDX8Renderer::RenderPoints`: draws the particles as quads that face the camera.
 /// With the shape records on, the record of the particles goes out after the transform and
 /// the bound are set, and the pipeline of the device does not run (see `particles_record`).
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `geometry_data` at live particle data whose arrays
+/// (vertices, colours, sizes) hold at least its count of active particles, as the engine's data
+/// does; `world_transform` and `world_bound` point at the shape's transform and bound.
 pub unsafe fn render_points(t: &MainThread, this: usize, geometry_data: usize, world_transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_points_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -461,6 +467,12 @@ unsafe fn lines_record(t: &MainThread, this: usize) -> bool {
 /// 0x6AD890 `NiDX8Renderer::RenderLines`. No caller reads EAX. With the shape records on,
 /// the record of the lines goes out after the transform and the bound are set, and the
 /// pipeline of the device does not run (see `lines_record`).
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `lines_data` at live line data whose arrays
+/// (vertices, colours, texture coordinates, segment flags; 0 when absent) hold its count of
+/// vertices; `transform` and `world_bound` point at the shape's transform and bound.
 pub unsafe fn render_lines(t: &MainThread, this: usize, lines_data: usize, transform: usize, world_bound: usize) {
     crate::shadow::touch(&render_lines_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
@@ -564,6 +576,13 @@ const HASH_MAP_NEW_SITES: [usize; 4] = [0x6A9B11, 0x6A9B57, 0x6A9B9D, 0x6A9BE3];
 /// "Optimize renderer hash map lookups" in PatchUtil.cpp of MWSE. Thus the port reads the
 /// bucket count and the four allocation sizes from the instructions in memory, as the code
 /// in memory uses them.
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8Renderer` that is not constructed yet, as the
+/// engine's allocation gives it. The function reads the bucket count and the allocation sizes of
+/// the hash maps from the game's code in memory at fixed addresses (MWSE's patch can change them),
+/// so that code is there.
 pub unsafe fn renderer_ctor(this: usize) -> usize {
     crate::shadow::touch(&renderer_ctor_port::STATE);
     site_thiscall!(0x6A9A90, this);

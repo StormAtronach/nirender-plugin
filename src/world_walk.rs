@@ -45,6 +45,11 @@ pub fn installed() -> bool {
 /// Claims MWSE's override. A refusal (another module owns it, or an MWSE without it) leaves the
 /// engine's call: the stream then has no event, and the helper takes the world's start as an
 /// older capture has it.
+///
+/// # Safety
+///
+/// No condition of its own: `INSTALLED` (a `sync::InstallState`) lets one caller install at a
+/// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
     if !INSTALLED.begin() {
         return;

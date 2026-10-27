@@ -258,6 +258,12 @@ unsafe fn camera_viewport(target: usize, port: usize) -> [u32; 6] {
 }
 
 /// 0x6AC620 `NiDX8Renderer::SetCameraData`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device; `location`, `direction`, `up` and
+/// `right` each at three floats; `frustum` and `port` are the camera's frustum and viewport as the
+/// engine passes them.
 pub unsafe fn set_camera_data(this: usize, location: usize, direction: usize, up: usize, right: usize, frustum: usize, port: usize) {
     crate::shadow::touch(&set_camera_data_port::STATE);
     write_view_matrix(this, location, direction, up, right);
@@ -338,6 +344,11 @@ pub(crate) unsafe fn update_model_camera(this: usize, transform: usize) {
 }
 
 /// 0x6AC9C0 `NiDX8Renderer::SetModelTransform`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device, and `transform` at a live
+/// `NiTransform`.
 pub unsafe fn set_model_transform(this: usize, transform: usize) {
     crate::shadow::touch(&set_model_transform_port::STATE);
     write_world_matrix(this, transform);
@@ -346,6 +357,11 @@ pub unsafe fn set_model_transform(this: usize, transform: usize) {
 }
 
 /// 0x6ACB10 `NiDX8Renderer::SetBoneTransform`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device, and `transform` at a live
+/// `NiTransform`; `bone_index` is a world matrix index that the device takes.
 pub unsafe fn set_bone_transform(this: usize, transform: usize, bone_index: u32) {
     crate::shadow::touch(&set_bone_transform_port::STATE);
     write_world_matrix(this, transform);
@@ -360,6 +376,12 @@ unsafe fn copy_transform(to: usize, from: usize) {
 }
 
 /// 0x6ACBE0 `NiDX8Renderer::SetSkinnedModelTransforms`. The game code does not read `bound`.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device; `skin` at a live `NiSkinInstance`
+/// with its skin data and its bones, and `partition` at a live skin partition of it; `transform` at
+/// a live `NiTransform`. `_bound` is not read.
 pub unsafe fn set_skinned_model_transforms(this: usize, skin: usize, partition: usize, transform: usize, _bound: usize) {
     crate::shadow::touch(&set_skinned_model_transforms_port::STATE);
     let buffer = || [0u32; T::SIZE / 4];
@@ -407,6 +429,11 @@ pub unsafe fn set_skinned_model_transforms(this: usize, skin: usize, partition: 
 // ---------------------------------------------------------------------------------------
 
 /// 0x6AC520 `NiDX8Renderer::BeginPaint`. The game code does not read `camera`.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device, its render state and its managers:
+/// the function can make a lost device again (`Recreate`).
 pub unsafe fn begin_paint(this: usize, _camera: usize) {
     crate::shadow::touch(&begin_paint_port::STATE);
     let status = d3d::device_test_cooperative_level(rd(this, R::d3dDevice));
@@ -467,6 +494,10 @@ unsafe fn begin_paint_regions(set: &mut Regions, this: usize) {
 }
 
 /// 0x6AC590 `NiDX8Renderer::EndPaint`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device.
 pub unsafe fn end_paint(this: usize) {
     crate::shadow::touch(&end_paint_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) != 0 && d3d::device_end_scene(rd(this, R::d3dDevice)) == 0 {
@@ -481,6 +512,10 @@ unsafe fn end_paint_regions(set: &mut Regions, this: usize) {
 }
 
 /// 0x6ABE40 `NiDX8Renderer::SwapBuffers`. The port presents nothing when the target is a texture.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device and its current render target.
 pub unsafe fn swap_buffers(this: usize) {
     crate::shadow::touch(&swap_buffers_port::STATE);
     let target: usize = rd(this, R::currentRenderTarget);
@@ -502,6 +537,11 @@ unsafe fn swap_buffers_regions(set: &mut Regions, this: usize) {
 
 /// 0x6ABE60 `NiDX8Renderer::ClearBuffer`. `rect` is a `NiRectFloat`, or 0 for the full
 /// target. `flags` has bit 0 for the colour buffer, bit 1 for stencil and bit 2 for depth.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its device and its current render target; `rect`
+/// is 0 or a live `NiRectFloat`.
 pub unsafe fn clear_buffer(this: usize, rect: usize, flags: u8) {
     crate::shadow::touch(&clear_buffer_port::STATE);
     let status = d3d::device_test_cooperative_level(rd(this, R::d3dDevice));
@@ -549,6 +589,11 @@ unsafe fn clear_buffer_regions(set: &mut Regions, this: usize) {
 
 /// 0x6ABD20 `NiDX8Renderer::SetRenderTarget`. `texture` is a `NiRenderedTexture`, or 0 for
 /// the back buffer. The port returns 1 when the device has the new target.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`, and `texture` is 0 or a live `NiRenderedTexture` (its
+/// kind is tested).
 pub unsafe fn set_render_target(this: usize, texture: usize) -> u8 {
     crate::shadow::touch(&set_render_target_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) != 0 {
@@ -604,6 +649,11 @@ unsafe fn assign_pointer_regions(set: &mut Regions, slot: usize, object: usize) 
 }
 
 /// 0x6AE030 `NiDX8Renderer::BeginBatch`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`; `property_state` and `effect_state` are each 0 or a
+/// live `NiRefObject`, whose reference the renderer's pointers count.
 pub unsafe fn begin_batch(this: usize, property_state: usize, effect_state: usize) {
     crate::shadow::touch(&begin_batch_port::STATE);
     ni::pointer_assign(this + R::propertyStatePtr, property_state);
@@ -618,6 +668,11 @@ unsafe fn begin_batch_regions(set: &mut Regions, this: usize, property_state: us
 }
 
 /// 0x6AC5C0 `NiDX8Renderer::PurgeMaterial`. It is a jump to the function of the render state.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its render state, and `material` is 0 or a live
+/// `NiMaterialProperty`.
 pub unsafe fn purge_material(this: usize, material: usize) {
     crate::shadow::touch(&purge_material_port::STATE);
     render_state_purge_material(rd(this, R::renderState), material);
@@ -632,6 +687,11 @@ unsafe fn purge_material_regions(set: &mut Regions, this: usize, material: usize
 }
 
 /// 0x6AC5D0 `NiDX8Renderer::PurgeEffect`. Only a light has data in the renderer.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its light manager, and `effect` is 0 or a live
+/// `NiObject`.
 pub unsafe fn purge_effect(this: usize, effect: usize) {
     crate::shadow::touch(&purge_effect_port::STATE);
     if effect != 0 && ni::is_kind_of(effect, RTTI_NI_LIGHT) {
@@ -653,24 +713,40 @@ unsafe fn purge_effect_regions(set: &mut Regions, this: usize, effect: usize) {
 // ---------------------------------------------------------------------------------------
 
 /// 0x6A9D70 `NiDX8Renderer::GetFlags`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`.
 pub unsafe fn get_flags(this: usize) -> u32 {
     crate::shadow::touch(&get_flags_port::STATE);
     rd(this, R::capabilityFlags)
 }
 
 /// 0x6A9C70 `NiDX8Renderer::SetDepthClear`. The port copies the float as an integer.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`.
 pub unsafe fn set_depth_clear(this: usize, depth: u32) {
     crate::shadow::touch(&set_depth_clear_port::STATE);
     wr(this, R::depthClearValue, depth);
 }
 
 /// 0x6A9D60 `NiDX8Renderer::SetStencilClear`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`.
 pub unsafe fn set_stencil_clear(this: usize, stencil: u32) {
     crate::shadow::touch(&set_stencil_clear_port::STATE);
     wr(this, R::stencilClearValue, stencil);
 }
 
 /// 0x6A9C80 `NiDX8Renderer::SetBgColor`. `color` is a `NiColor`. Alpha becomes 255.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`, and `color` at three floats.
 pub unsafe fn set_bg_color(this: usize, color: usize) -> u8 {
     crate::shadow::touch(&set_bg_color_port::STATE);
     let red = ftol_product(rd(color, 0), F255);
@@ -684,6 +760,11 @@ pub unsafe fn set_bg_color(this: usize, color: usize) -> u8 {
 }
 
 /// 0x6A9CF0 `NiDX8Renderer::GetBgColor`. The port fills the `NiColor` at `color` and returns it.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`, and `color` at room for three floats, which the
+/// function writes.
 pub unsafe fn get_bg_color(this: usize, color: usize) -> usize {
     crate::shadow::touch(&get_bg_color_port::STATE);
     let scale = f32::from_bits(INVERSE_255);
@@ -697,6 +778,10 @@ pub unsafe fn get_bg_color(this: usize, color: usize) -> usize {
 }
 
 /// 0x6ABFB0 `NiDX8Renderer::GetLeftRightSwap`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its render state.
 pub unsafe fn get_left_right_swap(this: usize) -> u8 {
     crate::shadow::touch(&get_left_right_swap_port::STATE);
     let render_state: usize = rd(this, R::renderState);
@@ -704,18 +789,30 @@ pub unsafe fn get_left_right_swap(this: usize) -> u8 {
 }
 
 /// 0x6AC310 `NiDX8Renderer::GetMaxFogValue`. The result is on the x87 stack.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its render state.
 pub unsafe fn get_max_fog_value(this: usize) -> f32 {
     crate::shadow::touch(&get_max_fog_value_port::STATE);
     rd(rd::<usize>(this, R::renderState), RS::maxFogValue)
 }
 
 /// 0x6F5670 `NiRenderer::GetMaxFogValue`: the base class gives 1.
+///
+/// # Safety
+///
+/// No condition: the function returns a constant. It is `unsafe` as every port function is.
 pub unsafe fn base_get_max_fog_value(_this: usize) -> f32 {
     crate::shadow::touch(&base_get_max_fog_value_port::STATE);
     1.0
 }
 
 /// 0x6F5650 `NiRenderer::SetLeftRightSwap`: the base class cannot swap, and returns 0.
+///
+/// # Safety
+///
+/// No condition: the function returns a constant. It is `unsafe` as every port function is.
 pub unsafe fn base_set_left_right_swap(_this: usize, _swap: u8) -> u8 {
     crate::shadow::touch(&base_set_left_right_swap_port::STATE);
     0
@@ -723,6 +820,11 @@ pub unsafe fn base_set_left_right_swap(_this: usize, _swap: u8) -> u8 {
 
 /// 0x6AC370 `NiDX8Renderer::PrecacheTexture`: gives the call to the texture manager. The game
 /// code jumps to the function of the manager, so the result is the result of that function.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its texture manager; the other arguments go on to
+/// slot 0xC of the manager as the engine passes them.
 pub unsafe fn precache_texture(this: usize, texture: usize, a3: u32, a4: u32) -> u32 {
     crate::shadow::touch(&precache_texture_port::STATE);
     let manager: usize = rd(this, R::textureManager);
@@ -730,18 +832,32 @@ pub unsafe fn precache_texture(this: usize, texture: usize, a3: u32, a4: u32) ->
 }
 
 /// 0x6F53E0 `NiRenderer::BatchRenderShape`: the base class gives the call to `RenderShape`.
+///
+/// # Safety
+///
+/// `this` points at a live renderer whose virtual table has `RenderShape` at 0xBC; the other
+/// arguments go on to it as the engine passes them.
 pub unsafe fn base_batch_render_shape(this: usize, geometry_data: usize, skin: usize, transform: usize, bound: usize) -> u32 {
     crate::shadow::touch(&base_batch_render_shape_port::STATE);
     engine::thiscall4(engine::virtual_at(this, 0xBC), this, geometry_data as u32, skin as u32, transform as u32, bound as u32)
 }
 
 /// 0x6F53F0 `NiRenderer::BatchRenderStrips`: the base class gives the call to `RenderTriStrips`.
+///
+/// # Safety
+///
+/// `this` points at a live renderer whose virtual table has `RenderTriStrips` at 0xC0; the other
+/// arguments go on to it as the engine passes them.
 pub unsafe fn base_batch_render_strips(this: usize, geometry_data: usize, skin: usize, transform: usize, bound: usize) -> u32 {
     crate::shadow::touch(&base_batch_render_strips_port::STATE);
     engine::thiscall4(engine::virtual_at(this, 0xC0), this, geometry_data as u32, skin as u32, transform as u32, bound as u32)
 }
 
 /// 0x6ABFD0 `NiDX8Renderer::SetLeftRightSwap`
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its render state.
 pub unsafe fn set_left_right_swap(this: usize, swap: u8) -> u8 {
     crate::shadow::touch(&set_left_right_swap_port::STATE);
     let render_state: usize = rd(this, R::renderState);
@@ -750,6 +866,10 @@ pub unsafe fn set_left_right_swap(this: usize, swap: u8) -> u8 {
 }
 
 /// 0x6ABFF0 `NiDX8Renderer::SetUseWBuffer`. The port returns 0 when the device has no w-buffer.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its render state and its device.
 pub unsafe fn set_use_w_buffer(this: usize, use_w_buffer: u8) -> u8 {
     crate::shadow::touch(&set_use_w_buffer_port::STATE);
     render_state::set_z_buffer_enable(rd(this, R::renderState), use_w_buffer);
@@ -761,6 +881,10 @@ pub unsafe fn set_use_w_buffer(this: usize, use_w_buffer: u8) -> u8 {
 
 /// 0x6AC030 `NiDX8Renderer::GetBackbufferWidth`. The port returns the width of the current
 /// render target.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its current render target.
 pub unsafe fn get_backbuffer_width(this: usize) -> u32 {
     crate::shadow::touch(&get_backbuffer_width_port::STATE);
     rd(rd(this, R::currentRenderTarget), RT::width)
@@ -768,12 +892,20 @@ pub unsafe fn get_backbuffer_width(this: usize) -> u32 {
 
 /// 0x6AC040 `NiDX8Renderer::GetBackbufferHeight`. The port returns the height of the current
 /// render target.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its current render target.
 pub unsafe fn get_backbuffer_height(this: usize) -> u32 {
     crate::shadow::touch(&get_backbuffer_height_port::STATE);
     rd(rd(this, R::currentRenderTarget), RT::height)
 }
 
 /// 0x6AC320 `NiDX8Renderer::SetMaxFogValue`. Zero and negative values become the minimum.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer` with its render state.
 pub unsafe fn set_max_fog_value(this: usize, value: f32) {
     crate::shadow::touch(&set_max_fog_value_port::STATE);
     let render_state: usize = rd(this, R::renderState);
@@ -892,6 +1024,11 @@ unsafe fn init_from(this: usize, empty_string: usize, x_axis: usize, y_axis: usi
 
 /// 0x6A96C0 `NiDX8Renderer::init`. The port sets the start values of the members, from the
 /// constructor.
+///
+/// # Safety
+///
+/// `this` points at an `NiDX8Renderer` that its constructor builds; the engine's empty string and
+/// its axis vectors are in memory.
 pub unsafe fn init(this: usize) {
     crate::shadow::touch(&init_port::STATE);
     init_from(this, engine::EMPTY_STRING, engine::VEC3_X_AXIS, engine::VEC3_Y_AXIS);

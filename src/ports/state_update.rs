@@ -63,6 +63,12 @@ port_thiscall!(update_properties_downward_port, 0x6F41B0, "NiGeometry::UpdatePro
     rust_main = update_properties_downward);
 
 /// The engine's update of the shape's property state; a new content asks for a recheck.
+///
+/// # Safety
+///
+/// `this` points at a live shape whose property state the function reads before and after the
+/// engine's update; `state` is the engine's argument, passed on as it is. The port is installed
+/// (the function calls its engine function).
 pub unsafe fn update_properties_downward(t: &MainThread, this: usize, state: usize) {
     crate::shadow::touch(&update_properties_downward_port::STATE);
     let before = property_state_print(this);
@@ -81,6 +87,12 @@ port_thiscall!(update_effects_downward_port, 0x6F4270, "NiGeometry::UpdateEffect
 /// The engine's update of the shape's effect state; a new content asks for a recheck. The
 /// engine shares an equal state between shapes (`IsEqual` with the last state), so a new
 /// pointer can hold the same effects.
+///
+/// # Safety
+///
+/// `this` points at a live shape whose effect state the function reads before and after the
+/// engine's update; `state` is the engine's argument, passed on as it is. The port is installed
+/// (the function calls its engine function).
 pub unsafe fn update_effects_downward(t: &MainThread, this: usize, state: usize) {
     crate::shadow::touch(&update_effects_downward_port::STATE);
     let before = effect_state_print(this);

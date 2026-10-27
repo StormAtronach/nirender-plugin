@@ -176,6 +176,12 @@ fn dot3(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> f32 {
 
 /// 0x6B5640 `NiDX8TexturePass::setBlendingState`. Applies the next sub-pass to the device.
 /// The function does not use the second argument.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` whose index `field_8` is within its array of sub-
+/// passes: the function reads that slot, which nothing here checks. The other arguments are as the
+/// engine passes them.
 pub unsafe fn set_blending_state(this: usize, a2: u32, _a3: u32, a4: u32, a5: u32) -> u32 {
     crate::shadow::touch(&set_blending_state_port::STATE);
     let mut result = 0u32;
@@ -203,6 +209,12 @@ pub unsafe fn set_blending_state(this: usize, a2: u32, _a3: u32, a4: u32, a5: u3
 
 /// 0x6B56B0 `NiDX8TexturePass::applyStageBlendOps`. Copies the colour operations and the
 /// alpha operations of blend slot `stage.field_94` from the pipeline into the stage.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` with its pipeline; `stage` is 0 or a live
+/// `NiDX8TextureStage` whose blend slot (`field_94`) is within the pipeline's table of blend
+/// operations, which nothing here checks.
 pub unsafe fn apply_stage_blend_ops(this: usize, stage: usize, flag: u8) {
     crate::shadow::touch(&apply_stage_blend_ops_port::STATE);
     if stage == 0 {
@@ -251,6 +263,11 @@ pub unsafe fn apply_stage_blend_ops(this: usize, stage: usize, flag: u8) {
 /// 0x6B57B0 `NiDX8TexturePass::bindStageTexture`. Appends the stage to the sub-pass that has
 /// space for it. In a later pass the sub-pass also takes the object of the blend slot of its
 /// first stage.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` with its array of sub-passes and its renderer;
+/// `stage` is 0 or a live `NiDX8TextureStage`.
 pub unsafe fn bind_stage_texture(this: usize, stage: usize, textures: u32, stages: u32) -> u8 {
     crate::shadow::touch(&bind_stage_texture_port::STATE);
     if stage == 0 {
@@ -278,6 +295,12 @@ pub unsafe fn bind_stage_texture(this: usize, stage: usize, textures: u32, stage
 
 /// 0x6B5870 `NiDX8TexturePass::setTexturePipeline`. Builds the stages of the texture effects
 /// of a `NiDynamicEffectState` when it is not the one of the previous call.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` with its pipeline and its virtual table;
+/// `effect_state` is the effect state of the draw as the engine passes it, whose texture effects
+/// the function reads.
 pub unsafe fn set_texture_pipeline(this: usize, effect_state: usize) {
     crate::shadow::touch(&set_texture_pipeline_port::STATE);
     let pipeline: usize = rd(this, TP::configurableTexturePipeline);
@@ -343,6 +366,10 @@ pub unsafe fn set_texture_pipeline(this: usize, effect_state: usize) {
 }
 
 /// 0x6B59E0 `NiDX8TexturePass::resetPassFlags`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass`.
 pub unsafe fn reset_pass_flags(this: usize) {
     crate::shadow::touch(&reset_pass_flags_port::STATE);
     wr::<u32>(this, TP::field_CD8, 0);
@@ -358,6 +385,11 @@ pub unsafe fn reset_pass_flags(this: usize) {
 
 /// 0x6B5A20 `NiDX8TexturePass::configureStageFromTextureProp`. Makes a stage from a
 /// `NiTextureEffect`. Returns 0 when the effect gives no stage.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` with its pipeline; `effect` at a live
+/// `NiTextureEffect`, and `stage` at a live `NiDX8TextureStage` that the function fills.
 pub unsafe fn configure_stage_from_texture_prop(this: usize, effect: usize, stage: usize) -> u8 {
     crate::shadow::touch(&configure_stage_from_texture_prop_port::STATE);
     if rd::<u32>(this, TP::field_6E0) >= 8 {
@@ -435,6 +467,11 @@ unsafe fn projected_texture_matrix(this: usize, effect: usize, stage: usize, neg
 
 /// 0x6B5B20 `NiDX8TexturePass::setupProjectedTextureMatrix`. Makes the clip stage of a
 /// projected light from the plane of the effect in camera space.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` whose count `field_18A0` is within its stages at
+/// `field_12C0`, which nothing here checks; `effect` at a live `NiTextureEffect`.
 pub unsafe fn setup_projected_texture_matrix(this: usize, effect: usize) -> u8 {
     crate::shadow::touch(&setup_projected_texture_matrix_port::STATE);
     let stage = stage_at(this, TP::field_12C0, rd(this, TP::field_18A0));
@@ -443,6 +480,11 @@ pub unsafe fn setup_projected_texture_matrix(this: usize, effect: usize) -> u8 {
 
 /// 0x6B5C00 `NiDX8TexturePass::setupProjectedTextureMatrixNeg`. Does the same for a projected
 /// shadow, with the opposite sign on the plane.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` whose count `field_2464` is within its stages at
+/// `field_1E84`, which nothing here checks; `effect` at a live `NiTextureEffect`.
 pub unsafe fn setup_projected_texture_matrix_neg(this: usize, effect: usize) -> u8 {
     crate::shadow::touch(&setup_projected_texture_matrix_neg_port::STATE);
     let stage = stage_at(this, TP::field_1E84, rd(this, TP::field_2464));
@@ -460,6 +502,11 @@ unsafe fn camera(pipeline: usize, offset: usize) -> f32 {
 }
 
 /// 0x6B5CE0 `NiDX8TexturePass::texGen_WorldParallel_Claude_`. Leaves the pipeline in EAX.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` with its pipeline; `matrix` at a 3 x 3 matrix and
+/// `translation` at three floats; `stage` at a live `NiDX8TextureStage` that the function writes.
 pub unsafe fn tex_gen_world_parallel(this: usize, matrix: usize, translation: usize, stage: usize) -> usize {
     crate::shadow::touch(&tex_gen_world_parallel_port::STATE);
     let pipeline: usize = rd(this, TP::configurableTexturePipeline);
@@ -491,6 +538,12 @@ unsafe fn world_parallel(pipeline: usize, matrix: usize, translation: usize, sta
 }
 
 /// 0x6B5EB0 `NiDX8TexturePass::texGen_WorldPerspective_Claude_`. Leaves the pipeline in EAX.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` with its pipeline and its renderer, whose pipeline is
+/// set; `matrix` at a 3 x 3 matrix and `translation` at three floats; `stage` at a live
+/// `NiDX8TextureStage` that the function writes.
 pub unsafe fn tex_gen_world_perspective(this: usize, matrix: usize, translation: usize, stage: usize) -> usize {
     crate::shadow::touch(&tex_gen_world_perspective_port::STATE);
     let renderer: usize = rd(this, TP::renderer);
@@ -569,6 +622,11 @@ pub const EFFECT_STAGE_WORDS: usize = 18;
 /// renderer and its camera of the frame. Thus the values are those that the pass of the
 /// device sets for the draw. Returns zeros when the effect gives no stage (off, or without a
 /// texture).
+///
+/// # Safety
+///
+/// `renderer` points at the live `NiDX8Renderer` with its pipeline and the camera of the frame;
+/// `effect` is 0 or a live `NiTextureEffect`.
 pub unsafe fn effect_stage_words(renderer: usize, effect: usize) -> [u32; EFFECT_STAGE_WORDS] {
     let mut words = [0u32; EFFECT_STAGE_WORDS];
     if effect == 0 || rd::<u8>(effect, EFFECT_ENABLED) == 0 || rd::<usize>(effect, EFFECT_TEXTURE) == 0 {
@@ -612,6 +670,11 @@ pub const EFFECT_STATIC_WORDS: usize = 13;
 /// (sphere and specular cube map) or the normal (diffuse cube map). The camera matrix of the
 /// callbacks only turns the camera-space vector into a world vector. The table of the helper
 /// makes the stage of a retained draw from these words. Zeros when the effect gives no stage.
+///
+/// # Safety
+///
+/// `renderer` points at the live `NiDX8Renderer` with its pipeline (the flags of a perspective map
+/// come from it); `effect` is 0 or a live `NiTextureEffect`.
 pub unsafe fn effect_static_words(renderer: usize, effect: usize) -> [u32; EFFECT_STATIC_WORDS] {
     let mut words = [0u32; EFFECT_STATIC_WORDS];
     if effect == 0 || rd::<u8>(effect, EFFECT_ENABLED) == 0 || rd::<usize>(effect, EFFECT_TEXTURE) == 0 {
@@ -628,18 +691,33 @@ pub unsafe fn effect_static_words(renderer: usize, effect: usize) -> [u32; EFFEC
 }
 
 /// 0x6B6090 `NiDX8TexturePass::texGen_SphereMap_Claude_`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` with its pipeline; `matrix` at a 3 x 3 matrix and
+/// `translation` at three floats; `stage` at a live `NiDX8TextureStage` that the function writes.
 pub unsafe fn tex_gen_sphere_map(this: usize, matrix: usize, translation: usize, stage: usize) -> u32 {
     crate::shadow::touch(&tex_gen_sphere_map_port::STATE);
     tex_gen_direction(this, matrix, translation, stage, 0x30000, 2)
 }
 
 /// 0x6B61B0 `NiDX8TexturePass::texGen_SpecularCubeMap_Claude_`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` with its pipeline; `matrix` at a 3 x 3 matrix and
+/// `translation` at three floats; `stage` at a live `NiDX8TextureStage` that the function writes.
 pub unsafe fn tex_gen_specular_cube_map(this: usize, matrix: usize, translation: usize, stage: usize) -> u32 {
     crate::shadow::touch(&tex_gen_specular_cube_map_port::STATE);
     tex_gen_direction(this, matrix, translation, stage, 0x30000, 3)
 }
 
 /// 0x6B6300 `NiDX8TexturePass::texGen_DiffuseCubeMap_Claude_`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TexturePass` with its pipeline; `matrix` at a 3 x 3 matrix and
+/// `translation` at three floats; `stage` at a live `NiDX8TextureStage` that the function writes.
 pub unsafe fn tex_gen_diffuse_cube_map(this: usize, matrix: usize, translation: usize, stage: usize) -> u32 {
     crate::shadow::touch(&tex_gen_diffuse_cube_map_port::STATE);
     tex_gen_direction(this, matrix, translation, stage, 0x10000, 3)
@@ -651,6 +729,11 @@ pub unsafe fn tex_gen_diffuse_cube_map(this: usize, matrix: usize, translation: 
 
 /// 0x6B6540 `NiDX8TexturePass::_1::setNiObjectField48`. The assignment of a `NiPointer`, as
 /// the compiler made it: a reset to null, then the assignment.
+///
+/// # Safety
+///
+/// `this` points at a live sub-pass of a `NiDX8TexturePass`, and `object` is 0 or a live
+/// `NiRefObject`.
 pub unsafe fn subpass_set_ni_object_field_48(this: usize, object: usize) {
     crate::shadow::touch(&subpass_set_ni_object_field_48_port::STATE);
     let current: usize = rd(this, SUB::field_48);
@@ -675,6 +758,10 @@ pub unsafe fn subpass_set_ni_object_field_48(this: usize, object: usize) {
 }
 
 /// 0x6B76E0 `NiDX8TexturePass::$1::ctor`
+///
+/// # Safety
+///
+/// `this` points at a block of the size of a sub-pass that is not constructed yet.
 pub unsafe fn subpass_ctor(this: usize) -> usize {
     crate::shadow::touch(&subpass_ctor_port::STATE);
     wr(this, SUB::vtbl, VTBL_NI_REF_OBJECT);
@@ -714,6 +801,11 @@ pub unsafe fn subpass_ctor(this: usize) -> usize {
 }
 
 /// 0x6B77E0 `NiDX8TexturePass::$1::dtor`
+///
+/// # Safety
+///
+/// `this` points at a live sub-pass that nothing uses after the call: the function releases its
+/// three objects.
 pub unsafe fn subpass_dtor(this: usize) {
     crate::shadow::touch(&subpass_dtor_port::STATE);
     wr(this, SUB::vtbl, VTBL_SUBPASS);
@@ -737,6 +829,11 @@ pub unsafe fn subpass_dtor(this: usize) {
 
 /// 0x6B78D0 `NiDX8TexturePass::_1::setStageAtIndex`. EAX is the index. When the stage count
 /// changed, EAX is the new stage count.
+///
+/// # Safety
+///
+/// `this` points at a live sub-pass, and `index` is within its slots of stages, which nothing here
+/// checks; `stage` is 0 or a live `NiDX8TextureStage`.
 pub unsafe fn subpass_set_stage_at_index(this: usize, index: u32, stage: usize) -> u32 {
     crate::shadow::touch(&subpass_set_stage_at_index_port::STATE);
     let slot = this.wrapping_add((index as usize).wrapping_mul(4));
@@ -755,6 +852,11 @@ pub unsafe fn subpass_set_stage_at_index(this: usize, index: u32, stage: usize) 
 /// 0x6B7900 `NiDX8TexturePass::method_4`, slot 1 of `$1`. Sends the stages of the sub-pass
 /// to the device and disables the stages after them. The function uses only the renderer of
 /// the five arguments.
+///
+/// # Safety
+///
+/// `this` points at a live sub-pass whose stages are live, and `renderer` at the live
+/// `NiDX8Renderer` with its render state and its device. The other four arguments are not read.
 pub unsafe fn subpass_apply(this: usize, renderer: usize, _a2: u32, _a3: u32, _a4: u32, _a5: u32) -> u32 {
     crate::shadow::touch(&subpass_apply_port::STATE);
     let count: u32 = rd(this, SUB::field_C);
@@ -808,6 +910,12 @@ unsafe fn available_slot_counts(this: usize, out_stages: usize, out_textures: us
 }
 
 /// 0x6B7990 `NiDX8TexturePass::_1::getAvailableSlotCounts`
+///
+/// # Safety
+///
+/// `this` points at a live sub-pass; `out_stages` and `out_textures` point at words that the
+/// function writes; the engine's device limits (`MAX_TEXTURE_BLEND_STAGES`,
+/// `MAX_SIMULTANEOUS_TEXTURES`) are in memory.
 pub unsafe fn subpass_get_available_slot_counts(this: usize, out_stages: usize, out_textures: usize) {
     crate::shadow::touch(&subpass_get_available_slot_counts_port::STATE);
     available_slot_counts(this, out_stages, out_textures, || rd(MAX_TEXTURE_BLEND_STAGES, 0), || rd(MAX_SIMULTANEOUS_TEXTURES, 0));
@@ -839,6 +947,11 @@ unsafe fn store_appended(this: usize, stage: usize) -> (u32, u32) {
 }
 
 /// 0x6B79E0 `NiDX8TexturePass::_1::appendStage`
+///
+/// # Safety
+///
+/// `this` points at a live sub-pass whose count `field_8` is within its slots of stages, which
+/// nothing here checks; `stage` is 0 or a live `NiDX8TextureStage`.
 pub unsafe fn subpass_append_stage(this: usize, stage: usize) -> u8 {
     crate::shadow::touch(&subpass_append_stage_port::STATE);
     if stage == 0 {
@@ -904,6 +1017,11 @@ unsafe fn append_stage_pair(this: usize, stage: usize, other_stage: usize, flag:
 
 /// 0x6B7A50 `NiDX8TexturePass::_1::appendStagePair`. Returns bit 0 for the first stage and
 /// bit 1 for the second.
+///
+/// # Safety
+///
+/// `this` points at a live sub-pass; `stage` and `other_stage` are 0 or live `NiDX8TextureStage`s;
+/// the engine's device limit `MAX_SIMULTANEOUS_TEXTURES` is in memory.
 pub unsafe fn subpass_append_stage_pair(this: usize, stage: usize, other_stage: usize, flag: u8) -> u32 {
     crate::shadow::touch(&subpass_append_stage_pair_port::STATE);
     append_stage_pair(this, stage, other_stage, flag, rd(MAX_SIMULTANEOUS_TEXTURES, 0))
@@ -915,6 +1033,11 @@ pub unsafe fn subpass_append_stage_pair(this: usize, stage: usize, other_stage: 
 
 /// 0x6C1E50 `NiDX8TexturePass_static::resetStage`. Sets no texture and disables the two
 /// operations.
+///
+/// # Safety
+///
+/// `renderer` points at the live `NiDX8Renderer` with its render state and its device, and
+/// `stage_index` is below 8, the stages of the render state, which nothing here checks.
 pub unsafe fn reset_stage(stage_index: u32, renderer: usize) {
     crate::shadow::touch(&reset_stage_port::STATE);
     let render_state: usize = rd(renderer, REN::renderState);
@@ -928,6 +1051,11 @@ pub unsafe fn reset_stage(stage_index: u32, renderer: usize) {
 }
 
 /// 0x6C1EE0 `NiDX8TexturePass::setTextureWrapping`. `this` is a `NiDX8TextureStage`.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TextureStage`, and `renderer` at the live `NiDX8Renderer` with its
+/// render state and its pipeline.
 pub unsafe fn set_texture_wrapping(this: usize, renderer: usize) {
     crate::shadow::touch(&set_texture_wrapping_port::STATE);
     let render_state: usize = rd(renderer, REN::renderState);
@@ -977,6 +1105,11 @@ unsafe fn texture_filtering(this: usize, renderer: usize, mipmapped: u8, flag: u
 
 /// 0x6C1FA0 `NiDX8TexturePass::setTextureFiltering`. `this` is a `NiDX8TextureStage`. A
 /// texture with no mipmaps gets the filter modes that need none.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8TextureStage`, and `renderer` at the live `NiDX8Renderer` with its
+/// render state.
 pub unsafe fn set_texture_filtering(this: usize, renderer: usize, mipmapped: u8, flag: u8) {
     crate::shadow::touch(&set_texture_filtering_port::STATE);
     texture_filtering(this, renderer, mipmapped, flag, FILTER_TABLE)

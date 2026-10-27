@@ -23,6 +23,11 @@ extern "system" {
 }
 
 /// Writes `bytes` over code at `addr`.
+///
+/// # Safety
+///
+/// `addr` points at `bytes.len()` bytes of code of this process that no thread runs while they are
+/// written.
 pub unsafe fn patch(addr: usize, bytes: &[u8]) -> bool {
     let mut old = 0u32;
     if VirtualProtect(addr as *mut c_void, bytes.len(), PAGE_EXECUTE_READWRITE, &mut old) == 0 {

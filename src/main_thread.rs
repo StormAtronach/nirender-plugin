@@ -24,6 +24,10 @@ impl MainThread {
     /// The proof, where the caller is the main thread by construction. The three places:
     /// `shadow::dispatch_inner` after its thread check, `lua::main_thread_gate` behind its
     /// check, and `worker_events::drain` after its check.
+    ///
+    /// # Safety
+    ///
+    /// The caller runs on the game's main thread. In a debug build, the function asserts it.
     #[track_caller]
     pub unsafe fn claim() -> MainThread {
         debug_assert!(crate::shadow::on_main_thread(), "a claim of the main thread off it");
