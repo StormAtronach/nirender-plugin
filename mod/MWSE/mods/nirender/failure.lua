@@ -55,6 +55,10 @@ onFrame = function()
 end
 
 event.register("enterFrame", onFrame)
--- The lowest priority: a load that another handler blocks never starts, and has no `loaded`.
-event.register("load", function() loading = true end, { priority = -1000 })
+-- The lowest priority, so that the handler sees a block of another handler: a blocked load
+-- never starts and has no `loaded`. A handler can set `e.block` and go on, without claiming
+-- the event.
+event.register("load", function(e) loading = not e.block end, { priority = -1000 })
 event.register("loaded", function() loading = false end)
+-- The main menu: no load runs (a load that failed in the engine has no `loaded`).
+event.register("uiActivated", function() loading = false end, { filter = "MenuOptions" })
