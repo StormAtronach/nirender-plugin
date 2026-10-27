@@ -209,3 +209,13 @@ impl Player {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tile_shader_is_valid_wgsl() {
+        crate::assert_wgsl("map tile copy", &TILE_SHADER);
+    }
+}

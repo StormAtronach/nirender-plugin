@@ -272,3 +272,13 @@ impl ParticleQuads {
         self.particles_used -= base as u64;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_particle_quad_shader_is_valid_wgsl() {
+        crate::assert_wgsl("particle quads", &SHADER);
+    }
+}

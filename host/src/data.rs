@@ -195,7 +195,7 @@ pub struct DrawData {
 
 /// The shader for a draw in screen coordinates: the colour of the vertex times the texture.
 pub(crate) const SCREEN_SHADER: &str = "
-pub(crate) struct Out { @builtin(position) position: vec4f, @location(0) color: vec4f, @location(1) uv: vec2f }
+struct Out { @builtin(position) position: vec4f, @location(0) color: vec4f, @location(1) uv: vec2f }
 @group(0) @binding(0) var picture: texture_2d<f32>;
 @group(0) @binding(1) var picture_sampler: sampler;
 @vertex fn vs(@location(0) position: vec4f, @location(1) color: vec4f, @location(2) uv: vec2f) -> Out {
@@ -575,3 +575,13 @@ const _: () = assert!(ARGS_SIZE == 20);
 pub(crate) const VERTEX_CHUNK: u64 = 64 << 20;
 
 pub(crate) const INDEX_CHUNK: u64 = 16 << 20;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_screen_shader_is_valid_wgsl() {
+        crate::assert_wgsl("screen draw", &SCREEN_SHADER);
+    }
+}
