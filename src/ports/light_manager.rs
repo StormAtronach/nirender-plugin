@@ -259,6 +259,11 @@ unsafe fn disable_device_lights(this: usize) {
 // ---- the ports
 
 /// 0x6BAB00 `NiDX8LightManager::LightEntry::Update`. Returns 1 when the port built the entry again.
+///
+/// # Safety
+///
+/// `entry` points at a light entry of the manager (`E::SIZE` bytes), and `light` at a live
+/// `NiLight`. The function takes the engine's critical section of the entries itself.
 pub unsafe fn light_entry_update(entry: usize, light: usize) -> u8 {
     crate::shadow::touch(&light_entry_update_port::STATE);
     eng::critical_section_lock(ENTRY_CRITICAL_SECTION, NAME_ENTRY_UPDATE);
@@ -275,6 +280,10 @@ pub unsafe fn light_entry_update(entry: usize, light: usize) -> u8 {
 
 /// The `D3DLIGHT8` of a light as the light manager gives it to the device: the 26 words.
 /// For a light of the world that no draw has (`world_lights`).
+///
+/// # Safety
+///
+/// `light` points at a live `NiLight`: the function reads its fields into the 26 words.
 pub unsafe fn d3d_light_of(light: usize) -> [u32; 26] {
     let mut entry = [0u32; E::SIZE / 4];
     write_d3d_light(entry.as_mut_ptr() as usize, light);
@@ -337,6 +346,11 @@ unsafe fn write_d3d_light(entry: usize, light: usize) {
 }
 
 /// 0x6BAEC0 `NiDX8LightManager::resetRenderStates`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8LightManager` whose render state is set: the function writes the
+/// device states through it.
 pub unsafe fn reset_render_states(this: usize) {
     crate::shadow::touch(&reset_render_states_port::STATE);
     wr::<u32>(this, M::ambientLightingState, 0);
@@ -354,6 +368,12 @@ pub unsafe fn reset_render_states(this: usize) {
 }
 
 /// 0x6BAD10 `NiDX8LightManager::ctor`. Returns `this`.
+///
+/// # Safety
+///
+/// `this` points at a block of the size of `NiDX8LightManager` that is not constructed yet;
+/// `render_state` points at the live `NiDX8RenderState`, and `device` at the plugin's device, whose
+/// reference the manager counts.
 pub unsafe fn ctor(this: usize, render_state: usize, device: usize) -> usize {
     crate::shadow::touch(&ctor_port::STATE);
     wr(this, M::vtbl, VTBL_NI_REF_OBJECT);
@@ -383,6 +403,11 @@ pub unsafe fn ctor(this: usize, render_state: usize, device: usize) -> usize {
 }
 
 /// 0x6BAF90 `NiDX8LightManager::dtor`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8LightManager` that nothing uses after the call: the function frees
+/// its entries, its list of device lights and its map, and releases its device.
 pub unsafe fn dtor(this: usize) {
     crate::shadow::touch(&dtor_port::STATE);
     wr(this, M::vtbl, VTBL_LIGHT_MANAGER);
@@ -440,6 +465,11 @@ pub unsafe fn dtor(this: usize) {
 }
 
 /// 0x6BB190 `NiDX8LightManager::nextFrame`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8LightManager` with its device. The function takes the manager's
+/// critical section itself.
 pub unsafe fn next_frame(this: usize) {
     crate::shadow::touch(&next_frame_port::STATE);
     let cs = this + M::criticalSection;
@@ -450,6 +480,12 @@ pub unsafe fn next_frame(this: usize) {
 }
 
 /// 0x6BB200 `NiDX8LightManager::setState`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8LightManager` with its render state; `texturing` at a live
+/// `NiTexturingProperty` with its map array, and `vertex_color` at a live `NiVertexColorProperty`;
+/// `state` is as the engine passes it. The function takes the manager's critical section itself.
 pub unsafe fn set_state(this: usize, state: usize, texturing: usize, vertex_color: usize) {
     crate::shadow::touch(&set_state_port::STATE);
     let cs = this + M::criticalSection;
@@ -538,6 +574,11 @@ pub unsafe fn set_state(this: usize, state: usize, texturing: usize, vertex_colo
 }
 
 /// 0x6BB4E0 `NiDX8LightManager::RemoveLight`
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8LightManager` with its device, and `light` at a live `NiLight`.
+/// The function takes the manager's critical section itself.
 pub unsafe fn remove_light(this: usize, light: usize) {
     crate::shadow::touch(&remove_light_port::STATE);
     let cs = this + M::criticalSection;
@@ -608,6 +649,12 @@ pub unsafe fn remove_light(this: usize, light: usize) {
 
 /// 0x6BB6C0 `NiDX8LightManager::updateLights`. The port sends the lights of one effect state
 /// to the device. The sum of the ambient lights becomes the ambient render state.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8LightManager` with its device and render state, and `state` at a
+/// live effect state whose list of lights holds live `NiLight`s. The function takes the manager's
+/// critical section itself.
 pub unsafe fn update_lights(this: usize, state: usize) {
     crate::shadow::touch(&update_lights_port::STATE);
     let cs = this + M::criticalSection;
@@ -759,6 +806,11 @@ pub(crate) unsafe fn ambient_of_effect_lists(nodes: &[usize]) -> u32 {
 
 /// 0x6BBB40 `NiDX8LightManager::ReleaseLights`. The port deletes each entry. The key of the
 /// entry stays in the map with no entry.
+///
+/// # Safety
+///
+/// `this` points at a live `NiDX8LightManager`; nothing uses the entries it deletes after the call.
+/// The function takes the manager's critical section itself.
 pub unsafe fn release_lights(this: usize) {
     crate::shadow::touch(&release_lights_port::STATE);
     let cs = this + M::criticalSection;

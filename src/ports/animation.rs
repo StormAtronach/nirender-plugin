@@ -33,6 +33,12 @@ port_thiscall!(animation_manager_update_port, 0x6EE690, "BSAnimationManager::Upd
     rust_main = animation_manager_update);
 
 /// The flag on each managed node the policy selects, then the engine's update.
+///
+/// # Safety
+///
+/// `this` points at a live animation manager whose array of managed nodes (the count at
+/// `MANAGED_FILLED`, the storage at `MANAGED_STORAGE`) holds live nodes or 0; `camera` is the
+/// engine's argument, passed on. The port is installed (the function calls its engine function).
 pub unsafe fn animation_manager_update(t: &MainThread, this: usize, time: f32, camera: usize) {
     crate::shadow::touch(&animation_manager_update_port::STATE);
     if crate::animation::active(t) {
@@ -56,6 +62,11 @@ port_thiscall!(animation_node_update_controllers_port, 0x6F2180, "BSAnimationNod
 
 /// The displayed bit of the animation node when the policy selects it, then the engine's
 /// update of its controllers.
+///
+/// # Safety
+///
+/// `this` points at a live animation node: the function writes its flags byte (`ANIM_FLAGS`). The
+/// port is installed (the function calls its engine function).
 pub unsafe fn animation_node_update_controllers(t: &MainThread, this: usize, time: f32) {
     crate::shadow::touch(&animation_node_update_controllers_port::STATE);
     if crate::animation::active(t) && crate::animation::displayed(t, this) {
@@ -72,6 +83,11 @@ port_thiscall!(animation_node_update_downward_pass_port, 0x6F2060, "BSAnimationN
 
 /// The displayed bit of the animation node when the policy selects it, then the engine's
 /// downward pass, which runs the controllers only with that bit (or AlwaysUpdate).
+///
+/// # Safety
+///
+/// `this` points at a live animation node: the function writes its flags byte (`ANIM_FLAGS`). The
+/// port is installed (the function calls its engine function).
 pub unsafe fn animation_node_update_downward_pass(t: &MainThread, this: usize, time: f32, update_controllers: u8, update_children: u8) {
     crate::shadow::touch(&animation_node_update_downward_pass_port::STATE);
     if update_controllers != 0 && crate::animation::active(t) && crate::animation::displayed(t, this) {
