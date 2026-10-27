@@ -97,7 +97,7 @@ fn serials<'a>(t: &'a MainThread) -> Open<'a, HashMap<(u32, u32), u32>> {
     SERIALS.get(t).map(|serials| serials.get_or_insert_with(HashMap::new))
 }
 
-/// The handle of a geometry data in the stream: its serial ([`SERIALS`]), made now for a data
+/// The handle of a geometry data in the stream: its serial (`SERIALS`), made now for a data
 /// the stream has not named yet.
 pub unsafe fn stream_handle(t: &MainThread, address: u32, unique: u32) -> u32 {
     if let Some(&serial) = serials(t).get(&(address, unique)) {
