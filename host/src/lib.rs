@@ -81,6 +81,8 @@ mod player;
 use engine::{plan, scene};
 mod retained;
 mod request;
+mod stage_groups;
+use stage_groups::{StageGroups, StageKey};
 /// The request of the GPU and what a check of a shader without a GPU takes from it (the
 /// helper of MGE XE, `shader_check` of mgeHost64), the probe, and the exit code of a refusal.
 pub use request::{fixed_limits, probe, required_features, required_features_of, tier_c_shader_source, world_shader_source, Refusal, TextureTier, ARRAY_SAMPLERS, ARRAY_TEXTURES, SAMPLED_TEXTURES};
@@ -488,16 +490,6 @@ mod cores {
     }
 }
 
-/// The set of a group of tier C: the texture handle and the sampler state of each stage, and
-/// the handle of the pass's target, which shows white (a texture cannot be a target and a
-/// texture of one pass; 0 for none).
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct StageKey {
-    textures: [u32; STAGES],
-    samplers: [[u32; 5]; STAGES],
-    hide: u32,
-}
-
 struct Renderer {
     device: Rc<wgpu::Device>,
     /// The format of the picture that the pipelines draw into.
@@ -640,10 +632,8 @@ struct Renderer {
     /// below; `request::TextureTier`).
     pub(crate) tier: request::TextureTier,
     /// Tier C: the group of each set of the 6 textures and the 6 samplers of the stages
-    /// (`Renderer::stage_group`), and the keys of the groups that hold each texture handle,
-    /// so that a texture that takes another view, or goes, drops its groups.
-    stage_groups: FxHashMap<StageKey, Rc<wgpu::BindGroup>>,
-    stage_groups_of: FxHashMap<u32, Vec<StageKey>>,
+    /// (`Renderer::stage_group`).
+    stage_groups: StageGroups<Rc<wgpu::BindGroup>>,
     /// The geometry records, by the geometry data of the game; their vertices and indexes
     /// in pools (`pool`), and the ranges of records replaced in this frame, given back at
     /// the start of the next.

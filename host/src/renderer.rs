@@ -531,8 +531,7 @@ impl Renderer {
             array_group: None,
             array_variants: FxHashMap::default(),
             tier,
-            stage_groups: FxHashMap::default(),
-            stage_groups_of: FxHashMap::default(),
+            stage_groups: StageGroups::default(),
             geometries: FxHashMap::default(),
             gone_textures: Vec::new(),
             // Storage too: the morph pass writes the positions of a morphed geometry in place.
@@ -595,7 +594,7 @@ impl Renderer {
         // Tier C: the groups that held the handle (another view, or the white of a texture
         // not known yet) are made again at their next use.
         if self.tier == request::TextureTier::C && !self.textures.get(&handle).is_some_and(|old| Rc::ptr_eq(old, &view)) {
-            self.forget_stage_groups(handle);
+            self.stage_groups.forget(handle);
         }
         let mut changed = false;
         if let Some(pinned) = self.pinned_textures.iter_mut().find(|p| p.handle == handle) {
@@ -732,7 +731,7 @@ impl Renderer {
     }
 
     /// Tier C: the group of a set of the stages' textures and samplers, made at its first use
-    /// and kept until one of its textures takes another view or goes ([`Self::forget_stage_groups`]).
+    /// and kept until one of its textures takes another view or goes ([`StageGroups::forget`]).
     /// A handle without a texture, and the target of the pass (`hide`), show white; a stage
     /// without a texture has the handle 0 and the sampler state 0, as in tier A.
     pub(crate) fn stage_group(&mut self, textures: [u32; STAGES], samplers: [[u32; 5]; STAGES], hide: Option<u32>) -> Rc<wgpu::BindGroup> {
@@ -740,7 +739,7 @@ impl Renderer {
         let hide = hide.filter(|handle| textures.contains(handle)).unwrap_or(0);
         let key = StageKey { textures, samplers, hide };
         if let Some(group) = self.stage_groups.get(&key) {
-            return group.clone();
+            return group;
         }
         let views: Vec<Rc<wgpu::TextureView>> = textures
             .iter()
@@ -751,23 +750,8 @@ impl Renderer {
         entries.extend(sampler_objects.iter().enumerate().map(|(stage, sampler)| wgpu::BindGroupEntry { binding: (STAGES + stage) as u32, resource: wgpu::BindingResource::Sampler(sampler) }));
         self.counts.array_groups_made += 1;
         let group = Rc::new(crate::gpu::frame_group(&self.device, &wgpu::BindGroupDescriptor { label: Some("draw textures of the stages"), layout: &self.array_layout, entries: &entries }));
-        for handle in textures.iter().copied().filter(|&handle| handle != 0) {
-            let keys = self.stage_groups_of.entry(handle).or_default();
-            if !keys.contains(&key) {
-                keys.push(key);
-            }
-        }
         self.stage_groups.insert(key, group.clone());
         group
-    }
-
-    /// Tier C: drops the groups that hold the texture `handle`.
-    fn forget_stage_groups(&mut self, handle: u32) {
-        if let Some(keys) = self.stage_groups_of.remove(&handle) {
-            for key in keys {
-                self.stage_groups.remove(&key);
-            }
-        }
     }
 
     /// A group of the arrays with only the textures of these slots of the frame, for draws
@@ -1355,7 +1339,7 @@ impl Renderer {
                 continue;
             }
             self.textures.remove(&handle);
-            self.forget_stage_groups(handle);
+            self.stage_groups.forget(handle);
             self.texture_objects.remove(&handle);
             self.targets.remove(&handle);
             self.decoded.remove(&handle);
