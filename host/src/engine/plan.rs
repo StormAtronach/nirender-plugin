@@ -83,12 +83,20 @@ impl Plan {
     /// their call before it, while the depth still holds the world. After the clear, a late
     /// sea plane would test an empty depth and draw over everything below the horizon (G7's
     /// report of 2026-10-26: a player levitating high, the engine's water plane culled).
+    /// The table's sorted blends that still wait for the flush of the engine's queue go
+    /// before such a clear too, when it is outside the scenes of the world camera: after it
+    /// they test an empty depth, and blends behind walls show (R19). Inside a scene of the
+    /// world camera they keep waiting for the flush (R22: above the water, after the plane).
     pub(crate) fn depth_clear(&mut self) -> Vec<Step> {
+        let mut steps = Vec::new();
         if self.world_ended && !self.classes_checked {
             self.classes_checked = true;
-            return vec![Step::MissingClasses];
+            steps.push(Step::MissingClasses);
         }
-        Vec::new()
+        if self.world_ended && self.queue_open && !scene::world_camera(self.scene_kind) {
+            steps.push(self.sorted_blends());
+        }
+        steps
     }
 
     /// The end of the scene in progress. `extension`: the player has an extension;
@@ -314,6 +322,23 @@ mod tests {
         assert_eq!(plan.depth_clear(), vec![]);
         world_scene(&mut plan);
         assert_eq!(plan.depth_clear(), vec![Step::MissingClasses]);
+        assert_eq!(plan.depth_clear(), vec![]);
+        assert_eq!(plan.scene_begin(SCENE_FIRST_PERSON), vec![]);
+    }
+
+    #[test]
+    fn the_blends_of_an_open_queue_come_before_a_depth_clear_after_the_world_scenes() {
+        let mut plan = Plan::default();
+        plan.scene_begin(SCENE_WORLD);
+        plan.world_draw(true, true, false, true, false);
+        // The world scene ends with the engine's queue open: the blends wait.
+        assert_eq!(plan.scene_end(true, true, true, true, false), vec![Step::ReleaseHeld, Step::EndWorld]);
+        // A clear in a scene of the world camera does not take them.
+        plan.scene_begin(SCENE_WATER);
+        assert_eq!(plan.depth_clear(), vec![Step::MissingClasses]);
+        plan.scene_end(true, true, true, true, false);
+        // A clear between the scenes, before the first person: they go before it, once.
+        assert_eq!(plan.depth_clear(), vec![Step::SortedBlends(0)]);
         assert_eq!(plan.depth_clear(), vec![]);
         assert_eq!(plan.scene_begin(SCENE_FIRST_PERSON), vec![]);
     }

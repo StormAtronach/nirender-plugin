@@ -309,6 +309,9 @@ impl Player {
                         let clear_stencil = (flags & 4 != 0).then(|| word(arguments, 20));
                         if clear_depth.is_some() {
                             for step in self.plan.depth_clear() {
+                                if matches!(step, plan::Step::SortedBlends(_)) {
+                                    self.renderer.counts.blends_before_clear += 1;
+                                }
                                 self.plan_step(step);
                             }
                         }
