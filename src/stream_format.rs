@@ -82,6 +82,9 @@ pub const EXIT_GPU: u32 = 20;
 
 /// The watchdog of the helper found its frame thread stalled and ended the program.
 pub const EXIT_STALLED: u32 = 30;
+/// A panic of the helper: the fast fail of the abort after the panic hook (`int 29h`, the
+/// status STATUS_STACK_BUFFER_OVERRUN). The hook announces it before its dump.
+pub const EXIT_PANIC: u32 = 0xC000_0409;
 /// The plugin ended the helper, which read no record for the limit of [`limit`].
 pub const EXIT_NOT_ANSWERING: u32 = 31;
 /// The seconds without a step of the frame thread after which the watchdog ends the helper.
@@ -104,7 +107,10 @@ pub const FIRST_RECORD_SECONDS: u64 = 60;
 /// The word of the ring head where the helper announces its exit before it ends on purpose:
 /// the code it will exit with, 0 while it announced none (and from a helper older than the
 /// word). A refusal writes its code (10 to 29) before its box (`gpu::refuse` of the host
-/// crate), so that no limit ends the helper while the player reads the box.
+/// crate), so that no limit ends the helper while the player reads the box. The watchdog
+/// (30), the panic hook ([`EXIT_PANIC`]) and the exception filter (the exception code) write
+/// theirs before the dump (`crash.rs`): a dump that hangs is ended by the plugin after
+/// [`ENDING_SECONDS`] with that code, so that the box names the crash or the stall.
 pub const RING_ENDING: usize = 80;
 /// The seconds the plugin gives a helper that announced an exit outside 10 to 29 (a crash or a
 /// stall that writes its dump), from the first look that sees the announcement; then the
@@ -254,7 +260,7 @@ mod tests {
     fn the_refusals_of_the_helper_are_the_codes_10_to_29() {
         assert!(helper_said_why(EXIT_STREAM_FORMAT) && helper_said_why(EXIT_EXTENSION_FORMAT) && helper_said_why(20));
         // The IPC host mode's codes, a stall and the codes of Windows for a crash are not.
-        assert!(!helper_said_why(0) && !helper_said_why(3) && !helper_said_why(30) && !helper_said_why(0xC000_0409));
+        assert!(!helper_said_why(0) && !helper_said_why(3) && !helper_said_why(30) && !helper_said_why(EXIT_PANIC));
         assert!(!helper_said_why(EXIT_STALLED) && !helper_said_why(EXIT_NOT_ANSWERING));
     }
 
@@ -266,7 +272,8 @@ mod tests {
         assert_eq!(limit(EXIT_EXTENSION_FORMAT, 30), Limit::None);
         assert_eq!(limit(EXIT_GPU, 0), Limit::None);
         assert_eq!(limit(EXIT_STALLED, 30), Limit::Ending(10));
-        assert_eq!(limit(0xC000_0409, 5), Limit::Ending(10));
+        assert_eq!(limit(EXIT_PANIC, 5), Limit::Ending(10));
+        assert_eq!(limit(0xC000_0005, 30), Limit::Ending(10));
     }
 
     #[test]

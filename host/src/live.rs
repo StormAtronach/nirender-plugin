@@ -1183,6 +1183,21 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_announced_exit_goes_into_the_ring_word_when_a_ring_is_open() {
+        // No ring: nothing is written, and nothing fails.
+        super::announce_exit(30);
+        // A ring head of the plugin, as Ring::open maps it.
+        let head: &'static mut [u32; 32] = Box::leak(Box::new([0u32; 32]));
+        let base = head.as_mut_ptr().cast::<u8>();
+        // SAFETY: the offset of the word is inside the 128 bytes of the head.
+        super::ENDING_WORD.store(unsafe { base.add(super::super::stream_format::RING_ENDING) }.cast(), std::sync::atomic::Ordering::Release);
+        super::announce_exit(super::super::stream_format::EXIT_PANIC);
+        super::ENDING_WORD.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Release);
+        assert_eq!(head[super::super::stream_format::RING_ENDING / 4], 0xC000_0409);
+        assert!(head.iter().enumerate().all(|(i, word)| i == 20 || *word == 0));
+    }
+
     use super::*;
 
     #[test]

@@ -10,6 +10,12 @@
 //! A stack overflow is the exception: the runtime ends the program on its guard page before
 //! any filter runs, so it leaves the log line of the runtime and no dump.
 //!
+//! Before its dump, each path announces the exit code that the program will end with
+//! (`live::announce_exit`, the ring word `stream_format::RING_ENDING`): the panic hook
+//! [`EXIT_PANIC`], the filter the exception code, the watchdog 30 (`watchdog.rs`). A dump that
+//! hangs (a thread suspended inside the loader, the failure-path design, section 6.1) is then
+//! ended by the plugin after `ENDING_SECONDS` with that code, so that the box names the crash.
+//!
 //! The frames of the backtrace are `module+offset` lines. The program ships without its pdb
 //! (the owner's rule), so no name is in the log; the pdb of the same build resolves the
 //! offsets later, and the minidump opens in a debugger with it.
@@ -19,7 +25,10 @@ use std::ffi::OsStr;
 use std::io::Write;
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+
+use crate::stream_format::EXIT_PANIC;
 
 /// EXCEPTION_RECORD.
 #[repr(C)]
@@ -157,6 +166,39 @@ static PROGRAM: OnceLock<Vec<u16>> = OnceLock::new();
 const STALL_DUMP_SECONDS: u32 = 10;
 /// STD_OUTPUT_HANDLE.
 const STD_OUTPUT: u32 = -11i32 as u32;
+/// For the test of the plugin's limit on a dump that hangs ([`hold_next_dump`]): the next
+/// crash path holds where its dump would be.
+static HOLD_DUMP: AtomicBool = AtomicBool::new(false);
+
+/// The next crash of this program holds for good where its dump would be, after its log lines
+/// and the announcement of its exit, as a dump that a held loader stops does. For a test only
+/// (the tune command `crash panic hold` of MGE XE): the plugin must end the program after
+/// `stream_format::ENDING_SECONDS` with the announced code.
+pub fn hold_next_dump() {
+    HOLD_DUMP.store(true, Ordering::Release);
+}
+
+/// Holds this thread for good when [`hold_next_dump`] asked for it.
+fn hold_if_asked() {
+    if HOLD_DUMP.load(Ordering::Acquire) {
+        println!("crash: the dump is held (a test: hold_next_dump); the plugin ends this program");
+        let _ = std::io::stdout().flush();
+        loop {
+            // SAFETY: a plain sleep.
+            unsafe { Sleep(u32::MAX) };
+        }
+    }
+}
+
+/// The exit code that an unhandled exception gives the process: its code, when the record is
+/// there.
+///
+/// # Safety
+///
+/// `record` is null or points to an exception record that lives for the call.
+unsafe fn exit_of_exception(record: *const ExceptionRecord) -> Option<u32> {
+    record.as_ref().map(|record| record.code)
+}
 
 /// Keeps the file at `path` as `<path>.1` (`nirender-host.log.1` for `nirender-host.log`),
 /// in place of the one of the run before that: a player who starts the game again after a
@@ -192,10 +234,13 @@ pub(crate) fn install(dump: PathBuf) {
     let program = std::env::current_exe().ok().and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().into_owned()));
     let _ = PROGRAM.set(program.unwrap_or_default().encode_utf16().map(lower).collect());
     std::panic::set_hook(Box::new(|info| {
+        // First the exit for the plugin: a dump that hangs is then ended with this code.
+        crate::live::announce_exit(EXIT_PANIC);
         println!("panic: {info}");
         for line in backtrace() {
             println!("  {line}");
         }
+        hold_if_asked();
         let dump = match DUMP.get() {
             Some(path) => write_dump_here(path).map(|()| path.as_path()),
             None => Err("no path for it: the crash data was not installed".to_string()),
@@ -211,6 +256,10 @@ pub(crate) fn install(dump: PathBuf) {
 /// minidump holds the exception, and the program ends.
 unsafe extern "system" fn filter(pointers: *mut ExceptionPointers) -> i32 {
     let record = (*pointers).record;
+    // First the exit for the plugin: a dump that hangs is then ended with this code.
+    if let Some(code) = exit_of_exception(record) {
+        crate::live::announce_exit(code);
+    }
     if record.is_null() {
         println!("crash: an exception without a record");
     } else {
@@ -219,6 +268,7 @@ unsafe extern "system" fn filter(pointers: *mut ExceptionPointers) -> i32 {
     for line in backtrace() {
         println!("  {line}");
     }
+    hold_if_asked();
     let dump = match DUMP.get() {
         Some(path) => write_dump_at(path, GetCurrentThreadId(), pointers).map(|()| path.as_path()),
         None => Err("no path for it: the crash data was not installed".to_string()),
@@ -472,5 +522,22 @@ mod tests {
         assert!(!lines.is_empty());
         let module = lines[0].split('+').next().unwrap();
         assert!(module.ends_with(".exe"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn the_filter_announces_the_code_of_the_exception() {
+        let record = ExceptionRecord { code: 0xC000_0005, flags: 0, record: core::ptr::null_mut(), address: core::ptr::null_mut(), parameters: 0, information: [0; 15] };
+        // SAFETY: the record lives for the calls; null is allowed.
+        unsafe {
+            assert_eq!(exit_of_exception(&record), Some(0xC000_0005));
+            assert_eq!(exit_of_exception(core::ptr::null()), None);
+        }
+    }
+
+    #[test]
+    fn no_dump_is_held_without_the_test_ask() {
+        // Without hold_next_dump the check returns at once (the test would hang, not fail).
+        assert!(!HOLD_DUMP.load(Ordering::Acquire));
+        hold_if_asked();
     }
 }

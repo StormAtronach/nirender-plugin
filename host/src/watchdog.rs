@@ -115,11 +115,14 @@ pub(crate) fn start() {
         .expect("the watchdog thread");
 }
 
-/// The frame thread stalled: the log line first, then the dump and the end of the program.
+/// The frame thread stalled: the exit announced to the plugin, the log line, then the dump
+/// and the end of the program.
 /// The line is printed before the frame thread is suspended: a thread suspended inside a
 /// print or an allocation holds its lock, and a print after it would wait for ever.
 fn stalled(frame_thread: u32, seconds: u64) -> ! {
     use std::io::Write;
+    // First the exit for the plugin: a dump that hangs is then ended with the code 30, not 31.
+    crate::live::announce_exit(EXIT_STALLED);
     println!("stalled for {seconds} s: the frame thread made no progress in a step; a minidump, then the program ends with the exit code {EXIT_STALLED}");
     let _ = std::io::stdout().flush();
     crate::crash::stall_dump_and_end(frame_thread, EXIT_STALLED)
