@@ -292,24 +292,29 @@ impl Renderer {
     ) -> Result<(Renderer, Option<wgpu::Surface<'static>>), Vec<request::Refusal>> {
         let request = request::request(backends, window, target_format, texture_slots, samples)?;
         request.report();
-        let request::Request { adapter: _, info, surface, device, queue, target_format, surface_usages, present_modes, depth_format, samples, array_cap, sampler_cap, .. } = request;
+        let request::Request { adapter: _, info, surface, device, queue, target_format, surface_usages, present_modes, depth_format, samples, array_cap, sampler_cap, tier, .. } = request;
         gpu::watch(&device, &info, surface.is_some());
 
         let multisample = (samples > 1).then(|| multisample::Multisample::new(&device, target_format, depth_format, samples));
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
         let source = request::world_shader_source(&extension_shader);
+        let source = if tier == request::TextureTier::C { request::tier_c_shader_source(&source) } else { source };
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let texture_entry = |binding: u32, count| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            count,
+        };
+        let sampler_entry = |binding: u32, count| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count };
+        // Group 1: the binding arrays of tier A, or the 6 textures and 6 samplers of tier C.
+        let array_entries: Vec<wgpu::BindGroupLayoutEntry> = match tier {
+            request::TextureTier::A => vec![texture_entry(0, std::num::NonZeroU32::new(array_cap)), sampler_entry(1, std::num::NonZeroU32::new(sampler_cap))],
+            request::TextureTier::C => (0..STAGES as u32).map(|stage| texture_entry(stage, None)).chain((0..STAGES as u32).map(|stage| sampler_entry(STAGES as u32 + stage, None))).collect(),
+        };
         let array_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("draw texture arrays"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-                    count: std::num::NonZeroU32::new(array_cap),
-                },
-                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: std::num::NonZeroU32::new(sampler_cap) },
-            ],
+            label: Some(if tier == request::TextureTier::A { "draw texture arrays" } else { "draw textures of the stages" }),
+            entries: &array_entries,
         });
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("extension frame"),
@@ -525,6 +530,9 @@ impl Renderer {
             frame_samplers: Vec::new(),
             array_group: None,
             array_variants: FxHashMap::default(),
+            tier,
+            stage_groups: FxHashMap::default(),
+            stage_groups_of: FxHashMap::default(),
             geometries: FxHashMap::default(),
             gone_textures: Vec::new(),
             // Storage too: the morph pass writes the positions of a morphed geometry in place.
@@ -555,6 +563,10 @@ impl Renderer {
     /// part grew past twice [`FRAME_RESERVE`], or when the room runs short. True when they
     /// were laid out again.
     pub(crate) fn begin_frame_arrays(&mut self) -> bool {
+        // Tier C has no arrays: the groups of the sets stay with their textures.
+        if self.tier == request::TextureTier::C {
+            return false;
+        }
         let laid_out = !self.frame_texture_views.is_empty();
         let pinned_grew = self.pinned_textures.len() > self.pinned_in_frame || self.pinned_samplers.len() > self.pinned_samplers_in_frame;
         let own = self.frame_texture_views.len().saturating_sub(self.pinned_in_frame + 1);
@@ -580,6 +592,11 @@ impl Renderer {
     /// a released handle comes back for a later texture. A pinned slot of the arrays, and a
     /// slot of the frame, that holds the handle takes the new view.
     pub(crate) fn set_texture(&mut self, handle: u32, view: Rc<wgpu::TextureView>) {
+        // Tier C: the groups that held the handle (another view, or the white of a texture
+        // not known yet) are made again at their next use.
+        if self.tier == request::TextureTier::C && !self.textures.get(&handle).is_some_and(|old| Rc::ptr_eq(old, &view)) {
+            self.forget_stage_groups(handle);
+        }
         let mut changed = false;
         if let Some(pinned) = self.pinned_textures.iter_mut().find(|p| p.handle == handle) {
             if !Rc::ptr_eq(&pinned.view, &view) {
@@ -626,7 +643,8 @@ impl Renderer {
     /// the frame did not have. 0 (white) for no texture, an unknown handle, or a frame with
     /// more textures than the arrays hold.
     pub(crate) fn frame_texture_slot(&mut self, handle: u32) -> u32 {
-        if handle == 0 {
+        // Tier C: no slots; the group of the draw's set holds its textures.
+        if handle == 0 || self.tier == request::TextureTier::C {
             return 0;
         }
         if let Some(&slot) = self.frame_texture_slots.get(&handle) {
@@ -652,6 +670,9 @@ impl Renderer {
 
     /// The slot of a sampler state in the arrays of the frame.
     pub(crate) fn frame_sampler_slot(&mut self, values: [u32; 5]) -> u32 {
+        if self.tier == request::TextureTier::C {
+            return 0;
+        }
         if let Some(&slot) = self.frame_sampler_slots.get(&values) {
             return slot;
         }
@@ -708,6 +729,45 @@ impl Renderer {
             None => self.array_group = Some(group.clone()),
         }
         group
+    }
+
+    /// Tier C: the group of a set of the stages' textures and samplers, made at its first use
+    /// and kept until one of its textures takes another view or goes ([`Self::forget_stage_groups`]).
+    /// A handle without a texture, and the target of the pass (`hide`), show white; a stage
+    /// without a texture has the handle 0 and the sampler state 0, as in tier A.
+    pub(crate) fn stage_group(&mut self, textures: [u32; STAGES], samplers: [[u32; 5]; STAGES], hide: Option<u32>) -> Rc<wgpu::BindGroup> {
+        // A target that is not one of the set's textures changes nothing: one group for both.
+        let hide = hide.filter(|handle| textures.contains(handle)).unwrap_or(0);
+        let key = StageKey { textures, samplers, hide };
+        if let Some(group) = self.stage_groups.get(&key) {
+            return group.clone();
+        }
+        let views: Vec<Rc<wgpu::TextureView>> = textures
+            .iter()
+            .map(|&handle| if handle == 0 || handle == hide { self.white.clone() } else { self.textures.get(&handle).cloned().unwrap_or_else(|| self.white.clone()) })
+            .collect();
+        let sampler_objects: Vec<Rc<wgpu::Sampler>> = samplers.iter().map(|&values| self.sampler(values)).collect();
+        let mut entries: Vec<wgpu::BindGroupEntry> = views.iter().enumerate().map(|(stage, view)| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(view) }).collect();
+        entries.extend(sampler_objects.iter().enumerate().map(|(stage, sampler)| wgpu::BindGroupEntry { binding: (STAGES + stage) as u32, resource: wgpu::BindingResource::Sampler(sampler) }));
+        self.counts.array_groups_made += 1;
+        let group = Rc::new(crate::gpu::frame_group(&self.device, &wgpu::BindGroupDescriptor { label: Some("draw textures of the stages"), layout: &self.array_layout, entries: &entries }));
+        for handle in textures.iter().copied().filter(|&handle| handle != 0) {
+            let keys = self.stage_groups_of.entry(handle).or_default();
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+        self.stage_groups.insert(key, group.clone());
+        group
+    }
+
+    /// Tier C: drops the groups that hold the texture `handle`.
+    fn forget_stage_groups(&mut self, handle: u32) {
+        if let Some(keys) = self.stage_groups_of.remove(&handle) {
+            for key in keys {
+                self.stage_groups.remove(&key);
+            }
+        }
     }
 
     /// A group of the arrays with only the textures of these slots of the frame, for draws
@@ -1287,6 +1347,7 @@ impl Renderer {
                 continue;
             }
             self.textures.remove(&handle);
+            self.forget_stage_groups(handle);
             self.texture_objects.remove(&handle);
             self.targets.remove(&handle);
             self.decoded.remove(&handle);

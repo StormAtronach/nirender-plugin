@@ -90,6 +90,10 @@ pub(crate) struct Switches {
     /// (the harness mode of the boxes, [`crate::gpu::message_box`]); 0 or unset: the box waits
     /// for the click. The plugin and MGE XE's d3d8.dll read the same variable for their boxes.
     pub(crate) box_seconds: u32,
+    /// `MGE_XE_TEXTURE_TIER=a|c`: the texture binding tier for an A/B on one machine
+    /// ([`crate::request::TextureTier`]); unset, tier A when the adapter has the binding arrays,
+    /// else tier C.
+    pub(crate) texture_tier: Option<crate::request::TextureTier>,
 }
 
 impl Switches {
@@ -127,6 +131,7 @@ impl Switches {
             growth_shots: read.text("NIRENDER_GROWTH_SHOTS"),
             // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
             box_seconds: read.parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |v| v.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600)),
+            texture_tier: read.choice("MGE_XE_TEXTURE_TIER", &["a", "c"]).map(|tier| if tier == "a" { crate::request::TextureTier::A } else { crate::request::TextureTier::C }),
         };
         read.report();
         switches

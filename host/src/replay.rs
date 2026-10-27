@@ -71,6 +71,9 @@ pub(crate) struct Draw {
     /// opaque draws first (`MGE_XE_ORDER=opaque`) uses these and not the addresses of the
     /// buffers, so a replay of a capture gives the same order in each build.
     pub(crate) texture_handles: [u32; STAGES],
+    /// The sampler state of each stage with a texture (0 for the others): tier C makes the
+    /// group of the draw from the handles and these (`Renderer::stage_group`).
+    pub(crate) sampler_values: [[u32; 5]; STAGES],
     /// The first index in the index buffer and the number of indexes, and the base vertex.
     pub(crate) range: (u32, u32),
     pub(crate) base_vertex: i32,
@@ -120,6 +123,7 @@ impl Replay for Replayer<'_> {
     fn replay(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView) {
         let mut bound = BoundGroups::default();
         let mut arrays_bound = false;
+        let mut stages_bound: Option<Rc<wgpu::BindGroup>> = None;
         for kept in self.kept {
             if view.classes & (1 << kept.class.min(31)) == 0 || (view.opaque_only && (kept.key.blend[0] != 0 || kept.key.depth[1] == 0)) || (view.translucent_only && !kept.translucent()) {
                 continue;
@@ -178,9 +182,16 @@ impl Replay for Replayer<'_> {
             pass.set_pipeline(&pipeline);
             pass.set_stencil_reference(kept.stencil_reference);
             bound.set(pass, 0, &self.renderer.frame_group);
-            if !arrays_bound {
-                // The pass of the extension draws into a texture of its own, not into a
-                // texture of the game.
+            // The pass of the extension draws into a texture of its own, not into a texture of
+            // the game: no target to hide.
+            if self.renderer.tier == crate::request::TextureTier::C {
+                let group = self.renderer.stage_group(kept.texture_handles, kept.sampler_values, None);
+                if !stages_bound.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &group)) {
+                    pass.set_bind_group(1, &*group, &[]);
+                    crate::gpu::note_array_bind(crate::gpu::BindOrigin::Replay);
+                    stages_bound = Some(group);
+                }
+            } else if !arrays_bound {
                 let group = self.renderer.array_group_for(None);
                 pass.set_bind_group(1, &*group, &[]);
                 crate::gpu::note_array_bind(crate::gpu::BindOrigin::Replay);
