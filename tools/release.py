@@ -162,10 +162,12 @@ def gate(mge, asset, dry_run):
 
 def fill_gate(notes, lines):
     """The notes with the gate's result lines in place of the token `{gate}` of their Tested
-    block; None when the notes have no token."""
+    block, without the local folders the lines end with ("in <path>"); None when the notes
+    have no token."""
     if GATE_TOKEN not in notes:
         return None
-    return notes.replace(GATE_TOKEN, "the capture gate: " + "; ".join(lines))
+    counts = [re.sub(r" in \S+$", "", line) for line in lines]
+    return notes.replace(GATE_TOKEN, "the capture gate: " + "; ".join(counts))
 
 
 RUN_FOLDER = re.compile(r"\b\d{8}-\d{6}-[A-Za-z0-9][A-Za-z0-9-]*")
@@ -264,7 +266,7 @@ def self_test():
     # A file named whole matches itself only, not a longer name that starts with it.
     assert untracked_in_sources(["?? Cargo.toml.orig"], PLUGIN_SOURCES) == []
     lines = ["2 of 2 pictures equal to the accepted ones in a", "206 of 206 pictures equal to the accepted ones in b"]
-    assert fill_gate("## Tested\n\n- {gate}\n", lines) == "## Tested\n\n- the capture gate: 2 of 2 pictures equal to the accepted ones in a; 206 of 206 pictures equal to the accepted ones in b\n"
+    assert fill_gate("## Tested\n\n- {gate}\n", lines) == "## Tested\n\n- the capture gate: 2 of 2 pictures equal to the accepted ones; 206 of 206 pictures equal to the accepted ones\n"
     assert fill_gate("## Tested\n\n- the gate by hand\n", lines) is None
     assert GATE_RESULT.findall("  ok   " + lines[0] + "\n  FAIL  1 of 2 pictures equal to the accepted ones in c\n") == [lines[0], "1 of 2 pictures equal to the accepted ones in c"]
     assert render_link_tag("v0.3.3") == "nirender-v0.3.3"
