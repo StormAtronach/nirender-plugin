@@ -1308,25 +1308,37 @@ pub unsafe fn helper_shadow_reach() -> f32 {
 
 /// Writes an `OVERLAY` record with the numbers since the last one.
 unsafe fn overlay_record(lock: &DeviceLock) {
-    let Some(s) = state(&lock) else { return };
-    let waits = match s.out.as_ref() {
-        Some(Sink::Ring(ring)) => ring.waited + ring.paced + crate::pacing::waited(),
-        _ => 0,
+    // The guards of the state and of the last numbers end before `write`, which opens the
+    // state again.
+    let (spent, waits) = {
+        let Some(s) = state(&lock) else { return };
+        let waits = match s.out.as_ref() {
+            Some(Sink::Ring(ring)) => ring.waited + ring.paced + crate::pacing::waited(),
+            _ => 0,
+        };
+        (s.spent, waits)
     };
-    let (spent, ports) = (s.spent, crate::shadow::port_ms());
-    let last = &mut *OVERLAY_LAST.get(&lock);
-    let frames = last.1.max(1) as f64;
-    let ms = |ticks: i64| (ticks as f64 * 1000.0 / ticks_per_second() as f64 / frames) as f32;
-    let body = crate::overlay::body(ms(spent - last.2), ((ports - last.3) / frames) as f32, ms(waits - last.4));
-    *last = (ticks(), 0, spent, ports, waits);
+    let ports = crate::shadow::port_ms();
+    let body = {
+        let last = &mut *OVERLAY_LAST.get(&lock);
+        let frames = last.1.max(1) as f64;
+        let ms = |ticks: i64| (ticks as f64 * 1000.0 / ticks_per_second() as f64 / frames) as f32;
+        let body = crate::overlay::body(ms(spent - last.2), ((ports - last.3) / frames) as f32, ms(waits - last.4));
+        *last = (ticks(), 0, spent, ports, waits);
+        body
+    };
     write(tag::OVERLAY, &[&body]);
 }
 
 /// At the end of a frame: the record of the overlay, one time in a second while it is on.
 unsafe fn overlay_tick(lock: &DeviceLock) {
-    let last = &mut *OVERLAY_LAST.get(&lock);
-    last.1 += 1;
-    if crate::overlay::on() && ticks() - last.0 >= ticks_per_second() {
+    // The guard of the last numbers ends before `overlay_record` opens them again.
+    let due = {
+        let last = &mut *OVERLAY_LAST.get(&lock);
+        last.1 += 1;
+        crate::overlay::on() && ticks() - last.0 >= ticks_per_second()
+    };
+    if due {
         overlay_record(&lock);
     }
 }
