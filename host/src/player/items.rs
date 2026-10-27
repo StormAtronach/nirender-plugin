@@ -459,6 +459,27 @@ impl Player {
         self.part_end(part);
     }
 
+    /// Puts what a late sorted run wrote into the copy of the world depth: the depth after
+    /// the run where it differs from the depth before it, the nearer of the two
+    /// ([`late_depth`]). The held draws (the water) drew before the run, so their depth is
+    /// in both copies and does not enter.
+    pub(crate) fn merge_late_depth(&mut self) {
+        if self.copy_depth(4, "depth: after late sorted blends").is_none() {
+            self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
+            return;
+        }
+        let device = self.renderer.device.clone();
+        let format = self.renderer.depth_format;
+        let late = self.late_depth.get_or_insert_with(|| late_depth::LateDepth::new(&device, format));
+        let depth_only = wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() };
+        if let (Some(before), Some(after), Some(world), Some(encoder)) = (self.late_before.as_ref(), self.late_after.as_ref(), self.world_depth.as_ref(), self.encoder.as_mut()) {
+            let at = stamp(&self.renderer.stamps, encoder, StampKind::Outside, "depth: late sorted blends into the world depth");
+            late.merge(&device, encoder, &before.create_view(&depth_only), &after.create_view(&depth_only), &world.create_view(&Default::default()));
+            stamp_end(&self.renderer.stamps, encoder, at);
+        }
+        self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
+    }
+
     /// Gives the extension its call at the end of the world scene. See [`Extension::after_world`].
     pub(crate) fn end_world(&mut self, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
@@ -658,9 +679,10 @@ impl Player {
     }
 
     /// Copies the depth as it is now, outside of the pass: into the copy of the moment (0),
-    /// the copy of the world (1, for [`Extension::post`]) or the copy of the draws of
-    /// [`Extension::before_world`] (2). The caller opens the pass again. `name`: the copy's
-    /// name for the GPU time.
+    /// the copy of the world (1, for [`Extension::post`]), the copy of the draws of
+    /// [`Extension::before_world`] (2), or the depth before (3) and after (4) a late sorted
+    /// run ([`late_depth`]). The caller opens the pass again. `name`: the copy's name for the
+    /// GPU time.
     pub(crate) fn copy_depth(&mut self, which: u32, name: &'static str) -> Option<wgpu::TextureView> {
         let source = self.depth.as_ref().map(|depth| depth.texture().clone())?;
         // A multisampled depth cannot be copied: the resolve pass writes the nearest sample
@@ -675,6 +697,8 @@ impl Player {
         let copy = match which {
             1 => &mut self.world_depth,
             2 => &mut self.before_depth,
+            3 => &mut self.late_before,
+            4 => &mut self.late_after,
             _ => &mut self.depth_copy,
         };
         if copy.as_ref().is_none_or(|copy| copy.size() != size) {

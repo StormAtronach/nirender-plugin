@@ -1953,6 +1953,14 @@ impl Player {
         if placed.is_empty() {
             self.renderer.counts.sorted_without_place_no_places += kept.len() as u64;
         }
+        // An item after the world end (the engine flushed its queue in a later scene): the
+        // post-processing reads the copy of the world depth, so what these blends write goes
+        // into it ([`late_depth`]): the depth before the run here, after it at the end.
+        let late = self.world_depth_kept && (!deferred.is_empty() || !kept.is_empty());
+        if late {
+            self.copy_depth(3, "depth: before late sorted blends");
+            self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
+        }
         if crate::dump_wanted() != 0 {
             println!("sorted blends: {} kept, {} of the engine's path, pass open {}, frame {}", kept.len(), deferred.len(), self.pass.is_some(), self.renderer.counts.frames);
             for &(key, bucket, _, slot) in &kept {
@@ -2003,13 +2011,8 @@ impl Player {
         }
         self.draw_sorted_run(view, run);
         self.retained.kept_sorted = all_kept;
-        // An item after the world end (the engine flushed its queue in a later scene): the
-        // post-processing reads the copy of the world depth, so the depth of these blends
-        // goes into it. The depth target still has the world, so a new copy is the nearer of
-        // the two, as `renderStage2` of the Direct3D 9 path merges its later scenes.
-        if self.world_depth_kept {
-            self.copy_depth(1, "depth: the world again, after late sorted blends");
-            self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
+        if late {
+            self.merge_late_depth();
         }
     }
 }
