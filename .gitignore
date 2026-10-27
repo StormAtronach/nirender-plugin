@@ -7,6 +7,7 @@ spikes/*/target/
 /host/target
 /d3d8/target
 /nirender.log
+*.log.1
 # The places of this machine (local.example.json and local.example.bat name the keys).
 /local.json
 /local.bat

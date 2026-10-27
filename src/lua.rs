@@ -218,6 +218,31 @@ unsafe extern "C" fn tune(l: LuaState) -> i32 {
     0
 }
 
+/// `nirender.hostState()` returns nil while the host program is well, else `{ code, word }`:
+/// its exit code (0 for a lost graphics device) and the words of the failure, for the
+/// autosave of failure.lua of the mod. It makes no table while nil.
+unsafe extern "C" fn host_state(l: LuaState) -> i32 {
+    match crate::failure::host_state() {
+        None => lua_pushnil(l),
+        Some((code, word)) => {
+            lua_createtable(l, 0, 2);
+            lua_pushnumber(l, code as f64);
+            lua_setfield(l, -2, c"code".as_ptr());
+            push_str(l, &word);
+            lua_setfield(l, -2, c"word".as_ptr());
+        }
+    }
+    1
+}
+
+/// `nirender.failureHandled(saveName, why)`: the mod saved the game as `saveName` after the
+/// failure of the host program, or could not (`why`). The plugin shows the one box of the
+/// failure then.
+unsafe extern "C" fn failure_handled(l: LuaState) -> i32 {
+    crate::failure::handled(arg_str(l, 1), arg_str(l, 2));
+    0
+}
+
 /// `nirender.portTimes(n)` returns the `n` ports with the most time of the main thread since
 /// the last call, as one text: name, calls, ms. The time of a port has the ports that it
 /// calls in it, so the numbers do not add up.
@@ -751,6 +776,8 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "streamMark", stream_mark);
     set_fn(l, "overlay", overlay);
     set_fn(l, "tune", tune);
+    set_fn(l, "hostState", host_state);
+    set_fn(l, "failureHandled", failure_handled);
     set_fn(l, "loadingDone", loading_done);
     set_fn(l, "portTimes", port_times);
     set_fn(l, "dumpDevice", dump_device);

@@ -2,7 +2,7 @@
 //! the frames go into a window.
 
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,32 +28,31 @@ extern "system" {
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
 }
 
-/// The head of the shared memory. See `capture.rs` of the plugin.
-const RING_MAGIC: u32 = 0x474E_5232;
-const RING_HEAD: usize = 128;
-const RING_WRITTEN: usize = 8;
-const RING_READ: usize = 16;
-const RING_CLOSED: usize = 24;
-/// The game waits for a read of this program (1 while it does): the event `<ring>-read` is
-/// set after a read only then (`capture.rs` of the plugin, `RING_GAME_WAITING`).
-const RING_GAME_WAITING: usize = 72;
-/// The classes of the game that the helper draws itself, for the plugin ([`Player::takes`]).
-const RING_TAKES: usize = 32;
-/// 1 while this program waits for a record: the plugin sets the event of the ring
-/// after a write only then.
-const RING_WAITING: usize = 36;
-/// The reach of the shadow map for the plugin's animation policy (the bits of an f32).
-const RING_SHADOW_REACH: usize = 40;
-/// For the pacing of the game (`pacing.rs` of the plugin): the busy time of this program for
-/// a frame (u32, microseconds), the bytes read at the end of the last frame shown (u64) and
-/// the time it was shown (u64, ticks of the performance counter).
-const RING_BUSY: usize = 44;
-const RING_DONE_AT: usize = 48;
-const RING_DONE_TIME: usize = 56;
-/// From the pacing: when the game starts its next frame (i64, ticks of the performance
-/// counter; `i64::MAX` from the end of a frame to the start of the next). While the game
-/// writes a frame this program waits for the records awake ([`Ring::game_phase`]).
-const RING_NEXT_START: usize = 64;
+// The layout of the HEADER record and of the shared memories of a stream: their one home,
+// shared with the plugin.
+use super::stream_format::{
+    HEADER_HEIGHT_AT, HEADER_WIDTH_AT, HEADER_WINDOW_AT, MESSAGES_CAPACITY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_MEMORY, MESSAGES_READ, MESSAGES_WRITTEN,
+    READ_EVENT, RECORDS_EVENT, SHOWN_EVENT, TILES_MEMORY,
+    REPLY_CAPACITY, REPLY_HEAD, REPLY_HEIGHT, REPLY_REQUEST, REPLY_WIDTH, RING_BUSY, RING_CAPACITY, RING_CLOSED, RING_DONE_AT, RING_DONE_TIME,
+    RING_GAME_WAITING, RING_HEAD, RING_MAGIC, RING_NEXT_START, RING_READ, RING_SHADOW_REACH, RING_TAKES, RING_WAITING, RING_WRITTEN, TILE_BYTES,
+    TILE_HEAD, TILE_HEIGHT, TILE_SLOTS, TILE_TICKET, TILE_WIDTH,
+};
+
+/// The word [`RING_ENDING`](super::stream_format::RING_ENDING) of the ring head, or null
+/// before the ring is open: [`announce_exit`] writes it from any thread.
+static ENDING_WORD: AtomicPtr<AtomicU32> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Tells the plugin that this program ends with `code` on purpose: its limits then follow the
+/// code (`stream_format::limit`), not the read counter. Without a ring (a replay, the program
+/// on its own) it does nothing.
+pub(crate) fn announce_exit(code: u32) {
+    let word = ENDING_WORD.load(Ordering::Acquire);
+    if !word.is_null() {
+        // SAFETY: the pointer is into the head of the ring, which stays mapped until the end
+        // of the program (the ring is never unmapped), and is 4-aligned for the AtomicU32.
+        unsafe { (*word).store(code, Ordering::Release) };
+    }
+}
 
 /// Where the game is when this program has no record: [`Ring::game_phase`].
 #[derive(Clone, Copy, PartialEq)]
@@ -93,24 +92,35 @@ impl Ring {
                 let base = unsafe { MapViewOfFile(mapping, 0xF001F, 0, 0, 0) };
                 assert!(!base.is_null(), "the shared memory does not map");
                 assert_eq!(unsafe { (base as *const u32).read() }, RING_MAGIC, "not a ring of the plugin");
-                let capacity = unsafe { (base.add(4) as *const u32).read() } as u64;
+                let capacity = unsafe { (base.add(RING_CAPACITY) as *const u32).read() } as u64;
                 // EVENT_ALL_ACCESS.
-                let mut event_name = format!("{name}-records").into_bytes();
+                let mut event_name = format!("{name}{RECORDS_EVENT}").into_bytes();
                 event_name.push(0);
                 let event = unsafe { OpenEventA(0x1F0003, 0, event_name.as_ptr()) };
-                let mut shown_name = format!("{name}-shown").into_bytes();
+                let mut shown_name = format!("{name}{SHOWN_EVENT}").into_bytes();
                 shown_name.push(0);
                 let shown_event = unsafe { OpenEventA(0x1F0003, 0, shown_name.as_ptr()) };
-                let mut read_name = format!("{name}-read").into_bytes();
+                let mut read_name = format!("{name}{READ_EVENT}").into_bytes();
                 read_name.push(0);
                 // SAFETY: the name is a NUL-ended byte string that lives for the call; a
                 // missing event gives 0, which the reader tests before each use.
                 let read_event = unsafe { OpenEventA(0x1F0003, 0, read_name.as_ptr()) };
+                // SAFETY: the offset of the word is inside the mapped head of the ring.
+                ENDING_WORD.store(unsafe { base.add(super::stream_format::RING_ENDING) }.cast(), Ordering::Release);
                 return Ring { base, capacity, event, shown_event, read_event };
             }
             assert!(start.elapsed() < Duration::from_secs(60), "no shared memory with the name {name}");
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// Tells the plugin the seconds that a step of the frame thread may take now
+    /// (`watchdog::allowance`): the plugin ends this program only after them and 5 s more
+    /// (`stream_format::RING_ALLOWANCE`).
+    fn set_allowance(&self, seconds: u32) {
+        // SAFETY: the head of the ring is mapped for the life of the `Ring`, and the offset 76
+        // of the word is 4-aligned within it, as an `AtomicU32` needs.
+        unsafe { (*(self.base.add(super::stream_format::RING_ALLOWANCE) as *const std::sync::atomic::AtomicU32)).store(seconds, Ordering::Release) };
     }
 
     /// Tells the plugin the classes of the game that the helper draws itself, and the
@@ -220,11 +230,7 @@ impl Ring {
     }
 }
 
-/// The reply memory. See `capture.rs` of the plugin.
-const REPLY_HEAD: usize = 16;
-/// The word of the head where the plugin writes how many pixel bytes the memory holds.
-const REPLY_CAPACITY: usize = 12;
-
+/// The reply memory (its layout: `stream_format`, `REPLY_*`).
 struct Reply {
     /// The name of the ring.
     name: String,
@@ -239,9 +245,9 @@ impl Reply {
         Some(Reply { name: name.to_string(), mapping, base, generation: 0 })
     }
 
-    /// The memory of the generation `generation`: `.reply`, then `.reply<generation>`.
+    /// The memory of the generation `generation` (`stream_format::reply_memory_name`).
     fn map(name: &str, generation: u32) -> Option<(isize, *mut u8)> {
-        let mut text = if generation == 0 { format!("{name}.reply") } else { format!("{name}.reply{generation}") }.into_bytes();
+        let mut text = super::stream_format::reply_memory_name(name, generation).into_bytes();
         text.push(0);
         let mapping = unsafe { OpenFileMappingA(0xF001F, 0, text.as_ptr()) };
         if mapping == 0 {
@@ -273,32 +279,26 @@ impl Reply {
         let pixels = if pixels.len() > capacity { &[][..] } else { pixels };
         unsafe {
             std::ptr::copy_nonoverlapping(pixels.as_ptr(), self.base.add(REPLY_HEAD), pixels.len());
-            (self.base.add(4) as *mut u32).write_volatile(width);
-            (self.base.add(8) as *mut u32).write_volatile(height);
-            (*(self.base as *const std::sync::atomic::AtomicU32)).store(request, Ordering::Release);
+            (self.base.add(REPLY_WIDTH) as *mut u32).write_volatile(width);
+            (self.base.add(REPLY_HEIGHT) as *mut u32).write_volatile(height);
+            (*(self.base.add(REPLY_REQUEST) as *const std::sync::atomic::AtomicU32)).store(request, Ordering::Release);
         }
     }
 }
 
-/// The tile memory of a stream: shared memory with the name of the ring and `.tiles`, which
-/// the plugin makes. Slots of a head (the ticket, written last; the width; the height; one
-/// unused word) and the pixels of a tile of 512 x 512 at most. The ticket picks the slot. See
-/// `capture.rs` of the plugin.
-const TILE_SLOTS: usize = 8;
-const TILE_BYTES: usize = 512 * 512 * 4;
-
 /// The live mode prints what the helper holds once in this many frames (about 5 minutes at
 /// 60 frames a second).
 const HELD_EVERY_FRAMES: u32 = 18_000;
-const TILE_HEAD: usize = 16;
 
+/// The tile memory of a stream, which the plugin makes (its layout: `stream_format`,
+/// `TILE_*`). The ticket picks the slot.
 struct Tiles {
     base: *mut u8,
 }
 
 impl Tiles {
     fn open(name: &str) -> Option<Tiles> {
-        let mut text = format!("{name}.tiles").into_bytes();
+        let mut text = format!("{name}{TILES_MEMORY}").into_bytes();
         text.push(0);
         let mapping = unsafe { OpenFileMappingA(0xF001F, 0, text.as_ptr()) };
         if mapping == 0 {
@@ -313,21 +313,15 @@ impl Tiles {
         unsafe {
             let slot = self.base.add((ticket as usize % TILE_SLOTS) * (TILE_HEAD + TILE_BYTES));
             std::ptr::copy_nonoverlapping(pixels.as_ptr(), slot.add(TILE_HEAD), pixels.len());
-            (slot.add(4) as *mut u32).write_volatile(width);
-            (slot.add(8) as *mut u32).write_volatile(height);
-            (*(slot as *const std::sync::atomic::AtomicU32)).store(ticket, Ordering::Release);
+            (slot.add(TILE_WIDTH) as *mut u32).write_volatile(width);
+            (slot.add(TILE_HEIGHT) as *mut u32).write_volatile(height);
+            (*(slot.add(TILE_TICKET) as *const std::sync::atomic::AtomicU32)).store(ticket, Ordering::Release);
         }
     }
 }
 
-/// The message memory of a stream: shared memory with the name of the ring and
-/// `.messages`, which the plugin makes. The head: [`MESSAGES_MAGIC`], the number of data
-/// bytes, the bytes that this program wrote (u64), the bytes that the game read (u64). Then
-/// the data: records of the number, the length and the bytes, which can go around the
-/// end. See `capture.rs` of the plugin.
-const MESSAGES_MAGIC: u32 = 0x4753_4D31;
-const MESSAGES_HEAD: usize = 32;
-
+/// The message memory of a stream, which the plugin makes (its layout: `stream_format`,
+/// `MESSAGES_*`).
 struct Messages {
     base: *mut u8,
     capacity: u64,
@@ -337,7 +331,7 @@ struct Messages {
 
 impl Messages {
     fn open(name: &str) -> Option<Messages> {
-        let mut text = format!("{name}.messages").into_bytes();
+        let mut text = format!("{name}{MESSAGES_MEMORY}").into_bytes();
         text.push(0);
         let mapping = unsafe { OpenFileMappingA(0xF001F, 0, text.as_ptr()) };
         if mapping == 0 {
@@ -347,7 +341,7 @@ impl Messages {
         if base.is_null() || unsafe { (base as *const u32).read_volatile() } != MESSAGES_MAGIC {
             return None;
         }
-        let capacity = unsafe { (base.add(4) as *const u32).read_volatile() } as u64;
+        let capacity = unsafe { (base.add(MESSAGES_CAPACITY) as *const u32).read_volatile() } as u64;
         Some(Messages { base, capacity, full: false })
     }
 
@@ -358,8 +352,8 @@ impl Messages {
     /// Puts one message into the memory, or drops it when the game has not read enough.
     fn put(&mut self, id: u32, bytes: &[u8]) {
         let total = 8 + bytes.len() as u64;
-        let written = self.counter(8).load(Ordering::Relaxed);
-        let read = self.counter(16).load(Ordering::Acquire);
+        let written = self.counter(MESSAGES_WRITTEN).load(Ordering::Relaxed);
+        let read = self.counter(MESSAGES_READ).load(Ordering::Acquire);
         if total > self.capacity - (written - read) {
             if !self.full {
                 self.full = true;
@@ -374,7 +368,7 @@ impl Messages {
                 at += 1;
             }
         }
-        self.counter(8).store(at, Ordering::Release);
+        self.counter(MESSAGES_WRITTEN).store(at, Ordering::Release);
     }
 }
 
@@ -417,6 +411,8 @@ struct App {
     back_buffer: Option<wgpu::Texture>,
     /// A frame of the game is in progress.
     in_frame: bool,
+    /// The game process was told that the device is lost.
+    lost_told: bool,
     /// The frames that the window did not take: its surface gave no picture.
     not_shown: u32,
     /// The status of the surface when the window last gave no picture, or an empty text.
@@ -661,10 +657,7 @@ impl App {
             Ok(made) => made,
             // No backend serves: the reason in the log and the box, then the exit code the
             // plugin knows (the failure-path page, the code 20).
-            Err(refusals) => {
-                crate::request::refuse_live(&refusals);
-                std::process::exit(crate::stream_format::EXIT_GPU as i32);
-            }
+            Err(refusals) => crate::request::refuse_live(&refusals),
         };
         let surface = surface.expect("a surface");
         let vsync = self.extension.as_ref().is_some_and(|extension| extension.vsync());
@@ -701,6 +694,9 @@ impl App {
         self.window = own;
         let (width, height) = self.window_size();
         self.configure(width, height);
+        // The frames start: from now the plugin gives a step the allowance and 5 s (before,
+        // the device and the shaders are made, and it gives 60 s).
+        self.ring.set_allowance(super::watchdog::allowance());
     }
 
     /// The size of the inside of the window: of this program's window, else of the game's.
@@ -775,6 +771,14 @@ impl ApplicationHandler for App {
             // so that the game does not wait for this program. A request that the game waits
             // for gets the answer "no pixels" at once.
             if super::gpu::lost() {
+                // The game process runs the failure path on the message (the plugin's
+                // `failure.rs`): the autosave, then its box. This program shows none. A
+                // replay has no message memory: the loss is the log line of `gpu.rs` only.
+                if let (Some(messages), false) = (self.messages.as_mut(), self.lost_told) {
+                    messages.put(super::stream_format::MESSAGE_LOST_DEVICE, &1u32.to_le_bytes());
+                    self.lost_told = true;
+                    println!("gpu: the game process is told that the device is lost");
+                }
                 if let Some(player) = self.player.as_mut() {
                     player.fail_tile_reads();
                 }
@@ -853,6 +857,9 @@ impl ApplicationHandler for App {
             let slot = &mut self.by_tag[(tag as usize).min(TAG_SLOTS - 1)];
             slot.0 += 1;
             slot.1 += 8 + self.data.len() as u64;
+            // The feed of the record, with the work of the frame's end, is one step of the
+            // watchdog: it ends at the end of this loop's body, before the next wait.
+            let _step = super::watchdog::Step::begin();
             let player = self.player.as_mut().unwrap();
             let clock = super::ticks::Clock::now();
             // The times of the frame in the game, and the time of this read: for the age
@@ -994,6 +1001,8 @@ impl ApplicationHandler for App {
                 let scene = facts.view(&device, &queue, &commands, player.renderer.target_format);
                 if let Some(extension) = player.extension.as_mut() {
                     extension.after_frame(&scene);
+                    super::watchdog::loading(extension.loading());
+                    self.ring.set_allowance(super::watchdog::allowance());
                 }
             }
             // The messages of the extension for its part in the game process.
@@ -1077,7 +1086,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
     };
     assert_eq!(tag, super::tag::HEADER, "the first record is not the head of the stream");
     // The window of the game owns the boxes of this program, the one of a refused stream too.
-    let game_window = if data.len() >= 12 { super::word(&data, 8) as isize } else { 0 };
+    let game_window = if data.len() >= HEADER_WINDOW_AT + 4 { super::word(&data, HEADER_WINDOW_AT) as isize } else { 0 };
     super::gpu::set_owner_window(game_window);
     // The stream format of the plugin against this build's, before any record is read. A
     // difference ends this program: the plugin reads the exit code and shows no second box.
@@ -1088,13 +1097,18 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
             for line in message.lines() {
                 println!("{line}");
             }
-            super::gpu::message_box(&format!("{message}\n\nThe game shows no new picture: close it with Alt+F4. nirender-host.log has the details."));
-            super::gpu::exit_now(super::stream_format::EXIT_STREAM_FORMAT);
+            super::gpu::refuse(super::stream_format::EXIT_STREAM_FORMAT, &format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."));
         }
     }
-    let size = (super::word(&data, 0).max(64), super::word(&data, 4).max(64));
+    let size = (super::word(&data, HEADER_WIDTH_AT).max(64), super::word(&data, HEADER_HEIGHT_AT).max(64));
     let embed = args.iter().any(|a| a == "--embed");
     println!("picture {} x {}, window of the game {game_window:#x}{}", size.0, size.1, if embed { ", the host goes into it" } else { "" });
+    // This thread is the frame thread: the watchdog ends the program when a step of it stalls.
+    if switches().watchdog {
+        super::watchdog::start();
+    } else {
+        println!("watchdog: off (MGE_XE_WATCHDOG=0)");
+    }
     let mut app = App {
         ring,
         reply: Reply::open(name),
@@ -1122,6 +1136,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         gamma: None,
         depth: None,
         in_frame: false,
+        lost_told: false,
         not_shown: 0,
         surface_status: "",
         data: Vec::new(),
@@ -1148,6 +1163,21 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_announced_exit_goes_into_the_ring_word_when_a_ring_is_open() {
+        // No ring: nothing is written, and nothing fails.
+        super::announce_exit(30);
+        // A ring head of the plugin, as Ring::open maps it.
+        let head: &'static mut [u32; 32] = Box::leak(Box::new([0u32; 32]));
+        let base = head.as_mut_ptr().cast::<u8>();
+        // SAFETY: the offset of the word is inside the 128 bytes of the head.
+        super::ENDING_WORD.store(unsafe { base.add(super::super::stream_format::RING_ENDING) }.cast(), std::sync::atomic::Ordering::Release);
+        super::announce_exit(super::super::stream_format::EXIT_PANIC);
+        super::ENDING_WORD.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Release);
+        assert_eq!(head[super::super::stream_format::RING_ENDING / 4], 0xC000_0409);
+        assert!(head.iter().enumerate().all(|(i, word)| i == 20 || *word == 0));
+    }
+
     use super::*;
 
     #[test]
@@ -1203,7 +1233,7 @@ mod tests {
     fn a_request_of_the_next_generation_is_answered_in_its_memory() {
         // The memory that the plugin makes when it grows: 32 pixel bytes.
         let ring = format!("nirender-test-{}", std::process::id());
-        let name = format!("{ring}.reply1\0");
+        let name = format!("{}\0", super::super::stream_format::reply_memory_name(&ring, 1));
         let mapping = unsafe { CreateFileMappingA(-1, std::ptr::null(), 4, 0, (REPLY_HEAD + 32) as u32, name.as_ptr()) };
         assert_ne!(mapping, 0);
         let larger = unsafe { MapViewOfFile(mapping, 0xF001F, 0, 0, 0) };

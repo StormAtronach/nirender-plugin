@@ -4,8 +4,8 @@
 //! - wgpu ends the program at an error that no error scope takes. Here the log names the
 //!   error (with the label of the object) and the program goes on: the draw or the pass that
 //!   has the error does nothing.
-//! - A lost device (a reset of the driver) ends all drawing. The log says so, and with a
-//!   window a message box tells the player.
+//! - A lost device (a reset of the driver) ends all drawing. The log says so, and the live
+//!   loop tells the game process (`live.rs`), whose plugin saves the game and shows the box.
 //! - `submit` and `frame_group` count the submits to the queue and the bind groups that are
 //!   made for one frame, with their CPU time, for the marks of a scenario.
 //! - `memory_lines` reports the GPU memory that wgpu's allocator holds, by the kind of object
@@ -28,9 +28,8 @@ static GROUP_NANOS: AtomicU64 = AtomicU64::new(0);
 /// The errors that the log shows in full. After them, one line for each 1000.
 const ERRORS_SHOWN: u64 = 20;
 
-/// Sets the handlers of the errors and of the loss of `device`. `window`: the program draws
-/// into a window, and a lost device gets a message box.
-pub fn watch(device: &wgpu::Device, adapter: &wgpu::AdapterInfo, window: bool) {
+/// Sets the handlers of the errors and of the loss of `device`.
+pub fn watch(device: &wgpu::Device, adapter: &wgpu::AdapterInfo) {
     let name = format!("{} ({:?}, driver {} {})", adapter.name, adapter.backend, adapter.driver, adapter.driver_info);
     device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
         let count = ERRORS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -56,9 +55,6 @@ pub fn watch(device: &wgpu::Device, adapter: &wgpu::AdapterInfo, window: bool) {
         }
         LOST.store(true, Ordering::Relaxed);
         println!("gpu: the device is lost ({reason:?}): {message}");
-        if window {
-            std::thread::spawn(lost_message);
-        }
     });
 }
 
@@ -222,14 +218,6 @@ pub fn work() -> [u64; 4] {
     ]
 }
 
-fn lost_message() {
-    message_box(
-        "The graphics device was lost: the driver was reset, or it stopped.\n\n\
-         The wgpu renderer of MGE XE cannot draw any more: close the game with Alt+F4.\n\n\
-         The log of the renderer (nirender-host.log in the folder of the game) has the details.",
-    );
-}
-
 /// The window that owns the boxes of this program: the game's window in the live mode, so
 /// that a box stays above it (an owned window is above its owner; the owner saw the box come
 /// to the front in run 2b of records entry 192); 0 for a replay and for the program on its
@@ -306,6 +294,40 @@ pub fn message_box(text: &str) {
         println!("box: {line}");
     }
 }
+
+/// Ends this program on a refusal with the exit `code` (10 to 29: the stream, the extension,
+/// the GPU) and the box `text`; the caller logged its reason lines. A refusal is an exit in
+/// progress, not a stall (the failure-path design, section 6.0), so in this order: the
+/// watchdog is disarmed, the exit is announced to the plugin (`stream_format::RING_ENDING`),
+/// the box waits for the player, the game's window gets WM_CLOSE (the close rule of
+/// section 5; without the game's window, a replay, only the box), and the program ends with
+/// the code. Public for the extension's own refusals.
+pub fn refuse(code: u32, text: &str) -> ! {
+    crate::watchdog::disarm();
+    crate::live::announce_exit(code);
+    println!("refusal: the exit code {code} is announced; the box, then the end");
+    message_box(text);
+    let owner = OWNER_WINDOW.load(Ordering::Relaxed);
+    if owner != 0 {
+        close_window(owner);
+    }
+    exit_now(code)
+}
+
+#[cfg(windows)]
+fn close_window(window: isize) {
+    #[link(name = "user32")]
+    extern "system" {
+        fn PostMessageW(window: isize, message: u32, wparam: usize, lparam: isize) -> i32;
+    }
+    const WM_CLOSE: u32 = 0x10;
+    println!("box: the game's window gets WM_CLOSE");
+    // SAFETY: PostMessageW takes any window handle; a window that is gone fails the call.
+    unsafe { PostMessageW(window, WM_CLOSE, 0, 0) };
+}
+
+#[cfg(not(windows))]
+fn close_window(_window: isize) {}
 
 /// Ends this program at once with `code`, for a refusal: TerminateProcess, not the orderly
 /// exit, so that no thread of the program (the loader, the device) can hold the end. The

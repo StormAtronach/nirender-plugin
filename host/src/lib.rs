@@ -45,7 +45,8 @@ use picture::*;
 mod cli;
 use cli::*;
 mod crash;
-pub use crash::rotate_log;
+pub use crash::{hold_next_dump, rotate_log};
+mod watchdog;
 mod tag;
 // The one home of the stream format number, shared with the plugin crate (see the file).
 // Public: the program that has this crate as a part reads the exit codes.
@@ -909,6 +910,17 @@ struct Player {
     size: (u32, u32),
     /// The size of the picture of the frame.
     frame_size: (u32, u32),
+}
+
+/// Parses and validates a WGSL source of this program as the device does when it makes the
+/// module (naga, with every capability): a test of a shader fails with naga's message.
+#[cfg(test)]
+pub(crate) fn assert_wgsl(label: &str, source: &str) {
+    use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+    let module = wgpu::naga::front::wgsl::parse_str(source).unwrap_or_else(|error| panic!("{label}: {}", error.emit_to_string(source)));
+    if let Err(error) = Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&module) {
+        panic!("{label}: {}", error.emit_to_string(source));
+    }
 }
 
 #[cfg(test)]

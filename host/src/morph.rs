@@ -279,3 +279,13 @@ impl Morphs {
         self.weights.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_morph_shader_is_valid_wgsl() {
+        crate::assert_wgsl("morphs", &SHADER);
+    }
+}

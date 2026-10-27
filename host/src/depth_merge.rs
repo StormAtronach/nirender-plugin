@@ -118,3 +118,13 @@ impl DepthMerge {
         pass.draw(0..3, 0..1);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_depth_merge_shader_is_valid_wgsl() {
+        crate::assert_wgsl("first-person depth merge", &format!("{}{}", crate::depth::wgsl(), SHADER));
+    }
+}

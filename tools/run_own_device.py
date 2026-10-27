@@ -68,6 +68,43 @@ def plugin_dll_of(argument, environment, default):
     return default, "the release build of this repository"
 
 
+# The variables of the run itself, and the option or the place that sets each. `--env` does
+# not take them: the runner is an allowed command (decision D6), so the DLL and the programs
+# that a run loads come only from its own options, never from a free value.
+RUNNER_VARIABLES = {
+    "NIRENDER_PLUGIN_DLL": "--plugin-dll",
+    "NIRENDER_HOST_EXE": "--mge-build (its numidium.exe), or the host build of this repository without it",
+    "NIRENDER_HOST_LOG": "the runner (host.txt in the run folder)",
+    "NIRENDER_BACKEND": "--backend",
+    "NIRENDER_HOST_ARGS": "--start-frames and --window-shots",
+}
+
+
+def env_of(entries):
+    """The variables of `--env NAME=VALUE`, in their order: a later value of a name wins. The
+    value is all after the first `=`. A variable of the run itself is refused, with the option
+    that sets it."""
+    variables = {}
+    for entry in entries:
+        name, equals, value = entry.partition("=")
+        if not equals or not name:
+            raise SystemExit("--env takes NAME=VALUE, not %r" % entry)
+        if name in RUNNER_VARIABLES:
+            raise SystemExit("--env cannot set %s: the run sets it through %s" % (name, RUNNER_VARIABLES[name]))
+        variables[name] = value
+    return variables
+
+
+def apply_env(environment, entries):
+    """Puts the `--env` variables into `environment` (the runner's, which the game gets), then
+    the default box time: a message box of the plugin, the helper or MGE XE closes itself after
+    5 s, so that a run never waits for a click, and the box's text is in the log (the
+    failure-path design, 5.1). A box time from `--env` or from the runner's environment is
+    kept: a test of a box that stays up longer than a limit."""
+    environment.update(env_of(entries))
+    environment.setdefault("MGE_XE_BOX_SECONDS", "5")
+
+
 def self_test():
     """The tests of the argument handling: no game, no build."""
     build = os.path.join("target", "akulakhan.dll")
@@ -75,6 +112,41 @@ def self_test():
     assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
     assert plugin_dll_of(None, {}, build) == (build, "the release build of this repository")
     assert plugin_dll_of("", {}, build)[0] == build
+    assert env_of([]) == {}
+    assert env_of(["MGE_XE_BOX_SECONDS=90", "A=1=2", "B=", "A=3"]) == {"MGE_XE_BOX_SECONDS": "90", "A": "3", "B": ""}
+    for bad in ["NOVALUE", "=1"] + ["%s=E:/x" % name for name in RUNNER_VARIABLES]:
+        try:
+            env_of([bad])
+        except SystemExit as refusal:
+            name = bad.partition("=")[0]
+            if name in RUNNER_VARIABLES:
+                assert RUNNER_VARIABLES[name] in str(refusal), refusal
+        else:
+            raise AssertionError("--env %s was taken" % bad)
+    # The two names that load code: refused one by one, also after a good entry.
+    for name in ("NIRENDER_PLUGIN_DLL", "NIRENDER_HOST_EXE"):
+        environment = {}
+        try:
+            apply_env(environment, ["MGE_XE_BOX_SECONDS=90", "%s=E:/other.bin" % name])
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("--env %s was taken" % name)
+        assert name not in environment
+    # The box time through the function that main uses: --env wins over the default, a value
+    # of the runner's environment is kept, and without either the default is 5 s.
+    environment = {}
+    apply_env(environment, ["MGE_XE_BOX_SECONDS=90"])
+    assert environment["MGE_XE_BOX_SECONDS"] == "90"
+    environment = {"MGE_XE_BOX_SECONDS": "20"}
+    apply_env(environment, [])
+    assert environment["MGE_XE_BOX_SECONDS"] == "20"
+    environment = {"MGE_XE_BOX_SECONDS": "20"}
+    apply_env(environment, ["MGE_XE_BOX_SECONDS=90"])
+    assert environment["MGE_XE_BOX_SECONDS"] == "90"
+    environment = {}
+    apply_env(environment, ["MGE_XE_WATCHDOG=1"])
+    assert environment == {"MGE_XE_WATCHDOG": "1", "MGE_XE_BOX_SECONDS": "5"}
     import io
 
     # The plugin's lines of a run: from mgeXE.log with the export, else from nirender.log.
@@ -173,11 +245,17 @@ def main():
                     "a test texture or mesh; the run's mod wins over the instance's mods")
     ap.add_argument("--mwse-dll", help="another MWSE.dll for this run only (as --add-file <it>=Root/MWSE.dll): an A/B of an MWSE build "
                     "without a change to the instance")
+    ap.add_argument("--env", action="append", default=[], metavar="NAME=VALUE",
+                    help="a variable for the game's process (the plugin, the helper and MGE XE read it), for this run only; "
+                    "again for more. It wins over the runner's default box time (MGE_XE_BOX_SECONDS=5). The variables "
+                    "of the run itself are refused, with the option that sets each: " + ", ".join(sorted(RUNNER_VARIABLES)))
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
     if args.self_test:
         self_test()
         return 0
+    # The game is started from this process: its variables go into the game's environment.
+    apply_env(os.environ, args.env)
     if args.log:
         # The runner's own lines go to the console and to the file; the file is the one a
         # shell redirect wrote before.
@@ -213,9 +291,6 @@ def main():
         os.environ["NIRENDER_HOST_EXE"] = HOST
     os.environ["NIRENDER_HOST_LOG"] = run.path("host.txt")
     os.environ["NIRENDER_BACKEND"] = args.backend
-    # A message box of the plugin, the helper or MGE XE closes itself after 5 s: a run never
-    # waits for a click, and the box's text is in the log (the failure-path design, 5.1).
-    os.environ["MGE_XE_BOX_SECONDS"] = "5"
     # Pictures of the start of the game, before the scenario can ask for one.
     # Pictures of the start of the game, before the scenario can ask for one, and of a frame of
     # a film (the 120th: a film starts from black): a film holds the main loop, so the scenario
