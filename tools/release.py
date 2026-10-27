@@ -3,12 +3,16 @@
     python tools/release.py --notes <file.md> [--max-perf] [--mge DIR] [--repo OWNER/NAME]
         [--keep-old] [--no-build] [--dry-run] [--add SOURCE=PATH ...] [--add-dir SOURCE=PATH ...]
         [--source NAME=URL@COMMIT ...]
+    python -I tools/release.py --self-test    # the tests of the pure parts, no git, no cargo
 
 The steps:
 
 1. The version is the one of Cargo.toml of this repository. A release with that version
    must not be there. The work of the two repositories must be committed and pushed: the
-   tag of the release goes on the head of the default branch on GitHub.
+   tag of the release goes on the head of the default branch on GitHub. An untracked file
+   under a path that the build reads or the archive takes (the source folders, the
+   manifests, the assets: `PLUGIN_SOURCES`, `MGE_SOURCES`) stops the release with its name,
+   since it would go into the binaries without being in the tag.
 2. `tools/checks.py all` runs the content checks of both repositories; `tools/docs.py`
    checks the doc comments of the plugin, the host crate and the helper (no broken link).
    `tools/clippy_baseline.py --check` stops the release when a Clippy lint has more warnings
@@ -80,10 +84,28 @@ def stop(text, dry_run):
     print("dry run, a release would stop here: " + text)
 
 
-def clean_and_pushed(repo, dry_run):
-    """Stops when the repository has work that is not committed or not pushed."""
-    if run(["git", "-C", repo, "status", "--porcelain", "--untracked-files=no"], capture=True).strip():
+# The paths of each repository that the build reads or the archive takes: an untracked file
+# under one of them would go into the binaries or the archive without being in the tag.
+PLUGIN_SOURCES = ("src/", "host/", "d3d8/", "mod/", "contract/", ".cargo/", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "LICENSE")
+MGE_SOURCES = ("d3d8/", "dinput8/", "mgeHost64/", "mge-config/", "MGEXEgui/", "distantland/", "xtask/", "assets/", ".cargo/", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "license.txt")
+
+
+def untracked_in_sources(status_lines, sources):
+    """The untracked files of a `git status --porcelain --untracked-files=all` output that are
+    under one of the source paths (a folder ends with a slash; a file is named whole)."""
+    untracked = [line[3:] for line in status_lines if line.startswith("?? ")]
+    return [path for path in untracked if any(path.startswith(source) if source.endswith("/") else path == source for source in sources)]
+
+
+def clean_and_pushed(repo, sources, dry_run):
+    """Stops when the repository has work that is not committed or not pushed, or an
+    untracked file under a path the build or the archive takes."""
+    status = run(["git", "-C", repo, "status", "--porcelain", "--untracked-files=all"], capture=True).splitlines()
+    if any(not line.startswith("?? ") for line in status):
         stop("%s has changes that are not committed" % repo, dry_run)
+    untracked = untracked_in_sources(status, sources)
+    if untracked:
+        stop("%s has untracked files under the paths the build takes; add them or move them away: %s" % (repo, ", ".join(untracked)), dry_run)
     run(["git", "-C", repo, "fetch", "--quiet"])
     ahead = run(["git", "-C", repo, "rev-list", "--count", "@{upstream}..HEAD"], capture=True).strip()
     if ahead != "0":
@@ -156,9 +178,20 @@ def license_additions(mge, plugin_url, plugin_tag, sources, stage):
     return [(gpl, "COPYING-GPL-2.0.txt"), (plugin_license, "LICENSE-nirender.txt"), (notices_path, "THIRD-PARTY-NOTICES.txt"), (sources_path, "SOURCES.txt")]
 
 
+def self_test():
+    """The tests of the pure parts: no git, no cargo, no GitHub."""
+    status = ["?? src/new.rs", "?? notes.txt", "?? host/src/lib2.rs", "?? Cargo.toml.bak", "?? Cargo.lock", " M src/lib.rs", "?? results/run/x.png"]
+    assert untracked_in_sources(status, PLUGIN_SOURCES) == ["src/new.rs", "host/src/lib2.rs", "Cargo.lock"], untracked_in_sources(status, PLUGIN_SOURCES)
+    assert untracked_in_sources(["?? docs/a.md", " M src/lib.rs"], MGE_SOURCES) == []
+    # A file named whole matches itself only, not a longer name that starts with it.
+    assert untracked_in_sources(["?? Cargo.toml.orig"], PLUGIN_SOURCES) == []
+    print("release self-test: ok")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--notes", required=True, help="the text of the release, a Markdown file")
+    ap.add_argument("--notes", help="the text of the release, a Markdown file")
+    ap.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no git, no cargo, no GitHub")
     ap.add_argument("--max-perf", action="store_true", help="the slow build of a final release")
     ap.add_argument("--mge", default=MGE, help="the MGE XE repository")
     ap.add_argument("--repo", default="StormAtronach/nirender-plugin", help="the GitHub repository of the releases")
@@ -169,6 +202,11 @@ def main():
     ap.add_argument("--source", action="append", default=[], metavar="NAME=URL@COMMIT", help="the source of a part added with --add or --add-dir, for SOURCES.txt")
     ap.add_argument("--dry-run", action="store_true", help="pack the archive, publish and delete nothing")
     args = ap.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
+    if not args.notes:
+        ap.error("--notes is required")
 
     assert os.path.isfile(args.notes), args.notes
     sources = []
@@ -207,8 +245,8 @@ def main():
     tags = [release["tagName"] for release in releases]
     if tag in tags:
         stop("the release %s is there already: set a new version in Cargo.toml" % tag, args.dry_run)
-    for repo in (PLUGIN, args.mge):
-        clean_and_pushed(repo, args.dry_run)
+    for repo, sources in ((PLUGIN, PLUGIN_SOURCES), (args.mge, MGE_SOURCES)):
+        clean_and_pushed(repo, sources, args.dry_run)
 
     # The license texts, the notices of the crates and the sources of the parts: before the
     # build, so that a stop here costs no build.
