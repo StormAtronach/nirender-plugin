@@ -10,8 +10,8 @@
 //!
 //! What the proof does not do: two `get` calls with one proof would give two `&mut` to one
 //! table. The rule is one open at a time (no call back into the module while a table is
-//! open). `get` gives a guard ([`crate::checked::Open`]) that finds a second open while the
-//! first is live.
+//! open). `get` gives a guard ([`crate::checked::Open`]); a second open while the first is
+//! live panics.
 
 use crate::checked::{Checked, Open};
 use core::marker::PhantomData;

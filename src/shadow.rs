@@ -294,6 +294,19 @@ pub fn on_main_thread() -> bool {
     current_thread_id() == MAIN_THREAD.load(Ordering::Relaxed)
 }
 
+/// For a test: the calling thread becomes the main thread; gives the id of the main thread
+/// before, which the test puts back with [`restore_main_thread`].
+#[cfg(test)]
+pub fn main_thread_for_test() -> u32 {
+    MAIN_THREAD.swap(current_thread_id(), Ordering::Relaxed)
+}
+
+/// For a test: puts back the main thread that [`main_thread_for_test`] gave.
+#[cfg(test)]
+pub fn restore_main_thread(id: u32) {
+    MAIN_THREAD.store(id, Ordering::Relaxed);
+}
+
 /// The run of a comparison that the calling thread is in. A comparison runs on the main
 /// thread only. Other threads are never in one.
 pub fn leg() -> Leg {

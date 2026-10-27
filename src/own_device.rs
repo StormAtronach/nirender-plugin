@@ -642,8 +642,12 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
             OK
         }
         15 => call(CALL_PRESENT, a),
-        // GetBackBuffer(index, type, address)
-        16 => call(CALL_GET_RENDER_TARGET, &a[2..3]),
+        // GetBackBuffer(index, type, address). The state closes first: the first call makes
+        // the surface, and its size comes from `size`, which opens the state.
+        16 => {
+            drop(s);
+            call(CALL_GET_RENDER_TARGET, &a[2..3])
+        }
         // GetRasterStatus: not in a vertical blank, line 0.
         17 => put(a[0], &[0, 0]),
         18 => {
@@ -680,10 +684,15 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
                 resource_add_reference(target);
                 put(a[0], &[target])
             } else {
+                // As for GetBackBuffer: the state closes before the surface can be made.
+                drop(s);
                 call(CALL_GET_RENDER_TARGET, a)
             }
         }
-        33 => call(CALL_GET_DEPTH_BUFFER, a),
+        33 => {
+            drop(s);
+            call(CALL_GET_DEPTH_BUFFER, a)
+        }
         34 => call(CALL_BEGIN_SCENE, a),
         35 => call(CALL_END_SCENE, a),
         36 => call(CALL_CLEAR, a),

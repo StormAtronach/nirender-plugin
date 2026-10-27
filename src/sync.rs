@@ -94,8 +94,8 @@ impl Drop for DeviceLock {
 
 /// State that only a holder of the device lock may touch, from any thread: the capture, the
 /// own device, the own host. `get` needs the guard. The rule, as for
-/// `main_thread::MainCell`: one open at a time; the guard of `get`
-/// ([`crate::checked::Open`]) finds a second open while the first is live. The section is
+/// `main_thread::MainCell`: one open at a time; a second open while the guard of `get`
+/// ([`crate::checked::Open`]) lives panics. The section is
 /// reentrant, so a function that cannot take its caller's guard takes the lock again.
 pub struct LockCell<T>(crate::checked::Checked<T>);
 

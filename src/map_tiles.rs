@@ -345,8 +345,10 @@ pub unsafe fn poll() {
         return;
     }
     if !crate::capture::recording() {
-        // The stream ended: no pixels come any more.
-        for open in core::mem::take(&mut *OPEN.get(&t)) {
+        // The stream ended: no pixels come any more. The guard of `OPEN` ends with the take,
+        // before `complete` runs the engine's release.
+        let ended = core::mem::take(&mut *OPEN.get(&t));
+        for open in ended {
             complete(open, None);
         }
     }
@@ -381,7 +383,9 @@ unsafe fn complete_all(t: &MainThread, before: &str) {
         return;
     }
     let start = crate::capture::ticks();
-    for open in core::mem::take(&mut *OPEN.get(t)) {
+    // The guard of `OPEN` ends with the take, before the waits and the engine's release.
+    let waiting = core::mem::take(&mut *OPEN.get(t));
+    for open in waiting {
         let pixels = crate::capture::wait_tile(open.ticket);
         WAITED.fetch_add(1, Ordering::Relaxed);
         complete(open, pixels);
