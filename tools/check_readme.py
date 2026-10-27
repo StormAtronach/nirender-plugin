@@ -13,7 +13,10 @@
 4. Every script `tools/*.py` has a row in tools/README.md (its name in back-quotes).
 
 With `--mge`: checks 1 and 2 for MGE XE's code (`mgeHost64/src`, `d3d8/src` of the
-MGE-XE-G7-render-link worktree next to this repo) against its RENDERER.md.
+MGE-XE-G7-render-link worktree next to this repo) against its RENDERER.md. A switch that the C++
+of `d3d8/cpp` names counts as read for check 2 (a RENDERER.md row of a switch that d3d8.dll
+reads is not "named but not read"); check 1 does not yet ask a row for each C++ read: the trees
+of 2026-10-27 lack the rows of MGE_XE_STALL_LOG and NIRENDER_HOST_EXE.
 
 The exit code is 0 when all checks pass.
 """
@@ -40,22 +43,30 @@ def code_files(repo, folders):
     for folder in folders:
         for root, _, names in os.walk(os.path.join(repo, folder)):
             for name in names:
-                if name.endswith((".rs", ".py", ".lua")):
+                if name.endswith((".rs", ".py", ".lua", ".cpp", ".h")):
                     yield os.path.join(root, name)
 
 
-def switches(repo, folders, document):
-    """Checks 1 and 2: the problems, and the switches read."""
-    text_of_document = open(document, encoding="utf-8").read()
-    documented = set(NAME.findall(text_of_document))
+def reads_in(repo, folders):
+    """The switches that the code of `folders` names in quotes, with the first file of each."""
     read = {}
     for path in code_files(repo, folders):
         text = open(path, encoding="utf-8", errors="replace").read()
         for name in READS.findall(text):
             read.setdefault(name, os.path.relpath(path, repo).replace("\\", "/"))
+    return read
+
+
+def switches(repo, folders, document, also_read=()):
+    """Checks 1 and 2: the problems, and the switches read. The code of `also_read` counts as
+    read for check 2 only."""
+    text_of_document = open(document, encoding="utf-8").read()
+    documented = set(NAME.findall(text_of_document))
+    read = reads_in(repo, folders)
+    known = set(read) | set(reads_in(repo, also_read))
     doc = os.path.basename(document)
     problems = [f"{name} is read in {where} and not in {doc}" for name, where in sorted(read.items()) if name not in documented]
-    problems += [f"{doc} names `{name}`, which no code reads" for name in sorted(set(NAMED.findall(text_of_document))) if name not in read]
+    problems += [f"{doc} names `{name}`, which no code reads" for name in sorted(set(NAMED.findall(text_of_document))) if name not in known]
     return problems, read
 
 
@@ -64,7 +75,7 @@ def main():
         # `--mge-dir DIR`: another MGE XE tree than the render-link sibling (a worktree's hook).
         arguments = sys.argv[1:]
         mge = arguments[arguments.index("--mge-dir") + 1] if "--mge-dir" in arguments else MGE
-        problems, read = switches(mge, ("mgeHost64/src", "d3d8/src"), os.path.join(mge, "RENDERER.md"))
+        problems, read = switches(mge, ("mgeHost64/src", "d3d8/src"), os.path.join(mge, "RENDERER.md"), also_read=("d3d8/cpp",))
         for problem in problems:
             print(problem)
         print(f"{len(read)} switches read in MGE XE's code, {len(problems)} problems")
