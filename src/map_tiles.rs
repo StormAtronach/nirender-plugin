@@ -113,6 +113,11 @@ static MOST_OPEN: AtomicUsize = AtomicUsize::new(0);
 
 /// Claims MWSE's four overrides, all or none. The plugin calls this when it is the host of the
 /// render link. Without the deferred paint the world map would get the zeros of an open tile.
+///
+/// # Safety
+///
+/// No condition of its own: `INSTALLED` (a `sync::InstallState`) lets one caller install at a
+/// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
     if !INSTALLED.begin() {
         return;

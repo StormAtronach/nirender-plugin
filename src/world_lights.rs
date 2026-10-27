@@ -79,7 +79,8 @@ fn with_set<R>(f: impl FnOnce(&mut WorldSet) -> R) -> Option<R> {
 
 /// Listens to MWSE's two events. The removal first: without it a light of an unloaded cell
 /// would stay in the set. A refusal leaves the plugin without the lights of the world: the
-/// helper's world mode then has no lights.
+/// helper's world mode then has no lights. A refused placement ends the removal's
+/// subscription too, so that a later try subscribes it once.
 ///
 /// # Safety
 ///

@@ -71,6 +71,11 @@ static WAITED: AtomicI64 = AtomicI64::new(0);
 
 /// Listens to MWSE's start of a frame. A refusal leaves the game without the pacing: its wait
 /// at Present stays.
+///
+/// # Safety
+///
+/// No condition of its own: `INSTALLED` (a `sync::InstallState`) lets one caller install at a
+/// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
     if !INSTALLED.begin() {
         return;

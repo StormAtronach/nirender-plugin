@@ -93,6 +93,11 @@ fn check_on() -> bool {
 /// Claims MWSE's four overrides (the render of the fog, a blob of it, the lock and the unlock
 /// of a render target; MWSE's own fog cache locks through them too). The plugin calls this
 /// when it is the host of the render link.
+///
+/// # Safety
+///
+/// No condition of its own: `INSTALLED` (a `sync::InstallState`) lets one caller install at a
+/// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
     if !INSTALLED.begin() {
         return;
