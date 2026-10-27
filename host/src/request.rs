@@ -402,4 +402,9 @@ mod tests {
         assert!(source.contains("return draw_fog_color();"), "the record read is not sent through the shader's function");
         assert!(source.find("fn extension_shade").unwrap() > source.find("fn view_distance").unwrap_or(0));
     }
+
+    #[test]
+    fn the_world_shader_is_valid_wgsl() {
+        crate::assert_wgsl("shader.wgsl", &world_shader_source(&crate::extension::extension_shaders(None)));
+    }
 }
