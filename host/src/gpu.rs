@@ -228,9 +228,10 @@ fn lost_message() {
 }
 
 /// Shows `text` to the player in a box with the caption "MGE XE", and waits until it is
-/// closed. For what ends the drawing: a lost device, a stream of another build.
+/// closed. For what ends the drawing: a lost device, a stream of another build. Public for
+/// the extension's own refusals.
 #[cfg(windows)]
-pub(crate) fn message_box(text: &str) {
+pub fn message_box(text: &str) {
     #[link(name = "user32")]
     extern "system" {
         fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
@@ -246,4 +247,4 @@ pub(crate) fn message_box(text: &str) {
 }
 
 #[cfg(not(windows))]
-pub(crate) fn message_box(_text: &str) {}
+pub fn message_box(_text: &str) {}
