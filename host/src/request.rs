@@ -357,7 +357,7 @@ pub(crate) fn refuse_live(refusals: &[Refusal]) {
     }
     let why: Vec<String> = refusals.iter().map(|refusal| format!("{} ({}) {}.", refusal.adapter.as_deref().unwrap_or("No adapter"), backend_name(refusal.backend), refusal.reason)).collect();
     let text = format!(
-        "The wgpu renderer of MGE XE cannot use this graphics device.\n{}\nQuit the game; set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\nnirender-host.log in the folder of the game has the details.",
+        "The wgpu renderer of MGE XE cannot use this graphics device.\n{}\nClose this box: the game closes. Set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\nnirender-host.log in the folder of the game has the details.",
         why.join("\n")
     );
     gpu::message_box(&text);
