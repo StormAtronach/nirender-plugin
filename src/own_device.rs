@@ -57,10 +57,8 @@ extern "system" {
     fn GetExitCodeProcess(process: isize, code: *mut u32) -> i32;
 }
 
-/// The process of the host program that `start_stream` started, or 0, and the name of its
-/// file.
+/// The process of the host program that `start_stream` started, or 0.
 static HOST_PROCESS: AtomicIsize = AtomicIsize::new(0);
-static HOST_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// The window of the game that the device draws into, from the start of the stream, or 0:
 /// a stop box closes it when the box closes (`failure.rs`).
 static GAME_WINDOW: AtomicUsize = AtomicUsize::new(0);
@@ -108,6 +106,10 @@ pub unsafe fn check_host() -> bool {
 pub unsafe fn end_host(code: u32) {
     let process = HOST_PROCESS.load(Ordering::Relaxed);
     if process != 0 && TerminateProcess(process, code) != 0 {
+        // TerminateProcess returns before the process has ended. The wait lets the check of
+        // the host at this frame end find the exit code before the stream stops
+        // (`capture::frame_end`): after the stop no frame end checks again.
+        WaitForSingleObject(process, 2000);
         crate::log!("own device: the host program is ended with the exit code {code}");
     }
 }
@@ -431,12 +433,24 @@ unsafe fn start_stream(s: &State) {
     crate::own_host::activate();
     GAME_WINDOW.store(device_window(s) as usize, Ordering::Relaxed);
     let name = format!("nirender-{}", GetCurrentProcessId());
-    let megabytes = std::env::var("NIRENDER_RING_MB").ok().and_then(|text| text.parse().ok()).unwrap_or(64);
-    if let Err(problem) = crate::capture::start_direct(&name, megabytes, s.parameters[0], s.parameters[1], device_window(s)) {
+    // 128 MB: a record must fit the ring whole, and the largest level of a texture of a
+    // modded install is 64 MiB (4096 x 4096 ARGB, or 8192 x 8192 DXT5), which a 64 MB ring
+    // misses by the record's head. A level over the ring is dropped and counted.
+    let megabytes = crate::switches::number_from_to("NIRENDER_RING_MB", 128, 1, 512);
+    // A ring that the system cannot give (its commit charge) is tried once at 64 MB, the
+    // size of before; a failed `start_direct` has started nothing.
+    let started = crate::capture::start_direct(&name, megabytes, s.parameters[0], s.parameters[1], device_window(s)).or_else(|problem| {
+        if megabytes <= 64 {
+            return Err(problem);
+        }
+        crate::log!("own device: no ring of {megabytes} MB ({problem}); a ring of 64 MB is tried, and a texture level over it is dropped");
+        crate::capture::start_direct(&name, 64, s.parameters[0], s.parameters[1], device_window(s))
+    });
+    if let Err(problem) = started {
         crate::log!("own device: no stream: {problem}");
         return;
     }
-    let program = std::env::var("NIRENDER_HOST_EXE").ok().filter(|path| std::path::Path::new(path).is_file()).or_else(|| {
+    let program = crate::switches::text("NIRENDER_HOST_EXE").filter(|path| std::path::Path::new(path).is_file()).or_else(|| {
         let mut module = 0usize;
         let mut path = [0u8; 600];
         // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
@@ -450,16 +464,16 @@ unsafe fn start_stream(s: &State) {
         return;
     };
     let mut command = format!("\"{program}\" --live {name} --embed");
-    if let Ok(backend) = std::env::var("NIRENDER_BACKEND") {
+    if let Some(backend) = crate::switches::choice("NIRENDER_BACKEND", &["vulkan", "dx12"]) {
         command.push_str(&format!(" --backend {backend}"));
     }
     // More arguments for the host program, for a test.
-    if let Ok(more) = std::env::var("NIRENDER_HOST_ARGS") {
+    if let Some(more) = crate::switches::text("NIRENDER_HOST_ARGS") {
         command.push_str(&format!(" {more}"));
     }
     // The text of the host program goes into a file: the one that NIRENDER_HOST_LOG names, or
     // nirender-host.log in the folder of the game.
-    let log = std::env::var("NIRENDER_HOST_LOG").unwrap_or_else(|_| "nirender-host.log".into());
+    let log = crate::switches::text("NIRENDER_HOST_LOG").unwrap_or_else(|| "nirender-host.log".into());
     let log = std::path::absolute(&log).map(|path| path.to_string_lossy().into_owned()).unwrap_or(log);
     command.push_str(&format!(" --log \"{log}\""));
     let mut line = command.clone().into_bytes();
@@ -483,8 +497,6 @@ unsafe fn start_stream(s: &State) {
     if started != 0 {
         // The process stays open: `check_host` asks it whether it has ended.
         HOST_PROCESS.store(information[0] as isize, Ordering::Relaxed);
-        let file = std::path::Path::new(&program).file_name().map(|name| name.to_string_lossy().into_owned());
-        let _ = HOST_NAME.set(file.unwrap_or(program.clone()));
         CloseHandle(information[1] as isize);
     }
     crate::log!("own device: host program {}: {command}", if started != 0 { "started" } else { "NOT started" });
@@ -499,6 +511,13 @@ pub unsafe extern "C" fn nirender_stream_extension(id: u32, data: *const u8, len
     if !data.is_null() && length != 0 && length < (1 << 20) {
         crate::capture::extension(id, core::slice::from_raw_parts(data, length as usize));
     }
+}
+
+/// The build id of this plugin, zero-ended, for the log of the `d3d8.dll` of MGE XE at the
+/// plugin's load. A plugin without this export is from before the handshake.
+#[no_mangle]
+pub extern "C" fn nirender_build_id() -> *const u8 {
+    crate::BUILD_ID_C.as_ptr()
 }
 
 /// The `Direct3DCreate8` of the plugin. The `d3d8.dll` of this repository calls it.

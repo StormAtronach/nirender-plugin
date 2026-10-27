@@ -17,10 +17,13 @@ impl Player {
     /// Does one record. Returns true for the record that ends a frame.
     /// Engine-rules R19, R22 (the skill wgpu-renderer-dev).
     pub(crate) fn feed(&mut self, tag: u32, data: &[u8]) -> bool {
-        // A record shorter than its fixed part is not read past its end: it is skipped and
-        // counted. The reads below of a record's variable part have their own checks.
-        if data.len() < tag::least_length(tag) {
-            self.renderer.counts.short_records += 1;
+        // A record shorter than its tag needs (the fixed part, and the variable parts that
+        // its counts name) is refused: not read past its end, counted, the first of each tag
+        // in the log. The reads below stay within `needed`; the checks of the readers on
+        // their own counts stay as a second line.
+        let needed = tag::needed(tag, data);
+        if data.len() < needed {
+            self.refuse(tag, data.len(), needed);
             return false;
         }
         let move_check = self.move_check.take();
@@ -333,9 +336,29 @@ impl Player {
                 },
                 _ => {}
             },
+            _ if !tag::is_known(tag) => {
+                let counts = &mut self.renderer.counts;
+                if counts.unknown_records == 0 {
+                    counts.unknown_tag = tag;
+                    println!("record of the tag {tag}, which this build does not know: skipped (the plugin is another build)");
+                }
+                counts.unknown_records += 1;
+            }
             _ => {}
         }
         false
+    }
+
+    /// Refuses a record shorter than its tag needs: counted, and the first of each tag in the
+    /// log with the tag, the length and the length needed.
+    fn refuse(&mut self, tag: u32, length: usize, needed: usize) {
+        let counts = &mut self.renderer.counts;
+        counts.short_records += 1;
+        let bit = 1u64 << tag.min(63);
+        if counts.refused_tags & bit == 0 {
+            counts.refused_tags |= bit;
+            println!("record of the tag {tag} ({}): {length} bytes, {needed} needed: refused (the first such record of this tag; the count is in the report)", tag::name(tag));
+        }
     }
 
     /// A draw with its vertices in the record. This program does the vertex format of the

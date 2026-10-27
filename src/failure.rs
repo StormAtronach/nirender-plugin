@@ -199,7 +199,8 @@ fn show(text: &str) {
         crate::log!("box: {line}");
     }
     // 0 to an hour, as the other boxes take the switch (`own_device::message_box`).
-    let seconds = std::env::var("MGE_XE_BOX_SECONDS").ok().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0).min(3600);
+    // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
+    let seconds = crate::switches::parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |value| value.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600));
     let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let (text, caption) = (wide(text), wide(CAPTION));
     std::thread::spawn(move || {

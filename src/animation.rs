@@ -64,7 +64,7 @@ pub fn policy() -> Policy {
             _ => Policy::ViewShadows,
         };
     }
-    let from_env = std::env::var("NIRENDER_ANIMATION").ok().and_then(|v| policy_of(&v)).unwrap_or(Policy::ViewShadows);
+    let from_env = crate::switches::parsed("NIRENDER_ANIMATION", "the name of a policy", policy_of).unwrap_or(Policy::ViewShadows);
     POLICY.store(from_env as u8, Ordering::Relaxed);
     from_env
 }

@@ -46,12 +46,19 @@ mod cli;
 use cli::*;
 mod crash;
 pub use crash::rotate_log;
-#[path = "../../src/stream_format.rs"]
-pub mod stream_format;
 mod watchdog;
 mod tag;
+// The one home of the stream format number, shared with the plugin crate (see the file).
+// Public: the program that has this crate as a part reads the exit codes.
+#[path = "../../src/stream_format.rs"]
+pub mod stream_format;
 mod extension;
 pub use extension::*;
+
+/// The build id of this crate: its name, its version and its commit (`build.rs` puts the
+/// commit into BUILD_COMMIT), for the first line of the log and the message of a refused
+/// stream.
+pub const BUILD_ID: &str = concat!("nirender-host v", env!("CARGO_PKG_VERSION"), " ", env!("BUILD_COMMIT"));
 mod replay;
 pub use replay::*;
 mod data;
@@ -67,13 +74,16 @@ use d3d::{address, attributes, blend_factor, color, compare, decode_dxt, expand_
 pub use d3d::{d3d_compare, d3d_stencil_operation};
 mod lights;
 use lights::{light_buffer, storage_buffer, Clusters, ExtensionLights};
-mod switches;
+pub mod switches;
 use switches::switches;
 mod particle_quads;
 mod engine;
 mod player;
 use engine::{plan, scene};
 mod retained;
+/// For the check of the world shader without a GPU in the helper of MGE XE (`shader_check`
+/// of mgeHost64): the text of an extension as the shader module takes it.
+pub use retained::rewrite_extension_text;
 mod uv_animation;
 mod morph;
 pub mod stamps;

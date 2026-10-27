@@ -86,8 +86,13 @@ The run:
 - `NIRENDER_HOST_LOG=<path>`: the file for the text of the host program; without it,
   `nirender-host.log` in the folder of the game.
 - `NIRENDER_BACKEND=vulkan|dx12`: the backend of the host program.
-- `NIRENDER_RING_MB=<n>`: the size of the ring, default 64.
-- `NIRENDER_PLUGIN_DLL=<path>`: the tools install that DLL for a run (one arm of an A/B).
+- `NIRENDER_RING_MB=<n>`: the size of the ring in MB, 1 to 512, default 128 (a texture
+  level must fit it whole; a 4096 x 4096 ARGB level is 64 MiB); a value outside is named
+  in nirender.log and 128 is taken.
+- `NIRENDER_PLUGIN_DLL=<path>`: the tools install that DLL for a run (one arm of an A/B); the runner's `--plugin-dll <path>` says the same without a variable.
+- `MGE_XE_BOX_SECONDS=<n>`: a message box of the plugin, of the helper or of MGE XE's
+  d3d8.dll closes itself after n seconds, and its text is in that part's log as `box:` lines
+  (always); unset or 0, the box waits for the click. The runner sets 5.
 - `NIRENDER_FOREGROUND=1`: the tools run the game in the foreground; a run is a background
   run without it. For a background run the runner stages a copy of the instance's MWSE.json
   with MWSE's setting `RunInBackground = true` into the run mod; the mod patches nothing.
@@ -197,15 +202,13 @@ MGE-XE-G7 render-link worktree.
   over the setting of the extension.
 - `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the setting
   of the extension: for an A/B of the mouse's lag.
-- `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over
-  `AutoNoVsync`.
+- `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over the vsync
+  setting of the extension (`graphics.vsync` of mgeXE.toml: FIFO with vsync on, else
+  `AutoNoVsync`).
 - `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a child
   window of it: for an A/B of the mouse's lag.
 - `MGE_XE_WATCHDOG=0`: no watchdog of the frame thread in the helper (`host/src/watchdog.rs`):
   for a test of the plugin's own limit of 10 s on a helper that reads no record.
-- `MGE_XE_BOX_SECONDS=<n>`: the message box of the plugin after a failure of the helper
-  (`src/failure.rs`) closes by itself after n seconds: for a test of the close of the game
-  after it.
 - `MGE_XE_CORES=0`: the threads of the helper are left to the scheduler.
 - `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n (at least 256), for the
   test of a full room.

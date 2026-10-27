@@ -543,7 +543,7 @@ static CACHED_READS: LockCell<u32> = LockCell::new(0);
 /// `NIRENDER_READ_CACHE=0` turns the cache of the reads off, for an A/B.
 fn read_cache_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| !std::env::var("NIRENDER_READ_CACHE").is_ok_and(|value| value == "0"))
+    *ON.get_or_init(|| crate::switches::on("NIRENDER_READ_CACHE") != Some(false))
 }
 
 /// Something can draw into `target` (a texture handle, or 0): its read is not kept.

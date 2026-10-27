@@ -156,7 +156,8 @@ pub unsafe fn install() -> Result<String, String> {
         crate::log!("{message}");
         return Err(message);
     }
-    crate::log!("nirender v{}", env!("CARGO_PKG_VERSION"));
+    crate::log!("{}", crate::BUILD_ID);
+    crate::switches::log_set();
     shadow::set_main_thread();
     shadow::calibrate_stamps();
     crate::log!("{}", crate::cores::prefer_performance_cores());
@@ -184,7 +185,7 @@ pub unsafe fn install() -> Result<String, String> {
     // A port left uninstalled to measure its own cost (`NIRENDER_SKIP_PORT=<name>`). Only a
     // port whose function is not the renderer's can be skipped without refusing the
     // renderer.
-    let skipped = std::env::var("NIRENDER_SKIP_PORT").ok();
+    let skipped = crate::switches::text("NIRENDER_SKIP_PORT");
     for port in ports::all() {
         if skipped.as_deref() == Some(port.name) {
             crate::log!("port {} left uninstalled (NIRENDER_SKIP_PORT)", port.name);
@@ -392,12 +393,12 @@ mod tests {
     /// or the files: the patch file is not ours to ship.
     #[test]
     fn every_code_patch_record_in_a_port_is_followed() {
-        let Some(roots) = std::env::var("NIRENDER_MCPATCH").ok().or_else(|| local("mcpatch_root")) else {
+        let Some(roots) = crate::switches::text("NIRENDER_MCPATCH").or_else(|| local("mcpatch_root")) else {
             eprintln!("skipped: no NIRENDER_MCPATCH and no mcpatch_root in local.json");
             return;
         };
         let roots: Vec<String> = roots.split(';').map(str::to_string).collect();
-        let Some(vanilla_path) = std::env::var("NIRENDER_VANILLA_EXE").ok().or_else(|| local("vanilla_exe")) else {
+        let Some(vanilla_path) = crate::switches::text("NIRENDER_VANILLA_EXE").or_else(|| local("vanilla_exe")) else {
             eprintln!("skipped: no NIRENDER_VANILLA_EXE and no vanilla_exe in local.json");
             return;
         };

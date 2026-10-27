@@ -80,7 +80,7 @@ static POLLS: AtomicU32 = AtomicU32::new(0);
 /// opened, so that a save or a purge soon after a cell cross finds open tiles. 0 by default.
 fn hold() -> u32 {
     static HOLD: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *HOLD.get_or_init(|| std::env::var("NIRENDER_MAP_TILES_HOLD").ok().and_then(|value| value.parse().ok()).unwrap_or(0))
+    *HOLD.get_or_init(|| crate::switches::number("NIRENDER_MAP_TILES_HOLD", 0))
 }
 
 static OPEN: MainCell<Vec<Open>> = MainCell::new(Vec::new());
@@ -117,7 +117,7 @@ pub unsafe fn install() {
     if INSTALLED.load(Ordering::Relaxed) {
         return;
     }
-    if std::env::var("NIRENDER_MAP_TILES").is_ok_and(|value| value == "0") {
+    if crate::switches::on("NIRENDER_MAP_TILES") == Some(false) {
         crate::log!("map tiles: NIRENDER_MAP_TILES=0, the engine reads each tile");
         return;
     }
