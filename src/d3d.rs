@@ -1000,6 +1000,16 @@ pub const D3DFMT_DXT2: u32 = 0x3254_5844;
 pub const D3DFMT_DXT3: u32 = 0x3354_5844;
 pub const D3DFMT_DXT4: u32 = 0x3454_5844;
 pub const D3DFMT_DXT5: u32 = 0x3554_5844;
+/// 'BC7 ', MGE XE's FourCC of a BC7 texture (`MGE_D3DFMT_BC7`, d3d8/cpp/mge/bc7format.h): the
+/// blocks of 16 bytes of DXGI_FORMAT_BC7_UNORM and of its sRGB form. MGE XE's DDS reader
+/// patch marks such a texture as pixel format 8 with this tag in `channelMasks[0]`.
+pub const D3DFMT_BC7: u32 = 0x2037_4342;
+
+/// True for the `NiPixelFormat` of a BC7 texture as MGE XE's DDS reader patch marks it: the
+/// format 8 (the 16-byte blocks of DXT5) with [`D3DFMT_BC7`] in its first channel mask.
+pub fn is_bc7(pixel_format: u32, first_channel_mask: u32) -> bool {
+    pixel_format == 8 && first_channel_mask == D3DFMT_BC7
+}
 pub const D3DFMT_YUY2: u32 = 0x3259_5559;
 pub const D3DFMT_UYVY: u32 = 0x5956_5955;
 
@@ -1233,5 +1243,15 @@ mod tests {
         // The fault is off in the unit tests, thus the two values go to the device as they are.
         assert_eq!(fault(), 0);
         assert_eq!(CALLS.with(|calls| calls.borrow().clone()), [[o as u32, 23, 4], [o as u32, 25, 4]]);
+    }
+
+    #[test]
+    fn only_the_dxt5_format_with_the_bc7_tag_is_bc7() {
+        assert!(is_bc7(8, D3DFMT_BC7));
+        // DXT5 without the tag (the reader clears the mask of a compressed format), the tag on
+        // another format, and the FourCC of DXT5 in the mask are not BC7.
+        assert!(!is_bc7(8, 0));
+        assert!(!is_bc7(6, D3DFMT_BC7));
+        assert!(!is_bc7(8, D3DFMT_DXT5));
     }
 }
