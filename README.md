@@ -134,6 +134,9 @@ The A/B:
   `depth:` names the format in use).
 - `MGE_XE_DEPTH_REVERSED=0` keeps the float depth in the plain convention (near 0, far 1), not
   reversed (near 1, far 0): for an A/B of the reversed depth (`host/src/depth.rs`).
+- `MGE_XE_ONE_DEPTH=1` draws the distant land and the game into one depth buffer, with an
+  infinite far plane for every perspective projection of the world view (step 6 of the depth
+  design; only with the reversed float depth). Temporary: it goes when step 6 is accepted.
 - `NIRENDER_CONTROLLERS=0` keeps a shape with a controller on itself or on a property (a
   morpher, a UV, flip, alpha or colour controller) on the engine's path (the rule before).
 - `NIRENDER_SKIN_TABLE=0` keeps the skinned shapes on the engine's display, with the palette
