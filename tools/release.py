@@ -125,9 +125,12 @@ def clean_and_pushed(repo, sources, dry_run):
     if untracked:
         stop("%s has untracked files under the paths the build takes; add them or move them away: %s" % (repo, ", ".join(untracked)), dry_run)
     run(["git", "-C", repo, "fetch", "--quiet"])
-    ahead = run(["git", "-C", repo, "rev-list", "--count", "@{upstream}..HEAD"], capture=True).strip()
-    if ahead != "0":
-        stop("%s has %s commits that are not pushed" % (repo, ahead), dry_run)
+    counted = subprocess.run(["git", "-C", repo, "rev-list", "--count", "@{upstream}..HEAD"], capture_output=True, text=True)
+    if counted.returncode != 0:
+        # A branch without an upstream (a new branch of a worktree) is not pushed either.
+        stop("%s: the branch has no upstream, so its commits are not pushed" % repo, dry_run)
+    elif counted.stdout.strip() != "0":
+        stop("%s has %s commits that are not pushed" % (repo, counted.stdout.strip()), dry_run)
 
 
 def unit_tests(mge):
