@@ -197,8 +197,9 @@ MGE-XE-G7 render-link worktree.
   over the setting of the extension.
 - `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the setting
   of the extension: for an A/B of the mouse's lag.
-- `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over
-  `AutoNoVsync`.
+- `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over the vsync
+  setting of the extension (`graphics.vsync` of mgeXE.toml: FIFO with vsync on, else
+  `AutoNoVsync`).
 - `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a child
   window of it: for an A/B of the mouse's lag.
 - `MGE_XE_CORES=0`: the threads of the helper are left to the scheduler.
