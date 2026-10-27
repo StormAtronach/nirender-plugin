@@ -283,6 +283,9 @@ struct Tables {
     /// puts them out of view, by that plane ([`PLANE_NAMES`]): the helper's own frustum
     /// decides for them, and a wider one draws what the engine does not.
     undisplayed_left: [u64; 7],
+    /// The same for the sorted blends, which `scene_end` hides: what a hide only by the far
+    /// plane would keep for the other views (the water's mirror).
+    undisplayed_blends_out: [u64; 7],
     /// The texture effects of the instances ([`EffectWatch`]), and the notes of the material
     /// of a sent instance because one of its effects changed.
     effects: HashMap<usize, EffectWatch>,
@@ -370,6 +373,7 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         scene_values: (0, None),
         scene_mixed: 0,
         undisplayed_left: [0; 7],
+        undisplayed_blends_out: [0; 7],
         effects: HashMap::default(),
         effect_notes: 0,
         texture_notes: 0,
@@ -532,6 +536,9 @@ pub unsafe fn scene_end(mt: &MainThread) {
         if let Some(plane) = left_visible(outside, instance.sorted_blend) {
             t.undisplayed_left[plane.min(PLANE_NAMES.len() - 1)] += 1;
             continue;
+        }
+        if let Some(plane) = outside {
+            t.undisplayed_blends_out[plane.min(PLANE_NAMES.len() - 1)] += 1;
         }
         instance.visible = false;
         capture::instance_state(instance.id, false);
@@ -2100,9 +2107,10 @@ pub unsafe fn report(mt: &MainThread) -> String {
             crate::material_stream::GROUP_NAMES.iter().zip(t.periodic_changes).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
         )
         + &format!(
-            "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk; shapes other than sorted blends the engine did not display, left visible by the plane that puts them out of the engine's view: {}\n",
+            "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk; shapes other than sorted blends the engine did not display, left visible by the plane that puts them out of the engine's view: {}; sorted blends the engine did not display, hidden while out of its view, by that plane: {}\n",
             queue_counts[0], queue_counts[1], queue_counts[2], walk_places,
-            PLANE_NAMES.iter().zip(t.undisplayed_left).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
+            PLANE_NAMES.iter().zip(t.undisplayed_left).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", "),
+            PLANE_NAMES.iter().zip(t.undisplayed_blends_out).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
         )
         + &{
             let engine = crate::shape_stream::engine_particle_records(mt);
