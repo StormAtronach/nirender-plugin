@@ -22,12 +22,12 @@ SOFTWARE.
 
 ---
 
-The licence above covers the files of this repository: the plugin akulakhan.dll,
+The license above covers the files of this repository: the plugin akulakhan.dll,
 its Lua mod, the host crate and the tools.
 
 numidium.exe, the renderer program of the release archive, is built from the
 host crate of this repository together with the code of MGE XE G7, which is
 under the GNU General Public License, version 2. numidium.exe is therefore
-distributed under the terms of that licence, with its complete source: this
+distributed under the terms of that license, with its complete source: this
 repository and the MGE XE G7 repository at the commits named in the SOURCES.txt
 of the archive. The archive carries the text of the GNU General Public License.
