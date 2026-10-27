@@ -86,7 +86,8 @@ fn header_abilities() -> u32 {
 pub mod tag {
     /// handle, flags, width, height, levels, D3D format, pixel format, pixel format tag, bytes
     /// for each pixel; then levels + 1 offsets, the widths and the heights of the levels; then
-    /// the pixels.
+    /// the pixels. A texture whose record would not fit the ring comes without the pixels
+    /// (the helper makes it with zeros), and each level follows as a [`TEXTURE_UPDATE`].
     pub const TEXTURE: u32 = 1;
     /// handle, offset, size; then the bytes that the game wrote into a buffer of the device.
     /// The plugin does not write it; an old capture file can hold it.
@@ -409,6 +410,11 @@ struct Ring {
     /// The host program did not read at all for the time limit of a wait. The game does not
     /// wait again before the host program reads.
     host_late: bool,
+    /// The records that did not fit the ring and were dropped, and the largest of them in
+    /// bytes; the textures sent level by level because their one record would not fit.
+    dropped: u32,
+    largest_dropped: usize,
+    split_textures: u32,
 }
 
 impl Ring {
@@ -435,7 +441,7 @@ impl Ring {
         event_name.push(0);
         let event = CreateEventA(core::ptr::null(), 0, 0, event_name.as_ptr());
         crate::pacing::start(mapping, name);
-        Ok(Ring { mapping, base, capacity, event, wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false })
+        Ok(Ring { mapping, base, capacity, event, wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false, dropped: 0, largest_dropped: 0, split_textures: 0 })
     }
 
     unsafe fn counter(&self, offset: usize) -> &core::sync::atomic::AtomicU64 {
@@ -454,7 +460,9 @@ impl Ring {
         let length: usize = parts.iter().map(|p| p.len()).sum();
         let total = 8 + length as u64;
         if total > self.capacity {
-            crate::log!("stream: a record of {length} bytes does not fit into the ring");
+            self.dropped += 1;
+            self.largest_dropped = self.largest_dropped.max(length);
+            crate::log!("stream: a record of {length} bytes does not fit into the ring of {} bytes and is dropped (NIRENDER_RING_MB raises the ring)", self.capacity);
             return true;
         }
         let written = self.counter(RING_WRITTEN).load(Ordering::Relaxed);
@@ -1157,6 +1165,14 @@ pub unsafe fn stop() {
                 ring.wakes
             );
             crate::log!("stream: {}", crate::sync::lock_wait_report());
+            if ring.split_textures > 0 || ring.dropped > 0 {
+                crate::log!(
+                    "stream: {} textures sent level by level (their one record did not fit the ring); {} records dropped for the ring's size, the largest {} bytes",
+                    ring.split_textures,
+                    ring.dropped,
+                    ring.largest_dropped
+                );
+            }
             ring.close();
             if let Some(mut reply) = s.reply.take() {
                 crate::log!("stream: {} pixel reads, the game waited {:.1} ms in all for them", reply.requests, reply.waited as f64 * 1000.0 / ticks_per_second() as f64);
@@ -1821,7 +1837,64 @@ pub unsafe fn texture(texture: &TextureV1, handle: usize) {
         texture.bytes_per_pixel,
     ];
     let pixels = core::slice::from_raw_parts(texture.pixels, offsets[levels] as usize);
-    write(tag::TEXTURE, &[words(&head), words(offsets), words(widths), words(heights), pixels]);
+    let tables = [words(&head), words(offsets), words(widths), words(heights)];
+    let sizes: Vec<usize> = (0..levels).map(|level| (offsets[level + 1] - offsets[level]) as usize).collect();
+    let Some(plan) = ring_capacity().and_then(|capacity| level_plan(capacity, tables.iter().map(|t| t.len()).sum(), &sizes)) else {
+        write(tag::TEXTURE, &[tables[0], tables[1], tables[2], tables[3], pixels]);
+        return;
+    };
+    // Too large for one record: the texture without its pixels, then each level that fits
+    // as an update, as a texture the game writes level by level comes.
+    write(tag::TEXTURE, &[tables[0], tables[1], tables[2], tables[3]]);
+    let mut dropped = 0;
+    for level in 0..levels {
+        let bytes = &pixels[offsets[level] as usize..offsets[level + 1] as usize];
+        if plan[level] {
+            texture_update(handle, level as u32, widths[level], heights[level], texture.d3d_format, bytes);
+        } else {
+            dropped += 1;
+            crate::log!("stream: level {level} of the texture {handle:#x} ({} x {}, {} bytes) does not fit into the ring and is not sent (NIRENDER_RING_MB raises the ring)", widths[level], heights[level], bytes.len());
+        }
+    }
+    note_split(dropped, sizes.iter().copied().max().unwrap_or(0));
+}
+
+/// Whether a texture goes level by level: [`None`] when its one record (the tables and all
+/// the pixels, with the record's head) fits the ring; else, for each level, whether that
+/// level fits as an update record (its head is 24 bytes). A level that does not fit is
+/// dropped by the caller.
+fn level_plan(capacity: u64, table_bytes: usize, level_sizes: &[usize]) -> Option<Vec<bool>> {
+    const RECORD_HEAD: usize = 8;
+    const UPDATE_HEAD: usize = 24;
+    let whole = RECORD_HEAD + table_bytes + level_sizes.iter().sum::<usize>();
+    if whole as u64 <= capacity {
+        return None;
+    }
+    Some(level_sizes.iter().map(|size| (RECORD_HEAD + UPDATE_HEAD + size) as u64 <= capacity).collect())
+}
+
+/// The capacity of the ring in bytes; [`None`] without a ring (a file capture: a record of
+/// any size goes into the file).
+unsafe fn ring_capacity() -> Option<u64> {
+    let lock = crate::sync::device_lock();
+    let s = state(&lock)?;
+    match s.out.as_ref() {
+        Some(Sink::Ring(ring)) => Some(ring.capacity),
+        _ => None,
+    }
+}
+
+/// Counts a texture sent level by level, and its levels that did not fit, for the report.
+unsafe fn note_split(levels_dropped: u32, largest_level: usize) {
+    let lock = crate::sync::device_lock();
+    let Some(mut s) = state(&lock) else { return };
+    if let Some(Sink::Ring(ring)) = s.out.as_mut() {
+        ring.split_textures += 1;
+        ring.dropped += levels_dropped;
+        if levels_dropped > 0 {
+            ring.largest_dropped = ring.largest_dropped.max(largest_level);
+        }
+    }
 }
 
 /// The bytes that the game wrote into a level of a texture.
@@ -2037,5 +2110,24 @@ mod tests {
         assert_eq!(header_format(&header), STREAM_FORMAT);
         assert_eq!(header_build_id(&header), crate::BUILD_ID);
         assert!(accept_header(&header, "a reader").is_ok());
+    }
+
+    /// A 4096 x 4096 ARGB texture with mips is 89 478 484 bytes of pixels: its one record does
+    /// not fit a 64 MiB ring, and its level 0 (64 MiB) misses the ring by the heads alone. In
+    /// a 128 MiB ring the one record fits. A level over the ring is the only thing dropped.
+    #[test]
+    fn a_texture_goes_level_by_level_when_its_record_does_not_fit() {
+        let mib = 1u64 << 20;
+        let levels: Vec<usize> = (0..13).map(|level| ((4096 >> level).max(1) as usize).pow(2) * 4).collect();
+        assert_eq!(levels.iter().sum::<usize>(), 89_478_484);
+        let tables = 36 + 14 * 4 + 13 * 4 * 2;
+        assert_eq!(super::level_plan(128 * mib, tables, &levels), None);
+        let plan = super::level_plan(64 * mib, tables, &levels).unwrap();
+        assert_eq!(plan[0], false);
+        assert!(plan[1..].iter().all(|fits| *fits));
+        let plan = super::level_plan(65 * mib, tables, &levels).unwrap();
+        assert!(plan.iter().all(|fits| *fits));
+        // A small texture always goes whole.
+        assert_eq!(super::level_plan(64 * mib, tables, &[256 * 256 * 4, 128 * 128 * 4]), None);
     }
 }

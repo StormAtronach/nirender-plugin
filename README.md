@@ -86,7 +86,7 @@ The run:
 - `NIRENDER_HOST_LOG=<path>`: the file for the text of the host program; without it,
   `nirender-host.log` in the folder of the game.
 - `NIRENDER_BACKEND=vulkan|dx12`: the backend of the host program.
-- `NIRENDER_RING_MB=<n>`: the size of the ring, default 64.
+- `NIRENDER_RING_MB=<n>`: the size of the ring, default 128 (a texture level must fit it whole; a 4096 x 4096 ARGB level is 64 MiB).
 - `NIRENDER_PLUGIN_DLL=<path>`: the tools install that DLL for a run (one arm of an A/B).
 - `MGE_XE_BOX_SECONDS=<n>`: a message box of the plugin, of the helper or of MGE XE's
   d3d8.dll closes itself after n seconds, and its text is in that part's log as `box:` lines
