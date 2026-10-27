@@ -1477,14 +1477,22 @@ pub unsafe fn render_state_deleting_dtor(this: usize, flags: u8) -> usize {
 
 /// 0x6B81E0 `NiDX8RenderState_static::Create`
 ///
+/// When `operator new` gives 0, the game's code goes on with a state of 0 and writes through
+/// it (0x6B8243 with `flag_2`, else in `initFromDeviceCaps`). The port logs it and returns that
+/// 0, the value the game's code has in hand, and writes nothing through it.
+///
 /// # Safety
 ///
-/// As for `render_state_ctor`. The engine's `operator new` does not fail: the function writes the
-/// flags through the new state without a test for 0, as the game's code does.
+/// `device` and `caps` are as for `render_state_ctor`. The function allocates the block
+/// itself.
 pub unsafe fn render_state_create(device: usize, caps: usize, flag_2: u8, flag_8: u8, flag_4: u8) -> usize {
     crate::shadow::touch(&render_state_create_port::STATE);
     let block = eng::operator_new(RS::SIZE);
-    let this = if block != 0 { render_state_ctor(block, device, caps) } else { 0 };
+    if block == 0 {
+        crate::log!("render state: operator new gave 0 for {} bytes; no render state (the game's code would write through 0)", RS::SIZE);
+        return 0;
+    }
+    let this = render_state_ctor(block, device, caps);
     if flag_2 != 0 {
         wr(this, RS::flags, rd::<u32>(this, RS::flags) | 2);
     }

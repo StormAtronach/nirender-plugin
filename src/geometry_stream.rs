@@ -711,9 +711,9 @@ enum MorphMode {
 
 fn morph_mode() -> MorphMode {
     static MODE: std::sync::OnceLock<MorphMode> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| match std::env::var("NIRENDER_MORPH_WEIGHTS").as_deref() {
-        Ok("0") => MorphMode::Off,
-        Ok("check") => MorphMode::Check,
+    *MODE.get_or_init(|| match crate::switches::choice("NIRENDER_MORPH_WEIGHTS", &["0", "1", "check"]) {
+        Some("0") => MorphMode::Off,
+        Some("check") => MorphMode::Check,
         _ => MorphMode::On,
     })
 }
@@ -930,9 +930,9 @@ enum UvMode {
 
 fn uv_mode() -> UvMode {
     static MODE: std::sync::OnceLock<UvMode> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| match std::env::var("NIRENDER_UV_STEPS").as_deref() {
-        Ok("0") => UvMode::Off,
-        Ok("check") => UvMode::Check,
+    *MODE.get_or_init(|| match crate::switches::choice("NIRENDER_UV_STEPS", &["0", "1", "check"]) {
+        Some("0") => UvMode::Off,
+        Some("check") => UvMode::Check,
         _ => UvMode::On,
     })
 }
@@ -1031,7 +1031,7 @@ static CENSUS: MainCell<Option<HashMap<(u32, u32), CensusEntry>>> = MainCell::ne
 
 fn census_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("NIRENDER_GEOMETRY_CENSUS").as_deref() == Ok("1"))
+    *ON.get_or_init(|| crate::switches::on("NIRENDER_GEOMETRY_CENSUS") == Some(true))
 }
 
 /// The class names of the controllers on `object`, joined with '+', or "none".

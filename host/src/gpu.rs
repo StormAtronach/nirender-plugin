@@ -219,24 +219,109 @@ pub fn work() -> [u64; 4] {
     ]
 }
 
-#[cfg(windows)]
 fn lost_message() {
+    message_box(
+        "The graphics device was lost: the driver was reset, or it stopped.\n\n\
+         The wgpu renderer of MGE XE cannot draw any more: close the game with Alt+F4.\n\n\
+         The log of the renderer (nirender-host.log in the folder of the game) has the details.",
+    );
+}
+
+/// The window that owns the boxes of this program: the game's window in the live mode, so
+/// that a box stays above it (an owned window is above its owner; the owner saw the box come
+/// to the front in run 2b of records entry 192); 0 for a replay and for the program on its
+/// own. An owner in another process joins the input of the two threads: the box answers only
+/// while the game's thread takes its messages; the game's thread still runs its frames after
+/// a refusal (the plugin waits for the ring with a time limit), so it does \[I\].
+static OWNER_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Names the window that owns the boxes ([`message_box`]).
+pub fn set_owner_window(window: isize) {
+    OWNER_WINDOW.store(window, Ordering::Relaxed);
+}
+
+/// Shows `text` to the player in a box with the caption "MGE XE", owned by the game's window,
+/// and waits until it is closed. For what ends the drawing: a lost device, a stream of another
+/// build. Public for the extension's own refusals. The rule of every box of the three parts
+/// (the failure-path design of the Numidium docs, sections 5 and 5.1; the plugin's and
+/// d3d8.dll's boxes follow it too): each line goes to the log first as "box: "; with
+/// `MGE_XE_BOX_SECONDS=<n>` the box closes itself after n seconds, through MessageBoxTimeoutW
+/// of user32 (not in the documented API, so taken by GetProcAddress; without it the box is
+/// only logged); without the switch it waits for the click.
+#[cfg(windows)]
+pub fn message_box(text: &str) {
     #[link(name = "user32")]
     extern "system" {
         fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
     }
+    extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> isize;
+        fn GetProcAddress(module: isize, name: *const u8) -> *const core::ffi::c_void;
+    }
+    type MessageBoxTimeout = unsafe extern "system" fn(isize, *const u16, *const u16, u32, u16, u32) -> i32;
     const MB_ICONERROR: u32 = 0x10;
     const MB_SETFOREGROUND: u32 = 0x1_0000;
     const MB_TOPMOST: u32 = 0x4_0000;
+    for line in text.lines() {
+        println!("box: {line}");
+    }
     let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let text = wide(
-        "The graphics device was lost: the driver was reset, or it stopped.\n\n\
-         The wgpu renderer of MGE XE cannot draw any more. Quit the game and start it again.\n\n\
-         The log of the renderer (nirender-host.log in the folder of the game) has the details.",
-    );
+    let text = wide(text);
     let caption = wide("MGE XE");
-    unsafe { MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST) };
+    let owner = OWNER_WINDOW.load(Ordering::Relaxed);
+    let flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
+    let seconds = crate::switches().box_seconds;
+    let started = Instant::now();
+    // SAFETY: the strings are zero-ended UTF-16 that live until the call returns; the
+    // function taken from user32 has the signature of MessageBoxTimeoutW.
+    unsafe {
+        if seconds == 0 {
+            MessageBoxW(owner, text.as_ptr(), caption.as_ptr(), flags);
+        } else {
+            let user32 = GetModuleHandleW(wide("user32.dll").as_ptr());
+            let timed = GetProcAddress(user32, c"MessageBoxTimeoutW".as_ptr().cast());
+            if timed.is_null() {
+                println!("box: not shown: this Windows has no MessageBoxTimeoutW");
+                return;
+            }
+            let timed: MessageBoxTimeout = std::mem::transmute(timed);
+            timed(owner, text.as_ptr(), caption.as_ptr(), flags, 0, seconds * 1000);
+        }
+    }
+    // The elapsed time tells a timeout from a click: MessageBoxTimeoutW answers IDOK on the
+    // timeout on this machine, not the documented 32000 [V Rob's run, 2026-10-27].
+    if seconds != 0 && started.elapsed() >= std::time::Duration::from_secs(u64::from(seconds)) {
+        println!("box: closed after {seconds} s, no click");
+    } else {
+        println!("box: closed by a click");
+    }
 }
 
 #[cfg(not(windows))]
-fn lost_message() {}
+pub fn message_box(text: &str) {
+    for line in text.lines() {
+        println!("box: {line}");
+    }
+}
+
+/// Ends this program at once with `code`, for a refusal: TerminateProcess, not the orderly
+/// exit, so that no thread of the program (the loader, the device) can hold the end. The
+/// plugin reads the code. TerminateProcess drops what stdout still buffers, so the log is
+/// flushed first: the box lines and the refusal lines must be in the file.
+#[cfg(windows)]
+pub fn exit_now(code: u32) -> ! {
+    use std::io::Write;
+    extern "system" {
+        fn GetCurrentProcess() -> isize;
+        fn TerminateProcess(process: isize, code: u32) -> i32;
+    }
+    let _ = std::io::stdout().flush();
+    // SAFETY: the handle of the own process is always valid; nothing runs after the call.
+    unsafe { TerminateProcess(GetCurrentProcess(), code) };
+    std::process::exit(code as i32)
+}
+
+#[cfg(not(windows))]
+pub fn exit_now(code: u32) -> ! {
+    std::process::exit(code as i32)
+}

@@ -712,8 +712,8 @@ pub unsafe fn vertex_manager_ctor(this: usize, device: usize) -> usize {
 ///
 /// # Safety
 ///
-/// `this` points at a live `NiDX8VertexBufferManager` with its device, that nothing uses after the
-/// call: the function releases the device without a test for 0, as the game's code does.
+/// `this` points at a live `NiDX8VertexBufferManager` that nothing uses after the call; its device
+/// is 0 or live, and the function releases it when it is not 0.
 pub unsafe fn vertex_manager_dtor(this: usize) {
     crate::shadow::touch(&vertex_manager_dtor_port::STATE);
     wr(this, VM::vtbl, VTBL_VERTEX_BUFFER_MANAGER);
@@ -723,9 +723,15 @@ pub unsafe fn vertex_manager_dtor(this: usize) {
     for map in [VM::hashmap_C, VM::hashmap_1C, VM::hashmapFVFUsage] {
         map_clear(this + map);
     }
-    // The game code does not test for a device here. The index buffer manager does.
-    device_release(rd(this, VM::device));
-    wr::<u32>(this, VM::device, 0);
+    // The game's code releases the device here without a test (0x6BDBD2) and faults when it is
+    // 0. The port tests it, as the index buffer manager does.
+    let device: usize = rd(this, VM::device);
+    if device != 0 {
+        device_release(device);
+        wr::<u32>(this, VM::device, 0);
+    } else {
+        crate::log!("vertex buffer manager: destroyed with no device; nothing to release (the game's code would call through 0)");
+    }
     map_destruct(this + VM::hashmapFVFUsage, eng::vtbl_vertex_map());
     map_destruct(this + VM::hashmap_1C, eng::vtbl_vertex_map());
     map_destruct(this + VM::hashmap_C, eng::vtbl_vertex_map());

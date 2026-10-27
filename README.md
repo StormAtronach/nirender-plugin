@@ -86,8 +86,13 @@ The run:
 - `NIRENDER_HOST_LOG=<path>`: the file for the text of the host program; without it,
   `nirender-host.log` in the folder of the game.
 - `NIRENDER_BACKEND=vulkan|dx12`: the backend of the host program.
-- `NIRENDER_RING_MB=<n>`: the size of the ring, default 64.
+- `NIRENDER_RING_MB=<n>`: the size of the ring in MB, 1 to 512, default 128 (a texture
+  level must fit it whole; a 4096 x 4096 ARGB level is 64 MiB); a value outside is named
+  in nirender.log and 128 is taken.
 - `NIRENDER_PLUGIN_DLL=<path>`: the tools install that DLL for a run (one arm of an A/B); the runner's `--plugin-dll <path>` says the same without a variable.
+- `MGE_XE_BOX_SECONDS=<n>`: a message box of the plugin, of the helper or of MGE XE's
+  d3d8.dll closes itself after n seconds, and its text is in that part's log as `box:` lines
+  (always); unset or 0, the box waits for the click. The runner sets 5.
 - `NIRENDER_FOREGROUND=1`: the tools run the game in the foreground; a run is a background
   run without it. For a background run the runner stages a copy of the instance's MWSE.json
   with MWSE's setting `RunInBackground = true` into the run mod; the mod patches nothing.

@@ -15,7 +15,7 @@
 //! too.
 
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -62,7 +62,7 @@ struct WorldSet {
 }
 
 static SET: Mutex<Option<WorldSet>> = Mutex::new(None);
-static INSTALLED: AtomicBool = AtomicBool::new(false);
+static INSTALLED: crate::sync::InstallState = crate::sync::InstallState::new();
 static PLACED: AtomicU64 = AtomicU64::new(0);
 static REMOVED: AtomicU64 = AtomicU64::new(0);
 /// The lights destroyed while in the set: the engine destroyed them without a removal.
@@ -83,21 +83,24 @@ fn with_set<R>(f: impl FnOnce(&mut WorldSet) -> R) -> Option<R> {
 ///
 /// # Safety
 ///
-/// One thread at a time calls this: the test of `INSTALLED` and its store are not one atomic step.
+/// No condition of its own: `INSTALLED` (a `sync::InstallState`) lets one caller install at a
+/// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
-    if INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.begin() {
         return;
     }
     use crate::mwse_native::{subscribe, NATIVE_EVENT_LIGHT_PLACED, NATIVE_EVENT_LIGHT_REMOVED};
     if let Err(error) = subscribe(NATIVE_EVENT_LIGHT_REMOVED, removed) {
         crate::log!("world lights: {error}: no lights of the world");
+        INSTALLED.finish(false);
         return;
     }
     if let Err(error) = subscribe(NATIVE_EVENT_LIGHT_PLACED, placed) {
         crate::log!("world lights: {error}: no lights of the world");
+        INSTALLED.finish(false);
         return;
     }
-    INSTALLED.store(true, Ordering::Relaxed);
+    INSTALLED.finish(true);
     crate::log!("world lights: MWSE reports each light placed in the world and each light removed");
 }
 
@@ -162,10 +165,12 @@ pub fn resend() {
 /// # Safety
 ///
 /// The lights of the set are live `NiLight`s. A light leaves the set at MWSE's removal event and at
-/// `NiDX8LightManager::RemoveLight`; that both come before the game frees the light is not known
-/// from this module. The game's data handler is 0 or live.
+/// `NiDX8LightManager::RemoveLight` 0x6BB4E0. The second comes before the free of the light:
+/// `NiLight::dtor` 0x6F99F0 calls it through `NiRenderer_static::RemoveEffect` 0x6F5090 and
+/// `NiDX8Renderer::PurgeEffect` 0x6AC5D0, before `NiLight::deleting_dtor` 0x6F99D0 frees the
+/// light. \[I\] Every light class ends in `NiLight::dtor`. The game's data handler is 0 or live.
 pub unsafe fn send(t: &MainThread) {
-    if !INSTALLED.load(Ordering::Relaxed) {
+    if !INSTALLED.is_installed() {
         return;
     }
     // The lights are read under the lock; the records go after it.

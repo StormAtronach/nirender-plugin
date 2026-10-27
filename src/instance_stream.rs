@@ -299,16 +299,16 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         states: 0,
         light_records: 0,
         skipped: 0,
-        skip: std::env::var("NIRENDER_SKIP").map_or(true, |v| v != "0"),
+        skip: crate::switches::on("NIRENDER_SKIP") != Some(false),
         scene_frame: u32::MAX,
         scene_values: (0, None),
         scene_mixed: 0,
-        landscape: std::env::var("NIRENDER_LANDSCAPE").map_or(true, |v| v != "0"),
-        actors: std::env::var("NIRENDER_ACTORS").map_or(true, |v| v != "0"),
-        animated: std::env::var("NIRENDER_ANIMATED").map_or(true, |v| v != "0"),
-        node_kinds: std::env::var("NIRENDER_NODE_KINDS").map_or(true, |v| v != "0"),
-        controllers: std::env::var("NIRENDER_CONTROLLERS").map_or(true, |v| v != "0"),
-        skin_table: std::env::var("NIRENDER_SKIN_TABLE").map_or(true, |v| v != "0"),
+        landscape: crate::switches::on("NIRENDER_LANDSCAPE") != Some(false),
+        actors: crate::switches::on("NIRENDER_ACTORS") != Some(false),
+        animated: crate::switches::on("NIRENDER_ANIMATED") != Some(false),
+        node_kinds: crate::switches::on("NIRENDER_NODE_KINDS") != Some(false),
+        controllers: crate::switches::on("NIRENDER_CONTROLLERS") != Some(false),
+        skin_table: crate::switches::on("NIRENDER_SKIN_TABLE") != Some(false),
         scratch_bones: Vec::new(),
         bone_records: 0,
         bone_failures: 0,
@@ -332,7 +332,7 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
 impl Tables {
     /// The mode, from `NIRENDER_RETAINED` at the first call.
     fn mode(&mut self) -> Mode {
-        *self.mode.get_or_insert_with(|| std::env::var("NIRENDER_RETAINED").ok().and_then(|v| Mode::parse(&v)).unwrap_or(Mode::Gpu))
+        *self.mode.get_or_insert_with(|| crate::switches::parsed("NIRENDER_RETAINED", "off, dual or gpu", Mode::parse).unwrap_or(Mode::Gpu))
     }
 }
 
@@ -736,9 +736,9 @@ fn sky_mode() -> u8 {
     use core::sync::atomic::Ordering::Relaxed;
     match SKY_MODE.load(Relaxed) {
         0 => {
-            let mode = match std::env::var("NIRENDER_SKY").as_deref() {
-                Ok("off") => 1,
-                Ok("count") => 2,
+            let mode = match crate::switches::choice("NIRENDER_SKY", &["off", "count", "on"]) {
+                Some("off") => 1,
+                Some("count") => 2,
                 _ => 3,
             };
             SKY_MODE.store(mode, Relaxed);
@@ -784,7 +784,7 @@ pub fn particle_table_on() -> bool {
     use core::sync::atomic::Ordering::Relaxed;
     let mode = match PARTICLE_MODE.load(Relaxed) {
         0 => {
-            let mode = if std::env::var("NIRENDER_PARTICLES").as_deref() == Ok("off") { 1 } else { 2 };
+            let mode = if crate::switches::choice("NIRENDER_PARTICLES", &["off", "on"]) == Some("off") { 1 } else { 2 };
             PARTICLE_MODE.store(mode, Relaxed);
             mode
         }
@@ -1083,9 +1083,9 @@ enum CompactMoves {
 
 fn compact_moves() -> CompactMoves {
     static MODE: std::sync::OnceLock<CompactMoves> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| match std::env::var("NIRENDER_COMPACT_MOVES").as_deref() {
-        Ok("0") => CompactMoves::Off,
-        Ok("check") => CompactMoves::Check,
+    *MODE.get_or_init(|| match crate::switches::choice("NIRENDER_COMPACT_MOVES", &["0", "1", "check"]) {
+        Some("0") => CompactMoves::Off,
+        Some("check") => CompactMoves::Check,
         _ => CompactMoves::On,
     })
 }
@@ -1377,7 +1377,7 @@ pub fn note_every() -> bool {
     if value != 255 {
         return value != 0;
     }
-    let on = std::env::var("NIRENDER_NOTE_EVERY").map_or(false, |v| v != "0");
+    let on = crate::switches::on("NIRENDER_NOTE_EVERY") == Some(true);
     NOTE_EVERY.store(on as u8, Relaxed);
     on
 }

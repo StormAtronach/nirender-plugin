@@ -38,6 +38,7 @@ extern "system" {
 
 extern "system" {
     fn GetModuleHandleExA(flags: u32, address: *const core::ffi::c_void, module: *mut usize) -> i32;
+    fn GetModuleHandleA(name: *const u8) -> usize;
     fn GetModuleFileNameA(module: usize, name: *mut u8, size: u32) -> u32;
     fn GetCurrentProcessId() -> u32;
     fn CreateProcessA(
@@ -77,19 +78,67 @@ pub unsafe fn check_host() {
     GetExitCodeProcess(process, &mut code);
     CloseHandle(process);
     crate::log!("own device: the host program ended with the exit code {code:#x}; the window gets no new picture");
-    const MB_ICONERROR: u32 = 0x10;
-    const MB_SETFOREGROUND: u32 = 0x1_0000;
-    const MB_TOPMOST: u32 = 0x4_0000;
-    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    // The host program ended on a refusal of its own (a stream of another build, no device):
+    // it named the reason in its log and in its own message box.
+    if crate::stream_format::helper_said_why(code) {
+        crate::log!("own device: the exit code is a refusal of the host program, which showed its message (nirender-host.log has the reason)");
+        return;
+    }
     let name = HOST_NAME.get().map(String::as_str).unwrap_or("the host program");
-    let text = wide(&format!(
+    message_box(&format!(
         "The wgpu renderer of MGE XE ({name}) has stopped (exit code {code:#x}).\n\n\
-         The game cannot show a new picture. Quit the game and start it again.\n\n\
+         The game cannot show a new picture: close it with Alt+F4.\n\n\
          The folder of the game has the details: the logs nirender-host.log, nirender.log and \
          mgeHost64.log, and the minidump numidium.dmp after a crash of the renderer."
     ));
+}
+
+/// Shows `text` to the player in a box with the caption "MGE XE" and waits until it is
+/// closed. The rule of every box of the three parts (the failure-path design of the Numidium
+/// docs, sections 5 and 5.1; the helper's `gpu::message_box` and d3d8.dll's box follow it
+/// too): each line goes to the log first as "box: "; with `MGE_XE_BOX_SECONDS=<n>` the box
+/// closes itself after n seconds, through MessageBoxTimeoutW of user32 (not in the documented
+/// API, so taken by GetProcAddress; without it the box is only logged); without the switch it
+/// waits for the click.
+///
+/// # Safety
+///
+/// Called on the thread of the game, as the other calls of this module are.
+pub unsafe fn message_box(text: &str) {
+    type MessageBoxTimeout = unsafe extern "system" fn(isize, *const u16, *const u16, u32, u16, u32) -> i32;
+    const MB_ICONERROR: u32 = 0x10;
+    const MB_SETFOREGROUND: u32 = 0x1_0000;
+    const MB_TOPMOST: u32 = 0x4_0000;
+    for line in text.lines() {
+        crate::log!("box: {line}");
+    }
+    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let text = wide(text);
     let caption = wide("MGE XE");
-    MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+    let flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
+    // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
+    let seconds: u32 = crate::switches::parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |value| value.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600));
+    let started = std::time::Instant::now();
+    if seconds == 0 {
+        MessageBoxW(0, text.as_ptr(), caption.as_ptr(), flags);
+    } else {
+        let user32 = GetModuleHandleA(c"user32.dll".as_ptr().cast());
+        let timed = crate::win::GetProcAddress(user32 as *mut core::ffi::c_void, c"MessageBoxTimeoutW".as_ptr().cast());
+        if timed.is_null() {
+            crate::log!("box: not shown: this Windows has no MessageBoxTimeoutW");
+            return;
+        }
+        // SAFETY: the function taken from user32 has the signature of MessageBoxTimeoutW.
+        let timed: MessageBoxTimeout = core::mem::transmute(timed);
+        timed(0, text.as_ptr(), caption.as_ptr(), flags, 0, seconds * 1000);
+    }
+    // The elapsed time tells a timeout from a click: MessageBoxTimeoutW answers IDOK on the
+    // timeout on this machine, not the documented 32000 [V Rob's run, 2026-10-27].
+    if seconds != 0 && started.elapsed() >= std::time::Duration::from_secs(u64::from(seconds)) {
+        crate::log!("box: closed after {seconds} s, no click");
+    } else {
+        crate::log!("box: closed by a click");
+    }
 }
 
 /// The D3DCAPS8 of the device of the testing computer (MGE XE on DXVK), from
@@ -410,12 +459,24 @@ unsafe fn device_window(s: &State) -> u32 {
 unsafe fn start_stream(s: &State) {
     crate::own_host::activate();
     let name = format!("nirender-{}", GetCurrentProcessId());
-    let megabytes = std::env::var("NIRENDER_RING_MB").ok().and_then(|text| text.parse().ok()).unwrap_or(64);
-    if let Err(problem) = crate::capture::start_direct(&name, megabytes, s.parameters[0], s.parameters[1], device_window(s)) {
+    // 128 MB: a record must fit the ring whole, and the largest level of a texture of a
+    // modded install is 64 MiB (4096 x 4096 ARGB, or 8192 x 8192 DXT5), which a 64 MB ring
+    // misses by the record's head. A level over the ring is dropped and counted.
+    let megabytes = crate::switches::number_from_to("NIRENDER_RING_MB", 128, 1, 512);
+    // A ring that the system cannot give (its commit charge) is tried once at 64 MB, the
+    // size of before; a failed `start_direct` has started nothing.
+    let started = crate::capture::start_direct(&name, megabytes, s.parameters[0], s.parameters[1], device_window(s)).or_else(|problem| {
+        if megabytes <= 64 {
+            return Err(problem);
+        }
+        crate::log!("own device: no ring of {megabytes} MB ({problem}); a ring of 64 MB is tried, and a texture level over it is dropped");
+        crate::capture::start_direct(&name, 64, s.parameters[0], s.parameters[1], device_window(s))
+    });
+    if let Err(problem) = started {
         crate::log!("own device: no stream: {problem}");
         return;
     }
-    let program = std::env::var("NIRENDER_HOST_EXE").ok().filter(|path| std::path::Path::new(path).is_file()).or_else(|| {
+    let program = crate::switches::text("NIRENDER_HOST_EXE").filter(|path| std::path::Path::new(path).is_file()).or_else(|| {
         let mut module = 0usize;
         let mut path = [0u8; 600];
         // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
@@ -429,16 +490,16 @@ unsafe fn start_stream(s: &State) {
         return;
     };
     let mut command = format!("\"{program}\" --live {name} --embed");
-    if let Ok(backend) = std::env::var("NIRENDER_BACKEND") {
+    if let Some(backend) = crate::switches::choice("NIRENDER_BACKEND", &["vulkan", "dx12"]) {
         command.push_str(&format!(" --backend {backend}"));
     }
     // More arguments for the host program, for a test.
-    if let Ok(more) = std::env::var("NIRENDER_HOST_ARGS") {
+    if let Some(more) = crate::switches::text("NIRENDER_HOST_ARGS") {
         command.push_str(&format!(" {more}"));
     }
     // The text of the host program goes into a file: the one that NIRENDER_HOST_LOG names, or
     // nirender-host.log in the folder of the game.
-    let log = std::env::var("NIRENDER_HOST_LOG").unwrap_or_else(|_| "nirender-host.log".into());
+    let log = crate::switches::text("NIRENDER_HOST_LOG").unwrap_or_else(|| "nirender-host.log".into());
     let log = std::path::absolute(&log).map(|path| path.to_string_lossy().into_owned()).unwrap_or(log);
     command.push_str(&format!(" --log \"{log}\""));
     let mut line = command.clone().into_bytes();
@@ -478,6 +539,13 @@ pub unsafe extern "C" fn nirender_stream_extension(id: u32, data: *const u8, len
     if !data.is_null() && length != 0 && length < (1 << 20) {
         crate::capture::extension(id, core::slice::from_raw_parts(data, length as usize));
     }
+}
+
+/// The build id of this plugin, zero-ended, for the log of the `d3d8.dll` of MGE XE at the
+/// plugin's load. A plugin without this export is from before the handshake.
+#[no_mangle]
+pub extern "C" fn nirender_build_id() -> *const u8 {
+    crate::BUILD_ID_C.as_ptr()
 }
 
 /// The `Direct3DCreate8` of the plugin. The `d3d8.dll` of this repository calls it.

@@ -34,6 +34,9 @@ const RING_HEAD: usize = 128;
 const RING_WRITTEN: usize = 8;
 const RING_READ: usize = 16;
 const RING_CLOSED: usize = 24;
+/// The game waits for a read of this program (1 while it does): the event `<ring>-read` is
+/// set after a read only then (`capture.rs` of the plugin, `RING_GAME_WAITING`).
+const RING_GAME_WAITING: usize = 72;
 /// The classes of the game that the helper draws itself, for the plugin ([`Player::takes`]).
 const RING_TAKES: usize = 32;
 /// 1 while this program waits for a record: the plugin sets the event of the ring
@@ -71,6 +74,10 @@ struct Ring {
     /// The event `<ring>-shown` of the pacing, set when this program has shown a frame; 0
     /// without the pacing.
     shown_event: isize,
+    /// The event `<ring>-read`, set after a read while the game says it waits for one
+    /// ([`RING_GAME_WAITING`]); 0 with a plugin that has none (the game's wait then ends by
+    /// its own time limit).
+    read_event: isize,
 }
 
 impl Ring {
@@ -94,7 +101,12 @@ impl Ring {
                 let mut shown_name = format!("{name}-shown").into_bytes();
                 shown_name.push(0);
                 let shown_event = unsafe { OpenEventA(0x1F0003, 0, shown_name.as_ptr()) };
-                return Ring { base, capacity, event, shown_event };
+                let mut read_name = format!("{name}-read").into_bytes();
+                read_name.push(0);
+                // SAFETY: the name is a NUL-ended byte string that lives for the call; a
+                // missing event gives 0, which the reader tests before each use.
+                let read_event = unsafe { OpenEventA(0x1F0003, 0, read_name.as_ptr()) };
+                return Ring { base, capacity, event, shown_event, read_event };
             }
             assert!(start.elapsed() < Duration::from_secs(60), "no shared memory with the name {name}");
             std::thread::sleep(Duration::from_millis(50));
@@ -191,7 +203,19 @@ impl Ring {
         let length = u32::from_le_bytes(head[4..8].try_into().unwrap()) as usize;
         data.resize(length, 0);
         self.copy_out(read + 8, data);
-        self.counter(RING_READ).store(read + 8 + length as u64, Ordering::Release);
+        self.counter(RING_READ).store(read + 8 + length as u64, Ordering::SeqCst);
+        // The game waits for a read: wake it. The store above and this load are SeqCst, as
+        // the game's store of the word and its load of the count are, so that one of the
+        // two sides sees the other's store.
+        // SAFETY: `base` maps the ring's head of RING_HEAD bytes for the life of the Ring, the
+        // word at RING_GAME_WAITING is 4-aligned inside it, and the game writes it only
+        // through an atomic of the same size.
+        let game_waiting = unsafe { &*(self.base.add(RING_GAME_WAITING) as *const std::sync::atomic::AtomicU32) };
+        if self.read_event != 0 && game_waiting.load(Ordering::SeqCst) != 0 {
+            // SAFETY: the event is a handle that OpenEventA gave and that is not closed while
+            // the Ring lives.
+            unsafe { SetEvent(self.read_event) };
+        }
         Some(tag)
     }
 }
@@ -444,10 +468,10 @@ fn tag_line(counts: &[(u64, u64)]) -> String {
     parts.join("; ")
 }
 
-/// The present mode for the setting of the extension ([`Extension::vsync`]): with vsync the
-/// window waits for the refresh of the screen (FIFO, the frame rate capped at the refresh
-/// rate); without it the window shows a frame when the game gives one (`AutoNoVsync`:
-/// immediate, mailbox or FIFO, the first that the surface has).
+/// The present mode for the setting of the extension ([`crate::Extension::vsync`]): with
+/// vsync the window waits for the refresh of the screen (FIFO, the frame rate capped at the
+/// refresh rate); without it the window shows a frame when the game gives one
+/// (`AutoNoVsync`: immediate, mailbox or FIFO, the first that the surface has).
 fn present_mode_of(vsync: bool) -> wgpu::PresentMode {
     if vsync {
         wgpu::PresentMode::Fifo
@@ -999,6 +1023,23 @@ impl ApplicationHandler for App {
     }
 }
 
+/// The file name of this program, for a message to the player: numidium.exe as the helper
+/// of MGE XE, nirender-host.exe on its own.
+fn program_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "the host program".to_string())
+}
+
+/// The builds that read the stream: this crate's, and the program's that has it as a part.
+pub(crate) fn reader_build(extension: Option<&dyn super::Extension>) -> String {
+    match extension.map(|extension| extension.name()).filter(|name| !name.is_empty()) {
+        Some(name) => format!("{}, {name}", super::BUILD_ID),
+        None => super::BUILD_ID.to_string(),
+    }
+}
+
 pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Option<Box<dyn super::Extension>>) {
     println!("{}", super::cores::prefer_performance_cores());
     let ring = Ring::open(name);
@@ -1014,8 +1055,23 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         std::thread::sleep(Duration::from_millis(5));
     };
     assert_eq!(tag, super::tag::HEADER, "the first record is not the head of the stream");
-    let size = (super::word(&data, 0).max(64), super::word(&data, 4).max(64));
+    // The window of the game owns the boxes of this program, the one of a refused stream too.
     let game_window = if data.len() >= 12 { super::word(&data, 8) as isize } else { 0 };
+    super::gpu::set_owner_window(game_window);
+    // The stream format of the plugin against this build's, before any record is read. A
+    // difference ends this program: the plugin reads the exit code and shows no second box.
+    let reader = format!("{} ({})", program_name(), reader_build(extension.as_deref()));
+    match super::stream_format::accept_header(&data, &reader) {
+        Ok(writer) => println!("stream format {}, the plugin {}", writer.format, writer.build_id),
+        Err(message) => {
+            for line in message.lines() {
+                println!("{line}");
+            }
+            super::gpu::message_box(&format!("{message}\n\nThe game shows no new picture: close it with Alt+F4. nirender-host.log has the details."));
+            super::gpu::exit_now(super::stream_format::EXIT_STREAM_FORMAT);
+        }
+    }
+    let size = (super::word(&data, 0).max(64), super::word(&data, 4).max(64));
     let embed = args.iter().any(|a| a == "--embed");
     println!("picture {} x {}, window of the game {game_window:#x}{}", size.0, size.1, if embed { ", the host goes into it" } else { "" });
     let mut app = App {

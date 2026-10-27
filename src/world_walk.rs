@@ -13,7 +13,7 @@
 //! through the engine's `CullShow`. When the step of the sky root returns, the frame event
 //! `EVENT_WORLD_WALK` goes into the stream. Every other root goes to the engine's `CullShow`.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::{thiscall1, vcall0};
 use crate::gen::layouts::{NiAVObject as AV, NiCamera as C, NiNode as N};
@@ -31,7 +31,7 @@ const SLOT_DISPLAY: usize = crate::gen::layouts::InterfaceNiAVObject::Display;
 /// The flag that `NiNode::Display` sets on the node (the low byte of the flags).
 const NODE_DISPLAYED: u8 = 0x10;
 
-static INSTALLED: AtomicBool = AtomicBool::new(false);
+static INSTALLED: crate::sync::InstallState = crate::sync::InstallState::new();
 /// The walks of the world root the plugin did, and the events it wrote.
 static WALKS: AtomicU64 = AtomicU64::new(0);
 static EVENTS: AtomicU64 = AtomicU64::new(0);
@@ -39,7 +39,7 @@ static EVENTS: AtomicU64 = AtomicU64::new(0);
 /// True when the plugin owns MWSE's override of the root's walk: the stream then carries the
 /// event, and its header says so (`capture::HEADER_WORLD_WALK`).
 pub fn installed() -> bool {
-    INSTALLED.load(Ordering::Relaxed)
+    INSTALLED.is_installed()
 }
 
 /// Claims MWSE's override. A refusal (another module owns it, or an MWSE without it) leaves the
@@ -48,17 +48,18 @@ pub fn installed() -> bool {
 ///
 /// # Safety
 ///
-/// One thread at a time calls this: the test of the installed flag and its store are not one atomic
-/// step.
+/// No condition of its own: `INSTALLED` (a `sync::InstallState`) lets one caller install at a
+/// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
-    if installed() {
+    if !INSTALLED.begin() {
         return;
     }
     if let Err(error) = crate::mwse_native::claim(crate::mwse_native::NATIVE_OVERRIDE_CAMERA_ROOT_CULL_SHOW, click_cull_show as *const () as usize) {
         crate::log!("world walk: {error}: the helper finds the world's start as before");
+        INSTALLED.finish(false);
         return;
     }
-    INSTALLED.store(true, Ordering::Relaxed);
+    INSTALLED.finish(true);
     crate::log!("world walk: the world camera's Click marks the end of the sky's walk");
 }
 
