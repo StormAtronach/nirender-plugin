@@ -7,7 +7,9 @@
   commit is in (`git rev-parse --show-toplevel`): the hooks folder is shared by the worktrees
   of a repository, and a hook that named one checkout's tools checked that checkout, not the
   tree of the commit.
-- The MGE XE repository: `checks.py mge --mge <the tree of the commit>`, in every worktree.
+- The MGE XE repository: `checks.py mge --mge <the tree of the commit>`, in every worktree
+  that has the renderer (`mgeHost64/src/renderer.rs`); a tree without it, a branch from
+  before the renderer, is skipped with a line, so that no commit there needs `--no-verify`.
   The tools come from this repository (the sibling `nirender-plugin` of the tree, or the
   path written at install time when there is none).
 - The docs repository: `check_state_pages.py --install-hook` writes its own hook.
@@ -35,13 +37,22 @@ def plugin_hook(python):
             "\"%s\" -I \"$tree/tools/checks.py\" plugin || exit 1\n" % python)
 
 
+RENDERER_MARKER = "mgeHost64/src/renderer.rs"
+
+
 def mge_hook(python, plugin):
     """The hook of the MGE XE repository: the mge checks against the tree the commit is in,
-    with the tools of the sibling nirender-plugin of that tree, else of `plugin`."""
+    with the tools of the sibling nirender-plugin of that tree, else of `plugin`. A tree
+    without the renderer (no [`RENDERER_MARKER`]: a branch from before it) is skipped with a
+    line, since the checks are of the renderer."""
     return ("# The content checks of the renderer (nirender-plugin tools/checks.py mge) against the\n"
-            "# tree the commit is in, in every worktree.\n"
+            "# tree the commit is in, in every worktree that has the renderer.\n"
             "tree=\"$(git rev-parse --show-toplevel)\"\n"
-            "plugin=\"$(dirname \"$tree\")/nirender-plugin\"\n"
+            "if [ ! -f \"$tree/%s\" ]; then\n"
+            "  echo \"pre-commit: $tree has no renderer (no %s); the mge checks are skipped\"\n"
+            "  exit 0\n"
+            "fi\n"
+            "plugin=\"$(dirname \"$tree\")/nirender-plugin\"\n" % (RENDERER_MARKER, RENDERER_MARKER)) + (
             "[ -f \"$plugin/tools/checks.py\" ] || plugin=\"%s\"\n"
             "\"%s\" -I \"$plugin/tools/checks.py\" mge --mge \"$tree\" || exit 1\n" % (plugin, python))
 
@@ -68,6 +79,9 @@ def self_test():
     body = mge_hook("C:/py/python.exe", "C:/repos/nirender-plugin")
     assert "mge --mge \"$tree\"" in body and "$(dirname \"$tree\")/nirender-plugin" in body, body
     assert "plugin=\"C:/repos/nirender-plugin\"" in body
+    # A tree without the renderer is skipped before the checks run, with the reason.
+    skip = body.index("[ ! -f \"$tree/%s\" ]" % RENDERER_MARKER)
+    assert skip < body.index("checks.py\" mge") and "has no renderer" in body and "exit 0" in body[skip:], body
     print("install_hooks self-test: ok")
 
 
