@@ -414,8 +414,6 @@ const RING_GAME_WAITING: usize = 72;
 /// the age of the picture in the debug overlay: the end of the wait of the frame before
 /// ([`crate::pacing`] at the start of the frame, else after the wait at Present).
 pub(crate) static FRAME_START: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-/// The game waits this long for room in the ring. Then it ends the stream: the host is gone.
-const RING_WAIT_SECONDS: i64 = 10;
 
 struct Ring {
     mapping: isize,
@@ -443,9 +441,9 @@ struct Ring {
     /// The host program did not read at all for the time limit of a wait. The game does not
     /// wait again before the host program reads.
     host_late: bool,
-    /// The ticks since which the host program read nothing while records waited, or 0.
-    still_since: i64,
-    /// The host program was ended for a stall (`EXIT_NOT_ANSWERING`): one time.
+    /// The times of the limit rule on a host program that reads nothing ([`Silence`]).
+    silence: Silence,
+    /// The plugin ended the host program (`end_host`): one time.
     ended: bool,
     /// The records that did not fit the ring and were dropped, and the largest of them in
     /// bytes; the textures sent level by level because their one record would not fit.
@@ -454,20 +452,55 @@ struct Ring {
     split_textures: u32,
 }
 
-/// The rule of a stalled host program, at the end of each frame: `read` is the bytes that the
-/// host program has read, `read_before` the same at the frame before, `pending` whether
-/// records wait for it, `still_since` the ticks since which the count has not moved (0 for
-/// none), `now` the ticks, `limit` the seconds the host program has
-/// (`stream_format::not_answering_limit` of its allowance word). Gives the new `still_since`,
-/// and true when the count has not moved for the limit while records waited: the host
-/// program is stalled. This rule finds a stall before the ring is full; a full ring waits
-/// [`RING_WAIT_SECONDS`] in `push`.
-fn host_still(read: u64, read_before: u64, pending: bool, still_since: i64, now: i64, limit: u64) -> (i64, bool) {
-    if !pending || read != read_before {
-        return (0, false);
+/// The times of the one limit of the plugin on a host program that reads no record while
+/// records wait (the failure-path design, section 6.0), at the end of a frame and in the wait
+/// for room in a full ring alike. The rule is `stream_format::limit`, from the two words that
+/// the host program writes; this keeps the times that it needs.
+#[derive(Default)]
+struct Silence {
+    /// The read counter at the last look.
+    last_read: u64,
+    /// The ticks since which the counter has not moved while records waited, or 0.
+    still_since: i64,
+    /// The ticks of the first look that saw an announced exit, or 0.
+    ending_since: i64,
+}
+
+/// What a look of [`Silence`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    /// Nothing to do: the host program reads, nothing waits for it, or its limit is ahead.
+    Wait,
+    /// No exit announced, and no read for this many seconds: the plugin ends the host program
+    /// with `EXIT_NOT_ANSWERING`.
+    NotAnswering(u64),
+    /// An exit announced, and the host program did not end in `stream_format::ENDING_SECONDS`
+    /// (its dump hangs): the plugin ends it with this announced code.
+    EndingLate(u32),
+}
+
+impl Silence {
+    /// One look: `read` is the read counter, `pending` whether records wait for the host
+    /// program, `ending` and `allowance` its two words of the ring head, `now` and `second`
+    /// ticks.
+    fn look(&mut self, read: u64, pending: bool, ending: u32, allowance: u32, now: i64, second: i64) -> Verdict {
+        let moved = read != self.last_read;
+        self.last_read = read;
+        if !pending || moved {
+            self.still_since = 0;
+        } else if self.still_since == 0 {
+            self.still_since = now;
+        }
+        if ending != 0 && self.ending_since == 0 {
+            self.ending_since = now;
+        }
+        match crate::stream_format::limit(ending, allowance) {
+            crate::stream_format::Limit::None => Verdict::Wait,
+            crate::stream_format::Limit::Ending(seconds) if now - self.ending_since > seconds as i64 * second => Verdict::EndingLate(ending),
+            crate::stream_format::Limit::Silence(seconds) if self.still_since != 0 && now - self.still_since > seconds as i64 * second => Verdict::NotAnswering(seconds),
+            _ => Verdict::Wait,
+        }
     }
-    let since = if still_since == 0 { now } else { still_since };
-    (since, now - since > limit as i64 * ticks_per_second())
 }
 
 impl Ring {
@@ -497,7 +530,7 @@ impl Ring {
         read_name.push(0);
         let read_event = CreateEventA(core::ptr::null(), 0, 0, read_name.as_ptr());
         crate::pacing::start(mapping, name);
-        Ok(Ring { mapping, base, capacity, event, wakes: 0, read_event, read_waits: 0, read_wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false, dropped: 0, largest_dropped: 0, split_textures: 0, still_since: 0, ended: false })
+        Ok(Ring { mapping, base, capacity, event, wakes: 0, read_event, read_waits: 0, read_wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false, dropped: 0, largest_dropped: 0, split_textures: 0, silence: Silence::default(), ended: false })
     }
 
     unsafe fn counter(&self, offset: usize) -> &core::sync::atomic::AtomicU64 {
@@ -554,8 +587,15 @@ impl Ring {
         let written = self.counter(RING_WRITTEN).load(Ordering::Relaxed);
         if self.capacity - (written - self.counter(RING_READ).load(Ordering::Acquire)) < total {
             let start = ticks();
-            while self.capacity - (written - self.counter(RING_READ).load(Ordering::Acquire)) < total {
-                if ticks() - start > RING_WAIT_SECONDS * ticks_per_second() {
+            loop {
+                let read = self.counter(RING_READ).load(Ordering::Acquire);
+                if self.capacity - (written - read) >= total {
+                    break;
+                }
+                // The limit rule ends a silent host program; a host program that ended (a
+                // refusal after its box) ends the wait at once, and the frame end reads its
+                // exit code (`check_host`).
+                if self.look_at_host(read, true, ticks()) || crate::own_device::host_ended() {
                     return false;
                 }
                 self.wait_for_read();
@@ -611,24 +651,43 @@ impl Ring {
             }
             self.paced += ticks() - start;
         }
-        // The limit of a stall: the allowance that the helper writes for a step of its frame
-        // thread (5 s, 30 s while it loads) and 5 s more, so that its watchdog acts first; 60 s
-        // before its frames start.
-        let allowance = (*(self.base.add(crate::stream_format::RING_ALLOWANCE) as *const core::sync::atomic::AtomicU32)).load(Ordering::Acquire);
-        let limit = crate::stream_format::not_answering_limit(allowance);
-        let (still_since, stalled) = host_still(read, self.read_before, read < self.frame_before, self.still_since, start, limit);
-        self.still_since = still_since;
-        if stalled && !self.ended {
-            // The host program is ended with the code that names the reason: `check_host`
-            // finds the code at the next frame end and runs the failure path.
-            self.ended = true;
-            crate::log!("stream: the host program read no record for {limit} s while records waited (its allowance {allowance} s); it is ended");
-            crate::failure::not_answering_after(limit);
-            crate::own_device::end_host(crate::stream_format::EXIT_NOT_ANSWERING);
-        }
+        self.look_at_host(read, read < self.frame_before, start);
         self.read_before = read;
         self.frame_before = self.counter(RING_WRITTEN).load(Ordering::Relaxed);
         crate::pacing::frame_end(self.frame_before, start);
+    }
+
+    /// A word of the ring head that the host program writes.
+    unsafe fn head_word(&self, offset: usize) -> u32 {
+        (*(self.base.add(offset) as *const core::sync::atomic::AtomicU32)).load(Ordering::Acquire)
+    }
+
+    /// The limit rule at one look ([`Silence`]), with the host program's two words: the
+    /// allowance (5 s for a step of its frame thread, 30 s while it loads, 0 before its
+    /// frames) and its announced exit. Ends the host program when its limit is passed, with
+    /// the code that names the reason: `check_host` finds the code at the frame end and runs
+    /// the failure path. True when the plugin has ended it, now or before.
+    unsafe fn look_at_host(&mut self, read: u64, pending: bool, now: i64) -> bool {
+        let ending = self.head_word(crate::stream_format::RING_ENDING);
+        let allowance = self.head_word(crate::stream_format::RING_ALLOWANCE);
+        let verdict = self.silence.look(read, pending, ending, allowance, now, ticks_per_second());
+        if self.ended {
+            return true;
+        }
+        match verdict {
+            Verdict::Wait => return false,
+            Verdict::NotAnswering(limit) => {
+                crate::log!("stream: the host program read no record for {limit} s while records waited (its allowance {allowance} s); it is ended");
+                crate::failure::not_answering_after(limit);
+                crate::own_device::end_host(crate::stream_format::EXIT_NOT_ANSWERING);
+            }
+            Verdict::EndingLate(code) => {
+                crate::log!("stream: the helper's dump did not finish in {} s (it announced the exit code {code:#x}); it is ended with that code", crate::stream_format::ENDING_SECONDS);
+                crate::own_device::end_host(code);
+            }
+        }
+        self.ended = true;
+        true
     }
 
     unsafe fn close(&mut self) {
@@ -1243,8 +1302,9 @@ unsafe fn begin(lock: &DeviceLock, out: Sink, warmup: u32, frames: u32) {
     ACTIVE.store(true, Ordering::Relaxed);
 }
 
-/// A writer on another thread found the ring full for [`RING_WAIT_SECONDS`]: the main thread
-/// ends the stream at the end of its frame (`frame_end`).
+/// A writer found that the host program ended while the ring was full, or the plugin ended it
+/// there, possibly on another thread: the main thread ends the stream at the end of its frame
+/// (`frame_end`).
 static STOP_ASKED: AtomicBool = AtomicBool::new(false);
 
 /// Ends the capture or the stream.
@@ -1560,12 +1620,10 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
         }
         Some(Sink::Ring(ring)) => {
             if !ring.push(tag, parts) {
-                crate::log!("stream: the host did not read for {RING_WAIT_SECONDS} s; the stream ends");
+                crate::log!("stream: the host program ended, or the plugin ended it, while the ring was full; the stream ends");
                 s.failed = true;
-                // The host program is ended with the code that names the reason: the main
-                // thread finds the code at its frame end and runs the failure path.
-                crate::failure::not_answering_after(RING_WAIT_SECONDS as u64);
-                crate::own_device::end_host(crate::stream_format::EXIT_NOT_ANSWERING);
+                // The main thread finds the exit code at its frame end and runs the failure
+                // path (`check_host`).
                 // The main thread ends the stream at the end of its frame: `stop` walks the
                 // tables the main thread owns and unmaps the ring it reads, and a writer can
                 // be on another thread (the engine's cell worker makes textures) or hold
@@ -2108,8 +2166,15 @@ unsafe fn frame_end(lock: &DeviceLock) {
     // host program that ended reads no record again: no write waits for it in a full ring
     // (`write` returns at a failed ring), and the stream ends at this frame end.
     #[cfg(not(test))]
-    if crate::own_device::check_host() {
-        host_gone(lock);
+    {
+        // The allowance word names the watchdog's limit in the box of a stall.
+        let allowance = state(lock).and_then(|s| match s.out.as_ref() {
+            Some(Sink::Ring(ring)) => Some(ring.head_word(crate::stream_format::RING_ALLOWANCE)),
+            _ => None,
+        });
+        if crate::own_device::check_host(allowance.unwrap_or(0)) {
+            host_gone(lock);
+        }
     }
     if STOP_ASKED.swap(false, Ordering::AcqRel) {
         stop();
@@ -2223,21 +2288,43 @@ const DEVICE_WINDOW: usize = crate::gen::layouts::NiDX8Renderer::d3dPresentParam
 mod stall_tests {
     use super::*;
 
+    const SECOND: i64 = 1000;
+
     #[test]
     fn a_count_that_does_not_move_while_records_wait_is_a_stall_after_the_limit() {
-        let second = ticks_per_second();
-        // The count moves: no stall, and no start of one.
-        assert_eq!(host_still(200, 100, true, 0, 10 * second, 10), (0, false));
-        // The count stands while records wait: the stall starts now.
-        assert_eq!(host_still(200, 200, true, 0, 10 * second, 10), (10 * second, false));
-        // Still standing, under the limit.
-        assert_eq!(host_still(200, 200, true, 10 * second, 19 * second, 10), (10 * second, false));
-        // Over the limit.
-        assert_eq!(host_still(200, 200, true, 10 * second, 21 * second, 10), (10 * second, true));
-        // The limit of a load (35 s): the same stand is no stall yet.
-        assert_eq!(host_still(200, 200, true, 10 * second, 21 * second, 35), (10 * second, false));
+        let mut silence = Silence::default();
+        // The count moves: no stall.
+        assert_eq!(silence.look(200, true, 0, 5, 10 * SECOND, SECOND), Verdict::Wait);
+        // The count stands while records wait: the stall starts now; the limit is 5 s + 5 s.
+        assert_eq!(silence.look(200, true, 0, 5, 11 * SECOND, SECOND), Verdict::Wait);
+        assert_eq!(silence.look(200, true, 0, 5, 20 * SECOND, SECOND), Verdict::Wait);
+        assert_eq!(silence.look(200, true, 0, 5, 22 * SECOND, SECOND), Verdict::NotAnswering(10));
+        // The limit of a load (30 s + 5 s): the same stand is no stall yet.
+        assert_eq!(silence.look(200, true, 0, 30, 22 * SECOND, SECOND), Verdict::Wait);
         // Nothing waits for the host program: no stall, whatever the count.
-        assert_eq!(host_still(200, 200, false, 10 * second, 30 * second, 10), (0, false));
+        assert_eq!(silence.look(200, false, 0, 5, 60 * SECOND, SECOND), Verdict::Wait);
+        assert_eq!(silence.look(200, true, 0, 5, 61 * SECOND, SECOND), Verdict::Wait);
+    }
+
+    #[test]
+    fn an_announced_refusal_has_no_limit() {
+        let mut silence = Silence::default();
+        assert_eq!(silence.look(200, true, 11, 30, SECOND, SECOND), Verdict::Wait);
+        // The box is up for 10 minutes: no limit ends the host program.
+        assert_eq!(silence.look(200, true, 11, 30, 600 * SECOND, SECOND), Verdict::Wait);
+        assert_eq!(silence.look(200, true, 10, 0, 600 * SECOND, SECOND), Verdict::Wait);
+    }
+
+    #[test]
+    fn another_announced_exit_has_10_s_from_its_first_sight() {
+        let mut silence = Silence::default();
+        // The count stood for 30 s before the watchdog announced its exit: the 10 s start at
+        // the announcement, not at the stand.
+        assert_eq!(silence.look(200, true, 0, 30, SECOND, SECOND), Verdict::Wait);
+        assert_eq!(silence.look(200, true, 0, 30, 2 * SECOND, SECOND), Verdict::Wait);
+        assert_eq!(silence.look(200, true, 30, 30, 32 * SECOND, SECOND), Verdict::Wait);
+        assert_eq!(silence.look(200, true, 30, 30, 42 * SECOND, SECOND), Verdict::Wait);
+        assert_eq!(silence.look(200, true, 30, 30, 43 * SECOND, SECOND), Verdict::EndingLate(30));
     }
 }
 

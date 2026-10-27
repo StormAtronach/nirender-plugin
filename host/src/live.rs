@@ -2,7 +2,7 @@
 //! the frames go into a window.
 
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -55,6 +55,22 @@ const RING_DONE_TIME: usize = 56;
 /// writes a frame this program waits for the records awake ([`Ring::game_phase`]).
 const RING_NEXT_START: usize = 64;
 
+/// The word [`RING_ENDING`](super::stream_format::RING_ENDING) of the ring head, or null
+/// before the ring is open: [`announce_exit`] writes it from any thread.
+static ENDING_WORD: AtomicPtr<AtomicU32> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Tells the plugin that this program ends with `code` on purpose: its limits then follow the
+/// code (`stream_format::limit`), not the read counter. Without a ring (a replay, the program
+/// on its own) it does nothing.
+pub(crate) fn announce_exit(code: u32) {
+    let word = ENDING_WORD.load(Ordering::Acquire);
+    if !word.is_null() {
+        // SAFETY: the pointer is into the head of the ring, which stays mapped until the end
+        // of the program (the ring is never unmapped), and is 4-aligned for the AtomicU32.
+        unsafe { (*word).store(code, Ordering::Release) };
+    }
+}
+
 /// Where the game is when this program has no record: [`Ring::game_phase`].
 #[derive(Clone, Copy, PartialEq)]
 enum GamePhase {
@@ -106,6 +122,8 @@ impl Ring {
                 // SAFETY: the name is a NUL-ended byte string that lives for the call; a
                 // missing event gives 0, which the reader tests before each use.
                 let read_event = unsafe { OpenEventA(0x1F0003, 0, read_name.as_ptr()) };
+                // SAFETY: the offset of the word is inside the mapped head of the ring.
+                ENDING_WORD.store(unsafe { base.add(super::stream_format::RING_ENDING) }.cast(), Ordering::Release);
                 return Ring { base, capacity, event, shown_event, read_event };
             }
             assert!(start.elapsed() < Duration::from_secs(60), "no shared memory with the name {name}");
@@ -670,10 +688,7 @@ impl App {
             Ok(made) => made,
             // No backend serves: the reason in the log and the box, then the exit code the
             // plugin knows (the failure-path page, the code 20).
-            Err(refusals) => {
-                crate::request::refuse_live(&refusals);
-                std::process::exit(crate::stream_format::EXIT_GPU as i32);
-            }
+            Err(refusals) => crate::request::refuse_live(&refusals),
         };
         let surface = surface.expect("a surface");
         let vsync = self.extension.as_ref().is_some_and(|extension| extension.vsync());
@@ -1103,8 +1118,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
             for line in message.lines() {
                 println!("{line}");
             }
-            super::gpu::stop_box(&format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."));
-            super::gpu::exit_now(super::stream_format::EXIT_STREAM_FORMAT);
+            super::gpu::refuse(super::stream_format::EXIT_STREAM_FORMAT, &format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."));
         }
     }
     let size = (super::word(&data, 0).max(64), super::word(&data, 4).max(64));

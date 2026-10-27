@@ -25,7 +25,7 @@
 //! | 1 to 9 | its IPC host mode (`error.rs` of mgeHost64) |
 //! | 10 to 29 | a refusal with a message box of its own: 10 the stream format, 11 the extension format, 20 the GPU or the window ([`EXIT_GPU`]) |
 //! | 30 | the watchdog of the helper: its frame thread made no progress for [`STALL_SECONDS`]; numidium.dmp written |
-//! | 31 | the plugin ended the helper: no read of the ring for [`not_answering_limit`] of its allowance |
+//! | 31 | the plugin ended the helper: no read of the ring for the limit of its allowance ([`limit`]) |
 //! | 0xc0000409 | a Rust panic (the fast fail of the abort); numidium.dmp written by the panic hook |
 //! | other 0xC... | an exception (0xc0000005 an access violation); numidium.dmp written by the exception filter |
 //!
@@ -52,8 +52,9 @@
 //! | 64 | i64 | plugin | the start of the next frame of the game, ticks |
 //! | 72 | u32 | plugin | the game waits for the helper (Ryker's `fix/plugin-limits`) |
 //! | 76 | u32 | helper | [`RING_ALLOWANCE`]: the seconds a step of the helper's frame thread may take |
+//! | 80 | u32 | helper | [`RING_ENDING`]: the exit code that the helper announced, 0 for none |
 //!
-//! The free area of the ring head: 80 to 127.
+//! The free area of the ring head: 84 to 127.
 
 /// The format of the stream that this build writes and reads.
 pub const STREAM_FORMAT: u32 = 1;
@@ -81,7 +82,7 @@ pub const EXIT_GPU: u32 = 20;
 
 /// The watchdog of the helper found its frame thread stalled and ended the program.
 pub const EXIT_STALLED: u32 = 30;
-/// The plugin ended the helper, which read no record for 10 s.
+/// The plugin ended the helper, which read no record for the limit of [`limit`].
 pub const EXIT_NOT_ANSWERING: u32 = 31;
 /// The seconds without a step of the frame thread after which the watchdog ends the helper.
 pub const STALL_SECONDS: u64 = 5;
@@ -99,6 +100,42 @@ pub const ALLOWANCE_MARGIN_SECONDS: u64 = 5;
 /// The seconds the plugin gives the helper while the allowance word is 0: the helper's own
 /// limit for its first record (`live.rs`).
 pub const FIRST_RECORD_SECONDS: u64 = 60;
+
+/// The word of the ring head where the helper announces its exit before it ends on purpose:
+/// the code it will exit with, 0 while it announced none (and from a helper older than the
+/// word). A refusal writes its code (10 to 29) before its box (`gpu::refuse` of the host
+/// crate), so that no limit ends the helper while the player reads the box.
+pub const RING_ENDING: usize = 80;
+/// The seconds the plugin gives a helper that announced an exit outside 10 to 29 (a crash or a
+/// stall that writes its dump), from the first look that sees the announcement; then the
+/// plugin ends the helper with the announced code.
+pub const ENDING_SECONDS: u64 = 10;
+
+/// The one limit of the plugin on a helper that reads no record while records wait, at the
+/// end of a frame and in the wait for room in a full ring alike, from the two words that the
+/// helper writes ([`RING_ENDING`], [`RING_ALLOWANCE`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    /// No exit announced: the read counter unchanged for this many seconds is a stall, and
+    /// the plugin ends the helper with [`EXIT_NOT_ANSWERING`].
+    Silence(u64),
+    /// A refusal is announced: its box is up, and the helper ends when the player closes it.
+    None,
+    /// Another exit is announced: this many seconds after the plugin saw it, the plugin ends
+    /// the helper with the announced code.
+    Ending(u64),
+}
+
+/// The limit for the announced exit `ending` and the allowance word `allowance`.
+pub fn limit(ending: u32, allowance: u32) -> Limit {
+    if ending == 0 {
+        Limit::Silence(not_answering_limit(allowance))
+    } else if helper_said_why(ending) {
+        Limit::None
+    } else {
+        Limit::Ending(ENDING_SECONDS)
+    }
+}
 
 /// The seconds without a read, while records wait, after which the plugin ends the helper
 /// with [`EXIT_NOT_ANSWERING`], for the allowance word of the ring head.
@@ -219,6 +256,17 @@ mod tests {
         // The IPC host mode's codes, a stall and the codes of Windows for a crash are not.
         assert!(!helper_said_why(0) && !helper_said_why(3) && !helper_said_why(30) && !helper_said_why(0xC000_0409));
         assert!(!helper_said_why(EXIT_STALLED) && !helper_said_why(EXIT_NOT_ANSWERING));
+    }
+
+    #[test]
+    fn an_announced_refusal_has_no_limit_and_another_exit_10_s() {
+        assert_eq!(limit(0, STALL_SECONDS as u32), Limit::Silence(10));
+        assert_eq!(limit(0, 0), Limit::Silence(60));
+        assert_eq!(limit(EXIT_STREAM_FORMAT, 5), Limit::None);
+        assert_eq!(limit(EXIT_EXTENSION_FORMAT, 30), Limit::None);
+        assert_eq!(limit(EXIT_GPU, 0), Limit::None);
+        assert_eq!(limit(EXIT_STALLED, 30), Limit::Ending(10));
+        assert_eq!(limit(0xC000_0409, 5), Limit::Ending(10));
     }
 
     #[test]

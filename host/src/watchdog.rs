@@ -8,7 +8,9 @@
 //! [`LOADING_SECONDS`]: a load of the distant land can hold a frame for seconds. The helper
 //! writes its allowance of the moment into the ring head ([`allowance`],
 //! `stream_format::RING_ALLOWANCE`), so that the plugin's own limit is always later.
-//! `MGE_XE_WATCHDOG=0` leaves the watchdog off, for a test of the plugin's own limit.
+//! `MGE_XE_WATCHDOG=0` leaves the watchdog off, for a test of the plugin's own limit. A
+//! refusal disarms it before its box ([`disarm`], `gpu::refuse`): the box waits for the
+//! player inside a step, and the program ends on purpose after it.
 //!
 //! The frame thread does two atomic writes for each step and reads no clock; the watchdog
 //! thread looks every [`LOOK_MS`] ms whether a step is in progress and whether the count of
@@ -26,6 +28,13 @@ const LOOK_MS: u64 = 250;
 static STEPS: AtomicU64 = AtomicU64::new(0);
 static IN_STEP: AtomicBool = AtomicBool::new(false);
 static LOADING: AtomicBool = AtomicBool::new(false);
+/// A refusal is in progress: the watchdog never ends the program after it.
+static DISARMED: AtomicBool = AtomicBool::new(false);
+
+/// Disarms the watchdog for good: the program ends on purpose (`gpu::refuse`).
+pub(crate) fn disarm() {
+    DISARMED.store(true, Ordering::Release);
+}
 
 /// A step of the frame thread: it ends when the guard drops.
 pub(crate) struct Step;
@@ -93,11 +102,13 @@ pub(crate) fn start() {
         .name("watchdog".into())
         .spawn(move || {
             let mut watch = Watch::default();
-            loop {
+            while !DISARMED.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(LOOK_MS));
                 let look = Look { steps: STEPS.load(Ordering::Relaxed), in_step: IN_STEP.load(Ordering::Acquire), loading: LOADING.load(Ordering::Relaxed) };
-                if let Some(seconds) = watch.look(look) {
-                    stalled(frame_thread, seconds);
+                // A refusal that came during the look ends the program itself.
+                match watch.look(look) {
+                    Some(seconds) if !DISARMED.load(Ordering::Acquire) => stalled(frame_thread, seconds),
+                    _ => {}
                 }
             }
         })

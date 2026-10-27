@@ -53,8 +53,10 @@ pub enum Cause {
     /// The process ended with an exit code that is not one of its own: the fast-fail code of
     /// a panic (0xc0000409), or the exception code of a fault.
     Crashed(u32),
-    /// The watchdog of the helper ended it (`EXIT_STALLED`).
-    Stalled,
+    /// The watchdog of the helper ended it (`EXIT_STALLED`) after a step of that many seconds:
+    /// its limit of the moment, which it writes as its allowance word (5 s, 30 s while its
+    /// extension loads).
+    Stalled(u64),
     /// The plugin ended it (`EXIT_NOT_ANSWERING`) after that many seconds without a read of the
     /// ring while records waited (`capture.rs`, the limit from the helper's allowance).
     NotAnswering(u64),
@@ -63,10 +65,12 @@ pub enum Cause {
 }
 
 impl Cause {
-    /// The cause behind an exit code of the helper that is not a refusal of its own.
-    pub fn of_exit_code(code: u32) -> Cause {
+    /// The cause behind an exit code of the helper that is not a refusal of its own;
+    /// `allowance` is the helper's allowance word (`stream_format::RING_ALLOWANCE`), 0 before
+    /// its frames start, when its watchdog has its first limit.
+    pub fn of_exit_code(code: u32, allowance: u32) -> Cause {
         match code {
-            EXIT_STALLED => Cause::Stalled,
+            EXIT_STALLED => Cause::Stalled(if allowance == 0 { STALL_SECONDS } else { u64::from(allowance) }),
             EXIT_NOT_ANSWERING => Cause::NotAnswering(NOT_ANSWERING_AFTER.load(Ordering::Relaxed)),
             other => Cause::Crashed(other),
         }
@@ -76,7 +80,7 @@ impl Cause {
     pub fn code(self) -> u32 {
         match self {
             Cause::Crashed(code) => code,
-            Cause::Stalled => EXIT_STALLED,
+            Cause::Stalled(_) => EXIT_STALLED,
             Cause::NotAnswering(_) => EXIT_NOT_ANSWERING,
             Cause::LostDevice => 0,
         }
@@ -89,7 +93,7 @@ impl Cause {
             // (`taskkill`, the task manager) or an exit that no code of the helper names.
             Cause::Crashed(0) => "ended without a reason (exit code 0)".to_string(),
             Cause::Crashed(code) => format!("crashed (exit code {code:#x})"),
-            Cause::Stalled => format!("stalled for {STALL_SECONDS} s (exit code {EXIT_STALLED})"),
+            Cause::Stalled(seconds) => format!("stalled for {seconds} s (exit code {EXIT_STALLED})"),
             Cause::NotAnswering(seconds) => format!("did not answer for {seconds} s (exit code {EXIT_NOT_ANSWERING})"),
             Cause::LostDevice => "lost its graphics device".to_string(),
         }
@@ -289,13 +293,16 @@ mod tests {
 
     #[test]
     fn the_words_name_the_cause_and_the_code() {
-        assert_eq!(Cause::of_exit_code(0xc000_0409).word(), "crashed (exit code 0xc0000409)");
-        assert_eq!(Cause::of_exit_code(30), Cause::Stalled);
-        assert_eq!(Cause::Stalled.word(), "stalled for 5 s (exit code 30)");
+        assert_eq!(Cause::of_exit_code(0xc000_0409, 5).word(), "crashed (exit code 0xc0000409)");
+        assert_eq!(Cause::of_exit_code(30, 5), Cause::Stalled(5));
+        assert_eq!(Cause::of_exit_code(30, 0), Cause::Stalled(5));
+        assert_eq!(Cause::Stalled(5).word(), "stalled for 5 s (exit code 30)");
+        // A stall while the extension loads: the box names the watchdog's 30 s.
+        assert_eq!(Cause::of_exit_code(30, 30).word(), "stalled for 30 s (exit code 30)");
         not_answering_after(10);
-        assert_eq!(Cause::of_exit_code(31).word(), "did not answer for 10 s (exit code 31)");
+        assert_eq!(Cause::of_exit_code(31, 5).word(), "did not answer for 10 s (exit code 31)");
         assert_eq!(Cause::NotAnswering(35).word(), "did not answer for 35 s (exit code 31)");
-        assert_eq!(Cause::of_exit_code(0).word(), "ended without a reason (exit code 0)");
+        assert_eq!(Cause::of_exit_code(0, 5).word(), "ended without a reason (exit code 0)");
         assert_eq!(Cause::LostDevice.word(), "lost its graphics device");
         assert_eq!(Cause::LostDevice.code(), 0);
         assert_eq!(Cause::Crashed(0xc000_0005).code(), 0xc000_0005);
@@ -303,7 +310,7 @@ mod tests {
 
     #[test]
     fn the_box_has_the_four_parts() {
-        let text = box_text(Cause::Stalled, &now_line(Some("MGE XE autosave 2026-10-27 12:00"), None));
+        let text = box_text(Cause::Stalled(5), &now_line(Some("MGE XE autosave 2026-10-27 12:00"), None));
         assert!(text.starts_with("The wgpu renderer of MGE XE (numidium.exe) has stopped.\nIt stalled for 5 s (exit code 30).\n\n"));
         assert!(text.contains("The game was saved as \"MGE XE autosave 2026-10-27 12:00\". Close this box: the game closes. Start it again and load the save."));
         assert!(text.ends_with("the minidump numidium.dmp after a crash of the renderer."));

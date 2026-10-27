@@ -74,8 +74,9 @@ pub fn game_window() -> usize {
 /// named in its own box. The host program ends after the game at the end of a session, so
 /// this finds a crash, its watchdog, `end_host` or a kill only. A device that the host
 /// program lost does not end it: the host program says so in a message (`capture.rs`).
-/// Returns true when the host program has ended: the stream then ends.
-pub unsafe fn check_host() -> bool {
+/// Returns true when the host program has ended: the stream then ends. `allowance` is the
+/// host program's allowance word (`stream_format::RING_ALLOWANCE`), for the box of a stall.
+pub unsafe fn check_host(allowance: u32) -> bool {
     let process = HOST_PROCESS.load(Ordering::Relaxed);
     // WAIT_OBJECT_0: the process has ended.
     if process == 0 || WaitForSingleObject(process, 0) != 0 {
@@ -92,7 +93,7 @@ pub unsafe fn check_host() -> bool {
         crate::log!("own device: the exit code is a refusal of the host program, which showed its message (nirender-host.log has the reason)");
         return true;
     }
-    crate::failure::found(crate::failure::Cause::of_exit_code(code));
+    crate::failure::found(crate::failure::Cause::of_exit_code(code, allowance));
     true
 }
 
@@ -106,12 +107,31 @@ pub unsafe fn check_host() -> bool {
 pub unsafe fn end_host(code: u32) {
     let process = HOST_PROCESS.load(Ordering::Relaxed);
     if process != 0 && TerminateProcess(process, code) != 0 {
+        crate::log!("own device: the host program is ended with the exit code {code}");
         // TerminateProcess returns before the process has ended. The wait lets the check of
         // the host at this frame end find the exit code before the stream stops
-        // (`capture::frame_end`): after the stop no frame end checks again.
-        WaitForSingleObject(process, 2000);
-        crate::log!("own device: the host program is ended with the exit code {code}");
+        // (`capture::frame_end`): after the stop no frame end checks again. The decision
+        // does not wait for it: the code and the box stand.
+        let started = std::time::Instant::now();
+        // WAIT_OBJECT_0: the process has ended.
+        if WaitForSingleObject(process, 2000) == 0 {
+            crate::log!("own device: the helper ended in {} ms", started.elapsed().as_millis());
+        } else {
+            crate::log!("own device: the helper had not ended after 2 s (a driver call); the plugin goes on");
+        }
     }
+}
+
+/// True when the host program that `start_stream` started has ended; its exit code stays for
+/// `check_host`. For the wait for room in a full ring (`capture.rs`).
+///
+/// # Safety
+///
+/// Called under the device lock, as `check_host` is: the handle is closed only there.
+pub unsafe fn host_ended() -> bool {
+    let process = HOST_PROCESS.load(Ordering::Relaxed);
+    // WAIT_OBJECT_0: the process has ended.
+    process != 0 && WaitForSingleObject(process, 0) == 0
 }
 
 /// The D3DCAPS8 of the device of the testing computer (MGE XE on DXVK), from

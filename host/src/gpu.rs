@@ -292,15 +292,23 @@ pub fn message_box(text: &str) {
     }
 }
 
-/// [`message_box`] for a refusal that stops the drawing; when the box closes, the game's
-/// window gets WM_CLOSE: the game closes (the close rule of the failure-path design). Without
-/// the game's window (a replay), only the box.
-pub fn stop_box(text: &str) {
+/// Ends this program on a refusal with the exit `code` (10 to 29: the stream, the extension,
+/// the GPU) and the box `text`; the caller logged its reason lines. A refusal is an exit in
+/// progress, not a stall (the failure-path design, section 6.0), so in this order: the
+/// watchdog is disarmed, the exit is announced to the plugin (`stream_format::RING_ENDING`),
+/// the box waits for the player, the game's window gets WM_CLOSE (the close rule of
+/// section 5; without the game's window, a replay, only the box), and the program ends with
+/// the code. Public for the extension's own refusals.
+pub fn refuse(code: u32, text: &str) -> ! {
+    crate::watchdog::disarm();
+    crate::live::announce_exit(code);
+    println!("refusal: the exit code {code} is announced; the box, then the end");
     message_box(text);
     let owner = OWNER_WINDOW.load(Ordering::Relaxed);
     if owner != 0 {
         close_window(owner);
     }
+    exit_now(code)
 }
 
 #[cfg(windows)]
