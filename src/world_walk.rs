@@ -49,10 +49,6 @@ pub unsafe fn install() {
     if installed() {
         return;
     }
-    if std::env::var("NIRENDER_WORLD_WALK").is_ok_and(|value| value == "0") {
-        crate::log!("world walk: NIRENDER_WORLD_WALK=0, the helper finds the world's start as before");
-        return;
-    }
     if let Err(error) = crate::mwse_native::claim(crate::mwse_native::NATIVE_OVERRIDE_CAMERA_ROOT_CULL_SHOW, click_cull_show as *const () as usize) {
         crate::log!("world walk: {error}: the helper finds the world's start as before");
         return;

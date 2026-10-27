@@ -84,10 +84,6 @@ pub unsafe fn install() {
     if INSTALLED.load(Ordering::Relaxed) {
         return;
     }
-    if std::env::var("NIRENDER_WORLD_LIGHTS").is_ok_and(|value| value == "0") {
-        crate::log!("world lights: NIRENDER_WORLD_LIGHTS=0, no lights of the world");
-        return;
-    }
     use crate::mwse_native::{subscribe, NATIVE_EVENT_LIGHT_PLACED, NATIVE_EVENT_LIGHT_REMOVED};
     if let Err(error) = subscribe(NATIVE_EVENT_LIGHT_REMOVED, removed) {
         crate::log!("world lights: {error}: no lights of the world");

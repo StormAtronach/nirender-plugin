@@ -148,11 +148,6 @@ The A/B:
   (`src/map_tiles.rs`).
 - `NIRENDER_READ_CACHE=0` turns off the cache of the reads of rendered textures
   (`src/own_host.rs`).
-- `NIRENDER_QUEUE_FLUSH=0` and `NIRENDER_WORLD_WALK=0`: the plugin takes no MWSE event for
-  the flush of the sorted queue and for the world's start; the helper places them as an older
-  capture has them.
-- `NIRENDER_WORLD_LIGHTS=0`: the plugin takes no MWSE light events; the helper's world mode
-  of the lights then has no lights.
 - `NIRENDER_PACE=0`: no pacing of the game to the helper (`src/pacing.rs`). The pacing waits
   at MWSE's start of a frame (native event 8, before the input of the frame) until the
   helper will need the frame, so that the picture is as new as the helper allows. Without it

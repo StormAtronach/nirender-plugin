@@ -31,10 +31,6 @@ pub unsafe fn install() {
     if installed() {
         return;
     }
-    if std::env::var("NIRENDER_QUEUE_FLUSH").is_ok_and(|value| value == "0") {
-        crate::log!("queue flush: NIRENDER_QUEUE_FLUSH=0, the helper places the flush as before");
-        return;
-    }
     if let Err(error) = crate::mwse_native::subscribe(crate::mwse_native::NATIVE_EVENT_ACCUMULATOR_FINISHED, accumulator_finished) {
         crate::log!("queue flush: {error}: the helper places the flush as before");
         return;
