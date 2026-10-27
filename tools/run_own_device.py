@@ -59,18 +59,22 @@ class Tee:
 
 
 def plugin_dll_of(argument, environment, default):
-    """The plugin DLL of a run: `--plugin-dll`, else the variable `NIRENDER_PLUGIN_DLL`, else
-    the release build of this repository."""
-    return argument or environment.get("NIRENDER_PLUGIN_DLL") or default
+    """The plugin DLL of a run and where it came from: `--plugin-dll`, else the variable
+    `NIRENDER_PLUGIN_DLL`, else the release build of this repository."""
+    if argument:
+        return argument, "--plugin-dll"
+    if environment.get("NIRENDER_PLUGIN_DLL"):
+        return environment["NIRENDER_PLUGIN_DLL"], "NIRENDER_PLUGIN_DLL"
+    return default, "the release build of this repository"
 
 
 def self_test():
     """The tests of the argument handling: no game, no build."""
     build = os.path.join("target", "akulakhan.dll")
-    assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == "E:/a.dll"
-    assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == "E:/b.dll"
-    assert plugin_dll_of(None, {}, build) == build
-    assert plugin_dll_of("", {}, build) == build
+    assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/a.dll", "--plugin-dll")
+    assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
+    assert plugin_dll_of(None, {}, build) == (build, "the release build of this repository")
+    assert plugin_dll_of("", {}, build)[0] == build
     import io
 
     console, log = io.StringIO(), io.StringIO()
@@ -164,7 +168,8 @@ def main():
         log = open(args.log, "w", encoding="utf-8", buffering=1)
         sys.stdout = Tee(sys.stdout, log)
         sys.stderr = Tee(sys.stderr, log)
-    session.DLL = plugin_dll_of(args.plugin_dll, os.environ, session.DLL)
+    session.DLL, source = plugin_dll_of(args.plugin_dll, os.environ, session.DLL)
+    print("plugin DLL: %s (%s)" % (session.DLL, source), flush=True)
     extra_files = [entry.split("=", 1) for entry in args.add_file]
     if any(len(pair) != 2 for pair in extra_files):
         raise SystemExit("--add-file takes SOURCE=PATH")

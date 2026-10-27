@@ -2,6 +2,7 @@
 
     python tools/check_readme.py
     python tools/check_readme.py --mge     # MGE XE's switches against its RENDERER.md
+    python tools/check_readme.py --mge --mge-dir DIR    # the same for another MGE XE tree
 
 1. Every switch (`NIRENDER_*`, `MGE_XE_*`) that the code names in quotes (the plugin, the host
    crate, the d3d8 crate, the tools and the Lua mod) is in README.md: the quoted name is the
@@ -60,7 +61,10 @@ def switches(repo, folders, document):
 
 def main():
     if "--mge" in sys.argv[1:]:
-        problems, read = switches(MGE, ("mgeHost64/src", "d3d8/src"), os.path.join(MGE, "RENDERER.md"))
+        # `--mge-dir DIR`: another MGE XE tree than the render-link sibling (a worktree's hook).
+        arguments = sys.argv[1:]
+        mge = arguments[arguments.index("--mge-dir") + 1] if "--mge-dir" in arguments else MGE
+        problems, read = switches(mge, ("mgeHost64/src", "d3d8/src"), os.path.join(mge, "RENDERER.md"))
         for problem in problems:
             print(problem)
         print(f"{len(read)} switches read in MGE XE's code, {len(problems)} problems")

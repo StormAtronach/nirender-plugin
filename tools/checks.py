@@ -3,6 +3,7 @@
     python -I tools/checks.py plugin    # the hook of this repository
     python -I tools/checks.py mge       # the hook of the MGE XE render-link worktree
     python -I tools/checks.py all       # both lists once (release.py)
+    python -I tools/checks.py mge --mge DIR    # the mge list against another MGE XE tree (a worktree's hook)
 
 The checks of each list:
 
@@ -16,7 +17,8 @@ The checks of each list:
 - `check_names.py` (docs): no skill names a switch or a Lua call the code lost.
 
 Each takes well under a second. A check whose repository is not on this machine is skipped
-with a line. The exit code is 1 when a check fails; its output is printed. `tools/docs.py`
+with a line; with `--strict` (release.py) such a check is a failure, since a release needs
+every check. The exit code is 1 when a check fails; its output is printed. `tools/docs.py`
 compiles, so it is not here: release.py runs it. `tools/install_hooks.py` writes the hooks.
 """
 import os
@@ -45,26 +47,52 @@ CHECKS = {
     "sharedse layouts": (PLUGIN / "tools" / "check_sharedse_layouts.py", REPOS / "MWSE" / "MWSE" / "SharedSE"),
     # The fixture test of the third-party notices writer of the release archive.
     "notices": (PLUGIN / "tools" / "third_party_notices.py", PLUGIN, ["--self-test"]),
+    # The tests of the pure parts of the release tool (the untracked-file stop, the tag name,
+    # the notes' Tested block).
+    "release": (PLUGIN / "tools" / "release.py", PLUGIN, ["--self-test"]),
     # The argument handling of the runner (--plugin-dll, --log).
     "runner": (PLUGIN / "tools" / "run_own_device.py", PLUGIN, ["--self-test"]),
+    # The adapter record of the replay gate.
+    "gate": (PLUGIN / "tools" / "validate_retained.py", PLUGIN, ["--self-test"]),
+    # The hook texts: the checks of the tree the commit is in.
+    "hooks": (PLUGIN / "tools" / "install_hooks.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "runner"],
+    "plugin": ["readme", "contract", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner", "gate", "hooks"],
     "mge": ["mge readme", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 
 
+# The option that gives each check of the MGE XE tree another tree than the render-link sibling
+# (`checks.py mge --mge DIR`: the pre-commit hook of a worktree).
+MGE_OPTION = {"mge readme": "--mge-dir", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge"}
+
+
 def main(argv):
-    which = argv[0] if argv else "all"
+    # `--strict`: a check that would be skipped is a failure (a release needs every check).
+    strict = "--strict" in argv
+    if "--mge" in argv and argv.index("--mge") + 1 >= len(argv):
+        raise SystemExit("usage: checks.py plugin|mge|all [--strict] [--mge DIR]: --mge needs the folder of the MGE XE tree")
+    mge = argv[argv.index("--mge") + 1] if "--mge" in argv else None
+    names = [argument for index, argument in enumerate(argv) if argument not in ("--strict", "--mge") and (index == 0 or argv[index - 1] != "--mge")]
+    which = names[0] if names else "all"
     if which not in LISTS:
-        raise SystemExit("usage: checks.py plugin|mge|all")
+        raise SystemExit("usage: checks.py plugin|mge|all [--strict] [--mge DIR]")
     failed, passed, skipped = [], [], []
     for name in LISTS[which]:
         script, needs, *rest = CHECKS[name]
-        args = rest[0] if rest else []
+        args = list(rest[0]) if rest else []
+        if mge and name in MGE_OPTION:
+            args += [MGE_OPTION[name], mge]
+            if needs == REPOS / "MGE-XE-G7-render-link":
+                needs = Path(mge)
         if not script.exists() or not needs.exists():
-            skipped.append(name)
+            if strict:
+                failed.append(name)
+                print("== the check '%s' cannot run (--strict): %s is not on this machine" % (name, script if not script.exists() else needs))
+            else:
+                skipped.append(name)
             continue
         run = subprocess.run([sys.executable, "-I", str(script), *args], cwd=script.parent, capture_output=True, text=True,
                              encoding="utf-8", errors="replace", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
