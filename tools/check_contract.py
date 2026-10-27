@@ -9,7 +9,13 @@
 3. Each function of MGE XE's d3d8.dll that the header declares (all but the host's own
    MGE_RenderLinkConnect) is looked up by its name in the plugin's `src` (GetProcAddress with
    b"NAME\0" or c"NAME"): the plugin uses each call of the contract.
-4. With --mge: each of those functions is an export of `d3d8/cpp/exports.def` there.
+4. With --mge: each of those functions is an export of `d3d8/cpp/exports.def` there, and
+   each `extern "C"` declaration or definition of it in `d3d8/cpp` has the header's return
+   type and parameter types (the names may differ), and no exception specification
+   (`noexcept`, `throw()`), which the C header cannot have. A file of d3d8.dll that sees both
+   declarations stops at a difference (C2382 on 2026-10-27, after the merge of step 3); d3d8's
+   build reads the header from the main nirender-plugin checkout, so a build of a branch can
+   miss it, and this check needs no compile.
 
 The exit code is 0 when all checks pass.
 """
@@ -51,6 +57,65 @@ def declared_functions(text):
     return sorted(set(names) - HOST_EXPORTS)
 
 
+SIGNATURE = r"(?:^|\n)[ \t]*%s([\w \t\*]+?)\s*__cdecl\s+(%s)\s*\(([^)]*)\)\s*(noexcept|throw\s*\(\s*\))?"
+
+
+def normal_type(text):
+    """A type as one spelling: single spaces, none around `*`."""
+    text = re.sub(r"\s+", " ", text.strip())
+    return re.sub(r"\s*\*\s*", "*", text)
+
+
+def parameter_types(parameters):
+    """The types of a parameter list, without the names."""
+    types = []
+    for parameter in [p.strip() for p in parameters.split(",") if p.strip()]:
+        if parameter != "void":
+            # The last word is the name, unless the parameter is only a type ending in `*`.
+            parameter = re.sub(r"(?<=[\w\*\]\s])\s*\b[A-Za-z_]\w*\s*(\[[^\]]*\])?$", lambda m: "*" if m.group(1) else "", parameter) or parameter
+        types.append(normal_type(parameter))
+    return types
+
+
+def signatures(text, names, extern_c):
+    """{name: [(return type, parameter types, exception specification)]} of the functions of
+    `names` that `text` declares or defines (with `extern "C"` first when `extern_c`)."""
+    found = {}
+    prefix = r'extern\s+"C"\s+' if extern_c else ""
+    for match in re.finditer(SIGNATURE % (prefix, "|".join(re.escape(n) for n in names)), text):
+        returned, name, parameters, exception = match.groups()
+        found.setdefault(name, []).append((normal_type(returned), parameter_types(parameters), exception))
+    return found
+
+
+def declaration_problems(header, cpp_files, names):
+    """The differences between the header's declaration of each function and d3d8's."""
+    problems = []
+    contract = signatures(header, names, False)
+    for path, text in cpp_files:
+        for name, found in signatures(text, names, True).items():
+            want = contract.get(name)
+            if not want:
+                continue
+            returned, parameters, _ = want[0]
+            for got_returned, got_parameters, exception in found:
+                if exception:
+                    problems.append("%s: %s is declared %s, and the contract (a C header) is not: a file that sees both stops (C2382)" % (path, name, exception))
+                if (got_returned, got_parameters) != (returned, parameters):
+                    problems.append("%s: %s is %s(%s), and the contract has %s(%s)" % (path, name, got_returned, ", ".join(got_parameters), returned, ", ".join(parameters)))
+    return problems
+
+
+def cpp_files(mge):
+    found = []
+    for root, _, files in os.walk(os.path.join(mge, "d3d8", "cpp")):
+        for name in files:
+            if name.endswith((".h", ".hpp", ".cpp")):
+                path = os.path.join(root, name)
+                found.append((os.path.relpath(path, mge).replace("\\", "/"), open(path, encoding="utf-8", errors="replace").read()))
+    return found
+
+
 def looked_up(name, sources):
     """True when a Rust text of `sources` looks the function up by its name."""
     return any('b"%s\\0"' % name in text or 'c"%s"' % name in text for text in sources)
@@ -85,6 +150,18 @@ def self_test():
     assert not looked_up("MGE_Log", rust)
     definition = "LIBRARY d3d8\nEXPORTS\nDirect3DCreate8=FakeDirect3DCreate\nMGE_LogLine\n; a note\nNirenderD3D8=MgeRendererWgpuActive\n"
     assert exported_names(definition) == {"Direct3DCreate8", "MGE_LogLine", "NirenderD3D8"}, exported_names(definition)
+    # The declarations of d3d8.dll against the contract's.
+    contract = "void __cdecl MGE_LogLine(const char* text);\nvoid __cdecl MGE_StreamSceneBegin(const MgeLinkSceneV1* scene);\n"
+    names = ["MGE_LogLine", "MGE_StreamSceneBegin"]
+    good = [("log.h", 'extern "C" void __cdecl MGE_LogLine(const char* line);\n'),
+            ("main.cpp", 'extern "C" void __cdecl MGE_StreamSceneBegin(const MgeLinkSceneV1 *packet) {\n')]
+    assert declaration_problems(contract, good, names) == [], declaration_problems(contract, good, names)
+    noexcept = [("log.h", 'extern "C" void __cdecl MGE_LogLine(const char* text) noexcept;\n')]
+    assert len(declaration_problems(contract, noexcept, names)) == 1 and "C2382" in declaration_problems(contract, noexcept, names)[0]
+    other = [("log.cpp", 'extern "C" int __cdecl MGE_LogLine(const wchar_t* text) {\n')]
+    assert len(declaration_problems(contract, other, names)) == 1
+    assert parameter_types("const char* text") == ["const char*"] and parameter_types("void") == ["void"]
+    assert parameter_types("uint32_t clientVersion") == ["uint32_t"] and parameter_types("double origin[3]") == ["double*"]
     print("check_contract self-test: ok")
 
 
@@ -129,6 +206,7 @@ def main():
         for name in functions:
             if name not in exported:
                 problems.append("%s is declared in the header and not exported in %s" % (name, definition))
+        problems += declaration_problems(text, cpp_files(args.mge), functions)
 
     for problem in problems:
         print("FAIL: " + problem)
