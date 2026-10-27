@@ -157,8 +157,8 @@ pub const NO_TABLE: &str = "the MWSE.dll of the game has no native ABI (MWSE_Get
 ///
 /// # Safety
 ///
-/// `listener` stays a valid function for as long as MWSE can call it: the plugin does not
-/// unsubscribe.
+/// `listener` stays a valid function until its subscription ends (`unsubscribe`): the
+/// plugin's listeners are functions of the DLL, which stays loaded.
 pub unsafe fn subscribe(event_id: u32, listener: Listener) -> Result<u32, String> {
     let api = api().ok_or_else(|| NO_TABLE.to_string())?;
     let mut handle = 0u32;
@@ -167,6 +167,18 @@ pub unsafe fn subscribe(event_id: u32, listener: Listener) -> Result<u32, String
         Ok(handle)
     } else {
         Err(format!("MWSE event {event_id}: {}", status_text(status)))
+    }
+}
+
+/// Ends a subscription that `subscribe` gave (its handle). Without MWSE's table nothing was
+/// subscribed, so nothing happens.
+///
+/// # Safety
+///
+/// On the main thread of the game, as every call of MWSE's table (MWSENativeApi.h).
+pub unsafe fn unsubscribe(handle: u32) {
+    if let Some(api) = api() {
+        (api.unsubscribe)(handle);
     }
 }
 
