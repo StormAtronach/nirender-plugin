@@ -10,7 +10,7 @@
 //! the state packet has.
 
 use core::mem::transmute;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
@@ -64,11 +64,26 @@ pub const OWN_FOG: u32 = 16384;
 /// blend at once, in the order of the scene, and the table draws it with the opaque.
 pub const NO_SORTER: u32 = 32768;
 
-static SENT: MainCell<Option<HashSet<u32>>> = MainCell::new(None);
+/// The handles given to a content, for the session: the check hash of the content
+/// ([`hash`]) and whether its record is sent now. A handle names one content for the whole
+/// session: a second content with the same handle steps to the next free handle
+/// (`handle_of`), and a handle whose record went (`MATERIAL_GONE`) keeps its content. The
+/// helper keeps the first content of a handle.
+static HANDLES: MainCell<Option<HashMap<u32, Handle>>> = MainCell::new(None);
+/// The steps past the handle of another content: one for each note of a content whose
+/// first handle another content has (a collision of the first hash).
+static COLLISIONS: MainCell<u64> = MainCell::new(0);
+
+#[derive(Clone, Copy)]
+struct Handle {
+    check: u32,
+    sent: bool,
+}
 static RECORDS: MainCell<u64> = MainCell::new(0);
 /// The records sent, by each device texture they name (its serial): a freed texture takes them
 /// with it (`drain_freed_textures`). A handle in a list can be stale (its record went with
-/// another texture): it goes only if it is still sent, and then it names this texture.
+/// another texture): it goes only if it is still sent, and then it names this texture (a
+/// handle names one content for the session, [`HANDLES`]).
 static BY_TEXTURE: MainCell<Option<HashMap<u32, Vec<u32>>>> = MainCell::new(None);
 /// The `MATERIAL_GONE` records sent.
 static GONE: MainCell<u64> = MainCell::new(0);
@@ -97,20 +112,49 @@ pub unsafe fn last_modelled(t: &MainThread) -> bool {
 }
 
 #[track_caller]
-fn sent<'a>(t: &'a MainThread) -> Open<'a, HashSet<u32>> {
-    SENT.get(t).map(|sent| sent.get_or_insert_with(HashSet::new))
+fn handles<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Handle>> {
+    HANDLES.get(t).map(|handles| handles.get_or_insert_with(HashMap::new))
 }
 
-/// Forgets the records that were sent: for a capture file from the stream.
+/// Takes the record of a handle off the sent ones. True when it was sent.
+fn unsend(t: &MainThread, handle: u32) -> bool {
+    handles(t).get_mut(&handle).is_some_and(|h| core::mem::replace(&mut h.sent, false))
+}
+
+/// Forgets the records that were sent: for a capture file from the stream. The handles keep
+/// their contents.
 pub unsafe fn reset(t: &MainThread) {
-    sent(t).clear();
+    for h in handles(t).values_mut() {
+        h.sent = false;
+    }
     by_texture(t).clear();
 }
 
 /// Forgets these records: the next draw with each content sends it again.
 pub unsafe fn forget(t: &MainThread, handles: &[u32]) {
-    for handle in handles {
-        sent(t).remove(handle);
+    for &handle in handles {
+        unsend(t, handle);
+    }
+}
+
+/// The handle of a content with the hash `first` and the check hash `check`, and whether its
+/// record must go now. The first free handle from `first` on, or the one that has this
+/// content.
+fn handle_of(t: &MainThread, first: u32, check: u32) -> (u32, bool) {
+    let mut table = handles(t);
+    let mut handle = first;
+    loop {
+        match table.get_mut(&handle) {
+            Some(h) if h.check == check => return (handle, !core::mem::replace(&mut h.sent, true)),
+            Some(_) => {
+                *COLLISIONS.get(t) += 1;
+                handle = handle.wrapping_add(1).max(1);
+            }
+            None => {
+                table.insert(handle, Handle { check, sent: true });
+                return (handle, true);
+            }
+        }
     }
 }
 
@@ -127,7 +171,7 @@ pub unsafe fn drain_freed_textures(t: &MainThread) {
     for texture in freed {
         let Some(handles) = by_texture(t).remove(&texture) else { continue };
         for handle in handles {
-            if sent(t).remove(&handle) {
+            if unsend(t, handle) {
                 crate::capture::material_gone(handle);
                 *GONE.get(t) += 1;
             }
@@ -136,7 +180,18 @@ pub unsafe fn drain_freed_textures(t: &MainThread) {
 }
 
 pub unsafe fn report(t: &MainThread) -> String {
-    format!("material: {} records, {} distinct, {} gone with their textures", *RECORDS.get(t), sent(t).len(), *GONE.get(t))
+    let (sent, all) = {
+        let table = handles(t);
+        (table.values().filter(|h| h.sent).count(), table.len())
+    };
+    format!(
+        "material: {} records, {} distinct sent now, {} handles in the session, {} gone with their textures, {} steps past the handle of another content (collisions of the first hash, at each note)",
+        *RECORDS.get(t),
+        sent,
+        all,
+        *GONE.get(t),
+        *COLLISIONS.get(t)
+    )
 }
 
 /// The device texture of a texture of the scene graph, from the texture manager of the
@@ -169,14 +224,17 @@ unsafe fn device_texture_address(renderer: usize, texture: usize) -> u32 {
     prepare(manager, texture, &mut created, &mut mipmapped) as u32
 }
 
-/// A hash of the words, one multiply and one rotation for each word: the record is hashed
-/// at every draw.
-fn hash(words: &[u32]) -> u32 {
-    let mut h: u32 = 0x811C_9DC5;
+/// Two hashes of the words, one multiply and one rotation for each word in each: the record
+/// is hashed at every draw. The first gives the handle; the second, with other constants, is
+/// the check that tells two contents with the same first hash apart (`handle_of`). The two
+/// run side by side in one pass.
+fn hash(words: &[u32]) -> (u32, u32) {
+    let (mut h, mut c): (u32, u32) = (0x811C_9DC5, 0x2545_F491);
     for &w in words {
         h = (h ^ w).wrapping_mul(0x9E37_79B1).rotate_left(13);
+        c = (c ^ w).wrapping_mul(0x85EB_CA77).rotate_left(17);
     }
-    h.max(1)
+    (h.max(1), c)
 }
 
 /// Notes the material of a shape that is about to be drawn: sends its record when the
@@ -369,8 +427,9 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
     w[1] = flags;
     *LAST_FLAGS.get(t) = flags;
 
-    let handle = hash(&w);
-    if sent(t).insert(handle) {
+    let (first, check) = hash(&w);
+    let (handle, new) = handle_of(t, first, check);
+    if new {
         crate::capture::material(handle, &w);
         *RECORDS.get(t) += 1;
         for at in TEXTURE_WORDS {
