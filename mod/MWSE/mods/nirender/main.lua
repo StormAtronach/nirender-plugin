@@ -114,9 +114,9 @@ elseif ownDevice then
         causes[#causes + 1] = string.format("the Morrowind Code Patch option \"%s\" (%s)", option.name, state)
         mwse.log("[nirender] the renderer is refused because of the Morrowind Code Patch option \"%s\" (feature %d), which is %s", option.name, option.id, state)
     end
-    local message = "MGE XE: the wgpu renderer is off for this session. See MWSE.log and nirender.log in the Morrowind folder."
+    local message = "MGE XE: the wgpu renderer is off for this session. See MWSE.log, and the lines of mgeXE.log that start with \"nirender: \", in the Morrowind folder."
     if #causes > 0 then
-        message = string.format("MGE XE: the wgpu renderer is off for this session. The cause is %s: change it with the Code Patch, or tell us. See nirender.log in the Morrowind folder.",
+        message = string.format("MGE XE: the wgpu renderer is off for this session. The cause is %s: change it with the Code Patch, or tell us. See the lines of mgeXE.log that start with \"nirender: \", in the Morrowind folder.",
             table.concat(causes, " and "))
     end
     event.register("loaded", function()

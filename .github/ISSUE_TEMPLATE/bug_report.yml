@@ -26,7 +26,7 @@ body:
     id: versions
     attributes:
       label: The versions from the logs
-      description: The first line of `nirender.log` and the first line of `nirender-host.log` (the Morrowind folder).
+      description: 'The line of `mgeXE.log` that starts with `nirender: nirender v`, and the first line of `nirender-host.log` (the Morrowind folder).'
       placeholder: "nirender v0.3.2; nirender-host v0.1.0, numidium v0.21.0"
     validations:
       required: true
@@ -65,11 +65,10 @@ body:
     id: files
     attributes:
       label: The files
-      description: Attach them to this report (drag them into the text box below). At least `nirender.log` and `nirender-host.log`. All of them are in the Morrowind folder; with Mod Organizer 2 and Root Builder they are in `overwrite\Root` of the instance after the game has ended. The logs and the dump attach as they are; zip `mgeXE.toml` and a save (`.ess`) before you attach them, since GitHub does not take those file types.
+      description: 'Attach them to this report (drag them into the text box below). At least `mgeXE.log` (it has the plugin''s lines, which start with `nirender: `) and `nirender-host.log`. All of them are in the Morrowind folder; with Mod Organizer 2 and Root Builder they are in `overwrite\Root` of the instance after the game has ended. The logs and the dump attach as they are; zip `mgeXE.toml` and a save (`.ess`) before you attach them, since GitHub does not take those file types.'
       options:
         - label: "`mgeXE.log`"
         - label: "`MWSE.log`"
-        - label: "`nirender.log`"
         - label: "`nirender-host.log`"
         - label: "`mgeXE.toml`"
         - label: "A capture `nirender-captures\\nirender-<date>.nircap` in the Morrowind folder: press F11 at the place of the problem (for a wrong picture or a missing object). The file holds the pictures and the textures of that place, so it can be large (a few MB to some hundred MB). Zip it; if it is still too large to attach, put it on a file host and paste the link."

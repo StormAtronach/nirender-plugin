@@ -92,10 +92,9 @@ def main():
         print("  " + open(run.path("host-%s.txt" % backend)).read().strip().replace("\n", "\n  "))
     for backend, path in screens:
         print("screen during the stream on %s: %s" % (backend, path))
-    if os.path.isfile(run.log):
-        for line in open(run.log, encoding="utf-8", errors="replace"):
-            if line.startswith(("stream:", "capture: end", "capture: the renderer", "own host")):
-                print("plugin: " + line.strip())
+    for line in run.plugin_lines():
+        if line.startswith(("stream:", "capture: end", "capture: the renderer", "own host")):
+            print("plugin: " + line.strip())
     problems = run.mge_problems()
     for problem in problems:
         print("  " + problem)

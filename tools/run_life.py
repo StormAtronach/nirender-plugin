@@ -98,10 +98,9 @@ def main():
     for process, _ in hosts:
         print("\nhost (exit code %s):" % process.returncode)
         print("  " + open(run.path("host.txt")).read().strip().replace("\n", "\n  "))
-    if os.path.isfile(run.log):
-        for line in open(run.log, encoding="utf-8", errors="replace"):
-            if line.startswith(("stream:", "capture: end", "own host")):
-                print("plugin: " + line.strip())
+    for line in run.plugin_lines():
+        if line.startswith(("stream:", "capture: end", "own host")):
+            print("plugin: " + line.strip())
 
     # The screenshot that the game wrote in this run, and the picture of the save.
     from PIL import Image

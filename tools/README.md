@@ -45,7 +45,7 @@ under the home folder.
 | `check_mwse_native.py` | The plugin's and MGE XE's copies of MWSE's native ABI against MWSE's header `MWSENativeApi.h`. |
 | `docs.py` | The rustdoc pages of the plugin, the host crate and the MGE XE helper, with the private items; fails on a broken link in a doc comment of our code; `target/docs.html` links the three (`--open`). `release.py` runs it. It runs cargo. |
 | `doc_links.py` | The names in backticks of the doc comments of one crate as links that rustdoc checks: it keeps the links that resolve and writes back the rest. Without `--apply` every file is restored. It runs cargo. |
-| `check_contract.py` | The render link contract: `contract/mge_render_link.h` against `src/link.rs`. |
+| `check_contract.py` | The render link contract: `contract/mge_render_link.h` against `src/link.rs` (the numbers and the struct sizes), and each function of d3d8.dll that the header declares is looked up by name in `src`; `--mge DIR` checks that d3d8.dll exports each of them (`d3d8/cpp/exports.def`); `--self-test` tests the parsing. |
 | `check_handshake.py` | The version handshake: the host crate reads the plugin's `src/stream_format.rs` (one STREAM_FORMAT); with `--mge`, MGE XE's MGE_EXTENSION_FORMAT equals the helper's EXTENSION_FORMAT. `checks.py` runs both. |
 | `check_comments_only.py` | That an edit changed comments only. |
 | `hand_offsets.py` | The engine field offsets written by hand outside `src/gen/layouts.rs`; `--check` fails on a file above its count in `hand_offsets.baseline`, `--update` lowers the counts. `checks.py` runs it. |
