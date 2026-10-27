@@ -1,7 +1,8 @@
 [toolchain]
-# The released compiler. The plugin uses no nightly feature: on 2026-10-20 stable 1.99.1
-# built and tested the plugin, the host crate and the d3d8 crate, and the game gate passed
-# on the DLL it made. MGE XE G7 keeps its own pin, a dated nightly for its dependencies; the
-# host crate builds under that pin when the helper is built there.
-channel = "stable"
-targets = ["i686-pc-windows-msvc"]
+# The same dated nightly as MGE XE G7 (its rust-toolchain.toml): the release builds the
+# plugin with that toolchain through `cargo xtask dist`, so the tests and the Clippy baseline
+# run on the compiler that ships (the owner's decision of 2026-10-27, D1 of the process
+# audit). The plugin uses no nightly feature: stable 1.99.1 built and tested it too. Bump
+# this date together with MGE XE G7's.
+channel = "nightly-2026-08-15"
+targets = ["i686-pc-windows-msvc", "x86_64-pc-windows-msvc"]

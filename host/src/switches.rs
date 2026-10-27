@@ -66,7 +66,7 @@ pub(crate) struct Switches {
     /// mouse's lag.
     pub(crate) frame_latency: Option<u32>,
     /// `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over
-    /// `AutoNoVsync`, for a test.
+    /// the setting of the extension ([`crate::Extension::vsync`]), for a test.
     pub(crate) present: Option<wgpu::PresentMode>,
     /// `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a
     /// child window of it: for an A/B of the mouse's lag.
@@ -114,7 +114,8 @@ impl Switches {
                 _ => None,
             },
             game_window: is("MGE_XE_WINDOW", "game"),
-            box_seconds: var("MGE_XE_BOX_SECONDS").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0),
+            // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
+            box_seconds: var("MGE_XE_BOX_SECONDS").and_then(|v| v.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600)),
         }
     }
 }

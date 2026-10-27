@@ -11,9 +11,11 @@ extern "system" {
     fn SetStdHandle(which: u32, handle: *mut core::ffi::c_void) -> i32;
 }
 
-/// Sends the text of this program, and the text of a failure, into a file.
+/// Sends the text of this program, and the text of a failure, into a file. The file of the
+/// run before is kept as `<path>.1`.
 pub(crate) fn log_to(path: &str) {
     use std::os::windows::io::IntoRawHandle;
+    crate::crash::rotate_log(std::path::Path::new(path));
     if let Ok(file) = std::fs::File::create(path) {
         let handle = file.into_raw_handle();
         // STD_OUTPUT_HANDLE and STD_ERROR_HANDLE
@@ -38,9 +40,11 @@ pub fn run(args: Vec<String>) {
 /// `run` with a program that draws more than the game does: in the live mode, and for a
 /// capture file.
 pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
-    if let Some(path) = option(&args, "--log") {
-        log_to(&path);
+    let log = option(&args, "--log");
+    if let Some(path) = &log {
+        log_to(path);
     }
+    crate::crash::install(crate::crash::dump_path(log.as_deref()));
     println!("{}", live::reader_build(extension.as_deref()));
     let backends = match option(&args, "--backend").as_deref() {
         Some("dx12") => wgpu::Backends::DX12,
@@ -61,8 +65,17 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     let mut at = 8;
     while at + 8 <= file.len() {
         let (tag, length) = (word(&file, at), word(&file, at + 4) as usize);
-        records.push((tag, &file[at + 8..at + 8 + length]));
+        // A record that runs past the end of the file: the file was cut, or its length word is
+        // wrong. The replay takes the records before it.
+        let Some(data) = (at + 8).checked_add(length).and_then(|end| file.get(at + 8..end)) else {
+            println!("record of the tag {tag} ({}) at the byte {at} of the capture: {} bytes, {length} needed: refused (it runs past the end of the file); the replay takes the {} records before it", tag::name(tag), file.len() - (at + 8), records.len());
+            break;
+        };
+        records.push((tag, data));
         at += 8 + length;
+    }
+    if at < file.len() && at + 8 > file.len() {
+        println!("capture: {} bytes after the last record are no whole record head: left out", file.len() - at);
     }
     let frames = records.iter().filter(|(tag, _)| *tag == tag::FRAME_END).count();
     // `--frames-at`: several frames of one replay, each into `<picture>-<frame as 5 digits>.png`
@@ -91,7 +104,10 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
             break;
         }
         if *tag == tag::CALL && word(data, 0) == CALL_VIEWPORT {
-            let viewport = &data[16 + word(data, 12) as usize * 4..];
+            // A short call, or an index past its end, has no viewport: the scan goes on.
+            let Some(viewport) = (word(data, 12) as usize).checked_mul(4).and_then(|index| data.get(16usize.saturating_add(index)..)) else {
+                continue;
+            };
             if viewport.len() >= 24 {
                 width = width.max(word(viewport, 0) + word(viewport, 8));
                 height = height.max(word(viewport, 4) + word(viewport, 12));

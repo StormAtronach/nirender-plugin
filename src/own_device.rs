@@ -88,7 +88,8 @@ pub unsafe fn check_host() {
     message_box(&format!(
         "The wgpu renderer of MGE XE ({name}) has stopped (exit code {code:#x}).\n\n\
          The game cannot show a new picture: close it with Alt+F4.\n\n\
-         The logs nirender-host.log and nirender.log in the folder of the game have the details."
+         The folder of the game has the details: the logs nirender-host.log, nirender.log and \
+         mgeHost64.log, and the minidump numidium.dmp after a crash of the renderer."
     ));
 }
 
@@ -115,7 +116,8 @@ pub unsafe fn message_box(text: &str) {
     let text = wide(text);
     let caption = wide("MGE XE");
     let flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
-    let seconds: u32 = std::env::var("MGE_XE_BOX_SECONDS").ok().and_then(|value| value.trim().parse().ok()).unwrap_or(0);
+    // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
+    let seconds: u32 = std::env::var("MGE_XE_BOX_SECONDS").ok().and_then(|value| value.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600));
     let started = std::time::Instant::now();
     if seconds == 0 {
         MessageBoxW(0, text.as_ptr(), caption.as_ptr(), flags);

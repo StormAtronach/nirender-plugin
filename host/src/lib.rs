@@ -44,6 +44,8 @@ mod picture;
 use picture::*;
 mod cli;
 use cli::*;
+mod crash;
+pub use crash::rotate_log;
 mod tag;
 // The one home of the stream format number, shared with the plugin crate (see the file).
 // Public: the program that has this crate as a part reads the exit codes.
@@ -78,6 +80,9 @@ mod engine;
 mod player;
 use engine::{plan, scene};
 mod retained;
+/// For the check of the world shader without a GPU in the helper of MGE XE (`shader_check`
+/// of mgeHost64): the text of an extension as the shader module takes it.
+pub use retained::rewrite_extension_text;
 mod uv_animation;
 mod morph;
 pub mod stamps;

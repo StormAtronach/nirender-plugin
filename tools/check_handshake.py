@@ -39,8 +39,16 @@ def check_plugin():
     host = read(os.path.join(REPO, "host", "src", "lib.rs"))
     if '#[path = "../../src/stream_format.rs"]' not in host:
         problems.append("host/src/lib.rs does not read src/stream_format.rs as a #[path] module")
-    if "STREAM_FORMAT" in host.replace("stream_format", ""):
-        problems.append("host/src/lib.rs names a STREAM_FORMAT of its own")
+    # One definition only: a second `const STREAM_FORMAT` anywhere in the two crates would
+    # be a second home that can drift.
+    for folder in ("src", os.path.join("host", "src")):
+        for root, _, names in os.walk(os.path.join(REPO, folder)):
+            for name in names:
+                path = os.path.join(root, name)
+                if not name.endswith(".rs") or os.path.samefile(path, home):
+                    continue
+                if re.search(r"\bconst\s+STREAM_FORMAT\b", read(path)):
+                    problems.append("%s defines a STREAM_FORMAT of its own" % os.path.relpath(path, REPO).replace("\\", "/"))
     return problems
 
 

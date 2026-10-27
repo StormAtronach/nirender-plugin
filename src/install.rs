@@ -160,10 +160,9 @@ pub unsafe fn install() -> Result<String, String> {
     shadow::set_main_thread();
     shadow::calibrate_stamps();
     crate::log!("{}", crate::cores::prefer_performance_cores());
-    // A panic of the Rust code ends the game. Its message and place go into the log first.
-    std::panic::set_hook(Box::new(|info| {
-        crate::log!("panic: {info}");
-    }));
+    // A panic of the Rust code ends the game. Its message, place and backtrace go into the
+    // log first, then MWSE's crash logger writes its crash log and minidump (`crash`).
+    crate::crash::install_panic_hook();
     crate::log!("x87 control word {:#06x}", x87::control_word());
 
     // The census runs before the detours, because the detours change the entry bytes.
