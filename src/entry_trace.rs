@@ -25,7 +25,7 @@ static LOGGED: std::sync::Mutex<Vec<(usize, usize, usize)>> = std::sync::Mutex::
 
 #[inline(always)]
 fn on() -> bool {
-    READ.call_once(|| ON.store(std::env::var("NIRENDER_ENTRY_TRACE").is_ok_and(|value| value == "1"), Ordering::Relaxed));
+    READ.call_once(|| ON.store(crate::switches::on("NIRENDER_ENTRY_TRACE") == Some(true), Ordering::Relaxed));
     ON.load(Ordering::Relaxed)
 }
 

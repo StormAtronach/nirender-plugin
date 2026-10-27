@@ -499,7 +499,7 @@ pub fn timing() -> bool {
         0 => false,
         1 => true,
         _ => {
-            let on = std::env::var("NIRENDER_PORT_TIMING").is_ok_and(|v| v == "1");
+            let on = crate::switches::on("NIRENDER_PORT_TIMING") == Some(true);
             TIMING.store(on as u8, Ordering::Relaxed);
             on
         }

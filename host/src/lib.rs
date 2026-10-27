@@ -73,7 +73,7 @@ use d3d::{address, attributes, blend_factor, color, compare, decode_dxt, expand_
 pub use d3d::{d3d_compare, d3d_stencil_operation};
 mod lights;
 use lights::{light_buffer, storage_buffer, Clusters, ExtensionLights};
-mod switches;
+pub mod switches;
 use switches::switches;
 mod particle_quads;
 mod engine;

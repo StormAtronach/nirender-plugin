@@ -46,6 +46,7 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     }
     crate::crash::install(crate::crash::dump_path(log.as_deref()));
     println!("{}", live::reader_build(extension.as_deref()));
+    switches::log_set();
     let backends = match option(&args, "--backend").as_deref() {
         Some("dx12") => wgpu::Backends::DX12,
         Some("vulkan") => wgpu::Backends::VULKAN,
