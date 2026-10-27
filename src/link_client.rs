@@ -1902,6 +1902,33 @@ mod resync_tests {
         0
     }
 
+    /// The fakes of the test in the statics of the link, and the test's thread as the main
+    /// thread. The drop puts all back, also when an assert of the test fails: else the fakes
+    /// stay for the later tests of the process, and a later thread with the same id would
+    /// count as the main thread.
+    struct Fakes {
+        main_thread_before: u32,
+    }
+
+    impl Fakes {
+        fn install(renderer: usize) -> Fakes {
+            let main_thread_before = crate::shadow::main_thread_for_test();
+            HOST.store(&HOST_OF_TEST as *const HostV1 as usize, Ordering::Relaxed);
+            RENDERER.store(renderer, Ordering::Relaxed);
+            Fakes { main_thread_before }
+        }
+    }
+
+    impl Drop for Fakes {
+        fn drop(&mut self) {
+            HOST.store(0, Ordering::Relaxed);
+            RENDERER.store(0, Ordering::Relaxed);
+            SUPPRESS.store(0, Ordering::Relaxed);
+            USED_FACTS.store(0, Ordering::Relaxed);
+            crate::shadow::restore_main_thread(self.main_thread_before);
+        }
+    }
+
     static HOST_OF_TEST: HostV1 = HostV1 {
         struct_size: size_of::<HostV1>() as u32,
         version: 1,
@@ -1943,11 +1970,9 @@ mod resync_tests {
         unsafe { (renderer.as_mut_ptr().add(R::d3dDevice) as *mut usize).write_unaligned(device) };
 
         // This thread is the main thread of the test: the notes of the device calls open the
-        // state only there.
-        crate::shadow::set_main_thread();
+        // state only there. The guard comes after the fakes, so it drops before them.
+        let _fakes = Fakes::install(renderer.as_ptr() as usize);
         let t = MainThread::for_test();
-        HOST.store(&HOST_OF_TEST as *const HostV1 as usize, Ordering::Relaxed);
-        RENDERER.store(renderer.as_ptr() as usize, Ordering::Relaxed);
         let identity: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
         // SAFETY: the matrix is 16 floats that live for the calls; the fakes above stand in
         // for the host, the renderer and the device for the whole test.
@@ -1959,8 +1984,6 @@ mod resync_tests {
             assert_eq!(use_facts(&t, 1 << FACT_DEVICE_TRANSFORMS), Some(1 << FACT_DEVICE_TRANSFORMS));
             assert_eq!(use_facts(&t, 0), Some(0));
         }
-        HOST.store(0, Ordering::Relaxed);
-        RENDERER.store(0, Ordering::Relaxed);
 
         assert_eq!(SET_TRANSFORMS.load(Ordering::Relaxed), 1, "resync made one SetTransform for the kept texture transform");
         assert_eq!(LAST_TRANSFORM.load(Ordering::Relaxed), D3DTS_TEXTURE0);
