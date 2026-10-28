@@ -94,6 +94,11 @@ impl Gamma {
         Gamma { layout, pipeline, table }
     }
 
+    /// The table of the ramp, for the scaled draw of `window_pass`.
+    pub(crate) fn table(&self) -> &wgpu::Buffer {
+        &self.table
+    }
+
     /// Writes the ramp into the table. The write lands before the command buffers of the next
     /// submit.
     pub(crate) fn set(&self, queue: &wgpu::Queue, ramp: &[u16]) {
