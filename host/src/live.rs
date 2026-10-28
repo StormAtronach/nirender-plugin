@@ -429,6 +429,8 @@ struct App {
     overlay: Option<super::overlay::Overlay>,
     /// The pass of the gamma ramp, made at the first ramp that is not the identity.
     gamma: Option<super::gamma::Gamma>,
+    /// The back buffer into the window: exact at the window's size, else scaled with its aspect.
+    to_window: super::window_pass::ToWindow,
     depth: Option<Rc<wgpu::TextureView>>,
     /// The back buffer of the game: the frames go into it, and then into the window. It
     /// keeps the last frame for a pixel read of the game.
@@ -562,19 +564,6 @@ fn take_gamma_ramp(gamma: &mut Option<super::gamma::Gamma>, player: &Player) {
     gamma.get_or_insert_with(|| super::gamma::Gamma::new(&renderer.device, renderer.target_format)).set(&renderer.queue, ramp);
 }
 
-/// The back buffer into the picture of the window, the part that the two have: through the
-/// gamma ramp of the device, or a plain copy for an identity ramp.
-fn to_window(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, gamma: Option<&super::gamma::Gamma>, back_buffer: &wgpu::Texture, window: &wgpu::Texture) {
-    match gamma {
-        Some(gamma) => gamma.draw(device, encoder, back_buffer, window),
-        None => encoder.copy_texture_to_texture(
-            back_buffer.as_image_copy(),
-            window.as_image_copy(),
-            wgpu::Extent3d { width: back_buffer.width().min(window.width()), height: back_buffer.height().min(window.height()), depth_or_array_layers: 1 },
-        ),
-    }
-}
-
 impl App {
     /// Sets the size of the picture in the window, and makes the depth buffer for it.
     fn configure(&mut self, width: u32, height: u32) {
@@ -613,7 +602,7 @@ impl App {
         let (device, queue) = (&player.renderer.device, &player.renderer.queue);
         let size = (frame.texture.width(), frame.texture.height());
         let mut encoder = device.create_command_encoder(&Default::default());
-        to_window(device, &mut encoder, self.gamma.as_ref().filter(|_| player.gamma_ramp.is_some()), back_buffer, &frame.texture);
+        self.to_window.draw(device, &mut encoder, self.gamma.as_ref().filter(|_| player.gamma_ramp.is_some()), back_buffer, &frame.texture);
         overlay.draw(device, queue, &mut encoder, &frame.texture.create_view(&Default::default()), size, Some(self.sign_step), &[], &Status::default());
         crate::gpu::submit(queue, [encoder.finish()]);
         queue.present(frame);
@@ -723,6 +712,21 @@ impl App {
         self.ring.set_allowance(super::watchdog::allowance());
     }
 
+    /// This program's window takes the size of the inside of the game's window: a fullscreen
+    /// game's window covers its monitor, and the player can resize a windowed game. The game's
+    /// window sends no event of its size to a window of another process, so its size is read at
+    /// each frame (one call). The surface follows through `Resized`.
+    fn follow_parent(&self) {
+        let (Some(window), Some(parent)) = (self.window.as_ref(), self.parent) else { return };
+        let mut rect = [0i32; 4];
+        unsafe { GetClientRect(parent, &mut rect) };
+        let parent_size = ((rect[2] - rect[0]).max(0) as u32, (rect[3] - rect[1]).max(0) as u32);
+        let own = window.inner_size();
+        if parent_size.0 != 0 && parent_size.1 != 0 && (own.width, own.height) != parent_size {
+            let _ = window.request_inner_size(PhysicalSize::new(parent_size.0, parent_size.1));
+        }
+    }
+
     /// The size of the inside of the window: of this program's window, else of the game's.
     fn window_size(&self) -> (u32, u32) {
         if let Some(window) = self.window.as_ref() {
@@ -780,6 +784,7 @@ impl ApplicationHandler for App {
             return self.finish(event_loop, "the window of the game is gone");
         }
         let size = self.size;
+        self.follow_parent();
         let (width, height) = self.window_size();
         self.configure(width, height);
         let waiting = Instant::now();
@@ -955,12 +960,13 @@ impl ApplicationHandler for App {
             }
             let gamma = self.gamma.as_ref().filter(|_| player.gamma_ramp.is_some());
             let overlay = self.overlay.as_mut();
+            let window_draw = &mut self.to_window;
             let mut read = None;
             player.end_frame(|encoder| {
-                // The picture goes into the window: the part that the two have, through the
-                // gamma ramp of the device.
+                // The picture goes into the window, through the gamma ramp of the device:
+                // exact at the window's size, else scaled with its aspect kept.
                 if let Some(frame) = frame.as_ref() {
-                    to_window(&device, encoder, gamma, back_buffer, &frame.texture);
+                    window_draw.draw(&device, encoder, gamma, back_buffer, &frame.texture);
                     // The debug overlay goes on the picture of the window, not into the
                     // back buffer: a picture file and a pixel read do not have it.
                     if let Some(overlay) = overlay {
@@ -1004,7 +1010,7 @@ impl ApplicationHandler for App {
                         view_formats: &[],
                     });
                     let mut encoder = device.create_command_encoder(&Default::default());
-                    to_window(&device, &mut encoder, gamma, back_buffer, &copy);
+                    super::window_pass::exact(&device, &mut encoder, gamma, back_buffer, &copy);
                     overlay.draw(&device, &queue, &mut encoder, &copy.create_view(&Default::default()), (width, height), None, &lines, &status);
                     let (buffer, row) = copy_picture(&device, &mut encoder, &copy, width, height);
                     crate::gpu::submit(&queue, [encoder.finish()]);
@@ -1158,6 +1164,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         player: None,
         overlay: None,
         gamma: None,
+        to_window: Default::default(),
         depth: None,
         in_frame: false,
         lost_told: false,

@@ -38,6 +38,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 pub mod depth;
 mod depth_merge;
 mod gamma;
+mod window_pass;
 mod late_depth;
 mod live;
 mod multisample;
