@@ -58,6 +58,9 @@ pub struct SceneView<'a> {
     pub target_format: wgpu::TextureFormat,
     pub depth_format: wgpu::TextureFormat,
     pub target_size: (u32, u32),
+    /// The number of the frame, as the renderer counts it (the number in its log lines, "a
+    /// buffer grew at frame N"): for an extension's log line of an event.
+    pub frame: u64,
     /// The samples for each pixel of the targets of the frame ([`Extension::samples`], cut to
     /// what the adapter has): a pipeline that draws into the pass of the game takes
     /// `multisample`. A pass on a texture of the extension has 1.
