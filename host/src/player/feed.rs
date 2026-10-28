@@ -853,6 +853,12 @@ impl Player {
             self.stream.shape_bones = None;
             return;
         }
+        // A draw that cannot change the picture (the faders at rest) is not drawn.
+        if material::keeps_picture(&m, colours[13]) {
+            self.renderer.counts.shape_keeping += 1;
+            self.stream.shape_bones = None;
+            return;
+        }
         for pass in 0..derived.passes.len() {
             let state = Pass::new(&derived, pass, &m, &self.renderer.textures, effects);
             // The flag 128: the draw goes into the picture of the character with the Code

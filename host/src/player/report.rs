@@ -73,7 +73,7 @@ impl Player {
             println!("records of a tag this build does not know: {}, skipped; the first tag {}", c.unknown_records, c.unknown_tag);
         }
         println!("{}", self.renderer.held_line());
-        println!("shapes: {} records, {} draws from them, {} without a geometry or a material", c.shape_records, c.shape_draws, c.shape_missing);
+        println!("shapes: {} records, {} draws from them, {} without a geometry or a material, {} that cannot change the picture (not drawn)", c.shape_records, c.shape_draws, c.shape_missing, c.shape_keeping);
         println!("instances: {} records and {} moves ({} checked against a full record, {} different), {} draws from them, {} draws of an instance not known, {} shape twins skipped, {} blends of the engine merged into the sorted list", c.instance_records, c.instance_moves, c.moves_checked, c.moves_different, c.instance_draws, c.instance_missing, c.shape_twins, c.merged_blends);
         println!(
             "sorted queue: {} places of the table's blends drawn in the engine's order, {} of an instance not known, {} outside the world scene, {} of an instance the table does not sort; {} sorted blends of the table without a place, not displayed by the engine ({} of them in frames with no place at all; {} of them drawn between by depth, from a stream without the places); {} places after the frame's first sorted blends; {} items of the table's blends before a depth clear after the world (the queue still open)",
