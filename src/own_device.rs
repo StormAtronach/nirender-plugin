@@ -337,10 +337,13 @@ unsafe fn read_monitors(s: &mut State) {
         return;
     }
     s.monitors = monitors::read();
-    crate::log!(
-        "own device: the DPI awareness of the game: {}",
-        monitors::dpi_awareness().unwrap_or("not known (no GetThreadDpiAwarenessContext before Windows 10, version 1607)")
-    );
+    // Once, also when the system gave no monitor (then the next call reads again).
+    if !DPI_LOGGED.swap(true, Ordering::Relaxed) {
+        crate::log!(
+            "own device: the DPI awareness of the game: {}",
+            monitors::dpi_awareness().unwrap_or("not known (no GetThreadDpiAwarenessContext before Windows 10, version 1607)")
+        );
+    }
     for (adapter, monitor) in s.monitors.iter().enumerate() {
         crate::log!(
             "own device: adapter {adapter}: {}{}, {} x {} at {}, {}, {} modes",
@@ -354,6 +357,9 @@ unsafe fn read_monitors(s: &mut State) {
         );
     }
 }
+
+/// The DPI line of the log, once.
+static DPI_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// The monitor of `adapter`, or None when the system gave no monitor.
 fn monitor(s: &State, adapter: u32) -> Option<&Monitor> {
@@ -461,7 +467,7 @@ unsafe extern "system" fn d3d_create_device(this: *mut Object, adapter: u32, _ki
     read_monitors(&mut s);
     s.adapter = adapter;
     s.focus_window = window;
-    accept_parameters(&mut s, parameters);
+    let placement = accept_parameters(&mut s, parameters);
     s.behavior = behavior;
     let device = new_object(&DEVICE_TABLE, &method_table());
     DEVICE.store(device, Ordering::Relaxed);
@@ -472,21 +478,23 @@ unsafe extern "system" fn d3d_create_device(this: *mut Object, adapter: u32, _ki
         s.parameters[1],
         device_window(&s)
     );
+    // The window's messages come out of the state (`Placement`); the helper then starts on
+    // the placed window.
+    drop(s);
+    place(placement);
+    let s = state(&lock);
     start_stream(&s);
     *out = device;
     OK
 }
 
-/// Takes the D3DPRESENT_PARAMETERS of the game: width, height, format, back buffer count,
-/// multisample type, swap effect, window, windowed, depth buffer, depth format, flags,
-/// refresh rate, interval. A size or a format of 0 is that of the display, and the game
-/// reads the values back.
 /// Takes the D3DPRESENT_PARAMETERS of `CreateDevice` or `Reset`: the back buffer's width (0),
 /// height (1) and format (2), the count of back buffers (3), the device window (6) and windowed
-/// (7). A size of 0 is the inside of the window when windowed, and the current mode of the
-/// adapter's monitor in fullscreen (`monitors::back_buffer_size`). In fullscreen the window goes
-/// onto the adapter's monitor ([`place_fullscreen`]).
-unsafe fn accept_parameters(s: &mut State, parameters: *mut u32) {
+/// (7). A size of 0 is the inside of the window when windowed, and the size of the adapter's
+/// monitor in fullscreen (`monitors::back_buffer_size`). The game reads the values back. In
+/// fullscreen it returns where the window goes ([`placement`]), for [`place`] after the state's
+/// guard drops.
+unsafe fn accept_parameters(s: &mut State, parameters: *mut u32) -> Option<Placement> {
     let given = core::slice::from_raw_parts_mut(parameters, 13);
     let windowed = given[7] != 0;
     let window = if given[6] != 0 { given[6] } else { s.focus_window };
@@ -498,36 +506,53 @@ unsafe fn accept_parameters(s: &mut State, parameters: *mut u32) {
     let monitor_size = monitor(s, s.adapter).map_or([mode[0], mode[1]], Monitor::size);
     let client_size = [(client[2] - client[0]).max(0) as u32, (client[3] - client[1]).max(0) as u32];
     [given[0], given[1]] = monitors::back_buffer_size([given[0], given[1]], windowed, client_size, monitor_size);
-    if !windowed {
-        place_fullscreen(s, window as usize, [given[0], given[1]]);
-    }
     if given[2] == 0 {
         given[2] = DISPLAY_FORMAT;
     }
     given[3] = given[3].max(1);
     s.parameters.copy_from_slice(given);
     s.viewport = [0, 0, given[0], given[1], 0, 1.0f32.to_bits()];
+    if windowed {
+        None
+    } else {
+        placement(s, window as usize, [given[0], given[1]])
+    }
 }
 
-/// The window of a fullscreen game over the adapter's monitor, without a border. The engine
-/// leaves its fullscreen window as `WinMain` made it (320 x 240, with a caption;
+/// Where a fullscreen window goes: the game's top window and the adapter's monitor. The two
+/// calls that place it ([`place`]) send the window's messages at once (WM_STYLECHANGED,
+/// WM_WINDOWPOSCHANGED, WM_SIZE): they run after the state's guard drops, so that a window
+/// procedure or a hook that calls the device does not open the state a second time.
+#[derive(Clone, Copy)]
+struct Placement {
+    window: usize,
+    rect: [i32; 4],
+}
+
+/// Puts the window of a fullscreen game over its monitor, without a border. Outside the
+/// state's guard ([`Placement`]).
+unsafe fn place(placement: Option<Placement>) {
+    let Some(Placement { window, rect: [left, top, right, bottom] }) = placement else { return };
+    // GWL_STYLE: WS_POPUP | WS_VISIBLE.
+    SetWindowLongA(window, -16, 0x8000_0000 | 0x1000_0000);
+    // SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+    SetWindowPos(window, 0, left, top, right - left, bottom - top, 0x0004 | 0x0010 | 0x0020);
+}
+
+/// The window of a fullscreen game over the adapter's monitor, without a border ([`place`]).
+/// The engine leaves its fullscreen window as `WinMain` made it (320 x 240, with a caption;
 /// `NiDX8Application::initMainWindow` 0x42991F), for Direct3D 8 to size; the wgpu path has
-/// no fullscreen of its own and changes no display mode, so the plugin sizes it. A back
-/// buffer of another size than the monitor's mode is drawn at the top left (the helper copies
-/// the part that the window and the back buffer have; the window's class has a black
-/// background) and is logged once.
-unsafe fn place_fullscreen(s: &State, window: usize, size: [u32; 2]) {
-    let Some(monitor) = monitor(s, s.adapter) else { return };
+/// no fullscreen of its own and changes no display mode, so the plugin sizes it. A back buffer
+/// of another size than the monitor is drawn into it by the helper (scaled when the helper
+/// scales, else at the top left) and is logged once.
+unsafe fn placement(s: &State, window: usize, size: [u32; 2]) -> Option<Placement> {
+    let monitor = monitor(s, s.adapter)?;
     // GA_ROOT: the top window of the game; the device window can be its child.
     let top = if window != 0 { GetAncestor(window, 2) } else { 0 };
     if top == 0 {
-        return;
+        return None;
     }
     let [left, top_edge, right, bottom] = monitor.rect;
-    // GWL_STYLE: WS_POPUP | WS_VISIBLE.
-    SetWindowLongA(top, -16, 0x8000_0000 | 0x1000_0000);
-    // SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
-    SetWindowPos(top, 0, left, top_edge, right - left, bottom - top_edge, 0x0004 | 0x0010 | 0x0020);
     crate::log!("own device: fullscreen on adapter {} ({}): the window covers it, {} x {} at {}, {}", s.adapter, monitor.name(), right - left, bottom - top_edge, left, top_edge);
     if size != monitor.size() && !FULLSCREEN_SIZE_LOGGED.swap(true, Ordering::Relaxed) {
         crate::log!(
@@ -540,6 +565,7 @@ unsafe fn place_fullscreen(s: &State, window: usize, size: [u32; 2]) {
             monitor.current[1]
         );
     }
+    Some(Placement { window: top, rect: monitor.rect })
 }
 
 /// The log line of a fullscreen size other than the monitor's mode, once.
@@ -738,8 +764,11 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
             if a[0] == 0 {
                 return Some(INVALID_CALL);
             }
-            accept_parameters(&mut s, a[0] as usize as *mut u32);
+            let placement = accept_parameters(&mut s, a[0] as usize as *mut u32);
             crate::log!("own device: reset, {} x {}", s.parameters[0], s.parameters[1]);
+            // Outside the state's guard (`Placement`).
+            drop(s);
+            place(placement);
             OK
         }
         15 => call(CALL_PRESENT, a),
