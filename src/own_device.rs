@@ -20,6 +20,7 @@
 use core::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 
 use crate::checked::Open;
+use crate::monitors::{self, Monitor};
 use crate::own_host::Kept;
 use crate::sync::{DeviceLock, LockCell};
 use crate::link::*;
@@ -31,8 +32,11 @@ const NOT_AVAILABLE: u32 = 0x8876_086A;
 
 #[link(name = "user32")]
 extern "system" {
-    fn EnumDisplaySettingsA(device: *const u8, mode: u32, out: *mut u8) -> i32;
     fn MonitorFromWindow(window: usize, flags: u32) -> usize;
+    fn GetClientRect(window: usize, rect: *mut i32) -> i32;
+    fn GetAncestor(window: usize, flags: u32) -> usize;
+    fn SetWindowPos(window: usize, after: usize, x: i32, y: i32, width: i32, height: i32, flags: u32) -> i32;
+    fn SetWindowLongA(window: usize, index: i32, value: u32) -> u32;
 }
 
 extern "system" {
@@ -176,9 +180,10 @@ struct State {
     stream: (Kept, u32),
     indices: (Kept, u32),
     render_target: Kept,
-    /// The display modes: width, height, refresh rate.
-    modes: Vec<[u32; 3]>,
-    current_mode: [u32; 3],
+    /// The monitors as the adapters, the primary first (`monitors::read`), read once.
+    monitors: Vec<Monitor>,
+    /// The adapter of `CreateDevice`.
+    adapter: u32,
 }
 
 static STATE: LockCell<Option<State>> = LockCell::new(None);
@@ -200,8 +205,8 @@ fn state<'a>(lock: &'a DeviceLock) -> Open<'a, State> {
         stream: (Kept::default(), 0),
         indices: (Kept::default(), 0),
         render_target: Kept::default(),
-        modes: Vec::new(),
-        current_mode: [640, 480, 60],
+        monitors: Vec::new(),
+        adapter: 0,
     }))
 }
 
@@ -277,72 +282,113 @@ unsafe extern "system" fn d3d_register_software_device(_this: usize, _function: 
     OK
 }
 
+/// One adapter for each monitor (`monitors`), and more up to the game's `Adapter` value when
+/// it is past them.
 unsafe extern "system" fn d3d_adapter_count(_this: usize) -> u32 {
-    1
+    let lock = crate::sync::device_lock();
+    let mut s = state(&lock);
+    read_monitors(&mut s);
+    let wanted = game_adapter();
+    let count = monitors::adapter_count(s.monitors.len(), wanted);
+    if wanted >= s.monitors.len() as u32 && count > wanted && !ADAPTER_PAST_LOGGED.swap(true, Ordering::Relaxed) {
+        crate::log!("own device: the game's Adapter value {wanted} is past the {} monitors: adapter {wanted} is the primary monitor", s.monitors.len());
+    }
+    count
 }
 
+/// The game's adapter, the registry value `Adapter` that `NiApplication::ReadSettings` read
+/// into the game object before the renderer is made; 0 without the game object.
+unsafe fn game_adapter() -> u32 {
+    let game: usize = crate::mem::rd(0x7C6CDC, 0);
+    if game == 0 {
+        return 0;
+    }
+    crate::mem::rd(game, crate::gen::layouts::TES3Game::adapterID)
+}
+
+/// The log line of an `Adapter` value past the monitors, once.
+static ADAPTER_PAST_LOGGED: AtomicBool = AtomicBool::new(false);
+
 /// A D3DADAPTER_IDENTIFIER8 has 1068 bytes: the driver and the description, 512 bytes each.
-unsafe extern "system" fn d3d_adapter_identifier(_this: usize, _adapter: u32, _flags: u32, out: *mut u8) -> u32 {
+/// The description names the monitor's display device.
+unsafe extern "system" fn d3d_adapter_identifier(_this: usize, adapter: u32, _flags: u32, out: *mut u8) -> u32 {
     if out.is_null() {
         return INVALID_CALL;
     }
+    let description = {
+        let lock = crate::sync::device_lock();
+        let mut s = state(&lock);
+        read_monitors(&mut s);
+        match s.monitors.get(monitors::monitor_of(adapter, s.monitors.len())) {
+            Some(monitor) => format!("nirender render link ({})", monitor.name()),
+            None => "nirender render link".to_string(),
+        }
+    };
     core::ptr::write_bytes(out, 0, 1068);
-    for (at, text) in [(0usize, &b"nirender.dll"[..]), (512, &b"nirender render link"[..])] {
-        core::ptr::copy_nonoverlapping(text.as_ptr(), out.add(at), text.len());
+    for (at, text) in [(0usize, &b"nirender.dll"[..]), (512, description.as_bytes())] {
+        core::ptr::copy_nonoverlapping(text.as_ptr(), out.add(at), text.len().min(511));
     }
     OK
 }
 
-/// Reads the display modes of the computer with 32 bits for each pixel.
-unsafe fn read_modes(s: &mut State) {
-    if !s.modes.is_empty() {
+/// Reads the monitors and their display modes, once.
+unsafe fn read_monitors(s: &mut State) {
+    if !s.monitors.is_empty() {
         return;
     }
-    // A DEVMODEA has 156 bytes: its size at 36, the bits for each pixel at 104, the width at
-    // 108, the height at 112 and the refresh rate at 120.
-    let mut mode = [0u8; 256];
-    let read = |mode: &[u8], at: usize| u32::from_le_bytes([mode[at], mode[at + 1], mode[at + 2], mode[at + 3]]);
-    mode[36..38].copy_from_slice(&156u16.to_le_bytes());
-    // ENUM_CURRENT_SETTINGS
-    if EnumDisplaySettingsA(core::ptr::null(), 0xFFFF_FFFF, mode.as_mut_ptr()) != 0 {
-        s.current_mode = [read(&mode, 108), read(&mode, 112), read(&mode, 120)];
-    }
-    let mut index = 0;
-    while index < 4096 && EnumDisplaySettingsA(core::ptr::null(), index, mode.as_mut_ptr()) != 0 {
-        let entry = [read(&mode, 108), read(&mode, 112), read(&mode, 120)];
-        if read(&mode, 104) == 32 && !s.modes.contains(&entry) {
-            s.modes.push(entry);
-        }
-        index += 1;
-    }
-    if s.modes.is_empty() {
-        s.modes.push(s.current_mode);
+    s.monitors = monitors::read();
+    for (adapter, monitor) in s.monitors.iter().enumerate() {
+        crate::log!(
+            "own device: adapter {adapter}: {}{}, {} x {} at {}, {}, {} modes",
+            monitor.name(),
+            if monitor.primary { " (primary)" } else { "" },
+            monitor.current[0],
+            monitor.current[1],
+            monitor.rect[0],
+            monitor.rect[1],
+            monitor.modes.len()
+        );
     }
 }
 
-unsafe extern "system" fn d3d_adapter_mode_count(_this: usize, _adapter: u32) -> u32 {
+/// The monitor of `adapter`, or None when the system gave no monitor.
+fn monitor(s: &State, adapter: u32) -> Option<&Monitor> {
+    s.monitors.get(monitors::monitor_of(adapter, s.monitors.len()))
+}
+
+/// The current mode of the monitor of `adapter`: width, height, refresh rate.
+fn current_mode(s: &State, adapter: u32) -> [u32; 3] {
+    monitor(s, adapter).map_or([640, 480, 60], |monitor| monitor.current)
+}
+
+unsafe extern "system" fn d3d_adapter_mode_count(_this: usize, adapter: u32) -> u32 {
     let lock = crate::sync::device_lock();
     let mut s = state(&lock);
-    read_modes(&mut s);
-    s.modes.len() as u32
+    read_monitors(&mut s);
+    monitor(&s, adapter).map_or(1, |monitor| monitor.modes.len() as u32)
 }
 
 /// A D3DDISPLAYMODE: width, height, refresh rate, format.
-unsafe extern "system" fn d3d_enum_adapter_modes(_this: usize, _adapter: u32, index: u32, out: u32) -> u32 {
+unsafe extern "system" fn d3d_enum_adapter_modes(_this: usize, adapter: u32, index: u32, out: u32) -> u32 {
     let lock = crate::sync::device_lock();
     let mut s = state(&lock);
-    read_modes(&mut s);
-    match s.modes.get(index as usize) {
+    read_monitors(&mut s);
+    let mode = match monitor(&s, adapter) {
+        Some(monitor) => monitor.modes.get(index as usize).copied(),
+        None => (index == 0).then(|| current_mode(&s, adapter)),
+    };
+    match mode {
         Some(mode) => put(out, &[mode[0], mode[1], mode[2], DISPLAY_FORMAT]),
         None => INVALID_CALL,
     }
 }
 
-unsafe extern "system" fn d3d_adapter_display_mode(_this: usize, _adapter: u32, out: u32) -> u32 {
+unsafe extern "system" fn d3d_adapter_display_mode(_this: usize, adapter: u32, out: u32) -> u32 {
     let lock = crate::sync::device_lock();
     let mut s = state(&lock);
-    read_modes(&mut s);
-    put(out, &[s.current_mode[0], s.current_mode[1], s.current_mode[2], DISPLAY_FORMAT])
+    read_monitors(&mut s);
+    let mode = current_mode(&s, adapter);
+    put(out, &[mode[0], mode[1], mode[2], DISPLAY_FORMAT])
 }
 
 /// Only the hardware device, D3DDEVTYPE_HAL.
@@ -391,20 +437,27 @@ unsafe extern "system" fn d3d_device_caps(_this: usize, _adapter: u32, _kind: u3
     put(out, &CAPS)
 }
 
-/// MONITOR_DEFAULTTOPRIMARY
-unsafe extern "system" fn d3d_adapter_monitor(_this: usize, _adapter: u32) -> u32 {
-    MonitorFromWindow(0, 1) as u32
+/// The monitor of the adapter; MONITOR_DEFAULTTOPRIMARY when the system gave no monitor.
+unsafe extern "system" fn d3d_adapter_monitor(_this: usize, adapter: u32) -> u32 {
+    let lock = crate::sync::device_lock();
+    let mut s = state(&lock);
+    read_monitors(&mut s);
+    match monitor(&s, adapter) {
+        Some(monitor) => monitor.handle as u32,
+        None => MonitorFromWindow(0, 1) as u32,
+    }
 }
 
-unsafe extern "system" fn d3d_create_device(this: *mut Object, _adapter: u32, _kind: u32, window: u32, behavior: u32, parameters: *mut u32, out: *mut usize) -> u32 {
+unsafe extern "system" fn d3d_create_device(this: *mut Object, adapter: u32, _kind: u32, window: u32, behavior: u32, parameters: *mut u32, out: *mut usize) -> u32 {
     if parameters.is_null() || out.is_null() {
         return INVALID_CALL;
     }
     let lock = crate::sync::device_lock();
     let mut s = state(&lock);
-    read_modes(&mut s);
-    accept_parameters(&mut s, parameters);
+    read_monitors(&mut s);
+    s.adapter = adapter;
     s.focus_window = window;
+    accept_parameters(&mut s, parameters);
     s.behavior = behavior;
     let device = new_object(&DEVICE_TABLE, &method_table());
     DEVICE.store(device, Ordering::Relaxed);
@@ -424,11 +477,25 @@ unsafe extern "system" fn d3d_create_device(this: *mut Object, _adapter: u32, _k
 /// multisample type, swap effect, window, windowed, depth buffer, depth format, flags,
 /// refresh rate, interval. A size or a format of 0 is that of the display, and the game
 /// reads the values back.
+/// Takes the D3DPRESENT_PARAMETERS of `CreateDevice` or `Reset`: the back buffer's width (0),
+/// height (1) and format (2), the count of back buffers (3), the device window (6) and windowed
+/// (7). A size of 0 is the inside of the window when windowed, and the current mode of the
+/// adapter's monitor in fullscreen (`monitors::back_buffer_size`). In fullscreen the window goes
+/// onto the adapter's monitor ([`place_fullscreen`]).
 unsafe fn accept_parameters(s: &mut State, parameters: *mut u32) {
     let given = core::slice::from_raw_parts_mut(parameters, 13);
-    if given[0] == 0 || given[1] == 0 {
-        given[0] = s.current_mode[0];
-        given[1] = s.current_mode[1];
+    let windowed = given[7] != 0;
+    let window = if given[6] != 0 { given[6] } else { s.focus_window };
+    let mut client = [0i32; 4];
+    if window != 0 {
+        GetClientRect(window as usize, client.as_mut_ptr());
+    }
+    let mode = current_mode(s, s.adapter);
+    let monitor_size = monitor(s, s.adapter).map_or([mode[0], mode[1]], Monitor::size);
+    let client_size = [(client[2] - client[0]).max(0) as u32, (client[3] - client[1]).max(0) as u32];
+    [given[0], given[1]] = monitors::back_buffer_size([given[0], given[1]], windowed, client_size, monitor_size);
+    if !windowed {
+        place_fullscreen(s, window as usize, [given[0], given[1]]);
     }
     if given[2] == 0 {
         given[2] = DISPLAY_FORMAT;
@@ -437,6 +504,42 @@ unsafe fn accept_parameters(s: &mut State, parameters: *mut u32) {
     s.parameters.copy_from_slice(given);
     s.viewport = [0, 0, given[0], given[1], 0, 1.0f32.to_bits()];
 }
+
+/// The window of a fullscreen game over the adapter's monitor, without a border. The engine
+/// leaves its fullscreen window as `WinMain` made it (320 x 240, with a caption;
+/// `NiDX8Application::initMainWindow` 0x42991F), for Direct3D 8 to size; the wgpu path has
+/// no fullscreen of its own and changes no display mode, so the plugin sizes it. A back
+/// buffer of another size than the monitor's mode is drawn at the top left (the helper copies
+/// the part that the window and the back buffer have; the window's class has a black
+/// background) and is logged once.
+unsafe fn place_fullscreen(s: &State, window: usize, size: [u32; 2]) {
+    let Some(monitor) = monitor(s, s.adapter) else { return };
+    // GA_ROOT: the top window of the game; the device window can be its child.
+    let top = if window != 0 { GetAncestor(window, 2) } else { 0 };
+    if top == 0 {
+        return;
+    }
+    let [left, top_edge, right, bottom] = monitor.rect;
+    // GWL_STYLE: WS_POPUP | WS_VISIBLE.
+    SetWindowLongA(top, -16, 0x8000_0000 | 0x1000_0000);
+    // SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+    SetWindowPos(top, 0, left, top_edge, right - left, bottom - top_edge, 0x0004 | 0x0010 | 0x0020);
+    crate::log!("own device: fullscreen on adapter {} ({}): the window covers it, {} x {} at {}, {}", s.adapter, monitor.name(), right - left, bottom - top_edge, left, top_edge);
+    if size != monitor.size() && !FULLSCREEN_SIZE_LOGGED.swap(true, Ordering::Relaxed) {
+        crate::log!(
+            "own device: the fullscreen size {} x {} is not the size of the monitor, {} x {} (its mode {} x {}): the picture does not cover the monitor",
+            size[0],
+            size[1],
+            monitor.size()[0],
+            monitor.size()[1],
+            monitor.current[0],
+            monitor.current[1]
+        );
+    }
+}
+
+/// The log line of a fullscreen size other than the monitor's mode, once.
+static FULLSCREEN_SIZE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 unsafe fn device_window(s: &State) -> u32 {
     if s.parameters[6] != 0 {
@@ -618,9 +721,12 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
             put(a[0], &[direct3d as u32])
         }
         7 => put(a[0], &CAPS),
-        8 => put(a[0], &[s.current_mode[0], s.current_mode[1], s.current_mode[2], DISPLAY_FORMAT]),
+        8 => {
+            let mode = current_mode(&s, s.adapter);
+            put(a[0], &[mode[0], mode[1], mode[2], DISPLAY_FORMAT])
+        }
         // GetCreationParameters: adapter, device type, focus window, behavior.
-        9 => put(a[0], &[0, 1, s.focus_window, s.behavior]),
+        9 => put(a[0], &[s.adapter, 1, s.focus_window, s.behavior]),
         // CreateAdditionalSwapChain, CreateVolumeTexture, CreateCubeTexture
         13 | 21 | 22 => INVALID_CALL,
         14 => {
