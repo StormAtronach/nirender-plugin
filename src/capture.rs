@@ -1509,6 +1509,9 @@ pub unsafe fn mark(text: &str) {
             }
         }
     }
+    // Risk 42: what the plugin keeps of the locked texture levels in the game's address space.
+    let copies = crate::own_host::level_copies();
+    crate::log!("level copies at the mark '{text}': {} levels of {} textures, {:.1} MB", copies.levels, copies.textures, copies.bytes as f64 / 1e6);
 }
 
 /// One line about the capture, for the scenario: the phase, the records and the bytes,

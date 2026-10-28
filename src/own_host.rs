@@ -150,6 +150,41 @@ pub unsafe fn snapshot() {
     crate::log!("own host: snapshot of {} textures, {} level surfaces, {} buffers, {} surfaces", count[0], count[1], count[2], count[3]);
 }
 
+/// The CPU copies of the locked texture levels that the objects alive hold (risk 42): the
+/// levels with a copy, the textures they belong to, and their bytes. For the log line at a
+/// mark ([`crate::capture::mark`]).
+pub fn level_copies() -> LevelCopies {
+    let lock = crate::sync::device_lock();
+    // SAFETY: an object in LIVE is alive until its release takes it out, which needs the
+    // device lock that this function holds.
+    let copies = LevelCopies::of(LIVE.get(&lock).iter().map(|&o| unsafe { (*(o as *const Object)).level_memory.as_slice() }));
+    copies
+}
+
+/// The sums of [`level_copies`].
+#[derive(Debug, Default, PartialEq)]
+pub struct LevelCopies {
+    pub levels: u32,
+    pub textures: u32,
+    pub bytes: u64,
+}
+
+impl LevelCopies {
+    fn of<'a>(objects: impl Iterator<Item = &'a [Vec<u8>]>) -> Self {
+        let mut sums = Self::default();
+        for levels in objects {
+            let held = levels.iter().filter(|memory| !memory.is_empty());
+            let (count, bytes) = held.fold((0, 0), |(count, bytes), memory| (count + 1, bytes + memory.len() as u64));
+            if count > 0 {
+                sums.levels += count;
+                sums.textures += 1;
+                sums.bytes += bytes;
+            }
+        }
+        sums
+    }
+}
+
 /// Writes the content of one texture that is alive into the capture, as it is now, by its
 /// serial ([`serial_of`]). For a capture file that holds between its frames.
 pub unsafe fn write_texture(serial: u32) {
@@ -993,4 +1028,18 @@ pub unsafe fn report() -> String {
         *CACHED_READS.get(&lock),
         if read_cache_on() { "" } else { " (NIRENDER_READ_CACHE=0)" }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LevelCopies;
+
+    #[test]
+    fn the_level_copies_count_only_the_levels_that_hold_bytes() {
+        let texture = vec![vec![0u8; 64], Vec::new(), vec![0u8; 16]];
+        let never_locked: Vec<Vec<u8>> = vec![Vec::new(); 3];
+        let other = vec![vec![0u8; 4]];
+        let objects: [&[Vec<u8>]; 4] = [&texture, &never_locked, &[], &other];
+        assert_eq!(LevelCopies::of(objects.into_iter()), LevelCopies { levels: 3, textures: 2, bytes: 84 });
+    }
 }
