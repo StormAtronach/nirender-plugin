@@ -586,6 +586,17 @@ pub fn keeps_picture(m: &Material, material_alpha: f32) -> bool {
     blend_keeps && writes_no_more && alpha_of_material && base_alone && no_other_stage && material_alpha == 0.0
 }
 
+/// The flag of a shape record for a draw into the Code Patch's picture of the character: it
+/// draws a pass that blends in a way of its own, by the texture's alpha
+/// (`Pass::code_patch_picture`).
+const CODE_PATCH_PICTURE: u32 = 128;
+
+/// [`keeps_picture`] for a shape's draw: not a draw into the Code Patch's picture of the
+/// character, and one pass only (the rule is of the first pass's state).
+pub fn draw_keeps_picture(shape_flags: u32, m: &Material, material_alpha: f32, passes: usize) -> bool {
+    shape_flags & CODE_PATCH_PICTURE == 0 && passes == 1 && keeps_picture(m, material_alpha)
+}
+
 #[cfg(test)]
 mod fog_map_tests {
     use super::*;
@@ -744,6 +755,15 @@ mod keeps_picture_tests {
         let mut additive = fader();
         additive[3] = ALPHA_ONE;
         assert!(keeps_picture(&parse(&additive), 0.0));
+    }
+
+    #[test]
+    fn the_code_patch_picture_and_more_passes_are_drawn() {
+        let m = parse(&fader());
+        assert!(draw_keeps_picture(0, &m, 0.0, 1));
+        // The Code Patch's character picture blends by the texture's alpha: drawn.
+        assert!(!draw_keeps_picture(CODE_PATCH_PICTURE, &m, 0.0, 1));
+        assert!(!draw_keeps_picture(0, &m, 0.0, 2));
     }
 
     #[test]
