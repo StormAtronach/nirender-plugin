@@ -416,6 +416,8 @@ pub(crate) struct Counts {
     pub(crate) shape_records: u32,
     pub(crate) shape_draws: u32,
     pub(crate) shape_missing: u32,
+    /// The shape draws that cannot change the picture, not drawn (`material::keeps_picture`).
+    pub(crate) shape_keeping: u32,
     /// The shapes with a rule of the engine that this program does not follow: a material
     /// without the smooth flag (the game sets `D3DSHADE_FLAT` for it), and a material with
     /// the specular flag (the game sets `D3DRS_SPECULARENABLE`).
