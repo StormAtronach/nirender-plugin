@@ -252,6 +252,10 @@ pub mod tag {
     /// The weights of the targets for the new revision of a geometry (`send_morph_weights`):
     /// the handle, the unique id, the number of weights, then the weights.
     pub const MORPH_WEIGHTS: u32 = 43;
+    /// The game made its renderer again at a new size (`TES3Game::restartRenderer`: its
+    /// Options menu, or a resize of its window): the width and the height of the picture and
+    /// the game's window, as the HEADER has them. The helper makes its back buffer again.
+    pub const SIZE: u32 = 44;
 }
 
 // ---- the ring in shared memory
@@ -1206,6 +1210,34 @@ pub unsafe fn start_direct(name: &str, megabytes: u32, width: u32, height: u32, 
     write_kept(&lock);
     crate::log!("stream: start with the device, a ring of {megabytes} MB with the name {name}");
     Ok(())
+}
+
+/// The game made its renderer again at `width` x `height` with the device of the stream (a
+/// second `CreateDevice`): a SIZE record, and the kept HEADER, which a capture file that starts
+/// later begins with, takes the size. The reply memory grows when a read needs it
+/// (`Reply::grow`).
+///
+/// # Safety
+///
+/// On the render thread of the game, as the other writes of the stream.
+pub unsafe fn resize(width: u32, height: u32, window: u32) {
+    let lock = crate::sync::device_lock();
+    if !recording() {
+        return;
+    }
+    if let Some(mut s) = state(&lock) {
+        if s.header.len() >= crate::stream_format::HEADER_WINDOW_AT + 4 {
+            s.header[crate::stream_format::HEADER_WIDTH_AT..crate::stream_format::HEADER_WIDTH_AT + 4].copy_from_slice(&width.to_le_bytes());
+            s.header[crate::stream_format::HEADER_HEIGHT_AT..crate::stream_format::HEADER_HEIGHT_AT + 4].copy_from_slice(&height.to_le_bytes());
+            s.header[crate::stream_format::HEADER_WINDOW_AT..crate::stream_format::HEADER_WINDOW_AT + 4].copy_from_slice(&window.to_le_bytes());
+        }
+    }
+    let mut size = [0u8; 12];
+    size[0..4].copy_from_slice(&width.to_le_bytes());
+    size[4..8].copy_from_slice(&height.to_le_bytes());
+    size[8..12].copy_from_slice(&window.to_le_bytes());
+    write(tag::SIZE, &[&size]);
+    crate::log!("stream: the picture is now {width} x {height} (the game made its renderer again)");
 }
 
 unsafe fn begin(lock: &DeviceLock, out: Sink, warmup: u32, frames: u32) {

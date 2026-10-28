@@ -727,6 +727,22 @@ impl App {
         }
     }
 
+    /// The size of the picture of the game's last SIZE record, when it differs from the back
+    /// buffer's: the back buffer and the depth are made again at it (`configure`); the window
+    /// keeps its size, and the picture is scaled into it as before.
+    fn take_new_size(&mut self) {
+        let Some(new) = self.player.as_ref().map(|player| player.size).filter(|&(width, height)| width != 0 && height != 0) else { return };
+        let new = (new.0.max(64), new.1.max(64));
+        if new == self.size {
+            return;
+        }
+        println!("picture {} x {} (the game made its renderer again; it was {} x {})", new.0, new.1, self.size.0, self.size.1);
+        self.size = new;
+        self.depth = None;
+        let (width, height) = self.window_size();
+        self.configure(width, height);
+    }
+
     /// The size of the inside of the window: of this program's window, else of the game's.
     fn window_size(&self) -> (u32, u32) {
         if let Some(window) = self.window.as_ref() {
@@ -832,6 +848,11 @@ impl ApplicationHandler for App {
             // The frame goes into the back buffer of this program. The window is not a
             // part of it: this program reads the stream also when the window is hidden,
             // because the game waits for it.
+            // The game made its renderer again at another size (a SIZE record): the back
+            // buffer and the depth are made again between two frames.
+            if !self.in_frame {
+                self.take_new_size();
+            }
             if !self.in_frame && self.depth.is_some() && size.0 != 0 {
                 self.player.as_mut().unwrap().begin_frame(self.back_buffer.as_ref().unwrap(), self.depth.clone().unwrap(), true);
                 self.in_frame = true;

@@ -81,15 +81,19 @@ pub const MORPH_TARGETS: u32 = 42;
 /// The weights of the targets for a new revision of a geometry (`Renderer::morph_weights`):
 /// the handle, the unique id, the number of weights, then the weights.
 pub const MORPH_WEIGHTS: u32 = 43;
+/// The game made its renderer again at a new size: the width and the height of the picture and
+/// the game's window, as the HEADER has them (`Player::size`; the live loop makes the back
+/// buffer again between two frames).
+pub const SIZE: u32 = 44;
 
 /// Every tag of this build, the two retired ones (2 and 7) among them. A new tag goes here
 /// with its constant, read by the player or not: a test asks that each constant is here.
-pub const KNOWN: [u32; 43] = [
+pub const KNOWN: [u32; 44] = [
     TEXTURE, 2, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, 7, COMMAND, CALL, FRAME_END, HEADER, TEXTURE_UPDATE,
     READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW,
     INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED,
     INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE,
-    MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS,
+    MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE,
 ];
 
 /// A tag that this build knows ([`KNOWN`]). A record of another tag comes from a plugin of
@@ -147,6 +151,7 @@ pub fn least_length(tag: u32) -> usize {
         GEOMETRY_UV => 28,
         MORPH_TARGETS => 16,
         MORPH_WEIGHTS => 12,
+        SIZE => 12,
         _ => 0,
     }
 }
@@ -267,6 +272,7 @@ pub fn name(tag: u32) -> &'static str {
         GEOMETRY_UV => "geometry uv",
         MORPH_TARGETS => "morph targets",
         MORPH_WEIGHTS => "morph weights",
+        SIZE => "size",
         _ => "unknown",
     }
 }
@@ -276,14 +282,14 @@ mod tests {
     use super::*;
 
     /// Every tag the player reads: all the known tags but the two retired ones (2 and 7).
-    const READ_TAGS: [u32; 41] = [
+    const READ_TAGS: [u32; 42] = [
         HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, COMMAND, CALL, FRAME_END, READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS,
-        INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS,
+        INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE,
     ];
 
     #[test]
     fn the_test_reads_every_known_tag_but_the_retired_ones() {
-        let known: Vec<u32> = (1..=MORPH_WEIGHTS).filter(|&tag| is_known(tag) && tag != 2 && tag != 7).collect();
+        let known: Vec<u32> = (1..=SIZE).filter(|&tag| is_known(tag) && tag != 2 && tag != 7).collect();
         let mut read = READ_TAGS.to_vec();
         read.sort();
         assert_eq!(read, known);
@@ -397,7 +403,7 @@ mod tests {
 
     #[test]
     fn every_record_with_a_fixed_head_has_a_least_length() {
-        for tag in [HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS] {
+        for tag in [HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE] {
             assert!(least_length(tag) > 0, "tag {tag} has no least length");
         }
     }
@@ -423,7 +429,7 @@ mod tests {
         for tag in constants {
             assert!(is_known(tag), "tag {tag} is a constant but not in KNOWN");
         }
-        assert!(!is_known(0) && !is_known(44));
+        assert!(!is_known(0) && !is_known(45));
     }
 
     #[test]

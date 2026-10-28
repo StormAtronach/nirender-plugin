@@ -469,6 +469,22 @@ unsafe extern "system" fn d3d_create_device(this: *mut Object, adapter: u32, _ki
     s.focus_window = window;
     let placement = accept_parameters(&mut s, parameters);
     s.behavior = behavior;
+    let (width, height, game_window, windowed) = (s.parameters[0], s.parameters[1], device_window(&s), s.parameters[7] != 0);
+    // A second device: the game made its renderer again (`TES3Game::restartRenderer`: its
+    // Options menu, or a resize of its window, `resolution`). The device, the stream and the
+    // helper stay, and the stream gets the new size; the old renderer's releases went through
+    // this device before, as deletes of the stream.
+    let existing = DEVICE.load(Ordering::Relaxed);
+    if existing != 0 {
+        crate::log!("own device: made again, {width} x {height} (the game made its renderer again); the device, the stream and the helper stay");
+        drop(s);
+        place(placement);
+        crate::capture::resize(width, height, game_window);
+        d3d_add_reference(existing as *mut Object);
+        d3d_add_reference(this);
+        *out = existing;
+        return OK;
+    }
     let device = new_object(&DEVICE_TABLE, &method_table());
     DEVICE.store(device, Ordering::Relaxed);
     d3d_add_reference(this);
@@ -479,9 +495,18 @@ unsafe extern "system" fn d3d_create_device(this: *mut Object, adapter: u32, _ki
         device_window(&s)
     );
     // The window's messages come out of the state (`Placement`); the helper then starts on
-    // the placed window.
+    // the placed window. A windowed game's window gets a sizing frame, and its size is watched
+    // (`resolution`).
     drop(s);
     place(placement);
+    // GA_ROOT: the game's top window; the device window can be its child.
+    let top = GetAncestor(game_window as usize, 2);
+    if top != 0 {
+        if windowed {
+            crate::resolution::frame_for_sizing(top);
+        }
+        crate::resolution::watch(top);
+    }
     let s = state(&lock);
     start_stream(&s);
     *out = device;
@@ -512,6 +537,7 @@ unsafe fn accept_parameters(s: &mut State, parameters: *mut u32) -> Option<Place
     given[3] = given[3].max(1);
     s.parameters.copy_from_slice(given);
     s.viewport = [0, 0, given[0], given[1], 0, 1.0f32.to_bits()];
+    crate::resolution::note_back_buffer(given[0], given[1], windowed);
     if windowed {
         None
     } else {
@@ -673,7 +699,10 @@ pub extern "C" fn nirender_build_id() -> *const u8 {
     crate::BUILD_ID_C.as_ptr()
 }
 
-/// The `Direct3DCreate8` of the plugin. The `d3d8.dll` of this repository calls it.
+/// The `Direct3DCreate8` of the plugin. The `d3d8.dll` of MGE XE calls it, once at the start
+/// and again each time the game makes its renderer again (a change of its resolution,
+/// `TES3Game::restartRenderer`): a second call gives the same `IDirect3D8`, whose second
+/// `CreateDevice` gives the same device and keeps the stream and the helper (`capture::resize`).
 #[no_mangle]
 pub unsafe extern "C" fn nirender_direct3d_create8(_sdk_version: u32) -> usize {
     if crate::install::refuse_without_ports() {

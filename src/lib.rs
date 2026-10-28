@@ -71,6 +71,7 @@ pub mod map_tiles;
 pub mod mem;
 pub mod monitors;
 pub mod mwse_native;
+pub mod resolution;
 pub mod overlay;
 pub mod pacing;
 pub mod world_walk;
