@@ -43,6 +43,9 @@ impl Player {
                 self.stream.scene_wireframe = abilities & HEADER_SCENE_WIREFRAME != 0;
                 self.stream.envmap_lit = (abilities & HEADER_ENVMAP_KNOWN != 0).then_some(abilities & HEADER_ENVMAP_LIT != 0);
             }
+            // The game made its renderer again: the live loop makes the back buffer again at
+            // the next frame's start; a replay keeps the size of its first record.
+            tag::SIZE => self.size = (word(data, HEADER_WIDTH_AT), word(data, HEADER_HEIGHT_AT)),
             tag::TEXTURE => self.renderer.texture(data),
             tag::TEXTURE_UPDATE => self.renderer.texture_update(data),
             tag::SHOT => self.shots.push(String::from_utf8_lossy(data).into_owned()),

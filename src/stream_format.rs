@@ -59,8 +59,9 @@
 //!
 //! The free area of the ring head: 84 to 127.
 
-/// The format of the stream that this build writes and reads.
-pub const STREAM_FORMAT: u32 = 1;
+/// The format of the stream that this build writes and reads. 2: the SIZE record (the game
+/// made its renderer again at a new size, 2026-10-28).
+pub const STREAM_FORMAT: u32 = 2;
 
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
 /// game, the abilities of the stream, the stream format, then the build id of the plugin as
@@ -378,8 +379,8 @@ mod tests {
     #[test]
     fn a_header_of_another_format_is_refused_with_both_builds_named() {
         let message = accept_header(&header(STREAM_FORMAT + 1, "nirender v9.9.9 abcdef0"), "numidium.exe (numidium v0.21.0 846ed77)").unwrap_err();
-        assert!(message.contains("akulakhan.dll (nirender v9.9.9 abcdef0) writes the stream format 2"), "{message}");
-        assert!(message.contains("numidium.exe (numidium v0.21.0 846ed77) reads the stream format 1"), "{message}");
+        assert!(message.contains(&format!("akulakhan.dll (nirender v9.9.9 abcdef0) writes the stream format {}", STREAM_FORMAT + 1)), "{message}");
+        assert!(message.contains(&format!("numidium.exe (numidium v0.21.0 846ed77) reads the stream format {STREAM_FORMAT}")), "{message}");
         assert!(message.contains("one archive"), "{message}");
     }
 
