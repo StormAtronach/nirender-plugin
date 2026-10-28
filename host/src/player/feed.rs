@@ -853,6 +853,9 @@ impl Player {
             self.stream.shape_bones = None;
             return;
         }
+        // A draw that cannot change the picture (the faders at rest): `draw` leaves it out once
+        // the frame's plan, the extension's classes and its sky have seen it.
+        self.stream.shape_keeps = material::draw_keeps_picture(flags, &m, colours[13], derived.passes.len());
         for pass in 0..derived.passes.len() {
             let state = Pass::new(&derived, pass, &m, &self.renderer.textures, effects);
             // The flag 128: the draw goes into the picture of the character with the Code
@@ -881,6 +884,7 @@ impl Player {
             }
             self.renderer.counts.shape_draws += 1;
         }
+        self.stream.shape_keeps = false;
         self.stream.shape_bones = None;
     }
 

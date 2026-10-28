@@ -58,6 +58,9 @@ pub(crate) struct Stream {
     /// The bones of the skinned shape in progress in the bones of the frame: the first and
     /// the number, or [`None`] for a draw that is not skinned.
     pub(crate) shape_bones: Option<(u32, u32)>,
+    /// The shape in progress cannot change the picture (`material::draw_keeps_picture`), set
+    /// by `draw_shape` for its passes only.
+    pub(crate) shape_keeps: bool,
     /// The world bound of the shape record in progress (flag 0x400): the centre and the
     /// radius, for the sort of a blended draw among the blends of the table.
     pub(crate) shape_bound: Option<[f32; 4]>,

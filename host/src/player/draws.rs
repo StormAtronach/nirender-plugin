@@ -277,6 +277,13 @@ impl Player {
         }
         self.stream.fog_range = fog_range.filter(|_| world);
         self.stream.sky = sky.filter(|_| in_back_buffer && (1..=7).contains(&self.stream.object_class));
+        // A draw that cannot change the picture (`material::draw_keeps_picture`) is not drawn,
+        // after the frame's plan took its steps above and the extension's class took the draw:
+        // not a sky draw that the extension draws its own sky over (alpha 1, the shader).
+        if self.stream.shape_keeps && self.stream.sky.is_none() {
+            renderer.counts.shape_keeping += 1;
+            return;
+        }
         let mut draw_data = self.stream.draw_data(derived, pass, &mut renderer.counts, &mut self.frame_lights);
         if let Some(uv) = renderer.geometries.get(&self.stream.shape.geometry).and_then(|g| g.uv) {
             crate::uv_animation::compose(&mut draw_data, &uv);

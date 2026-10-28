@@ -557,6 +557,46 @@ pub fn d3d_material(values: &[f32; 14]) -> [f32; 17] {
     material
 }
 
+/// The blend factors of an alpha property (`NiAlphaProperty`): one, the source alpha, its
+/// inverse.
+const ALPHA_ONE: u32 = 0;
+const ALPHA_SOURCE: u32 = 6;
+const ALPHA_INVERSE_SOURCE: u32 = 7;
+/// The vertex colours ignored, and the lighting of the emissive, ambient and diffuse colours
+/// (`NiVertexColorProperty`): the colour, and so the alpha, comes from the material.
+const VERTEX_SOURCE_IGNORE: u32 = 0;
+const LIGHTING_EMISSIVE_AMBIENT_DIFFUSE: u32 = 1;
+/// The apply mode "modulate" of the base map (`NiTexturingProperty`).
+const APPLY_MODULATE: u32 = 2;
+
+/// True when a draw cannot change one pixel of the picture: its blend keeps the destination
+/// for a source alpha of 0 (the source alpha with its inverse, or with one), it writes no
+/// depth and no stencil, and its alpha is the material's alpha of 0: the vertex colours are
+/// ignored, the material lights it, and no texture stage but the base, modulated, acts on
+/// the alpha (the dark, detail, gloss, glow, bump and decal maps and the effects run in
+/// further stages). The engine's faders at rest are such draws: three full-screen quads
+/// each frame. Fog changes the colour, not the alpha.
+pub fn keeps_picture(m: &Material, material_alpha: f32) -> bool {
+    let blend_keeps = m.flags & BLEND != 0 && m.source_blend == ALPHA_SOURCE && matches!(m.destination_blend, ALPHA_INVERSE_SOURCE | ALPHA_ONE);
+    let writes_no_more = m.flags & (DEPTH_WRITE | STENCIL) == 0;
+    let alpha_of_material = m.source_mode == VERTEX_SOURCE_IGNORE && m.lighting_mode == LIGHTING_EMISSIVE_AMBIENT_DIFFUSE;
+    let base = &m.maps[BASE];
+    let base_alone = !base.present || m.apply_mode == APPLY_MODULATE;
+    let no_other_stage = m.maps.iter().skip(1).all(|map| !map.present) && m.decals == 0 && m.flags & (ENVIRONMENT_MAP | FOG_MAP | PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0;
+    blend_keeps && writes_no_more && alpha_of_material && base_alone && no_other_stage && material_alpha == 0.0
+}
+
+/// The flag of a shape record for a draw into the Code Patch's picture of the character: it
+/// draws a pass that blends in a way of its own, by the texture's alpha
+/// (`Pass::code_patch_picture`).
+const CODE_PATCH_PICTURE: u32 = 128;
+
+/// [`keeps_picture`] for a shape's draw: not a draw into the Code Patch's picture of the
+/// character, and one pass only (the rule is of the first pass's state).
+pub fn draw_keeps_picture(shape_flags: u32, m: &Material, material_alpha: f32, passes: usize) -> bool {
+    shape_flags & CODE_PATCH_PICTURE == 0 && passes == 1 && keeps_picture(m, material_alpha)
+}
+
 #[cfg(test)]
 mod fog_map_tests {
     use super::*;
@@ -682,5 +722,74 @@ mod engine_rule_tests {
         let d = derive(&material(false, 2), 3, Some(false));
         assert_eq!(d.passes[0][0].source, BASE as u32);
         assert_eq!(d.passes[0][0].set, 0);
+    }
+}
+
+#[cfg(test)]
+mod keeps_picture_tests {
+    use super::*;
+
+    /// A fader's record: blend source alpha over its inverse, depth test, the vertex colours
+    /// ignored, lit, a base map modulated.
+    fn fader() -> [u32; WORDS] {
+        let mut words = [0u32; WORDS];
+        words[1] = BLEND | DEPTH_TEST;
+        words[2] = ALPHA_SOURCE;
+        words[3] = ALPHA_INVERSE_SOURCE;
+        words[6] = APPLY_MODULATE;
+        words[8] = 0x100;
+        words[12] = 1;
+        words[68] = VERTEX_SOURCE_IGNORE;
+        words[69] = LIGHTING_EMISSIVE_AMBIENT_DIFFUSE;
+        words
+    }
+
+    fn parse(words: &[u32; WORDS]) -> Material {
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        Material::parse(&bytes).unwrap()
+    }
+
+    #[test]
+    fn a_fader_at_rest_keeps_the_picture() {
+        assert!(keeps_picture(&parse(&fader()), 0.0));
+        let mut additive = fader();
+        additive[3] = ALPHA_ONE;
+        assert!(keeps_picture(&parse(&additive), 0.0));
+    }
+
+    #[test]
+    fn the_code_patch_picture_and_more_passes_are_drawn() {
+        let m = parse(&fader());
+        assert!(draw_keeps_picture(0, &m, 0.0, 1));
+        // The Code Patch's character picture blends by the texture's alpha: drawn.
+        assert!(!draw_keeps_picture(CODE_PATCH_PICTURE, &m, 0.0, 1));
+        assert!(!draw_keeps_picture(0, &m, 0.0, 2));
+    }
+
+    #[test]
+    fn a_draw_that_can_write_a_pixel_does_not() {
+        // A visible alpha.
+        assert!(!keeps_picture(&parse(&fader()), 0.01));
+        // The depth written.
+        let mut words = fader();
+        words[1] |= DEPTH_WRITE;
+        assert!(!keeps_picture(&parse(&words), 0.0));
+        // The alpha from the vertex colours.
+        let mut words = fader();
+        words[68] = 2;
+        assert!(!keeps_picture(&parse(&words), 0.0));
+        // The base map replaces the alpha.
+        let mut words = fader();
+        words[6] = 0;
+        assert!(!keeps_picture(&parse(&words), 0.0));
+        // A second map in a further stage.
+        let mut words = fader();
+        words[13] = 0x200;
+        words[17] = 1;
+        assert!(!keeps_picture(&parse(&words), 0.0));
+        // No blend.
+        let mut words = fader();
+        words[1] &= !BLEND;
+        assert!(!keeps_picture(&parse(&words), 0.0));
     }
 }

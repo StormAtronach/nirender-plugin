@@ -31,6 +31,7 @@ impl Player {
                 fog: [0; 4],
                 ambient_source: 0,
                 shape_bones: None,
+                shape_keeps: false,
                 shape_bound: None,
                 shape_queued: false,
                 queue_marked: false,
