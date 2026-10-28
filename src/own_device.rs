@@ -337,6 +337,10 @@ unsafe fn read_monitors(s: &mut State) {
         return;
     }
     s.monitors = monitors::read();
+    crate::log!(
+        "own device: the DPI awareness of the game: {}",
+        monitors::dpi_awareness().unwrap_or("not known (no GetThreadDpiAwarenessContext before Windows 10, version 1607)")
+    );
     for (adapter, monitor) in s.monitors.iter().enumerate() {
         crate::log!(
             "own device: adapter {adapter}: {}{}, {} x {} at {}, {}, {} modes",

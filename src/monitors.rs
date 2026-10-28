@@ -104,6 +104,40 @@ pub fn back_buffer_size(given: [u32; 2], windowed: bool, client: [u32; 2], monit
     }
 }
 
+/// The words of a DPI_AWARENESS value for the log: 0 unaware (Windows scales the window of the
+/// game, and [`Monitor::size`] is scaled), 1 aware of the system's scale, 2 aware of each
+/// monitor's scale.
+pub fn awareness_name(value: i32) -> &'static str {
+    match value {
+        0 => "unaware: Windows scales the game's window",
+        1 => "aware of the system's scale",
+        2 => "aware of each monitor's scale",
+        _ => "not known",
+    }
+}
+
+/// The DPI awareness of this thread ([`awareness_name`]), or None on a Windows without the calls
+/// (before Windows 10, version 1607): they are looked up, not imported, so that the plugin loads
+/// there too.
+///
+/// # Safety
+///
+/// Calls user32's functions of the awareness; any thread.
+pub unsafe fn dpi_awareness() -> Option<&'static str> {
+    type Context = unsafe extern "system" fn() -> isize;
+    type Awareness = unsafe extern "system" fn(isize) -> i32;
+    let user32: Vec<u16> = "user32.dll".encode_utf16().chain([0]).collect();
+    let module = crate::win::GetModuleHandleW(user32.as_ptr());
+    let context = crate::win::GetProcAddress(module, c"GetThreadDpiAwarenessContext".as_ptr().cast());
+    let awareness = crate::win::GetProcAddress(module, c"GetAwarenessFromDpiAwarenessContext".as_ptr().cast());
+    if context.is_null() || awareness.is_null() {
+        return None;
+    }
+    let context = core::mem::transmute::<*mut core::ffi::c_void, Context>(context);
+    let awareness = core::mem::transmute::<*mut core::ffi::c_void, Awareness>(awareness);
+    Some(awareness_name(awareness(context())))
+}
+
 /// The monitors of the computer, with their modes, in the order of [`adapters`]. Empty when
 /// the system gives none.
 ///
@@ -219,6 +253,16 @@ mod tests {
             assert!(size[0] > 0 && size[0] <= monitor.current[0] && size[1] > 0 && size[1] <= monitor.current[1], "{size:?} {:?}", monitor.current);
             assert!(monitor.modes.contains(&monitor.current), "{:?}", monitor.modes);
         }
+    }
+
+    #[test]
+    fn the_dpi_awareness_has_its_words() {
+        assert_eq!(awareness_name(0), "unaware: Windows scales the game's window");
+        assert_eq!(awareness_name(2), "aware of each monitor's scale");
+        assert_eq!(awareness_name(-1), "not known");
+        // This test process: one of the three, on this Windows.
+        // SAFETY: user32's calls of the awareness, on this thread.
+        assert!(unsafe { dpi_awareness() }.is_some_and(|words| words != "not known"));
     }
 
     #[test]
