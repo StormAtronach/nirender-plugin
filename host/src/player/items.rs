@@ -381,6 +381,7 @@ impl Player {
         let fog = self.retained_values.and_then(|(_, fog)| fog).unwrap_or(self.stream.fog);
         WorldFacts {
             target_size: self.size_of_target(),
+            frame: self.renderer.counts.frames as u64,
             samples: self.renderer.samples,
             depth_format: self.renderer.depth_format,
             origin: self.stream.origin,

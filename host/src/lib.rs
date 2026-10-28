@@ -115,6 +115,8 @@ struct WorldFacts {
     samples: u32,
     /// The format of the depth of the frame ([`Renderer::depth_format`]).
     depth_format: wgpu::TextureFormat,
+    /// The number of the frame ([`SceneView::frame`]).
+    frame: u64,
 }
 
 /// The position of the camera of a view matrix of Direct3D: minus its translation times its
@@ -133,6 +135,7 @@ impl WorldFacts {
             target_format,
             depth_format: self.depth_format,
             target_size: self.target_size,
+            frame: self.frame,
             samples: self.samples,
             view: self.view,
             projection: self.projection,
