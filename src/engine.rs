@@ -838,6 +838,67 @@ pub unsafe fn ni_bound_ctor(bound: usize) {
     thiscall0(0x6F25E0, bound);
 }
 
+/// 0x41A700 `TES3Game::restartRenderer`: the renderer made again at `width` x `height`.
+///
+/// # Safety
+///
+/// `game` is the live `TES3Game`, on the main thread, between two frames.
+#[track_caller]
+pub unsafe fn tes3_game_restart_renderer(game: usize, width: u32, height: u32, bit_depth: u32) {
+    thiscall3(0x41A700, game, width, height, bit_depth);
+}
+
+/// 0x458D70 `LoadScreenManager::renderMutexLock`.
+///
+/// # Safety
+///
+/// `manager` is the game's live `LoadScreenManager`; the lock is given back with
+/// [`load_screen_manager_render_mutex_unlock`].
+#[track_caller]
+pub unsafe fn load_screen_manager_render_mutex_lock(manager: usize) {
+    thiscall0(0x458D70, manager);
+}
+
+/// 0x458DA0 `LoadScreenManager::renderMutexUnlock`.
+///
+/// # Safety
+///
+/// `manager` is the game's live `LoadScreenManager`, its render lock taken by this thread.
+#[track_caller]
+pub unsafe fn load_screen_manager_render_mutex_unlock(manager: usize) {
+    thiscall0(0x458DA0, manager);
+}
+
+/// 0x4360F0 `ShadowManager::setEnabled`.
+///
+/// # Safety
+///
+/// `manager` is the world controller's live `ShadowManager`.
+#[track_caller]
+pub unsafe fn shadow_manager_set_enabled(manager: usize, enabled: bool) {
+    thiscall1(0x4360F0, manager, enabled as u32);
+}
+
+/// `NiRenderer::GetFlags` (the virtual function at 0x30).
+///
+/// # Safety
+///
+/// `renderer` points at a live renderer.
+#[track_caller]
+pub unsafe fn renderer_get_flags(renderer: usize) -> u32 {
+    vcall0(renderer, crate::gen::layouts::InterfaceNiRenderer::GetFlags)
+}
+
+/// `NiRenderer::SetRenderTarget` (the virtual function at 0x3C); 0 for the back buffer.
+///
+/// # Safety
+///
+/// `renderer` points at a live renderer; `target` is 0 or a live `NiRenderedTexture`.
+#[track_caller]
+pub unsafe fn renderer_set_render_target(renderer: usize, target: usize) {
+    vcall1(renderer, crate::gen::layouts::InterfaceNiRenderer::SetRenderTarget, target as u32);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

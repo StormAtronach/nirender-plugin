@@ -15,6 +15,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
+use crate::engine;
 use crate::gen::layouts::{TES3Game, WorldController};
 use crate::mem::{rd, wr};
 
@@ -26,6 +27,7 @@ extern "system" {
     fn GetClientRect(window: usize, rect: *mut i32) -> i32;
     fn AdjustWindowRect(rect: *mut i32, style: u32, menu: i32) -> i32;
     fn SetWindowPos(window: usize, after: usize, x: i32, y: i32, width: i32, height: i32, flags: u32) -> i32;
+    fn GetWindowRect(window: usize, rect: *mut i32) -> i32;
 }
 
 /// The size of the back buffer of the device, and whether the game is windowed: the
@@ -45,6 +47,7 @@ static SUBSCRIBED: AtomicBool = AtomicBool::new(false);
 
 const GWL_WNDPROC: i32 = -4;
 const GWL_STYLE: i32 = -16;
+const WM_MOVE: u32 = 0x0003;
 const WM_SIZE: u32 = 0x0005;
 const WM_ENTERSIZEMOVE: u32 = 0x0231;
 const WM_EXITSIZEMOVE: u32 = 0x0232;
@@ -85,19 +88,41 @@ fn ask(size: (u32, u32)) {
     }
 }
 
+/// The window's place into the game's `windowPositionX` and `windowPositionY`, for a windowed
+/// game. The game reads them only at its start (`NiDX8Application::ctor` 0x4288A0, the
+/// registry's read 0x428C30) and puts its window there at each restart of its renderer
+/// (`initMainWindow` 0x4299C5); without this, a moved window would jump back at a change of
+/// the resolution. For a maximised window the place is its outer rectangle's corner, so the
+/// game's `SetWindowPos` gives the same rectangle again.
+unsafe fn note_place(window: usize) {
+    if !WINDOWED.load(Ordering::Relaxed) {
+        return;
+    }
+    let game: usize = rd(0x7C6CDC, 0);
+    let mut rect = [0i32; 4];
+    if game == 0 || GetWindowRect(window, rect.as_mut_ptr()) == 0 {
+        return;
+    }
+    wr::<i32>(game, TES3Game::windowPositionX, rect[0]);
+    wr::<i32>(game, TES3Game::windowPositionY, rect[1]);
+}
+
 /// The plugin's window procedure on the game's top window, before the game's: the end of a
 /// drag, and a maximise or a restore outside a drag (no WM_EXITSIZEMOVE comes then), ask for
-/// a restart at the window's new size.
+/// a restart at the window's new size; a move notes the window's place.
 unsafe extern "system" fn window_procedure(window: usize, message: u32, wparam: usize, lparam: isize) -> isize {
     match message {
         WM_ENTERSIZEMOVE => DRAGGING.store(true, Ordering::Relaxed),
+        WM_MOVE => note_place(window),
         WM_EXITSIZEMOVE => {
             DRAGGING.store(false, Ordering::Relaxed);
+            note_place(window);
             let mut rect = [0i32; 4];
             GetClientRect(window, rect.as_mut_ptr());
             ask(((rect[2] - rect[0]).max(0) as u32, (rect[3] - rect[1]).max(0) as u32));
         }
         WM_SIZE if !DRAGGING.load(Ordering::Relaxed) && (wparam == SIZE_RESTORED || wparam == SIZE_MAXIMIZED) => {
+            note_place(window);
             ask(((lparam as usize & 0xFFFF) as u32, ((lparam as usize >> 16) & 0xFFFF) as u32));
         }
         _ => {}
@@ -164,7 +189,8 @@ unsafe extern "C" fn frame_started(_user: *mut core::ffi::c_void, _packet: *cons
 
 /// `TES3Game::restartRenderer` at `width` x `height`, as the Options menu does it
 /// (`ui_MenuVideo_resChangeMessage_onResult` 0x6383E0): the world controller's view size and a
-/// bit depth of 32, then the restart under the load screen's render lock.
+/// bit depth of 32; then, under the load screen's render lock, the restart, the shadows off when
+/// the new renderer lacks their flag (0x80), and the back buffer as the render target.
 unsafe fn restart(width: u32, height: u32) {
     let game: usize = rd(0x7C6CDC, 0);
     let world: usize = rd(crate::engine::WORLD_CONTROLLER, 0);
@@ -176,16 +202,20 @@ unsafe fn restart(width: u32, height: u32) {
     wr::<u32>(world, WorldController::viewHeight, height);
     wr::<u32>(world, WorldController::bitDepth, 32);
     let screens: usize = rd(game, TES3Game::loadScreenManager);
-    // LoadScreenManager::renderMutexLock 0x458D70 and renderMutexUnlock 0x458DA0.
-    let lock = core::mem::transmute::<usize, unsafe extern "thiscall" fn(usize)>(0x458D70);
-    let unlock = core::mem::transmute::<usize, unsafe extern "thiscall" fn(usize)>(0x458DA0);
-    let restart_renderer = core::mem::transmute::<usize, unsafe extern "thiscall" fn(usize, u32, u32, u32)>(0x41A700);
     if screens != 0 {
-        lock(screens);
+        engine::load_screen_manager_render_mutex_lock(screens);
     }
-    restart_renderer(game, width, height, 32);
+    engine::tes3_game_restart_renderer(game, width, height, 32);
+    let renderer: usize = rd(world, WorldController::renderer);
+    if renderer != 0 {
+        if engine::renderer_get_flags(renderer) & 0x80 == 0 {
+            wr::<u32>(world, WorldController::field_E4, 0);
+            engine::shadow_manager_set_enabled(rd(world, WorldController::shadowManager), false);
+        }
+        engine::renderer_set_render_target(renderer, 0);
+    }
     if screens != 0 {
-        unlock(screens);
+        engine::load_screen_manager_render_mutex_unlock(screens);
     }
 }
 
