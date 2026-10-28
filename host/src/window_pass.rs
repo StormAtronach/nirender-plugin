@@ -140,6 +140,10 @@ impl Scale {
             multiview_mask: None,
         });
         let [x, y, w, h] = rect;
+        // A rectangle with no pixels (an extreme aspect): the window stays black.
+        if w == 0 || h == 0 {
+            return;
+        }
         pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &group, &[]);
@@ -178,7 +182,9 @@ impl ToWindow {
             self.fitted = Some(rect);
             println!("window: the picture {} x {} drawn at {} x {} at {}, {} in {} x {}", picture.0, picture.1, rect[2], rect[3], rect[0], rect[1], window.width(), window.height());
         }
-        if rect == [0, 0, picture.0, picture.1] {
+        // Only a window of the picture's size: a larger one (one more column) would keep
+        // undefined pixels beside the copy, and the scaled draw clears them black.
+        if (window.width(), window.height()) == picture {
             return exact(device, encoder, gamma, back_buffer, window);
         }
         let scale = self.scale.get_or_insert_with(|| Scale::new(device, window.format()));
@@ -230,6 +236,8 @@ mod tests {
         assert_eq!((w, h), (1921, 1080));
         assert_eq!((x, y), (0, 0));
         assert_eq!(fit((800, 600), (1001, 600)), [100, 0, 800, 600]);
+        // Rounded to the nearest, not truncated: 768 * 1280 / 1366 is 719.6.
+        assert_eq!(fit((1366, 768), (1280, 1024)), [0, 152, 1280, 720]);
         // No pixels: the whole window.
         assert_eq!(fit((0, 0), (640, 480)), [0, 0, 640, 480]);
     }
