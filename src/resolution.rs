@@ -28,6 +28,7 @@ extern "system" {
     fn AdjustWindowRect(rect: *mut i32, style: u32, menu: i32) -> i32;
     fn SetWindowPos(window: usize, after: usize, x: i32, y: i32, width: i32, height: i32, flags: u32) -> i32;
     fn GetWindowRect(window: usize, rect: *mut i32) -> i32;
+    fn IsIconic(window: usize) -> i32;
 }
 
 /// The size of the back buffer of the device, and whether the game is windowed: the
@@ -95,7 +96,8 @@ fn ask(size: (u32, u32)) {
 /// the resolution. For a maximised window the place is its outer rectangle's corner, so the
 /// game's `SetWindowPos` gives the same rectangle again.
 unsafe fn note_place(window: usize) {
-    if !WINDOWED.load(Ordering::Relaxed) {
+    // A minimised window's place (-32000, -32000) is not one to come back to.
+    if !WINDOWED.load(Ordering::Relaxed) || IsIconic(window) != 0 {
         return;
     }
     let game: usize = rd(0x7C6CDC, 0);
@@ -209,7 +211,8 @@ unsafe fn restart(width: u32, height: u32) {
     let renderer: usize = rd(world, WorldController::renderer);
     if renderer != 0 {
         if engine::renderer_get_flags(renderer) & 0x80 == 0 {
-            wr::<u32>(world, WorldController::field_E4, 0);
+            // One byte, as the menu writes it (0x6384F0); the next three are other flags.
+            wr::<u8>(world, WorldController::field_E4, 0);
             engine::shadow_manager_set_enabled(rd(world, WorldController::shadowManager), false);
         }
         engine::renderer_set_render_target(renderer, 0);
