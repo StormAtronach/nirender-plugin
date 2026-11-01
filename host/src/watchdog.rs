@@ -336,19 +336,28 @@ mod tests {
         set_allowance_word(std::ptr::null_mut());
         FRAMES_STARTED.store(false, Ordering::Relaxed);
         LOWER_WORD.store(false, Ordering::Relaxed);
+
+        // The time of a long part does not count after it, with the real count and rule: 25
+        // looks (over 6 s) inside a guard, then a look after its drop. The short limit counts
+        // from the drop: a real hang after the guard reaches the 5 s at the 21st look. The same
+        // for the end of a load.
+        let look = || Look { steps: STEPS.load(Ordering::Relaxed), in_step: true, loading: long_limit() };
+        let mut watch = Watch::default();
+        let guard = LongStep::begin();
+        assert_eq!(looks_of(&mut watch, 25, &look), None);
+        drop(guard);
+        assert_eq!(looks_of(&mut watch, 20, &look), None);
+        assert_eq!(watch.look(look()), Some(5));
+        let mut watch = Watch::default();
+        loading(true);
+        assert_eq!(looks_of(&mut watch, 25, &look), None);
+        loading(false);
+        assert_eq!(looks_of(&mut watch, 20, &look), None);
+        assert_eq!(watch.look(look()), Some(5));
     }
 
-    /// The Reviewer's sequence: a long part of 6 s in a step, then a look after its end. The count
-    /// that moved at the drop restarts the clock, so this is no stall, and the short limit
-    /// counts from the drop.
-    #[test]
-    fn the_time_inside_a_long_part_does_not_count_after_it() {
-        let mut watch = Watch::default();
-        let inside = Look { steps: 1, in_step: true, loading: true };
-        assert_eq!(looks(&mut watch, 25, inside), None);
-        let after = Look { steps: 2, in_step: true, loading: false };
-        assert_eq!(looks(&mut watch, 20, after), None);
-        // A real hang after the long part: the 21st look after the drop reaches the 5 s.
-        assert_eq!(watch.look(after), Some(5));
+    fn looks_of(watch: &mut Watch, count: usize, look: &dyn Fn() -> Look) -> Option<u64> {
+        (0..count).map(|_| watch.look(look())).last().flatten()
     }
+
 }
