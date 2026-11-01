@@ -610,14 +610,14 @@ impl Player {
 
     fn log_orphan(&self, id: u32) {
         let now = self.renderer.counts.frames;
-        let (made, name) = self.instance_made.get(&id).map_or((now, ""), |made| (made.frame, &made.name[..]));
+        let (first, last, name) = self.instance_made.get(&id).map_or((now, now, ""), |made| (made.first_frame, made.last_frame, &made.name[..]));
         let (visible, bound) = self.retained.first_slot_facts(id).unwrap_or((false, [0.0; 4]));
         match self.instances.get(&id) {
             Some(r) => println!(
-                "instance census: orphan {id} '{name}': class {}, flags {:#x}, geometry {:#x}, material {:#x}, at {:.1} {:.1} {:.1}, bound {bound:?}, visible {visible}, made in frame {made}, now {now}; removed",
+                "instance census: orphan {id} '{name}': class {}, flags {:#x}, geometry {:#x}, material {:#x}, at {:.1} {:.1} {:.1}, bound {bound:?}, visible {visible}, records from frame {first} to {last}, now {now}; removed",
                 r.class, r.flags, r.geometry, r.material, r.exact[0], r.exact[1], r.exact[2]
             ),
-            None => println!("instance census: orphan {id} '{name}': in the table only, bound {bound:?}, visible {visible}, made in frame {made}, now {now}; removed"),
+            None => println!("instance census: orphan {id} '{name}': in the table only, bound {bound:?}, visible {visible}, records from frame {first} to {last}, now {now}; removed"),
         }
     }
 
@@ -654,7 +654,7 @@ impl Player {
         };
         let id = word(data, 0);
         let frame = self.renderer.counts.frames;
-        self.instance_made.entry(id).or_insert_with(|| InstanceMade { frame, name: String::from_utf8_lossy(data.get(176..).unwrap_or_default()).into() });
+        self.instance_made.entry(id).or_insert_with(|| InstanceMade { first_frame: frame, last_frame: frame, name: String::from_utf8_lossy(data.get(176..).unwrap_or_default()).into() }).last_frame = frame;
         if let Some((_, moved)) = move_check.filter(|(moved_id, _)| *moved_id == id) {
             self.renderer.counts.moves_checked += 1;
             if moved != retained {
@@ -686,6 +686,9 @@ impl Player {
         retained.bound = core::array::from_fn(|i| float(data, 88 + i * 4));
         self.instance_put(id, retained);
         self.renderer.counts.instance_moves += 1;
+        if let Some(made) = self.instance_made.get_mut(&id) {
+            made.last_frame = self.renderer.counts.frames;
+        }
         self.move_check = Some((id, retained));
         if retained.flags & INSTANCE_BLOCK != 0 && !self.retained.update_place(id, &retained) {
             self.retained_insert(id, &retained);

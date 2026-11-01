@@ -250,9 +250,11 @@ enum Item {
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-/// The first record of an instance: the frame of the player, and the name of its shape.
+/// The records of an instance, in frames of the player: its first and its last, and the name
+/// of its shape.
 struct InstanceMade {
-    frame: u32,
+    first_frame: u32,
+    last_frame: u32,
     name: Box<str>,
 }
 
@@ -703,7 +705,7 @@ struct Player {
     stream: Stream,
     /// The retained instances of the plugin, by their id.
     instances: HashMap<u32, Retained>,
-    /// The first record of each instance in `instances`, for the log of an orphan
+    /// The records of each instance in `instances`, for the log of an orphan
     /// (`instance_census`).
     instance_made: HashMap<u32, InstanceMade>,
     /// The ids of the instances of each geometry handle, kept with `instances`

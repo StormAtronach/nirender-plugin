@@ -336,6 +336,8 @@ struct Tables {
     handle_updates: u64,
     value_updates: u64,
     deletes: u64,
+    /// The instances that ended with `sent` clear (`note_end`).
+    ends_without_record: u64,
     /// The draws of particle instances sent as `INSTANCE_DRAW` records (particles plan, step 2).
     particle_draws: u64,
     /// The particle instances made (the log names the first 100).
@@ -393,6 +395,7 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         handle_updates: 0,
         value_updates: 0,
         deletes: 0,
+        ends_without_record: 0,
         particle_draws: 0,
         particle_instances_made: 0,
         rejected_by: [0; REASONS],
@@ -705,6 +708,7 @@ pub unsafe fn forget(mt: &MainThread, shape: usize) -> bool {
     let t = &mut *tables_open;
     t.rejected.remove(&shape);
     if let Some(instance) = t.instances.remove(&shape) {
+        t.note_end(&instance, "destroyed");
         if capture::recording() {
             capture::instance_delete(instance.id);
         }
@@ -1126,7 +1130,22 @@ unsafe fn reject_at_record(mt: &MainThread, t: &mut Tables, shape: usize, cause:
     t.reject_pending(shape, true);
 }
 
+/// The lines of `Tables::note_end` in the log of a session; the report counts them all.
+const MOST_END_LINES: u64 = 64;
+
 impl Tables {
+    /// An instance that the helper holds ends while `sent` is clear: the case in which a delete
+    /// once did not go. The id is that of the helper's line of an orphan (`INSTANCE_CENSUS`).
+    fn note_end(&mut self, instance: &Instance, how: &str) {
+        if !instance.filled || instance.sent {
+            return;
+        }
+        self.ends_without_record += 1;
+        if self.ends_without_record <= MOST_END_LINES {
+            crate::log!("instances: instance {} {how} with no record since a reset: class {}, geometry {:#x}, visible {}", instance.id, instance.class, instance.geometry, instance.visible);
+        }
+    }
+
     /// The shape of a pending draw turned out not retainable at the record (a kind of draw
     /// other than a shape, a picture of the Code Patch, no handle): it goes to the rejected
     /// set.
@@ -1134,6 +1153,7 @@ impl Tables {
         mark(shape, false);
         // The record always goes, as in `forget`.
         if let Some(instance) = self.instances.remove(&shape) {
+            self.note_end(&instance, "rejected");
             if capture::recording() {
                 capture::instance_delete(instance.id);
             }
@@ -2109,7 +2129,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
     let causes = ["not a plain world draw of a retained class", "no geometry", "no material", "path off", "not modelled"];
     let skipped: Vec<String> = causes.iter().zip(t.skipped_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
-        "instances: mode {}, {} retained ({} live, {} skinned: the table draws them {}, {} bone records, {} hidden with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
+        "instances: mode {}, {} retained ({} live, {} skinned: the table draws them {}, {} bone records, {} hidden with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes ({} with no record since a reset), {} light records, {} state records",
         t.mode().name(),
         t.instances.len(),
         t.instances.values().filter(|i| i.live).count(),
@@ -2128,6 +2148,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
         t.handle_updates,
         t.value_updates,
         t.deletes,
+        t.ends_without_record,
         t.light_records,
         t.states
     ) + "\n"
