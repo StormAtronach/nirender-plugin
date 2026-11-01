@@ -65,7 +65,8 @@ under the home folder.
 | `region_means.py` | The mean colour of named regions of two pictures, and the ratio. |
 | `shader_delta.py` | The effect of a post shader on each renderer, with the tone difference of the renderers out of the comparison. |
 | `shadow_factor.py` | The shadow factor of each of two renderers, from pictures with and without the shadows. |
-| `capture_dump.py` | The records of a capture, for the root cause of a difference of a picture. |
+| `capture_dump.py` | The records of a capture, for the root cause of a difference of a picture; the interface's shapes, for a picture that a menu lacks. |
+| `lights_count.py` | What clustered distant lights and a 3D light volume would hold, from a `lights.data`. |
 | `capture_space.py` | Which space the records of a capture are in (an origin, relative flags). |
 | `inventory.py` | The inventory of a capture, for the material model of the retained pipeline. |
 | `light_values_check.py` | The light values of a capture two ways: the LIGHT records against the lights inline in the SHAPE records. |

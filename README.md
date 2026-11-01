@@ -71,7 +71,8 @@ this file; every path this file names exists) and `tools/check_contract.py` (the
 
 Other tools: `tools/replay.py` (a capture to a picture), `tools/picture_diff.py` and
 `tools/diff_crops.py` (two pictures compared), `tools/capture_dump.py` (the records of a
-capture), `tools/run_own_device.py` (a game run with the harness mods).
+capture), `tools/lights_count.py` (what clustered distant lights would hold, from a
+`lights.data`), `tools/run_own_device.py` (a game run with the harness mods).
 
 ## Switches
 
