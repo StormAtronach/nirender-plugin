@@ -12,7 +12,9 @@
 //!
 //! A table that a reset emptied fills again with equal items at the next draws, so the parts'
 //! notes count the records sent: only they show a capture's second send. Not covered:
-//! `light_noted` of the instance table, frames that move by themselves.
+//! `light_noted` of the instance table, frames that move by themselves. The line that ends in
+//! [`MOVES`] is for the reader only: the geometry table changes by itself, so a comparison
+//! skips it, and the line of the geometry's records decides.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -49,6 +51,9 @@ impl Part {
     }
 }
 
+/// The end of a line that a comparison skips.
+pub const MOVES: &str = "(moves by itself)";
+
 static ASKED: AtomicBool = AtomicBool::new(false);
 /// The last summary that is done, and its number.
 static LAST: MainCell<(Option<String>, u32)> = MainCell::new((None, 0));
@@ -81,9 +86,12 @@ pub unsafe fn run_pending() {
     ASKED.store(false, Ordering::Release);
     let ((source_textures, rendered_textures), buffers) = crate::capture::with_worker_stalled(|| (crate::ports::textures::state_part(), crate::ports::geometry::state_part(crate::engine::renderer())));
     let (instances, mode, generation) = crate::instance_stream::state_part(&t);
+    let (mut geometry, geometry_records) = crate::geometry_stream::state_part(&t);
+    geometry.note = MOVES.to_string();
     let text = [
         instances.line("instances"),
-        crate::geometry_stream::state_part(&t).line("geometry"),
+        format!("geometry records sent: {geometry_records}\n"),
+        geometry.line("geometry table"),
         crate::material_stream::state_part(&t).line("materials"),
         crate::light_stream::state_part(&t).line("lights"),
         source_textures.line("source textures"),

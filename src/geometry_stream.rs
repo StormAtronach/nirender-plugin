@@ -119,10 +119,11 @@ fn versions<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Sent>> {
 }
 
 /// The geometries sent, for the state summary: what the helper has of each, and the targets of
-/// the morphs. Not the frame of the last draw, which moves by itself. The note counts the
-/// records sent: a table that a reset emptied fills again with equal items, and only the count
-/// shows the second send.
-pub fn state_part(t: &MainThread) -> crate::state_summary::Part {
+/// the morphs, and the records sent. Not the frame of the last draw, which moves by itself. The
+/// table moves too, with no capture: 61 of 878 items left it in a paused menu (train 4, control),
+/// as the game's objects are destroyed. So the records decide: a table that a reset emptied fills
+/// again with equal items, and only that count shows the second send.
+pub fn state_part(t: &MainThread) -> (crate::state_summary::Part, u64) {
     let mut part = crate::state_summary::Part::default();
     for (&address, sent) in versions(t).iter() {
         let v = sent.version;
@@ -133,8 +134,7 @@ pub fn state_part(t: &MainThread) -> crate::state_summary::Part {
             part.add(&[crate::state_summary::MORPH_ITEM, address, targets]);
         }
     }
-    part.note = format!("records sent {}", *RECORDS.get(t));
-    part
+    (part, *RECORDS.get(t))
 }
 
 /// True when `handle` was sent with `version`: the draw sends nothing. Marks it used now.
