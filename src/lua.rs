@@ -188,6 +188,25 @@ unsafe extern "C" fn stream_mark(l: LuaState) -> i32 {
     0
 }
 
+/// `nirender.stateSummary()` asks for a summary of the state at the next Present, with
+/// `NIRENDER_STATE_SUMMARY=1`, and returns the text of the last one that is done and its number:
+/// one line for each part, a count and a hash (`src/state_summary.rs`). Nil before the first one
+/// and without the switch.
+unsafe extern "C" fn state_summary(l: LuaState) -> i32 {
+    let t = MainThread::claim();
+    match crate::state_summary::ask(&t) {
+        Some((text, number)) => {
+            push_str(l, &text);
+            lua_pushnumber(l, number as f64);
+            2
+        }
+        None => {
+            lua_pushnil(l);
+            1
+        }
+    }
+}
+
 /// `nirender.loadingDone()`: the game has its data (the "initialized" event).
 unsafe extern "C" fn loading_done(_: LuaState) -> i32 {
     crate::capture::loading_done();
@@ -822,6 +841,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "captureStop", capture_stop);
     set_fn(l, "streamShot", stream_shot);
     set_fn(l, "streamMark", stream_mark);
+    set_fn(l, "stateSummary", state_summary);
     set_fn(l, "overlay", overlay);
     set_fn(l, "tune", tune);
     set_fn(l, "hostState", host_state);

@@ -52,6 +52,21 @@ fn versions<'a>(t: &'a MainThread) -> Open<'a, Vec<Option<Sent>>> {
     VERSIONS.get(t)
 }
 
+/// The lights sent, for the state summary: their values, by index.
+pub fn state_part(t: &MainThread) -> crate::state_summary::Part {
+    let mut part = crate::state_summary::Part::default();
+    for (index, sent) in versions(t).iter().enumerate() {
+        if let Some((values, radius)) = sent {
+            let mut words = [0u32; 28];
+            words[0] = index as u32;
+            words[1] = *radius;
+            words[2..].copy_from_slice(values);
+            part.add(&words);
+        }
+    }
+    part
+}
+
 /// Forgets the lights: the next draw with each sends it again. For the start of a capture
 /// file, and for the frames of a file that held.
 ///

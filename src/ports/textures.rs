@@ -908,6 +908,32 @@ pub unsafe fn purge_source_textures() -> (u32, u32, u32) {
     (dropped, kept, unreadable)
 }
 
+/// The engine's list of live textures, for the state summary: each texture and the address of
+/// its renderer data. The note counts the source textures from a file that have no renderer
+/// data and no pixel data: their size reads 0 until their next draw.
+///
+/// # Safety
+///
+/// The cell worker is stalled: it changes the list with no lock.
+pub unsafe fn state_part() -> crate::state_summary::Part {
+    let mut part = crate::state_summary::Part::default();
+    let (mut without_data, mut no_size) = (0, 0);
+    let mut texture = eng::texture_list_head();
+    while texture != 0 {
+        let data: u32 = rd(texture, T::rendererData);
+        part.add(&[texture as u32, data]);
+        if data == 0 {
+            without_data += 1;
+            if ni::is_kind_of(texture, RTTI_SOURCE_TEXTURE) && rd::<usize>(texture, ST::filenameOnPC) != 0 && rd::<usize>(texture, ST::pixelData) == 0 {
+                no_size += 1;
+            }
+        }
+        texture = rd(texture, T::nextTexture);
+    }
+    part.note = format!("without renderer data {without_data}, of them file textures with no size {no_size}");
+    part
+}
+
 // ---- NiDX8SourceTextureData
 
 /// 0x6BFDE0 `NiDX8SourceTextureData::ctor`. Returns `this`.

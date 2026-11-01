@@ -449,6 +449,7 @@ pub unsafe fn after_present() {
     }
     stream_present();
     crate::capture::run_pending_purge();
+    crate::state_summary::run_pending();
 }
 
 /// MGE XE runs its logic of a frame. Only through `after_present`, without the device lock.

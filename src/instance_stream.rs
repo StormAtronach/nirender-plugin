@@ -351,6 +351,21 @@ struct Tables {
 
 static TABLES: MainCell<Option<Tables>> = MainCell::new(None);
 
+/// The table, for the state summary: the id, `sent` and `visible` of each instance, the mode and
+/// the generation.
+pub fn state_part(mt: &MainThread) -> (crate::state_summary::Part, Option<Mode>, u32) {
+    let t = tables(mt);
+    let mut part = crate::state_summary::Part::default();
+    let (mut sent, mut visible) = (0, 0);
+    for instance in t.instances.values() {
+        part.add(&[instance.id, instance.sent as u32, instance.visible as u32]);
+        sent += instance.sent as u32;
+        visible += instance.visible as u32;
+    }
+    part.note = format!("sent {sent}, visible {visible}");
+    (part, t.mode, t.generation)
+}
+
 /// The table, for a holder of the proof of the main thread; made at the first open.
 #[track_caller]
 fn tables(mt: &MainThread) -> Open<'_, Tables> {

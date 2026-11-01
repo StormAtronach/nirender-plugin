@@ -2145,21 +2145,28 @@ pub unsafe fn run_pending_purge() {
         return;
     }
     PURGE_PENDING.store(false, Ordering::Release);
-    let data_handler: usize = rd(DATA_HANDLER, 0);
-    if data_handler != 0 {
-        crate::engine::thiscall0(WAIT_FOR_BACKGROUND_THREAD, data_handler);
-    }
-    {
+    with_worker_stalled(|| {
         let lock = crate::sync::device_lock();
         // The purge makes the engine write records: the state is closed during it.
         let in_view = state(&lock).map(|s| s.geometry.len());
         if let Some(in_view) = in_view {
             purge(in_view);
         }
+    });
+}
+
+/// Runs `work` with the cell worker stalled. Without the device lock (the rule above), and not
+/// under a Lua call: a worker that waits for the Lua lock never reaches its stall point.
+pub unsafe fn with_worker_stalled<T>(work: impl FnOnce() -> T) -> T {
+    let data_handler: usize = rd(DATA_HANDLER, 0);
+    if data_handler != 0 {
+        crate::engine::thiscall0(WAIT_FOR_BACKGROUND_THREAD, data_handler);
     }
+    let result = work();
     if data_handler != 0 {
         crate::engine::thiscall0(RELEASE_BACKGROUND_THREAD, data_handler);
     }
+    result
 }
 
 /// Makes the renderer drop its textures and the buffers of the geometry of the warm-up.

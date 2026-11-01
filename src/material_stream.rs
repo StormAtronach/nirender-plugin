@@ -200,6 +200,19 @@ fn handles<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Handle>> {
     HANDLES.get(t).map(|handles| handles.get_or_insert_with(HashMap::new))
 }
 
+/// The material handles, for the state summary: each content, and whether the helper has its
+/// record.
+pub fn state_part(t: &MainThread) -> crate::state_summary::Part {
+    let mut part = crate::state_summary::Part::default();
+    let mut sent = 0;
+    for (&id, handle) in handles(t).iter() {
+        part.add(&[id, handle.check, handle.sent as u32]);
+        sent += handle.sent as u32;
+    }
+    part.note = format!("sent {sent}");
+    part
+}
+
 /// Takes the record of a handle off the sent ones. True when it was sent.
 fn unsend(t: &MainThread, handle: u32) -> bool {
     sent_groups(t).remove(&handle);

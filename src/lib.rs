@@ -85,6 +85,7 @@ pub mod resource;
 pub mod shadow;
 pub mod shape_stream;
 pub mod site;
+pub mod state_summary;
 pub mod stream_format;
 pub mod switches;
 pub mod sync;
