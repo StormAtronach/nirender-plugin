@@ -23,7 +23,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::capture::{ticks, ticks_per_second};
-use crate::stream_format::{EXIT_NOT_ANSWERING, EXIT_STALLED, STALL_SECONDS};
+use crate::stream_format::{EXIT_HELPER_TOO_OLD, EXIT_NOT_ANSWERING, EXIT_STALLED, STALL_SECONDS};
 
 #[link(name = "user32")]
 extern "system" {
@@ -60,6 +60,9 @@ pub enum Cause {
     /// The plugin ended it (`EXIT_NOT_ANSWERING`) after that many seconds without a read of the
     /// ring while records waited (`capture.rs`, the limit from the helper's allowance).
     NotAnswering(u64),
+    /// The plugin ended it (`EXIT_HELPER_TOO_OLD`): an older build than the plugin, too old to
+    /// refuse a stream of another format (`stream_format::helper_too_old`).
+    TooOld,
     /// The helper lost its graphics device and said so (`MESSAGE_LOST_DEVICE`); it lives on.
     LostDevice,
 }
@@ -72,6 +75,7 @@ impl Cause {
         match code {
             EXIT_STALLED => Cause::Stalled(if allowance == 0 { STALL_SECONDS } else { u64::from(allowance) }),
             EXIT_NOT_ANSWERING => Cause::NotAnswering(NOT_ANSWERING_AFTER.load(Ordering::Relaxed)),
+            EXIT_HELPER_TOO_OLD => Cause::TooOld,
             other => Cause::Crashed(other),
         }
     }
@@ -82,6 +86,7 @@ impl Cause {
             Cause::Crashed(code) => code,
             Cause::Stalled(_) => EXIT_STALLED,
             Cause::NotAnswering(_) => EXIT_NOT_ANSWERING,
+            Cause::TooOld => EXIT_HELPER_TOO_OLD,
             Cause::LostDevice => 0,
         }
     }
@@ -95,6 +100,7 @@ impl Cause {
             Cause::Crashed(code) => format!("crashed (exit code {code:#x})"),
             Cause::Stalled(seconds) => format!("stalled for {seconds} s (exit code {EXIT_STALLED})"),
             Cause::NotAnswering(seconds) => format!("did not answer for {seconds} s (exit code {EXIT_NOT_ANSWERING})"),
+            Cause::TooOld => format!("is an older build than the plugin: install akulakhan.dll, numidium.exe and d3d8.dll from one archive (exit code {EXIT_HELPER_TOO_OLD})"),
             Cause::LostDevice => "lost its graphics device".to_string(),
         }
     }
@@ -306,6 +312,9 @@ mod tests {
         assert_eq!(Cause::of_exit_code(0, 5).word(), "ended without a reason (exit code 0)");
         assert_eq!(Cause::LostDevice.word(), "lost its graphics device");
         assert_eq!(Cause::LostDevice.code(), 0);
+        assert_eq!(Cause::of_exit_code(32, 0), Cause::TooOld);
+        assert_eq!(Cause::TooOld.code(), 32);
+        assert!(Cause::TooOld.word().contains("from one archive"), "{}", Cause::TooOld.word());
         assert_eq!(Cause::Crashed(0xc000_0005).code(), 0xc000_0005);
     }
 
