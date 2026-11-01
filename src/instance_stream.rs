@@ -336,6 +336,8 @@ struct Tables {
     handle_updates: u64,
     value_updates: u64,
     deletes: u64,
+    /// The instances that ended with `sent` clear (`note_end`).
+    ends_without_record: u64,
     /// The draws of particle instances sent as `INSTANCE_DRAW` records (particles plan, step 2).
     particle_draws: u64,
     /// The particle instances made (the log names the first 100).
@@ -393,11 +395,20 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         handle_updates: 0,
         value_updates: 0,
         deletes: 0,
+        ends_without_record: 0,
         particle_draws: 0,
         particle_instances_made: 0,
         rejected_by: [0; REASONS],
         skipped_by: [0; 5],
     }))
+}
+
+impl Instance {
+    /// An instance of a shape at its first draw: no record of it went yet.
+    #[allow(clippy::too_many_arguments)]
+    fn new(id: u32, class: u32, geometry: u32, material: u32, frame: u32, generation: u32, skinned: bool, live: bool, points: bool) -> Instance {
+        Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
+    }
 }
 
 impl Tables {
@@ -474,7 +485,8 @@ unsafe fn enabled(mt: &MainThread) -> bool {
 /// Forgets which instances were sent: for the start of a capture file from the stream, so
 /// that the next draw of each sends its `INSTANCE` record into the file. The capture purges
 /// the source textures too, so the handles of every instance get a check.
-pub unsafe fn reset(mt: &MainThread) {
+pub unsafe fn reset(mt: &MainThread, cause: &str) {
+    crate::log!("instances: the records go again: {cause}");
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     t.generation = t.generation.wrapping_add(1);
@@ -484,6 +496,42 @@ pub unsafe fn reset(mt: &MainThread) {
     }
     // The LIGHT records go again (`light_stream::reset`): the lights are noted again too.
     t.light_noted.clear();
+}
+
+/// Sends the ids of the instances (`INSTANCE_CENSUS`). The destroyed shapes that the cell
+/// worker queued leave first, with their deletes; one that it destroys after the drain only
+/// makes the list longer. So the helper holds no id that the list lacks, unless a delete was
+/// lost.
+///
+/// # Safety
+///
+/// The caller does not hold the tables open: the drain and the list open them.
+pub unsafe fn send_census(mt: &MainThread) {
+    crate::worker_events::drain();
+    if !capture::recording() {
+        return;
+    }
+    let ids: Vec<u32> = tables(mt).instances.values().map(|instance| instance.id).collect();
+    capture::instance_census(&ids);
+}
+
+/// MWSE_NATIVE_EVENT_PLAYER_CELL_CHANGED, on the main thread.
+unsafe extern "C" fn player_cell_changed(_user: *mut core::ffi::c_void, _packet: *const core::ffi::c_void) {
+    if let Some(t) = MainThread::here() {
+        send_census(&t);
+    }
+}
+
+/// A census at each cell change of the player, from MWSE's native event.
+///
+/// # Safety
+///
+/// As for `mwse_native::subscribe`: the listener is a function of this DLL, which stays loaded.
+pub unsafe fn install_census() {
+    use crate::mwse_native::{subscribe, NATIVE_EVENT_PLAYER_CELL_CHANGED};
+    if let Err(error) = subscribe(NATIVE_EVENT_PLAYER_CELL_CHANGED, player_cell_changed) {
+        crate::log!("instances: {error}: no census at a cell change");
+    }
 }
 
 /// A scene of the game begins: the camera of the world scene is kept for the check at its
@@ -660,13 +708,16 @@ pub unsafe fn frame_tick(mt: &MainThread) {
 }
 
 /// The shape is deleted (the destructor of `NiGeometry`): its instance goes, with a record
-/// for the helper when the helper had it. True when the shape was an instance.
+/// for the helper. `Instance::sent` does not say whether the helper holds the instance (a
+/// reset clears it), and the helper ignores an id it does not hold, so the record always
+/// goes. True when the shape was an instance.
 pub unsafe fn forget(mt: &MainThread, shape: usize) -> bool {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     t.rejected.remove(&shape);
     if let Some(instance) = t.instances.remove(&shape) {
-        if instance.sent && capture::recording() {
+        t.note_end(&instance, "destroyed");
+        if capture::recording() {
             capture::instance_delete(instance.id);
         }
         t.deletes += 1;
@@ -763,7 +814,8 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points });
+    let frame = t.frame;
+    t.instances.insert(shape, Instance::new(id, class, geometry, material, frame, generation, skinned, live, points));
     t.pending = Some((shape, id));
 }
 
@@ -1086,14 +1138,31 @@ unsafe fn reject_at_record(mt: &MainThread, t: &mut Tables, shape: usize, cause:
     t.reject_pending(shape, true);
 }
 
+/// The lines of `Tables::note_end` in the log of a session; the report counts them all.
+const MOST_END_LINES: u64 = 64;
+
 impl Tables {
+    /// An instance that the helper holds ends while `sent` is clear: the case in which a delete
+    /// once did not go. The id is that of the helper's line of an orphan (`INSTANCE_CENSUS`).
+    fn note_end(&mut self, instance: &Instance, how: &str) {
+        if !instance.filled || instance.sent {
+            return;
+        }
+        self.ends_without_record += 1;
+        if self.ends_without_record <= MOST_END_LINES {
+            crate::log!("instances: instance {} {how} with no record since a reset: class {}, geometry {:#x}, visible {}", instance.id, instance.class, instance.geometry, instance.visible);
+        }
+    }
+
     /// The shape of a pending draw turned out not retainable at the record (a kind of draw
     /// other than a shape, a picture of the Code Patch, no handle): it goes to the rejected
     /// set.
     unsafe fn reject_pending(&mut self, shape: usize, reason_later: bool) {
         mark(shape, false);
+        // The record always goes, as in `forget`.
         if let Some(instance) = self.instances.remove(&shape) {
-            if instance.sent && capture::recording() {
+            self.note_end(&instance, "rejected");
+            if capture::recording() {
                 capture::instance_delete(instance.id);
             }
         }
@@ -2068,7 +2137,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
     let causes = ["not a plain world draw of a retained class", "no geometry", "no material", "path off", "not modelled"];
     let skipped: Vec<String> = causes.iter().zip(t.skipped_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
-        "instances: mode {}, {} retained ({} live, {} skinned: the table draws them {}, {} bone records, {} hidden with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes, {} light records, {} state records",
+        "instances: mode {}, {} retained ({} live, {} skinned: the table draws them {}, {} bone records, {} hidden with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes ({} with no record since a reset), {} light records, {} state records",
         t.mode().name(),
         t.instances.len(),
         t.instances.values().filter(|i| i.live).count(),
@@ -2087,6 +2156,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
         t.handle_updates,
         t.value_updates,
         t.deletes,
+        t.ends_without_record,
         t.light_records,
         t.states
     ) + "\n"
@@ -2128,6 +2198,40 @@ pub unsafe fn report(mt: &MainThread) -> String {
 mod tests {
     use super::*;
     use crate::material_stream::EFFECT_SIGNATURE_WORDS;
+
+    /// A shape that the engine does not display after a reset (a culled weapon, a shape out of
+    /// the view) and that is then destroyed: the helper holds its instance, so the delete must
+    /// go, or the helper draws it at its last place for the rest of the session.
+    #[test]
+    fn a_shape_destroyed_after_a_reset_sends_its_delete() {
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let mut forgotten = Instance::new(77, 0, 1, 2, 0, 0, false, false, false);
+            forgotten.filled = true;
+            forgotten.sent = true;
+            let mut rejected = Instance::new(78, 0, 1, 2, 0, 0, false, false, false);
+            rejected.filled = true;
+            rejected.sent = true;
+            // The rejection clears the shape's mark, so it needs flags to write.
+            let mut rejected_shape = [0u8; 64];
+            let rejected_at = rejected_shape.as_mut_ptr() as usize;
+            let forgotten_at = 0x7700_0000;
+            tables(&mt).instances.insert(forgotten_at, forgotten);
+            tables(&mt).instances.insert(rejected_at, rejected);
+
+            reset(&mt, "a test");
+            assert!(!tables(&mt).instances[&forgotten_at].sent, "the reset did not clear the flag");
+            assert!(forget(&mt, forgotten_at));
+            reject_pending(&mt, rejected_at, false);
+            tables(&mt).rejected.remove(&rejected_at);
+
+            let deletes = capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+            assert_eq!(deletes, [77, 78]);
+        }
+    }
 
     #[test]
     fn an_effect_watch_grows_its_version_only_when_the_words_change() {

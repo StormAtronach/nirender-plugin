@@ -207,7 +207,7 @@ pub const MESSAGES_HEAD: usize = 32;
 /// The exit codes of the helper when the parts do not match. The helper's own table: 0 ok,
 /// 1 to 9 its IPC host mode (`error.rs` of mgeHost64), 10 to 29 a refusal with a message box
 /// (10 the stream format, 11 the extension format or no hello record, 20 to 29 the device or
-/// the window), 30 to 39 a stall. The plugin's `check_host` reads them with
+/// the window), 30 to 39 a stall or an end by the plugin. The plugin's `check_host` reads them with
 /// [`helper_said_why`]: the helper showed its message, the plugin shows none.
 pub const EXIT_STREAM_FORMAT: u32 = 10;
 pub const EXIT_EXTENSION_FORMAT: u32 = 11;
@@ -224,6 +224,9 @@ pub const EXIT_STALLED: u32 = 30;
 pub const EXIT_PANIC: u32 = 0xC000_0409;
 /// The plugin ended the helper, which read no record for the limit of [`limit`].
 pub const EXIT_NOT_ANSWERING: u32 = 31;
+/// The plugin ended the helper, which is older than the words of the ring head
+/// ([`helper_too_old`]).
+pub const EXIT_HELPER_TOO_OLD: u32 = 32;
 /// The seconds without a step of the frame thread after which the watchdog ends the helper.
 pub const STALL_SECONDS: u64 = 5;
 /// The seconds a step may take while the extension of the helper loads (the distant land
@@ -294,6 +297,14 @@ pub fn not_answering_limit(allowance: u32) -> u64 {
 /// message box and in its log, and the plugin adds no second box.
 pub fn helper_said_why(exit_code: u32) -> bool {
     (10..=29).contains(&exit_code)
+}
+
+/// True for a helper older than the allowance word, which is too old to refuse a stream of
+/// another format: it read a whole frame (`read` is past `frame_end`, the end of a frame in the
+/// ring, 0 before the first), and the word is still 0. Every newer helper writes the word
+/// before it reads a frame. `ending`: an announced exit has a rule of its own ([`limit`]).
+pub fn helper_too_old(ending: u32, allowance: u32, read: u64, frame_end: u64) -> bool {
+    ending == 0 && allowance == 0 && frame_end != 0 && read >= frame_end
 }
 
 /// The format number of a HEADER record: 0 for a record from before the handshake.
@@ -399,6 +410,23 @@ mod tests {
         // The IPC host mode's codes, a stall and the codes of Windows for a crash are not.
         assert!(!helper_said_why(0) && !helper_said_why(3) && !helper_said_why(30) && !helper_said_why(EXIT_PANIC));
         assert!(!helper_said_why(EXIT_STALLED) && !helper_said_why(EXIT_NOT_ANSWERING));
+        // The plugin shows the box of a helper too old to refuse.
+        assert!(!helper_said_why(EXIT_HELPER_TOO_OLD));
+    }
+
+    #[test]
+    fn a_helper_that_read_a_frame_without_the_allowance_word_is_too_old() {
+        assert!(helper_too_old(0, 0, 5000, 5000));
+        assert!(helper_too_old(0, 0, 6000, 5000));
+        // A helper with the word, of any value.
+        assert!(!helper_too_old(0, STALL_SECONDS as u32, 6000, 5000));
+        assert!(!helper_too_old(0, LOADING_SECONDS as u32, 6000, 5000));
+        // Before the first frame's end, and while the frame is not read yet: it can still
+        // be making its device, with the word at 0.
+        assert!(!helper_too_old(0, 0, 6000, 0));
+        assert!(!helper_too_old(0, 0, 4999, 5000));
+        // A refusal that announced its exit: its box is up.
+        assert!(!helper_too_old(EXIT_STREAM_FORMAT, 0, 6000, 5000));
     }
 
     /// The words of one head, as (offset, bytes): each is aligned to its size, none overlaps

@@ -256,6 +256,10 @@ pub mod tag {
     /// Options menu, or a resize of its window): the width and the height of the picture and
     /// the game's window, as the HEADER has them. The helper makes its back buffer again.
     pub const SIZE: u32 = 44;
+    /// The ids of the plugin's instances (`instance_stream::send_census`): the number, then the
+    /// ids. The helper holds no other instance: one that it holds and this list lacks lost its
+    /// [`INSTANCE_DELETE`]. A helper of an older build skips the record.
+    pub const INSTANCE_CENSUS: u32 = 45;
 }
 
 // ---- the ring in shared memory
@@ -631,6 +635,12 @@ impl Ring {
         let read = self.counter(RING_READ).load(Ordering::Acquire);
         let verdict = self.silence.look(read, pending, ending, allowance, now, ticks_per_second());
         if self.ended {
+            return true;
+        }
+        if crate::stream_format::helper_too_old(ending, allowance, read, self.frame_before) {
+            crate::log!("stream: the host program read a whole frame and wrote no allowance word: it is older than this plugin, and files of different builds are mixed; it is ended");
+            crate::own_device::end_host(crate::stream_format::EXIT_HELPER_TOO_OLD);
+            self.ended = true;
             return true;
         }
         match verdict {
@@ -1024,9 +1034,28 @@ pub fn active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
+#[cfg(not(test))]
 #[inline]
 pub fn recording() -> bool {
     RECORDING.load(Ordering::Relaxed)
+}
+
+/// In a test: recording on this thread only, while it collects the ids of its deletes.
+#[cfg(test)]
+pub fn recording() -> bool {
+    RECORDING.load(Ordering::Relaxed) || TEST_DELETES.with(|deletes| deletes.borrow().is_some())
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_DELETES: core::cell::RefCell<Option<Vec<u32>>> = const { core::cell::RefCell::new(None) };
+}
+
+/// For a test: starts collecting the ids of this thread's `instance_delete` (true), or ends
+/// that (false). Gives the ids collected.
+#[cfg(test)]
+pub fn test_record_deletes(on: bool) -> Vec<u32> {
+    TEST_DELETES.with(|deletes| deletes.replace(on.then(Vec::new))).unwrap_or_default()
 }
 
 /// Makes the capture file at `path`, and its folder first when the folder is missing (the
@@ -1082,7 +1111,7 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     crate::geometry_stream::reset(t);
     crate::material_stream::reset(t);
     crate::light_stream::reset(t);
-    crate::instance_stream::reset(t);
+    crate::instance_stream::reset(t, "a capture file starts");
     if let Some(mut s) = state(&lock) {
         s.tee_only = false;
         if s.tee_hold {
@@ -1131,7 +1160,7 @@ pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
     crate::material_stream::forget(t, &material);
     // The lights change in most frames: all of them again, into the frames.
     crate::light_stream::reset(t);
-    crate::instance_stream::reset(t);
+    crate::instance_stream::reset(t, "a capture file that holds takes its frames");
     true
 }
 
@@ -1782,8 +1811,25 @@ pub unsafe fn instance_walk(id: u32) {
 
 /// The end of an instance. See [`tag::INSTANCE_DELETE`].
 pub unsafe fn instance_delete(id: u32) {
+    #[cfg(test)]
+    TEST_DELETES.with(|deletes| {
+        if let Some(deletes) = deletes.borrow_mut().as_mut() {
+            deletes.push(id);
+        }
+    });
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_DELETE, &[words(&[id])]);
+}
+
+/// The ids of the plugin's instances. See [`tag::INSTANCE_CENSUS`].
+///
+/// # Safety
+///
+/// On the main thread: the place of the record among the deletes of the instances is what the
+/// helper's check relies on, and those deletes go on the main thread.
+pub unsafe fn instance_census(ids: &[u32]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::INSTANCE_CENSUS, &[words(&[ids.len() as u32]), words(ids)]);
 }
 
 /// The lights of an instance. See [`tag::INSTANCE_LIGHTS`].

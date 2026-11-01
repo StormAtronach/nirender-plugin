@@ -626,6 +626,17 @@ impl RetainedSet {
         }
     }
 
+    /// The ids of the instances of the table.
+    pub fn ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.by_id.keys().copied()
+    }
+
+    /// Whether the first slot of the instance is visible, and its bound.
+    pub fn first_slot_facts(&self, id: u32) -> Option<(bool, [f32; 4])> {
+        let &slot = self.by_id.get(&id)?.first()?;
+        self.slots[slot as usize].as_ref().map(|s| (s.visible, s.bound))
+    }
+
     pub fn set_visible(&mut self, id: u32, visible: bool) {
         if let Some(slots) = self.by_id.get(&id) {
             for &slot in slots {
