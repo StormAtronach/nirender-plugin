@@ -634,6 +634,12 @@ impl Ring {
         if self.ended {
             return true;
         }
+        if crate::stream_format::helper_too_old(ending, allowance, read, self.frame_before) {
+            crate::log!("stream: the host program read a whole frame and wrote no allowance word: it is older than this plugin, and files of different builds are mixed; it is ended");
+            crate::own_device::end_host(crate::stream_format::EXIT_HELPER_TOO_OLD);
+            self.ended = true;
+            return true;
+        }
         match verdict {
             Verdict::Wait => return false,
             Verdict::NotAnswering(limit) => {
