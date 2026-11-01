@@ -400,6 +400,14 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
     }))
 }
 
+impl Instance {
+    /// An instance of a shape at its first draw: no record of it went yet.
+    #[allow(clippy::too_many_arguments)]
+    fn new(id: u32, class: u32, geometry: u32, material: u32, frame: u32, generation: u32, skinned: bool, live: bool, points: bool) -> Instance {
+        Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
+    }
+}
+
 impl Tables {
     /// The mode, from `NIRENDER_RETAINED` at the first call.
     fn mode(&mut self) -> Mode {
@@ -689,13 +697,15 @@ pub unsafe fn frame_tick(mt: &MainThread) {
 }
 
 /// The shape is deleted (the destructor of `NiGeometry`): its instance goes, with a record
-/// for the helper when the helper had it. True when the shape was an instance.
+/// for the helper. `Instance::sent` does not say whether the helper holds the instance (a
+/// reset clears it), and the helper ignores an id it does not hold, so the record always
+/// goes. True when the shape was an instance.
 pub unsafe fn forget(mt: &MainThread, shape: usize) -> bool {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     t.rejected.remove(&shape);
     if let Some(instance) = t.instances.remove(&shape) {
-        if instance.sent && capture::recording() {
+        if capture::recording() {
             capture::instance_delete(instance.id);
         }
         t.deletes += 1;
@@ -792,7 +802,8 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     let id = t.next_id;
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
-    t.instances.insert(shape, Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: t.frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points });
+    let frame = t.frame;
+    t.instances.insert(shape, Instance::new(id, class, geometry, material, frame, generation, skinned, live, points));
     t.pending = Some((shape, id));
 }
 
@@ -1121,8 +1132,9 @@ impl Tables {
     /// set.
     unsafe fn reject_pending(&mut self, shape: usize, reason_later: bool) {
         mark(shape, false);
+        // The record always goes, as in `forget`.
         if let Some(instance) = self.instances.remove(&shape) {
-            if instance.sent && capture::recording() {
+            if capture::recording() {
                 capture::instance_delete(instance.id);
             }
         }
@@ -2157,6 +2169,40 @@ pub unsafe fn report(mt: &MainThread) -> String {
 mod tests {
     use super::*;
     use crate::material_stream::EFFECT_SIGNATURE_WORDS;
+
+    /// A shape that the engine does not display after a reset (a culled weapon, a shape out of
+    /// the view) and that is then destroyed: the helper holds its instance, so the delete must
+    /// go, or the helper draws it at its last place for the rest of the session.
+    #[test]
+    fn a_shape_destroyed_after_a_reset_sends_its_delete() {
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let mut forgotten = Instance::new(77, 0, 1, 2, 0, 0, false, false, false);
+            forgotten.filled = true;
+            forgotten.sent = true;
+            let mut rejected = Instance::new(78, 0, 1, 2, 0, 0, false, false, false);
+            rejected.filled = true;
+            rejected.sent = true;
+            // The rejection clears the shape's mark, so it needs flags to write.
+            let mut rejected_shape = [0u8; 64];
+            let rejected_at = rejected_shape.as_mut_ptr() as usize;
+            let forgotten_at = 0x7700_0000;
+            tables(&mt).instances.insert(forgotten_at, forgotten);
+            tables(&mt).instances.insert(rejected_at, rejected);
+
+            reset(&mt, "a test");
+            assert!(!tables(&mt).instances[&forgotten_at].sent, "the reset did not clear the flag");
+            assert!(forget(&mt, forgotten_at));
+            reject_pending(&mt, rejected_at, false);
+            tables(&mt).rejected.remove(&rejected_at);
+
+            let deletes = capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+            assert_eq!(deletes, [77, 78]);
+        }
+    }
 
     #[test]
     fn an_effect_watch_grows_its_version_only_when_the_words_change() {

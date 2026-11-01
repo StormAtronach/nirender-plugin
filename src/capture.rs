@@ -1025,9 +1025,28 @@ pub fn active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
+#[cfg(not(test))]
 #[inline]
 pub fn recording() -> bool {
     RECORDING.load(Ordering::Relaxed)
+}
+
+/// In a test: recording on this thread only, while it collects the ids of its deletes.
+#[cfg(test)]
+pub fn recording() -> bool {
+    RECORDING.load(Ordering::Relaxed) || TEST_DELETES.with(|deletes| deletes.borrow().is_some())
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_DELETES: core::cell::RefCell<Option<Vec<u32>>> = const { core::cell::RefCell::new(None) };
+}
+
+/// For a test: starts collecting the ids of this thread's `instance_delete` (true), or ends
+/// that (false). Gives the ids collected.
+#[cfg(test)]
+pub fn test_record_deletes(on: bool) -> Vec<u32> {
+    TEST_DELETES.with(|deletes| deletes.replace(on.then(Vec::new))).unwrap_or_default()
 }
 
 /// Makes the capture file at `path`, and its folder first when the folder is missing (the
@@ -1783,6 +1802,12 @@ pub unsafe fn instance_walk(id: u32) {
 
 /// The end of an instance. See [`tag::INSTANCE_DELETE`].
 pub unsafe fn instance_delete(id: u32) {
+    #[cfg(test)]
+    TEST_DELETES.with(|deletes| {
+        if let Some(deletes) = deletes.borrow_mut().as_mut() {
+            deletes.push(id);
+        }
+    });
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_DELETE, &[words(&[id])]);
 }
