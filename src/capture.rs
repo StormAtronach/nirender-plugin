@@ -2157,6 +2157,10 @@ pub unsafe fn run_pending_purge() {
 
 /// Runs `work` with the cell worker stalled. Without the device lock (the rule above), and not
 /// under a Lua call: a worker that waits for the Lua lock never reaches its stall point.
+///
+/// # Safety
+///
+/// On the main thread, with the game's data handler alive or 0.
 pub unsafe fn with_worker_stalled<T>(work: impl FnOnce() -> T) -> T {
     let data_handler: usize = rd(DATA_HANDLER, 0);
     if data_handler != 0 {

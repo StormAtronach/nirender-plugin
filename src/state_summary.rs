@@ -5,12 +5,23 @@
 //! `nirender.stateSummary()` asks for a summary and returns the last one that is done, with its
 //! number. The summary is made at the next Present: its walk of the engine's texture list and of
 //! the renderer's maps needs the cell worker stalled, and a stall under a Lua call can wait for
-//! a worker that waits for the Lua lock. The test takes two summaries with a capture between them,
-//! in a paused menu; a control takes two with no capture between them.
+//! a worker that waits for the Lua lock. For the same reason a test asks in a paused menu, not
+//! during a load: a Lua teleport draws frames of a load under its Lua call [I]. The test takes two
+//! summaries with a capture between them; a control takes two with no capture between them. Two
+//! calls with no Present between them give the same summary: compare the numbers too.
+//!
+//! A table that a reset emptied fills again with equal items at the next draws, so the parts'
+//! notes count the records sent: only they show a capture's second send. Not covered:
+//! `light_noted` of the instance table, frames that move by themselves.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::main_thread::{MainCell, MainThread};
+
+/// The first word of the items of the tables that share a part with another table.
+pub const MORPH_ITEM: u32 = 0xFFFF_0001;
+pub const GROUPS_ITEM: u32 = 0xFFFF_0002;
+pub const BY_TEXTURE_ITEM: u32 = 0xFFFF_0003;
 
 /// One part: the number of its items and a hash of them that does not depend on their order
 /// (the tables are hash maps). The note is for the reader: the counts that say what differs.

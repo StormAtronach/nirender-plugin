@@ -254,6 +254,16 @@ pub unsafe fn serial_of(address: u32) -> u32 {
     }
 }
 
+/// The serial of any object of this host, for the state summary: a buffer made again at the
+/// same address shows there. Any other value stays as it is.
+///
+/// # Safety
+///
+/// As for [`serial_of`]: `address` is 0, a live object of this host, or another host's.
+pub unsafe fn object_serial(address: u32) -> u32 {
+    own(address).map_or(address, |o| o.serial)
+}
+
 /// A handle that a device keeps from a Set call (a stage texture, a stream, the indices, a
 /// target), with the serial of its object at that call. The device holds no count on it, so
 /// the object can be released and its address taken by a later object: [`Kept::live`] gives

@@ -339,7 +339,8 @@ unsafe fn keys(map: usize) -> Vec<u32> {
     list
 }
 
-/// The renderer's two maps of buffers, for the state summary: each key and its buffers.
+/// The renderer's two maps of buffers, for the state summary: each key, its entry and the serials
+/// of its device buffers: a block made again can have the old address.
 ///
 /// # Safety
 ///
@@ -354,8 +355,9 @@ pub unsafe fn state_part(this: usize) -> crate::state_summary::Part {
     for (index, &map) in maps.iter().enumerate() {
         for key in keys(map) {
             let node = hash_map::find(map, key);
-            let data: u32 = if node != 0 { rd(node, THashMap_Node::data) } else { 0 };
-            part.add(&[index as u32, key, data]);
+            let data: usize = if node != 0 { rd(node, THashMap_Node::data) } else { 0 };
+            let (vertices, indices) = if data != 0 { (rd::<u32>(data, GB::d3dVertexBuffer), rd::<u32>(data, GB::indexBuffer)) } else { (0, 0) };
+            part.add(&[index as u32, key, data as u32, crate::own_host::object_serial(vertices), crate::own_host::object_serial(indices)]);
         }
     }
     part

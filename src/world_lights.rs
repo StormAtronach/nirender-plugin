@@ -242,6 +242,11 @@ pub unsafe fn describe() -> Vec<String> {
 }
 
 /// The report line.
+/// The records of the keys sent, for the state summary.
+pub fn key_records() -> u64 {
+    KEY_RECORDS.load(Ordering::Relaxed)
+}
+
 pub fn report() -> String {
     let now = with_set(|set| set.lights.len()).unwrap_or(0);
     format!(

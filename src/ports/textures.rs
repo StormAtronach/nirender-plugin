@@ -908,8 +908,9 @@ pub unsafe fn purge_source_textures() -> (u32, u32, u32) {
     (dropped, kept, unreadable)
 }
 
-/// The engine's list of live textures, for the state summary: each texture and the address of
-/// its renderer data. The note counts the source textures from a file that have no renderer
+/// The engine's list of live textures, for the state summary: each texture, the address of its
+/// renderer data and the serial of its device texture: a block made again can have the old
+/// address, and a serial does not come back. The note counts the source textures from a file that have no renderer
 /// data and no pixel data: their size reads 0 until their next draw.
 ///
 /// # Safety
@@ -921,7 +922,8 @@ pub unsafe fn state_part() -> crate::state_summary::Part {
     let mut texture = eng::texture_list_head();
     while texture != 0 {
         let data: u32 = rd(texture, T::rendererData);
-        part.add(&[texture as u32, data]);
+        let device = if data != 0 { crate::own_host::serial_of(data_get_d3d_texture(data as usize) as u32) } else { 0 };
+        part.add(&[texture as u32, data, device]);
         if data == 0 {
             without_data += 1;
             if ni::is_kind_of(texture, RTTI_SOURCE_TEXTURE) && rd::<usize>(texture, ST::filenameOnPC) != 0 && rd::<usize>(texture, ST::pixelData) == 0 {

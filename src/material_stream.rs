@@ -200,8 +200,9 @@ fn handles<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Handle>> {
     HANDLES.get(t).map(|handles| handles.get_or_insert_with(HashMap::new))
 }
 
-/// The material handles, for the state summary: each content, and whether the helper has its
-/// record.
+/// The material handles, for the state summary: each content, whether the helper has its
+/// record, the groups of words sent, and the materials of each texture. The note counts the
+/// records sent (`geometry_stream::state_part`).
 pub fn state_part(t: &MainThread) -> crate::state_summary::Part {
     let mut part = crate::state_summary::Part::default();
     let mut sent = 0;
@@ -209,7 +210,19 @@ pub fn state_part(t: &MainThread) -> crate::state_summary::Part {
         part.add(&[id, handle.check, handle.sent as u32]);
         sent += handle.sent as u32;
     }
-    part.note = format!("sent {sent}");
+    for (&id, groups) in sent_groups(t).iter() {
+        let mut words = vec![crate::state_summary::GROUPS_ITEM, id];
+        words.extend_from_slice(groups);
+        part.add(&words);
+    }
+    for (&texture, materials) in by_texture(t).iter() {
+        let mut words = vec![crate::state_summary::BY_TEXTURE_ITEM, texture];
+        let mut sorted = materials.clone();
+        sorted.sort_unstable();
+        words.extend(sorted);
+        part.add(&words);
+    }
+    part.note = format!("sent {sent}, records sent {}", *RECORDS.get(t));
     part
 }
 

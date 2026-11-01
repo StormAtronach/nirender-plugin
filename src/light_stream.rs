@@ -52,7 +52,8 @@ fn versions<'a>(t: &'a MainThread) -> Open<'a, Vec<Option<Sent>>> {
     VERSIONS.get(t)
 }
 
-/// The lights sent, for the state summary: their values, by index.
+/// The lights sent, for the state summary: their values, by index. The note counts the records
+/// sent, and those of the world's lights (`geometry_stream::state_part`).
 pub fn state_part(t: &MainThread) -> crate::state_summary::Part {
     let mut part = crate::state_summary::Part::default();
     for (index, sent) in versions(t).iter().enumerate() {
@@ -64,6 +65,7 @@ pub fn state_part(t: &MainThread) -> crate::state_summary::Part {
             part.add(&words);
         }
     }
+    part.note = format!("records sent {}, world lights' records {}", *RECORDS.get(t), crate::world_lights::key_records());
     part
 }
 

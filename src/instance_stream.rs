@@ -351,18 +351,22 @@ struct Tables {
 
 static TABLES: MainCell<Option<Tables>> = MainCell::new(None);
 
-/// The table, for the state summary: the id, `sent` and `visible` of each instance, the mode and
-/// the generation.
+/// The table, for the state summary: the id, `sent`, `visible` and light list of each instance,
+/// the mode and the generation. The note counts the records sent
+/// (`geometry_stream::state_part`). Not `light_noted`: frames, which move by themselves.
 pub fn state_part(mt: &MainThread) -> (crate::state_summary::Part, Option<Mode>, u32) {
     let t = tables(mt);
     let mut part = crate::state_summary::Part::default();
     let (mut sent, mut visible) = (0, 0);
     for instance in t.instances.values() {
-        part.add(&[instance.id, instance.sent as u32, instance.visible as u32]);
+        let mut words = vec![instance.id, instance.sent as u32, instance.visible as u32];
+        words.extend_from_slice(&instance.lights);
+        part.add(&words);
         sent += instance.sent as u32;
         visible += instance.visible as u32;
     }
-    part.note = format!("sent {sent}, visible {visible}");
+    let records: u64 = (*RECORD_COUNTS.get(mt))[RC_FIRST..=RC_MOVED_COLOURS].iter().sum();
+    part.note = format!("sent {sent}, visible {visible}, records sent {records}");
     (part, t.mode, t.generation)
 }
 
