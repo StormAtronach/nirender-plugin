@@ -1175,8 +1175,10 @@ unsafe fn source_cube_map_data_update_regions(set: &mut Regions, this: usize) {
 
 /// Makes the renderer data of each rendered texture again. The pictures in the textures are
 /// lost: the game draws a rendered texture again only when it needs a new picture. This is
-/// not a function of the game; the capture uses it, so that the making of each rendered
-/// texture is in the stream. Returns the number of textures.
+/// not a function of the game; the start of a stream uses it, where the helper has nothing
+/// yet, so that the making of each rendered texture is in the stream. A file from a running
+/// stream must not: a mark would blank the map's fog of war until a load. Returns the number
+/// of textures.
 ///
 /// It takes the textures from the list of the textures that are alive. The map of rendered
 /// textures of the renderer is no source for this: no function takes a texture out of that

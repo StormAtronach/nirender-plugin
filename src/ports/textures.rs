@@ -870,7 +870,7 @@ fn forget_unreadable(data: usize) {
 
 /// Makes each source texture lose its renderer data: the game makes it again at the next use
 /// of the texture. A rendered texture keeps its data: the game does not make that again by
-/// itself. This is not a function of the game; the capture uses it.
+/// itself. This is not a function of the game; the start of a stream uses it.
 ///
 /// A source texture that the game cannot make again keeps its data.
 /// `NiDX8SourceTextureData_static::Create` (0x6BFA50) reads the file of the texture when it
@@ -925,9 +925,9 @@ pub unsafe fn source_data_of(texture: usize) -> Option<(usize, u32)> {
 /// The engine's list of live textures, for the state summary: each texture, the address of its
 /// renderer data and the serial of its device texture: a block made again can have the old
 /// address, and a serial does not come back. Two parts, the source textures (with those that
-/// have no renderer data) and the others by the table of their data: a capture still remakes the
-/// rendered ones, and one sum would hide what the source textures do. The note counts the source
-/// textures from a file that have no renderer data and no pixel data: their size reads 0 until
+/// have no renderer data) and the others by the table of their data: the start of a stream
+/// remakes the rendered ones, and one sum would hide what the source textures do. The note counts
+/// the source textures from a file that have no renderer data and no pixel data: their size reads 0 until
 /// their next draw.
 ///
 /// # Safety

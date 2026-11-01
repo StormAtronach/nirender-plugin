@@ -1221,6 +1221,9 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     let file = create_capture_file(path)?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     out.write_all(MAGIC).map_err(|error| error.to_string())?;
+    // Before the file opens: these reads are records for the helper, not for the file.
+    #[cfg(not(test))]
+    let pictures = crate::own_host::rendered_pictures();
     let header = {
         let Some(mut s) = state(&lock) else { return Err("no stream".into()) };
         s.tee = Some(Tee { out, left: frames.max(1), worst_frame: 0, textures: FileTextures::default() });
@@ -1232,7 +1235,12 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     write(tag::HEADER, &[&header]);
     write_kept(&lock);
     #[cfg(not(test))]
-    crate::own_host::snapshot();
+    {
+        crate::own_host::snapshot();
+        for picture in &pictures {
+            crate::own_host::write_picture(picture);
+        }
+    }
     crate::geometry_stream::reset(t);
     crate::material_stream::reset(t);
     crate::light_stream::reset(t);
@@ -1244,10 +1252,10 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
                 tee.left = 0;
             }
         }
-        // The rendered textures and the geometry of the game go into the file as the game
-        // makes them again: the purge runs at the next Present, outside the device lock and
-        // with the cell worker stalled (`run_pending_purge`). The source textures stay as they
-        // are: each comes into the file at its naming (`name_texture`).
+        // The geometry of the game goes into the file as the game makes it again: the purge
+        // runs at the next Present, outside the device lock and with the cell worker stalled
+        // (`run_pending_purge`). The textures stay as they are: a source texture comes into
+        // the file at its naming (`name_texture`), a rendered texture with the snapshot.
         let _ = s;
         PURGE_PENDING.store(true, Ordering::Release);
     }
@@ -2363,11 +2371,30 @@ pub unsafe fn texture_update(handle: usize, level: u32, width: u32, height: u32,
     write(tag::TEXTURE_UPDATE, &[words(&[stream_handle(handle as u32), level, width, height, format, bytes.len() as u32]), bytes]);
 }
 
+/// The head of a copy of pixels that names its texture (`call`, a copy from an image surface):
+/// the index, the result, the handle, the count, 4 arguments with no surface; then width,
+/// height, format, size and the texture.
+fn picture_head(texture: u32, width: u32, height: u32, format: u32, size: u32) -> [u32; 13] {
+    [CALL_COPY_PIXELS, 0, 0, 4, 0, 0, 0, 0, width, height, format, size, texture]
+}
+
+/// The picture of a rendered texture, into the file only: the helper has it. `pixels` has 4
+/// bytes for each pixel, blue first.
+///
+/// # Safety
+///
+/// `texture` is a live object of the own host. The caller does not hold the state open.
+pub unsafe fn rendered_picture(texture: u32, width: u32, height: u32, format: u32, pixels: &[u8]) {
+    let head = picture_head(stream_handle(texture), width, height, format, pixels.len() as u32);
+    write_record(tag::CALL, &[words(&head), pixels], true);
+}
+
 /// A purge is due (`purge`): the capture asked for it under the device lock.
 static PURGE_PENDING: AtomicBool = AtomicBool::new(false);
-/// The purge also drops the source textures: at the start of a stream into a file, where the
-/// helper has nothing yet. A file from a running stream reads them at their naming.
-static PURGE_SOURCE_TEXTURES: AtomicBool = AtomicBool::new(false);
+/// The purge also drops the source textures and makes the rendered textures again: at the
+/// start of a stream, where the helper has nothing yet. A file from a running stream leaves
+/// them as they are.
+static PURGE_TEXTURES: AtomicBool = AtomicBool::new(false);
 
 /// The engine's stall of the cell worker (`DataHandler::waitForBackgroundThread`, the save
 /// game's own handshake): the worker acknowledges between two references of the cell it
@@ -2422,8 +2449,11 @@ unsafe fn purge(in_view: usize) {
     if renderer == 0 {
         return;
     }
-    let (textures, kept, unreadable) = if PURGE_SOURCE_TEXTURES.swap(false, Ordering::Relaxed) { crate::ports::textures::purge_source_textures() } else { (0, 0, 0) };
-    let rendered = crate::ports::rendered::remake_rendered_textures(renderer);
+    let (mut textures, mut kept, mut unreadable, mut rendered) = (0, 0, 0, 0);
+    if PURGE_TEXTURES.swap(false, Ordering::Relaxed) {
+        (textures, kept, unreadable) = crate::ports::textures::purge_source_textures();
+        rendered = crate::ports::rendered::remake_rendered_textures(renderer);
+    }
     // Every buffer the renderer has, by the renderer's own maps: the game can draw an object
     // into a rendered texture one time and not again. Do not read the objects kept from the
     // warm-up (`s.geometry`): the cell worker can have freed them.
@@ -2515,7 +2545,7 @@ unsafe fn frame_end(lock: &DeviceLock) {
                 write_kept(&lock);
                 // The purge at the next Present, outside the device lock, with the cell
                 // worker stalled (`run_pending_purge`).
-                PURGE_SOURCE_TEXTURES.store(true, Ordering::Relaxed);
+                PURGE_TEXTURES.store(true, Ordering::Relaxed);
                 PURGE_PENDING.store(true, Ordering::Release);
             }
         }
@@ -2644,10 +2674,23 @@ mod capture_file_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{tag, FileTextures, CALL_COPY_PIXELS, CALL_CREATE_TEXTURE, CALL_RENDER_TARGET, CALL_TEXTURE_LEVEL};
+    use super::{picture_head, tag, FileTextures, CALL_COPY_PIXELS, CALL_CREATE_TEXTURE, CALL_RENDER_TARGET, CALL_TEXTURE_LEVEL};
 
     fn bytes(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    /// The helper reads a copy's pixels after its arguments (`CALL_COPY_PIXELS`, feed.rs): the
+    /// count says where they start, and the fifth word names the texture.
+    #[test]
+    fn a_picture_names_its_texture_where_the_helper_reads_it() {
+        let head = picture_head(9, 64, 32, 21, 8192);
+        let count = head[3] as usize;
+        let after_arguments = &head[4 + count..];
+        assert_eq!((head[0], after_arguments[0], after_arguments[1], after_arguments[4]), (CALL_COPY_PIXELS, 64, 32, 9));
+        // It names no surface, so the file's count of lacking handles does not move.
+        let mut files = FileTextures::default();
+        assert!(files.note_named(tag::CALL, &[&bytes(&head)], [0, 0]).is_empty());
     }
 
     #[test]
