@@ -121,6 +121,7 @@ impl ParticleQuads {
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("particle quads"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let _long = crate::LongStep::begin();
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("particle quads"),
             layout: Some(&pipeline_layout),

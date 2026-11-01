@@ -81,6 +81,7 @@ impl Scale {
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("scaled picture"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("scaled picture"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let _long = crate::LongStep::begin();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("scaled picture"),
             layout: Some(&pipeline_layout),

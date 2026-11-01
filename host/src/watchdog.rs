@@ -7,7 +7,9 @@
 //! the failure path. While the extension loads ([`crate::Extension::loading`]) a step may take
 //! [`LOADING_SECONDS`]: a load of the distant land can hold a frame for seconds. The helper
 //! writes its allowance of the moment into the ring head ([`allowance`],
-//! `stream_format::RING_ALLOWANCE`), so that the plugin's own limit is always later.
+//! `stream_format::RING_ALLOWANCE`), so that the plugin's own limit is always later. A step
+//! that the helper knows is long (the GPU objects of a load, the pipelines) has the same limit
+//! while it lasts ([`LongStep`]): a real hang inside it is still caught, at that limit.
 //! `MGE_XE_WATCHDOG=0` leaves the watchdog off, for a test of the plugin's own limit. A
 //! refusal disarms it before its box ([`disarm`], `gpu::refuse`): the box waits for the
 //! player inside a step, and the program ends on purpose after it.
@@ -16,7 +18,8 @@
 //! thread looks every [`LOOK_MS`] ms whether a step is in progress and whether the count of
 //! the steps moved.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::marker::PhantomData;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::stream_format::{EXIT_STALLED, LOADING_SECONDS, STALL_SECONDS};
@@ -28,6 +31,14 @@ const LOOK_MS: u64 = 250;
 static STEPS: AtomicU64 = AtomicU64::new(0);
 static IN_STEP: AtomicBool = AtomicBool::new(false);
 static LOADING: AtomicBool = AtomicBool::new(false);
+/// The long steps in progress ([`LongStep`]).
+static LONG_STEPS: AtomicU32 = AtomicU32::new(0);
+/// The word `RING_ALLOWANCE` of the ring head, or null without a ring (a replay, the probe). The
+/// head stays mapped for the process, as for `live::ENDING_WORD`.
+static ALLOWANCE_WORD: AtomicPtr<AtomicU32> = AtomicPtr::new(std::ptr::null_mut());
+/// The frames started: until then the word stays 0, and the plugin gives the helper its first
+/// limit (`stream_format::FIRST_RECORD_SECONDS`).
+static FRAMES_STARTED: AtomicBool = AtomicBool::new(false);
 /// A refusal is in progress: the watchdog never ends the program after it.
 static DISARMED: AtomicBool = AtomicBool::new(false);
 
@@ -58,10 +69,59 @@ pub(crate) fn loading(on: bool) {
     LOADING.store(on, Ordering::Relaxed);
 }
 
+/// A step of the frame thread has the long limit: the extension loads, or a long step runs.
+fn long_limit() -> bool {
+    LOADING.load(Ordering::Relaxed) || LONG_STEPS.load(Ordering::Relaxed) > 0
+}
+
 /// The seconds a step of the frame thread may take now: the word that the helper writes into
 /// the ring head for the plugin.
 pub(crate) fn allowance() -> u32 {
-    if LOADING.load(Ordering::Relaxed) { LOADING_SECONDS as u32 } else { STALL_SECONDS as u32 }
+    if long_limit() { LOADING_SECONDS as u32 } else { STALL_SECONDS as u32 }
+}
+
+/// The ring is open: `word` is its word `RING_ALLOWANCE`, mapped for the process.
+pub(crate) fn set_allowance_word(word: *mut AtomicU32) {
+    ALLOWANCE_WORD.store(word, Ordering::Release);
+}
+
+/// The frames start: from now the plugin gives a step the allowance and 5 s more.
+pub(crate) fn frames_start() {
+    FRAMES_STARTED.store(true, Ordering::Relaxed);
+    publish();
+}
+
+/// Writes [`allowance`] into the word for the plugin: the one writer of the word, so that a
+/// write at a frame's end inside a long step cannot put the short value back. From the frame
+/// thread only: nothing orders the reading and the writing of two threads.
+pub(crate) fn publish() {
+    let word = ALLOWANCE_WORD.load(Ordering::Acquire);
+    if !word.is_null() && FRAMES_STARTED.load(Ordering::Relaxed) {
+        // SAFETY: a word of the ring head, 4-aligned and mapped for the process, or a null
+        // pointer (`set_allowance_word`).
+        unsafe { (*word).store(allowance(), Ordering::Release) };
+    }
+}
+
+/// A step that the helper knows is long: the GPU objects of a load, the making of pipelines. The
+/// watchdog and the plugin give the long limit until the guard drops; guards can nest. Make it
+/// the first statement of the long part, on the frame thread: a raise at the start of a step
+/// reaches the plugin at its next look, inside the short limit.
+pub struct LongStep(PhantomData<*const ()>);
+
+impl LongStep {
+    pub fn begin() -> LongStep {
+        LONG_STEPS.fetch_add(1, Ordering::Relaxed);
+        publish();
+        LongStep(PhantomData)
+    }
+}
+
+impl Drop for LongStep {
+    fn drop(&mut self) {
+        LONG_STEPS.fetch_sub(1, Ordering::Relaxed);
+        publish();
+    }
 }
 
 /// What the watchdog saw at one look.
@@ -104,7 +164,7 @@ pub(crate) fn start() {
             let mut watch = Watch::default();
             while !DISARMED.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(LOOK_MS));
-                let look = Look { steps: STEPS.load(Ordering::Relaxed), in_step: IN_STEP.load(Ordering::Acquire), loading: LOADING.load(Ordering::Relaxed) };
+                let look = Look { steps: STEPS.load(Ordering::Relaxed), in_step: IN_STEP.load(Ordering::Acquire), loading: long_limit() };
                 // A refusal that came during the look ends the program itself.
                 match watch.look(look) {
                     Some(seconds) if !DISARMED.load(Ordering::Acquire) => stalled(frame_thread, seconds),
@@ -166,5 +226,49 @@ mod tests {
         let loading = Look { steps: 1, in_step: true, loading: true };
         assert_eq!(looks(&mut watch, 120, loading), None);
         assert_eq!(watch.look(loading), Some(30));
+    }
+
+    /// The one test that uses the statics of the long steps: tests run at the same time.
+    #[test]
+    fn a_long_step_raises_the_allowance_and_the_word_until_the_last_guard_drops() {
+        let word: &'static AtomicU32 = Box::leak(Box::new(AtomicU32::new(0)));
+        let read = || word.load(Ordering::Acquire);
+        let (short, long) = (STALL_SECONDS as u32, LOADING_SECONDS as u32);
+        // No ring: the guard changes the watchdog only, and nothing fails.
+        {
+            let _step = LongStep::begin();
+            assert_eq!(allowance(), long);
+        }
+        assert_eq!(allowance(), short);
+        set_allowance_word(word as *const AtomicU32 as *mut AtomicU32);
+        // Before the frames the word stays 0: the plugin's first limit stands.
+        {
+            let _step = LongStep::begin();
+            assert_eq!((allowance(), read()), (long, 0));
+        }
+        assert_eq!(read(), 0);
+        frames_start();
+        assert_eq!(read(), short);
+        // One guard, and two nested: the last drop puts both back.
+        let outer = LongStep::begin();
+        assert_eq!((allowance(), read()), (long, long));
+        let inner = LongStep::begin();
+        assert_eq!((allowance(), read()), (long, long));
+        drop(inner);
+        assert_eq!((allowance(), read()), (long, long));
+        // A write at a frame's end inside the guard cannot put the short value back.
+        publish();
+        assert_eq!(read(), long);
+        drop(outer);
+        assert_eq!((allowance(), read()), (short, short));
+        // The end of a guard while the extension loads keeps the long value.
+        loading(true);
+        drop(LongStep::begin());
+        assert_eq!((allowance(), read()), (long, long));
+        loading(false);
+        publish();
+        assert_eq!(read(), short);
+        set_allowance_word(std::ptr::null_mut());
+        FRAMES_STARTED.store(false, Ordering::Relaxed);
     }
 }

@@ -49,6 +49,7 @@ use cli::*;
 mod crash;
 pub use crash::{hold_next_dump, rotate_log};
 mod watchdog;
+pub use watchdog::LongStep;
 mod tag;
 // The one home of the stream format number, shared with the plugin crate (see the file).
 // Public: the program that has this crate as a part reads the exit codes.
