@@ -55,30 +55,45 @@ local MAP_KEYS = {
     maps = true, baseMap = true, darkMap = true, detailMap = true, glossMap = true, glowMap = true, bumpMap = true,
 }
 
+-- The method with its report.
+local function wrapperOf(value, key)
+    if key == "setTarget" then
+        return function(self, target, ...)
+            local result = value(self, target, ...)
+            notify(target)
+            return result
+        end
+    end
+    return function(self, ...)
+        local result = value(self, ...)
+        notify(self)
+        return result
+    end
+end
+
 local function wrapIndex(mt, role)
     local index = rawget(mt, "__index")
     if type(index) ~= "function" then
         return
     end
+    -- The wrapper of each wrapped method name of this metatable, kept from its first read. Sol
+    -- makes a new function at each read of a method, with the binding and not the object in it,
+    -- and it takes the object from the call: so the first one serves all, and a later read makes
+    -- no function at all, not even sol's.
+    local wrappers = {}
     rawset(mt, "__index", function(object, key)
+        local wrapper = wrappers[key]
+        if wrapper then
+            return wrapper
+        end
         local value = index(object, key)
         if role == "texturing" and MAP_KEYS[key] then
             touched[object] = true
         end
-        if type(value) == "function" then
-            if CONTROLLER_METHODS[key] then
-                return function(self, ...)
-                    local result = value(self, ...)
-                    notify(self)
-                    return result
-                end
-            elseif key == "setTarget" then
-                return function(self, target, ...)
-                    local result = value(self, target, ...)
-                    notify(target)
-                    return result
-                end
-            end
+        if (CONTROLLER_METHODS[key] or key == "setTarget") and type(value) == "function" then
+            wrapper = wrapperOf(value, key)
+            wrappers[key] = wrapper
+            return wrapper
         end
         return value
     end)
@@ -207,8 +222,8 @@ local function seed()
 end
 
 event.register(tes3.event.enterFrame, function()
-    if next(touched) then
-        touched = {}
+    for property in pairs(touched) do
+        touched[property] = nil
     end
 end)
 event.register(tes3.event.loaded, scan)
