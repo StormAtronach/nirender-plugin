@@ -6,8 +6,12 @@ state packets, the stage states and the draws of the device; the helper does not
     python -I tools/capture_dump.py <capture.nircap> materials <frame> [--geometry 0x...]
     python -I tools/capture_dump.py <capture.nircap> particles <frame>
     python -I tools/capture_dump.py <capture.nircap> calls
+    python -I tools/capture_dump.py <capture.nircap> ui <frame> [--box x0 y0 x1 y1]
+    python -I tools/capture_dump.py <capture.nircap> ui-geometry <frame> --shapes 3,5
+    python -I tools/capture_dump.py <capture.nircap> ui-textures <frame>
+    python -I tools/capture_dump.py <capture.nircap> first-draw
 
-sequence   the records of one frame in their order: the objects, the shape records, the
+sequence  the records of one frame in their order: the objects, the shape records, the
            render state commands (in a capture from before the cut: those that the
            pipeline of the device sets for a draw, and the draws of the device).
 materials  the material of each shape record of the frame, decoded, once for each
@@ -19,6 +23,17 @@ particles  the particle records of the frame: the count, the radius, the camera 
 calls      the CALL and COMMAND records of the whole capture by their kind, for each
            frame: the calls of the frame (clear, viewport, targets), the view and the
            projection, and the render states of code outside the renderer.
+ui         the interface shapes of the frame in draw order, each with its number, name,
+           rectangle on the screen, texture and state, for a picture that a menu lacks. The
+           rectangle: the geometry's vertices through the world matrix; the screen's x is
+           X + 960 and its y is 1140 - Z (the interface camera of a 1920 x 1080 picture).
+           `--box` keeps the shapes that touch a rectangle of the screen.
+ui-geometry  the shapes of those numbers: the world matrix, and each GEOMETRY record of
+           their geometries in the capture, with the vertices.
+ui-textures  the TEXTURE records by frame, and the interface shapes of the frame by their
+           base texture, or "NOT IN THE CAPTURE" for a handle with no record.
+first-draw the frames whose first draw into the back buffer comes before a colour clear of
+           it: such a frame draws over the picture of the frame before.
 
 The frames count from 0, as `replay.py --frame` does.
 """
@@ -32,6 +47,10 @@ TAG_SCENE_BEGIN, TAG_SCENE_END, TAG_GEOMETRY, TAG_MATERIAL, TAG_SHAPE = 3, 4, 18
 TAG_INSTANCE, TAG_INSTANCE_DRAW, TAG_INSTANCE_DELETE = 23, 24, 25
 TAG_INSTANCE_LIGHTS, TAG_INSTANCE_STATE, TAG_RETAINED_SCENE = 26, 27, 28
 TAG_LIGHT = 21
+TAG_TEXTURE, TAG_INSTANCE_PARTICLES = 1, 35
+# SCENE_BEGIN's kind of the interface, and the calls `first-draw` follows.
+SCENE_INTERFACE = 7
+CALL_CLEAR, CALL_RENDER_TARGET, CALL_TEXTURE_LEVEL, CALL_CREATE_TEXTURE = 4, 7, 15, 20
 RENDER_STATES = {7: "ZENABLE", 8: "FILLMODE", 14: "ZWRITEENABLE", 22: "CULLMODE", 28: "FOGENABLE", 34: "FOGCOLOR",
                  35: "FOGTABLEMODE", 36: "FOGSTART", 37: "FOGEND", 38: "FOGDENSITY", 48: "RANGEFOGENABLE",
                  52: "STENCILENABLE", 53: "STENCILFAIL", 54: "STENCILZFAIL", 55: "STENCILPASS", 56: "STENCILFUNC",
@@ -237,12 +256,127 @@ def calls(path):
     print("commands for each frame:", per_frame(commands))
 
 
+def interface_shapes(path, wanted):
+    """(number, body, name) for each interface shape of the frame, from 1, in draw order, and
+    the tables of the records up to the frame's end: the textures (width, height, levels,
+    format), the materials and the geometries, each as the frame last had it."""
+    shapes, textures, material_words, geometries = [], {}, {}, {}
+    kind, name = None, ""
+    for frame, tag, body in records(path):
+        if frame > wanted:
+            break
+        if tag == TAG_TEXTURE and len(body) >= 24:
+            textures[words(body, 0, 1)[0]] = words(body, 8, 4)
+        elif tag == TAG_SCENE_BEGIN and len(body) >= 8:
+            kind = words(body, 4, 1)[0]
+        elif tag == TAG_SCENE_END:
+            kind = None
+        elif tag == TAG_OBJECT and len(body) >= 12:
+            name = object_name(body).split("\0")[0]
+        elif tag == TAG_GEOMETRY and len(body) >= 32:
+            fvf, stride, vertices, _entries, strips = words(body, 12, 5)
+            vertex_at = 32 + ((strips * 2 + 3) & ~3)
+            points = [struct.unpack_from("<3f", body, vertex_at + i * stride) for i in range(vertices) if vertex_at + i * stride + 12 <= len(body)]
+            geometries[words(body, 0, 1)[0]] = points
+        elif tag == TAG_MATERIAL and len(body) >= 4 + 70 * 4:
+            material_words[words(body, 0, 1)[0]] = words(body, 4, 70)
+        elif tag == TAG_SHAPE and kind == SCENE_INTERFACE and frame == wanted and len(body) >= 140:
+            shapes.append((len(shapes) + 1, body, name))
+    return shapes, textures, material_words, geometries
+
+
+def base_texture(material_words):
+    """The handle of the material's base map, or None without one."""
+    return material_words[8] if material_words and material_words[12] else None
+
+
+def ui(path, wanted, box):
+    shapes, textures, material_words, geometries = interface_shapes(path, wanted)
+    for number, body, name in shapes:
+        geometry, material, flags = words(body, 0, 3)
+        world = struct.unpack_from("<16f", body, SHAPE_WORLD)
+        points = geometries.get(geometry, [])
+        xs = [p[0] * world[0] + p[1] * world[4] + p[2] * world[8] + world[12] for p in points]
+        zs = [p[0] * world[2] + p[1] * world[6] + p[2] * world[10] + world[14] for p in points]
+        rect = (min(xs) + 960, 1140 - max(zs), max(xs) + 960, 1140 - min(zs)) if xs else (0, 0, 0, 0)
+        if box and (rect[2] < box[0] or rect[0] > box[2] or rect[3] < box[1] or rect[1] > box[3]):
+            continue
+        state = material_words.get(material)
+        base = base_texture(state)
+        size = textures.get(base)
+        texture = "none" if base is None else "0x%x %s" % (base, "%dx%d L%d fmt 0x%x" % size if size else "NOT IN THE CAPTURE")
+        look = "flags 0x%x blend %d/%d apply %d vert %d light %d" % (state[1], state[2], state[3], state[6], state[68], state[69]) if state else "no material"
+        alpha = struct.unpack_from("<14f", body, SHAPE_COLOURS)[13]
+        print("#%d %-28s [%.0f,%.0f - %.0f,%.0f] verts %d shape 0x%x tex %s %s alpha %.3f" % (number, name[:28], *rect, len(points), flags, texture, look, alpha))
+
+
+def ui_geometry(path, wanted, numbers):
+    shapes = interface_shapes(path, wanted)[0]
+    handles = {}
+    for number, body, _name in shapes:
+        if number in numbers:
+            geometry, material = words(body, 0, 2)
+            handles[geometry] = number
+            w = struct.unpack_from("<16f", body, SHAPE_WORLD)
+            print("shape #%d geometry 0x%x material 0x%x world x %.3f %.3f %.3f y %.3f %.3f %.3f z %.3f %.3f %.3f t %.1f %.1f %.1f" % (number, geometry, material, w[0], w[1], w[2], w[4], w[5], w[6], w[8], w[9], w[10], w[12], w[13], w[14]))
+    for frame, tag, body in records(path):
+        if tag == TAG_GEOMETRY and len(body) >= 32 and words(body, 0, 1)[0] in handles:
+            geometry = words(body, 0, 1)[0]
+            fvf, stride, vertices, entries, strips = words(body, 12, 5)
+            print("frame %d GEOMETRY 0x%x (shape #%d) fvf 0x%x stride %d vertices %d entries %d strips %d" % (frame, geometry, handles[geometry], fvf, stride, vertices, entries, strips))
+            vertex_at = 32 + ((strips * 2 + 3) & ~3)
+            for i in range(vertices):
+                vertex = struct.unpack_from("<%df" % (stride // 4), body, vertex_at + i * stride)
+                print("   ", " ".join("%.3f" % value for value in vertex))
+
+
+def ui_textures(path, wanted):
+    by_frame = collections.Counter(frame for frame, tag, body in records(path) if tag == TAG_TEXTURE and len(body) >= 24)
+    print("TEXTURE records by frame:", dict(sorted(by_frame.items())))
+    shapes, textures, material_words, _geometries = interface_shapes(path, wanted)
+    print("interface shapes of frame %d: %d" % (wanted, len(shapes)))
+    groups = {}
+    for _number, body, _name in shapes:
+        geometry, material = words(body, 0, 2)
+        base = base_texture(material_words.get(material))
+        size = textures.get(base)
+        key = "no base map" if base is None else "texture 0x%x %s" % (base, "%dx%d levels %d format 0x%x" % size if size else "NOT IN THE CAPTURE")
+        groups.setdefault(key, []).append((geometry, struct.unpack_from("<16f", body, SHAPE_WORLD)))
+    for key, group in sorted(groups.items(), key=lambda item: -len(item[1])):
+        geometry, world = group[0]
+        print("  %4d x %s; first geometry 0x%x at %.1f, %.1f scale %.2f" % (len(group), key, geometry, world[12], world[13], world[0]))
+
+
+def first_draw(path):
+    surfaces, targets = {}, set()
+    back_buffer = True
+    first = {}
+    for frame, tag, body in records(path):
+        if tag == TAG_CALL and len(body) >= 16:
+            call, _result, handle = words(body, 0, 3)
+            arguments = body[16:]
+            if call == CALL_CREATE_TEXTURE and len(arguments) >= 16 and handle and words(arguments, 12, 1)[0] & 1:
+                targets.add(handle)
+            elif call == CALL_TEXTURE_LEVEL and len(arguments) >= 8 and handle and words(arguments, 4, 1)[0] == 0:
+                surfaces[handle] = words(arguments, 0, 1)[0]
+            elif call == CALL_RENDER_TARGET and len(arguments) >= 4:
+                back_buffer = surfaces.get(words(arguments, 0, 1)[0]) not in targets
+            elif call == CALL_CLEAR and back_buffer and len(arguments) >= 12 and words(arguments, 8, 1)[0] & 1:
+                first.setdefault(frame, "clear")
+        elif tag in (TAG_SHAPE, TAG_INSTANCE_DRAW, TAG_INSTANCE_PARTICLES) and back_buffer:
+            first.setdefault(frame, "draw")
+    drawn_first = sorted(frame for frame, what in first.items() if what == "draw")
+    print("%d frames with a clear or a draw, %d start with a draw into the back buffer%s" % (len(first), len(drawn_first), ": frames " + ", ".join(map(str, drawn_first[:12])) if drawn_first else ""))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("capture")
-    ap.add_argument("what", choices=["sequence", "materials", "particles", "calls"])
+    ap.add_argument("what", choices=["sequence", "materials", "particles", "calls", "ui", "ui-geometry", "ui-textures", "first-draw"])
     ap.add_argument("frame", nargs="?", type=int, default=0)
     ap.add_argument("--geometry", type=lambda v: int(v, 0), default=None)
+    ap.add_argument("--box", nargs=4, type=float, default=None, metavar=("X0", "Y0", "X1", "Y1"))
+    ap.add_argument("--shapes", default="")
     args = ap.parse_args()
     if args.what == "sequence":
         sequence(args.capture, args.frame)
@@ -250,6 +384,14 @@ def main():
         materials(args.capture, args.frame, args.geometry)
     elif args.what == "particles":
         particles(args.capture, args.frame)
+    elif args.what == "ui":
+        ui(args.capture, args.frame, args.box)
+    elif args.what == "ui-geometry":
+        ui_geometry(args.capture, args.frame, {int(number) for number in args.shapes.split(",") if number})
+    elif args.what == "ui-textures":
+        ui_textures(args.capture, args.frame)
+    elif args.what == "first-draw":
+        first_draw(args.capture)
     else:
         calls(args.capture)
     return 0
