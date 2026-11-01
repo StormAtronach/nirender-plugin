@@ -109,13 +109,17 @@ def apply_env(environment, entries):
 
 def archive_arguments(args):
     """`--archive`: the run takes the build, the plugin and the MWSE.dll of the extracted release
-    archive, and it builds nothing. The mod's Lua is the archive's too (`session.prepare`)."""
+    archive, and it builds nothing. The mod's Lua is the archive's too (`session.prepare`), and
+    the instance's own mod `nirender` is off for the run: under the run's mod, Mod Organizer would
+    serve a file that the archive lacks from it, and a faulty archive would pass."""
     if not args.archive:
         return
     if args.plugin_dll or args.mge_build:
         raise SystemExit("--archive names the build and the plugin: no --plugin-dll or --mge-build with it")
     args.mge_build = args.archive
     args.no_build = True
+    if "nirender" not in args.disable_mod:
+        args.disable_mod.append("nirender")
     args.plugin_dll = os.path.join(args.archive, "Data Files", "MWSE", "lib", "akulakhan.dll")
     mwse = os.path.join(args.archive, "MWSE.dll")
     if os.path.isfile(mwse) and not args.mwse_dll:
@@ -167,9 +171,31 @@ def self_test_archive_lua():
             raise AssertionError("an archive without main.lua was taken")
 
 
+def self_test_archive_arguments():
+    """`--archive` takes the archive's parts and turns the instance's own mod off, once."""
+    args = argparse.Namespace(archive="E:/a", plugin_dll=None, mge_build=None, mwse_dll=None, no_build=False, disable_mod=[])
+    archive_arguments(args)
+    assert args.mge_build == "E:/a" and args.no_build
+    assert args.plugin_dll == os.path.join("E:/a", "Data Files", "MWSE", "lib", "akulakhan.dll"), args.plugin_dll
+    assert args.disable_mod == ["nirender"], args.disable_mod
+    args = argparse.Namespace(archive="E:/a", plugin_dll=None, mge_build=None, mwse_dll=None, no_build=False, disable_mod=["nirender", "other"])
+    archive_arguments(args)
+    assert args.disable_mod == ["nirender", "other"], args.disable_mod
+    args = argparse.Namespace(archive=None, plugin_dll=None, mge_build=None, mwse_dll=None, no_build=False, disable_mod=[])
+    archive_arguments(args)
+    assert args.disable_mod == [] and not args.no_build
+    try:
+        archive_arguments(argparse.Namespace(archive="E:/a", plugin_dll="E:/b.dll", mge_build=None, mwse_dll=None, no_build=False, disable_mod=[]))
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("--archive with --plugin-dll was taken")
+
+
 def self_test():
     """The tests of the argument handling: no game, no build."""
     self_test_archive_lua()
+    self_test_archive_arguments()
     build = os.path.join("target", "akulakhan.dll")
     assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/a.dll", "--plugin-dll")
     assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
