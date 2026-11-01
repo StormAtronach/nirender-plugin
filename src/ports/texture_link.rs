@@ -139,6 +139,144 @@ fn power_of_two(value: u32) -> bool {
     value != 0 && value & value.wrapping_sub(1) == 0
 }
 
+/// The pixel format of the device for `pixel_data`, as `create` picks it: 0 for no data, or a
+/// size or a format that the device cannot take. `create` takes the default texture for those.
+unsafe fn fitting_format(this: usize, pixel_data: usize, prefs: usize, renderer: usize) -> usize {
+    if pixel_data != 0
+        && power_of_two(rd(rd::<usize>(pixel_data, PD::mipmapWidths), 0))
+        && power_of_two(rd(rd::<usize>(pixel_data, PD::mipmapHeights), 0))
+    {
+        textures::find_matching_pixel_format(this, pixel_data + PD::format, prefs, renderer + R::arrayArrayTextureFormats)
+    } else {
+        0
+    }
+}
+
+/// The record of a texture of the link, with the converted pixels of `this`.
+unsafe fn description_of(this: usize, texture: usize, converted: usize) -> TextureV1 {
+    TextureV1 {
+        struct_size: core::mem::size_of::<TextureV1>() as u32,
+        flags: if rd::<u8>(texture, ST::isStatic) == 0 { TEXTURE_DYNAMIC } else { 0 },
+        width: rd(this, SD::width),
+        height: rd(this, SD::height),
+        levels: rd(converted, PD::mipmapLevels),
+        d3d_format: d3d_format_of(this, converted),
+        pixel_format: rd(converted, PD::format_format),
+        pixel_format_tag: rd(converted, PD::format_channelMasks),
+        bytes_per_pixel: rd(converted, PD::bytesPerPixel),
+        pixels: rd(converted, PD::pixelsAllMips),
+        level_offsets: rd::<usize>(converted, PD::mipmapOffsets) as *const u32,
+        level_widths: rd(converted, PD::mipmapWidths),
+        level_heights: rd(converted, PD::mipmapHeights),
+    }
+}
+
+/// Why a capture file lacks a texture ([`read_for_file`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileLacks {
+    /// The game could not read its file: the texture has the default pixels.
+    Unreadable,
+    /// No file name and no pixel data.
+    NoSource,
+    /// The file does not open now.
+    NoFile,
+    /// The file opens, and the readers or the converter give nothing.
+    NotRead,
+}
+
+/// The file name of a source texture, for the log.
+///
+/// # Safety
+///
+/// `texture` is a live `NiSourceTexture`.
+pub unsafe fn file_name_of(texture: usize) -> String {
+    let filename: usize = rd(texture, ST::filenameOnPC);
+    if filename == 0 {
+        return String::from("(no file)");
+    }
+    core::ffi::CStr::from_ptr(filename as *const core::ffi::c_char).to_string_lossy().into_owned()
+}
+
+/// Opens a file as the engine's `ReadImageFile` 0x6F6570 does, and closes it. That function
+/// shows the error menu of the engine when the file does not open, which changes the game.
+unsafe fn file_opens(filename: usize) -> bool {
+    const GET_FILE: usize = 0x7C29E4;
+    const READ_MODE: u32 = 0;
+    const BUFFER_SIZE: u32 = 0x2800;
+    const V_IS_OPEN: usize = 4;
+    const V_DELETING_DTOR: usize = 0;
+    let file = crate::engine::cdecl3(rd(GET_FILE, 0), filename as u32, READ_MODE, BUFFER_SIZE) as usize;
+    if file == 0 {
+        return false;
+    }
+    let open = crate::engine::vcall0(file, V_IS_OPEN) & 0xFF != 0;
+    crate::engine::vcall1(file, V_DELETING_DTOR, 1);
+    open
+}
+
+/// Gives `write` the record of a texture, with the pixels that `create` made for it, for a
+/// capture file: the same file, the same format, the same conversion ([`fitting_format`],
+/// [`description_of`]), in memory that goes at the return. The game's objects stay as they are:
+/// `data`, the renderer data of `texture`, is read only, a file's pixel data is new and goes
+/// here, and a texture's own pixel data goes through the converter with no destination, so that
+/// nothing can write into it. Nothing else sees it: MGE XE's patches and the counter of the
+/// texture memory are inside `create`.
+///
+/// # Safety
+///
+/// `texture` is a live `NiSourceTexture`, and `data` its live `NiDX8SourceTextureData`. On the
+/// game's thread, without the device lock: the readers take their critical section, and the
+/// lock's holder must not wait for another thread (`sync::device_lock`).
+pub unsafe fn read_for_file(texture: usize, data: usize, write: impl FnOnce(&TextureV1)) -> Result<(), FileLacks> {
+    if textures::is_unreadable(data) {
+        return Err(FileLacks::Unreadable);
+    }
+    let converter = get_image_converter();
+    let filename: usize = rd(texture, ST::filenameOnPC);
+    let own_pixels: usize = rd(texture, ST::pixelData);
+    let mut pixel_data = if filename != 0 {
+        if !file_opens(filename) {
+            return Err(FileLacks::NoFile);
+        }
+        textures::converter_read_file(converter, filename, 0)
+    } else if own_pixels != 0 {
+        own_pixels
+    } else {
+        return Err(FileLacks::NoSource);
+    };
+    if pixel_data == 0 {
+        return Err(FileLacks::NotRead);
+    }
+    wr(pixel_data, REF_COUNT, rd::<u32>(pixel_data, REF_COUNT).wrapping_add(1));
+    let mut held = pixel_data;
+
+    let renderer: usize = rd(data, SD::renderer);
+    let mut format = fitting_format(data, pixel_data, texture + T::formatPrefs, renderer);
+    if format == 0 {
+        // As `create`: the texture of the game has the default pixels.
+        pixel_data = rd(renderer, R::defaultTexturePixelData);
+        format = rd(renderer, R::defaultTextureFormats);
+        ni::release(held);
+        held = pixel_data;
+        wr(pixel_data, REF_COUNT, rd::<u32>(pixel_data, REF_COUNT).wrapping_add(1));
+    }
+    // Only pixels read here may be the converter's destination.
+    let destination = if filename != 0 && pixel_data != rd::<usize>(renderer, R::defaultTexturePixelData) { pixel_data } else { 0 };
+    let converted = textures::converter_convert(converter, pixel_data, format, destination, rd(data, SD::bMipMap));
+    let result = if converted != 0 {
+        write(&description_of(data, texture, converted));
+        // New pixel data has no reference; the source has the one from above.
+        if rd::<u32>(converted, REF_COUNT) == 0 {
+            ni::delete_object(converted);
+        }
+        Ok(())
+    } else {
+        Err(FileLacks::NotRead)
+    };
+    ni::release(held);
+    result
+}
+
 /// The source textures whose `create` is in progress on the main thread, innermost last.
 static IN_PROGRESS: MainCell<Vec<usize>> = MainCell::new(Vec::new());
 /// The nested calls that took the default texture without a read, for the log.
@@ -205,13 +343,7 @@ pub unsafe fn create(t: &MainThread, texture: usize, renderer: usize) -> usize {
     if pixel_data != 0 {
         wr(pixel_data, REF_COUNT, rd::<u32>(pixel_data, REF_COUNT).wrapping_add(1));
     }
-    let mut format = 0usize;
-    if pixel_data != 0
-        && power_of_two(rd(rd::<usize>(pixel_data, PD::mipmapWidths), 0))
-        && power_of_two(rd(rd::<usize>(pixel_data, PD::mipmapHeights), 0))
-    {
-        format = textures::find_matching_pixel_format(this, pixel_data + PD::format, prefs, renderer + R::arrayArrayTextureFormats);
-    }
+    let mut format = fitting_format(this, pixel_data, prefs, renderer);
     if format == 0 {
         // No data, or a size or a format that the device cannot take: the default texture.
         pixel_data = rd(renderer, R::defaultTexturePixelData);
@@ -243,21 +375,7 @@ pub unsafe fn create(t: &MainThread, texture: usize, renderer: usize) -> usize {
         if link {
         wr(this, SD::levels, levels);
 
-        let description = TextureV1 {
-            struct_size: core::mem::size_of::<TextureV1>() as u32,
-            flags: if rd::<u8>(texture, ST::isStatic) == 0 { TEXTURE_DYNAMIC } else { 0 },
-            width: rd(this, SD::width),
-            height: rd(this, SD::height),
-            levels,
-            d3d_format: d3d_format_of(this, converted),
-            pixel_format: rd(converted, PD::format_format),
-            pixel_format_tag: rd(converted, PD::format_channelMasks),
-            bytes_per_pixel: rd(converted, PD::bytesPerPixel),
-            pixels: rd(converted, PD::pixelsAllMips),
-            level_offsets: offsets as *const u32,
-            level_widths: rd(converted, PD::mipmapWidths),
-            level_heights: rd(converted, PD::mipmapHeights),
-        };
+        let description = description_of(this, texture, converted);
         critical_section_lock(CREATE_CRITICAL_SECTION, NAME_CREATE_SURFACE);
         let handle = crate::link_client::texture_create(&description);
         critical_section_unlock(CREATE_CRITICAL_SECTION);
