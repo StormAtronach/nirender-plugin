@@ -1813,6 +1813,11 @@ pub unsafe fn instance_delete(id: u32) {
 }
 
 /// The ids of the plugin's instances. See [`tag::INSTANCE_CENSUS`].
+///
+/// # Safety
+///
+/// On the main thread: the place of the record among the deletes of the instances is what the
+/// helper's check relies on, and those deletes go on the main thread.
 pub unsafe fn instance_census(ids: &[u32]) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_CENSUS, &[words(&[ids.len() as u32]), words(ids)]);

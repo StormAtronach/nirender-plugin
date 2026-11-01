@@ -707,7 +707,7 @@ struct Player {
     instances: HashMap<u32, Retained>,
     /// The records of each instance in `instances`, for the log of an orphan
     /// (`instance_census`).
-    instance_made: HashMap<u32, InstanceMade>,
+    instance_made: FxHashMap<u32, InstanceMade>,
     /// The ids of the instances of each geometry handle, kept with `instances`
     /// (`instance_put`, `instance_take`): a changed or a gone geometry finds its instances
     /// without a scan of all of them.

@@ -502,6 +502,10 @@ pub unsafe fn reset(mt: &MainThread, cause: &str) {
 /// worker queued leave first, with their deletes; one that it destroys after the drain only
 /// makes the list longer. So the helper holds no id that the list lacks, unless a delete was
 /// lost.
+///
+/// # Safety
+///
+/// The caller does not hold the tables open: the drain and the list open them.
 pub unsafe fn send_census(mt: &MainThread) {
     crate::worker_events::drain();
     if !capture::recording() {
@@ -519,6 +523,11 @@ unsafe extern "C" fn player_cell_changed(_user: *mut core::ffi::c_void, _packet:
 }
 
 /// A census at each cell change of the player, from MWSE's native event.
+///
+/// # Safety
+///
+/// As for `mwse_native::subscribe`: MWSE is loaded, on the main thread. The plugin stays
+/// loaded for the life of the game, so the function it subscribes stays valid.
 pub unsafe fn install_census() {
     use crate::mwse_native::{subscribe, NATIVE_EVENT_PLAYER_CELL_CHANGED};
     if let Err(error) = subscribe(NATIVE_EVENT_PLAYER_CELL_CHANGED, player_cell_changed) {
