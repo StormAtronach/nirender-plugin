@@ -1,7 +1,9 @@
 @echo off
 rem The manual check of play-manual-check.bat, in the Outlander-test instance (the heavy
 rem modlist; never the Outlander instance of the owner's play). The build: MGE_BUILD of
-rem local.bat, with the plugin of this repo. The instance: OUTLANDER_INSTANCE of local.bat,
+rem local.bat. The plugin: NIRENDER_PLUGIN_DLL of local.bat if set, otherwise the build in the
+rem target folder of this repo, whatever its age; never a file of MGE_BUILD. The Lua of the
+rem plugin: mod/ of this repo. The instance: OUTLANDER_INSTANCE of local.bat,
 rem its game folder "Stock Game Folder", its profile Outlander, and its mgeXE.toml in the mod
 rem "MGE XE G7". Its first start after a version change regenerates the distant land (about
 rem 30 s). The Livecoding mod's main.lua comes from the testing instance: Outlander-test has
