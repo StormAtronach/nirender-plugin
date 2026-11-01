@@ -149,6 +149,13 @@ def main():
         # The baseline is counted on the layout of a release, the one that release.py checks.
         raise SystemExit("--update counts the baseline without --mge-host: the layout that release.py checks")
 
+    # Cargo runs in each place: a relative target folder would land inside every checkout (2026-10-28:
+    # target-2way/ in the main render-link checkout, which stopped release.py).
+    target = os.environ.get("CARGO_TARGET_DIR")
+    if target and not os.path.isabs(target):
+        os.environ["CARGO_TARGET_DIR"] = os.path.abspath(target)
+        print("CARGO_TARGET_DIR %s is relative: taken as %s" % (target, os.environ["CARGO_TARGET_DIR"]), flush=True)
+
     found = scan(args.mge, args.mge_host)
     if found is None:
         return 1

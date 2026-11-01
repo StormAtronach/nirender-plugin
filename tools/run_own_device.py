@@ -5,6 +5,7 @@ the window of the game.
 
     python tools/run_own_device.py --label owndevice [--backend vulkan]
         [--plugin-dll <akulakhan.dll>] [--log <file.txt>]
+    python tools/run_own_device.py --label rel --archive <extracted release archive>  # the release check
     python -I tools/run_own_device.py --self-test    # the tests of the argument handling
 
 The command of a run takes no variable prefix, redirect or chained command, so that one
@@ -23,6 +24,7 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 
 # The modules of this folder, also under `python -I` (checks.py runs the self-test so).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -105,8 +107,95 @@ def apply_env(environment, entries):
     environment.setdefault("MGE_XE_BOX_SECONDS", "5")
 
 
+def archive_arguments(args):
+    """`--archive`: the run takes the build, the plugin and the MWSE.dll of the extracted release
+    archive, and it builds nothing. The mod's Lua is the archive's too (`session.prepare`), and
+    the instance's own mod `nirender` is off for the run: under the run's mod, Mod Organizer would
+    serve a file that the archive lacks from it, and a faulty archive would pass."""
+    if not args.archive:
+        return
+    if args.plugin_dll or args.mge_build:
+        raise SystemExit("--archive names the build and the plugin: no --plugin-dll or --mge-build with it")
+    args.mge_build = args.archive
+    args.no_build = True
+    if "nirender" not in args.disable_mod:
+        args.disable_mod.append("nirender")
+    args.plugin_dll = os.path.join(args.archive, "Data Files", "MWSE", "lib", "akulakhan.dll")
+    mwse = os.path.join(args.archive, "MWSE.dll")
+    if os.path.isfile(mwse) and not args.mwse_dll:
+        args.mwse_dll = mwse
+
+
+def self_test_archive_lua():
+    """A fake archive and a fake run mod in a temporary folder: the archive's file wins, a file
+    that the archive's Lua loads and lacks leaves the run's mod (the fault of v0.3.3: main.lua
+    without failure.lua), and the harness's scenario stays."""
+    with tempfile.TemporaryDirectory() as folder:
+        archive = os.path.join(folder, "archive", "Data Files", "MWSE", "mods", "nirender")
+        dist = os.path.join(folder, "dist", "MWSE", "mods", "nirender")
+        os.makedirs(archive)
+        os.makedirs(dist)
+
+        def write(where, name, text):
+            with open(os.path.join(where, name), "w", encoding="utf-8") as file:
+                file.write(text)
+
+        write(archive, "main.lua", 'dofile("Data Files\\\\MWSE\\\\mods\\\\nirender\\\\failure.lua")\nrequire("nirender.notifier")\nrequire("nirender." .. spec.scenario)\n')
+        write(dist, "main.lua", "the repo's")
+        write(dist, "failure.lua", "the repo's")
+        write(dist, "notifier.lua", "the repo's")
+        write(dist, "owndevice.lua", "the scenario")
+        shipped, missing = session.stage_archive_lua(os.path.join(folder, "archive"), os.path.join(folder, "dist"))
+        assert shipped == ["main.lua"], shipped
+        assert missing == ["failure.lua", "notifier.lua"], missing
+        assert sorted(os.listdir(dist)) == ["main.lua", "owndevice.lua"], os.listdir(dist)
+        assert "failure.lua" in open(os.path.join(dist, "main.lua"), encoding="utf-8").read()
+
+        # With the files there, nothing is missing, and a file loaded through another is reached.
+        write(archive, "failure.lua", 'dofile("Data Files/MWSE/mods/nirender/extra.lua")')
+        write(archive, "notifier.lua", "")
+        write(dist, "extra.lua", "the repo's")
+        shipped, missing = session.stage_archive_lua(os.path.join(folder, "archive"), os.path.join(folder, "dist"))
+        assert missing == ["extra.lua"], missing
+        assert "extra.lua" not in os.listdir(dist)
+        write(archive, "extra.lua", "")
+        assert session.stage_archive_lua(os.path.join(folder, "archive"), os.path.join(folder, "dist"))[1] == []
+
+        # No main.lua in the archive: refused.
+        os.remove(os.path.join(archive, "main.lua"))
+        try:
+            session.stage_archive_lua(os.path.join(folder, "archive"), os.path.join(folder, "dist"))
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("an archive without main.lua was taken")
+
+
+def self_test_archive_arguments():
+    """`--archive` takes the archive's parts and turns the instance's own mod off, once."""
+    args = argparse.Namespace(archive="E:/a", plugin_dll=None, mge_build=None, mwse_dll=None, no_build=False, disable_mod=[])
+    archive_arguments(args)
+    assert args.mge_build == "E:/a" and args.no_build
+    assert args.plugin_dll == os.path.join("E:/a", "Data Files", "MWSE", "lib", "akulakhan.dll"), args.plugin_dll
+    assert args.disable_mod == ["nirender"], args.disable_mod
+    args = argparse.Namespace(archive="E:/a", plugin_dll=None, mge_build=None, mwse_dll=None, no_build=False, disable_mod=["nirender", "other"])
+    archive_arguments(args)
+    assert args.disable_mod == ["nirender", "other"], args.disable_mod
+    args = argparse.Namespace(archive=None, plugin_dll=None, mge_build=None, mwse_dll=None, no_build=False, disable_mod=[])
+    archive_arguments(args)
+    assert args.disable_mod == [] and not args.no_build
+    try:
+        archive_arguments(argparse.Namespace(archive="E:/a", plugin_dll="E:/b.dll", mge_build=None, mwse_dll=None, no_build=False, disable_mod=[]))
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("--archive with --plugin-dll was taken")
+
+
 def self_test():
     """The tests of the argument handling: no game, no build."""
+    self_test_archive_lua()
+    self_test_archive_arguments()
     build = os.path.join("target", "akulakhan.dll")
     assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/a.dll", "--plugin-dll")
     assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
@@ -250,7 +339,10 @@ def main():
                     "again for more. It wins over the runner's default box time (MGE_XE_BOX_SECONDS=5). The variables "
                     "of the run itself are refused, with the option that sets each: " + ", ".join(sorted(RUNNER_VARIABLES)))
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--archive", help="the release check: a folder with an extracted release archive. The run takes its build, its plugin, its "
+                    "MWSE.dll and its Lua files; a Lua file that the archive loads and lacks is not in the run, as in a player's game")
     args = ap.parse_args()
+    archive_arguments(args)
     if args.self_test:
         self_test()
         return 0
@@ -276,7 +368,7 @@ def main():
         cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
         for folder in (HOST_DIR, D3D8_DIR):
             subprocess.run([cargo, "build", "--release", "--quiet"], cwd=folder, check=True)
-    session.prepare(build=not args.no_build, extra_files=extra_files)
+    session.prepare(build=not args.no_build, extra_files=extra_files, archive=args.archive)
     run = session.Run(args.label)
     # Without a save (--save ""), the scenario starts a new game: the films of the game play.
     spec = run.spec("owndevice", save=args.save or None, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
