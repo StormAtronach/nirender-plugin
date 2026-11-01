@@ -1,7 +1,9 @@
 @echo off
 rem A game to play by hand with the wgpu renderer and the mark key (the owner, 2026-10-20).
-rem The build: MGE_BUILD of local.bat (a helper build folder with d3d8.dll and numidium.exe)
-rem with the plugin of this repo. local.bat also names the Python interpreter and, if it is
+rem The build: MGE_BUILD of local.bat (a helper build folder with d3d8.dll and numidium.exe).
+rem The plugin: NIRENDER_PLUGIN_DLL of local.bat if set, otherwise the build in the target
+rem folder of this repo, whatever its age; never a file of MGE_BUILD. The Lua of the plugin:
+rem mod/ of this repo. local.bat also names the Python interpreter and, if it is
 rem not next to this repo in moreFPS, the livecoding file of the mark key.
 rem In the game: load a save, press Alt+X once, then Insert at each issue (a numbered mark:
 rem the place and view in MWSE.log, 40 frames in C:\tmp\mark-N.nircap, 24 pictures).
