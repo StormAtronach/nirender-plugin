@@ -90,6 +90,9 @@ const PLANE_NAMES: [&str; 7] = ["near", "far", "left", "right", "top", "bottom",
 const SLOT_ON_PRE_DISPLAY: usize = InterfaceNiTimeController::OnPreDisplay;
 const RTTI_NAME: usize = NiRTTI::name;
 const RTTI_BASE: usize = NiRTTI::baseRTTI;
+/// The run-time type of `NiBillboardNode`.
+const RTTI_BILLBOARD_NODE: usize = 0x7DE0A0;
+const NODE_FLAGS: usize = crate::gen::layouts::NiAVObject::flags;
 /// The most nodes above a shape that the walk looks at.
 const MAX_DEPTH: usize = 32;
 /// The frames between two checks of the handles of an instance. This note is a safety net for
@@ -886,8 +889,9 @@ unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, effect_
         }
     }
     // A texture effect is retained in any coordinate mode (engine-rules R24) when its
-    // projection does not move: no controller on the effect or on a node above it
-    // (`effect_retained`). The material record holds the projection.
+    // projection does not move: no controller on the effect or on a node above it, and no
+    // billboard above it that turns to the camera (`effect_retained`). The material record
+    // holds the projection.
     if effect_state != 0 {
         for effect in [rd::<usize>(effect_state, DES::environmentMap), rd::<usize>(effect_state, DES::fogMap)] {
             if effect != 0 && !effect_retained(effect) {
@@ -1106,9 +1110,20 @@ unsafe fn effect_retained(effect: usize) -> bool {
         if rd::<usize>(node, CONTROLLERS) != 0 {
             return false;
         }
+        if crate::ports::ni::is_kind_of(node, RTTI_BILLBOARD_NODE) && billboard_turns(rd(node, NODE_FLAGS)) {
+            return false;
+        }
         node = rd(node, PARENT);
     }
     false
+}
+
+/// True when a billboard node with these flags turns to the camera at its display
+/// (`NiBillboardNode::RotateToCamera` 0x6D3C00): the mode is in bits 5 and 6, and mode 3 has no
+/// turn. It updates its children there, so an effect under it holds another projection before
+/// that display than after it, in a frame: the material record would hold the wrong one.
+fn billboard_turns(flags: u16) -> bool {
+    (flags >> 5) & 3 != 3
 }
 
 /// True when the run-time type of the node, or a base of it, is one of the rejected kinds
@@ -2250,6 +2265,17 @@ mod tests {
             crate::shadow::restore_main_thread(before);
             assert_eq!(deletes, [77, 78]);
         }
+    }
+
+    #[test]
+    fn a_billboard_turns_in_every_mode_but_the_third() {
+        // The flags of the test level's billboards: mode 0, 1, 2 and 2, with the displayed bit.
+        for flags in [0x0A, 0x2A, 0x4A, 0x5A] {
+            assert!(billboard_turns(flags), "{flags:#x}");
+        }
+        // Mode 3 turns nothing, with any other bit.
+        assert!(!billboard_turns(0x60));
+        assert!(!billboard_turns(0x7F));
     }
 
     #[test]
