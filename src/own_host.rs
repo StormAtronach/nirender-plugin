@@ -98,8 +98,8 @@ static LIVE: LockCell<Vec<usize>> = LockCell::new(Vec::new());
 /// capture file that starts in the middle of a stream. A texture whose pixels came from the
 /// pixel data of the game (the port of the texture loader writes them, with no lock) has no
 /// memory here and is not written: the capture reads it for the file when a material names it
-/// (`capture::name_texture`). A rendered texture is not written: the caller makes the game make
-/// it again.
+/// (`capture::name_texture`). A rendered texture is written with no bytes: its picture is in the
+/// helper (`rendered_pictures`).
 pub unsafe fn snapshot() {
     let lock = crate::sync::device_lock();
     let live: Vec<usize> = LIVE.get(&lock).clone();
@@ -117,10 +117,10 @@ pub unsafe fn snapshot() {
         let o = &*(object as *const Object);
         let handle = object as u32;
         let address = &handle as *const u32 as u32;
-        let kept_texture = |t: &Object| t.usage & 1 == 0 && t.level_memory.iter().any(|m| !m.is_empty());
+        let in_file = |t: &Object| is_rendered(t) || t.level_memory.iter().any(|m| !m.is_empty());
         match o.kind {
-            Kind::Texture if !kept_texture(o) => {}
-            Kind::LevelSurface if o.owner.is_null() || !kept_texture(&*o.owner) => {}
+            Kind::Texture if !in_file(o) => {}
+            Kind::LevelSurface if o.owner.is_null() || !in_file(&*o.owner) => {}
             Kind::Texture => {
                 crate::capture::call(CALL_CREATE_TEXTURE, &[o.width, o.height, o.levels, o.usage, o.format, o.pool, address], 0);
                 for (level, memory) in o.level_memory.iter().enumerate() {
@@ -149,6 +149,63 @@ pub unsafe fn snapshot() {
         }
     }
     crate::log!("own host: snapshot of {} textures, {} level surfaces, {} buffers, {} surfaces", count[0], count[1], count[2], count[3]);
+}
+
+/// D3DUSAGE_RENDERTARGET: the game draws into the texture.
+fn is_rendered(texture: &Object) -> bool {
+    texture.usage & 1 != 0
+}
+
+/// The picture of a rendered texture, for a capture file.
+pub struct RenderedPicture {
+    texture: u32,
+    format: u32,
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+/// Reads the picture of each rendered texture that is alive from the helper. The game draws a
+/// rendered texture only when it needs a new picture (the fog of war of a map tile, a texture
+/// of a mod), so a file's frames need not hold it. A texture with no answer goes into the file
+/// with no picture.
+///
+/// # Safety
+///
+/// With the own host in use, before a capture file opens: a read is a record of the stream, and
+/// the caller does not hold the state open. Each read waits for the helper.
+pub unsafe fn rendered_pictures() -> Vec<RenderedPicture> {
+    let lock = crate::sync::device_lock();
+    let live: Vec<usize> = LIVE.get(&lock).clone();
+    let start = crate::capture::ticks();
+    let (mut textures, mut pictures) = (0, Vec::new());
+    let mut sizes = std::collections::BTreeMap::<(u32, u32), u32>::new();
+    for object in live {
+        let o = &*(object as *const Object);
+        if o.kind != Kind::Texture || !is_rendered(o) {
+            continue;
+        }
+        textures += 1;
+        *sizes.entry((o.width, o.height)).or_default() += 1;
+        if let Some((width, height, pixels)) = crate::capture::read_pixels(object as u32) {
+            pictures.push(RenderedPicture { texture: object as u32, format: o.format, width, height, pixels: pixels.to_vec() });
+        }
+    }
+    let sizes: Vec<String> = sizes.iter().map(|((width, height), count)| format!("{count} of {width} x {height}")).collect();
+    // A file that holds does not count this frame in its worst frame: this line has the time.
+    let spent = (crate::capture::ticks() - start) as f64 * 1000.0 / crate::capture::ticks_per_second() as f64;
+    crate::log!("capture: {textures} rendered textures ({}), {} with their pictures read in {spent:.1} ms", sizes.join(", "), pictures.len());
+    pictures
+}
+
+/// Writes a picture of [`rendered_pictures`] into the capture file. After the snapshot, which
+/// makes its texture.
+///
+/// # Safety
+///
+/// Under the device lock since [`rendered_pictures`], so that the picture's texture is alive.
+pub unsafe fn write_picture(picture: &RenderedPicture) {
+    crate::capture::rendered_picture(picture.texture, picture.width, picture.height, picture.format, &picture.pixels);
 }
 
 /// The CPU copies of the locked texture levels that the objects alive hold (risk 42): the
