@@ -22,7 +22,7 @@
 //! data in bytes (u32), and the data. All numbers are little endian. The tags are in `tag`.
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
@@ -984,6 +984,119 @@ struct Tee {
     left: u32,
     /// The longest frame of the file, in ticks of the performance counter.
     worst_frame: i64,
+    textures: FileTextures,
+}
+
+/// The revision of a texture that the file got from the stream: its first naming notes the
+/// revision.
+const REVISION_UNKNOWN: u32 = u32::MAX;
+
+/// What a capture file has of the textures and surfaces, by the handle of the stream. A capture
+/// leaves the game's textures as they are, so a texture from before the file comes into the
+/// file when a material first names it ([`name_texture`]).
+#[derive(Default)]
+struct FileTextures {
+    /// The handles in the file, with the revision of the pixels.
+    have: HashMap<u32, u32>,
+    /// The textures that could not come into the file: a naming tries each once.
+    lacking: HashSet<u32>,
+    /// The handles named by a record of the file that the file lacks, each logged once.
+    named_lacking: HashSet<u32>,
+    /// The handle that the game's thread reads for the file, outside the lock, and whether its
+    /// TEXTURE_GONE came meanwhile: a later texture can have the handle.
+    reading: Option<u32>,
+    reading_gone: bool,
+    read: u32,
+    read_again: u32,
+    lacks: [u32; 4],
+    /// The namings at which the thread held the device lock: no read there.
+    lock_held: u32,
+    records_naming_lacking: u32,
+}
+
+impl FileTextures {
+    /// Keeps the set current with a record that goes into the file.
+    fn note_record(&mut self, tag: u32, parts: &[&[u8]]) {
+        let word = |i: usize| parts.first().and_then(|p| p.get(i * 4..i * 4 + 4)).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        match tag {
+            tag::TEXTURE => {
+                if let Some(handle) = word(0) {
+                    self.have.insert(handle, REVISION_UNKNOWN);
+                }
+            }
+            tag::TEXTURE_GONE => {
+                if let Some(handle) = word(0) {
+                    self.have.remove(&handle);
+                    self.lacking.remove(&handle);
+                    self.named_lacking.remove(&handle);
+                    self.reading_gone |= self.reading == Some(handle);
+                }
+            }
+            tag::CALL => {
+                if matches!(word(0), Some(CALL_CREATE_TEXTURE | CALL_TEXTURE_LEVEL | CALL_CUBE_FACE | CALL_CREATE_IMAGE_SURFACE | CALL_CREATE_DEPTH_BUFFER | CALL_GET_RENDER_TARGET | CALL_GET_DEPTH_BUFFER)) {
+                    if let Some(handle) = word(2) {
+                        self.have.insert(handle, REVISION_UNKNOWN);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The handles that a record names under the device lock (0 for none), and the record's
+    /// name. A material goes through [`name_texture`]; these cannot read, so they count.
+    fn named_by(tag: u32, parts: &[&[u8]]) -> ([u32; 2], &'static str) {
+        let word = |i: usize| parts.first().and_then(|p| p.get(i * 4..i * 4 + 4)).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        // A CALL: the index, the result, the handle, the count, the arguments.
+        const CALL_ARGUMENTS: usize = 4;
+        match tag {
+            tag::DRAW_UP => ([word(0), 0], "DRAW_UP"),
+            tag::COPY_TILE => ([word(1), word(2)], "COPY_TILE"),
+            tag::READ_PIXELS => ([word(1), 0], "READ_PIXELS"),
+            tag::CALL if word(0) == CALL_COPY_PIXELS => ([word(CALL_ARGUMENTS), word(CALL_ARGUMENTS + 3)], "COPY_PIXELS"),
+            tag::CALL if word(0) == CALL_RENDER_TARGET => ([word(CALL_ARGUMENTS), word(CALL_ARGUMENTS + 1)], "RENDER_TARGET"),
+            _ => ([0, 0], ""),
+        }
+    }
+
+    /// Counts a record that names a handle the file lacks, and gives each such handle once for
+    /// the log. `exempt`: the back buffer and the depth buffer, which a file does not hold.
+    fn note_named(&mut self, tag: u32, parts: &[&[u8]], exempt: [u32; 2]) -> Vec<(u32, &'static str)> {
+        let (handles, name) = Self::named_by(tag, parts);
+        let mut first_times = Vec::new();
+        for handle in handles {
+            if handle != 0 && !exempt.contains(&handle) && !self.have.contains_key(&handle) {
+                self.records_naming_lacking += 1;
+                if self.named_lacking.insert(handle) {
+                    first_times.push((handle, name));
+                }
+            }
+        }
+        first_times
+    }
+
+    /// True when a naming with this revision must read the texture for the file.
+    fn wants(&mut self, handle: u32, revision: u32) -> bool {
+        if self.lacking.contains(&handle) {
+            return false;
+        }
+        match self.have.get_mut(&handle) {
+            None => true,
+            Some(seen) if *seen == REVISION_UNKNOWN => {
+                *seen = revision;
+                false
+            }
+            Some(seen) => *seen != revision,
+        }
+    }
+
+    fn report(&self) -> String {
+        let [unreadable, no_source, no_file, not_read] = self.lacks;
+        format!(
+            "capture: the textures of the file: {} read at a naming, {} read again for a new revision; lacking: {unreadable} unreadable, {no_source} with no source, {no_file} whose file did not open, {not_read} not read; {} namings with the lock held; {} records name a handle the file lacks",
+            self.read, self.read_again, self.lock_held, self.records_naming_lacking
+        )
+    }
 }
 
 struct State {
@@ -1110,7 +1223,8 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     out.write_all(MAGIC).map_err(|error| error.to_string())?;
     let header = {
         let Some(mut s) = state(&lock) else { return Err("no stream".into()) };
-        s.tee = Some(Tee { out, left: frames.max(1), worst_frame: 0 });
+        s.tee = Some(Tee { out, left: frames.max(1), worst_frame: 0, textures: FileTextures::default() });
+        FILE_OPEN.store(true, Ordering::Relaxed);
         s.tee_hold = frames == 0;
         s.tee_only = true;
         s.header.clone()
@@ -1130,9 +1244,10 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
                 tee.left = 0;
             }
         }
-        // The source textures, the rendered textures and the geometry of the game go into
-        // the file as the game makes them again: the purge runs at the next Present, outside
-        // the device lock and with the cell worker stalled (`run_pending_purge`).
+        // The rendered textures and the geometry of the game go into the file as the game
+        // makes them again: the purge runs at the next Present, outside the device lock and
+        // with the cell worker stalled (`run_pending_purge`). The source textures stay as they
+        // are: each comes into the file at its naming (`name_texture`).
         let _ = s;
         PURGE_PENDING.store(true, Ordering::Release);
     }
@@ -1199,7 +1314,9 @@ fn resource_record(tag: u32) -> bool {
 
 /// Ends the capture file of a direct stream.
 unsafe fn end_tee(s: &mut State) {
+    FILE_OPEN.store(false, Ordering::Relaxed);
     if let Some(mut tee) = s.tee.take() {
+        crate::log!("{}", tee.textures.report());
         let ok = tee.out.flush().is_ok();
         let worst = tee.worst_frame as f64 * 1000.0 / ticks_per_second() as f64;
         crate::log!("capture: the file from the stream is complete, ok {ok}; the worst frame of the file {worst:.1} ms");
@@ -1596,6 +1713,12 @@ pub unsafe fn status() -> String {
 }
 
 unsafe fn write(tag: u32, parts: &[&[u8]]) {
+    write_record(tag, parts, false);
+}
+
+/// Writes a record into the stream and the file; with `file_only`, into the file alone, so
+/// that the helper sees no record of it. Another thread's records go on as they are.
+unsafe fn write_record(tag: u32, parts: &[&[u8]], file_only: bool) {
     let lock = crate::sync::device_lock();
     if !recording() {
         return;
@@ -1627,6 +1750,10 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
         }
     }
     if let Some(tee) = s.tee.as_mut().filter(|tee| !hold || tee.left > 0 || resource_record(tag)) {
+        tee.textures.note_record(tag, parts);
+        for (handle, name) in tee.textures.note_named(tag, parts, exempt_surfaces()) {
+            crate::log!("capture: {name} names the handle {handle:#x}, which the file lacks");
+        }
         let mut ok = tee.out.write_all(&tag.to_le_bytes()).is_ok() && tee.out.write_all(&(length as u32).to_le_bytes()).is_ok();
         for part in parts {
             ok = ok && tee.out.write_all(part).is_ok();
@@ -1634,9 +1761,10 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
         if !ok {
             crate::log!("capture: the file from the stream failed");
             s.tee = None;
+            FILE_OPEN.store(false, Ordering::Relaxed);
         }
     }
-    if s.tee_only {
+    if s.tee_only || file_only {
         return;
     }
     match s.out.as_mut() {
@@ -2042,22 +2170,8 @@ pub unsafe fn texture(texture: &TextureV1, handle: usize) {
     if !recording() {
         return;
     }
+    let TextureParts { head, offsets, widths, heights, pixels } = texture_parts(texture, handle);
     let levels = texture.levels as usize;
-    let offsets = core::slice::from_raw_parts(texture.level_offsets, levels + 1);
-    let widths = core::slice::from_raw_parts(texture.level_widths, levels);
-    let heights = core::slice::from_raw_parts(texture.level_heights, levels);
-    let head = [
-        stream_handle(handle as u32),
-        texture.flags,
-        texture.width,
-        texture.height,
-        texture.levels,
-        texture.d3d_format,
-        texture.pixel_format,
-        texture.pixel_format_tag,
-        texture.bytes_per_pixel,
-    ];
-    let pixels = core::slice::from_raw_parts(texture.pixels, offsets[levels] as usize);
     let tables = [words(&head), words(offsets), words(widths), words(heights)];
     let sizes: Vec<usize> = (0..levels).map(|level| (offsets[level + 1] - offsets[level]) as usize).collect();
     let Some(plan) = ring_capacity().and_then(|capacity| level_plan(capacity, tables.iter().map(|t| t.len()).sum(), &sizes)) else {
@@ -2082,6 +2196,121 @@ pub unsafe fn texture(texture: &TextureV1, handle: usize) {
     }
     note_split(dropped, sizes.iter().copied().max().unwrap_or(0));
 }
+
+/// The head, the tables and the pixels of a texture's record.
+struct TextureParts<'a> {
+    head: [u32; 9],
+    offsets: &'a [u32],
+    widths: &'a [u32],
+    heights: &'a [u32],
+    pixels: &'a [u8],
+}
+
+unsafe fn texture_parts(texture: &TextureV1, handle: usize) -> TextureParts<'_> {
+    let levels = texture.levels as usize;
+    let offsets = core::slice::from_raw_parts(texture.level_offsets, levels + 1);
+    let head = [
+        stream_handle(handle as u32),
+        texture.flags,
+        texture.width,
+        texture.height,
+        texture.levels,
+        texture.d3d_format,
+        texture.pixel_format,
+        texture.pixel_format_tag,
+        texture.bytes_per_pixel,
+    ];
+    TextureParts {
+        head,
+        offsets,
+        widths: core::slice::from_raw_parts(texture.level_widths, levels),
+        heights: core::slice::from_raw_parts(texture.level_heights, levels),
+        pixels: core::slice::from_raw_parts(texture.pixels, offsets[levels] as usize),
+    }
+}
+
+/// True while a capture file is open: the one test on the hot path of a naming.
+static FILE_OPEN: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+pub fn file_open() -> bool {
+    FILE_OPEN.load(Ordering::Relaxed)
+}
+
+/// The back buffer and the depth buffer, as the stream names them: a file does not hold them.
+#[cfg(not(test))]
+unsafe fn exempt_surfaces() -> [u32; 2] {
+    crate::own_host::target_serials()
+}
+#[cfg(test)]
+unsafe fn exempt_surfaces() -> [u32; 2] {
+    [0, 0]
+}
+
+/// A material names a texture of the scene graph (`material_stream::device_texture`), with a
+/// file open: a source texture that the file lacks comes into the file now, before the record
+/// that names it. The file's alone: the game's texture, the renderer data and the helper see
+/// nothing of it (`texture_link::read_for_file`). The read runs without the device lock
+/// (`sync::device_lock`); only the write takes it.
+///
+/// # Safety
+///
+/// On the game's thread, in a draw: `texture` is a live texture of the scene graph, and `address`
+/// its device texture.
+#[cfg(not(test))]
+pub unsafe fn name_texture(texture: usize, address: u32) {
+    let Some((data, revision)) = crate::ports::textures::source_data_of(texture) else { return };
+    let handle = stream_handle(address);
+    let lock_held = crate::sync::device_lock_held_here();
+    let again = {
+        let lock = crate::sync::device_lock();
+        let Some(mut s) = state(&lock) else { return };
+        let Some(tee) = s.tee.as_mut() else { return };
+        if handle == 0 || !tee.textures.wants(handle, revision) {
+            return;
+        }
+        if lock_held {
+            tee.textures.lock_held += 1;
+            return;
+        }
+        tee.textures.reading = Some(handle);
+        tee.textures.reading_gone = false;
+        tee.textures.have.contains_key(&handle)
+    };
+    let result = crate::ports::texture_link::read_for_file(texture, data, |description| {
+        let lock = crate::sync::device_lock();
+        let gone = state(&lock).is_none_or(|s| s.tee.as_ref().is_none_or(|tee| tee.textures.reading_gone));
+        if !gone {
+            let TextureParts { head, offsets, widths, heights, pixels } = texture_parts(description, address as usize);
+            write_record(tag::TEXTURE, &[words(&head), words(offsets), words(widths), words(heights), pixels], true);
+        }
+    });
+    let lock = crate::sync::device_lock();
+    let Some(mut s) = state(&lock) else { return };
+    let Some(tee) = s.tee.as_mut() else { return };
+    let files = &mut tee.textures;
+    files.reading = None;
+    match result {
+        Ok(()) if files.reading_gone => {}
+        Ok(()) => {
+            files.have.insert(handle, revision);
+            if again {
+                files.read_again += 1;
+            } else {
+                files.read += 1;
+            }
+        }
+        Err(lacks) => {
+            files.lacking.insert(handle);
+            files.lacks[lacks as usize] += 1;
+            crate::log!("capture: the file lacks the texture {handle:#x} {}: {lacks:?}", crate::ports::texture_link::file_name_of(texture));
+        }
+    }
+}
+
+/// The unit tests run without the game: no file is read.
+#[cfg(test)]
+pub unsafe fn name_texture(_texture: usize, _address: u32) {}
 
 /// Whether a texture goes level by level: [`None`] when its one record (the tables and all
 /// the pixels, with the record's head) fits the ring; else, for each level, whether that
@@ -2136,6 +2365,9 @@ pub unsafe fn texture_update(handle: usize, level: u32, width: u32, height: u32,
 
 /// A purge is due (`purge`): the capture asked for it under the device lock.
 static PURGE_PENDING: AtomicBool = AtomicBool::new(false);
+/// The purge also drops the source textures: at the start of a stream into a file, where the
+/// helper has nothing yet. A file from a running stream reads them at their naming.
+static PURGE_SOURCE_TEXTURES: AtomicBool = AtomicBool::new(false);
 
 /// The engine's stall of the cell worker (`DataHandler::waitForBackgroundThread`, the save
 /// game's own handshake): the worker acknowledges between two references of the cell it
@@ -2190,7 +2422,7 @@ unsafe fn purge(in_view: usize) {
     if renderer == 0 {
         return;
     }
-    let (textures, kept, unreadable) = crate::ports::textures::purge_source_textures();
+    let (textures, kept, unreadable) = if PURGE_SOURCE_TEXTURES.swap(false, Ordering::Relaxed) { crate::ports::textures::purge_source_textures() } else { (0, 0, 0) };
     let rendered = crate::ports::rendered::remake_rendered_textures(renderer);
     // Every buffer the renderer has, by the renderer's own maps: the game can draw an object
     // into a rendered texture one time and not again. Do not read the objects kept from the
@@ -2283,6 +2515,7 @@ unsafe fn frame_end(lock: &DeviceLock) {
                 write_kept(&lock);
                 // The purge at the next Present, outside the device lock, with the cell
                 // worker stalled (`run_pending_purge`).
+                PURGE_SOURCE_TEXTURES.store(true, Ordering::Relaxed);
                 PURGE_PENDING.store(true, Ordering::Release);
             }
         }
@@ -2411,6 +2644,71 @@ mod capture_file_tests {
 
 #[cfg(test)]
 mod tests {
+    use super::{tag, FileTextures, CALL_COPY_PIXELS, CALL_CREATE_TEXTURE, CALL_RENDER_TARGET, CALL_TEXTURE_LEVEL};
+
+    fn bytes(words: &[u32]) -> Vec<u8> {
+        words.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn the_file_s_set_follows_its_records() {
+        let mut files = FileTextures::default();
+        assert!(files.wants(7, 1));
+        files.note_record(tag::TEXTURE, &[&bytes(&[7, 0])]);
+        // From the stream: its first naming notes the revision, and reads nothing.
+        assert!(!files.wants(7, 1));
+        assert!(!files.wants(7, 1));
+        // A new revision reads again.
+        assert!(files.wants(7, 2));
+        files.note_record(tag::TEXTURE_GONE, &[&bytes(&[7])]);
+        assert!(files.wants(7, 1));
+        files.note_record(tag::CALL, &[&bytes(&[CALL_CREATE_TEXTURE, 0, 8, 0])]);
+        files.note_record(tag::CALL, &[&bytes(&[CALL_TEXTURE_LEVEL, 0, 9, 0])]);
+        assert!(!files.wants(8, 1));
+        assert!(!files.wants(9, 1));
+    }
+
+    #[test]
+    fn a_handle_that_goes_during_its_read_is_noted() {
+        let mut files = FileTextures { reading: Some(5), ..Default::default() };
+        files.note_record(tag::TEXTURE_GONE, &[&bytes(&[6])]);
+        assert!(!files.reading_gone);
+        files.note_record(tag::TEXTURE_GONE, &[&bytes(&[5])]);
+        assert!(files.reading_gone);
+    }
+
+    #[test]
+    fn a_texture_that_failed_is_tried_once() {
+        let mut files = FileTextures::default();
+        files.lacking.insert(3);
+        assert!(!files.wants(3, 1));
+    }
+
+    #[test]
+    fn the_records_that_name_a_handle_count_what_the_file_lacks() {
+        let mut files = FileTextures::default();
+        files.note_record(tag::TEXTURE, &[&bytes(&[10])]);
+        let cases: [(u32, Vec<u32>); 5] = [
+            (tag::DRAW_UP, vec![20]),
+            (tag::COPY_TILE, vec![1, 21, 10]),
+            (tag::READ_PIXELS, vec![1, 22]),
+            (tag::CALL, vec![CALL_COPY_PIXELS, 0, 0, 4, 23, 0, 0, 10]),
+            (tag::CALL, vec![CALL_RENDER_TARGET, 0, 0, 2, 24, 99]),
+        ];
+        let mut named = Vec::new();
+        for (record, words) in &cases {
+            named.extend(files.note_named(*record, &[&bytes(words)], [99, 0]).into_iter().map(|(handle, _)| handle));
+        }
+        assert_eq!(named, vec![20, 21, 22, 23, 24]);
+        assert_eq!(files.records_naming_lacking, 5);
+        // Logged once, counted each time; handle 0 and a known handle do not count.
+        assert!(files.note_named(tag::DRAW_UP, &[&bytes(&[20])], [99, 0]).is_empty());
+        assert_eq!(files.records_naming_lacking, 6);
+        assert!(files.note_named(tag::DRAW_UP, &[&bytes(&[0])], [99, 0]).is_empty());
+        assert!(files.note_named(tag::DRAW_UP, &[&bytes(&[10])], [99, 0]).is_empty());
+        assert_eq!(files.records_naming_lacking, 6);
+    }
+
     /// A reply memory that grows has the next generation, the new capacity in its head, the
     /// number of the last answer and the counts.
     #[test]

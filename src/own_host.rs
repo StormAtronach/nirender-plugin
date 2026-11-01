@@ -97,8 +97,9 @@ static LIVE: LockCell<Vec<usize>> = LockCell::new(Vec::new());
 /// Writes each resource that is alive into the capture: its creation and its bytes. For a
 /// capture file that starts in the middle of a stream. A texture whose pixels came from the
 /// pixel data of the game (the port of the texture loader writes them, with no lock) has no
-/// memory here and is not written: the caller makes the game load it again. A rendered
-/// texture is not written: the caller makes the game make it again.
+/// memory here and is not written: the capture reads it for the file when a material names it
+/// (`capture::name_texture`). A rendered texture is not written: the caller makes the game make
+/// it again.
 pub unsafe fn snapshot() {
     let lock = crate::sync::device_lock();
     let live: Vec<usize> = LIVE.get(&lock).clone();
@@ -262,6 +263,15 @@ pub unsafe fn serial_of(address: u32) -> u32 {
 /// As for [`serial_of`]: `address` is 0, a live object of this host, or another host's.
 pub unsafe fn object_serial(address: u32) -> u32 {
     own(address).map_or(address, |o| o.serial)
+}
+
+/// The back buffer and the depth buffer, as the stream names them.
+///
+/// # Safety
+///
+/// The plugin runs in the game, and the two objects live as long as the device.
+pub unsafe fn target_serials() -> [u32; 2] {
+    [serial_of(BACK_BUFFER.load(Ordering::Relaxed)), serial_of(DEPTH_BUFFER.load(Ordering::Relaxed))]
 }
 
 /// A handle that a device keeps from a Set call (a stage texture, a stream, the indices, a

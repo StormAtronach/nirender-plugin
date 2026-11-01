@@ -370,7 +370,11 @@ pub unsafe fn report(t: &MainThread) -> String {
 /// renderer (slot 2 of its table: `PrepareTextureForRendering`), as the stream names it (its
 /// serial, `own_host::serial_of`). 0 without a texture.
 unsafe fn device_texture(renderer: usize, texture: usize) -> u32 {
-    crate::capture::stream_handle(device_texture_address(renderer, texture))
+    let address = device_texture_address(renderer, texture);
+    if crate::capture::file_open() && texture != 0 {
+        crate::capture::name_texture(texture, address);
+    }
+    crate::capture::stream_handle(address)
 }
 
 /// The address of the device texture of a texture of the scene graph (see `device_texture`).

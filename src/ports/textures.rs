@@ -908,6 +908,20 @@ pub unsafe fn purge_source_textures() -> (u32, u32, u32) {
     (dropped, kept, unreadable)
 }
 
+/// The source renderer data of a texture and the revision of its pixels; [`None`] for a texture
+/// of another kind (a rendered one, a cube map) or with no renderer data.
+///
+/// # Safety
+///
+/// `texture` is a live texture.
+pub unsafe fn source_data_of(texture: usize) -> Option<(usize, u32)> {
+    let data: usize = rd(texture, T::rendererData);
+    if data == 0 || rd::<u32>(data, TD::vtbl_vtbl) != VTBL_SOURCE_TEXTURE_DATA {
+        return None;
+    }
+    Some((data, rd(data, SD::sourceRevisionID)))
+}
+
 /// The engine's list of live textures, for the state summary: each texture, the address of its
 /// renderer data and the serial of its device texture: a block made again can have the old
 /// address, and a serial does not come back. Two parts, the source textures (with those that
