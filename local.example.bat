@@ -5,6 +5,8 @@ rem The Python interpreter of the tools (3.12 with Pillow).
 set "PYTHON=C:\Python312\python.exe"
 rem A build folder of the MGE XE G7 helper: d3d8.dll, numidium.exe and its Data Files.
 set "MGE_BUILD=C:\path\to\mgebuilds\f32"
+rem The plugin of a game (MGE_BUILD does not give it); without this line, the build in target of this repo.
+rem set "NIRENDER_PLUGIN_DLL=C:\path\to\akulakhan.dll"
 rem The Mod Organizer instance of the heavy modlist for play-manual-check-outlander.bat.
 set "OUTLANDER_INSTANCE=D:\path\to\Outlander-test"
 rem The livecoding file of the mark key; without this line, the one in the sibling repo moreFPS.
