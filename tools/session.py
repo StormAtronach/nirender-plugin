@@ -10,6 +10,7 @@ folders of the run's mods into the game folder at the start and takes them out a
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -81,13 +82,58 @@ def stage_background_config(deployment):
     print("  MWSE.json with RunInBackground = true <- %s" % (source or "the defaults (no MWSE.json in the instance)"))
 
 
-def prepare(build=True, features=(), extra_files=()):
+def loaded_lua(text):
+    """The files of the nirender mod that a Lua text loads, as names under the mod's folder: a
+    dofile of `mods\\\\nirender\\\\<name>.lua` or `mods/nirender/<name>.lua`, and a require or include
+    of `nirender.<name>`. A name built at run time (`"nirender." .. spec.scenario`, the run spec
+    of a harness run) is not a file of an install, and it is not found. xtask's `loaded_lua` of
+    MGE XE has the same rule for the build of an archive."""
+    names = [match.replace("\\\\", "/").replace("\\", "/").lower() + ".lua" for match in re.findall(r"mods[\\/]+nirender[\\/]+([\w.\\/-]+?)\.lua", text, re.I)]
+    names += [match.replace(".", "/").lower() + ".lua" for match in re.findall(r"""(?:require|include)\s*\(?\s*["']nirender\.([\w.]+)["']""", text, re.I)]
+    return names
+
+
+def stage_archive_lua(archive, dist):
+    """The mod's Lua files of a run on a release archive (an extracted folder): the archive's files
+    take the place of the repo's, and a file that the archive's Lua loads and the archive lacks
+    leaves the run's mod, so that the run fails as a player's game does (v0.3.3: the harness's
+    copies of two files hid that the archive had only main.lua). The other files of the repo's
+    mod stay: the scenario that a run spec starts, which a player's game never loads.
+
+    Returns (the archive's Lua files, the loaded files that it lacks)."""
+    source = os.path.join(archive, "Data Files", "MWSE", "mods", "nirender")
+    target = os.path.join(dist, "MWSE", "mods", "nirender")
+    shipped = {name.lower(): name for name in os.listdir(source)} if os.path.isdir(source) else {}
+    if "main.lua" not in shipped:
+        raise SystemExit("the archive at %s has no Data Files/MWSE/mods/nirender/main.lua" % archive)
+    for name in shipped.values():
+        shutil.copy2(os.path.join(source, name), os.path.join(target, name))
+    # What the archive's main.lua reaches, through the files that the archive has.
+    reached, missing, queue = set(), set(), ["main.lua"]
+    while queue:
+        name = queue.pop()
+        if name in reached:
+            continue
+        reached.add(name)
+        if name in shipped:
+            queue += loaded_lua(open(os.path.join(source, shipped[name]), encoding="utf-8", errors="replace").read())
+        else:
+            missing.add(name)
+    for name in missing:
+        place = os.path.join(target, *name.split("/"))
+        if os.path.isfile(place):
+            os.remove(place)
+    return sorted(shipped), sorted(missing)
+
+
+def prepare(build=True, features=(), extra_files=(), archive=None):
     """Builds the plugin, runs the offline tests and installs the mod into the testing instance.
 
     `features` are cargo features of the build: ("rig",) for a run of the comparison rig.
     `extra_files` are (source, path in the mod) pairs that go into the run's mod for this run
     only: test files, or another MWSE.dll as `Root/MWSE.dll`. The run's mod wins over the mods
-    of the instance; the next install takes them out."""
+    of the instance; the next install takes them out. `archive` is an extracted release archive:
+    the mod's Lua of the run is the archive's ([`stage_archive_lua`])."""
     if build:
         env = dict(os.environ)
         env["PATH"] = os.path.join(os.path.expanduser("~"), ".cargo", "bin") + os.pathsep + env["PATH"]
@@ -105,6 +151,9 @@ def prepare(build=True, features=(), extra_files=()):
     shutil.copytree(os.path.join(REPO, "mod"), DIST)
     os.makedirs(os.path.join(DIST, "MWSE", "lib"), exist_ok=True)
     shutil.copy2(DLL, os.path.join(DIST, "MWSE", "lib", "akulakhan.dll"))
+    if archive:
+        shipped, missing = stage_archive_lua(archive, DIST)
+        print("archive Lua: %s; loaded by it and not in the archive (the run lacks them, as a player's game): %s" % (", ".join(shipped), ", ".join(missing) or "none"), flush=True)
     pdb = os.path.splitext(DLL)[0] + ".pdb"
     if os.path.isfile(pdb):
         shutil.copy2(pdb, os.path.join(DIST, "MWSE", "lib", "akulakhan.pdb"))
