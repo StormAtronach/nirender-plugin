@@ -438,6 +438,9 @@ pub(crate) struct Counts {
     /// The `INSTANCE_PARTICLES` records: the particles of a particle instance's draw.
     pub(crate) instance_particles: u32,
     pub(crate) instance_missing: u32,
+    /// The `INSTANCE_CENSUS` records, and the instances they showed the plugin does not list.
+    pub(crate) instance_censuses: u32,
+    pub(crate) instance_orphans: u32,
     pub(crate) shape_twins: u32,
     /// The blended draws of the engine's path merged into the sorted list of the table.
     pub(crate) merged_blends: u64,

@@ -17,6 +17,18 @@ pub(crate) fn reply_generation(data: &[u8]) -> u32 {
     }
 }
 
+/// The lines of orphans in the log of a session; the report counts them all.
+const MOST_ORPHAN_LINES: u32 = 256;
+
+/// The ids of `held` that `listed` lacks, each once and in order.
+fn orphans_of(held: impl Iterator<Item = u32>, listed: &[u32]) -> Vec<u32> {
+    let listed: FxHashSet<u32> = listed.iter().copied().collect();
+    let mut orphans: Vec<u32> = held.filter(|id| !listed.contains(id)).collect();
+    orphans.sort_unstable();
+    orphans.dedup();
+    orphans
+}
+
 impl Player {
     /// Does one record. Returns true for the record that ends a frame.
     /// Engine-rules R19, R22 (the skill wgpu-renderer-dev).
@@ -218,6 +230,7 @@ impl Player {
                 self.instance_take(word(data, 0));
                 self.retained_remove(word(data, 0));
             }
+            tag::INSTANCE_CENSUS if data.len() >= 4 => self.instance_census(data),
             tag::LIGHT if data.len() >= 108 => {
                 // The engine keeps the radius of a point light in its specular colour
                 // (`game_dynamicLightTest` 0x4D3039). The device values carry that colour times
@@ -573,6 +586,39 @@ impl Player {
         if let Some(old) = self.instances.remove(&id) {
             self.by_geometry_remove(old.geometry, id);
         }
+        self.instance_made.remove(&id);
+    }
+
+    /// The plugin's list of its instances ([`tag::INSTANCE_CENSUS`]). An instance held here that
+    /// the list lacks lost its delete: nothing would hide it or remove it any more, and it
+    /// would stay drawn at its last place. It is logged, and removed.
+    pub(crate) fn instance_census(&mut self, data: &[u8]) {
+        let count = (word(data, 0) as usize).min((data.len() - 4) / 4);
+        let listed: Vec<u32> = (0..count).map(|i| word(data, 4 + i * 4)).collect();
+        let held = self.instances.keys().copied().chain(self.retained.ids());
+        let orphans = orphans_of(held, &listed);
+        self.renderer.counts.instance_censuses += 1;
+        for id in orphans {
+            self.renderer.counts.instance_orphans += 1;
+            if self.renderer.counts.instance_orphans <= MOST_ORPHAN_LINES {
+                self.log_orphan(id);
+            }
+            self.instance_take(id);
+            self.retained_remove(id);
+        }
+    }
+
+    fn log_orphan(&self, id: u32) {
+        let now = self.renderer.counts.frames;
+        let (made, name) = self.instance_made.get(&id).map_or((now, ""), |made| (made.frame, &made.name[..]));
+        let (visible, bound) = self.retained.first_slot_facts(id).unwrap_or((false, [0.0; 4]));
+        match self.instances.get(&id) {
+            Some(r) => println!(
+                "instance census: orphan {id} '{name}': class {}, flags {:#x}, geometry {:#x}, material {:#x}, at {:.1} {:.1} {:.1}, bound {bound:?}, visible {visible}, made in frame {made}, now {now}; removed",
+                r.class, r.flags, r.geometry, r.material, r.exact[0], r.exact[1], r.exact[2]
+            ),
+            None => println!("instance census: orphan {id} '{name}': in the table only, bound {bound:?}, visible {visible}, made in frame {made}, now {now}; removed"),
+        }
     }
 
     fn by_geometry_remove(&mut self, geometry: u32, id: u32) {
@@ -607,6 +653,8 @@ impl Player {
             bound: core::array::from_fn(|i| float(data, 160 + i * 4)),
         };
         let id = word(data, 0);
+        let frame = self.renderer.counts.frames;
+        self.instance_made.entry(id).or_insert_with(|| InstanceMade { frame, name: String::from_utf8_lossy(data.get(176..).unwrap_or_default()).into() });
         if let Some((_, moved)) = move_check.filter(|(moved_id, _)| *moved_id == id) {
             self.renderer.counts.moves_checked += 1;
             if moved != retained {
@@ -984,5 +1032,19 @@ impl Player {
         }
         self.renderer.counts.held += 1;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::orphans_of;
+
+    #[test]
+    fn a_census_names_an_orphan_and_never_a_listed_instance() {
+        // 5 and 9 are listed; 7 lost its delete, and it is held in both tables of the helper.
+        let held = [5, 7, 9, 7].into_iter();
+        assert_eq!(orphans_of(held, &[9, 5, 11]), [7]);
+        // Listed but not held here (made and not sent yet): no orphan.
+        assert!(orphans_of([5].into_iter(), &[5, 6]).is_empty());
     }
 }

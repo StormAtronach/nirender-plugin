@@ -474,7 +474,8 @@ unsafe fn enabled(mt: &MainThread) -> bool {
 /// Forgets which instances were sent: for the start of a capture file from the stream, so
 /// that the next draw of each sends its `INSTANCE` record into the file. The capture purges
 /// the source textures too, so the handles of every instance get a check.
-pub unsafe fn reset(mt: &MainThread) {
+pub unsafe fn reset(mt: &MainThread, cause: &str) {
+    crate::log!("instances: the records go again: {cause}");
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     t.generation = t.generation.wrapping_add(1);
@@ -484,6 +485,34 @@ pub unsafe fn reset(mt: &MainThread) {
     }
     // The LIGHT records go again (`light_stream::reset`): the lights are noted again too.
     t.light_noted.clear();
+}
+
+/// Sends the ids of the instances (`INSTANCE_CENSUS`). The destroyed shapes that the cell
+/// worker queued leave first, with their deletes; one that it destroys after the drain only
+/// makes the list longer. So the helper holds no id that the list lacks, unless a delete was
+/// lost.
+pub unsafe fn send_census(mt: &MainThread) {
+    crate::worker_events::drain();
+    if !capture::recording() {
+        return;
+    }
+    let ids: Vec<u32> = tables(mt).instances.values().map(|instance| instance.id).collect();
+    capture::instance_census(&ids);
+}
+
+/// MWSE_NATIVE_EVENT_PLAYER_CELL_CHANGED, on the main thread.
+unsafe extern "C" fn player_cell_changed(_user: *mut core::ffi::c_void, _packet: *const core::ffi::c_void) {
+    if let Some(t) = MainThread::here() {
+        send_census(&t);
+    }
+}
+
+/// A census at each cell change of the player, from MWSE's native event.
+pub unsafe fn install_census() {
+    use crate::mwse_native::{subscribe, NATIVE_EVENT_PLAYER_CELL_CHANGED};
+    if let Err(error) = subscribe(NATIVE_EVENT_PLAYER_CELL_CHANGED, player_cell_changed) {
+        crate::log!("instances: {error}: no census at a cell change");
+    }
 }
 
 /// A scene of the game begins: the camera of the world scene is kept for the check at its

@@ -256,6 +256,10 @@ pub mod tag {
     /// Options menu, or a resize of its window): the width and the height of the picture and
     /// the game's window, as the HEADER has them. The helper makes its back buffer again.
     pub const SIZE: u32 = 44;
+    /// The ids of the plugin's instances (`instance_stream::send_census`): the number, then the
+    /// ids. The helper holds no other instance: one that it holds and this list lacks lost its
+    /// [`INSTANCE_DELETE`]. A helper of an older build skips the record.
+    pub const INSTANCE_CENSUS: u32 = 45;
 }
 
 // ---- the ring in shared memory
@@ -1079,7 +1083,7 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     crate::geometry_stream::reset(t);
     crate::material_stream::reset(t);
     crate::light_stream::reset(t);
-    crate::instance_stream::reset(t);
+    crate::instance_stream::reset(t, "a capture file starts");
     if let Some(mut s) = state(&lock) {
         s.tee_only = false;
         if s.tee_hold {
@@ -1128,7 +1132,7 @@ pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
     crate::material_stream::forget(t, &material);
     // The lights change in most frames: all of them again, into the frames.
     crate::light_stream::reset(t);
-    crate::instance_stream::reset(t);
+    crate::instance_stream::reset(t, "a capture file that holds takes its frames");
     true
 }
 
@@ -1781,6 +1785,12 @@ pub unsafe fn instance_walk(id: u32) {
 pub unsafe fn instance_delete(id: u32) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_DELETE, &[words(&[id])]);
+}
+
+/// The ids of the plugin's instances. See [`tag::INSTANCE_CENSUS`].
+pub unsafe fn instance_census(ids: &[u32]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::INSTANCE_CENSUS, &[words(&[ids.len() as u32]), words(ids)]);
 }
 
 /// The lights of an instance. See [`tag::INSTANCE_LIGHTS`].

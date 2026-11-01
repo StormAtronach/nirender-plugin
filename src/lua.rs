@@ -140,8 +140,10 @@ unsafe extern "C" fn refusal_options(l: LuaState) -> i32 {
 /// into a file. See `capture`. Returns true, or false and the problem.
 unsafe extern "C" fn capture(l: LuaState) -> i32 {
     let path = arg_str(l, 1).unwrap_or_default();
-    match crate::capture::start(&MainThread::claim(), &path, lua_tonumber(l, 2) as u32, lua_tonumber(l, 3) as u32) {
+    let t = &MainThread::claim();
+    match crate::capture::start(t, &path, lua_tonumber(l, 2) as u32, lua_tonumber(l, 3) as u32) {
         Ok(()) => {
+            crate::instance_stream::send_census(t);
             lua_pushboolean(l, 1);
             1
         }
@@ -444,6 +446,13 @@ unsafe extern "C" fn animation_policy(l: LuaState) -> i32 {
     }
     push_str(l, crate::animation::policy_name());
     1
+}
+
+/// `nirender.instanceCensus()` sends the ids of the instances to the helper, which logs and
+/// removes each instance it holds that the list lacks.
+unsafe extern "C" fn instance_census(_l: LuaState) -> i32 {
+    crate::instance_stream::send_census(&MainThread::claim());
+    0
 }
 
 /// `nirender.instances()`: the report of the retained instances, as the log gets it at the
@@ -804,6 +813,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "noteEvery", note_every);
     set_fn(l, "changed", changed);
     set_fn(l, "displayCost", display_cost);
+    set_fn(l, "instanceCensus", instance_census);
     set_fn(l, "retained", retained);
     set_fn(l, "worldLights", world_lights);
     set_fn(l, "captureFrames", capture_frames);
