@@ -551,7 +551,7 @@ impl Ring {
                 // The limit rule ends a silent host program; a host program that ended (a
                 // refusal after its box) ends the wait at once, and the frame end reads its
                 // exit code (`check_host`).
-                if self.look_at_host(read, true, ticks()) || crate::own_device::host_ended() {
+                if self.look_at_host(true, ticks()) || crate::own_device::host_ended() {
                     return false;
                 }
                 self.wait_for_read();
@@ -607,7 +607,7 @@ impl Ring {
             }
             self.paced += ticks() - start;
         }
-        self.look_at_host(read, read < self.frame_before, start);
+        self.look_at_host(read < self.frame_before, start);
         self.read_before = read;
         self.frame_before = self.counter(RING_WRITTEN).load(Ordering::Relaxed);
         crate::pacing::frame_end(self.frame_before, start);
@@ -623,9 +623,12 @@ impl Ring {
     /// frames) and its announced exit. Ends the host program when its limit is passed, with
     /// the code that names the reason: `check_host` finds the code at the frame end and runs
     /// the failure path. True when the plugin has ended it, now or before.
-    unsafe fn look_at_host(&mut self, read: u64, pending: bool, now: i64) -> bool {
+    unsafe fn look_at_host(&mut self, pending: bool, now: i64) -> bool {
         let ending = self.head_word(crate::stream_format::RING_ENDING);
         let allowance = self.head_word(crate::stream_format::RING_ALLOWANCE);
+        // The read position after the word: the helper moves it before it lowers the word, so a
+        // short limit never meets a read from before the long step.
+        let read = self.counter(RING_READ).load(Ordering::Acquire);
         let verdict = self.silence.look(read, pending, ending, allowance, now, ticks_per_second());
         if self.ended {
             return true;
