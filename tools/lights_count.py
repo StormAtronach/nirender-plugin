@@ -9,8 +9,8 @@ log depth slices from the handoff to the draw distance; the same with the reach 
 the worst place over the lit cells, and the bricks of the 3D volume (shadows-and-lights-design.md
 3.5: a voxel every 1024 units, 8 x 8 a cell, 4 layers, 24 bytes a voxel).
 
-The format: formats/lights.rs. The reach: 1.5 times the radius, as the bake (generation/lights.rs:37).
-The handoff: where a glow starts, view range - 1800 - 512 (renderer.rs:2742, 2748).
+The format: formats/lights.rs. The reach: 1.5 times the radius, as the bake (`BAKE_REACH`, generation/lights.rs).
+The handoff: where a glow starts, view range - 1800 - 512 (`before_world`, renderer.rs).
 
 [I] in the numbers: the view is 90 degrees across at 16:9 and level; a source goes into every cell
 of the box around its sphere, so a cell's count is high by a little; the bricks count from z = 0,

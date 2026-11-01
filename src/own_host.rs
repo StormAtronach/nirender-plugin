@@ -170,32 +170,55 @@ pub struct RenderedPicture {
 /// of a mod), so a file's frames need not hold it. A texture with no answer goes into the file
 /// with no picture.
 ///
+/// The reads stop at a time budget: the engine sets no limit on the map's tiles
+/// (`MapController` 0x41F680), and a press of the mark must not stall the game for long. The
+/// largest textures go first. A texture not read is blank in a replay only.
+///
 /// # Safety
 ///
 /// With the own host in use, before a capture file opens: a read is a record of the stream, and
 /// the caller does not hold the state open. Each read waits for the helper.
 pub unsafe fn rendered_pictures() -> Vec<RenderedPicture> {
     let lock = crate::sync::device_lock();
-    let live: Vec<usize> = LIVE.get(&lock).clone();
-    let start = crate::capture::ticks();
-    let (mut textures, mut pictures) = (0, Vec::new());
+    let mut textures: Vec<usize> = LIVE.get(&lock).iter().copied().filter(|&o| (*(o as *const Object)).kind == Kind::Texture && is_rendered(&*(o as *const Object))).collect();
+    textures.sort_by_key(|&o| std::cmp::Reverse((*(o as *const Object)).width * (*(o as *const Object)).height));
     let mut sizes = std::collections::BTreeMap::<(u32, u32), u32>::new();
-    for object in live {
-        let o = &*(object as *const Object);
-        if o.kind != Kind::Texture || !is_rendered(o) {
-            continue;
-        }
-        textures += 1;
+    for &o in &textures {
+        let o = &*(o as *const Object);
         *sizes.entry((o.width, o.height)).or_default() += 1;
-        if let Some((width, height, pixels)) = crate::capture::read_pixels(object as u32) {
-            pictures.push(RenderedPicture { texture: object as u32, format: o.format, width, height, pixels: pixels.to_vec() });
-        }
     }
     let sizes: Vec<String> = sizes.iter().map(|((width, height), count)| format!("{count} of {width} x {height}")).collect();
+
+    let start = crate::capture::ticks();
+    let budget = crate::switches::number("NIRENDER_CAPTURE_READS_MS", READS_BUDGET_MS) as i64 * crate::capture::ticks_per_second() / 1000;
+    let count = textures.len();
+    let (pictures, ended) = read_within(textures, budget, || crate::capture::ticks() - start, |object| {
+        let (width, height, pixels) = crate::capture::read_pixels(object as u32)?;
+        Some(RenderedPicture { texture: object as u32, format: (*(object as *const Object)).format, width, height, pixels: pixels.to_vec() })
+    });
+
     // A file that holds does not count this frame in its worst frame: this line has the time.
     let spent = (crate::capture::ticks() - start) as f64 * 1000.0 / crate::capture::ticks_per_second() as f64;
-    crate::log!("capture: {textures} rendered textures ({}), {} with their pictures read in {spent:.1} ms", sizes.join(", "), pictures.len());
+    let end = if ended { ", the budget ended the reads" } else { "" };
+    crate::log!("capture: {count} rendered textures ({}), {} with their pictures read in {spent:.1} ms{end}", sizes.join(", "), pictures.len());
     pictures
+}
+
+/// The time for the reads of [`rendered_pictures`], in milliseconds: about 300 textures of a fog
+/// tile, a map of 17 x 17 tiles. `NIRENDER_CAPTURE_READS_MS` sets another, for a test.
+const READS_BUDGET_MS: u32 = 500;
+
+/// Reads the items in their order while `elapsed` is under `budget`, looked at before each read.
+/// Gives what the reads gave, and true when the budget left items unread.
+fn read_within<T, R>(items: Vec<T>, budget: i64, elapsed: impl Fn() -> i64, mut read: impl FnMut(T) -> Option<R>) -> (Vec<R>, bool) {
+    let mut done = Vec::new();
+    for item in items {
+        if elapsed() >= budget {
+            return (done, true);
+        }
+        done.extend(read(item));
+    }
+    (done, false)
 }
 
 /// Writes a picture of [`rendered_pictures`] into the capture file. After the snapshot, which
@@ -1109,7 +1132,26 @@ pub unsafe fn report() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::LevelCopies;
+    use super::{read_within, LevelCopies};
+
+    #[test]
+    fn the_reads_stop_at_the_budget_and_say_so() {
+        // Each look at the clock is one tick later: the budget of 3 ends the reads at the fourth.
+        let clock = std::cell::Cell::new(0);
+        let elapsed = || {
+            let now = clock.get();
+            clock.set(now + 1);
+            now
+        };
+        let (read, ended) = read_within(vec![1, 2, 3, 4, 5], 3, elapsed, |item| Some(item * 10));
+        assert_eq!((read, ended), (vec![10, 20, 30], true));
+        // All read in time: not ended. An item with no answer is no result and no stop.
+        let (read, ended) = read_within(vec![1, 2, 3], 100, || 0, |item| (item != 2).then_some(item));
+        assert_eq!((read, ended), (vec![1, 3], false));
+        // A budget of 0 reads nothing, and an empty list is not ended by it.
+        assert_eq!(read_within(vec![1], 0, || 0, Some), (vec![], true));
+        assert_eq!(read_within(Vec::<i32>::new(), 0, || 0, Some), (vec![], false));
+    }
 
     #[test]
     fn the_level_copies_count_only_the_levels_that_hold_bytes() {

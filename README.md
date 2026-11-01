@@ -179,6 +179,8 @@ The A/B:
   (`src/map_tiles.rs`).
 - `NIRENDER_READ_CACHE=0` turns off the cache of the reads of rendered textures
   (`src/own_host.rs`).
+- `NIRENDER_CAPTURE_READS_MS=N`: the time in milliseconds for a capture's reads of the
+  rendered textures, 500 by default, for a test of the stop (`src/own_host.rs`).
 - `NIRENDER_PACE=0`: no pacing of the game to the helper (`src/pacing.rs`). The pacing waits
   at MWSE's start of a frame (native event 8, before the input of the frame) until the
   helper will need the frame, so that the picture is as new as the helper allows. Without it

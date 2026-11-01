@@ -11,7 +11,7 @@ state packets, the stage states and the draws of the device; the helper does not
     python -I tools/capture_dump.py <capture.nircap> ui-textures <frame>
     python -I tools/capture_dump.py <capture.nircap> first-draw
 
-sequence  the records of one frame in their order: the objects, the shape records, the
+sequence   the records of one frame in their order: the objects, the shape records, the
            render state commands (in a capture from before the cut: those that the
            pipeline of the device sets for a draw, and the draws of the device).
 materials  the material of each shape record of the frame, decoded, once for each
