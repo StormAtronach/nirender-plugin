@@ -171,6 +171,61 @@ def self_test_archive_lua():
             raise AssertionError("an archive without main.lua was taken")
 
 
+def saves_folder(profile, game_dir):
+    """The folder of the game's saves in a profile: its own with Mod Organizer's `LocalSaves`,
+    else the one of the game."""
+    try:
+        with open(os.path.join(profile, "settings.ini"), encoding="utf-8", errors="replace") as settings:
+            local = any(line.strip().lower() == "localsaves=true" for line in settings)
+    except OSError:
+        local = False
+    return os.path.join(profile, "saves") if local else os.path.join(game_dir, "Saves")
+
+
+def save_problem(save, folder):
+    """Why the run cannot load `save` from `folder`, with the newest saves that are there, or
+    None. Without the check the game waits at the main menu for a load that never comes, until the
+    budget ends. An empty name starts a new game: no save is needed."""
+    if not save or os.path.isfile(os.path.join(folder, save)):
+        return None
+    try:
+        saves = [name for name in os.listdir(folder) if name.lower().endswith(".ess")]
+    except OSError:
+        saves = []
+    saves.sort(key=lambda name: os.path.getmtime(os.path.join(folder, name)), reverse=True)
+    return "the save %s is not in %s; the newest there: %s. Name one with --save, or --save \"\" for a new game" % (save, folder, ", ".join(saves[:3]) or "none")
+
+
+def self_test_save_problem():
+    """A missing save is refused with its folder and the newest saves; a save that is there and a
+    new game are not. The folder follows `LocalSaves`."""
+    with tempfile.TemporaryDirectory() as root:
+        profile, game = os.path.join(root, "profile"), os.path.join(root, "game")
+        os.makedirs(os.path.join(profile, "saves"))
+        os.makedirs(os.path.join(game, "Saves"))
+        settings = os.path.join(profile, "settings.ini")
+        assert saves_folder(profile, game) == os.path.join(game, "Saves")
+        with open(settings, "w") as f:
+            f.write("[General]\nLocalSaves=false\n")
+        assert saves_folder(profile, game) == os.path.join(game, "Saves")
+        with open(settings, "w") as f:
+            f.write("[General]\nLocalSaves=true\n")
+        folder = saves_folder(profile, game)
+        assert folder == os.path.join(profile, "saves")
+        assert save_problem("", folder) is None
+        missing = save_problem("quiksave.ess", folder)
+        assert "quiksave.ess" in missing and folder in missing and "none" in missing, missing
+        for name, age in (("old.ess", 100), ("new.ess", 200), ("note.txt", 300)):
+            with open(os.path.join(folder, name), "w"):
+                pass
+            os.utime(os.path.join(folder, name), (age, age))
+        missing = save_problem("quiksave.ess", folder)
+        assert "new.ess, old.ess" in missing and "note.txt" not in missing, missing
+        assert save_problem("old.ess", folder) is None
+        assert save_problem("old.ess", os.path.join(game, "Saves")) is not None
+        assert save_problem("x.ess", os.path.join(root, "no such folder")) is not None
+
+
 def self_test_archive_arguments():
     """`--archive` takes the archive's parts and turns the instance's own mod off, once."""
     args = argparse.Namespace(archive="E:/a", plugin_dll=None, mge_build=None, mwse_dll=None, no_build=False, disable_mod=[])
@@ -194,6 +249,7 @@ def self_test_archive_arguments():
 
 def self_test():
     """The tests of the argument handling: no game, no build."""
+    self_test_save_problem()
     self_test_archive_lua()
     self_test_archive_arguments()
     build = os.path.join("target", "akulakhan.dll")
@@ -364,6 +420,9 @@ def main():
 
     if args.instance:
         session.use_instance(args.instance, args.game_dir, args.profile)
+    problem = save_problem(args.save, saves_folder(session.harness.PROFILE, session.harness.GAME_DIR))
+    if problem:
+        raise SystemExit("run_own_device: " + problem)
     if not args.no_build:
         cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
         for folder in (HOST_DIR, D3D8_DIR):
