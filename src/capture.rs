@@ -637,7 +637,9 @@ impl Ring {
         if self.ended {
             return true;
         }
-        if crate::stream_format::helper_too_old(ending, allowance, read, self.frame_before) {
+        // The word again: the one above is older than the read, and a current helper can have
+        // written it, and read a whole frame, between the two loads.
+        if crate::stream_format::helper_too_old(ending, allowance, read, self.frame_before) && self.head_word(crate::stream_format::RING_ALLOWANCE) == 0 {
             crate::log!("stream: the host program read a whole frame and wrote no allowance word: it is older than this plugin, and files of different builds are mixed; it is ended");
             crate::own_device::end_host(crate::stream_format::EXIT_HELPER_TOO_OLD);
             self.ended = true;
