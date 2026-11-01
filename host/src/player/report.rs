@@ -92,6 +92,7 @@ impl Player {
             "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} hidden, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
             r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.hidden, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
         );
+        println!("instance census: {} lists of the plugin, {} instances held here that a list lacked", c.instance_censuses, c.instance_orphans);
         let (morph_steps, morph_skipped) = self.renderer.morph_counts();
         println!(
             "morphs: {} records of targets, {} steps made on the GPU, {} not made, {} for a geometry not held",
