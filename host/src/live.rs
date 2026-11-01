@@ -131,20 +131,14 @@ impl Ring {
                 let read_event = unsafe { OpenEventA(0x1F0003, 0, read_name.as_ptr()) };
                 // SAFETY: the offset of the word is inside the mapped head of the ring.
                 ENDING_WORD.store(unsafe { base.add(super::stream_format::RING_ENDING) }.cast(), Ordering::Release);
+                // SAFETY: as above; the offset 76 of the word is 4-aligned within the head, as
+                // an `AtomicU32` needs. The `Ring` has no `Drop`: the head stays mapped.
+                super::watchdog::set_allowance_word(unsafe { base.add(super::stream_format::RING_ALLOWANCE) }.cast());
                 return Ring { base, capacity, event, shown_event, read_event };
             }
             assert!(start.elapsed() < Duration::from_secs(60), "no shared memory with the name {name}");
             std::thread::sleep(Duration::from_millis(50));
         }
-    }
-
-    /// Tells the plugin the seconds that a step of the frame thread may take now
-    /// (`watchdog::allowance`): the plugin ends this program only after them and 5 s more
-    /// (`stream_format::RING_ALLOWANCE`).
-    fn set_allowance(&self, seconds: u32) {
-        // SAFETY: the head of the ring is mapped for the life of the `Ring`, and the offset 76
-        // of the word is 4-aligned within it, as an `AtomicU32` needs.
-        unsafe { (*(self.base.add(super::stream_format::RING_ALLOWANCE) as *const std::sync::atomic::AtomicU32)).store(seconds, Ordering::Release) };
     }
 
     /// Tells the plugin the classes of the game that the helper draws itself, and the
@@ -709,7 +703,7 @@ impl App {
         self.configure(width, height);
         // The frames start: from now the plugin gives a step the allowance and 5 s (before,
         // the device and the shaders are made, and it gives 60 s).
-        self.ring.set_allowance(super::watchdog::allowance());
+        super::watchdog::frames_start();
     }
 
     /// This program's window takes the size of the inside of the game's window: a fullscreen
@@ -1053,7 +1047,7 @@ impl ApplicationHandler for App {
                 if let Some(extension) = player.extension.as_mut() {
                     extension.after_frame(&scene);
                     super::watchdog::loading(extension.loading());
-                    self.ring.set_allowance(super::watchdog::allowance());
+                    super::watchdog::publish();
                 }
             }
             // The messages of the extension for its part in the game process.

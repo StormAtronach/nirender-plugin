@@ -1028,6 +1028,7 @@ impl Renderer {
             immediate_size: 0,
         });
         let attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x2];
+        let _long = crate::LongStep::begin();
         let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("screen draw"),
             layout: Some(&layout),
@@ -1556,6 +1557,7 @@ impl Renderer {
                 _ => None,
             };
             let depth_on = key.depth[0] != 0;
+            let _long = crate::LongStep::begin();
             let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("game draw"),
                 layout: Some(&self.pipeline_layout),

@@ -49,6 +49,7 @@ impl Player {
         }
         let device = &self.renderer.device;
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("map tile copy"), source: wgpu::ShaderSource::Wgsl(TILE_SHADER.into()) });
+        let _long = crate::LongStep::begin();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("map tile copy"),
             layout: None,

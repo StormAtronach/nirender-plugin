@@ -63,6 +63,7 @@ impl Multisample {
         });
         let depth_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("depth resolve"), source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{}{DEPTH_SHADER}", depth::wgsl()).into()) });
         let depth_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("depth resolve"), bind_group_layouts: &[Some(&depth_layout)], immediate_size: 0 });
+        let _long = crate::LongStep::begin();
         let depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("depth resolve"),
             layout: Some(&depth_pipeline_layout),
