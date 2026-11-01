@@ -976,6 +976,16 @@ enum Phase {
     Record(u32),
 }
 
+/// A file that gets a copy of the records of a direct stream, and what belongs to that file: it
+/// all goes when the file ends, by any way.
+struct Tee {
+    out: BufWriter<File>,
+    /// The frames that are left for the file.
+    left: u32,
+    /// The longest frame of the file, in ticks of the performance counter.
+    worst_frame: i64,
+}
+
 struct State {
     phase: Phase,
     /// The frames of the record. 0 for a stream: it has no end.
@@ -989,10 +999,9 @@ struct State {
     reply: Option<Reply>,
     tiles: Option<Tiles>,
     messages: Option<Messages>,
-    /// A file that gets a copy of the records of a direct stream, with the number of frames
-    /// that are left for it. While `tee_only`, the records go into the file only: the
-    /// snapshot of the resources at its start.
-    tee: Option<(BufWriter<File>, u32)>,
+    /// A file that gets a copy of the records of a direct stream. While `tee_only`, the records
+    /// go into the file only: the snapshot of the resources at its start.
+    tee: Option<Tee>,
     /// The file from the stream stays open when its frames are done: it takes the resource
     /// records only, until `tee_frames` asks for frames again. See `tee`.
     tee_hold: bool,
@@ -1101,7 +1110,7 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     out.write_all(MAGIC).map_err(|error| error.to_string())?;
     let header = {
         let Some(mut s) = state(&lock) else { return Err("no stream".into()) };
-        s.tee = Some((out, frames.max(1)));
+        s.tee = Some(Tee { out, left: frames.max(1), worst_frame: 0 });
         s.tee_hold = frames == 0;
         s.tee_only = true;
         s.header.clone()
@@ -1117,8 +1126,8 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     if let Some(mut s) = state(&lock) {
         s.tee_only = false;
         if s.tee_hold {
-            if let Some((_, left)) = s.tee.as_mut() {
-                *left = 0;
+            if let Some(tee) = s.tee.as_mut() {
+                tee.left = 0;
             }
         }
         // The source textures, the rendered textures and the geometry of the game go into
@@ -1141,8 +1150,8 @@ pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
         if !s.tee_hold || s.tee.is_none() {
             return false;
         }
-        if let Some((_, left)) = s.tee.as_mut() {
-            *left = frames.max(1);
+        if let Some(tee) = s.tee.as_mut() {
+            tee.left = frames.max(1);
         }
     }
     // The content of the buffers and textures that changed while the file held, as it is
@@ -1190,9 +1199,10 @@ fn resource_record(tag: u32) -> bool {
 
 /// Ends the capture file of a direct stream.
 unsafe fn end_tee(s: &mut State) {
-    if let Some((mut out, _)) = s.tee.take() {
-        let ok = out.flush().is_ok();
-        crate::log!("capture: the file from the stream is complete, ok {ok}");
+    if let Some(mut tee) = s.tee.take() {
+        let ok = tee.out.flush().is_ok();
+        let worst = tee.worst_frame as f64 * 1000.0 / ticks_per_second() as f64;
+        crate::log!("capture: the file from the stream is complete, ok {ok}; the worst frame of the file {worst:.1} ms");
     }
 }
 
@@ -1601,7 +1611,7 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
     let hold = s.tee_hold;
     // A record of a resource while the file holds: its handle is the first word. The record
     // of the end of a frame has no parts.
-    if hold && s.tee.as_ref().is_some_and(|tee| tee.1 == 0) && parts.first().is_some_and(|p| p.len() >= 4) {
+    if hold && s.tee.as_ref().is_some_and(|tee| tee.left == 0) && parts.first().is_some_and(|p| p.len() >= 4) {
         let handle = u32::from_le_bytes([parts[0][0], parts[0][1], parts[0][2], parts[0][3]]);
         match tag {
             tag::TEXTURE_UPDATE => {
@@ -1616,10 +1626,10 @@ unsafe fn write(tag: u32, parts: &[&[u8]]) {
             _ => {}
         }
     }
-    if let Some((out, _)) = s.tee.as_mut().filter(|tee| !hold || tee.1 > 0 || resource_record(tag)) {
-        let mut ok = out.write_all(&tag.to_le_bytes()).is_ok() && out.write_all(&(length as u32).to_le_bytes()).is_ok();
+    if let Some(tee) = s.tee.as_mut().filter(|tee| !hold || tee.left > 0 || resource_record(tag)) {
+        let mut ok = tee.out.write_all(&tag.to_le_bytes()).is_ok() && tee.out.write_all(&(length as u32).to_le_bytes()).is_ok();
         for part in parts {
-            ok = ok && out.write_all(part).is_ok();
+            ok = ok && tee.out.write_all(part).is_ok();
         }
         if !ok {
             crate::log!("capture: the file from the stream failed");
@@ -2299,9 +2309,10 @@ unsafe fn frame_end(lock: &DeviceLock) {
                     return;
                 }
                 let hold = s.tee_hold;
-                if let Some((_, left)) = s.tee.as_mut().filter(|tee| tee.1 > 0) {
-                    *left -= 1;
-                    if *left == 0 && !hold {
+                if let Some(tee) = s.tee.as_mut().filter(|tee| tee.left > 0) {
+                    tee.left -= 1;
+                    tee.worst_frame = tee.worst_frame.max(end - start);
+                    if tee.left == 0 && !hold {
                         end_tee(&mut s);
                     }
                 }
