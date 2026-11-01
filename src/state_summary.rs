@@ -79,14 +79,15 @@ pub unsafe fn run_pending() {
         return;
     }
     ASKED.store(false, Ordering::Release);
-    let (textures, buffers) = crate::capture::with_worker_stalled(|| (crate::ports::textures::state_part(), crate::ports::geometry::state_part(crate::engine::renderer())));
+    let ((source_textures, rendered_textures), buffers) = crate::capture::with_worker_stalled(|| (crate::ports::textures::state_part(), crate::ports::geometry::state_part(crate::engine::renderer())));
     let (instances, mode, generation) = crate::instance_stream::state_part(&t);
     let text = [
         instances.line("instances"),
         crate::geometry_stream::state_part(&t).line("geometry"),
         crate::material_stream::state_part(&t).line("materials"),
         crate::light_stream::state_part(&t).line("lights"),
-        textures.line("textures"),
+        source_textures.line("source textures"),
+        rendered_textures.line("rendered textures"),
         buffers.line("buffers"),
         format!("mode: {mode:?}\ngeneration: {generation}\n"),
     ]
