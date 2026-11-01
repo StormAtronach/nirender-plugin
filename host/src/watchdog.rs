@@ -27,7 +27,8 @@ use crate::stream_format::{EXIT_STALLED, LOADING_SECONDS, STALL_SECONDS};
 /// The time between two looks of the watchdog thread.
 const LOOK_MS: u64 = 250;
 
-/// The steps that began, counted; a step in progress; the extension loads.
+/// The steps that began, and the ends of a long part inside a step, counted: the watchdog's clock
+/// of a step restarts when the count moves. A step in progress; the extension loads.
 static STEPS: AtomicU64 = AtomicU64::new(0);
 static IN_STEP: AtomicBool = AtomicBool::new(false);
 static LOADING: AtomicBool = AtomicBool::new(false);
@@ -39,6 +40,8 @@ static ALLOWANCE_WORD: AtomicPtr<AtomicU32> = AtomicPtr::new(std::ptr::null_mut(
 /// The frames started: until then the word stays 0, and the plugin gives the helper its first
 /// limit (`stream_format::FIRST_RECORD_SECONDS`).
 static FRAMES_STARTED: AtomicBool = AtomicBool::new(false);
+/// The word holds a long value that [`allowance`] no longer gives: the next step lowers it.
+static LOWER_WORD: AtomicBool = AtomicBool::new(false);
 /// A refusal is in progress: the watchdog never ends the program after it.
 static DISARMED: AtomicBool = AtomicBool::new(false);
 
@@ -54,6 +57,11 @@ impl Step {
     pub(crate) fn begin() -> Step {
         STEPS.fetch_add(1, Ordering::Relaxed);
         IN_STEP.store(true, Ordering::Release);
+        // The read position moved for this step's record: the plugin's silence starts again.
+        if LOWER_WORD.load(Ordering::Relaxed) {
+            LOWER_WORD.store(false, Ordering::Relaxed);
+            write_word(allowance());
+        }
         Step
     }
 }
@@ -64,9 +72,12 @@ impl Drop for Step {
     }
 }
 
-/// Tells the watchdog whether the extension loads, from the frame thread.
+/// Tells the watchdog whether the extension loads, from the frame thread. The end of a load
+/// restarts the clock of the step: the time of the load does not count against the short limit.
 pub(crate) fn loading(on: bool) {
-    LOADING.store(on, Ordering::Relaxed);
+    if LOADING.swap(on, Ordering::Relaxed) && !on {
+        STEPS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// A step of the frame thread has the long limit: the extension loads, or a long step runs.
@@ -91,22 +102,42 @@ pub(crate) fn frames_start() {
     publish();
 }
 
-/// Writes [`allowance`] into the word for the plugin: the one writer of the word, so that a
-/// write at a frame's end inside a long step cannot put the short value back. From the frame
-/// thread only: nothing orders the reading and the writing of two threads.
-pub(crate) fn publish() {
+/// Writes `seconds` into the word, once the frames started and when the ring is open; gives the
+/// value the word had.
+fn write_word(seconds: u32) -> u32 {
     let word = ALLOWANCE_WORD.load(Ordering::Acquire);
-    if !word.is_null() && FRAMES_STARTED.load(Ordering::Relaxed) {
-        // SAFETY: a word of the ring head, 4-aligned and mapped for the process, or a null
-        // pointer (`set_allowance_word`).
-        unsafe { (*word).store(allowance(), Ordering::Release) };
+    if word.is_null() || !FRAMES_STARTED.load(Ordering::Relaxed) {
+        return 0;
+    }
+    // SAFETY: a word of the ring head, 4-aligned and mapped for the process, or a null pointer
+    // (`set_allowance_word`), tested above.
+    unsafe { (*word).swap(seconds, Ordering::AcqRel) }
+}
+
+/// Writes [`allowance`] into the word for the plugin: the one writer of the word, so that a
+/// write at a frame's end inside a long step cannot put the short value back. A rise is written
+/// now. A fall waits for the next step ([`Step::begin`]): the plugin counts its silence from
+/// the last read, and the long part is in that silence, so the short limit may come only after
+/// the next read. From the frame thread only: nothing orders the reading and the writing of two
+/// threads.
+pub(crate) fn publish() {
+    let now = allowance();
+    let word = ALLOWANCE_WORD.load(Ordering::Acquire);
+    // SAFETY: as in `write_word`; the word is read only when it is not null.
+    if !word.is_null() && now < unsafe { (*word).load(Ordering::Acquire) } {
+        LOWER_WORD.store(true, Ordering::Relaxed);
+    } else {
+        LOWER_WORD.store(false, Ordering::Relaxed);
+        write_word(now);
     }
 }
 
 /// A step that the helper knows is long: the GPU objects of a load, the making of pipelines. The
-/// watchdog and the plugin give the long limit until the guard drops; guards can nest. Make it
-/// the first statement of the long part, on the frame thread: a raise at the start of a step
-/// reaches the plugin at its next look, inside the short limit.
+/// watchdog gives the long limit until the last guard drops, then restarts the step's clock, so
+/// that the time inside the guard does not count against the short limit. The plugin has the long
+/// limit until the helper's next read ([`publish`]). Guards can nest. Make it the first statement
+/// of the long part, on the frame thread: a raise at the start of a step reaches the plugin at
+/// its next look, inside the short limit.
 pub struct LongStep(PhantomData<*const ()>);
 
 impl LongStep {
@@ -119,7 +150,9 @@ impl LongStep {
 
 impl Drop for LongStep {
     fn drop(&mut self) {
-        LONG_STEPS.fetch_sub(1, Ordering::Relaxed);
+        if LONG_STEPS.fetch_sub(1, Ordering::Relaxed) == 1 {
+            STEPS.fetch_add(1, Ordering::Relaxed);
+        }
         publish();
     }
 }
@@ -259,16 +292,63 @@ mod tests {
         // A write at a frame's end inside the guard cannot put the short value back.
         publish();
         assert_eq!(read(), long);
+        // The last drop: the limit of the watchdog is short, and the clock of the step restarts
+        // (one more step counted; the inner drop above counted none). The word falls only at the
+        // next step, after the read position moved.
+        let steps = STEPS.load(Ordering::Relaxed);
         drop(outer);
-        assert_eq!((allowance(), read()), (short, short));
-        // The end of a guard while the extension loads keeps the long value.
+        assert_eq!((allowance(), read()), (short, long));
+        assert_eq!(STEPS.load(Ordering::Relaxed), steps + 1);
+        // A frame's end before that next read leaves it long.
+        publish();
+        assert_eq!(read(), long);
+        drop(Step::begin());
+        assert_eq!(read(), short);
+        // A second step writes nothing more, and a rise after a pending fall is written at once.
+        drop(Step::begin());
+        assert_eq!(read(), short);
+        drop(LongStep::begin());
+        assert_eq!(read(), long);
+        let again = LongStep::begin();
+        assert_eq!(read(), long);
+        // The next step inside a guard keeps the long value.
+        drop(Step::begin());
+        assert_eq!(read(), long);
+        drop(again);
+        drop(Step::begin());
+        assert_eq!(read(), short);
+        // The end of a guard while the extension loads keeps the long value and the clock of
+        // the load; the end of the load restarts the clock, and the word falls at the next step.
         loading(true);
+        publish();
+        let steps = STEPS.load(Ordering::Relaxed);
+        assert_eq!(read(), long);
         drop(LongStep::begin());
         assert_eq!((allowance(), read()), (long, long));
+        assert_eq!(STEPS.load(Ordering::Relaxed), steps + 1);
+        let steps = STEPS.load(Ordering::Relaxed);
         loading(false);
         publish();
+        assert_eq!((allowance(), read()), (short, long));
+        assert_eq!(STEPS.load(Ordering::Relaxed), steps + 1);
+        drop(Step::begin());
         assert_eq!(read(), short);
         set_allowance_word(std::ptr::null_mut());
         FRAMES_STARTED.store(false, Ordering::Relaxed);
+        LOWER_WORD.store(false, Ordering::Relaxed);
+    }
+
+    /// The Reviewer's sequence: a long part of 6 s in a step, then a look after its end. The count
+    /// that moved at the drop restarts the clock, so this is no stall, and the short limit
+    /// counts from the drop.
+    #[test]
+    fn the_time_inside_a_long_part_does_not_count_after_it() {
+        let mut watch = Watch::default();
+        let inside = Look { steps: 1, in_step: true, loading: true };
+        assert_eq!(looks(&mut watch, 25, inside), None);
+        let after = Look { steps: 2, in_step: true, loading: false };
+        assert_eq!(looks(&mut watch, 20, after), None);
+        // A real hang after the long part: the 21st look after the drop reaches the 5 s.
+        assert_eq!(watch.look(after), Some(5));
     }
 }
