@@ -118,6 +118,25 @@ fn versions<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Sent>> {
     VERSIONS.get(t).map(|versions| versions.get_or_insert_with(HashMap::new))
 }
 
+/// The geometries sent, for the state summary: what the helper has of each, and the targets of
+/// the morphs, and the records sent. Not the frame of the last draw, which moves by itself. The
+/// table moves too, with no capture: 61 of 878 items left it in a paused menu (train 4, control),
+/// as the game's objects are destroyed. So the records decide: a table that a reset emptied fills
+/// again with equal items, and only that count shows the second send.
+pub fn state_part(t: &MainThread) -> (crate::state_summary::Part, u64) {
+    let mut part = crate::state_summary::Part::default();
+    for (&address, sent) in versions(t).iter() {
+        let v = sent.version;
+        part.add(&[address, v.unique, v.revision as u32, v.vertices, v.entries, v.skin_data, sent.uv_set.unwrap_or(u32::MAX), sent.morph as u32]);
+    }
+    if let Some(morphs) = (*MORPH_SENT.get(t)).as_ref() {
+        for (&address, &targets) in morphs {
+            part.add(&[crate::state_summary::MORPH_ITEM, address, targets]);
+        }
+    }
+    (part, *RECORDS.get(t))
+}
+
 /// True when `handle` was sent with `version`: the draw sends nothing. Marks it used now.
 fn known(t: &MainThread, handle: u32, version: Version) -> bool {
     let now = crate::camera_space::frame(t);

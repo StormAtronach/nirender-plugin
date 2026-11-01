@@ -908,6 +908,38 @@ pub unsafe fn purge_source_textures() -> (u32, u32, u32) {
     (dropped, kept, unreadable)
 }
 
+/// The engine's list of live textures, for the state summary: each texture, the address of its
+/// renderer data and the serial of its device texture: a block made again can have the old
+/// address, and a serial does not come back. Two parts, the source textures (with those that
+/// have no renderer data) and the others by the table of their data: a capture still remakes the
+/// rendered ones, and one sum would hide what the source textures do. The note counts the source
+/// textures from a file that have no renderer data and no pixel data: their size reads 0 until
+/// their next draw.
+///
+/// # Safety
+///
+/// The cell worker is stalled: it changes the list with no lock.
+pub unsafe fn state_part() -> (crate::state_summary::Part, crate::state_summary::Part) {
+    let (mut source, mut rendered) = (crate::state_summary::Part::default(), crate::state_summary::Part::default());
+    let (mut without_data, mut no_size) = (0, 0);
+    let mut texture = eng::texture_list_head();
+    while texture != 0 {
+        let data: u32 = rd(texture, T::rendererData);
+        let device = if data != 0 { crate::own_host::serial_of(data_get_d3d_texture(data as usize) as u32) } else { 0 };
+        let is_source = data == 0 || rd::<u32>(data as usize, TD::vtbl_vtbl) == VTBL_SOURCE_TEXTURE_DATA;
+        (if is_source { &mut source } else { &mut rendered }).add(&[texture as u32, data, device]);
+        if data == 0 {
+            without_data += 1;
+            if ni::is_kind_of(texture, RTTI_SOURCE_TEXTURE) && rd::<usize>(texture, ST::filenameOnPC) != 0 && rd::<usize>(texture, ST::pixelData) == 0 {
+                no_size += 1;
+            }
+        }
+        texture = rd(texture, T::nextTexture);
+    }
+    source.note = format!("without renderer data {without_data}, of them file textures with no size {no_size}");
+    (source, rendered)
+}
+
 // ---- NiDX8SourceTextureData
 
 /// 0x6BFDE0 `NiDX8SourceTextureData::ctor`. Returns `this`.

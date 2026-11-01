@@ -339,6 +339,30 @@ unsafe fn keys(map: usize) -> Vec<u32> {
     list
 }
 
+/// The renderer's two maps of buffers, for the state summary: each key, its entry and the serials
+/// of its device buffers: a block made again can have the old address.
+///
+/// # Safety
+///
+/// `this` is 0 or the live `NiDX8Renderer`, and the cell worker is stalled: it changes the maps
+/// with no lock.
+pub unsafe fn state_part(this: usize) -> crate::state_summary::Part {
+    let mut part = crate::state_summary::Part::default();
+    if this == 0 {
+        return part;
+    }
+    let maps = [this + R::hashGeomBuffers, this + R::hashmap_skinPartitionsToGeomBuffers];
+    for (index, &map) in maps.iter().enumerate() {
+        for key in keys(map) {
+            let node = hash_map::find(map, key);
+            let data: usize = if node != 0 { rd(node, THashMap_Node::data) } else { 0 };
+            let (vertices, indices) = if data != 0 { (rd::<u32>(data, GB::d3dVertexBuffer), rd::<u32>(data, GB::indexBuffer)) } else { (0, 0) };
+            part.add(&[index as u32, key, data as u32, crate::own_host::object_serial(vertices), crate::own_host::object_serial(indices)]);
+        }
+    }
+    part
+}
+
 /// Makes the renderer drop the buffers of each geometry and of each skin partition that it
 /// has buffers for. The game makes them again at the next draw of the object. This is not a
 /// function of the game; the capture uses it. Returns the two numbers.
