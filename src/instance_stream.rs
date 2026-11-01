@@ -526,8 +526,7 @@ unsafe extern "C" fn player_cell_changed(_user: *mut core::ffi::c_void, _packet:
 ///
 /// # Safety
 ///
-/// As for `mwse_native::subscribe`: MWSE is loaded, on the main thread. The plugin stays
-/// loaded for the life of the game, so the function it subscribes stays valid.
+/// As for `mwse_native::subscribe`: the listener is a function of this DLL, which stays loaded.
 pub unsafe fn install_census() {
     use crate::mwse_native::{subscribe, NATIVE_EVENT_PLAYER_CELL_CHANGED};
     if let Err(error) = subscribe(NATIVE_EVENT_PLAYER_CELL_CHANGED, player_cell_changed) {
