@@ -2442,8 +2442,8 @@ pub unsafe fn with_worker_stalled<T>(work: impl FnOnce() -> T) -> T {
     result
 }
 
-/// Makes the renderer drop its textures and the buffers of the geometry of the warm-up.
-/// Only through `run_pending_purge`: the cell worker stalled.
+/// Makes the renderer drop the buffers of its geometry, and at the start of a stream its
+/// textures too ([`PURGE_TEXTURES`]). Only through `run_pending_purge`: the cell worker stalled.
 unsafe fn purge(in_view: usize) {
     let renderer = crate::engine::renderer();
     if renderer == 0 {

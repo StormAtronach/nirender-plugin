@@ -177,6 +177,7 @@ pub struct RenderedPicture {
 pub unsafe fn rendered_pictures() -> Vec<RenderedPicture> {
     let lock = crate::sync::device_lock();
     let live: Vec<usize> = LIVE.get(&lock).clone();
+    let start = crate::capture::ticks();
     let (mut textures, mut pictures) = (0, Vec::new());
     let mut sizes = std::collections::BTreeMap::<(u32, u32), u32>::new();
     for object in live {
@@ -191,7 +192,9 @@ pub unsafe fn rendered_pictures() -> Vec<RenderedPicture> {
         }
     }
     let sizes: Vec<String> = sizes.iter().map(|((width, height), count)| format!("{count} of {width} x {height}")).collect();
-    crate::log!("capture: {textures} rendered textures ({}), {} with their pictures read", sizes.join(", "), pictures.len());
+    // A file that holds does not count this frame in its worst frame: this line has the time.
+    let spent = (crate::capture::ticks() - start) as f64 * 1000.0 / crate::capture::ticks_per_second() as f64;
+    crate::log!("capture: {textures} rendered textures ({}), {} with their pictures read in {spent:.1} ms", sizes.join(", "), pictures.len());
     pictures
 }
 
