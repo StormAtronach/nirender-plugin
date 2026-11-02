@@ -127,8 +127,9 @@ impl Stream {
             data.fog_color = color(fog[0]);
             data.fog = [f32::from_bits(fog[1]), f32::from_bits(fog[2]), 1.0, (fog[3] != 0) as u32 as f32];
             // The fog of the extension is for the world only: `fog_range` is set for a draw of
-            // the world views (the scene kind), and empty for any other draw.
-            if let Some((start, end)) = self.fog_range {
+            // the world views (the scene kind), and empty for any other draw. A shape with a fog
+            // property of its own keeps its range, as it does in the table (`draw_fog` of the shader).
+            if let (Some((start, end)), None) = (self.fog_range, derived.own_fog) {
                 data.fog[0] = start;
                 data.fog[1] = end;
                 // The fog of the extension is on the distance from the camera, as the fog
