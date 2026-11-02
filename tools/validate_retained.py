@@ -38,6 +38,8 @@ Stages (capture, baseline and only by default, in this order):
 --disable-mod NAME switches a mod of the profile off for the runs (an A/B of a mod).
 """
 import argparse
+import contextlib
+import io
 import os
 import re
 import subprocess
@@ -58,13 +60,19 @@ PLACES = {
 }
 
 
-def run(args, env=None):
+def run_code(args, env=None):
+    """The exit code of a program and its output."""
     e = dict(os.environ)
     # The folder of the interpreter: an isolated interpreter (-I) finds the DLL of Pillow there.
     e["PATH"] = os.path.dirname(PY) + os.pathsep + e.get("PATH", "")
     e.update(env or {})
     result = subprocess.run(args, capture_output=True, text=True, env=e, cwd=REPO)
-    return result.stdout + result.stderr
+    return result.returncode, result.stdout + result.stderr
+
+
+def run(args, env=None):
+    """The output of a program."""
+    return run_code(args, env)[1]
 
 
 def newest(label):
@@ -97,6 +105,20 @@ def host_counts(folder):
 def check(condition, text):
     print(("  ok   " if condition else "  FAIL ") + text, flush=True)
     return condition
+
+
+def ran(result, tool, accepting=False):
+    """True when a tool of this folder ended with the code 0. `result` comes from `run_code`. Else
+    its last lines go to the console and the stage fails: a failed tool would only show later as
+    pictures that are missing, or in accept mode as pictures accepted. An exception, a helper
+    that died and a tour stop with no picture all end with another code. In accept mode the
+    pictures made before the stop are in the accepted folder already."""
+    code, output = result
+    if code == 0:
+        return True
+    for line in output.strip().split("\n")[-6:]:
+        print("       " + line[:200], flush=True)
+    return check(False, "%s ended with the code %d%s" % (tool, code, ": the accepted folder holds a mix now, accept again" if accepting else ""))
 
 
 def plugin_report(folder):
@@ -132,7 +154,8 @@ def stage_capture(place, mge_build):
     ok = check_counts(folder)
     capture = os.path.join(folder, "exterior.nircap")
     a = os.path.join(folder, "replay.png")
-    out = run([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--mge-build", mge_build], {})
+    code, out = run_code([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--mge-build", mge_build], {})
+    ok &= ran((code, out), "replay.py")
     # Each GPU error prints a line "gpu error N (kind, adapter ...)" (host/src/gpu.rs).
     errors = len(re.findall(r"^gpu error \d+ \(", out, re.M))
     ok &= check(os.path.isfile(a) and errors == 0, "replay of the capture: %s, %d gpu errors" % ("a picture" if os.path.isfile(a) else "no picture", errors))
@@ -171,6 +194,15 @@ def self_test():
     assert adapter_note(None, same).endswith("(accept again to record it)")
     assert "can be the GPU's" in adapter_note("AMD Radeon (Vulkan, driver 1)", same)
     assert adapter_note(same, None) == "adapter: not printed by the helper"
+    # A tool that ends with another code than 0 fails the stage, and its last lines show: an
+    # exception, or a helper that died and printed no traceback.
+    assert ran((0, "pictures in a folder"), "tool")
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        assert not ran((1, "Traceback (most recent call last):\n  a frame\nFileNotFoundError: progress.log"), "tool")
+    assert "FileNotFoundError: progress.log" in printed.getvalue() and "FAIL tool ended with the code 1" in printed.getvalue()
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        assert not ran((-1073741819, "a line of the helper"), "tool", True)
+    assert "a line of the helper" in printed.getvalue() and "accept again" in printed.getvalue()
     # A build folder with the helper only (a cargo target folder) lacks the Data Files.
     with tempfile.TemporaryDirectory() as build:
         open(os.path.join(build, "numidium.exe"), "wb").close()
@@ -197,12 +229,14 @@ def stage_baseline(baseline, accept, mge_build):
     os.makedirs(out, exist_ok=True)
     adapter = None
     for capture in captures:
-        output = run([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, capture[:-7] + ".png"), "--frame", "1", "--mge-build", mge_build], env)
+        code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, capture[:-7] + ".png"), "--frame", "1", "--mge-build", mge_build], env)
+        if not ran((code, output), "replay.py", accept):
+            return False
         adapter = adapter or adapter_of(output)
     tour = os.path.join(baseline, "tour")
     tour_out = os.path.join(tour, "accepted" if accept else "now")
-    if os.path.isdir(tour):
-        run([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env)
+    if os.path.isdir(tour) and not ran(run_code([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env), "validate_tour.py", accept):
+        return False
     adapter_path = os.path.join(accepted, ADAPTER_FILE)
     if accept:
         if adapter:
@@ -334,7 +368,9 @@ def stage_tour(mge_build):
         return check(False, "no three captures from the run")
     print("       " + folder, flush=True)
     ok = check_counts(folder)
-    out = run([PY, os.path.join(HERE, "validate_tour.py"), folder, "--jobs", "4", "--mge-build", mge_build], {})
+    code, out = run_code([PY, os.path.join(HERE, "validate_tour.py"), folder, "--jobs", "4", "--mge-build", mge_build], {})
+    if not ran((code, out), "validate_tour.py"):
+        return False
     tail = out.strip().split("\n")
     for line in tail[-45:]:
         print("       " + line[:160], flush=True)
