@@ -1325,10 +1325,17 @@ pub unsafe fn tee_end() {
 /// holds takes these between its frames, so that the resources of a recorded frame are in
 /// the file. The content of buffers and textures comes once, at the frames. The visibility
 /// and the deletion of a retained instance count too: the file has the instance from an
-/// earlier frame, and a release sends again only the instances the engine displays.
+/// earlier frame, and a release sends again only the instances the engine displays. A chain of
+/// a texture effect counts too: `effect_chain` sends it once, and a later frame's stage needs it.
 /// Engine-rules R14 (the skill wgpu-renderer-dev).
 fn resource_record(tag: u32) -> bool {
-    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE | tag::TEXTURE_GONE | tag::GEOMETRY_GONE | tag::MATERIAL_GONE)
+    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE | tag::TEXTURE_GONE | tag::GEOMETRY_GONE | tag::MATERIAL_GONE | tag::EFFECT_CHAIN)
+}
+
+/// [`resource_record`], for a test of another module.
+#[cfg(test)]
+pub(crate) fn takes_while_holding(tag: u32) -> bool {
+    resource_record(tag)
 }
 
 /// Ends the capture file of a direct stream.

@@ -226,6 +226,13 @@ mod tests {
         assert_eq!(turn_mode(0x7F, Some(0x1A)), None);
     }
 
+    /// A tour's capture holds between its stops: a chain sent then must still reach the file, or
+    /// its replay draws these stages with zero matrices (run 20261102-062618-hob-turn-tour).
+    #[test]
+    fn a_file_that_holds_takes_the_chains() {
+        assert!(crate::capture::takes_while_holding(crate::capture::tag::EFFECT_CHAIN));
+    }
+
     /// The flags of the test level's `turn_two`, read in the game: the node between the two
     /// billboards has 0x02, so the second billboard (0x42) has no display and no turn.
     #[test]
