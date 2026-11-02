@@ -144,7 +144,8 @@ unsafe fn note_of(shape: usize) -> String {
 }
 
 unsafe fn on_texture_data_dtor(args: &[usize]) {
-    push(Event::TextureFreed(args[0]));
+    let Some(&data) = args.first() else { return };
+    push(Event::TextureFreed(data));
 }
 
 /// `NiDX8LightManager::RemoveLight(this, light)`: the light's destructor calls it, so the
@@ -276,6 +277,8 @@ mod tests {
     use super::*;
     use crate::ports::textures::{forget_unreadable, is_unreadable, mark_unreadable};
 
+    /// The hook and the call of the drain's arm, one by one. The arm in `drain` itself has no
+    /// test: `drain` applies every kind of event, and the others need the tables of the game.
     #[test]
     fn a_freed_address_no_longer_counts_as_unreadable() {
         let data = 0x7E57_0082;
