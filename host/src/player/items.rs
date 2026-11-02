@@ -38,7 +38,11 @@ impl Player {
             self.retained.counts.turn_seconds += began.elapsed().as_secs_f64();
         }
         let began = std::time::Instant::now();
+        let segment = self.renderer.retained_records;
         self.renderer.retained_upload(&mut self.retained);
+        // A new shape can make the segment grow in any frame. The uploads below write the frame's
+        // records and instances again, at the new place.
+        Instance::follow_segment(&mut self.frame_instances, segment, self.renderer.retained_records);
         self.retained.counts.upload_seconds += began.elapsed().as_secs_f64();
         self.renderer.upload_lights(&self.frame_lights);
         self.renderer.upload_bones(&self.frame_bones);

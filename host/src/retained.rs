@@ -1228,7 +1228,9 @@ impl Renderer {
     }
 
     /// Room in the segments of the records and the instances for `slots` slots: larger
-    /// buffers when short, with the frame's part after the segment. Between frames only.
+    /// buffers when short, with the frame's part after the segment. Before the items of a part
+    /// of a frame: the part before it has gone to the GPU, and the frame's instances follow
+    /// (`Instance::follow_segment`).
     fn retained_room(&mut self, slots: usize) {
         if slots <= self.retained_records {
             return;
