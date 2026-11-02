@@ -80,10 +80,14 @@ def start():
 
 
 def stop():
-    # Only the game of this instance: the owner can have a game of another instance open.
-    game_dir = os.path.normcase(harness.GAME_DIR)
-    game = [pid for pid, path in harness.processes("Morrowind.exe") if path and os.path.normcase(path).startswith(game_dir)]
+    # Only a game in the game folder of this instance: the owner can have a game of another instance open.
+    game_dir = os.path.normcase(harness.GAME_DIR) + os.sep
+    running = harness.processes("Morrowind.exe")
+    game = [pid for pid, path in running if path and os.path.normcase(path).startswith(game_dir)]
     harness.close_game(game)
+    # A game with no readable path can be of this instance, and it stays open: Mod Organizer stays
+    # too, and the exit code is the harness's for a game left.
+    harness.games_left.extend(pid for pid, path in running if not path)
     # Mod Organizer ends by itself after Root Builder has cleared the game folder.
     harness.close_mo2()
     print("stopped: %d game" % len(game))
