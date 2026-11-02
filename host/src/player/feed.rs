@@ -1061,6 +1061,7 @@ impl Player {
             let facts = self.world_facts(false);
             self.items.push(Item::HeldHere(Box::new(held), Box::new(facts)));
         } else {
+            self.renderer.counts.held_sorted_fallback += crate::engine::alpha::sorted_by_engine(held.facts.class, &derived.blends, derived.no_sorter) as u64;
             self.taken.push(held);
         }
         self.renderer.counts.held += 1;

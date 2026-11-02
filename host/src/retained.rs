@@ -2179,6 +2179,7 @@ impl Player {
             if queued && self.extension.as_mut().is_some_and(|extension| extension.held_sorted(&h)) {
                 self.held_sorted_wait.push((id, h, *facts));
             } else {
+                self.renderer.counts.held_sorted_fallback += sorted as u64;
                 self.taken.push(h);
             }
         }

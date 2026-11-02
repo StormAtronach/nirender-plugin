@@ -107,6 +107,7 @@ impl Player {
             before_kept: false,
             picture_copy: None,
             depth_copy: None,
+            depth_before_class: None,
             world_depth: None,
             world_depth_kept: false,
             late_before: None,
@@ -338,6 +339,7 @@ impl Player {
         self.phase_world = false;
         self.phase_posted = false;
         self.world_matrices = None;
+        self.depth_before_class = None;
         self.world_depth_kept = false;
         self.world_depth_projection = None;
         self.first_person_drawn = false;

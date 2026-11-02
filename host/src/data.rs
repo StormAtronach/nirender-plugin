@@ -522,6 +522,10 @@ pub(crate) struct Counts {
     /// The held instances that waited for a place in the sorted queue, and no flush of the frame
     /// came to it ([`Extension::held_sorted`]).
     pub(crate) held_sorted_lost: u64,
+    /// The held shapes that blend in the engine's sorted queue and had no place in it here: a
+    /// shape of the stream, or an instance after a flush in the middle of the frame. They draw
+    /// at the end of the world scene.
+    pub(crate) held_sorted_fallback: u64,
     pub(crate) texture_updates_lost: u32,
     pub(crate) lost_reasons: HashMap<String, u32>,
     pub(crate) textures_decoded: u32,

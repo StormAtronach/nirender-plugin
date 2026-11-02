@@ -474,8 +474,10 @@ impl Player {
 
     /// Puts what a late sorted run wrote into the copy of the world depth: the depth after
     /// the run where it differs from the depth before it, the nearer of the two
-    /// ([`late_depth`]). The held draws (the water) drew before the run, so their depth is
-    /// in both copies and does not enter.
+    /// ([`late_depth`]). The held draws at the end of the world scene drew before the run, so
+    /// their depth is in both copies and does not enter. A held draw at its place in the
+    /// sorted queue is in the run: the depth that it writes enters (a water surface that asks
+    /// for the write, or any surface with a dry space in the frame).
     pub(crate) fn merge_late_depth(&mut self) {
         if self.copy_depth(4, "depth: after late sorted blends").is_none() {
             self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
@@ -602,7 +604,13 @@ impl Player {
         let Some(mut extension) = self.extension.take() else { return };
         // Inside the sorted blends this is no item of its own: the run of draws before it ends here.
         self.end_run();
-        let (picture, depth) = self.copy_for(extension.reads(ReadingCall::HeldInPlace(&held)), false, ("picture: a held draw in place", "depth: a held draw in place"));
+        // After a class call, the depth under the draw is the copy of that call: the class's
+        // own depth (the sea plane) and the depth of the blends since then are not under it
+        // for this reading. The depth test of the draw still has them.
+        let reads = extension.reads(ReadingCall::HeldInPlace(&held));
+        let under = self.depth_before_class.clone().filter(|_| reads.depth);
+        let (picture, depth) = self.copy_for(Reads { depth: reads.depth && under.is_none(), ..reads }, false, ("picture: a held draw in place", "depth: a held draw in place"));
+        let depth = under.or(depth);
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let commands = self.renderer.commands.clone();
         let mut scene = facts.view(&device, &queue, &commands, format);
@@ -725,7 +733,10 @@ impl Player {
             2 => &mut self.before_depth,
             3 => &mut self.late_before,
             4 => &mut self.late_after,
-            _ => &mut self.depth_copy,
+            _ => {
+                self.depth_before_class = None;
+                &mut self.depth_copy
+            }
         };
         if copy.as_ref().is_none_or(|copy| copy.size() != size) {
             // A target too: the resolve writes it, and the depth of the first person goes into
@@ -836,6 +847,9 @@ impl Player {
             self.split = Some(plane);
         }
         let (picture, depth) = self.copy_for(extension.reads(ReadingCall::Class(class)), false, ("picture: a class of draws", "depth: a class of draws"));
+        if depth.is_some() {
+            self.depth_before_class = depth.clone();
+        }
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let commands = self.renderer.commands.clone();
         let mut scene = facts.view(&device, &queue, &commands, format);
