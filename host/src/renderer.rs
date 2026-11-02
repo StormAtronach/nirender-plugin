@@ -1262,6 +1262,7 @@ impl Renderer {
         let index_range = self.index_pool.take(&self.device, &self.queue, index_bytes, 4);
         let geometry = Geometry {
             influence_range,
+            bones_needed: list.map_or(0, crate::influences::bones_needed),
             fvf,
             stride,
             entries,
@@ -1451,7 +1452,7 @@ impl Renderer {
             let (vertex, base_vertex) = quads.add(&device, particles, sum, difference);
             self.counts.shape_particles += 1;
             // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-            let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: count as u32 * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex, first_index: 0, unique: None, influence_range: None, uv: None, drawn_in: 0 };
+            let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: count as u32 * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex, first_index: 0, unique: None, influence_range: None, bones_needed: 0, uv: None, drawn_in: 0 };
             self.put_geometry(handle, geometry);
             self.counts.times[TIME_BUFFERS] += clock.elapsed();
             return;
@@ -1482,7 +1483,7 @@ impl Renderer {
         let vertex = Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("particles"), contents: &bytes, usage: wgpu::BufferUsages::VERTEX }));
         self.counts.shape_particles += 1;
         // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: 0, first_index: 0, unique: None, influence_range: None, uv: None, drawn_in: 0 };
+        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: 0, first_index: 0, unique: None, influence_range: None, bones_needed: 0, uv: None, drawn_in: 0 };
         self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
     }

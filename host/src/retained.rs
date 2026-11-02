@@ -43,6 +43,19 @@ pub const RETAINED_BONES_AT_FIRST: usize = 1024;
 const RUN_GAP: usize = 4;
 /// The first bone of a slot whose bones have not come yet: the slot is not drawn.
 const NO_BONES: u32 = u32::MAX;
+
+/// The first bone of a slot of an instance with `count` bones at `first`. The list of a shape
+/// that the game skins in software names one matrix more than the bones of the skin, the place
+/// of the shape. MWSE's flag lives on the data that the clones share, so a change of the flag
+/// makes the slots of a clone again before the clone's next display sends that matrix. Until
+/// then the slot is not drawn: the list would read a bone of another instance.
+fn slot_bones(first: u32, count: u32, needed: u32) -> u32 {
+    if count >= needed {
+        first
+    } else {
+        NO_BONES
+    }
+}
 /// The bits of `light_range.w` of the record of a retained instance: the world matrix from
 /// the instance, the values of the view from the scene, the lights through the indexes.
 const RETAINED_RECORD_BITS: u32 = 2 | 4 | 8;
@@ -150,6 +163,8 @@ struct Slot {
     /// A skinned slot: the first of the bones of its instance in the table's palette (its
     /// instance carries it to the shader), or [`NO_BONES`].
     bones_first: u32,
+    /// The bones that the list of its geometry names ([`crate::influences::bones_needed`]).
+    bones_needed: u32,
     /// The material is emissive only (`Derived::no_lights`): the slot takes no light of its
     /// instance and a black ambient.
     no_lights: bool,
@@ -488,8 +503,9 @@ impl RetainedSet {
             for &slot in slots {
                 if let Some(s) = self.slots[slot as usize].as_mut() {
                     s.bound = bound;
-                    if s.bones_first != first {
-                        s.bones_first = first;
+                    let wanted = slot_bones(first, count, s.bones_needed);
+                    if s.bones_first != wanted {
+                        s.bones_first = wanted;
                         self.moved.push(slot);
                     }
                 }
@@ -517,8 +533,8 @@ impl RetainedSet {
     }
 
     /// The first bone of a slot of the instance, for a slot made again.
-    fn bones_first_of(&self, id: u32) -> u32 {
-        self.bones_of.get(&id).map_or(NO_BONES, |&(first, _)| first)
+    fn bones_first_of(&self, id: u32, needed: u32) -> u32 {
+        self.bones_of.get(&id).map_or(NO_BONES, |&(first, count)| slot_bones(first, count, needed))
     }
 
     /// The origin of the set follows the camera of the world: `camera` is the exact
@@ -1556,6 +1572,7 @@ impl Player {
             self.retained.counts.no_material += 1;
             return;
         };
+        let bones_needed = self.renderer.geometries.get(&r.geometry).map_or(0, |g| g.bones_needed);
         let sets = (fvf >> 8) & 0xF;
         let derived = match self.renderer.derived.get(&(r.material, sets)) {
             Some(d) => d.clone(),
@@ -1722,10 +1739,10 @@ impl Player {
             }
             // A skinned instance keeps its range of bones when it is made again; its bound
             // comes with the bones that the plugin sends after the instance record.
-            let bones_first = if r.flags & INSTANCE_SKINNED != 0 { set.bones_first_of(id) } else { NO_BONES };
+            let bones_first = if r.flags & INSTANCE_SKINNED != 0 { set.bones_first_of(id, bones_needed) } else { NO_BONES };
             let sorted = crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter);
             let in_place = !sorted && derived.blends.first().is_some_and(|b| b[0] != 0);
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted, in_place, pinned, bones_first, no_lights: derived.no_lights, claim, held: false, uv_base: None });
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted, in_place, pinned, bones_first, bones_needed, no_lights: derived.no_lights, claim, held: false, uv_base: None });
             set.ranges_total += ranges.len();
             set.cull[slot as usize] = CullEntry::of(set.slots[slot as usize].as_ref());
             set.buckets[bucket as usize].slots.push(slot);
@@ -2123,7 +2140,16 @@ fn merge_picks(kept: &[u64], deferred: &[u64]) -> Vec<Pick> {
 
 #[cfg(test)]
 mod merge_tests {
-    use super::{merge_picks, Pick};
+    use super::{merge_picks, slot_bones, Pick, NO_BONES};
+
+    #[test]
+    fn a_slot_waits_for_the_bones_its_list_names() {
+        // No list: any number of bones.
+        assert_eq!(slot_bones(40, 26, 0), 40);
+        // A list that names the matrix after the 26 bones of the skin.
+        assert_eq!(slot_bones(40, 26, 27), NO_BONES);
+        assert_eq!(slot_bones(40, 27, 27), 40);
+    }
 
     #[test]
     fn the_engine_order_stays_when_its_keys_are_not_sorted() {
