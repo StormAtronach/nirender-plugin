@@ -2171,13 +2171,15 @@ impl Player {
         // of the frame, so its places are known here; after a flush in the middle of the frame
         // (a read-back) they may not be, and the instance draws at the end of the world scene.
         for (h, id, sorted) in held {
-            if self.extension.as_ref().is_some_and(|extension| extension.held_in_place(&h)) {
-                self.give_held_here(h, facts);
-                continue;
-            }
+            let in_place = self.extension.as_ref().is_some_and(|extension| extension.held_in_place(&h));
             let queued = sorted && self.frame_sorted.iter().any(|entry| matches!(entry.2, crate::Waiting::Table(place) if place == id));
-            if queued && self.extension.as_mut().is_some_and(|extension| extension.held_sorted(&h)) {
+            // A shape in place that the engine queued has its place in the queue: a blended mask
+            // whose stencil it tests goes before it there.
+            let in_queue = queued && self.extension.as_mut().is_some_and(|extension| extension.held_sorted(&h));
+            if in_queue || (queued && in_place) {
                 self.held_sorted_wait.push((id, h, *facts));
+            } else if in_place {
+                self.give_held_here(h, facts);
             } else {
                 self.renderer.counts.held_sorted_fallback += sorted as u64;
                 self.taken.push(h);
