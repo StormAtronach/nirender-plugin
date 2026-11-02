@@ -196,6 +196,34 @@ def save_problem(save, folder):
     return "the save %s is not in %s; the newest there: %s. Name one with --save, or --save \"\" for a new game" % (save, folder, ", ".join(saves[:3]) or "none")
 
 
+def pngs_from_tgas(folder):
+    """Turns the TGA files of a folder into PNG files: `niPixelData:exportTGA` is what the game can write."""
+    import picture_diff  # noqa: F401  (it finds the DLLs of Pillow under -I)
+    from PIL import Image
+
+    for root, _, names in os.walk(folder):
+        for name in names:
+            if name.endswith(".tga"):
+                path = os.path.join(root, name)
+                with Image.open(path) as picture:
+                    picture.convert("RGB").save(path[:-4] + ".png")
+                os.remove(path)
+
+
+def self_test_pngs_from_tgas():
+    import picture_diff  # noqa: F401  (it finds the DLLs of Pillow under -I)
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as folder:
+        os.mkdir(os.path.join(folder, "eng"))
+        path = os.path.join(folder, "eng", "a.tga")
+        Image.new("RGBA", (4, 4), (10, 20, 30, 255)).save(path)
+        pngs_from_tgas(folder)
+        assert not os.path.exists(path)
+        with Image.open(path[:-4] + ".png") as picture:
+            assert picture.getpixel((0, 0))[:3] == (10, 20, 30)
+
+
 def self_test_save_problem():
     """A missing save is refused with its folder and the newest saves; a save that is there and a
     new game are not. The folder follows `LocalSaves`."""
@@ -250,6 +278,7 @@ def self_test_archive_arguments():
 def self_test():
     """The tests of the argument handling: no game, no build."""
     self_test_save_problem()
+    self_test_pngs_from_tgas()
     self_test_archive_lua()
     self_test_archive_arguments()
     build = os.path.join("target", "akulakhan.dll")
@@ -334,6 +363,9 @@ def main():
     ap.add_argument("--config-mod", default="Configuration", help="the mod of the testing instance with mgeXE.toml")
     ap.add_argument("--reference", action="store_true", help="run the same scenario with MGE XE on Direct3D 9, for its frame rate: the "
                     "MGE XE of the instance, or of --mge-build")
+    ap.add_argument("--engine-reference", action="store_true", help="run the same scenario on the engine's own renderer: `runtime.disabled` in "
+                    "the run's mgeXE.toml, so the game has the system's Direct3D 8 and no MGE XE draws. The pictures are eng-<step>.png: the world with no interface, at 2048 x 1024. "
+                    "MGE XE still applies its early patches, and MWSE and the Code Patch their own: not the game of 2002")
     ap.add_argument("--instance", help="the folder of another Mod Organizer instance to run in, and not the testing instance")
     ap.add_argument("--game-dir", help="with --instance: the game folder of that instance")
     ap.add_argument("--profile", default="Default", help="with --instance: its profile")
@@ -402,6 +434,9 @@ def main():
     if args.self_test:
         self_test()
         return 0
+    if args.engine_reference:
+        args.reference = True
+        args.set.append("[runtime] disabled = true")
     # The game is started from this process: its variables go into the game's environment.
     apply_env(os.environ, args.env)
     if args.log:
@@ -436,7 +471,8 @@ def main():
                     shaderBatch=open(args.shader_batch, encoding="utf-8").read() if args.shader_batch else None,
                     tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, tourDual=args.tour_dual or None, tourExtra=args.tour_extra or None, captureMenu=args.capture_menu, settleSeconds=args.settle, portTimes=args.port_times or None,
                     overlay=args.overlay or None, earlyPicture=run.path("early.png").replace("\\", "/") if args.early_picture else None,
-                    afterLoadPictures=args.after_load_pictures or None, keepFade=args.keep_fade or None, keepAI=args.keep_ai or None)
+                    afterLoadPictures=args.after_load_pictures or None, keepFade=args.keep_fade or None, keepAI=args.keep_ai or None,
+                    engineReference=args.engine_reference or None)
     # The plugin starts the host program. It reads these from the environment of the game.
     if not args.mge_build:
         os.environ["NIRENDER_HOST_EXE"] = HOST
@@ -550,6 +586,8 @@ def main():
     for line in lines:
         if line.startswith(("own device", "stream:", "capture: end", "own host", "install:", "link:")):
             print("plugin: " + line.strip()[:240])
+    if args.engine_reference:
+        pngs_from_tgas(run.dir)
     print("pictures in " + run.dir)
     # The size of the run and of every run kept (the owner, 2026-10-18: the results folder
     # had grown to hundreds of GB unnoticed). The runner deletes nothing; the line says when

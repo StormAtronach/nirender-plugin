@@ -9,6 +9,32 @@ return function(nirender, spec)
     local scenario = require("nirender.scenario")(nirender, spec, "owndevice")
     local say, after = scenario.say, scenario.after
 
+    -- The engine's own renderer (`--engine-reference`): MGE XE has `runtime.disabled`, so the game has
+    -- the system's Direct3D 8 and MGE XE gives no Lua API. These stand in for what this scenario, the
+    -- batches and the cards ask of it. The picture is the engine's draw of the world camera into a
+    -- rendered texture, read back: the world with no interface, at 2048 x 1024, so wider than the
+    -- screen's shape. Two others give nothing here: `niRenderer:takeScreenshot` returns nil, and a
+    -- window capture is black, as the game has exclusive full screen.
+    -- The runner turns the TGA files of the run folder into PNG files at the end.
+    if spec.engineReference then
+        mge = mge or {}
+        mge.saveScreenshot = function(params)
+            local world = tes3.worldController.worldCamera
+            local texture = niRenderedTexture.create(2048, 1024)
+            world.renderer:setRenderTarget(texture)
+            world.camera:clear()
+            world.camera:click(false)
+            world.renderer:setRenderTarget(nil)
+            local pixels = niPixelData.new(2048, 1024)
+            texture:readback(pixels)
+            pixels:exportTGA((params.path:gsub("%.png$", ".tga")))
+        end
+        mge.shaders = { list = {}, find = function() return nil end }
+        mge.lightingMode = { vertex = 0, perPixel = 1, perPixelInteriorOnly = 2 }
+        mge.getLightingMode = function() return "no MGE XE" end
+        mge.setLightingMode = function() end
+    end
+
     local function inventory(on)
         if on then
             for _, name in ipairs({ "MenuInventory", "MenuMap", "MenuStat", "MenuMagic" }) do
@@ -445,7 +471,7 @@ return function(nirender, spec)
                                 -- reference), in live/ on wgpu (the helper's live frame, beside the
                                 -- capture).
                                 local name = string.format("%d-%02d-%s.png", index, stop, ref.object.id:gsub("[^%w_]", "_"))
-                                local folder = own and "/live" or "/ref"
+                                local folder = own and "/live" or (spec.engineReference and "/eng" or "/ref")
                                 lfs.mkdir(spec.dir .. folder)
                                 mge.saveScreenshot({ path = spec.dir .. folder .. "/" .. name, captureWithUI = true })
                             end
@@ -677,7 +703,8 @@ return function(nirender, spec)
             if nirender.captureStatus():sub(1, 3) == "off" and mge and mge.saveScreenshot then
                 -- No stream: the run is the reference with MGE XE on Direct3D 9. The picture
                 -- is that of MGE XE.
-                mge.saveScreenshot({ path = string.format("%s/ref-%s.png", spec.dir, this[1]), captureWithUI = true })
+                local prefix = spec.engineReference and "eng" or "ref"
+                mge.saveScreenshot({ path = string.format("%s/%s-%s.png", spec.dir, prefix, this[1]), captureWithUI = true })
             else
                 nirender.streamShot(string.format("%s/host-%s.png", spec.dir, this[1]))
             end
