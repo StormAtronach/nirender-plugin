@@ -83,6 +83,26 @@ unsafe fn local_words(node: usize, out: &mut Vec<u32>) {
     out.push(rd(node, AV::localTransform_localScale));
 }
 
+/// True when a turning billboard is above the effect, with no table: for the report of the
+/// shapes that the table does not take.
+///
+/// # Safety
+///
+/// `effect` points at a live `NiTextureEffect` with live nodes above it.
+pub unsafe fn turning_above(effect: usize) -> bool {
+    let mut node = effect;
+    for _ in 0..MAX_DEPTH {
+        if node == 0 {
+            return false;
+        }
+        if node_turn(node).is_some() {
+            return true;
+        }
+        node = rd(node, AV::parentNode);
+    }
+    false
+}
+
 /// Reads the chain of `effect` into `chain`: its words stay empty for an effect with no turning
 /// billboard above it.
 unsafe fn read_chain(effect: usize, chain: &mut Chain) -> Vec<u32> {
