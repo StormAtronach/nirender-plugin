@@ -182,9 +182,11 @@ def self_test_setup():
         assert lines[0] == "instance %s, profile Default" % root, lines[0]
         assert "MWSE.dll " + abc in lines and "d3d8.dll absent" in lines and "commits: x" in lines, lines
         assert "akulakhan.dll %s (mod High)" % abc in lines, lines
-        assert not any(line.startswith("dinput8.dll") for line in lines), lines
+        assert not any(line.startswith(("dinput8.dll", "d3d9.dll")) for line in lines), lines
         write(os.path.join(game, "dinput8.dll"), "abc")
-        assert "dinput8.dll " + abc in harness.setup_lines(root, profile, game, modlist, plugins, source)
+        write(os.path.join(game, "d3d9.dll"), "abc")
+        with_optional = harness.setup_lines(root, profile, game, modlist, plugins, source)
+        assert "dinput8.dll " + abc in with_optional and "d3d9.dll " + abc in with_optional, with_optional
         assert any(line.startswith("plugins 3, load order MD5 ") for line in lines), lines
         assert harness.setup_lines(root, profile, game, ["-Off"], [], None)[-2:] == ["akulakhan.dll absent", "plugins: no Morrowind.ini names any"]
         text = harness.setup_text(profile, modlist, plugins, source)
