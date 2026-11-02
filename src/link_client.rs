@@ -1939,14 +1939,17 @@ mod resync_tests {
     /// count as the main thread.
     struct Fakes {
         main_thread_before: u32,
+        /// Goes after the drop below has put all back.
+        _turn: crate::main_thread::TestTurn,
     }
 
     impl Fakes {
         fn install(renderer: usize) -> Fakes {
+            let turn = crate::main_thread::TestTurn::take();
             let main_thread_before = crate::shadow::main_thread_for_test();
             HOST.store(&HOST_OF_TEST as *const HostV1 as usize, Ordering::Relaxed);
             RENDERER.store(renderer, Ordering::Relaxed);
-            Fakes { main_thread_before }
+            Fakes { main_thread_before, _turn: turn }
         }
     }
 
