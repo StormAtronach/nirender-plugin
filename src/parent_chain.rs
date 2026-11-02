@@ -5,8 +5,8 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-/// The most nodes a walk follows. The engine's own recursion down a scene is far shallower, so a
-/// chain this long is not a scene.
+/// The most nodes a walk follows. \[I: not read in the engine\] The engine's own recursion down a
+/// scene (`NiNode::Display` calls `CullShow` for each child) is far shallower, so a chain this long is not a scene.
 pub const GUARD: usize = 4096;
 
 /// The chain has more than the allowed nodes and goes on: no node above the shape was left
@@ -39,7 +39,7 @@ pub fn first_answer<T>(first: usize, limit: usize, parent_of: impl Fn(usize) -> 
 pub fn note_too_long(reader: &str) {
     static LOGGED: AtomicBool = AtomicBool::new(false);
     if !LOGGED.swap(true, Ordering::Relaxed) {
-        crate::log!("parent chain: {reader} met more than {GUARD} nodes above a shape (the first; later ones are counted in the report)");
+        crate::log!("parent chain: {reader} met more than {GUARD} nodes above a shape (the first; the table's reject test counts the others in the instances report)");
     }
 }
 
