@@ -685,7 +685,10 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
         let color = operation(stage.color.x, argument(stage.color.y, diffuse, current, texel),
             argument(stage.color.z, diffuse, current, texel), argument(stage.color.w, diffuse, current, texel), diffuse, current, texel);
         var alpha = current;
-        if stage.alpha.x != 1u {
+        // A bump stage (22 and 23) moves the coordinate of the next stage, and its output is the
+        // current colour and alpha. The engine's table has SELECTARG1 for its alpha; on the engine
+        // and on Direct3D 9 a blended shape with a bump stage keeps its own alpha.
+        if stage.alpha.x != 1u && stage.color.x != 22u && stage.color.x != 23u {
             alpha = operation(stage.alpha.x, argument(stage.alpha.y, diffuse, current, texel),
                 argument(stage.alpha.z, diffuse, current, texel), vec4f(0.0), diffuse, current, texel);
         }
