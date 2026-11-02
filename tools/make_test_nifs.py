@@ -39,7 +39,9 @@ a cylinder), a lit material, a base texture of the level, and the property under
                  coordinate mode n (0 to 4); the shape comes first in the walk, beside the
                  billboard (the effect and the coordinate modes: host/src/effect_turn.rs)
     turn_under_b<m> the same with the shape under the billboard, turning with the effect
-    turn_two     two turning billboards above the effect, a plain node between
+    turn_two     two billboards above the effect, a plain node between, the shape beside them:
+                 the second has no geometry under it and no display, so it does not turn
+    turn_two_under the same with the shape under the second billboard: both turn
     turn_fog     a fog map under a billboard
 
 The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
@@ -529,6 +531,7 @@ def main():
         name = "turn_under_b%d" % mode
         files.append((name, make_turn(name, b, [mode], parallel, shape_under=True)))
     files.append(("turn_two", make_turn("turn_two", b, [1, 2], parallel)))
+    files.append(("turn_two_under", make_turn("turn_two_under", b, [1, 2], parallel, shape_under=True)))
     files.append(("turn_fog", make_turn("turn_fog", c, [0], (3, 2, SPHERE_MATRIX, SPHERE_TRANSLATION))))
     lines = ["-- The test NIFs of the flag support, made by tools/make_test_nifs.py (do not edit).",
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",

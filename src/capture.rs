@@ -266,8 +266,9 @@ pub mod tag {
     /// above the first turning billboard (13 words), each link (its kind: the billboard's mode
     /// 0 to 2, or 3 for no turn; its local transform, 13 words), the model projection (12 words).
     pub const EFFECT_CHAIN: u32 = 46;
-    /// The test switch `NIRENDER_EFFECT_TURN_CHECK`: the id of a chain and the engine's world
-    /// projection of the effect after its billboard's display in this frame (12 floats).
+    /// The test switch `NIRENDER_EFFECT_TURN_CHECK`: the id of a chain, the engine's world
+    /// projection of the effect after its billboard's display in this frame (12 floats), and the
+    /// place of the camera as the engine stores it (3 floats).
     pub const EFFECT_TURN_CHECK: u32 = 47;
 }
 

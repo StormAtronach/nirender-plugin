@@ -586,7 +586,7 @@ pub unsafe fn scene_end(mt: &MainThread) {
     if camera == 0 || t.mode() != Mode::Gpu || !capture::recording() {
         return;
     }
-    crate::effect_chain::send_checks(mt);
+    crate::effect_chain::send_checks(mt, camera);
     let count = rd::<i32>(camera, C::countCullingPlanes).max(0) as usize;
     let storage: usize = rd(camera, C::cullingPlanes_storage);
     let planes: Vec<usize> = (0..count).map(|i| rd(storage, i * 4)).collect();

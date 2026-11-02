@@ -1,7 +1,7 @@
 -- The moving camera of the live check of `NIRENDER_EFFECT_TURN_CHECK` (src/effect_chain.rs).
 --
 -- In a live session in a cell of the test level, through mwse-mcp:
---     return dofile("<repo>/tools/effect_turn_walk.lua")(60)
+--     local f = io.open("<repo>/tools/effect_turn_walk.lua"); local s = f:read("*a"); f:close(); return loadstring(s)()(60)
 --
 -- Places the `turn_` exhibits of tools/make_test_nifs.py in a grid north of the player, then
 -- flies the player for that many seconds on an ellipse around the grid, turning and pitching

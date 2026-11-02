@@ -333,7 +333,7 @@ pub struct RetainedSet {
     effect_chains: HashMap<u32, crate::effect_turn::Chain>,
     turning_stages: Vec<TurningStage>,
     /// The engine's words of this frame for the live check, and what it found.
-    turn_check_words: Vec<(u32, crate::effect_turn::Projection)>,
+    turn_check_words: Vec<(u32, crate::effect_turn::Projection, [f32; 3])>,
     pub turn_checks: crate::effect_turn::TurnChecks,
     pub counts: RetainedCounts,
 }
@@ -494,7 +494,7 @@ impl RetainedSet {
     /// The engine's words of an effect in this frame ([`crate::tag::EFFECT_TURN_CHECK`]).
     pub fn effect_turn_check_record(&mut self, data: &[u8]) {
         let f = |i: usize| crate::float(data, i * 4);
-        self.turn_check_words.push((crate::word(data, 0), (core::array::from_fn(|i| f(1 + i)), core::array::from_fn(|i| f(10 + i)))));
+        self.turn_check_words.push((crate::word(data, 0), (core::array::from_fn(|i| f(1 + i)), core::array::from_fn(|i| f(10 + i))), core::array::from_fn(|i| f(13 + i))));
     }
 
     pub fn effect_chain_count(&self) -> usize {
@@ -511,9 +511,9 @@ impl RetainedSet {
     pub fn turn_effects(&mut self, camera: &crate::effect_turn::Camera) {
         if !self.turn_check_words.is_empty() {
             self.turn_checks.next_frame(camera);
-            for (id, engine) in core::mem::take(&mut self.turn_check_words) {
+            for (id, engine, stored_location) in core::mem::take(&mut self.turn_check_words) {
                 if let Some(chain) = self.effect_chains.get(&id) {
-                    self.turn_checks.compare(chain, &engine);
+                    self.turn_checks.compare(chain, &engine, stored_location);
                 }
             }
         }

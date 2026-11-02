@@ -90,8 +90,9 @@ pub const INSTANCE_CENSUS: u32 = 45;
 /// the coordinate mode, the number of links, the world of the node above the first turning
 /// billboard, each link (its kind and local transform), the model projection (`effect_turn`).
 pub const EFFECT_CHAIN: u32 = 46;
-/// The test switch `NIRENDER_EFFECT_TURN_CHECK`: the id of a chain and the engine's world
-/// projection of the effect after its billboard's display in this frame (12 floats).
+/// The test switch `NIRENDER_EFFECT_TURN_CHECK`: the id of a chain, the engine's world
+/// projection of the effect after its billboard's display in this frame (12 floats), and the
+/// place of the camera as the engine stores it (3 floats).
 pub const EFFECT_TURN_CHECK: u32 = 47;
 
 /// Every tag of this build, the two retired ones (2 and 7) among them. A new tag goes here
@@ -163,7 +164,7 @@ pub fn least_length(tag: u32) -> usize {
         INSTANCE_CENSUS => 4,
         // A chain with no links: the head and the model projection.
         EFFECT_CHAIN => (crate::effect_turn::HEAD_WORDS + crate::effect_turn::MODEL_WORDS) * 4,
-        EFFECT_TURN_CHECK => 13 * 4,
+        EFFECT_TURN_CHECK => 16 * 4,
         _ => 0,
     }
 }

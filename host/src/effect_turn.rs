@@ -274,6 +274,9 @@ struct PairCheck {
     compared: u64,
     matrix: f32,
     translation: f32,
+    /// The matrix with the camera at the place the engine stores (32-bit floats), in place of
+    /// the exact place: how much of the difference that place makes.
+    stored_place: f32,
     /// The same with the camera of the frame before, and with no turn: the null tests. A moving
     /// camera shows in the first, and a turn that counts in the second.
     old_camera: f32,
@@ -282,7 +285,10 @@ struct PairCheck {
 
 impl PairCheck {
     fn line(&self, name: &str) -> String {
-        format!("{name}: {} compared, largest difference {} in the matrix and {} in the translation; with the camera of the frame before {}, with no turn {}", self.compared, self.matrix, self.translation, self.old_camera, self.no_turn)
+        format!(
+            "{name}: {} compared, largest difference {} in the matrix and {} in the translation; with the engine's stored camera place {}; with the camera of the frame before {}, with no turn {}",
+            self.compared, self.matrix, self.translation, self.stored_place, self.old_camera, self.no_turn
+        )
     }
 }
 
@@ -310,9 +316,10 @@ impl TurnChecks {
     }
 
     /// The projection of `chain` against the engine's words of this frame.
-    pub fn compare(&mut self, chain: &Chain, engine: &Projection) {
+    pub fn compare(&mut self, chain: &Chain, engine: &Projection, stored_location: [f32; 3]) {
         let Some(camera) = self.camera else { return };
         let (matrix, translation) = difference(&chain.projection(&camera), engine);
+        let stored_place = difference(&chain.projection(&Camera { location: stored_location, ..camera }), engine).0;
         let old_camera = self.previous.map_or(0.0, |previous| difference(&chain.projection(&previous), engine).0);
         let no_turn = difference(&chain.unturned_projection(), engine).0;
         let pair = if chain.turning_billboards() > 1 {
@@ -325,6 +332,7 @@ impl TurnChecks {
         pair.compared += 1;
         pair.matrix = pair.matrix.max(matrix);
         pair.translation = pair.translation.max(translation);
+        pair.stored_place = pair.stored_place.max(stored_place);
         pair.old_camera = pair.old_camera.max(old_camera);
         pair.no_turn = pair.no_turn.max(no_turn);
     }

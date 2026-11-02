@@ -1,7 +1,9 @@
 -- The test vectors of `host/src/effect_turn.rs`: the engine's own functions on made objects.
 --
 -- In a running game, through mwse-mcp:
---     return dofile("<repo>/tools/effect_turn_vectors.lua")("<repo>/host/src/effect_turn_vectors.txt")
+--     local f = io.open("<repo>/tools/effect_turn_vectors.lua"); local s = f:read("*a"); f:close()
+--     return loadstring(s)()("<repo>/host/src/effect_turn_vectors.txt")
+-- (MWSE's dofile resolves its path inside the game's folders.)
 --
 -- It calls NiBillboardNode::RotateToCamera 0x6D3C00, NiAVObject::UpdateWorldData 0x6FB350 and
 -- NiTextureEffect::UpdateWorldData 0x6E3970 (with UpdateProjection 0x6E37C0) through the FFI, on

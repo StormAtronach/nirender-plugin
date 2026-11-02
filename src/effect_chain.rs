@@ -26,6 +26,8 @@ const MAX_DEPTH: usize = 32;
 const NO_TURN: u32 = 3;
 /// The flag that `NiNode::Display` 0x6C9190 sets: after it, the billboard has turned.
 const DISPLAYED: u16 = 0x10;
+/// The flag of a node with geometry under it (`NiNode::IsVisualObject` 0x445A60).
+const CONTAINS_GEOMETRY: u16 = 0x08;
 /// The frames an effect stays in the table without a display of a shape it lights. Its address
 /// can be another object's by then.
 const KEEP_FRAMES: u32 = 4096;
@@ -53,19 +55,24 @@ fn chains<'a>(t: &'a MainThread) -> Open<'a, HashMap<usize, Chain>> {
 }
 
 /// The billboard's mode (flags bits 5 and 6) when it turns to the camera at its display: mode 3
-/// has no turn (`RotateToCamera` 0x6D3C00).
-fn turn_mode(flags: u16) -> Option<u32> {
+/// has no turn (`RotateToCamera` 0x6D3C00). A node with no geometry under it does not display
+/// its children (`NiNode::Display` 0x6C9190 tests the flag that `NiNode::UpdateWorldBound` 0x6C8C90
+/// keeps), so a billboard below it has no display and never turns.
+fn turn_mode(flags: u16, parent_flags: Option<u16>) -> Option<u32> {
+    if parent_flags.is_some_and(|parent| parent & CONTAINS_GEOMETRY == 0) {
+        return None;
+    }
     let mode = u32::from(flags >> 5) & 3;
     (mode != NO_TURN).then_some(mode)
 }
 
 /// The mode of the node, when it is a billboard that turns.
 unsafe fn node_turn(node: usize) -> Option<u32> {
-    if crate::ports::ni::is_kind_of(node, RTTI_BILLBOARD_NODE) {
-        turn_mode(rd(node, AV::flags))
-    } else {
-        None
+    if !crate::ports::ni::is_kind_of(node, RTTI_BILLBOARD_NODE) {
+        return None;
     }
+    let parent: usize = rd(node, AV::parentNode);
+    turn_mode(rd(node, AV::flags), (parent != 0).then(|| rd(parent, AV::flags)))
 }
 
 /// The words of the local transform of a node. A node always has its rotation
@@ -170,15 +177,17 @@ fn check_on() -> bool {
 }
 
 /// The test switch, at the end of a world scene: the engine's projection of each effect read in
-/// this frame whose billboards have all turned in this frame. A billboard out of the view keeps
-/// an older turn, and the flag tells the two apart: it is cleared here, and only a display sets
-/// it again. [I] The check is for a place with no other walk before the world's in a frame (the
-/// test level): the local map's walk would set the flag with another camera.
+/// this frame whose billboards have all turned in this frame, and the place of the camera as the
+/// engine stores it. A billboard out of the view keeps an older turn, and the flag tells the two
+/// apart: it is cleared here, and only a display sets it again. [I] The check is for a place with
+/// no other walk before the world's in a frame (the test level): the local map's walk would set
+/// the flag with another camera.
 ///
 /// # Safety
 ///
-/// The effects and the billboards read in this frame are live.
-pub unsafe fn send_checks(t: &MainThread) {
+/// The effects and the billboards read in this frame are live, and `camera` is the live camera of
+/// the world scene.
+pub unsafe fn send_checks(t: &MainThread, camera: usize) {
     if !check_on() {
         return;
     }
@@ -190,6 +199,7 @@ pub unsafe fn send_checks(t: &MainThread) {
             let mut words = vec![effect as u32];
             words.extend_from_slice(&rd::<[u32; 9]>(effect, TE::worldProjMat));
             words.extend_from_slice(&rd::<[u32; 3]>(effect, TE::worldProjTrans));
+            words.extend_from_slice(&rd::<[u32; 3]>(camera, AV::worldTransform_translation));
             crate::capture::effect_turn_check(&words);
         }
     }
@@ -208,10 +218,19 @@ mod tests {
     fn a_billboard_turns_in_every_mode_but_the_third() {
         // The flags of the test level's billboards: mode 0, 1, 2 and 2, with the displayed bit.
         for (flags, mode) in [(0x0A, 0), (0x2A, 1), (0x4A, 2), (0x5A, 2)] {
-            assert_eq!(turn_mode(flags), Some(mode), "{flags:#x}");
+            assert_eq!(turn_mode(flags, Some(0x1A)), Some(mode), "{flags:#x}");
+            assert_eq!(turn_mode(flags, None), Some(mode), "{flags:#x} with no parent");
         }
         // Mode 3 turns nothing, with any other bit.
-        assert_eq!(turn_mode(0x60), None);
-        assert_eq!(turn_mode(0x7F), None);
+        assert_eq!(turn_mode(0x60, Some(0x1A)), None);
+        assert_eq!(turn_mode(0x7F, Some(0x1A)), None);
+    }
+
+    /// The flags of the test level's `turn_two`, read in the game: the node between the two
+    /// billboards has 0x02, so the second billboard (0x42) has no display and no turn.
+    #[test]
+    fn a_billboard_under_a_node_with_no_geometry_does_not_turn() {
+        assert_eq!(turn_mode(0x42, Some(0x02)), None);
+        assert_eq!(turn_mode(0x32, Some(0x1A)), Some(1));
     }
 }

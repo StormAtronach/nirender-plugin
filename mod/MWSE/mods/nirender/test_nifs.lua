@@ -38,5 +38,6 @@ return {
     { id = "@nif_x_turn_b2_c4", mesh = "@_nifx\\turn_b2_c4.nif" },
     { id = "@nif_x_turn_under_b2", mesh = "@_nifx\\turn_under_b2.nif" },
     { id = "@nif_x_turn_two", mesh = "@_nifx\\turn_two.nif" },
+    { id = "@nif_x_turn_two_under", mesh = "@_nifx\\turn_two_under.nif" },
     { id = "@nif_x_turn_fog", mesh = "@_nifx\\turn_fog.nif" },
 }
