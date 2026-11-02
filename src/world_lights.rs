@@ -64,6 +64,8 @@ struct WorldSet {
 static SET: Mutex<Option<WorldSet>> = Mutex::new(None);
 static INSTALLED: crate::sync::InstallState = crate::sync::InstallState::new();
 static PLACED: AtomicU64 = AtomicU64::new(0);
+/// The placements of a light whose attenuation gives another radius than the placement's.
+static RADIUS_OTHER: AtomicU64 = AtomicU64::new(0);
 static REMOVED: AtomicU64 = AtomicU64::new(0);
 /// The lights destroyed while in the set: the engine destroyed them without a removal.
 static DESTROYED_IN_SET: AtomicU64 = AtomicU64::new(0);
@@ -120,6 +122,11 @@ unsafe extern "C" fn placed(_user: *mut c_void, packet: *const c_void) {
     // The radius the engine passed, before a module's light attach radius changes it.
     if let Some(t) = MainThread::here() {
         crate::light_stream::note_radius(&t, rd(packet.light as usize, L::index), packet.radius as f32);
+    }
+    // The fade takes the radius from the attenuation: a light whose placement says another.
+    let radius = crate::link_client::point_light_radius(packet.light as usize);
+    if (radius - packet.radius as f32).abs() > 1.0 && RADIUS_OTHER.fetch_add(1, Ordering::Relaxed) < 10 {
+        crate::log!("world lights: a light placed with the radius {}, its attenuation gives {radius}", packet.radius);
     }
     with_set(|set| {
         // A new light is off until a send finds it on: that send gives the keys again.
@@ -250,8 +257,9 @@ pub fn key_records() -> u64 {
 pub fn report() -> String {
     let now = with_set(|set| set.lights.len()).unwrap_or(0);
     format!(
-        "world lights: {} placed events, {} removed events, {} lights now (at most {}), {} destroyed without a removal, {} records of the keys, {} lights in the last",
+        "world lights: {} placed events ({} with another radius by the attenuation), {} removed events, {} lights now (at most {}), {} destroyed without a removal, {} records of the keys, {} lights in the last",
         PLACED.load(Ordering::Relaxed),
+        RADIUS_OTHER.load(Ordering::Relaxed),
         REMOVED.load(Ordering::Relaxed),
         now,
         MOST.load(Ordering::Relaxed),
