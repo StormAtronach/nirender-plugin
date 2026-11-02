@@ -168,6 +168,10 @@ pub unsafe fn install() -> Result<String, String> {
 
     // The census runs before the detours, because the detours change the entry bytes.
     let changed = census(false);
+    #[cfg(not(test))]
+    if crate::link_client::own_d3d8() && !crate::ports::texture_link::install_format_rule() {
+        crate::log!("textures: the CreateTexture call of the game function is not the game's code: a BC7 texture made on the cell worker can take the wrong format");
+    }
 
     #[cfg(feature = "rig")]
     {

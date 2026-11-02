@@ -73,7 +73,7 @@ use stream::*;
 pub use cli::{run, run_with};
 
 mod d3d;
-use d3d::{address, attributes, blend_factor, color, compare, decode_dxt, expand_16_bits, expands, filter, gpu_bytes, known, stencil_operation, texture_format, INPUT_FORMATS};
+use d3d::{address, attributes, blend_factor, color, compare, decode_dxt, expand_16_bits, expands, filter, known, stencil_operation, texture_format, INPUT_FORMATS};
 pub use d3d::{d3d_compare, d3d_stencil_operation};
 mod lights;
 use influences::FVF_INFLUENCES;

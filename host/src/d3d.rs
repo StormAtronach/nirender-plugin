@@ -59,6 +59,18 @@ pub(crate) fn cpu_decodes(d3d_format: u32) -> bool {
     matches!(d3d_format, 0x3154_5844 | 0x3254_5844 | 0x3354_5844 | 0x3454_5844 | 0x3554_5844)
 }
 
+/// How a texture update of a level lies in the stream, from [`texture_format`]: the bytes of a
+/// block (0 for no blocks), the bytes of a row for the GPU, the rows, and the bytes in the stream.
+pub(crate) fn level_layout(d3d_format: u32, width: u32, height: u32) -> (u32, u32, u32, usize) {
+    let (block, source_bytes) = texture_format(d3d_format).map_or((0, 4), |f| (f.1 as u32, f.2 as u32));
+    if block != 0 {
+        let (across, down) = (width.div_ceil(4), height.div_ceil(4));
+        (block, across * block, down, (across * down * block) as usize)
+    } else {
+        (0, width * gpu_bytes(d3d_format) as u32, height, (width * height * source_bytes) as usize)
+    }
+}
+
 /// The format of the GPU for a D3DFORMAT, the bytes of one of its blocks (0 for a format
 /// without blocks), and the bytes of a pixel in the stream. [`None`] for a format that this
 /// program does not make.
@@ -294,6 +306,11 @@ mod tests {
     #[test]
     fn bc7_is_a_block_format_of_16_bytes_that_the_cpu_does_not_decode() {
         assert_eq!(texture_format(D3DFMT_BC7), Some((wgpu::TextureFormat::Bc7RgbaUnorm, 16, 0)));
+        // The update of a level of a block format: the blocks of BC7 are the size of those of DXT5.
+        assert_eq!(level_layout(D3DFMT_BC7, 64, 64), (16, 256, 16, 4096));
+        assert_eq!(level_layout(D3DFMT_BC7, 2, 2), (16, 16, 1, 16));
+        assert_eq!(level_layout(0x3554_5844, 64, 64), (16, 256, 16, 4096));
+        assert_eq!(level_layout(0x3154_5844, 64, 64), (8, 128, 16, 2048));
         assert!(!cpu_decodes(D3DFMT_BC7));
         for dxt in [0x3154_5844, 0x3254_5844, 0x3354_5844, 0x3454_5844, 0x3554_5844] {
             assert!(cpu_decodes(dxt));

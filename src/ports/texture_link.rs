@@ -64,16 +64,61 @@ unsafe fn texture_made(converted: usize) {
     cdecl1(TEXTURE_MADE, record.as_mut_ptr() as u32);
 }
 
-/// The Direct3D format of the texture of `this`, made from `converted`: 'BC7 ' for the pixel
-/// format 8 (the 16-byte blocks of DXT5) with MGE XE's tag of BC7 in its first channel mask,
-/// as MGE XE's `patchLoadTexture2DCreate` reads it; else the format of the engine's table
-/// for the pixel format of `this`. The tag is in the converted pixel data, not in the format
-/// of `this`, which is a copy of the renderer's DXT5 entry.
+/// The Direct3D format of a texture made from `converted`, from `table_format` of the engine's
+/// table ([`crate::d3d::format_with_tag`]). The tag is in the converted pixel data, not in the
+/// format of the texture data, which is a copy of the renderer's DXT5 entry.
+unsafe fn format_of_pixels(converted: usize, table_format: u32) -> u32 {
+    crate::d3d::format_with_tag(rd(converted, PD::format_format), rd(converted, PD::format_channelMasks), table_format)
+}
+
+/// The Direct3D format of the texture of `this`, made from `converted`.
 unsafe fn d3d_format_of(this: usize, converted: usize) -> u32 {
-    if crate::d3d::is_bc7(rd(converted, PD::format_format), rd(converted, PD::format_channelMasks)) {
-        return crate::d3d::D3DFMT_BC7;
+    format_of_pixels(converted, cdecl1(D3D_FORMAT_FOR_PIXEL_FORMAT, (this + SD::format) as u32))
+}
+
+/// The `CreateTexture` call of `NiDX8SourceTextureData_static::Create`. The game function runs
+/// as it is on the cell worker, so its format comes from the engine's table there, which has no
+/// BC7. Its arguments are those of MGE XE's `patchLoadTexture2DCreate`.
+unsafe extern "system" fn create_texture_call(device: usize, this: usize, converted: usize, table_format: u32) -> u32 {
+    crate::d3d::device_create_texture(
+        device,
+        rd(this, SD::width),
+        rd(this, SD::height),
+        rd(this, SD::levels),
+        0,
+        format_of_pixels(converted, table_format),
+        POOL_MANAGED,
+        this + SD::d3dTexture,
+    )
+}
+
+/// The bytes that put `function` at [`CREATE_TEXTURE_CALL`]: the shape of MGE XE's patch, so that
+/// [`patched_call`] finds it. The jump lands past the call that it replaces.
+fn create_call_bytes(function: u32) -> [u8; 13] {
+    let mut bytes = [0u8; 13];
+    bytes[..5].copy_from_slice(&MGE_CREATE_HEAD);
+    bytes[5..9].copy_from_slice(&function.to_le_bytes());
+    bytes[9..].copy_from_slice(&MGE_CREATE_TAIL);
+    bytes
+}
+
+/// Puts [`create_texture_call`] in the game function, for a game without a Direct3D device: MGE XE
+/// patches this place only on Direct3D 9. True when the patch went in, or a patch of this shape is
+/// there already; false when another change holds the place.
+///
+/// # Safety
+///
+/// The game's code is mapped at its address, and no thread runs the function yet.
+pub unsafe fn install_format_rule() -> bool {
+    /// `lea eax, [esi + d3dTexture]; mov ecx, [ebx]; push eax`
+    const GAME_CODE: [u8; 6] = [0x8D, 0x46, SD::d3dTexture as u8, 0x8B, 0x0B, 0x50];
+    if patched_call(CREATE_TEXTURE_CALL, &MGE_CREATE_HEAD, &MGE_CREATE_TAIL).is_some() {
+        return true;
     }
-    cdecl1(D3D_FORMAT_FOR_PIXEL_FORMAT, (this + SD::format) as u32)
+    if rd::<[u8; 6]>(CREATE_TEXTURE_CALL, 0) != GAME_CODE {
+        return false;
+    }
+    crate::win::patch(CREATE_TEXTURE_CALL, &create_call_bytes(create_texture_call as *const () as u32))
 }
 
 /// Makes the D3D8 texture of `this` on the device and copies each level of `converted` into
