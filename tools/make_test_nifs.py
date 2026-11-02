@@ -30,6 +30,11 @@ a cylinder), a lit material, a base texture of the level, and the property under
                  east
     node_sortadjust a NiSortAdjustNode with the mode 0 (inherit) over two boxes side by
                  side; a batch sets MWSE's mode 64 (ordered subtree) at run time
+    skin_soft    two skinned boxes with MWSE's software skinning flag, each beside a plain
+                 box at the place and the size the engine's `NiSkinInstance::Deform` gives
+                 it: the edges of each pair line up only with every influence and the raw
+                 weights (`make_skinned`)
+    skin_hard    the same file without the flag (the control): the edges do not line up
 
 The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
 write of the level's own files. The texture effect is attached as the level's exhibits do:
@@ -279,6 +284,78 @@ def make_tree(name, kind, children, fields=None, flags=8):
     return write_file(name, blocks)
 
 
+def moved(geometry, by):
+    """The geometry with its vertices moved by `by`."""
+    vertices, normals, uvs, triangles = geometry
+    return [[v[k] + by[k] for k in range(3)] for v in vertices], normals, uvs, triangles
+
+
+def skin_blocks(blocks, skeleton, bones, weights):
+    """Adds the skin of a shape: its bones have the identity from the skin, so a bone only moves
+    a vertex by the bone's own place. `weights` gives (bone, weight) of a vertex for each vertex
+    of the shape. The radius keeps the posed bound around each exhibit. Returns the block of
+    the skin instance."""
+    instance = len(blocks)
+    records = []
+    for bone in range(len(bones)):
+        listed = [(vertex, weight) for vertex, influences in enumerate(weights) for b, weight in influences if b == bone]
+        records.append({"rotation": list(IDENTITY), "translation": list(ZERO3), "scale": 1.0, "center": list(ZERO3), "radius": 500.0, "weights": listed})
+    blocks.append({"type": "NiSkinInstance", "data": instance + 1, "skeleton_root": skeleton, "bones": list(bones)})
+    blocks.append({"type": "NiSkinData", "skindata": {"rotation": list(IDENTITY), "translation": list(ZERO3), "scale": 1.0, "skin_partition": -1, "bones": records}})
+    return instance
+
+
+def make_skinned(name, flags):
+    """A root, 6 bones, and two pairs of a skinned box (red) and a plain box (blue). `flags` are
+    the flags of the two skinned shapes.
+
+    With MWSE's flag the engine sums each influence with its raw weight, and its shape's place
+    once (`NiSkinInstance::Deform` 0x6FA000, then the shape's world transform):
+
+        place = shape(sum of weight * (vertex + place of the bone))
+
+    The left pair, more than 4 influences that sum to 1: 6 bones, four at z 100 with the weight
+    0.2 and two at z -200 with the weight 0.1. All of them give z 40 (0.8 * 100 + 0.2 * -200);
+    the 4 largest, made to sum to 1, give z 100. The plain box is at z 40.
+
+    The right pair, weights that do not sum to 1: 2 bones at x 150 with the weight 0.25. The box
+    of 120 comes out with half its size at x 75. Made to sum to 1, it keeps its size at x 150,
+    over the plain box of 60 at x 145. A palette blend that counts the shape's place with the
+    weights puts it at half the shape's place in the world, far from the plain box."""
+    red, blue = material(), material()
+    red["emissive"] = [0.8, 0.25, 0.2]
+    blue["emissive"] = [0.2, 0.3, 0.8]
+    blocks = [node("@_nifx " + name), red, blue, texturing(4), source_texture(BASE_TEXTURE)]
+    places = [[0.0, 0.0, 100.0]] * 4 + [[0.0, 0.0, -200.0]] * 2 + [[150.0, 0.0, 0.0]] * 2
+    bones = []
+    for i, place in enumerate(places):
+        bone = node("bone %d" % i)
+        bone["translation"] = list(place)
+        bones.append(len(blocks))
+        blocks[0]["children"].append(len(blocks))
+        blocks.append(bone)
+    many = [(b, 0.2 if b < 4 else 0.1) for b in range(6)]
+    half = [(6, 0.25), (7, 0.25)]
+    # Each pair: the skinned box, then the plain box at the place the engine gives it.
+    exhibits = [
+        ("many", moved(box(120.0), [-150.0, 0.0, 0.0]), many, box(120.0), [-280.0, 0.0, 40.0]),
+        ("half", box(120.0), half, box(60.0), [145.0, 0.0, 0.0]),
+    ]
+    for label, skinned, influences, plain, plain_at in exhibits:
+        shape = av_object("%s %s" % (name, label), flags)
+        shape.update({"type": "NiTriShape", "data": len(blocks) + 1, "skin": len(blocks) + 2, "properties": [1, 3]})
+        blocks[0]["children"].append(len(blocks))
+        blocks.append(shape)
+        blocks.append(tri_shape_data(skinned))
+        skin_blocks(blocks, 0, bones, [influences] * len(skinned[0]))
+        marker = av_object("%s %s plain" % (name, label), 0)
+        marker.update({"type": "NiTriShape", "data": len(blocks) + 1, "skin": -1, "properties": [2, 3], "translation": list(plain_at)})
+        blocks[0]["children"].append(len(blocks))
+        blocks.append(marker)
+        blocks.append(tri_shape_data(plain))
+    return write_file(name, blocks)
+
+
 def write_file(name, blocks):
     """Writes the blocks with the root 0, proven by a read and a write back."""
     data = nif40.write(blocks, [0])
@@ -387,6 +464,10 @@ def main():
         # BC7 base textures: MGE XE's DDS reader patch takes them on both renderers.
         ("bc7", make("bc7", b, base_texture="textures\\@_nifx\\bc7.dds")),
         ("bc7_srgb", make("bc7_srgb", b, base_texture="textures\\@_nifx\\bc7_srgb.dds")),
+        # The bit of MWSE's software skinning on a shape (`TriShapeFlags::SoftwareSkinningFlag`),
+        # which its `TriShape::linkObject` copies to the geometry data at the load.
+        ("skin_soft", make_skinned("skin_soft", 0x200)),
+        ("skin_hard", make_skinned("skin_hard", 0)),
     ]
     lines = ["-- The test NIFs of the flag support, made by tools/make_test_nifs.py (do not edit).",
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",
