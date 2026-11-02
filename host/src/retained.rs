@@ -6,11 +6,12 @@
 //! lights (`INSTANCE_LIGHTS`), of its visibility (`INSTANCE_STATE`), of its values (the
 //! `INSTANCE` record again) or its end (`INSTANCE_DELETE`).
 //!
-//! At the start of the world of a frame, and in each view that the extension replays (a
-//! mirror, the layers of the shadow map), the helper tests the bound of each visible
-//! instance against the planes of the view on the CPU and draws the ones in view with one
-//! indirect call for each bucket (the instances with one pipeline, one stencil reference,
-//! one pair of pool buffers, and, without the arrays of the frame, one set of textures).
+//! At the start of the world of a frame, and in each view that the extension replays (the
+//! water's mirror, with only the sky classes; the shadow maps do not use the table), the helper
+//! tests the bound of each visible instance against the planes of the view on the CPU and draws
+//! the ones in view with one indirect call for each bucket (the instances with one pipeline, one
+//! stencil reference, one pair of pool buffers, and, without the arrays of the frame, one set of
+//! textures).
 //! The values of the view (its matrices, the fog, the ambient light, the pixel step, the
 //! clip plane) are in a `Scene` uniform with a dynamic offset: the record of a retained
 //! instance has the flag 4 in `light_range.w`, and the shader takes those values from the
