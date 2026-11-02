@@ -94,11 +94,13 @@ def stages_for(kind, repo, paths, baseline=BASELINE):
         stages = [("plugin tests", plugin, ["cargo", "test", "--quiet"]),
                   ("host tests", os.path.join(plugin, "host"), ["cargo", "test", "--quiet"]),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check")),
-                  ("checks", plugin, tool("checks.py", "plugin"))]
+                  ("checks", plugin, tool("checks.py", "plugin")),
+                  ("docs", plugin, tool("docs.py", "--mge", mge))]
     else:
         stages = [("helper tests", mge, ["cargo", "test", "--quiet", "-p", "mgeHost64", "-p", "mge-config", "-p", "mge-probe"]),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", "--mge", mge)),
-                  ("checks", plugin, tool("checks.py", "mge", "--mge", mge))]
+                  ("checks", plugin, tool("checks.py", "mge", "--mge", mge)),
+                  ("docs", plugin, tool("docs.py", "--mge", mge))]
     if touches(paths, D3D8_PATHS[kind]):
         stages.append(("d3d8 build", mge, ["cargo", "build", "--quiet", "-p", "d3d8", "--profile", "release-dll"]))
         stages.append(("contract", plugin, tool("check_contract.py", "--mge", mge)))
@@ -242,7 +244,7 @@ def self_test():
         def names(kind, repo, *paths):
             return [name for name, _, _ in stages_for(kind, repo, paths)]
 
-        base = ["plugin tests", "host tests", "clippy baseline", "checks"]
+        base = ["plugin tests", "host tests", "clippy baseline", "checks", "docs"]
         assert names("plugin", plugin, "tools/x.py", "src/lib.rs") == base
         assert names("plugin", plugin, "host/src/shader.wgsl") == base + ["build for the gate", "replay gate"]
         assert names("plugin", plugin, "host/src/material.rs") == base + ["build for the gate", "replay gate"]
@@ -251,7 +253,7 @@ def self_test():
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"]
         for path in ("Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "host/.cargo/config.toml"):
             assert names("plugin", plugin, path) == base + ["build for the gate", "replay gate"], path
-        mge_base = ["helper tests", "clippy baseline", "checks"]
+        mge_base = ["helper tests", "clippy baseline", "checks", "docs"]
         for path in ("Cargo.toml", "Cargo.lock", "mgeHost64/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"):
             assert names("mge", mge, path) == mge_base + ["build for the gate", "replay gate"], path
         assert names("mge", mge, "mge-config/Cargo.toml") == mge_base + ["d3d8 build", "contract", "build for the gate", "replay gate"]

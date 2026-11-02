@@ -2231,6 +2231,7 @@ mod tests {
     /// go, or the helper draws it at its last place for the rest of the session.
     #[test]
     fn a_shape_destroyed_after_a_reset_sends_its_delete() {
+        let _turn = crate::main_thread::TestTurn::take();
         unsafe {
             let before = crate::shadow::main_thread_for_test();
             let mt = MainThread::claim();
