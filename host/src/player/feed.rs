@@ -1057,7 +1057,16 @@ impl Player {
             cull: derived.cull,
             stencil: derived.stencil,
         };
-        if self.extension.as_ref().is_some_and(|extension| extension.held_in_place(&held)) {
+        let in_place = self.extension.as_ref().is_some_and(|extension| extension.held_in_place(&held));
+        // The draws of the flush of the engine's queue wait for the sorted blends (`draw`). A held
+        // shape of the flush waits with them, or it goes before them: before the mask whose
+        // stencil it tests, when a sort adjust node in MWSE's ordered mode draws both.
+        let of_flush = self.plan.world_begun && self.stream.queue_marked && self.stream.shape_queued;
+        if of_flush && (in_place || self.extension.as_mut().is_some_and(|extension| extension.held_sorted(&held))) {
+            let facts = self.world_facts(false);
+            let centre = self.stream.sort_centre(&held.data.world[0], held.origin);
+            self.wait_for_sorted(centre, crate::Waiting::Held(Box::new(held), Box::new(facts)));
+        } else if in_place {
             let facts = self.world_facts(false);
             self.items.push(Item::HeldHere(Box::new(held), Box::new(facts)));
         } else {

@@ -2269,6 +2269,10 @@ impl Player {
                         let draw = draw.clone();
                         self.issue(&draw);
                     }
+                    crate::Waiting::Held(held, facts) => {
+                        self.draw_sorted_run(view, core::mem::take(&mut run));
+                        self.give_held_here((**held).clone(), facts);
+                    }
                     &crate::Waiting::Table(id) => {
                         self.renderer.counts.queued_places += 1;
                         // A held instance of a blended slot draws here, at its place in the

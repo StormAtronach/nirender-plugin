@@ -712,6 +712,8 @@ enum Waiting {
     /// The place of a sorted blend of the table in the engine's queue
     /// ([`tag::INSTANCE_QUEUED`]): the id of the instance.
     Table(u32),
+    /// A held shape of the engine's path that the flush draws: the extension draws it here.
+    Held(Box<HeldDraw>, Box<WorldFacts>),
 }
 
 /// Reads the records of a stream in their order and draws the frames.
