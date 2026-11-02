@@ -827,6 +827,10 @@ struct Player {
     held_draws: Vec<Item>,
     /// The shapes of the frame that the extension took, for [`Extension::draw_held`].
     taken: Vec<HeldDraw>,
+    /// The held instances of blended slots that wait for their place in the engine's sorted
+    /// queue ([`Extension::held_sorted`]): the id of the instance, its draw and the facts of
+    /// the world where it was held.
+    held_sorted_wait: Vec<(u32, HeldDraw, WorldFacts)>,
     /// The lights of all draws of the frame, in the order of the draws.
     frame_lights: Vec<LightData>,
     /// The bones of the skinned draws of the frame, for the bone buffer.

@@ -670,9 +670,19 @@ pub trait Extension {
         false
     }
 
+    /// True when the extension draws this held instance of a blended slot at its place in the
+    /// engine's sorted queue, in `draw_held_in_place`, and not in `draw_held`: a shape that
+    /// blends draws among the engine's blends, far to near, as the game draws it. An instance
+    /// that the engine did not queue draws as in `draw_held`. A shape that `held_in_place`
+    /// named is drawn there, whatever this says.
+    fn held_sorted(&self, _held: &HeldDraw) -> bool {
+        false
+    }
+
     /// The renderer calls this for each held shape that `held_in_place` named, at the place of
     /// the shape in the order of the game: after the draws of the game before it, before
-    /// those after it. The pass, `scene.picture` (a copy of the picture there),
+    /// those after it. For an instance that `held_sorted` named, the place is that of the
+    /// instance in the engine's sorted queue. The pass, `scene.picture` (a copy of the picture there),
     /// `scene.depth` and `scene.lights` are as for `draw_held`.
     fn draw_held_in_place(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _held: &[HeldDraw], _replay: &mut dyn Replay) {}
 
