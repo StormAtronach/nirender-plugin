@@ -11,13 +11,16 @@ builds do not pile up. A step of each merge. Without `--apply` it only lists.
 
 All of these must hold before a worktree goes:
 
-- Its branch is merged into the target of its repository, or `--name` names it.
-- `git status` shows no change and no untracked file, and each ignored file is a build output or
+- Its branch is merged into the target of its repository, or `--name` names it. With or without
+  a name, a ref must hold its commit: a removal must not leave a commit on no ref.
+- `git status` works and shows no change and no untracked file, and each ignored file is a build output or
   in `results`: `git worktree remove` deletes ignored files without a word.
 - No process uses it: a command line or a program path in it, or a current folder in it. This is
   looked at again just before the removal. It does not see a session that has a worktree in mind
   and no command running there: a standing worktree needs `.keep-worktree` or a line in
-  SHARED_CHECKOUTS.
+  SHARED_CHECKOUTS. System processes give no current folder. It does not see a junction elsewhere
+  that points into a worktree either.
+- The tool does not run from it.
 - No game and no helper runs: a run writes into its worktree's results, and the walk would disturb
   a timing. The tool stops before the walk.
 - Nothing was written in it for `--idle-hours` hours, and it has no `.keep-worktree` file, and
@@ -30,15 +33,18 @@ Then, in this order, and any failure leaves the worktree as it is, apart from wh
 
 1. A real `results` folder is copied to E:\\nirender-keep\\runs-<date>, unless a runs-* folder holds
    the same run; the number and the size of the files must agree.
-2. Each reparse point in the tree is removed as a link, which leaves its target. `git worktree
-   remove` goes through a junction: on 2026-10-29 one deleted E:\\nirender-results that way.
+2. A new walk finds each reparse point in the tree, and each is removed as a link, which leaves its
+   target. `git worktree remove` goes through a junction: on 2026-10-29 one deleted
+   E:\\nirender-results that way. A folder that the walk cannot read, or a link that is still there
+   after this, refuses the removal.
 3. `git worktree remove`, never --force, then `git worktree prune`. Branches stay.
 
 What `git worktree remove` leaves goes on a list with its size, for the owner: this tool makes no
 recursive delete of its own. The plain folders in C:\\tmp are listed too, and nothing touches them.
 `cargo sweep` is not here: it finds nothing in the layout of our targets (the board, 2026-10-29).
 
-Each act goes to E:\\nirender-keep\\clean-worktrees.log.
+Each act goes to E:\\nirender-keep\\clean-worktrees.log, with the target of each link removed, so
+that a link can be made again when the removal then fails.
 """
 import argparse
 import ctypes
@@ -89,11 +95,13 @@ def is_play_set(path):
 def decide(tree):
     """What happens to a worktree, from its facts: a dict with `path`, `main`, `branch` (None when
     detached), `merged`, `named`, `changes`, `locked`, `marker`, `used_by`, `depended_by`,
-    `other_ignored`, `idle_hours`, `idle_limit` and `unread`. Returns (True, the reason it may go) or (False, the
-    reason it stays). The first refusal in this order is the reason."""
+    `other_ignored`, `status_error`, `on_a_ref`, `idle_hours`, `idle_limit` and `unread`. Returns
+    (True, the reason it may go) or (False, the reason it stays). The first refusal in this order is the reason."""
     path = tree["path"]
     if tree["main"] or any(same_path(path, os.path.join(REPOS_ROOT, name)) for name in SHARED_CHECKOUTS):
         return False, "a main checkout"
+    if same_or_under(HERE, path):
+        return False, "the tool runs from it"
     if same_or_under(path, KEEP_ROOT):
         return False, "under E:\\nirender-keep"
     if is_play_set(path):
@@ -106,6 +114,8 @@ def decide(tree):
         return False, "in use: " + ", ".join(tree["used_by"][:3])
     if tree["depended_by"]:
         return False, "a Cargo.toml names it by path: " + ", ".join(tree["depended_by"][:3])
+    if tree["status_error"]:
+        return False, "git status failed: " + tree["status_error"]
     if tree["changes"]:
         return False, "%d changed or untracked files" % tree["changes"]
     if tree["other_ignored"]:
@@ -114,6 +124,8 @@ def decide(tree):
         return False, "%d folders could not be read" % tree["unread"]
     if tree["idle_hours"] < tree["idle_limit"]:
         return False, "written %.1f hours ago" % tree["idle_hours"]
+    if not tree["on_a_ref"]:
+        return False, "no ref holds its commit: make a branch first"
     if tree["named"]:
         return True, "named on the command line"
     if tree["branch"] is None:
@@ -332,7 +344,9 @@ def users_of(tree_path, running):
 
 
 def git(tree, *args):
-    return subprocess.run(["git", "-C", tree, *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    # A hook of git sets GIT_DIR, which turns each command to the repository of that hook.
+    clean = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    return subprocess.run(["git", "-C", tree, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", env=clean)
 
 
 def worktrees_of(repository):
@@ -361,14 +375,18 @@ def facts_of(tree, target, repository, running, dependents, named, idle_limit, n
     size, files, newest, links, unread = walk(path)
     head = tree["head"]
     merged = bool(tree["branch"]) and git(repository, "merge-base", "--is-ancestor", head, target).returncode == 0
-    status = git(path, "status", "--porcelain", "--ignored").stdout.splitlines()
+    status_run = git(path, "status", "--porcelain", "--ignored")
+    status = status_run.stdout.splitlines()
     ignored = [row[3:] for row in status if row.startswith("!! ")]
+    refs = git(repository, "for-each-ref", "--contains", head, "--format=%(refname)")
     results = real_results(path)
     return {
         **tree,
         "target": target,
         "merged": merged,
         "named": any(same_path(path, name) for name in named),
+        "status_error": status_run.stderr.strip() or "code %d" % status_run.returncode if status_run.returncode != 0 else "",
+        "on_a_ref": refs.returncode == 0 and bool(refs.stdout.strip()),
         "changes": len(status) - len(ignored),
         "other_ignored": [name for name in ignored if not BUILD_OUTPUTS.fullmatch(name)],
         "marker": os.path.exists(os.path.join(path, KEEP_MARKER)),
@@ -400,23 +418,46 @@ def gigabytes(size):
     return "%.1f GB" % (size / 1e9)
 
 
-def remove(tree, repository, date):
-    """The three steps of removal. Returns what is left there, as (path, bytes), or raises OSError."""
-    path = tree["path"]
-    if tree["results"]:
-        for copied in copy_results(tree["results"], KEEP_ROOT, date):
-            log_line("  copied to %s" % copied, True)
-    for link in tree["links"]:
+def clear_links(path, removed):
+    """Removes each reparse point of a tree as a link, from a walk made now: a list from before may
+    lack one, and git goes through a link. Adds each to `removed` as link -> target."""
+    _, _, _, links, unread = walk(path)
+    if unread:
+        raise OSError("%d folders could not be read" % unread)
+    for link in links:
         target = os.path.realpath(link)
         remove_link(link)
+        removed.append("%s -> %s" % (link, target))
         log_line("  link removed: %s (its target %s stays: %s)" % (link, target, os.path.exists(target)), True)
+    _, _, _, links, unread = walk(path)
+    if links or unread:
+        raise OSError("after the links went: %d links, %d folders could not be read" % (len(links), unread))
+
+
+def remove(tree, repository, date, removed):
+    """The three steps of removal. Returns what is left there, as (path, bytes), or raises OSError.
+    `removed` gets the links that went, also when a later step fails."""
+    path = tree["path"]
+    results = real_results(path)
+    if results:
+        for copied in copy_results(results, KEEP_ROOT, date):
+            log_line("  copied to %s" % copied, True)
+    clear_links(path, removed)
     result = git(repository, "worktree", "remove", path)
     if result.returncode != 0:
-        raise OSError("git worktree remove: " + result.stderr.strip())
+        raise OSError("git worktree remove: %s (the tree stays; a removal that failed midway leaves a part of it)" % result.stderr.strip())
     git(repository, "worktree", "prune")
     if os.path.lexists(path):
         return path, walk(path)[0]
     return None
+
+
+def failure_text(error, removed):
+    """What a failed removal did. The copy of results does not change the tree."""
+    text = "  NOT REMOVED: %s" % error
+    if removed:
+        text += "; links removed, make them again if the tree stays: " + ", ".join(removed)
+    return text
 
 
 def plain_folders():
@@ -486,15 +527,16 @@ def main():
     failed = 0
     for row in go:
         log_line("removing %s [%s] %s, %s" % (row["path"], row["branch"] or "detached", row["reason"], gigabytes(row["size"])), True)
+        removed = []
         try:
             now_running, _ = processes()
             busy = games_in(now_running) + users_of(row["path"], now_running)
             if busy:
                 raise OSError("in use now: " + ", ".join(busy[:3]))
-            remains = remove(row, row["repository"], date)
+            remains = remove(row, row["repository"], date, removed)
         except OSError as error:
             failed += 1
-            log_line("  LEFT AS IT IS: %s" % error, True)
+            log_line(failure_text(error, removed), True)
             continue
         log_line("  removed" if remains is None else "  git left the folder: %s" % gigabytes(remains[1]), True)
         if remains:
@@ -506,13 +548,22 @@ def main():
     return 1 if failed else 0
 
 
+def make_junction(link, target):
+    result = subprocess.run(["cmd", "/c", "mklink", "/J", link, target], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def self_test():
-    base = {"path": "C:\\repos\\nirender-plugin-x", "main": False, "branch": "fix/x", "merged": True, "named": False, "changes": 0, "other_ignored": [], "locked": False, "marker": False, "used_by": [], "depended_by": [], "idle_hours": 48.0, "idle_limit": 6.0, "unread": 0}
+    global KEEP_ROOT, LOG
+    base = {"path": "C:\\repos\\nirender-plugin-x", "main": False, "branch": "fix/x", "merged": True, "named": False, "changes": 0, "other_ignored": [], "status_error": "", "on_a_ref": True, "locked": False, "marker": False, "used_by": [], "depended_by": [], "idle_hours": 48.0, "idle_limit": 6.0, "unread": 0}
     assert decide(base) == (True, "merged")
     for change, word in [
         ({"merged": False}, "not merged"),
         ({"branch": None}, "only by name"),
         ({"changes": 3}, "3 changed"),
+        ({"status_error": "not a git repository"}, "git status failed"),
+        ({"on_a_ref": False}, "no ref"),
+        ({"path": HERE}, "runs from it"),
         ({"other_ignored": ["captures/"]}, "captures/"),
         ({"path": os.path.join(REPOS_ROOT, "MGE-XE-G7-train")}, "main checkout"),
         ({"locked": True}, "locked"),
@@ -531,7 +582,7 @@ def self_test():
     # A name passes the tests of the branch, and no other test.
     assert decide({**base, "merged": False, "named": True})[0]
     assert decide({**base, "branch": None, "named": True})[0]
-    for change in ({"changes": 1}, {"used_by": ["x 1"]}, {"marker": True}, {"path": "C:\\tmp\\play185\\x"}, {"main": True}, {"idle_hours": 0.5}, {"depended_by": ["y"]}):
+    for change in ({"changes": 1}, {"used_by": ["x 1"]}, {"marker": True}, {"path": "C:\\tmp\\play185\\x"}, {"main": True}, {"idle_hours": 0.5}, {"depended_by": ["y"]}, {"on_a_ref": False}, {"status_error": "x"}):
         assert not decide({**base, "named": True, **change})[0], change
     for name in ("target/", "bin/", "results/", "tools/out/", "tools/__pycache__/", "tools/ports/__pycache__/"):
         assert BUILD_OUTPUTS.fullmatch(name), name
@@ -545,7 +596,7 @@ def self_test():
     assert users_of("C:\\repos\\tree", [{"pid": 2, "name": "sh", "exe": "", "command": "sh", "cwd": "C:\\repos\\tree\\src\\"}]) == ["sh 2"]
     assert current_folder(os.getpid()) is not None and same_or_under(os.getcwd(), current_folder(os.getpid()))
 
-    with tempfile.TemporaryDirectory() as temp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
         # A real junction: the walk does not go through it, and its removal leaves its target.
         outside = os.path.join(temp, "outside")
         os.makedirs(outside)
@@ -554,8 +605,7 @@ def self_test():
         os.makedirs(os.path.join(tree, "src"))
         open(os.path.join(tree, "src", "a.txt"), "w").write("abc")
         link = os.path.join(tree, "results")
-        result = subprocess.run(["cmd", "/c", "mklink", "/J", link, outside], capture_output=True, text=True)
-        assert result.returncode == 0, result.stderr
+        make_junction(link, outside)
         size, files, _, links, unread = walk(tree)
         assert (size, files, links, unread) == (3, 1, [link], 0), (size, files, links, unread)
         assert real_results(tree) is None
@@ -593,6 +643,70 @@ def self_test():
         os.makedirs(member)
         open(os.path.join(member, "Cargo.toml"), "w").write('a = { path = "../../tree/host" }\nb = { path = "../inside" }\n')
         assert path_dependencies(os.path.join(temp, "other")) == {os.path.join(temp, "tree", "host")}
+
+        # A real repository and real worktrees, with the log and the keep folder here.
+        KEEP_ROOT, LOG = keep, os.path.join(temp, "test.log")
+        repository = os.path.join(temp, "repository")
+        commit = ("-c", "user.name=test", "-c", "user.email=test@test", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "x")
+        assert git(temp, "init", "-q", "-b", "master", repository).returncode == 0
+        open(os.path.join(repository, ".gitignore"), "w").write("target/\n")
+        git(repository, "add", ".gitignore")
+        assert git(repository, *commit).returncode == 0
+
+        def worktree(name, detached=False):
+            path = os.path.join(temp, name)
+            assert git(repository, "worktree", "add", "-q", "-b", name, path).returncode == 0
+            if detached:
+                assert git(path, "checkout", "-q", "--detach").returncode == 0
+            return path
+
+        def facts(path, branch):
+            tree = {"path": path, "main": False, "branch": branch, "head": git(path, "rev-parse", "HEAD").stdout.strip(), "locked": False, "prunable": False}
+            return facts_of(tree, "master", repository, [], {}, [], 0.0, time.time())
+
+        # A junction that came after the facts: the removal finds it, and its target stays.
+        late = worktree("late")
+        row = facts(late, "late")
+        assert row["links"] == [] and decide(row) == (True, "merged"), decide(row)
+        os.makedirs(os.path.join(late, "target"))
+        outside2 = os.path.join(temp, "outside2")
+        os.makedirs(outside2)
+        open(os.path.join(outside2, "precious.txt"), "w").write("y" * 10)
+        make_junction(os.path.join(late, "target", "link"), outside2)
+        removed = []
+        assert remove(row, repository, "today", removed) is None
+        assert not os.path.lexists(late) and len(removed) == 1
+        assert os.path.getsize(os.path.join(outside2, "precious.txt")) == 10
+
+        # A status that fails does not read as clean: the state of a half-failed removal.
+        broken = worktree("broken")
+        os.remove(os.path.join(broken, ".git"))
+        row = facts(broken, "broken")
+        assert not decide(row)[0] and "git status failed" in decide(row)[1], decide(row)
+
+        # A name does not take a commit that no ref holds, and does take one that a ref holds.
+        loose = worktree("loose", detached=True)
+        row = {**facts(loose, None), "named": True}
+        assert decide(row) == (True, "named on the command line"), decide(row)
+        assert git(loose, *commit).returncode == 0
+        row = {**facts(loose, None), "named": True}
+        assert not decide(row)[0] and "no ref" in decide(row)[1], decide(row)
+
+        # A removal that git refuses after the links went says so, with the target of each link.
+        refused = worktree("refused")
+        row = facts(refused, "refused")
+        os.makedirs(os.path.join(refused, "target"))
+        make_junction(os.path.join(refused, "target", "link"), outside2)
+        open(os.path.join(refused, "new.txt"), "w").write("z")
+        removed = []
+        try:
+            remove(row, repository, "today", removed)
+            raise AssertionError("no refusal")
+        except OSError as error:
+            text = failure_text(error, removed)
+        assert "NOT REMOVED" in text and "the tree stays" in text and "links removed" in text and outside2 in text, text
+        assert "links removed" not in failure_text(OSError("x"), [])
+        assert os.path.exists(os.path.join(refused, "new.txt"))
     print("clean_merged_worktrees self-test: ok")
     return 0
 
