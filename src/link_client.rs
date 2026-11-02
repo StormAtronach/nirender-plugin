@@ -1333,7 +1333,7 @@ fn node_class(node: usize, roots: &Roots) -> Option<u32> {
 /// The radius of a point light, for the helper's fade: MGE XE's recovery from the light's
 /// attenuation (`MGE_LightFadeRadius`), the one its light attach radius takes, so that the fade
 /// ends inside the attach radius for every kind of light. 0 when the attenuation gives no radius:
-/// the light has no fade. The owner's D64. [I] A spell light can read long under a quadratic
+/// the light has no fade. The owner's D64. \[I\] A spell light can read long under a quadratic
 /// `[LightAttenuation]`: `MWBridge::pointLightRadius` names the case.
 ///
 /// A `d3d8.dll` without the function: the radius the engine passed to its attach pass when it
