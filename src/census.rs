@@ -60,6 +60,21 @@ extern "system" {
     fn GetModuleFileNameA(module: usize, name: *mut u8, size: u32) -> u32;
 }
 
+/// The base address of the module that holds `address`, or 0 for memory outside any module.
+///
+/// # Safety
+///
+/// No condition: any value of `address` is allowed. It is `unsafe` because of the call of the
+/// Windows function.
+pub unsafe fn module_base_of(address: usize) -> usize {
+    let mut module = 0usize;
+    // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | UNCHANGED_REFCOUNT
+    if GetModuleHandleExA(4 | 2, address as *const c_void, &mut module) == 0 {
+        return 0;
+    }
+    module
+}
+
 /// The file name of the module that holds `address`, or "?" for memory outside any module.
 ///
 /// # Safety
@@ -67,9 +82,8 @@ extern "system" {
 /// No condition: any value of `address` is allowed. It is `unsafe` because of the calls of the
 /// Windows functions.
 pub unsafe fn module_of(address: usize) -> String {
-    let mut module = 0usize;
-    // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | UNCHANGED_REFCOUNT
-    if GetModuleHandleExA(4 | 2, address as *const c_void, &mut module) == 0 || module == 0 {
+    let module = module_base_of(address);
+    if module == 0 {
         return "?".into();
     }
     let mut name = [0u8; 260];
