@@ -85,7 +85,13 @@ pub unsafe fn code_patch_picture() -> bool {
             if target != DRAW && rd::<u16>(target, 0) == 0x05C6 && rd::<u8>(target, 6) == 1 {
                 address = rd::<u32>(target, 2) as usize;
                 crate::log!("shapes: the Code Patch draws the picture of the character, its flags are at {address:#x}");
+            } else if target != DRAW {
+                let bytes: [u8; 8] = rd(target, 0);
+                crate::log!("shapes: the call at {CALL:#x} goes to {target:#x}, which is not the game's draw or the known Code Patch; its first bytes are {bytes:02x?}; the picture of the character takes no Code Patch draws");
             }
+        } else {
+            let first: u8 = rd(CALL, 0);
+            crate::log!("shapes: the code at {CALL:#x} starts with {first:#04x}, not a call; the picture of the character takes no Code Patch draws");
         }
         CODE_PATCH_FLAGS.store(address, Ordering::Relaxed);
     }
