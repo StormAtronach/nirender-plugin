@@ -35,6 +35,13 @@ a cylinder), a lit material, a base texture of the level, and the property under
                  it: the edges of each pair line up only with every influence and the raw
                  weights (`make_skinned`)
     skin_hard    the same file without the flag (the control): the edges do not line up
+    pass_decal_glow a decal with an alpha (`decal.dds`, opaque on the right half only) and a
+                 glow map: the glow is a pass of its own and shows on the whole box
+    pass_decal_env the same decal and an environment map without a gloss map, the cylinder:
+                 the map is a pass of its own and shows on the whole cylinder
+    base_set1    a checker as the base map on coordinate set 1, which spans a quarter of the
+                 texture: 2 cells across a face show set 1, 8 cells show set 0
+    base_set9    the same with the set 9, which the geometry does not have: it takes the last
 
 The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
 write of the level's own files. The texture effect is attached as the level's exhibits do:
@@ -58,6 +65,10 @@ BASE_TEXTURE = "textures\\@_nif\\blankwhite.dds"
 # box, which a position maps along one line of it.
 TEXTURES = os.path.join(REPO, "mod", "textures", "@_nifx")
 EFFECT_TEXTURE = "textures\\@_nifx\\checker.dds"
+DECAL_TEXTURE = "textures\\@_nifx\\decal.dds"
+# The places in the list of maps of a NiTexturingProperty.
+GLOW_MAP = 4
+DECAL_MAP = 6
 IDENTITY = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 ZERO3 = [0.0, 0.0, 0.0]
 # The usual mapping of a reflection vector onto a sphere map: half of x and y, plus a half.
@@ -171,6 +182,12 @@ def material(specular=None, glossiness=0.0):
     return b
 
 
+def dark_material():
+    b = material()
+    b.update({"ambient": [0.1, 0.1, 0.1], "diffuse": [0.1, 0.1, 0.1]})
+    return b
+
+
 def source_texture(file_name, pixel_layout=0, use_mipmaps=0, alpha_format=0):
     b = object_net()
     b.update({"type": "NiSourceTexture", "use_external": 1, "file_name": file_name, "pixel_layout": pixel_layout,
@@ -228,13 +245,23 @@ def point_light(position, diffuse=(1.0, 1.0, 1.0)):
     return b
 
 
-def make(name, geometry, extra_properties=(), effect=None, material_block=None, light=None, base_texture=BASE_TEXTURE):
+def make(name, geometry, extra_properties=(), effect=None, material_block=None, light=None, base_texture=BASE_TEXTURE, maps=None, base_set=None):
     """The blocks: 0 root, 1 shape, 2 data, 3 material, 4 texturing, 5 texture, then the
-    extra properties, then the effect and its texture, then the light."""
+    textures of `maps` (the place in the list of maps, the file), then the extra properties,
+    then the effect and its texture, then the light. With `base_set` the geometry has a second
+    coordinate set, a quarter of the first, and the base map names `base_set`."""
     blocks = [node("@_nifx " + name), None, tri_shape_data(geometry), material_block or material(), texturing(5), source_texture(base_texture)]
     shape = av_object(name, 0)
     shape.update({"type": "NiTriShape", "data": 2, "skin": -1, "properties": [3, 4]})
     blocks[1] = shape
+    if base_set is not None:
+        data = blocks[2]["tridata"]
+        data["uv_set_count"] = 2
+        data["uv_sets"].append([[u * 0.25, v * 0.25] for u, v in data["uv_sets"][0]])
+        blocks[4]["textures"][0]["uv_set"] = base_set
+    for place, file_name in (maps or {}).items():
+        blocks[4]["textures"][place] = dict(blocks[4]["textures"][0], source=len(blocks))
+        blocks.append(source_texture(file_name, 5, 2, 3))
     for prop in extra_properties:
         shape["properties"].append(len(blocks))
         blocks.append(prop)
@@ -367,20 +394,31 @@ def write_file(name, blocks):
 
 
 def write_checker(path, size=64, cell=8):
-    """An uncompressed DDS (A8R8G8B8, with its mipmaps) of a checker of white and dark blue
-    cells, with one red cell at the origin: the texture of the effect exhibits, which both
-    paths of the renderer sample through the generated coordinates. The mipmaps keep a far
-    exhibit from aliasing differently on the two paths (seen 2026-10-16 without them)."""
-    import struct
+    """A checker of white and dark blue cells, with one red cell at the origin: the texture of
+    the effect exhibits, which both paths of the renderer sample through the generated
+    coordinates. The mipmaps keep a far exhibit from aliasing differently on the two paths
+    (seen 2026-10-16 without them)."""
     level = []
     for y in range(size):
         for x in range(size):
             if x < cell and y < cell:
-                level.append((0, 0, 255))
+                level.append((0, 0, 255, 255))
             elif (x // cell + y // cell) % 2 == 0:
-                level.append((255, 255, 255))
+                level.append((255, 255, 255, 255))
             else:
-                level.append((128, 32, 16))
+                level.append((128, 32, 16, 255))
+    write_dds(path, size, level)
+
+
+def write_decal(path, size=64):
+    """Green, opaque on the right half and transparent on the left: a stage that joins the
+    decal's pass shows only on the right half."""
+    write_dds(path, size, [(0, 160, 0, 255 if x >= size // 2 else 0) for _ in range(size) for x in range(size)])
+
+
+def write_dds(path, size, level):
+    """An uncompressed DDS (A8R8G8B8, with its mipmaps) of pixels of blue, green, red, alpha."""
+    import struct
     levels = [(size, level)]
     width = size
     while width > 1:
@@ -389,7 +427,7 @@ def write_checker(path, size=64, cell=8):
         for y in range(half):
             for x in range(half):
                 quad = [level[(2 * y + dy) * width + 2 * x + dx] for dy in (0, 1) for dx in (0, 1)]
-                smaller.append(tuple(sum(p[k] for p in quad) // 4 for k in range(3)))
+                smaller.append(tuple(sum(p[k] for p in quad) // 4 for k in range(4)))
         level, width = smaller, half
         levels.append((width, level))
     # DDSD_CAPS, HEIGHT, WIDTH, PITCH, PIXELFORMAT and MIPMAPCOUNT; DDSCAPS_TEXTURE, COMPLEX
@@ -399,8 +437,8 @@ def write_checker(path, size=64, cell=8):
     assert len(header) == 128
     pixels = bytearray()
     for _, pixels_of_level in levels:
-        for b, g, r in pixels_of_level:
-            pixels += bytes((b, g, r, 255))
+        for pixel in pixels_of_level:
+            pixels += bytes(pixel)
     open(path, "wb").write(header + pixels)
 
 
@@ -426,6 +464,7 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     os.makedirs(TEXTURES, exist_ok=True)
     write_checker(os.path.join(TEXTURES, "checker.dds"))
+    write_decal(os.path.join(TEXTURES, "decal.dds"))
     # The BC7 textures (MGE XE's BC7, the DX10 header): the plain and the sRGB form, the
     # same blocks. Both draw as stored on both renderers (the BC7 design).
     import bc7
@@ -468,6 +507,13 @@ def main():
         # which its `TriShape::linkObject` copies to the geometry data at the load.
         ("skin_soft", make_skinned("skin_soft", 0x200)),
         ("skin_hard", make_skinned("skin_hard", 0)),
+        # A stage of blend slot 0 after a decal (`NiDX8TexturePass::initOrCheckSubpass` 0x6B3D70).
+        # A dark material: on a white base in the sun the added stage has no room to show.
+        ("pass_decal_glow", make("pass_decal_glow", b, maps={GLOW_MAP: EFFECT_TEXTURE, DECAL_MAP: DECAL_TEXTURE}, material_block=dark_material())),
+        ("pass_decal_env", make("pass_decal_env", c, effect=(2, 2, SPHERE_MATRIX, SPHERE_TRANSLATION), maps={DECAL_MAP: DECAL_TEXTURE}, material_block=dark_material())),
+        # The coordinate set of the base map (MWSE's patch at 0x6B42AC).
+        ("base_set1", make("base_set1", b, base_texture=EFFECT_TEXTURE, base_set=1)),
+        ("base_set9", make("base_set9", b, base_texture=EFFECT_TEXTURE, base_set=9)),
     ]
     lines = ["-- The test NIFs of the flag support, made by tools/make_test_nifs.py (do not edit).",
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",
