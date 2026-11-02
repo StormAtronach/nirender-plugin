@@ -240,8 +240,8 @@ pub enum ReadingCall<'a> {
     Class(u32),
     /// [`Extension::draw_held`] with these shapes.
     Held(&'a [HeldDraw]),
-    /// [`Extension::draw_held_in_place`] with this shape.
-    HeldInPlace(&'a HeldDraw),
+    /// [`Extension::draw_held_in_place`] with these shapes.
+    HeldInPlace(&'a [HeldDraw]),
     /// [`Extension::post`].
     Post,
 }
@@ -685,8 +685,10 @@ pub trait Extension {
     /// The renderer calls this for each held shape that `held_in_place` named, at the place of
     /// the shape in the order of the game: after the draws of the game before it, before
     /// those after it. For an instance that `held_sorted` named, the place is that of the
-    /// instance in the engine's sorted queue. The pass, `scene.picture` (a copy of the picture there),
-    /// `scene.depth` and `scene.lights` are as for `draw_held`.
+    /// instance in the engine's sorted queue. Shapes that follow each other in the queue, with no
+    /// other draw between them, come in one call: `scene.picture` does not have them. The pass,
+    /// `scene.picture` (a copy of the picture there), `scene.depth` and `scene.lights` are as for
+    /// `draw_held`.
     fn draw_held_in_place(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _held: &[HeldDraw], _replay: &mut dyn Replay) {}
 
     /// True when the extension wants its call `draw_held` in this frame without a held shape,

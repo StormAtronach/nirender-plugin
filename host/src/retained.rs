@@ -2179,7 +2179,7 @@ impl Player {
             if in_queue || (queued && in_place) {
                 self.held_sorted_wait.push((id, h, *facts));
             } else if in_place {
-                self.give_held_here(h, facts);
+                self.give_held_here(core::slice::from_ref(&h), facts);
             } else {
                 self.renderer.counts.held_sorted_fallback += sorted as u64;
                 self.taken.push(h);
@@ -2259,21 +2259,29 @@ impl Player {
         let deferred_keys: Vec<u64> = deferred.iter().map(|entry| entry.0).collect();
         // The places of the table that follow each other draw as one run.
         let mut run: Vec<(u64, u32, u32, u32)> = Vec::new();
+        // The held shapes that follow each other in the queue, with no other draw between them,
+        // go in one call. They draw from one copy of the picture, so that no surface shows another
+        // through its refraction (`flushWaterVolumes` of the Direct3D 9 path).
+        let mut surfaces: Vec<HeldDraw> = Vec::new();
+        let mut surfaces_facts: Option<WorldFacts> = None;
         for pick in merge_picks(&kept_keys, &deferred_keys) {
             match pick {
                 Pick::Table(start, end) => {
                     self.draw_sorted_run(view, core::mem::take(&mut run));
+                    self.give_held_run(&mut surfaces, surfaces_facts);
                     self.draw_sorted_run(view, kept[start..end].to_vec());
                 }
                 Pick::Engine(j) => match &deferred[j].1 {
                     crate::Waiting::Draw(draw) => {
                         self.draw_sorted_run(view, core::mem::take(&mut run));
+                        self.give_held_run(&mut surfaces, surfaces_facts);
                         let draw = draw.clone();
                         self.issue(&draw);
                     }
                     crate::Waiting::Held(held, facts) => {
                         self.draw_sorted_run(view, core::mem::take(&mut run));
-                        self.give_held_here((**held).clone(), facts);
+                        surfaces.push((**held).clone());
+                        surfaces_facts = Some(**facts);
                     }
                     &crate::Waiting::Table(id) => {
                         self.renderer.counts.queued_places += 1;
@@ -2282,15 +2290,24 @@ impl Player {
                         if let Some(at) = self.held_sorted_wait.iter().position(|waiting| waiting.0 == id) {
                             let (_, held, facts) = self.held_sorted_wait.remove(at);
                             self.draw_sorted_run(view, core::mem::take(&mut run));
-                            self.give_held_here(held, &facts);
-                        } else if self.retained.placed_entries(id, &mut run) != 0 {
-                            self.renderer.counts.queued_not_sorted += 1;
+                            surfaces.push(held);
+                            surfaces_facts = Some(facts);
+                        } else {
+                            let mut placed = Vec::new();
+                            if self.retained.placed_entries(id, &mut placed) != 0 {
+                                self.renderer.counts.queued_not_sorted += 1;
+                            }
+                            if !placed.is_empty() {
+                                self.give_held_run(&mut surfaces, surfaces_facts);
+                                run.append(&mut placed);
+                            }
                         }
                     }
                 },
             }
         }
         self.draw_sorted_run(view, run);
+        self.give_held_run(&mut surfaces, surfaces_facts);
         self.retained.kept_sorted = all_kept;
         if late {
             self.merge_late_depth();
@@ -2299,6 +2316,15 @@ impl Player {
 }
 
 impl Player {
+    /// Gives the extension the held shapes that wait in `surfaces`, in one call, and empties
+    /// the list. Nothing without shapes.
+    fn give_held_run(&mut self, surfaces: &mut Vec<HeldDraw>, facts: Option<WorldFacts>) {
+        if let (false, Some(facts)) = (surfaces.is_empty(), facts) {
+            self.give_held_here(surfaces, &facts);
+            surfaces.clear();
+        }
+    }
+
     /// Draws a run of the table's sorted entries into the pass ([`Sorted::Only`]), with the
     /// view of the main pass. Nothing without entries or without that view.
     fn draw_sorted_run(&mut self, view: Option<RetainedView>, entries: Vec<(u64, u32, u32, u32)>) {

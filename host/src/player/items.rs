@@ -197,7 +197,7 @@ impl Player {
                 Item::WorldEnd(facts) => self.end_world(&facts),
                 Item::SortedBlends(generation) => self.draw_retained_sorted(generation),
                 Item::WalkPlaces(run) => self.draw_walk_run(run),
-                Item::HeldHere(held, facts) => self.give_held_here(*held, &facts),
+                Item::HeldHere(held, facts) => self.give_held_here(core::slice::from_ref(&*held), &facts),
                 Item::Replace(class, facts, drawn) => self.replace_class(class, &facts, drawn),
                 Item::Post(facts) => self.post_process(&facts),
                 Item::FirstPersonDepth(projection) => self.merge_first_person_depth(&projection),
@@ -599,12 +599,13 @@ impl Player {
         self.extension = Some(extension);
     }
 
-    /// Gives the extension a held shape in its place. See [`Extension::draw_held_in_place`].
-    pub(crate) fn give_held_here(&mut self, held: HeldDraw, facts: &WorldFacts) {
+    /// Gives the extension held shapes in their place, from one copy of the picture. See
+    /// [`Extension::draw_held_in_place`].
+    pub(crate) fn give_held_here(&mut self, held: &[HeldDraw], facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
         // Inside the sorted blends this is no item of its own: the run of draws before it ends here.
         self.end_run();
-        let (picture, depth) = self.copy_for(extension.reads(ReadingCall::HeldInPlace(&held)), false, ("picture: a held draw in place", "depth: a held draw in place"));
+        let (picture, depth) = self.copy_for(extension.reads(ReadingCall::HeldInPlace(held)), false, ("picture: a held draw in place", "depth: a held draw in place"));
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let commands = self.renderer.commands.clone();
         let mut scene = facts.view(&device, &queue, &commands, format);
@@ -622,7 +623,7 @@ impl Player {
             let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: a held draw in its place");
-            extension.draw_held_in_place(&scene, pass, core::slice::from_ref(&held), &mut replayer);
+            extension.draw_held_in_place(&scene, pass, held, &mut replayer);
             pass.pop_debug_group();
             self.renderer.counts.times[TIME_EXT_CLASS] += clock.elapsed();
             self.world_draws = world;
