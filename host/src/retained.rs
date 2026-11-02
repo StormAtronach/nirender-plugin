@@ -362,7 +362,7 @@ pub struct RetainedSet {
     dirty_entries: Vec<u32>,
     entries_origin: [f64; 3],
     /// The engine's words of this frame for the live check, and what it found.
-    turn_check_words: Vec<(u32, crate::effect_turn::Projection, [f32; 3])>,
+    turn_check_words: Vec<crate::effect_turn::EngineWords>,
     pub turn_checks: crate::effect_turn::TurnChecks,
     pub counts: RetainedCounts,
 }
@@ -529,7 +529,12 @@ impl RetainedSet {
     /// The engine's words of an effect in this frame ([`crate::tag::EFFECT_TURN_CHECK`]).
     pub fn effect_turn_check_record(&mut self, data: &[u8]) {
         let f = |i: usize| crate::float(data, i * 4);
-        self.turn_check_words.push((crate::word(data, 0), (core::array::from_fn(|i| f(1 + i)), core::array::from_fn(|i| f(10 + i))), core::array::from_fn(|i| f(13 + i))));
+        self.turn_check_words.push(crate::effect_turn::EngineWords {
+            id: crate::word(data, 0),
+            projection: (core::array::from_fn(|i| f(1 + i)), core::array::from_fn(|i| f(10 + i))),
+            camera_place: core::array::from_fn(|i| f(13 + i)),
+            stage: core::array::from_fn(|i| f(16 + i)),
+        });
     }
 
     /// A chain of a texture effect went ([`crate::tag::EFFECT_CHAIN_GONE`]).
@@ -598,10 +603,10 @@ impl RetainedSet {
     /// a still camera writes nothing, and the material records never change.
     /// With the test switch, compares the projections with the engine's words of the frame.
     pub fn turn_effects(&mut self, camera: &crate::effect_turn::Camera) {
-        if let Some(&(_, _, stored_location)) = self.turn_check_words.first() {
-            self.turn_checks.next_frame(camera, stored_location, &self.origin);
-            for (id, engine, _) in core::mem::take(&mut self.turn_check_words) {
-                if let Some(chain) = self.effect_chains.get(&id) {
+        if let Some(first) = self.turn_check_words.first() {
+            self.turn_checks.next_frame(camera, first.camera_place, &self.origin);
+            for engine in core::mem::take(&mut self.turn_check_words) {
+                if let Some(chain) = self.effect_chains.get(&engine.id) {
                     self.turn_checks.compare(chain, &engine);
                 }
             }

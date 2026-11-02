@@ -64,10 +64,11 @@ fn turn_mode(flags: u16) -> Option<u32> {
 /// True when a parent that has its display displays this child. `NiAVObject::CullShow` 0x6EB480
 /// skips a hidden node. A node with no geometry under it does not display its children
 /// (`NiNode::Display` 0x6C9190 tests the flag that `NiNode::UpdateWorldBound` 0x6C8C90 keeps). A
-/// switch node displays only the child at its index (`NiSwitchNode::Display` 0x6D8320). So a
-/// billboard without its display never turns.
-fn child_displayed(flags: u16, parent_flags: Option<u16>, selected: bool) -> bool {
-    flags & APP_CULLED == 0 && parent_flags.is_none_or(|parent| parent & CONTAINS_GEOMETRY != 0) && selected
+/// switch node displays only the child at its index, and does not test that flag
+/// (`NiSwitchNode::Display` 0x6D8320): `plain_parent_flags` is [`None`] for it, and for no parent. So
+/// a billboard without its display never turns.
+fn child_displayed(flags: u16, plain_parent_flags: Option<u16>, selected: bool) -> bool {
+    flags & APP_CULLED == 0 && plain_parent_flags.is_none_or(|parent| parent & CONTAINS_GEOMETRY != 0) && selected
 }
 
 /// True when the node is a switch node, or a level of detail or an animation node on one.
@@ -131,7 +132,8 @@ unsafe fn turns_down(nodes: &[usize]) -> Vec<Option<u32>> {
         let node = nodes[at];
         let parent = nodes.get(at + 1).copied();
         let selected = parent.is_none_or(|parent| selected_by(parent, node));
-        shown = shown && child_displayed(rd(node, AV::flags), parent.map(|parent| rd(parent, AV::flags)), selected);
+        let plain_parent = parent.filter(|&parent| !is_switch(parent));
+        shown = shown && child_displayed(rd(node, AV::flags), plain_parent.map(|parent| rd(parent, AV::flags)), selected);
         if shown && crate::ports::ni::is_kind_of(node, RTTI_BILLBOARD_NODE) {
             turns[at] = turn_mode(rd(node, AV::flags));
         }
@@ -231,16 +233,18 @@ fn check_on() -> bool {
 }
 
 /// The test switch, at the end of a world scene: the engine's projection of each effect read in
-/// this frame whose billboards have all turned in this frame, and the place of the camera as the
-/// engine stores it. A billboard out of the view keeps an older turn, and the flag tells the two
+/// this frame whose billboards have all turned in this frame, the place of the camera as the
+/// engine stores it, and the stage that the engine's callbacks make from them for this camera (the
+/// texture matrix of `texture_pass_b::effect_stage_words`, which a draw at its place in the walk
+/// has). A billboard out of the view keeps an older turn, and the flag tells the two
 /// apart: it is cleared here, and only a display sets it again. [I] The check is for a place with
 /// no other walk before the world's in a frame (the test level): the local map's walk would set
 /// the flag with another camera.
 ///
 /// # Safety
 ///
-/// The effects and the billboards read in this frame are live, and `camera` is the live camera of
-/// the world scene.
+/// The effects and the billboards read in this frame are live, `camera` is the live camera of the
+/// world scene, and the renderer's pipeline holds that camera.
 pub unsafe fn send_checks(t: &MainThread, camera: usize) {
     if !check_on() {
         return;
@@ -254,6 +258,7 @@ pub unsafe fn send_checks(t: &MainThread, camera: usize) {
             words.extend_from_slice(&rd::<[u32; 9]>(effect, TE::worldProjMat));
             words.extend_from_slice(&rd::<[u32; 3]>(effect, TE::worldProjTrans));
             words.extend_from_slice(&rd::<[u32; 3]>(camera, AV::worldTransform_translation));
+            words.extend_from_slice(&crate::ports::texture_pass_b::effect_stage_words(crate::engine::renderer(), effect)[2..]);
             crate::capture::effect_turn_check(&words);
         }
     }
@@ -293,5 +298,13 @@ mod tests {
     fn a_hidden_node_and_a_child_not_selected_have_no_display() {
         assert!(!child_displayed(0x33, Some(0x1A), true));
         assert!(!child_displayed(0x32, Some(0x1A), false));
+    }
+
+    /// A switch displays its selected child with no geometry under it: `turns_down` gives it no
+    /// parent flags to test.
+    #[test]
+    fn a_switch_does_not_test_the_geometry_flag() {
+        assert!(child_displayed(0x42, None, true));
+        assert!(!child_displayed(0x42, None, false));
     }
 }

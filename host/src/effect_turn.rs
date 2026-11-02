@@ -38,6 +38,15 @@ const IDENTITY: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 /// A world projection: the matrix by rows, the translation.
 pub type Projection = ([f32; 9], [f32; 3]);
 
+/// What the test switch reads of the engine in a frame ([`crate::tag::EFFECT_TURN_CHECK`]).
+pub struct EngineWords {
+    pub id: u32,
+    pub projection: Projection,
+    pub camera_place: [f32; 3],
+    /// The texture matrix of the engine's callbacks for the camera of the frame.
+    pub stage: [f32; 16],
+}
+
 /// A map that takes the position of the vertex (coordinate modes 0 and 1): its stage is relative
 /// to the origin of the table. A reflection or a normal has no place in it.
 pub fn takes_position(coordinates: u32) -> bool {
@@ -185,7 +194,12 @@ impl Chain {
     /// space as the engine's callbacks do: each row of the projection along the camera's axes, and a
     /// position relative to the camera.
     pub fn camera_stage(&self, camera: &Camera) -> [f32; 16] {
-        let (matrix, translation) = self.stage_projection(camera, &camera.location);
+        self.camera_stage_in(camera, Places::Exact)
+    }
+
+    fn camera_stage_in(&self, camera: &Camera, places: Places) -> [f32; 16] {
+        let origin = if takes_position(self.coordinates) { camera.location } else { [0.0; 3] };
+        let (matrix, translation) = self.projection(camera, places, &origin, true);
         let mut out = [0.0f32; 16];
         for (axis, along) in [camera.right, camera.up, camera.direction].iter().enumerate() {
             for row in 0..3 {
@@ -369,13 +383,19 @@ struct PairCheck {
     /// tests. A moving camera shows in the first, and a turn that counts in the second.
     old_camera: f32,
     no_turn: f32,
+    /// The stage of a draw at its place against the engine's callbacks: the first three rows, the
+    /// translation; from the stored places, then from the exact ones as a draw takes it.
+    stage_matrix: f32,
+    stage_translation: f32,
+    exact_stage_matrix: f32,
+    exact_stage_translation: f32,
 }
 
 impl PairCheck {
     fn line(&self, name: &str) -> String {
         format!(
-            "{name}: {} compared, largest difference {} in the matrix and {} in the translation; from the exact places {} and {}; a coordinate at the effect's place off by {} relative, {} in the form before; with the camera of the frame before {}, with no turn {}",
-            self.compared, self.matrix, self.translation, self.exact_matrix, self.exact_translation, self.relative_error, self.world_error, self.old_camera, self.no_turn
+            "{name}: {} compared, largest difference {} in the matrix and {} in the translation; from the exact places {} and {}; a coordinate at the effect's place off by {} relative, {} in the form before; with the camera of the frame before {}, with no turn {}; the stage at its place {} and {}, from the exact places {} and {}",
+            self.compared, self.matrix, self.translation, self.exact_matrix, self.exact_translation, self.relative_error, self.world_error, self.old_camera, self.no_turn, self.stage_matrix, self.stage_translation, self.exact_stage_matrix, self.exact_stage_translation
         )
     }
 }
@@ -400,6 +420,12 @@ pub struct TurnChecks {
     farthest: f64,
 }
 
+/// The largest difference of two texture matrices: the first three rows, the translation.
+fn stage_difference(a: &[f32; 16], b: &[f32; 16]) -> (f32, f32) {
+    let largest = |x: &[f32], y: &[f32]| x.iter().zip(y).map(|(p, q)| (p - q).abs()).fold(0.0f32, f32::max);
+    (largest(&a[..12], &b[..12]), largest(&a[12..15], &b[12..15]))
+}
+
 /// A coordinate from a stage at the effect's place: the matrix times the place, plus the
 /// translation, in floats as the shader takes it.
 fn coordinate_at(matrix: &[f32; 9], translation: &[f32; 3], place: &[f32; 3]) -> [f32; 3] {
@@ -421,13 +447,16 @@ impl TurnChecks {
     }
 
     /// The projection of `chain` against the engine's words of this frame.
-    pub fn compare(&mut self, chain: &Chain, engine: &Projection) {
+    pub fn compare(&mut self, chain: &Chain, words: &EngineWords) {
         let (Some(camera), Some(stored_camera)) = (self.camera, self.stored) else { return };
+        let engine = &words.projection;
         let (matrix, translation) = difference(&chain.stored_projection(&stored_camera), engine);
         let (exact_matrix, exact_translation) = difference(&chain.exact_projection(&camera), engine);
         let old_camera = self.previous_stored.map_or(0.0, |previous| difference(&chain.stored_projection(&previous), engine).0);
         let no_turn = difference(&chain.unturned_projection(&stored_camera), engine).0;
         let (relative_error, world_error) = self.coordinate_errors(chain, &camera, engine);
+        let (stage_matrix, stage_translation) = stage_difference(&chain.camera_stage_in(&stored_camera, Places::Stored), &words.stage);
+        let (exact_stage_matrix, exact_stage_translation) = stage_difference(&chain.camera_stage(&camera), &words.stage);
         let pair = if chain.turning_billboards() > 1 {
             &mut self.nested
         } else {
@@ -444,6 +473,10 @@ impl TurnChecks {
         pair.world_error = pair.world_error.max(world_error);
         pair.old_camera = pair.old_camera.max(old_camera);
         pair.no_turn = pair.no_turn.max(no_turn);
+        pair.stage_matrix = pair.stage_matrix.max(stage_matrix);
+        pair.stage_translation = pair.stage_translation.max(stage_translation);
+        pair.exact_stage_matrix = pair.exact_stage_matrix.max(exact_stage_matrix);
+        pair.exact_stage_translation = pair.exact_stage_translation.max(exact_stage_translation);
     }
 
     /// The error of a coordinate at the effect's place, for the stage relative to the origin and
@@ -646,6 +679,27 @@ mod tests {
         // A sphere map keeps its translation.
         let sphere = plain_stage(2, &matrix, &translation, &[2560.0, -256.0, 512.0]);
         assert_eq!([sphere[12], sphere[13], sphere[14]], translation);
+    }
+
+    /// The stage of a draw at its place, with its translation, takes a position of camera space to
+    /// the value that the engine's world projection gives the same place of the world. A wrong origin
+    /// fails here.
+    #[test]
+    fn the_stage_of_camera_space_gives_the_engines_coordinate() {
+        for case in cases().iter().filter(|c| takes_position(c.chain.coordinates)) {
+            let stage = case.chain.camera_stage_in(&case.camera, Places::Stored);
+            let v = [12.5f64, -7.25, 180.0];
+            let axes = [case.camera.right, case.camera.up, case.camera.direction];
+            let place: [f64; 3] = core::array::from_fn(|k| (0..3).map(|a| f64::from(axes[a][k]) * v[a]).sum::<f64>() + case.camera.location[k]);
+            let want = stage_value(&case.matrix, &case.translation, &place);
+            for row in 0..3 {
+                let got: f64 = (0..3).map(|a| v[a] * f64::from(stage[a * 4 + row])).sum::<f64>() + f64::from(stage[12 + row]);
+                // Each side has a translation rounded to its float step.
+                let size = case.translation[row].abs().max(stage[12 + row].abs()).max(1.0);
+                let step = f64::from(f32::from_bits(size.to_bits() + 1) - size);
+                assert!((got - want[row]).abs() <= step * 3.0 + 1.0e-3, "{}: {got} against {}", case.name, want[row]);
+            }
+        }
     }
 
     /// The stage of a draw at its place takes vectors of camera space: it gives the same value as

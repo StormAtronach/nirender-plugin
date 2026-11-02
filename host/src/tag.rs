@@ -91,8 +91,9 @@ pub const INSTANCE_CENSUS: u32 = 45;
 /// billboard, each link (its kind and local transform), the model projection (`effect_turn`).
 pub const EFFECT_CHAIN: u32 = 46;
 /// The test switch `NIRENDER_EFFECT_TURN_CHECK`: the id of a chain, the engine's world
-/// projection of the effect after its billboard's display in this frame (12 floats), and the
-/// place of the camera as the engine stores it (3 floats).
+/// projection of the effect after its billboard's display in this frame (12 floats), the
+/// place of the camera as the engine stores it (3 floats), and the texture matrix of the stage
+/// that the engine's callbacks make from them (16 floats).
 pub const EFFECT_TURN_CHECK: u32 = 47;
 /// The plugin forgot the chain of an effect that lit nothing for a while: its id. A later display
 /// sends the chain again.
@@ -167,7 +168,7 @@ pub fn least_length(tag: u32) -> usize {
         INSTANCE_CENSUS => 4,
         // A chain with no links: the head and the model projection.
         EFFECT_CHAIN => (crate::effect_turn::HEAD_WORDS + crate::effect_turn::MODEL_WORDS) * 4,
-        EFFECT_TURN_CHECK => 16 * 4,
+        EFFECT_TURN_CHECK => 32 * 4,
         EFFECT_CHAIN_GONE => 4,
         _ => 0,
     }

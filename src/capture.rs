@@ -268,8 +268,9 @@ pub mod tag {
     /// model projection (12 words).
     pub const EFFECT_CHAIN: u32 = 46;
     /// The test switch `NIRENDER_EFFECT_TURN_CHECK`: the id of a chain, the engine's world
-    /// projection of the effect after its billboard's display in this frame (12 floats), and the
-    /// place of the camera as the engine stores it (3 floats).
+    /// projection of the effect after its billboard's display in this frame (12 floats), the
+    /// place of the camera as the engine stores it (3 floats), and the texture matrix of the stage
+    /// that the engine's callbacks make from them (16 floats).
     pub const EFFECT_TURN_CHECK: u32 = 47;
     /// The plugin forgot the chain of an effect that lit nothing for a while (`effect_chain`): its
     /// id. A later display sends the chain again.
