@@ -45,6 +45,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -75,21 +76,33 @@ def run(args, env=None):
     return run_code(args, env)[1]
 
 
-def newest(label):
-    runs = sorted((d for d in os.listdir(os.path.join(REPO, "results")) if d.endswith("-" + label)), reverse=True)
+def newest(label, since=None):
+    """The newest run folder of a label. With `since` (a time in RUN_TIME's form), only a folder of
+    that time or later."""
+    runs = sorted((d for d in os.listdir(os.path.join(REPO, "results")) if d.endswith("-" + label) and (since is None or d[:15] >= since)), reverse=True)
     return os.path.join(REPO, "results", runs[0]) if runs else None
 
 
 GPU_TIME = {}
 RUNNER_ARGS = []
+# The start of a run folder's name.
+RUN_TIME = "%Y%m%d-%H%M%S"
 
 
 def game(label, extra, mge_build, env=None):
+    """A game run. Returns its folder, or None when the runner failed or made no folder: the run of
+    an earlier stage must not stand in for it. The runner refuses a session that does not hold the
+    game slot."""
     args = [PY, os.path.join(HERE, "run_own_device.py"), "--mge-build", mge_build, "--no-build", "--label", label, "--set", "expanded_light_limit = true"] + RUNNER_ARGS + extra
     e = dict(GPU_TIME)
     e.update(env or {})
-    run(args, e)
-    return newest(label)
+    started = time.strftime(RUN_TIME)
+    if not ran(run_code(args, e), "the runner of " + label):
+        return None
+    folder = newest(label, started)
+    if not folder:
+        check(False, "the runner of %s made no folder since %s" % (label, started))
+    return folder
 
 
 def host_counts(folder):
@@ -186,6 +199,7 @@ def adapter_note(recorded, now):
 
 def self_test():
     """The tests of the pure parts: no game, no replay."""
+    global REPO, run_code
     output = "distant land: on\nadapter: NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)\nframe 1\n"
     assert adapter_of(output) == "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
     assert adapter_of("no such line\n") is None
@@ -210,6 +224,35 @@ def self_test():
         for part in BUILD_PARTS[1:]:
             os.makedirs(os.path.join(build, part))
         assert build_missing(build) == []
+    # A game stage reads a run of its own. An old run of the label is there each time, and it must
+    # not stand in: not after a refusal of the runner, and not when the runner made no folder.
+    real_repo, real_run_code = REPO, run_code
+    try:
+        with tempfile.TemporaryDirectory() as repo:
+            REPO = repo
+            old = os.path.join(repo, "results", "20200101-000000-v-test")
+            os.makedirs(old)
+            run_code = lambda args, env=None: (1, "the game slot is held by another session")
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                assert game("v-test", [], "build") is None
+            assert "the game slot is held" in printed.getvalue() and "FAIL the runner of v-test ended with the code 1" in printed.getvalue()
+            run_code = lambda args, env=None: (0, "")
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                assert game("v-test", [], "build") is None
+            assert "made no folder" in printed.getvalue()
+
+            def a_new_run(args, env=None):
+                os.makedirs(new)
+                return 0, ""
+
+            new = os.path.join(repo, "results", time.strftime(RUN_TIME) + "-v-test")
+            run_code = a_new_run
+            assert game("v-test", [], "build") == new
+            # The clusters stage reads the capture of an earlier stage, so without a time the newest
+            # run counts.
+            assert newest("v-test") == new and newest("v-test", "99991231-000000") is None
+    finally:
+        REPO, run_code = real_repo, real_run_code
     print("validate_retained self-test: ok")
 
 
