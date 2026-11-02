@@ -1040,6 +1040,33 @@ static TABLE: HostV1 = HostV1 {
 
 /// The device calls of other code that this host took and did not do, by the method.
 static TAKEN: LockCell<[u32; 100]> = LockCell::new([0; 100]);
+/// The same calls by the method and by the code that made the call (its return address).
+static TAKEN_BY: LockCell<std::collections::BTreeMap<(usize, usize), u32>> = LockCell::new(std::collections::BTreeMap::new());
+/// The lines of the log for a method and a caller seen for the first time, at most.
+const TAKEN_LINES: usize = 32;
+
+/// The return address of the call of `NiDX8LightManager::RemoveLight` to `LightEnable`.
+const REMOVE_LIGHT_CALL: usize = 0x6BB5FE;
+/// The return addresses of the calls of the cutscene player's `setupD3DState` and
+/// `restoreD3DState` to `SetPixelShader`.
+const CUTSCENE_SHADER_CALLS: [usize; 2] = [0x64EFBE, 0x64F245];
+
+/// True for a device call of other code that changes nothing on this host, so it is not a taken
+/// call. There is no device light and no pixel shader here:
+/// - `LightEnable(index, false)` from `NiDX8LightManager::RemoveLight` on the cell worker. The
+///   helper hears of the destroyed light from `worker_events`.
+/// - `SetPixelShader(0)` from the cutscene player.
+///
+/// The same form from another caller stays a taken call, so that an unported path shows. This
+/// only stops the count: the answer of a taken call is the same.
+pub fn nothing_to_do(slot: usize, args: &[u32], caller: usize) -> bool {
+    use crate::d3d::{DEVICE_LIGHT_ENABLE, DEVICE_SET_PIXEL_SHADER};
+    match slot * 4 {
+        DEVICE_LIGHT_ENABLE => caller == REMOVE_LIGHT_CALL && args.get(1) == Some(&0),
+        DEVICE_SET_PIXEL_SHADER => CUTSCENE_SHADER_CALLS.contains(&caller) && args.first() == Some(&0),
+        _ => false,
+    }
+}
 
 /// A device call of other code that has no call of the link. It must not get to the device
 /// of MGE XE: it can have an object of this host as an argument.
@@ -1048,6 +1075,33 @@ pub unsafe fn take(slot: usize) {
     if let Some(count) = TAKEN.get(&lock).get_mut(slot) {
         *count += 1;
     };
+    let mut by = TAKEN_BY.get(&lock);
+    let count = by.entry((slot, crate::device::caller())).or_insert(0);
+    *count += 1;
+    let first = *count == 1;
+    if first && by.len() <= TAKEN_LINES {
+        crate::log!("own host: a device call taken and not done: {} from {}", crate::device::NAMES.get(slot).copied().unwrap_or("?"), module_and_offset(crate::device::caller()));
+    }
+}
+
+/// An address as the module that holds it and the offset in it, or the address alone for code
+/// outside every module.
+fn module_and_offset(address: usize) -> String {
+    // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT
+    const FROM_ADDRESS: u32 = 4 | 2;
+    let mut module: *mut core::ffi::c_void = core::ptr::null_mut();
+    // SAFETY: the two calls read no memory of the address; `module` and `name` are ours, and the
+    // size is the size of `name`.
+    unsafe {
+        if crate::win::GetModuleHandleExW(FROM_ADDRESS, address as *const core::ffi::c_void, &mut module) == 0 {
+            return format!("{address:#x}");
+        }
+        let mut name = [0u16; 260];
+        let length = crate::win::GetModuleFileNameW(module, name.as_mut_ptr(), name.len() as u32) as usize;
+        let path = String::from_utf16_lossy(&name[..length]);
+        let file = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_string();
+        format!("{file}+{:#x}", address - module as usize)
+    }
 }
 
 /// The colour surface that the game draws into now: the last one of a call to set the
@@ -1112,6 +1166,8 @@ pub unsafe fn report() -> String {
     for (slot, count) in taken.iter().enumerate() {
         if *count != 0 {
             text.push_str(&format!(" {}:{}", crate::device::NAMES.get(slot).copied().unwrap_or("?"), count));
+            let callers: Vec<String> = TAKEN_BY.get(&lock).iter().filter(|((method, _), _)| *method == slot).map(|((_, caller), count)| format!("{} {count}", module_and_offset(*caller))).collect();
+            text.push_str(&format!(" ({})", callers.join(", ")));
         }
     }
     if text.is_empty() {
@@ -1132,7 +1188,8 @@ pub unsafe fn report() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_within, LevelCopies};
+    use super::{nothing_to_do, read_within, LevelCopies, CUTSCENE_SHADER_CALLS, REMOVE_LIGHT_CALL};
+    use crate::d3d::{DEVICE_LIGHT_ENABLE, DEVICE_SET_LIGHT, DEVICE_SET_PIXEL_SHADER};
 
     #[test]
     fn the_reads_stop_at_the_budget_and_say_so() {
@@ -1151,6 +1208,29 @@ mod tests {
         // A budget of 0 reads nothing, and an empty list is not ended by it.
         assert_eq!(read_within(vec![1], 0, || 0, Some), (vec![], true));
         assert_eq!(read_within(Vec::<i32>::new(), 0, || 0, Some), (vec![], false));
+    }
+
+    #[test]
+    fn only_a_call_that_changes_nothing_is_not_a_taken_call() {
+        let light = DEVICE_LIGHT_ENABLE / 4;
+        let shader = DEVICE_SET_PIXEL_SHADER / 4;
+        let [setup, restore] = CUTSCENE_SHADER_CALLS;
+        // The index of the light does not matter; its state does.
+        assert!(nothing_to_do(light, &[7, 0], REMOVE_LIGHT_CALL));
+        assert!(!nothing_to_do(light, &[7, 1], REMOVE_LIGHT_CALL));
+        assert!(nothing_to_do(shader, &[0], setup));
+        assert!(nothing_to_do(shader, &[0], restore));
+        assert!(!nothing_to_do(shader, &[0x1234], restore));
+        // The same form from another caller: `updateLights` at 0x6BB794, the water code at 0x65D2AB.
+        assert!(!nothing_to_do(light, &[7, 0], 0x6BB79A));
+        assert!(!nothing_to_do(shader, &[0], 0x65D2B1));
+        // The caller of the other method.
+        assert!(!nothing_to_do(light, &[7, 0], setup));
+        assert!(!nothing_to_do(shader, &[0], REMOVE_LIGHT_CALL));
+        // Another method with the same arguments, and a call with too few.
+        assert!(!nothing_to_do(DEVICE_SET_LIGHT / 4, &[7, 0], REMOVE_LIGHT_CALL));
+        assert!(!nothing_to_do(light, &[7], REMOVE_LIGHT_CALL));
+        assert!(!nothing_to_do(shader, &[], setup));
     }
 
     #[test]

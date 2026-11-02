@@ -565,6 +565,11 @@ wrappers! {
 /// The return address of the device call that is in progress. The entry code of each wrapper
 /// writes it. See `entry_code`.
 static CALLER: AtomicU32 = AtomicU32::new(0);
+/// The return address of the device call in progress: the code that called the device.
+pub fn caller() -> usize {
+    CALLER.load(Ordering::Relaxed) as usize
+}
+
 /// The wrappers count the callers of the device. See `callers.rs`.
 #[cfg(feature = "rig")]
 static CALLER_CENSUS: AtomicBool = AtomicBool::new(false);

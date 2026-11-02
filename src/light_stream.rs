@@ -95,8 +95,10 @@ pub unsafe fn report(t: &MainThread) -> String {
 }
 
 /// The light with this key was destroyed (`NiDX8LightManager::RemoveLight`): the engine gives
-/// the key to the next light it makes. Sends a `LIGHT_GONE` record when a `LIGHT` record went
-/// for the key, so that the next light with the key goes as new.
+/// the key to the next light it makes, and it goes as new. Sends a `LIGHT_GONE` record also when
+/// the list here does not know the key: [`reset`] clears the list and the helper keeps the light,
+/// and a table instance can still name its key. A key that the helper does not know changes
+/// nothing there.
 ///
 /// # Safety
 ///
@@ -106,12 +108,14 @@ pub unsafe fn forget(t: &MainThread, key: u32) {
     if let Some(radius) = RADII.get(t).get_mut(key as usize) {
         *radius = 0.0;
     }
-    let mut versions = versions(t);
-    let Some(sent) = versions.get_mut(key as usize) else { return };
-    if sent.take().is_some() {
-        crate::capture::light_gone(key);
-        *GONE.get(t) += 1;
+    if key as usize >= MOST_INDEX {
+        return;
     }
+    if let Some(sent) = versions(t).get_mut(key as usize) {
+        *sent = None;
+    }
+    crate::capture::light_gone(key);
+    *GONE.get(t) += 1;
 }
 
 /// Notes one light by its key, its device values and the radius of the game: sends a record
@@ -178,4 +182,32 @@ pub unsafe fn note<'a>(t: &'a MainThread, renderer: usize) -> Open<'a, [u32]> {
         count += 1;
     }
     keys.map(|keys| &mut keys[..count])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{forget, versions, GONE, MOST_INDEX};
+    use crate::main_thread::MainThread;
+
+    #[test]
+    fn a_destroyed_light_sends_its_record_when_the_list_has_lost_the_key() {
+        let t = MainThread::for_test();
+        // SAFETY: `forget` reads no engine memory, and no stream is open in a test.
+        unsafe {
+            versions(&t).clear();
+            let before = *GONE.get(&t);
+            // As after a reset of the list: the key is not in it, and the helper can hold the light.
+            forget(&t, 5);
+            assert_eq!(*GONE.get(&t), before + 1);
+            // A key in the list goes from it.
+            versions(&t).resize(8, Some(([0; 26], 0)));
+            forget(&t, 5);
+            assert_eq!(*GONE.get(&t), before + 2);
+            assert!(versions(&t)[5].is_none() && versions(&t)[4].is_some());
+            versions(&t).clear();
+            // An index above the lights of the game was never sent.
+            forget(&t, MOST_INDEX as u32);
+            assert_eq!(*GONE.get(&t), before + 2);
+        }
+    }
 }

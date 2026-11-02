@@ -188,6 +188,8 @@ pub struct DrawData {
     /// the draw has it, as the engine lights a draw with the lights of its effect state.
     pub light_mask: [[u32; 4]; 2],
     pub stages: [StageData; 6],
+    /// The texture transform of each stage. A stage of the table's texture effect has a
+    /// `slots[2]` and takes its matrix from `effect_entries`, one for each effect.
     pub texture_transforms: [[f32; 16]; 6],
     /// 1 / width and -1 / height of the viewport.
     pub pixel: [f32; 4],

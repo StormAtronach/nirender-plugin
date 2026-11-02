@@ -143,6 +143,10 @@ The A/B:
   the engine's path.
 - `NIRENDER_NODE_KINDS=0` keeps a shape under a billboard, switch, level of detail, BSP,
   animation or particle node on the engine's path (the rule before 2026-10-16).
+- `NIRENDER_EFFECT_TURN_CHECK=1` (a test switch): at the end of each world scene the plugin
+  sends the engine's projection of each texture effect under a turning billboard, after the
+  billboard's display, and clears the billboard's displayed flag. The helper compares it with
+  its own (`host/src/effect_turn.rs`) and reports the largest difference by the pair of modes.
 - `NIRENDER_PARTICLES=off` keeps the particle systems on the engine's path (the rule before
   2026-10-24). `nirender.particleDraws(false)` keeps them in the table but sends their draws
   as the engine's records, live.

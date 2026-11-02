@@ -142,7 +142,7 @@ struct Scene {
     extension7: vec4f,
     counts: array<vec4u, 2>,
     // The origin of the retained set in the world: the positions of its draws are relative
-    // to it. A stage of a texture effect that takes the position adds it.
+    // to it.
     origin: vec4f,
     // The factor the extension's shade applies to an ambient light: a retained draw's own
     // ambient (its instance's lights record) times this is the scaled value.
@@ -151,6 +151,9 @@ struct Scene {
     world_lights: vec4u,
 }
 @group(0) @binding(10) var<uniform> scene: Scene;
+// The texture matrix of each texture effect of the table, one for each effect, whatever number
+// of shapes it lights: a stage with `slots.z` takes the entry `slots.z - 1` (`retained.rs`).
+@group(0) @binding(14) var<storage, read> effect_entries: array<mat4x4f>;
 @group(0) @binding(11) var<storage, read> lights_retained: array<Light>;
 
 fn from_scene() -> bool {
@@ -334,9 +337,10 @@ fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view
         // The same vectors in the world, for the texture effects of the retained table: the
         // engine's callbacks turn the vector of camera space into one of the world before
         // the effect's matrix, and the table keeps only the matrix. The view matrix has no
-        // scale: its transpose turns a vector of the view into one of the world.
+        // scale: its transpose turns a vector of the view into one of the world. The position
+        // is relative to the origin of the table, and so is the translation of its entry.
         case 5u: { value = vec4f(normalize(world_normal), 1.0); }
-        case 6u: { value = vec4f(world_position + scene.origin.xyz, 1.0); }
+        case 6u: { value = vec4f(world_position, 1.0); }
         case 7u: {
             let from_eye = normalize(view_position);
             let reflected = from_eye - 2.0 * dot(view_normal, from_eye) * view_normal;
@@ -348,7 +352,12 @@ fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view
         default: { value = vec4f(sets[how.y & 3u], 1.0, 0.0); }
     }
     if how.z != 0u {
-        value = draws[record].texture_transforms[index] * value;
+        let entry = draws[record].stages[index].slots.z;
+        if entry != 0u {
+            value = effect_entries[entry - 1u] * value;
+        } else {
+            value = draws[record].texture_transforms[index] * value;
+        }
     }
     return value;
 }

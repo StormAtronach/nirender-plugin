@@ -104,6 +104,9 @@ impl Player {
                 }
             }
             tag::GEOMETRY_UV => self.geometry_uv_record(data),
+            tag::EFFECT_CHAIN => self.retained.effect_chain_record(data),
+            tag::EFFECT_CHAIN_GONE => self.retained.effect_chain_gone(word(data, 0)),
+            tag::EFFECT_TURN_CHECK => self.retained.effect_turn_check_record(data),
             tag::MORPH_TARGETS => self.renderer.morph_targets(data),
             tag::MORPH_WEIGHTS => self.renderer.morph_weights(data),
             tag::GEOMETRY_GONE => {
@@ -813,7 +816,12 @@ impl Player {
         // bound words).
         self.stream.shape_queued = flags & 0x800 != 0;
         self.stream.shape_bound = Some(retained.bound);
-        let effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, 12 + (e * EFFECT_STAGE_WORDS + i) * 4))));
+        let mut effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, 12 + (e * EFFECT_STAGE_WORDS + i) * 4))));
+        // An effect that moves in the play takes its chain's value, as in the table.
+        if let (Some(stages), Some(material)) = (effects.as_mut(), self.renderer.materials.get(&retained.material)) {
+            let location = self.stream.origin.unwrap_or_else(|| eye_of_view(&self.stream.view));
+            self.retained.chain_stages(material, &self.stream.view, location, stages);
+        }
         self.stream.shape_fog = has_fog.then(|| core::array::from_fn(|i| word(data, fog_at + i * 4)));
         if let Some(fog) = self.stream.shape_fog {
             self.stream.fog = fog;

@@ -62,8 +62,11 @@
 /// The format of the stream that this build writes and reads. 2: the SIZE record (the game
 /// made its renderer again at a new size, 2026-10-28). 3: the bone influences after the indexes
 /// of a GEOMETRY record, for a shape that the game skins in software (2026-11-02). A helper of
-/// format 2 would read such a vertex's list as its weights.
-pub const STREAM_FORMAT: u32 = 3;
+/// format 2 would read such a vertex's list as its weights. 4: the records EFFECT_CHAIN,
+/// EFFECT_TURN_CHECK and EFFECT_CHAIN_GONE, and a material record whose effect has the bit
+/// 0x80000000 in its flags word and the id of its chain in the first word of its matrix
+/// (2026-11-02). A helper of format 3 would draw such a stage with the id as a matrix word.
+pub const STREAM_FORMAT: u32 = 4;
 
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
 /// game, the abilities of the stream, the stream format, then the build id of the plugin as
