@@ -38,6 +38,8 @@ Stages (capture, baseline and only by default, in this order):
 --disable-mod NAME switches a mod of the profile off for the runs (an A/B of a mod).
 """
 import argparse
+import contextlib
+import io
 import os
 import re
 import subprocess
@@ -97,6 +99,17 @@ def host_counts(folder):
 def check(condition, text):
     print(("  ok   " if condition else "  FAIL ") + text, flush=True)
     return condition
+
+
+def ran(output, tool):
+    """True when a tool of this folder ended without an exception. Else its last lines go to the
+    console and the stage fails: `run` keeps the output of a tool, so an exception would only
+    show later as pictures that are missing."""
+    if "Traceback (most recent call last)" not in output:
+        return True
+    for line in output.strip().split("\n")[-6:]:
+        print("       " + line[:200], flush=True)
+    return check(False, "%s stopped with an exception" % tool)
 
 
 def plugin_report(folder):
@@ -171,6 +184,11 @@ def self_test():
     assert adapter_note(None, same).endswith("(accept again to record it)")
     assert "can be the GPU's" in adapter_note("AMD Radeon (Vulkan, driver 1)", same)
     assert adapter_note(same, None) == "adapter: not printed by the helper"
+    # A tool that stopped with an exception fails the stage, and its error shows.
+    assert ran("pictures in a folder", "tool")
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        assert not ran("Traceback (most recent call last):\n  a frame\nFileNotFoundError: progress.log", "tool")
+    assert "FileNotFoundError: progress.log" in printed.getvalue() and "FAIL tool stopped" in printed.getvalue()
     # A build folder with the helper only (a cargo target folder) lacks the Data Files.
     with tempfile.TemporaryDirectory() as build:
         open(os.path.join(build, "numidium.exe"), "wb").close()
@@ -198,11 +216,13 @@ def stage_baseline(baseline, accept, mge_build):
     adapter = None
     for capture in captures:
         output = run([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, capture[:-7] + ".png"), "--frame", "1", "--mge-build", mge_build], env)
+        if not ran(output, "replay.py"):
+            return False
         adapter = adapter or adapter_of(output)
     tour = os.path.join(baseline, "tour")
     tour_out = os.path.join(tour, "accepted" if accept else "now")
-    if os.path.isdir(tour):
-        run([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env)
+    if os.path.isdir(tour) and not ran(run([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env), "validate_tour.py"):
+        return False
     adapter_path = os.path.join(accepted, ADAPTER_FILE)
     if accept:
         if adapter:
@@ -335,6 +355,8 @@ def stage_tour(mge_build):
     print("       " + folder, flush=True)
     ok = check_counts(folder)
     out = run([PY, os.path.join(HERE, "validate_tour.py"), folder, "--jobs", "4", "--mge-build", mge_build], {})
+    if not ran(out, "validate_tour.py"):
+        return False
     tail = out.strip().split("\n")
     for line in tail[-45:]:
         print("       " + line[:160], flush=True)
