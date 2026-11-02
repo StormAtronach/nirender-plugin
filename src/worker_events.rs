@@ -14,7 +14,8 @@
 //!
 //! The events:
 //! - `NiGeometry::dtor`: the shape leaves the table.
-//! - `NiDX8SourceTextureData::dtor`: counted only. On the main thread the destructor makes
+//! - `NiDX8SourceTextureData::dtor`: the mark of the unreadable texture goes
+//!   (`ports::textures::forget_unreadable`). On the main thread the destructor also makes
 //!   every instance note its handles again (a new generation). On the worker it does not:
 //!   the data goes with its texture, so no live instance names it (an inference). A new
 //!   generation for each texture of an unloaded cell makes a frame hitch.
@@ -32,8 +33,8 @@ use crate::mem::rd;
 enum Event {
     /// A geometry was destroyed.
     Destroyed(usize),
-    /// A source texture's renderer data was destroyed (counted only: see the module).
-    TextureFreed,
+    /// A source texture's renderer data was destroyed: its address.
+    TextureFreed(usize),
     /// A light was destroyed: its index.
     LightGone(u32),
     /// A geometry data was destroyed: its address and its unique id.
@@ -47,7 +48,7 @@ impl Event {
     fn kind(self) -> usize {
         match self {
             Event::Destroyed(_) => 0,
-            Event::TextureFreed => 1,
+            Event::TextureFreed(_) => 1,
             Event::LightGone(_) => 2,
             Event::GeometryGone(..) => 3,
         }
@@ -142,8 +143,8 @@ unsafe fn note_of(shape: usize) -> String {
     format!("shape 0x{shape:x} '{}' under {}; stack words in the engine: {}", names[0], names[1..].join(" < "), addresses.join(" "))
 }
 
-unsafe fn on_texture_data_dtor(_args: &[usize]) {
-    push(Event::TextureFreed);
+unsafe fn on_texture_data_dtor(args: &[usize]) {
+    push(Event::TextureFreed(args[0]));
 }
 
 /// `NiDX8LightManager::RemoveLight(this, light)`: the light's destructor calls it, so the
@@ -236,7 +237,7 @@ pub unsafe fn drain() {
                     DESTROYED_INSTANCES.fetch_add(1, Ordering::Relaxed);
                 }
             }
-            Event::TextureFreed => {}
+            Event::TextureFreed(data) => crate::ports::textures::forget_unreadable(data),
             Event::LightGone(key) => crate::light_stream::forget(t, key),
             Event::GeometryGone(data, unique) => crate::geometry_stream::gone(t, data, unique),
         }
@@ -268,4 +269,26 @@ pub fn report() -> String {
         parts.join("; "),
         DESTROYED_INSTANCES.load(Ordering::Relaxed)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ports::textures::{forget_unreadable, is_unreadable, mark_unreadable};
+
+    #[test]
+    fn a_freed_address_no_longer_counts_as_unreadable() {
+        let data = 0x7E57_0082;
+        mark_unreadable(data);
+        assert!(is_unreadable(data));
+        unsafe { on_texture_data_dtor(&[data]) };
+        // The hook keeps to the queue: the mark stays until the main thread applies the event.
+        assert!(is_unreadable(data));
+        let mut queue = QUEUE.lock().unwrap();
+        let at = queue.iter().position(|event| matches!(event, Event::TextureFreed(freed) if *freed == data));
+        queue.remove(at.expect("the hook writes the address into the queue"));
+        drop(queue);
+        forget_unreadable(data);
+        assert!(!is_unreadable(data));
+    }
 }

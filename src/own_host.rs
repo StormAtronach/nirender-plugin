@@ -656,8 +656,12 @@ unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool
         entry.0 += 1;
         entry.1 += waited;
     }
-    let Some((width, height, pixels)) = read else { return false };
+    let Some((width, height, pixels)) = read else {
+        *FAILED_READS.get(lock) += 1;
+        return false;
+    };
     if (width, height) != (into_width, into_height) {
+        *FAILED_READS.get(lock) += 1;
         return false;
     }
     memory.copy_from_slice(pixels);
@@ -710,6 +714,9 @@ unsafe fn copy_pixels(lock: &DeviceLock, source: u32, destination: u32) -> u32 {
 }
 
 static PIXEL_READS: LockCell<u32> = LockCell::new(0);
+/// The reads that gave no pixels, or pixels of another size: the game's memory stays as it was,
+/// and the game's call still returns success.
+static FAILED_READS: LockCell<u32> = LockCell::new(0);
 /// The reads by (width, height, from the back buffer): the count and the wait in ticks.
 static READS_BY_SIZE: LockCell<std::collections::BTreeMap<(u32, u32, bool), (u32, i64)>> = LockCell::new(std::collections::BTreeMap::new());
 
@@ -1196,8 +1203,9 @@ pub unsafe fn report() -> String {
         sizes.push_str(&format!(" {width}x{height}{}: {count} reads, {:.1} ms;", if *back { " (back buffer)" } else { "" }, *ticks as f64 * 1000.0 / per_second));
     }
     format!(
-        "own host: {} pixel reads from the host program, by target size:{sizes} {} reads from the kept pixels{}; device calls without a call of the link, taken and not done:{text}",
+        "own host: {} pixel reads from the host program, {} failed, by target size:{sizes} {} reads from the kept pixels{}; device calls without a call of the link, taken and not done:{text}",
         *PIXEL_READS.get(&lock),
+        *FAILED_READS.get(&lock),
         *CACHED_READS.get(&lock),
         if read_cache_on() { "" } else { " (NIRENDER_READ_CACHE=0)" }
     )
