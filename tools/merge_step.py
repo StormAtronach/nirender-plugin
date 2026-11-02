@@ -1,19 +1,23 @@
 """The checks of a merge, for the Coordinator, on the merged tree: one PASS or FAIL line for each stage.
 
-    python -I tools/merge_step.py <repo> <commit> [--no-wait] [--dry-run]
+    python -I tools/merge_step.py <repo> <commit> --base <tip> [--no-wait] [--dry-run]
     python -I tools/merge_step.py --self-test    # the tests of the pure parts: no build, no game
 
 <repo> is the tree of nirender-plugin or MGE-XE-G7-render-link, at <commit> and with no tracked change. There is no
 trial merge: the tool refuses another tree state. It takes the build slot for the whole of its work and releases it. It
 waits in the queue of that slot; with --no-wait it stops with exit code 3. --dry-run prints the stages and takes nothing.
 
-The stages of nirender-plugin: the plugin's tests, the host's tests, clippy_baseline.py --check, checks.py plugin. The
-stages of render-link: the helper's and mge-config's tests, checks.py mge --mge <repo>. The diff from the first parent of
-<commit> adds these:
+<tip> is the tip of the shared branch before the merge. It is required: the parents of <commit> do not tell the change, as
+the first parent misses a fast-forward and a branch that merged the shared branch.
 
-- a d3d8 build and check_contract.py --mge when the change touches d3d8 or contract/;
-- the replay gate, tools/validate_retained.py baseline with no game, when the change touches the host's shader, the
-  host's material.rs or the helper's renderer. The path decides: a change of material.rs outside `derive` also runs it.
+The stages of nirender-plugin: the plugin's tests, the host's tests, clippy_baseline.py --check, checks.py plugin. The
+stages of render-link: the helper's and mge-config's tests, checks.py mge --mge <repo>. The diff from <tip> to <commit> adds
+these:
+
+- a d3d8 build and check_contract.py --mge when the change touches d3d8, mge-config or contract/;
+- the replay gate, tools/validate_retained.py baseline with no game, when the change touches the host's source, the
+  helper's renderer or the shaders of the assets, the source of the shaders in a build. The path decides: a stream or a
+  table change can move a picture too.
 
 All stages run, also after a failure. Exit code 1 on any failure. The output of each stage is in
 <plugin>/target/merge-step-<commit>.log. It pushes nothing.
@@ -42,8 +46,8 @@ PLUGIN_NAME = "nirender-plugin"
 MGE_NAME = "MGE-XE-G7-render-link"
 SLOT_MINUTES = 60
 # What a change must touch for the gate, as paths from the root of each repo: a file, or a folder with its slash.
-GATE_PATHS = {"plugin": ("host/src/shader.wgsl", "host/src/material.rs"), "mge": ("mgeHost64/src/renderer.rs", "mgeHost64/src/renderer/")}
-D3D8_PATHS = {"plugin": ("contract/",), "mge": ("d3d8/",)}
+GATE_PATHS = {"plugin": ("host/src/",), "mge": ("mgeHost64/src/renderer.rs", "mgeHost64/src/renderer/", "assets/Data Files/shaders/")}
+D3D8_PATHS = {"plugin": ("contract/",), "mge": ("d3d8/", "mge-config/")}
 
 
 def touches(paths, wanted):
@@ -95,6 +99,15 @@ def tree_problem(kind, repo, stages, head, commit, changed):
     missing = [folder for _, folder, _ in stages if not os.path.isdir(folder)]
     if missing:
         return "no folder %s: the stages need the sibling" % missing[0]
+    return None
+
+
+def base_problem(base, commit, is_ancestor):
+    """Why the diff from this base does not tell the change, as a text, or None."""
+    if base == commit:
+        return "the base is the commit, so the diff is empty and asks for no stage: give the tip before the merge"
+    if not is_ancestor:
+        return "the base %s is no ancestor of the commit: the diff would also hold the other side's changes" % base[:10]
     return None
 
 
@@ -151,12 +164,15 @@ def self_test():
         assert names("plugin", plugin, "tools/x.py", "src/lib.rs") == base
         assert names("plugin", plugin, "host/src/shader.wgsl") == base + ["build for the gate", "replay gate"]
         assert names("plugin", plugin, "host/src/material.rs") == base + ["build for the gate", "replay gate"]
-        assert names("plugin", plugin, "host/src/material_other.rs") == base, "a name that only starts the same ran the gate"
+        assert names("plugin", plugin, "host/src/retained.rs") == base + ["build for the gate", "replay gate"]
+        assert names("plugin", plugin, "host/src_old/x.rs") == base, "a name that only starts the same ran the gate"
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"]
         mge_base = ["helper tests", "checks"]
-        assert names("mge", mge, "mge-config/src/lib.rs") == mge_base
+        assert names("mge", mge, "mge-config/src/lib.rs") == mge_base + ["d3d8 build", "contract"]
         assert names("mge", mge, "mgeHost64/src/renderer/water.rs") == mge_base + ["build for the gate", "replay gate"]
         assert names("mge", mge, "mgeHost64/src/renderer.rs") == mge_base + ["build for the gate", "replay gate"]
+        assert names("mge", mge, "assets/Data Files/shaders/core/x.fx") == mge_base + ["build for the gate", "replay gate"]
+        assert names("mge", mge, "assets/Data Files/other.txt") == mge_base
         assert names("mge", mge, "mgeHost64/src/other.rs") == mge_base
         assert names("mge", mge, "d3d8/cpp/mge/x.cpp") == mge_base + ["d3d8 build", "contract"]
 
@@ -181,6 +197,11 @@ def self_test():
         assert tree_problem("plugin", worktree, [("a", plugin, [])], "abc", "abc", False) is None
         assert "sibling" in tree_problem("plugin", plugin, [("a", os.path.join(root, "gone"), [])], "abc", "abc", False)
 
+        # The base.
+        assert base_problem("abc", "def", True) is None
+        assert "empty" in base_problem("abc", "abc", True)
+        assert "no ancestor" in base_problem("abc", "def", False)
+
         # A stage's own exit code decides its line, and the log has its output.
         with open(os.path.join(root, "log.txt"), "w", encoding="utf-8") as log:
             assert run_stage("good", root, [sys.executable, "-c", "print('out')"], log)
@@ -194,6 +215,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("repo", nargs="?")
     parser.add_argument("commit", nargs="?")
+    parser.add_argument("--base", help="the tip of the shared branch before the merge: the diff from it decides the stages")
     parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 where this would wait for the slot")
     parser.add_argument("--dry-run", action="store_true", help="print the stages: no slot, no build")
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
@@ -201,20 +223,24 @@ def main():
     if args.self_test:
         self_test()
         return 0
-    if not args.repo or not args.commit:
-        parser.error("it needs <repo> and <commit>")
+    if not args.repo or not args.commit or not args.base:
+        parser.error("it needs <repo>, <commit> and --base <the tip before the merge>")
 
     repo = os.path.abspath(args.repo)
     kind = repo_kind(repo)
     commit = git(repo, "rev-parse", args.commit)
-    # The first parent: a merge's whole change, and for a plain commit its own.
-    paths = git(repo, "diff", "--name-only", commit + "^1", commit).splitlines()
+    base = git(repo, "rev-parse", args.base)
+    problem = base_problem(base, commit, subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", base, commit]).returncode == 0)
+    if problem:
+        say("FAIL the base: %s" % problem)
+        return 1
+    paths = git(repo, "diff", "--name-only", base, commit).splitlines()
     stages = stages_for(kind, repo, paths) if kind else []
     problem = tree_problem(kind, repo, stages, git(repo, "rev-parse", "HEAD"), commit, bool(git(repo, "status", "--porcelain", "--untracked-files=no")))
     if problem:
         say("FAIL the tree: %s" % problem)
         return 1
-    say("%s %s: %d changed paths; stages: %s" % (os.path.basename(repo), commit[:10], len(paths), ", ".join(name for name, _, _ in stages)))
+    say("%s %s: %d changed paths from %s; stages: %s" % (os.path.basename(repo), commit[:10], len(paths), base[:10], ", ".join(name for name, _, _ in stages)))
     if args.dry_run:
         return 0
 
