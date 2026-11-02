@@ -81,6 +81,7 @@ under the home folder.
 | Tool | What it is |
 | --- | --- |
 | `nif40.py` | A reader and writer of NetImmerse 4.0.0.2 files for the blocks the test assets need. |
+| `make_rain_nif.py` | Placeable rain for a view out of an interior, frame rate independent: a NIF for each size of box and the streak texture. |
 | `make_test_nifs.py` | The test NIFs of the flag support: one file for each flag value the engine supports and the content does not use; two boxes with a BC7 texture, plain and sRGB; and a texture effect under a turning billboard, for each pair of modes. |
 | `effect_turn_vectors.lua` | In a running game: the engine's own billboard and projection functions on made objects, written as the test vectors of `host/src/effect_turn.rs`. |
 | `effect_turn_walk.lua` | In a running game with `NIRENDER_EFFECT_TURN_CHECK=1`: places the `turn_` exhibits and flies the camera around them, for the helper's comparison with the engine's words. |
