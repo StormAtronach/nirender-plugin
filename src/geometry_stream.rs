@@ -271,7 +271,8 @@ pub unsafe fn needs_partitions(skin_data: usize) -> bool {
 struct SkinCounts {
     from_data: u64,
     from_partitions: u64,
-    /// The geometries sent with [`all_influences`], and the entries of their lists.
+    /// The geometries sent with a list ([`all_influences`], [`every_influence`]), and the entries
+    /// of their lists.
     lists: u64,
     list_entries: u64,
     without_bone_data: u64,
@@ -379,13 +380,17 @@ const LIST_ENTRY_BYTES: usize = 8;
 /// A sum of weights this close to 1 needs no entry for the rest.
 const WEIGHT_SUM_EXACT: f32 = 1e-6;
 
+/// For each vertex its first entry and its count, and the count and the entries of the list in
+/// the form of the record.
+type InfluenceList = (Vec<(u32, u32)>, Vec<u8>);
+
 /// The bone influences of a shape that the game skins in software: for each vertex its first
 /// entry and its count, and the count and the entries of the list in the form of the record.
 /// `NiSkinInstance::Deform` 0x6FA000 sums each influence with its raw weight in the space of the
 /// shape, so the world place of the shape counts once. A bone of the palette holds that place,
 /// so a vertex whose weights do not sum to 1 gets one more entry: the rest of the weight, for
 /// the bone after the last, which has only the place of the shape (`camera_space::skin_palette`).
-fn all_influences(lists: &[Vec<(u8, f32)>], bone_count: u32) -> (Vec<(u32, u32)>, Vec<u8>) {
+fn all_influences(lists: &[Vec<(u8, f32)>], bone_count: u32) -> InfluenceList {
     let mut vertices = Vec::with_capacity(lists.len());
     let mut entries = vec![0u8; 4];
     let mut total = 0u32;
@@ -407,6 +412,32 @@ fn all_influences(lists: &[Vec<(u8, f32)>], bone_count: u32) -> (Vec<(u32, u32)>
     }
     entries[..4].copy_from_slice(&total.to_le_bytes());
     (vertices, entries)
+}
+
+/// The list of a skinned geometry that the game does not skin in software, when a vertex has more
+/// than 4 influences: every influence with the weight that sums to 1 (`skin_data_weights`). One
+/// draw has one vertex format, so the whole geometry takes the list. A vertex with 4 or fewer gets
+/// what [`pack_weights`] gives it, and a vertex with none the first bone. [`None`] when no vertex
+/// has more than 4: the packed form is the fast path.
+fn every_influence(lists: &[Vec<(u8, f32)>]) -> Option<InfluenceList> {
+    if lists.iter().all(|list| list.len() <= 4) {
+        return None;
+    }
+    let mut vertices = Vec::with_capacity(lists.len());
+    let mut entries = vec![0u8; 4];
+    let mut total = 0u32;
+    for list in lists {
+        let first = total;
+        let none = [(0u8, 1.0f32)];
+        for &(bone, weight) in if list.is_empty() { &none[..] } else { &list[..] } {
+            entries.extend_from_slice(&(bone as u32).to_le_bytes());
+            entries.extend_from_slice(&weight.to_le_bytes());
+            total += 1;
+        }
+        vertices.push((first, total - first));
+    }
+    entries[..4].copy_from_slice(&total.to_le_bytes());
+    Some((vertices, entries))
 }
 
 /// For a test: a copy of the list with a sum of 1.
@@ -668,9 +699,21 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
     let coords: usize = rd(geom_data, GD::textureCoords);
     let all_vertices = rd::<u16>(geom_data, GD::vertexCount) as usize;
     let sets = (rd::<u16>(geom_data, GD::textureSets) as u32).min(8);
-    // Every influence with its raw weight, when the skin data has its weights (a skin with only
-    // partitions gives 4 bones, as it does in any case).
-    let list = if software { skin_data_raw_weights(skin_data, all_vertices).map(|lists| all_influences(&lists, rd(skin_data, DATA_BONE_COUNT))) } else { None };
+    // Every influence, when the skin data has its weights (a skin with only partitions gives 4
+    // bones, as it does in any case): with its raw weight for a shape that the game skins in
+    // software, and for another shape when a vertex has more than 4.
+    let list = if software {
+        skin_data_raw_weights(skin_data, all_vertices).map(|lists| all_influences(&lists, rd(skin_data, DATA_BONE_COUNT)))
+    } else if skin != 0 && !SKIN_FROM_PARTITIONS.load(core::sync::atomic::Ordering::Relaxed) {
+        skin_data_weights(skin_data, all_vertices).and_then(|lists| every_influence(&lists))
+    } else {
+        None
+    };
+    // The counts of the report take every skinned geometry of the skin data.
+    if list.is_some() && !software {
+        let triangles = triangle_vertices(indexes, entries, strip_count, strip_lengths);
+        let _ = skin_data_influences(t, skin_data, all_vertices, &triangles);
+    }
     let influences = if skin != 0 && list.is_none() {
         let from_data = if SKIN_FROM_PARTITIONS.load(core::sync::atomic::Ordering::Relaxed) {
             None
@@ -1504,6 +1547,36 @@ mod tests {
         // The packed form takes the 4 largest and makes them sum to 1: 100, not 40.
         let packed = super::pack_weights(&super::tests_unitized(&list[0]));
         assert_eq!(packed.1, [0, 1, 2, 3]);
+    }
+
+    /// The packed form stays while no vertex has more than 4. With one such vertex every vertex
+    /// takes the list: more than 4 keep every one, and 4 or fewer give what the packed form gives.
+    #[test]
+    fn a_vertex_with_more_than_4_influences_puts_the_geometry_on_the_list() {
+        let four = vec![(0u8, 0.4f32), (1, 0.3), (2, 0.2), (3, 0.1)];
+        let six = vec![(0u8, 0.2f32), (1, 0.2), (2, 0.2), (3, 0.2), (4, 0.1), (5, 0.1)];
+        assert!(super::every_influence(&[four.clone(), Vec::new()]).is_none());
+        let lists = vec![six, four.clone(), Vec::new()];
+        let (vertices, entries) = super::every_influence(&lists).expect("a list");
+        assert_eq!(vertices, vec![(0, 6), (6, 4), (10, 1)]);
+        assert_eq!(entries.len(), 4 + 11 * super::LIST_ENTRY_BYTES);
+        assert_eq!(u32::from_le_bytes(entries[..4].try_into().unwrap()), 11);
+        let places = [100.0, 100.0, 100.0, 100.0, -200.0, -200.0];
+        // Every influence counts: 40. The 4 largest with a sum of 1 would give 100.
+        assert!((summed(&places, &vertices, &entries, 0, 0.0) - 40.0).abs() < 1e-3);
+        // A vertex with 4 gives what its packed form gives.
+        let packed = pack_weights(&four);
+        let spread = [10.0, 20.0, 30.0, 40.0, 0.0, 0.0];
+        let weight = |k: usize| if k < 3 { packed.0[k] } else { 1.0 - packed.0.iter().sum::<f32>() };
+        let from_packed: f32 = (0..4).map(|k| weight(k) * spread[packed.1[k] as usize]).sum();
+        assert!((summed(&spread, &vertices, &entries, 1, 0.0) - from_packed).abs() < 1e-3);
+        // A vertex with none follows the first bone, as its packed form does. No entry names a bone
+        // past the last: the palette of such a shape has no matrix for the place of the shape.
+        assert!((summed(&spread, &vertices, &entries, 2, 0.0) - 10.0).abs() < 1e-3);
+        for i in 0..11 {
+            let at = 4 + i * super::LIST_ENTRY_BYTES;
+            assert!(u32::from_le_bytes(entries[at..at + 4].try_into().unwrap()) < 6);
+        }
     }
 
     /// Weights that do not sum to 1 keep their raw value, and the rest goes to the place of the

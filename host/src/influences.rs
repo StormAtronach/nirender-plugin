@@ -1,7 +1,8 @@
-//! The bone influences of the shapes that the game skins in software (MWSE's flag on the
-//! geometry): every influence of a vertex with its raw weight, as `NiSkinInstance::Deform`
-//! 0x6FA000 sums them. The packed vertex of a skinned shape holds only 4 bones whose weights
-//! sum to 1.
+//! The bone influences of the shapes that a packed vertex cannot hold. The packed vertex of a
+//! skinned shape holds only 4 bones whose weights sum to 1. A shape that the game skins in software
+//! (MWSE's flag on the geometry) has every influence with its raw weight, as
+//! `NiSkinInstance::Deform` 0x6FA000 sums them. Another shape with a vertex of more than 4 has
+//! every influence with the weights that sum to 1 (the plugin's `every_influence`).
 //!
 //! One storage buffer holds the lists of all such geometries, because the vertex shader reads
 //! it from one binding. A vertex of such a geometry holds its first entry and its count in the
@@ -14,7 +15,7 @@ use crate::pool;
 
 /// The bytes of an entry of the list: the bone (u32) and its weight (f32).
 pub(crate) const ENTRY_BYTES: u64 = 8;
-/// The room of the buffer at first: such a geometry is rare.
+/// The room of the buffer at first: it grows when the game shows such geometries.
 const FIRST_BYTES: u64 = 1 << 12;
 /// The vertex format of a geometry with a list: this bit on the format of a skinned vertex. It
 /// is above the bits of a real format here: the plugin writes no sizes of coordinate sets.
