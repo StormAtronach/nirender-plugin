@@ -6,7 +6,7 @@
 //! number. The summary is made at the next Present: its walk of the engine's texture list and of
 //! the renderer's maps needs the cell worker stalled, and a stall under a Lua call can wait for
 //! a worker that waits for the Lua lock. For the same reason a test asks in a paused menu, not
-//! during a load: a Lua teleport draws frames of a load under its Lua call [I]. The test takes two
+//! during a load: a Lua teleport draws frames of a load under its Lua call \[I\]. The test takes two
 //! summaries with a capture between them; a control takes two with no capture between them. Two
 //! calls with no Present between them give the same summary: compare the numbers too.
 //!
