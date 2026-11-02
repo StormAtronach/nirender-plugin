@@ -116,8 +116,6 @@ const LIGHT_VTBL_GET_TYPE: usize = InterfaceNiLight::GetType;
 const MIN_DIMMER: f32 = 0.01;
 /// Bit 0 of the flags of a `NiAVObject`: the application culled the object.
 const FLAG_APP_CULLED: u16 = 1;
-/// The longest parent chain that the walk follows.
-const MAX_DEPTH: usize = 64;
 const MAX_LIGHTS: usize = 64;
 
 /// The objects that the tests compare with. `begin_paint` reads them one time for a scene.
@@ -1280,52 +1278,56 @@ unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
     if roots.moon_shadows.contains(&geometry) {
         return CLASS_SKY_MOON_SHADOW;
     }
-    let mut node = geometry;
-    for _ in 0..MAX_DEPTH {
-        if node == 0 {
-            break;
-        }
-        let class = if node == roots.sky_dome {
-            CLASS_SKY_DOME
-        } else if node == roots.night_sky {
-            CLASS_SKY_NIGHT
-        } else if node == roots.clouds {
-            CLASS_SKY_CLOUDS
-        } else if node == roots.sun_vis || node == roots.sun_base {
-            CLASS_SKY_SUN
-        } else if roots.moon_shadows.contains(&node) {
-            CLASS_SKY_MOON_SHADOW
-        } else if roots.moon_roots.contains(&node) {
-            CLASS_SKY_MOON
-        } else if node == roots.sky_root {
-            CLASS_SKY_OTHER
-        } else if node == roots.sun_glare {
-            CLASS_SUN_GLARE
-        } else if roots.particles.contains(&node) {
-            CLASS_WEATHER_PARTICLES
-        } else if node == roots.water_ripples {
-            CLASS_WATER_RIPPLE
-        } else if node == roots.water_plane {
-            CLASS_WATER_PLANE
-        } else if node == roots.landscape_root {
-            CLASS_LANDSCAPE
-        } else if node == roots.object_root {
-            CLASS_OBJECT
-        } else if node == roots.shadow_volume {
-            CLASS_SHADOW_VOLUME
-        } else if node == roots.shadow_overlay {
-            CLASS_SHADOW_OVERLAY
-        } else {
-            node = rd(node, AV::parentNode);
-            continue;
-        };
-        return class;
+    // A chain cut at the guard leaves the class unknown, as a chain with no known node does.
+    let found = crate::parent_chain::first_answer(geometry, crate::parent_chain::GUARD, |node| rd(node, AV::parentNode), |node| node_class(node, roots));
+    match found {
+        Ok(Some(class)) => return class,
+        Ok(None) => {}
+        Err(crate::parent_chain::ChainTooLong) => crate::parent_chain::note_too_long("the class of a draw"),
     }
     if roots.scene_kind == SCENE_FIRST_PERSON {
         CLASS_FIRST_PERSON
     } else {
         CLASS_UNKNOWN
     }
+}
+
+/// The class that a node of the parent chain gives, when it is one of the known objects.
+fn node_class(node: usize, roots: &Roots) -> Option<u32> {
+    let class = if node == roots.sky_dome {
+        CLASS_SKY_DOME
+    } else if node == roots.night_sky {
+        CLASS_SKY_NIGHT
+    } else if node == roots.clouds {
+        CLASS_SKY_CLOUDS
+    } else if node == roots.sun_vis || node == roots.sun_base {
+        CLASS_SKY_SUN
+    } else if roots.moon_shadows.contains(&node) {
+        CLASS_SKY_MOON_SHADOW
+    } else if roots.moon_roots.contains(&node) {
+        CLASS_SKY_MOON
+    } else if node == roots.sky_root {
+        CLASS_SKY_OTHER
+    } else if node == roots.sun_glare {
+        CLASS_SUN_GLARE
+    } else if roots.particles.contains(&node) {
+        CLASS_WEATHER_PARTICLES
+    } else if node == roots.water_ripples {
+        CLASS_WATER_RIPPLE
+    } else if node == roots.water_plane {
+        CLASS_WATER_PLANE
+    } else if node == roots.landscape_root {
+        CLASS_LANDSCAPE
+    } else if node == roots.object_root {
+        CLASS_OBJECT
+    } else if node == roots.shadow_volume {
+        CLASS_SHADOW_VOLUME
+    } else if node == roots.shadow_overlay {
+        CLASS_SHADOW_OVERLAY
+    } else {
+        return None;
+    };
+    Some(class)
 }
 
 /// The radius of a point light, for the helper's fade: MGE XE's recovery from the light's
