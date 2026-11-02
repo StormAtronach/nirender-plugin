@@ -390,6 +390,8 @@ static STREAM_MESSAGE: AtomicUsize = AtomicUsize::new(0);
 /// camera's Click with the scene packet, or 0. MGE XE takes its main view and its eye from it
 /// and from the camera object it names, not from the view matrix.
 static STREAM_SCENE_BEGIN: AtomicUsize = AtomicUsize::new(0);
+/// `MGE_LightFadeRadius` of MGE XE (see [`point_light_radius`]), or 0.
+static LIGHT_FADE_RADIUS: AtomicUsize = AtomicUsize::new(0);
 
 /// Finds the functions of MGE XE. The `d3d8.dll` of this repository has none.
 unsafe fn find_stream_functions() {
@@ -405,6 +407,8 @@ unsafe fn find_stream_functions() {
     STREAM_MESSAGE.store(message as usize, Ordering::Relaxed);
     let scene_begin = win::GetProcAddress(module as *mut c_void, b"MGE_StreamSceneBegin\0".as_ptr());
     STREAM_SCENE_BEGIN.store(scene_begin as usize, Ordering::Relaxed);
+    let fade_radius = win::GetProcAddress(module as *mut c_void, c"MGE_LightFadeRadius".as_ptr().cast());
+    LIGHT_FADE_RADIUS.store(fade_radius as usize, Ordering::Relaxed);
     if !present.is_null() {
         crate::log!("link: the frame logic of MGE XE runs from the stream");
     }
@@ -1324,15 +1328,25 @@ unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
     }
 }
 
-/// The radius of a point light: the radius the engine passed to its attach pass when it placed
-/// the light (`light_stream::radius_of`, from MWSE's event). Else the light's specular colour,
-/// where `game_dynamicLightTest` (0x4D3039) writes the attach radius it was given (0x4D3150
-/// and `game_getLightRadiusFromSpecular` 0x4D1B80 read it back): without a module that owns the
-/// light attach radius it is the light's radius, but MGE XE makes it the end of its fade and
-/// 160 more. A light that a mod made in Lua has the radius the mod set, 0 when it set none.
-/// The light manager's device values carry the specular colour times the dimmer: they are not
-/// the radius.
+/// The radius of a point light, for the helper's fade: MGE XE's recovery from the light's
+/// attenuation (`MGE_LightFadeRadius`), the one its light attach radius takes, so that the fade
+/// ends inside the attach radius for every kind of light. 0 when the attenuation gives no radius:
+/// the light has no fade. The owner's D64. [I] A spell light can read long under a quadratic
+/// `[LightAttenuation]`: `MWBridge::pointLightRadius` names the case.
+///
+/// A `d3d8.dll` without the function: the radius the engine passed to its attach pass when it
+/// placed the light (`light_stream::radius_of`, from MWSE's event). Else the light's specular
+/// colour, where `game_dynamicLightTest` (0x4D3039) writes the attach radius it was given (0x4D3150
+/// and `game_getLightRadiusFromSpecular` 0x4D1B80 read it back). The light manager's device values
+/// carry the specular colour times the dimmer: they are not the radius.
 pub unsafe fn point_light_radius(light: usize) -> f32 {
+    let recovery = LIGHT_FADE_RADIUS.load(Ordering::Relaxed);
+    // Two callers pass any light of a draw, and only a point light has these words.
+    if recovery != 0 && vcall0(light, LIGHT_VTBL_GET_TYPE) == LIGHT_POINT {
+        use crate::gen::layouts::NiPointLight as PL;
+        let recovery: unsafe extern "C" fn(f32, f32, f32) -> f32 = core::mem::transmute(recovery);
+        return recovery(rd(light, PL::constantAttenuation), rd(light, PL::linearAttenuation), rd(light, PL::quadraticAttenuation));
+    }
     if let Some(t) = MainThread::here() {
         if let Some(radius) = crate::light_stream::radius_of(&t, rd(light, L::index)) {
             return radius;
