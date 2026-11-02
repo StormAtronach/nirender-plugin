@@ -1040,6 +1040,10 @@ static TABLE: HostV1 = HostV1 {
 
 /// The device calls of other code that this host took and did not do, by the method.
 static TAKEN: LockCell<[u32; 100]> = LockCell::new([0; 100]);
+/// The same calls by the method and by the code that made the call (its return address).
+static TAKEN_BY: LockCell<std::collections::BTreeMap<(usize, usize), u32>> = LockCell::new(std::collections::BTreeMap::new());
+/// The lines of the log for a method and a caller seen for the first time, at most.
+const TAKEN_LINES: usize = 32;
 
 /// A device call of other code that has no call of the link. It must not get to the device
 /// of MGE XE: it can have an object of this host as an argument.
@@ -1048,6 +1052,33 @@ pub unsafe fn take(slot: usize) {
     if let Some(count) = TAKEN.get(&lock).get_mut(slot) {
         *count += 1;
     };
+    let mut by = TAKEN_BY.get(&lock);
+    let count = by.entry((slot, crate::device::caller())).or_insert(0);
+    *count += 1;
+    let first = *count == 1;
+    if first && by.len() <= TAKEN_LINES {
+        crate::log!("own host: a device call taken and not done: {} from {}", crate::device::NAMES.get(slot).copied().unwrap_or("?"), module_and_offset(crate::device::caller()));
+    }
+}
+
+/// An address as the module that holds it and the offset in it, or the address alone for code
+/// outside every module.
+fn module_and_offset(address: usize) -> String {
+    // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT
+    const FROM_ADDRESS: u32 = 4 | 2;
+    let mut module: *mut core::ffi::c_void = core::ptr::null_mut();
+    // SAFETY: the two calls read no memory of the address; `module` and `name` are ours, and the
+    // size is the size of `name`.
+    unsafe {
+        if crate::win::GetModuleHandleExW(FROM_ADDRESS, address as *const core::ffi::c_void, &mut module) == 0 {
+            return format!("{address:#x}");
+        }
+        let mut name = [0u16; 260];
+        let length = crate::win::GetModuleFileNameW(module, name.as_mut_ptr(), name.len() as u32) as usize;
+        let path = String::from_utf16_lossy(&name[..length]);
+        let file = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_string();
+        format!("{file}+{:#x}", address - module as usize)
+    }
 }
 
 /// The colour surface that the game draws into now: the last one of a call to set the
@@ -1112,6 +1143,8 @@ pub unsafe fn report() -> String {
     for (slot, count) in taken.iter().enumerate() {
         if *count != 0 {
             text.push_str(&format!(" {}:{}", crate::device::NAMES.get(slot).copied().unwrap_or("?"), count));
+            let callers: Vec<String> = TAKEN_BY.get(&lock).iter().filter(|((method, _), _)| *method == slot).map(|((_, caller), count)| format!("{} {count}", module_and_offset(*caller))).collect();
+            text.push_str(&format!(" ({})", callers.join(", ")));
         }
     }
     if text.is_empty() {
