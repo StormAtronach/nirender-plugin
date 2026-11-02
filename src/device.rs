@@ -647,6 +647,10 @@ unsafe fn is_windows_direct3d8(release: usize) -> bool {
 /// The decision of [`is_windows_direct3d8`] for the module `module` of `Release`, when `host` is
 /// the base of the `d3d8.dll` of the game folder (0 without one) and `plugin` the base of this
 /// plugin.
+///
+/// The rule is "not the host, not the plugin". Any other module of `Release` counts as Windows:
+/// the shim of `apphelp.dll` does, and so would another wrapper of Direct3D 8 that a user puts
+/// in front of the device. Such a wrapper gets no plugin lock in `AddRef` and `Release`.
 fn is_direct3d8_of_windows(module: usize, host: usize, plugin: usize) -> bool {
     module != 0 && module != host && module != plugin
 }
