@@ -116,7 +116,7 @@ struct Clusters {
 // The bones of the skinned instances of the table (`retained.rs`), in the space of the set:
 // a retained skinned draw reads them from the first bone of its instance.
 @group(0) @binding(12) var<storage, read> retained_palette: array<mat4x4f>;
-// The bone influences of the shapes that the game skins in software (`influences.rs`): a vertex
+// The bone influences of the shapes that a packed vertex cannot hold (`influences.rs`): a vertex
 // of such a shape names its entries.
 struct Influence {
     bone: u32,
@@ -396,11 +396,12 @@ fn vs(in: VertexIn) -> VertexOut {
         world_position += last * (bone * local);
         world_normal += last * (bone * vec4f(in.normal, 0.0)).xyz;
     } else if weights == 5u {
-        // A shape that the game skins in software: each influence of the vertex with its raw
-        // weight, as `NiSkinInstance::Deform` sums them. The first two weights of the vertex
-        // are its first entry and its count. A normal takes the rotation of a bone without
-        // its scale, as there. The plugin's last bone has no rotation: it only gives the
-        // place of the shape to the part of the weights that the sum lacks of 1.
+        // A shape with a list: a shape that the game skins in software, or one with a vertex of
+        // more than 4 influences. Each influence of the vertex with its weight, as
+        // `NiSkinInstance::Deform` sums them. The first two weights of the vertex are its first
+        // entry and its count. A normal takes the rotation of a bone without its scale, as
+        // there. For a shape in software, the plugin's last bone has no rotation: it only gives
+        // the place of the shape to the part of the weights that the sum lacks of 1.
         let first = select(draws[record].light_range.z, in.record.y, from_scene());
         let at = u32(in.weights.x);
         world_position = vec4f(0.0);
