@@ -634,7 +634,10 @@ unsafe fn pixel_memory(surface: &mut Object) -> Option<&'static mut Vec<u8>> {
 /// map menu reads the same textures again and again (records entry 55).
 unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool {
     let (into_width, into_height) = (into.width, into.height);
-    let Some(memory) = pixel_memory(into) else { return false };
+    let Some(memory) = pixel_memory(into) else {
+        *FAILED_READS.get(lock) += 1;
+        return false;
+    };
     let cacheable = target != 0 && read_cache_on() && texture_of(CURRENT_TARGET.load(Ordering::Relaxed)) != target;
     if cacheable {
         if let Some(kept) = READ_CACHE.get(lock).get(&target) {
