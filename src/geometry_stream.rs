@@ -1438,14 +1438,15 @@ mod tests {
         core::array::from_fn(|r| m[r] * v[0] + m[4 + r] * v[1] + m[8 + r] * v[2] + m[12 + r])
     }
 
-    /// Raw weights with moving bones, in numbers: what the vertex shader sums from the list and
-    /// the palette against what `NiSkinInstance::Deform` 0x6FA000 and then the shape's world
-    /// transform give, for a turned and moved shape, more than 4 influences, weights that do
-    /// not sum to 1, and two poses of the bones. A palette bone is the shape times the bone.
+    /// The rest entry restores the place of the shape once, for a turned, scaled and moved
+    /// shape, more than 4 influences, weights that do not sum to 1, and two poses of the bones.
+    /// A palette bone is the shape times the bone. This guards `all_influences` and `place_only`:
+    /// both sums are written here by hand, so it cannot show a wrong WGSL, a wrong palette or a
+    /// wrong reading of `NiSkinInstance::Deform` 0x6FA000.
     #[test]
-    fn the_sum_of_the_list_is_the_engine_s_in_each_pose() {
+    fn the_rest_entry_restores_the_place_of_the_shape_once() {
         let mut shape = [0f32; 16];
-        (shape[1], shape[4], shape[10], shape[15]) = (1.0, -1.0, 1.0, 1.0);
+        (shape[1], shape[4], shape[10], shape[15]) = (2.0, -2.0, 2.0, 1.0);
         (shape[12], shape[13], shape[14]) = (1000.0, -2000.0, 50.0);
         let weights = [0.2f32, 0.15, 0.1, 0.05, 0.05, 0.05];
         let list = vec![weights.iter().enumerate().map(|(bone, &weight)| (bone as u8, weight)).collect::<Vec<_>>()];
