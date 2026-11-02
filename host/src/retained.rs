@@ -598,11 +598,11 @@ impl RetainedSet {
     /// a still camera writes nothing, and the material records never change.
     /// With the test switch, compares the projections with the engine's words of the frame.
     pub fn turn_effects(&mut self, camera: &crate::effect_turn::Camera) {
-        if !self.turn_check_words.is_empty() {
-            self.turn_checks.next_frame(camera, &self.origin);
-            for (id, engine, stored_location) in core::mem::take(&mut self.turn_check_words) {
+        if let Some(&(_, _, stored_location)) = self.turn_check_words.first() {
+            self.turn_checks.next_frame(camera, stored_location, &self.origin);
+            for (id, engine, _) in core::mem::take(&mut self.turn_check_words) {
                 if let Some(chain) = self.effect_chains.get(&id) {
-                    self.turn_checks.compare(chain, &engine, stored_location);
+                    self.turn_checks.compare(chain, &engine);
                 }
             }
         }

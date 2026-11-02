@@ -392,6 +392,9 @@ pub struct TurnChecks {
     moved_frames: u64,
     camera: Option<Camera>,
     previous: Option<Camera>,
+    /// The cameras above at the place the engine stores.
+    stored: Option<Camera>,
+    previous_stored: Option<Camera>,
     origin: [f64; 3],
     /// The largest distance of the camera from the origin of the world.
     farthest: f64,
@@ -404,24 +407,25 @@ fn coordinate_at(matrix: &[f32; 9], translation: &[f32; 3], place: &[f32; 3]) ->
 }
 
 impl TurnChecks {
-    /// A frame's camera and the origin of the table, before its comparisons.
-    pub fn next_frame(&mut self, camera: &Camera, origin: &[f64; 3]) {
+    /// A frame's camera, with the place the engine stores for it, and the origin of the table,
+    /// before its comparisons.
+    pub fn next_frame(&mut self, camera: &Camera, stored_location: [f32; 3], origin: &[f64; 3]) {
         self.previous = self.camera;
         self.camera = Some(*camera);
+        self.previous_stored = self.stored;
+        self.stored = Some(Camera { location: stored_location.map(f64::from), ..*camera });
         self.origin = *origin;
         self.frames += 1;
         self.moved_frames += u64::from(self.previous.is_some_and(|previous| previous != *camera));
         self.farthest = self.farthest.max(camera.location.iter().map(|v| v * v).sum::<f64>().sqrt());
     }
 
-    /// The projection of `chain` against the engine's words of this frame, with the place of the
-    /// camera as the engine stores it.
-    pub fn compare(&mut self, chain: &Chain, engine: &Projection, stored_location: [f32; 3]) {
-        let Some(camera) = self.camera else { return };
-        let stored_camera = Camera { location: stored_location.map(f64::from), ..camera };
+    /// The projection of `chain` against the engine's words of this frame.
+    pub fn compare(&mut self, chain: &Chain, engine: &Projection) {
+        let (Some(camera), Some(stored_camera)) = (self.camera, self.stored) else { return };
         let (matrix, translation) = difference(&chain.stored_projection(&stored_camera), engine);
         let (exact_matrix, exact_translation) = difference(&chain.exact_projection(&camera), engine);
-        let old_camera = self.previous.map_or(0.0, |previous| difference(&chain.stored_projection(&Camera { location: stored_location.map(f64::from), ..previous }), engine).0);
+        let old_camera = self.previous_stored.map_or(0.0, |previous| difference(&chain.stored_projection(&previous), engine).0);
         let no_turn = difference(&chain.unturned_projection(&stored_camera), engine).0;
         let (relative_error, world_error) = self.coordinate_errors(chain, &camera, engine);
         let pair = if chain.turning_billboards() > 1 {
@@ -673,7 +677,7 @@ mod tests {
         chain.root.translation = chain.root_exact.map(|v| v as f32);
         let camera = Camera { location: [250100.0, -310100.0, 1300.0], ..case.camera };
         let mut checks = TurnChecks::default();
-        checks.next_frame(&camera, &camera.location);
+        checks.next_frame(&camera, camera.location.map(|v| v as f32), &camera.location);
         let engine = chain.stored_projection(&Camera { location: camera.location.map(|v| f64::from(v as f32)), ..camera });
         let (relative, world) = checks.coordinate_errors(&chain, &camera, &engine);
         assert!(relative < 1.0e-4, "the relative stage is off by {relative}");
