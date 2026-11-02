@@ -87,6 +87,8 @@ The run:
 - `NIRENDER_HOST_LOG=<path>`: the file for the text of the host program; without it,
   `nirender-host.log` in the folder of the game.
 - `NIRENDER_BACKEND=vulkan|dx12`: the backend of the host program.
+- `NIRENDER_PLUGIN_DIR=<path>`: the plugin's folder for `cargo xtask` of MGE XE; without it,
+  the sibling folder. `tools/merge_step.py` removes it from its stages.
 - `NIRENDER_RING_MB=<n>`: the size of the ring in MB, 1 to 512, default 128 (a texture
   level must fit it whole; a 4096 x 4096 ARGB level is 64 MiB); a value outside is named
   in the plugin's log and 128 is taken.
