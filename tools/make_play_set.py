@@ -24,7 +24,8 @@ note says so.
 
 Only on a pass, it writes MGE_BUILD and NIRENDER_PLUGIN_DLL in local.bat of the main checkout. A failed
 smoke leaves local.bat on the last good set, says why, and exit code 1. Each set has a one-line WHAT.txt.
-Nothing is deleted: older sets stay until the owner's cleanup, and a failed set stays with its reason.
+Nothing is deleted: older sets stay until the owner's cleanup, and a failed set stays with its reason. The
+smoke's runs are copied to E:/nirender-keep/runs-<date>.
 
 With the tips of the set in local.bat it does nothing, unless --force. A build waits while the slots refuse
 a build, and the smoke waits in the queue of the game slot: with --no-wait each stops with exit code 3.
@@ -53,6 +54,7 @@ PLUGIN_BRANCH = "master"
 MGE_BRANCH = "feature/wgpu-renderer"
 TREES = "C:/tmp/playset"
 SETS = "E:/nirender-keep/mgebuilds"
+KEPT_RUNS = "E:/nirender-keep/runs-%s"
 HARNESS = os.path.join(REPOS, "moreFPS", "docs", "scripts", "test-harness-2026-10-03")
 BATCH = os.path.join(REPOS, "moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "batch-play-smoke.lua")
 PLUGIN_TARGET = os.path.join("target", "i686-pc-windows-msvc", "release", "akulakhan.dll")
@@ -304,8 +306,16 @@ def newest_run(tree, label):
     return folders[-1]
 
 
+def keep_run(run):
+    """Copies a run to the kept runs: the results of a tree in TREES are a real folder that a cleanup may delete."""
+    target = os.path.join(KEPT_RUNS % datetime.date.today().isoformat(), os.path.basename(run))
+    shutil.copytree(run, target, dirs_exist_ok=True)
+    return target
+
+
 def run_runner(tree, label, folder, plugin_dll, budget, *args):
-    """Runs the runner of the tree, whose Lua and tools are of the built commit. Returns the run folder."""
+    """Runs the runner of the tree, whose Lua and tools are of the built commit. Returns the run folder, kept
+    also when the run failed, as a failed set's reason names it."""
     wait_clean()
     log = os.path.join(tree, "results", label + ".txt")
     say("smoke: %s" % label)
@@ -313,6 +323,7 @@ def run_runner(tree, label, folder, plugin_dll, budget, *args):
                            "--no-build", "--set", "[runtime] renderer_probe = false", "--budget", str(budget), *args, "--log", log],
                           cwd=tree, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     run = newest_run(tree, label)
+    say("smoke: the run is kept in %s" % keep_run(run))
     if done.returncode != 0:
         raise SmokeFailed("the runner of %s gave exit code %d: %s" % (label, done.returncode, run))
     return run
@@ -363,8 +374,9 @@ def smoke_tour(tree, folder, plugin_dll, notes):
     check_run_files(run, notes)
     done = subprocess.run([sys.executable, "tools/validate_tour.py", run, "--mge-build", folder, "--jobs", "3"],
                           cwd=tree, capture_output=True, text=True, errors="replace")
-    with open(run + "-validate.txt", "w", encoding="utf-8") as file:
+    with open(os.path.join(run, "validate.txt"), "w", encoding="utf-8") as file:
         file.write(done.stdout + done.stderr)
+    keep_run(run)
     faults = tour_faults(done.stdout, done.returncode)
     if faults:
         raise SmokeFailed("%s: %s" % (run, "; ".join(faults)))
@@ -491,6 +503,20 @@ def self_test():
         with open(os.path.join(folder, "WHAT.txt"), "w", encoding="ascii") as file:
             file.write(set_note("f186", "abc", "def", "FAILED: a reason"))
         assert current_set_commits(bat) is None, "a failed set is no current set"
+
+    # A run is kept under its own name, and again without a fault: the validation is added to it later.
+    with tempfile.TemporaryDirectory() as folder:
+        global KEPT_RUNS
+        kept_before = KEPT_RUNS
+        KEPT_RUNS = os.path.join(folder, "runs-%s")
+        run = os.path.join(folder, "20261102-000000-x")
+        os.mkdir(run)
+        with open(os.path.join(run, "a.txt"), "w", encoding="ascii") as file:
+            file.write("a")
+        kept = keep_run(run)
+        keep_run(run)
+        assert os.path.basename(kept) == os.path.basename(run) and os.path.isfile(os.path.join(kept, "a.txt"))
+        KEPT_RUNS = kept_before
 
     # The picture rule, with a black and a real picture.
     from PIL import Image
