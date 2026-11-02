@@ -697,7 +697,7 @@ pub unsafe fn textures_changed(mt: &MainThread) {
 }
 
 /// The start of a draw of the engine: a pending draw that no shape record took (a skinned
-/// shape whose palette failed, or one skinned in software) must not reach the next record.
+/// shape whose palette failed) must not reach the next record.
 pub unsafe fn begin_draw(mt: &MainThread) {
     tables(mt).pending = None;
 }
