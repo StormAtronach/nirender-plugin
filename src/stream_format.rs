@@ -65,8 +65,10 @@
 /// format 2 would read such a vertex's list as its weights. 4: the records EFFECT_CHAIN,
 /// EFFECT_TURN_CHECK and EFFECT_CHAIN_GONE, and a material record whose effect has the bit
 /// 0x80000000 in its flags word and the id of its chain in the first word of its matrix
-/// (2026-11-02). A helper of format 3 would draw such a stage with the id as a matrix word.
-pub const STREAM_FORMAT: u32 = 4;
+/// (2026-11-02). A helper of format 3 would draw such a stage with the id as a matrix word. 5: the
+/// decal count of a material record is the whole count, and the maps past the 8 follow its words
+/// (2026-11-02). A helper of format 4 would draw only two decals.
+pub const STREAM_FORMAT: u32 = 5;
 
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
 /// game, the abilities of the stream, the stream format, then the build id of the plugin as

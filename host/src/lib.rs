@@ -372,7 +372,7 @@ impl Pass {
                 8 => (m.environment.clamp, m.environment.filter),
                 9 => (m.fog_map.clamp, m.fog_map.filter),
                 10 => (3, 1),
-                map => (m.maps[map as usize].clamp, m.maps[map as usize].filter),
+                source => (m.map_of_source(source).clamp, m.map_of_source(source).filter),
             };
             let mut sampler = material::sampler_states(clamp, filter);
             // A texture with one level gets no mip filter. [I] The engine's filter for a

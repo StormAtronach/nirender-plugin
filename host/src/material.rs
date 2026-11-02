@@ -18,6 +18,12 @@ pub const WORDS: usize = 91;
 /// The words of a record that has the static values of its texture effects after the 91
 /// (13 for each: the environment map at 91, the fog map at 104). A shorter record has none.
 pub const WORDS_WITH_EFFECTS: usize = 117;
+/// The words of a map in a record. The maps past the 8 at word 8 (the third decal and on, as many
+/// as the texturing property has) come after [`WORDS_WITH_EFFECTS`].
+const MAP_WORDS: usize = 5;
+/// The `source` of a stage of the first map past the 8. The sources 8, 9 and 10 are the environment
+/// map, the fog map and the stage with no texture.
+const SOURCE_PAST_THE_MAPS: u32 = 11;
 
 pub const BLEND: u32 = 1;
 pub const ALPHA_TEST: u32 = 2;
@@ -68,7 +74,8 @@ pub struct Material {
     pub alpha_reference: u32,
     pub apply_mode: u32,
     pub decals: u32,
-    pub maps: [Map; 8],
+    /// The 8 of the record's first part, then its maps past them.
+    pub maps: Vec<Map>,
     pub bump: [f32; 6],
     /// Ambient, diffuse, specular, emissive (3 each), shininess, alpha.
     pub material: [f32; 14],
@@ -127,6 +134,13 @@ impl Material {
                 Effect { matrix: core::array::from_fn(|k| f(at + k)), translation: core::array::from_fn(|k| f(at + 9 + k)), flags, turning: None }
             })
         };
+        // Every word of a map past the 8 is in the record: `decals` counts them.
+        let past_the_maps = (w(7) as usize).saturating_sub(2);
+        let in_record = (data.len() / 4).saturating_sub(WORDS_WITH_EFFECTS) / MAP_WORDS;
+        if past_the_maps > in_record {
+            println!("material: a record counts {} decals and has the words of {}: the rest are not drawn", w(7), 2 + in_record);
+        }
+        let maps =(0..8).map(|i| map(8 + i * MAP_WORDS)).chain((0..past_the_maps.min(in_record)).map(|i| map(WORDS_WITH_EFFECTS + i * MAP_WORDS))).collect();
         Some(Material {
             flags: w(1),
             source_blend: w(2),
@@ -135,7 +149,7 @@ impl Material {
             alpha_reference: w(5),
             apply_mode: w(6),
             decals: w(7),
-            maps: core::array::from_fn(|i| map(8 + i * 5)),
+            maps,
             bump: core::array::from_fn(|k| f(48 + k)),
             material: core::array::from_fn(|k| f(54 + k)),
             source_mode: w(68),
@@ -154,6 +168,17 @@ impl Material {
             fog_map_effect: effect(104, w(1) & FOG_MAP != 0),
         })
     }
+
+    /// The map of a stage's `source` that names one of [`Material::maps`].
+    pub fn map_of_source(&self, source: u32) -> Map {
+        let index = if source >= SOURCE_PAST_THE_MAPS { source - SOURCE_PAST_THE_MAPS + 8 } else { source };
+        self.maps[index as usize]
+    }
+}
+
+/// The `source` of a stage of the map at `index` of [`Material::maps`].
+fn source_of_map(index: usize) -> u32 {
+    if index < 8 { index as u32 } else { SOURCE_PAST_THE_MAPS + (index - 8) as u32 }
 }
 
 /// One stage of the derived state: the texture, the colour and alpha operations
@@ -421,7 +446,7 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
         let mp = m.maps[map];
         let (color, alpha) = ops(slot, first, apply, mp.texture != 0);
         let set = coordinate_set(mp.set, sets);
-        Stage { texture: mp.texture, color, alpha, set, source: map as u32, clamp: mp.clamp, filter: mp.filter }
+        Stage { texture: mp.texture, color, alpha, set, source: source_of_map(map), clamp: mp.clamp, filter: mp.filter }
     };
     let mut pass: Vec<Stage> = Vec::new();
     let mut pass_slot = 2u32;
@@ -467,7 +492,7 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
     // does it take a sub-pass with capacity for the stage (0x6B3B30).
     for i in 0..m.decals as usize {
         let map = DECAL0 + i;
-        if map < 8 && has(map) {
+        if map < m.maps.len() && has(map) {
             passes.push((core::mem::take(&mut pass), pass_slot));
             pass_slot = 1;
             pass.push(stage(map, 1, true));
@@ -777,6 +802,51 @@ mod pass_slot_tests {
 
     const ENVIRONMENT: u32 = 8;
     const ADD: [u32; 3] = [1, 2, 2];
+
+    /// A record with a base map and `decals` decals of the textures 100, 101 and on, with a clamp
+    /// mode that tells each one.
+    fn with_decals(decals: usize) -> Vec<u8> {
+        let mut words = vec![0u32; WORDS_WITH_EFFECTS + decals.saturating_sub(2) * MAP_WORDS];
+        words[0] = words.len() as u32;
+        words[7] = decals as u32;
+        words[8] = 50;
+        words[8 + 4] = 1;
+        for i in 0..decals {
+            let at = if i < 2 { 8 + (DECAL0 + i) * MAP_WORDS } else { WORDS_WITH_EFFECTS + (i - 2) * MAP_WORDS };
+            words[at] = 100 + i as u32;
+            words[at + 1] = i as u32;
+            words[at + 4] = 1;
+        }
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    /// The owner's rule: every engine value. `setCTPipelineState` draws each decal in a pass of
+    /// its own, with no cap (`ports/ct_pipeline_state.rs`, the loop at 6B4B43).
+    #[test]
+    fn every_decal_of_a_record_has_its_pass() {
+        for decals in [0, 1, 2, 3, 8, 40] {
+            let m = Material::parse(&with_decals(decals)).unwrap();
+            let d = derive(&m, 1, Some(false));
+            assert_eq!(d.passes.len(), 1 + decals, "{decals} decals");
+            for i in 0..decals {
+                let stage = d.passes[1 + i][0];
+                assert_eq!(stage.texture, 100 + i as u32);
+                assert_eq!(stage.clamp, i as u32);
+                // The sampler and the coordinate of a stage find their map by its source.
+                assert_eq!(m.map_of_source(stage.source).texture, 100 + i as u32);
+                assert!(!matches!(stage.source, 8..=10), "a decal must not read as the environment map, the fog map or no texture");
+            }
+        }
+    }
+
+    #[test]
+    fn a_record_without_the_words_of_its_decals_has_only_its_maps() {
+        let mut data = with_decals(4);
+        data.truncate((WORDS_WITH_EFFECTS + MAP_WORDS) * 4);
+        let m = Material::parse(&data).unwrap();
+        assert_eq!(m.maps.len(), 9);
+        assert_eq!(derive(&m, 1, Some(false)).passes.len(), 4);
+    }
 
     #[test]
     fn a_stage_of_slot_0_joins_the_first_pass() {
