@@ -729,7 +729,9 @@ def main():
 
     def build_trees():
         build_log = os.path.join(TREES, "build-%s-%s.log" % (plugin_commit, mge_commit))
+        slots.note_active("build", time.time())
         build_step(["cargo", "build", "--release"], plugin_tree, build_log)
+        slots.note_active("build", time.time())
         build_step(["cargo", "xtask", "dist"], mge_tree, build_log)
         return build_log
 

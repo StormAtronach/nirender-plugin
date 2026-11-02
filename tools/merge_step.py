@@ -172,8 +172,10 @@ def clear_pictures(folder):
                     os.remove(entry.path)
 
 
-def run_stages(stages, log):
-    """All stages, also after a failure, but the gate has no build to replay after a failure of its build."""
+def run_stages(stages, log, note_stage=lambda: None):
+    """All stages, also after a failure, but the gate has no build to replay after a failure of its build.
+    `note_stage` runs before each stage that runs: the hold of the build slot lapses after 15 minutes with
+    no compile seen, and a round can pass that with a stage that does not compile."""
     results = {}
     for name, folder, command in stages:
         if name == "replay gate" and not results.get("build for the gate", True):
@@ -182,6 +184,7 @@ def run_stages(stages, log):
             continue
         if name == "replay gate":
             clear_pictures(command[command.index("--now") + 1])
+        note_stage()
         results[name] = run_stage(name, folder, command, log)
     return list(results.values())
 
@@ -338,6 +341,12 @@ def self_test():
             assert run_stages([("a", root, bad), ("build for the gate", root, good), gate_stage], log) == [False, True, True]
         assert os.listdir(now) == ["tour"] and os.listdir(os.path.join(now, "tour")) == []
 
+        # Each stage that runs notes the slot's work, and a gate that does not run does not.
+        notes = []
+        with open(os.path.join(root, "log4.txt"), "w", encoding="utf-8") as log:
+            run_stages([("a", root, good), ("build for the gate", root, bad), gate_stage], log, lambda: notes.append(1))
+        assert len(notes) == 2
+
         # A pass against a named folder does not move the ref.
         assert moves_the_ref(BASELINE) and not moves_the_ref(os.path.join(root, "copy"))
     print("merge_step self-test: ok")
@@ -396,7 +405,7 @@ def main():
     log_path = os.path.join(plugin, "target", "merge-step-%s.log" % commit[:10])
     try:
         with open(log_path, "w", encoding="utf-8", errors="replace") as log:
-            results = run_stages(stages, log)
+            results = run_stages(stages, log, lambda: slots.note_active("build", time.time()))
     finally:
         say(slots.release("build").text.splitlines()[0])
     say("%d of %d stages passed; the output is in %s" % (sum(results), len(results), log_path))
