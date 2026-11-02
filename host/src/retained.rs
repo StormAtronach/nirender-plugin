@@ -221,6 +221,8 @@ pub struct RetainedCounts {
     /// The entries of the texture effects written ([`RetainedSet::turn_effects`]), the seconds
     /// of that, and the seconds of the upload of the table.
     pub entry_writes: u64,
+    /// The chains that came.
+    pub chain_records: u64,
     pub turn_seconds: f64,
     pub upload_seconds: f64,
 }
@@ -353,8 +355,10 @@ pub struct RetainedSet {
     bones_dirty: bool,
     /// The instances that the extension claims ([`Slot::claim`]).
     claimed: std::collections::HashSet<u32>,
-    /// The texture effects that move in the play, by the id of the chain.
+    /// The texture effects that move in the play, by the id of the chain, and the chain each had
+    /// before its last record (for the null test of the live check).
     effect_chains: HashMap<u32, crate::effect_turn::Chain>,
+    chains_before: HashMap<u32, crate::effect_turn::Chain>,
     /// The entries of the texture effects, their numbers by what they hold, the free ones, those
     /// to write, and the origin the plain ones were made for ([`RetainedSet::turn_effects`]).
     effect_entries: Vec<Option<EffectEntry>>,
@@ -373,6 +377,7 @@ impl RetainedSet {
         RetainedSet {
             claimed: std::collections::HashSet::new(),
             effect_chains: HashMap::new(),
+            chains_before: HashMap::new(),
             effect_entries: Vec::new(),
             entry_of: HashMap::new(),
             free_entries: Vec::new(),
@@ -523,7 +528,10 @@ impl RetainedSet {
     pub fn effect_chain_record(&mut self, data: &[u8]) {
         let words: Vec<u32> = data.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect();
         if let Some((id, chain)) = crate::effect_turn::Chain::parse(&words) {
-            self.effect_chains.insert(id, chain);
+            self.counts.chain_records += 1;
+            if let Some(before) = self.effect_chains.insert(id, chain) {
+                self.chains_before.insert(id, before);
+            }
         }
     }
 
@@ -541,10 +549,13 @@ impl RetainedSet {
     /// A chain of a texture effect went ([`crate::tag::EFFECT_CHAIN_GONE`]).
     pub fn effect_chain_gone(&mut self, id: u32) {
         self.effect_chains.remove(&id);
+        self.chains_before.remove(&id);
     }
 
-    pub fn effect_chain_count(&self) -> usize {
-        self.effect_chains.len()
+    /// The chains with a turning billboard, and those with only a controller.
+    pub fn effect_chain_counts(&self) -> (usize, usize) {
+        let turning = self.effect_chains.values().filter(|chain| chain.turning_billboards() > 0).count();
+        (turning, self.effect_chains.len() - turning)
     }
 
     /// The entries of the texture effects, and the stages that name them.
@@ -608,7 +619,8 @@ impl RetainedSet {
             self.turn_checks.next_frame(camera, first.camera_place, &self.origin);
             for engine in core::mem::take(&mut self.turn_check_words) {
                 if let Some(chain) = self.effect_chains.get(&engine.id) {
-                    self.turn_checks.compare(chain, &engine);
+                    let before = self.chains_before.get(&engine.id).unwrap_or(chain);
+                    self.turn_checks.compare(chain, before, &engine);
                 }
             }
         }

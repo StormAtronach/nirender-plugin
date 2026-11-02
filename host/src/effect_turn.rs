@@ -380,10 +380,12 @@ struct PairCheck {
     /// takes the position only.
     relative_error: f32,
     world_error: f32,
-    /// The stored projection with the camera of the frame before, and with no turn: the null
-    /// tests. A moving camera shows in the first, and a turn that counts in the second.
+    /// The stored projection with the camera of the frame before, with no turn, and with the chain
+    /// of the frame before: the null tests. A moving camera shows in the first, a turn that counts in
+    /// the second, and a read of the chain one frame late in the third.
     old_camera: f32,
     no_turn: f32,
+    old_chain: f32,
     /// The stage of a draw at its place against the engine's callbacks: the first three rows, the
     /// translation; from the stored places, then from the exact ones as a draw takes it.
     stage_matrix: f32,
@@ -395,18 +397,18 @@ struct PairCheck {
 impl PairCheck {
     fn line(&self, name: &str) -> String {
         format!(
-            "{name}: {} compared, largest difference {} in the matrix and {} in the translation; from the exact places {} and {}; a coordinate at the effect's place off by {} relative, {} in the form before; with the camera of the frame before {}, with no turn {}; the stage at its place {} and {}, from the exact places {} and {}",
-            self.compared, self.matrix, self.translation, self.exact_matrix, self.exact_translation, self.relative_error, self.world_error, self.old_camera, self.no_turn, self.stage_matrix, self.stage_translation, self.exact_stage_matrix, self.exact_stage_translation
+            "{name}: {} compared, largest difference {} in the matrix and {} in the translation; from the exact places {} and {}; a coordinate at the effect's place off by {} relative, {} in the form before; with the camera of the frame before {}, with no turn {}; the stage at its place {} and {}, from the exact places {} and {}; with the chain of the frame before {}",
+            self.compared, self.matrix, self.translation, self.exact_matrix, self.exact_translation, self.relative_error, self.world_error, self.old_camera, self.no_turn, self.stage_matrix, self.stage_translation, self.exact_stage_matrix, self.exact_stage_translation, self.old_chain
         )
     }
 }
 
 /// The live check: the helper's projection against the engine's words after the billboard's
-/// display, by the pair of the billboard's mode and the coordinate mode, and the chains with
-/// more than one turning billboard apart.
+/// display, by the pair of the billboard's mode (the last row: a controller and no billboard) and
+/// the coordinate mode, and the chains with more than one turning billboard apart.
 #[derive(Default)]
 pub struct TurnChecks {
-    pairs: [[PairCheck; 5]; 3],
+    pairs: [[PairCheck; 5]; 4],
     nested: PairCheck,
     /// The frames with a comparison, and those whose camera differed from the frame before.
     frames: u64,
@@ -447,14 +449,16 @@ impl TurnChecks {
         self.farthest = self.farthest.max(camera.location.iter().map(|v| v * v).sum::<f64>().sqrt());
     }
 
-    /// The projection of `chain` against the engine's words of this frame.
-    pub fn compare(&mut self, chain: &Chain, words: &EngineWords) {
+    /// The projection of `chain` against the engine's words of this frame. `before` is its chain
+    /// before the last record.
+    pub fn compare(&mut self, chain: &Chain, before: &Chain, words: &EngineWords) {
         let (Some(camera), Some(stored_camera)) = (self.camera, self.stored) else { return };
         let engine = &words.projection;
         let (matrix, translation) = difference(&chain.stored_projection(&stored_camera), engine);
         let (exact_matrix, exact_translation) = difference(&chain.exact_projection(&camera), engine);
         let old_camera = self.previous_stored.map_or(0.0, |previous| difference(&chain.stored_projection(&previous), engine).0);
         let no_turn = difference(&chain.unturned_projection(&stored_camera), engine).0;
+        let old_chain = difference(&before.stored_projection(&stored_camera), engine).0;
         let (relative_error, world_error) = self.coordinate_errors(chain, &camera, engine);
         let (stage_matrix, stage_translation) = stage_difference(&chain.camera_stage_in(&stored_camera, Places::Stored), &words.stage);
         let (exact_stage_matrix, exact_stage_translation) = stage_difference(&chain.camera_stage(&camera), &words.stage);
@@ -478,6 +482,7 @@ impl TurnChecks {
         pair.stage_translation = pair.stage_translation.max(stage_translation);
         pair.exact_stage_matrix = pair.exact_stage_matrix.max(exact_stage_matrix);
         pair.exact_stage_translation = pair.exact_stage_translation.max(exact_stage_translation);
+        pair.old_chain = pair.old_chain.max(old_chain);
     }
 
     /// The error of a coordinate at the effect's place, for the stage relative to the origin and
@@ -507,8 +512,9 @@ impl TurnChecks {
         }
         lines.push(format!("effect turn check: {} frames, {} with another camera than the frame before; the camera at most {:.0} units from the origin of the world", self.frames, self.moved_frames, self.farthest));
         for (mode, modes) in self.pairs.iter().enumerate() {
+            let billboard = if mode as u32 == NO_TURN { "no billboard".to_string() } else { format!("billboard mode {mode}") };
             for (coordinates, pair) in modes.iter().enumerate() {
-                lines.push(pair.line(&format!("effect turn check: billboard mode {mode}, coordinate mode {coordinates}")));
+                lines.push(pair.line(&format!("effect turn check: {billboard}, coordinate mode {coordinates}")));
             }
         }
         lines.push(self.nested.line("effect turn check: two turning billboards"));

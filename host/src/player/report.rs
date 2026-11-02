@@ -94,9 +94,10 @@ impl Player {
         );
         println!("instance census: {} lists of the plugin, {} instances held here that a list lacked", c.instance_censuses, c.instance_orphans);
         let (entries, entry_stages) = self.retained.effect_entry_counts();
+        let (turning, controlled) = self.retained.effect_chain_counts();
         println!(
-            "effect chains: {} texture effects under a turning billboard; {entries} entries of texture effects, {entry_stages} stages name them, {} entries written; {:.3} s making them, {:.3} s in the upload of the table",
-            self.retained.effect_chain_count(), r.entry_writes, r.turn_seconds, r.upload_seconds
+            "effect chains: {turning} texture effects under a turning billboard, {controlled} with only a controller; {} chain records; {entries} entries of texture effects, {entry_stages} stages name them, {} entries written; {:.3} s making them, {:.3} s in the upload of the table",
+            r.chain_records, r.entry_writes, r.turn_seconds, r.upload_seconds
         );
         for line in self.retained.turn_checks.lines() {
             println!("{line}");

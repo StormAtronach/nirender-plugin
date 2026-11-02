@@ -46,6 +46,11 @@ a cylinder), a lit material, a base texture of the level, and the property under
     turn_hidden  a billboard with the hidden flag: no display, no turn
     turn_switched a billboard that a switch node does not select: no display, no turn
     turn_selected a billboard that a switch node selects, no geometry under the switch: it turns
+    ctrl_b<m>_c<n> a keyframe controller on the effect, with the billboard mode m (n: no
+                 billboard) and the coordinate mode n
+    ctrl_above_b<m> the controller on the node above the billboard, which moves the shape too
+    ctrl_between the controller on the node between two billboards, the shape under the second
+    ctrl_under_b1 the controller on the effect, the shape under the billboard with it
 
 The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
 write of the level's own files. The texture effect is attached as the level's exhibits do:
@@ -374,7 +379,20 @@ def billboard(name, mode, translation):
     return b
 
 
-def make_turn(name, geometry, modes, effect, shape_under=False, hidden=False, switched=False, selected=False):
+def keyframes(blocks, target, stop=4.0):
+    """A controller that swings a block in place, in a loop of `stop` seconds, as the level's
+    exhibits have it (flags 8): 40 units along x and a quarter turn about z and back."""
+    controller = len(blocks)
+    half = math.sqrt(0.5)
+    blocks.append({"type": "NiKeyframeController", "next": -1, "flags": 8, "frequency": 1.0, "phase": 0.0, "start": 0.0, "stop": stop, "target": target, "data": controller + 1})
+    blocks.append({"type": "NiKeyframeData",
+                   "rotation_keys": {"interpolation": 1, "keys": [(0.0, 1.0, 0.0, 0.0, 0.0), (stop / 2, half, 0.0, 0.0, half), (stop, 1.0, 0.0, 0.0, 0.0)]},
+                   "translation_keys": {"interpolation": 1, "keys": [(0.0, 0.0, 0.0, 0.0), (stop / 2, 40.0, 0.0, 0.0), (stop, 0.0, 0.0, 0.0)]},
+                   "scale_keys": {"interpolation": 0, "keys": []}})
+    blocks[target]["controller"] = controller
+
+
+def make_turn(name, geometry, modes, effect, shape_under=False, hidden=False, switched=False, selected=False, controller=None):
     """A texture effect under turning billboards, one in each of `modes`, nested. The shape is
     a child of the node above the first billboard, before it in the walk, as in the level's
     103.nif: the shape displays before its effect turns. With `shape_under`, the shape is under
@@ -383,6 +401,8 @@ def make_turn(name, geometry, modes, effect, shape_under=False, hidden=False, sw
     switch node does not select. Neither has a display, so the effect does not turn. With
     `selected`, the billboard is the child that a switch selects, with no geometry under the switch:
     a switch tests no geometry flag, so it has its display and turns.
+    `controller` puts a keyframe controller on the effect ("effect"), on the node above the
+    billboards ("above"), or on the node between two billboards ("between").
     The blocks: 0 root, 1 shape, 2 data, 3 material, 4 texturing, 5 texture, 6 the node above,
     then each billboard (a plain node between two), the effect and its texture."""
     blocks = [node("@_nifx " + name), None, tri_shape_data(geometry), material(), texturing(5), source_texture(BASE_TEXTURE)]
@@ -424,6 +444,16 @@ def make_turn(name, geometry, modes, effect, shape_under=False, hidden=False, sw
     texture_type, coordinates, matrix, translation = effect
     blocks.append(texture_effect(effect_at + 1, texture_type, coordinates, matrix, translation))
     blocks.append(source_texture(EFFECT_TEXTURE, 5, 2, 3))
+    if controller is not None:
+        # The engine runs the controllers of a static under an animated node, with these flags
+        # as the level's exhibits have them (`BSAnimationManager::Update` 0x6EE690).
+        blocks[0].update({"type": "NiBSAnimationNode", "flags": 0x6A})
+    if controller == "effect":
+        keyframes(blocks, effect_at)
+    elif controller == "above":
+        keyframes(blocks, 6)
+    elif controller == "between":
+        keyframes(blocks, next(i for i, block in enumerate(blocks) if block.get("name") == "between"))
     return write_file(name, blocks)
 
 
@@ -556,6 +586,16 @@ def main():
     files.append(("turn_hidden", make_turn("turn_hidden", b, [2], parallel, hidden=True)))
     files.append(("turn_switched", make_turn("turn_switched", b, [2], parallel, switched=True)))
     files.append(("turn_selected", make_turn("turn_selected", b, [2], parallel, selected=True)))
+    # A keyframe controller on the effect: no billboard and each mode, with each coordinate mode;
+    # then on a node above, on the node between two billboards, and with the shape under one.
+    for mode, modes in [("n", []), ("0", [0]), ("1", [1]), ("2", [2])]:
+        for coordinates, effect in enumerate(effects):
+            name = "ctrl_b%s_c%d" % (mode, coordinates)
+            files.append((name, make_turn(name, c if coordinates >= 2 else b, modes, effect, controller="effect")))
+        name = "ctrl_above_b%s" % mode
+        files.append((name, make_turn(name, b, modes, parallel, controller="above")))
+    files.append(("ctrl_between", make_turn("ctrl_between", b, [1, 2], parallel, shape_under=True, controller="between")))
+    files.append(("ctrl_under_b1", make_turn("ctrl_under_b1", b, [1], parallel, shape_under=True, controller="effect")))
     lines = ["-- The test NIFs of the flag support, made by tools/make_test_nifs.py (do not edit).",
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",
              "return {"]
