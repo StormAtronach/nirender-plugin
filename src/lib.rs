@@ -79,6 +79,7 @@ pub mod world_walk;
 pub mod queue_flush;
 #[cfg(feature = "rig")]
 pub mod perf;
+pub mod parent_chain;
 pub mod ptr_hash;
 pub mod ports;
 #[cfg(feature = "rig")]

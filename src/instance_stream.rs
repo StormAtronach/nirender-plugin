@@ -91,8 +91,6 @@ const PLANE_NAMES: [&str; 7] = ["near", "far", "left", "right", "top", "bottom",
 const SLOT_ON_PRE_DISPLAY: usize = InterfaceNiTimeController::OnPreDisplay;
 const RTTI_NAME: usize = NiRTTI::name;
 const RTTI_BASE: usize = NiRTTI::baseRTTI;
-/// The most nodes above a shape that the walk looks at.
-const MAX_DEPTH: usize = 32;
 /// The frames between two checks of the handles of an instance. This note is a safety net for
 /// changes of a retained shape's material that no event reports. Followed by events: the
 /// property and effect states (`recheck`), the Lua changes (`note_change`), the live
@@ -148,7 +146,10 @@ const REASON_LATER: usize = 3;
 /// The depth test of the shape is equal, greater, not equal or greater or equal: the draw
 /// depends on the depth of a draw before it, so its place in the order of the game matters.
 const REASON_DEPTH: usize = 4;
-const REASONS: usize = 5;
+/// More nodes above the shape than the walk allows ([`crate::parent_chain::GUARD`]): the nodes
+/// beyond are unread, so the shape stays on the engine's path.
+const REASON_CHAIN: usize = 5;
+const REASONS: usize = 6;
 
 struct Instance {
     id: u32,
@@ -867,18 +868,27 @@ unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, skinned
         *live = true;
     }
     let animated = t.animated;
-    let mut node: usize = rd(shape, PARENT);
-    for _ in 0..MAX_DEPTH {
-        if node == 0 {
-            break;
+    let above = crate::parent_chain::first_answer(
+        rd(shape, PARENT),
+        crate::parent_chain::GUARD,
+        |node| rd(node, PARENT),
+        |node| {
+            if !animated && !skinned && rd::<usize>(node, CONTROLLERS) != 0 {
+                Some(REASON_CONTROLLER)
+            } else if kind_rejected(t.node_kinds, node, skinned) {
+                Some(REASON_NODE_KIND)
+            } else {
+                None
+            }
+        },
+    );
+    match above {
+        Ok(Some(reason)) => return Some(reason),
+        Ok(None) => {}
+        Err(crate::parent_chain::ChainTooLong) => {
+            crate::parent_chain::note_too_long("the table's reject test");
+            return Some(REASON_CHAIN);
         }
-        if !animated && !skinned && rd::<usize>(node, CONTROLLERS) != 0 {
-            return Some(REASON_CONTROLLER);
-        }
-        if kind_rejected(t.node_kinds, node, skinned) {
-            return Some(REASON_NODE_KIND);
-        }
-        node = rd(node, PARENT);
     }
     if property_state != 0 {
         for slot in 0..STATE_COUNT {
@@ -1087,7 +1097,7 @@ pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, 
     };
     let mut node_controllers = 0;
     let mut node: usize = rd(shape, PARENT);
-    for _ in 0..MAX_DEPTH {
+    for _ in 0..crate::parent_chain::GUARD {
         if node == 0 {
             break;
         }
@@ -2145,7 +2155,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
     let (rechecks, change_notes, queue_counts, walk_places) = (*RECHECKS.get(mt), *CHANGE_NOTES.get(mt), *QUEUE_COUNTS.get(mt), *WALK_PLACES.get(mt));
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
-    let reasons = ["controller", "node kind", "property controller", "at the record", "depth function"];
+    let reasons = ["controller", "node kind", "property controller", "at the record", "depth function", "parent chain too long"];
     let mut rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     let later = *LATER_BY.get(mt);
     if later.iter().any(|&n| n != 0) {
