@@ -211,7 +211,7 @@ pub unsafe fn report(t: &MainThread) -> String {
     let (uv_check, morph_check) = (*UV_CHECK.get(t), *MORPH_CHECK.get(t));
     let s = &*SKIN_COUNTS.get(t);
     format!(
-        "geometry: {} records, {:.1} MB, {} UV steps (checked {}, over 1/1000 {}, the most {:.6}), {} morph steps (checked {}, over 1/1000 {}, the most {:.6}), {} geometries known, {} forgotten after {} frames without a draw, {} destroyed (GEOMETRY_GONE); skins: {} from the skin data, {} from the partitions ({} without bone data), {} with a dying skin data; vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}; skinned in software with every influence: {} records, {} entries",
+        "geometry: {} records, {:.1} MB, {} UV steps (checked {}, over 1/1000 {}, the most {:.6}), {} morph steps (checked {}, over 1/1000 {}, the most {:.6}), {} geometries known, {} forgotten after {} frames without a draw, {} destroyed (GEOMETRY_GONE); skins: {} from the skin data, {} from the partitions ({} without bone data), {} with a dying skin data; vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}; with a list of every influence: {} records, {} entries",
         records,
         bytes as f64 / 1e6,
         *UV_STEPS.get(t),
