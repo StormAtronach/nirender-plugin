@@ -634,7 +634,10 @@ unsafe fn pixel_memory(surface: &mut Object) -> Option<&'static mut Vec<u8>> {
 /// map menu reads the same textures again and again (records entry 55).
 unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool {
     let (into_width, into_height) = (into.width, into.height);
-    let Some(memory) = pixel_memory(into) else { return false };
+    let Some(memory) = pixel_memory(into) else {
+        *FAILED_READS.get(lock) += 1;
+        return false;
+    };
     let cacheable = target != 0 && read_cache_on() && texture_of(CURRENT_TARGET.load(Ordering::Relaxed)) != target;
     if cacheable {
         if let Some(kept) = READ_CACHE.get(lock).get(&target) {
@@ -714,8 +717,8 @@ unsafe fn copy_pixels(lock: &DeviceLock, source: u32, destination: u32) -> u32 {
 }
 
 static PIXEL_READS: LockCell<u32> = LockCell::new(0);
-/// The reads that gave no pixels, or pixels of another size: the game's memory stays as it was,
-/// and the game's call still returns success.
+/// The reads that gave no pixels, gave pixels of another size, or had no pixel memory to write
+/// into: the game's memory stays as it was, and the game's call still returns success.
 static FAILED_READS: LockCell<u32> = LockCell::new(0);
 /// The reads by (width, height, from the back buffer): the count and the wait in ticks.
 static READS_BY_SIZE: LockCell<std::collections::BTreeMap<(u32, u32, bool), (u32, i64)>> = LockCell::new(std::collections::BTreeMap::new());
