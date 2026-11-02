@@ -407,7 +407,7 @@ unsafe fn find_stream_functions() {
     STREAM_MESSAGE.store(message as usize, Ordering::Relaxed);
     let scene_begin = win::GetProcAddress(module as *mut c_void, b"MGE_StreamSceneBegin\0".as_ptr());
     STREAM_SCENE_BEGIN.store(scene_begin as usize, Ordering::Relaxed);
-    let fade_radius = win::GetProcAddress(module as *mut c_void, b"MGE_LightFadeRadius\0".as_ptr());
+    let fade_radius = win::GetProcAddress(module as *mut c_void, c"MGE_LightFadeRadius".as_ptr().cast());
     LIGHT_FADE_RADIUS.store(fade_radius as usize, Ordering::Relaxed);
     if !present.is_null() {
         crate::log!("link: the frame logic of MGE XE runs from the stream");
