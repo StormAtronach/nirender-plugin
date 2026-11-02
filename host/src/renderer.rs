@@ -1172,17 +1172,7 @@ impl Renderer {
             return;
         };
         let decode = self.decoded.contains(&handle);
-        let block = match d3d_format {
-            0x3154_5844 => 8,
-            0x3354_5844 | 0x3554_5844 => 16,
-            _ => 0,
-        };
-        let source_bytes = texture_format(*d3d_format).map_or(4, |f| f.2 as u32);
-        let (row, rows, expected) = if block != 0 {
-            (width.div_ceil(4) * block, height.div_ceil(4), (width.div_ceil(4) * height.div_ceil(4) * block) as usize)
-        } else {
-            (width * gpu_bytes(*d3d_format) as u32, height, (width * height * source_bytes) as usize)
-        };
+        let (block, row, rows, expected) = crate::d3d::level_layout(*d3d_format, width, height);
         if level >= texture.mip_level_count() || size < expected || data.len() < 24 + expected {
             self.counts.texture_updates_lost += 1;
             let reason = if level >= texture.mip_level_count() { "the texture has no such level" } else { "the record has too few bytes" };

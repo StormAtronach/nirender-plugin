@@ -1010,6 +1010,16 @@ pub const D3DFMT_BC7: u32 = 0x2037_4342;
 pub fn is_bc7(pixel_format: u32, first_channel_mask: u32) -> bool {
     pixel_format == 8 && first_channel_mask == D3DFMT_BC7
 }
+
+/// The rule for the Direct3D format of a texture of a thread: 'BC7 ' for such a pixel format
+/// ([`is_bc7`]), else `table_format`, from the engine's table.
+pub fn format_with_tag(pixel_format: u32, first_channel_mask: u32, table_format: u32) -> u32 {
+    if is_bc7(pixel_format, first_channel_mask) {
+        D3DFMT_BC7
+    } else {
+        table_format
+    }
+}
 pub const D3DFMT_YUY2: u32 = 0x3259_5559;
 pub const D3DFMT_UYVY: u32 = 0x5956_5955;
 
@@ -1247,6 +1257,9 @@ mod tests {
 
     #[test]
     fn only_the_dxt5_format_with_the_bc7_tag_is_bc7() {
+        assert_eq!(format_with_tag(8, D3DFMT_BC7, D3DFMT_DXT5), D3DFMT_BC7);
+        assert_eq!(format_with_tag(8, 0, D3DFMT_DXT5), D3DFMT_DXT5);
+        assert_eq!(format_with_tag(6, D3DFMT_BC7, 21), 21);
         assert!(is_bc7(8, D3DFMT_BC7));
         // DXT5 without the tag (the reader clears the mask of a compressed format), the tag on
         // another format, and the FourCC of DXT5 in the mask are not BC7.
