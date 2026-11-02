@@ -200,12 +200,13 @@ class Run:
         spec.update(values)
         return spec
 
-    def launch(self, spec, timeout, tag, mods=(), disable=()):
+    def launch(self, spec, timeout, tag, mods=(), disable=(), facts=()):
         """Starts the game with `spec` and follows it until the scenario says DONE.
 
         `mods` are the other mods of the run, as (name, {path in the mod: source file}); the
         names start with harness.RUN_MOD_PREFIX. `disable` are mods of the instance that are off
-        for the run. The mod list is as it was after the run.
+        for the run. The mod list is as it was after the run. `facts` are more lines for the record
+        of what the run ran (`harness.write_setup`).
 
         A run is a background run unless NIRENDER_FOREGROUND=1 (the owner, 2026-10-20): the
         runner stages MWSE.json with RunInBackground = true (stage_background_config) and does
@@ -227,7 +228,7 @@ class Run:
                 deployment.use_mod(name, files)
             for name in disable:
                 deployment.disable_mod(name)
-            done = harness.run_game(self.progress, timeout, tag, deployment, self.started, foreground=foreground)
+            done = harness.run_game(self.progress, timeout, tag, deployment, self.started, foreground=foreground, facts=facts)
         finally:
             # run_game also restores. This restore is for a failure before run_game gets to
             # that point.
