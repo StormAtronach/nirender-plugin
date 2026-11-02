@@ -230,7 +230,7 @@ fn check_on() -> bool {
 /// engine stores it, and the stage that the engine's callbacks make from them for this camera (the
 /// texture matrix of `texture_pass_b::effect_stage_words`, which a draw at its place in the walk
 /// has). A billboard out of the view keeps an older turn, and the flag tells the two
-/// apart: it is cleared here, and only a display sets it again. [I] The check is for a place with
+/// apart: it is cleared here, and only a display sets it again. \[I\] The check is for a place with
 /// no other walk before the world's in a frame (the test level): the local map's walk would set
 /// the flag with another camera.
 ///

@@ -573,7 +573,7 @@ unsafe fn skinned_relative(t: &MainThread,
 /// world matrix of the device (as `write_world_matrix` makes one), relative to the origin
 /// when this module owns the matrices. Returns whether the matrices are relative, or what
 /// is missing when the data of the skin is not complete. With `software` (the game skins the
-/// shape in software) one more matrix follows: [`place_only`].
+/// shape in software) one more matrix follows: `place_only`.
 ///
 /// # Safety
 ///
@@ -689,7 +689,7 @@ pub const BONE_BYTES: usize = 9 * 4 + 3 * 8;
 /// its exact translation in the world (3 doubles), from the shape's exact transform. Returns
 /// the number of bones, or what is missing when the data of the skin is not complete. A shape
 /// of 0 is missing data too: the function reads nothing through it (not the game's code). With
-/// `software`, one more bone with no rotation and the place of the shape ([`place_only`]).
+/// `software`, one more bone with no rotation and the place of the shape (`place_only`).
 ///
 /// # Safety
 ///

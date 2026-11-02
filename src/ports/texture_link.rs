@@ -102,7 +102,7 @@ fn create_call_bytes(function: u32) -> [u8; 13] {
     bytes
 }
 
-/// Puts [`create_texture_call`] in the game function, for a game without a Direct3D device: MGE XE
+/// Puts `create_texture_call` in the game function, for a game without a Direct3D device: MGE XE
 /// patches this place only on Direct3D 9. True when the patch went in, or a patch of this shape is
 /// there already; false when another change holds the place.
 ///
@@ -260,8 +260,8 @@ unsafe fn file_opens(filename: usize) -> bool {
 }
 
 /// Gives `write` the record of a texture, with the pixels that `create` made for it, for a
-/// capture file: the same file, the same format, the same conversion ([`fitting_format`],
-/// [`description_of`]), in memory that goes at the return. The game's objects stay as they are:
+/// capture file: the same file, the same format, the same conversion (`fitting_format`,
+/// `description_of`), in memory that goes at the return. The game's objects stay as they are:
 /// `data`, the renderer data of `texture`, is read only, a file's pixel data is new and goes
 /// here, and a texture's own pixel data goes through the converter with no destination, so that
 /// nothing can write into it. Nothing else sees it: MGE XE's patches and the counter of the

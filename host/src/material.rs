@@ -108,7 +108,7 @@ pub struct Effect {
     pub translation: [f32; 3],
     pub flags: u32,
     /// An effect under a billboard that turns: the id of its chain
-    /// ([`crate::tag::EFFECT_CHAIN`]). The record has no projection then: the table makes it
+    /// (`crate::tag::EFFECT_CHAIN`). The record has no projection then: the table makes it
     /// from the chain for the camera of each frame, and the camera makes no new material.
     pub turning: Option<u32>,
 }
