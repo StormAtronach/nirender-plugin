@@ -25,21 +25,11 @@ const WEIGHTS_AT: usize = 12;
 /// A range of the list, to give back: the offset and the size in bytes.
 pub(crate) type ListRange = (u64, u64);
 
-pub(crate) struct Influences {
-    pub(crate) buffer: wgpu::Buffer,
-    bytes: Vec<u8>,
-    free: Vec<(u64, u64)>,
-    /// The bytes in use.
-    pub(crate) used: u64,
-}
-
-fn make_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("bone influences"),
-        size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
+/// The bones of an instance that a list needs: its largest bone and one. The largest can be the
+/// matrix with only the place of the shape, which comes with the bones of each instance.
+pub(crate) fn bones_needed(list: &[u8]) -> u32 {
+    let entry = ENTRY_BYTES as usize;
+    (0..list.len() / entry).map(|i| u32::from_le_bytes([list[i * entry], list[i * entry + 1], list[i * entry + 2], list[i * entry + 3]]).saturating_add(1)).max().unwrap_or(0)
 }
 
 /// The first entry of each vertex moved by `first`, for vertices of `stride` bytes.
@@ -53,43 +43,87 @@ pub(crate) fn moved_vertices(vertices: &[u8], stride: usize, first: u32) -> Vec<
     out
 }
 
+/// The room of the list and a copy of its bytes.
+struct ListSpace {
+    bytes: Vec<u8>,
+    free: Vec<(u64, u64)>,
+    used: u64,
+    grown: u32,
+}
+
+impl ListSpace {
+    fn new(size: u64) -> ListSpace {
+        ListSpace { bytes: vec![0; size as usize], free: vec![(0, size)], used: 0, grown: 0 }
+    }
+
+    /// Takes a range for the entries and copies them there: the range, its first entry as the
+    /// vertices name it, and true when the room grew. The old bytes keep their offsets.
+    fn put(&mut self, entries: &[u8]) -> (ListRange, u32, bool) {
+        let size = (entries.len() as u64).max(ENTRY_BYTES);
+        let mut grew = false;
+        let at = match pool::carve(&mut self.free, size, ENTRY_BYTES) {
+            Some(at) => at,
+            None => {
+                let old = self.bytes.len() as u64;
+                let new = (old + size).next_power_of_two();
+                self.bytes.resize(new as usize, 0);
+                pool::merge(&mut self.free, old, new - old);
+                self.grown += 1;
+                grew = true;
+                pool::carve(&mut self.free, size, ENTRY_BYTES).expect("the new room has the range")
+            }
+        };
+        self.bytes[at as usize..at as usize + entries.len()].copy_from_slice(entries);
+        self.used += size;
+        ((at, size), (at / ENTRY_BYTES) as u32, grew)
+    }
+
+    fn give(&mut self, range: ListRange) {
+        pool::merge(&mut self.free, range.0, range.1);
+        self.used -= range.1;
+    }
+}
+
+pub(crate) struct Influences {
+    pub(crate) buffer: wgpu::Buffer,
+    space: ListSpace,
+}
+
+fn make_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("bone influences"),
+        size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 impl Influences {
     pub(crate) fn new(device: &wgpu::Device) -> Influences {
-        Influences { buffer: make_buffer(device, FIRST_BYTES), bytes: vec![0; FIRST_BYTES as usize], free: vec![(0, FIRST_BYTES)], used: 0 }
+        Influences { buffer: make_buffer(device, FIRST_BYTES), space: ListSpace::new(FIRST_BYTES) }
     }
 
     /// Takes a range for the entries, and writes them. Returns the range, and its first entry
     /// as the vertices name it. The entries of a list come in whole numbers of [`ENTRY_BYTES`].
     pub(crate) fn put(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, entries: &[u8]) -> (ListRange, u32) {
-        let size = (entries.len() as u64).max(ENTRY_BYTES);
-        let at = match pool::carve(&mut self.free, size, ENTRY_BYTES) {
-            Some(at) => at,
-            None => self.grow(device, queue, size),
-        };
-        self.bytes[at as usize..at as usize + entries.len()].copy_from_slice(entries);
-        if !entries.is_empty() {
-            queue.write_buffer(&self.buffer, at, entries);
+        let (range, first, grew) = self.space.put(entries);
+        if grew {
+            self.buffer = make_buffer(device, self.space.bytes.len() as u64);
+            queue.write_buffer(&self.buffer, 0, &self.space.bytes);
+        } else if !entries.is_empty() {
+            queue.write_buffer(&self.buffer, range.0, entries);
         }
-        self.used += size;
-        ((at, size), (at / ENTRY_BYTES) as u32)
-    }
-
-    /// A buffer with room for `size` bytes more: the old bytes keep their offsets. Returns the
-    /// offset of the new range.
-    fn grow(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, size: u64) -> u64 {
-        let old = self.bytes.len() as u64;
-        let new = (old + size).next_power_of_two();
-        self.buffer = make_buffer(device, new);
-        self.bytes.resize(new as usize, 0);
-        queue.write_buffer(&self.buffer, 0, &self.bytes[..old as usize]);
-        pool::merge(&mut self.free, old, new - old);
-        pool::carve(&mut self.free, size, ENTRY_BYTES).expect("the new buffer has room")
+        (range, first)
     }
 
     /// Gives a range back, after the frame that may still use it.
     pub(crate) fn give(&mut self, range: ListRange) {
-        pool::merge(&mut self.free, range.0, range.1);
-        self.used -= range.1;
+        self.space.give(range);
+    }
+
+    /// For the report: the bytes in use, the room of the buffer, and how many times it grew.
+    pub(crate) fn report(&self) -> (u64, u64, u32) {
+        (self.space.used, self.space.bytes.len() as u64, self.space.grown)
     }
 }
 
@@ -102,6 +136,10 @@ mod tests {
         bytes[12..16].copy_from_slice(&first.to_le_bytes());
         bytes[16..20].copy_from_slice(&count.to_le_bytes());
         bytes
+    }
+
+    fn entries(count: usize, fill: u8) -> Vec<u8> {
+        vec![fill; count * ENTRY_BYTES as usize]
     }
 
     #[test]
@@ -119,5 +157,47 @@ mod tests {
         // up to there is exact in the float of the vertex.
         let last = (1u32 << 24) - 1;
         assert_eq!(last as f32 as u32, last);
+    }
+
+    /// A list that does not fit grows the room, and the lists before it keep their offset and
+    /// their bytes: the vertices that name them are not written again.
+    #[test]
+    fn the_room_grows_and_the_old_lists_stay() {
+        let mut space = ListSpace::new(64);
+        let (a, a_first, a_grew) = space.put(&entries(4, 0xAA));
+        assert_eq!((a, a_first, a_grew), ((0, 32), 0, false));
+        let (b, b_first, b_grew) = space.put(&entries(100, 0xBB));
+        assert!(b_grew);
+        assert_eq!(space.grown, 1);
+        assert_eq!(b.0 % ENTRY_BYTES, 0);
+        assert_eq!(b_first as u64, b.0 / ENTRY_BYTES);
+        assert!(space.bytes.len() as u64 >= 32 + 800);
+        assert!(space.bytes[..32].iter().all(|&byte| byte == 0xAA));
+        assert!(space.bytes[b.0 as usize..(b.0 + b.1) as usize].iter().all(|&byte| byte == 0xBB));
+        assert_eq!(space.used, 832);
+    }
+
+    /// A range given back serves the next list, with no growth.
+    #[test]
+    fn a_range_given_back_is_used_again() {
+        let mut space = ListSpace::new(64);
+        let (a, _, _) = space.put(&entries(8, 1));
+        space.give(a);
+        assert_eq!(space.used, 0);
+        let (b, _, grew) = space.put(&entries(8, 2));
+        assert!(!grew);
+        assert_eq!(b, a);
+        assert_eq!(space.grown, 0);
+    }
+
+    #[test]
+    fn a_list_needs_its_largest_bone_and_one() {
+        assert_eq!(bones_needed(&[]), 0);
+        let mut list = Vec::new();
+        for (bone, weight) in [(2u32, 0.25f32), (6, 0.5), (0, 0.25)] {
+            list.extend_from_slice(&bone.to_le_bytes());
+            list.extend_from_slice(&weight.to_le_bytes());
+        }
+        assert_eq!(bones_needed(&list), 7);
     }
 }

@@ -210,14 +210,18 @@ impl Player {
                 c.pinned_replaced[1]
             );
         }
+        let influences = self.renderer.influences.report();
         println!(
-            "geometry pools: {:.1} MB of vertices in {} buffers of {:.0} MB in all, {:.1} MB of indexes in {} buffers of {:.0} MB in all",
+            "geometry pools: {:.1} MB of vertices in {} buffers of {:.0} MB in all, {:.1} MB of indexes in {} buffers of {:.0} MB in all, {} bytes of bone influences in a buffer of {} bytes that grew {} times",
             self.renderer.vertex_pool.used as f64 / 1e6,
             self.renderer.vertex_pool.chunks(),
             self.renderer.vertex_pool.capacity() as f64 / 1e6,
             self.renderer.index_pool.used as f64 / 1e6,
             self.renderer.index_pool.chunks(),
-            self.renderer.index_pool.capacity() as f64 / 1e6
+            self.renderer.index_pool.capacity() as f64 / 1e6,
+            influences.0,
+            influences.1,
+            influences.2
         );
         for (format, count) in &c.texture_formats {
             println!("texture format {format:#x} not made: {count}");
