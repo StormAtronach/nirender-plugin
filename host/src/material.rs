@@ -268,6 +268,21 @@ pub struct Derived {
     pub modelled: bool,
 }
 
+impl Derived {
+    /// The diffuse, emissive and ambient sources of a draw: 1 is the vertex colour, and 0 the
+    /// material, as in `D3DMATERIALCOLORSOURCE`. A draw without vertex colours has only the
+    /// material. Where the engine leaves the state of the draw before ([`Derived::sources`]),
+    /// this is a fixed choice, so that a picture does not depend on the order of the draws:
+    /// the values of the source mode "ambient and diffuse". That these are the usual
+    /// values left by the engine is \[I\]: their count was not read.
+    pub fn vertex_sources(&self, has_color: bool) -> [u32; 3] {
+        if !has_color {
+            return [0, 0, 0];
+        }
+        [self.sources[0].unwrap_or(1), self.sources[1].unwrap_or(0), self.sources[2].unwrap_or(1)]
+    }
+}
+
 // The first-stage table (pipeline + 0x108) and the later-stage table (+ 0x1F8) of the blend
 // slots, as `initAlphaStateTemplates` 0x6B90E0 writes them and `applyStageBlendOps` 0x6B56B0
 // reads them: colour operation, argument 1, argument 2, alpha operation, argument 1, argument
@@ -706,6 +721,28 @@ mod engine_rule_tests {
 
     fn environment_stage(d: &Derived) -> Stage {
         *d.passes.iter().flatten().find(|s| s.source == 8).unwrap()
+    }
+
+    fn sources_of(lighting_mode: u32, source_mode: u32, has_color: bool) -> [u32; 3] {
+        let mut m = material(false, 0);
+        m.lighting_mode = lighting_mode;
+        m.source_mode = source_mode;
+        derive(&m, 1, None).vertex_sources(has_color)
+    }
+
+    #[test]
+    fn a_source_that_the_engine_leaves_is_fixed() {
+        // The three defined modes keep their values.
+        assert_eq!(sources_of(1, 0, true), [0, 0, 0]);
+        assert_eq!(sources_of(1, 1, true), [0, 1, 0]);
+        assert_eq!(sources_of(1, 2, true), [1, 0, 1]);
+        // A source mode past them, with the lights on: the engine writes no source, here all
+        // three are fixed. The emissive-only mode leaves the diffuse and the ambient.
+        assert_eq!(sources_of(1, 3, true), [1, 0, 1]);
+        assert_eq!(sources_of(1, 77, true), [1, 0, 1]);
+        assert_eq!(sources_of(0, 0, true), [1, 0, 1]);
+        // No vertex colours: only the material.
+        assert_eq!(sources_of(1, 3, false), [0, 0, 0]);
     }
 
     #[test]
