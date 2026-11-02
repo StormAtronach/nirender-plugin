@@ -28,7 +28,8 @@ use crate::mem::rd;
 /// The number of words of a record: 91 for the properties and the textures and modes of the
 /// effects, then 13 for each texture effect that do not change with the camera
 /// (`texture_pass_b::effect_static_words`: the environment map at 91, the fog map at 104),
-/// for the stages of the table of the helper.
+/// for the stages of the table of the helper. A property with maps past the first 8 (the third
+/// decal and on) has their 5 words each after these.
 pub const WORDS: usize = 117;
 const NI_TEXTURE_RENDERER_DATA: usize = layouts::NiTexture::rendererData;
 const SOURCE_DATA_D3D_TEXTURE: usize = layouts::NiDX8SourceTextureData::d3dTexture;
@@ -123,6 +124,14 @@ pub const GROUP_NAMES: [&str; GROUPS] = [
 /// The group of a word of the record (the layout of [`note`]).
 fn group_of(word: usize) -> usize {
     match word {
+        // The maps past the first 8: the texture, then its modes.
+        at if at >= WORDS => {
+            if (at - WORDS).is_multiple_of(5) {
+                2
+            } else {
+                1
+            }
+        }
         8 | 13 | 18 | 23 | 28 | 33 | 38 | 43 => 2,
         6..=47 => 1,
         48..=53 => 3,
@@ -430,6 +439,7 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
     let mut w = [0u32; WORDS];
     w[0] = WORDS as u32;
     let mut flags = 0;
+    let mut maps_past_the_8: Vec<u32> = Vec::new();
 
     // Alpha.
     let alpha: usize = rd(property_state, PS::propAlpha);
@@ -458,17 +468,20 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
         if decals == 1 && crate::ports::ni::texturing_map(maps, crate::ports::ni::MAP_DECAL_0) == 0 {
             decals = 0;
         }
-        w[7] = if end >= 6 { decals.min(2) } else { 0 };
+        w[7] = if end >= 6 { decals } else { 0 };
+        let map_words = |map: usize| -> [u32; 5] {
+            let texture: usize = rd(map, MAP::texture);
+            [device_texture(renderer, texture), rd(map, MAP::clampMode), rd(map, MAP::filterMode), rd(map, MAP::texCoordSet), (texture != 0) as u32]
+        };
+        for i in 8..end as usize {
+            let map: usize = rd(maps, i * 4);
+            maps_past_the_8.extend_from_slice(&if map != 0 { map_words(map) } else { [0; 5] });
+        }
         for i in 0..8usize {
             let map: usize = if (i as u32) < end { rd(maps, i * 4) } else { 0 };
             let at = 8 + i * 5;
             if map != 0 {
-                let texture: usize = rd(map, MAP::texture);
-                w[at] = device_texture(renderer, texture);
-                w[at + 1] = rd(map, MAP::clampMode);
-                w[at + 2] = rd(map, MAP::filterMode);
-                w[at + 3] = rd(map, MAP::texCoordSet);
-                w[at + 4] = (texture != 0) as u32;
+                w[at..at + 5].copy_from_slice(&map_words(map));
                 if i == 5 {
                     w[48] = rd(map, BUMP::lumaScale);
                     w[49] = rd(map, BUMP::lumaOffset);
@@ -610,15 +623,23 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
     w[1] = flags;
     *LAST_FLAGS.get(t) = flags;
 
-    let (first, check) = hash(&w);
+    w[0] = (WORDS + maps_past_the_8.len()) as u32;
+    let joined: Vec<u32>;
+    let words: &[u32] = if maps_past_the_8.is_empty() {
+        &w
+    } else {
+        joined = [&w[..], &maps_past_the_8[..]].concat();
+        &joined
+    };
+    let (first, check) = hash(words);
     let (handle, new) = handle_of(t, first, check);
     if new {
-        crate::capture::material(handle, &w);
-        sent_groups(t).insert(handle, group_hashes(&w));
+        crate::capture::material(handle, words);
+        sent_groups(t).insert(handle, group_hashes(words));
         *RECORDS.get(t) += 1;
-        for at in TEXTURE_WORDS {
-            if w[at] != 0 {
-                by_texture(t).entry(w[at]).or_default().push(handle);
+        for at in TEXTURE_WORDS.into_iter().chain((WORDS..words.len()).step_by(5)) {
+            if words[at] != 0 {
+                by_texture(t).entry(words[at]).or_default().push(handle);
             }
         }
     }
@@ -705,6 +726,11 @@ mod tests {
         assert_eq!(GROUP_NAMES[group_of(89)], "projected lights and shadows");
         assert_eq!(GROUP_NAMES[group_of(91)], "an effect's projection");
         assert_eq!(GROUP_NAMES[group_of(WORDS - 1)], "an effect's projection");
+        // The maps past the first 8.
+        assert_eq!(GROUP_NAMES[group_of(WORDS)], "a map's texture");
+        assert_eq!(GROUP_NAMES[group_of(WORDS + 1)], "texturing and map modes");
+        assert_eq!(GROUP_NAMES[group_of(WORDS + 4)], "texturing and map modes");
+        assert_eq!(GROUP_NAMES[group_of(WORDS + 5)], "a map's texture");
     }
 
     #[test]
