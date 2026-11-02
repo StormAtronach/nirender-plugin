@@ -496,6 +496,9 @@ pub(crate) struct Counts {
     /// The lights and the entries of the clusters of the frames.
     pub(crate) cluster_lights: u64,
     pub(crate) cluster_entries: u64,
+    /// The entries that found their cluster full (`lights::CLUSTER_LIGHTS`) and were dropped,
+    /// in the clusters of the draws, of the lights of the world and of the extension.
+    pub(crate) cluster_dropped: u64,
     /// The lights of the frames for the extension ([`FrameLights`]).
     pub(crate) extension_lights: u64,
     /// The frames with more clustered lights than a mask of a draw has bits.

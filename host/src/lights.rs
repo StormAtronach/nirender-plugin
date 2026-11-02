@@ -35,8 +35,8 @@ pub(crate) const GRID_WORLD_LIGHTS: u32 = 3;
 /// entry of a light, its centre in the space of the view ([`None`] for a directional light,
 /// which is in each cluster) and its reach. `lists` has a list for each cluster. Returns the
 /// table (the first entry and the number for each cluster), the entries, and the values for
-/// the shader with `w` in the grid.
-pub(crate) fn bin_lights(lists: &mut [Vec<u32>], items: impl Iterator<Item = (u32, Option<[f32; 3]>, f32)>, projection: &[f32; 16], size: (u32, u32), w: u32) -> (Vec<[u32; 2]>, Vec<u32>, ClusterData) {
+/// the shader with `w` in the grid. An entry that finds its cluster full goes into `dropped`.
+pub(crate) fn bin_lights(lists: &mut [Vec<u32>], items: impl Iterator<Item = (u32, Option<[f32; 3]>, f32)>, projection: &[f32; 16], size: (u32, u32), w: u32, dropped: &mut u64) -> (Vec<[u32; 2]>, Vec<u32>, ClusterData) {
     for list in lists.iter_mut() {
         list.clear();
     }
@@ -83,6 +83,8 @@ pub(crate) fn bin_lights(lists: &mut [Vec<u32>], items: impl Iterator<Item = (u3
                     let list = &mut lists[(z * gy + y) * gx + x];
                     if list.len() < CLUSTER_LIGHTS {
                         list.push(entry);
+                    } else {
+                        *dropped += 1;
                     }
                 }
             }
@@ -224,7 +226,7 @@ impl Clusters {
             // so a reach past the objects the game attached the light to lights nothing more.
             Some((index | slot << 16, centre, crate::extension::cluster_reach(light)))
         });
-        let (table, indexes, data) = bin_lights(&mut self.lists, items, &projection, size, 1);
+        let (table, indexes, data) = bin_lights(&mut self.lists, items, &projection, size, 1, &mut counts.cluster_dropped);
         self.unique.clear();
         self.write(device, queue, &table, &indexes, &data, counts);
         true
@@ -259,7 +261,7 @@ impl Clusters {
             let centre = [(p[0] as f64 + to_scene[0]) as f32, (p[1] as f64 + to_scene[1]) as f32, (p[2] as f64 + to_scene[2]) as f32, p[3]];
             Some((slot, Some(view_point(&view, centre)), crate::extension::cluster_reach(light)))
         });
-        let (table, indexes, mut data) = bin_lights(&mut self.lists, items, &projection, size, GRID_WORLD_LIGHTS);
+        let (table, indexes, mut data) = bin_lights(&mut self.lists, items, &projection, size, GRID_WORLD_LIGHTS, &mut counts.cluster_dropped);
         data.offset = [to_scene[0] as f32, to_scene[1] as f32, to_scene[2] as f32, 0.0];
         self.write(device, queue, &table, &indexes, &data, counts);
         true
@@ -378,7 +380,7 @@ impl ExtensionLights {
             items.push((lights.len() as u32, centre, light_reach(&light)));
             lights.push(light);
         }
-        let (table, indexes, data) = bin_lights(&mut self.lists, items.into_iter(), &projection, size, 2);
+        let (table, indexes, data) = bin_lights(&mut self.lists, items.into_iter(), &projection, size, 2, &mut counts.cluster_dropped);
         if lights.len() > self.light_capacity {
             self.light_capacity = lights.len().next_power_of_two();
             self.lights = storage_buffer(device, "extension lights", self.light_capacity, core::mem::size_of::<LightData>());
@@ -427,11 +429,28 @@ mod tests {
         p
     }
 
-    fn entries(centre: [f32; 3], reach: f32) -> usize {
+    /// The entries that a number of lights at one place make, and the entries dropped.
+    fn bin_at_one_place(lights: u32, centre: [f32; 3], reach: f32) -> (usize, u64) {
         let cells = (CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]) as usize;
         let mut lists: Vec<Vec<u32>> = (0..cells).map(|_| Vec::new()).collect();
-        let (_, indexes, _) = bin_lights(&mut lists, [(7u32, Some(centre), reach)].into_iter(), &projection(), (1024, 1024), 1);
-        indexes.len()
+        let mut dropped = 0;
+        let (_, indexes, _) = bin_lights(&mut lists, (0..lights).map(|entry| (entry, Some(centre), reach)), &projection(), (1024, 1024), 1, &mut dropped);
+        (indexes.len(), dropped)
+    }
+
+    fn entries(centre: [f32; 3], reach: f32) -> usize {
+        bin_at_one_place(1, centre, reach).0
+    }
+
+    #[test]
+    fn a_full_cluster_counts_the_light_that_it_drops() {
+        let (centre, reach) = ([0.0, 0.0, 100.0], 10.0);
+        let clusters = entries(centre, reach);
+        assert!(clusters > 0);
+        let full = CLUSTER_LIGHTS as u32;
+        assert_eq!(bin_at_one_place(full, centre, reach), (clusters * CLUSTER_LIGHTS, 0));
+        // The next light finds each of its clusters full: one drop for each cluster.
+        assert_eq!(bin_at_one_place(full + 1, centre, reach), (clusters * CLUSTER_LIGHTS, clusters as u64));
     }
 
     #[test]
