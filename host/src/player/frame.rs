@@ -62,6 +62,7 @@ impl Player {
             shots: Vec::new(),
             growth_test: (switches().force_growth, switches().growth_shots.clone()),
             growth_shot_next: None,
+            segment_growth_at: switches().force_segment_growth,
             early_pictures: Vec::new(),
             overlay_record: None,
             gamma_ramp: None,

@@ -186,6 +186,13 @@ impl Player {
     /// `indexes` entries of the index list of the geometry from `first_index`.
     /// Engine-rules R21 (the skill wgpu-renderer-dev).
     pub(crate) fn draw(&mut self, derived: &material::Derived, pass: &Pass, topology: u32, first_index: u32, indexes: u32) {
+        if self.segment_growth_at != 0 && self.target.and_then(|handle| self.renderer.targets.get(&handle)).is_some_and(|texture| texture.size.0 <= 64) {
+            self.segment_growth_at -= 1;
+            if self.segment_growth_at == 0 {
+                self.renderer.force_segment_growth = true;
+                println!("buffers: the segment of the table grows on purpose, at frame {}", self.renderer.counts.frames);
+            }
+        }
         if !self.stream.back_buffer {
             self.renderer.counts.other_target += 1;
             return;

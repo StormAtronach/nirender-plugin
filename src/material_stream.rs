@@ -625,8 +625,9 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
     handle
 }
 
-/// The bit of the flags word of an effect in a record: the effect turns with a billboard, and
-/// the first word of its matrix is the id of its chain (`effect_chain`).
+/// The bit of the flags word of an effect in a record: the effect moves in the play, with a
+/// turning billboard or a controller, and the first word of its matrix is the id of its chain
+/// (`effect_chain`).
 const EFFECT_TURNS: u32 = 0x8000_0000;
 
 /// The projection words of an effect in a record. An effect under a turning billboard names its

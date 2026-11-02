@@ -1228,7 +1228,9 @@ impl Renderer {
     }
 
     /// Room in the segments of the records and the instances for `slots` slots: larger
-    /// buffers when short, with the frame's part after the segment. Between frames only.
+    /// buffers when short, with the frame's part after the segment. Before the items of a part
+    /// of a frame: the part before it has gone to the GPU, and the frame's instances follow
+    /// (`Instance::follow_segment`).
     fn retained_room(&mut self, slots: usize) {
         if slots <= self.retained_records {
             return;
@@ -1283,7 +1285,8 @@ impl Renderer {
     /// the frame. A new buffer gets the whole segment.
     pub fn retained_upload(&mut self, set: &mut RetainedSet) {
         self.upload_effect_entries(set);
-        self.retained_room(set.slots.len());
+        let slots = if std::mem::take(&mut self.force_segment_growth) { set.slots.len().max(self.retained_records + 1) } else { set.slots.len() };
+        self.retained_room(slots);
         let all = set.all_dirty || self.record_generation != set.record_generation || self.instance_generation != set.instance_generation;
         set.record_generation = self.record_generation;
         set.instance_generation = self.instance_generation;

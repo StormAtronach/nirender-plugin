@@ -547,6 +547,22 @@ pub(crate) struct Instance {
     pub(crate) record: [u32; 4],
 }
 
+impl Instance {
+    /// The table's segment grew from `before` to `after` records, and the frame's records moved
+    /// with its end: the instances that name them follow. A number under `before` names a slot of
+    /// the table, which stays. Without this, a draw made earlier in the frame of a growth takes a
+    /// record of the table.
+    pub(crate) fn follow_segment(instances: &mut [Instance], before: usize, after: usize) {
+        if before == after {
+            return;
+        }
+        let moved = (after - before) as u32;
+        for instance in instances.iter_mut().filter(|instance| instance.record[0] as usize >= before) {
+            instance.record[0] += moved;
+        }
+    }
+}
+
 pub(crate) const INSTANCE_SIZE: usize = core::mem::size_of::<Instance>();
 
 /// The size of a record of a draw: [`DrawData`], as the shader's `array<Draw>` has it.
@@ -598,5 +614,25 @@ mod tests {
     #[test]
     fn the_screen_shader_is_valid_wgsl() {
         crate::assert_wgsl("screen draw", &SCREEN_SHADER);
+    }
+
+    fn instance(record: u32) -> Instance {
+        Instance { world: [0.0; 16], record: [record, 7, 0, 0] }
+    }
+
+    /// The numbers of run 20261102-135610-hob-race-2: records 2048 and 2049 at the growth to 4096.
+    #[test]
+    fn the_records_of_the_frame_follow_the_segment() {
+        let mut instances = [instance(0), instance(2047), instance(2048), instance(2049)];
+        Instance::follow_segment(&mut instances, 2048, 4096);
+        assert_eq!(instances.map(|i| i.record[0]), [0, 2047, 4096, 4097]);
+        assert_eq!(instances[2].record[1], 7);
+    }
+
+    #[test]
+    fn no_growth_moves_no_record() {
+        let mut instances = [instance(2048), instance(9000)];
+        Instance::follow_segment(&mut instances, 2048, 2048);
+        assert_eq!(instances.map(|i| i.record[0]), [2048, 9000]);
     }
 }
