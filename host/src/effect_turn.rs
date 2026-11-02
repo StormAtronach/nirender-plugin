@@ -7,9 +7,10 @@
 //! billboard, the local transform of each node from it down to the effect, and the model
 //! projection. The helper makes the projection from those and the camera of the frame.
 //!
-//! The camera is the one of the world scene, for all views. The mirror and the layers of the
-//! shadow map replay the table's slots with the same world matrix (`Replayer::replay_retained`),
-//! so the geometry under a billboard stays turned to that camera in them, and the effect agrees.
+//! The camera is the one of the world scene. The main view is the only one that draws the table's
+//! world shapes: the water's mirror replays only the sky classes (`reflect_sky`, `ReplayView::SKY`),
+//! and the shadow maps do not use the table. A slot has one value for all views, so a sky slot in
+//! the mirror takes the world camera's value too.
 //!
 //! The same steps make two values ([`Places`]). With the engine's stored places, each sum stored
 //! as a float, they give the engine's words bit for bit: the unit tests and the live check. With
