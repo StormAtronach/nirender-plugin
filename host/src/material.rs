@@ -321,7 +321,7 @@ fn stencil_action(value: u32) -> u32 {
 }
 
 /// The texture coordinate set of a map: its set when the geometry has it, else the last
-/// (`setCTPipelineState` 0x6B41B0, for each map but the base, which always takes set 0).
+/// (`setCTPipelineState` 0x6B41B0, for the base map through MWSE's patch at 0x6B42AC).
 fn coordinate_set(set: u32, sets: u32) -> u32 {
     let last = sets.saturating_sub(1);
     if set < sets {
@@ -416,12 +416,11 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
         };
     }
 
-    // The stages. A pass has at most 8 stages. The base stage takes coordinate set 0,
-    // whatever set its map names (`setCTPipelineState` 0x6B41B0).
+    // The stages. A pass has at most 8 stages.
     let stage = |map: usize, slot: u32, first: bool| -> Stage {
         let mp = m.maps[map];
         let (color, alpha) = ops(slot, first, apply, mp.texture != 0);
-        let set = if map == BASE { 0 } else { coordinate_set(mp.set, sets) };
+        let set = coordinate_set(mp.set, sets);
         Stage { texture: mp.texture, color, alpha, set, source: map as u32, clamp: mp.clamp, filter: mp.filter }
     };
     let mut pass: Vec<Stage> = Vec::new();
@@ -481,7 +480,9 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
         // (`template_for` of `setCTPipelineState`): 8 for the bump stage, else 0 for the
         // stage of the environment map, which adds. The enchanted items of the game have a
         // gloss map (a texture of one colour), so their glow is always a pass of its own.
-        if has(GLOSS) || pass.len() as u32 + needed > 8 {
+        // Without a gloss map `initOrCheckSubpass` 0x6B3D70 decides, with blend slot 0: a new
+        // pass when this is not the first pass and it starts with another slot, or has no room.
+        if has(GLOSS) || (!passes.is_empty() && pass_slot != 0) || pass.len() as u32 + needed > 8 {
             passes.push((core::mem::take(&mut pass), pass_slot));
             pass_slot = if has(BUMP) { 8 } else { 0 };
         }
@@ -521,9 +522,10 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
             pass.push(stage(GLOSS, 2, false));
         }
     }
-    // The glow stage, in the pass when it has room.
+    // The glow stage (blend slot 0), in the pass when `initOrCheckSubpass` allows it: the first
+    // pass, or a pass that starts with slot 0, and with room.
     if has(GLOW) {
-        if pass.len() >= 8 {
+        if (!passes.is_empty() && pass_slot != 0) || pass.len() >= 8 {
             passes.push((core::mem::take(&mut pass), pass_slot));
             pass_slot = 0;
         }
@@ -732,10 +734,83 @@ mod engine_rule_tests {
     }
 
     #[test]
-    fn the_base_stage_takes_coordinate_set_0() {
-        let d = derive(&material(false, 2), 3, Some(false));
-        assert_eq!(d.passes[0][0].source, BASE as u32);
-        assert_eq!(d.passes[0][0].set, 0);
+    fn the_base_stage_takes_the_set_of_its_map_up_to_the_last_of_the_geometry() {
+        // The numbers of `base_map_coordinate_set` of the plugin, which does the work of MWSE's
+        // patch at 0x6B42AC.
+        for (base_set, sets, expected) in [(2, 3, 2), (2, 2, 1), (0, 3, 0), (3, 0, 0)] {
+            let d = derive(&material(false, base_set), sets, Some(false));
+            assert_eq!(d.passes[0][0].source, BASE as u32);
+            assert_eq!(d.passes[0][0].set, expected, "set {base_set} of {sets}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod pass_slot_tests {
+    use super::*;
+
+    /// The record of a base map and the maps of `slots`, each with its index as its texture;
+    /// the environment map, with the source 8 of a stage, when `environment` is set.
+    fn material(slots: &[usize], environment: bool) -> Material {
+        let mut words = [0u32; WORDS];
+        words[6] = 2;
+        for &map in [BASE].iter().chain(slots) {
+            words[8 + map * 5] = map as u32 + 1;
+            words[12 + map * 5] = 1;
+            if map == DECAL0 {
+                words[7] = 1;
+            }
+        }
+        if environment {
+            words[1] = ENVIRONMENT_MAP;
+            words[81] = 9;
+            words[84] = 2;
+        }
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        Material::parse(&bytes).unwrap()
+    }
+
+    /// The sources of the stages of each pass.
+    fn passes(m: &Material) -> Vec<Vec<u32>> {
+        derive(m, 1, Some(false)).passes.iter().map(|pass| pass.iter().map(|stage| stage.source).collect()).collect()
+    }
+
+    const ENVIRONMENT: u32 = 8;
+    const ADD: [u32; 3] = [1, 2, 2];
+
+    #[test]
+    fn a_stage_of_slot_0_joins_the_first_pass() {
+        let [base, glow] = [BASE as u32, GLOW as u32];
+        assert_eq!(passes(&material(&[GLOW], false)), [vec![base, glow]]);
+        assert_eq!(passes(&material(&[], true)), [vec![base, ENVIRONMENT]]);
+        assert_eq!(passes(&material(&[GLOW], true)), [vec![base, ENVIRONMENT, glow]]);
+    }
+
+    #[test]
+    fn a_stage_of_slot_0_does_not_join_a_decal_pass() {
+        let [base, decal, glow] = [BASE as u32, DECAL0 as u32, GLOW as u32];
+        let d = derive(&material(&[DECAL0, GLOW], false), 1, Some(false));
+        assert_eq!(passes(&material(&[DECAL0, GLOW], false)), [vec![base], vec![decal], vec![glow]]);
+        // A pass of its own adds: in the decal's pass it blended by the decal's alpha.
+        assert_eq!(d.blends[2], ADD);
+
+        let d = derive(&material(&[DECAL0], true), 1, Some(false));
+        assert_eq!(passes(&material(&[DECAL0], true)), [vec![base], vec![decal], vec![ENVIRONMENT]]);
+        assert_eq!(d.blends[2], ADD);
+        // The first stage of a pass takes the texture alone (SELECTARG1).
+        assert_eq!(d.passes[2][0].color, [2, 2, 0]);
+    }
+
+    #[test]
+    fn the_glow_does_not_join_a_bump_pass_after_the_first() {
+        let [base, decal, bump, glow] = [BASE as u32, DECAL0 as u32, BUMP as u32, GLOW as u32];
+        assert_eq!(passes(&material(&[DECAL0, BUMP, GLOW], true)), [vec![base], vec![decal], vec![bump, ENVIRONMENT], vec![glow]]);
+    }
+
+    #[test]
+    fn the_glow_joins_a_pass_after_the_first_that_starts_with_slot_0() {
+        let [base, gloss, glow] = [BASE as u32, GLOSS as u32, GLOW as u32];
+        assert_eq!(passes(&material(&[GLOSS, GLOW], true)), [vec![base], vec![ENVIRONMENT, gloss, glow]]);
     }
 }
 
