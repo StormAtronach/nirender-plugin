@@ -307,7 +307,7 @@ fn stencil_action(value: u32) -> u32 {
 }
 
 /// The texture coordinate set of a map: its set when the geometry has it, else the last
-/// (`setCTPipelineState` 0x6B41B0, for each map but the base, which always takes set 0).
+/// (`setCTPipelineState` 0x6B41B0, for the base map through MWSE's patch at 0x6B42AC).
 fn coordinate_set(set: u32, sets: u32) -> u32 {
     let last = sets.saturating_sub(1);
     if set < sets {
@@ -402,12 +402,11 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
         };
     }
 
-    // The stages. A pass has at most 8 stages. The base stage takes coordinate set 0,
-    // whatever set its map names (`setCTPipelineState` 0x6B41B0).
+    // The stages. A pass has at most 8 stages.
     let stage = |map: usize, slot: u32, first: bool| -> Stage {
         let mp = m.maps[map];
         let (color, alpha) = ops(slot, first, apply, mp.texture != 0);
-        let set = if map == BASE { 0 } else { coordinate_set(mp.set, sets) };
+        let set = coordinate_set(mp.set, sets);
         Stage { texture: mp.texture, color, alpha, set, source: map as u32, clamp: mp.clamp, filter: mp.filter }
     };
     let mut pass: Vec<Stage> = Vec::new();
@@ -721,10 +720,14 @@ mod engine_rule_tests {
     }
 
     #[test]
-    fn the_base_stage_takes_coordinate_set_0() {
-        let d = derive(&material(false, 2), 3, Some(false));
-        assert_eq!(d.passes[0][0].source, BASE as u32);
-        assert_eq!(d.passes[0][0].set, 0);
+    fn the_base_stage_takes_the_set_of_its_map_up_to_the_last_of_the_geometry() {
+        // The numbers of `base_map_coordinate_set` of the plugin, which does the work of MWSE's
+        // patch at 0x6B42AC.
+        for (base_set, sets, expected) in [(2, 3, 2), (2, 2, 1), (0, 3, 0), (3, 0, 0)] {
+            let d = derive(&material(false, base_set), sets, Some(false));
+            assert_eq!(d.passes[0][0].source, BASE as u32);
+            assert_eq!(d.passes[0][0].set, expected, "set {base_set} of {sets}");
+        }
     }
 }
 
