@@ -647,7 +647,7 @@ pub unsafe fn skin_report(t: &MainThread) -> String {
 /// the place of the shape counts once, but each bone of the palette holds it. The vertex takes
 /// this matrix with the part of the weights that their sum lacks of 1
 /// (`geometry_stream::all_influences`).
-fn place_only(place: [f32; 3]) -> [f32; 16] {
+pub(crate) fn place_only(place: [f32; 3]) -> [f32; 16] {
     let mut matrix = [0f32; 16];
     matrix[12..15].copy_from_slice(&place);
     matrix[15] = 1.0;

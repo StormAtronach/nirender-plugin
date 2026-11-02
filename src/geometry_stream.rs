@@ -1426,6 +1426,70 @@ mod tests {
             .sum()
     }
 
+    /// A matrix of the palette by columns, times another.
+    fn times(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+        core::array::from_fn(|i| {
+            let (c, r) = (i / 4, i % 4);
+            (0..4).map(|k| a[k * 4 + r] * b[c * 4 + k]).sum()
+        })
+    }
+
+    fn point(m: &[f32; 16], v: [f32; 3]) -> [f32; 3] {
+        core::array::from_fn(|r| m[r] * v[0] + m[4 + r] * v[1] + m[8 + r] * v[2] + m[12 + r])
+    }
+
+    /// Raw weights with moving bones, in numbers: what the vertex shader sums from the list and
+    /// the palette against what `NiSkinInstance::Deform` 0x6FA000 and then the shape's world
+    /// transform give, for a turned and moved shape, more than 4 influences, weights that do
+    /// not sum to 1, and two poses of the bones. A palette bone is the shape times the bone.
+    #[test]
+    fn the_sum_of_the_list_is_the_engine_s_in_each_pose() {
+        let mut shape = [0f32; 16];
+        (shape[1], shape[4], shape[10], shape[15]) = (1.0, -1.0, 1.0, 1.0);
+        (shape[12], shape[13], shape[14]) = (1000.0, -2000.0, 50.0);
+        let weights = [0.2f32, 0.15, 0.1, 0.05, 0.05, 0.05];
+        let list = vec![weights.iter().enumerate().map(|(bone, &weight)| (bone as u8, weight)).collect::<Vec<_>>()];
+        let (vertices, entries) = super::all_influences(&list, 6);
+        assert_eq!(vertices, vec![(0, 7)]);
+        let word = |at: usize| u32::from_le_bytes(entries[at..at + 4].try_into().unwrap());
+        let vertex = [3.0f32, 5.0, 7.0];
+        for pose in [0.0f32, 40.0] {
+            let bones: Vec<[f32; 16]> = (0..6)
+                .map(|b| {
+                    let mut m = [0f32; 16];
+                    let turn = 0.1 * b as f32 + pose * 0.01;
+                    (m[0], m[1], m[4], m[5], m[10], m[15]) = (turn.cos(), turn.sin(), -turn.sin(), turn.cos(), 1.0, 1.0);
+                    (m[12], m[13], m[14]) = (b as f32 * 10.0 + pose, -pose, 2.0);
+                    m
+                })
+                .collect();
+            // The engine: the sum in the space of the shape, then the shape once.
+            let mut in_shape = [0f32; 3];
+            for (bone, &weight) in bones.iter().zip(&weights) {
+                let p = point(bone, vertex);
+                for k in 0..3 {
+                    in_shape[k] += weight * p[k];
+                }
+            }
+            let engine = point(&shape, in_shape);
+            // The shader: each entry times its palette matrix.
+            let mut palette: Vec<[f32; 16]> = bones.iter().map(|bone| times(&shape, bone)).collect();
+            palette.push(crate::camera_space::place_only([shape[12], shape[13], shape[14]]));
+            let mut sum = [0f32; 3];
+            for i in 0..7 {
+                let at = 4 + i * super::LIST_ENTRY_BYTES;
+                let p = point(&palette[word(at) as usize], vertex);
+                let weight = f32::from_bits(word(at + 4));
+                for k in 0..3 {
+                    sum[k] += weight * p[k];
+                }
+            }
+            for k in 0..3 {
+                assert!((sum[k] - engine[k]).abs() < 0.01, "pose {pose}: {sum:?} against {engine:?}");
+            }
+        }
+    }
+
     /// More than 4 influences keep every one, with the weight they have.
     #[test]
     fn the_list_keeps_every_influence() {
