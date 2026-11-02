@@ -519,6 +519,9 @@ pub(crate) struct Counts {
     pub(crate) replayed: u32,
     /// The shapes that the extension took ([`Extension::hold`]).
     pub(crate) held: u32,
+    /// The held instances that waited for a place in the sorted queue, and no flush of the frame
+    /// came to it ([`Extension::held_sorted`]).
+    pub(crate) held_sorted_lost: u64,
     pub(crate) texture_updates_lost: u32,
     pub(crate) lost_reasons: HashMap<String, u32>,
     pub(crate) textures_decoded: u32,

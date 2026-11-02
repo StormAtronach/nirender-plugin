@@ -577,9 +577,7 @@ impl Player {
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
         scene.before_depth = before_depth.as_ref();
-        // The lights for the extension, binned for the view that it draws with.
-        let renderer = &mut self.renderer;
-        renderer.extension_lights.build(&renderer.device, &renderer.queue, &self.frame_lights, facts.view, facts.projection, self.frame_size, &mut renderer.counts);
+        self.build_extension_lights(facts);
         let own = &self.renderer.extension_lights;
         let lights = own.built.then(|| (own.lights.clone(), own.uniform.clone(), own.table.clone(), own.indexes.clone(), own.origin));
         scene.lights = lights.as_ref().map(|(lights, clusters, table, indexes, origin)| FrameLights { lights, clusters, table, indexes, origin: *origin });
@@ -602,12 +600,17 @@ impl Player {
     /// Gives the extension a held shape in its place. See [`Extension::draw_held_in_place`].
     pub(crate) fn give_held_here(&mut self, held: HeldDraw, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
+        // Inside the sorted blends this is no item of its own: the run of draws before it ends here.
+        self.end_run();
         let (picture, depth) = self.copy_for(extension.reads(ReadingCall::HeldInPlace(&held)), false, ("picture: a held draw in place", "depth: a held draw in place"));
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let commands = self.renderer.commands.clone();
         let mut scene = facts.view(&device, &queue, &commands, format);
+        let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| copy.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() }));
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
+        scene.before_depth = before_depth.as_ref();
+        self.build_extension_lights(facts);
         let own = &self.renderer.extension_lights;
         let lights = own.built.then(|| (own.lights.clone(), own.uniform.clone(), own.table.clone(), own.indexes.clone(), own.origin));
         scene.lights = lights.as_ref().map(|(lights, clusters, table, indexes, origin)| FrameLights { lights, clusters, table, indexes, origin: *origin });
@@ -622,7 +625,17 @@ impl Player {
             self.renderer.counts.times[TIME_EXT_CLASS] += clock.elapsed();
             self.world_draws = world;
         }
+        self.forget_bound();
         self.extension = Some(extension);
+    }
+
+    /// The lights for the extension, binned for the view that it draws with, once in a frame:
+    /// a held draw in place can come before the held draws, or be the only one.
+    fn build_extension_lights(&mut self, facts: &WorldFacts) {
+        let renderer = &mut self.renderer;
+        if !renderer.extension_lights.built {
+            renderer.extension_lights.build(&renderer.device, &renderer.queue, &self.frame_lights, facts.view, facts.projection, self.frame_size, &mut renderer.counts);
+        }
     }
 
     /// Keeps the picture of the frame as it is now, for [`Extension::blend`].

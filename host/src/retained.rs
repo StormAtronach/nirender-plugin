@@ -2165,29 +2165,23 @@ impl Player {
         self.forget_bound();
         // The held instances go where the stream's held shapes go: in place (after the
         // table's draws, its place in the frame [I: the engine's walk would place each one
-        // among the game's draws]), at its place in the engine's sorted queue when it blends
-        // and the extension asks for that ([`Extension::held_sorted`]), or with the others at
-        // the end of the world scene.
+        // among the game's draws]), at its place in the engine's sorted queue when it blends,
+        // the engine queued it and the extension asks for that ([`Extension::held_sorted`]),
+        // or with the others at the end of the world scene. The items run after the records
+        // of the frame, so its places are known here; after a flush in the middle of the frame
+        // (a read-back) they may not be, and the instance draws at the end of the world scene.
         for (h, id, sorted) in held {
-            let extension = self.extension.as_ref();
-            if extension.is_some_and(|extension| extension.held_in_place(&h)) {
+            if self.extension.as_ref().is_some_and(|extension| extension.held_in_place(&h)) {
                 self.give_held_here(h, facts);
-            } else if sorted && extension.is_some_and(|extension| extension.held_sorted(&h)) {
+                continue;
+            }
+            let queued = sorted && self.frame_sorted.iter().any(|entry| matches!(entry.2, crate::Waiting::Table(place) if place == id));
+            if queued && self.extension.as_mut().is_some_and(|extension| extension.held_sorted(&h)) {
                 self.held_sorted_wait.push((id, h, *facts));
             } else {
                 self.taken.push(h);
             }
         }
-    }
-
-    /// Takes the held instances that wait for a place in the sorted queue and have none in
-    /// this flush or a later one of the frame (`later`: the ids that a later flush places, and
-    /// `placed` the ids of this one). The engine did not queue them: they draw as the held
-    /// shapes of the world scene do.
-    fn held_without_place(&mut self, placed: &std::collections::HashSet<u32>, later: &std::collections::HashSet<u32>) -> Vec<(HeldDraw, WorldFacts)> {
-        let (without, waiting) = split_unplaced(core::mem::take(&mut self.held_sorted_wait), |(id, _, _)| *id, placed, later);
-        self.held_sorted_wait = waiting;
-        without.into_iter().map(|(_, held, facts)| (held, facts)).collect()
     }
 
     /// Draws the sorted blends of the frame where the engine flushes its sorted queue: the
@@ -2203,23 +2197,11 @@ impl Player {
     /// Engine-rules R21, R22 (the skill wgpu-renderer-dev).
     pub(super) fn draw_retained_sorted(&mut self, generation: u32) {
         let (deferred, later): (Vec<_>, Vec<_>) = core::mem::take(&mut self.frame_sorted).into_iter().partition(|e| e.3 == generation);
-        let later_ids: std::collections::HashSet<u32> = later.iter().filter_map(|e| if let crate::Waiting::Table(id) = e.2 { Some(id) } else { None }).collect();
         self.frame_sorted = later;
         let view = if generation == 0 { self.retained.sorted_view.take() } else { self.retained.sorted_view };
         let all_kept = if generation == 0 && self.retained_on && view.is_some() { core::mem::take(&mut self.retained.kept_sorted) } else { Vec::new() };
         // The kept blends of the instances with a place in the queue draw at their place.
         let placed: std::collections::HashSet<u32> = deferred.iter().filter_map(|e| if let crate::Waiting::Table(id) = e.2 { Some(id) } else { None }).collect();
-        // A held instance without a place in this flush or a later one draws as the held shapes
-        // of the world scene do: with those, when this flush comes before the end of the world
-        // scene (the first one), else here, at the end of the flush.
-        let mut unplaced_here = Vec::new();
-        for (held, facts) in self.held_without_place(&placed, &later_ids) {
-            if generation == 0 {
-                self.taken.push(held);
-            } else {
-                unplaced_here.push((held, facts));
-            }
-        }
         let kept: Vec<(u64, u32, u32, u32)> = all_kept
             .iter()
             .copied()
@@ -2256,9 +2238,6 @@ impl Player {
             }
         }
         if kept.is_empty() && deferred.is_empty() {
-            for (held, facts) in unplaced_here {
-                self.give_held_here(held, &facts);
-            }
             return;
         }
         let near = self.world_near.unwrap_or([0.0; 4]);
@@ -2305,9 +2284,6 @@ impl Player {
             }
         }
         self.draw_sorted_run(view, run);
-        for (held, facts) in unplaced_here {
-            self.give_held_here(held, &facts);
-        }
         self.retained.kept_sorted = all_kept;
         if late {
             self.merge_late_depth();
@@ -2358,13 +2334,6 @@ fn sorted_key(centre: f32, id: u32) -> u64 {
     (!centre.max(0.0).to_bits() as u64) << 32 | id as u64
 }
 
-/// Splits the held instances that wait for a place in the sorted queue into those that have
-/// none (not in `placed`, the places of this flush, and not in `later`, the places of a later
-/// flush of the frame), and those that wait on. Each keeps its order.
-fn split_unplaced<T>(waiting: Vec<T>, id: impl Fn(&T) -> u32, placed: &std::collections::HashSet<u32>, later: &std::collections::HashSet<u32>) -> (Vec<T>, Vec<T>) {
-    waiting.into_iter().partition(|entry| !placed.contains(&id(entry)) && !later.contains(&id(entry)))
-}
-
 /// The key of a bucket of the other draws: the groups in order (0 no blend and no alpha test,
 /// 1 an alpha test, 2 a blend out of the sort), the first two front to back by the depth of
 /// their nearest draw, the blends in the order of their buckets.
@@ -2409,22 +2378,7 @@ fn merge_picks(kept: &[u64], deferred: &[u64]) -> Vec<Pick> {
 
 #[cfg(test)]
 mod merge_tests {
-    use super::{merge_picks, slot_bones, split_unplaced, Pick, NO_BONES};
-
-    #[test]
-    fn a_held_instance_without_a_place_draws_with_the_others() {
-        use std::collections::HashSet;
-        let waiting = vec![(1, "a"), (2, "b"), (3, "c"), (4, "d")];
-        let placed = HashSet::from([2]);
-        let later = HashSet::from([3]);
-        let (without, waiting) = split_unplaced(waiting, |entry| entry.0, &placed, &later);
-        // 1 and 4 have no place in this flush or a later one; 2 draws now, 3 waits for its flush.
-        assert_eq!(without, vec![(1, "a"), (4, "d")]);
-        assert_eq!(waiting, vec![(2, "b"), (3, "c")]);
-        // Nothing waits: nothing splits.
-        let (without, waiting) = split_unplaced(Vec::<(u32, &str)>::new(), |entry| entry.0, &placed, &later);
-        assert!(without.is_empty() && waiting.is_empty());
-    }
+    use super::{merge_picks, slot_bones, Pick, NO_BONES};
 
     #[test]
     fn a_slot_waits_for_the_bones_its_list_names() {

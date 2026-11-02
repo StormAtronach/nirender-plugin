@@ -672,10 +672,12 @@ pub trait Extension {
 
     /// True when the extension draws this held instance of a blended slot at its place in the
     /// engine's sorted queue, in `draw_held_in_place`, and not in `draw_held`: a shape that
-    /// blends draws among the engine's blends, far to near, as the game draws it. An instance
-    /// that the engine did not queue draws as in `draw_held`. A shape that `held_in_place`
-    /// named is drawn there, whatever this says.
-    fn held_sorted(&self, _held: &HeldDraw) -> bool {
+    /// blends draws among the engine's blends, far to near, as the game draws it. The renderer
+    /// asks only for an instance that the engine queued in this frame, so true means that it
+    /// draws at that place, after the classes of draws of the frame: an extension that needs
+    /// to know of the shape before them notes it here. An instance that the engine did not
+    /// queue draws as in `draw_held`. A shape that `held_in_place` named is drawn there.
+    fn held_sorted(&mut self, _held: &HeldDraw) -> bool {
         false
     }
 
