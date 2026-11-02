@@ -978,7 +978,7 @@ impl Renderer {
             } else if expands(d3d_format) {
                 let mut source = pixels[from.min(to)..to.min(from + size)].to_vec();
                 source.resize(size, 0);
-                bytes.extend_from_slice(&expand_16_bits(d3d_format, &source));
+                bytes.extend_from_slice(&gpu_pixels(d3d_format, &source));
             } else {
                 bytes.extend_from_slice(&pixels[from.min(to)..to.min(from + size)]);
                 bytes.resize(start + size, 0);
@@ -1188,7 +1188,7 @@ impl Renderer {
         }
         let rows = if decode { height } else { rows };
         if expands(*d3d_format) {
-            pixels = std::borrow::Cow::Owned(expand_16_bits(*d3d_format, &pixels));
+            pixels = std::borrow::Cow::Owned(gpu_pixels(*d3d_format, &pixels));
         } else if *d3d_format == 22 {
             // No alpha in this format.
             for pixel in pixels.to_mut().chunks_exact_mut(4) {

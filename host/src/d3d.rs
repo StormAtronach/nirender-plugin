@@ -87,13 +87,53 @@ pub(crate) fn texture_format(d3d_format: u32) -> Option<(wgpu::TextureFormat, us
         23..=26 => (wgpu::TextureFormat::Bgra8Unorm, 0, 2),
         // D3DFMT_V8U8, a bump map: two numbers with a sign, U in the first byte.
         60 => (wgpu::TextureFormat::Rg8Snorm, 0, 2),
+        // D3DFMT_L6V5U5 and X8L8V8U8, bump maps with luminance: this program makes 4 bytes of them
+        // (`bump_luminance_pixels`).
+        61 => (wgpu::TextureFormat::Rgba8Snorm, 0, 2),
+        62 => (wgpu::TextureFormat::Rgba8Snorm, 0, 4),
         _ => return None,
     })
 }
 
-/// True for a format with 16 bits that this program makes 4 bytes of.
+/// True for a format whose pixels this program makes again ([`gpu_pixels`]).
 pub(crate) fn expands(d3d_format: u32) -> bool {
-    (23..=26).contains(&d3d_format)
+    (23..=26).contains(&d3d_format) || is_bump_luminance(d3d_format)
+}
+
+fn is_bump_luminance(d3d_format: u32) -> bool {
+    d3d_format == 61 || d3d_format == 62
+}
+
+/// The pixels for the GPU of a format that [`expands`] names.
+pub(crate) fn gpu_pixels(d3d_format: u32, source: &[u8]) -> Vec<u8> {
+    if is_bump_luminance(d3d_format) {
+        bump_luminance_pixels(d3d_format, source)
+    } else {
+        expand_16_bits(d3d_format, source)
+    }
+}
+
+/// Makes pixels with the bytes U, V, luminance, alpha for a GPU format with four signed numbers,
+/// from L6V5U5 or X8L8V8U8. The GPU has no format with a sign on U and V only. So the luminance,
+/// from 0 to 1 in the source, is written as a number from 0 to 127, which the GPU reads as 0 to 1.
+/// These formats have no alpha, and Direct3D reads it as 1: the byte 127.
+fn bump_luminance_pixels(d3d_format: u32, source: &[u8]) -> Vec<u8> {
+    // A number from 0 to `top` as a number from 0 to 127, rounded.
+    let luminance = |value: u32, top: u32| ((value * 127 + top / 2) / top) as u8;
+    if d3d_format == 62 {
+        return source.as_chunks::<4>().0.iter().flat_map(|pixel| [pixel[0], pixel[1], luminance(pixel[2] as u32, 255), 127]).collect();
+    }
+    // A number with a sign and 5 bits as one with 8 bits: 15 is 127, and -16 reads as -1.
+    let signed = |value: u16| ((((value & 31) as i32 ^ 16) - 16) * 127 / 15).clamp(-128, 127) as i8 as u8;
+    source
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .flat_map(|pair| {
+            let p = u16::from_le_bytes(*pair);
+            [signed(p), signed(p >> 5), luminance((p >> 10) as u32, 63), 127]
+        })
+        .collect()
 }
 
 /// The bytes of a pixel on the GPU, for a format without blocks.
@@ -302,6 +342,46 @@ pub(crate) const INPUT_FORMATS: [wgpu::VertexFormat; 9] = {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the GPU reads from a byte of a signed format.
+    fn read_signed(byte: u8) -> f32 {
+        (byte as i8 as f32 / 127.0).max(-1.0)
+    }
+
+    #[test]
+    fn x8l8v8u8_keeps_u_and_v_and_makes_the_luminance_a_positive_signed_number() {
+        assert_eq!(texture_format(62), Some((wgpu::TextureFormat::Rgba8Snorm, 0, 4)));
+        assert_eq!(level_layout(62, 4, 2), (0, 16, 2, 32));
+        assert!(expands(62));
+        // U -128, V 127, and the four luminance values at the ends. X becomes an alpha of 1.
+        let source = [0x80, 0x7f, 0, 9, 0x80, 0x7f, 127, 9, 0x7f, 0x80, 128, 9, 0x7f, 0x80, 255, 9];
+        let made = gpu_pixels(62, &source);
+        assert_eq!(made, [0x80, 0x7f, 0, 127, 0x80, 0x7f, 63, 127, 0x7f, 0x80, 64, 127, 0x7f, 0x80, 127, 127]);
+        assert_eq!((read_signed(made[0]), read_signed(made[1]), read_signed(made[3])), (-1.0, 1.0, 1.0));
+        for (index, value) in [0.0f32, 127.0, 128.0, 255.0].into_iter().enumerate() {
+            assert!((read_signed(made[index * 4 + 2]) - value / 255.0).abs() <= 1.0 / 254.0, "luminance {value}");
+        }
+    }
+
+    #[test]
+    fn l6v5u5_makes_four_bytes_with_its_numbers_at_their_ends() {
+        assert_eq!(texture_format(61), Some((wgpu::TextureFormat::Rgba8Snorm, 0, 2)));
+        assert_eq!(level_layout(61, 4, 2), (0, 16, 2, 16));
+        assert!(expands(61));
+        let pixel = |u: u16, v: u16, l: u16| (u | v << 5 | l << 10).to_le_bytes();
+        // U -16, V 15, L 63; U 15, V -15, L 0; U 0, V -1, L 32.
+        let source = [pixel(0b10000, 0b01111, 63), pixel(0b01111, 0b10001, 0), pixel(0, 0b11111, 32)].concat();
+        let made = gpu_pixels(61, &source);
+        assert_eq!(made, [0x80, 127, 127, 127, 127, 0x81, 0, 127, 0, 0xf8, 65, 127]);
+        assert_eq!(read_signed(made[0]), -1.0);
+        assert!((read_signed(made[9]) + 1.0 / 15.0).abs() <= 1.0 / 254.0);
+    }
+
+    #[test]
+    fn the_formats_of_16_bits_still_expand_as_before() {
+        assert_eq!(gpu_pixels(23, &[0xff, 0xff]), expand_16_bits(23, &[0xff, 0xff]));
+        assert!(!expands(60) && !expands(21));
+    }
 
     #[test]
     fn bc7_is_a_block_format_of_16_bytes_that_the_cpu_does_not_decode() {
