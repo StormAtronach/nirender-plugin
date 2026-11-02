@@ -222,8 +222,8 @@ struct Instance {
 /// A texture effect of the table's instances (an environment or a fog map, whose words hold no
 /// projection when it moves in the play: `effect_chain`), by its address:
 /// its words as the material record copies them, read at most once a frame, and a version
-/// that grows when they change. The effect has no controller (else its shapes are not
-/// retained), but its projection follows its world transform
+/// that grows when they change. An effect with a controller has a chain in place of its
+/// projection words, and any other effect's projection follows its world transform
 /// (`NiTextureEffect::UpdateWorldData` 0x6E3970 calls `UpdateProjection` 0x6E37C0), so a
 /// move of a node above it changes the material of every shape it lights.
 #[derive(Default)]
