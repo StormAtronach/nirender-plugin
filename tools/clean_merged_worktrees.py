@@ -68,7 +68,7 @@ REPOSITORIES = [("nirender-plugin", "master"), ("MGE-XE-G7-render-link", "featur
 # worktree is one too.
 SHARED_CHECKOUTS = ["nirender-plugin", "MGE-XE-G7", "MGE-XE-G7-render-link", "nirender-plugin-train", "MGE-XE-G7-train"]
 # What a build leaves, as `git status --ignored` names it. `results` is copied before a removal.
-BUILD_OUTPUTS = re.compile(r"(target|bin|results|tools/out)/|(.*/)?__pycache__/")
+BUILD_OUTPUTS = re.compile(r"(target|host/target|bin|results|tools/out)/|(.*/)?__pycache__/")
 KEEP_ROOT = "E:\\nirender-keep"
 LOG = os.path.join(KEEP_ROOT, "clean-worktrees.log")
 PLAIN_FOLDERS = "C:\\tmp"
@@ -99,7 +99,7 @@ def decide(tree):
     (True, the reason it may go) or (False, the reason it stays). The first refusal in this order is the reason."""
     path = tree["path"]
     if tree["main"] or any(same_path(path, os.path.join(REPOS_ROOT, name)) for name in SHARED_CHECKOUTS):
-        return False, "a main checkout"
+        return False, "a main or standing checkout"
     if same_or_under(HERE, path):
         return False, "the tool runs from it"
     if same_or_under(path, KEEP_ROOT):
@@ -565,15 +565,15 @@ def self_test():
         ({"on_a_ref": False}, "no ref"),
         ({"path": HERE}, "runs from it"),
         ({"other_ignored": ["captures/"]}, "captures/"),
-        ({"path": os.path.join(REPOS_ROOT, "MGE-XE-G7-train")}, "main checkout"),
+        ({"path": os.path.join(REPOS_ROOT, "MGE-XE-G7-train")}, "standing checkout"),
         ({"locked": True}, "locked"),
         ({"marker": True}, KEEP_MARKER),
         ({"used_by": ["cargo.exe 7"]}, "cargo.exe 7"),
         ({"depended_by": ["MGE-XE-G7-x"]}, "by path"),
         ({"idle_hours": 1.0}, "hours ago"),
         ({"unread": 2}, "could not be read"),
-        ({"main": True}, "main checkout"),
-        ({"path": os.path.join(REPOS_ROOT, "MGE-XE-G7-render-link")}, "main checkout"),
+        ({"main": True}, "standing checkout"),
+        ({"path": os.path.join(REPOS_ROOT, "MGE-XE-G7-render-link")}, "standing checkout"),
         ({"path": "C:\\tmp\\play185\\nirender-plugin"}, "play set"),
         ({"path": "E:\\nirender-keep\\x"}, "nirender-keep"),
     ]:
@@ -584,7 +584,7 @@ def self_test():
     assert decide({**base, "branch": None, "named": True})[0]
     for change in ({"changes": 1}, {"used_by": ["x 1"]}, {"marker": True}, {"path": "C:\\tmp\\play185\\x"}, {"main": True}, {"idle_hours": 0.5}, {"depended_by": ["y"]}, {"on_a_ref": False}, {"status_error": "x"}):
         assert not decide({**base, "named": True, **change})[0], change
-    for name in ("target/", "bin/", "results/", "tools/out/", "tools/__pycache__/", "tools/ports/__pycache__/"):
+    for name in ("target/", "host/target/", "bin/", "results/", "tools/out/", "tools/__pycache__/", "tools/ports/__pycache__/"):
         assert BUILD_OUTPUTS.fullmatch(name), name
     for name in ("captures/", "tools/target/", "bin/notes.txt", "results"):
         assert not BUILD_OUTPUTS.fullmatch(name), name
