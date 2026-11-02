@@ -781,7 +781,7 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
             }
         }
         // No device is behind the link. The call ends here.
-        if !crate::own_host::nothing_to_do(slot, args) {
+        if !crate::own_host::nothing_to_do(slot, args, crate::device::caller()) {
             crate::own_host::take(slot);
         }
         return Some(0);
