@@ -29,8 +29,9 @@ mge --mge <repo>. The diff from <tip> to <commit> adds these:
 These two stages also need a sibling with no tracked change. The first line gives the hash of the sibling.
 
 --baseline names the folder that the gate compares with: the accepted folder without it, or a copy in the same form, as a
-reference and not an acceptance. The first line names it. The gate writes nothing in it: its pictures go to
-<plugin>/target/merge-step-now, which each gate of this tool replaces under the build slot.
+reference and not an acceptance. The first line names it. A pass against a named folder does not move the ref. The gate
+writes nothing in it: its pictures go to <plugin>/target/merge-step-now, which each gate of this tool clears first, under the
+build slot, so that a stale picture cannot compare.
 
 All stages run, also after a failure. Exit code 1 on any failure. The output of each stage is in
 <plugin>/target/merge-step-<commit>.log. It pushes nothing.
@@ -59,9 +60,10 @@ PLUGIN_NAME = "nirender-plugin"
 MGE_NAME = "MGE-XE-G7-render-link"
 SLOT_MINUTES = 60
 # What a change must touch for the gate, as paths from the root of each repo: a file, or a folder with its slash.
-GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock"),
+GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
+                         "host/.cargo/config.toml"),
               "mge": ("mgeHost64/src/renderer.rs", "mgeHost64/src/renderer/", "assets/Data Files/shaders/", "Cargo.toml", "Cargo.lock",
-                      "mgeHost64/Cargo.toml", "mge-config/Cargo.toml")}
+                      "mgeHost64/Cargo.toml", "mge-config/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml")}
 D3D8_PATHS = {"plugin": ("contract/",), "mge": ("d3d8/", "mge-config/")}
 # These move a build out of its tree. Cargo then returns 0, and the gate replays the old file of the build folder.
 BUILD_MOVERS = ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "NIRENDER_PLUGIN_DIR")
@@ -159,6 +161,15 @@ def run_stage(name, folder, command, log):
     return code == 0
 
 
+def clear_pictures(folder):
+    """Removes the files of the gate's folder of pictures and of its tour folder, one by one."""
+    for part in (folder, os.path.join(folder, "tour")):
+        if os.path.isdir(part):
+            for entry in os.scandir(part):
+                if entry.is_file(follow_symlinks=False):
+                    os.remove(entry.path)
+
+
 def run_stages(stages, log):
     """All stages, also after a failure, but the gate has no build to replay after a failure of its build."""
     results = {}
@@ -166,9 +177,16 @@ def run_stages(stages, log):
         if name == "replay gate" and not results.get("build for the gate", True):
             say("NOT RUN %s: its build failed" % name)
             results[name] = False
-        else:
-            results[name] = run_stage(name, folder, command, log)
+            continue
+        if name == "replay gate":
+            clear_pictures(command[command.index("--now") + 1])
+        results[name] = run_stage(name, folder, command, log)
     return list(results.values())
+
+
+def moves_the_ref(baseline):
+    """Only a pass against the accepted folder is a pass of the merge."""
+    return os.path.normcase(os.path.abspath(baseline)) == os.path.normcase(os.path.abspath(BASELINE))
 
 
 def resolve(repo, name):
@@ -231,10 +249,10 @@ def self_test():
         assert names("plugin", plugin, "host/src/retained.rs") == base + ["build for the gate", "replay gate"]
         assert names("plugin", plugin, "host/src_old/x.rs") == base, "a name that only starts the same ran the gate"
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"]
-        for path in ("Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock"):
+        for path in ("Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "host/.cargo/config.toml"):
             assert names("plugin", plugin, path) == base + ["build for the gate", "replay gate"], path
         mge_base = ["helper tests", "clippy baseline", "checks"]
-        for path in ("Cargo.toml", "Cargo.lock", "mgeHost64/Cargo.toml"):
+        for path in ("Cargo.toml", "Cargo.lock", "mgeHost64/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"):
             assert names("mge", mge, path) == mge_base + ["build for the gate", "replay gate"], path
         assert names("mge", mge, "mge-config/Cargo.toml") == mge_base + ["d3d8 build", "contract", "build for the gate", "replay gate"]
         assert "mge-probe" in stages_for("mge", mge, [])[0][2]
@@ -304,12 +322,22 @@ def self_test():
 
         # The gate does not run on a failed build, and a failure stops no other stage.
         good, bad = [sys.executable, "-c", "pass"], [sys.executable, "-c", "raise SystemExit(4)"]
+        now = os.path.join(root, "now")
+        gate_stage = ("replay gate", root, good + ["--now", now])
+        os.makedirs(os.path.join(now, "tour"))
         with open(os.path.join(root, "log2.txt"), "w", encoding="utf-8") as log:
-            assert run_stages([("a", root, bad), ("build for the gate", root, bad), ("replay gate", root, good)], log) == [False, False, False]
+            assert run_stages([("a", root, bad), ("build for the gate", root, bad), gate_stage], log) == [False, False, False]
         with open(os.path.join(root, "log2.txt"), encoding="utf-8") as log:
             assert "== replay gate" not in log.read()
+        # A stale picture cannot compare: the gate clears its folder and the tour's.
+        for stale in (os.path.join(now, "old.png"), os.path.join(now, "tour", "old.png")):
+            open(stale, "w", encoding="ascii").close()
         with open(os.path.join(root, "log3.txt"), "w", encoding="utf-8") as log:
-            assert run_stages([("a", root, bad), ("build for the gate", root, good), ("replay gate", root, good)], log) == [False, True, True]
+            assert run_stages([("a", root, bad), ("build for the gate", root, good), gate_stage], log) == [False, True, True]
+        assert os.listdir(now) == ["tour"] and os.listdir(os.path.join(now, "tour")) == []
+
+        # A pass against a named folder does not move the ref.
+        assert moves_the_ref(BASELINE) and not moves_the_ref(os.path.join(root, "copy"))
     print("merge_step self-test: ok")
 
 
@@ -372,7 +400,10 @@ def main():
     say("%d of %d stages passed; the output is in %s" % (sum(results), len(results), log_path))
     if not all(results):
         return 1
-    git(repo, "update-ref", passed_ref, commit)
+    if moves_the_ref(baseline):
+        git(repo, "update-ref", passed_ref, commit)
+    else:
+        say("%s stays: this pass is against %s, not the accepted folder" % (passed_ref, baseline))
     return 0
 
 
