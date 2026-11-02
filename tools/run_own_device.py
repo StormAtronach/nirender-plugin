@@ -18,10 +18,12 @@ The files of the run are in mods of the harness that are on for the run only (se
 "Harness - MGE XE" (d3d8.dll, numidium.exe), "Harness - config" (mgeXE.toml of the run) and
 "Harness - exe" (--exe). The result is a picture of the host program after each step of the
 scenario (host-<step>.png), the text of the host program (host.txt) and the lines of the
-plugin about its device.
+plugin about its device. The first lines of progress.log, `[runner]`, and setup.txt say what the
+run ran (`harness.write_setup`).
 """
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -124,6 +126,75 @@ def archive_arguments(args):
     mwse = os.path.join(args.archive, "MWSE.dll")
     if os.path.isfile(mwse) and not args.mwse_dll:
         args.mwse_dll = mwse
+
+
+def build_commits(mge_build):
+    """The line of the record of a run that names the commits of its build, from WHAT.txt of the build
+    folder. A folder that does not say them is named as such: no commit is guessed."""
+    if not mge_build:
+        return "commits: no --mge-build"
+    what = os.path.join(mge_build, "WHAT.txt")
+    try:
+        with open(what, encoding="utf-8", errors="replace") as file:
+            found = re.search(r"nirender \S+ (\w+), render-link \S+ (\w+)", file.read())
+    except OSError:
+        found = None
+    if not found:
+        return "commits: %s does not say them" % mge_build
+    return "commits: nirender %s, render-link %s, from %s" % (found.group(1), found.group(2), what)
+
+
+def self_test_setup():
+    """The record of what a run ran, with a fake instance: each file by its MD5 at the game's folder,
+    the plugin from the mod that wins, the plugins in the order of their numbers."""
+    harness = session.harness
+    with tempfile.TemporaryDirectory() as root:
+        game, profile = os.path.join(root, "game"), os.path.join(root, "profiles", "Default")
+        plugin = os.path.join("mods", "High", harness.PLUGIN_FILE)
+        for folder in (game, profile, os.path.join(root, os.path.dirname(plugin)), os.path.join(root, "mods", "Low", "MWSE", "lib"), os.path.join(root, "mods", "Off", "MWSE", "lib")):
+            os.makedirs(folder)
+
+        def write(path, text):
+            with open(path, "w", encoding="ascii") as file:
+                file.write(text)
+
+        write(os.path.join(game, "MWSE.dll"), "abc")
+        write(os.path.join(root, plugin), "abc")
+        write(os.path.join(root, "mods", "Low", harness.PLUGIN_FILE), "low")
+        write(os.path.join(root, "mods", "Off", harness.PLUGIN_FILE), "off")
+        modlist = ["# generated", "-Off", "+High", "+Low"]
+        abc = "900150983cd24fb0d6963f7d28e17f72"
+
+        assert harness.winning_file(harness.PLUGIN_FILE, root, modlist, game) == ("mod High", os.path.join(root, plugin))
+        assert harness.winning_file(harness.PLUGIN_FILE, root, ["-Off"], game) is None
+
+        ini = "[Game Files]\nGameFile10=Ten.esp\nGameFile2=Two.esp\ngamefile0 = Morrowind.esm \n[Other]\nNotGameFile=x\n"
+        assert harness.active_plugins(ini) == ["Morrowind.esm", "Two.esp", "Ten.esp"], harness.active_plugins(ini)
+        assert harness.read_active_plugins(profile, game) == ([], None)
+        write(os.path.join(game, "Morrowind.ini"), "GameFile0=Game.esm\n")
+        assert harness.read_active_plugins(profile, game)[0] == ["Game.esm"]
+        write(os.path.join(profile, "Morrowind.ini"), ini)
+        plugins, source = harness.read_active_plugins(profile, game)
+        assert plugins == ["Morrowind.esm", "Two.esp", "Ten.esp"] and source == os.path.join(profile, "Morrowind.ini")
+        assert harness.load_order_md5(plugins) != harness.load_order_md5(list(reversed(plugins)))
+
+        lines = harness.setup_lines(root, profile, game, modlist, plugins, source, ["commits: x"])
+        assert lines[0] == "instance %s, profile Default" % root, lines[0]
+        assert "MWSE.dll " + abc in lines and "d3d8.dll absent" in lines and "commits: x" in lines, lines
+        assert "akulakhan.dll %s (mod High)" % abc in lines, lines
+        assert not any(line.startswith("dinput8.dll") for line in lines), lines
+        write(os.path.join(game, "dinput8.dll"), "abc")
+        assert "dinput8.dll " + abc in harness.setup_lines(root, profile, game, modlist, plugins, source)
+        assert any(line.startswith("plugins 3, load order MD5 ") for line in lines), lines
+        assert harness.setup_lines(root, profile, game, ["-Off"], [], None)[-2:] == ["akulakhan.dll absent", "plugins: no Morrowind.ini names any"]
+        text = harness.setup_text(profile, modlist, plugins, source)
+        assert "+High\n" in text and "Ten.esp\n" in text and text.index("+High") < text.index("[plugins]") < text.index("Morrowind.esm"), text
+
+        # The commits: only what the folder of the build says.
+        assert build_commits(None) == "commits: no --mge-build"
+        assert "does not say" in build_commits(root)
+        write(os.path.join(root, "WHAT.txt"), "f1 2026-11-02 15:00: the owner's play set, nirender master abc1, render-link feature/wgpu-renderer def2, no pdb; smoke: pending\n")
+        assert build_commits(root).startswith("commits: nirender abc1, render-link def2, from "), build_commits(root)
 
 
 def self_test_archive_lua():
@@ -277,6 +348,7 @@ def self_test_archive_arguments():
 
 def self_test():
     """The tests of the argument handling: no game, no build."""
+    self_test_setup()
     self_test_save_problem()
     self_test_pngs_from_tgas()
     self_test_archive_lua()
@@ -566,7 +638,7 @@ def main():
         files = next(files for name, files in mods if name == CONFIG_MOD)
         for name in os.listdir(bridge):
             files["MWSE/mods/mwseMCP/" + name] = os.path.join(bridge, name)
-    done = run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod)
+    done = run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)])
 
     print()
     for line in run.progress_lines(TAG):
