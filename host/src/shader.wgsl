@@ -642,8 +642,8 @@ fn bump_move(index: u32, texel: vec4f) -> vec2f {
 // With luminance (23), a bump stage also scales the colour of the texel of the next stage: the
 // blue channel of the bump map, by the scale and the offset of the material, kept between 0
 // and 1, as `bumpmapLumiStage` of MGE XE's `XE FixedFuncEmu.fx`. The running engine looks the
-// same in the case seen: a DXT5 map on the water of the test level. A format without the channel
-// has a luminance of 1 (`Material::stage_bump`).
+// same in the case seen: a DXT5 map on the water of the test level. In a format without the
+// channel, the blue channel reads 1 (`d3d::gpu_pixels`), so the scale and the offset still apply.
 fn bump_light(index: u32, bump_texel: vec4f, texel: vec4f) -> vec4f {
     let stage = draws[record].stages[index];
     if index >= draws[record].counts.y || stage.color.x != 23u {

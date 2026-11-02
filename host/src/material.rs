@@ -176,12 +176,9 @@ impl Material {
     }
 
     /// The values of a bump stage for the shader: the four of the bump matrix, then the scale and
-    /// the offset of the luminance, which the record has from the bump map. `no_luminance`: the
-    /// map's format has no such channel (V8U8), so Direct3D takes a luminance of 1, and a texture
-    /// of it reads 0 in the channel: scale 0, offset 1.
-    pub fn stage_bump(&self, no_luminance: bool) -> [f32; 6] {
-        let (scale, offset) = if no_luminance { (0.0, 1.0) } else { (self.bump[0], self.bump[1]) };
-        [self.bump[2], self.bump[3], self.bump[4], self.bump[5], scale, offset]
+    /// the offset of the luminance, which the record has from the bump map.
+    pub fn stage_bump(&self) -> [f32; 6] {
+        [self.bump[2], self.bump[3], self.bump[4], self.bump[5], self.bump[0], self.bump[1]]
     }
 }
 
@@ -898,15 +895,14 @@ mod stage_bump_tests {
     use super::*;
 
     #[test]
-    fn a_bump_stage_has_the_luminance_of_its_record_unless_the_format_has_none() {
+    fn a_bump_stage_has_the_luminance_of_its_record() {
         let mut words = [0u32; WORDS];
         for (k, value) in [0.5f32, 0.25, 1.0, 2.0, 3.0, 4.0].into_iter().enumerate() {
             words[48 + k] = value.to_bits();
         }
         let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
         let material = Material::parse(&bytes).unwrap();
-        assert_eq!(material.stage_bump(false), [1.0, 2.0, 3.0, 4.0, 0.5, 0.25]);
-        assert_eq!(material.stage_bump(true), [1.0, 2.0, 3.0, 4.0, 0.0, 1.0]);
+        assert_eq!(material.stage_bump(), [1.0, 2.0, 3.0, 4.0, 0.5, 0.25]);
     }
 }
 

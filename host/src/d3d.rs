@@ -67,7 +67,8 @@ pub(crate) fn level_layout(d3d_format: u32, width: u32, height: u32) -> (u32, u3
         let (across, down) = (width.div_ceil(4), height.div_ceil(4));
         (block, across * block, down, (across * down * block) as usize)
     } else {
-        (0, width * gpu_bytes(d3d_format) as u32, height, (width * height * source_bytes) as usize)
+        // Each format without blocks has 4 bytes a pixel on the GPU.
+        (0, width * 4, height, (width * height * source_bytes) as usize)
     }
 }
 
@@ -85,11 +86,9 @@ pub(crate) fn texture_format(d3d_format: u32) -> Option<(wgpu::TextureFormat, us
         21 | 22 => (wgpu::TextureFormat::Bgra8Unorm, 0, 4),
         // D3DFMT_R5G6B5, X1R5G5B5, A1R5G5B5 and A4R4G4B4: this program makes 4 bytes of them.
         23..=26 => (wgpu::TextureFormat::Bgra8Unorm, 0, 2),
-        // D3DFMT_V8U8, a bump map: two numbers with a sign, U in the first byte.
-        60 => (wgpu::TextureFormat::Rg8Snorm, 0, 2),
-        // D3DFMT_L6V5U5 and X8L8V8U8, bump maps with luminance: this program makes 4 bytes of them
-        // (`bump_luminance_pixels`).
-        61 => (wgpu::TextureFormat::Rgba8Snorm, 0, 2),
+        // D3DFMT_V8U8, L6V5U5 and X8L8V8U8, bump maps: this program makes 4 bytes of them
+        // (`bump_pixels`).
+        60 | 61 => (wgpu::TextureFormat::Rgba8Snorm, 0, 2),
         62 => (wgpu::TextureFormat::Rgba8Snorm, 0, 4),
         _ => return None,
     })
@@ -97,29 +96,33 @@ pub(crate) fn texture_format(d3d_format: u32) -> Option<(wgpu::TextureFormat, us
 
 /// True for a format whose pixels this program makes again ([`gpu_pixels`]).
 pub(crate) fn expands(d3d_format: u32) -> bool {
-    (23..=26).contains(&d3d_format) || is_bump_luminance(d3d_format)
+    (23..=26).contains(&d3d_format) || is_bump(d3d_format)
 }
 
-fn is_bump_luminance(d3d_format: u32) -> bool {
-    d3d_format == 61 || d3d_format == 62
+fn is_bump(d3d_format: u32) -> bool {
+    (60..=62).contains(&d3d_format)
 }
 
 /// The pixels for the GPU of a format that [`expands`] names.
 pub(crate) fn gpu_pixels(d3d_format: u32, source: &[u8]) -> Vec<u8> {
-    if is_bump_luminance(d3d_format) {
-        bump_luminance_pixels(d3d_format, source)
+    if is_bump(d3d_format) {
+        bump_pixels(d3d_format, source)
     } else {
         expand_16_bits(d3d_format, source)
     }
 }
 
 /// Makes pixels with the bytes U, V, luminance, alpha for a GPU format with four signed numbers,
-/// from L6V5U5 or X8L8V8U8. The GPU has no format with a sign on U and V only. So the luminance,
-/// from 0 to 1 in the source, is written as a number from 0 to 127, which the GPU reads as 0 to 1.
-/// These formats have no alpha, and Direct3D reads it as 1: the byte 127.
-fn bump_luminance_pixels(d3d_format: u32, source: &[u8]) -> Vec<u8> {
+/// from V8U8, L6V5U5 or X8L8V8U8. The GPU has no format with a sign on U and V only. So the
+/// luminance, from 0 to 1 in the source, is written as a number from 0 to 127, which the GPU reads
+/// as 0 to 1. Direct3D reads 1 for a channel that a format does not have: the byte 127, for the
+/// alpha of each format and for the luminance of V8U8.
+fn bump_pixels(d3d_format: u32, source: &[u8]) -> Vec<u8> {
     // A number from 0 to `top` as a number from 0 to 127, rounded.
     let luminance = |value: u32, top: u32| ((value * 127 + top / 2) / top) as u8;
+    if d3d_format == 60 {
+        return source.as_chunks::<2>().0.iter().flat_map(|pixel| [pixel[0], pixel[1], 127, 127]).collect();
+    }
     if d3d_format == 62 {
         return source.as_chunks::<4>().0.iter().flat_map(|pixel| [pixel[0], pixel[1], luminance(pixel[2] as u32, 255), 127]).collect();
     }
@@ -134,15 +137,6 @@ fn bump_luminance_pixels(d3d_format: u32, source: &[u8]) -> Vec<u8> {
             [signed(p), signed(p >> 5), luminance((p >> 10) as u32, 63), 127]
         })
         .collect()
-}
-
-/// The bytes of a pixel on the GPU, for a format without blocks.
-pub(crate) fn gpu_bytes(d3d_format: u32) -> usize {
-    if d3d_format == 60 {
-        2
-    } else {
-        4
-    }
 }
 
 /// Makes pixels with the bytes blue, green, red, alpha from a level of a DXT1, DXT3 or DXT5
@@ -378,9 +372,19 @@ mod tests {
     }
 
     #[test]
+    fn v8u8_reads_a_luminance_and_an_alpha_of_1() {
+        assert_eq!(texture_format(60), Some((wgpu::TextureFormat::Rgba8Snorm, 0, 2)));
+        assert_eq!(level_layout(60, 4, 2), (0, 16, 2, 16));
+        assert!(expands(60));
+        let made = gpu_pixels(60, &[0x80, 0x7f, 0x7f, 0x80]);
+        assert_eq!(made, [0x80, 0x7f, 127, 127, 0x7f, 0x80, 127, 127]);
+        assert_eq!((read_signed(made[0]), read_signed(made[1]), read_signed(made[2]), read_signed(made[3])), (-1.0, 1.0, 1.0, 1.0));
+    }
+
+    #[test]
     fn the_formats_of_16_bits_still_expand_as_before() {
         assert_eq!(gpu_pixels(23, &[0xff, 0xff]), expand_16_bits(23, &[0xff, 0xff]));
-        assert!(!expands(60) && !expands(21));
+        assert!(!expands(21));
     }
 
     #[test]

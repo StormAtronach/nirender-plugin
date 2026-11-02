@@ -386,7 +386,7 @@ impl Pass {
                 coordinate,
                 transform,
                 // The stage of the bump map has the values of the material.
-                bump: if st.source == 5 { m.stage_bump(textures.get(&st.texture).is_some_and(|t| t.texture().format() == wgpu::TextureFormat::Rg8Snorm)) } else { [0.5, 0.0, 0.0, 0.5, 1.0, 0.0] },
+                bump: if st.source == 5 { m.stage_bump() } else { [0.5, 0.0, 0.0, 0.5, 1.0, 0.0] },
                 texture: st.texture,
                 sampler,
                 texture_transform,
