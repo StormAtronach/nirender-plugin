@@ -639,12 +639,18 @@ fn bump_move(index: u32, texel: vec4f) -> vec2f {
     return vec2f(texel.r * stage.bump.x + texel.g * stage.bump.z, texel.r * stage.bump.y + texel.g * stage.bump.w);
 }
 
-// With luminance, a bump stage also makes the texel of the next stage darker, by the
-// luminance channel of the bump map. The bump maps of the game have formats without such a
-// channel, and then Direct3D takes a luminance of 1: the texel stays as it is. A format with
-// luminance is not in this program.
+// With luminance (23), a bump stage also scales the colour of the texel of the next stage: the
+// blue channel of the bump map, by the scale and the offset of the material, kept between 0
+// and 1, as `bumpmapLumiStage` of MGE XE's `XE FixedFuncEmu.fx`. The running engine looks the
+// same in the case seen: a DXT5 map on the water of the test level. A format without the channel
+// has a luminance of 1 (`Material::stage_bump`).
 fn bump_light(index: u32, bump_texel: vec4f, texel: vec4f) -> vec4f {
-    return texel;
+    let stage = draws[record].stages[index];
+    if index >= draws[record].counts.y || stage.color.x != 23u {
+        return texel;
+    }
+    let light = clamp(bump_texel.b * stage.luminance.x + stage.luminance.y, 0.0, 1.0);
+    return vec4f(texel.rgb * light, texel.a);
 }
 
 @fragment
