@@ -1045,6 +1045,22 @@ static TAKEN_BY: LockCell<std::collections::BTreeMap<(usize, usize), u32>> = Loc
 /// The lines of the log for a method and a caller seen for the first time, at most.
 const TAKEN_LINES: usize = 32;
 
+/// True for a device call of other code that changes nothing on this host, so it is not a taken
+/// call. There is no device light and no pixel shader here:
+/// - `LightEnable(index, false)`: `NiDX8LightManager::RemoveLight` on the cell worker. The helper
+///   hears of the destroyed light from `worker_events`.
+/// - `SetPixelShader(0)`: `setupD3DState` and `restoreD3DState` of the cutscene player.
+///
+/// Any other value stays a taken call, so that its caller shows.
+pub fn nothing_to_do(slot: usize, args: &[u32]) -> bool {
+    use crate::d3d::{DEVICE_LIGHT_ENABLE, DEVICE_SET_PIXEL_SHADER};
+    match slot * 4 {
+        DEVICE_LIGHT_ENABLE => args.get(1) == Some(&0),
+        DEVICE_SET_PIXEL_SHADER => args.first() == Some(&0),
+        _ => false,
+    }
+}
+
 /// A device call of other code that has no call of the link. It must not get to the device
 /// of MGE XE: it can have an object of this host as an argument.
 pub unsafe fn take(slot: usize) {
@@ -1165,7 +1181,8 @@ pub unsafe fn report() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_within, LevelCopies};
+    use super::{nothing_to_do, read_within, LevelCopies};
+    use crate::d3d::{DEVICE_LIGHT_ENABLE, DEVICE_SET_LIGHT, DEVICE_SET_PIXEL_SHADER};
 
     #[test]
     fn the_reads_stop_at_the_budget_and_say_so() {
@@ -1184,6 +1201,21 @@ mod tests {
         // A budget of 0 reads nothing, and an empty list is not ended by it.
         assert_eq!(read_within(vec![1], 0, || 0, Some), (vec![], true));
         assert_eq!(read_within(Vec::<i32>::new(), 0, || 0, Some), (vec![], false));
+    }
+
+    #[test]
+    fn only_a_call_that_changes_nothing_is_not_a_taken_call() {
+        let light = DEVICE_LIGHT_ENABLE / 4;
+        let shader = DEVICE_SET_PIXEL_SHADER / 4;
+        // The index of the light does not matter; its state does.
+        assert!(nothing_to_do(light, &[7, 0]));
+        assert!(!nothing_to_do(light, &[7, 1]));
+        assert!(nothing_to_do(shader, &[0]));
+        assert!(!nothing_to_do(shader, &[0x1234]));
+        // Another method with the same arguments, and a call with too few.
+        assert!(!nothing_to_do(DEVICE_SET_LIGHT / 4, &[7, 0]));
+        assert!(!nothing_to_do(light, &[7]));
+        assert!(!nothing_to_do(shader, &[]));
     }
 
     #[test]
