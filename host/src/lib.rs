@@ -895,9 +895,6 @@ struct Player {
     /// The picture and the depth of the frame before a call of [`Extension::draw_class`].
     picture_copy: Option<wgpu::Texture>,
     depth_copy: Option<wgpu::Texture>,
-    /// The copy of the depth made for the last call of [`Extension::draw_class`] in this frame,
-    /// while `depth_copy` still holds it: what a later held draw reads as the depth under it.
-    depth_before_class: Option<wgpu::TextureView>,
     /// The depth of the game at the end of its world scene, for [`Extension::post`]: the game
     /// clears its depth before its later scenes. The projection of the world at that time,
     /// and true when a draw of the first-person scene went into the back buffer in this
