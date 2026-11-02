@@ -529,6 +529,7 @@ impl Renderer {
             record_generation: 0,
             instance_generation: 0,
             force_record_growth: false,
+            force_segment_growth: false,
             pinned_textures: Vec::new(),
             pinned_free: Vec::new(),
             pinned_index: FxHashMap::default(),

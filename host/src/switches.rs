@@ -97,6 +97,10 @@ pub(crate) struct Switches {
     pub(crate) force_growth: u32,
     /// `NIRENDER_GROWTH_SHOTS=<prefix>`: a picture after each forced growth, at that prefix.
     pub(crate) growth_shots: Option<String>,
+    /// `NIRENDER_FORCE_SEGMENT_GROWTH=<n>`: the segment of the table doubles in the frame of the
+    /// n-th draw into a small rendered texture (a fog texture of the map), for the test of a
+    /// growth in the middle of a frame; 0 is never.
+    pub(crate) force_segment_growth: u32,
     /// `MGE_XE_BOX_SECONDS=<n>`: a message box of this program closes itself after n seconds
     /// (the harness mode of the boxes, [`crate::gpu::message_box`]); 0 or unset: the box waits
     /// for the click. The plugin and MGE XE's d3d8.dll read the same variable for their boxes.
@@ -150,6 +154,7 @@ impl Switches {
             watchdog: read.on("MGE_XE_WATCHDOG") != Some(false),
             force_growth: read.number("NIRENDER_FORCE_GROWTH").unwrap_or(0),
             growth_shots: read.text("NIRENDER_GROWTH_SHOTS"),
+            force_segment_growth: read.number("NIRENDER_FORCE_SEGMENT_GROWTH").unwrap_or(0),
             // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
             box_seconds: read.parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |v| v.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600)),
             texture_tier: read.choice("MGE_XE_TEXTURE_TIER", &["a", "c"]).map(|tier| if tier == "a" { crate::request::TextureTier::A } else { crate::request::TextureTier::C }),

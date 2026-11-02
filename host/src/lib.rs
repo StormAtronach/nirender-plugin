@@ -585,6 +585,9 @@ struct Renderer {
     /// A test (`NIRENDER_FORCE_GROWTH`): the next `upload_records` makes its buffer again, as a
     /// growth does.
     force_record_growth: bool,
+    /// A test (`NIRENDER_FORCE_SEGMENT_GROWTH`): the next `retained_upload` doubles the segment
+    /// of the table.
+    force_segment_growth: bool,
     /// The textures and the samplers with a slot of the arrays that stays from frame to
     /// frame, for the records of the retained instances. A texture slot counts the stages of
     /// the instances that use it; at 0 it is free (handle 0, the white view) and a later
@@ -789,6 +792,9 @@ struct Player {
     /// go into pictures. The picture of the next frame waits here.
     growth_test: (u32, Option<String>),
     growth_shot_next: Option<String>,
+    /// A test (`NIRENDER_FORCE_SEGMENT_GROWTH`): the draws into a small rendered texture until
+    /// the segment of the table grows; 0 is never.
+    segment_growth_at: u32,
     /// The pictures of the frame from before the interface of the game, for an extension:
     /// the buffer, the length of a row, the size, the file. Saved at the end of the frame.
     early_pictures: Vec<(wgpu::Buffer, usize, u32, u32, String)>,

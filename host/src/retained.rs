@@ -1283,7 +1283,8 @@ impl Renderer {
     /// the frame. A new buffer gets the whole segment.
     pub fn retained_upload(&mut self, set: &mut RetainedSet) {
         self.upload_effect_entries(set);
-        self.retained_room(set.slots.len());
+        let slots = if std::mem::take(&mut self.force_segment_growth) { set.slots.len().max(self.retained_records + 1) } else { set.slots.len() };
+        self.retained_room(slots);
         let all = set.all_dirty || self.record_generation != set.record_generation || self.instance_generation != set.instance_generation;
         set.record_generation = self.record_generation;
         set.instance_generation = self.instance_generation;
