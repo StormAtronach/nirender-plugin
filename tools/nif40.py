@@ -88,6 +88,9 @@ LAYOUTS = {
                                     ("source", "ref"), ("clipping_plane", "u8"), ("plane_normal", "v3"), ("plane_constant", "f"),
                                     ("ps2_l", "i16"), ("ps2_k", "i16"), ("unknown", "u16")],
     "NiStringExtraData": [("next", "ref"), ("bytes_remaining", "u32"), ("string", "str")],
+    # A controller of a node's transform, and its keys.
+    "NiKeyframeController": [("next", "ref"), ("flags", "u16"), ("frequency", "f"), ("phase", "f"), ("start", "f"), ("stop", "f"), ("target", "ref"), ("data", "ref")],
+    "NiKeyframeData": [("rotation_keys", "rotkeys"), ("translation_keys", "v3keys"), ("scale_keys", "fkeys")],
     # A skinned shape: the skin data, the skeleton root and the bones; the data holds the
     # transform of the skin, then for each bone its transform, its bound and its weights.
     "NiSkinInstance": [("data", "ref"), ("skeleton_root", "ref"), ("bones", "refs")],
@@ -97,6 +100,15 @@ LAYOUTS = {
                                  ("constant", "f"), ("linear", "f"), ("quadratic", "f")],
     "NiSpotLight": AV_OBJECT + [("affected", "u32list"), ("dimmer", "f"), ("ambient", "v3"), ("diffuse", "v3"), ("specular", "v3"),
                                 ("constant", "f"), ("linear", "f"), ("quadratic", "f"), ("cutoff", "f"), ("exponent", "f")],
+}
+
+
+# The parts of a key after its time, by the kind of the key group and its interpolation (1 linear,
+# 2 quadratic, 3 with tension, bias and continuity).
+KEY_FORMATS = {
+    "rotkeys": {1: "<5f", 3: "<8f"},
+    "v3keys": {1: "<4f", 2: "<10f", 3: "<7f"},
+    "fkeys": {1: "<2f", 2: "<4f", 3: "<5f"},
 }
 
 
@@ -148,6 +160,15 @@ class Reader:
         if kind == "lodlevels":
             n = self.take("<I")
             return [self.take("<2f") for _ in range(n)]
+        if kind in KEY_FORMATS:
+            n = self.take("<I")
+            if n == 0:
+                return {"interpolation": 0, "keys": []}
+            interpolation = self.take("<I")
+            layout = KEY_FORMATS[kind].get(interpolation)
+            if layout is None:
+                raise Unknown("block: %s interpolation %d" % (kind, interpolation))
+            return {"interpolation": interpolation, "keys": [self.take(layout) for _ in range(n)]}
         if kind == "skindata":
             d = {"rotation": self.take("<9f"), "translation": self.take("<3f"), "scale": self.take("<f")}
             n = self.take("<I")
@@ -285,6 +306,12 @@ class Writer:
             self.put("<I", len(v))
             for r in v:
                 self.put("<I", r)
+        elif kind in KEY_FORMATS:
+            self.put("<I", len(v["keys"]))
+            if v["keys"]:
+                self.put("<I", v["interpolation"])
+                for key in v["keys"]:
+                    self.put(KEY_FORMATS[kind][v["interpolation"]], *key)
         elif kind == "lodlevels":
             self.put("<I", len(v))
             for near, far in v:

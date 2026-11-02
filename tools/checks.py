@@ -63,16 +63,19 @@ CHECKS = {
     "release": (PLUGIN / "tools" / "release.py", PLUGIN, ["--self-test"]),
     # The argument handling of the runner (--plugin-dll, --log).
     "runner": (PLUGIN / "tools" / "run_own_device.py", PLUGIN, ["--self-test"]),
+    "the close of a game": (PLUGIN / "tools" / "play.py", PLUGIN, ["--self-test"]),
+    "the play set": (PLUGIN / "tools" / "make_play_set.py", PLUGIN, ["--self-test"]),
     "clippy arguments": (PLUGIN / "tools" / "clippy_baseline.py", PLUGIN, ["--self-test"]),
     # The adapter record of the replay gate.
     "gate": (PLUGIN / "tools" / "validate_retained.py", PLUGIN, ["--self-test"]),
+    "clean worktrees": (PLUGIN / "tools" / "clean_merged_worktrees.py", PLUGIN, ["--self-test"]),
     # The hook texts: the checks of the tree the commit is in.
     "hooks": (PLUGIN / "tools" / "install_hooks.py", PLUGIN, ["--self-test"]),
     # The pure parts of the corrupted-capture tool (the record walk, the mutations, the verdicts).
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner", "clippy arguments", "gate", "hooks", "fuzz"],
+    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner", "the close of a game", "the play set", "clippy arguments", "gate", "clean worktrees", "hooks", "fuzz"],
     "mge": ["mge readme", "mge handshake", "mge contract", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))

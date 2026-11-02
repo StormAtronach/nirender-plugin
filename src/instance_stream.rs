@@ -4,11 +4,12 @@
 //! the transform, the colours or the handles sends the `INSTANCE` record again with the
 //! same id. The destructor of the geometry sends `INSTANCE_DELETE`.
 //!
-//! The safe class (`reject_reason`): a shape of the world scene of a retained class
-//! (`class_retained`), with no depth test that depends on an earlier draw, no texture
-//! effect that moves, and no rejected node kind above it (`REJECTED_KINDS`). A controller
-//! on a node above moves the instance in place. A controller on the shape or on one of its
-//! properties makes it a live shape: its display runs the controllers' `OnPreDisplay` and
+//! What the table takes today (`reject_reason`; the rest stays on the engine's path until its
+//! work is done, charter 1): a shape of the world scene of a retained class
+//! (`class_retained`), with no depth test that depends on an earlier draw and no rejected node
+//! kind above it (`REJECTED_KINDS`).
+//! A controller on a node above moves the instance in place. A controller on the shape or on
+//! one of its properties makes it a live shape: its display runs the controllers' `OnPreDisplay` and
 //! notes the geometry and the material each time. A blended shape is retained: the helper
 //! sorts the blends of its table back to front. The class of a shape is decided once and
 //! kept until the shape is deleted.
@@ -90,9 +91,6 @@ const PLANE_NAMES: [&str; 7] = ["near", "far", "left", "right", "top", "bottom",
 const SLOT_ON_PRE_DISPLAY: usize = InterfaceNiTimeController::OnPreDisplay;
 const RTTI_NAME: usize = NiRTTI::name;
 const RTTI_BASE: usize = NiRTTI::baseRTTI;
-/// The run-time type of `NiBillboardNode`.
-const RTTI_BILLBOARD_NODE: usize = 0x7DE0A0;
-const NODE_FLAGS: usize = crate::gen::layouts::NiAVObject::flags;
 /// The most nodes above a shape that the walk looks at.
 const MAX_DEPTH: usize = 32;
 /// The frames between two checks of the handles of an instance. This note is a safety net for
@@ -146,12 +144,11 @@ impl Mode {
 const REASON_CONTROLLER: usize = 0;
 const REASON_NODE_KIND: usize = 1;
 const REASON_PROPERTY_CONTROLLER: usize = 2;
-const REASON_EFFECT: usize = 3;
-const REASON_LATER: usize = 4;
+const REASON_LATER: usize = 3;
 /// The depth test of the shape is equal, greater, not equal or greater or equal: the draw
 /// depends on the depth of a draw before it, so its place in the order of the game matters.
-const REASON_DEPTH: usize = 5;
-const REASONS: usize = 6;
+const REASON_DEPTH: usize = 4;
+const REASONS: usize = 5;
 
 struct Instance {
     id: u32,
@@ -222,7 +219,8 @@ struct Instance {
     points: bool,
 }
 
-/// A texture effect of the table's instances (an environment or a fog map), by its address:
+/// A texture effect of the table's instances (an environment or a fog map, whose words hold no
+/// projection when it moves in the play: `effect_chain`), by its address:
 /// its words as the material record copies them, read at most once a frame, and a version
 /// that grows when they change. The effect has no controller (else its shapes are not
 /// retained), but its projection follows its world transform
@@ -510,9 +508,9 @@ unsafe fn enabled(mt: &MainThread) -> bool {
 /// that the next draw of each sends its `INSTANCE` record into the file. The capture purges
 /// the source textures too, so the handles of every instance get a check.
 pub unsafe fn reset(mt: &MainThread, cause: &str) {
-    crate::log!("instances: the records go again: {cause}");
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
+    crate::log!("instances: the records go again: {cause}");
     t.generation = t.generation.wrapping_add(1);
     for instance in t.instances.values_mut() {
         instance.sent = false;
@@ -587,6 +585,7 @@ pub unsafe fn scene_end(mt: &MainThread) {
     if camera == 0 || t.mode() != Mode::Gpu || !capture::recording() {
         return;
     }
+    crate::effect_chain::send_checks(mt, camera);
     let count = rd::<i32>(camera, C::countCullingPlanes).max(0) as usize;
     let storage: usize = rd(camera, C::cullingPlanes_storage);
     let planes: Vec<usize> = (0..count).map(|i| rd(storage, i * 4)).collect();
@@ -720,6 +719,7 @@ pub unsafe fn frame_tick(mt: &MainThread) {
         note_change(mt, address);
     }
     apply_changes(mt);
+    crate::effect_chain::frame_tick(mt);
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     t.frame = t.frame.wrapping_add(1);
@@ -782,7 +782,7 @@ pub unsafe fn seen(mt: &MainThread, shape: usize, kind: u32, class_out: &mut u32
 /// After the notes of a draw: decides if the shape is retained, and makes the draw in
 /// progress pending for `draw` when it is. `property_state` and `effect_state` are those
 /// of the renderer for the draw.
-pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: bool, points: bool, class: u32, geometry: u32, material: u32, property_state: usize, effect_state: usize) {
+pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: bool, points: bool, class: u32, geometry: u32, material: u32, property_state: usize) {
     let cause = if !eligible {
         Some(0)
     } else if geometry == 0 {
@@ -818,7 +818,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
         return;
     }
     let mut live = false;
-    if let Some(reason) = reject_reason(t, shape, property_state, effect_state, skinned, &mut live) {
+    if let Some(reason) = reject_reason(t, shape, property_state, skinned, &mut live) {
         t.rejected.insert(shape);
         t.rejected_by[reason] += 1;
         return;
@@ -852,10 +852,11 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     t.pending = Some((shape, id));
 }
 
-/// Why the shape is not retained, or [`None`] when it is of the safe class. `live` is set
-/// when a controller on the shape or on a property changes it.
+/// Why the table does not take the shape yet, or [`None`] when it does. Each reason is a class
+/// of shapes left on the engine's path: unfinished work, not a rule to keep (charter 1). `live`
+/// is set when a controller on the shape or on a property changes it.
 /// Engine-rules R1, R6, R7 (the skill wgpu-renderer-dev).
-unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, effect_state: usize, skinned: bool, live: &mut bool) -> Option<usize> {
+unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, skinned: bool, live: &mut bool) -> Option<usize> {
     // A controller on the shape changes its data (a morpher, a UV controller): the shape is
     // live. A controller on a node above only moves the shape, and `skipped_display` moves
     // the instance in place.
@@ -899,17 +900,9 @@ unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, effect_
             return Some(REASON_DEPTH);
         }
     }
-    // A texture effect is retained in any coordinate mode (engine-rules R24) when its
-    // projection does not move: no controller on the effect or on a node above it, and no
-    // billboard above it that turns to the camera (`effect_retained`). The material record
-    // holds the projection.
-    if effect_state != 0 {
-        for effect in [rd::<usize>(effect_state, DES::environmentMap), rd::<usize>(effect_state, DES::fogMap)] {
-            if effect != 0 && !effect_retained(effect) {
-                return Some(REASON_EFFECT);
-            }
-        }
-    }
+    // A texture effect is retained in any coordinate mode (engine-rules R24). The material record
+    // holds the projection, or, when it moves in the play, names the chain the helper makes it from
+    // (`effect_chain`).
     None
 }
 
@@ -1074,7 +1067,7 @@ fn sky_table_class(class: u32) -> bool {
 /// set in the log line ("sky", "weather"). Logs each shape once: the name, the class,
 /// the handles, whether the material is modelled, the reject reason, live, the depth and alpha
 /// flags, and the controllers on the shape, above it and on its properties.
-pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, plain_world_shape: bool, geometry: u32, material: u32, property_state: usize, effect_state: usize) {
+pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, plain_world_shape: bool, geometry: u32, material: u32, property_state: usize) {
     let seen = &mut *SKY_SEEN.get(mt);
     if seen.contains(&shape) {
         return;
@@ -1083,7 +1076,7 @@ pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, 
     let text: usize = rd(shape, 8);
     let name = if text != 0 { core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
     let mut live = false;
-    let reason = reject_reason(&tables(mt), shape, property_state, effect_state, false, &mut live);
+    let reason = reject_reason(&tables(mt), shape, property_state, false, &mut live);
     let (z_flags, z_function) = match if property_state != 0 { rd::<usize>(property_state, PS::propZBuffer) } else { 0 } {
         0 => (None, None),
         z => (Some(rd::<u16>(z, PROPERTY_FLAGS)), Some(rd::<u32>(z, ZP::testFunction))),
@@ -1109,32 +1102,6 @@ pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, 
         crate::material_stream::last_modelled(mt),
         rd::<usize>(shape, CONTROLLERS) != 0
     );
-}
-
-/// True when the table can draw the texture effect: see `reject_reason`.
-unsafe fn effect_retained(effect: usize) -> bool {
-    let mut node = effect;
-    for _ in 0..MAX_DEPTH {
-        if node == 0 {
-            return true;
-        }
-        if rd::<usize>(node, CONTROLLERS) != 0 {
-            return false;
-        }
-        if crate::ports::ni::is_kind_of(node, RTTI_BILLBOARD_NODE) && billboard_turns(rd(node, NODE_FLAGS)) {
-            return false;
-        }
-        node = rd(node, PARENT);
-    }
-    false
-}
-
-/// True when a billboard node with these flags turns to the camera at its display
-/// (`NiBillboardNode::RotateToCamera` 0x6D3C00): the mode is in bits 5 and 6, and mode 3 has no
-/// turn. It updates its children there, so an effect under it holds another projection before
-/// that display than after it, in a frame: the material record would hold the wrong one.
-fn billboard_turns(flags: u16) -> bool {
-    (flags >> 5) & 3 != 3
 }
 
 /// True when the run-time type of the node, or a base of it, is one of the rejected kinds
@@ -1835,7 +1802,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
             let rechecks = &mut *RECHECKS.get(mt);
             rechecks[3] += 1;
             let mut live = false;
-            if reject_reason(t, shape, property_state, effect_state, skinned, &mut live).is_some() {
+            if reject_reason(t, shape, property_state, skinned, &mut live).is_some() {
                 rechecks[4] += 1;
                 t.reject_pending(shape, true);
                 return false;
@@ -1879,7 +1846,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     // state): each at most once a frame, whatever number of shapes it lights.
     let effects = if effect_state != 0 { [rd::<usize>(effect_state, DES::environmentMap), rd(effect_state, DES::fogMap)] } else { [0; 2] };
     let effect_versions = effects.map(|effect| {
-        let version = if effect == 0 { 0 } else { t.effects.entry(effect).or_default().observe(frame, || crate::material_stream::effect_signature(renderer, effect)) };
+        let version = if effect == 0 { 0 } else { t.effects.entry(effect).or_default().observe(frame, || crate::material_stream::effect_signature(mt, renderer, effect)) };
         (effect, version)
     });
     let Some(instance) = t.instances.get_mut(&shape) else {
@@ -2178,7 +2145,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
     let (rechecks, change_notes, queue_counts, walk_places) = (*RECHECKS.get(mt), *CHANGE_NOTES.get(mt), *QUEUE_COUNTS.get(mt), *WALK_PLACES.get(mt));
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
-    let reasons = ["controller", "node kind", "property controller", "effect", "at the record", "depth function"];
+    let reasons = ["controller", "node kind", "property controller", "at the record", "depth function"];
     let mut rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     let later = *LATER_BY.get(mt);
     if later.iter().any(|&n| n != 0) {
@@ -2281,17 +2248,6 @@ mod tests {
             crate::shadow::restore_main_thread(before);
             assert_eq!(deletes, [77, 78]);
         }
-    }
-
-    #[test]
-    fn a_billboard_turns_in_every_mode_but_the_third() {
-        // The flags of the test level's billboards: mode 0, 1, 2 and 2, with the displayed bit.
-        for flags in [0x0A, 0x2A, 0x4A, 0x5A] {
-            assert!(billboard_turns(flags), "{flags:#x}");
-        }
-        // Mode 3 turns nothing, with any other bit.
-        assert!(!billboard_turns(0x60));
-        assert!(!billboard_turns(0x7F));
     }
 
     #[test]

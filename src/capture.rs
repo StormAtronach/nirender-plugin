@@ -206,8 +206,8 @@ pub mod tag {
     /// in the order of the walk's draws.
     pub const INSTANCE_WALK: u32 = 32;
     /// A light of the light manager was destroyed (`NiDX8LightManager::RemoveLight`): its
-    /// key. The engine gives the key to the next light it makes. Sent only for a light that
-    /// went as a [`LIGHT`] record. See `light_stream::forget`.
+    /// key. The engine gives the key to the next light it makes. Sent for each destroyed light,
+    /// also one that never went as a [`LIGHT`] record. See `light_stream::forget`.
     pub const LIGHT_GONE: u32 = 33;
     /// The lights of the world that are on (`world_lights`): the number, then their keys. Sent
     /// at the start of a world scene when the set changed. The values of each light go as
@@ -261,6 +261,20 @@ pub mod tag {
     /// ids. The helper holds no other instance: one that it holds and this list lacks lost its
     /// [`INSTANCE_DELETE`]. A helper of an older build skips the record.
     pub const INSTANCE_CENSUS: u32 = 45;
+    /// What does not change with the camera of a texture effect under a turning billboard
+    /// (`effect_chain`): the id, the coordinate mode, the number of links, the world of the node
+    /// above the first turning billboard (13 words), its exact place (3 doubles), each link (its
+    /// kind: the billboard's mode 0 to 2, or 3 for no turn; its local transform, 13 words), the
+    /// model projection (12 words).
+    pub const EFFECT_CHAIN: u32 = 46;
+    /// The test switch `NIRENDER_EFFECT_TURN_CHECK`: the id of a chain, the engine's world
+    /// projection of the effect after its billboard's display in this frame (12 floats), the
+    /// place of the camera as the engine stores it (3 floats), and the texture matrix of the stage
+    /// that the engine's callbacks make from them (16 floats).
+    pub const EFFECT_TURN_CHECK: u32 = 47;
+    /// The plugin forgot the chain of an effect that lit nothing for a while (`effect_chain`): its
+    /// id. A later display sends the chain again.
+    pub const EFFECT_CHAIN_GONE: u32 = 48;
 }
 
 // ---- the ring in shared memory
@@ -1244,6 +1258,7 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     }
     crate::geometry_stream::reset(t);
     crate::material_stream::reset(t);
+    crate::effect_chain::reset(t);
     crate::light_stream::reset(t);
     crate::instance_stream::reset(t, "a capture file starts");
     if let Some(mut s) = state(&lock) {
@@ -1293,6 +1308,10 @@ pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
     crate::geometry_stream::forget(t, &geometry);
     let material: Vec<u32> = state(&lock).map(|mut s| s.tee_dirty_material.drain().collect()).unwrap_or_default();
     crate::material_stream::forget(t, &material);
+    // The chains of the texture effects do not go into the file during a hold: all of them again,
+    // into the frames (the replay of run 20261102-062618-hob-turn-tour had none, and drew those
+    // stages with zero matrices).
+    crate::effect_chain::reset(t);
     // The lights change in most frames: all of them again, into the frames.
     crate::light_stream::reset(t);
     crate::instance_stream::reset(t, "a capture file that holds takes its frames");
@@ -1318,7 +1337,7 @@ pub unsafe fn tee_end() {
 /// earlier frame, and a release sends again only the instances the engine displays.
 /// Engine-rules R14 (the skill wgpu-renderer-dev).
 fn resource_record(tag: u32) -> bool {
-    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE | tag::TEXTURE_GONE | tag::GEOMETRY_GONE | tag::MATERIAL_GONE)
+    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE | tag::TEXTURE_GONE | tag::GEOMETRY_GONE | tag::MATERIAL_GONE | tag::EFFECT_CHAIN_GONE)
 }
 
 /// Ends the capture file of a direct stream.
@@ -1907,6 +1926,36 @@ pub fn word_bytes(values: &[u32]) -> &[u8] {
 
 fn float_bytes(values: &[f32]) -> &[u8] {
     unsafe { core::slice::from_raw_parts(values.as_ptr() as *const u8, values.len() * 4) }
+}
+
+/// The chain of a texture effect. See [`tag::EFFECT_CHAIN`].
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory.
+pub unsafe fn effect_chain(record: &[u32]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::EFFECT_CHAIN, &[words(record)]);
+}
+
+/// The chain of an effect went. See [`tag::EFFECT_CHAIN_GONE`].
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory.
+pub unsafe fn effect_chain_gone(id: u32) {
+    let _lock = crate::sync::device_lock();
+    write(tag::EFFECT_CHAIN_GONE, &[words(&[id])]);
+}
+
+/// The engine's projection of an effect. See [`tag::EFFECT_TURN_CHECK`].
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory.
+pub unsafe fn effect_turn_check(record: &[u32]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::EFFECT_TURN_CHECK, &[words(record)]);
 }
 
 /// A state of a UV controller. See [`tag::GEOMETRY_UV`].

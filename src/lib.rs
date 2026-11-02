@@ -66,6 +66,7 @@ pub mod link;
 pub mod link_client;
 pub mod light_stream;
 pub mod material_stream;
+pub mod effect_chain;
 pub mod map_fog;
 pub mod map_tiles;
 pub mod mem;

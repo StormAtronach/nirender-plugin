@@ -25,21 +25,119 @@ it). The staged copy of FILE is in the Harness mod: an edit there during the gam
 the next Alt+X.
 
 Close Mod Organizer of the testing instance first. Leave the game by its menu: the tool
-waits for that, then stops its Mod Organizer and puts the mod list back.
+waits for that, then stops its Mod Organizer and puts the mod list back. Then it prints how the
+game closed: its exit code, and whether the fresh MWSE.log has a crash line, with its first lines.
+This report only reads, and a fault in it stops nothing.
 """
 import argparse
+import contextlib
+import ctypes
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import time
 
-import session  # noqa: F401  (puts the harness on the path)
-import harness
+# The modules of this folder, also under `python -I` (the self-test runs so).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import session  # noqa: E402, F401  (puts the harness on the path)
+import harness  # noqa: E402
 
 MGE_BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "MGE-XE-G7-render-link", "bin", "MSVC-Release")
 # The testing instance, for files that another instance lacks (the Livecoding mod).
 TESTING_INSTANCE = harness.MO2_ROOT
+
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+CRASH_LINE = "Morrowind has crashed"
+CRASH_DETAIL = re.compile(r"Playtime|Thread:|Exception:|^0x")
+
+
+def kernel32():
+    library = ctypes.WinDLL("kernel32")
+    library.OpenProcess.restype = ctypes.c_void_p
+    library.GetExitCodeProcess.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong))
+    library.CloseHandle.argtypes = (ctypes.c_void_p,)
+    return library
+
+
+def game_handle(pid):
+    """A handle that keeps the game's exit code after the game has gone, or None."""
+    return kernel32().OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+
+
+def exit_code_text(handle):
+    """The exit code of an ended process as text, or a text that says why there is none."""
+    if not handle:
+        return "not read: the game gave no handle"
+    library = kernel32()
+    code = ctypes.c_ulong()
+    read = library.GetExitCodeProcess(handle, ctypes.byref(code))
+    library.CloseHandle(handle)
+    return "0x%08X" % code.value if read else "not read"
+
+
+def close_lines(logs, since):
+    """What the fresh MWSE.log says about the close, as lines of text. A log is fresh when it was written
+    after `since`. Mod Organizer moves a live log to overwrite/Root when it closes: call this after that."""
+    fresh = [path for path in logs if os.path.isfile(path) and os.path.getmtime(path) >= since]
+    if not fresh:
+        return ["MWSE.log: no fresh log in %s" % ", ".join(logs)]
+    path = max(fresh, key=os.path.getmtime)
+    with open(path, encoding="utf-8", errors="replace") as file:
+        lines = file.read().splitlines()
+    at = next((index for index, line in enumerate(lines) if CRASH_LINE in line), None)
+    if at is None:
+        return ["MWSE.log: no crash line in %s" % path]
+    details = [line[:110] for line in lines[at + 1:at + 40] if CRASH_DETAIL.search(line)]
+    return ["MWSE.log: CRASH at line %d of %s" % (at + 1, path)] + ["  " + line for line in details[:10]]
+
+
+def report_close(handle, started):
+    """Prints how the game closed. This only reads, and no fault here may stop the owner's close."""
+    try:
+        print("the game closed after %.0f s, exit code %s" % (time.time() - started, exit_code_text(handle)), flush=True)
+        for line in close_lines(harness.MWSE_LOGS, started):
+            print(line, flush=True)
+    except Exception as error:  # noqa: BLE001 - the report must never stop a close
+        print("the report of the close failed: %s" % error, flush=True)
+
+
+def self_test():
+    """The tests of the report of a close: no game."""
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5); raise SystemExit(3)"])
+    handle = game_handle(child.pid)
+    child.wait()
+    assert exit_code_text(handle) == "0x00000003"
+    assert "no handle" in exit_code_text(None)
+
+    with tempfile.TemporaryDirectory() as folder:
+        live, overwrite = os.path.join(folder, "live.log"), os.path.join(folder, "overwrite.log")
+        missing = close_lines((overwrite, live), time.time())
+        assert "no fresh log" in missing[0], missing
+
+        with open(live, "w", encoding="ascii") as file:
+            file.write("old\n%s\n" % CRASH_LINE)
+        os.utime(live, (1000, 1000))
+        with open(overwrite, "w", encoding="ascii") as file:
+            file.write("a line\nanother\n")
+        now = os.path.getmtime(overwrite)
+        lines = close_lines((overwrite, live), now - 1)
+        assert "no crash line" in lines[0] and overwrite in lines[0], lines
+
+        with open(overwrite, "w", encoding="ascii") as file:
+            file.write("a line\n%s!\nPlaytime: 00:05:35\nnoise\nThread: GameMainThread\nException: X\n0x001 | d3d8 | a |\n" % CRASH_LINE)
+        lines = close_lines((overwrite, live), now - 1)
+        assert "CRASH at line 2" in lines[0] and len(lines) == 5, lines
+        assert "noise" not in " ".join(lines), lines
+
+    # A fault in the report stays in the report.
+    harness_logs = harness.MWSE_LOGS
+    harness.MWSE_LOGS = 7
+    report_close(None, time.time())
+    harness.MWSE_LOGS = harness_logs
+    print("play self-test: ok")
 
 
 def main():
@@ -54,7 +152,11 @@ def main():
     ap.add_argument("--game-dir", help="with --instance: the game folder of that instance")
     ap.add_argument("--profile", default="Default", help="with --instance: its profile")
     ap.add_argument("--stage-only", action="store_true", help="stage the mods, print them, take them out again; no game")
+    ap.add_argument("--self-test", action="store_true", help="the tests of the report of a close: no game")
     args = ap.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
 
     if args.instance:
         session.use_instance(args.instance, args.game_dir, args.profile)
@@ -115,6 +217,7 @@ def main():
             files["MWSE/mods/livecoding/livecoding.lua"] = os.path.abspath(args.livecoding)
         mods.append((session.MOD_NAME, files))
     deployment = harness.Deployment()
+    handle, started, game_ended = None, time.time(), False
     try:
         for name, files in mods:
             deployment.use_mod(name, files)
@@ -130,9 +233,14 @@ def main():
                 return 1
             time.sleep(2)
         print("the game runs; leave it by its menu when you are done", flush=True)
+        started = time.time()
+        # A fault here costs only the exit code of the report.
+        with contextlib.suppress(Exception):
+            handle = game_handle(harness.processes("Morrowind.exe")[0][0])
         while harness.processes("Morrowind.exe"):
             time.sleep(2)
         print("the game ended")
+        game_ended = True
     finally:
         harness.close_mo2()
         deployment.restore()
@@ -140,6 +248,9 @@ def main():
             os.remove(switched)
         os.rmdir(os.path.dirname(switched))
         print("the mod list of the instance is back")
+    # After Mod Organizer has closed: it moves the game's log to overwrite/Root.
+    if game_ended:
+        report_close(handle, started)
     return 0
 
 
