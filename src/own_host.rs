@@ -713,7 +713,17 @@ static PIXEL_READS: LockCell<u32> = LockCell::new(0);
 /// The reads by (width, height, from the back buffer): the count and the wait in ticks.
 static READS_BY_SIZE: LockCell<std::collections::BTreeMap<(u32, u32, bool), (u32, i64)>> = LockCell::new(std::collections::BTreeMap::new());
 
-unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, _rectangle: usize, _flags: u32) -> u32 {
+/// The offset of the first byte of a locked rectangle that starts at `left` and `top`, in a surface
+/// with rows of `row` bytes and pixels of `pixel` bytes: [`None`] when it starts outside the surface.
+/// A block format has no pixels to count (`pixel` 0), and it locks whole.
+fn lock_offset(left: u32, top: u32, width: u32, height: u32, row: u32, pixel: u32) -> Option<usize> {
+    if pixel == 0 {
+        return Some(0);
+    }
+    (left < width && top < height).then(|| top as usize * row as usize + left as usize * pixel as usize)
+}
+
+unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, rectangle: usize, _flags: u32) -> u32 {
     let lock = crate::sync::device_lock();
     crate::sync::off_thread("resource", "surface LockRect");
     let object = &mut *this;
@@ -731,8 +741,15 @@ unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, _rec
     if object.memory.len() != size {
         object.memory.resize(size, 0);
     }
+    // A RECT: left, top, right, bottom. `NiDX8Renderer::TakeScreenshot` gives a width and a height as
+    // the last two, so only the first two count here.
+    let (left, top) = if rectangle != 0 { (crate::mem::rd::<u32>(rectangle, 0), crate::mem::rd::<u32>(rectangle, 4)) } else { (0, 0) };
+    let pixel = if object.format >= 0x100 { 0 } else { row / object.width.max(1) };
+    let Some(offset) = lock_offset(left, top, object.width, object.height, row, pixel) else {
+        return FAIL;
+    };
     *locked = row;
-    *locked.add(1) = object.memory.as_mut_ptr() as u32;
+    *locked.add(1) = object.memory.as_mut_ptr().add(offset) as u32;
     OK
 }
 
@@ -1188,7 +1205,7 @@ pub unsafe fn report() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{nothing_to_do, read_within, LevelCopies, CUTSCENE_SHADER_CALLS, REMOVE_LIGHT_CALL};
+    use super::{lock_offset, nothing_to_do, read_within, LevelCopies, CUTSCENE_SHADER_CALLS, REMOVE_LIGHT_CALL};
     use crate::d3d::{DEVICE_LIGHT_ENABLE, DEVICE_SET_LIGHT, DEVICE_SET_PIXEL_SHADER};
 
     #[test]
@@ -1231,6 +1248,18 @@ mod tests {
         assert!(!nothing_to_do(DEVICE_SET_LIGHT / 4, &[7, 0], REMOVE_LIGHT_CALL));
         assert!(!nothing_to_do(light, &[7], REMOVE_LIGHT_CALL));
         assert!(!nothing_to_do(shader, &[], setup));
+    }
+
+    #[test]
+    fn a_locked_rectangle_starts_at_its_left_and_top() {
+        // A frame of 1920 x 1080 with 4 bytes for each pixel.
+        assert_eq!(lock_offset(0, 0, 1920, 1080, 7680, 4), Some(0));
+        assert_eq!(lock_offset(100, 200, 1920, 1080, 7680, 4), Some(200 * 7680 + 400));
+        assert_eq!(lock_offset(1919, 1079, 1920, 1080, 7680, 4), Some(1079 * 7680 + 7676));
+        assert_eq!(lock_offset(1920, 0, 1920, 1080, 7680, 4), None);
+        assert_eq!(lock_offset(0, 1080, 1920, 1080, 7680, 4), None);
+        // A block format locks whole.
+        assert_eq!(lock_offset(100, 200, 64, 64, 256, 0), Some(0));
     }
 
     #[test]
