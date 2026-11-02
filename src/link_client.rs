@@ -83,6 +83,8 @@ const DH_WATER_CONTROLLER: usize = DataHandler::waterController;
 const WATER_NV_LAKE: usize = WaterController::waterNVLake;
 const WATER_RIPPLES: usize = WaterController::sgRippleNode;
 const WATER_PLANE: usize = WaterController::sgWaterPlane;
+const WATER_TILES: usize = WaterController::waterTriShapes;
+const WATER_TILES_PER_SIDE: usize = WaterController::surfaceTileCount;
 
 // The weather controller.
 const W_SUN_VIS: usize = WeatherController::sgSunVis;
@@ -135,6 +137,7 @@ struct Roots {
     particles: [usize; 3],
     water_ripples: usize,
     water_plane: usize,
+    water_controller: usize,
     landscape_root: usize,
     object_root: usize,
     shadow_volume: usize,
@@ -156,6 +159,7 @@ const NO_ROOTS: Roots = Roots {
     particles: [0; 3],
     water_ripples: 0,
     water_plane: 0,
+    water_controller: 0,
     landscape_root: 0,
     object_root: 0,
     shadow_volume: 0,
@@ -1170,6 +1174,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
         particles: [ptr_at(weather, W_RAIN), ptr_at(weather, W_SNOW), ptr_at(weather, W_STORM)],
         water_ripples: ptr_at(water_controller, WATER_RIPPLES),
         water_plane: ptr_at(water_controller, WATER_PLANE),
+        water_controller,
         landscape_root: ptr_at(data_handler, DH_LANDSCAPE_ROOT),
         object_root: ptr_at(data_handler, DH_OBJECT_ROOT),
         shadow_volume: ptr_at(shadow_manager, SM_SHADOW_VOLUME),
@@ -1281,6 +1286,8 @@ unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
     // A chain cut at the guard leaves the class unknown, as a chain with no known node does.
     let found = crate::parent_chain::first_answer(geometry, crate::parent_chain::GUARD, |node| rd(node, AV::parentNode), |node| node_class(node, roots));
     match found {
+        // Another shape under the plane's node is not the plane: a mod can attach one there.
+        Ok(Some(CLASS_WATER_PLANE)) if !is_water_tile(geometry, roots.water_controller) => {}
         Ok(Some(class)) => return class,
         Ok(None) => {}
         Err(crate::parent_chain::ChainTooLong) => crate::parent_chain::note_too_long("the class of a draw"),
@@ -1290,6 +1297,21 @@ unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
     } else {
         CLASS_UNKNOWN
     }
+}
+
+/// True for a tile of the water surface that the water controller built
+/// (`createWaterGeometryNV` 0x51DEB0, `createSurfaceGeometry` 0x51E240). Read at each test, as
+/// `readINIData` 0x51BB30 builds the tiles again.
+unsafe fn is_water_tile(shape: usize, water_controller: usize) -> bool {
+    if water_controller == 0 {
+        return false;
+    }
+    let tiles = ptr_at(water_controller, WATER_TILES);
+    if tiles == 0 {
+        return false;
+    }
+    let side = rd::<u32>(water_controller, WATER_TILES_PER_SIDE) as usize;
+    (0..side * side).any(|tile| rd::<usize>(tiles, tile * 4) == shape)
 }
 
 /// The class that a node of the parent chain gives, when it is one of the known objects.
@@ -1888,6 +1910,44 @@ mod present_tests {
             assert!(!take_present_due());
         }
         assert!(take_present_due());
+    }
+}
+
+#[cfg(test)]
+mod water_plane_tests {
+    use super::*;
+    use crate::mem::wr;
+
+    /// A tile of the water controller is the plane. Another shape under the plane's node is
+    /// not, and a shape under the ripple node stays a ripple.
+    #[test]
+    fn only_the_tiles_under_the_plane_node_are_the_plane() {
+        let plane = vec![0usize; AV::parentNode / 4 + 1];
+        let ripples = {
+            let mut node = vec![0usize; AV::parentNode / 4 + 1];
+            node[AV::parentNode / 4] = plane.as_ptr() as usize;
+            node
+        };
+        let shape_under = |parent: usize| {
+            let mut shape = vec![0usize; AV::parentNode / 4 + 1];
+            shape[AV::parentNode / 4] = parent;
+            shape
+        };
+        let tile = shape_under(plane.as_ptr() as usize);
+        let of_a_mod = shape_under(plane.as_ptr() as usize);
+        let ripple = shape_under(ripples.as_ptr() as usize);
+        let tiles = [0x10usize, tile.as_ptr() as usize, 0x20, 0x30];
+        let mut controller = vec![0u8; WATER_TILES_PER_SIDE + 4];
+        unsafe {
+            wr::<usize>(controller.as_mut_ptr() as usize, WATER_TILES, tiles.as_ptr() as usize);
+            wr::<u32>(controller.as_mut_ptr() as usize, WATER_TILES_PER_SIDE, 2);
+        }
+        let roots = Roots { water_plane: plane.as_ptr() as usize, water_ripples: ripples.as_ptr() as usize, water_controller: controller.as_ptr() as usize, ..NO_ROOTS };
+        unsafe {
+            assert_eq!(object_class(tile.as_ptr() as usize, &roots), CLASS_WATER_PLANE);
+            assert_eq!(object_class(of_a_mod.as_ptr() as usize, &roots), CLASS_UNKNOWN);
+            assert_eq!(object_class(ripple.as_ptr() as usize, &roots), CLASS_WATER_RIPPLE);
+        }
     }
 }
 
