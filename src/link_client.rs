@@ -1341,9 +1341,11 @@ unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
 /// carry the specular colour times the dimmer: they are not the radius.
 pub unsafe fn point_light_radius(light: usize) -> f32 {
     let recovery = LIGHT_FADE_RADIUS.load(Ordering::Relaxed);
-    if recovery != 0 {
+    // Two callers pass any light of a draw, and only a point light has these words.
+    if recovery != 0 && vcall0(light, LIGHT_VTBL_GET_TYPE) == LIGHT_POINT {
+        use crate::gen::layouts::NiPointLight as PL;
         let recovery: unsafe extern "C" fn(f32, f32, f32) -> f32 = core::mem::transmute(recovery);
-        return recovery(rd(light, L::constantAttenuation), rd(light, L::linearAttenuation), rd(light, L::quadraticAttenuation));
+        return recovery(rd(light, PL::constantAttenuation), rd(light, PL::linearAttenuation), rd(light, PL::quadraticAttenuation));
     }
     if let Some(t) = MainThread::here() {
         if let Some(radius) = crate::light_stream::radius_of(&t, rd(light, L::index)) {
