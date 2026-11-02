@@ -63,6 +63,8 @@ CHECKS = {
     "release": (PLUGIN / "tools" / "release.py", PLUGIN, ["--self-test"]),
     # The argument handling of the runner (--plugin-dll, --log).
     "runner": (PLUGIN / "tools" / "run_own_device.py", PLUGIN, ["--self-test"]),
+    "the close of a game": (PLUGIN / "tools" / "play.py", PLUGIN, ["--self-test"]),
+    "the play set": (PLUGIN / "tools" / "make_play_set.py", PLUGIN, ["--self-test"]),
     "clippy arguments": (PLUGIN / "tools" / "clippy_baseline.py", PLUGIN, ["--self-test"]),
     # The adapter record of the replay gate.
     "gate": (PLUGIN / "tools" / "validate_retained.py", PLUGIN, ["--self-test"]),
