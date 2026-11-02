@@ -954,8 +954,8 @@ pub fn set_sky_draws(on: bool) {
 }
 
 /// The switch of the weather's shapes, the rain, snow and storm drops of class 9
-/// (`NIRENDER_WEATHER`; the plan note's section 3.1): 0 not read, 1 off (the default until its
-/// gate: the engine's shape records), 2 the census (`count`), 3 the drops' instances in the
+/// (`NIRENDER_WEATHER`): 0 not read, 1 off (the default: the engine's
+/// shape records), 2 the census (`count`), 3 the drops' instances in the
 /// table (`on`), drawn as the sky's are.
 static WEATHER_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
