@@ -94,15 +94,18 @@ pub const EFFECT_CHAIN: u32 = 46;
 /// projection of the effect after its billboard's display in this frame (12 floats), and the
 /// place of the camera as the engine stores it (3 floats).
 pub const EFFECT_TURN_CHECK: u32 = 47;
+/// The plugin forgot the chain of an effect that lit nothing for a while: its id. A later display
+/// sends the chain again.
+pub const EFFECT_CHAIN_GONE: u32 = 48;
 
 /// Every tag of this build, the two retired ones (2 and 7) among them. A new tag goes here
 /// with its constant, read by the player or not: a test asks that each constant is here.
-pub const KNOWN: [u32; 47] = [
+pub const KNOWN: [u32; 48] = [
     TEXTURE, 2, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, 7, COMMAND, CALL, FRAME_END, HEADER, TEXTURE_UPDATE,
     READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW,
     INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED,
     INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE,
-    MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS, EFFECT_CHAIN, EFFECT_TURN_CHECK,
+    MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS, EFFECT_CHAIN, EFFECT_TURN_CHECK, EFFECT_CHAIN_GONE,
 ];
 
 /// A tag that this build knows ([`KNOWN`]). A record of another tag comes from a plugin of
@@ -165,6 +168,7 @@ pub fn least_length(tag: u32) -> usize {
         // A chain with no links: the head and the model projection.
         EFFECT_CHAIN => (crate::effect_turn::HEAD_WORDS + crate::effect_turn::MODEL_WORDS) * 4,
         EFFECT_TURN_CHECK => 16 * 4,
+        EFFECT_CHAIN_GONE => 4,
         _ => 0,
     }
 }
@@ -298,6 +302,7 @@ pub fn name(tag: u32) -> &'static str {
         INSTANCE_CENSUS => "instance census",
         EFFECT_CHAIN => "effect chain",
         EFFECT_TURN_CHECK => "effect turn check",
+        EFFECT_CHAIN_GONE => "effect chain gone",
         _ => "unknown",
     }
 }
@@ -307,14 +312,14 @@ mod tests {
     use super::*;
 
     /// Every tag the player reads: all the known tags but the two retired ones (2 and 7).
-    const READ_TAGS: [u32; 45] = [
+    const READ_TAGS: [u32; 46] = [
         HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, COMMAND, CALL, FRAME_END, READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS,
-        INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS, EFFECT_CHAIN, EFFECT_TURN_CHECK,
+        INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS, EFFECT_CHAIN, EFFECT_TURN_CHECK, EFFECT_CHAIN_GONE,
     ];
 
     #[test]
     fn the_test_reads_every_known_tag_but_the_retired_ones() {
-        let known: Vec<u32> = (1..=EFFECT_TURN_CHECK).filter(|&tag| is_known(tag) && tag != 2 && tag != 7).collect();
+        let known: Vec<u32> = (1..=EFFECT_CHAIN_GONE).filter(|&tag| is_known(tag) && tag != 2 && tag != 7).collect();
         let mut read = READ_TAGS.to_vec();
         read.sort();
         assert_eq!(read, known);
@@ -471,7 +476,7 @@ mod tests {
         for tag in constants {
             assert!(is_known(tag), "tag {tag} is a constant but not in KNOWN");
         }
-        assert!(!is_known(0) && !is_known(48));
+        assert!(!is_known(0) && !is_known(49));
     }
 
     #[test]

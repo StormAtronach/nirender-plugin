@@ -263,13 +263,17 @@ pub mod tag {
     pub const INSTANCE_CENSUS: u32 = 45;
     /// What does not change with the camera of a texture effect under a turning billboard
     /// (`effect_chain`): the id, the coordinate mode, the number of links, the world of the node
-    /// above the first turning billboard (13 words), each link (its kind: the billboard's mode
-    /// 0 to 2, or 3 for no turn; its local transform, 13 words), the model projection (12 words).
+    /// above the first turning billboard (13 words), its exact place (3 doubles), each link (its
+    /// kind: the billboard's mode 0 to 2, or 3 for no turn; its local transform, 13 words), the
+    /// model projection (12 words).
     pub const EFFECT_CHAIN: u32 = 46;
     /// The test switch `NIRENDER_EFFECT_TURN_CHECK`: the id of a chain, the engine's world
     /// projection of the effect after its billboard's display in this frame (12 floats), and the
     /// place of the camera as the engine stores it (3 floats).
     pub const EFFECT_TURN_CHECK: u32 = 47;
+    /// The plugin forgot the chain of an effect that lit nothing for a while (`effect_chain`): its
+    /// id. A later display sends the chain again.
+    pub const EFFECT_CHAIN_GONE: u32 = 48;
 }
 
 // ---- the ring in shared memory
@@ -1303,6 +1307,10 @@ pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
     crate::geometry_stream::forget(t, &geometry);
     let material: Vec<u32> = state(&lock).map(|mut s| s.tee_dirty_material.drain().collect()).unwrap_or_default();
     crate::material_stream::forget(t, &material);
+    // The chains of the texture effects do not go into the file during a hold: all of them again,
+    // into the frames (the replay of run 20261102-062618-hob-turn-tour had none, and drew those
+    // stages with zero matrices).
+    crate::effect_chain::reset(t);
     // The lights change in most frames: all of them again, into the frames.
     crate::light_stream::reset(t);
     crate::instance_stream::reset(t, "a capture file that holds takes its frames");
@@ -1325,17 +1333,10 @@ pub unsafe fn tee_end() {
 /// holds takes these between its frames, so that the resources of a recorded frame are in
 /// the file. The content of buffers and textures comes once, at the frames. The visibility
 /// and the deletion of a retained instance count too: the file has the instance from an
-/// earlier frame, and a release sends again only the instances the engine displays. A chain of
-/// a texture effect counts too: `effect_chain` sends it once, and a later frame's stage needs it.
+/// earlier frame, and a release sends again only the instances the engine displays.
 /// Engine-rules R14 (the skill wgpu-renderer-dev).
 fn resource_record(tag: u32) -> bool {
-    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE | tag::TEXTURE_GONE | tag::GEOMETRY_GONE | tag::MATERIAL_GONE | tag::EFFECT_CHAIN)
-}
-
-/// [`resource_record`], for a test of another module.
-#[cfg(test)]
-pub(crate) fn takes_while_holding(tag: u32) -> bool {
-    resource_record(tag)
+    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE | tag::TEXTURE_GONE | tag::GEOMETRY_GONE | tag::MATERIAL_GONE | tag::EFFECT_CHAIN_GONE)
 }
 
 /// Ends the capture file of a direct stream.
@@ -1934,6 +1935,16 @@ fn float_bytes(values: &[f32]) -> &[u8] {
 pub unsafe fn effect_chain(record: &[u32]) {
     let _lock = crate::sync::device_lock();
     write(tag::EFFECT_CHAIN, &[words(record)]);
+}
+
+/// The chain of an effect went. See [`tag::EFFECT_CHAIN_GONE`].
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory.
+pub unsafe fn effect_chain_gone(id: u32) {
+    let _lock = crate::sync::device_lock();
+    write(tag::EFFECT_CHAIN_GONE, &[words(&[id])]);
 }
 
 /// The engine's projection of an effect. See [`tag::EFFECT_TURN_CHECK`].

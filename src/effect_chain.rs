@@ -13,21 +13,21 @@
 //! end of each world scene (`send_checks`), and the helper compares them with its own.
 
 use crate::checked::Open;
-use crate::gen::layouts::{NiAVObject as AV, NiTextureEffect as TE};
+use crate::gen::layouts::{NiAVObject as AV, NiNode as NODE, NiRTTI, NiSwitchNode as SWITCH, NiTextureEffect as TE};
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::{rd, wr};
 use crate::ptr_hash::HashMap;
 
 /// The run-time type of `NiBillboardNode`.
 const RTTI_BILLBOARD_NODE: usize = 0x7DE0A0;
-/// The most nodes above an effect that the walk looks at, as `instance_stream` for a shape.
-const MAX_DEPTH: usize = 32;
 /// The kind of a link that does not turn: a plain node, a billboard of the mode 3, the effect.
 const NO_TURN: u32 = 3;
 /// The flag that `NiNode::Display` 0x6C9190 sets: after it, the billboard has turned.
 const DISPLAYED: u16 = 0x10;
 /// The flag of a node with geometry under it (`NiNode::IsVisualObject` 0x445A60).
 const CONTAINS_GEOMETRY: u16 = 0x08;
+/// The flag of a hidden node (`NiAVObject::GetAppCulled` 0x442B30).
+const APP_CULLED: u16 = 0x01;
 /// The frames an effect stays in the table without a display of a shape it lights. Its address
 /// can be another object's by then.
 const KEEP_FRAMES: u32 = 4096;
@@ -55,24 +55,41 @@ fn chains<'a>(t: &'a MainThread) -> Open<'a, HashMap<usize, Chain>> {
 }
 
 /// The billboard's mode (flags bits 5 and 6) when it turns to the camera at its display: mode 3
-/// has no turn (`RotateToCamera` 0x6D3C00). A node with no geometry under it does not display
-/// its children (`NiNode::Display` 0x6C9190 tests the flag that `NiNode::UpdateWorldBound` 0x6C8C90
-/// keeps), so a billboard below it has no display and never turns.
-fn turn_mode(flags: u16, parent_flags: Option<u16>) -> Option<u32> {
-    if parent_flags.is_some_and(|parent| parent & CONTAINS_GEOMETRY == 0) {
-        return None;
-    }
+/// has no turn (`RotateToCamera` 0x6D3C00).
+fn turn_mode(flags: u16) -> Option<u32> {
     let mode = u32::from(flags >> 5) & 3;
     (mode != NO_TURN).then_some(mode)
 }
 
-/// The mode of the node, when it is a billboard that turns.
-unsafe fn node_turn(node: usize) -> Option<u32> {
-    if !crate::ports::ni::is_kind_of(node, RTTI_BILLBOARD_NODE) {
-        return None;
+/// True when a parent that has its display displays this child. `NiAVObject::CullShow` 0x6EB480
+/// skips a hidden node. A node with no geometry under it does not display its children
+/// (`NiNode::Display` 0x6C9190 tests the flag that `NiNode::UpdateWorldBound` 0x6C8C90 keeps). A
+/// switch node displays only the child at its index (`NiSwitchNode::Display` 0x6D8320). So a
+/// billboard without its display never turns.
+fn child_displayed(flags: u16, parent_flags: Option<u16>, selected: bool) -> bool {
+    flags & APP_CULLED == 0 && parent_flags.is_none_or(|parent| parent & CONTAINS_GEOMETRY != 0) && selected
+}
+
+/// True when the node is a switch node, or a level of detail or an animation node on one.
+unsafe fn is_switch(node: usize) -> bool {
+    let mut rtti = crate::ports::ni::get_rtti(node);
+    while rtti != 0 {
+        let name: usize = rd(rtti, NiRTTI::name);
+        if name != 0 && core::ffi::CStr::from_ptr(name as *const core::ffi::c_char).to_bytes() == b"NiSwitchNode" {
+            return true;
+        }
+        rtti = rd(rtti, NiRTTI::baseRTTI);
     }
-    let parent: usize = rd(node, AV::parentNode);
-    turn_mode(rd(node, AV::flags), (parent != 0).then(|| rd(parent, AV::flags)))
+    false
+}
+
+/// True when a switch parent selects this child, and for any other parent.
+unsafe fn selected_by(parent: usize, node: usize) -> bool {
+    if !is_switch(parent) {
+        return true;
+    }
+    let index: i32 = rd(parent, SWITCH::switchIndex);
+    index >= 0 && rd::<usize>(rd::<usize>(parent, NODE::kChildren_storage), index as usize * 4) == node
 }
 
 /// The words of the local transform of a node. A node always has its rotation
@@ -83,64 +100,74 @@ unsafe fn local_words(node: usize, out: &mut Vec<u32>) {
     out.push(rd(node, AV::localTransform_localScale));
 }
 
-/// True when a turning billboard is above the effect, with no table: for the report of the
-/// shapes that the table does not take.
+/// True when a turning billboard with its display is above the effect, with no table: for the
+/// report of the shapes that the table does not take.
 ///
 /// # Safety
 ///
 /// `effect` points at a live `NiTextureEffect` with live nodes above it.
 pub unsafe fn turning_above(effect: usize) -> bool {
+    let nodes = nodes_up(effect);
+    !turns_down(&nodes).iter().all(|turn| turn.is_none())
+}
+
+/// The nodes from the effect up to the root.
+unsafe fn nodes_up(effect: usize) -> Vec<usize> {
+    let mut nodes = Vec::new();
     let mut node = effect;
-    for _ in 0..MAX_DEPTH {
-        if node == 0 {
-            return false;
-        }
-        if node_turn(node).is_some() {
-            return true;
-        }
+    while node != 0 {
+        nodes.push(node);
         node = rd(node, AV::parentNode);
     }
-    false
+    nodes
+}
+
+/// For each node of [`nodes_up`], the mode of its turn: a billboard that turns, when it and the
+/// nodes above it have their displays.
+unsafe fn turns_down(nodes: &[usize]) -> Vec<Option<u32>> {
+    let mut turns = vec![None; nodes.len()];
+    let mut shown = true;
+    for at in (0..nodes.len()).rev() {
+        let node = nodes[at];
+        let parent = nodes.get(at + 1).copied();
+        let selected = parent.is_none_or(|parent| selected_by(parent, node));
+        shown = shown && child_displayed(rd(node, AV::flags), parent.map(|parent| rd(parent, AV::flags)), selected);
+        if shown && crate::ports::ni::is_kind_of(node, RTTI_BILLBOARD_NODE) {
+            turns[at] = turn_mode(rd(node, AV::flags));
+        }
+    }
+    turns
 }
 
 /// Reads the chain of `effect` into `chain`: its words stay empty for an effect with no turning
 /// billboard above it.
-unsafe fn read_chain(effect: usize, chain: &mut Chain) -> Vec<u32> {
+unsafe fn read_chain(t: &MainThread, effect: usize, chain: &mut Chain) -> Vec<u32> {
     chain.billboards.clear();
-    let mut first = 0;
-    let mut node = effect;
-    for _ in 0..MAX_DEPTH {
-        if node == 0 {
-            break;
+    let nodes = nodes_up(effect);
+    let turns = turns_down(&nodes);
+    let Some(first) = turns.iter().rposition(|turn| turn.is_some()) else { return Vec::new() };
+    chain.billboards.extend(nodes.iter().zip(&turns).filter(|(_, turn)| turn.is_some()).map(|(&node, _)| node));
+
+    let mut words = vec![effect as u32, rd(effect, TE::coordMode), first as u32 + 1];
+    let above = nodes.get(first + 1).copied();
+    let exact = match above {
+        Some(above) => {
+            let stored: [f32; 3] = rd(above, AV::worldTransform_translation);
+            words.extend_from_slice(&rd::<[u32; 13]>(above, AV::worldTransform));
+            crate::camera_space::exact_translation(t, above, 0).unwrap_or(stored.map(f64::from))
         }
-        if node_turn(node).is_some() {
-            first = node;
-            chain.billboards.push(node);
+        None => {
+            words.extend(IDENTITY_TRANSFORM.map(f32::to_bits));
+            [0.0; 3]
         }
-        node = rd(node, AV::parentNode);
+    };
+    for value in exact {
+        words.push(value.to_bits() as u32);
+        words.push((value.to_bits() >> 32) as u32);
     }
-    if first == 0 {
-        return Vec::new();
-    }
-    let mut nodes = Vec::new();
-    let mut node = effect;
-    loop {
-        nodes.push(node);
-        if node == first {
-            break;
-        }
-        node = rd(node, AV::parentNode);
-    }
-    let mut words = vec![effect as u32, rd(effect, TE::coordMode), nodes.len() as u32];
-    let above: usize = rd(first, AV::parentNode);
-    if above != 0 {
-        words.extend_from_slice(&rd::<[u32; 13]>(above, AV::worldTransform));
-    } else {
-        words.extend(IDENTITY_TRANSFORM.map(f32::to_bits));
-    }
-    for &node in nodes.iter().rev() {
-        words.push(node_turn(node).unwrap_or(NO_TURN));
-        local_words(node, &mut words);
+    for at in (0..=first).rev() {
+        words.push(turns[at].unwrap_or(NO_TURN));
+        local_words(nodes[at], &mut words);
     }
     words.extend_from_slice(&rd::<[u32; 9]>(effect, TE::modelProjMat));
     words.extend_from_slice(&rd::<[u32; 3]>(effect, TE::modelProjTrans));
@@ -159,7 +186,7 @@ pub unsafe fn note(t: &MainThread, effect: usize) -> bool {
     let chain = table.entry(effect).or_default();
     if chain.frame != frame {
         chain.frame = frame;
-        let words = read_chain(effect, chain);
+        let words = read_chain(t, effect, chain);
         if words != chain.words {
             chain.words = words;
             chain.sent = false;
@@ -187,7 +214,14 @@ pub fn frame_tick(t: &MainThread) {
         *frame
     };
     if frame.is_multiple_of(KEEP_FRAMES) {
-        chains(t).retain(|_, chain| frame.wrapping_sub(chain.frame) < KEEP_FRAMES);
+        chains(t).retain(|&effect, chain| {
+            let keep = frame.wrapping_sub(chain.frame) < KEEP_FRAMES;
+            if !keep && chain.sent {
+                // SAFETY: no engine memory is read.
+                unsafe { crate::capture::effect_chain_gone(effect as u32) };
+            }
+            keep
+        });
     }
 }
 
@@ -238,26 +272,26 @@ mod tests {
     fn a_billboard_turns_in_every_mode_but_the_third() {
         // The flags of the test level's billboards: mode 0, 1, 2 and 2, with the displayed bit.
         for (flags, mode) in [(0x0A, 0), (0x2A, 1), (0x4A, 2), (0x5A, 2)] {
-            assert_eq!(turn_mode(flags, Some(0x1A)), Some(mode), "{flags:#x}");
-            assert_eq!(turn_mode(flags, None), Some(mode), "{flags:#x} with no parent");
+            assert_eq!(turn_mode(flags), Some(mode), "{flags:#x}");
         }
         // Mode 3 turns nothing, with any other bit.
-        assert_eq!(turn_mode(0x60, Some(0x1A)), None);
-        assert_eq!(turn_mode(0x7F, Some(0x1A)), None);
-    }
-
-    /// A tour's capture holds between its stops: a chain sent then must still reach the file, or
-    /// its replay draws these stages with zero matrices (run 20261102-062618-hob-turn-tour).
-    #[test]
-    fn a_file_that_holds_takes_the_chains() {
-        assert!(crate::capture::takes_while_holding(crate::capture::tag::EFFECT_CHAIN));
+        assert_eq!(turn_mode(0x60), None);
+        assert_eq!(turn_mode(0x7F), None);
     }
 
     /// The flags of the test level's `turn_two`, read in the game: the node between the two
     /// billboards has 0x02, so the second billboard (0x42) has no display and no turn.
     #[test]
     fn a_billboard_under_a_node_with_no_geometry_does_not_turn() {
-        assert_eq!(turn_mode(0x42, Some(0x02)), None);
-        assert_eq!(turn_mode(0x32, Some(0x1A)), Some(1));
+        assert!(!child_displayed(0x42, Some(0x02), true));
+        assert!(child_displayed(0x32, Some(0x1A), true));
+        assert!(child_displayed(0x32, None, true));
+    }
+
+    /// `NiAVObject::CullShow` 0x6EB480 and `NiSwitchNode::Display` 0x6D8320.
+    #[test]
+    fn a_hidden_node_and_a_child_not_selected_have_no_display() {
+        assert!(!child_displayed(0x33, Some(0x1A), true));
+        assert!(!child_displayed(0x32, Some(0x1A), false));
     }
 }

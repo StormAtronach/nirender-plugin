@@ -43,6 +43,8 @@ a cylinder), a lit material, a base texture of the level, and the property under
                  the second has no geometry under it and no display, so it does not turn
     turn_two_under the same with the shape under the second billboard: both turn
     turn_fog     a fog map under a billboard
+    turn_hidden  a billboard with the hidden flag: no display, no turn
+    turn_switched a billboard that a switch node does not select: no display, no turn
 
 The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
 write of the level's own files. The texture effect is attached as the level's exhibits do:
@@ -371,11 +373,13 @@ def billboard(name, mode, translation):
     return b
 
 
-def make_turn(name, geometry, modes, effect, shape_under=False):
+def make_turn(name, geometry, modes, effect, shape_under=False, hidden=False, switched=False):
     """A texture effect under turning billboards, one in each of `modes`, nested. The shape is
     a child of the node above the first billboard, before it in the walk, as in the level's
     103.nif: the shape displays before its effect turns. With `shape_under`, the shape is under
     the last billboard with the effect, and turns with it. The node above lists the effect.
+    With `hidden` the first billboard has the hidden flag; with `switched` it is the child that a
+    switch node does not select. Neither has a display, so the effect does not turn.
     The blocks: 0 root, 1 shape, 2 data, 3 material, 4 texturing, 5 texture, 6 the node above,
     then each billboard (a plain node between two), the effect and its texture."""
     blocks = [node("@_nifx " + name), None, tri_shape_data(geometry), material(), texturing(5), source_texture(BASE_TEXTURE)]
@@ -386,6 +390,15 @@ def make_turn(name, geometry, modes, effect, shape_under=False):
     blocks.append(node("sub"))
     parent = 6
     blocks[6]["children"] = [] if shape_under else [1]
+    if switched:
+        # The switch selects an empty node, its child 0, and the billboard is its child 1.
+        switch = node("switch")
+        switch.update({"type": "NiSwitchNode", "index": 0})
+        blocks.append(switch)
+        blocks[parent]["children"].append(len(blocks) - 1)
+        parent = len(blocks) - 1
+        blocks.append(node("selected"))
+        blocks[parent]["children"].append(len(blocks) - 1)
     for i, mode in enumerate(modes):
         if i > 0:
             between = node("between")
@@ -394,6 +407,8 @@ def make_turn(name, geometry, modes, effect, shape_under=False):
             blocks[parent]["children"].append(len(blocks) - 1)
             parent = len(blocks) - 1
         blocks.append(billboard("billboard %d" % i, mode, [40.0, 0.0, 0.0]))
+        if hidden and i == 0:
+            blocks[-1]["flags"] |= 1
         blocks[parent]["children"].append(len(blocks) - 1)
         parent = len(blocks) - 1
     if shape_under:
@@ -533,6 +548,8 @@ def main():
     files.append(("turn_two", make_turn("turn_two", b, [1, 2], parallel)))
     files.append(("turn_two_under", make_turn("turn_two_under", b, [1, 2], parallel, shape_under=True)))
     files.append(("turn_fog", make_turn("turn_fog", c, [0], (3, 2, SPHERE_MATRIX, SPHERE_TRANSLATION))))
+    files.append(("turn_hidden", make_turn("turn_hidden", b, [2], parallel, hidden=True)))
+    files.append(("turn_switched", make_turn("turn_switched", b, [2], parallel, switched=True)))
     lines = ["-- The test NIFs of the flag support, made by tools/make_test_nifs.py (do not edit).",
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",
              "return {"]

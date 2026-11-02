@@ -6,7 +6,7 @@ use super::*;
 
 /// The bind group of the frame: the resources of the extension, the clusters of the lights,
 /// the lights and the bones of the frame, and the buffers of the retained instances.
-pub(crate) fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters, lights: &wgpu::Buffer, bones: &wgpu::Buffer, records: &wgpu::Buffer, light_indexes: &wgpu::Buffer, scenes: &wgpu::Buffer, retained_lights: &wgpu::Buffer, retained_bones: &wgpu::Buffer, influences: &wgpu::Buffer) -> wgpu::BindGroup {
+pub(crate) fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters, lights: &wgpu::Buffer, bones: &wgpu::Buffer, records: &wgpu::Buffer, light_indexes: &wgpu::Buffer, scenes: &wgpu::Buffer, retained_lights: &wgpu::Buffer, retained_bones: &wgpu::Buffer, influences: &wgpu::Buffer, effect_entries: &wgpu::Buffer) -> wgpu::BindGroup {
     crate::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
         label: Some("extension frame"),
         layout,
@@ -25,6 +25,7 @@ pub(crate) fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout,
             wgpu::BindGroupEntry { binding: 11, resource: retained_lights.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 12, resource: retained_bones.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 13, resource: influences.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 14, resource: effect_entries.as_entire_binding() },
         ],
     })
 }
@@ -408,6 +409,14 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
+                // The texture matrices of the table's texture effects. The vertex stage reads 8
+                // storage buffers with it, the limit of `request::fixed_limits`.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -456,8 +465,9 @@ impl Renderer {
         let first_retained_lights = retained_light_buffer(&device, RETAINED_LIGHTS_AT_FIRST);
         let first_indirect = indirect_buffer(&device, RECORDS_AT_FIRST);
         let first_retained_bones = bone_buffer(&device, RETAINED_BONES_AT_FIRST);
+        let first_effect_entries = effect_entry_buffer(&device, EFFECT_ENTRIES_AT_FIRST);
         let influences = crate::influences::Influences::new(&device);
-        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones, &first_records, &first_light_indexes, &first_scenes, &first_retained_lights, &first_retained_bones, &influences.buffer));
+        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones, &first_records, &first_light_indexes, &first_scenes, &first_retained_lights, &first_retained_bones, &influences.buffer, &first_effect_entries));
         let timing = make_timing(&device, &queue);
         let stamps = timing.as_ref().map_or_else(|| Rc::new(crate::stamps::Stamps::off()), |timing| timing.stamps.clone());
         let renderer = Renderer {
@@ -476,6 +486,8 @@ impl Renderer {
             bone_buffer: first_bones,
             bone_capacity: BONES_AT_FIRST,
             retained_bone_buffer: first_retained_bones,
+            effect_entry_buffer: first_effect_entries,
+            effect_entry_capacity: EFFECT_ENTRIES_AT_FIRST,
             retained_bone_capacity: RETAINED_BONES_AT_FIRST,
             device: Rc::new(device),
             target_format,

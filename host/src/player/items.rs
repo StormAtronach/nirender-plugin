@@ -33,9 +33,13 @@ impl Player {
         // The texture effects under a turning billboard, for the camera of the world.
         if let Some(facts) = items.iter().find_map(|item| if let Item::WorldStart(facts) = item { Some(facts) } else { None }) {
             let location = facts.origin.unwrap_or_else(|| eye_of_view(&facts.view));
+            let began = std::time::Instant::now();
             self.retained.turn_effects(&crate::effect_turn::Camera::of_view(&facts.view, location));
+            self.retained.counts.turn_seconds += began.elapsed().as_secs_f64();
         }
+        let began = std::time::Instant::now();
         self.renderer.retained_upload(&mut self.retained);
+        self.retained.counts.upload_seconds += began.elapsed().as_secs_f64();
         self.renderer.upload_lights(&self.frame_lights);
         self.renderer.upload_bones(&self.frame_bones);
         // The small group and the copies of its draws, in the records and instances of the
@@ -99,7 +103,7 @@ impl Player {
             }
         }
         renderer.counts.times[TIME_CLUSTERS] += clock.elapsed();
-        renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters, &renderer.light_buffer, &renderer.bone_buffer, &renderer.record_buffer, &renderer.light_index_buffer, &renderer.scene_buffer, &renderer.retained_light_buffer, &renderer.retained_bone_buffer, &renderer.influences.buffer));
+        renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters, &renderer.light_buffer, &renderer.bone_buffer, &renderer.record_buffer, &renderer.light_index_buffer, &renderer.scene_buffer, &renderer.retained_light_buffer, &renderer.retained_bone_buffer, &renderer.influences.buffer, &renderer.effect_entry_buffer));
         // The GPU time of the frame by part (`MGE_XE_GPU_TIME=1`): one span for each group of
         // items of one kind in one phase of the frame. The world's start and end, the post
         // chain and the first person's depth have spans of their own inside.

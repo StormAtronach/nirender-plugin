@@ -40,4 +40,6 @@ return {
     { id = "@nif_x_turn_two", mesh = "@_nifx\\turn_two.nif" },
     { id = "@nif_x_turn_two_under", mesh = "@_nifx\\turn_two_under.nif" },
     { id = "@nif_x_turn_fog", mesh = "@_nifx\\turn_fog.nif" },
+    { id = "@nif_x_turn_hidden", mesh = "@_nifx\\turn_hidden.nif" },
+    { id = "@nif_x_turn_switched", mesh = "@_nifx\\turn_switched.nif" },
 }
