@@ -7,18 +7,21 @@
 //! can also record the call and can skip it. A recording that skips calls is "dry". The
 //! Rust function runs dry for a comparison, so it draws nothing.
 //!
+//! The wrappers of `AddRef` and `Release` of the Direct3D 8 of Windows take no lock, and the
+//! rig does not record them (`REFS_UNLOCKED`, see `device_call`).
+//!
 //! A record in the log has the slot, the argument count, the arguments, the payload length in
 //! words and the payload. The payload is the bytes behind a pointer argument. Two logs are
 //! equal when the words are equal.
 
-#[cfg(feature = "rig")]
-use core::sync::atomic::AtomicBool;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 pub const SLOTS: usize = 97;
 /// The copy goes past the interface, because the device class can have more virtual functions.
 const TABLE_LEN: usize = 160;
 
+const SLOT_ADD_REF: usize = 1;
+const SLOT_RELEASE: usize = 2;
 pub const SLOT_PRESENT: usize = 15;
 #[cfg(feature = "rig")]
 const SLOT_CREATE_VERTEX_BUFFER: usize = 23;
@@ -217,6 +220,9 @@ static RECORDING: AtomicBool = AtomicBool::new(false);
 static DRY: AtomicBool = AtomicBool::new(false);
 /// The calls that the device makes on itself during a call are not calls of the game.
 static DEPTH: AtomicU32 = AtomicU32::new(0);
+/// True when the wrappers of `AddRef` and `Release` take no `device_lock`: the device is the
+/// Direct3D 8 of Windows. Written once by `attach`.
+static REFS_UNLOCKED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "rig")]
 static mut LOG: Vec<u32> = Vec::new();
 #[cfg(feature = "rig")]
@@ -464,6 +470,15 @@ const SLOT_TEST_COOPERATIVE_LEVEL: usize = crate::d3d::DEVICE_TEST_COOPERATIVE_L
 pub static FORCE_RESET: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 unsafe fn device_call(slot: usize, this: usize, args: &[u32]) -> u32 {
+    // The resources of the Direct3D 8 of Windows release their device from inside the lock of
+    // Direct3D, when their last reference goes. A wrapper that took `device_lock` here would
+    // wait for it while another thread holds it inside a wrapper and waits for the lock of
+    // Direct3D (the hang of run 20261102-211027-sf-engine-vivec). These two calls need no
+    // lock of the plugin: they touch none of its state. The call goes to the device as it is,
+    // not through `forward`, which writes the shared `DEPTH`.
+    if (slot == SLOT_ADD_REF || slot == SLOT_RELEASE) && REFS_UNLOCKED.load(Ordering::Relaxed) {
+        return call_original(slot, this, args);
+    }
     let result = locked_device_call(slot, this, args);
     // The end of a Present runs MGE XE's logic of the frame, which stalls the cell worker:
     // only after the device lock is free (`link_client::after_present`).
@@ -616,6 +631,21 @@ unsafe fn make_entries() -> usize {
     block
 }
 
+/// True when `release`, the `Release` of a device, is code of the Direct3D 8 of Windows: a
+/// `d3d8.dll` that is not the one of the game folder. The own device of the plugin has its code
+/// in the plugin, and the Direct3D 8 device that MGE XE makes over Direct3D 9 has it in the
+/// `d3d8.dll` of the game folder: neither is true.
+unsafe fn is_windows_direct3d8(release: usize) -> bool {
+    let module = crate::census::module_base_of(release);
+    is_d3d8_dll_of_windows(module, crate::link_client::host_module(), &crate::census::module_of(release))
+}
+
+/// The decision of [`is_windows_direct3d8`] for a module `module` of the file `file_name`, when
+/// `host` is the base of the `d3d8.dll` of the game folder (0 without one).
+fn is_d3d8_dll_of_windows(module: usize, host: usize, file_name: &str) -> bool {
+    module != 0 && module != host && file_name.eq_ignore_ascii_case("d3d8.dll")
+}
+
 /// Puts the recorder on the device object at `device`. A second call for the same device is
 /// safe.
 pub unsafe fn attach(device: usize) -> Result<(), String> {
@@ -633,7 +663,7 @@ pub unsafe fn attach(device: usize) -> Result<(), String> {
     // information there.
     core::ptr::copy_nonoverlapping((vtable - 4) as *const usize, orig, TABLE_LEN + 1);
     core::ptr::copy_nonoverlapping(orig, ours, TABLE_LEN + 1);
-    static ENTRIES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    REFS_UNLOCKED.store(is_windows_direct3d8(ORIG[SLOT_RELEASE + 1].load(Ordering::Relaxed)), Ordering::Relaxed);    static ENTRIES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
     if ENTRIES.load(Ordering::Relaxed) == 0 {
         ENTRIES.store(make_entries(), Ordering::Relaxed);
     }
@@ -689,6 +719,53 @@ mod tests {
         assert_eq!(NAMES[0xFC / 4], "SetTextureStageState");
         assert_eq!(NAMES[0x94 / 4], "SetTransform");
         assert_eq!(NAMES[96], "DeletePatch");
+    }
+
+    #[test]
+    fn only_a_d3d8_dll_of_windows_has_unlocked_references() {
+        // The Direct3D 8 of Windows, with and without a d3d8.dll in the game folder.
+        assert!(is_d3d8_dll_of_windows(0x1000, 0, "d3d8.dll"));
+        assert!(is_d3d8_dll_of_windows(0x2000, 0x1000, "D3D8.DLL"));
+        // The d3d8.dll of the game folder: the Direct3D 8 device that MGE XE makes over Direct3D 9.
+        assert!(!is_d3d8_dll_of_windows(0x1000, 0x1000, "d3d8.dll"));
+        // The own device of the plugin, and memory outside any module.
+        assert!(!is_d3d8_dll_of_windows(0x2000, 0x1000, "akulakhan.dll"));
+        assert!(!is_d3d8_dll_of_windows(0, 0x1000, "?"));
+    }
+
+    /// The same decision on real modules. It loads the d3d8.dll of Windows: run it by hand with
+    /// `cargo test --release -- --ignored`. It failed once in the first run of a new test
+    /// binary, with no cause found, so it is not part of the normal run.
+    #[test]
+    #[ignore = "loads the d3d8.dll of Windows"]
+    fn the_d3d8_dll_of_windows_has_unlocked_references() {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn LoadLibraryA(name: *const u8) -> *mut core::ffi::c_void;
+            fn GetSystemDirectoryA(buffer: *mut u8, size: u32) -> u32;
+        }
+        // SAFETY: the address is code of this test binary, and the names are zero-ended.
+        unsafe {
+            // The test binary is not a d3d8.dll.
+            assert!(!is_windows_direct3d8(the_d3d8_dll_of_windows_has_unlocked_references as usize));
+            assert!(!is_windows_direct3d8(0));
+            // The d3d8.dll of Windows is one. It is loaded by its full path: a bare name looks in
+            // the folder of the binary first.
+            let mut path = [0u8; 300];
+            let length = GetSystemDirectoryA(path.as_mut_ptr(), 260) as usize;
+            let name = b"\\d3d8.dll\0";
+            path[length..length + name.len()].copy_from_slice(name);
+            let module = LoadLibraryA(path.as_ptr());
+            if module.is_null() {
+                return;
+            }
+            let create = crate::win::GetProcAddress(module, b"Direct3DCreate8\0".as_ptr());
+            assert!(!create.is_null());
+            let module = crate::census::module_base_of(create as usize);
+            let host = crate::link_client::host_module();
+            let name = crate::census::module_of(create as usize);
+            assert!(is_windows_direct3d8(create as usize), "module {module:#x} {name}, host {host:#x}");
+        }
     }
 
     #[cfg(feature = "rig")]

@@ -67,6 +67,16 @@ pub struct DeviceLock(#[allow(dead_code)] Option<crate::entry_trace::Mark>);
 /// deadlock (records entry 50). The stalls are MGE XE's logic of the frame and the
 /// capture's purge; both run in `link_client::after_present`, which checks
 /// `device_lock_held_here` first.
+///
+/// The same holds for the lock that the Direct3D 8 of Windows has in each device: it is the
+/// lock of another thread too. A wrapper holds this lock while the real call takes the lock of
+/// Direct3D, so a thread must never take this lock while it is inside Direct3D. It happens
+/// when the last reference of a resource goes: `Release` holds the lock of Direct3D and
+/// releases the device through the vtable, which is the table of the wrappers. If that wrapper
+/// took this lock, one thread would hold this one and wait for Direct3D's, and the other
+/// would hold Direct3D's and wait for this one (the hang of run
+/// 20261102-211027-sf-engine-vivec, the cell worker against the main thread). So the wrappers
+/// of `AddRef` and `Release` take no lock on that device (`device::attach`).
 #[track_caller]
 pub fn device_lock() -> DeviceLock {
     unsafe {
