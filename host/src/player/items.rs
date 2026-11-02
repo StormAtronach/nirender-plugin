@@ -94,7 +94,7 @@ impl Player {
             }
         }
         renderer.counts.times[TIME_CLUSTERS] += clock.elapsed();
-        renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters, &renderer.light_buffer, &renderer.bone_buffer, &renderer.record_buffer, &renderer.light_index_buffer, &renderer.scene_buffer, &renderer.retained_light_buffer, &renderer.retained_bone_buffer));
+        renderer.frame_group = Rc::new(frame_group(&renderer.device, &renderer.frame_layout, &renderer.frame_uniform, &renderer.frame_sampler, &texture, &renderer.clusters, &renderer.light_buffer, &renderer.bone_buffer, &renderer.record_buffer, &renderer.light_index_buffer, &renderer.scene_buffer, &renderer.retained_light_buffer, &renderer.retained_bone_buffer, &renderer.influences.buffer));
         // The GPU time of the frame by part (`MGE_XE_GPU_TIME=1`): one span for each group of
         // items of one kind in one phase of the frame. The world's start and end, the post
         // chain and the first person's depth have spans of their own inside.

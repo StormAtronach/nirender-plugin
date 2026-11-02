@@ -60,8 +60,10 @@
 //! The free area of the ring head: 84 to 127.
 
 /// The format of the stream that this build writes and reads. 2: the SIZE record (the game
-/// made its renderer again at a new size, 2026-10-28).
-pub const STREAM_FORMAT: u32 = 2;
+/// made its renderer again at a new size, 2026-10-28). 3: the bone influences after the indexes
+/// of a GEOMETRY record, for a shape that the game skins in software (2026-11-02). A helper of
+/// format 2 would read such a vertex's list as its weights.
+pub const STREAM_FORMAT: u32 = 3;
 
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
 /// game, the abilities of the stream, the stream format, then the build id of the plugin as

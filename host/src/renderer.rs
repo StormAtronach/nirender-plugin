@@ -6,7 +6,7 @@ use super::*;
 
 /// The bind group of the frame: the resources of the extension, the clusters of the lights,
 /// the lights and the bones of the frame, and the buffers of the retained instances.
-pub(crate) fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters, lights: &wgpu::Buffer, bones: &wgpu::Buffer, records: &wgpu::Buffer, light_indexes: &wgpu::Buffer, scenes: &wgpu::Buffer, retained_lights: &wgpu::Buffer, retained_bones: &wgpu::Buffer) -> wgpu::BindGroup {
+pub(crate) fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters, lights: &wgpu::Buffer, bones: &wgpu::Buffer, records: &wgpu::Buffer, light_indexes: &wgpu::Buffer, scenes: &wgpu::Buffer, retained_lights: &wgpu::Buffer, retained_bones: &wgpu::Buffer, influences: &wgpu::Buffer) -> wgpu::BindGroup {
     crate::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
         label: Some("extension frame"),
         layout,
@@ -24,6 +24,7 @@ pub(crate) fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout,
             wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: scenes, offset: 0, size: core::num::NonZeroU64::new(SCENE_SIZE as u64) }) },
             wgpu::BindGroupEntry { binding: 11, resource: retained_lights.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 12, resource: retained_bones.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 13, resource: influences.as_entire_binding() },
         ],
     })
 }
@@ -338,15 +339,17 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
+                // The clusters: only a pixel reads them. The vertex stage has room for 8
+                // storage buffers, the default limit of a stage (binding 13).
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
@@ -390,10 +393,17 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
-                // The bones of the skinned retained instances. The vertex stage reads 8
-                // storage buffers with it: the default limit of a stage.
+                // The bones of the skinned retained instances.
                 wgpu::BindGroupLayoutEntry {
                     binding: 12,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                // The bone influences of the shapes that the game skins in software. The vertex
+                // stage reads 7 storage buffers with it.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 13,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
@@ -446,7 +456,8 @@ impl Renderer {
         let first_retained_lights = retained_light_buffer(&device, RETAINED_LIGHTS_AT_FIRST);
         let first_indirect = indirect_buffer(&device, RECORDS_AT_FIRST);
         let first_retained_bones = bone_buffer(&device, RETAINED_BONES_AT_FIRST);
-        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones, &first_records, &first_light_indexes, &first_scenes, &first_retained_lights, &first_retained_bones));
+        let influences = crate::influences::Influences::new(&device);
+        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones, &first_records, &first_light_indexes, &first_scenes, &first_retained_lights, &first_retained_bones, &influences.buffer));
         let timing = make_timing(&device, &queue);
         let stamps = timing.as_ref().map_or_else(|| Rc::new(crate::stamps::Stamps::off()), |timing| timing.stamps.clone());
         let renderer = Renderer {
@@ -537,8 +548,10 @@ impl Renderer {
             // Storage too: the morph pass writes the positions of a morphed geometry in place.
             vertex_pool: pool::Pool::new("game vertices", wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE, VERTEX_CHUNK),
             index_pool: pool::Pool::new("game indexes", wgpu::BufferUsages::INDEX, INDEX_CHUNK),
+            influences,
             retired: Vec::new(),
             retired_indexes: Vec::new(),
+            retired_influences: Vec::new(),
             geometry_frame: 1,
             quad_indexes: None,
             particle_quads: None,
@@ -1205,7 +1218,22 @@ impl Renderer {
         self.counts.geometry_records += 1;
         self.counts.geometry_bytes += data.len() as u64;
         let (vertex_bytes, index_bytes) = (&data[vertex_at..index_at], &data[index_at..index_end]);
-        let same_layout = self.geometries.get(&handle).filter(|old| old.unique == Some(word(data, 4)) && old.fvf == fvf && old.stride == stride && old.entries == entries && old.strips == strip_lengths);
+        // A shape that the game skins in software: its bone influences after the indexes. Its
+        // vertices name them, so its record takes new ranges (`influences.rs`).
+        let list = if fvf & FVF_INFLUENCES != 0 {
+            let list = data.len().checked_sub(index_end + 4).filter(|_| stride >= 28).and_then(|left| {
+                let bytes = word(data, index_end) as usize * crate::influences::ENTRY_BYTES as usize;
+                (bytes <= left).then(|| &data[index_end + 4..index_end + 4 + bytes])
+            });
+            let Some(list) = list else {
+                self.counts.geometry_bad += 1;
+                return false;
+            };
+            Some(list)
+        } else {
+            None
+        };
+        let same_layout = self.geometries.get(&handle).filter(|old| list.is_none() && old.unique == Some(word(data, 4)) && old.fvf == fvf && old.stride == stride && old.entries == entries && old.strips == strip_lengths);
         // A draw of this frame named the ranges already (the screen polygon of each blob of the
         // fog of war): the write would land before that draw too.
         let drawn_in_frame = same_layout.is_some_and(|old| old.drawn_in == self.geometry_frame);
@@ -1222,9 +1250,18 @@ impl Renderer {
                 return true;
             }
         }
+        let (moved, influence_range) = match list {
+            Some(list) => {
+                let (range, first) = self.influences.put(&self.device, &self.queue, list);
+                (Some(crate::influences::moved_vertices(vertex_bytes, stride as usize, first)), Some(range))
+            }
+            None => (None, None),
+        };
+        let vertex_bytes = moved.as_deref().unwrap_or(vertex_bytes);
         let vertex_range = self.vertex_pool.take(&self.device, &self.queue, vertex_bytes, stride as u64);
         let index_range = self.index_pool.take(&self.device, &self.queue, index_bytes, 4);
         let geometry = Geometry {
+            influence_range,
             fvf,
             stride,
             entries,
@@ -1250,6 +1287,7 @@ impl Renderer {
         if let Some(old) = self.geometries.insert(handle, geometry) {
             self.retired.extend(old.vertex_range);
             self.retired_indexes.extend(old.index_range);
+            self.retired_influences.extend(old.influence_range);
         }
     }
 
@@ -1264,6 +1302,7 @@ impl Renderer {
         if let Some(old) = self.geometries.remove(&handle) {
             self.retired.extend(old.vertex_range);
             self.retired_indexes.extend(old.index_range);
+            self.retired_influences.extend(old.influence_range);
         }
         if let Some(morphs) = self.morphs.as_mut() {
             morphs.gone(handle, unique);
@@ -1412,7 +1451,7 @@ impl Renderer {
             let (vertex, base_vertex) = quads.add(&device, particles, sum, difference);
             self.counts.shape_particles += 1;
             // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-            let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: count as u32 * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex, first_index: 0, unique: None, uv: None, drawn_in: 0 };
+            let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: count as u32 * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex, first_index: 0, unique: None, influence_range: None, uv: None, drawn_in: 0 };
             self.put_geometry(handle, geometry);
             self.counts.times[TIME_BUFFERS] += clock.elapsed();
             return;
@@ -1443,7 +1482,7 @@ impl Renderer {
         let vertex = Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("particles"), contents: &bytes, usage: wgpu::BufferUsages::VERTEX }));
         self.counts.shape_particles += 1;
         // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: 0, first_index: 0, unique: None, uv: None, drawn_in: 0 };
+        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: 0, first_index: 0, unique: None, influence_range: None, uv: None, drawn_in: 0 };
         self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
     }

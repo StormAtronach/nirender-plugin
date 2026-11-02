@@ -1642,9 +1642,10 @@ impl Player {
             let mut data = self.stream.draw_data(&derived, &p, &mut self.renderer.counts, &mut dummy);
             crate::draw_dump("retained table, before the record bits", r.geometry, &data);
             data.world[0] = self.retained.world_of(r);
-            // A skinned instance blends four bones of its instance for each vertex.
+            // A skinned instance blends four bones of its instance for each vertex, or each
+            // influence of a shape that the game skins in software.
             if r.flags & INSTANCE_SKINNED != 0 {
-                data.flags[3] = 4;
+                data.flags[3] = if fvf & FVF_INFLUENCES != 0 { 5 } else { 4 };
             }
             // The kind of the pass for the shade bits of the scene.
             let kind = slot_kind(p.blend, derived.depth[1] != 0);

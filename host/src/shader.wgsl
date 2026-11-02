@@ -116,6 +116,13 @@ struct Clusters {
 // The bones of the skinned instances of the table (`retained.rs`), in the space of the set:
 // a retained skinned draw reads them from the first bone of its instance.
 @group(0) @binding(12) var<storage, read> retained_palette: array<mat4x4f>;
+// The bone influences of the shapes that the game skins in software (`influences.rs`): a vertex
+// of such a shape names its entries.
+struct Influence {
+    bone: u32,
+    weight: f32,
+}
+@group(0) @binding(13) var<storage, read> influences: array<Influence>;
 // The retained instances (`retained.rs`): the lights of a draw with bit 8 of
 // `light_range.w` are `lights_retained[light_indexes[i]]`; a draw with bit 4 takes the
 // values of its view from `scene` (bound with a dynamic offset: one scene for each view).
@@ -346,6 +353,14 @@ fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view
     return value;
 }
 
+// A bone of a skinned draw: of the table's palette for a retained draw, else of the frame's.
+fn skin_bone(index: u32) -> mat4x4f {
+    if from_scene() {
+        return retained_palette[index];
+    }
+    return palette[index];
+}
+
 @vertex
 fn vs(in: VertexIn) -> VertexOut {
     record = in.record.x;
@@ -380,6 +395,25 @@ fn vs(in: VertexIn) -> VertexOut {
         let bone = palette[first + in.bones[3]];
         world_position += last * (bone * local);
         world_normal += last * (bone * vec4f(in.normal, 0.0)).xyz;
+    } else if weights == 5u {
+        // A shape that the game skins in software: each influence of the vertex with its raw
+        // weight, as `NiSkinInstance::Deform` sums them. The first two weights of the vertex
+        // are its first entry and its count. A normal takes the rotation of a bone without
+        // its scale, as there. The plugin's last bone has no rotation: it only gives the
+        // place of the shape to the part of the weights that the sum lacks of 1.
+        let first = select(draws[record].light_range.z, in.record.y, from_scene());
+        let at = u32(in.weights.x);
+        world_position = vec4f(0.0);
+        world_normal = vec3f(0.0);
+        for (var i = at; i < at + u32(in.weights.y); i++) {
+            let bone = skin_bone(first + influences[i].bone);
+            let weight = influences[i].weight;
+            world_position += weight * (bone * local);
+            let scale = length(bone[0].xyz);
+            if scale > 0.0 {
+                world_normal += weight * (bone * vec4f(in.normal, 0.0)).xyz / scale;
+            }
+        }
     } else if weights == 4u {
         // A retained skinned draw: the same blend with the bones of its instance in the
         // table's palette, from the first bone its instance carries.

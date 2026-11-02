@@ -463,6 +463,22 @@ unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize)
     }
 }
 
+/// True when the game skins a skinned geometry in software at its draw: the check of
+/// `RenderShape`, or for strips that of `RenderTriStrips`, which MWSE does not patch. MWSE exposes
+/// the flag, so a change of it can come at any time.
+///
+/// # Safety
+///
+/// The renderer of the game is 0 or live, and `geom_data` points at live geometry data.
+pub(crate) unsafe fn skinned_in_software(strips: bool, geom_data: usize) -> bool {
+    let renderer = crate::engine::renderer();
+    if renderer == 0 {
+        return false;
+    }
+    let check = if strips { SkinningCheck::HardwareBones } else { skinning_check(&skinning_check_bytes()) };
+    software_skinning(check, renderer, geom_data)
+}
+
 /// The shape record of a draw (see `shape_stream`): the transform, the bound and the
 /// lights of the draw in the order of `DrawPrimitive` 0x6AEB80 (the port below), but
 /// always: `DrawPrimitive` skips the transform on BUILD_KEEP_TRANSFORM and the lights on
@@ -471,7 +487,7 @@ unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize)
 /// them. It gets the palette of the skin in place of the transform. Returns true when the
 /// pipeline of the device must not run for the draw. `RenderScreenPoly` uses it too, with
 /// the identity transform that it gives `DrawPrimitive`.
-pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, transform: usize, world_bound: usize) -> bool {
+pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, software: bool, transform: usize, world_bound: usize) -> bool {
     if !crate::shape_stream::on() {
         return false;
     }
@@ -485,7 +501,7 @@ pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, tran
     let mut palette = PALETTE.with(|kept| core::mem::take(&mut *kept.borrow_mut()));
     palette.clear();
     let (world, relative) = if skin != 0 {
-        let relative = match crate::camera_space::skin_palette(t, skin, transform, true, &mut palette) {
+        let relative = match crate::camera_space::skin_palette(t, skin, transform, true, software, &mut palette) {
             Ok(relative) => relative,
             Err(why) => {
                 crate::shape_stream::without_palette(t, why);
@@ -534,11 +550,12 @@ pub unsafe fn render_shape(t: &MainThread, this: usize, geom_data: usize, skin: 
     if skin != 0 {
         // A shape that the game skins in software takes the record too: the helper skins each
         // shape, and the draw of the device does not reach the helper.
-        if shape_record(t, this, skin, transform, world_bound) {
+        let check = skinning_check(&skinning_check_bytes());
+        let software = software_skinning(check, this, geom_data);
+        if shape_record(t, this, skin, software, transform, world_bound) {
             return;
         }
-        let check = skinning_check(&skinning_check_bytes());
-        if !software_skinning(check, this, geom_data) {
+        if !software {
             site_thiscall!(RS_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
             return;
         }
@@ -547,7 +564,7 @@ pub unsafe fn render_shape(t: &MainThread, this: usize, geom_data: usize, skin: 
             SkinningCheck::GeometryFlag => "the flag of MWSE on the geometry",
         });
     }
-    if skin == 0 && shape_record(t, this, 0, transform, world_bound) {
+    if skin == 0 && shape_record(t, this, 0, false, transform, world_bound) {
         return;
     }
     let mut geom_buffer: usize = 0;
@@ -582,16 +599,17 @@ pub unsafe fn render_tri_strips(t: &MainThread, this: usize, geom_data: usize, s
     }
     if skin != 0 {
         // As in `render_shape`: the record comes first, also for less than 4 bones of the device.
-        if shape_record(t, this, skin, transform, world_bound) {
+        let software = software_skinning(SkinningCheck::HardwareBones, this, geom_data);
+        if shape_record(t, this, skin, software, transform, world_bound) {
             return;
         }
-        if rd::<u32>(this, R::countHWBones) >= 4 {
+        if !software {
             site_thiscall!(RT_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
             return;
         }
         crate::shape_stream::software_skinned(t, "strips, less than 4 bones of the device");
     }
-    if skin == 0 && shape_record(t, this, 0, transform, world_bound) {
+    if skin == 0 && shape_record(t, this, 0, false, transform, world_bound) {
         return;
     }
     let mut geom_buffer: usize = 0;

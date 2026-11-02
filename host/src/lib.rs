@@ -76,6 +76,7 @@ mod d3d;
 use d3d::{address, attributes, blend_factor, color, compare, decode_dxt, expand_16_bits, expands, filter, gpu_bytes, known, stencil_operation, texture_format, INPUT_FORMATS};
 pub use d3d::{d3d_compare, d3d_stencil_operation};
 mod lights;
+use influences::FVF_INFLUENCES;
 use lights::{light_buffer, storage_buffer, Clusters, ExtensionLights};
 pub mod switches;
 use switches::switches;
@@ -423,6 +424,7 @@ impl Pass {
 pub mod gpu;
 pub mod material;
 mod overlay;
+mod influences;
 mod pool;
 mod ticks;
 
@@ -660,6 +662,9 @@ struct Renderer {
     index_pool: pool::Pool,
     retired: Vec<pool::Range>,
     retired_indexes: Vec<pool::Range>,
+    /// The bone influences of the shapes that the game skins in software.
+    influences: influences::Influences,
+    retired_influences: Vec<influences::ListRange>,
     /// The number of the frame, 1 for the first: a geometry keeps the frame of its last draw
     /// (`Geometry::drawn_in`).
     geometry_frame: u32,

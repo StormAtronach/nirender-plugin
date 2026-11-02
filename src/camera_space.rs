@@ -572,17 +572,18 @@ unsafe fn skinned_relative(t: &MainThread,
 /// The palette of a skin for the shape record: the transform of each bone of the skin as a
 /// world matrix of the device (as `write_world_matrix` makes one), relative to the origin
 /// when this module owns the matrices. Returns whether the matrices are relative, or what
-/// is missing when the data of the skin is not complete.
+/// is missing when the data of the skin is not complete. With `software` (the game skins the
+/// shape in software) one more matrix follows: [`place_only`].
 ///
 /// # Safety
 ///
 /// `skin` is 0 or a live `NiSkinInstance` with its skin data and its bones, and `transform` is 0 or
 /// the world transform of a live `NiAVObject` whose parent chain is live.
-pub unsafe fn skin_palette(t: &MainThread, skin: usize, transform: usize, geometry_site: bool, out: &mut Vec<[f32; 16]>) -> Result<bool, &'static str> {
+pub unsafe fn skin_palette(t: &MainThread, skin: usize, transform: usize, geometry_site: bool, software: bool, out: &mut Vec<[f32; 16]>) -> Result<bool, &'static str> {
     let start = crate::capture::ticks();
-    let result = build_skin_palette(t, skin, transform, geometry_site, out);
+    let result = build_skin_palette(t, skin, transform, geometry_site, software, out);
     if result.is_ok() {
-        note_skin(t, skin, out.len(), crate::capture::ticks() - start);
+        note_skin(t, skin, out.len() - software as usize, crate::capture::ticks() - start);
     }
     result
 }
@@ -641,7 +642,19 @@ pub unsafe fn skin_report(t: &MainThread) -> String {
     )
 }
 
-unsafe fn build_skin_palette(t: &MainThread, skin: usize, transform: usize, geometry_site: bool, out: &mut Vec<[f32; 16]>) -> Result<bool, &'static str> {
+/// The matrix after the bones of a shape that the game skins in software: no rotation, and the
+/// place of the shape. `NiSkinInstance::Deform` sums the influences in the space of the shape, so
+/// the place of the shape counts once, but each bone of the palette holds it. The vertex takes
+/// this matrix with the part of the weights that their sum lacks of 1
+/// (`geometry_stream::all_influences`).
+fn place_only(place: [f32; 3]) -> [f32; 16] {
+    let mut matrix = [0f32; 16];
+    matrix[12..15].copy_from_slice(&place);
+    matrix[15] = 1.0;
+    matrix
+}
+
+unsafe fn build_skin_palette(t: &MainThread, skin: usize, transform: usize, geometry_site: bool, software: bool, out: &mut Vec<[f32; 16]>) -> Result<bool, &'static str> {
     out.clear();
     if transform == 0 {
         return Err("no skin instance or no transform");
@@ -662,6 +675,9 @@ unsafe fn build_skin_palette(t: &MainThread, skin: usize, transform: usize, geom
         matrix[15] = 1.0;
         out.push(matrix);
     })?;
+    if software {
+        out.push(place_only(core::array::from_fn(|c| (shape.t[c] - origin[c]) as f32)));
+    }
     Ok(relative)
 }
 
@@ -672,20 +688,22 @@ pub const BONE_BYTES: usize = 9 * 4 + 3 * 8;
 /// the matrix of its rotation and scale (9 floats, by columns, as the palette has them) and
 /// its exact translation in the world (3 doubles), from the shape's exact transform. Returns
 /// the number of bones, or what is missing when the data of the skin is not complete. A shape
-/// of 0 is missing data too: the function reads nothing through it (not the game's code).
+/// of 0 is missing data too: the function reads nothing through it (not the game's code). With
+/// `software`, one more bone with no rotation and the place of the shape ([`place_only`]).
 ///
 /// # Safety
 ///
 /// `shape` is 0 or points at a live `NiAVObject` whose parent chain is live. `skin` is 0 or a
 /// live `NiSkinInstance` with its skin data and its bones.
-pub unsafe fn skin_bones(t: &MainThread, shape: usize, skin: usize, out: &mut Vec<u8>) -> Result<u32, &'static str> {
+pub unsafe fn skin_bones(t: &MainThread, shape: usize, skin: usize, software: bool, out: &mut Vec<u8>) -> Result<u32, &'static str> {
     let start = crate::capture::ticks();
     out.clear();
     if shape == 0 {
         return Err("no shape");
     }
     let mut count = 0u32;
-    skin_transforms(t, skin, &exact_transform(t, shape), |palette| {
+    let place = exact_transform(t, shape);
+    skin_transforms(t, skin, &place, |palette| {
         let scale = palette.s as f32;
         for c in 0..3 {
             for r in 0..3 {
@@ -698,6 +716,13 @@ pub unsafe fn skin_bones(t: &MainThread, shape: usize, skin: usize, out: &mut Ve
         count += 1;
     })?;
     note_skin(t, skin, count as usize, crate::capture::ticks() - start);
+    if software {
+        out.extend_from_slice(&[0u8; 9 * 4]);
+        for c in 0..3 {
+            out.extend_from_slice(&place.t[c].to_le_bytes());
+        }
+        count += 1;
+    }
     Ok(count)
 }
 
@@ -813,12 +838,21 @@ pub unsafe fn report(t: &MainThread, reset: bool) -> String {
 mod tests {
     use super::*;
 
+    /// The matrix after the bones: a vertex takes the place and nothing of its own position.
+    #[test]
+    fn the_place_of_a_shape_has_no_rotation() {
+        let m = place_only([10.0, 20.0, 30.0]);
+        let v = [7.0f32, 8.0, 9.0, 1.0];
+        let out: [f32; 4] = core::array::from_fn(|r| (0..4).map(|c| m[c * 4 + r] * v[c]).sum());
+        assert_eq!(out, [10.0, 20.0, 30.0, 1.0]);
+    }
+
     /// A shape of 0 gives "no shape" and reads nothing, with or without a skin.
     #[test]
     fn skin_bones_of_no_shape_is_missing_data() {
         let t = MainThread::for_test();
         let mut out = vec![1u8, 2, 3];
-        assert_eq!(unsafe { skin_bones(&t, 0, 0, &mut out) }, Err("no shape"));
+        assert_eq!(unsafe { skin_bones(&t, 0, 0, false, &mut out) }, Err("no shape"));
         assert!(out.is_empty());
     }
 

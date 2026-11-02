@@ -201,6 +201,8 @@ struct Instance {
     recheck: bool,
     /// The kind of its draw (`link::DRAW_SHAPE` or `DRAW_STRIPS`), 0 until known.
     kind: u32,
+    /// The game skins the shape in software, as its last display read the flag.
+    software: bool,
     /// A copy of the shape's property pointers at its last display. `apply_changes` reads
     /// only this copy, never engine memory: the cell worker can free a shape at any time.
     properties: [usize; PROPERTY_SLOTS],
@@ -429,7 +431,7 @@ impl Instance {
     /// An instance of a shape at its first draw: no record of it went yet.
     #[allow(clippy::too_many_arguments)]
     fn new(id: u32, class: u32, geometry: u32, material: u32, frame: u32, generation: u32, skinned: bool, live: bool, points: bool) -> Instance {
-        Instance { id, class, geometry, material, rotation: [0; 12], stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
+        Instance { id, class, geometry, material, rotation: [0; 12], software: false, stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
     }
 }
 
@@ -654,11 +656,17 @@ pub unsafe fn set_skin_table(mt: &MainThread, on: bool) -> bool {
     before
 }
 
+/// True when the draw function of the instance is that of strips.
+fn instance_strips(t: &Tables, shape: usize) -> bool {
+    t.instances.get(&shape).is_some_and(|instance| instance.kind == crate::link::DRAW_STRIPS)
+}
+
 /// Sends the bones of a skinned instance (`INSTANCE_BONES`) with the shape's world bound.
 /// Returns false when the bones cannot be made: the instance is hidden then, and counted.
 unsafe fn send_bones(mt: &MainThread, t: &mut Tables, shape: usize, id: u32) -> bool {
     let mut bones = core::mem::take(&mut t.scratch_bones);
-    let result = crate::camera_space::skin_bones(mt, shape, rd(shape, GEOMETRY_SKIN), &mut bones);
+    let software = crate::ports::draw::skinned_in_software(instance_strips(t, shape), rd(shape, GEOMETRY_MODEL_DATA));
+    let result = crate::camera_space::skin_bones(mt, shape, rd(shape, GEOMETRY_SKIN), software, &mut bones);
     let sent = match result {
         Ok(count) => {
             let posed: [f32; 4] = rd(shape, WORLD_BOUND);
@@ -757,11 +765,14 @@ pub unsafe fn seen(mt: &MainThread, shape: usize, kind: u32, class_out: &mut u32
     }
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
-    let instance = t.instances.get(&shape)?;
-    if !instance.filled || !instance.sent || instance.live || instance.generation != t.generation || instance.id.wrapping_add(t.frame) % CHECK_FRAMES == 0 {
+    let instance = t.instances.get_mut(&shape)?;
+    // A change of MWSE's flag sends the geometry again, with the notes of the draw.
+    let software = instance.skinned && crate::ports::draw::skinned_in_software(kind == crate::link::DRAW_STRIPS, rd(shape, GEOMETRY_MODEL_DATA));
+    let software_changed = instance.software != software;
+    instance.software = software;
+    if software_changed || !instance.filled || !instance.sent || instance.live || instance.generation != t.generation || instance.id.wrapping_add(t.frame) % CHECK_FRAMES == 0 {
         return None;
     }
-    let _ = kind;
     *class_out = instance.class;
     t.pending = Some((shape, instance.id));
     t.fast_draws += 1;
@@ -1880,7 +1891,12 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     // a record that must go again (the start of a capture), and at every display of a
     // live shape (a new revision of the data sends the geometry again under its handle).
     // And when an effect of the shape changed: its material record copies the effect.
-    let event_due = note_every() || instance.live || !instance.sent || effects_changed || instance.generation != generation;
+    // A flag of MWSE changed on the data of a skinned shape: the geometry goes again with
+    // another form of its bone influences.
+    let software = instance.skinned && crate::ports::draw::skinned_in_software(instance.kind == crate::link::DRAW_STRIPS, rd(shape, GEOMETRY_MODEL_DATA));
+    let software_changed = instance.software != software;
+    instance.software = software;
+    let event_due = note_every() || instance.live || !instance.sent || effects_changed || software_changed || instance.generation != generation;
     let due = event_due || id.wrapping_add(frame).is_multiple_of(CHECK_FRAMES);
     if due {
         COST_NOTES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
