@@ -377,6 +377,8 @@ def check_run_files(run, notes):
 
 
 def picture_is_black(path):
+    # Here and not at the top: only this needs Pillow. picture_diff finds its DLLs under -I.
+    import picture_diff  # noqa: F401
     from PIL import Image, ImageStat
 
     with Image.open(path) as picture:
@@ -586,6 +588,7 @@ def self_test():
         KEPT_RUNS = kept_before
 
     # The picture rule, with a black and a real picture.
+    import picture_diff  # noqa: F401
     from PIL import Image
 
     with tempfile.TemporaryDirectory() as folder:

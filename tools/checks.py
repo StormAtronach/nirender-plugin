@@ -75,7 +75,7 @@ CHECKS = {
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner", "clippy arguments", "gate", "clean worktrees", "hooks", "fuzz"],
+    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner", "the close of a game", "the play set", "clippy arguments", "gate", "clean worktrees", "hooks", "fuzz"],
     "mge": ["mge readme", "mge handshake", "mge contract", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
