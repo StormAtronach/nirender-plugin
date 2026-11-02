@@ -13,6 +13,11 @@ rem the place and view in MWSE.log, 40 frames in C:\tmp\mark-N.nircap, 24 pictur
 rem Do not press F11 with Insert: one capture at a time. Home switches the renderer between
 rem the table and the engine's draws; End lists the lights near the camera in MWSE.log.
 rem Leave the game by its menu: the tool then puts the instance back.
+rem This is the owner's start, and the slot check never refuses it: with no session variable,
+rem whatever the terminal holds, the check in tools\play.py passes. A session that runs this
+rem file is refused by the slot hook, by the text of its command.
+setlocal
+set "CLAUDE_CODE_SESSION_ID="
 cd /d "%~dp0"
 if not exist local.bat (
     echo local.bat is missing: copy local.example.bat to local.bat and set its places.
