@@ -26,7 +26,8 @@ and the gate is added. A crash when the game closes, after the last step, fails 
 fault at exit, and the note says so. A new fault at exit reads the same.
 
 Only on a pass, it writes MGE_BUILD and NIRENDER_PLUGIN_DLL in local.bat of the main checkout. A failed
-smoke leaves local.bat on the last good set, says why, and exit code 1. Each set has a one-line WHAT.txt.
+smoke leaves local.bat on the last good set, says why, and exit code 1. Each set has a one-line WHAT.txt,
+which names the MD5 of the MWSE.dll that the smoke ran on, from the lines of the runner in progress.log.
 No set is deleted: older sets stay until the owner's cleanup, and a failed set stays with its reason. The
 only file it deletes is the smoke's own save. The smoke's runs are copied to E:/nirender-keep/runs-<date>.
 
@@ -86,6 +87,8 @@ LEAST_STOPS = 100
 BLACK_LEVEL = 3.0
 OWNER_BATS = ("play-manual-check.bat", "play-manual-check-outlander.bat")
 BAT_CLEARS = 'set "CLAUDE_CODE_SESSION_ID="'
+# The MD5 of the MWSE.dll of each run of this smoke.
+SMOKE_MWSE = set()
 
 
 class SmokeFailed(Exception):
@@ -142,11 +145,26 @@ def with_set_lines(text, set_folder, plugin_dll):
     return text
 
 
-def set_note(name, plugin_commit, mge_commit, result):
+def run_mwse(progress):
+    """The MD5 of the MWSE.dll of a run in the text of its progress.log, or None."""
+    found = re.search(r"^\[runner\] MWSE\.dll (\w+)", progress, re.MULTILINE)
+    return found.group(1) if found else None
+
+
+def mwse_text(digests):
+    """What the note says of the MWSE.dll of the smoke, from the MD5 of each of its runs."""
+    if not digests:
+        return "no run of the smoke yet to name its MWSE.dll"
+    if len(digests) > 1:
+        return "the MWSE.dll changed during the smoke: %s" % ", ".join(sorted(digests))
+    return "MWSE.dll %s" % next(iter(digests))
+
+
+def set_note(name, plugin_commit, mge_commit, result, digests=()):
     """The one line of WHAT.txt."""
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    return "%s %s: the owner's play set, nirender %s %s, render-link %s %s, no pdb, the instance's MWSE.dll; smoke: %s\n" % (
-        name, stamp, PLUGIN_BRANCH, plugin_commit, MGE_BRANCH, mge_commit, result)
+    return "%s %s: the owner's play set, nirender %s %s, render-link %s %s, no pdb, %s; smoke: %s\n" % (
+        name, stamp, PLUGIN_BRANCH, plugin_commit, MGE_BRANCH, mge_commit, mwse_text(digests), result)
 
 
 def batch_answers(progress):
@@ -384,6 +402,10 @@ def run_runner(tree, label, folder, plugin_dll, budget, *args):
                           cwd=tree, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     run = newest_run(tree, label, began)
     say("smoke: the run is kept in %s" % keep_run(run))
+    digest = run_mwse(read_text(os.path.join(run, "progress.log")))
+    # A run with no such line is not named here: a smoke with no name says so in the note.
+    if digest:
+        SMOKE_MWSE.add(digest)
     if done.returncode != 0:
         raise SmokeFailed("the runner of %s gave exit code %d: %s" % (label, done.returncode, run))
     return run
@@ -591,8 +613,12 @@ def self_test():
     assert any("no numbers" in fault for fault in tour_faults(tour.replace("0.001 mean, 0.08 % different", "the sizes differ"), 0))
     assert tour_faults("", 0) != []
 
-    note = set_note("f186", "abc", "def", "passed (a, b, 2 of 2 bats)")
-    assert note.count("\n") == 1 and note.endswith("2 of 2 bats)\n")
+    note = set_note("f186", "abc", "def", "passed (a, b, 2 of 2 bats)", {"aae6"})
+    assert note.count("\n") == 1 and note.endswith("2 of 2 bats)\n") and ", MWSE.dll aae6; smoke:" in note, note
+    assert "no run of the smoke" in set_note("f186", "abc", "def", "pending")
+    assert "changed during the smoke: a1, b2" in mwse_text({"b2", "a1"})
+    assert run_mwse("[runner] instance D:\\m, profile Default\n[runner] MWSE.dll aae6\n[t] MWSE.dll zz\n") == "aae6"
+    assert run_mwse("[t] MWSE.dll zz\n") is None
     with tempfile.TemporaryDirectory() as folder:
         with open(os.path.join(folder, "WHAT.txt"), "w", encoding="ascii") as file:
             file.write(note)
@@ -720,7 +746,7 @@ def main():
 
     def write_note(result):
         with open(os.path.join(SETS, name, "WHAT.txt"), "w", encoding="ascii", errors="backslashreplace") as file:
-            file.write(set_note(name, plugin_commit, mge_commit, result))
+            file.write(set_note(name, plugin_commit, mge_commit, result, SMOKE_MWSE))
 
     try:
         # The wait for the slot can be long, and the set must be of the tips when the smoke starts (f187 was
