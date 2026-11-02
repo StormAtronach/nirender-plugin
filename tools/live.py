@@ -81,8 +81,7 @@ def start():
 
 def stop():
     game = [pid for pid, _ in harness.processes("Morrowind.exe")]
-    harness.kill_pids(game)
-    harness.wait_gone(game)
+    harness.close_game(game)
     # Mod Organizer ends by itself after Root Builder has cleared the game folder.
     harness.close_mo2()
     print("stopped: %d game" % len(game))
