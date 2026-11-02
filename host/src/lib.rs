@@ -92,9 +92,10 @@ use stage_groups::{StageGroups, StageKey};
 /// helper of MGE XE, `shader_check` of mgeHost64), the probe, and the exit code of a refusal.
 pub use request::{fixed_limits, probe, required_features, required_features_of, tier_c_shader_source, world_shader_source, Refusal, TextureTier, ARRAY_SAMPLERS, ARRAY_TEXTURES, SAMPLED_TEXTURES};
 mod uv_animation;
+mod effect_turn;
 mod morph;
 pub mod stamps;
-use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_BONES_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
+use retained::{effect_entry_buffer, light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet, SceneData, EFFECT_ENTRIES_AT_FIRST, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_BONES_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
 
 /// The wgpu of this crate, for a program that draws with it through [`Extension`].
 pub use wgpu;
@@ -602,6 +603,9 @@ struct Renderer {
     bone_capacity: usize,
     /// The bones of the skinned retained instances ([`Renderer::retained_upload`]), in matrices.
     retained_bone_buffer: wgpu::Buffer,
+    /// The texture matrices of the table's texture effects, and its room.
+    effect_entry_buffer: wgpu::Buffer,
+    effect_entry_capacity: usize,
     retained_bone_capacity: usize,
     /// The lights that came as records, by key: a `D3DLIGHT8`.
     lights_known: HashMap<u32, [u8; 104]>,

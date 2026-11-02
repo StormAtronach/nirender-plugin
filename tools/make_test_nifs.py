@@ -35,6 +35,17 @@ a cylinder), a lit material, a base texture of the level, and the property under
                  it: the edges of each pair line up only with every influence and the raw
                  weights (`make_skinned`)
     skin_hard    the same file without the flag (the control): the edges do not line up
+    turn_b<m>_c<n> a NiTextureEffect under a NiBillboardNode of the mode m (0 to 2), with the
+                 coordinate mode n (0 to 4); the shape comes first in the walk, beside the
+                 billboard (the effect and the coordinate modes: host/src/effect_turn.rs)
+    turn_under_b<m> the same with the shape under the billboard, turning with the effect
+    turn_two     two billboards above the effect, a plain node between, the shape beside them:
+                 the second has no geometry under it and no display, so it does not turn
+    turn_two_under the same with the shape under the second billboard: both turn
+    turn_fog     a fog map under a billboard
+    turn_hidden  a billboard with the hidden flag: no display, no turn
+    turn_switched a billboard that a switch node does not select: no display, no turn
+    turn_selected a billboard that a switch node selects, no geometry under the switch: it turns
 
 The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
 write of the level's own files. The texture effect is attached as the level's exhibits do:
@@ -356,6 +367,66 @@ def make_skinned(name, flags):
     return write_file(name, blocks)
 
 
+def billboard(name, mode, translation):
+    b = node(name, 8 | (mode << 5))
+    b["type"] = "NiBillboardNode"
+    b["translation"] = list(translation)
+    return b
+
+
+def make_turn(name, geometry, modes, effect, shape_under=False, hidden=False, switched=False, selected=False):
+    """A texture effect under turning billboards, one in each of `modes`, nested. The shape is
+    a child of the node above the first billboard, before it in the walk, as in the level's
+    103.nif: the shape displays before its effect turns. With `shape_under`, the shape is under
+    the last billboard with the effect, and turns with it. The node above lists the effect.
+    With `hidden` the first billboard has the hidden flag; with `switched` it is the child that a
+    switch node does not select. Neither has a display, so the effect does not turn. With
+    `selected`, the billboard is the child that a switch selects, with no geometry under the switch:
+    a switch tests no geometry flag, so it has its display and turns.
+    The blocks: 0 root, 1 shape, 2 data, 3 material, 4 texturing, 5 texture, 6 the node above,
+    then each billboard (a plain node between two), the effect and its texture."""
+    blocks = [node("@_nifx " + name), None, tri_shape_data(geometry), material(), texturing(5), source_texture(BASE_TEXTURE)]
+    shape = av_object(name, 0)
+    shape.update({"type": "NiTriShape", "data": 2, "skin": -1, "properties": [3, 4]})
+    blocks[1] = shape
+    blocks[0]["children"] = [6]
+    blocks.append(node("sub"))
+    parent = 6
+    blocks[6]["children"] = [] if shape_under else [1]
+    if switched or selected:
+        # With `switched` the switch selects an empty node, its child 0, and the billboard is its
+        # child 1. With `selected` the billboard is its child 0.
+        switch = node("switch")
+        switch.update({"type": "NiSwitchNode", "index": 0})
+        blocks.append(switch)
+        blocks[parent]["children"].append(len(blocks) - 1)
+        parent = len(blocks) - 1
+    if switched:
+        blocks.append(node("selected"))
+        blocks[parent]["children"].append(len(blocks) - 1)
+    for i, mode in enumerate(modes):
+        if i > 0:
+            between = node("between")
+            between["translation"] = [10.0, 0.0, 20.0]
+            blocks.append(between)
+            blocks[parent]["children"].append(len(blocks) - 1)
+            parent = len(blocks) - 1
+        blocks.append(billboard("billboard %d" % i, mode, [40.0, 0.0, 0.0]))
+        if hidden and i == 0:
+            blocks[-1]["flags"] |= 1
+        blocks[parent]["children"].append(len(blocks) - 1)
+        parent = len(blocks) - 1
+    if shape_under:
+        blocks[parent]["children"].append(1)
+    effect_at = len(blocks)
+    blocks[parent]["children"].append(effect_at)
+    blocks[6]["effects"] = [effect_at]
+    texture_type, coordinates, matrix, translation = effect
+    blocks.append(texture_effect(effect_at + 1, texture_type, coordinates, matrix, translation))
+    blocks.append(source_texture(EFFECT_TEXTURE, 5, 2, 3))
+    return write_file(name, blocks)
+
+
 def write_file(name, blocks):
     """Writes the blocks with the root 0, proven by a read and a write back."""
     data = nif40.write(blocks, [0])
@@ -469,6 +540,22 @@ def main():
         ("skin_soft", make_skinned("skin_soft", 0x200)),
         ("skin_hard", make_skinned("skin_hard", 0)),
     ]
+    # A texture effect under a turning billboard: each pair of the billboard's mode and the
+    # coordinate mode, the shape turning with the effect, two billboards, a fog map.
+    parallel = (2, 0, [1 / 240, 0.0, 0.0, 0.0, 1 / 240, 0.0, 0.0, 0.0, 1 / 240], [0.5, 0.5, 0.5])
+    effects = [parallel, (2, 1, [1 / 240, 0.0, 0.0, 0.0, 1 / 240, 0.0, 0.0, 0.0, 1 / 400], [0.5, 0.5, 1.0]), (2, 2, SPHERE_MATRIX, SPHERE_TRANSLATION), (2, 3, SPHERE_MATRIX, SPHERE_TRANSLATION), (2, 4, SPHERE_MATRIX, SPHERE_TRANSLATION)]
+    for mode in range(3):
+        for coordinates, effect in enumerate(effects):
+            name = "turn_b%d_c%d" % (mode, coordinates)
+            files.append((name, make_turn(name, c if coordinates >= 2 else b, [mode], effect)))
+        name = "turn_under_b%d" % mode
+        files.append((name, make_turn(name, b, [mode], parallel, shape_under=True)))
+    files.append(("turn_two", make_turn("turn_two", b, [1, 2], parallel)))
+    files.append(("turn_two_under", make_turn("turn_two_under", b, [1, 2], parallel, shape_under=True)))
+    files.append(("turn_fog", make_turn("turn_fog", c, [0], (3, 2, SPHERE_MATRIX, SPHERE_TRANSLATION))))
+    files.append(("turn_hidden", make_turn("turn_hidden", b, [2], parallel, hidden=True)))
+    files.append(("turn_switched", make_turn("turn_switched", b, [2], parallel, switched=True)))
+    files.append(("turn_selected", make_turn("turn_selected", b, [2], parallel, selected=True)))
     lines = ["-- The test NIFs of the flag support, made by tools/make_test_nifs.py (do not edit).",
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",
              "return {"]

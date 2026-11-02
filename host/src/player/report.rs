@@ -93,6 +93,14 @@ impl Player {
             r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.hidden, r.without_bones, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
         );
         println!("instance census: {} lists of the plugin, {} instances held here that a list lacked", c.instance_censuses, c.instance_orphans);
+        let (entries, entry_stages) = self.retained.effect_entry_counts();
+        println!(
+            "effect chains: {} texture effects under a turning billboard; {entries} entries of texture effects, {entry_stages} stages name them, {} entries written; {:.3} s making them, {:.3} s in the upload of the table",
+            self.retained.effect_chain_count(), r.entry_writes, r.turn_seconds, r.upload_seconds
+        );
+        for line in self.retained.turn_checks.lines() {
+            println!("{line}");
+        }
         let (morph_steps, morph_skipped) = self.renderer.morph_counts();
         println!(
             "morphs: {} records of targets, {} steps made on the GPU, {} not made, {} for a geometry not held",
