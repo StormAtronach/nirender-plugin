@@ -37,8 +37,8 @@ a cylinder), a lit material, a base texture of the level, and the property under
     skin_hard    the same file without the flag (the control): the edges do not line up
     pass_decal_glow a decal with an alpha (`decal.dds`, opaque on the right half only) and a
                  glow map: the glow is a pass of its own and shows on the whole box
-    pass_decal_env the same decal and an environment map without a gloss map, the cylinder:
-                 the map is a pass of its own and shows on the whole cylinder
+    pass_decal_env the same decal and a parallel environment map without a gloss map: the map
+                 is a pass of its own and shows on the whole box
     base_set1    a checker as the base map on coordinate set 1, which spans a quarter of the
                  texture: 2 cells across a face show set 1, 8 cells show set 0
     base_set9    the same with the set 9, which the geometry does not have: it takes the last
@@ -510,7 +510,9 @@ def main():
         # A stage of blend slot 0 after a decal (`NiDX8TexturePass::initOrCheckSubpass` 0x6B3D70).
         # A dark material: on a white base in the sun the added stage has no room to show.
         ("pass_decal_glow", make("pass_decal_glow", b, maps={GLOW_MAP: EFFECT_TEXTURE, DECAL_MAP: DECAL_TEXTURE}, material_block=dark_material())),
-        ("pass_decal_env", make("pass_decal_env", c, effect=(2, 2, SPHERE_MATRIX, SPHERE_TRANSLATION), maps={DECAL_MAP: DECAL_TEXTURE}, material_block=dark_material())),
+        # A parallel map: the Code Patch scales a sphere map by the lit colour, which is dark here,
+        # and leaves a projected map alone (`derive` in host/src/material.rs).
+        ("pass_decal_env", make("pass_decal_env", b, effect=(2, 0, [1 / 240, 0.0, 0.0, 0.0, 1 / 240, 0.0, 0.0, 0.0, 1 / 240], [0.5, 0.5, 0.5]), maps={DECAL_MAP: DECAL_TEXTURE}, material_block=dark_material())),
         # The coordinate set of the base map (MWSE's patch at 0x6B42AC).
         ("base_set1", make("base_set1", b, base_texture=EFFECT_TEXTURE, base_set=1)),
         ("base_set9", make("base_set9", b, base_texture=EFFECT_TEXTURE, base_set=9)),
