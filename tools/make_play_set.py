@@ -2,6 +2,7 @@
 
     python -I tools/make_play_set.py [--force] [--no-wait]
     python -I tools/make_play_set.py --build-only   # warms the cargo targets: no set, no slot of the game
+    python -I tools/make_play_set.py --bats-only    # the step of the owner's start alone, on local.bat's set
     python -I tools/make_play_set.py --self-test    # the tests of the pure parts: no build, no game
 
 It builds nirender-plugin `master` and render-link `feature/wgpu-renderer` at their local tips, in the
@@ -9,26 +10,31 @@ worktrees of C:/tmp/playset, which keep their cargo targets for the next set. It
 `cargo xtask dist` to a new E:/nirender-keep/mgebuilds/f<N>, with no pdb, and the plugin beside it as
 akulakhan-<commit>.dll. Then it takes the game slot and runs the smoke on the testing instance:
 
-- live: tools/run_own_device.py with batch-play-smoke.lua: a walk over 5 cell borders, a save, a load, the
-  map, the inventory and the character. The runner must end well, each answer of the game must be the
-  asked one, no step picture may be black, and host.txt must have no `gpu error`.
-- tour: the 3 test cells with --tour-dual, and tools/validate_tour.py: no picture may fail, and no pair of
-  mode gpu against mode off may differ by more than MEAN_LIMIT.
+- live: tools/run_own_device.py with batch-play-smoke.lua: teleports over 5 cell borders, a save, a move to
+  another cell, a load, the map, the inventory and the character. The runner must end well, each answer of
+  the game must be the asked one, no step picture may be black, and host.txt must have no `gpu error`.
+- gate: tools/validate_retained.py baseline, with no game: the replays against the accepted pictures. This
+  sees a fault that both modes share. A planned new look stops the set until a baseline is accepted.
+- tour: the 3 test cells with --tour-dual, and tools/validate_tour.py: no picture may fail, no pair may lack
+  its numbers, and no pair of mode gpu against mode off may differ by more than MEAN_LIMIT.
 - the owner's start: both play-manual-check*.bat with the real tools/play.py and --stage-only, so that
   they stop just before the game. The bat must pass the slot check, with this session's variable in its
   terminal, and each instance's mod list must be as before.
 
-This is the smoke of f185 with one change: a batch replaces the live bridge, as a script cannot call it.
-A crash when the game closes, after the last step, fails nothing: it is the parked fault at exit, and the
-note says so.
+This is the smoke of f185 with two changes: a batch replaces the live bridge, as a script cannot call it,
+and the gate is added. A crash when the game closes, after the last step, fails nothing: it is the parked
+fault at exit, and the note says so. A new fault at exit reads the same.
 
 Only on a pass, it writes MGE_BUILD and NIRENDER_PLUGIN_DLL in local.bat of the main checkout. A failed
 smoke leaves local.bat on the last good set, says why, and exit code 1. Each set has a one-line WHAT.txt.
-Nothing is deleted: older sets stay until the owner's cleanup, and a failed set stays with its reason. The
-smoke's runs are copied to E:/nirender-keep/runs-<date>.
+No set is deleted: older sets stay until the owner's cleanup, and a failed set stays with its reason. The
+only file it deletes is the smoke's own save. The smoke's runs are copied to E:/nirender-keep/runs-<date>.
 
-With the tips of the set in local.bat it does nothing, unless --force. A build waits while the slots refuse
-a build, and the smoke waits in the queue of the game slot: with --no-wait each stops with exit code 3.
+With the tips of the set in local.bat it does nothing, unless --force. The owner's checkout must be at the
+plugin's commit, as a game by the bat takes the Lua of mod/ from there: otherwise it stops, unless --force,
+and the note says so. A build waits while the slots refuse a build, and the smoke waits in the queue of the
+game slot: with --no-wait each stops with exit code 3. It needs the slot tool, and a session when
+enforcement is on: nobody waits for this job, and a game with no slot can spoil a timing run.
 """
 import argparse
 import datetime
@@ -57,6 +63,8 @@ SETS = "E:/nirender-keep/mgebuilds"
 KEPT_RUNS = "E:/nirender-keep/runs-%s"
 HARNESS = os.path.join(REPOS, "moreFPS", "docs", "scripts", "test-harness-2026-10-03")
 BATCH = os.path.join(REPOS, "moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "batch-play-smoke.lua")
+LIVECODING = os.path.join(REPOS, "moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "livecoding-mark.lua")
+BASELINE = os.path.join(PLUGIN_REPO, "results", "baseline-records")
 PLUGIN_TARGET = os.path.join("target", "i686-pc-windows-msvc", "release", "akulakhan.dll")
 TOUR_CELLS = "@nifTest_1;@nifTest_2;@nifTest_3"
 TESTING_MODLIST = "D:/Modlists/Morrowind75testing/profiles/Default/modlist.txt"
@@ -65,9 +73,11 @@ SMOKE_SAVE = "D:/Modlists/Morrowind75testing/profiles/Default/saves/playsmoke.es
 WAIT_SECONDS = 60
 SLOT_MINUTES = 45
 # f185 had a largest mean of 0.001 at the tour's 103 stops. A change of the picture between two modes that
-# is larger than this is no noise. [I] The value is a judgement, with room for small differences.
+# is larger than this is no noise. [I] The value is a judgement, with room for small differences. The gate
+# is the exact test: this is a second net.
 MEAN_LIMIT = 0.05
-LEAST_STOPS = 50
+# The tour has 103 stops: a much shorter tour did not run through.
+LEAST_STOPS = 100
 # Below this mean level (0 to 255) a step picture counts as black.
 BLACK_LEVEL = 3.0
 OWNER_BATS = ("play-manual-check.bat", "play-manual-check-outlander.bat")
@@ -148,9 +158,15 @@ def live_faults(progress):
     saved = answers.get("save", "")
     if not saved.startswith("saved: true"):
         faults.append("the save: %r" % saved)
-    loaded = re.fullmatch(r"saved in (grid \S+), now (grid \S+)", answers.get("loaded", ""))
-    if not loaded or loaded.group(1) != loaded.group(2):
-        faults.append("the load: %r" % answers.get("loaded"))
+    # The load is proven by the way back from another cell, and by the game's event.
+    loaded = re.fullmatch(r"saved in (grid \S+), now (grid \S+), loads (\d+)", answers.get("loaded", ""))
+    away = re.fullmatch(r"away at (grid \S+)", answers.get("away", ""))
+    if not loaded or not away:
+        faults.append("the load: %r after %r" % (answers.get("loaded"), answers.get("away")))
+    elif away.group(1) == loaded.group(1):
+        faults.append("the player did not leave the saved cell before the load: %s" % away.group(1))
+    elif loaded.group(1) != loaded.group(2) or int(loaded.group(3)) < 1:
+        faults.append("the load did not bring the player back: %s" % answers.get("loaded"))
 
     for name, menu in (("map", "MenuMap"), ("inventory", "MenuInventory"), ("character", "MenuStat")):
         if menu not in answers.get(name, ""):
@@ -171,6 +187,11 @@ def tour_faults(output, code):
     stops = re.search(r"(\d+) stops to replay", output)
     if not stops or int(stops.group(1)) < LEAST_STOPS:
         faults.append("the tour has too few stops: %s" % (stops.group(1) if stops else "none"))
+    # A pair with no numbers (a missing picture, a size mismatch) lists first, and its exit code is 0.
+    pair_rows = re.findall(r"^\s+(\S+\.png)\s+(.*)$", output, re.MULTILINE)
+    unmeasured = [name for name, text in pair_rows if not re.match(r"[\d.]+ mean", text)]
+    if unmeasured:
+        faults.append("%d pairs have no numbers, first %s" % (len(unmeasured), unmeasured[0]))
     means = [(float(mean), name) for name, mean in re.findall(r"^\s+(\S+\.png)\s+([\d.]+) mean", output, re.MULTILINE)]
     if not means:
         faults.append("validate_tour.py has no differences of mode gpu against mode off")
@@ -186,19 +207,24 @@ def closing_crash(mwse_log):
 # --- the slots -----------------------------------------------------------------------------
 
 def load_slots():
-    """The slot tool, or None: a tool that does not load must not stop a set, as with the other checks."""
+    """The slot tool. A tool that does not load stops this job: unlike a hook, it holds up nobody, and a
+    stop costs one rerun, while a game with no slot can spoil a timing run."""
     sys.path.insert(0, HARNESS)
     try:
         import slot
-    except Exception as error:  # noqa: BLE001 - the same rule as harness.check_slot
-        say("the slot tool did not load, and the set goes on with no slot: %s" % error)
-        return None
+    except Exception as error:  # noqa: BLE001 - any fault of the tool means the same
+        say("the slot tool did not load: %s" % error)
+        sys.exit(3)
+    if slot.enforcing() and not slot.session_id():
+        # A take would store the text as its owner, and the runner's check would then refuse this job.
+        say("enforcement is on, and this process has no session: run this from a session")
+        sys.exit(3)
     return slot
 
 
 def wait_for_build(slots, no_wait):
     """Waits while the state refuses a build: this tool's cargo is a child, and the hook does not see it."""
-    while slots is not None and slots.enforcing():
+    while slots.enforcing():
         found = slots.refusal("build", slots.session_id())
         if found is None:
             return
@@ -209,16 +235,19 @@ def wait_for_build(slots, no_wait):
         time.sleep(WAIT_SECONDS)
 
 
-def take_game(slots, name, no_wait):
+def take_game(slots, what, no_wait):
     """Takes the game slot, and waits in its queue. It asks again at each wait, so that it keeps its place."""
-    if slots is None:
-        return False
     os.makedirs(slots.STATE_DIR, exist_ok=True)
     while True:
-        reply = slots.take("game", "make_play_set: smoke of %s" % name, minutes=SLOT_MINUTES)
+        try:
+            reply = slots.take("game", "make_play_set: %s" % what, minutes=SLOT_MINUTES)
+        except slots.StateBusy as error:
+            say("the state of the slots is busy, and I ask again: %s" % error)
+            time.sleep(WAIT_SECONDS)
+            continue
         say(reply.text.splitlines()[0])
         if reply.code == slots.DONE:
-            return True
+            return
         if no_wait:
             sys.exit(3)
         time.sleep(WAIT_SECONDS)
@@ -299,10 +328,11 @@ def wait_clean():
     raise SmokeFailed("the instance did not become free in 180 s")
 
 
-def newest_run(tree, label):
-    folders = sorted(glob.glob(os.path.join(tree, "results", "*-" + label)))
+def newest_run(tree, label, since):
+    """The folder of the run that began after `since`. The tree's results stay between sets."""
+    folders = [path for path in sorted(glob.glob(os.path.join(tree, "results", "*-" + label))) if os.path.getmtime(path) >= since]
     if not folders:
-        raise SmokeFailed("no run folder of %s" % label)
+        raise SmokeFailed("no new run folder of %s" % label)
     return folders[-1]
 
 
@@ -319,10 +349,12 @@ def run_runner(tree, label, folder, plugin_dll, budget, *args):
     wait_clean()
     log = os.path.join(tree, "results", label + ".txt")
     say("smoke: %s" % label)
+    began = time.time()
+    # With the renderer's probe on, as the owner's start has it: a probe that says no is a fault of the set.
     done = subprocess.run([sys.executable, "tools/run_own_device.py", "--label", label, "--plugin-dll", plugin_dll, "--mge-build", folder,
-                           "--no-build", "--set", "[runtime] renderer_probe = false", "--budget", str(budget), *args, "--log", log],
+                           "--no-build", "--budget", str(budget), *args, "--log", log],
                           cwd=tree, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    run = newest_run(tree, label)
+    run = newest_run(tree, label, began)
     say("smoke: the run is kept in %s" % keep_run(run))
     if done.returncode != 0:
         raise SmokeFailed("the runner of %s gave exit code %d: %s" % (label, done.returncode, run))
@@ -341,7 +373,7 @@ def check_run_files(run, notes):
         raise SmokeFailed("%d gpu errors in %s" % (gpu_errors, run))
     # The runner's exit code 0 says that the last step ended, so a crash in this log came at the close.
     if closing_crash(read_text(os.path.join(run, "MWSE.log"))):
-        notes.append("crash at the close of %s" % os.path.basename(run))
+        notes.append("crash at the close of %s: the parked fault at exit, or a new one, as this cannot tell" % os.path.basename(run))
 
 
 def picture_is_black(path):
@@ -369,6 +401,20 @@ def smoke_live(tree, folder, plugin_dll, notes):
     return run
 
 
+def smoke_gate(tree, folder):
+    """The replays against the accepted pictures, with no game. Its exit code is honest since 849c9b3."""
+    say("smoke: the gate")
+    done = subprocess.run([sys.executable, "-I", "tools/validate_retained.py", "baseline", "--mge-build", folder, "--baseline", BASELINE],
+                          cwd=tree, capture_output=True, text=True, errors="replace")
+    keep = os.path.join(KEPT_RUNS % datetime.date.today().isoformat(), "gate-%s.txt" % os.path.basename(folder))
+    os.makedirs(os.path.dirname(keep), exist_ok=True)
+    with open(keep, "w", encoding="utf-8") as file:
+        file.write(done.stdout + done.stderr)
+    if done.returncode != 0:
+        raise SmokeFailed("the gate gave exit code %d, see %s: %s" % (done.returncode, keep, (done.stdout + done.stderr).strip()[-200:]))
+    return os.path.basename(keep)
+
+
 def smoke_tour(tree, folder, plugin_dll, notes):
     run = run_runner(tree, "playset-tour", folder, plugin_dll, 900, "--steps", "tour", "--tour-cells", TOUR_CELLS, "--tour-dual")
     check_run_files(run, notes)
@@ -389,7 +435,10 @@ def smoke_owner_bats(tree, folder, plugin_dll, owner_local_bat, notes):
     Returns the number of bats that reached the game's start."""
     wait_clean()
     tested = 0
-    outlander = local_bat_values(read_text(owner_local_bat)).get("OUTLANDER_INSTANCE", "")
+    owner_values = local_bat_values(read_text(owner_local_bat))
+    outlander = owner_values.get("OUTLANDER_INSTANCE", "")
+    # Without this the bat looks for it next to the tree, where no moreFPS is.
+    livecoding = owner_values.get("LIVECODING", LIVECODING)
     outlander_modlist = os.path.join(outlander, "profiles", OUTLANDER_PROFILE, "modlist.txt")
     modlists = [path for path in (TESTING_MODLIST, outlander_modlist) if os.path.isfile(path)]
     before = {path: md5_of(path) for path in modlists}
@@ -398,8 +447,8 @@ def smoke_owner_bats(tree, folder, plugin_dll, owner_local_bat, notes):
     with open(stage_only, "w", encoding="ascii", newline="\r\n") as file:
         file.write('@"%s" %%* --stage-only\n' % sys.executable)
     with open(os.path.join(tree, "local.bat"), "w", encoding="ascii", newline="\r\n") as file:
-        file.write('@set "PYTHON=%s"\n@set "MGE_BUILD=%s"\n@set "NIRENDER_PLUGIN_DLL=%s"\n@set "OUTLANDER_INSTANCE=%s"\n' % (
-            stage_only, folder, plugin_dll, outlander))
+        file.write('@set "PYTHON=%s"\n@set "MGE_BUILD=%s"\n@set "NIRENDER_PLUGIN_DLL=%s"\n@set "OUTLANDER_INSTANCE=%s"\n@set "LIVECODING=%s"\n' % (
+            stage_only, folder, plugin_dll, outlander, livecoding))
 
     for bat in OWNER_BATS:
         bat_path = os.path.join(tree, bat)
@@ -427,14 +476,16 @@ def smoke_owner_bats(tree, folder, plugin_dll, owner_local_bat, notes):
 def run_smoke(tree, folder, plugin_dll, owner_local_bat, notes):
     """The quick part first: a fault costs less time."""
     live = smoke_live(tree, folder, plugin_dll, notes)
+    gate = smoke_gate(tree, folder)
     tour = smoke_tour(tree, folder, plugin_dll, notes)
     tested = smoke_owner_bats(tree, folder, plugin_dll, owner_local_bat, notes)
-    return "passed (%s, %s, %d of %d bats)" % (os.path.basename(live), os.path.basename(tour), tested, len(OWNER_BATS))
+    return "passed (%s, %s, %s, %d of %d bats)" % (os.path.basename(live), gate, os.path.basename(tour), tested, len(OWNER_BATS))
 
 
 def write_local_bat(path, set_folder, plugin_dll):
-    """Replaces local.bat in one step. A game that starts now reads the old text or the new."""
-    text = read_text(path)
+    """Replaces local.bat in one step. A game that starts now reads the old text or the new. The line ends stay."""
+    with open(path, encoding="utf-8", errors="replace", newline="") as file:
+        text = file.read()
     updated = with_set_lines(text, set_folder.replace("/", "\\"), plugin_dll.replace("/", "\\"))
     temporary = path + ".new"
     with open(temporary, "w", encoding="ascii", newline="") as file:
@@ -471,13 +522,26 @@ def self_test():
     else:
         raise AssertionError("a missing line of local.bat was taken")
 
+    with tempfile.TemporaryDirectory() as folder:
+        bat = os.path.join(folder, "local.bat")
+        with open(bat, "wb") as file:
+            file.write(text.encode("ascii"))
+        write_local_bat(bat, "E:/a/f186", "E:/a/f186/y.dll")
+        with open(bat, "rb") as file:
+            written = file.read()
+        assert written.count(b"\r\n") == text.count("\r\n") and b'set "MGE_BUILD=E:\\a\\f186"' in written, written
+
     good = "\n".join(["[t] shader batch: at-%d: run true asked %d,0 grid %d,0" % (i, i, i) for i in range(1, 6)] + [
-        "[t] shader batch: save: run true saved: true grid 1,0", "[t] shader batch: loaded: run true saved in grid 1,0, now grid 1,0",
+        "[t] shader batch: save: run true saved: true grid 1,0", "[t] shader batch: away: run true away at grid 2,0",
+        "[t] shader batch: loaded: run true saved in grid 1,0, now grid 1,0, loads 1",
         "[t] shader batch: map: run true open: MenuMulti, MenuMap", "[t] shader batch: inventory: run true open: MenuInventory",
         "[t] shader batch: character: run true open: MenuStat", "[t] step sh-map: true "])
     assert live_faults(good) == [], live_faults(good)
     assert any("another grid" in fault for fault in live_faults(good.replace("asked 2,0 grid 2,0", "asked 2,0 grid 9,0")))
-    assert any("the load" in fault for fault in live_faults(good.replace("now grid 1,0", "now grid 5,5")))
+    assert any("did not bring" in fault for fault in live_faults(good.replace("now grid 1,0", "now grid 2,0")))
+    assert any("did not bring" in fault for fault in live_faults(good.replace("loads 1", "loads 0")))
+    assert any("did not leave" in fault for fault in live_faults(good.replace("away at grid 2,0", "away at grid 1,0")))
+    assert any("the load" in fault for fault in live_faults(good.replace("shader batch: away:", "shader batch: other:")))
     assert any("MenuMap" in fault for fault in live_faults(good.replace("MenuMulti, MenuMap", "MenuMulti")))
     assert any("the set map failed" in fault for fault in live_faults(good + "\n[t] shader batch: map: run false broken"))
     assert any("sh-map failed" in fault for fault in live_faults(good.replace("step sh-map: true", "step sh-map: false")))
@@ -488,7 +552,10 @@ def self_test():
     assert tour_faults(tour, 1) != []
     assert tour_faults(tour.replace("0 failed", "3 failed"), 0) != []
     assert tour_faults(tour.replace("103 stops", "4 stops"), 0) != []
+    assert tour_faults(tour.replace("103 stops", "60 stops"), 0) != []
     assert tour_faults(tour.replace("0.001 mean", "0.200 mean"), 0) != []
+    assert any("no numbers" in fault for fault in tour_faults(tour.replace("0.001 mean, 0.08 % different", "missing"), 0))
+    assert any("no numbers" in fault for fault in tour_faults(tour.replace("0.001 mean, 0.08 % different", "the sizes differ"), 0))
     assert tour_faults("", 0) != []
 
     note = set_note("f186", "abc", "def", "passed (a, b, 2 of 2 bats)")
@@ -535,6 +602,7 @@ def main():
     parser.add_argument("--force", action="store_true", help="make a set when local.bat's set has these tips already")
     parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 where this would wait for a slot")
     parser.add_argument("--build-only", action="store_true", help="only the build in the trees: no set, no game")
+    parser.add_argument("--bats-only", action="store_true", help="the step of the owner's start alone, on the set that local.bat names")
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
     args = parser.parse_args()
     if args.self_test:
@@ -545,18 +613,43 @@ def main():
     plugin_commit = git(PLUGIN_REPO, "rev-parse", "--short=7", PLUGIN_BRANCH)
     mge_commit = git(MGE_REPO, "rev-parse", "--short=7", MGE_BRANCH)
     say("the tips: nirender %s %s, render-link %s %s" % (PLUGIN_BRANCH, plugin_commit, MGE_BRANCH, mge_commit))
-    if not args.force and current_set_commits(owner_local_bat) == (plugin_commit, mge_commit):
+    if not args.force and not args.bats_only and current_set_commits(owner_local_bat) == (plugin_commit, mge_commit):
         say("local.bat names a set of these tips, and nothing is made")
         return 0
 
     slots = load_slots()
-    wait_for_build(slots, args.no_wait)
     plugin_tree = ready_tree("nirender-plugin", PLUGIN_REPO, plugin_commit)
     mge_tree = ready_tree("MGE-XE-G7-render-link", MGE_REPO, mge_commit)
     os.makedirs(os.path.join(plugin_tree, "results"), exist_ok=True)
     # The runner of the tree finds the harness by this key: its siblings hold no moreFPS.
     with open(os.path.join(plugin_tree, "local.json"), "w", encoding="ascii") as file:
         json.dump({"harness": HARNESS}, file)
+
+    if args.bats_only:
+        values = local_bat_values(read_text(owner_local_bat))
+        take_game(slots, "the step of the owner's start", args.no_wait)
+        notes = []
+        try:
+            tested = smoke_owner_bats(plugin_tree, values["MGE_BUILD"], values["NIRENDER_PLUGIN_DLL"], owner_local_bat, notes)
+        except SmokeFailed as failure:
+            say("FAILED: %s" % failure)
+            return 1
+        finally:
+            say(slots.release("game").text)
+        say("%d of %d bats reached the game's start%s" % (tested, len(OWNER_BATS), "; " + "; ".join(notes) if notes else ""))
+        return 0
+
+    # A game by the bat takes the Lua of mod/ from the owner's checkout: a plugin and a Lua of different commits
+    # are a wrong play set.
+    head = git(PLUGIN_REPO, "rev-parse", "--short=7", "HEAD")
+    checkout_note = ""
+    if head != plugin_commit:
+        if not args.force:
+            say("the owner's checkout is at %s, not %s, and nothing is built: use --force to make this set anyway" % (head, plugin_commit))
+            return 1
+        checkout_note = "; the owner's checkout was at %s, so a game by the bat takes another Lua" % head
+
+    wait_for_build(slots, args.no_wait)
 
     build_log = os.path.join(TREES, "build-%s-%s.log" % (plugin_commit, mge_commit))
     build_step(["cargo", "build", "--release"], plugin_tree, build_log)
@@ -565,38 +658,41 @@ def main():
         say("built, with no set: %s" % build_log)
         return 0
 
-    name = new_set_folder()
-    folder = os.path.join(SETS, name).replace("\\", "/")
-    note_path = os.path.join(folder, "WHAT.txt")
-    with open(note_path, "x", encoding="ascii") as file:
-        file.write(set_note(name, plugin_commit, mge_commit, "pending"))
-    plugin_dll = copy_stage(os.path.join(mge_tree, "target", "dist-staging"), plugin_tree, folder, plugin_commit).replace("\\", "/")
-    say("the set: %s" % folder)
-
+    # The slot first: a stop in the queue leaves no set folder behind.
+    take_game(slots, "the smoke of the next set", args.no_wait)
+    name = None
     notes = []
-    held = take_game(slots, name, args.no_wait)
+
+    def write_note(result):
+        with open(os.path.join(SETS, name, "WHAT.txt"), "w", encoding="ascii", errors="backslashreplace") as file:
+            file.write(set_note(name, plugin_commit, mge_commit, result))
+
     try:
+        name = new_set_folder()
+        folder = os.path.join(SETS, name).replace("\\", "/")
+        with open(os.path.join(folder, "WHAT.txt"), "x", encoding="ascii") as file:
+            file.write(set_note(name, plugin_commit, mge_commit, "pending"))
+        plugin_dll = copy_stage(os.path.join(mge_tree, "target", "dist-staging"), plugin_tree, folder, plugin_commit).replace("\\", "/")
+        say("the set: %s" % folder)
         result = run_smoke(plugin_tree, folder, plugin_dll, owner_local_bat, notes)
     except SmokeFailed as failure:
         reason = "FAILED: %s" % failure
-        with open(note_path, "w", encoding="ascii", errors="backslashreplace") as file:
-            file.write(set_note(name, plugin_commit, mge_commit, reason))
+        write_note(reason)
         say("%s: %s. local.bat stays on the last good set." % (name, reason))
         return 1
+    except BaseException as failure:
+        # A note must not stay on "pending" (a stop of a tool, an interrupt).
+        if name:
+            write_note("FAILED: stopped by %r" % failure)
+        raise
     finally:
-        if held:
-            say(slots.release("game").text)
+        say(slots.release("game").text)
 
-    extra = "; " + "; ".join(notes) if notes else ""
-    with open(note_path, "w", encoding="ascii", errors="backslashreplace") as file:
-        file.write(set_note(name, plugin_commit, mge_commit, result + extra))
+    # local.bat first: a note that says passed then always has a set that local.bat names.
     write_local_bat(owner_local_bat, folder, plugin_dll)
-    say(read_text(note_path).strip())
+    write_note(result + checkout_note + ("; " + "; ".join(notes) if notes else ""))
+    say(read_text(os.path.join(folder, "WHAT.txt")).strip())
     say("local.bat now names %s" % name)
-
-    head = git(PLUGIN_REPO, "rev-parse", "--short=7", "HEAD")
-    if head != plugin_commit:
-        say("warning: the owner's checkout is at %s, not %s: a game by the bat takes the Lua of mod/ from that checkout" % (head, plugin_commit))
     return 0
 
 
