@@ -206,8 +206,8 @@ pub mod tag {
     /// in the order of the walk's draws.
     pub const INSTANCE_WALK: u32 = 32;
     /// A light of the light manager was destroyed (`NiDX8LightManager::RemoveLight`): its
-    /// key. The engine gives the key to the next light it makes. Sent only for a light that
-    /// went as a [`LIGHT`] record. See `light_stream::forget`.
+    /// key. The engine gives the key to the next light it makes. Sent for each destroyed light,
+    /// also one that never went as a [`LIGHT`] record. See `light_stream::forget`.
     pub const LIGHT_GONE: u32 = 33;
     /// The lights of the world that are on (`world_lights`): the number, then their keys. Sent
     /// at the start of a world scene when the set changed. The values of each light go as
