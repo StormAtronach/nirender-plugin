@@ -850,7 +850,12 @@ static UNREADABLE: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new
 /// not be read.
 pub fn mark_unreadable(data: usize) {
     if let Ok(mut list) = UNREADABLE.lock() {
-        list.push(data);
+        // A free of the same address from before this texture must not take the new mark.
+        crate::worker_events::drop_texture_freed(data);
+        // The older texture's mark can still be here: its free was the one dropped above.
+        if !list.contains(&data) {
+            list.push(data);
+        }
     }
 }
 

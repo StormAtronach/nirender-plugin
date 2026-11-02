@@ -84,6 +84,18 @@ fn push(event: Event) {
     }
 }
 
+/// Takes the frees of renderer data at `data` out of the queue: the address is in use again.
+pub fn drop_texture_freed(data: usize) {
+    if let Ok(mut queue) = QUEUE.lock() {
+        let before = queue.len();
+        queue.retain(|event| !matches!(event, Event::TextureFreed(freed) if *freed == data));
+        let dropped = before - queue.len();
+        if dropped != 0 {
+            QUEUED[Event::TextureFreed(data).kind()].fetch_sub(dropped as u64, Ordering::Relaxed);
+        }
+    }
+}
+
 // The `any_thread` hooks, with the arguments of each port's call.
 
 unsafe fn on_geometry_dtor(args: &[usize]) {
@@ -293,5 +305,32 @@ mod tests {
         drop(queue);
         forget_unreadable(data);
         assert!(!is_unreadable(data));
+    }
+
+    #[test]
+    fn a_new_mark_drops_the_older_free_of_its_address() {
+        let (data, other) = (0x7E57_0086, 0x7E57_008A);
+        unsafe {
+            on_texture_data_dtor(&[data]);
+            on_texture_data_dtor(&[other]);
+        }
+        mark_unreadable(data);
+        let waiting = |address: usize| QUEUE.lock().unwrap().iter().any(|event| matches!(event, Event::TextureFreed(freed) if *freed == address));
+        assert!(!waiting(data), "the free from before the mark stays in the queue");
+        assert!(waiting(other), "the free of another address went too");
+        assert!(is_unreadable(data));
+        drop_texture_freed(other);
+        forget_unreadable(data);
+    }
+
+    /// The mark of the old texture is still in the list when its free waits in the queue.
+    #[test]
+    fn a_second_mark_on_an_address_needs_one_forget() {
+        let data = 0x7E57_008E;
+        mark_unreadable(data);
+        unsafe { on_texture_data_dtor(&[data]) };
+        mark_unreadable(data);
+        forget_unreadable(data);
+        assert!(!is_unreadable(data), "the address stays marked with no texture");
     }
 }
