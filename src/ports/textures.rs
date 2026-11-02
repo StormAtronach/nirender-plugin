@@ -860,7 +860,7 @@ pub fn is_unreadable(data: usize) -> bool {
 }
 
 /// Removes the mark of renderer data that is deleted.
-fn forget_unreadable(data: usize) {
+pub(crate) fn forget_unreadable(data: usize) {
     if let Ok(mut list) = UNREADABLE.lock() {
         if let Some(at) = list.iter().position(|&d| d == data) {
             list.swap_remove(at);
