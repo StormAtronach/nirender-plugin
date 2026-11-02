@@ -79,7 +79,9 @@ under the home folder.
 | Tool | What it is |
 | --- | --- |
 | `nif40.py` | A reader and writer of NetImmerse 4.0.0.2 files for the blocks the test assets need. |
-| `make_test_nifs.py` | The test NIFs of the flag support: one file for each flag value the engine supports and the content does not use; and two boxes with a BC7 texture, plain and sRGB. |
+| `make_test_nifs.py` | The test NIFs of the flag support: one file for each flag value the engine supports and the content does not use; two boxes with a BC7 texture, plain and sRGB; and a texture effect under a turning billboard, for each pair of modes. |
+| `effect_turn_vectors.lua` | In a running game: the engine's own billboard and projection functions on made objects, written as the test vectors of `host/src/effect_turn.rs`. |
+| `effect_turn_walk.lua` | In a running game with `NIRENDER_EFFECT_TURN_CHECK=1`: places the `turn_` exhibits and flies the camera around them, for the helper's comparison with the engine's words. |
 | `bc7.py` | A small encoder and decoder of BC7 mode 6, for the BC7 textures of `make_test_nifs.py` (no other BC7 tool is installed); `--self-test` tests the round trip. |
 | `nif_block_census.py` | Which NIF block types occur in the game's BSAs, a mod folder or a test level. |
 | `nif_flag_census.py` | How many NIFs carry a flat-shading, specular or dither property, and with which flag. |
