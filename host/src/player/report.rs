@@ -89,8 +89,8 @@ impl Player {
         );
         let r = &self.retained.counts;
         println!(
-            "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} hidden, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
-            r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.hidden, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
+            "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} hidden, {} skipped waiting for their bones, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
+            r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.hidden, r.without_bones, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
         );
         println!("instance census: {} lists of the plugin, {} instances held here that a list lacked", c.instance_censuses, c.instance_orphans);
         let (morph_steps, morph_skipped) = self.renderer.morph_counts();
@@ -210,14 +210,18 @@ impl Player {
                 c.pinned_replaced[1]
             );
         }
+        let influences = self.renderer.influences.report();
         println!(
-            "geometry pools: {:.1} MB of vertices in {} buffers of {:.0} MB in all, {:.1} MB of indexes in {} buffers of {:.0} MB in all",
+            "geometry pools: {:.1} MB of vertices in {} buffers of {:.0} MB in all, {:.1} MB of indexes in {} buffers of {:.0} MB in all, {} bytes of bone influences in a buffer of {} bytes that grew {} times",
             self.renderer.vertex_pool.used as f64 / 1e6,
             self.renderer.vertex_pool.chunks(),
             self.renderer.vertex_pool.capacity() as f64 / 1e6,
             self.renderer.index_pool.used as f64 / 1e6,
             self.renderer.index_pool.chunks(),
-            self.renderer.index_pool.capacity() as f64 / 1e6
+            self.renderer.index_pool.capacity() as f64 / 1e6,
+            influences.0,
+            influences.1,
+            influences.2
         );
         for (format, count) in &c.texture_formats {
             println!("texture format {format:#x} not made: {count}");

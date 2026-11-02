@@ -295,12 +295,24 @@ pub unsafe fn report(t: &MainThread) -> String {
 /// The skinned draws that got no record because their skin has no complete palette.
 static WITHOUT_PALETTE: MainCell<u64> = MainCell::new(0);
 /// The skinned draws that the game skins in software (MWSE's flag of the geometry, or less
-/// than 4 bones of the device): `RenderShape` gives them to `DrawPrimitive`, which sends no
-/// record.
+/// than 4 bones of the device) and that got no record: their palette cannot be made, so
+/// `RenderShape` gives them to `DrawPrimitive`, whose draw does not reach the helper.
 static SOFTWARE_SKINNED: MainCell<u64> = MainCell::new(0);
 
-/// Counts a skinned draw that the game skins in software, and writes the first ones to the
-/// log with the reason and the picture flag of the Code Patch.
+/// For a test: the draws that [`without_palette`] counted.
+#[cfg(test)]
+pub fn without_palette_count(t: &MainThread) -> u64 {
+    *WITHOUT_PALETTE.get(t)
+}
+
+/// For a test: [`code_patch_picture`] reads no game code, as for a game without the Code Patch.
+#[cfg(test)]
+pub fn test_without_code_patch() {
+    CODE_PATCH_FLAGS.store(1, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Counts a skinned draw that the game skins in software and that got no record, and writes
+/// the first ones to the log with the reason and the picture flag of the Code Patch.
 ///
 /// # Safety
 ///
@@ -313,7 +325,7 @@ pub unsafe fn software_skinned(t: &MainThread, why: &str) {
     let count = &mut *SOFTWARE_SKINNED.get(t);
     *count += 1;
     if *count <= 8 {
-        crate::log!("shapes: a skinned draw that the game skins in software ({why}), picture of the character {}", code_patch_picture());
+        crate::log!("shapes: a skinned draw without a record that the game skins in software ({why}), picture of the character {}", code_patch_picture());
     }
 }
 

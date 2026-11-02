@@ -361,6 +361,9 @@ impl Player {
         for range in std::mem::take(&mut self.renderer.retired_indexes) {
             self.renderer.index_pool.give(&range);
         }
+        for range in std::mem::take(&mut self.renderer.retired_influences) {
+            self.renderer.influences.give(range);
+        }
         self.renderer.geometry_frame = self.renderer.geometry_frame.wrapping_add(1).max(1);
         self.renderer.record_staging.clear();
         self.renderer.record_count = 0;

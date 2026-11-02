@@ -922,7 +922,7 @@ unsafe fn screen_polygon_record(t: &MainThread, this: usize, count: u32, vertice
         return false;
     }
     crate::shape_stream::note_geometry(t, handle);
-    crate::ports::draw::shape_record(t, this, 0, transform, bound)
+    crate::ports::draw::shape_record(t, this, 0, false, transform, bound)
 }
 
 /// 0x6ADD20 `NiDX8Renderer::RenderScreenPoly`

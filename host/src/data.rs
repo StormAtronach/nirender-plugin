@@ -21,6 +21,10 @@ pub(crate) struct Geometry {
     pub(crate) index: Rc<wgpu::Buffer>,
     pub(crate) vertex_range: Option<pool::Range>,
     pub(crate) index_range: Option<pool::Range>,
+    /// The range of the bone influences of a shape that the game skins in software.
+    pub(crate) influence_range: Option<crate::influences::ListRange>,
+    /// The bones of an instance that the list of the geometry names, 0 with no list.
+    pub(crate) bones_needed: u32,
     /// The first vertex of the geometry in its buffer (the base vertex of a draw) and its
     /// first index entry (added to the first index of a draw).
     pub(crate) base_vertex: i32,
@@ -162,7 +166,8 @@ pub struct DrawData {
     pub fog: [f32; 4],
     pub texture_factor: [f32; 4],
     /// Lighting on, the vertex has a normal, the vertex has a colour, the number of weights
-    /// (4: a skinned draw, the four bones of a vertex are indexes into the palette).
+    /// (4: a skinned draw, the four bones of a vertex are indexes into the palette; 5: a shape
+    /// that the game skins in software, the vertex names its entries in `influences`).
     pub flags: [u32; 4],
     /// The diffuse source, the emissive source, the alpha test function (0 is off), the
     /// alpha reference.

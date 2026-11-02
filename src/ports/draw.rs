@@ -463,6 +463,22 @@ unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize)
     }
 }
 
+/// True when the game skins a skinned geometry in software at its draw: the check of
+/// `RenderShape`, or for strips that of `RenderTriStrips`, which MWSE does not patch. MWSE exposes
+/// the flag, so a change of it can come at any time.
+///
+/// # Safety
+///
+/// The renderer of the game is 0 or live, and `geom_data` points at live geometry data.
+pub(crate) unsafe fn skinned_in_software(strips: bool, geom_data: usize) -> bool {
+    let renderer = crate::engine::renderer();
+    if renderer == 0 {
+        return false;
+    }
+    let check = if strips { SkinningCheck::HardwareBones } else { skinning_check(&skinning_check_bytes()) };
+    software_skinning(check, renderer, geom_data)
+}
+
 /// The shape record of a draw (see `shape_stream`): the transform, the bound and the
 /// lights of the draw in the order of `DrawPrimitive` 0x6AEB80 (the port below), but
 /// always: `DrawPrimitive` skips the transform on BUILD_KEEP_TRANSFORM and the lights on
@@ -471,7 +487,7 @@ unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize)
 /// them. It gets the palette of the skin in place of the transform. Returns true when the
 /// pipeline of the device must not run for the draw. `RenderScreenPoly` uses it too, with
 /// the identity transform that it gives `DrawPrimitive`.
-pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, transform: usize, world_bound: usize) -> bool {
+pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, software: bool, transform: usize, world_bound: usize) -> bool {
     if !crate::shape_stream::on() {
         return false;
     }
@@ -485,7 +501,7 @@ pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, tran
     let mut palette = PALETTE.with(|kept| core::mem::take(&mut *kept.borrow_mut()));
     palette.clear();
     let (world, relative) = if skin != 0 {
-        let relative = match crate::camera_space::skin_palette(t, skin, transform, true, &mut palette) {
+        let relative = match crate::camera_space::skin_palette(t, skin, transform, true, software, &mut palette) {
             Ok(relative) => relative,
             Err(why) => {
                 crate::shape_stream::without_palette(t, why);
@@ -531,21 +547,24 @@ pub unsafe fn render_shape(t: &MainThread, this: usize, geom_data: usize, skin: 
     if vcall0(geom_data, VT_GET_ACTIVE_VERTEX_COUNT) as u16 == 0 {
         return;
     }
-    if skin != 0 && !software_skinning(skinning_check(&skinning_check_bytes()), this, geom_data) {
-        if shape_record(t, this, skin, transform, world_bound) {
+    if skin != 0 {
+        // A shape that the game skins in software takes the record too: the helper skins each
+        // shape, and the draw of the device does not reach the helper.
+        let check = skinning_check(&skinning_check_bytes());
+        let software = software_skinning(check, this, geom_data);
+        if shape_record(t, this, skin, software, transform, world_bound) {
             return;
         }
-        site_thiscall!(RS_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
-        return;
-    }
-    if skin != 0 {
-        let check = skinning_check(&skinning_check_bytes());
+        if !software {
+            site_thiscall!(RS_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
+            return;
+        }
         crate::shape_stream::software_skinned(t, match check {
             SkinningCheck::HardwareBones => "less than 4 bones of the device",
             SkinningCheck::GeometryFlag => "the flag of MWSE on the geometry",
         });
     }
-    if skin == 0 && shape_record(t, this, 0, transform, world_bound) {
+    if skin == 0 && shape_record(t, this, 0, false, transform, world_bound) {
         return;
     }
     let mut geom_buffer: usize = 0;
@@ -578,17 +597,19 @@ pub unsafe fn render_tri_strips(t: &MainThread, this: usize, geom_data: usize, s
     if vcall0(geom_data, VT_GET_ACTIVE_VERTEX_COUNT) as u16 == 0 {
         return;
     }
-    if skin != 0 && rd::<u32>(this, R::countHWBones) >= 4 {
-        if shape_record(t, this, skin, transform, world_bound) {
+    if skin != 0 {
+        // As in `render_shape`: the record comes first, also for less than 4 bones of the device.
+        let software = software_skinning(SkinningCheck::HardwareBones, this, geom_data);
+        if shape_record(t, this, skin, software, transform, world_bound) {
             return;
         }
-        site_thiscall!(RT_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
-        return;
-    }
-    if skin != 0 {
+        if !software {
+            site_thiscall!(RT_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
+            return;
+        }
         crate::shape_stream::software_skinned(t, "strips, less than 4 bones of the device");
     }
-    if skin == 0 && shape_record(t, this, 0, transform, world_bound) {
+    if skin == 0 && shape_record(t, this, 0, false, transform, world_bound) {
         return;
     }
     let mut geom_buffer: usize = 0;
@@ -2062,6 +2083,54 @@ mod tests {
             let log = calls();
             assert_eq!(log[1].0, RS_CREATE_GEOMETRY_BUFFER_DATA);
             assert_eq!(log[2].0, RS_DRAW_PRIMITIVE);
+            SKINNING_CHECK_BYTES.with(|bytes| bytes.set(SKINNING_CHECK_DATABASE));
+        }
+    }
+
+    /// While the stream records, a shape that the game skins in software asks for its record
+    /// as any skinned shape does: a skin without data has no palette, and `without_palette`
+    /// counts each. Before the fix the two calls of the software path did not ask.
+    #[test]
+    fn a_shape_skinned_in_software_asks_for_its_record() {
+        let mut w = world();
+        let r = w.r();
+        let mut geom = geometry();
+        let g = geom.data.as_mut_ptr() as usize;
+        let mut b = buffer();
+        let gb = b.as_mut_ptr() as usize;
+        let mut property_state = vec![0u8; PS::SIZE];
+        let mut skin = vec![0u8; NiSkinInstance::SIZE];
+        let mut transform = vec![0u8; crate::gen::layouts::NiTransform::SIZE];
+        let (skin, transform) = (skin.as_mut_ptr() as usize, transform.as_mut_ptr() as usize);
+        let t = &MainThread::for_test();
+        unsafe {
+            wr::<u8>(r, R::bSceneOpen, 1);
+            wr::<usize>(r, R::currentPropertyState, property_state.as_mut_ptr() as usize);
+            crate::capture::test_record_deletes(true);
+            crate::shape_stream::test_without_code_patch();
+            let count = || crate::shape_stream::without_palette_count(t);
+            let before = count();
+
+            // The flag of MWSE on the geometry data.
+            SKINNING_CHECK_BYTES.with(|bytes| bytes.set(SKINNING_CHECK_MWSE));
+            wr::<u16>(g, GEOM_DATA_PATCH_RENDER_FLAGS, 0x200);
+            returns(GEOM_VERTEX_COUNT, &[9]);
+            returns(RS_CREATE_GEOMETRY_BUFFER_DATA, &[0]);
+            render_shape(t, r, g, skin, transform, 0x20);
+            assert_eq!(count(), before + 1);
+            assert!(calls().iter().any(|call| call.0 == RS_DRAW_PRIMITIVE));
+
+            // Less than 4 bones of the device, with a strip.
+            wr::<u32>(r, R::countHWBones, 3);
+            returns(GEOM_VERTEX_COUNT, &[9]);
+            returns(RT_CREATE_GEOMETRY_BUFFER_DATA, &[1]);
+            poke(RT_CREATE_GEOMETRY_BUFFER_DATA, 1, gb as u32);
+            returns(RT_GET_STRIP_LENGTH_SUM, &[0x14]);
+            render_tri_strips(t, r, g, skin, transform, 0x20);
+            assert_eq!(count(), before + 2);
+            assert!(calls().iter().any(|call| call.0 == RT_DRAW_PRIMITIVE));
+
+            crate::capture::test_record_deletes(false);
             SKINNING_CHECK_BYTES.with(|bytes| bytes.set(SKINNING_CHECK_DATABASE));
         }
     }

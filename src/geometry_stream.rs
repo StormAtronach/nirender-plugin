@@ -49,6 +49,9 @@ struct Version {
     entries: u32,
     /// The skin data of a skinned shape: its partitions give the weights.
     skin_data: u32,
+    /// The game skins the shape in software: the record has every influence. A flag that MWSE
+    /// sets later changes the version, so the geometry goes again.
+    software: bool,
 }
 
 /// A geometry that was sent: its version, the frame of its last draw, and the texture set of
@@ -127,7 +130,7 @@ pub fn state_part(t: &MainThread) -> (crate::state_summary::Part, u64) {
     let mut part = crate::state_summary::Part::default();
     for (&address, sent) in versions(t).iter() {
         let v = sent.version;
-        part.add(&[address, v.unique, v.revision as u32, v.vertices, v.entries, v.skin_data, sent.uv_set.unwrap_or(u32::MAX), sent.morph as u32]);
+        part.add(&[address, v.unique, v.revision as u32, v.vertices, v.entries, v.skin_data, sent.uv_set.unwrap_or(u32::MAX), sent.morph as u32, v.software as u32]);
     }
     if let Some(morphs) = (*MORPH_SENT.get(t)).as_ref() {
         for (&address, &targets) in morphs {
@@ -208,7 +211,7 @@ pub unsafe fn report(t: &MainThread) -> String {
     let (uv_check, morph_check) = (*UV_CHECK.get(t), *MORPH_CHECK.get(t));
     let s = &*SKIN_COUNTS.get(t);
     format!(
-        "geometry: {} records, {:.1} MB, {} UV steps (checked {}, over 1/1000 {}, the most {:.6}), {} morph steps (checked {}, over 1/1000 {}, the most {:.6}), {} geometries known, {} forgotten after {} frames without a draw, {} destroyed (GEOMETRY_GONE); skins: {} from the skin data, {} from the partitions ({} without bone data), {} with a dying skin data; vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}",
+        "geometry: {} records, {:.1} MB, {} UV steps (checked {}, over 1/1000 {}, the most {:.6}), {} morph steps (checked {}, over 1/1000 {}, the most {:.6}), {} geometries known, {} forgotten after {} frames without a draw, {} destroyed (GEOMETRY_GONE); skins: {} from the skin data, {} from the partitions ({} without bone data), {} with a dying skin data; vertices {}, with more than 4 bones {} (the most {}); triangles {}, with more than 4 bones {}; vertices compared with the partitions {}, different {}; skinned in software with every influence: {} records, {} entries",
         records,
         bytes as f64 / 1e6,
         *UV_STEPS.get(t),
@@ -233,7 +236,9 @@ pub unsafe fn report(t: &MainThread) -> String {
         s.triangles,
         s.triangles_over_four,
         s.compared,
-        s.different
+        s.different,
+        s.lists,
+        s.list_entries
     )
 }
 
@@ -266,6 +271,9 @@ pub unsafe fn needs_partitions(skin_data: usize) -> bool {
 struct SkinCounts {
     from_data: u64,
     from_partitions: u64,
+    /// The geometries sent with [`all_influences`], and the entries of their lists.
+    lists: u64,
+    list_entries: u64,
     without_bone_data: u64,
     dying: u64,
     vertices: u64,
@@ -280,6 +288,8 @@ struct SkinCounts {
 static SKIN_COUNTS: MainCell<SkinCounts> = MainCell::new(SkinCounts {
     from_data: 0,
     from_partitions: 0,
+    lists: 0,
+    list_entries: 0,
     without_bone_data: 0,
     dying: 0,
     vertices: 0,
@@ -332,6 +342,16 @@ pub unsafe fn skin_data_dying(skin_data: usize) -> bool {
 /// the engine collects them (`NiSkinPartition::CreateVertexInteractions` 0x6C6B60): the sum
 /// of the weights of a vertex is made 1. [`None`] when the data is not complete.
 unsafe fn skin_data_weights(skin_data: usize, vertices: usize) -> Option<Vec<Vec<(u8, f32)>>> {
+    let mut lists = skin_data_raw_weights(skin_data, vertices)?;
+    for list in &mut lists {
+        unitize(list);
+    }
+    Some(lists)
+}
+
+/// The weights of the bones of each vertex from the skin data, as the data has them.
+/// [`None`] when the data is not complete.
+unsafe fn skin_data_raw_weights(skin_data: usize, vertices: usize) -> Option<Vec<Vec<(u8, f32)>>> {
     if !has_bone_weights(skin_data) {
         return None;
     }
@@ -347,10 +367,54 @@ unsafe fn skin_data_weights(skin_data: usize, vertices: usize) -> Option<Vec<Vec
             lists.get_mut(vertex)?.push((b as u8, weight));
         }
     }
-    for list in &mut lists {
-        unitize(list);
-    }
     Some(lists)
+}
+
+/// The bit of the vertex format of a geometry with the list of [`all_influences`]. It is the
+/// crate's `FVF_INFLUENCES` (host/src/influences.rs).
+const FVF_INFLUENCES: u32 = 0x4000_0000;
+/// The bytes of an entry of the list: the bone (u32) and its weight (f32). It is the crate's
+/// `ENTRY_BYTES`.
+const LIST_ENTRY_BYTES: usize = 8;
+/// A sum of weights this close to 1 needs no entry for the rest.
+const WEIGHT_SUM_EXACT: f32 = 1e-6;
+
+/// The bone influences of a shape that the game skins in software: for each vertex its first
+/// entry and its count, and the count and the entries of the list in the form of the record.
+/// `NiSkinInstance::Deform` 0x6FA000 sums each influence with its raw weight in the space of the
+/// shape, so the world place of the shape counts once. A bone of the palette holds that place,
+/// so a vertex whose weights do not sum to 1 gets one more entry: the rest of the weight, for
+/// the bone after the last, which has only the place of the shape (`camera_space::skin_palette`).
+fn all_influences(lists: &[Vec<(u8, f32)>], bone_count: u32) -> (Vec<(u32, u32)>, Vec<u8>) {
+    let mut vertices = Vec::with_capacity(lists.len());
+    let mut entries = vec![0u8; 4];
+    let mut total = 0u32;
+    for list in lists {
+        let first = total;
+        let mut put = |bone: u32, weight: f32| {
+            entries.extend_from_slice(&bone.to_le_bytes());
+            entries.extend_from_slice(&weight.to_le_bytes());
+            total += 1;
+        };
+        for &(bone, weight) in list {
+            put(bone as u32, weight);
+        }
+        let rest = 1.0 - list.iter().map(|(_, weight)| weight).sum::<f32>();
+        if rest.abs() > WEIGHT_SUM_EXACT {
+            put(bone_count, rest);
+        }
+        vertices.push((first, total - first));
+    }
+    entries[..4].copy_from_slice(&total.to_le_bytes());
+    (vertices, entries)
+}
+
+/// For a test: a copy of the list with a sum of 1.
+#[cfg(test)]
+fn tests_unitized(list: &[(u8, f32)]) -> Vec<(u8, f32)> {
+    let mut list = list.to_vec();
+    unitize(&mut list);
+    list
 }
 
 /// Makes the sum of the weights 1.
@@ -547,7 +611,8 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         *DYING.get(t) = geom_data;
         return 0;
     }
-    let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: active, entries, skin_data: skin_data as u32 };
+    let software = skin != 0 && crate::ports::draw::skinned_in_software(strips, geom_data);
+    let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: active, entries, skin_data: skin_data as u32, software };
     let stream = stream_handle(t, handle, version.unique);
     if known(t, handle, version) {
         return stream;
@@ -603,7 +668,10 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
     let coords: usize = rd(geom_data, GD::textureCoords);
     let all_vertices = rd::<u16>(geom_data, GD::vertexCount) as usize;
     let sets = (rd::<u16>(geom_data, GD::textureSets) as u32).min(8);
-    let influences = if skin != 0 {
+    // Every influence with its raw weight, when the skin data has its weights (a skin with only
+    // partitions gives 4 bones, as it does in any case).
+    let list = if software { skin_data_raw_weights(skin_data, all_vertices).map(|lists| all_influences(&lists, rd(skin_data, DATA_BONE_COUNT))) } else { None };
+    let influences = if skin != 0 && list.is_none() {
         let from_data = if SKIN_FROM_PARTITIONS.load(core::sync::atomic::Ordering::Relaxed) {
             None
         } else {
@@ -629,7 +697,7 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
     } else {
         None
     };
-    let mut fvf = if skin != 0 { D3DFVF_XYZB4 | D3DFVF_LASTBETA_UBYTE4 } else { D3DFVF_XYZ };
+    let mut fvf = if list.is_some() { D3DFVF_XYZB4 | D3DFVF_LASTBETA_UBYTE4 | FVF_INFLUENCES } else if skin != 0 { D3DFVF_XYZB4 | D3DFVF_LASTBETA_UBYTE4 } else { D3DFVF_XYZ };
     let mut stride = if skin != 0 { 28usize } else { 12usize };
     let normal_offset = stride;
     if normals != 0 {
@@ -661,6 +729,11 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
             }
             to[24..28].copy_from_slice(&bones);
         }
+        if let Some((vertices, _)) = &list {
+            let (first, count) = vertices[i];
+            to[12..16].copy_from_slice(&(first as f32).to_le_bytes());
+            to[16..20].copy_from_slice(&(count as f32).to_le_bytes());
+        }
         if normals != 0 {
             to[normal_offset..normal_offset + 12].copy_from_slice(core::slice::from_raw_parts((normals + i * 12) as *const u8, 12));
         }
@@ -680,7 +753,13 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
     if strip_count != 0 {
         lengths[..strip_count as usize * 2].copy_from_slice(core::slice::from_raw_parts(strip_lengths as *const u8, strip_count as usize * 2));
     }
-    send(t, handle, stream, version, fvf, stride as u32, strip_count, &lengths, &bytes, index_bytes);
+    let list_bytes = list.as_ref().map_or(&[][..], |(_, entries)| entries);
+    if list.is_some() {
+        let counts = &mut *SKIN_COUNTS.get(t);
+        counts.lists += 1;
+        counts.list_entries += (list_bytes.len() as u64).saturating_sub(4) / LIST_ENTRY_BYTES as u64;
+    }
+    send(t, handle, stream, version, fvf, stride as u32, strip_count, &lengths, &bytes, index_bytes, list_bytes);
     if let Some(uv) = uv {
         send_uv(stream, version.unique, &uv, true);
         if let Some(sent) = versions(t).get_mut(&handle) {
@@ -1158,11 +1237,11 @@ pub unsafe fn census_report(t: &MainThread) -> Vec<String> {
 
 /// Sends a geometry record and notes its version. `lengths` has the strip lengths, padded
 /// to 4 bytes.
-unsafe fn send(t: &MainThread, handle: u32, stream: u32, version: Version, fvf: u32, stride: u32, strip_count: u32, lengths: &[u8], bytes: &[u8], index_bytes: &[u8]) {
-    crate::capture::geometry(&[stream, version.unique, version.revision as u32, fvf, stride, version.vertices, version.entries, strip_count], lengths, bytes, index_bytes);
+unsafe fn send(t: &MainThread, handle: u32, stream: u32, version: Version, fvf: u32, stride: u32, strip_count: u32, lengths: &[u8], bytes: &[u8], index_bytes: &[u8], list: &[u8]) {
+    crate::capture::geometry(&[stream, version.unique, version.revision as u32, fvf, stride, version.vertices, version.entries, strip_count], lengths, bytes, index_bytes, list);
     versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: None, morph: false });
     *RECORDS.get(t) += 1;
-    *BYTES.get(t) += (32 + lengths.len() + bytes.len() + index_bytes.len()) as u64;
+    *BYTES.get(t) += (32 + lengths.len() + bytes.len() + index_bytes.len() + list.len()) as u64;
 }
 
 /// The vertex format and the stride of a vertex with a position, a colour when `colours`
@@ -1205,7 +1284,7 @@ unsafe fn note_lines(t: &MainThread, geom_data: usize) -> u32 {
         return 0;
     }
     let handle = geom_data as u32;
-    let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: count as u32, entries: indexes.len() as u32, skin_data: 0 };
+    let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: count as u32, entries: indexes.len() as u32, skin_data: 0, software: false };
     let stream = stream_handle(t, handle, version.unique);
     if known(t, handle, version) {
         return stream;
@@ -1224,7 +1303,7 @@ unsafe fn note_lines(t: &MainThread, geom_data: usize) -> u32 {
         }
     }
     let index_bytes: Vec<u8> = indexes.iter().flat_map(|i| i.to_le_bytes()).collect();
-    send(t, handle, stream, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes);
+    send(t, handle, stream, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes, &[]);
     stream
 }
 
@@ -1261,9 +1340,9 @@ pub unsafe fn note_screen_polygon(t: &MainThread, count: u32, vertices: usize, t
     let indexes: Vec<u16> = (0..count as u16 - 2).flat_map(|n| [0, n + 1, n + 2]).collect();
     let index_bytes: Vec<u8> = indexes.iter().flat_map(|i| i.to_le_bytes()).collect();
     let handle = vertices as u32;
-    let version = Version { unique: 0, revision: 0, vertices: count as u32, entries: indexes.len() as u32, skin_data: 0 };
+    let version = Version { unique: 0, revision: 0, vertices: count as u32, entries: indexes.len() as u32, skin_data: 0, software: false };
     let stream = stream_handle(t, handle, 0);
-    send(t, handle, stream, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes);
+    send(t, handle, stream, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes, &[]);
     // The next draw of the polygon sends it again.
     versions(t).remove(&handle);
     stream
@@ -1332,6 +1411,118 @@ unsafe fn skin_influences(skin_data: usize, vertices: usize) -> Option<Vec<([f32
 
 #[cfg(test)]
 mod tests {
+    /// The list of a vertex, as the vertex shader sums it, for a palette of single places.
+    fn summed(places: &[f32], vertices: &[(u32, u32)], entries: &[u8], vertex: usize, position: f32) -> f32 {
+        let (first, count) = vertices[vertex];
+        let word = |at: usize| u32::from_le_bytes(entries[at..at + 4].try_into().unwrap());
+        (first..first + count)
+            .map(|i| {
+                let at = 4 + i as usize * super::LIST_ENTRY_BYTES;
+                let (bone, weight) = (word(at) as usize, f32::from_bits(word(at + 4)));
+                // The last bone of the palette has only the place of the shape.
+                let of_vertex = if bone == places.len() - 1 { 0.0 } else { position };
+                weight * (of_vertex + places[bone])
+            })
+            .sum()
+    }
+
+    /// A matrix of the palette by columns, times another.
+    fn times(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+        core::array::from_fn(|i| {
+            let (c, r) = (i / 4, i % 4);
+            (0..4).map(|k| a[k * 4 + r] * b[c * 4 + k]).sum()
+        })
+    }
+
+    fn point(m: &[f32; 16], v: [f32; 3]) -> [f32; 3] {
+        core::array::from_fn(|r| m[r] * v[0] + m[4 + r] * v[1] + m[8 + r] * v[2] + m[12 + r])
+    }
+
+    /// The rest entry restores the place of the shape once, for a turned, scaled and moved
+    /// shape, more than 4 influences, weights that do not sum to 1, and two poses of the bones.
+    /// A palette bone is the shape times the bone. This guards `all_influences` and `place_only`:
+    /// both sums are written here by hand, so it cannot show a wrong WGSL, a wrong palette or a
+    /// wrong reading of `NiSkinInstance::Deform` 0x6FA000.
+    #[test]
+    fn the_rest_entry_restores_the_place_of_the_shape_once() {
+        let mut shape = [0f32; 16];
+        (shape[1], shape[4], shape[10], shape[15]) = (2.0, -2.0, 2.0, 1.0);
+        (shape[12], shape[13], shape[14]) = (1000.0, -2000.0, 50.0);
+        let weights = [0.2f32, 0.15, 0.1, 0.05, 0.05, 0.05];
+        let list = vec![weights.iter().enumerate().map(|(bone, &weight)| (bone as u8, weight)).collect::<Vec<_>>()];
+        let (vertices, entries) = super::all_influences(&list, 6);
+        assert_eq!(vertices, vec![(0, 7)]);
+        let word = |at: usize| u32::from_le_bytes(entries[at..at + 4].try_into().unwrap());
+        let vertex = [3.0f32, 5.0, 7.0];
+        for pose in [0.0f32, 40.0] {
+            let bones: Vec<[f32; 16]> = (0..6)
+                .map(|b| {
+                    let mut m = [0f32; 16];
+                    let turn = 0.1 * b as f32 + pose * 0.01;
+                    (m[0], m[1], m[4], m[5], m[10], m[15]) = (turn.cos(), turn.sin(), -turn.sin(), turn.cos(), 1.0, 1.0);
+                    (m[12], m[13], m[14]) = (b as f32 * 10.0 + pose, -pose, 2.0);
+                    m
+                })
+                .collect();
+            // The engine: the sum in the space of the shape, then the shape once.
+            let mut in_shape = [0f32; 3];
+            for (bone, &weight) in bones.iter().zip(&weights) {
+                let p = point(bone, vertex);
+                for k in 0..3 {
+                    in_shape[k] += weight * p[k];
+                }
+            }
+            let engine = point(&shape, in_shape);
+            // The shader: each entry times its palette matrix.
+            let mut palette: Vec<[f32; 16]> = bones.iter().map(|bone| times(&shape, bone)).collect();
+            palette.push(crate::camera_space::place_only([shape[12], shape[13], shape[14]]));
+            let mut sum = [0f32; 3];
+            for i in 0..7 {
+                let at = 4 + i * super::LIST_ENTRY_BYTES;
+                let p = point(&palette[word(at) as usize], vertex);
+                let weight = f32::from_bits(word(at + 4));
+                for k in 0..3 {
+                    sum[k] += weight * p[k];
+                }
+            }
+            for k in 0..3 {
+                assert!((sum[k] - engine[k]).abs() < 0.01, "pose {pose}: {sum:?} against {engine:?}");
+            }
+        }
+    }
+
+    /// More than 4 influences keep every one, with the weight they have.
+    #[test]
+    fn the_list_keeps_every_influence() {
+        let list = vec![vec![(0u8, 0.2f32), (1, 0.2), (2, 0.2), (3, 0.2), (4, 0.1), (5, 0.1)]];
+        let (vertices, entries) = super::all_influences(&list, 6);
+        assert_eq!(vertices, vec![(0, 6)]);
+        assert_eq!(entries.len(), 4 + 6 * super::LIST_ENTRY_BYTES);
+        assert_eq!(u32::from_le_bytes(entries[..4].try_into().unwrap()), 6);
+        let places = [100.0, 100.0, 100.0, 100.0, -200.0, -200.0, 0.0];
+        assert!((summed(&places, &vertices, &entries, 0, 0.0) - 40.0).abs() < 1e-3);
+        // The packed form takes the 4 largest and makes them sum to 1: 100, not 40.
+        let packed = super::pack_weights(&super::tests_unitized(&list[0]));
+        assert_eq!(packed.1, [0, 1, 2, 3]);
+    }
+
+    /// Weights that do not sum to 1 keep their raw value, and the rest goes to the place of the
+    /// shape: the result is the shape's place plus the weighted sum, as the engine has it.
+    #[test]
+    fn the_rest_of_the_weights_takes_the_place_of_the_shape() {
+        let list = vec![vec![(0u8, 0.25f32), (1, 0.25)], Vec::new(), vec![(0, 1.0)]];
+        let (vertices, entries) = super::all_influences(&list, 2);
+        assert_eq!(vertices, vec![(0, 3), (3, 1), (4, 1)]);
+        // The shape at 1000, a bone 150 from it, the vertex 60 from the shape: the palette has
+        // 1150 for the bone, and the engine gives 1000 + 0.5 * (150 + 60).
+        let places = [1150.0, 1150.0, 1000.0];
+        assert!((summed(&places, &vertices, &entries, 0, 60.0) - (1000.0 + 0.5 * 210.0)).abs() < 1e-2);
+        // No influence: the place of the shape.
+        assert!((summed(&places, &vertices, &entries, 1, 60.0) - 1000.0).abs() < 1e-2);
+        // A sum of 1 has no entry more.
+        assert!((summed(&places, &vertices, &entries, 2, 60.0) - 1210.0).abs() < 1e-2);
+    }
+
     use super::{has_bone_weights, pack_weights, same_influences, scaled_time, skin_data_dying, unitize, unpacked};
 
     /// A time controller in memory with these fields (`NiTimeController` layout).

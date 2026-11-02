@@ -17,4 +17,6 @@ return {
     { id = "@nif_x_node_sortadjust", mesh = "@_nifx\\node_sortadjust.nif" },
     { id = "@nif_x_bc7", mesh = "@_nifx\\bc7.nif" },
     { id = "@nif_x_bc7_srgb", mesh = "@_nifx\\bc7_srgb.nif" },
+    { id = "@nif_x_skin_soft", mesh = "@_nifx\\skin_soft.nif" },
+    { id = "@nif_x_skin_hard", mesh = "@_nifx\\skin_hard.nif" },
 }

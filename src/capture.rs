@@ -122,8 +122,9 @@ pub mod tag {
     pub const MARK: u32 = 17;
     /// The geometry of a shape, packed by the plugin and keyed by the geometry data: handle,
     /// unique id, revision, vertex format, stride, vertices, index entries, strip count;
-    /// then the strip lengths (u16, padded to 4 bytes), the vertices, the indexes. See
-    /// `geometry_stream`.
+    /// then the strip lengths (u16, padded to 4 bytes), the vertices, the indexes. A shape that
+    /// the game skins in software has a bit in its format, and after the indexes the count and
+    /// the entries of its bone influences. See `geometry_stream`.
     pub const GEOMETRY: u32 = 18;
     /// The material of a shape as facts: the handle (a hash of the words), then the words.
     /// See `material_stream`.
@@ -2054,10 +2055,11 @@ pub unsafe fn material(handle: u32, record: &[u32]) {
     write(tag::MATERIAL, &[words(&[handle]), words(record)]);
 }
 
-/// A geometry record. See [`tag::GEOMETRY`].
-pub unsafe fn geometry(head: &[u32], lengths: &[u8], vertices: &[u8], indexes: &[u8]) {
+/// A geometry record. See [`tag::GEOMETRY`]. `list` is empty, or the count and the entries of the
+/// bone influences of a shape that the game skins in software.
+pub unsafe fn geometry(head: &[u32], lengths: &[u8], vertices: &[u8], indexes: &[u8], list: &[u8]) {
     let _lock = crate::sync::device_lock();
-    write(tag::GEOMETRY, &[words(head), lengths, vertices, indexes]);
+    write(tag::GEOMETRY, &[words(head), lengths, vertices, indexes, list]);
 }
 
 /// A state command of the device. Only a transform goes into the stream, with its matrix:

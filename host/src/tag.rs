@@ -180,7 +180,15 @@ pub fn needed(tag: u32, data: &[u8]) -> usize {
         // The strip lengths (u16 each, rounded to words), the vertices, the index entries.
         GEOMETRY => {
             let lengths = (count(28).saturating_mul(2).saturating_add(3)) & !3;
-            sum(&[32, lengths, count(20).saturating_mul(count(16)), count(24).saturating_mul(2)])
+            let head = sum(&[32, lengths, count(20).saturating_mul(count(16)), count(24).saturating_mul(2)]);
+            // A shape that the game skins in software: the bone influences after the indexes.
+            if word(data, 12) & crate::influences::FVF_INFLUENCES == 0 {
+                return head;
+            }
+            if data.len() < head.saturating_add(4) {
+                return head.saturating_add(4);
+            }
+            sum(&[head, 4, count(head).saturating_mul(crate::influences::ENTRY_BYTES as usize)])
         }
         MORPH_TARGETS => sum(&[16, count(8).saturating_mul(count(12)).saturating_mul(12)]),
         MORPH_WEIGHTS => sum(&[12, count(8).saturating_mul(4)]),
@@ -420,6 +428,18 @@ mod tests {
 
     /// Each `pub const` tag of this file is in [`KNOWN`], so that a new tag the player does
     /// not read is not counted as a record of another build.
+    #[test]
+    fn a_geometry_with_bone_influences_needs_its_list() {
+        let mut record = vec![0u8; 32];
+        record[12..16].copy_from_slice(&crate::influences::FVF_INFLUENCES.to_le_bytes());
+        // No vertex and no index: the count of the list is next, then 3 entries.
+        assert_eq!(needed(GEOMETRY, &record), 36);
+        record.extend_from_slice(&3u32.to_le_bytes());
+        assert_eq!(needed(GEOMETRY, &record), 36 + 24);
+        record[12..16].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(needed(GEOMETRY, &record), 32);
+    }
+
     #[test]
     fn every_tag_constant_is_known() {
         let source = include_str!("tag.rs");

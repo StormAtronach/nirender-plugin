@@ -52,7 +52,7 @@ fn alignment(align: u64) -> u64 {
 
 /// Takes `size` bytes at a multiple of `align` out of the free ranges (first fit): the offset,
 /// or [`None`] when no range has room.
-fn carve(free: &mut Vec<(u64, u64)>, size: u64, align: u64) -> Option<u64> {
+pub(crate) fn carve(free: &mut Vec<(u64, u64)>, size: u64, align: u64) -> Option<u64> {
     let slot = free.iter().position(|&(offset, room)| offset.next_multiple_of(align) + size <= offset + room)?;
     let (offset, room) = free.remove(slot);
     let at = offset.next_multiple_of(align);
@@ -71,7 +71,7 @@ fn carve(free: &mut Vec<(u64, u64)>, size: u64, align: u64) -> Option<u64> {
 }
 
 /// Gives a range back to the free ranges, joined with the neighbours that touch it.
-fn merge(free: &mut Vec<(u64, u64)>, offset: u64, size: u64) {
+pub(crate) fn merge(free: &mut Vec<(u64, u64)>, offset: u64, size: u64) {
     let at = free.partition_point(|&(start, _)| start < offset);
     free.insert(at, (offset, size));
     if at + 1 < free.len() && free[at].0 + free[at].1 == free[at + 1].0 {

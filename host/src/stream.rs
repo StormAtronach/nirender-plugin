@@ -168,8 +168,9 @@ impl Stream {
         data.light_range = [frame_lights.len() as u32, lights as u32, 0, flat_shading_bit(derived)];
         data.counts[0] = lights as u32;
         if let Some((first, _)) = self.shape_bones {
-            // A skinned shape: the vertex blend reads four bones of the palette of the frame.
-            data.flags[3] = 4;
+            // A skinned shape: the vertex blend reads four bones of the palette of the frame, or
+            // each influence of a shape that the game skins in software.
+            data.flags[3] = if shape.fvf & FVF_INFLUENCES != 0 { 5 } else { 4 };
             data.light_range[2] = first;
         }
         for light in shape.lights.chunks_exact(STATE_LIGHT_SIZE).take(lights) {
