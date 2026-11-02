@@ -71,6 +71,12 @@ impl StageBase {
         }
         data.texture_transforms = self.transforms;
     }
+
+    /// A new texture transform for a stage that takes no step of a UV controller (a texture
+    /// effect that turns with a billboard): a later [`StageBase::restore`] keeps it.
+    pub(crate) fn set_transform(&mut self, stage: usize, transform: &[f32; 16]) {
+        self.transforms[stage] = *transform;
+    }
 }
 
 /// Puts the step of `uv` before the texture transform of each stage of `data` that takes its

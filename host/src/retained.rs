@@ -207,6 +207,16 @@ pub struct RetainedCounts {
     /// their bucket order.
     pub walk_without_place: u64,
     pub walk_reordered: u64,
+    /// The stages of the turning texture effects written ([`RetainedSet::turn_effects`]).
+    pub turned_stages: u64,
+}
+
+/// A stage of a slot whose texture effect turns with a billboard.
+#[derive(Clone, Copy)]
+struct TurningStage {
+    slot: u32,
+    stage: u32,
+    chain: u32,
 }
 
 /// What the cull of a view reads of a slot (`collect_order`), beside the slot in a small
@@ -318,6 +328,13 @@ pub struct RetainedSet {
     bones_dirty: bool,
     /// The instances that the extension claims ([`Slot::claim`]).
     claimed: std::collections::HashSet<u32>,
+    /// The texture effects under a turning billboard, by the id of the chain, and the stages of
+    /// the slots that draw them: [`RetainedSet::turn_effects`] writes those for each camera.
+    effect_chains: HashMap<u32, crate::effect_turn::Chain>,
+    turning_stages: Vec<TurningStage>,
+    /// The engine's words of this frame for the live check, and what it found.
+    turn_check_words: Vec<(u32, crate::effect_turn::Projection)>,
+    pub turn_checks: crate::effect_turn::TurnChecks,
     pub counts: RetainedCounts,
 }
 
@@ -325,6 +342,10 @@ impl RetainedSet {
     pub fn new() -> RetainedSet {
         RetainedSet {
             claimed: std::collections::HashSet::new(),
+            effect_chains: HashMap::new(),
+            turning_stages: Vec::new(),
+            turn_check_words: Vec::new(),
+            turn_checks: Default::default(),
             slots: Vec::new(),
             cull: Vec::new(),
             ranges_total: 0,
@@ -401,6 +422,7 @@ impl RetainedSet {
                 self.light_indexes_live = self.light_indexes_live.saturating_sub(self.keys_of.get(&id).map_or(0, |keys| keys.len()));
                 pinned.extend(taken.pinned.iter().copied().filter(|&h| h != 0));
             }
+            self.turning_stages.retain(|turning| turning.slot != slot);
             self.free.push(slot);
         }
         self.keys_of.remove(&id);
@@ -457,6 +479,66 @@ impl RetainedSet {
                 }
             }
             self.dirty.push(slot);
+        }
+    }
+
+    /// A chain of a texture effect ([`crate::tag::EFFECT_CHAIN`]). The stages take it at the next
+    /// [`RetainedSet::turn_effects`].
+    pub fn effect_chain_record(&mut self, data: &[u8]) {
+        let words: Vec<u32> = data.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect();
+        if let Some((id, chain)) = crate::effect_turn::Chain::parse(&words) {
+            self.effect_chains.insert(id, chain);
+        }
+    }
+
+    /// The engine's words of an effect in this frame ([`crate::tag::EFFECT_TURN_CHECK`]).
+    pub fn effect_turn_check_record(&mut self, data: &[u8]) {
+        let f = |i: usize| crate::float(data, i * 4);
+        self.turn_check_words.push((crate::word(data, 0), (core::array::from_fn(|i| f(1 + i)), core::array::from_fn(|i| f(10 + i)))));
+    }
+
+    pub fn effect_chain_count(&self) -> usize {
+        self.effect_chains.len()
+    }
+
+    pub fn turning_stage_count(&self) -> usize {
+        self.turning_stages.len()
+    }
+
+    /// Writes the stages of the turning texture effects for the camera of the frame: only those
+    /// that it changes, so a still camera writes nothing and the material records never change.
+    /// With the test switch, compares the projections with the engine's words of the frame.
+    pub fn turn_effects(&mut self, camera: &crate::effect_turn::Camera) {
+        if !self.turn_check_words.is_empty() {
+            self.turn_checks.next_frame(camera);
+            for (id, engine) in core::mem::take(&mut self.turn_check_words) {
+                if let Some(chain) = self.effect_chains.get(&id) {
+                    self.turn_checks.compare(chain, &engine);
+                }
+            }
+        }
+        let mut last: Option<(u32, [f32; 16])> = None;
+        // In the order of the record, so that the stages of one chain usually come together.
+        for turning in &self.turning_stages {
+            let matrix = match last {
+                Some((chain, matrix)) if chain == turning.chain => matrix,
+                _ => {
+                    let Some(chain) = self.effect_chains.get(&turning.chain) else { continue };
+                    let (matrix, translation) = chain.projection(camera);
+                    crate::effect_turn::texture_matrix(&matrix, &translation)
+                }
+            };
+            last = Some((turning.chain, matrix));
+            let Some(slot) = self.slots[turning.slot as usize].as_mut() else { continue };
+            let stage = turning.stage as usize;
+            if slot.data.texture_transforms[stage] != matrix {
+                slot.data.texture_transforms[stage] = matrix;
+                if let Some(base) = slot.uv_base.as_mut() {
+                    base.set_transform(stage, &matrix);
+                }
+                self.dirty.push(turning.slot);
+                self.counts.turned_stages += 1;
+            }
         }
     }
 
@@ -1507,16 +1589,10 @@ fn effect_stages(m: &material::Material) -> Option<[[u32; EFFECT_STAGE_WORDS]; 2
             _ => 0x50000,
         };
         words[1] = e.flags;
-        // The texture matrix of Direct3D, row by row: the coordinate is a row vector times
-        // the matrix, so a column of the effect's matrix is a row here, and the translation
-        // is the fourth row.
-        for row in 0..3 {
-            for column in 0..3 {
-                words[2 + row * 4 + column] = e.matrix[column * 3 + row].to_bits();
-            }
-        }
-        for column in 0..3 {
-            words[2 + 12 + column] = e.translation[column].to_bits();
+        // An effect that turns has no projection in its record: `turn_effects` writes its stage.
+        let matrix = crate::effect_turn::texture_matrix(&e.matrix, &e.translation);
+        for (word, value) in words[2..].iter_mut().zip(matrix) {
+            *word = value.to_bits();
         }
         words
     };
@@ -1748,6 +1824,17 @@ impl Player {
             set.buckets[bucket as usize].slots.push(slot);
             set.dirty.push(slot);
             slots.push(slot);
+            // The stages whose texture effect turns: their matrix comes from the chain.
+            for (stage, st) in derived.passes[pass].iter().enumerate().take(STAGES) {
+                let effect = match st.source {
+                    8 => m.environment_effect,
+                    9 => m.fog_map_effect,
+                    _ => None,
+                };
+                if let Some(chain) = effect.and_then(|effect| effect.turning) {
+                    set.turning_stages.push(TurningStage { slot, stage: stage as u32, chain });
+                }
+            }
         }
         let set = &mut self.retained;
         set.by_id.insert(id, slots);

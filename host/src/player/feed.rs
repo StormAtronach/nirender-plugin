@@ -104,6 +104,8 @@ impl Player {
                 }
             }
             tag::GEOMETRY_UV => self.geometry_uv_record(data),
+            tag::EFFECT_CHAIN => self.retained.effect_chain_record(data),
+            tag::EFFECT_TURN_CHECK => self.retained.effect_turn_check_record(data),
             tag::MORPH_TARGETS => self.renderer.morph_targets(data),
             tag::MORPH_WEIGHTS => self.renderer.morph_weights(data),
             tag::GEOMETRY_GONE => {

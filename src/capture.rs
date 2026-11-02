@@ -261,6 +261,14 @@ pub mod tag {
     /// ids. The helper holds no other instance: one that it holds and this list lacks lost its
     /// [`INSTANCE_DELETE`]. A helper of an older build skips the record.
     pub const INSTANCE_CENSUS: u32 = 45;
+    /// What does not change with the camera of a texture effect under a turning billboard
+    /// (`effect_chain`): the id, the coordinate mode, the number of links, the world of the node
+    /// above the first turning billboard (13 words), each link (its kind: the billboard's mode
+    /// 0 to 2, or 3 for no turn; its local transform, 13 words), the model projection (12 words).
+    pub const EFFECT_CHAIN: u32 = 46;
+    /// The test switch `NIRENDER_EFFECT_TURN_CHECK`: the id of a chain and the engine's world
+    /// projection of the effect after its billboard's display in this frame (12 floats).
+    pub const EFFECT_TURN_CHECK: u32 = 47;
 }
 
 // ---- the ring in shared memory
@@ -1244,6 +1252,7 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     }
     crate::geometry_stream::reset(t);
     crate::material_stream::reset(t);
+    crate::effect_chain::reset(t);
     crate::light_stream::reset(t);
     crate::instance_stream::reset(t, "a capture file starts");
     if let Some(mut s) = state(&lock) {
@@ -1907,6 +1916,26 @@ pub fn word_bytes(values: &[u32]) -> &[u8] {
 
 fn float_bytes(values: &[f32]) -> &[u8] {
     unsafe { core::slice::from_raw_parts(values.as_ptr() as *const u8, values.len() * 4) }
+}
+
+/// The chain of a texture effect. See [`tag::EFFECT_CHAIN`].
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory.
+pub unsafe fn effect_chain(record: &[u32]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::EFFECT_CHAIN, &[words(record)]);
+}
+
+/// The engine's projection of an effect. See [`tag::EFFECT_TURN_CHECK`].
+///
+/// # Safety
+///
+/// No condition of its own: the function reads no engine memory.
+pub unsafe fn effect_turn_check(record: &[u32]) {
+    let _lock = crate::sync::device_lock();
+    write(tag::EFFECT_TURN_CHECK, &[words(record)]);
 }
 
 /// A state of a UV controller. See [`tag::GEOMETRY_UV`].

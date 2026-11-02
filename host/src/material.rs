@@ -100,7 +100,15 @@ pub struct Effect {
     pub matrix: [f32; 9],
     pub translation: [f32; 3],
     pub flags: u32,
+    /// An effect under a billboard that turns: the id of its chain
+    /// ([`crate::tag::EFFECT_CHAIN`]). The record has no projection then: the table makes it
+    /// from the chain for the camera of each frame, and the camera makes no new material.
+    pub turning: Option<u32>,
 }
+
+/// The bit of the flags word of an effect in a record: the effect turns, and the first word of
+/// its matrix is the id of its chain.
+pub const EFFECT_TURNS: u32 = 0x8000_0000;
 
 impl Material {
     pub fn parse(data: &[u8]) -> Option<Material> {
@@ -111,7 +119,13 @@ impl Material {
         let f = |i: usize| f32::from_bits(w(i));
         let map = |at: usize| Map { texture: w(at), clamp: w(at + 1), filter: w(at + 2), set: w(at + 3), present: w(at + 4) != 0 };
         let effect = |at: usize, present: bool| -> Option<Effect> {
-            (present && data.len() >= WORDS_WITH_EFFECTS * 4).then(|| Effect { matrix: core::array::from_fn(|k| f(at + k)), translation: core::array::from_fn(|k| f(at + 9 + k)), flags: w(at + 12) })
+            (present && data.len() >= WORDS_WITH_EFFECTS * 4).then(|| {
+                let flags = w(at + 12);
+                if flags & EFFECT_TURNS != 0 {
+                    return Effect { matrix: [0.0; 9], translation: [0.0; 3], flags: flags & !EFFECT_TURNS, turning: Some(w(at)) };
+                }
+                Effect { matrix: core::array::from_fn(|k| f(at + k)), translation: core::array::from_fn(|k| f(at + 9 + k)), flags, turning: None }
+            })
         };
         Some(Material {
             flags: w(1),

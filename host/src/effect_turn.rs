@@ -1,0 +1,510 @@
+//! The world projection of a texture effect under a billboard that turns to the camera.
+//!
+//! The engine turns a billboard at its display (`NiBillboardNode::RotateToCamera` 0x6D3C00) and
+//! updates its children there, so the projection of an effect under it changes with the camera
+//! (`NiTextureEffect::UpdateProjection` 0x6E37C0). The plugin sends what does not change with
+//! the camera ([`crate::tag::EFFECT_CHAIN`]): the world of the node above the first turning
+//! billboard, the local transform of each node from it down to the effect, and the model
+//! projection. The helper makes the projection from those and the camera of the frame.
+//!
+//! The camera is the one of the world scene, for all views. The mirror and the layers of the
+//! shadow map replay the table's slots with the same world matrix (`Replayer::replay_retained`),
+//! so the geometry under a billboard stays turned to that camera in them, and the effect agrees.
+//!
+//! The steps follow the engine's: each sum is taken in double precision and stored as a float.
+
+/// The words of a transform: the rotation row by row, the translation, the scale.
+pub const TRANSFORM_WORDS: usize = 13;
+/// The words of a link of a record: the kind, then the local transform.
+pub const LINK_WORDS: usize = 1 + TRANSFORM_WORDS;
+/// The words of a record before its links: the id, the coordinate mode, the number of links,
+/// then the world of the node above the first turning billboard.
+pub const HEAD_WORDS: usize = 3 + TRANSFORM_WORDS;
+/// The words of a record after its links: the model projection, matrix and translation.
+pub const MODEL_WORDS: usize = 12;
+/// The kind of a link that does not turn: a plain node, a billboard of the mode 3, the effect.
+pub const NO_TURN: u32 = 3;
+/// The most links a record can have: the plugin looks at 32 nodes above a shape.
+const MOST_LINKS: usize = 64;
+
+/// A sphere map: its projection comes from the world rotation alone.
+const COORDINATES_SPHERE: u32 = 2;
+
+const IDENTITY: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+
+/// A world projection: the matrix by rows, the translation.
+pub type Projection = ([f32; 9], [f32; 3]);
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Camera {
+    pub direction: [f32; 3],
+    pub up: [f32; 3],
+    pub right: [f32; 3],
+    pub location: [f32; 3],
+}
+
+impl Camera {
+    /// The camera of a view matrix of Direct3D, whose columns hold the camera's axes
+    /// (`NiDX8Renderer::SetCameraData` 0x6AC620), at its exact place.
+    pub fn of_view(view: &[f32; 16], location: [f64; 3]) -> Camera {
+        Camera {
+            right: [view[0], view[4], view[8]],
+            up: [view[1], view[5], view[9]],
+            direction: [view[2], view[6], view[10]],
+            location: location.map(|v| v as f32),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Transform {
+    pub rotation: [f32; 9],
+    pub translation: [f32; 3],
+    pub scale: f32,
+}
+
+impl Transform {
+    fn of_words(words: &[u32]) -> Transform {
+        Transform { rotation: core::array::from_fn(|i| f32::from_bits(words[i])), translation: core::array::from_fn(|i| f32::from_bits(words[9 + i])), scale: f32::from_bits(words[12]) }
+    }
+}
+
+/// A node from the first turning billboard down to the effect.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Link {
+    /// The billboard's mode (0 to 2), or [`NO_TURN`].
+    pub kind: u32,
+    pub local: Transform,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Chain {
+    pub coordinates: u32,
+    /// The world of the node above the first turning billboard.
+    pub root: Transform,
+    pub links: Vec<Link>,
+    pub model_matrix: [f32; 9],
+    pub model_translation: [f32; 3],
+}
+
+impl Chain {
+    /// The id and the chain of a record, or [`None`] for a record that does not hold its links.
+    pub fn parse(words: &[u32]) -> Option<(u32, Chain)> {
+        let count = *words.get(2)? as usize;
+        if count > MOST_LINKS || words.len() < HEAD_WORDS + count * LINK_WORDS + MODEL_WORDS {
+            return None;
+        }
+        let links = words[HEAD_WORDS..].as_chunks::<LINK_WORDS>().0.iter().take(count).map(|link| Link { kind: link[0], local: Transform::of_words(&link[1..]) }).collect();
+        let model = &words[HEAD_WORDS + count * LINK_WORDS..];
+        let chain = Chain {
+            coordinates: words[1],
+            root: Transform::of_words(&words[3..]),
+            links,
+            model_matrix: core::array::from_fn(|i| f32::from_bits(model[i])),
+            model_translation: core::array::from_fn(|i| f32::from_bits(model[9 + i])),
+        };
+        Some((words[0], chain))
+    }
+
+    /// The world transform of the effect for this camera.
+    pub fn effect_world(&self, camera: &Camera) -> Transform {
+        let mut world = self.root;
+        for link in &self.links {
+            world = child_world(&world, &link.local);
+            if link.kind != NO_TURN {
+                world.rotation = multiply(&world.rotation, &turn(link.kind, &world, camera));
+            }
+        }
+        world
+    }
+
+    /// The world projection of the effect for this camera: the matrix and the translation.
+    pub fn projection(&self, camera: &Camera) -> Projection {
+        projection(self.coordinates, &self.model_matrix, &self.model_translation, &self.effect_world(camera))
+    }
+
+    /// The world projection with no turn at all, for the null test of the check.
+    pub fn unturned_projection(&self) -> Projection {
+        let world = self.links.iter().fold(self.root, |world, link| child_world(&world, &link.local));
+        projection(self.coordinates, &self.model_matrix, &self.model_translation, &world)
+    }
+
+    /// The mode of the last billboard that turns: the pair of the check's report.
+    pub fn last_turn(&self) -> u32 {
+        self.links.iter().rev().map(|link| link.kind).find(|&kind| kind != NO_TURN).unwrap_or(NO_TURN)
+    }
+
+    pub fn turning_billboards(&self) -> usize {
+        self.links.iter().filter(|link| link.kind != NO_TURN).count()
+    }
+}
+
+/// `a b`, each by rows (`matrix33::multiplyMatrix` 0x6E80A0).
+fn multiply(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
+    core::array::from_fn(|i| {
+        let (row, column) = (i / 3, i % 3);
+        (0..3).map(|k| f64::from(a[row * 3 + k]) * f64::from(b[k * 3 + column])).sum::<f64>() as f32
+    })
+}
+
+/// `m v` (`matrix33::multiplyVector3` 0x6E8230).
+fn apply(m: &[f32; 9], v: &[f32; 3]) -> [f32; 3] {
+    core::array::from_fn(|row| (0..3).map(|k| f64::from(m[row * 3 + k]) * f64::from(v[k])).sum::<f64>() as f32)
+}
+
+/// `v m`, the vector in the axes of `m` (`matrix33_static::transpose_mul_vec3` 0x6E8290).
+fn apply_transposed(m: &[f32; 9], v: &[f32; 3]) -> [f32; 3] {
+    core::array::from_fn(|column| (0..3).map(|k| f64::from(m[k * 3 + column]) * f64::from(v[k])).sum::<f64>() as f32)
+}
+
+/// The world of a child (`NiAVObject::UpdateWorldData` 0x6FB350, with its parent).
+fn child_world(parent: &Transform, local: &Transform) -> Transform {
+    let turned = apply(&parent.rotation, &local.translation);
+    let scaled = turned.map(|v| (f64::from(v) * f64::from(parent.scale)) as f32);
+    Transform {
+        rotation: multiply(&parent.rotation, &local.rotation),
+        translation: core::array::from_fn(|i| (f64::from(parent.translation[i]) + f64::from(scaled[i])) as f32),
+        scale: (f64::from(local.scale) * f64::from(parent.scale)) as f32,
+    }
+}
+
+/// The matrix that `RotateToCamera` 0x6D3C00 puts after the rotation of the billboard, for its
+/// mode and its world before the turn.
+fn turn(mode: u32, world: &Transform, camera: &Camera) -> [f32; 9] {
+    match mode {
+        0 => turn_facing(world, camera),
+        1 => turn_about_y(world, camera),
+        2 => turn_to_axes(world, camera),
+        _ => IDENTITY,
+    }
+}
+
+/// Mode 0: faces the camera and keeps its up. Identity with the camera's up and right both
+/// across the node's Y axis.
+fn turn_facing(world: &Transform, camera: &Camera) -> [f32; 9] {
+    let direction = apply_transposed(&world.rotation, &camera.direction).map(f64::from);
+    let up = apply_transposed(&world.rotation, &camera.up).map(f64::from);
+    let right = apply_transposed(&world.rotation, &camera.right).map(f64::from);
+
+    let length = (up[1] * up[1] + right[1] * right[1]).sqrt();
+    if length.is_nan() || length <= 1.0e-6 {
+        return IDENTITY;
+    }
+    let cosine = up[1] / length;
+    let sine = -right[1] / length;
+    [
+        (up[0] * sine + right[0] * cosine) as f32,
+        (up[0] * cosine - right[0] * sine) as f32,
+        -direction[0] as f32,
+        (up[1] * sine + right[1] * cosine) as f32,
+        (up[1] * cosine - right[1] * sine) as f32,
+        -direction[1] as f32,
+        (up[2] * sine + right[2] * cosine) as f32,
+        (up[2] * cosine - right[2] * sine) as f32,
+        -direction[2] as f32,
+    ]
+}
+
+/// Mode 1: about the local Y axis, towards the camera's place, with the scale divided out.
+/// Identity with the camera on that axis.
+fn turn_about_y(world: &Transform, camera: &Camera) -> [f32; 9] {
+    let delta: [f32; 3] = core::array::from_fn(|i| (f64::from(camera.location[i]) - f64::from(world.translation[i])) as f32);
+    let local = apply_transposed(&world.rotation, &delta);
+    let inverse = 1.0 / f64::from(world.scale);
+    let x = f64::from((inverse * f64::from(local[0])) as f32);
+    let z = inverse * f64::from(local[2]);
+
+    let length = (z * z + x * x).sqrt();
+    if length.is_nan() || length < 1.0e-12 {
+        return IDENTITY;
+    }
+    let cosine = (z / length) as f32;
+    let sine = (x / length) as f32;
+    [cosine, 0.0, sine, 0.0, 1.0, 0.0, -sine, 0.0, cosine]
+}
+
+/// Mode 2: the rotation becomes the camera's axes.
+fn turn_to_axes(world: &Transform, camera: &Camera) -> [f32; 9] {
+    let direction = apply_transposed(&world.rotation, &camera.direction);
+    let up = apply_transposed(&world.rotation, &camera.up);
+    let right = apply_transposed(&world.rotation, &camera.right);
+    [right[0], up[0], direction[0], right[1], up[1], direction[1], right[2], up[2], direction[2]]
+}
+
+/// `NiTextureEffect::UpdateProjection` 0x6E37C0: a sphere map from the world rotation alone, each
+/// other mode from the model projection.
+pub fn projection(coordinates: u32, model_matrix: &[f32; 9], model_translation: &[f32; 3], world: &Transform) -> Projection {
+    if coordinates == COORDINATES_SPHERE {
+        let r = &world.rotation;
+        let half = |v: f32| (f64::from(v) * 0.5) as f32;
+        let minus_half = |v: f32| (f64::from(v) * -0.5) as f32;
+        return ([half(r[2]), half(r[5]), half(r[8]), minus_half(r[1]), minus_half(r[4]), minus_half(r[7]), 0.0, 0.0, 0.0], [0.5, 0.5, 0.0]);
+    }
+    let inverse = (1.0 / f64::from(world.scale)) as f32;
+    let r = &world.rotation;
+    let transposed = [r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]];
+    let matrix = multiply(model_matrix, &transposed).map(|v| (f64::from(v) * f64::from(inverse)) as f32);
+    let at = apply(&matrix, &world.translation);
+    (matrix, core::array::from_fn(|i| (f64::from(model_translation[i]) - f64::from(at[i])) as f32))
+}
+
+/// The texture matrix of Direct3D for a world projection, row by row: the coordinate is a row
+/// vector times the matrix, so a column of the projection's matrix is a row here, and the
+/// translation is the fourth row.
+pub fn texture_matrix(matrix: &[f32; 9], translation: &[f32; 3]) -> [f32; 16] {
+    let mut out = [0.0f32; 16];
+    for row in 0..3 {
+        for column in 0..3 {
+            out[row * 4 + column] = matrix[column * 3 + row];
+        }
+    }
+    out[12..15].copy_from_slice(translation);
+    out
+}
+
+/// The largest difference of a projection from the engine's words: the matrix, the translation.
+pub fn difference(a: &Projection, b: &Projection) -> (f32, f32) {
+    let largest = |x: &[f32], y: &[f32]| x.iter().zip(y).map(|(p, q)| (p - q).abs()).fold(0.0f32, f32::max);
+    (largest(&a.0, &b.0), largest(&a.1, &b.1))
+}
+
+/// What the live check of one pair found (`NIRENDER_EFFECT_TURN_CHECK`).
+#[derive(Clone, Copy, Default)]
+struct PairCheck {
+    compared: u64,
+    matrix: f32,
+    translation: f32,
+    /// The same with the camera of the frame before, and with no turn: the null tests. A moving
+    /// camera shows in the first, and a turn that counts in the second.
+    old_camera: f32,
+    no_turn: f32,
+}
+
+impl PairCheck {
+    fn line(&self, name: &str) -> String {
+        format!("{name}: {} compared, largest difference {} in the matrix and {} in the translation; with the camera of the frame before {}, with no turn {}", self.compared, self.matrix, self.translation, self.old_camera, self.no_turn)
+    }
+}
+
+/// The live check: the helper's projection against the engine's words after the billboard's
+/// display, by the pair of the billboard's mode and the coordinate mode, and the chains with
+/// more than one turning billboard apart.
+#[derive(Default)]
+pub struct TurnChecks {
+    pairs: [[PairCheck; 5]; 3],
+    nested: PairCheck,
+    /// The frames with a comparison, and those whose camera differed from the frame before.
+    frames: u64,
+    moved_frames: u64,
+    camera: Option<Camera>,
+    previous: Option<Camera>,
+}
+
+impl TurnChecks {
+    /// A frame's camera, before its comparisons.
+    pub fn next_frame(&mut self, camera: &Camera) {
+        self.previous = self.camera;
+        self.camera = Some(*camera);
+        self.frames += 1;
+        self.moved_frames += u64::from(self.previous.is_some_and(|previous| previous != *camera));
+    }
+
+    /// The projection of `chain` against the engine's words of this frame.
+    pub fn compare(&mut self, chain: &Chain, engine: &Projection) {
+        let Some(camera) = self.camera else { return };
+        let (matrix, translation) = difference(&chain.projection(&camera), engine);
+        let old_camera = self.previous.map_or(0.0, |previous| difference(&chain.projection(&previous), engine).0);
+        let no_turn = difference(&chain.unturned_projection(), engine).0;
+        let pair = if chain.turning_billboards() > 1 {
+            &mut self.nested
+        } else {
+            let (mode, coordinates) = (chain.last_turn() as usize, chain.coordinates as usize);
+            let Some(pair) = self.pairs.get_mut(mode).and_then(|modes| modes.get_mut(coordinates)) else { return };
+            pair
+        };
+        pair.compared += 1;
+        pair.matrix = pair.matrix.max(matrix);
+        pair.translation = pair.translation.max(translation);
+        pair.old_camera = pair.old_camera.max(old_camera);
+        pair.no_turn = pair.no_turn.max(no_turn);
+    }
+
+    /// The lines of the report; none without a comparison.
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.frames == 0 {
+            return lines;
+        }
+        lines.push(format!("effect turn check: {} frames, {} with another camera than the frame before", self.frames, self.moved_frames));
+        for (mode, modes) in self.pairs.iter().enumerate() {
+            for (coordinates, pair) in modes.iter().enumerate() {
+                lines.push(pair.line(&format!("effect turn check: billboard mode {mode}, coordinate mode {coordinates}")));
+            }
+        }
+        lines.push(self.nested.line("effect turn check: two turning billboards"));
+        lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The vectors of `tools/effect_turn_vectors.lua`: the engine's own functions on made objects.
+    const VECTORS: &str = include_str!("effect_turn_vectors.txt");
+
+    /// One float step at this size, in units.
+    fn step(v: f32) -> f32 {
+        let v = v.abs().max(1.0e-3);
+        f32::from_bits(v.to_bits() + 1) - v
+    }
+
+    fn floats(text: &str) -> Vec<f32> {
+        text.split_whitespace().map(|word| f32::from_bits(u32::from_str_radix(word, 16).unwrap())).collect()
+    }
+
+    fn transform(v: &[f32]) -> Transform {
+        Transform { rotation: v[..9].try_into().unwrap(), translation: v[9..12].try_into().unwrap(), scale: v[12] }
+    }
+
+    /// A case of the file: its name, the chain, the camera, the engine's world of the effect and
+    /// its projection.
+    struct Case {
+        name: String,
+        chain: Chain,
+        camera: Camera,
+        world: Transform,
+        matrix: [f32; 9],
+        translation: [f32; 3],
+    }
+
+    /// A line is `name|coordinate mode|kinds|root|the locals|model|camera|world|projection`, each
+    /// float as the eight hex digits of its word.
+    fn cases() -> Vec<Case> {
+        VECTORS
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.is_empty())
+            .map(|line| {
+                let parts: Vec<&str> = line.split('|').collect();
+                let kinds: Vec<u32> = parts[2].split_whitespace().map(|k| k.parse().unwrap()).collect();
+                let locals = floats(parts[4]);
+                let model = floats(parts[5]);
+                let camera = floats(parts[6]);
+                let projection = floats(parts[8]);
+                Case {
+                    name: parts[0].to_string(),
+                    chain: Chain {
+                        coordinates: parts[1].parse().unwrap(),
+                        root: transform(&floats(parts[3])),
+                        links: kinds.iter().enumerate().map(|(i, &kind)| Link { kind, local: transform(&locals[i * TRANSFORM_WORDS..]) }).collect(),
+                        model_matrix: model[..9].try_into().unwrap(),
+                        model_translation: model[9..12].try_into().unwrap(),
+                    },
+                    camera: Camera { direction: camera[..3].try_into().unwrap(), up: camera[3..6].try_into().unwrap(), right: camera[6..9].try_into().unwrap(), location: camera[9..12].try_into().unwrap() },
+                    world: transform(&floats(parts[7])),
+                    matrix: projection[..9].try_into().unwrap(),
+                    translation: projection[9..12].try_into().unwrap(),
+                }
+            })
+            .collect()
+    }
+
+    /// Within `steps` float steps of the engine's value. A value near 0 is the difference of
+    /// larger values, so the step of the largest value of the set counts for it.
+    fn close(name: &str, what: &str, got: &[f32], want: &[f32], steps: f32) {
+        let largest = want.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        for (i, (g, w)) in got.iter().zip(want).enumerate() {
+            let allowed = steps * step(largest);
+            assert!((g - w).abs() <= allowed, "{name}: {what}[{i}] is {g}, the engine has {w} (allowed {allowed})");
+        }
+    }
+
+    #[test]
+    fn the_maths_gives_the_engines_values() {
+        let cases = cases();
+        assert!(cases.len() >= 100, "{} cases", cases.len());
+        for case in &cases {
+            let world = case.chain.effect_world(&case.camera);
+            close(&case.name, "world rotation", &world.rotation, &case.world.rotation, 4.0);
+            close(&case.name, "world translation", &world.translation, &case.world.translation, 4.0);
+            close(&case.name, "world scale", &[world.scale], &[case.world.scale], 1.0);
+            let (matrix, translation) = case.chain.projection(&case.camera);
+            close(&case.name, "matrix", &matrix, &case.matrix, 8.0);
+            close(&case.name, "translation", &translation, &case.translation, 16.0);
+        }
+    }
+
+    #[test]
+    fn the_file_holds_every_pair_and_both_identity_branches() {
+        let cases = cases();
+        for mode in 0..3 {
+            for coordinates in 0..5 {
+                assert!(cases.iter().any(|c| c.chain.coordinates == coordinates && c.chain.last_turn() == mode), "no case of billboard mode {mode} and coordinate mode {coordinates}");
+            }
+        }
+        for name in ["identity facing", "identity about y", "nested"] {
+            assert!(cases.iter().any(|c| c.name.starts_with(name)), "no case {name}");
+        }
+    }
+
+    /// An identity branch leaves the rotation as it was: the file's cases show that the engine
+    /// took the branch, and the maths takes it too.
+    #[test]
+    fn an_identity_branch_does_not_turn() {
+        for case in cases().iter().filter(|c| c.name.starts_with("identity")) {
+            let world = case.chain.effect_world(&case.camera);
+            let plain = case.chain.links.iter().fold(case.chain.root, |w, link| child_world(&w, &link.local));
+            assert_eq!(world.rotation, plain.rotation, "{}", case.name);
+            assert_eq!(case.world.rotation, plain.rotation, "{} in the engine", case.name);
+        }
+    }
+
+    /// The null test of the file: the same cases with no turn differ from the engine's values,
+    /// so a test of this file can show a missing turn.
+    #[test]
+    fn without_the_turn_the_values_differ() {
+        let cases = cases();
+        let turning: Vec<&Case> = cases.iter().filter(|c| !c.name.starts_with("identity") && c.chain.last_turn() != NO_TURN).collect();
+        assert!(!turning.is_empty());
+        let same = turning.iter().filter(|c| {
+            let plain = c.chain.unturned_projection();
+            difference(&plain, &(c.matrix, c.translation)).0 <= 1.0e-6
+        });
+        // A case with the camera along the node's own axes can turn by nothing.
+        assert!(same.count() * 10 < turning.len());
+    }
+
+    #[test]
+    fn a_record_is_read_and_a_short_one_refused() {
+        let mut words = vec![7u32, 2, 1];
+        words.extend(core::iter::repeat(1.0f32.to_bits()).take(TRANSFORM_WORDS));
+        words.push(1);
+        words.extend(core::iter::repeat(2.0f32.to_bits()).take(TRANSFORM_WORDS));
+        words.extend(core::iter::repeat(3.0f32.to_bits()).take(MODEL_WORDS));
+        let (id, chain) = Chain::parse(&words).unwrap();
+        assert_eq!((id, chain.coordinates, chain.links.len(), chain.links[0].kind), (7, 2, 1, 1));
+        assert_eq!(chain.root.scale, 1.0);
+        assert_eq!(chain.links[0].local.scale, 2.0);
+        assert_eq!(chain.model_translation, [3.0; 3]);
+        assert!(Chain::parse(&words[..words.len() - 1]).is_none());
+        let mut many = words.clone();
+        many[2] = u32::MAX;
+        assert!(Chain::parse(&many).is_none());
+    }
+
+    #[test]
+    fn the_camera_comes_from_the_columns_of_the_view() {
+        let view = [1.0, 2.0, 3.0, 0.0, 4.0, 5.0, 6.0, 0.0, 7.0, 8.0, 9.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let camera = Camera::of_view(&view, [10.0, 20.0, 30.0]);
+        assert_eq!(camera.right, [1.0, 4.0, 7.0]);
+        assert_eq!(camera.up, [2.0, 5.0, 8.0]);
+        assert_eq!(camera.direction, [3.0, 6.0, 9.0]);
+        assert_eq!(camera.location, [10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn the_texture_matrix_has_the_columns_in_rows() {
+        let m = texture_matrix(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], &[10.0, 11.0, 12.0]);
+        assert_eq!(m, [1.0, 4.0, 7.0, 0.0, 2.0, 5.0, 8.0, 0.0, 3.0, 6.0, 9.0, 0.0, 10.0, 11.0, 12.0, 0.0]);
+    }
+}

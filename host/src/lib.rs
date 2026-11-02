@@ -92,6 +92,7 @@ use stage_groups::{StageGroups, StageKey};
 /// helper of MGE XE, `shader_check` of mgeHost64), the probe, and the exit code of a refusal.
 pub use request::{fixed_limits, probe, required_features, required_features_of, tier_c_shader_source, world_shader_source, Refusal, TextureTier, ARRAY_SAMPLERS, ARRAY_TEXTURES, SAMPLED_TEXTURES};
 mod uv_animation;
+mod effect_turn;
 mod morph;
 pub mod stamps;
 use retained::{light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet, SceneData, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_BONES_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};

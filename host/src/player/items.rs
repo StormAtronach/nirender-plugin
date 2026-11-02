@@ -30,6 +30,11 @@ impl Player {
         if let Some(origin) = world_origin {
             self.retained.rebase(origin, &self.renderer.lights_known);
         }
+        // The texture effects under a turning billboard, for the camera of the world.
+        if let Some(facts) = items.iter().find_map(|item| if let Item::WorldStart(facts) = item { Some(facts) } else { None }) {
+            let location = facts.origin.unwrap_or_else(|| eye_of_view(&facts.view));
+            self.retained.turn_effects(&crate::effect_turn::Camera::of_view(&facts.view, location));
+        }
         self.renderer.retained_upload(&mut self.retained);
         self.renderer.upload_lights(&self.frame_lights);
         self.renderer.upload_bones(&self.frame_bones);

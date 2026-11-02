@@ -86,15 +86,22 @@ pub const MORPH_WEIGHTS: u32 = 43;
 /// buffer again between two frames).
 pub const SIZE: u32 = 44;
 pub const INSTANCE_CENSUS: u32 = 45;
+/// What does not change with the camera of a texture effect under a turning billboard: the id,
+/// the coordinate mode, the number of links, the world of the node above the first turning
+/// billboard, each link (its kind and local transform), the model projection (`effect_turn`).
+pub const EFFECT_CHAIN: u32 = 46;
+/// The test switch `NIRENDER_EFFECT_TURN_CHECK`: the id of a chain and the engine's world
+/// projection of the effect after its billboard's display in this frame (12 floats).
+pub const EFFECT_TURN_CHECK: u32 = 47;
 
 /// Every tag of this build, the two retired ones (2 and 7) among them. A new tag goes here
 /// with its constant, read by the player or not: a test asks that each constant is here.
-pub const KNOWN: [u32; 45] = [
+pub const KNOWN: [u32; 47] = [
     TEXTURE, 2, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, 7, COMMAND, CALL, FRAME_END, HEADER, TEXTURE_UPDATE,
     READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW,
     INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED,
     INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE,
-    MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS,
+    MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS, EFFECT_CHAIN, EFFECT_TURN_CHECK,
 ];
 
 /// A tag that this build knows ([`KNOWN`]). A record of another tag comes from a plugin of
@@ -154,6 +161,9 @@ pub fn least_length(tag: u32) -> usize {
         MORPH_WEIGHTS => 12,
         SIZE => 12,
         INSTANCE_CENSUS => 4,
+        // A chain with no links: the head and the model projection.
+        EFFECT_CHAIN => (crate::effect_turn::HEAD_WORDS + crate::effect_turn::MODEL_WORDS) * 4,
+        EFFECT_TURN_CHECK => 13 * 4,
         _ => 0,
     }
 }
@@ -194,6 +204,7 @@ pub fn needed(tag: u32, data: &[u8]) -> usize {
         MORPH_WEIGHTS => sum(&[12, count(8).saturating_mul(4)]),
         INSTANCE_LIGHTS => sum(&[8, count(4).saturating_mul(4)]),
         INSTANCE_BONES => sum(&[24, count(4).saturating_mul(BONE_BYTES)]),
+        EFFECT_CHAIN => sum(&[head, count(8).saturating_mul(crate::effect_turn::LINK_WORDS * 4)]),
         // The keys of the lights, the texture effects (flag 16), the fog (flag 32), the bones.
         SHAPE => {
             let flags = word(data, 8);
@@ -284,6 +295,8 @@ pub fn name(tag: u32) -> &'static str {
         MORPH_WEIGHTS => "morph weights",
         SIZE => "size",
         INSTANCE_CENSUS => "instance census",
+        EFFECT_CHAIN => "effect chain",
+        EFFECT_TURN_CHECK => "effect turn check",
         _ => "unknown",
     }
 }
@@ -293,14 +306,14 @@ mod tests {
     use super::*;
 
     /// Every tag the player reads: all the known tags but the two retired ones (2 and 7).
-    const READ_TAGS: [u32; 43] = [
+    const READ_TAGS: [u32; 45] = [
         HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, COMMAND, CALL, FRAME_END, READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS,
-        INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS,
+        INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS, EFFECT_CHAIN, EFFECT_TURN_CHECK,
     ];
 
     #[test]
     fn the_test_reads_every_known_tag_but_the_retired_ones() {
-        let known: Vec<u32> = (1..=INSTANCE_CENSUS).filter(|&tag| is_known(tag) && tag != 2 && tag != 7).collect();
+        let known: Vec<u32> = (1..=EFFECT_TURN_CHECK).filter(|&tag| is_known(tag) && tag != 2 && tag != 7).collect();
         let mut read = READ_TAGS.to_vec();
         read.sort();
         assert_eq!(read, known);
@@ -344,6 +357,11 @@ mod tests {
             INSTANCE_LIGHTS => {
                 put(&mut record, 4, 2);
                 record.resize(16, 0);
+            }
+            EFFECT_CHAIN => {
+                put(&mut record, 8, 2);
+                let whole = record.len() + 2 * crate::effect_turn::LINK_WORDS * 4;
+                record.resize(whole, 0);
             }
             INSTANCE_BONES => {
                 put(&mut record, 4, 1);
@@ -452,7 +470,7 @@ mod tests {
         for tag in constants {
             assert!(is_known(tag), "tag {tag} is a constant but not in KNOWN");
         }
-        assert!(!is_known(0) && !is_known(46));
+        assert!(!is_known(0) && !is_known(48));
     }
 
     #[test]
