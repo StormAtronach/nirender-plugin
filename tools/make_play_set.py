@@ -30,6 +30,9 @@ smoke leaves local.bat on the last good set, says why, and exit code 1. Each set
 No set is deleted: older sets stay until the owner's cleanup, and a failed set stays with its reason. The
 only file it deletes is the smoke's own save. The smoke's runs are copied to E:/nirender-keep/runs-<date>.
 
+It reads the tips again when it holds the slot, and builds again if they moved, as the wait in the queue can
+be long. If they move during the smoke, the note says that the set is not at the tips.
+
 With the tips of the set in local.bat it does nothing, unless --force. The owner's checkout must be at the
 plugin's commit, as a game by the bat takes the Lua of mod/ from there: otherwise it stops, unless --force,
 and the note says so. A build waits while the slots refuse a build, and the smoke waits in the queue of the
@@ -106,6 +109,17 @@ def md5_of(path):
 
 
 # --- the pure parts ---------------------------------------------------------------------
+
+def current_tips():
+    """The commits of the two branches now, as (plugin, render-link)."""
+    return git(PLUGIN_REPO, "rev-parse", "--short=7", PLUGIN_BRANCH), git(MGE_REPO, "rev-parse", "--short=7", MGE_BRANCH)
+
+
+def tips_moved(built, now):
+    """A text that says which tips differ from the built commits, or an empty text."""
+    moved = ["%s moved from %s to %s" % (branch, old, new) for branch, old, new in zip((PLUGIN_BRANCH, MGE_BRANCH), built, now, strict=True) if old != new]
+    return ", ".join(moved)
+
 
 def next_set_number(names):
     """The next number of a set folder. The highest number as a number: a text sort puts f99 after f100."""
@@ -526,6 +540,9 @@ def current_set_commits(owner_local_bat):
 def self_test():
     assert next_set_number(["f99", "f100", "f7", "other", "f12x"]) == 101
     assert next_set_number([]) == 1
+    assert tips_moved(("a", "b"), ("a", "b")) == ""
+    assert PLUGIN_BRANCH in tips_moved(("a", "b"), ("c", "b")) and MGE_BRANCH not in tips_moved(("a", "b"), ("c", "b"))
+    assert MGE_BRANCH in tips_moved(("a", "b"), ("a", "d"))
 
     text = '@echo off\r\nset "PYTHON=C:\\p.exe"\r\nset "MGE_BUILD=E:\\a\\f185"\r\nset "NIRENDER_PLUGIN_DLL=E:\\a\\f185\\x.dll"\r\nset "OUTLANDER_INSTANCE=D:\\o"\r\n'
     updated = with_set_lines(text, "E:\\a\\f186", "E:\\a\\f186\\y.dll")
@@ -630,6 +647,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--force", action="store_true", help="make a set when local.bat's set has these tips already")
     parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 where this would wait for a slot")
+    parser.add_argument("--keep-slot", action="store_true", help="after a pass, keep the game slot for this session's next work, and release it yourself")
     parser.add_argument("--build-only", action="store_true", help="only the build in the trees: no set, no game")
     parser.add_argument("--bats-only", action="store_true", help="the step of the owner's start alone, on the set that local.bat names")
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
@@ -639,8 +657,7 @@ def main():
         return 0
 
     owner_local_bat = os.path.join(PLUGIN_REPO, "local.bat")
-    plugin_commit = git(PLUGIN_REPO, "rev-parse", "--short=7", PLUGIN_BRANCH)
-    mge_commit = git(MGE_REPO, "rev-parse", "--short=7", MGE_BRANCH)
+    plugin_commit, mge_commit = current_tips()
     say("the tips: nirender %s %s, render-link %s %s" % (PLUGIN_BRANCH, plugin_commit, MGE_BRANCH, mge_commit))
     if not args.force and not args.bats_only and current_set_commits(owner_local_bat) == (plugin_commit, mge_commit):
         say("local.bat names a set of these tips, and nothing is made")
@@ -684,9 +701,13 @@ def main():
 
     wait_for_build(slots, args.no_wait)
 
-    build_log = os.path.join(TREES, "build-%s-%s.log" % (plugin_commit, mge_commit))
-    build_step(["cargo", "build", "--release"], plugin_tree, build_log)
-    build_step(["cargo", "xtask", "dist"], mge_tree, build_log)
+    def build_trees():
+        build_log = os.path.join(TREES, "build-%s-%s.log" % (plugin_commit, mge_commit))
+        build_step(["cargo", "build", "--release"], plugin_tree, build_log)
+        build_step(["cargo", "xtask", "dist"], mge_tree, build_log)
+        return build_log
+
+    build_log = build_trees()
     if args.build_only:
         say("built, with no set: %s" % build_log)
         return 0
@@ -695,12 +716,27 @@ def main():
     take_game(slots, "the smoke of the next set", args.no_wait)
     name = None
     notes = []
+    passed = False
 
     def write_note(result):
         with open(os.path.join(SETS, name, "WHAT.txt"), "w", encoding="ascii", errors="backslashreplace") as file:
             file.write(set_note(name, plugin_commit, mge_commit, result))
 
     try:
+        # The wait for the slot can be long, and the set must be of the tips when the smoke starts (f187 was
+        # an hour old). A build here holds the slot, and it is a plain hold: builds may run beside it anyway.
+        moved = tips_moved((plugin_commit, mge_commit), current_tips())
+        if moved:
+            say("%s during the wait for the slot, and I build again" % moved)
+            plugin_commit, mge_commit = current_tips()
+            plugin_tree = ready_tree("nirender-plugin", PLUGIN_REPO, plugin_commit)
+            mge_tree = ready_tree("MGE-XE-G7-render-link", MGE_REPO, mge_commit)
+            build_trees()
+            head = git(PLUGIN_REPO, "rev-parse", "--short=7", "HEAD")
+            if head != plugin_commit:
+                checkout_note = "; the owner's checkout was at %s, so a game by the bat takes another Lua" % head
+                say(checkout_note[2:])
+
         name = new_set_folder()
         folder = os.path.join(SETS, name).replace("\\", "/")
         with open(os.path.join(folder, "WHAT.txt"), "x", encoding="ascii") as file:
@@ -708,6 +744,7 @@ def main():
         plugin_dll = copy_stage(os.path.join(mge_tree, "target", "dist-staging"), plugin_tree, folder, plugin_commit).replace("\\", "/")
         say("the set: %s" % folder)
         result = run_smoke(plugin_tree, folder, plugin_dll, owner_local_bat, notes)
+        passed = True
     except SmokeFailed as failure:
         reason = "FAILED: %s" % failure
         write_note(reason)
@@ -719,7 +756,15 @@ def main():
             write_note("FAILED: stopped by %r" % failure)
         raise
     finally:
-        say(slots.release("game").text)
+        if passed and args.keep_slot:
+            say("game: kept for the next work of this session")
+        else:
+            say(slots.release("game").text)
+
+    # A set that passed stays good, but it must not read as the tips.
+    moved = tips_moved((plugin_commit, mge_commit), current_tips())
+    if moved:
+        notes.append("NOT THE TIPS: %s during the smoke" % moved)
 
     # local.bat first: a note that says passed then always has a set that local.bat names.
     write_local_bat(owner_local_bat, folder, plugin_dll)
