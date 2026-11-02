@@ -253,10 +253,41 @@ def self_test():
             assert newest("v-test") == new and newest("v-test", "99991231-000000") is None
     finally:
         REPO, run_code = real_repo, real_run_code
+    # The folders of the baseline stage. With --now, it writes nothing in the baseline folder.
+    base, other = os.path.join("x", "base"), os.path.join("x", "other")
+    assert picture_folders(base, True, None) == (os.path.join(base, "accepted"), os.path.join(base, "tour", "accepted"))
+    assert picture_folders(base, False, None) == (os.path.join(base, "now"), os.path.join(base, "tour", "now"))
+    assert picture_folders(base, False, other) == (other, os.path.join(other, "tour"))
+    assert now_problem(base, False, None) is None and now_problem(base, True, None) is None and now_problem(base, False, other) is None
+    assert now_problem(base, False, os.path.join("x", "base2")) is None, "a name that only starts the same is outside"
+    assert "--accept" in now_problem(base, True, other)
+    assert "in the baseline folder" in now_problem(base, False, base)
+    assert "in the baseline folder" in now_problem(base, False, os.path.join(base, "accepted"))
     print("validate_retained self-test: ok")
 
 
-def stage_baseline(baseline, accept, mge_build):
+def picture_folders(baseline, accept, now):
+    """Where the baseline stage writes: the folder of the pictures, and the folder of the tour's."""
+    if accept:
+        return os.path.join(baseline, "accepted"), os.path.join(baseline, "tour", "accepted")
+    if now:
+        return now, os.path.join(now, "tour")
+    return os.path.join(baseline, "now"), os.path.join(baseline, "tour", "now")
+
+
+def now_problem(baseline, accept, now):
+    """Why --now cannot be used, as a text, or None. With --now, the stage writes nothing in the baseline folder."""
+    if not now:
+        return None
+    if accept:
+        return "--now and --accept: an acceptance writes the accepted pictures"
+    folder, inside = os.path.normcase(os.path.abspath(baseline)), os.path.normcase(os.path.abspath(now))
+    if inside == folder or inside.startswith(folder + os.sep):
+        return "--now %s is in the baseline folder" % now
+    return None
+
+
+def stage_baseline(baseline, accept, mge_build, now=None):
     """The captures of the baseline folder against their accepted pictures, in the order of
     the draws of the game, as a player has them."""
     print("baseline %s" % baseline, flush=True)
@@ -268,7 +299,7 @@ def stage_baseline(baseline, accept, mge_build):
         return check(False, "no capture in the baseline folder")
     env = {}
     accepted = os.path.join(baseline, "accepted")
-    out = accepted if accept else os.path.join(baseline, "now")
+    out, tour_out = picture_folders(baseline, accept, now)
     os.makedirs(out, exist_ok=True)
     adapter = None
     for capture in captures:
@@ -277,7 +308,6 @@ def stage_baseline(baseline, accept, mge_build):
             return False
         adapter = adapter or adapter_of(output)
     tour = os.path.join(baseline, "tour")
-    tour_out = os.path.join(tour, "accepted" if accept else "now")
     if os.path.isdir(tour) and not ran(run_code([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env), "validate_tour.py", accept):
         return False
     adapter_path = os.path.join(accepted, ADAPTER_FILE)
@@ -428,6 +458,7 @@ def main():
     ap.add_argument("--places", default="seyda,narsis")
     ap.add_argument("--baseline", default=os.path.join(REPO, "results", "baseline-records"), help="the folder of the baseline stage")
     ap.add_argument("--accept", action="store_true", help="the baseline stage writes the accepted pictures and compares nothing")
+    ap.add_argument("--now", default=None, help="the folder of the baseline stage's pictures, outside the baseline folder; without it, `now` in the baseline folder")
     ap.add_argument("--gpu-time", action="store_true", help="the helper writes GPU time stamps in the only stage")
     ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off for the runs")
     ap.add_argument("--weather", type=int, default=None, help="the weather of the runs, 0 clear to 9 blizzard (the game's without this)")
@@ -436,6 +467,10 @@ def main():
     if args.self_test:
         self_test()
         return 0
+    problem = now_problem(args.baseline, args.accept, args.now)
+    if problem:
+        print("  FAIL " + problem, flush=True)
+        return 1
     if args.disable_mod:
         RUNNER_ARGS.extend(["--disable-mod", args.disable_mod])
     if args.weather is not None:
@@ -449,7 +484,7 @@ def main():
                 if not stage_capture(place, args.mge_build):
                     return 1
         elif stage == "baseline":
-            if not stage_baseline(args.baseline, args.accept, args.mge_build):
+            if not stage_baseline(args.baseline, args.accept, args.mge_build, args.now):
                 return 1
         elif stage == "only":
             for place in places:
