@@ -1,7 +1,7 @@
 """A reader and writer of NetImmerse 4.0.0.2 files (the NIF of Morrowind) for the blocks the
 test assets need: nodes, tri shapes and their data, the properties, source textures, texture
-effects and string extra data. Written 2026-10-16 for the test NIFs of the flag support
-(flag inventory check). The layouts are those of nif.xml for 4.0.0.2; the proof of each one
+effects, string extra data and particle systems. Written 2026-10-16 for the test NIFs of the
+flag support (flag inventory check). The layouts are those of nif.xml for 4.0.0.2; the proof of each one
 is `python tools/nif40.py check <folder>`: every file of the folder whose blocks are all
 known must read and write back byte for byte.
 
@@ -22,6 +22,20 @@ AV_OBJECT = OBJECT_NET + [("flags", "u16"), ("translation", "v3"), ("rotation", 
                           ("properties", "refs"), ("bounds", "bounds")]
 TEX_DESC = [("source", "ref"), ("clamp", "u32"), ("filter", "u32"), ("uv_set", "u32"), ("ps2_l", "i16"), ("ps2_k", "i16"), ("unknown", "u16")]
 NODE = AV_OBJECT + [("children", "refs"), ("effects", "refs")]
+# The base of a controller (`NiTimeController::LoadBinary` 0x6FC9F0).
+TIME_CONTROLLER = [("next", "ref"), ("flags", "u16"), ("frequency", "f"), ("phase", "f"), ("low_key", "f"), ("high_key", "f"), ("target", "ref")]
+# `NiParticleSystemController::LoadBinary` 0x70B310: the field names are the engine's.
+PARTICLE_CONTROLLER = TIME_CONTROLLER + [
+    ("speed", "f"), ("speed_variation", "f"), ("declination", "f"), ("declination_variation", "f"), ("planar_angle", "f"),
+    ("planar_angle_variation", "f"), ("initial_normal", "v3"), ("initial_color", "c4"), ("initial_size", "f"), ("emit_start", "f"),
+    ("emit_stop", "f"), ("reset_system", "u8"), ("birth_rate", "f"), ("lifespan", "f"), ("lifespan_variance", "f"), ("use_birth_rate", "u8"),
+    ("spawn_on_death", "u8"), ("emitter_width", "f"), ("emitter_height", "f"), ("emitter_depth", "f"), ("emitter", "ref"),
+    ("spawn_generations", "u16"), ("spawn_percentage", "f"), ("spawn_multiplier", "u16"), ("spawned_speed_chaos", "f"),
+    ("spawned_direction_chaos", "f"), ("particles", "perparticle"), ("emitter_modifier", "ref"), ("modifiers", "ref"), ("colliders", "ref"),
+    ("static_bound", "u8")]
+# The base of a particle modifier (`NiParticleModifier::LoadBinary` 0x7269E0).
+PARTICLE_MODIFIER = [("next", "ref"), ("controller", "ref")]
+PARTICLES = AV_OBJECT + [("data", "ref"), ("skin", "ref")]
 LAYOUTS = {
     "NiNode": NODE,
     "NiCollisionSwitch": NODE,
@@ -39,6 +53,21 @@ LAYOUTS = {
     "NiBSPNode": NODE + [("plane_normal", "v3"), ("plane_constant", "f")],
     "NiTriShape": AV_OBJECT + [("data", "ref"), ("skin", "ref")],
     "NiTriShapeData": [("tridata", "tridata")],
+    "NiAutoNormalParticles": PARTICLES,
+    "NiRotatingParticles": PARTICLES,
+    # `NiParticlesData::LoadBinary` 0x6D2250 after the geometry data and the triangle count.
+    "NiAutoNormalParticlesData": [("particledata", "particledata")],
+    # `NiRotatingParticlesData::LoadBinary` 0x6DD000: then the rotations.
+    "NiRotatingParticlesData": [("particledata", "rotatingdata")],
+    "NiParticleSystemController": PARTICLE_CONTROLLER,
+    "NiBSPArrayController": PARTICLE_CONTROLLER,
+    "NiParticleGrowFade": PARTICLE_MODIFIER + [("grow", "f"), ("fade", "f")],
+    "NiParticleColorModifier": PARTICLE_MODIFIER + [("color_data", "ref")],
+    "NiParticleRotation": PARTICLE_MODIFIER + [("random_initial_axis", "u8"), ("initial_axis", "v3"), ("rotation_speed", "f")],
+    "NiGravity": PARTICLE_MODIFIER + [("decay", "f"), ("force", "f"), ("force_type", "u32"), ("position", "v3"), ("direction", "v3")],
+    "NiPlanarCollider": PARTICLE_MODIFIER + [("restitution", "f"), ("height", "f"), ("width", "f"), ("centre", "v3"), ("x_axis", "v3"), ("y_axis", "v3"),
+                                             ("plane_normal", "v3"), ("plane_constant", "f")],
+    "NiColorData": [("keys", "colorkeys")],
     "NiMaterialProperty": OBJECT_NET + [("flags", "u16"), ("ambient", "v3"), ("diffuse", "v3"), ("specular", "v3"), ("emissive", "v3"),
                                         ("glossiness", "f"), ("alpha", "f")],
     "NiAlphaProperty": OBJECT_NET + [("flags", "u16"), ("threshold", "u8")],
@@ -154,9 +183,42 @@ class Reader:
                     m["bump_matrix"] = self.take("<4f")
                 maps.append(m)
             return maps
-        if kind == "tridata":
+        if kind == "c4":
+            return self.take("<4f")
+        if kind == "perparticle":
+            count = self.take("<H")
+            active = self.take("<H")
+            items = []
+            for _ in range(count):
+                # The bytes too: an unused slot of a game's file can hold a signalling NaN, which a
+                # float does not keep.
+                raw = self.data[self.at:self.at + 40]
+                items.append({"raw": raw, "velocity": self.take("<3f"), "rotation_axis": self.take("<3f"), "age": self.take("<f"),
+                              "lifespan": self.take("<f"), "last_update": self.take("<f"), "generation": self.take("<H"), "index": self.take("<H")})
+            return {"active": active, "items": items}
+        if kind == "rotatingdata":
+            d = self.field("particledata")
+            d["has_rotations"] = self.take("<I")
+            d["rotations"] = [self.take("<4f") for _ in range(d["count"])] if d["has_rotations"] else []
+            return d
+        if kind == "colorkeys":
+            n = self.take("<I")
+            interpolation = self.take("<I")
+            if n and interpolation != 1:
+                raise ValueError("colour keys of interpolation %d" % interpolation)
+            return {"interpolation": interpolation, "items": [self.take("<5f") for _ in range(n)]}
+        if kind == "particledata":
+            d = self.field("geomdata")
+            d["triangle_count"] = self.take("<H")
+            d["particle_radius"] = self.take("<f")
+            d["active"] = self.take("<H")
+            d["has_sizes"] = self.take("<I")
+            d["sizes"] = [self.take("<f") for _ in range(d["count"])] if d["has_sizes"] else []
+            return d
+        if kind == "geomdata":
             d = {}
             n = self.take("<H")
+            d["count"] = n
             d["has_vertices"] = self.take("<I")
             d["vertices"] = [self.take("<3f") for _ in range(n)] if d["has_vertices"] else []
             d["has_normals"] = self.take("<I")
@@ -169,6 +231,9 @@ class Reader:
             d["has_uv"] = self.take("<I")
             d["uv_sets"] = [[self.take("<2f") for _ in range(n)] for _ in range(sets)] if d["has_uv"] else []
             d["uv_set_count"] = sets
+            return d
+        if kind == "tridata":
+            d = self.field("geomdata")
             t = self.take("<H")
             d["triangle_points"] = self.take("<I")
             d["triangles"] = [self.take("<3H") for _ in range(t)]
@@ -262,11 +327,47 @@ class Writer:
                     self.put("<f", m["luma_scale"])
                     self.put("<f", m["luma_offset"])
                     self.put("<4f", *m["bump_matrix"])
-        elif kind == "tridata":
+        elif kind == "c4":
+            self.put("<4f", *v)
+        elif kind == "perparticle":
+            self.put("<H", len(v["items"]))
+            self.put("<H", v["active"])
+            for p in v["items"]:
+                if "raw" in p:
+                    self.parts.append(p["raw"])
+                    continue
+                self.put("<3f", *p["velocity"])
+                self.put("<3f", *p["rotation_axis"])
+                self.put("<f", p["age"])
+                self.put("<f", p["lifespan"])
+                self.put("<f", p["last_update"])
+                self.put("<H", p["generation"])
+                self.put("<H", p["index"])
+        elif kind == "rotatingdata":
+            self.field("particledata", v)
+            self.put("<I", v["has_rotations"])
+            for q in v["rotations"]:
+                self.put("<4f", *q)
+        elif kind == "colorkeys":
+            self.put("<I", len(v["items"]))
+            self.put("<I", v["interpolation"])
+            for key in v["items"]:
+                self.put("<5f", *key)
+        elif kind == "particledata":
+            self.field("geomdata", v)
+            self.put("<H", v["triangle_count"])
+            self.put("<f", v["particle_radius"])
+            self.put("<H", v["active"])
+            self.put("<I", v["has_sizes"])
+            for size in v["sizes"]:
+                self.put("<f", size)
+        elif kind == "geomdata":
             d = v
-            n = len(d["vertices"]) if d["has_vertices"] else len(d["normals"]) if d["has_normals"] else len(d["colors"])
-            if d["has_uv"] and d["uv_sets"]:
-                n = len(d["uv_sets"][0])
+            n = d.get("count")
+            if n is None:
+                n = len(d["vertices"]) if d["has_vertices"] else len(d["normals"]) if d["has_normals"] else len(d["colors"])
+                if d["has_uv"] and d["uv_sets"]:
+                    n = len(d["uv_sets"][0])
             self.put("<H", n)
             self.put("<I", d["has_vertices"])
             for p in d["vertices"]:
@@ -284,6 +385,9 @@ class Writer:
             for uvs in d["uv_sets"]:
                 for uv in uvs:
                     self.put("<2f", *uv)
+        elif kind == "tridata":
+            d = v
+            self.field("geomdata", d)
             self.put("<H", len(d["triangles"]))
             self.put("<I", d["triangle_points"])
             for t in d["triangles"]:
