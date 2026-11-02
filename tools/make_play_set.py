@@ -41,6 +41,7 @@ import datetime
 import glob
 import hashlib
 import json
+import msvcrt
 import os
 import re
 import shutil
@@ -251,6 +252,19 @@ def take_game(slots, what, no_wait):
         if no_wait:
             sys.exit(3)
         time.sleep(WAIT_SECONDS)
+
+
+def hold_run_lock(path):
+    """Keeps a second run of this tool out for the whole of this one: it would move the trees and their
+    cargo targets under the first. The system drops the lock when this process ends. The descriptor stays open
+    on purpose. Returns it, or None when another run holds the lock."""
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT)
+    try:
+        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+    except OSError:
+        os.close(descriptor)
+        return None
+    return descriptor
 
 
 # --- the build ------------------------------------------------------------------------------
@@ -573,6 +587,18 @@ def self_test():
             file.write(set_note("f186", "abc", "def", "FAILED: a reason"))
         assert current_set_commits(bat) is None, "a failed set is no current set"
 
+    # A second run stops, in another process as the lock is per handle, and the lock goes with the first.
+    with tempfile.TemporaryDirectory() as folder:
+        lock = os.path.join(folder, "lock")
+        first = hold_run_lock(lock)
+        assert first is not None
+        probe = "import sys; sys.path.insert(0, %r); import make_play_set as m; sys.exit(0 if m.hold_run_lock(%r) is None else 1)" % (
+            os.path.dirname(os.path.abspath(__file__)), lock)
+        assert subprocess.run([sys.executable, "-I", "-c", probe]).returncode == 0, "a second run was let in"
+        msvcrt.locking(first, msvcrt.LK_UNLCK, 1)
+        os.close(first)
+        assert subprocess.run([sys.executable, "-I", "-c", probe]).returncode == 1, "the lock stayed after the first run"
+
     # A run is kept under its own name, and again without a fault: the validation is added to it later.
     with tempfile.TemporaryDirectory() as folder:
         global KEPT_RUNS
@@ -621,6 +647,10 @@ def main():
         return 0
 
     slots = load_slots()
+    os.makedirs(TREES, exist_ok=True)
+    if hold_run_lock(os.path.join(TREES, "make_play_set.lock")) is None:
+        say("another run of this tool is at work, and this one stops")
+        return 3
     plugin_tree = ready_tree("nirender-plugin", PLUGIN_REPO, plugin_commit)
     mge_tree = ready_tree("MGE-XE-G7-render-link", MGE_REPO, mge_commit)
     os.makedirs(os.path.join(plugin_tree, "results"), exist_ok=True)
