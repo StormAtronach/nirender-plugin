@@ -1,4 +1,6 @@
-//! The texture effects under a billboard that turns to the camera.
+//! The texture effects whose projection moves in the play: under a billboard that turns to the
+//! camera, or with a controller on the effect or on a node above it. A controller changes the
+//! projection each frame in the update pass, before the walk; the chain goes again when it does.
 //!
 //! `NiBillboardNode::Display` 0x6D4040 turns the node (`RotateToCamera` 0x6D3C00) and updates its
 //! children, so the projection of an effect under it (`NiTextureEffect::UpdateProjection`
@@ -101,17 +103,6 @@ unsafe fn local_words(node: usize, out: &mut Vec<u32>) {
     out.push(rd(node, AV::localTransform_localScale));
 }
 
-/// True when a turning billboard with its display is above the effect, with no table: for the
-/// report of the shapes that the table does not take.
-///
-/// # Safety
-///
-/// `effect` points at a live `NiTextureEffect` with live nodes above it.
-pub unsafe fn turning_above(effect: usize) -> bool {
-    let nodes = nodes_up(effect);
-    !turns_down(&nodes).iter().all(|turn| turn.is_none())
-}
-
 /// The nodes from the effect up to the root.
 unsafe fn nodes_up(effect: usize) -> Vec<usize> {
     let mut nodes = Vec::new();
@@ -147,7 +138,9 @@ unsafe fn read_chain(t: &MainThread, effect: usize, chain: &mut Chain) -> Vec<u3
     chain.billboards.clear();
     let nodes = nodes_up(effect);
     let turns = turns_down(&nodes);
-    let Some(first) = turns.iter().rposition(|turn| turn.is_some()) else { return Vec::new() };
+    // Without a turn and with a controller, the chain is the effect under its parent's world.
+    let controlled = nodes.iter().any(|&node| rd::<usize>(node, AV::controllers) != 0);
+    let Some(first) = turns.iter().rposition(|turn| turn.is_some()).or(controlled.then_some(0)) else { return Vec::new() };
     chain.billboards.extend(nodes.iter().zip(&turns).filter(|(_, turn)| turn.is_some()).map(|(&node, _)| node));
 
     let mut words = vec![effect as u32, rd(effect, TE::coordMode), first as u32 + 1];
@@ -176,8 +169,8 @@ unsafe fn read_chain(t: &MainThread, effect: usize, chain: &mut Chain) -> Vec<u3
     words
 }
 
-/// True when a turning billboard is above the effect: the helper makes its projection. Reads the
-/// chain at most once a frame, and sends it when it changed.
+/// True when the projection of the effect moves in the play: the helper makes it. Reads the chain
+/// at most once a frame, and sends it when it changed.
 ///
 /// # Safety
 ///

@@ -6,8 +6,8 @@
 //!
 //! What the table takes today (`reject_reason`; the rest stays on the engine's path until its
 //! work is done, charter 1): a shape of the world scene of a retained class
-//! (`class_retained`), with no depth test that depends on an earlier draw, no controller on
-//! its texture effects or above them, and no rejected node kind above it (`REJECTED_KINDS`).
+//! (`class_retained`), with no depth test that depends on an earlier draw and no rejected node
+//! kind above it (`REJECTED_KINDS`).
 //! A controller on a node above moves the instance in place. A controller on the shape or on
 //! one of its properties makes it a live shape: its display runs the controllers' `OnPreDisplay` and
 //! notes the geometry and the material each time. A blended shape is retained: the helper
@@ -144,12 +144,11 @@ impl Mode {
 const REASON_CONTROLLER: usize = 0;
 const REASON_NODE_KIND: usize = 1;
 const REASON_PROPERTY_CONTROLLER: usize = 2;
-const REASON_EFFECT: usize = 3;
-const REASON_LATER: usize = 4;
+const REASON_LATER: usize = 3;
 /// The depth test of the shape is equal, greater, not equal or greater or equal: the draw
 /// depends on the depth of a draw before it, so its place in the order of the game matters.
-const REASON_DEPTH: usize = 5;
-const REASONS: usize = 6;
+const REASON_DEPTH: usize = 4;
+const REASONS: usize = 5;
 
 struct Instance {
     id: u32,
@@ -221,7 +220,7 @@ struct Instance {
 }
 
 /// A texture effect of the table's instances (an environment or a fog map, whose words hold no
-/// projection under a turning billboard: `effect_chain`), by its address:
+/// projection when it moves in the play: `effect_chain`), by its address:
 /// its words as the material record copies them, read at most once a frame, and a version
 /// that grows when they change. The effect has no controller (else its shapes are not
 /// retained), but its projection follows its world transform
@@ -347,7 +346,6 @@ struct Tables {
     /// The particle instances made (the log names the first 100).
     particle_instances_made: u64,
     rejected_by: [u64; REASONS],
-    effect_rejections: EffectRejections,
     /// The draws that `consider` did not take, by the first cause: not a plain world draw
     /// of a retained class, no geometry handle, no material handle, the path off, the
     /// material not modelled.
@@ -423,7 +421,6 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         particle_draws: 0,
         particle_instances_made: 0,
         rejected_by: [0; REASONS],
-        effect_rejections: EffectRejections { causes: [0; EFFECT_CAUSE_NAMES.len()], turning: 0, by_controller: std::collections::BTreeMap::new() },
         skipped_by: [0; 5],
     }))
 }
@@ -513,7 +510,7 @@ unsafe fn enabled(mt: &MainThread) -> bool {
 pub unsafe fn reset(mt: &MainThread, cause: &str) {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
-    crate::log!("instances: the records go again: {cause}; rejected so far: {} for a texture effect, {} in all", t.rejected_by[REASON_EFFECT], t.rejected.len());
+    crate::log!("instances: the records go again: {cause}");
     t.generation = t.generation.wrapping_add(1);
     for instance in t.instances.values_mut() {
         instance.sent = false;
@@ -785,7 +782,7 @@ pub unsafe fn seen(mt: &MainThread, shape: usize, kind: u32, class_out: &mut u32
 /// After the notes of a draw: decides if the shape is retained, and makes the draw in
 /// progress pending for `draw` when it is. `property_state` and `effect_state` are those
 /// of the renderer for the draw.
-pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: bool, points: bool, class: u32, geometry: u32, material: u32, property_state: usize, effect_state: usize) {
+pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: bool, points: bool, class: u32, geometry: u32, material: u32, property_state: usize) {
     let cause = if !eligible {
         Some(0)
     } else if geometry == 0 {
@@ -821,12 +818,9 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
         return;
     }
     let mut live = false;
-    if let Some(reason) = reject_reason(t, shape, property_state, effect_state, skinned, &mut live) {
+    if let Some(reason) = reject_reason(t, shape, property_state, skinned, &mut live) {
         t.rejected.insert(shape);
         t.rejected_by[reason] += 1;
-        if reason == REASON_EFFECT {
-            t.effect_rejections.note(effect_state);
-        }
         return;
     }
     // A particle system changes its particles every frame: live from the start.
@@ -862,7 +856,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
 /// of shapes left on the engine's path: unfinished work, not a rule to keep (charter 1). `live`
 /// is set when a controller on the shape or on a property changes it.
 /// Engine-rules R1, R6, R7 (the skill wgpu-renderer-dev).
-unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, effect_state: usize, skinned: bool, live: &mut bool) -> Option<usize> {
+unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, skinned: bool, live: &mut bool) -> Option<usize> {
     // A controller on the shape changes its data (a morpher, a UV controller): the shape is
     // live. A controller on a node above only moves the shape, and `skipped_display` moves
     // the instance in place.
@@ -906,17 +900,9 @@ unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, effect_
             return Some(REASON_DEPTH);
         }
     }
-    // A texture effect is retained in any coordinate mode (engine-rules R24) with no controller
-    // on the effect or on a node above it (`effect_retained`). The material record holds the
-    // projection, or under a turning billboard names the chain the helper makes it from
+    // A texture effect is retained in any coordinate mode (engine-rules R24). The material record
+    // holds the projection, or, when it moves in the play, names the chain the helper makes it from
     // (`effect_chain`).
-    if effect_state != 0 {
-        for effect in [rd::<usize>(effect_state, DES::environmentMap), rd::<usize>(effect_state, DES::fogMap)] {
-            if effect != 0 && !effect_retained(effect) {
-                return Some(REASON_EFFECT);
-            }
-        }
-    }
     None
 }
 
@@ -1081,7 +1067,7 @@ fn sky_table_class(class: u32) -> bool {
 /// set in the log line ("sky", "weather"). Logs each shape once: the name, the class,
 /// the handles, whether the material is modelled, the reject reason, live, the depth and alpha
 /// flags, and the controllers on the shape, above it and on its properties.
-pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, plain_world_shape: bool, geometry: u32, material: u32, property_state: usize, effect_state: usize) {
+pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, plain_world_shape: bool, geometry: u32, material: u32, property_state: usize) {
     let seen = &mut *SKY_SEEN.get(mt);
     if seen.contains(&shape) {
         return;
@@ -1090,7 +1076,7 @@ pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, 
     let text: usize = rd(shape, 8);
     let name = if text != 0 { core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
     let mut live = false;
-    let reason = reject_reason(&tables(mt), shape, property_state, effect_state, false, &mut live);
+    let reason = reject_reason(&tables(mt), shape, property_state, false, &mut live);
     let (z_flags, z_function) = match if property_state != 0 { rd::<usize>(property_state, PS::propZBuffer) } else { 0 } {
         0 => (None, None),
         z => (Some(rd::<u16>(z, PROPERTY_FLAGS)), Some(rd::<u32>(z, ZP::testFunction))),
@@ -1116,69 +1102,6 @@ pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, 
         crate::material_stream::last_modelled(mt),
         rd::<usize>(shape, CONTROLLERS) != 0
     );
-}
-
-/// Why the table does not take a texture effect yet, by [`EFFECT_CAUSE_NAMES`], and the node of
-/// that cause; [`None`] when it does: see `reject_reason`.
-unsafe fn effect_cause(effect: usize) -> Option<(usize, usize)> {
-    let mut node = effect;
-    for _ in 0..MAX_DEPTH {
-        if node == 0 {
-            return None;
-        }
-        if rd::<usize>(node, CONTROLLERS) != 0 {
-            return Some((if node == effect { 0 } else { 1 }, node));
-        }
-        node = rd(node, PARENT);
-    }
-    Some((2, effect))
-}
-
-/// True when the table can draw the texture effect: see `reject_reason`.
-unsafe fn effect_retained(effect: usize) -> bool {
-    effect_cause(effect).is_none()
-}
-
-/// The causes of [`REASON_EFFECT`].
-const EFFECT_CAUSE_NAMES: [&str; 3] = ["a controller on the effect", "a controller above it", "too deep"];
-
-/// The shapes that the table does not take for a texture effect, split for the report: by cause,
-/// those with a turning billboard above the effect, and by the controller and its node.
-#[derive(Default)]
-struct EffectRejections {
-    causes: [u64; EFFECT_CAUSE_NAMES.len()],
-    turning: u64,
-    by_controller: std::collections::BTreeMap<String, u32>,
-}
-
-impl EffectRejections {
-    /// A shape with these effects was rejected for one of them.
-    unsafe fn note(&mut self, effect_state: usize) {
-        for effect in [rd::<usize>(effect_state, DES::environmentMap), rd::<usize>(effect_state, DES::fogMap)] {
-            if effect == 0 {
-                continue;
-            }
-            let Some((cause, node)) = effect_cause(effect) else { continue };
-            self.causes[cause] += 1;
-            self.turning += u64::from(crate::effect_chain::turning_above(effect));
-            *self.by_controller.entry(controller_name(node)).or_default() += 1;
-            return;
-        }
-    }
-
-    fn text(&self) -> String {
-        let causes: Vec<String> = EFFECT_CAUSE_NAMES.iter().zip(self.causes).map(|(name, count)| format!("{name} {count}")).collect();
-        let controllers: Vec<String> = self.by_controller.iter().map(|(name, count)| format!("{name} x{count}")).collect();
-        format!("{}; with a turning billboard above the effect {}; by controller: {}", causes.join(", "), self.turning, controllers.join(", "))
-    }
-}
-
-/// The run-time type of the first controller of a node and the node's name, for the report.
-unsafe fn controller_name(node: usize) -> String {
-    let c_text = |text: usize| if text != 0 { core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
-    let controller: usize = rd(node, CONTROLLERS);
-    let kind = if controller != 0 { c_text(rd(crate::ports::ni::get_rtti(controller), RTTI_NAME)) } else { "none".to_string() };
-    format!("{kind} on '{}'", c_text(rd(node, crate::gen::layouts::NiObjectNET::name)))
 }
 
 /// True when the run-time type of the node, or a base of it, is one of the rejected kinds
@@ -1879,7 +1802,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
             let rechecks = &mut *RECHECKS.get(mt);
             rechecks[3] += 1;
             let mut live = false;
-            if reject_reason(t, shape, property_state, effect_state, skinned, &mut live).is_some() {
+            if reject_reason(t, shape, property_state, skinned, &mut live).is_some() {
                 rechecks[4] += 1;
                 t.reject_pending(shape, true);
                 return false;
@@ -2222,11 +2145,8 @@ pub unsafe fn report(mt: &MainThread) -> String {
     let (rechecks, change_notes, queue_counts, walk_places) = (*RECHECKS.get(mt), *CHANGE_NOTES.get(mt), *QUEUE_COUNTS.get(mt), *WALK_PLACES.get(mt));
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
-    let reasons = ["controller", "node kind", "property controller", "effect", "at the record", "depth function"];
+    let reasons = ["controller", "node kind", "property controller", "at the record", "depth function"];
     let mut rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
-    if t.rejected_by[REASON_EFFECT] != 0 {
-        rejected.push(format!("the effect's by cause: {}", t.effect_rejections.text()));
-    }
     let later = *LATER_BY.get(mt);
     if later.iter().any(|&n| n != 0) {
         rejected.push(format!("at the record by cause: geometry {}, material {}, not modelled {}, translation {}", later[0], later[1], later[2], later[3]));
