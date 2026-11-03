@@ -61,6 +61,10 @@ pub struct SceneView<'a> {
     /// The number of the frame, as the renderer counts it (the number in its log lines, "a
     /// buffer grew at frame N"): for an extension's log line of an event.
     pub frame: u64,
+    /// The view of the call: the slot of its scene and its kind ([`ViewKind`]). Today every call
+    /// is the main view's (the key [`ViewKey::MAIN`]); an extension that draws a view of its own
+    /// reads the key, and one that does not ignores it.
+    pub view_key: ViewKey,
     /// The samples for each pixel of the targets of the frame ([`Extension::samples`], cut to
     /// what the adapter has): a pipeline that draws into the pass of the game takes
     /// `multisample`. A pass on a texture of the extension has 1.

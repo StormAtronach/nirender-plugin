@@ -5,12 +5,16 @@
 //! draw and does the steps it returns, in their order.
 
 use super::scene;
+use crate::ViewKind;
 
 /// What the player does at a scene event or before a draw, in this order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Step {
     /// The world of the frame starts here: the extension draws before the world.
     StartWorld,
+    /// The table's main view draws here, in a world scene whose world a main view with a
+    /// root of its own began earlier in the frame: the world does not start again.
+    MainView,
     /// The draws held for the start of the world go into the items, in their order: the
     /// extension draws its distant land under them and starts the depth of the world, so a
     /// draw before the start would lose its depth.
@@ -35,8 +39,18 @@ pub(crate) enum Step {
 pub(crate) struct Plan {
     /// The kind of the scene in progress (`scene::SCENE_*`; 0 between scenes).
     pub(crate) scene_kind: u32,
+    /// The kind of the view of the scene in progress. The steps of the extension (the start
+    /// and the end of the world, the post) belong to the main view only. A scene that the
+    /// plugin names [`scene::SCENE_OTHER`] with the main view's camera is a main view with a
+    /// root of its own (a mod's subject on the world camera): see [`Plan::main_other_root`].
+    pub(crate) view: ViewKind,
     pub(crate) world_begun: bool,
     pub(crate) world_ended: bool,
+    /// The world of the frame began in a main view with a root of its own, not in the world
+    /// scene.
+    world_by_other: bool,
+    /// [`Step::MainView`] was given in this frame.
+    main_view_given: bool,
     /// A draw of a sky class went into the back buffer in the world scene of this frame.
     pub(crate) sky_seen: bool,
     /// The number of sorted-blends items of the frame so far: the generation of the next.
@@ -56,14 +70,22 @@ impl Plan {
         *self = Plan::default();
     }
 
-    /// The start of a scene. At the user interface scene of the game the world views are
-    /// done and the post-processing is due. The table's blends that still wait for the flush
-    /// of the queue go first, at the first-person or the user interface scene: the engine
-    /// flushes the queue in its water scene, so this is for a frame without one. The classes
-    /// that no draw of the world camera brought go before them, as the engine draws its water
-    /// before it flushes the queue.
+    /// The start of a scene whose camera the plan does not know: [`Plan::scene_begin_view`] with
+    /// the kind that the plugin's scene kind gives.
+    #[cfg(test)]
     pub(crate) fn scene_begin(&mut self, kind: u32) -> Vec<Step> {
+        self.scene_begin_view(kind, if kind == scene::SCENE_OTHER { ViewKind::OtherScreen } else { ViewKind::Main })
+    }
+
+    /// The start of a scene whose view has the kind `view` (from its camera and its target). At
+    /// the user interface scene of the game the world views are done and the post-processing is
+    /// due. The table's blends that still wait for the flush of the queue go first, at the
+    /// first-person or the user interface scene: the engine flushes the queue in its water
+    /// scene, so this is for a frame without one. The classes that no draw of the world camera
+    /// brought go before them, as the engine draws its water before it flushes the queue.
+    pub(crate) fn scene_begin_view(&mut self, kind: u32, view: ViewKind) -> Vec<Step> {
         self.scene_kind = kind;
+        self.view = view;
         let mut steps = Vec::new();
         if self.world_ended && !self.classes_checked && (kind == scene::SCENE_FIRST_PERSON || kind == scene::SCENE_UI) {
             self.classes_checked = true;
@@ -74,6 +96,12 @@ impl Plan {
         }
         if kind == scene::SCENE_UI {
             steps.push(Step::Post);
+        }
+        // The world scene after a main view with a root of its own: the world began there and
+        // did not wait for this scene's shapes, so the table's main view draws now.
+        if kind == scene::SCENE_WORLD && view == ViewKind::Main && self.world_by_other && !self.main_view_given {
+            self.main_view_given = true;
+            steps.push(Step::MainView);
         }
         steps
     }
@@ -107,15 +135,17 @@ impl Plan {
     pub(crate) fn scene_end(&mut self, extension: bool, in_back_buffer: bool, drawing: bool, queue_open: bool, flush_marked: bool) -> Vec<Step> {
         let mut steps = Vec::new();
         let kind = self.scene_kind;
-        let world_scene = kind == scene::SCENE_WORLD && in_back_buffer && drawing;
+        let main_other = self.main_other_root();
+        let world_scene = (kind == scene::SCENE_WORLD || main_other) && in_back_buffer && drawing;
         // A world scene in which the game drew nothing of the world (the console command
         // ToggleWorld culls the world roots; a view with nothing in it): the world starts at
         // the end of the scene, so that the extension draws its distant land under the sky.
         if extension && world_scene && !self.world_begun {
             self.world_begun = true;
+            self.world_by_other = main_other;
             steps.push(Step::StartWorld);
         }
-        if kind == scene::SCENE_WORLD {
+        if kind == scene::SCENE_WORLD || (main_other && self.world_begun) {
             steps.push(Step::ReleaseHeld);
         }
         // A blend of the engine's path that came in a later scene of the world camera (the
@@ -137,7 +167,9 @@ impl Plan {
             self.world_ended = true;
             if queue_open {
                 self.queue_open = true;
-            } else if !flush_marked || self.waiting {
+            } else if (!flush_marked || self.waiting) && (!main_other || self.waiting) {
+                // A main view with a root of its own has the sorted blends of its view
+                // (`views`), and an item here only for a blend of the engine's path.
                 steps.push(self.sorted_blends());
             }
             steps.push(Step::EndWorld);
@@ -149,6 +181,26 @@ impl Plan {
         }
         self.scene_kind = 0;
         steps
+    }
+
+    /// The scene in progress is the main view with a root that is not the world's: the world
+    /// camera into the back buffer, named [`scene::SCENE_OTHER`] by its root (Isolate Subject
+    /// of Joy of Painting). Direct3D 9 takes the kind from the camera, so MGE XE adds its parts
+    /// to this scene as to the world scene.
+    pub(crate) fn main_other_root(&self) -> bool {
+        self.scene_kind == scene::SCENE_OTHER && self.view == ViewKind::Main
+    }
+
+    /// The first place of a retained shape in a main view with a root of its own: the world
+    /// starts here, as at the first draw of a world scene. The world walk of the engine is
+    /// the walk of the world root, so no event marks this start.
+    pub(crate) fn view_first_place(&mut self, extension: bool, in_back_buffer: bool) -> Vec<Step> {
+        if extension && in_back_buffer && self.main_other_root() && !self.world_begun {
+            self.world_begun = true;
+            self.world_by_other = true;
+            return vec![Step::StartWorld, Step::ReleaseHeld];
+        }
+        Vec::new()
     }
 
     fn sorted_blends(&mut self) -> Step {
@@ -170,13 +222,17 @@ impl Plan {
     /// `walk_marked`: the stream marks the world's start with an event (`world_walk`); no
     /// draw starts the world then, and a draw before the event that is not the sky is held.
     pub(crate) fn world_draw(&mut self, extension: bool, in_back_buffer: bool, sky: bool, sky_hidden: bool, walk_marked: bool) -> (Vec<Step>, bool) {
-        let world_scene = in_back_buffer && self.scene_kind == scene::SCENE_WORLD;
+        let main_other = self.main_other_root();
+        let world_scene = in_back_buffer && (self.scene_kind == scene::SCENE_WORLD || main_other);
         if world_scene && sky {
             self.sky_seen = true;
         }
         let mut steps = Vec::new();
-        if extension && !walk_marked && !self.world_begun && world_scene && !sky && (self.sky_seen || sky_hidden) {
+        // A main view with a root of its own has no walk event and no sky: its world starts
+        // at its first draw.
+        if extension && (!walk_marked || main_other) && !self.world_begun && world_scene && !sky && (self.sky_seen || sky_hidden || main_other) {
             self.world_begun = true;
+            self.world_by_other = main_other;
             steps.push(Step::StartWorld);
             steps.push(Step::ReleaseHeld);
         }
@@ -216,8 +272,10 @@ impl Plan {
 
 #[cfg(test)]
 mod tests {
-    use super::scene::{SCENE_FIRST_PERSON, SCENE_SORTED_ALPHA, SCENE_UI, SCENE_WATER, SCENE_WORLD};
+    use super::scene::{SCENE_FIRST_PERSON, SCENE_OTHER, SCENE_SORTED_ALPHA, SCENE_UI, SCENE_WATER, SCENE_WORLD};
     use super::{Plan, Step};
+    use crate::engine::views::Views;
+    use crate::ViewKind;
 
     /// A world scene with the sky first, then the world.
     fn world_scene(plan: &mut Plan) -> Vec<Step> {
@@ -511,5 +569,96 @@ mod tests {
         assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::Post]);
         plan.frame_start();
         assert_eq!(plan.scene_kind, 0);
+    }
+
+    /// A mod's subject on the world camera (Isolate Subject): the scene has the plugin's kind
+    /// `SCENE_OTHER` and the main view's camera. Its world starts at its first place, with no
+    /// walk event and no sky, and the post after the user interface scene follows.
+    #[test]
+    fn a_main_view_with_a_root_of_its_own_starts_the_world_at_its_first_place() {
+        let mut plan = Plan::default();
+        assert_eq!(plan.scene_begin_view(SCENE_OTHER, ViewKind::Main), vec![]);
+        assert!(plan.main_other_root());
+        assert_eq!(plan.view_first_place(true, true), vec![Step::StartWorld, Step::ReleaseHeld]);
+        assert_eq!(plan.view_first_place(true, true), vec![]);
+        // Its sorted blends belong to its view: no item of the plan, the world ends.
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::ReleaseHeld, Step::EndWorld]);
+        assert!(plan.world_begun && plan.world_ended);
+        assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::MissingClasses, Step::Post]);
+    }
+
+    #[test]
+    fn a_draw_of_the_engine_starts_the_world_of_a_main_view_with_a_root_of_its_own() {
+        let mut plan = Plan::default();
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main);
+        // The walk is marked in the stream, but its event is of the world root.
+        assert_eq!(plan.world_draw(true, true, false, false, true), (vec![Step::StartWorld, Step::ReleaseHeld], false));
+        assert_eq!(plan.world_draw(true, true, false, false, true), (vec![], false));
+    }
+
+    #[test]
+    fn an_empty_main_view_with_a_root_of_its_own_starts_the_world_at_its_end() {
+        let mut plan = Plan::default();
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::StartWorld, Step::ReleaseHeld, Step::EndWorld]);
+    }
+
+    /// A world scene that comes after a main view with a root of its own: the world began in
+    /// the earlier scene, so the world scene gets the table's main view and no second start.
+    #[test]
+    fn a_world_scene_after_a_main_view_with_a_root_of_its_own_still_draws_the_main_view() {
+        let mut plan = Plan::default();
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main);
+        plan.view_first_place(true, true);
+        plan.scene_end(true, true, true, false, false);
+        assert_eq!(plan.scene_begin(SCENE_WORLD), vec![Step::MainView]);
+        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![], false));
+        plan.scene_end(true, true, true, false, false);
+        // Once in a frame.
+        assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
+        // A world scene that began the world itself needs no such step.
+        plan.frame_start();
+        assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
+        plan.world_draw(true, true, false, true, false);
+        plan.scene_end(true, true, true, false, false);
+        assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
+    }
+
+    /// A stream with no places of the view groups (a capture from before D82) has the camera
+    /// word but nothing to draw for an Isolate Subject frame: its scene stays another screen
+    /// and starts no world.
+    #[test]
+    fn an_old_format_isolate_frame_starts_no_world() {
+        let kind_of = |views: &Views| ViewKind::classify(false, views.camera_is_world(SCENE_OTHER, 7, 7));
+        let old = Views::default();
+        let mut plan = Plan::default();
+        assert_eq!(plan.scene_begin_view(SCENE_OTHER, kind_of(&old)), vec![]);
+        assert!(!plan.main_other_root());
+        assert_eq!(plan.view_first_place(true, true), vec![]);
+        assert_eq!(plan.world_draw(true, true, false, false, true), (vec![], false));
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![]);
+        assert!(!plan.world_begun);
+        // The same frame in a stream with the places is a main view.
+        let mut new = Views::default();
+        new.on = true;
+        assert_eq!(kind_of(&new), ViewKind::Main);
+    }
+
+    /// The additions of MGE XE are the main view's: another screen, a picture and a frame
+    /// with no extension start no world.
+    #[test]
+    fn only_a_main_view_starts_the_world() {
+        let mut plan = Plan::default();
+        assert_eq!(plan.scene_begin(SCENE_OTHER), vec![]);
+        assert!(!plan.main_other_root());
+        assert_eq!(plan.view_first_place(true, true), vec![]);
+        assert_eq!(plan.world_draw(true, true, false, false, true), (vec![], false));
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![]);
+        assert!(!plan.world_begun);
+        let mut plan = Plan::default();
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main);
+        assert_eq!(plan.view_first_place(false, true), vec![]);
+        assert_eq!(plan.view_first_place(true, false), vec![]);
+        assert!(!plan.world_begun);
     }
 }

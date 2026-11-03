@@ -130,6 +130,7 @@ impl Player {
                 Item::WalkPlaces(_) => Some(MAIN_VIEW_WALK),
                 Item::ViewPlaces(group, _) | Item::ViewSorted(group) => Some(self.view_group_name(*group)),
                 Item::SortedBlends(_) => Some(MAIN_VIEW_SORTED),
+                Item::MainView(_) => Some(MAIN_VIEW_OPAQUE),
                 Item::Replace(..) => Some("a class of draws (extension: water)"),
                 Item::HeldHere(..) => Some("a held draw in place (extension)"),
                 Item::Target(_) | Item::Clear(..) | Item::Viewport(_) => group.as_ref().map(|(name, _)| *name),
@@ -166,6 +167,7 @@ impl Player {
                         Item::Viewport(_) => "viewport",
                         Item::Screen(_) => "screen",
                         Item::WorldStart(_) => "world-start",
+                        Item::MainView(_) => "main-view",
                         Item::WorldEnd(_) => "world-end",
                         Item::SortedBlends(_) => "sorted-blends",
                         Item::WalkPlaces(_) => "walk-places",
@@ -205,6 +207,7 @@ impl Player {
                     self.renderer.counts.screen_draws += 1;
                 }
                 Item::WorldStart(facts) => self.start_world(&facts),
+                Item::MainView(facts) => self.timed(MAIN_VIEW_OPAQUE, 0, |player| player.draw_retained_main(&facts)),
                 Item::WorldEnd(facts) => self.end_world(&facts),
                 Item::SortedBlends(generation) => {
                     self.timed(MAIN_VIEW_SORTED, 0, |player| player.draw_retained_sorted(generation));
@@ -307,8 +310,16 @@ impl Player {
                 if self.parameters.is_none() {
                     self.ask_frame();
                 }
-                let facts = self.world_facts(true);
+                let mut facts = self.world_facts(true);
+                // Only a stream that writes the places of the view groups draws the shapes of such
+                // a scene there.
+                facts.own_root = self.plan_now().main_other_root() && self.views.on;
                 self.items.push(Item::WorldStart(Box::new(facts)));
+            }
+            plan::Step::MainView => {
+                let facts = self.world_facts(true);
+                self.renderer.counts.world_after_main_view += 1;
+                self.items.push(Item::MainView(Box::new(facts)));
             }
             plan::Step::ReleaseHeld => self.items.append(&mut self.held_draws),
             plan::Step::SortedBlends(generation) => self.items.push(Item::SortedBlends(generation)),
@@ -427,6 +438,9 @@ impl Player {
             fog_end: f32::from_bits(fog[2]),
             sun: self.world_sun,
             ambient: self.world_ambient,
+            // The extension's calls are the main view's: the steps of the plan run in it only.
+            view_key: ViewKey::MAIN,
+            own_root: false,
         }
     }
 
@@ -488,9 +502,11 @@ impl Player {
             let clear = (!depth::one_buffer()).then(|| depth::clear(1.0));
             self.open_pass(crate::gpu::PassReason::WorldStart, None, clear, None);
         }
-        let part = self.part_begin(MAIN_VIEW_OPAQUE);
-        self.timed(MAIN_VIEW_OPAQUE, 0, |player| player.draw_retained_main(facts));
-        self.part_end(part);
+        if !facts.own_root {
+            let part = self.part_begin(MAIN_VIEW_OPAQUE);
+            self.timed(MAIN_VIEW_OPAQUE, 0, |player| player.draw_retained_main(facts));
+            self.part_end(part);
+        }
     }
 
     /// Does `draw`, the item of one view group, and adds its CPU time to the group's
@@ -502,8 +518,8 @@ impl Player {
     }
 
     /// The name of a view of its own of the frame, for its GPU span and its CPU time: its order
-    /// among the frame's views of their own, the size of its target and its camera. Two views
-    /// with the same order, size and camera in different frames share a name. The name is made
+    /// among the frame's views of their own, the size of its target, its kind and its camera.
+    /// Two views with the same order, size, kind and camera in different frames share a name. The name is made
     /// once for each view, when its facts are known.
     pub(crate) fn view_group_name(&self, group: usize) -> &'static str {
         let Some(g) = self.views.group(group) else { return stamps::name(&format!("table: view of its own {}", group + 1)) };
@@ -511,8 +527,9 @@ impl Player {
             return name;
         }
         let camera = if g.world_camera { "the world camera" } else { "another camera" };
-        let Some(facts) = g.facts else { return stamps::name(&format!("table: view of its own {} ({camera})", group + 1)) };
-        let name = stamps::name(&format!("table: view of its own {} ({}x{}, {camera})", group + 1, facts.target_size.0, facts.target_size.1));
+        let kind = g.kind.name();
+        let Some(facts) = g.facts else { return stamps::name(&format!("table: view of its own {} ({kind}, {camera})", group + 1)) };
+        let name = stamps::name(&format!("table: view of its own {} ({}x{}, {kind}, {camera})", group + 1, facts.target_size.0, facts.target_size.1));
         g.name.set(Some(name));
         name
     }

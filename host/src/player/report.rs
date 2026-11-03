@@ -87,6 +87,13 @@ impl Player {
             "views of their own: {} views drawn (a save's picture, a mod's camera), {} places drawn in them, {} of an instance with no slot to draw, {} of an instance not known; {} views not drawn because the scene slots were full; {} views of another camera with the last frame's shade",
             c.views, c.view_places, c.view_places_empty, c.view_unknown, c.views_dropped, c.view_shade_late
         );
+        println!(
+            "view kinds: of the views drawn, {} main (the world camera on a root of its own), {} pictures (a texture), {} of another screen; {} of them have the shade in their additions",
+            c.view_kinds[ViewKind::Main as usize], c.view_kinds[ViewKind::Picture as usize], c.view_kinds[ViewKind::OtherScreen as usize], c.view_with_shade
+        );
+        if c.world_after_main_view != 0 {
+            println!("world scenes after a main view with a root of its own: {} (the table's main view drew in them, the world did not start again)", c.world_after_main_view);
+        }
         self.print_view_times();
         if self.views.slots_on {
             println!("{}", self.views.slots_line());
@@ -253,7 +260,7 @@ impl Player {
         let c = &self.renderer.counts;
         let totals = c.view_times.totals();
         println!(
-            "view groups (CPU): {} groups in {} frames; the GPU time of each is the span of the same name; N of \"view of its own N\" is the view's order in its frame, so views of one order, size and camera share a name",
+            "view groups (CPU): {} groups in {} frames; the GPU time of each is the span of the same name; N of \"view of its own N\" is the view's order in its frame, so views of one order, size, kind and camera share a name",
             totals.len(),
             c.frames
         );

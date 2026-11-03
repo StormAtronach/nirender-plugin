@@ -57,6 +57,8 @@ mod tag;
 pub mod stream_format;
 mod extension;
 pub use extension::*;
+mod view_kind;
+pub use view_kind::{Additions, ViewKey, ViewKind};
 
 /// The build id of this crate: its name, its version and its commit (`build.rs` puts the
 /// commit into BUILD_COMMIT), for the first line of the log and the message of a refused
@@ -125,6 +127,12 @@ struct WorldFacts {
     depth_format: wgpu::TextureFormat,
     /// The number of the frame ([`SceneView::frame`]).
     frame: u64,
+    /// The view of the call ([`SceneView::view_key`]).
+    view_key: ViewKey,
+    /// The main view has a root of its own (a mod's subject on the world camera): the shapes of
+    /// its scene draw in its view group, and the table's main view draws none at the start of
+    /// the world. See [`plan::Plan::main_other_root`].
+    own_root: bool,
 }
 
 /// The position of the camera: the exact origin of the scene, else the one of `view`.
@@ -154,6 +162,7 @@ impl WorldFacts {
             depth_format: self.depth_format,
             target_size: self.target_size,
             frame: self.frame,
+            view_key: self.view_key,
             samples: self.samples,
             view: self.view,
             projection: self.projection,
@@ -245,6 +254,8 @@ enum Item {
     Draw(Rc<Draw>),
     Screen(ScreenDraw),
     WorldStart(Box<WorldFacts>),
+    /// The table's main view draws, with no start of the world (see [`plan::Step::MainView`]).
+    MainView(Box<WorldFacts>),
     WorldEnd(Box<WorldFacts>),
     /// The sorted blends of the retained table and the blends of the engine's path that
     /// waited for this item: the generation names the item within the frame.
@@ -785,6 +796,13 @@ struct Player {
     /// frame alone (a clear of a mirror's depth after the world). It starts again at each
     /// return to the back buffer.
     target_plan: plan::Plan,
+    /// The camera of the last scene of the world camera that drew into the back buffer (the
+    /// camera word of its scene record; 0 before the first). A scene of the plugin's kind
+    /// `SCENE_OTHER` with this camera is a main view with a root of its own: the kind of a view
+    /// comes from its camera and its target ([`ViewKind::classify`]). It stays from frame to
+    /// frame, so a frame that has no world scene of the world root (a mod's subject on the world
+    /// camera) still knows the camera.
+    world_camera_id: u32,
     /// The frame in progress: its commands, its pass, and its two targets.
     encoder: Option<wgpu::CommandEncoder>,
     pass: Option<wgpu::RenderPass<'static>>,

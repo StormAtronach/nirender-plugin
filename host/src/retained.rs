@@ -2445,8 +2445,12 @@ impl Player {
             apply_shade(&mut scene, &shade);
         }
         self.renderer.write_scene(slot, &scene);
-        self.views.group_mut(group)?.slot = Some(slot);
+        let g = self.views.group_mut(group)?;
+        g.slot = Some(slot);
+        let (kind, additions) = (g.kind, g.additions);
         self.renderer.counts.views += 1;
+        self.renderer.counts.view_kinds[kind as usize] += 1;
+        self.renderer.counts.view_with_shade += u64::from(additions.contains(Additions::SHADE));
         Some(slot)
     }
 }

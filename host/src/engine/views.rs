@@ -14,6 +14,7 @@
 
 use super::scene;
 use crate::stream_format::VIEW_SLOTS;
+use crate::{Additions, ViewKind};
 
 /// The view of a scene, at its first place.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -30,6 +31,9 @@ pub(crate) struct Group {
     /// The scene is of the world camera ([`scene::SCENE_WORLD`]): its view can make the shade
     /// of the frame.
     pub(crate) world_camera: bool,
+    /// The kind of the view and its additions ([`ViewKind::additions`]).
+    pub(crate) kind: ViewKind,
+    pub(crate) additions: Additions,
     pub(crate) facts: Option<ViewFacts>,
     /// The scene slot of the view once it is written; `dropped` when all slots were taken.
     pub(crate) slot: Option<u32>,
@@ -120,6 +124,8 @@ pub(crate) struct Views {
     /// The view slots of D82, for the whole run: a retirement frees one.
     slots: [Option<ViewSlot>; VIEW_SLOTS],
     slot_counts: SlotCounts,
+    /// The user interface scene of the frame began: a view after it has no additions.
+    ui_seen: bool,
 }
 
 impl Views {
@@ -173,16 +179,31 @@ impl Views {
     pub(crate) fn frame_start(&mut self) {
         self.groups.clear();
         self.open = None;
+        self.ui_seen = false;
     }
 
-    /// The start of a scene. `in_target`: the game draws into a rendered texture of the helper.
-    /// True when the scene has a view of its own.
-    pub(crate) fn scene_begin(&mut self, kind: u32, in_target: bool) -> bool {
+    /// The camera of a scene is the world camera: the scene is one of the world camera's
+    /// scenes, or a [`scene::SCENE_OTHER`] with the world camera `world_camera`. The second
+    /// case needs the places of the view groups in the stream (`on`): a stream without them
+    /// (a capture from before D82) has no shapes to draw for such a scene, so the plan keeps
+    /// treating it as another screen.
+    pub(crate) fn camera_is_world(&self, kind: u32, camera: u32, world_camera: u32) -> bool {
+        scene::world_camera(kind) || (self.on && kind == scene::SCENE_OTHER && camera != 0 && camera == world_camera)
+    }
+
+    /// The start of a scene. `in_target`: the game draws into a rendered texture of the helper;
+    /// `camera_is_world`: the camera of the scene is the world camera. True when the scene has
+    /// a view of its own.
+    pub(crate) fn scene_begin(&mut self, kind: u32, in_target: bool, camera_is_world: bool) -> bool {
         self.open = None;
+        if kind == scene::SCENE_UI {
+            self.ui_seen = true;
+        }
         if !self.on || !(in_target || kind == scene::SCENE_OTHER) {
             return false;
         }
-        self.groups.push(Group { world_camera: kind == scene::SCENE_WORLD, ..Group::default() });
+        let view = ViewKind::classify(in_target, camera_is_world);
+        self.groups.push(Group { world_camera: kind == scene::SCENE_WORLD, kind: view, additions: view.additions(self.ui_seen), ..Group::default() });
         self.open = Some(self.groups.len() - 1);
         true
     }
@@ -318,28 +339,28 @@ mod tests {
     #[test]
     fn a_scene_into_a_target_or_of_another_root_has_a_view_of_its_own() {
         let mut views = on();
-        assert!(views.scene_begin(SCENE_WORLD, true));
+        assert!(views.scene_begin(SCENE_WORLD, true, true));
         assert!(views.group(0).unwrap().world_camera);
         assert_eq!(views.scene_end(), None);
-        assert!(views.scene_begin(SCENE_FIRST_PERSON, true));
+        assert!(views.scene_begin(SCENE_FIRST_PERSON, true, false));
         assert!(!views.group(1).unwrap().world_camera);
         views.scene_end();
-        assert!(!views.scene_begin(SCENE_WORLD, false));
+        assert!(!views.scene_begin(SCENE_WORLD, false, true));
         assert_eq!(views.place(5, true, false), Place::Outside);
         assert!(!views.queued(5));
-        assert!(!views.scene_begin(SCENE_UI, false));
+        assert!(!views.scene_begin(SCENE_UI, false, false));
         // A mod's subject on another root, into the back buffer.
-        assert!(views.scene_begin(SCENE_OTHER, false));
+        assert!(views.scene_begin(SCENE_OTHER, false, false));
         // Without the header bit nothing changes.
         let mut off = Views::default();
-        assert!(!off.scene_begin(SCENE_WORLD, true));
+        assert!(!off.scene_begin(SCENE_WORLD, true, true));
         assert_eq!(off.place(5, true, false), Place::Outside);
     }
 
     #[test]
     fn the_places_of_a_scene_draw_in_runs_and_its_sorted_places_at_the_flush() {
         let mut views = on();
-        views.scene_begin(SCENE_WORLD, true);
+        views.scene_begin(SCENE_WORLD, true, true);
         views.note_facts(|| ViewFacts { view: [1.0; 16], projection: [2.0; 16], origin: None, target_size: (128, 128) });
         views.note_facts(|| ViewFacts { view: [3.0; 16], projection: [3.0; 16], origin: None, target_size: (1, 1) });
         assert_eq!(views.group(0).unwrap().facts.unwrap().target_size, (128, 128));
@@ -431,5 +452,31 @@ mod tests {
         // Without the flag, word 4 is the target.
         views.note_scene_record(&record(10, 101, 0x5000, 0));
         assert_eq!(views.slots[0], Some(ViewSlot { camera: 10, root: 101, target: 0x5000 }));
+    }
+
+    /// The kind of a view comes from the camera and the target: the world camera on a mod's root
+    /// is a main view; another camera into the back buffer is another screen, with the
+    /// additions of Direct3D 9's second stage before the user interface scene and none after
+    /// it; a texture is a picture.
+    #[test]
+    fn a_view_has_its_kind_and_additions() {
+        let mut views = on();
+        assert!(views.scene_begin(SCENE_OTHER, false, true));
+        assert_eq!(views.group(0).unwrap().kind, ViewKind::Main);
+        assert_eq!(views.group(0).unwrap().additions, Additions::ALL);
+        assert!(views.scene_begin(SCENE_OTHER, false, false));
+        let screen = views.group(1).unwrap();
+        assert_eq!(screen.kind, ViewKind::OtherScreen);
+        assert!(screen.additions.contains(Additions::SHADOW_RECEIVE) && !screen.additions.contains(Additions::LAND));
+        assert!(views.scene_begin(SCENE_WORLD, true, true));
+        assert_eq!((views.group(2).unwrap().kind, views.group(2).unwrap().additions), (ViewKind::Picture, Additions::NONE));
+        views.scene_begin(SCENE_UI, false, false);
+        assert!(views.scene_begin(SCENE_OTHER, false, false));
+        let after = views.group(3).unwrap();
+        assert_eq!((after.kind, after.additions), (ViewKind::OtherScreen, Additions::NONE));
+        // The next frame starts before the user interface scene again.
+        views.frame_start();
+        assert!(views.scene_begin(SCENE_OTHER, false, false));
+        assert!(views.group(0).unwrap().additions.contains(Additions::POST_COVER));
     }
 }
