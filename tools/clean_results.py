@@ -11,13 +11,18 @@
 A run folder `<YYYYmmdd-HHMMSS>-<label>` lives in `results/` of a checkout, in E:\\nirender-results or in
 E:\\nirender-keep\\runs-*. Each gets one of five treatments:
 
-- cited: the docs, the notes of the sessions, an accepted baseline or a commit message names it. It stays
-  whole. A full citation counts by its date and time. The short form `-HHMMSS-label` counts too.
+- cited: the docs, the notes of the sessions, the check cards, a commit message or the text of a named folder of
+  E:\\nirender-keep names it, or a dump inside it. It stays whole. A full citation counts by its date and time, a
+  short one by `-HHMMSS-` alone. A run's own log and a copy of a run are no citation.
 - running: younger than one hour. Not touched.
 - young: younger than 7 days. It stays whole.
-- trim: 7 to 30 days. The pictures and the captures go, the text and the dumps stay, and `trimmed.txt`
-  lists what went.
+- trim: 7 to 30 days. The pictures, the captures and the film go, all else stays, and `trimmed.txt` lists
+  what went.
 - expired: 30 days or more. Removed.
+
+`--apply` refuses when the text may lack a citation: a folder or a file that cannot be read, a repository with no
+log, or too little text in all. An uncited run whose label the text holds is listed for the Archivist: its label
+alone keeps it from nothing.
 
 A `results` that is a link is not followed: its target is a place of its own or none. Each folder that is
 no run stays: `baseline-records`, the bench captures, the named folders of E:\\nirender-keep.
@@ -32,7 +37,7 @@ A dump in C:\\tmp\\mwdumps or E:\\nirender-keep\\full-dumps-*:
 
 A set of E:\\nirender-keep\\mgebuilds stays when local.bat names it or it is the one before, when a process
 uses it, or when the text or the name of a baseline-* or gate-* folder names it. Others go 30 days after
-their newest write.
+their newest write. When local.bat names no set that is here, no set goes.
 
 The tool refuses while a game or a helper runs. A removal never goes through a link. Each act goes to
 E:\\nirender-keep\\clean-worktrees.log.
@@ -51,7 +56,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # `python -I` leaves the folder of the script off the path.
 sys.path.insert(0, HERE)
 import clean_common as common  # noqa: E402
-from clean_common import DUMP_DAYS, KEEP_ROOT, SETS, Evidence, current_set, file_kind, files_in, games_in, gigabytes, is_link, is_link_entry, kept_set_numbers, log_line, long_path, processes, project_trees, remove_file, remove_tree, run_age_days, run_treatment, set_number, set_treatment, users_of, walk  # noqa: E402
+from clean_common import DUMP_DAYS, KEEP_ROOT, SETS, Evidence, current_set, files_in, games_in, gigabytes, is_heavy, is_link, is_link_entry, kept_set_names, log_line, long_path, processes, project_trees, remove_file, remove_tree, run_age_days, run_treatment, set_number, set_treatment, users_of, walk  # noqa: E402
 
 RUN_PLACES = ["E:\\nirender-results"]
 DUMP_PLACES = ["C:\\tmp\\mwdumps"]
@@ -93,14 +98,14 @@ def plan_root(root, evidence, now):
         except OSError as error:
             print("not read, and it stays: %s (%s)" % (entry.path, error))
             continue
-        treatment = run_treatment(age, evidence.cites_run(entry.name))
+        treatment = run_treatment(age, evidence.cites_run_with(entry.name, files))
         rows.append({
             "name": entry.name,
             "path": entry.path,
             "treatment": treatment,
             "size": sum(file[1] for file in files),
             "files": files,
-            "heavy": [file for file in files if file_kind(file[0]) == "picture"] if treatment == "trim" else [],
+            "heavy": [file for file in files if is_heavy(file[0])] if treatment == "trim" else [],
         })
     return rows
 
@@ -246,12 +251,13 @@ def plan_sets(sets, evidence, current, running, now):
         return []
     with os.scandir(sets) as entries:
         found = sorted((entry for entry in entries if not is_link_entry(entry) and entry.is_dir(follow_symlinks=False)), key=lambda entry: (set_number(entry.name) or 0, entry.name))
-    kept = kept_set_numbers(current, [entry.name for entry in found])
+    names = [entry.name for entry in found]
+    current_known = current in names
+    kept = kept_set_names(current, names) if current_known else set()
     rows = []
     for entry in found:
         size, _, newest, links, unread = walk(entry.path)
-        number = set_number(entry.name)
-        treatment = set_treatment((now - newest) / 86400 if newest else 0, evidence.cites_word(entry.name), number in kept, users_of(entry.path, running))
+        treatment = set_treatment((now - newest) / 86400 if newest else 0, evidence.cites_word(entry.name), entry.name in kept, users_of(entry.path, running), current_known)
         if unread and treatment == "go":
             treatment = "stay: %d folders could not be read" % unread
         rows.append({"name": entry.name, "path": entry.path, "size": size, "links": links, "treatment": treatment})
@@ -308,6 +314,14 @@ def print_runs(plans, links, names):
         print("    %-8s %5d runs  %9s  %9s freed" % (treatment, count, gigabytes(size), gigabytes(freed)))
 
 
+def print_labels(plans, evidence):
+    """The uncited runs whose label the text holds, for the Archivist: a citation by its time keeps each one."""
+    names = sorted({row["name"] for _, rows in plans for row in rows if evidence.label_only(row["name"])})
+    print("\nUNCITED RUNS WHOSE LABEL THE TEXT HOLDS, for the Archivist (%d):" % len(names))
+    for name in names:
+        print("  " + name)
+
+
 def print_dumps(rows, others):
     print("\nDUMPS (%d, %s):" % (len(rows), gigabytes(sum(row["size"] for row in rows))))
     for row in sorted(rows, key=lambda r: r["path"]):
@@ -342,12 +356,19 @@ def main():
         return 1
     now = time.time()
     evidence = Evidence.load()
+    print("The evidence: %.1f MB of text, %d full and %d short citations." % (len(evidence.text) / 1e6, len(evidence.stamps), len(evidence.shorts)))
+    for problem in evidence.problems:
+        print("THE EVIDENCE MAY LACK A CITATION: " + problem)
+    if evidence.problems and args.apply:
+        print("NOTHING DONE: an uncited run may be evidence.")
+        return 1
     roots, links = run_roots()
     plans = [(root, plan_root(root, evidence, now)) for root in roots]
     dumps = plan_dumps(DUMP_PLACES + sorted(glob.glob(os.path.join(KEEP_ROOT, "full-dumps-*"))), evidence, now)
     current = current_set()
     sets = plan_sets(SETS, evidence, current, running, now)
     print_runs(plans, links, args.list)
+    print_labels(plans, evidence)
     print_dumps(dumps, other_dumps())
     print("\nlocal.bat names the set %s" % current)
     print_sets(sets, args.list)
@@ -379,7 +400,7 @@ def self_test():
         names = {"running": stamp(0.01) + "-a", "young": stamp(3) + "-b", "trim": stamp(10) + "-c", "expired": stamp(40) + "-d", "cited": stamp(50) + "-e"}
         for name in names.values():
             os.makedirs(os.path.join(root, name, "sub"))
-            for file in ("a.png", "b.nircap", "c.txt", "d.dmp", os.path.join("sub", "e.log"), os.path.join("sub", "f.png")):
+            for file in ("a.png", "b.nircap", "c.txt", "d.dmp", os.path.join("sub", "e.log"), os.path.join("sub", "f.png"), "g.ess"):
                 with open(os.path.join(root, name, file), "w") as out:
                     out.write("x" * 100)
         # A folder that is no run, and a run's name that is a link: neither is touched.
@@ -403,14 +424,14 @@ def self_test():
         for treatment, name in names.items():
             assert by_name[name]["treatment"] == treatment, (treatment, by_name[name]["treatment"])
         assert sorted(os.path.basename(file[0]) for file in by_name[names["trim"]]["heavy"]) == ["a.png", "b.nircap", "f.png"]
-        assert freed_by(by_name[names["trim"]]) == 300 and freed_by(by_name[names["expired"]]) == 600 and freed_by(by_name[names["young"]]) == 0
+        assert freed_by(by_name[names["trim"]]) == 300 and freed_by(by_name[names["expired"]]) == 700 and freed_by(by_name[names["young"]]) == 0
         before = {name: sorted(file[0] for file in files_in(os.path.join(root, name))) for name in names.values()}
         assert act_on_root(rows) == 0, open(common.LOG).read()
         assert not os.path.lexists(os.path.join(root, names["expired"]))
         for name in (names["running"], names["young"], names["cited"]):
             assert sorted(file[0] for file in files_in(os.path.join(root, name))) == before[name], name
         trimmed = os.path.join(root, names["trim"])
-        assert sorted(os.path.relpath(file[0], trimmed) for file in files_in(trimmed)) == sorted(["c.txt", "d.dmp", os.path.join("sub", "e.log"), "trimmed.txt"])
+        assert sorted(os.path.relpath(file[0], trimmed) for file in files_in(trimmed)) == sorted(["c.txt", "d.dmp", os.path.join("sub", "e.log"), "g.ess", "trimmed.txt"])
         assert "a.png" in open(os.path.join(trimmed, "trimmed.txt")).read()
         assert os.path.lexists(os.path.join(trimmed, "results")), "a trim leaves a link"
         assert os.path.getsize(os.path.join(outside, "precious.txt")) == 1000
@@ -419,6 +440,14 @@ def self_test():
         note = os.path.getsize(os.path.join(trimmed, "trimmed.txt"))
         assert act_on_root(plan_root(root, evidence, now)) == 0
         assert os.path.getsize(os.path.join(trimmed, "trimmed.txt")) == note
+
+        # A dump that a record names keeps its old run whole, though the record does not name the run.
+        with_dump = stamp(45) + "-f"
+        os.makedirs(os.path.join(root, with_dump))
+        with open(os.path.join(root, with_dump, "Morrowind.exe.777.dmp"), "w") as out:
+            out.write("d")
+        kept_run = {row["name"]: row for row in plan_root(root, Evidence("the file Morrowind.exe.777.dmp"), now)}[with_dump]
+        assert kept_run["treatment"] == "cited", kept_run["treatment"]
 
         # A real LZX, on a dump in a folder of its own.
         place = os.path.join(temp, "full-dumps-x")
@@ -469,6 +498,11 @@ def self_test():
         treatments = {row["name"]: row["treatment"] for row in rows}
         assert treatments["f100"] == "stay: cited" and treatments["f101"] == "go" and "younger" in treatments["f102"], treatments
         assert treatments["f193"] == "stay: in use" and "the one before" in treatments["f194"] and "the one before" in treatments["f195"] and treatments["vd-a"] == "go", treatments
+        # A current set with no number stays by its name. With no current set known, no set goes.
+        by_name_rows = {row["name"]: row["treatment"] for row in plan_sets(sets, Evidence(""), "vd-a", [], now)}
+        assert "the current" in by_name_rows["vd-a"] and "the current" in by_name_rows["f195"] and by_name_rows["f100"] == "go", by_name_rows
+        for unknown in (None, "f999"):
+            assert all(row["treatment"].startswith("stay") for row in plan_sets(sets, Evidence(""), unknown, [], now)), unknown
         assert act_on_sets(rows) == 0, open(common.LOG).read()
         assert not os.path.exists(os.path.join(sets, "f101")) and not os.path.exists(os.path.join(sets, "vd-a")) and os.path.exists(os.path.join(sets, "f100"))
         assert os.path.getsize(os.path.join(outside, "precious.txt")) == 1000

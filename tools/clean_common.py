@@ -37,14 +37,21 @@ SETS = os.path.join(KEEP_ROOT, "mgebuilds")
 GAME_PROGRAMS = {"morrowind.exe", "numidium.exe", "nirender-host.exe"}
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
+# The check cards of the test train name runs too.
+CARDS = "C:\\tmp\\coord\\train\\cards"
 RUN = re.compile(r"^(\d{8}-\d{6})-.+$")
 STAMP = re.compile(r"\d{8}-\d{6}")
-# The short form of a run's name, `-HHMMSS-label`, with no word character before it.
-SHORT_CITATION = re.compile(r"(?<!\w)-\d{6}-[\w.-]+")
-DOC_TEXT = (".md", ".tsv", ".txt", ".py", ".sh", ".lua", ".json", ".csv")
-TEXT_LIMIT = 1 << 24
-TEXT_FILES = (".log", ".txt", ".tsv", ".toml", ".json", ".lua", ".csv", ".md")
+# The short form of a run's name, `-HHMMSS-`, with no word character before it. The label may differ.
+SHORT_CITATION = re.compile(r"(?<!\w)-\d{6}(?=-)")
+DUMP_NUMBER = re.compile(r"(?i)(?:dump|pid)\W{0,3}(\d+)")
+EVIDENCE_TEXT = (".md", ".tsv", ".txt", ".py", ".sh", ".lua", ".json", ".csv", ".log", ".toml", ".cdb", ".ps1")
+# The docs and the commit messages alone hold more. Less says that a part was not read.
+LEAST_EVIDENCE = 10_000_000
+LEAST_LABEL = 4
+# What a trim of a run takes: pictures, captures and film. The rest stays to the end of the run.
+HEAVY_FILES = (".png", ".tga", ".bmp", ".jpg", ".jpeg", ".gif", ".nircap", ".mp4", ".mkv", ".avi", ".webm")
 DUMP_FILES = (".dmp", ".mdmp")
+GENERIC_DUMPS = {"mwse_minidump"}
 BUSY_DAYS = 1 / 24
 PICTURE_DAYS = 7
 TEXT_DAYS = 30
@@ -128,15 +135,13 @@ def files_in(root):
 
 
 def remove_link(path):
-    """Removes a reparse point as a link: its target stays. A folder link goes with `rmdir`, which
-    with no switch only removes an empty folder or a link, and a file link with os.remove."""
-    if os.lstat(path).st_file_attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
-        result = subprocess.run(["cmd", "/c", "rmdir", path], capture_output=True, text=True)
-        if result.returncode != 0:
-            raise OSError("rmdir %s: %s" % (path, result.stderr.strip()))
+    """Removes a reparse point as a link: its target stays. os.rmdir takes a folder link and never goes
+    through it, and os.remove a file link."""
+    if os.lstat(long_path(path)).st_file_attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
+        os.rmdir(long_path(path))
     else:
-        os.remove(path)
-    if os.path.lexists(path):
+        os.remove(long_path(path))
+    if os.path.lexists(long_path(path)):
         raise OSError("the link %s is still there" % path)
 
 
@@ -357,6 +362,14 @@ def kept_set_numbers(current, names):
     return {number, max(before)} if before else {number}
 
 
+def kept_set_names(current, names):
+    """The names of the sets that stay as the current one and the one before. A current set with no number stays by
+    its name, and the highest number counts as the one before."""
+    number = set_number(current)
+    numbered = [(found, name) for found, name in ((set_number(name), name) for name in names) if found is not None and (number is None or found < number)]
+    return {current, max(numbered)[1]} if numbered else {current}
+
+
 def old_play_set(path, kept):
     """True for a tree of a numbered play set older than the two that stay: C:\\tmp\\play185\\x. The rolling trees of
     C:\\tmp\\playset have no number and stay."""
@@ -372,43 +385,66 @@ def old_play_set(path, kept):
 # ---- the citations
 
 
+def evidence_folders():
+    """The folders whose text names runs. Not the copies of runs and not the sets: a run's log names its own folder,
+    and that is no citation. A folder that is missing shows in the load."""
+    folders = [DOCS, MEMORY, CARDS]
+    try:
+        with os.scandir(KEEP_ROOT) as entries:
+            folders += sorted(entry.path for entry in entries if entry.is_dir(follow_symlinks=False) and not is_link_entry(entry) and not entry.name.startswith("runs-") and entry.path != SETS)
+    except OSError:
+        folders.append(KEEP_ROOT)
+    return folders
+
+
 class Evidence:
     """What the docs, the notes, the accepted baselines and the commit messages name."""
 
-    def __init__(self, text):
+    def __init__(self, text, problems=()):
         self.text = text
+        # Why the text may lack a citation. A removal must not run on it: every run would read as uncited.
+        self.problems = list(problems)
         self.stamps = set(STAMP.findall(text))
-        self.shorts = sorted(SHORT_CITATION.findall(text))
+        self.shorts = set(SHORT_CITATION.findall(text))
+        self.dump_numbers = set(DUMP_NUMBER.findall(text))
 
     @classmethod
-    def load(cls, folders=None, repos=COMMIT_REPOS):
-        if folders is None:
-            folders = [DOCS, MEMORY, *glob.glob(os.path.join(KEEP_ROOT, "baseline-*")), *glob.glob(os.path.join(KEEP_ROOT, "gate-*"))]
-        parts = []
+    def load(cls, folders=None, names=None, repos=COMMIT_REPOS, least=LEAST_EVIDENCE):
+        """The text of each folder and each commit message. `names` are folders whose own name counts too."""
+        folders = evidence_folders() if folders is None else folders
+        names = glob.glob(os.path.join(KEEP_ROOT, "baseline-*")) + glob.glob(os.path.join(KEEP_ROOT, "gate-*")) if names is None else names
+        # The name of a baseline can hold the set that it needs: baseline-accepted-20261102-f194.
+        parts = [os.path.basename(name) for name in names]
+        problems = []
         for folder in folders:
-            if os.path.isdir(folder):
-                # The name of a baseline can hold the set that it needs: baseline-accepted-20261102-f194.
-                parts.append(os.path.basename(folder))
-                for path, size, _ in files_in(folder):
-                    if path.lower().endswith(DOC_TEXT) and size < TEXT_LIMIT and os.sep + ".git" + os.sep not in path:
-                        try:
-                            with open(long_path(path), encoding="utf-8", errors="replace") as file:
-                                parts.append(file.read())
-                        except OSError:
-                            pass
+            try:
+                found = files_in(folder)
+            except OSError as error:
+                problems.append("a folder cannot be read: %s (%s)" % (folder, error))
+                continue
+            for path, _, _ in found:
+                if not path.lower().endswith(EVIDENCE_TEXT) or os.sep + ".git" + os.sep in path:
+                    continue
+                try:
+                    with open(long_path(path), encoding="utf-8", errors="replace") as file:
+                        parts.append(file.read())
+                except OSError as error:
+                    problems.append("a file cannot be read: %s (%s)" % (path, error))
         for repo in repos:
-            if os.path.isdir(repo):
-                parts.append(git(repo, "log", "--all", "--format=%B").stdout)
-        return cls("\n".join(parts))
+            log = git(repo, "log", "--all", "--format=%B") if os.path.isdir(repo) else None
+            if log is None or log.returncode != 0 or not log.stdout.strip():
+                problems.append("no commit messages from %s" % repo)
+            else:
+                parts.append(log.stdout)
+        text = "\n".join(parts)
+        if len(text) < least:
+            problems.append("only %d characters of text, and at least %d are expected" % (len(text), least))
+        return cls(text, problems)
 
     def cites_run(self, name):
         """A full citation counts by its date and time, as a record can shorten the label. A short
-        citation can carry a trailing part (a file name, a dot), and matches by its start."""
-        if name[:15] in self.stamps:
-            return True
-        short = name[8:]
-        at = bisect.bisect_left(self.shorts, short)
-        return at < len(self.shorts) and self.shorts[at].startswith(short)
+        citation counts by its time alone: a false keep costs little, and a false removal loses evidence."""
+        return name[:15] in self.stamps or name[8:15] in self.shorts
 
     def cites_word(self, word):
         """True when the text holds this name as a word of its own: f94 is not in f945 or xf94."""
@@ -416,27 +452,31 @@ class Evidence:
 
     def cites_dump(self, path):
         """True when the text names a dump by its file, its name with no extension, or the number
-        of its process beside the word dump or pid."""
-        name = os.path.basename(path)
-        stem = os.path.splitext(name)[0]
+        of its process beside the word dump or pid. The name of a mini dump is the same in each run, and says nothing."""
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if stem.lower() in GENERIC_DUMPS:
+            return False
         if self.cites_word(stem):
             return True
-        number = re.search(r"\.(\d+)$", stem)
-        return number is not None and re.search(r"(?i)(?:dump|pid)\W{0,3}" + number.group(1) + r"(?!\d)", self.text) is not None
+        number = re.search(r"[.-](\d+)$", stem)
+        return number is not None and number.group(1) in self.dump_numbers
+
+    def cites_run_with(self, name, files):
+        """True when the text names a run, or a dump among its files: (path, bytes, time)."""
+        return self.cites_run(name) or any(file[0].lower().endswith(DUMP_FILES) and self.cites_dump(file[0]) for file in files)
+
+    def label_only(self, name):
+        """True for an uncited run whose label the text holds: a record that may mean it, with no time to prove it."""
+        label = name[16:]
+        return len(label) >= LEAST_LABEL and not self.cites_run(name) and self.cites_word(label)
 
 
 # ---- the expiry
 
 
-def file_kind(name):
-    """How long a file of a run lives: "text", "dump" or "picture" (pictures, captures, film frames and
-    anything else that is no text)."""
-    lower = name.lower()
-    if lower.endswith(TEXT_FILES):
-        return "text"
-    if lower.endswith(DUMP_FILES):
-        return "dump"
-    return "picture"
+def is_heavy(name):
+    """True for a file that a trim takes: a picture, a capture or a film. All else lives as long as its run."""
+    return name.lower().endswith(HEAVY_FILES)
 
 
 def run_age_days(name, now):
@@ -464,8 +504,10 @@ def run_treatment(age_days, cited):
     return "expired"
 
 
-def set_treatment(age_days, cited, kept, used):
-    """What happens to a set of mgebuilds: "stay" with the reason, or "go"."""
+def set_treatment(age_days, cited, kept, used, current_known=True):
+    """What happens to a set of mgebuilds: "stay" with the reason, or "go". With no current set known, no set goes."""
+    if not current_known:
+        return "stay: local.bat names no set that is here"
     if kept:
         return "stay: the current play set or the one before"
     if used:
@@ -482,6 +524,8 @@ def self_test_common():
     assert set_number("f195") == 195 and set_number("play185") == 185 and set_number("f91-null") is None and set_number("playset") is None
     assert kept_set_numbers("f195", ["f27", "f104p", "f193", "f195", "vd-a28"]) == {195, 193}
     assert kept_set_numbers("f27", ["f27", "f28"]) == {27} and kept_set_numbers(None, ["f1"]) == set() and kept_set_numbers("vd-a28", ["f1"]) == set()
+    assert kept_set_names("f195", ["f27", "f193", "f195", "vd-a"]) == {"f195", "f193"} and kept_set_names("vd-a", ["f27", "f28", "vd-a"]) == {"vd-a", "f28"}
+    assert kept_set_names("f27", ["f27"]) == {"f27"} and kept_set_names("vd-a", ["vd-a"]) == {"vd-a"}
     assert old_play_set("C:\\tmp\\play185\\nirender-plugin", {195, 194}) and not old_play_set("C:\\tmp\\play194\\x", {195, 194})
     assert not old_play_set("C:\\tmp\\playset\\x", {195, 194}) and not old_play_set("C:\\tmp\\play185\\x", set()) and not old_play_set("C:\\tmp\\walk\\x", {195})
     assert own_line([{"pid": 5, "parent": 3}, {"pid": 3, "parent": 1}, {"pid": 9, "parent": 3}], 5) == {5, 3, 1}
@@ -489,12 +533,40 @@ def self_test_common():
     assert set_treatment(40, False, False, False) == "go" and "younger" in set_treatment(10, False, False, False)
     for kept, used, cited in ((True, False, False), (False, True, False), (False, False, True)):
         assert "stay" in set_treatment(400, cited, kept, used)
+    assert "names no set" in set_treatment(400, False, False, False, False)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
         with open(os.path.join(temp, "local.bat"), "w", encoding="ascii") as file:
             file.write('set "OTHER=1"\nset "MGE_BUILD=E:\\nirender-keep\\mgebuilds\\f195"\n')
         assert current_set(temp) == "f195" and current_set(os.path.join(temp, "none")) is None
-    assert file_kind("host-a.PNG") == "picture" and file_kind("a.nircap") == "picture" and file_kind("x.mp4") == "picture"
-    assert file_kind("host.txt") == "text" and file_kind("MWSE.log") == "text" and file_kind("a.DMP") == "dump"
+
+        # Each way for the text to lack a citation shows, so that no removal runs on it.
+        docs = os.path.join(temp, "docs")
+        os.makedirs(docs)
+        with open(os.path.join(docs, "a.md"), "w", encoding="ascii") as file:
+            file.write("see 20261103-010838-h14-w2\n" * 10)
+        repo = os.path.join(temp, "repo")
+        assert git(temp, "init", "-q", "-b", "master", repo).returncode == 0
+        assert git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "a commit names 20261103-020202-x").returncode == 0
+        good = Evidence.load([docs], [], [repo], least=100)
+        assert good.problems == [] and good.cites_run("20261103-010838-h14-w2") and good.cites_run("20261103-020202-x"), good.problems
+        assert "cannot be read" in " ".join(Evidence.load([os.path.join(temp, "no-docs")], [], [repo], least=1).problems)
+        assert "no commit messages" in " ".join(Evidence.load([docs], [], [os.path.join(temp, "no-repo")], least=1).problems)
+        no_commits = os.path.join(temp, "empty-repo")
+        assert git(temp, "init", "-q", "-b", "master", no_commits).returncode == 0
+        assert "no commit messages" in " ".join(Evidence.load([docs], [], [no_commits], least=1).problems), "a git log that fails"
+        assert "characters" in " ".join(Evidence.load([docs], [], [repo]).problems), "too little text"
+        # A file held open with no sharing cannot be read.
+        held = subprocess.Popen(["powershell", "-NoProfile", "-Command", "$f=[IO.File]::Open('%s','Open','ReadWrite','None'); Write-Output held; [Console]::In.ReadLine() | Out-Null; $f.Close()" % os.path.join(docs, "a.md")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        assert held.stdout.readline().strip() == "held"
+        assert "a file cannot be read" in " ".join(Evidence.load([docs], [], [repo], least=1).problems)
+        held.communicate("\n")
+        # A copy of a run and the sets are no evidence, and each named folder is.
+        names = [os.path.basename(path) for path in evidence_folders()]
+        assert not any(name.startswith("runs-") or name == "mgebuilds" for name in names)
+    for name in ("host-a.PNG", "a.nircap", "x.mp4", "y.tga"):
+        assert is_heavy(name), name
+    for name in ("host.txt", "MWSE.log", "a.DMP", "b.py", "c.sh", "d.ess", "e.ini", "f.xml", "g.wgsl", "h.dll", "none"):
+        assert not is_heavy(name), name
     for age, cited, expected in [(0.01, False, "running"), (0.01, True, "cited"), (6.9, False, "young"), (7.0, False, "trim"), (29.9, False, "trim"), (30.0, False, "expired"), (400, True, "cited")]:
         assert run_treatment(age, cited) == expected, (age, cited)
     now = time.mktime(time.strptime("20261103-120000", "%Y%m%d-%H%M%S"))
@@ -503,7 +575,18 @@ def self_test_common():
     evidence = Evidence("see 20261103-010838-h14-w2/a.png and -012408-h3-w1 and 20261103-020000-short, set f94 and gate-f96 and xf97 f985; the dump Morrowind.exe.111.dmp, pid 222, 333 frames")
     assert evidence.cites_run("20261103-010838-h14-w2") and evidence.cites_run("20261103-012408-h3-w1")
     assert evidence.cites_run("20261103-020000-short-longer-label"), "a citation with a shorter label"
+    assert evidence.cites_run("20261102-012408-other"), "a short citation counts by its time alone"
     assert not evidence.cites_run("20261103-012630-h3-d") and not evidence.cites_run("20261102-012630-h3")
     assert evidence.cites_word("f94") and evidence.cites_word("f96") and not evidence.cites_word("f97") and not evidence.cites_word("f98")
     assert evidence.cites_dump("C:\\d\\Morrowind.exe.111.dmp") and evidence.cites_dump("C:\\d\\Morrowind.exe.222.dmp")
     assert not evidence.cites_dump("C:\\d\\Morrowind.exe.333.dmp") and not evidence.cites_dump("C:\\d\\Morrowind.exe.22.dmp")
+    assert Evidence("the hang dump 60548").cites_dump("C:\\d\\hang-60548.dmp")
+    # The name of a mini dump is in the docs, and it keeps no run.
+    plain = Evidence("MWSE_MiniDump.dmp holds it; the file Morrowind.exe.111.dmp; the run h14-w2-fine")
+    assert not plain.cites_dump("C:\\r\\MWSE_MiniDump.dmp") and plain.cites_dump("C:\\r\\Morrowind.exe.111.dmp")
+    # A run counts as cited by a dump inside it, and by nothing else among its files.
+    uncited = "20261001-000000-x"
+    assert plain.cites_run_with(uncited, [("C:\\r\\a.png", 1, 0.0), ("C:\\r\\Morrowind.exe.111.dmp", 1, 0.0)])
+    assert not plain.cites_run_with(uncited, [("C:\\r\\Morrowind.exe.111.png", 1, 0.0), ("C:\\r\\MWSE_MiniDump.dmp", 1, 0.0)])
+    # A label alone is listed for the Archivist. It keeps nothing.
+    assert plain.label_only("20261001-000000-h14-w2-fine") and not plain.label_only("20261001-000000-other") and not plain.label_only("20261001-000000-the")

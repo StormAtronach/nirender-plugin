@@ -65,6 +65,7 @@ C:\\tmp are listed too, and nothing touches them. The removal of build output go
 Each act goes to E:\\nirender-keep\\clean-worktrees.log, with the target of each link removed, so
 that a link can be made again when the removal then fails.
 """
+import _winapi
 import argparse
 import os
 import re
@@ -79,7 +80,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # `python -I` leaves the folder of the script off the path.
 sys.path.insert(0, HERE)
 import clean_common as common  # noqa: E402
-from clean_common import FILE_ATTRIBUTE_REPARSE_POINT, KEEP_ROOT, REPOS_ROOT, REPOSITORIES, SETS, Evidence, current_folder, current_set, file_kind, files_in, games_in, git, gigabytes, is_link, is_link_entry, kept_set_numbers, log_line, old_play_set, own_line, processes, project_trees, remove_link, remove_tree, run_age_days, run_treatment, same_or_under, same_path, users_of, walk, worktrees_of  # noqa: E402
+from clean_common import FILE_ATTRIBUTE_REPARSE_POINT, KEEP_ROOT, REPOS_ROOT, REPOSITORIES, SETS, Evidence, current_folder, current_set, files_in, games_in, git, gigabytes, is_heavy, is_link, is_link_entry, kept_set_numbers, log_line, old_play_set, own_line, processes, project_trees, remove_link, remove_tree, run_age_days, run_treatment, same_or_under, same_path, users_of, walk, worktrees_of  # noqa: E402
 
 # The shared checkouts and the test train's pair stay, whatever their branch has. Git's own main
 # worktree is one too.
@@ -276,7 +277,7 @@ def other_outputs(trees):
 def fingerprint(root, pictures=True):
     """The number and the size of the files of a folder, for the check of a copy: with no pictures
     when `pictures` is false. Raises OSError when it cannot read a folder."""
-    found = [file for file in files_in(root) if pictures or file_kind(file[0]) != "picture"]
+    found = [file for file in files_in(root) if pictures or not is_heavy(file[0])]
     return len(found), sum(file[1] for file in found)
 
 
@@ -319,7 +320,7 @@ def copy_results(results, keep_root, date, evidence, now):
             copied.append(target)
             continue
         age = run_age_days(name, now)
-        treatment = None if age is None else run_treatment(age, evidence.cites_run(name))
+        treatment = None if age is None else run_treatment(age, evidence.cites_run_with(name, files_in(source)))
         if treatment == "expired":
             continue
         pictures = treatment != "trim"
@@ -341,7 +342,7 @@ def uncopied(folder, names, pictures):
     left_out = []
     for name in names:
         path = os.path.join(folder, name)
-        if is_link(path) or (not pictures and not os.path.isdir(path) and file_kind(name) == "picture"):
+        if is_link(path) or (not pictures and not os.path.isdir(path) and is_heavy(name)):
             left_out.append(name)
     return left_out
 
@@ -537,10 +538,15 @@ def main():
     print("\nOTHER TARGET FOLDERS under %s, in no tree of the project, not touched (%s):" % (REPOS_ROOT, gigabytes(sum(size for size, _ in others))))
     for size, path in others:
         print("  %9s  %s" % (gigabytes(size), path))
+    evidence = Evidence.load()
+    for problem in evidence.problems:
+        print("THE EVIDENCE MAY LACK A CITATION: " + problem)
     if not args.apply:
         print("\nA dry run: nothing changed. --apply acts.")
         return 0
-    evidence = Evidence.load()
+    if evidence.problems:
+        print("NOTHING DONE: a removal copies only the runs that are cited or young, and an uncited run may be evidence.")
+        return 1
     left = []
     failed = 0
     for row in go:
@@ -668,6 +674,12 @@ def self_test():
         assert real_results(tree) is None
         remove_link(link)
         assert not os.path.lexists(link) and os.path.getsize(os.path.join(outside, "precious.txt")) == 1000
+
+        # A path with an ampersand: no shell reads it as a second command.
+        odd = os.path.join(tree, "a&b")
+        _winapi.CreateJunction(outside, odd)
+        remove_link(odd)
+        assert not os.path.lexists(odd) and os.path.exists(os.path.join(outside, "precious.txt"))
 
         # A real results folder: a copy, the check of it, and a run that is kept already.
         results = os.path.join(tree, "results")
