@@ -1046,6 +1046,31 @@ def self_test_full_dump():
         assert run.options["full_dump"] is full_dump, run.options
 
 
+def self_test_use_instance():
+    """--instance: every path of the harness in the testing instance or its game folder moves to
+    the other instance, the crash dumps too. MOTTE_MOD is a mod of the testing instance only."""
+    def paths(value):
+        return [value] if isinstance(value, str) else [v for v in value if isinstance(v, str)] if isinstance(value, tuple) else []
+
+    names = [name for name in dir(session.harness) if name.isupper() and name not in ("MO2_ROOT", "GAME_DIR", "MOTTE_MOD")]
+    saved = {name: getattr(session.harness, name) for name in names + ["MO2_ROOT", "GAME_DIR"]}
+    saved_mge = session.MGE_LOGS
+    old_roots = (session.harness.MO2_ROOT, session.harness.GAME_DIR)
+    held = [name for name in names if any(path.startswith(old_roots) for path in paths(saved[name]))]
+    assert "MINIDUMPS" in held and "MWSE_LOGS" in held, held
+    instance, game = os.path.join("X:", os.sep, "other"), os.path.join("X:", os.sep, "game")
+    try:
+        session.use_instance(instance, game)
+        for name in held:
+            for path in paths(getattr(session.harness, name)):
+                assert path.startswith((instance, game)), "%s keeps %s" % (name, path)
+        assert session.harness.MINIDUMPS[0] == os.path.join(instance, "overwrite", "Root", "MWSE_MiniDump.dmp")
+    finally:
+        for name, value in saved.items():
+            setattr(session.harness, name, value)
+        session.MGE_LOGS = saved_mge
+
+
 def self_test():
     """The tests of the argument handling: no game, no build."""
     self_test_mge_log_problems()
@@ -1060,6 +1085,7 @@ def self_test():
     self_test_archive_arguments()
     self_test_plugin_evidence()
     self_test_full_dump()
+    self_test_use_instance()
     build = os.path.join("target", "akulakhan.dll")
     assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/a.dll", "--plugin-dll")
     assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
