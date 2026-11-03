@@ -2,9 +2,12 @@
 
 The game side of a run is in `session.py`.
 """
+import functools
 import json
 import os
 import re
+import subprocess
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -44,16 +47,56 @@ def build_missing(mge_build):
     return [part for part in BUILD_PARTS if not os.path.exists(os.path.join(mge_build, part))]
 
 
+@functools.lru_cache(maxsize=None)
+def main_checkout():
+    """The folder of the main checkout of this repository: `REPO` itself, or the checkout that
+    a worktree belongs to. None when git cannot tell."""
+    run = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=REPO,
+                         capture_output=True, text=True)
+    if run.returncode != 0 or not run.stdout.strip():
+        return None
+    return os.path.dirname(os.path.normpath(run.stdout.strip()))
+
+
+@functools.lru_cache(maxsize=None)
+def local_file():
+    """The `local.json` that `local` reads: the one at the repo root, else the one of the main
+    checkout (the file is not tracked, so a new worktree has none). None when neither has one.
+    The main checkout's file is named once on stderr, so that the output shows where the places
+    came from."""
+    own = os.path.join(REPO, "local.json")
+    if os.path.isfile(own):
+        return own
+    main = main_checkout()
+    if main and os.path.normcase(main) != os.path.normcase(REPO) and os.path.isfile(os.path.join(main, "local.json")):
+        path = os.path.join(main, "local.json")
+        print("local.json: %s (the main checkout's; this tree has none)" % path, file=sys.stderr)
+        return path
+    return None
+
+
 def local(key, default):
     """A place of this machine that a tool needs and the repo does not hold: the key of
-    `local.json` at the repo root (not tracked; `local.example.json` names the keys), else
-    `default`, a place next to this repo or under the home folder."""
-    path = os.path.join(REPO, "local.json")
-    if os.path.isfile(path):
+    `local_file()` (not tracked; `local.example.json` names the keys), else `default`, a place
+    next to this repo or under the home folder."""
+    path = local_file()
+    if path:
         values = json.load(open(path, encoding="utf-8"))
         if key in values:
             return values[key]
     return default
+
+
+def sibling(*parts):
+    """The place `parts` next to this repo, else next to the main checkout (a worktree away from
+    the repos folder has no siblings but its own). The place next to this repo when neither
+    exists."""
+    near = os.path.join(SIBLINGS, *parts)
+    main = main_checkout()
+    if os.path.exists(near) or not main:
+        return near
+    far = os.path.join(os.path.dirname(main), *parts)
+    return far if os.path.exists(far) else near
 
 # The functions of the renderer subsystem, by their name in the IDA database.
 FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiPropertyState"

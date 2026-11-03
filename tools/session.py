@@ -17,9 +17,12 @@ import sys
 import time
 
 import common  # noqa: E402
-from common import REPO, SIBLINGS, local
+from common import REPO, local, local_file, sibling
 
-HARNESS_DIR = local("harness", os.path.join(SIBLINGS, "moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
+HARNESS_DIR = local("harness", sibling("moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
+if not os.path.isfile(os.path.join(HARNESS_DIR, "harness.py")):
+    raise SystemExit("session.py: no harness.py in %s. Set the key \"harness\" in %s." % (
+        HARNESS_DIR, local_file() or os.path.join(REPO, "local.json") + " or in the local.json of the main checkout"))
 sys.path.insert(0, HARNESS_DIR)
 import harness  # noqa: E402
 
