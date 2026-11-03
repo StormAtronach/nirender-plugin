@@ -109,6 +109,10 @@ pub const HEADER_ENVMAP_LIT: u32 = 128;
 /// `INSTANCE_WALK` (or `INSTANCE_QUEUED`), and the helper draws the scene's shapes there in a
 /// view of the scene's own (`instance_stream::Route::Places`).
 pub const HEADER_VIEW_PLACES: u32 = 256;
+/// A bit of the same word: the scene records carry the view slot (`link::SceneV1::view`, a
+/// record of 56 bytes), and a slot that retires comes as the frame event
+/// `link::EVENT_VIEW_RETIRE` (`view_slots`).
+pub const HEADER_SCENE_VIEWS: u32 = 512;
 
 // The shared memories of a stream. The plugin makes each one, named after the ring; the
 // helper opens it. The words of the ring head are in the table at the head of this file.

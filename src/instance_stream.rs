@@ -53,6 +53,7 @@ use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDy
 use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, CLASS_WEATHER_PARTICLES, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_OTHER, SCENE_RACE_MENU_HEAD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
 use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
+use crate::view_slots::{Click, ViewTable, VIEW_SLOTS};
 use crate::mem::{rd, wr};
 
 const CONTROLLERS: usize = NiAVObject::controllers;
@@ -740,6 +741,60 @@ pub unsafe fn frame_tick(mt: &MainThread) {
         let in_use: HashSet<u32> = t.instances.values().map(|instance| instance.material).collect();
         crate::material_stream::sweep(mt, &in_use, t.frame);
     }
+    view_present(mt);
+}
+
+/// The view slots of D82 ([`ViewTable`]), and the slots that retired at the last Present, for
+/// the frame events `link::EVENT_VIEW_RETIRE` (`capture::frame_end` writes them).
+static VIEWS: MainCell<Option<ViewTable>> = MainCell::new(None);
+static RETIRED_VIEWS: MainCell<Vec<u8>> = MainCell::new(Vec::new());
+
+/// A scene starts: its view slot plus 1, for `SceneV1::view`, or 0 for a scene that is not a
+/// view or that found no free slot (one log line at the first refusal).
+pub fn view_open(mt: &MainThread, click: &Click) -> u32 {
+    let mut views_open = VIEWS.get(mt);
+    let views = views_open.get_or_insert_with(ViewTable::default);
+    let refused = views.refused;
+    let opened = views.open(click);
+    if refused == 0 && views.refused == 1 {
+        crate::log!("views: all {VIEW_SLOTS} view slots are taken; a new view gets none (the count is in the report)");
+    }
+    opened.map_or(0, |opened| opened.slot as u32 + 1)
+}
+
+/// The renderer's SwapBuffers, with the device's target (`None` for the back buffer): the open
+/// views into it close.
+pub fn view_swap(mt: &MainThread, target: Option<usize>) {
+    if let Some(views) = VIEWS.get(mt).as_mut() {
+        views.swap(target);
+    }
+}
+
+/// A readback ran the frame's work so far: a texture key used again gets its first slot.
+pub fn view_flush(mt: &MainThread) {
+    if let Some(views) = VIEWS.get(mt).as_mut() {
+        views.flush();
+    }
+}
+
+/// Present, the end of the frame (`frame_tick`): the views close and the idle slots retire.
+fn view_present(mt: &MainThread) {
+    let retired = VIEWS.get(mt).as_mut().map(|views| views.present().retired).unwrap_or_default();
+    RETIRED_VIEWS.get(mt).extend(retired);
+}
+
+/// The slots that retired at Present since the last call.
+pub fn take_retired_views(mt: &MainThread) -> Vec<u8> {
+    core::mem::take(&mut *RETIRED_VIEWS.get(mt))
+}
+
+/// The report line of the view slots.
+fn view_report(mt: &MainThread) -> String {
+    let views_open = VIEWS.get(mt);
+    let Some(views) = views_open.as_ref() else {
+        return "views: no scene yet".to_owned();
+    };
+    format!("views: {} of {VIEW_SLOTS} slots in use, {} scenes refused, {} slots retired, {} root changes", views.in_use(), views.refused, views.retired, views.root_changes)
 }
 
 /// The shape is deleted (the destructor of `NiGeometry`): its instance goes, with a record
@@ -2295,6 +2350,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
         + "\n" + &crate::worker_events::report()
         + "\n" + &crate::freed_fill::report()
         + "\n" + &crate::camera_space::skin_report(mt)
+        + "\n" + &view_report(mt)
 }
 
 #[cfg(test)]
@@ -2322,6 +2378,36 @@ mod tests {
         assert_eq!(route_of(SCENE_LOCAL_MAP, false, true), Route::Engine(0));
         assert_eq!(route_of(SCENE_WATER_REFLECTION, false, true), Route::Engine(3));
         assert_eq!(route_of(SCENE_CHARACTER_PREVIEW, true, true), Route::Engine(1));
+    }
+
+    /// The view field of a scene start: slot + 1 for a view, 0 for a scene that is not one. The
+    /// slot of a texture view that no scene uses retires at Present after 60 frames, once.
+    #[test]
+    fn a_scene_start_gives_its_view_and_present_retires_idle_slots() {
+        use crate::link::SCENE_SHADOW_CASTERS;
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            let world = Click { kind: SCENE_WORLD, camera: 0x7900_0000, root: 0x7900_1000, target: None, world_camera: true };
+            let shadow = Click { kind: SCENE_SHADOW_CASTERS, camera: 0x7900_2000, root: 0x7900_3000, target: None, world_camera: false };
+            let picture = Click { kind: SCENE_OTHER, camera: 0x7900_0000, root: 0x7900_1000, target: Some(0x7900_4000), world_camera: false };
+            assert_eq!(view_open(&mt, &world), 1);
+            assert_eq!(view_open(&mt, &shadow), 0);
+            let picture_view = view_open(&mt, &picture);
+            assert!(picture_view > 1);
+            view_swap(&mt, Some(0x7900_4000));
+            take_retired_views(&mt);
+            let mut retired = Vec::new();
+            for _ in 0..=crate::view_slots::RETIRE_FRAMES {
+                view_present(&mt);
+                retired.extend(take_retired_views(&mt));
+            }
+            assert!(retired.contains(&((picture_view - 1) as u8)), "{retired:?}");
+            assert!(!retired.contains(&0), "the main view retired");
+            assert!(view_report(&mt).starts_with("views: "));
+            crate::shadow::restore_main_thread(before);
+        }
     }
 
     /// A shape that the engine does not display after a reset (a culled weapon, a shape out of

@@ -241,6 +241,10 @@
 // The engine drew the main sorted queue of the Click: the end of its flush (MWSE's event
 // MWSE_NATIVE_EVENT_ACCUMULATOR_FINISHED). a: 0. b: 0. (nirender src/queue_flush.rs)
 #define MGE_LINK_EVENT_QUEUE_FLUSHED 5u
+// A view slot had no scene for 60 frames and is free again: its bit goes from every
+// instance. a: the slot. b: 0. At Present, before the frame's end. (nirender
+// src/view_slots.rs)
+#define MGE_LINK_EVENT_VIEW_RETIRE 6u
 
 // Facts that the host can compare. They are the indexes of `MgeLinkCountersV1::facts`.
 #define MGE_LINK_FACT_LIGHT_RADIUS 0u
@@ -335,6 +339,12 @@ typedef struct MgeLinkSceneV1 {
     // is relative to the camera has its translation relative to this point. Valid with
     // MGE_LINK_SCENE_HAS_CAMERA_ORIGIN.
     double cameraOrigin[3];
+    // The view slot of the scene plus 1, 0 for a scene that is not a view (nirender
+    // src/view_slots.rs). Only the low byte is used. A packet with a structSize of 48 has no
+    // view.
+    uint32_t view;
+    // 0.
+    uint32_t reserved;
 } MgeLinkSceneV1;
 
 typedef struct MgeLinkLightV1 {
@@ -546,7 +556,7 @@ typedef struct MgeRenderLinkHostV1 {
 
 #ifdef __cplusplus
 static_assert(sizeof(void*) == 4, "the render link is for 32-bit code");
-static_assert(sizeof(MgeLinkSceneV1) == 48, "MgeLinkSceneV1 size");
+static_assert(sizeof(MgeLinkSceneV1) == 56, "MgeLinkSceneV1 size");
 static_assert(sizeof(MgeLinkLightV1) == 16, "MgeLinkLightV1 size");
 static_assert(sizeof(MgeLinkDrawV1) == 48, "MgeLinkDrawV1 size");
 static_assert(sizeof(MgeLinkStateLightV1) == 108, "MgeLinkStateLightV1 size");
