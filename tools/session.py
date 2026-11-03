@@ -146,22 +146,7 @@ def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True):
             print("> " + " ".join(command), flush=True)
             if subprocess.run(command, cwd=REPO, env=env).returncode != 0:
                 raise SystemExit("build failed")
-    # The mod as it is installed: the Lua files and the DLL. The symbol file goes beside the
-    # DLL when the build has one (the owner, 2026-10-16): a profile of the run then
-    # resolves the plugin's symbols without a search path. This is the Harness mod of a
-    # run, never an install or an archive, where no pdb goes.
-    if os.path.isdir(DIST):
-        shutil.rmtree(DIST)
-    shutil.copytree(os.path.join(REPO, "mod"), DIST)
-    if plugin:
-        os.makedirs(os.path.join(DIST, "MWSE", "lib"), exist_ok=True)
-        shutil.copy2(DLL, os.path.join(DIST, "MWSE", "lib", "akulakhan.dll"))
-    if archive:
-        shipped, missing = stage_archive_lua(archive, DIST)
-        print("archive Lua: %s; loaded by it and not in the archive (the run lacks them, as a player's game): %s" % (", ".join(shipped), ", ".join(missing) or "none"), flush=True)
-    pdb = os.path.splitext(DLL)[0] + ".pdb"
-    if plugin and os.path.isfile(pdb):
-        shutil.copy2(pdb, os.path.join(DIST, "MWSE", "lib", "akulakhan.pdb"))
+    stage_mod(DIST, DLL, plugin, archive)
     for source, target in extra_files:
         if not os.path.isfile(source):
             raise SystemExit("no file %s for %s" % (source, target))
@@ -178,6 +163,31 @@ def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True):
     # The mod stays off between runs: it would take the place of the release in a game by hand.
     for change in harness.install_mod(enable=False):
         print("  %s: %s" % (MOD_NAME, change))
+
+
+def stage_mod(dist, dll, plugin, archive=None):
+    """The mod as it is installed, in `dist`: the Lua files and, with `plugin`, the DLL. The
+    symbol file goes beside the DLL when the build has one (the owner, 2026-10-16): a profile
+    of the run then resolves the plugin's symbols without a search path. This is the Harness
+    mod of a run, never an install or an archive, where no pdb goes. Without `plugin` the mod
+    has no file of the plugin: a run without the plugin fails if it has one."""
+    if os.path.isdir(dist):
+        shutil.rmtree(dist)
+    shutil.copytree(os.path.join(REPO, "mod"), dist)
+    lib = os.path.join(dist, "MWSE", "lib")
+    if plugin:
+        os.makedirs(lib, exist_ok=True)
+        shutil.copy2(dll, os.path.join(lib, "akulakhan.dll"))
+    if archive:
+        shipped, missing = stage_archive_lua(archive, dist)
+        print("archive Lua: %s; loaded by it and not in the archive (the run lacks them, as a player's game): %s" % (", ".join(shipped), ", ".join(missing) or "none"), flush=True)
+    pdb = os.path.splitext(dll)[0] + ".pdb"
+    if plugin and os.path.isfile(pdb):
+        shutil.copy2(pdb, os.path.join(lib, "akulakhan.pdb"))
+    if not plugin:
+        found = [name for name in ("akulakhan.dll", "akulakhan.pdb") if os.path.isfile(os.path.join(lib, name))]
+        if found:
+            raise SystemExit("the mod of a run without the plugin has %s" % ", ".join(found))
 
 
 def plugin_mods(modlist, root=None):
