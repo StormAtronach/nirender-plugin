@@ -2,9 +2,11 @@
 -- (owndevice.lua) calls `wrap` at each stop; a stop of an entry that this file knows turns its case on and turns it off again
 -- before the tour goes on. The files are made by tools/make_test_nifs.py (`make_level4`).
 --
---   @nif_x_level4_mirror   a pane and a group `subject` (a red box, a green cylinder, a yellow box). Each frame the world camera
---                          clicks the group, with the yellow box hidden around the click, into a niRenderedTexture that is the
---                          base map of the pane: the pane shows the red box and the green cylinder, the world shows all three.
+--   @nif_x_level4_mirror   a pane and a group `subject` (a red box, a green cylinder, a yellow box and a turning billboard with a
+--                          magenta triangle). Each frame the world camera, turned 45 degrees round the group, clicks the group,
+--                          with the yellow box hidden around the click, into a niRenderedTexture that is the base map of the pane:
+--                          the pane shows the red box, the green cylinder and the triangle turned for the mirror camera; the world
+--                          shows all four, the triangle turned for the world camera (D82 stage 2b's exhibit).
 --   @nif_x_level4_isolate  the group and, beside it in the same file, a blue box `bystander` that is not under the group. What
 --                          Isolate Subject of Joy of Painting does (services/PhotoMenu/SubjectFilter.lua, enableOcclusion and
 --                          disableOcclusion): the camera's scene is the group, MGE XE's distant land, statics and water are
@@ -37,6 +39,15 @@ local function mirror(reference, proofFolder)
     -- the group turns for a different camera in the click than in the world's walk (D82 stage 2b). The world camera's own
     -- place and facing come back after the click.
     local function click()
+        -- The texture as the frame before finished it: the read at the first click after the proof comes before this click,
+        -- so a helper that flushes the mirror only at the next click has nothing newer to show. The read can fail.
+        if clicks == PROOF_CLICK + 1 and proofFolder then
+            local pixels = niPixelData.new(TEXTURE_SIZE, TEXTURE_SIZE)
+            local read = texture:readback(pixels)
+            local path = proofFolder .. "/level4-mirror-texture-late.tga"
+            pixels:exportTGA(path)
+            say("proof at click %d, before the click: readback %s, texture written to %s", clicks, tostring(read), path)
+        end
         local original = camera.scene
         local oldTranslation, oldRotation = camera.translation:copy(), camera.rotation:copy()
         -- The camera hangs under a node that carries its place (the local translation is near zero at the stop), so the
@@ -44,9 +55,9 @@ local function mirror(reference, proofFolder)
         local centre = subject.worldTransform.translation
         local turn = tes3matrix33.new()
         turn:toRotationZ(MIRROR_YAW)
-        local world = camera.worldTransform
-        local mirrorTranslation = centre + turn * (world.translation - centre)
-        local mirrorRotation = turn * world.rotation
+        local current = camera.worldTransform
+        local mirrorTranslation = centre + turn * (current.translation - centre)
+        local mirrorRotation = turn * current.rotation
         local parent = camera.parent.worldTransform
         local fromParent = parent.rotation:transpose()
         camera.translation = (fromParent * (mirrorTranslation - parent.translation)) * (1 / parent.scale)
