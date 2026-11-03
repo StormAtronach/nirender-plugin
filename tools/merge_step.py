@@ -51,6 +51,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -216,7 +217,8 @@ def is_ancestor(repo, older, newer):
 
 
 def take_build(slots, what, no_wait):
-    """Takes the build slot, and asks again in its queue, so that the place stays. False with --no-wait, when it must wait."""
+    """Takes the build slot, and asks again in its queue, so that the place stays. False with --no-wait, when it must wait,
+    and on a refusal, as waiting cannot pass that."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
     while True:
         try:
@@ -228,6 +230,8 @@ def take_build(slots, what, no_wait):
         say(reply.text.splitlines()[0])
         if reply.code == slots.DONE:
             return True
+        if reply.code == slots.REFUSED:
+            return False
         if no_wait:
             slots.leave("build", what)
             return False
@@ -357,6 +361,29 @@ def self_test():
         # A pass against a named folder does not move the ref.
         assert moves_the_ref(BASELINE) and not moves_the_ref(os.path.join(root, "copy"))
 
+        # A refusal for lack of room ends the wait, and a place in the queue goes on.
+        class Slots:
+            DONE, REFUSED, QUEUED = 0, 1, 3
+            STATE_DIR = os.path.join(root, "slots")
+            StateBusy = OSError
+            replies = []
+
+            @classmethod
+            def take(cls, *_, **__):
+                code = cls.replies.pop(0)
+                return types.SimpleNamespace(code=code, text="a reply")
+
+            @staticmethod
+            def leave(*_):
+                pass
+
+        Slots.replies = [Slots.REFUSED]
+        assert take_build(Slots, "x", False) is False
+        Slots.replies = [Slots.DONE]
+        assert take_build(Slots, "x", False) is True
+        Slots.replies = [Slots.QUEUED]
+        assert take_build(Slots, "x", True) is False and Slots.replies == []
+
         # The log keeps its name, and its folder is made.
         logs = os.path.join(root, "new", "logs")
         assert log_path_of("0123456789abcdef", logs) == os.path.join(logs, "merge-step-0123456789.log") and os.path.isdir(logs)
@@ -412,8 +439,8 @@ def main():
     what = "merge_step: %s %s" % (os.path.basename(repo), commit[:10])
     if not take_build(slots, what, args.no_wait):
         return 3
-    log_path = log_path_of(commit)
     try:
+        log_path = log_path_of(commit)
         with open(log_path, "w", encoding="utf-8", errors="replace") as log:
             results = run_stages(stages, log, lambda: slots.note_active("build", time.time()))
     finally:
