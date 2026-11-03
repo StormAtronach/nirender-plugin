@@ -8,7 +8,7 @@
 //!
 //! The helper learns the parts of a view from the frame event `link::EVENT_VIEW_OPTIONS`: the
 //! plugin writes it when a scene of a view opens (`view_slots`) and the parts differ from those
-//! that the helper has for the slot ([`Sent`]), so at the change only.
+//! that the helper has for the slot, so at the change only.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
@@ -75,17 +75,23 @@ pub fn forget(kind: u32, key: usize) {
     });
 }
 
-/// The parts for the view of a scene: those of its texture, or of its camera for a view into the
-/// back buffer. The main view has none.
+/// The parts of the key that names the view itself: its texture, or its camera for a view into
+/// the back buffer.
+fn own_parts(click: &Click) -> Option<u32> {
+    match click.target {
+        Some(target) => get(KIND_RENDERED_TEXTURE, target),
+        None => get(KIND_CAMERA, click.camera),
+    }
+}
+
+/// The parts for the view of a scene. The lookup goes from the most specific key to none: the
+/// view's own key ([`own_parts`]), then none. A default for every texture that a camera draws
+/// into would go between the two (owner card D93, not built).
 fn parts_of(click: &Click) -> u32 {
     if click.world_camera && click.target.is_none() {
         return 0;
     }
-    let (kind, key) = match click.target {
-        Some(target) => (KIND_RENDERED_TEXTURE, target),
-        None => (KIND_CAMERA, click.camera),
-    };
-    get(kind, key).unwrap_or(0)
+    own_parts(click).unwrap_or(0)
 }
 
 /// A scene of the view in `slot` opens. Returns the parts to write as `EVENT_VIEW_OPTIONS` when
