@@ -248,6 +248,18 @@ def weather_warning(args):
     return "warning: the run has timing steps and the weather is the game's, which can change in the run and move the frame rate: --weather 0 pins it to clear"
 
 
+FULL_DUMP_SIZE = "0.8 GB"
+
+
+def full_dump_note(args):
+    """The line of `--check` for a run with --full-dump: MWSE's dump at a crash holds the whole
+    memory of the game (its virtual memory was 754 MB at an exit crash of 2026-11-03). The dump
+    stays in the run folder (D71). None without the option."""
+    if not args.full_dump:
+        return None
+    return "--full-dump: a crash of the run writes a dump of about %s into the run folder" % FULL_DUMP_SIZE
+
+
 def weather_summary(pinned, lines):
     """What the result summary says of the weather: `pinned N`, or the game's with the names that
     the mod's weather lines (owndevice.lua) show, in the order they first appear."""
@@ -949,12 +961,12 @@ def self_test_ring_problem():
         def restore(self):
             calls.append("restore")
 
-    saved = (session.harness.Deployment, session.harness.run_game, session.ring_problem_of_instance, session.RESULTS, session.stage_background_config)
+    saved = (session.harness.Deployment, session.harness.run_game, session.ring_problem_of_instance, session.RESULTS, session.stage_mwse_config)
     with tempfile.TemporaryDirectory() as results:
         session.harness.Deployment = Deployment
         session.harness.run_game = lambda *a, **k: calls.append("run_game")
         session.ring_problem_of_instance = lambda: "the rings differ"
-        session.stage_background_config = lambda deployment: None
+        session.stage_mwse_config = lambda deployment, settings: None
         session.RESULTS = results
         try:
             run = session.Run("ring-test")
@@ -966,7 +978,18 @@ def self_test_ring_problem():
                 raise AssertionError("Run.launch started with a ring problem")
             assert calls == ["enable", "restore"], calls
         finally:
-            (session.harness.Deployment, session.harness.run_game, session.ring_problem_of_instance, session.RESULTS, session.stage_background_config) = saved
+            (session.harness.Deployment, session.harness.run_game, session.ring_problem_of_instance, session.RESULTS, session.stage_mwse_config) = saved
+
+
+def self_test_full_dump():
+    """--full-dump: the setting goes into the run's copy of MWSE.json only with the option, beside
+    RunInBackground of a background run; --check names the size."""
+    assert session.mwse_run_settings(False, False) == {"RunInBackground": True}
+    assert session.mwse_run_settings(False, True) == {"RunInBackground": True, "CreateFullMinidumps": True}
+    assert session.mwse_run_settings(True, True) == {"CreateFullMinidumps": True}
+    assert session.mwse_run_settings(True, False) == {}
+    assert full_dump_note(argparse.Namespace(full_dump=False)) is None
+    assert FULL_DUMP_SIZE in full_dump_note(argparse.Namespace(full_dump=True))
 
 
 def self_test():
@@ -982,6 +1005,7 @@ def self_test():
     self_test_archive_lua()
     self_test_archive_arguments()
     self_test_plugin_evidence()
+    self_test_full_dump()
     build = os.path.join("target", "akulakhan.dll")
     assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/a.dll", "--plugin-dll")
     assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
@@ -1109,6 +1133,8 @@ def main():
     ap.add_argument("--capture-menu", type=int, default=0, help="frames of a capture file that starts at the main menu and holds the load of the "
                     "save (menu.nircap): the loading screen is a screen polygon")
     ap.add_argument("--budget", type=int, default=200)
+    ap.add_argument("--full-dump", action="store_true", help="MWSE writes a full-memory dump at a crash (its setting CreateFullMinidumps, set only in "
+                    "the run's copy of MWSE.json): about " + FULL_DUMP_SIZE + " in the run folder, so that the objects and the heap of a crash can be read")
     ap.add_argument("--settle", type=float, default=None, help="the seconds to wait at the interior and at the exterior before the picture (6 without this)")
     ap.add_argument("--keep-fade", action="store_true", help="keep the fade-in of the distant statics and the grass (the tunable statics.fade); "
                     "without this the mod sets it to 0 at the start, so that a picture does not depend on the moment of an arrival")
@@ -1158,6 +1184,8 @@ def main():
         print("run_own_device: the arguments are good; nothing started (--check)")
         if weather_warning(args):
             print("run_own_device: " + weather_warning(args))
+        if full_dump_note(args):
+            print("run_own_device: " + full_dump_note(args))
         return 0
     if args.engine_reference:
         args.reference = True
@@ -1280,7 +1308,7 @@ def main():
         for name in os.listdir(bridge):
             files["MWSE/mods/mwseMCP/" + name] = os.path.join(bridge, name)
     with PluginWatch(path=run.path("plugin-watch.txt")) as watch:
-        done = run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)])
+        done = run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)], full_dump=args.full_dump)
 
     print()
     progress = run.progress_lines(TAG)
