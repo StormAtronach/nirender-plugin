@@ -5,20 +5,22 @@
 --   @nif_x_level4_mirror   a pane and a group `subject` (a red box, a green cylinder, a yellow box). Each frame the world camera
 --                          clicks the group, with the yellow box hidden around the click, into a niRenderedTexture that is the
 --                          base map of the pane: the pane shows the red box and the green cylinder, the world shows all three.
---   @nif_x_level4_isolate  the group alone. What Isolate Subject of Joy of Painting does (services/PhotoMenu/SubjectFilter.lua,
---                          enableOcclusion and disableOcclusion): the camera's scene is the group, MGE XE's distant land,
---                          statics and water are off, and the water of the game is hidden. The back buffer shows the group on
---                          the clear colour.
+--   @nif_x_level4_isolate  the group and, beside it in the same file, a blue box `bystander` that is not under the group. What
+--                          Isolate Subject of Joy of Painting does (services/PhotoMenu/SubjectFilter.lua, enableOcclusion and
+--                          disableOcclusion): the camera's scene is the group, MGE XE's distant land, statics and water are
+--                          off, and the water of the game is hidden. The back buffer shows the group on the clear colour and
+--                          no blue box: a picture with the blue box is a renderer that draws more than the camera's scene.
 local mock = {}
 
 local TEXTURE_SIZE = 256
+local PROOF_CLICK = 30
 
 local function say(format, ...)
     mwse.log("[nirender.mirror_mock] " .. format, ...)
 end
 
 -- The mirror: a click into a rendered texture each frame. Returns the function that ends the case.
-local function mirror(reference)
+local function mirror(reference, proofFolder)
     local root = reference.sceneNode
     local pane = root:getObjectByName("pane")
     local subject = root:getObjectByName("subject")
@@ -40,6 +42,14 @@ local function mirror(reference)
         camera:click()
         camera:swapBuffers()
         camera.renderer:setRenderTarget(nil)
+        -- The proof of the click: the rendered texture itself, written once as a picture of its own.
+        if clicks == PROOF_CLICK and proofFolder then
+            local pixels = niPixelData.new(TEXTURE_SIZE, TEXTURE_SIZE)
+            local read = texture:readback(pixels)
+            local path = proofFolder .. "/level4-mirror-texture.tga"
+            pixels:exportTGA(path)
+            say("proof at click %d: readback %s, texture written to %s; camera scene is the subject: %s", clicks, tostring(read), path, tostring(camera.scene == subject))
+        end
         camera.scene = original
         yellow.appCulled = false
         subject:update()
@@ -58,8 +68,9 @@ end
 
 -- The isolation of Joy of Painting, in its order. Returns the function that ends the case.
 local function isolate(reference)
+    local subject = reference.sceneNode:getObjectByName("subject")
     local oldRoot = tes3.getCamera().scene
-    tes3.getCamera().scene = reference.sceneNode
+    tes3.getCamera().scene = subject
     local oldDistantLand = mge.render.distantLand
     mge.render.distantLand = false
     local oldDistantStatics = mge.render.distantStatics
@@ -71,7 +82,7 @@ local function isolate(reference)
         tes3.runLegacyScript({ command = "ToggleWater" })
     end
     say("isolate on: the camera's scene is the subject: %s; distant land %s, statics %s and water %s were on",
-        tostring(tes3.getCamera().scene == reference.sceneNode), tostring(oldDistantLand), tostring(oldDistantStatics), tostring(oldDistantWater))
+        tostring(tes3.getCamera().scene == subject), tostring(oldDistantLand), tostring(oldDistantStatics), tostring(oldDistantWater))
 
     return function()
         if oldDistantLand ~= nil then
@@ -100,12 +111,12 @@ local cases = {
 }
 
 -- Turns on the case of the stop at `reference` (nothing for an entry without one) and returns a `go` that turns it off first.
-function mock.wrap(reference, go)
+function mock.wrap(reference, go, proofFolder)
     local case = cases[reference.object.id:lower()]
     if not case then
         return go
     end
-    local finish = case(reference)
+    local finish = case(reference, proofFolder)
     return function(...)
         finish()
         return go(...)

@@ -62,9 +62,10 @@ a cylinder), a lit material, a base texture of the level, and the property under
                  cylinder and a yellow box (`make_level4`); at its stop the mock clicks the
                  world camera into a rendered texture of the group, with the yellow box hidden
                  around the click, and sets the texture on the pane
-    level4_isolate the same group alone; at its stop the mock does what Joy of Painting's
-                 Isolate Subject does: the camera's scene is the group, MGE XE's distant land,
-                 statics and water are off, and the water of the game is hidden
+    level4_isolate the same group and, not under it, a blue box `bystander` 130 units above;
+                 at its stop the mock does what Joy of Painting's Isolate Subject does: the
+                 camera's scene is the group, MGE XE's distant land, statics and water are
+                 off, and the water of the game is hidden. The blue box must not show
 
 The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
 write of the level's own files. The texture effect is attached as the level's exhibits do:
@@ -354,6 +355,8 @@ def coloured_material(colour, emissive):
 LEVEL4_SUBJECT = "subject"
 LEVEL4_PANE = "pane"
 LEVEL4_YELLOW = "yellow box"
+LEVEL4_BYSTANDER = "bystander"
+LEVEL4_BLUE = [0.0, 0.2, 1.0]
 
 
 def make_level4(name, pane):
@@ -362,7 +365,8 @@ def make_level4(name, pane):
     side by side; with `pane` the group stands 260 units west of a pane at the origin, which the
     mock sets a rendered texture on (a niRenderedTexture of the subject, with the yellow box
     hidden around the click); without it the group stands at the origin (the subject that the
-    mock isolates, as Joy of Painting's Isolate Subject does). The blocks: 0 root, then the
+    mock isolates, as Joy of Painting's Isolate Subject does) with a blue box `bystander` above it,
+    outside the group, that the isolation must hide. The blocks: 0 root, then the
     texture of the group (a property and a source) and the shapes, then the pane with a texture
     of its own."""
     blocks = [node("@_nifx " + name)]
@@ -390,6 +394,12 @@ def make_level4(name, pane):
         shape.update({"type": "NiTriShape", "data": data, "skin": -1, "properties": [shade, group_texturing], "translation": list(translation)})
         blocks[subject]["children"].append(add(shape))
     blocks[0]["children"].append(subject)
+    if not pane:
+        data = add(tri_shape_data(b))
+        shade = add(coloured_material(LEVEL4_BLUE, [0.35 * k for k in LEVEL4_BLUE]))
+        shape = av_object(LEVEL4_BYSTANDER, 0)
+        shape.update({"type": "NiTriShape", "data": data, "skin": -1, "properties": [shade, group_texturing], "translation": [0.0, 0.0, 130.0]})
+        blocks[0]["children"].append(add(shape))
     if pane:
         blocks[subject]["translation"] = [-260.0, 0.0, 0.0]
         geometry = quad(200.0, 200.0)
