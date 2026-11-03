@@ -1,5 +1,6 @@
-"""Removes the side worktrees of the nirender and MGE XE repositories whose work is merged, so that
-builds do not pile up. A step of each merge. Without `--apply` it only lists.
+"""Removes the side worktrees of the nirender and MGE XE repositories whose work is merged, the old play
+sets, and the build output of any tree that no build touched for 48 hours (the data rule, D71). A step
+of each merge. Without `--apply` it only lists.
 
     python tools/clean_merged_worktrees.py                  # the list: each worktree, its size, why
     python tools/clean_merged_worktrees.py --apply          # remove the ones the list names
@@ -9,10 +10,25 @@ builds do not pile up. A step of each merge. Without `--apply` it only lists.
                                                             # reads the whole disk, so never in a timing
     python -I tools/clean_merged_worktrees.py --self-test   # the pure parts and a real junction
 
+Build output is disposable. In each worktree of the nirender, MGE XE and MWSE repositories, main and
+standing checkouts too, a folder goes with its source left alone when all of these hold:
+
+- It is `target` or `target-*` with a Cargo.toml beside it or a CACHEDIR.TAG in it, at most three levels
+  down, or MWSE's objects: `Release` or `Debug` of MWSE, CSSE and MWSE-Tests, with only a compiler's files.
+- MWSE's `build` folder stays: it holds lua51.dll, which MSBuild does not always make here, and files put
+  there by hand.
+- It is a real folder, git ignores it or it has a CACHEDIR.TAG (cargo's mark: `target-*` is not always in
+  .gitignore), and git tracks no file in it.
+- Nothing was written in it for 48 hours.
+- No process uses the tree, no game and no helper runs: both are looked at again just before the removal.
+
+A play set is the current one that local.bat names, or the one before, or old. An old set's trees in
+C:\\tmp\\play<N> go by the steps below, with no branch and no merge needed. The rolling trees of C:\\tmp\\playset stay.
+
 All of these must hold before a worktree goes:
 
-- Its branch is merged into the target of its repository, or `--name` names it. With or without
-  a name, a ref must hold its commit: a removal must not leave a commit on no ref.
+- Its branch is merged into the target of its repository, `--name` names it, or it is an old play set.
+  In each case a ref must hold its commit: a removal must not leave a commit on no ref.
 - `git status` works and shows no change and no untracked file, and each ignored file is a build output or
   in `results`: `git worktree remove` deletes ignored files without a word.
 - No process uses it: a command line or a program path in it, or a current folder in it. This is
@@ -26,34 +42,34 @@ All of these must hold before a worktree goes:
 - Nothing was written in it for `--idle-hours` hours, and it has no `.keep-worktree` file, and
   git does not hold it locked.
 - No other worktree's Cargo.toml names it by path.
-- It is no main checkout, no standing worktree of the train and no play set, and it is not under
-  E:\\nirender-keep.
+- It is no main checkout, no standing worktree of the train and no current play set, and it is not
+  under E:\\nirender-keep.
 
 Then, in this order, and any failure leaves the worktree as it is, apart from what came before:
 
-1. A real `results` folder is copied to E:\\nirender-keep\\runs-<date>, unless a runs-* folder holds
-   the same run; the number and the size of the files must agree.
+1. What a real `results` folder holds is copied to E:\\nirender-keep\\runs-<date>, unless a runs-*
+   folder holds the same; the number and the size of the files must agree. By the expiry of
+   `clean_results.py`: a run that is cited or younger than 7 days whole, one of 7 to 30 days with no
+   pictures, an older one not at all. A folder that is no run and a loose file are copied whole.
 2. A new walk finds each reparse point in the tree, and each is removed as a link, which leaves its
    target. `git worktree remove` goes through a junction: on 2026-10-29 one deleted
    E:\\nirender-results that way. A folder that the walk cannot read, or a link that is still there
    after this, refuses the removal.
 3. `git worktree remove`, never --force, then `git worktree prune`. Branches stay.
 
-What `git worktree remove` leaves goes on a list with its size, for the owner: this tool makes no
-recursive delete of its own. The plain folders in C:\\tmp are listed too, and nothing touches them.
+What `git worktree remove` leaves goes on a list with its size, for the owner. The plain folders in
+C:\\tmp are listed too, and nothing touches them. The removal of build output goes file by file through
+`clean_common.remove_tree`, and it takes each link as a link.
 `cargo sweep` is not here: it finds nothing in the layout of our targets (the board, 2026-10-29).
 
 Each act goes to E:\\nirender-keep\\clean-worktrees.log, with the target of each link removed, so
 that a link can be made again when the removal then fails.
 """
+import _winapi
 import argparse
-import ctypes
-import ctypes.wintypes as wt
-import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -61,30 +77,25 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPOS_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-# The repositories: a checkout of each, and the branch that a worktree's work merges into.
-REPOSITORIES = [("nirender-plugin", "master"), ("MGE-XE-G7-render-link", "feature/wgpu-renderer")]
+# `python -I` leaves the folder of the script off the path.
+sys.path.insert(0, HERE)
+import clean_common as common  # noqa: E402
+from clean_common import FILE_ATTRIBUTE_REPARSE_POINT, KEEP_ROOT, REPOS_ROOT, REPOSITORIES, SETS, Evidence, current_folder, current_set, files_in, games_in, git, gigabytes, is_heavy, is_link, is_link_entry, kept_set_numbers, log_line, old_play_set, own_line, processes, project_trees, remove_link, remove_tree, run_age_days, run_treatment, same_or_under, same_path, users_of, walk, worktrees_of  # noqa: E402
+
 # The shared checkouts and the test train's pair stay, whatever their branch has. Git's own main
 # worktree is one too.
 SHARED_CHECKOUTS = ["nirender-plugin", "MGE-XE-G7", "MGE-XE-G7-render-link", "nirender-plugin-train", "MGE-XE-G7-train"]
 # What a build leaves, as `git status --ignored` names it. `results` is copied before a removal.
-BUILD_OUTPUTS = re.compile(r"(target|host/target|bin|results|tools/out)/|(.*/)?__pycache__/")
-KEEP_ROOT = "E:\\nirender-keep"
-LOG = os.path.join(KEEP_ROOT, "clean-worktrees.log")
+BUILD_OUTPUTS = re.compile(r"(target|host/target|bin|dist|results|tools/out)/|(.*/)?__pycache__/")
 PLAIN_FOLDERS = "C:\\tmp"
 KEEP_MARKER = ".keep-worktree"
-GAME_PROGRAMS = {"morrowind.exe", "numidium.exe", "nirender-host.exe"}
-FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-
-
-def same_path(path, other):
-    return os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(other))
-
-
-def same_or_under(path, root):
-    """True when `path` is `root` or a path below it, on Windows' terms."""
-    path, root = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(root))
-    return path == root or path.startswith(root.rstrip("\\/") + os.sep)
+OUTPUT_HOURS = 48.0
+TARGET_NAME = re.compile(r"target(-.+)?", re.I)
+# How deep the search for a target goes below a tree.
+TARGET_DEPTH = 3
+# MWSE's objects, and the kinds of file that a compiler leaves there.
+MSBUILD_OBJECTS = [os.path.join(project, configuration) for project in ("MWSE", "CSSE", "MWSE-Tests") for configuration in ("Release", "Debug")]
+OBJECT_FILES = (".obj", ".tlog", ".log", ".recipe", ".iobj", ".ipdb", ".pch", ".res", ".txt", ".pdb", ".lastbuildstate", ".ilk", ".idb")
 
 
 def is_play_set(path):
@@ -94,7 +105,7 @@ def is_play_set(path):
 
 def decide(tree):
     """What happens to a worktree, from its facts: a dict with `path`, `main`, `branch` (None when
-    detached), `merged`, `named`, `changes`, `locked`, `marker`, `used_by`, `depended_by`,
+    detached), `merged`, `named`, `old_set`, `changes`, `locked`, `marker`, `used_by`, `depended_by`,
     `other_ignored`, `status_error`, `on_a_ref`, `idle_hours`, `idle_limit` and `unread`. Returns
     (True, the reason it may go) or (False, the reason it stays). The first refusal in this order is the reason."""
     path = tree["path"]
@@ -104,7 +115,7 @@ def decide(tree):
         return False, "the tool runs from it"
     if same_or_under(path, KEEP_ROOT):
         return False, "under E:\\nirender-keep"
-    if is_play_set(path):
+    if is_play_set(path) and not tree.get("old_set"):
         return False, "a play set"
     if tree["locked"]:
         return False, "git holds it locked"
@@ -128,6 +139,8 @@ def decide(tree):
         return False, "no ref holds its commit: make a branch first"
     if tree["named"]:
         return True, "named on the command line"
+    if tree.get("old_set"):
+        return True, "an old play set"
     if tree["branch"] is None:
         return False, "no branch (detached): only by name"
     if not tree["merged"]:
@@ -135,70 +148,148 @@ def decide(tree):
     return True, "merged"
 
 
-def is_link_entry(entry):
-    """True for a reparse point: a symbolic link or a junction. The walk does not go into it."""
-    return bool(entry.stat(follow_symlinks=False).st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+# ---- build output
 
 
-def walk(root):
-    """The facts of a tree by a walk that never goes through a link: (bytes, files, the newest
-    time of a write, the reparse points, the folders that could not be read)."""
-    size = files = 0
-    newest = 0.0
-    links = []
-    unread = 0
-    stack = [root]
-    while stack:
-        folder = stack.pop()
+def target_folders(tree_path):
+    """The folders of a tree that a cargo build left, a link among them too: never below `results` or below a target."""
+    found = []
+
+    def scan(folder, depth):
         try:
             with os.scandir(folder) as entries:
-                for entry in entries:
-                    try:
-                        if is_link_entry(entry):
-                            links.append(entry.path)
-                        elif entry.is_dir(follow_symlinks=False):
-                            stack.append(entry.path)
-                        else:
-                            info = entry.stat(follow_symlinks=False)
-                            size += info.st_size
-                            files += 1
-                            newest = max(newest, info.st_mtime)
-                    except OSError:
-                        unread += 1
+                rows = list(entries)
         except OSError:
-            unread += 1
-    return size, files, newest, links, unread
+            return
+        has_manifest = any(row.name == "Cargo.toml" for row in rows)
+        for row in rows:
+            if not row.is_dir(follow_symlinks=False) and not is_link_entry(row):
+                continue
+            if TARGET_NAME.fullmatch(row.name):
+                if has_manifest or os.path.exists(os.path.join(row.path, "CACHEDIR.TAG")):
+                    found.append(row.path)
+            elif depth < TARGET_DEPTH and row.name not in (".git", "results") and not is_link_entry(row):
+                scan(row.path, depth + 1)
+
+    scan(tree_path, 1)
+    return found
 
 
-def remove_link(path):
-    """Removes a reparse point as a link: its target stays. A folder link goes with `rmdir`, which
-    with no switch only removes an empty folder or a link, and a file link with os.remove."""
-    if os.lstat(path).st_file_attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
-        result = subprocess.run(["cmd", "/c", "rmdir", path], capture_output=True, text=True)
-        if result.returncode != 0:
-            raise OSError("rmdir %s: %s" % (path, result.stderr.strip()))
-    else:
-        os.remove(path)
-    if os.path.lexists(path):
-        raise OSError("the link %s is still there" % path)
+def output_folders(tree_path, output_only):
+    """The folders that the sweep looks at in a tree: each target, and in MWSE its objects."""
+    found = target_folders(tree_path)
+    if output_only:
+        found += [path for path in (os.path.join(tree_path, name) for name in MSBUILD_OBJECTS) if os.path.lexists(path)]
+    return found
 
 
-def fingerprint(root):
-    """The number and the size of the files of a folder, for the check of a copy."""
-    size, files, _, _, unread = walk(root)
-    return files, size, unread
+def output_facts(tree_path, folder, output_only, now):
+    """All facts of one output folder for `decide_output`."""
+    relative = os.path.relpath(folder, tree_path).replace("\\", "/")
+    if is_link(folder):
+        return {"tree": tree_path, "path": folder, "is_link": True, "size": 0, "links": [], "unread": 0, "idle_hours": 0.0, "ignored": True, "tracked": 0, "strange": [], "top": []}
+    size, _, newest, links, unread = walk(folder)
+    strange = []
+    if output_only and not TARGET_NAME.fullmatch(os.path.basename(folder)):
+        strange = [path for path, _, _ in files_in(folder) if not path.lower().endswith(OBJECT_FILES)]
+    with os.scandir(folder) as entries:
+        top = sorted(entry.name for entry in entries)
+    return {
+        "tree": tree_path,
+        "path": folder,
+        "is_link": False,
+        "size": size,
+        "links": links,
+        "unread": unread,
+        "idle_hours": (now - newest) / 3600.0 if newest else 1e9,
+        "ignored": os.path.exists(os.path.join(folder, "CACHEDIR.TAG")) or git(tree_path, "check-ignore", "-q", relative + "/").returncode == 0,
+        "tracked": len(git(tree_path, "ls-files", "--", relative).stdout.splitlines()),
+        "strange": strange,
+        "top": top,
+    }
 
 
-def kept_copy(name, source, keep_root):
+def decide_output(row, used_by):
+    """What happens to an output folder: (True, the reason it goes) or (False, the reason it stays)."""
+    if row["is_link"]:
+        return False, "a link, and it stays"
+    if not row["ignored"]:
+        return False, "git does not ignore it"
+    if row["tracked"]:
+        return False, "git tracks %d files in it" % row["tracked"]
+    if row["strange"]:
+        return False, "%d files that no compiler makes: %s" % (len(row["strange"]), os.path.basename(row["strange"][0]))
+    if row["unread"]:
+        return False, "%d folders could not be read" % row["unread"]
+    if used_by:
+        return False, "in use: " + ", ".join(used_by[:3])
+    if row["idle_hours"] < OUTPUT_HOURS:
+        return False, "written %.1f hours ago" % row["idle_hours"]
+    return True, "no write for %.0f hours" % min(row["idle_hours"], 9999)
+
+
+def plan_outputs(trees, running, now):
+    """Each output folder of the given trees with its decision."""
+    skip = own_line(running, os.getpid())
+    rows = []
+    for tree_path, output_only in trees:
+        used_by = users_of(tree_path, running, skip)
+        for folder in output_folders(tree_path, output_only):
+            row = output_facts(tree_path, folder, output_only, now)
+            row["goes"], row["reason"] = decide_output(row, used_by)
+            rows.append(row)
+    return rows
+
+
+def remove_output(row, now, running):
+    """Removes one output folder after a new look at the processes and the writes. Returns the failures
+    of the removal, or raises OSError when it refuses."""
+    busy = games_in(running) + users_of(row["tree"], running, own_line(running, os.getpid()))
+    if busy:
+        raise OSError("in use now: " + ", ".join(busy[:3]))
+    _, _, newest, _, unread = walk(row["path"])
+    if unread or (newest and (now - newest) / 3600.0 < OUTPUT_HOURS):
+        raise OSError("written since the list, or not readable")
+    links, failures = remove_tree(row["path"])
+    for link, target in links:
+        log_line("  link removed: %s (its target %s stays: %s)" % (link, target, os.path.exists(target)), True)
+    return failures
+
+
+def other_outputs(trees):
+    """Target folders under the folder of the repos that are in no tree of the project: only a list."""
+    rows = []
+    known = {os.path.normcase(path) for path, _ in trees}
+    for name in sorted(os.listdir(REPOS_ROOT)):
+        path = os.path.join(REPOS_ROOT, name)
+        if not os.path.isdir(path) or os.path.normcase(path) in known:
+            continue
+        candidates = [path] if "target" in name.lower() else [os.path.join(path, "target")]
+        for candidate in candidates:
+            if os.path.isdir(candidate) and not is_link(candidate):
+                rows.append((walk(candidate)[0], candidate))
+    return sorted(rows, reverse=True)
+
+
+# ---- the results of a worktree
+
+
+def fingerprint(root, pictures=True):
+    """The number and the size of the files of a folder, for the check of a copy: with no pictures
+    when `pictures` is false. Raises OSError when it cannot read a folder."""
+    found = [file for file in files_in(root) if pictures or not is_heavy(file[0])]
+    return len(found), sum(file[1] for file in found)
+
+
+def kept_copy(name, wanted, pictures, keep_root):
     """The folder under `keep_root`\\runs-* that holds this run with the same number and size of
     files, or None."""
     if not os.path.isdir(keep_root):
         return None
-    wanted = fingerprint(source)
     for folder in sorted(os.listdir(keep_root)):
         if folder.startswith("runs-"):
             candidate = os.path.join(keep_root, folder, name)
-            if os.path.isdir(candidate) and fingerprint(candidate) == wanted:
+            if os.path.isdir(candidate) and fingerprint(candidate, pictures) == wanted:
                 return candidate
     return None
 
@@ -211,12 +302,15 @@ def real_results(tree_path):
     return path
 
 
-def copy_results(results, keep_root, date):
-    """Copies each entry of a real results folder that is not kept yet to runs-<date>. Returns what
-    it copied. Raises OSError when a copy does not agree: the caller then leaves the tree."""
+def copy_results(results, keep_root, date, evidence, now):
+    """Copies what the expiry leaves of each entry of a real results folder, when it is not kept yet,
+    to runs-<date>. Returns what it copied. Raises OSError when a copy does not agree: the caller
+    then leaves the tree. A link in the folder is not followed and not copied."""
     copied = []
     for name in sorted(os.listdir(results)):
         source = os.path.join(results, name)
+        if is_link(source):
+            continue
         if not os.path.isdir(source):
             target = os.path.join(keep_root, "runs-" + date, "loose-" + os.path.basename(os.path.dirname(results)), name)
             os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -225,16 +319,32 @@ def copy_results(results, keep_root, date):
                 raise OSError("the copy of %s differs" % source)
             copied.append(target)
             continue
-        if kept_copy(name, source, keep_root):
+        age = run_age_days(name, now)
+        treatment = None if age is None else run_treatment(age, evidence.cites_run_with(name, files_in(source)))
+        if treatment == "expired":
+            continue
+        pictures = treatment != "trim"
+        wanted = fingerprint(source, pictures)
+        if kept_copy(name, wanted, pictures, keep_root):
             continue
         target = os.path.join(keep_root, "runs-" + date, name)
         if os.path.exists(target):
             raise OSError("%s exists with other files than %s" % (target, source))
-        shutil.copytree(source, target, symlinks=True)
-        if fingerprint(source) != fingerprint(target):
-            raise OSError("the copy of %s differs: %s against %s" % (source, fingerprint(source), fingerprint(target)))
+        shutil.copytree(source, target, ignore=lambda folder, names: uncopied(folder, names, pictures))
+        if fingerprint(target) != wanted:
+            raise OSError("the copy of %s differs: %s against %s" % (source, wanted, fingerprint(target)))
         copied.append(target)
     return copied
+
+
+def uncopied(folder, names, pictures):
+    """The entries of a folder that a copy leaves out: each link, and the pictures of a trimmed run."""
+    left_out = []
+    for name in names:
+        path = os.path.join(folder, name)
+        if is_link(path) or (not pictures and not os.path.isdir(path) and is_heavy(name)):
+            left_out.append(name)
+    return left_out
 
 
 def path_dependencies(tree_path):
@@ -258,120 +368,23 @@ def path_dependencies(tree_path):
     return found
 
 
-# ---- processes
-
-
-class PROCESS_BASIC_INFORMATION(ctypes.Structure):
-    _fields_ = [("reserved1", ctypes.c_void_p), ("peb", ctypes.c_void_p), ("reserved2", ctypes.c_void_p * 2), ("pid", ctypes.c_void_p), ("reserved3", ctypes.c_void_p)]
-
-
-def current_folder(pid):
-    """The current folder of a process by its process block, or None when it cannot be read. For a
-    32-bit process (the game, a shell) the 32-bit block has it."""
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    ntdll = ctypes.WinDLL("ntdll")
-    kernel.OpenProcess.restype = wt.HANDLE
-    kernel.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
-    kernel.ReadProcessMemory.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
-    kernel.CloseHandle.argtypes = [wt.HANDLE]
-    ntdll.NtQueryInformationProcess.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.ULONG, ctypes.POINTER(wt.ULONG)]
-    # PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
-    handle = kernel.OpenProcess(0x400 | 0x10, False, pid)
-    if not handle:
-        return None
-
-    def read(address, size):
-        buffer = ctypes.create_string_buffer(size)
-        done = ctypes.c_size_t()
-        if not kernel.ReadProcessMemory(handle, address, buffer, size, ctypes.byref(done)) or done.value != size:
-            raise OSError("no read")
-        return buffer.raw
-
-    try:
-        wow64 = ctypes.c_void_p()
-        got = wt.ULONG()
-        # ProcessWow64Information: the address of the 32-bit block.
-        if ntdll.NtQueryInformationProcess(handle, 26, ctypes.byref(wow64), ctypes.sizeof(wow64), ctypes.byref(got)) != 0:
-            return None
-        if wow64.value:
-            parameters = int.from_bytes(read(wow64.value + 0x10, 4), "little")
-            length = int.from_bytes(read(parameters + 0x24, 2), "little")
-            text = int.from_bytes(read(parameters + 0x28, 4), "little")
-        else:
-            basic = PROCESS_BASIC_INFORMATION()
-            if ntdll.NtQueryInformationProcess(handle, 0, ctypes.byref(basic), ctypes.sizeof(basic), ctypes.byref(got)) != 0:
-                return None
-            parameters = int.from_bytes(read(basic.peb + 0x20, 8), "little")
-            length = int.from_bytes(read(parameters + 0x38, 2), "little")
-            text = int.from_bytes(read(parameters + 0x40, 8), "little")
-        return read(text, length).decode("utf-16-le", errors="replace")
-    except OSError:
-        return None
-    finally:
-        kernel.CloseHandle(handle)
-
-
-def processes():
-    """Each process with its program, command line and current folder: dicts, and how many
-    processes gave no current folder."""
-    command = "Get-CimInstance Win32_Process | Select-Object ProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
-    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command], capture_output=True, text=True, encoding="utf-8", errors="replace")
-    found = []
-    unread = 0
-    for row in json.loads(result.stdout):
-        folder = current_folder(row["ProcessId"])
-        unread += folder is None
-        found.append({"pid": row["ProcessId"], "name": row["Name"] or "", "exe": row["ExecutablePath"] or "", "command": row["CommandLine"] or "", "cwd": folder or ""})
-    return found, unread
-
-
-def users_of(tree_path, running):
-    """The processes that use a tree, by name and id."""
-    users = []
-    for process in running:
-        if process["pid"] == os.getpid():
-            continue
-        slashes = os.path.normcase(os.path.abspath(tree_path)).replace("\\", "/")
-        shell_form = "/" + slashes[0] + slashes[2:]
-        command = os.path.normcase(process["command"]).replace("\\", "/")
-        in_command = re.search("(?:" + re.escape(slashes) + "|" + re.escape(shell_form) + r")(?=[/\"' ]|$)", command) is not None
-        if in_command or (process["exe"] and same_or_under(process["exe"], tree_path)) or (process["cwd"] and same_or_under(process["cwd"], tree_path)):
-            users.append("%s %d" % (process["name"], process["pid"]))
-    return users
-
-
 # ---- git
 
 
-def git(tree, *args):
-    # A hook of git sets GIT_DIR, which turns each command to the repository of that hook.
-    clean = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
-    return subprocess.run(["git", "-C", tree, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", env=clean)
+def dependents_of(path, old_set, dependents):
+    """The other trees whose Cargo.toml names this tree by path. The sibling of an old play set goes with it."""
+    found = []
+    for other, folders in dependents.items():
+        sibling = old_set and same_or_under(other, os.path.dirname(path))
+        if not same_or_under(other, path) and not sibling and any(same_or_under(folder, path) for folder in folders):
+            found.append(os.path.basename(other))
+    return sorted(found)
 
 
-def worktrees_of(repository):
-    """The worktrees of a repository: dicts with `path`, `branch`, `head`, `locked`."""
-    trees = []
-    current = None
-    for line in git(repository, "worktree", "list", "--porcelain").stdout.splitlines():
-        if line.startswith("worktree "):
-            # Git lists its main worktree first.
-            current = {"path": os.path.abspath(line[9:]), "main": not trees, "branch": None, "head": "", "locked": False, "prunable": False}
-            trees.append(current)
-        elif line.startswith("HEAD "):
-            current["head"] = line[5:]
-        elif line.startswith("branch "):
-            current["branch"] = line[7:].removeprefix("refs/heads/")
-        elif line.startswith("locked"):
-            current["locked"] = True
-        elif line.startswith("prunable"):
-            current["prunable"] = True
-    return trees
-
-
-def facts_of(tree, target, repository, running, dependents, named, idle_limit, now):
+def facts_of(tree, target, repository, running, dependents, named, idle_limit, now, kept_sets=frozenset()):
     """All facts of a worktree for `decide`."""
     path = tree["path"]
+    old_set = old_play_set(path, kept_sets)
     size, files, newest, links, unread = walk(path)
     head = tree["head"]
     merged = bool(tree["branch"]) and git(repository, "merge-base", "--is-ancestor", head, target).returncode == 0
@@ -385,13 +398,14 @@ def facts_of(tree, target, repository, running, dependents, named, idle_limit, n
         "target": target,
         "merged": merged,
         "named": any(same_path(path, name) for name in named),
+        "old_set": old_set,
         "status_error": status_run.stderr.strip() or "code %d" % status_run.returncode if status_run.returncode != 0 else "",
         "on_a_ref": refs.returncode == 0 and bool(refs.stdout.strip()),
         "changes": len(status) - len(ignored),
         "other_ignored": [name for name in ignored if not BUILD_OUTPUTS.fullmatch(name)],
         "marker": os.path.exists(os.path.join(path, KEEP_MARKER)),
         "used_by": users_of(path, running),
-        "depended_by": sorted(os.path.basename(other) for other, folders in dependents.items() if not same_or_under(other, path) and any(same_or_under(folder, path) for folder in folders)),
+        "depended_by": dependents_of(path, old_set, dependents),
         "idle_hours": (now - newest) / 3600.0 if newest else 1e9,
         "idle_limit": idle_limit,
         "unread": unread,
@@ -401,21 +415,6 @@ def facts_of(tree, target, repository, running, dependents, named, idle_limit, n
         "results": results,
         "result_runs": len(os.listdir(results)) if results else 0,
     }
-
-
-def games_in(running):
-    return sorted({"%s %d" % (p["name"], p["pid"]) for p in running if p["name"].lower() in GAME_PROGRAMS})
-
-
-def log_line(text, apply):
-    print(text, flush=True)
-    if apply:
-        with open(LOG, "a", encoding="utf-8") as file:
-            file.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text + "\n")
-
-
-def gigabytes(size):
-    return "%.1f GB" % (size / 1e9)
 
 
 def clear_links(path, removed):
@@ -434,13 +433,13 @@ def clear_links(path, removed):
         raise OSError("after the links went: %d links, %d folders could not be read" % (len(links), unread))
 
 
-def remove(tree, repository, date, removed):
+def remove(tree, repository, date, removed, evidence):
     """The three steps of removal. Returns what is left there, as (path, bytes), or raises OSError.
     `removed` gets the links that went, also when a later step fails."""
     path = tree["path"]
     results = real_results(path)
     if results:
-        for copied in copy_results(results, KEEP_ROOT, date):
+        for copied in copy_results(results, KEEP_ROOT, date, evidence, time.time()):
             log_line("  copied to %s" % copied, True)
     clear_links(path, removed)
     result = git(repository, "worktree", "remove", path)
@@ -498,8 +497,11 @@ def main():
     all_trees = [tree for _, _, trees in repositories for tree in trees]
     dependents = {tree["path"]: path_dependencies(tree["path"]) for tree in all_trees}
     jobs = [(tree, target, repository) for repository, target, trees in repositories for tree in trees if os.path.isdir(tree["path"])]
+    current = current_set()
+    kept_sets = kept_set_numbers(current, os.listdir(SETS) if os.path.isdir(SETS) else [])
+    print("local.bat names the set %s; the play sets kept by number: %s" % (current, sorted(kept_sets)))
     with ThreadPoolExecutor(8) as pool:
-        rows = list(pool.map(lambda job: facts_of(job[0], job[1], job[2], running, dependents, named, args.idle_hours, now), jobs))
+        rows = list(pool.map(lambda job: facts_of(job[0], job[1], job[2], running, dependents, named, args.idle_hours, now, kept_sets), jobs))
     go, stay = [], []
     for row, job in zip(rows, jobs):
         ok, reason = decide(row)
@@ -520,9 +522,31 @@ def main():
     print("\nPLAIN FOLDERS in %s, not touched (%s), the largest 15:" % (PLAIN_FOLDERS, gigabytes(sum(size for size, _ in folders))))
     for size, path in folders[:15]:
         print("  %9s  %s" % (gigabytes(size), path))
+    # A worktree that goes takes its output with it.
+    going = {os.path.normcase(row["path"]) for row in go}
+    trees = project_trees()
+    outputs = plan_outputs([tree for tree in trees if os.path.normcase(tree[0]) not in going], running, now)
+    print("\nBUILD OUTPUT THAT GOES (%s):" % gigabytes(sum(row["size"] for row in outputs if row["goes"])))
+    for row in sorted((row for row in outputs if row["goes"]), key=lambda r: -r["size"]):
+        print("  %9s  %s  %s; %d links; top: %s" % (gigabytes(row["size"]), row["path"], row["reason"], len(row["links"]), " ".join(row["top"])[:160]))
+        for link in row["links"]:
+            print("             link: %s -> %s" % (link, os.path.realpath(link)))
+    print("\nBUILD OUTPUT THAT STAYS (%s):" % gigabytes(sum(row["size"] for row in outputs if not row["goes"])))
+    for row in sorted((row for row in outputs if not row["goes"]), key=lambda r: -r["size"]):
+        print("  %9s  %s  %s" % (gigabytes(row["size"]), row["path"], row["reason"]))
+    others = other_outputs(trees)
+    print("\nOTHER TARGET FOLDERS under %s, in no tree of the project, not touched (%s):" % (REPOS_ROOT, gigabytes(sum(size for size, _ in others))))
+    for size, path in others:
+        print("  %9s  %s" % (gigabytes(size), path))
+    evidence = Evidence.load()
+    for problem in evidence.problems:
+        print("THE EVIDENCE MAY LACK A CITATION: " + problem)
     if not args.apply:
         print("\nA dry run: nothing changed. --apply acts.")
         return 0
+    if evidence.problems:
+        print("NOTHING DONE: a removal copies only the runs that are cited or young, and an uncited run may be evidence.")
+        return 1
     left = []
     failed = 0
     for row in go:
@@ -533,7 +557,7 @@ def main():
             busy = games_in(now_running) + users_of(row["path"], now_running)
             if busy:
                 raise OSError("in use now: " + ", ".join(busy[:3]))
-            remains = remove(row, row["repository"], date, removed)
+            remains = remove(row, row["repository"], date, removed, evidence)
         except OSError as error:
             failed += 1
             log_line(failure_text(error, removed), True)
@@ -541,8 +565,21 @@ def main():
         log_line("  removed" if remains is None else "  git left the folder: %s" % gigabytes(remains[1]), True)
         if remains:
             left.append(remains)
+    for row in outputs:
+        if not row["goes"]:
+            continue
+        log_line("removing output %s, %s: %s" % (row["path"], gigabytes(row["size"]), row["reason"]), True)
+        try:
+            failures = remove_output(row, time.time(), processes()[0])
+        except OSError as error:
+            failed += 1
+            log_line("  NOT REMOVED: %s" % error, True)
+            continue
+        for path, error in failures:
+            log_line("  NOT REMOVED: %s (%s)" % (path, error), True)
+        failed += len(failures)
     if left:
-        print("\nFOLDERS THAT REMAIN, for the owner (this tool makes no recursive delete):")
+        print("\nFOLDERS THAT REMAIN, for the owner:")
         for path, size in left:
             print("  %9s  %s" % (gigabytes(size), path))
     return 1 if failed else 0
@@ -554,7 +591,7 @@ def make_junction(link, target):
 
 
 def self_test():
-    global KEEP_ROOT, LOG
+    global KEEP_ROOT
     base = {"path": "C:\\repos\\nirender-plugin-x", "main": False, "branch": "fix/x", "merged": True, "named": False, "changes": 0, "other_ignored": [], "status_error": "", "on_a_ref": True, "locked": False, "marker": False, "used_by": [], "depended_by": [], "idle_hours": 48.0, "idle_limit": 6.0, "unread": 0}
     assert decide(base) == (True, "merged")
     for change, word in [
@@ -584,6 +621,32 @@ def self_test():
     assert decide({**base, "branch": None, "named": True})[0]
     for change in ({"changes": 1}, {"used_by": ["x 1"]}, {"marker": True}, {"path": "C:\\tmp\\play185\\x"}, {"main": True}, {"idle_hours": 0.5}, {"depended_by": ["y"]}, {"on_a_ref": False}, {"status_error": "x"}):
         assert not decide({**base, "named": True, **change})[0], change
+    # An old play set needs no branch and no merge, and passes no other test.
+    old = {**base, "path": "C:\\tmp\\play185\\nirender-plugin", "branch": None, "merged": False, "old_set": True}
+    assert decide(old) == (True, "an old play set"), decide(old)
+    for change in ({"changes": 1}, {"used_by": ["x 1"]}, {"marker": True}, {"idle_hours": 0.5}, {"on_a_ref": False}, {"unread": 1}, {"other_ignored": ["x/"]}):
+        assert not decide({**old, **change})[0], change
+    assert "play set" in decide({**old, "old_set": False})[1]
+    # The sibling of an old play set names it by path, and goes with it. Any other tree still stops it.
+    plugin, sibling, stranger = "C:\\tmp\\play185\\nirender-plugin", "C:\\tmp\\play185\\MGE-XE-G7-render-link", "C:\\repos\\MGE-XE-G7-x"
+    names_it = {sibling: {plugin + "\\host"}, stranger: {"C:\\repos\\other\\host"}, plugin: set()}
+    assert dependents_of(plugin, True, names_it) == [] and dependents_of(plugin, False, names_it) == ["MGE-XE-G7-render-link"]
+    assert dependents_of(plugin, True, {**names_it, stranger: {plugin + "\\host"}}) == ["MGE-XE-G7-x"]
+    assert BUILD_OUTPUTS.fullmatch("dist/") and not BUILD_OUTPUTS.fullmatch("tools/dist/")
+    # The decision on an output folder.
+    output = {"is_link": False, "ignored": True, "tracked": 0, "strange": [], "unread": 0, "idle_hours": 49.0}
+    assert decide_output(output, [])[0]
+    for change, used_by, word in [
+        ({"is_link": True}, [], "a link"),
+        ({"ignored": False}, [], "does not ignore"),
+        ({"tracked": 2}, [], "tracks 2"),
+        ({"strange": ["C:\\x\\MWSE.dll.FIXED"]}, [], "MWSE.dll.FIXED"),
+        ({"unread": 1}, [], "could not be read"),
+        ({}, ["cargo.exe 7"], "cargo.exe 7"),
+        ({"idle_hours": 47.0}, [], "hours ago"),
+    ]:
+        ok, reason = decide_output({**output, **change}, used_by)
+        assert not ok and word in reason, (change, reason)
     for name in ("target/", "host/target/", "bin/", "results/", "tools/out/", "tools/__pycache__/", "tools/ports/__pycache__/"):
         assert BUILD_OUTPUTS.fullmatch(name), name
     for name in ("captures/", "tools/target/", "bin/notes.txt", "results"):
@@ -612,6 +675,12 @@ def self_test():
         remove_link(link)
         assert not os.path.lexists(link) and os.path.getsize(os.path.join(outside, "precious.txt")) == 1000
 
+        # A path with an ampersand: no shell reads it as a second command.
+        odd = os.path.join(tree, "a&b")
+        _winapi.CreateJunction(outside, odd)
+        remove_link(odd)
+        assert not os.path.lexists(odd) and os.path.exists(os.path.join(outside, "precious.txt"))
+
         # A real results folder: a copy, the check of it, and a run that is kept already.
         results = os.path.join(tree, "results")
         os.makedirs(os.path.join(results, "run1"))
@@ -623,7 +692,9 @@ def self_test():
         os.makedirs(os.path.join(keep, "runs-old", "run2"))
         open(os.path.join(keep, "runs-old", "run2", "y.log"), "w").write("1")
         assert real_results(tree) == results
-        copied = copy_results(results, keep, "today")
+        nothing = Evidence("")
+        now = time.time()
+        copied = copy_results(results, keep, "today", nothing, now)
         assert sorted(os.path.basename(c) for c in copied) == ["loose.txt", "run1"], copied
         assert open(os.path.join(keep, "runs-today", "run1", "x.log")).read() == "12345"
         assert not os.path.exists(os.path.join(keep, "runs-today", "run2"))
@@ -633,11 +704,84 @@ def self_test():
         os.makedirs(os.path.join(keep, "runs-today", "run3"))
         open(os.path.join(keep, "runs-today", "run3", "other.log"), "w").write("d")
         try:
-            copy_results(results, keep, "today")
+            copy_results(results, keep, "today", nothing, now)
             raise AssertionError("no refusal")
         except OSError as error:
             assert "other files" in str(error)
 
+        # The expiry decides what a removal copies, and a junction in a run stays behind.
+        results2 = os.path.join(temp, "results2")
+
+        def run_folder(days):
+            name = time.strftime("%Y%m%d-%H%M%S", time.localtime(now - days * 86400)) + "-r"
+            os.makedirs(os.path.join(results2, name))
+            for file in ("a.png", "b.log", "c.dmp"):
+                open(os.path.join(results2, name, file), "w").write("x" * 10)
+            return name
+
+        young, trimmed, expired, cited = run_folder(2), run_folder(10), run_folder(40), run_folder(50)
+        make_junction(os.path.join(results2, trimmed, "link"), outside)
+        make_junction(os.path.join(results2, "run-link"), outside)
+        keep2 = os.path.join(temp, "keep2")
+        os.makedirs(keep2)
+        copied = copy_results(results2, keep2, "today", Evidence("a record cites " + cited), now)
+        assert sorted(os.path.basename(c) for c in copied) == sorted([young, trimmed, cited]), copied
+        target = os.path.join(keep2, "runs-today")
+        assert sorted(os.listdir(os.path.join(target, young))) == ["a.png", "b.log", "c.dmp"]
+        assert sorted(os.listdir(os.path.join(target, cited))) == ["a.png", "b.log", "c.dmp"]
+        assert sorted(os.listdir(os.path.join(target, trimmed))) == ["b.log", "c.dmp"]
+        assert not os.path.exists(os.path.join(target, expired)) and not os.path.lexists(os.path.join(target, "run-link"))
+        # A second removal finds the same files kept, with or without the pictures.
+        assert copy_results(results2, keep2, "later", Evidence("a record cites " + cited), now) == []
+
+        # The output folders of a tree: its target with a link in it, a member's, a target with no build's marks, a link.
+        built = os.path.join(temp, "built")
+        os.makedirs(os.path.join(built, "host", "target", "release"))
+        os.makedirs(os.path.join(built, "target", "release"))
+        os.makedirs(os.path.join(built, "target-mine"))
+        os.makedirs(os.path.join(built, "docs", "target"))
+        os.makedirs(os.path.join(built, "results", "x", "target"))
+        os.makedirs(os.path.join(built, "src"))
+        for manifest in (os.path.join(built, "Cargo.toml"), os.path.join(built, "host", "Cargo.toml")):
+            open(manifest, "w").write("[package]\n")
+        open(os.path.join(built, "src", "lib.rs"), "w").write("source")
+        open(os.path.join(built, "target", "release", "a.dll"), "w").write("xx")
+        open(os.path.join(built, "host", "target", "CACHEDIR.TAG"), "w").write("tag")
+        make_junction(os.path.join(built, "target", "release", "out"), outside)
+        make_junction(os.path.join(built, "host", "target-link"), outside)
+        found = sorted(os.path.relpath(path, built) for path in target_folders(built))
+        assert found == sorted(["target", "target-mine", os.path.join("host", "target"), os.path.join("host", "target-link")]), found
+        links, failures = remove_tree(os.path.join(built, "target"))
+        assert failures == [] and [link for link, _ in links] == [os.path.join(built, "target", "release", "out")], (links, failures)
+        assert not os.path.exists(os.path.join(built, "target")) and os.path.exists(os.path.join(built, "src", "lib.rs"))
+        assert os.path.getsize(os.path.join(outside, "precious.txt")) == 1000
+        try:
+            remove_tree(os.path.join(built, "host", "target-link"))
+            raise AssertionError("a link went")
+        except OSError as error:
+            assert "is a link" in str(error)
+        assert os.path.getsize(os.path.join(outside, "precious.txt")) == 1000
+        # A new look just before the removal: a write since the list refuses it, and a later one passes.
+        fresh = os.path.join(built, "host", "target")
+        # Cargo's mark counts where no .gitignore names the folder, as this tree has none.
+        assert output_facts(built, fresh, False, time.time())["ignored"] and not output_facts(built, os.path.join(built, "target-mine"), False, time.time())["ignored"]
+        row = {"tree": built, "path": fresh}
+        for running, word in (([], "written since"), ([{"pid": 5, "parent": 0, "name": "Morrowind.exe", "exe": "", "command": "", "cwd": ""}], "Morrowind.exe 5"), ([{"pid": 6, "parent": 0, "name": "cargo.exe", "exe": "", "command": "", "cwd": fresh}], "cargo.exe 6")):
+            later = time.time() + (0 if word == "written since" else 3 * 86400)
+            try:
+                remove_output(row, later, running)
+                raise AssertionError("no refusal: " + word)
+            except OSError as error:
+                assert word in str(error), (word, error)
+        assert remove_output(row, time.time() + 3 * 86400, []) == [] and not os.path.exists(fresh)
+        # MWSE's objects: only with a compiler's files, and the search finds them only in such a tree.
+        objects = os.path.join(built, "MWSE", "Release")
+        os.makedirs(objects)
+        open(os.path.join(objects, "a.obj"), "w").write("o")
+        assert output_folders(built, True)[-1] == objects and objects not in output_folders(built, False)
+        assert output_facts(built, objects, True, time.time())["strange"] == []
+        open(os.path.join(objects, "MWSE.dll.FIXED"), "w").write("o")
+        assert len(output_facts(built, objects, True, time.time())["strange"]) == 1
         # The path of a Cargo.toml, here in a member of the workspace.
         member = os.path.join(temp, "other", "member")
         os.makedirs(member)
@@ -645,7 +789,8 @@ def self_test():
         assert path_dependencies(os.path.join(temp, "other")) == {os.path.join(temp, "tree", "host")}
 
         # A real repository and real worktrees, with the log and the keep folder here.
-        KEEP_ROOT, LOG = keep, os.path.join(temp, "test.log")
+        KEEP_ROOT = keep
+        common.LOG = os.path.join(temp, "test.log")
         repository = os.path.join(temp, "repository")
         commit = ("-c", "user.name=test", "-c", "user.email=test@test", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "x")
         assert git(temp, "init", "-q", "-b", "master", repository).returncode == 0
@@ -674,7 +819,7 @@ def self_test():
         open(os.path.join(outside2, "precious.txt"), "w").write("y" * 10)
         make_junction(os.path.join(late, "target", "link"), outside2)
         removed = []
-        assert remove(row, repository, "today", removed) is None
+        assert remove(row, repository, "today", removed, nothing) is None
         assert not os.path.lexists(late) and len(removed) == 1
         assert os.path.getsize(os.path.join(outside2, "precious.txt")) == 10
 
@@ -700,7 +845,7 @@ def self_test():
         open(os.path.join(refused, "new.txt"), "w").write("z")
         removed = []
         try:
-            remove(row, repository, "today", removed)
+            remove(row, repository, "today", removed, nothing)
             raise AssertionError("no refusal")
         except OSError as error:
             text = failure_text(error, removed)

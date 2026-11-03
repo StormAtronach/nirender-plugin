@@ -667,7 +667,19 @@ def main():
     # had grown to hundreds of GB unnoticed). The runner deletes nothing; the line says when
     # it is time to.
     print("size: this run %s; all runs in %s %s" % (folder_size(run.dir), os.path.dirname(run.dir), folder_size(os.path.dirname(run.dir))))
+    print_disk_limits()
     return 0 if done else 1
+
+
+def print_disk_limits():
+    """The limits of the data rule (D71), from the slot tool beside the harness. A fault here never stops a run."""
+    try:
+        import slot
+
+        for line in slot.runner_disk_lines():
+            print(line)
+    except Exception as error:  # noqa: BLE001 - only a line of a report
+        print("the limits of the disks are not known: %s" % error)
 
 
 def folder_size(path):

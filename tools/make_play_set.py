@@ -53,6 +53,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -261,7 +262,8 @@ def wait_for_build(slots, no_wait):
         found = slots.refusal("build", slots.session_id())
         if found is None:
             return
-        if no_wait:
+        # Waiting cannot pass a refusal for lack of room.
+        if no_wait or found.final:
             say("no build now: %s" % found.text)
             sys.exit(3)
         say("waiting for the build: %s" % found.text)
@@ -281,7 +283,7 @@ def take_game(slots, what, no_wait):
         say(reply.text.splitlines()[0])
         if reply.code == slots.DONE:
             return
-        if no_wait:
+        if no_wait or reply.code == slots.REFUSED:
             sys.exit(3)
         time.sleep(WAIT_SECONDS)
 
@@ -560,6 +562,47 @@ def current_set_commits(owner_local_bat):
 # --- the tests of the pure parts ------------------------------------------------------------
 
 def self_test():
+    # A refusal for lack of room ends each wait with a code. A wait for another holder goes on.
+    class Slots:
+        DONE, REFUSED, QUEUED = 0, 1, 3
+        STATE_DIR = tempfile.gettempdir()
+        StateBusy = OSError
+        replies, refusals = [], []
+
+        @classmethod
+        def take(cls, *_, **__):
+            return types.SimpleNamespace(code=cls.replies.pop(0), text="a reply")
+
+        @classmethod
+        def refusal(cls, *_):
+            return cls.refusals.pop(0)
+
+        @staticmethod
+        def enforcing():
+            return True
+
+        @staticmethod
+        def session_id():
+            return "s"
+
+    def ends_with_three(action, *args):
+        try:
+            action(*args)
+        except SystemExit as stop:
+            return stop.code == 3
+        return False
+
+    Slots.replies = [Slots.REFUSED]
+    assert ends_with_three(take_game, Slots, "x", False)
+    Slots.replies = [Slots.DONE]
+    assert not ends_with_three(take_game, Slots, "x", False)
+    Slots.refusals = [types.SimpleNamespace(text="no room", final=True)]
+    assert ends_with_three(wait_for_build, Slots, False)
+    Slots.refusals = [None]
+    assert not ends_with_three(wait_for_build, Slots, False)
+    Slots.refusals = [types.SimpleNamespace(text="held", final=False)]
+    assert ends_with_three(wait_for_build, Slots, True), "--no-wait"
+
     assert next_set_number(["f99", "f100", "f7", "other", "f12x"]) == 101
     assert next_set_number([]) == 1
     assert tips_moved(("a", "b"), ("a", "b")) == ""
