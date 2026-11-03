@@ -532,10 +532,65 @@ mod tests {
         assert_eq!(dump_path(None).parent(), Some(Path::new(".")));
     }
 
+    /// The longest time that a test of a dump may take in its child process.
+    const CHILD_SECONDS: u64 = 60;
+
+    /// Runs the ignored test `name` of this module alone, in a child process of this test
+    /// program, and fails when the test fails, does not run, or takes longer than
+    /// [`CHILD_SECONDS`] (the child is then ended).
+    ///
+    /// A dump of this process suspends every other thread of it while dbghelp writes. Two dumps
+    /// in one process (the harness runs tests on parallel threads) can each suspend the other
+    /// inside dbghelp, whose functions are single-threaded, and then both wait for ever
+    /// (merge_step, 2026-11-03: 14 minutes). In a child of its own a dump shares its process with
+    /// no other test. A timer in this process could not end a hang: the dump suspends it too.
+    fn in_child(name: &str) {
+        let module = module_path!().split_once("::").map_or(module_path!(), |(_, rest)| rest);
+        let test = format!("{module}::{name}");
+        // The child's output goes to a file, not a pipe: a pipe that nobody reads while this
+        // test waits would stop a child that writes more than the pipe holds.
+        let log = std::env::temp_dir().join(format!("nirender-host-{name}-{}.txt", std::process::id()));
+        let file = std::fs::File::create(&log).unwrap();
+        let program = std::env::current_exe().unwrap();
+        let mut child = std::process::Command::new(program)
+            .args([test.as_str(), "--exact", "--ignored", "--test-threads=1", "--nocapture"])
+            .stdout(file.try_clone().unwrap())
+            .stderr(file)
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if started.elapsed().as_secs() >= CHILD_SECONDS {
+                child.kill().ok();
+                child.wait().ok();
+                panic!("{test} did not end in {CHILD_SECONDS} s in its child process: it hangs (its output: {})", log.display());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let output = std::fs::read_to_string(&log).unwrap_or_default();
+        std::fs::remove_file(&log).ok();
+        assert!(status.success(), "{test} failed in its child process:\n{output}");
+        assert!(output.contains("test result: ok. 1 passed"), "{test} did not run in its child process:\n{output}");
+    }
+
+    #[test]
+    fn a_dump_of_this_process_is_written() {
+        in_child("a_dump_of_this_process_is_written_in_this_process");
+    }
+
+    #[test]
+    fn the_dump_writer_loads_no_dll() {
+        in_child("the_dump_writer_loads_no_dll_in_this_process");
+    }
+
     /// The other tests run on threads that start while the dump runs: without the DLLs of the
     /// dump held, the dump could wait for the loader forever (see `hold_dump_libraries`).
     #[test]
-    fn a_dump_of_this_process_is_written() {
+    #[ignore = "a dump of this process: run alone by a_dump_of_this_process_is_written"]
+    fn a_dump_of_this_process_is_written_in_this_process() {
         hold_dump_libraries();
         let folder = std::env::temp_dir().join(format!("nirender-host-dump-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
@@ -667,7 +722,8 @@ mod tests {
     /// the thread of a dump. A DLL that loads there is one that the list lacks on this
     /// Windows, and the test names it. Without the hold it names the six.
     #[test]
-    fn the_dump_writer_loads_no_dll() {
+    #[ignore = "a dump of this process: run alone by the_dump_writer_loads_no_dll"]
+    fn the_dump_writer_loads_no_dll_in_this_process() {
         hold_dump_libraries();
         let folder = std::env::temp_dir().join(format!("nirender-host-loads-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
