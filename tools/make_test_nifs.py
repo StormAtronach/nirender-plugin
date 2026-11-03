@@ -61,7 +61,10 @@ a cylinder), a lit material, a base texture of the level, and the property under
     level4_mirror a pane and, 300 units west of it, a group `subject` of a red box, a green
                  cylinder and a yellow box (`make_level4`); at its stop the mock clicks the
                  world camera into a rendered texture of the group, with the yellow box hidden
-                 around the click, and sets the texture on the pane
+                 around the click, and sets the texture on the pane. The group also holds
+                 a turning billboard (mode 0) with a magenta right triangle; the click is
+                 made from a camera 45 degrees round the group from the world camera, so
+                 each of the two views turns the billboard for its own camera (D82 stage 2b)
     level4_isolate the same group and, not under it, a blue box `bystander` 130 units above;
                  at its stop the mock does what Joy of Painting's Isolate Subject does: the
                  camera's scene is the group, MGE XE's distant land, statics and water are
@@ -347,6 +350,13 @@ def quad(width, height):
     return vertices, [[0.0, -1.0, 0.0]] * 4, [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]], [[0, 1, 2], [0, 2, 3]]
 
 
+def right_triangle(half):
+    """One face of the shape of `quad`, the facing of the south face (normal -y), cut along a diagonal: a right
+    triangle of `2 * half` across and high, with the right angle at the lower right."""
+    vertices, normals, uvs, triangles = quad(2.0 * half, 2.0 * half)
+    return vertices[:3], normals[:3], uvs[:3], [triangles[0]]
+
+
 def coloured_material(colour, emissive):
     """A lit colour with a share of itself as the glow, so that it shows in the level's dim light.
     With the colour black and the glow white the shape shows its texture as it is."""
@@ -361,6 +371,11 @@ LEVEL4_PANE = "pane"
 LEVEL4_YELLOW = "yellow box"
 LEVEL4_BYSTANDER = "bystander"
 LEVEL4_BLUE = [0.0, 0.2, 1.0]
+LEVEL4_BILLBOARD = "billboard"
+LEVEL4_FLAG = "flag"
+LEVEL4_MAGENTA = [1.0, 0.0, 1.0]
+LEVEL4_FLAG_SIZE = 40.0
+LEVEL4_BILLBOARD_LIFT = 100.0
 # The tour's camera looks above the origin of an exhibit: at the first live tour (2026-11-03) a pane of 200 units at the
 # origin was cut by the lower edge of the picture, and a group 260 units to the side was at the left edge of the view
 # (half the view is about 310 units wide at the stop). The group and the pane stand 150 units to each side and 110 up.
@@ -403,6 +418,19 @@ def make_level4(name, pane):
         shape.update({"type": "NiTriShape", "data": data, "skin": -1, "properties": [shade, group_texturing], "translation": list(translation)})
         blocks[subject]["children"].append(add(shape))
     blocks[0]["children"].append(subject)
+    if pane:
+        # D82 stage 2b's exhibit: a turning billboard in the group, so that the world camera and the mock's mirror camera
+        # (a different place, `mirror_mock.lua`) both display it. Its child is a right triangle, not symmetric in any
+        # axis, so a wrong turn shows as a different shape and not only as a different size.
+        turn = billboard(LEVEL4_BILLBOARD, 0, [0.0, 0.0, LEVEL4_BILLBOARD_LIFT])
+        flag = right_triangle(LEVEL4_FLAG_SIZE)
+        check_winding("level4 flag", flag)
+        data = add(tri_shape_data(flag))
+        shade = add(coloured_material(LEVEL4_MAGENTA, [0.35 * k for k in LEVEL4_MAGENTA]))
+        shape = av_object(LEVEL4_FLAG, 0)
+        shape.update({"type": "NiTriShape", "data": data, "skin": -1, "properties": [shade, group_texturing]})
+        turn["children"].append(add(shape))
+        blocks[subject]["children"].append(add(turn))
     if not pane:
         data = add(tri_shape_data(b))
         shade = add(coloured_material(LEVEL4_BLUE, [0.35 * k for k in LEVEL4_BLUE]))

@@ -2,9 +2,11 @@
 -- (owndevice.lua) calls `wrap` at each stop; a stop of an entry that this file knows turns its case on and turns it off again
 -- before the tour goes on. The files are made by tools/make_test_nifs.py (`make_level4`).
 --
---   @nif_x_level4_mirror   a pane and a group `subject` (a red box, a green cylinder, a yellow box). Each frame the world camera
---                          clicks the group, with the yellow box hidden around the click, into a niRenderedTexture that is the
---                          base map of the pane: the pane shows the red box and the green cylinder, the world shows all three.
+--   @nif_x_level4_mirror   a pane and a group `subject` (a red box, a green cylinder, a yellow box and a turning billboard with a
+--                          magenta triangle). Each frame the world camera, turned 45 degrees round the group, clicks the group,
+--                          with the yellow box hidden around the click, into a niRenderedTexture that is the base map of the pane:
+--                          the pane shows the red box, the green cylinder and the triangle turned for the mirror camera; the world
+--                          shows all four, the triangle turned for the world camera (D82 stage 2b's exhibit).
 --   @nif_x_level4_isolate  the group and, beside it in the same file, a blue box `bystander` that is not under the group. What
 --                          Isolate Subject of Joy of Painting does (services/PhotoMenu/SubjectFilter.lua, enableOcclusion and
 --                          disableOcclusion): the camera's scene is the group, MGE XE's distant land, statics and water are
@@ -14,6 +16,7 @@ local mock = {}
 
 local TEXTURE_SIZE = 256
 local PROOF_CLICK = 30
+local MIRROR_YAW = math.rad(45)
 
 local function say(format, ...)
     mwse.log("[nirender.mirror_mock] " .. format, ...)
@@ -32,8 +35,36 @@ local function mirror(reference, proofFolder)
     local world = camera.scene
     local clicks = 0
 
+    -- The mirror camera: the world camera turned MIRROR_YAW round the group (a place and a facing), so that the billboard in
+    -- the group turns for a different camera in the click than in the world's walk (D82 stage 2b). The world camera's own
+    -- place and facing come back after the click.
     local function click()
+        -- The texture as the frame before finished it: this read comes before the click of the proof frame and after a frame
+        -- with no read, so no read has flushed the mirror's views for it. It shows what the helper made of the frame without
+        -- the flush of a read, and it can fail. The read after the proof click (below) is the check of the flush path.
+        if clicks == PROOF_CLICK and proofFolder then
+            local pixels = niPixelData.new(TEXTURE_SIZE, TEXTURE_SIZE)
+            local read = texture:readback(pixels)
+            local path = proofFolder .. "/level4-mirror-texture-late.tga"
+            pixels:exportTGA(path)
+            say("proof at click %d, before the click (the texture of click %d): readback %s, texture written to %s", clicks, clicks - 1, tostring(read), path)
+        end
         local original = camera.scene
+        local oldTranslation, oldRotation = camera.translation:copy(), camera.rotation:copy()
+        -- The camera hangs under a node that carries its place (the local translation is near zero at the stop), so the
+        -- turn is made in world space and written back as a local transform of the parent's space.
+        local centre = subject.worldTransform.translation
+        local turn = tes3matrix33.new()
+        turn:toRotationZ(MIRROR_YAW)
+        local current = camera.worldTransform
+        local mirrorTranslation = centre + turn * (current.translation - centre)
+        local mirrorRotation = turn * current.rotation
+        local parent = camera.parent.worldTransform
+        local fromParent = parent.rotation:transpose()
+        camera.translation = (fromParent * (mirrorTranslation - parent.translation)) * (1 / parent.scale)
+        camera.rotation = fromParent * mirrorRotation
+        camera:update()
+        local mirrorAt = camera.worldTransform.translation:copy()
         yellow.appCulled = true
         subject:update()
         camera.scene = subject
@@ -44,6 +75,9 @@ local function mirror(reference, proofFolder)
         camera.renderer:setRenderTarget(nil)
         local sceneWasSubject = camera.scene == subject
         camera.scene = original
+        camera.translation = oldTranslation
+        camera.rotation = oldRotation
+        camera:update()
         yellow.appCulled = false
         subject:update()
         -- The proof of the click, after the restore so that a fault in it leaves the world camera as it was: the
@@ -54,6 +88,9 @@ local function mirror(reference, proofFolder)
             local path = proofFolder .. "/level4-mirror-texture.tga"
             pixels:exportTGA(path)
             say("proof at click %d: readback %s, texture written to %s; camera scene was the subject: %s", clicks, tostring(read), path, tostring(sceneWasSubject))
+            local worldAt = camera.worldTransform.translation
+            say("proof at click %d: the mirror camera stood at %s, %.0f units from the world camera at %s; the group is at %s", clicks, tostring(mirrorAt),
+                mirrorAt:distance(worldAt), tostring(worldAt), tostring(subject.worldTransform.translation))
         end
         clicks = clicks + 1
     end
