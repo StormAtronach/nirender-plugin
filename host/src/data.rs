@@ -519,12 +519,13 @@ pub(crate) struct Counts {
     pub(crate) replayed: u32,
     /// The shapes that the extension took ([`Extension::hold`]).
     pub(crate) held: u32,
-    /// The held instances that waited for a place in the sorted queue, and no flush of the frame
-    /// came to it ([`Extension::held_sorted`]).
+    /// The held shapes that waited for a place in the sorted queue, instances and shapes of the
+    /// stream, and no flush of the frame came to it ([`Extension::held_sorted`]).
     pub(crate) held_sorted_lost: u64,
-    /// The held shapes that blend in the engine's sorted queue and had no place in it here: a
-    /// shape of the stream, or an instance after a flush in the middle of the frame. They draw
-    /// at the end of the world scene.
+    /// The held shapes that blend in the engine's sorted queue and did not wait for a place in
+    /// it: the extension did not ask for it, a record has no queue mark (an older capture), or an
+    /// instance comes after a flush in the middle of the frame. They draw at the end of the world
+    /// scene.
     pub(crate) held_sorted_fallback: u64,
     pub(crate) texture_updates_lost: u32,
     pub(crate) lost_reasons: HashMap<String, u32>,
