@@ -25,8 +25,15 @@ function standIn.threadCensus() return "no plugin in this run" end
 function standIn.report() return "no plugin in this run\n" end
 function standIn.tune() error("nirender.tune: no plugin in this run") end
 
+-- The names that the scenario tests for presence before a call (`if nirender.overlay then`):
+-- the stand-in lacks them, as a plugin without them would.
+local optional = { overlay = true, portTimes = true }
+
 return setmetatable(standIn, {
     __index = function(_, name)
+        if optional[name] then
+            return nil
+        end
         error(string.format("nirender.%s: no plugin in this run", tostring(name)), 2)
     end,
 })
