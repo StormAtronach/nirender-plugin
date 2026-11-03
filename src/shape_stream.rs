@@ -112,6 +112,15 @@ pub unsafe fn fog_values(renderer: usize, property_state: usize) -> Option<[u32;
     fog_values_of(renderer, rd(property_state, PS::propFog))
 }
 
+/// The colour of one fog property, on or off; [`None`] without a property.
+///
+/// # Safety
+///
+/// `fog` is 0 or a live `NiFogProperty`.
+pub unsafe fn fog_color_of(fog: usize) -> Option<u32> {
+    (fog != 0).then(|| rd(fog, crate::gen::layouts::NiFogProperty::color))
+}
+
 /// The fog words of one fog property (the cell's, or a shape's own), with the render
 /// state of the renderer for the range.
 ///

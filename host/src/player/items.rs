@@ -386,12 +386,10 @@ impl Player {
             self.world_sun = sun;
             self.world_ambient = [ambient[0], ambient[1], ambient[2]];
         }
-        // The fog of the world: the scene record's, which the plugin reads from the game's
-        // own fog property each frame. Only without the record: the fog states of the last
-        // draw with fog. The fill mode: the scene record's flag, from the game's own
-        // wireframe property; only in an older capture the last draw's (D3DFILL_WIREFRAME is
-        // 2), which a mod's mesh with a wireframe property can give.
-        let fog = self.retained_values.and_then(|(_, fog)| fog).unwrap_or(self.stream.fog);
+        // The fill mode: the scene record's flag, from the game's own wireframe property; only
+        // in an older capture the last draw's (D3DFILL_WIREFRAME is 2), which a mod's mesh with
+        // a wireframe property can give.
+        let (fog_on, fog) = world_fog(self.retained_values, self.fog_off_color, self.stream.fog);
         WorldFacts {
             target_size: self.size_of_target(),
             frame: self.renderer.counts.frames as u64,
@@ -402,6 +400,7 @@ impl Player {
             projection: self.stream.projection,
             interior: self.stream.interior,
             wireframe: if self.stream.scene_wireframe { self.stream.wireframe } else { self.stream.shape.fill == 2 },
+            fog_on,
             fog_color: color(fog[0]),
             fog_start: f32::from_bits(fog[1]),
             fog_end: f32::from_bits(fog[2]),
@@ -876,6 +875,18 @@ impl Player {
     }
 }
 
+/// Whether the fog of the world is on, and its words: the colour, the start, the end, the range
+/// flag. The scene record has the game's own fog property, which the plugin reads each frame: a
+/// record without fog means that the property is off, with its colour kept and no distances.
+/// Only without a record (an older capture), the fog of the last draw with fog.
+fn world_fog(record: Option<(u32, Option<[u32; 4]>)>, off_color: u32, last_draw: [u32; 4]) -> (bool, [u32; 4]) {
+    match record {
+        Some((_, Some(fog))) => (true, fog),
+        Some((_, None)) => (false, [off_color, 0, 0, 0]),
+        None => (true, last_draw),
+    }
+}
+
 /// The start of a named span of the frame's GPU work in the encoder, with no pass open
 /// (`stamps::Stamps`).
 fn stamp(stamps: &Stamps, encoder: &mut wgpu::CommandEncoder, kind: StampKind, name: &'static str) -> Stamp {
@@ -916,5 +927,29 @@ impl Player {
             (None, Some(encoder)) => stamps.end(encoder, at),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod world_fog_tests {
+    use super::world_fog;
+
+    const LAST_DRAW: [u32; 4] = [1, 2, 3, 0];
+    const SCENE: [u32; 4] = [4, 5, 6, 1];
+    const OFF_COLOR: u32 = 7;
+
+    #[test]
+    fn a_record_with_fog_gives_its_fog() {
+        assert_eq!(world_fog(Some((0, Some(SCENE))), OFF_COLOR, LAST_DRAW), (true, SCENE));
+    }
+
+    #[test]
+    fn a_record_with_the_fog_off_keeps_it_off_with_the_colour_of_the_property() {
+        assert_eq!(world_fog(Some((0, None)), OFF_COLOR, LAST_DRAW), (false, [OFF_COLOR, 0, 0, 0]));
+    }
+
+    #[test]
+    fn only_no_record_falls_back_to_the_last_draw() {
+        assert_eq!(world_fog(None, OFF_COLOR, LAST_DRAW), (true, LAST_DRAW));
     }
 }

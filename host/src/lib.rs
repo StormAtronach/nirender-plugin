@@ -108,6 +108,7 @@ struct WorldFacts {
     projection: [f32; 16],
     interior: bool,
     wireframe: bool,
+    fog_on: bool,
     fog_color: [f32; 4],
     fog_start: f32,
     fog_end: f32,
@@ -146,6 +147,7 @@ impl WorldFacts {
             eye: self.origin.unwrap_or_else(|| eye_of_view(&self.view)),
             interior: self.interior,
             wireframe: self.wireframe,
+            fog_on: self.fog_on,
             fog_color: self.fog_color,
             fog_start: self.fog_start,
             fog_end: self.fog_end,
@@ -746,6 +748,9 @@ struct Player {
     /// light and the fog of the frame for their draws (`RETAINED_SCENE`).
     retained: RetainedSet,
     retained_values: Option<(u32, Option<[u32; 4]>)>,
+    /// The colour of the game's fog property in a scene record with the fog off; 0 from an
+    /// older capture.
+    fog_off_color: u32,
     /// The table's lights as the extension shaded them for the main view of this frame, and
     /// what the shade gives the scene: made before the clusters of the lights of the world
     /// (`MGE_XE_LIGHTS=world`), then taken by `draw_retained_main`.
