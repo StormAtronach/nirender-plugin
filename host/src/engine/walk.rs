@@ -16,6 +16,10 @@ pub(crate) type Entry = (u64, u32, u32, u32);
 /// bucket (`retained::bucket_key`).
 pub(crate) const GROUP_IN_PLACE: u64 = 2;
 
+/// The view slot of the main view (D82): the places of the world camera's scenes into the
+/// back buffer.
+pub(crate) const MAIN_VIEW: u8 = 0;
+
 /// What a place did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Place {
@@ -27,20 +31,33 @@ pub(crate) enum Place {
     New(usize),
 }
 
-/// The places of a frame.
+/// A run of places of one view: the ids of places with no other item between them.
+#[derive(Default)]
+struct Run {
+    view: u8,
+    ids: Vec<u32>,
+}
+
+/// The places of a frame, for each view (D82 stage 2): a view leaves out of its blends only
+/// the instances placed in that view, so a place in one view never takes a blend out of
+/// another.
 #[derive(Default)]
 pub(crate) struct Walk {
     /// The head of the stream says that the plugin writes the places. Without it nothing
     /// changes: the blends out of the sort draw by bucket at the start of the world.
     pub(crate) on: bool,
-    /// The runs of places: the ids of places with no other item between them.
-    runs: Vec<Vec<u32>>,
-    /// The ids placed in the frame, in the walk's order, once each.
-    order: Vec<u32>,
-    placed: HashSet<u32>,
-    /// The ids that the main view took as placed, and the entries it left out for each.
-    taken: HashSet<u32>,
-    left_out: HashMap<u32, Vec<Entry>>,
+    runs: Vec<Run>,
+    /// The places of the frame, in the walk's order, once each for each view.
+    order: Vec<(u8, u32)>,
+    placed: HashSet<(u8, u32)>,
+    /// The views of each id placed in the frame, as a mask: an id placed in two views shares
+    /// one transform between them (design 3.4a).
+    views_of: HashMap<u32, u32>,
+    /// The places of an id in a second view of the frame, counted at the place.
+    pub(crate) in_two_views: u64,
+    /// The places that each view took, and the entries it left out for each.
+    taken: HashSet<(u8, u32)>,
+    left_out: HashMap<(u8, u32), Vec<Entry>>,
 }
 
 impl Walk {
@@ -49,26 +66,39 @@ impl Walk {
         self.runs.clear();
         self.order.clear();
         self.placed.clear();
+        self.views_of.clear();
         self.taken.clear();
         self.left_out.clear();
     }
 
-    /// A place of the frame. `known`: the table has the instance; `adjacent`: the last item
-    /// of the frame is a run of places, so the place joins it and draws in the same call.
+    /// A place of the frame in the main view. `known`: the table has the instance;
+    /// `adjacent`: the last item of the frame is a run of places, so the place joins it and
+    /// draws in the same call.
     pub(crate) fn place(&mut self, id: u32, known: bool, adjacent: bool) -> Place {
+        self.place_in(MAIN_VIEW, id, known, adjacent)
+    }
+
+    /// A place of the frame in `view`. A place joins the last run only when the run is of the
+    /// same view.
+    pub(crate) fn place_in(&mut self, view: u8, id: u32, known: bool, adjacent: bool) -> Place {
         if !known {
             return Place::Unknown;
         }
-        if self.placed.insert(id) {
-            self.order.push(id);
+        if self.placed.insert((view, id)) {
+            self.order.push((view, id));
+            let views = self.views_of.entry(id).or_insert(0);
+            if *views != 0 && *views & 1 << view == 0 {
+                self.in_two_views += 1;
+            }
+            *views |= 1 << view;
         }
         match self.runs.last_mut() {
-            Some(run) if adjacent => {
-                run.push(id);
+            Some(run) if adjacent && run.view == view => {
+                run.ids.push(id);
                 Place::Joined
             }
             _ => {
-                self.runs.push(vec![id]);
+                self.runs.push(Run { view, ids: vec![id] });
                 Place::New(self.runs.len() - 1)
             }
         }
@@ -79,39 +109,45 @@ impl Walk {
     /// instance of a slot. Returns the number of places whose walk order differs from their
     /// bucket order.
     pub(crate) fn leave_out(&mut self, order: &mut Vec<Entry>, id_of: impl Fn(u32) -> Option<u32>) -> u32 {
-        self.taken.clone_from(&self.placed);
-        self.left_out.clear();
-        if self.placed.is_empty() {
+        self.leave_out_of(MAIN_VIEW, order, id_of)
+    }
+
+    /// [`Walk::leave_out`] for the order of `view`: only the instances placed in `view`.
+    pub(crate) fn leave_out_of(&mut self, view: u8, order: &mut Vec<Entry>, id_of: impl Fn(u32) -> Option<u32>) -> u32 {
+        self.taken.retain(|&(v, _)| v != view);
+        self.left_out.retain(|&(v, _), _| v != view);
+        self.taken.extend(self.placed.iter().filter(|&&(v, _)| v == view));
+        if !self.placed.iter().any(|&(v, _)| v == view) {
             return 0;
         }
         let (placed, left_out) = (&self.placed, &mut self.left_out);
         let mut bucket_order = Vec::new();
         order.retain(|entry| {
-            let Some(id) = id_of(entry.3).filter(|id| entry.0 >> 32 == GROUP_IN_PLACE && placed.contains(id)) else { return true };
-            let entries = left_out.entry(id).or_default();
+            let Some(id) = id_of(entry.3).filter(|id| entry.0 >> 32 == GROUP_IN_PLACE && placed.contains(&(view, *id))) else { return true };
+            let entries = left_out.entry((view, id)).or_default();
             if entries.is_empty() {
                 bucket_order.push(id);
             }
             entries.push(*entry);
             false
         });
-        let walk_order = self.order.iter().filter(|id| self.left_out.contains_key(id));
-        walk_order.zip(&bucket_order).filter(|(walk, bucket)| walk != bucket).count() as u32
+        let walk_order = self.order.iter().filter(|&&(v, id)| v == view && self.left_out.contains_key(&(v, id))).map(|&(_, id)| id);
+        walk_order.zip(&bucket_order).filter(|(walk, bucket)| walk != *bucket).count() as u32
     }
 
     /// The entries of a run in the walk's order, for its item, and the number of its places
-    /// that the main view did not take (a part of the frame ran before they came: the view
-    /// drew those with the other blends).
+    /// that its view did not take (a part of the frame ran before they came: the view drew
+    /// those with the other blends).
     pub(crate) fn take_run(&mut self, run: usize) -> (Vec<Entry>, u32) {
-        let ids = self.runs.get_mut(run).map(core::mem::take).unwrap_or_default();
+        let Some(Run { view, ids }) = self.runs.get_mut(run).map(core::mem::take) else { return (Vec::new(), 0) };
         let mut entries = Vec::new();
         let mut late = 0;
         for id in ids {
-            if !self.taken.contains(&id) {
+            if !self.taken.contains(&(view, id)) {
                 late += 1;
                 continue;
             }
-            if let Some(left) = self.left_out.remove(&id) {
+            if let Some(left) = self.left_out.remove(&(view, id)) {
                 entries.extend(left);
             }
         }
@@ -214,5 +250,58 @@ mod tests {
         let mut order = order();
         assert_eq!(walk.leave_out(&mut order, id_of), 0);
         assert_eq!(order, vec![opaque(5, 2)]);
+    }
+
+    /// A place in a view of its own takes no blend out of the main view, and the view's own
+    /// order leaves out only its places; the runs of two views never join.
+    #[test]
+    fn a_place_in_one_view_leaves_the_other_view_alone() {
+        let mut walk = Walk { on: true, ..Default::default() };
+        assert_eq!(walk.place_in(3, 11, true, false), Place::New(0));
+        // The last item is view 3's run: a place of view 0 starts its own run.
+        assert_eq!(walk.place(10, true, true), Place::New(1));
+        let mut main = order();
+        assert_eq!(walk.leave_out(&mut main, id_of), 0);
+        assert_eq!(main, vec![opaque(5, 2), blend(1, 2, 1), blend(2, 3, 3)]);
+        let mut mirror = order();
+        assert_eq!(walk.leave_out_of(3, &mut mirror, id_of), 0);
+        assert_eq!(mirror, vec![opaque(5, 2), blend(0, 1, 0), blend(2, 3, 3)]);
+        assert_eq!(walk.take_run(0), (vec![blend(1, 2, 1)], 0));
+        assert_eq!(walk.take_run(1), (vec![blend(0, 1, 0)], 0));
+    }
+
+    /// An id placed in two views of a frame is counted once for each further view: they share
+    /// one transform (design 3.4a). The next frame starts again.
+    #[test]
+    fn an_id_placed_in_two_views_is_counted() {
+        let mut walk = Walk { on: true, ..Default::default() };
+        walk.place(10, true, false);
+        walk.place(10, true, true);
+        assert_eq!(walk.in_two_views, 0);
+        walk.place_in(2, 10, true, false);
+        walk.place_in(2, 10, true, true);
+        assert_eq!(walk.in_two_views, 1);
+        walk.place_in(5, 10, true, false);
+        assert_eq!(walk.in_two_views, 2);
+        walk.frame_start();
+        walk.place_in(2, 10, true, false);
+        assert_eq!(walk.in_two_views, 2);
+    }
+
+    /// A second leave-out of the same view in a frame (a second click of its camera) replaces
+    /// the first one's entries; another view's stay.
+    #[test]
+    fn a_second_leave_out_of_a_view_replaces_its_entries() {
+        let mut walk = Walk { on: true, ..Default::default() };
+        walk.place(10, true, false);
+        walk.place_in(4, 11, true, false);
+        let mut main = order();
+        walk.leave_out(&mut main, id_of);
+        let mut view = order();
+        walk.leave_out_of(4, &mut view, id_of);
+        let mut main_again = order();
+        walk.leave_out(&mut main_again, id_of);
+        assert_eq!(walk.take_run(1), (vec![blend(1, 2, 1)], 0));
+        assert_eq!(walk.take_run(0), (vec![blend(0, 1, 0)], 0));
     }
 }

@@ -80,8 +80,8 @@ impl Player {
             c.queued_places, c.queued_unknown, c.queued_outside, c.queued_not_sorted, c.sorted_without_place, c.sorted_without_place_no_places, c.sorted_without_place_drawn, c.queued_late_places, c.blends_before_clear
         );
         println!(
-            "walk places: {} places of the table's blends in the engine's walk, {} of an instance not known, {} outside a world view, {} after the table's main view; {} blends drawn in place by the engine that had no place, drawn by bucket; {} places whose walk order differs from their bucket order",
-            c.walk_places, c.walk_unknown, c.walk_outside, c.walk_late, self.retained.counts.walk_without_place, self.retained.counts.walk_reordered
+            "walk places: {} places of the table's blends in the engine's walk, {} of an instance not known, {} outside a world view, {} after the table's main view; {} blends drawn in place by the engine that had no place, drawn by bucket; {} places whose walk order differs from their bucket order; {} places of an instance in a second view of its frame",
+            c.walk_places, c.walk_unknown, c.walk_outside, c.walk_late, self.retained.counts.walk_without_place, self.retained.counts.walk_reordered, self.retained.walk.in_two_views
         );
         println!(
             "views of their own: {} views drawn (a save's picture, a mod's camera), {} places drawn in them, {} of an instance with no slot to draw, {} of an instance not known; {} views not drawn because the scene slots were full; {} views of another camera with the last frame's shade",
