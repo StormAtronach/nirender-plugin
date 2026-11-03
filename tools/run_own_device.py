@@ -132,11 +132,60 @@ def archive_arguments(args):
         args.mwse_dll = mwse
 
 
-def argument_problems(args, exists=os.path.exists):
+def read_text(path):
+    """The text of a file, or None when it cannot be read."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+# A batch that walks for `NIRENDER_WALK_MINUTES` (the land walks of wgpu-scene-audit), with
+# its default: `tonumber(os.getenv("NIRENDER_WALK_MINUTES") or "") or 60`.
+WALK_MINUTES_DEFAULT = re.compile(r'os\.getenv\("NIRENDER_WALK_MINUTES"\)[^\n]*?\bor\s+(\d+)')
+# The seconds of a run before its batch starts and after it ends: the load, the steps before
+# the batch, the close. A 4-minute walk ran 314 s from the start to the end (2026-11-03).
+WALK_START_SECONDS = 120
+
+
+def walk_budget_problem(args, read=read_text, environment=os.environ):
+    """The fault of a run whose shader batch walks for longer than its `--budget` allows: the
+    runner ends the game at the budget, in the walk, and the plugin writes no end report
+    (2026-11-03, a 60-minute walk under the default 200 s). The walk's minutes are those of
+    `--env NIRENDER_WALK_MINUTES`, else of the runner's environment, else the batch's default.
+    None when the budget covers the walk and `WALK_START_SECONDS`, or when the batch does not
+    read the variable itself (a batch that loads a walk batch from another file is not seen)."""
+    if not args.shader_batch:
+        return None
+    text = read(args.shader_batch)
+    default = WALK_MINUTES_DEFAULT.search(text or "")
+    if not default:
+        return None
+    try:
+        variables = env_of(args.env)
+    except SystemExit:
+        return None
+    value = variables.get("NIRENDER_WALK_MINUTES", environment.get("NIRENDER_WALK_MINUTES"))
+    try:
+        minutes = float(value) if value is not None else float(default.group(1))
+    except ValueError:
+        return "NIRENDER_WALK_MINUTES takes a number of minutes, not %r" % value
+    source = "NIRENDER_WALK_MINUTES" if value is not None else "the batch's default"
+    needed = int(minutes * 60) + WALK_START_SECONDS
+    if args.budget >= needed:
+        return None
+    return ("--budget %d is shorter than the walk of the shader batch (%g min, %s) and the start (%d s): "
+            "give --budget %d or more, or a shorter walk with --env NIRENDER_WALK_MINUTES=N"
+            % (args.budget, minutes, source, WALK_START_SECONDS, needed))
+
+
+def argument_problems(args, exists=os.path.exists, read=read_text, environment=os.environ):
     """Every fault of the arguments that shows before the run starts anything: the form of
-    each value, and the files and folders that the run reads. One line for each fault; none
-    for a good command. `--check` runs only this (and the check of the save), so that a
-    caller can refuse a bad command before it takes the game slot."""
+    each value, the files and folders that the run reads, and a budget shorter than the walk
+    of its batch. One line for each fault; none for a good command. `--check` runs only this
+    (and the check of the save), so that a caller can refuse a bad command before it takes the
+    game slot."""
     problems = []
     if args.reference_plugin and not (args.reference or args.engine_reference):
         problems.append("--reference-plugin is for a run with --reference or --engine-reference")
@@ -172,6 +221,9 @@ def argument_problems(args, exists=os.path.exists):
                 problems.append("--mge-build: no %s in %s" % (name, args.mge_build))
     if args.instance and not exists(args.instance):
         problems.append("--instance: no folder %s" % args.instance)
+    walk = walk_budget_problem(args, read, environment) if not args.shader_batch or exists(args.shader_batch) else None
+    if walk:
+        problems.append(walk)
     return problems
 
 
@@ -643,7 +695,7 @@ def self_test_checks():
     def namespace(**changes):
         values = dict(reference_plugin=False, reference=False, engine_reference=False, position=None, hour=None, weather=None,
                       env=[], add_file=[], plugin_dll=None, shader_batch=None, lua_file=None, mwse_dll=None, exe=None, log=None,
-                      mge_build=None, instance=None)
+                      mge_build=None, instance=None, budget=200)
         values.update(changes)
         return argparse.Namespace(**values)
 
@@ -667,6 +719,28 @@ def self_test_checks():
     for args in bad:
         assert argument_problems(args, exists), args
     assert len(argument_problems(namespace(mge_build="E:/c", weather=10), exists)) == 3
+
+    # A batch that walks: the budget must cover the walk and the start.
+    walk = {"E:/batch.lua": 'local MINUTES = tonumber(os.getenv("NIRENDER_WALK_MINUTES") or "") or 60\n'}
+    read = walk.get
+    quiet = {}
+    def walk_problems(**changes):
+        return argument_problems(namespace(shader_batch="E:/batch.lua", **changes), exists, read, quiet)
+    # The case of 2026-11-03: the batch's 60 minutes under the default 200 s.
+    problems = walk_problems()
+    assert len(problems) == 1 and "--budget 3720 or more" in problems[0] and "the batch's default" in problems[0], problems
+    assert walk_problems(budget=3720) == []
+    # --env sets the minutes; a later value wins, as in env_of.
+    assert walk_problems(env=["NIRENDER_WALK_MINUTES=4"], budget=600) == []
+    problems = walk_problems(env=["NIRENDER_WALK_MINUTES=60", "NIRENDER_WALK_MINUTES=4"], budget=359)
+    assert len(problems) == 1 and "--budget 360 or more" in problems[0] and "NIRENDER_WALK_MINUTES" in problems[0], problems
+    assert walk_problems(env=["NIRENDER_WALK_MINUTES=four"], budget=600)
+    # The runner's environment, when --env does not set it.
+    assert walk_budget_problem(namespace(shader_batch="E:/batch.lua", budget=600), read, {"NIRENDER_WALK_MINUTES": "4"}) is None
+    assert walk_budget_problem(namespace(shader_batch="E:/batch.lua", budget=600), read, quiet)
+    # A batch that does not walk, and no batch: no fault.
+    assert argument_problems(namespace(shader_batch="E:/batch.lua"), exists, {"E:/batch.lua": "return {}\n"}.get, quiet) == []
+    assert walk_budget_problem(namespace(), read, quiet) is None
 
     assert run_exit_code(True, True, True) == 2
     assert run_exit_code(True, True, False) == 2

@@ -117,6 +117,9 @@ The run:
 - `NIRENDER_FOREGROUND=1`: the tools run the game in the foreground; a run is a background
   run without it. For a background run the runner stages a copy of the instance's MWSE.json
   with MWSE's setting `RunInBackground = true` into the run mod; the mod patches nothing.
+- `NIRENDER_WALK_MINUTES=<n>`: the minutes of the walk of a land walk batch (the batch's
+  default without it, 60 in the hour walks). The runner refuses a run whose `--budget` is
+  shorter than the walk and 120 s.
 - `NIRENDER_NOTIFIER=0`: the mod does not load the stand-in Lua change notifier.
 
 The places of this machine (the harness, the mwse-mcp package, the OBS recorder, the video
