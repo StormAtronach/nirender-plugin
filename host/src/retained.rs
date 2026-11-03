@@ -1212,6 +1212,13 @@ pub(crate) fn view_world_begins(sky: bool, sky_hidden: bool, walk_marked: bool, 
     !sky && (sky_hidden || (!walk_marked && sky_seen))
 }
 
+/// A place begins the world of a view of its own when its instance is not of the sky: the
+/// engine walks the sky root first, and the sky's instances have places too. `class` is the
+/// class of the instance's record; a place of an instance with no record begins nothing.
+pub(crate) fn place_begins_world(class: Option<u32>) -> bool {
+    class.is_some_and(|class| !crate::engine::scene::sky_class(class))
+}
+
 /// What a place of a view of its own does with one slot of its instance
 /// ([`RetainedSet::view_entries`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -3067,6 +3074,19 @@ mod view_bit_tests {
         // With the sky hidden there is no sky draw: the first draw.
         assert!(view_world_begins(false, true, true, false));
         assert!(view_world_begins(false, true, false, false));
+    }
+
+    #[test]
+    fn a_place_of_the_sky_does_not_begin_the_world_of_a_view() {
+        use crate::engine::scene::{CLASS_SKY_DOME, CLASS_SKY_FIRST, CLASS_SKY_LAST};
+        // The sky's instances have places, walked before the world.
+        assert!(!place_begins_world(Some(CLASS_SKY_DOME)));
+        assert!(!place_begins_world(Some(CLASS_SKY_FIRST)));
+        assert!(!place_begins_world(Some(CLASS_SKY_LAST)));
+        // A place of the world, and one of an instance with no record.
+        assert!(place_begins_world(Some(CLASS_SKY_LAST + 1)));
+        assert!(place_begins_world(Some(0)));
+        assert!(!place_begins_world(None));
     }
 
     #[test]

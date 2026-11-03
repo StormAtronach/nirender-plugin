@@ -904,8 +904,9 @@ impl Player {
     /// view of the scene at its first place, then the place in its run.
     pub(crate) fn view_place(&mut self, id: u32) {
         self.note_view_facts();
-        // The engine walks the sky root first: a place of a retained shape is in the world.
-        self.view_world_begun = true;
+        // The engine walks the sky root first, and the sky's instances have places too: a place of
+        // an instance that is not of the sky is in the world.
+        self.view_world_begun |= crate::retained::place_begins_world(self.instances.get(&id).map(|r| r.class));
         self.view_table_item();
         let open = self.views.open();
         let adjacent = matches!(self.items.last(), Some(&Item::ViewPlaces(group, _)) if Some(group) == open);
