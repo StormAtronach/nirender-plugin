@@ -183,6 +183,12 @@ struct Instance {
     /// Its `INSTANCE` record goes again for the start of a capture file (`reset`): the state
     /// records of its views follow the record (`restate`).
     restate: bool,
+    /// A billboard node is above the shape: its display reads the world transform of the
+    /// last view's turn (design 3.4a, until stage 2b). The frame of its last display and the
+    /// views that displayed it in that frame, for [`BILLBOARD_IN_TWO_VIEWS`].
+    under_billboard: bool,
+    views_frame: u32,
+    frame_views: u32,
     /// The `INSTANCE` record with these values went into the stream or the file.
     sent: bool,
     /// The matrices of its last `INSTANCE` record were relative to the camera's origin.
@@ -463,7 +469,7 @@ impl Instance {
     /// An instance of a shape at its first draw: no record of it went yet.
     #[allow(clippy::too_many_arguments)]
     fn new(id: u32, class: u32, geometry: u32, material: u32, generation: u32, skinned: bool, live: bool, points: bool) -> Instance {
-        Instance { id, class, geometry, material, rotation: [0; 12], software: false, stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, visible: 0, displayed: 0, listed: 0, restate: false, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], checked: 0, effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
+        Instance { id, class, geometry, material, rotation: [0; 12], software: false, stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, visible: 0, displayed: 0, listed: 0, restate: false, under_billboard: false, views_frame: 0, frame_views: 0, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], checked: 0, effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
     }
 }
 
@@ -757,10 +763,40 @@ fn views_of(mask: u32) -> impl Iterator<Item = u8> {
     (0..VIEW_SLOTS as u8).filter(move |view| mask & (1 << view) != 0)
 }
 
-/// A display of the instance in the scene's view `view`: the mark "displayed in v", bit v with
-/// its state record when the bit was clear, and the shape in v's visible list.
-unsafe fn show_in_view(instance: &mut Instance, shape: usize, view: u8, lists: &mut [Vec<(usize, u32)>], states: &mut u64) {
+/// The instances under a billboard that a second view displayed in one frame, once for each
+/// instance and frame: they draw in both views with the world transform of the last view's
+/// turn, until stage 2b turns them for each view (design 3.4a).
+pub static BILLBOARD_IN_TWO_VIEWS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// A billboard node of any mode is above the shape (`NiBillboardNode`). Mode 3 does not turn,
+/// and no NIF block of the content has it (design 3.4a, the scan of 2026-11-03).
+unsafe fn under_billboard(shape: usize) -> bool {
+    let found = crate::parent_chain::first_answer(
+        rd(shape, PARENT),
+        crate::parent_chain::GUARD,
+        |node| rd(node, PARENT),
+        |node| crate::ports::ni::is_kind_of(node, crate::effect_chain::RTTI_BILLBOARD_NODE).then_some(()),
+    );
+    matches!(found, Ok(Some(())))
+}
+
+/// A display of the instance in the scene's view `view` in the frame `frame`: the mark
+/// "displayed in v", bit v with its state record when the bit was clear, and the shape in v's
+/// visible list. An instance under a billboard notes the views of the frame.
+unsafe fn show_in_view(instance: &mut Instance, shape: usize, view: u8, frame: u32, lists: &mut [Vec<(usize, u32)>], states: &mut u64) {
     let bit = 1u32 << view;
+    if instance.under_billboard {
+        if instance.views_frame != frame {
+            instance.views_frame = frame;
+            instance.frame_views = 0;
+        }
+        if instance.frame_views & bit == 0 {
+            if instance.frame_views.count_ones() == 1 {
+                BILLBOARD_IN_TWO_VIEWS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
+            instance.frame_views |= bit;
+        }
+    }
     instance.displayed |= bit;
     if instance.visible & bit == 0 {
         instance.visible |= bit;
@@ -1103,7 +1139,7 @@ fn view_report(mt: &MainThread) -> String {
         return "views: no scene yet".to_owned();
     };
     format!(
-        "views: {} of {VIEW_SLOTS} slots in use, {} slots retired, {} root changes; {} second slots (at most {} in one flush), {} slots taken back, {} flushes forced, {} slots of a destroyed target ({} destructors off the main thread, {} waited for an open table); hides at the closes: {} by the planes, {} after a root change",
+        "views: {} of {VIEW_SLOTS} slots in use, {} slots retired, {} root changes; {} second slots (at most {} in one flush), {} slots taken back, {} flushes forced, {} slots of a destroyed target ({} destructors off the main thread, {} waited for an open table); hides at the closes: {} by the planes, {} after a root change; {} instances under a billboard displayed in two views of a frame (they draw with the last view's turn)",
         views.in_use(),
         views.retired,
         views.root_changes,
@@ -1115,7 +1151,8 @@ fn view_report(mt: &MainThread) -> String {
         VIEW_TARGETS_OFF_MAIN.load(core::sync::atomic::Ordering::Relaxed),
         VIEW_TARGETS_WAITED.load(core::sync::atomic::Ordering::Relaxed),
         CLOSE_HIDES[0].load(core::sync::atomic::Ordering::Relaxed),
-        CLOSE_HIDES[1].load(core::sync::atomic::Ordering::Relaxed)
+        CLOSE_HIDES[1].load(core::sync::atomic::Ordering::Relaxed),
+        BILLBOARD_IN_TWO_VIEWS.load(core::sync::atomic::Ordering::Relaxed)
     )
 }
 
@@ -1230,6 +1267,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
     let mut instance = Instance::new(id, class, geometry, material, generation, skinned, live, points);
+    instance.under_billboard = under_billboard(shape);
     // The classification reads the shape as it is now: the notes before it are done.
     instance.checked = change_count(mt);
     t.instances.insert(shape, instance);
@@ -1682,7 +1720,7 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
             capture::instance_lights(id, lights, ambient);
             t.light_records += 1;
         }
-        show_in_view(instance, shape, t.scene_view, &mut t.view_lists, &mut t.states);
+        show_in_view(instance, shape, t.scene_view, t.frame, &mut t.view_lists, &mut t.states);
         if skinned {
             send_bones(mt, t, shape, id);
         }
@@ -2601,7 +2639,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         t.light_records += 1;
     }
     t.scratch_keys = keys;
-    show_in_view(instance, shape, t.scene_view, &mut t.view_lists, &mut t.states);
+    show_in_view(instance, shape, t.scene_view, t.frame, &mut t.view_lists, &mut t.states);
     t.skipped += 1;
     true
 }
@@ -2893,7 +2931,7 @@ mod tests {
                 let mut tables_open = tables(&mt);
                 let t = &mut *tables_open;
                 let instance = t.instances.get_mut(&shape).expect("a test instance");
-                show_in_view(instance, shape, view, &mut t.view_lists, &mut t.states);
+                show_in_view(instance, shape, view, t.frame, &mut t.view_lists, &mut t.states);
             };
             let mask = |shape: usize| tables(&mt).instances[&shape].visible;
             show(a, 1);
@@ -2944,7 +2982,7 @@ mod tests {
                 let mut tables_open = tables(&mt);
                 let t = &mut *tables_open;
                 let instance = t.instances.get_mut(&a).expect("a test instance");
-                show_in_view(instance, a, 1, &mut t.view_lists, &mut t.states);
+                show_in_view(instance, a, 1, t.frame, &mut t.view_lists, &mut t.states);
             };
             let mode = tables(&mt).mode.replace(Mode::Gpu);
             insert(94);
@@ -2986,7 +3024,7 @@ mod tests {
                 instance.filled = true;
                 t.instances.insert(a, instance);
                 let instance = t.instances.get_mut(&a).expect("a test instance");
-                show_in_view(instance, a, slot, &mut t.view_lists, &mut t.states);
+                show_in_view(instance, a, slot, t.frame, &mut t.view_lists, &mut t.states);
             }
             {
                 let _held = tables(&mt);
@@ -2999,6 +3037,38 @@ mod tests {
             take_retired_views(&mt);
             capture::test_record_deletes(false);
             crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// An instance under a billboard that a second view displays in a frame is counted once for
+    /// that frame; a third view adds nothing; the next frame starts again. One not under a
+    /// billboard is not counted.
+    #[test]
+    fn an_instance_under_a_billboard_in_two_views_of_a_frame_is_counted_once() {
+        use core::sync::atomic::Ordering::Relaxed;
+        let mut lists = vec![Vec::new(); VIEW_SLOTS];
+        let mut states = 0;
+        let mut under = Instance::new(97, 0, 1, 2, 0, false, false, false);
+        under.under_billboard = true;
+        let mut plain = Instance::new(98, 0, 1, 2, 0, false, false, false);
+        let count = || BILLBOARD_IN_TWO_VIEWS.load(Relaxed);
+        let _turn = crate::main_thread::TestTurn::take();
+        let start = count();
+        unsafe {
+            show_in_view(&mut under, 0x10, 1, 5, &mut lists, &mut states);
+            show_in_view(&mut under, 0x10, 1, 5, &mut lists, &mut states);
+            assert_eq!(count(), start);
+            show_in_view(&mut under, 0x10, 0, 5, &mut lists, &mut states);
+            assert_eq!(count(), start + 1);
+            show_in_view(&mut under, 0x10, 2, 5, &mut lists, &mut states);
+            assert_eq!(count(), start + 1);
+            show_in_view(&mut under, 0x10, 0, 6, &mut lists, &mut states);
+            assert_eq!(count(), start + 1);
+            show_in_view(&mut under, 0x10, 1, 6, &mut lists, &mut states);
+            assert_eq!(count(), start + 2);
+            show_in_view(&mut plain, 0x20, 1, 6, &mut lists, &mut states);
+            show_in_view(&mut plain, 0x20, 0, 6, &mut lists, &mut states);
+            assert_eq!(count(), start + 2);
         }
     }
 
