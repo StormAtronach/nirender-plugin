@@ -919,6 +919,9 @@ struct Player {
     /// [`Extension::before_world`] for [`Extension::blend`] with true when it is of this frame.
     pass_target: Option<u32>,
     target_size: (u32, u32),
+    /// The pixels of the pass's target for each pixel of the game's size (`RenderTexture::scale`):
+    /// the game's viewports are in its size.
+    target_scale: (f32, f32),
     viewport: Option<([f32; 4], [f32; 2])>,
     before: Option<wgpu::Texture>,
     before_kept: bool,

@@ -143,7 +143,10 @@ pub unsafe fn host_ended() -> bool {
 /// `MaxActiveLights` (word 40, byte 0xA0) is 32, not 8. The engine's renderer does not read
 /// this word. `updateLights` (0x6BB6C0) enables every light of the effect state. The only cap
 /// is 7 lights of a node's own list (`NiNode::PushLocalEffects` 0x6C8F00), 32 with
-/// `distant_land.expanded_light_limit`.
+/// `distant_land.expanded_light_limit`. `MaxTextureWidth` and `MaxTextureHeight` (words 22 and
+/// 23) stay 16384, the helper's most: the helper starts at the end of `CreateDevice`, after the
+/// game can read these caps, so the plugin cannot know an adapter's smaller limit. The helper
+/// makes a larger rendered texture smaller (`target_size` in the host).
 const CAPS: [u32; 53] = [
     0x00000001, 0x00000000, 0x00020000, 0x200a0000, 0x00000420, 0x8000000f, 0x00000000, 0x001bbef0, 0x00000ef2, 0x00f37191,
     0x000000ff, 0x00001fff, 0x00001fff, 0x000000ff, 0x00084208, 0x0001ecc5, 0x03030700, 0x03030300, 0x03030300, 0x0000003f,

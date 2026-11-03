@@ -1129,27 +1129,39 @@ impl Renderer {
         self.counts.textures += 1;
     }
 
-    /// Makes a texture that the game draws into, with a depth buffer of its size.
+    /// Makes a texture that the game draws into, with a depth buffer of its size: the size that
+    /// the game asked for, each side cut to the device's largest ([`target_size`]).
     pub(crate) fn render_texture(&mut self, handle: u32, width: u32, height: u32) {
-        let (width, height) = (width.max(1), height.max(1));
+        let asked = (width.max(1), height.max(1));
+        let largest = self.device.limits().max_texture_dimension_2d;
+        let (width, height) = target_size(asked, largest);
+        if (width, height) != asked {
+            self.counts.render_textures_cut += 1;
+            if !self.counts.render_texture_cut_sizes.contains(&asked) {
+                self.counts.render_texture_cut_sizes.push(asked);
+                println!("rendered texture: the game asked for {} x {}, and the device's largest side is {largest}: made {width} x {height}", asked.0, asked.1);
+            }
+        }
         let texture = target_texture(&self.device, width, height, self.target_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC);
         let depth = target_texture(&self.device, width, height, self.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT);
         let view = Rc::new(texture.create_view(&Default::default()));
         self.set_texture(handle, view.clone());
         self.texture_objects.remove(&handle);
-        self.targets.insert(handle, RenderTexture { texture, view, depth: Rc::new(depth.create_view(&Default::default())), size: (width, height) });
+        self.targets.insert(handle, RenderTexture { texture, view, depth: Rc::new(depth.create_view(&Default::default())), size: (width, height), asked });
         self.counts.render_textures += 1;
     }
 
     /// The game copied pixels of its own into a texture that it draws into. `pixels` has 4
-    /// bytes for each pixel, blue first.
+    /// bytes for each pixel, blue first, at the size that the game asked for.
     pub(crate) fn target_pixels(&mut self, handle: u32, width: u32, height: u32, pixels: &[u8]) {
         let Some(target) = self.targets.get(&handle) else { return };
-        if target.size != (width, height) || pixels.len() < (width * height * 4) as usize {
+        if target.asked != (width, height) || pixels.len() < (width * height * 4) as usize {
             self.counts.texture_updates_lost += 1;
             return;
         }
-        let mut bytes = pixels[..(width * height * 4) as usize].to_vec();
+        let game_pixels = &pixels[..(width * height * 4) as usize];
+        let (width, height) = target.size;
+        let mut bytes = if target.size == target.asked { game_pixels.to_vec() } else { resample_nearest(game_pixels, target.asked, target.size) };
         if !matches!(self.target_format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
             for pixel in bytes.chunks_exact_mut(4) {
                 pixel.swap(0, 2);

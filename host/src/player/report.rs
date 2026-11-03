@@ -192,8 +192,8 @@ impl Player {
             println!("  not written: {reason}: {count}");
         }
         println!(
-            "rendered textures made {}, draws into them {}, copies of pixels into them {}, pixel reads {}",
-            c.render_textures, c.target_draws, c.target_copies, c.pixel_reads
+            "rendered textures made {} ({} of them smaller than the game asked: the device's largest side), draws into them {}, copies of pixels into them {}, pixel reads {}",
+            c.render_textures, c.render_textures_cut, c.target_draws, c.target_copies, c.pixel_reads
         );
         println!("map tiles copied {}, tile reads given to the game {}, tiles not copied {}", c.tile_copies, c.tile_reads, c.tiles_lost);
         println!("draws in screen coordinates {}, not drawn {}", c.screen_draws, c.screen_draws_lost);
