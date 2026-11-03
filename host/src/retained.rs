@@ -234,12 +234,14 @@ pub struct RetainedCounts {
     pub view_states_dropped: u64,
     pub views_retired: u64,
     /// The tables of the views of their own: the lists taken at a close, the entries of a list
-    /// whose slot held another instance at the draw, the tables drawn, and the tables of a
-    /// view into a texture that drew before its close (a flush in its scene): collected then.
+    /// whose slot held another instance or another bucket at the draw, the tables drawn, the
+    /// tables of a view into a texture that drew before its close (a flush in its scene):
+    /// collected then, and the tables with nothing to draw (no scene slot taken).
     pub view_lists: u64,
     pub view_list_gone: u64,
     pub view_tables_drawn: u64,
     pub view_lists_late: u64,
+    pub view_tables_empty: u64,
     pub turn_seconds: f64,
     pub upload_seconds: f64,
 }
@@ -2589,7 +2591,8 @@ impl Player {
     /// The table of a view of its own ([`Item::ViewTable`]): its slots that do not blend, by its
     /// bit, in its planes, through `collect_order`. A view into a texture draws the list taken at
     /// its close ([`RetainedSet::close_view`]); a view into the back buffer collects it here, at
-    /// its first scene in the frame.
+    /// its first scene in the frame. A table with nothing to draw takes no scene slot and opens
+    /// no pass: the slots of the frame are few ([`SCENE_SLOTS`]).
     pub(super) fn draw_view_table(&mut self, group: usize) {
         if !self.retained_on {
             return;
@@ -2603,17 +2606,28 @@ impl Player {
             }
             self.retained.view_tables.drawn |= 1 << bit;
         }
-        let Some(slot) = self.view_slot(group) else { return };
         let planes = view_planes(&facts.view, &facts.projection);
-        let mut view = RetainedView { scene_slot: slot, bit, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Opaque, samples: self.pass_samples };
+        let mut view = RetainedView { scene_slot: 0, bit, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Opaque, samples: self.pass_samples };
         match list {
-            Some(list) => {
-                self.retained.order_of_list(&list);
-                view.sorted = Sorted::Ready;
+            Some(list) => self.retained.order_of_list(&list),
+            None => {
+                if !back_buffer {
+                    self.retained.counts.view_lists_late += 1;
+                }
+                self.retained.collect_order(&view, true);
             }
-            None if !back_buffer => self.retained.counts.view_lists_late += 1,
-            None => {}
         }
+        if self.retained.order.is_empty() {
+            self.retained.counts.view_tables_empty += 1;
+            return;
+        }
+
+        // The scene of the view is written at the slot's take; the order waits outside the set.
+        let order = core::mem::take(&mut self.retained.order);
+        let Some(slot) = self.view_slot(group) else { return };
+        self.retained.order = order;
+        view.scene_slot = slot;
+        view.sorted = Sorted::Ready;
         self.retained.counts.view_tables_drawn += 1;
         self.begin_pass();
         let Some(pass) = self.pass.as_mut() else { return };
