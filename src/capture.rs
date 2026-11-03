@@ -868,6 +868,11 @@ pub unsafe fn copy_tile(target: u32, texture: u32) -> Option<u32> {
     if !recording() {
         return None;
     }
+    // The helper runs the frame's work so far before the copy (`flush` in the helper's tiles):
+    // a flush of the views, as for a read of pixels.
+    if let Some(t) = MainThread::here() {
+        crate::instance_stream::view_flush(&t);
+    }
     let ticket = {
         let mut s = state(&lock)?;
         let tiles = s.tiles.as_mut()?;
