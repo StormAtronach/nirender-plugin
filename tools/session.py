@@ -314,6 +314,38 @@ def ring_problem(plugin, helper):
             % (plugin, b", ".join(sorted(plugin_marks)).decode(), helper, b", ".join(sorted(helper_marks)).decode()))
 
 
+def mge_build_files(mge_build):
+    """The files of the mod Harness - MGE XE for a run with the run build `mge_build`, as {path
+    in the mod: source file}: d3d8.dll and numidium.exe, and what the build has of the rest."""
+    files = {"Root/d3d8.dll": os.path.join(mge_build, "d3d8.dll"), "Root/numidium.exe": os.path.join(mge_build, "numidium.exe")}
+    # The symbol files of the build beside the binaries, when it has them: a profile of the
+    # run resolves the helper's symbols without a search path (the owner, 2026-10-16). The
+    # Harness mod is the runner's staging, not an install.
+    for name in ("numidium.pdb", "d3d8.pdb"):
+        symbols = os.path.join(mge_build, name)
+        if os.path.isfile(symbols):
+            files["Root/" + name] = symbols
+    # The DXVK of the build, when it has one, over the DXVK of the instance: the Direct3D 9
+    # path of a feature that needs a DXVK change.
+    dxvk = os.path.join(mge_build, "d3d9.dll")
+    if os.path.isfile(dxvk):
+        files["Root/d3d9.dll"] = dxvk
+    # The Lua of the build (the MGE XE Options mod: its menus and the event
+    # distantLandReady), over the copy of the release in the instance.
+    options = os.path.join(mge_build, "Data Files", "mwse", "mods", "MGE XE Options")
+    for folder, _, names in os.walk(options):
+        for name in names:
+            source = os.path.join(folder, name)
+            files["MWSE/mods/MGE XE Options/" + os.path.relpath(source, options).replace(os.sep, "/")] = source
+    # The core shaders of the build (Direct3D 9 reads them at run time; the build's d3d8.dll
+    # sets the parameters they declare), over the copy of the release.
+    core = os.path.join(mge_build, "Data Files", "shaders", "core")
+    if os.path.isdir(core):
+        for name in os.listdir(core):
+            files["shaders/core/" + name] = os.path.join(core, name)
+    return files
+
+
 def winning_root_file(name, root, modlist, game_dir):
     """The path of the program file `name` in the game folder at the start (Root Builder): the
     overwrite's Root, then the enabled mods' Root by priority, then the game folder. None if
@@ -324,12 +356,24 @@ def winning_root_file(name, root, modlist, game_dir):
     return next((path for path in places if os.path.isfile(path)), None)
 
 
+def ring_helper(root, modlist, game_dir, environment):
+    """The helper that the plugin starts: the file that NIRENDER_HOST_EXE names (own_device.rs,
+    start_stream) when the runner sets it, else the numidium.exe of the game folder at the start.
+    On the wgpu path MGE XE's d3d8.dll sets the variable to that numidium.exe itself
+    (d3d8/cpp/main.cpp, createStreamedD3D); the runner sets it only for the plugin's own device
+    (run_own_device.py without --mge-build, with renderer_wgpu = false)."""
+    named = environment.get("NIRENDER_HOST_EXE")
+    if named and os.path.isfile(named):
+        return named
+    return winning_root_file("numidium.exe", root, modlist, game_dir)
+
+
 def ring_problem_of_instance():
-    """The ring check of the instance as the run starts it: the plugin and the helper that win in
-    the mod list as it is now."""
+    """The ring check of the instance as the run starts it: the plugin that wins in the mod list
+    as it is now, and its helper."""
     modlist = harness.read_modlist()[0]
     plugin = harness.winning_file(harness.PLUGIN_FILE, harness.MO2_ROOT, modlist, harness.GAME_DIR)
-    helper = winning_root_file("numidium.exe", harness.MO2_ROOT, modlist, harness.GAME_DIR)
+    helper = ring_helper(harness.MO2_ROOT, modlist, harness.GAME_DIR, os.environ)
     return ring_problem(plugin and plugin[1], helper)
 
 

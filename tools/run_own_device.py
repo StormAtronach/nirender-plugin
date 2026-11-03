@@ -829,6 +829,60 @@ def self_test_ring_problem():
         assert winner("numidium.exe", root, ["+Old"], game) == os.path.join(root, "overwrite", "Root", "numidium.exe")
         assert winner("other.exe", root, ["+Old"], game) is None
 
+        # The runner's NIRENDER_HOST_EXE (the plugin's own device) wins over the game folder's.
+        host = binary(os.path.join(root, "repo", "nirender-host.exe"), b"2RNG")
+        helper = session.ring_helper
+        assert helper(root, ["+Old"], game, {"NIRENDER_HOST_EXE": host}) == host
+        assert helper(root, ["-Old"], game, {}) == os.path.join(root, "overwrite", "Root", "numidium.exe")
+        assert helper(root, ["+Old"], game, {"NIRENDER_HOST_EXE": os.path.join(root, "no such.exe")}) == os.path.join(root, "overwrite", "Root", "numidium.exe")
+
+        # A build's files: the binaries always, the rest when the build has them.
+        build = os.path.join(root, "build")
+        binary(os.path.join(build, "d3d8.dll"), b"")
+        binary(os.path.join(build, "Data Files", "mwse", "mods", "MGE XE Options", "main.lua"), b"")
+        binary(os.path.join(build, "Data Files", "shaders", "core", "XE Main.fx"), b"")
+        files = session.mge_build_files(build)
+        assert set(files) == {"Root/d3d8.dll", "Root/numidium.exe", "MWSE/mods/MGE XE Options/main.lua", "shaders/core/XE Main.fx"}, files
+        assert files["Root/numidium.exe"] == os.path.join(build, "numidium.exe")
+
+    # Run.launch stops before the start on a ring problem, and restores the instance.
+    calls = []
+
+    class Deployment:
+        def write_spec(self, *a):
+            pass
+
+        def enable_mod(self, name):
+            calls.append("enable")
+
+        def use_mod(self, *a):
+            pass
+
+        def disable_mod(self, *a):
+            pass
+
+        def restore(self):
+            calls.append("restore")
+
+    saved = (session.harness.Deployment, session.harness.run_game, session.ring_problem_of_instance, session.RESULTS, session.stage_background_config)
+    with tempfile.TemporaryDirectory() as results:
+        session.harness.Deployment = Deployment
+        session.harness.run_game = lambda *a, **k: calls.append("run_game")
+        session.ring_problem_of_instance = lambda: "the rings differ"
+        session.stage_background_config = lambda deployment: None
+        session.RESULTS = results
+        try:
+            run = session.Run("ring-test")
+            try:
+                run.launch({}, 10, "[t] ")
+            except SystemExit as stop:
+                assert "the rings differ" in str(stop), stop
+            else:
+                raise AssertionError("Run.launch started with a ring problem")
+            assert calls == ["enable", "restore"], calls
+        finally:
+            (session.harness.Deployment, session.harness.run_game, session.ring_problem_of_instance, session.RESULTS, session.stage_background_config) = saved
+
 
 def self_test():
     """The tests of the argument handling: no game, no build."""
@@ -1129,32 +1183,7 @@ def main():
         # the plugin, and its helper is the renderer. With --reference the same build with the
         # switch off: Direct3D 9 with the d3d8.dll and the helper of that build (the helper as
         # the IPC host of distant land).
-        mods[0] = (MGE_MOD, {"Root/d3d8.dll": os.path.join(args.mge_build, "d3d8.dll"), "Root/numidium.exe": os.path.join(args.mge_build, "numidium.exe")})
-        # The symbol files of the build beside the binaries, when it has them: a profile
-        # of the run resolves the helper's symbols without a search path (the owner,
-        # 2026-10-16). The Harness mod is the runner's staging, not an install.
-        for name in ("numidium.pdb", "d3d8.pdb"):
-            symbols = os.path.join(args.mge_build, name)
-            if os.path.isfile(symbols):
-                mods[0][1]["Root/" + name] = symbols
-        # The DXVK of the build, when it has one, over the DXVK of the instance: the
-        # Direct3D 9 path of a feature that needs a DXVK change.
-        dxvk = os.path.join(args.mge_build, "d3d9.dll")
-        if os.path.isfile(dxvk):
-            mods[0][1]["Root/d3d9.dll"] = dxvk
-        # The Lua of the build (the MGE XE Options mod: its menus and the event
-        # distantLandReady), over the copy of the release in the instance.
-        options = os.path.join(args.mge_build, "Data Files", "mwse", "mods", "MGE XE Options")
-        for folder, _, names in os.walk(options):
-            for name in names:
-                source = os.path.join(folder, name)
-                mods[0][1]["MWSE/mods/MGE XE Options/" + os.path.relpath(source, options).replace(os.sep, "/")] = source
-        # The core shaders of the build (Direct3D 9 reads them at run time; the build's
-        # d3d8.dll sets the parameters they declare), over the copy of the release.
-        core = os.path.join(args.mge_build, "Data Files", "shaders", "core")
-        if os.path.isdir(core):
-            for name in os.listdir(core):
-                mods[0][1]["shaders/core/" + name] = os.path.join(core, name)
+        mods[0] = (MGE_MOD, session.mge_build_files(args.mge_build))
     elif args.reference:
         # MGE XE of the instance on Direct3D 9.
         mods.pop(0)
