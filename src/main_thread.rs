@@ -114,6 +114,14 @@ impl<T> MainCell<T> {
         // The proof says the main thread: no other thread opens the table.
         unsafe { self.0.open() }
     }
+
+    /// [`MainCell::get`] when no other open of the table is live; [`None`] while one is.
+    #[track_caller]
+    #[inline(always)]
+    pub fn try_get<'a>(&'a self, _: &'a MainThread) -> Option<Open<'a, T>> {
+        // The proof says the main thread: no other thread opens the table.
+        unsafe { self.0.try_open() }
+    }
 }
 
 #[cfg(test)]

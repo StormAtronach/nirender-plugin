@@ -21,7 +21,7 @@ use crate::mem::{rd, wr};
 use crate::ptr_hash::HashMap;
 
 /// The run-time type of `NiBillboardNode`.
-const RTTI_BILLBOARD_NODE: usize = 0x7DE0A0;
+pub(crate) const RTTI_BILLBOARD_NODE: usize = 0x7DE0A0;
 /// The kind of a link that does not turn: a plain node, a billboard of the mode 3, the effect.
 const NO_TURN: u32 = 3;
 /// The flag that `NiNode::Display` 0x6C9190 sets: after it, the billboard has turned.

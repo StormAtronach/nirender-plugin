@@ -1191,7 +1191,12 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
         target: (!back_buffer).then_some(roots.render_target as usize),
         world_camera: world_controller != 0 && camera == rd::<usize>(world_controller, WC_WORLD_CAMERA),
     };
-    let view = crate::instance_stream::view_open(t, &click);
+    // A scene on the engine's path (the local map's tiles, the character preview, the water
+    // reflection, a target that the helper lacks) is no view: the table does not serve it, so
+    // its displays set no marks (`instance_stream::skipped_display`), and a slot would only
+    // add pressure (design 3.1).
+    let route = crate::instance_stream::route_of(roots.scene_kind, back_buffer, crate::own_host::target_is_known());
+    let view = crate::instance_stream::view_of_scene(t, &click, route);
     let scene = SceneV1 {
         struct_size: size_of::<SceneV1>() as u32,
         kind: roots.scene_kind,
@@ -1209,8 +1214,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     };
     (host.scene_begin)(&scene);
     crate::capture::scene_begin(&scene);
-    let route = crate::instance_stream::route_of(scene.kind, scene.flags & SCENE_BACK_BUFFER != 0, crate::own_host::target_is_known());
-    crate::instance_stream::scene_begin(t, roots.scene_kind, camera, route);
+    crate::instance_stream::scene_begin(t, roots.scene_kind, camera, route, view);
     // MGE XE's frame logic takes the same packet (the contract's `MGE_StreamSceneBegin`).
     let function = STREAM_SCENE_BEGIN.load(Ordering::Relaxed);
     if function != 0 {

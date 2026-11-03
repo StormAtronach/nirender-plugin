@@ -4,12 +4,22 @@
 use crate::*;
 use crate::stream_format::{
     HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET,
-    HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
+    HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_BITS, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
 /// The generation of the reply memory that a `READ_PIXELS` record names: 0 in a record of a
 /// plugin before the third word.
 pub(crate) fn reply_generation(data: &[u8]) -> u32 {
+    if data.len() >= 12 {
+        word(data, 8)
+    } else {
+        0
+    }
+}
+
+/// The view slot that an `INSTANCE_STATE` record names: 0 (the main view) in a record of a
+/// plugin before the third word.
+fn instance_state_view(data: &[u8]) -> u32 {
     if data.len() >= 12 {
         word(data, 8)
     } else {
@@ -82,6 +92,7 @@ impl Player {
                 self.retained.walk.on = abilities & HEADER_WALK_PLACES != 0;
                 self.views.on = abilities & HEADER_VIEW_PLACES != 0;
                 self.views.slots_on = abilities & HEADER_SCENE_VIEWS != 0;
+                self.retained.view_bits = abilities & HEADER_VIEW_BITS != 0;
                 self.stream.scene_wireframe = abilities & HEADER_SCENE_WIREFRAME != 0;
                 self.stream.envmap_lit = (abilities & HEADER_ENVMAP_KNOWN != 0).then_some(abilities & HEADER_ENVMAP_LIT != 0);
             }
@@ -182,6 +193,11 @@ impl Player {
                 }
                 let camera_is_world = self.views.camera_is_world(kind, camera, self.world_camera_id);
                 self.views.scene_begin(kind, in_target, camera_is_world);
+                self.view_world_begun = false;
+                self.view_sky_seen = false;
+                self.view_world_why = "";
+                self.view_scene_draws = [0; 2];
+                self.view_table_at = None;
                 for step in self.plan_now().scene_begin_view(kind, ViewKind::classify(in_target, camera_is_world)) {
                     self.plan_step(step);
                 }
@@ -194,6 +210,17 @@ impl Player {
                 let steps = self.plan_now().scene_end(extension, in_back_buffer, drawing, queue_open, queue_flush);
                 for step in steps {
                     self.plan_step(step);
+                }
+                // A view into a texture closes here (its EndPaint): its table takes its list now. A
+                // scene whose world did not begin gets its table item here.
+                if let Some(group) = self.views.open() {
+                    self.begin_view_world("the scene end");
+                    self.view_table_item();
+                    let facts = self.views.group(group).and_then(|g| g.facts);
+                    if let (Some(bit), Some(facts), Some(_)) = (self.table_bit(group), facts, self.target) {
+                        self.retained.close_view(group, bit, view_planes(&facts.view, &facts.projection));
+                    }
+                    self.view_table_line(group);
                 }
                 if let Some(group) = self.views.scene_end().filter(|_| drawing) {
                     self.items.push(Item::ViewSorted(group));
@@ -211,6 +238,12 @@ impl Player {
                 }
                 if word(data, 0) == EVENT_VIEW_RETIRE && self.views.slots_on {
                     self.views.retire(word(data, 4));
+                    self.retained.retire_view(word(data, 4));
+                }
+                if word(data, 0) == EVENT_FLUSH && self.views.slots_on {
+                    self.views.note_forced_flush();
+                    // The plugin reads and writes no texture at a forced flush.
+                    self.flush_split(Some(super::split::Touch::default()), |_| ());
                 }
             }
             // The kind and the class of the object of the shape records that follow.
@@ -239,7 +272,7 @@ impl Player {
                     self.retained.set_lights(id, &keys, ambient, &self.renderer.lights_known);
                 }
             }
-            tag::INSTANCE_STATE if data.len() >= 8 => self.retained.set_visible(word(data, 0), word(data, 4) != 0),
+            tag::INSTANCE_STATE if data.len() >= 8 => self.retained.view_state(word(data, 0), instance_state_view(data), word(data, 4) != 0),
             tag::INSTANCE_BONES if data.len() >= 24 => {
                 let bound = core::array::from_fn(|i| float(data, 8 + i * 4));
                 self.retained.set_bones(word(data, 0), word(data, 4), bound, &data[24..]);
@@ -279,6 +312,7 @@ impl Player {
             tag::INSTANCE_DELETE if data.len() >= 4 => {
                 self.instance_take(word(data, 0));
                 self.retained_remove(word(data, 0));
+                self.retained.forget_mask(word(data, 0));
             }
             tag::INSTANCE_CENSUS if data.len() >= 4 => self.instance_census(data),
             tag::LIGHT if data.len() >= 108 => {
@@ -372,7 +406,8 @@ impl Player {
                         if let (Some(texture), true) = (texture, pixels.len() >= 20) {
                             // The draws into the texture come first: a write of a texture is
                             // done before the commands that are not sent yet.
-                            self.flush(|player| player.renderer.target_pixels(texture, word(pixels, 0), word(pixels, 4), &pixels[20..]));
+                            let touch = super::split::Touch { reads: Vec::new(), writes: vec![texture] };
+                            self.flush_split(Some(touch), |player| player.renderer.target_pixels(texture, word(pixels, 0), word(pixels, 4), &pixels[20..]));
                         }
                     }
                     CALL_CLEAR if self.drawing() && self.stream.back_buffer => {
@@ -495,7 +530,8 @@ impl Player {
             ],
         });
         renderer.counts.times[TIME_BUFFERS] += clock.elapsed();
-        self.items.push(Item::Screen(ScreenDraw { pipeline, group, buffer, vertices: (list.len() / 10) as u32 }));
+        self.view_table_item();
+        self.items.push(Item::Screen(ScreenDraw { texture, pipeline, group, buffer, vertices: (list.len() / 10) as u32 }));
     }
 
     /// The size of the target that the game draws into.
@@ -667,13 +703,16 @@ impl Player {
             }
             self.instance_take(id);
             self.retained_remove(id);
+            // It lost its delete: its views go as at a delete.
+            self.retained.forget_mask(id);
         }
     }
 
     fn log_orphan(&self, id: u32) {
         let now = self.renderer.counts.frames;
         let (first, last, name) = self.instance_made.get(&id).map_or((now, now, ""), |made| (made.first_frame, made.last_frame, &made.name[..]));
-        let (visible, bound) = self.retained.first_slot_facts(id).unwrap_or((false, [0.0; 4]));
+        let (mask, bound) = self.retained.first_slot_facts(id).unwrap_or((0, [0.0; 4]));
+        let visible = mask & 1 != 0;
         match self.instances.get(&id) {
             Some(r) => println!(
                 "instance census: orphan {id} '{name}': class {}, flags {:#x}, geometry {:#x}, material {:#x}, at {:.1} {:.1} {:.1}, bound {bound:?}, visible {visible}, records from frame {first} to {last}, now {now}; removed",
@@ -847,11 +886,57 @@ impl Player {
         }
     }
 
+    /// The view of the open scene of a view of its own, at its first draw or place.
+    fn note_view_facts(&mut self) {
+        let (view, projection, origin, target_size) = (self.stream.view, self.stream.projection, self.stream.origin, self.size_of_target());
+        self.views.note_facts(|| engine::views::ViewFacts { view, projection, origin, target_size });
+    }
+
+    /// A draw comes in the open scene of a view of its own whose table draws: the table's item
+    /// goes before it, once for the scene (the main view draws its table at its first click).
+    /// Only after the world of the scene began ([`Player::view_world_begun`]): the sky of a
+    /// view of the world camera draws first, and it would cover the table.
+    pub(crate) fn view_table_item(&mut self) {
+        let Some(group) = self.views.open().filter(|&group| self.view_world_begun && self.drawing() && self.table_bit(group).is_some()) else { return };
+        self.note_view_facts();
+        if self.retained.view_tables.queue(group) {
+            self.view_table_at = Some((self.view_scene_draws, self.view_world_why));
+            self.items.push(Item::ViewTable(group));
+        }
+    }
+
+    /// The end of a scene of a view of its own with a table: where its table item went among the
+    /// scene's draws, for the first [`VIEW_TABLE_LINES`] scenes of the run. A draw that began the
+    /// world counts in the draws before the item, which goes before that draw.
+    fn view_table_line(&mut self, group: usize) {
+        let Some(slot) = self.table_bit(group) else { return };
+        if self.view_table_lines >= VIEW_TABLE_LINES {
+            return;
+        }
+        self.view_table_lines += 1;
+        let frame = self.renderer.counts.frames;
+        let into = self.target.map_or_else(|| String::from("the back buffer"), |handle| format!("texture {handle}"));
+        let [draws, sky] = self.view_scene_draws;
+        let place = match self.view_table_at {
+            Some(([before, sky_before], why)) => format!("after {before} of its draws ({sky_before} of the sky), at {why}"),
+            None => String::from("not queued (the stream does not draw)"),
+        };
+        println!("view table: frame {frame}, group {group}, view slot {slot}, into {into}: {place}; the scene had {draws} draws ({sky} of the sky)");
+        if self.view_table_lines == VIEW_TABLE_LINES {
+            println!("view table: the first {VIEW_TABLE_LINES} scenes are logged; no more lines");
+        }
+    }
+
     /// A place of a retained shape in a scene with a view of its own ([`engine::views`]): the
     /// view of the scene at its first place, then the place in its run.
     pub(crate) fn view_place(&mut self, id: u32) {
-        let (view, projection, origin, target_size) = (self.stream.view, self.stream.projection, self.stream.origin, self.size_of_target());
-        self.views.note_facts(|| engine::views::ViewFacts { view, projection, origin, target_size });
+        self.note_view_facts();
+        // The engine walks the sky root first, and the sky's instances have places too: a place of
+        // an instance that is not of the sky is in the world.
+        if crate::retained::place_begins_world(self.instances.get(&id).map(|r| r.class)) {
+            self.begin_view_world("a place of the world");
+        }
+        self.view_table_item();
         let open = self.views.open();
         let adjacent = matches!(self.items.last(), Some(&Item::ViewPlaces(group, _)) if Some(group) == open);
         let known = self.retained.centre_of(id).is_some();
@@ -1145,7 +1230,15 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
-    use super::{orphans_of, scene_record};
+    use super::{instance_state_view, orphans_of, scene_record};
+
+    #[test]
+    fn an_8_byte_instance_state_is_of_the_main_view() {
+        let words = |values: &[u32]| values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        assert_eq!(instance_state_view(&words(&[7, 1])), 0);
+        assert_eq!(instance_state_view(&words(&[7, 1, 5])), 5);
+        assert_eq!(instance_state_view(&words(&[7, 0, 40])), 40);
+    }
 
     /// A made-up record: the ambient light, the flags, then each group of words.
     fn record(flags: u32, words: &[u32], sun: bool) -> Vec<u8> {

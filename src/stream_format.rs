@@ -67,8 +67,10 @@
 /// 0x80000000 in its flags word and the id of its chain in the first word of its matrix
 /// (2026-11-02). A helper of format 3 would draw such a stage with the id as a matrix word. 5: the
 /// decal count of a material record is the whole count, and the maps past the 8 follow its words
-/// (2026-11-02). A helper of format 4 would draw only two decals.
-pub const STREAM_FORMAT: u32 = 5;
+/// (2026-11-02). A helper of format 4 would draw only two decals. 6: an `INSTANCE_STATE` record
+/// of 12 bytes names its view slot ([`HEADER_VIEW_BITS`], 2026-11-03). A helper of format 5
+/// would read it as view 0 and hide a mirror's shape in the main view.
+pub const STREAM_FORMAT: u32 = 6;
 
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
 /// game, the abilities of the stream, the stream format, then the build id of the plugin as
@@ -113,6 +115,11 @@ pub const HEADER_VIEW_PLACES: u32 = 256;
 /// record of 56 bytes), and a slot that retires comes as the frame event
 /// `link::EVENT_VIEW_RETIRE` (`view_slots`).
 pub const HEADER_SCENE_VIEWS: u32 = 512;
+/// A bit of the same word: the plugin keeps one visibility bit for each view (D82 stage 2,
+/// design 3.4c). An `INSTANCE_STATE` record of 12 bytes names its view slot in its third word;
+/// one of 8 bytes is view 0. Under the bit the helper starts a new slot with no view's bit;
+/// without it, with bit 0, as before.
+pub const HEADER_VIEW_BITS: u32 = 1024;
 /// The number of view slots (`view_slots`): one bit of a `u32` mask for each. The view field
 /// of a scene record holds a slot plus 1, so its values are 0 to `VIEW_SLOTS`.
 pub const VIEW_SLOTS: usize = 32;

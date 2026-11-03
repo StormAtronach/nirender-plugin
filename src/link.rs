@@ -130,9 +130,16 @@ pub const EVENT_SWAP: u32 = 3;
 pub const EVENT_WORLD_WALK: u32 = 4;
 /// The engine drew the main sorted queue of the Click (`queue_flush`): the end of its flush.
 pub const EVENT_QUEUE_FLUSHED: u32 = 5;
-/// A view slot had no scene for 60 frames and is free again (`view_slots`): its bit goes from
-/// every instance. a: the slot. At Present, before the frame's end.
+/// A view slot is free again (`view_slots`): its bit goes from every instance. a: the slot. It
+/// comes after the record at which the slot's last items run (a flush's record or `FRAME_END`)
+/// and before the slot's reuse: after `FRAME_END` (60 frames with no scene, a second slot, a
+/// destroyed target), after a flush's record (a second slot, a destroyed target), before the
+/// scene of a key that takes the slot back, and in a target's destructor for a slot whose items
+/// ran.
 pub const EVENT_VIEW_RETIRE: u32 = 6;
+/// Every view slot is open or used since the last flush (`view_slots`): the helper runs the
+/// frame's work so far, as for a read of pixels. a: 0.
+pub const EVENT_FLUSH: u32 = 7;
 
 pub const FACT_LIGHT_RADIUS: u32 = 0;
 pub const FACT_SUN_LIGHT: u32 = 1;

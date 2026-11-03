@@ -80,8 +80,8 @@ impl Player {
             c.queued_places, c.queued_unknown, c.queued_outside, c.queued_not_sorted, c.sorted_without_place, c.sorted_without_place_no_places, c.sorted_without_place_drawn, c.queued_late_places, c.blends_before_clear
         );
         println!(
-            "walk places: {} places of the table's blends in the engine's walk, {} of an instance not known, {} outside a world view, {} after the table's main view; {} blends drawn in place by the engine that had no place, drawn by bucket; {} places whose walk order differs from their bucket order",
-            c.walk_places, c.walk_unknown, c.walk_outside, c.walk_late, self.retained.counts.walk_without_place, self.retained.counts.walk_reordered
+            "walk places: {} places of the table's blends in the engine's walk, {} of an instance not known, {} outside a world view, {} after the table's main view; {} blends drawn in place by the engine that had no place, drawn by bucket; {} places whose walk order differs from their bucket order; {} places of an instance in a second view of its frame",
+            c.walk_places, c.walk_unknown, c.walk_outside, c.walk_late, self.retained.counts.walk_without_place, self.retained.counts.walk_reordered, self.retained.walk.in_two_views
         );
         println!(
             "views of their own: {} views drawn (a save's picture, a mod's camera), {} places drawn in them, {} of an instance with no slot to draw, {} of an instance not known; {} views not drawn because the scene slots were full; {} views of another camera with the last frame's shade",
@@ -106,6 +106,11 @@ impl Player {
         println!(
             "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} hidden, {} skipped waiting for their bones, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
             r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.hidden, r.without_bones, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
+        );
+        println!(
+            "view bits: {}; {} instance states, {} of them of a view other than the main view, {} dropped for a view above 31; {} view slots retired; tables of views of their own: {} drawn, {} with nothing to draw, {} lists taken at a close, {} drawn before their close, {} entries left out for another instance or bucket in their slot",
+            if self.retained.view_bits { "on" } else { "off (one bit, of the main view)" },
+            r.view_states, r.view_states_other, r.view_states_dropped, r.views_retired, r.view_tables_drawn, r.view_tables_empty, r.view_lists, r.view_lists_late, r.view_list_gone
         );
         println!("instance census: {} lists of the plugin, {} instances held here that a list lacked", c.instance_censuses, c.instance_orphans);
         let (entries, entry_stages) = self.retained.effect_entry_counts();
@@ -201,6 +206,10 @@ impl Player {
         println!(
             "rendered textures made {} ({} of them smaller than the game asked: the device's largest side), draws into them {}, copies of pixels into them {}, pixel reads {}",
             c.render_textures, c.render_textures_cut, c.target_draws, c.target_copies, c.pixel_reads
+        );
+        println!(
+            "flushes split {}: texture runs ahead of the back buffer's items {}, held for their kinds {}, held for their textures {}; flushes that ran every item for their operation {}",
+            c.flush_splits, c.flush_runs_ahead, c.flush_runs_held_kind, c.flush_runs_held_textures, c.flush_operation_waits
         );
         println!("map tiles copied {}, tile reads given to the game {}, tiles not copied {}", c.tile_copies, c.tile_reads, c.tiles_lost);
         println!("draws in screen coordinates {}, not drawn {}", c.screen_draws, c.screen_draws_lost);

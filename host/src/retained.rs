@@ -138,6 +138,16 @@ struct Bucket {
     slots: Vec<u32>,
 }
 
+impl Bucket {
+    /// A view of its own draws the bucket at its places, in the order of the stream, and not in
+    /// its table: it blends, or it tests the stencil. A stencil mask works only in the order the
+    /// game gives (Joy of Painting's occlusion tester: its masked objects write the stencil, and
+    /// its screen overlay after them draws where they wrote).
+    fn in_stream_order(&self) -> bool {
+        self.key.blend[0] != 0 || self.key.stencil[0] != 0
+    }
+}
+
 /// One pass of one instance: a record and an instance of the segments.
 struct Slot {
     #[allow(dead_code)]
@@ -159,7 +169,10 @@ struct Slot {
     /// triangle list, one for each strip).
     ranges: Vec<(u32, u32)>,
     base_vertex: i32,
-    visible: bool,
+    /// The views that display the instance, one bit for each view slot (bit 0 the main
+    /// view): the plugin's `INSTANCE_STATE` records set and clear them, and a retired view's
+    /// bit goes from every slot ([`RetainedSet::retire_view`]).
+    mask: u32,
     /// The draw blends and the engine would sort it: the table draws it back to front with
     /// the other sorted blends where the engine flushes its queue.
     sorted: bool,
@@ -223,6 +236,22 @@ pub struct RetainedCounts {
     pub entry_writes: u64,
     /// The chains that came.
     pub chain_records: u64,
+    /// The `INSTANCE_STATE` records taken, those of a view other than the main view, those
+    /// dropped because their view is above 31 (a fault of the stream), and the view slots
+    /// retired.
+    pub view_states: u64,
+    pub view_states_other: u64,
+    pub view_states_dropped: u64,
+    pub views_retired: u64,
+    /// The tables of the views of their own: the lists taken at a close, the entries of a list
+    /// whose slot held another instance or another bucket at the draw, the tables drawn, the
+    /// tables of a view into a texture that drew before its close (a flush in its scene):
+    /// collected then, and the tables with nothing to draw (no scene slot taken).
+    pub view_lists: u64,
+    pub view_list_gone: u64,
+    pub view_tables_drawn: u64,
+    pub view_lists_late: u64,
+    pub view_tables_empty: u64,
     pub turn_seconds: f64,
     pub upload_seconds: f64,
 }
@@ -251,12 +280,13 @@ struct EffectEntry {
 #[derive(Clone, Copy, Default)]
 struct CullEntry {
     bound: [f32; 4],
+    /// [`Slot::mask`]: a view draws the slot when its bit is set ([`RetainedView::bit`]).
+    mask: u32,
     state: u8,
 }
 
 /// The bits of [`CullEntry::state`].
 const CULL_LIVE: u8 = 1;
-const CULL_VISIBLE: u8 = 2;
 const CULL_HELD: u8 = 4;
 const CULL_WITHOUT_BONES: u8 = 8;
 
@@ -264,16 +294,13 @@ impl CullEntry {
     fn of(slot: Option<&Slot>) -> CullEntry {
         let Some(s) = slot else { return CullEntry::default() };
         let mut state = CULL_LIVE;
-        if s.visible {
-            state |= CULL_VISIBLE;
-        }
         if s.held {
             state |= CULL_HELD;
         }
         if s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES {
             state |= CULL_WITHOUT_BONES;
         }
-        CullEntry { bound: s.bound, state }
+        CullEntry { bound: s.bound, mask: s.mask, state }
     }
 }
 
@@ -369,6 +396,21 @@ pub struct RetainedSet {
     /// The engine's words of this frame for the live check, and what it found.
     turn_check_words: Vec<crate::effect_turn::EngineWords>,
     pub turn_checks: crate::effect_turn::TurnChecks,
+    /// The plugin keeps one bit for each view (`HEADER_VIEW_BITS`): a new instance then
+    /// starts displayed in no view, and the state records set its bits. Without it the stream
+    /// has the one bit of the main view, and a new instance starts displayed there.
+    pub view_bits: bool,
+    /// The views retired since the last pass over the slots (`EVENT_VIEW_RETIRE`): their bits
+    /// go from every slot in one pass, before the next record that reads or writes the masks
+    /// ([`RetainedSet::apply_retires`]).
+    pending_retire: u32,
+    /// The views that display each instance, with [`RetainedSet::view_bits`]: kept by id, as
+    /// `keys_of` is, so that an instance made again keeps them also when it has no slot for a
+    /// while (no geometry or no material yet), and a state for an id with no slot is kept.
+    /// Dropped at `INSTANCE_DELETE` ([`RetainedSet::forget_mask`]).
+    masks: HashMap<u32, u32>,
+    /// The tables of the views of their own in the frame (D82 stage 2).
+    pub view_tables: ViewTables,
     pub counts: RetainedCounts,
 }
 
@@ -385,6 +427,10 @@ impl RetainedSet {
             entries_origin: [0.0; 3],
             turn_check_words: Vec::new(),
             turn_checks: Default::default(),
+            view_bits: false,
+            pending_retire: 0,
+            masks: HashMap::new(),
+            view_tables: ViewTables::default(),
             slots: Vec::new(),
             cull: Vec::new(),
             ranges_total: 0,
@@ -857,20 +903,87 @@ impl RetainedSet {
         self.by_id.keys().copied()
     }
 
-    /// Whether the first slot of the instance is visible, and its bound.
-    pub fn first_slot_facts(&self, id: u32) -> Option<(bool, [f32; 4])> {
+    /// The views that display the first slot of the instance ([`Slot::mask`]), and its bound.
+    pub fn first_slot_facts(&self, id: u32) -> Option<(u32, [f32; 4])> {
         let &slot = self.by_id.get(&id)?.first()?;
-        self.slots[slot as usize].as_ref().map(|s| (s.visible, s.bound))
+        self.slots[slot as usize].as_ref().map(|s| (s.mask & !self.pending_retire, s.bound))
     }
 
-    pub fn set_visible(&mut self, id: u32, visible: bool) {
+    /// The mask of a new slot of the instance `id`: the mask that its slots had when the
+    /// instance is made again (the plugin sends its states only when they change); else none
+    /// with [`RetainedSet::view_bits`], and the main view's bit without.
+    fn start_mask(&mut self, id: u32) -> u32 {
+        if !self.view_bits {
+            return 1;
+        }
+        self.apply_retires();
+        self.masks.get(&id).copied().unwrap_or(0)
+    }
+
+    /// The instance `id` is gone (`INSTANCE_DELETE`): its views go with it.
+    pub fn forget_mask(&mut self, id: u32) {
+        self.masks.remove(&id);
+    }
+
+    /// The view `view` (0 to 31) displays the instance, or no longer does.
+    pub fn set_visible(&mut self, id: u32, view: u32, visible: bool) {
+        self.apply_retires();
+        let bit = 1u32 << view;
+        let mask = self.masks.entry(id).or_insert(0);
+        *mask = if visible { *mask | bit } else { *mask & !bit };
         if let Some(slots) = self.by_id.get(&id) {
             for &slot in slots {
                 if let Some(s) = self.slots[slot as usize].as_mut() {
-                    s.visible = visible;
+                    s.mask = if visible { s.mask | bit } else { s.mask & !bit };
                 }
                 self.cull[slot as usize] = CullEntry::of(self.slots[slot as usize].as_ref());
             }
+        }
+    }
+
+    /// The texture handles that the slots pinned, a handle once for each use.
+    pub fn pinned_textures(&self) -> impl Iterator<Item = u32> + '_ {
+        self.slots.iter().flatten().flat_map(|s| s.pinned).filter(|&handle| handle != 0)
+    }
+
+    /// The view slot `view` (0 to 31) is retired: its bit goes from every slot at the next
+    /// [`RetainedSet::apply_retires`], so that the retires of one flush cost one pass.
+    /// Without [`RetainedSet::view_bits`] the one bit is the main view's, and a retire changes
+    /// no mask.
+    pub fn retire_view(&mut self, view: u32) {
+        let Some(bit) = 1u32.checked_shl(view).filter(|_| self.view_bits) else { return };
+        self.pending_retire |= bit;
+        self.counts.views_retired += 1;
+    }
+
+    /// The record `INSTANCE_STATE`: the view `view` displays the instance `id`, or no longer
+    /// does. A view above 31 is a fault of the stream: the record is dropped and counted.
+    pub fn view_state(&mut self, id: u32, view: u32, visible: bool) {
+        if view > 31 {
+            self.counts.view_states_dropped += 1;
+            return;
+        }
+        self.counts.view_states += 1;
+        if view != 0 {
+            self.counts.view_states_other += 1;
+        }
+        self.set_visible(id, view, visible);
+    }
+
+    /// Clears the bits of the retired views in every slot, in one pass.
+    fn apply_retires(&mut self) {
+        let retired = std::mem::take(&mut self.pending_retire);
+        if retired == 0 {
+            return;
+        }
+        for (slot, s) in self.slots.iter_mut().enumerate() {
+            if let Some(s) = s.as_mut().filter(|s| s.mask & retired != 0) {
+                s.mask &= !retired;
+                self.cull[slot] = CullEntry::of(Some(&*s));
+            }
+        }
+        for mask in self.masks.values_mut() {
+            *mask &= !retired;
         }
     }
 
@@ -1066,12 +1179,103 @@ pub enum Sorted {
     Keep,
     /// Draws the kept blends: at the point where the engine flushes its sorted queue.
     Only,
+    /// Draws the slots that do not blend: a view of its own, whose blends draw at their places.
+    Opaque,
+    /// Draws the order that is in the set already: a view's list taken at its close.
+    Ready,
+}
+
+/// The draws of a view of its own that do not blend, taken at the close of its scene (D82, the
+/// design's (d)): a later state, retirement or reuse of the view's bit does not reach them. Each
+/// entry keeps the instance of its slot; an entry whose slot holds another instance at the draw
+/// is left out.
+struct ViewList {
+    entries: Vec<(u64, u32, u32, u32)>,
+    ids: Vec<u32>,
+}
+
+/// The tables of the views of their own in a frame.
+#[derive(Default)]
+pub struct ViewTables {
+    /// The lists taken at the close of a view into a texture, by group.
+    lists: HashMap<usize, ViewList>,
+    /// The groups whose table item is in the frame's items.
+    queued: Vec<usize>,
+    /// The view slots into the back buffer whose table drew in the frame: such a view has a
+    /// group for each scene, and draws at its first.
+    drawn: u32,
+}
+
+/// The view slot whose bit a group's table draws ([`Player::table_bit`]): with the plugin's bits
+/// for each view, and not for a main view. A group of the world camera into the back buffer is
+/// view 0 whatever its root (Isolate Subject): view 0 draws once, through `draw_retained_main`,
+/// and its group draws its places.
+fn table_slot(view_bits: bool, kind: crate::view_kind::ViewKind, view_slot: Option<u32>) -> Option<u32> {
+    view_slot.filter(|_| view_bits && kind != crate::view_kind::ViewKind::Main)
+}
+
+/// A draw begins the world of a view of its own ([`Player::view_table_item`]), by the main
+/// view's rule (`plan::world_draw`): a draw that is not the sky, after a draw of the sky or with
+/// the sky hidden. A stream that marks the walk (`walk_marked`) begins it at the event, except
+/// with the sky hidden.
+pub(crate) fn view_world_begins(sky: bool, sky_hidden: bool, walk_marked: bool, sky_seen: bool) -> bool {
+    !sky && (sky_hidden || (!walk_marked && sky_seen))
+}
+
+/// A place begins the world of a view of its own when its instance is not of the sky: the
+/// engine walks the sky root first, and the sky's instances have places too. `class` is the
+/// class of the instance's record; a place of an instance with no record begins nothing.
+pub(crate) fn place_begins_world(class: Option<u32>) -> bool {
+    class.is_some_and(|class| !crate::engine::scene::sky_class(class))
+}
+
+/// What a place of a view of its own does with one slot of its instance
+/// ([`RetainedSet::view_entries`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PlacePart {
+    /// The extension holds the slot, or it is skinned and has no bones yet.
+    Skip,
+    /// The slot does not blend, and the view's table draws it.
+    Table,
+    Draw,
+}
+
+/// The part of one slot in a place: `blends_only` when the view's table draws the slots that
+/// do not blend; `in_order` when its bucket draws in the stream's order
+/// ([`Bucket::in_stream_order`]: it blends or tests the stencil).
+fn place_part(held: bool, without_bones: bool, in_order: bool, blends_only: bool) -> PlacePart {
+    if held || without_bones {
+        PlacePart::Skip
+    } else if blends_only && !in_order {
+        PlacePart::Table
+    } else {
+        PlacePart::Draw
+    }
+}
+
+impl ViewTables {
+    pub fn frame_start(&mut self) {
+        self.lists.clear();
+        self.queued.clear();
+        self.drawn = 0;
+    }
+
+    /// The group's table item is not queued yet: it is now.
+    pub fn queue(&mut self, group: usize) -> bool {
+        let new = !self.queued.contains(&group);
+        if new {
+            self.queued.push(group);
+        }
+        new
+    }
 }
 
 /// How a view changes the keys and the matrices of the retained draws.
 #[derive(Clone, Copy)]
 pub struct RetainedView {
     pub scene_slot: u32,
+    /// The view slot whose bit of [`Slot::mask`] the view draws: 0 for the main view.
+    pub bit: u32,
     /// The classes the view draws, one bit for each.
     pub classes: u32,
     pub planes: [[f32; 4]; 6],
@@ -1475,11 +1679,13 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
     let mut stages_bound: Option<Rc<wgpu::BindGroup>> = None;
     let mut shared_bound = false;
     let mut frame_bound = false;
-    let order = if view.sorted == Sorted::Only {
-        core::mem::take(&mut set.kept_sorted)
-    } else {
-        set.collect_order(view);
-        core::mem::take(&mut set.order)
+    let order = match view.sorted {
+        Sorted::Only => core::mem::take(&mut set.kept_sorted),
+        Sorted::Ready => core::mem::take(&mut set.order),
+        Sorted::Together | Sorted::Keep | Sorted::Opaque => {
+            set.collect_order(view, true);
+            core::mem::take(&mut set.order)
+        }
     };
     let mut at = 0;
     while at < order.len() {
@@ -1598,14 +1804,24 @@ impl RetainedSet {
     /// Puts the entries of every slot of an instance into `entries` (a run of [`Sorted::Only`]
     /// for a view of its own), in the order of its slots: the slots the extension holds, and a
     /// skinned slot without its bones, are left out.
-    fn view_entries(&self, id: u32, entries: &mut Vec<(u64, u32, u32, u32)>) {
+    /// With `blends_only`, the view's table draws the slots that do not blend and test no
+    /// stencil ([`Sorted::Opaque`]), and its places draw those that do, in the stream's order
+    /// ([`Bucket::in_stream_order`]). True when a slot was left out for the table: the place is
+    /// drawn then, by the table.
+    fn view_entries(&self, id: u32, blends_only: bool, entries: &mut Vec<(u64, u32, u32, u32)>) -> bool {
+        let mut left_to_table = false;
         for &slot in self.by_id.get(&id).map(Vec::as_slice).unwrap_or(&[]) {
             let Some(s) = self.slots[slot as usize].as_ref() else { continue };
-            if s.held || (s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES) {
-                continue;
+            let without_bones = s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES;
+            // Only a place under a table asks for the bucket.
+            let in_order = blends_only && self.buckets[s.bucket as usize].in_stream_order();
+            match place_part(s.held, without_bones, in_order, blends_only) {
+                PlacePart::Skip => {}
+                PlacePart::Table => left_to_table = true,
+                PlacePart::Draw => entries.push((0, s.bucket, 0, slot)),
             }
-            entries.push((0, s.bucket, 0, slot));
         }
+        left_to_table
     }
 
     /// The draws of a view in the order they go to the GPU, into `order`:
@@ -1632,7 +1848,10 @@ impl RetainedSet {
     ///    queue ([`tag::INSTANCE_QUEUED`]) draws at its place, in the engine's order; this
     ///    order is only for the blends without one (`draw_retained_sorted`).
     /// Engine-rules R3, R4, R20 (the skill wgpu-renderer-dev).
-    fn collect_order(&mut self, view: &RetainedView) {
+    fn collect_order(&mut self, view: &RetainedView, test_held: bool) {
+        self.apply_retires();
+        let bit = 1u32 << view.bit;
+        let opaque_only = view.sorted == Sorted::Opaque;
         self.order.clear();
         self.sorted_order.clear();
         self.bucket_depth.clear();
@@ -1644,17 +1863,23 @@ impl RetainedSet {
                 continue;
             }
             let blends = bucket.key.blend[0] != 0;
+            // The table of a view of its own leaves the buckets that draw in the stream's order
+            // to the view's places.
+            if opaque_only && bucket.in_stream_order() {
+                continue;
+            }
             for &slot in &bucket.slots {
                 let cull = &self.cull[slot as usize];
                 if cull.state & CULL_LIVE == 0 {
                     continue;
                 }
-                if cull.state & CULL_VISIBLE == 0 {
+                if cull.mask & bit == 0 {
                     self.counts.hidden += 1;
                     continue;
                 }
-                // The extension draws a held instance (`Extension::claims`).
-                if cull.state & CULL_HELD != 0 {
+                // The extension draws a held instance (`Extension::claims`). A list taken at a
+                // view's close tests it at the draw: the extension holds at the run.
+                if test_held && cull.state & CULL_HELD != 0 {
                     continue;
                 }
                 if cull.state & CULL_WITHOUT_BONES != 0 {
@@ -1707,7 +1932,42 @@ impl RetainedSet {
                 self.kept_sorted.append(&mut self.sorted_order);
                 self.sorted_view = Some(*view);
             }
-            Sorted::Only => {}
+            Sorted::Only | Sorted::Opaque | Sorted::Ready => {}
+        }
+    }
+
+    /// The list of the view `view` ([`Sorted::Opaque`]) at the close of its scene.
+    fn take_view_list(&mut self, view: &RetainedView) -> ViewList {
+        self.collect_order(view, false);
+        let entries = core::mem::take(&mut self.order);
+        let ids = entries.iter().map(|entry| self.slots[entry.3 as usize].as_ref().map_or(u32::MAX, |s| s.id)).collect();
+        ViewList { entries, ids }
+    }
+
+    /// The view of its own of the group `group` closed: its list for the table item. `bit` is its
+    /// view slot; the planes are those of its camera.
+    pub fn close_view(&mut self, group: usize, bit: u32, planes: [[f32; 4]; 6]) {
+        let view = RetainedView { scene_slot: 0, bit, classes: !0, planes, flip_cull: false, force_depth_test: false, target: None, sorted: Sorted::Opaque, samples: 1 };
+        let list = self.take_view_list(&view);
+        self.counts.view_lists += 1;
+        self.view_tables.lists.insert(group, list);
+    }
+
+    /// The entries of a stored list for its draw, into the order: those whose slot still holds
+    /// their instance, and that the extension does not hold.
+    fn order_of_list(&mut self, list: &ViewList) {
+        self.order.clear();
+        for (entry, &id) in list.entries.iter().zip(&list.ids) {
+            match self.slots[entry.3 as usize].as_ref() {
+                // A slot taken again by the same instance can have another bucket (a new
+                // material or class): the entry is stale then.
+                Some(s) if s.id == id && s.bucket == entry.1 => {
+                    if !s.held {
+                        self.order.push(*entry);
+                    }
+                }
+                _ => self.counts.view_list_gone += 1,
+            }
         }
     }
 }
@@ -1797,6 +2057,7 @@ impl Player {
     /// Engine-rules R13 (the skill wgpu-renderer-dev).
     pub(super) fn retained_insert(&mut self, id: u32, r: &Retained) {
         let keys = self.retained.keys_of.get(&id).cloned();
+        let mask = self.retained.start_mask(id);
         self.retained_remove_slots(id);
         let Some((fvf, stride, entries, strips, vertex, index, base_vertex, first_index)) =
             self.renderer.geometries.get(&r.geometry).map(|g| (g.fvf, g.stride, g.entries, g.strips.clone(), g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index))
@@ -1988,7 +2249,7 @@ impl Player {
             let bones_first = if r.flags & INSTANCE_SKINNED != 0 { set.bones_first_of(id, bones_needed) } else { NO_BONES };
             let sorted = crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter);
             let in_place = !sorted && derived.blends.first().is_some_and(|b| b[0] != 0);
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted, in_place, pinned, bones_first, bones_needed, no_lights: derived.no_lights, claim, held: false, uv_base: None, effect_entries });
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, mask, sorted, in_place, pinned, bones_first, bones_needed, no_lights: derived.no_lights, claim, held: false, uv_base: None, effect_entries });
             set.ranges_total += ranges.len();
             set.cull[slot as usize] = CullEntry::of(set.slots[slot as usize].as_ref());
             set.buckets[bucket as usize].slots.push(slot);
@@ -2076,7 +2337,7 @@ impl Player {
             let Some(&first) = slots.first() else { continue };
             let Some(s) = self.retained.slots[first as usize].as_ref() else { continue };
             let Some(claim) = s.claim else { continue };
-            let held = offer && s.visible && in_view(&s.bound, planes) && extension.hold(&claim);
+            let held = offer && s.mask & 1 != 0 && in_view(&s.bound, planes) && extension.hold(&claim);
             if held {
                 let bucket = &self.retained.buckets[s.bucket as usize];
                 let key = bucket.key;
@@ -2175,7 +2436,7 @@ impl Player {
         let held = self.retained_hold(facts, &planes);
         self.begin_pass();
         let Some(pass) = self.pass.as_mut() else { return };
-        let view = RetainedView { scene_slot: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Keep, samples: self.pass_samples };
+        let view = RetainedView { scene_slot: 0, bit: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Keep, samples: self.pass_samples };
         pass.push_debug_group("retained instances");
         draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &view);
         pass.pop_debug_group();
@@ -2376,29 +2637,89 @@ impl Player {
         self.retained.kept_sorted = kept;
     }
 
+    /// The view slot whose bit the table of the group's view draws, with the plugin's bits for
+    /// each view ([`RetainedSet::view_bits`]); else the view draws only its places.
+    pub(super) fn table_bit(&self, group: usize) -> Option<u32> {
+        let g = self.views.group(group)?;
+        table_slot(self.retained.view_bits, g.kind, g.view_slot())
+    }
+
+    /// The table of a view of its own ([`Item::ViewTable`]): its slots that do not blend, by its
+    /// bit, in its planes, through `collect_order`. A view into a texture draws the list taken at
+    /// its close ([`RetainedSet::close_view`]); a view into the back buffer collects it here, at
+    /// its first scene in the frame. A table with nothing to draw takes no scene slot and opens
+    /// no pass: the slots of the frame are few ([`SCENE_SLOTS`]).
+    pub(super) fn draw_view_table(&mut self, group: usize) {
+        if !self.retained_on {
+            return;
+        }
+        let (Some(bit), Some(facts)) = (self.table_bit(group), self.views.group(group).and_then(|g| g.facts)) else { return };
+        let list = self.retained.view_tables.lists.remove(&group);
+        let back_buffer = self.pass_target.is_none();
+        if back_buffer {
+            if self.retained.view_tables.drawn & (1 << bit) != 0 {
+                return;
+            }
+            self.retained.view_tables.drawn |= 1 << bit;
+        }
+        let planes = view_planes(&facts.view, &facts.projection);
+        let mut view = RetainedView { scene_slot: 0, bit, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Opaque, samples: self.pass_samples };
+        match list {
+            Some(list) => self.retained.order_of_list(&list),
+            None => {
+                if !back_buffer {
+                    self.retained.counts.view_lists_late += 1;
+                }
+                self.retained.collect_order(&view, true);
+            }
+        }
+        if self.retained.order.is_empty() {
+            self.retained.counts.view_tables_empty += 1;
+            return;
+        }
+
+        // The scene of the view is written at the slot's take; the order waits outside the set.
+        let order = core::mem::take(&mut self.retained.order);
+        let Some(slot) = self.view_slot(group) else { return };
+        self.retained.order = order;
+        view.scene_slot = slot;
+        view.sorted = Sorted::Ready;
+        self.retained.counts.view_tables_drawn += 1;
+        self.begin_pass();
+        let Some(pass) = self.pass.as_mut() else { return };
+        pass.push_debug_group("retained instances of a view of its own");
+        draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &view);
+        pass.pop_debug_group();
+        self.forget_bound();
+    }
+
     /// Draws the places `ids` of a view of its own ([`Item::ViewPlaces`], [`Item::ViewSorted`]):
     /// every slot of each instance, in the places' order, with the view of the group's scene in
-    /// its own scene slot. The engine displayed each one: no cull. The main view's kept blends
-    /// stay for their item.
+    /// its own scene slot. The engine displayed each one: no cull. When the view's table draws
+    /// ([`Player::table_bit`]), only the slots that blend. The main view's kept blends stay for
+    /// their item.
     pub(super) fn draw_view_run(&mut self, group: usize, ids: &[u32]) {
         if ids.is_empty() || !self.retained_on {
             return;
         }
-        let Some(slot) = self.view_slot(group) else { return };
+        let blends_only = self.table_bit(group).is_some();
         let mut entries = Vec::new();
         for id in ids {
             let before = entries.len();
-            self.retained.view_entries(*id, &mut entries);
+            let left_to_table = self.retained.view_entries(*id, blends_only, &mut entries);
             self.renderer.counts.view_places += 1;
-            if entries.len() == before {
+            if entries.len() == before && !left_to_table {
                 self.renderer.counts.view_places_empty += 1;
             }
         }
+        // A run with nothing to draw takes no scene slot, as an empty table.
         if entries.is_empty() {
             return;
         }
+        let Some(slot) = self.view_slot(group) else { return };
         let view = RetainedView {
             scene_slot: slot,
+            bit: 0,
             classes: !0,
             planes: [[0.0; 4]; 6],
             // The cull of each shape is its own (`material::derive`), in every view.
@@ -2583,6 +2904,256 @@ mod merge_tests {
                 Pick::Engine(3)
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod view_bit_tests {
+    use super::*;
+
+    fn slot(id: u32, mask: u32) -> Slot {
+        Slot {
+            id,
+            geometry: 0,
+            material: 0,
+            class: 0,
+            flags: 0,
+            colours: [0.0; 14],
+            exact: [0.0; 3],
+            world: [0.0; 16],
+            bound: [0.0, 0.0, 0.0, 1.0],
+            bucket: 0,
+            data: bytemuck::Zeroable::zeroed(),
+            ranges: Vec::new(),
+            base_vertex: 0,
+            mask,
+            sorted: false,
+            in_place: false,
+            pinned: [0; STAGES],
+            bones_first: NO_BONES,
+            bones_needed: 0,
+            no_lights: false,
+            claim: None,
+            held: false,
+            uv_base: None,
+            effect_entries: Vec::new(),
+        }
+    }
+
+    /// A slot of the instance `id` with the mask `mask` in the table, as `retained_insert` puts it.
+    fn put(set: &mut RetainedSet, id: u32, mask: u32) {
+        let index = set.slots.len() as u32;
+        set.slots.push(Some(slot(id, mask)));
+        set.cull.push(CullEntry::of(set.slots.last().and_then(Option::as_ref)));
+        set.by_id.entry(id).or_default().push(index);
+    }
+
+    /// The mask of the instance's first slot, and that its cull entry has the same mask.
+    fn mask_of(set: &RetainedSet, id: u32) -> u32 {
+        let slot = set.by_id[&id][0] as usize;
+        let mask = set.slots[slot].as_ref().unwrap().mask;
+        assert_eq!(set.cull[slot].mask, mask, "the cull entry of instance {id} lags its slot");
+        mask
+    }
+
+    #[test]
+    fn two_retires_then_a_state_that_reuses_a_slot_in_the_same_frame() {
+        let mut set = RetainedSet::new();
+        set.view_bits = true;
+        put(&mut set, 7, 1 | 1 << 3 | 1 << 5);
+        put(&mut set, 8, 1 << 3);
+        set.retire_view(3);
+        set.retire_view(5);
+        // The retires wait for one pass, but the facts already leave them out.
+        assert_eq!(set.slots[0].as_ref().unwrap().mask, 1 | 1 << 3 | 1 << 5);
+        assert_eq!(set.first_slot_facts(7).unwrap().0, 1);
+        // Slot 3 is used again: its state comes after its retire in the stream.
+        set.view_state(7, 3, true);
+        assert_eq!(set.pending_retire, 0);
+        assert_eq!(mask_of(&set, 7), 1 | 1 << 3);
+        assert_eq!(mask_of(&set, 8), 0);
+        assert_eq!((set.counts.views_retired, set.counts.view_states, set.counts.view_states_other), (2, 1, 1));
+    }
+
+    #[test]
+    fn a_new_instance_starts_in_no_view_with_view_bits_and_in_the_main_view_without() {
+        let mut set = RetainedSet::new();
+        assert_eq!(set.start_mask(9), 1);
+        set.view_bits = true;
+        assert_eq!(set.start_mask(9), 0);
+    }
+
+    #[test]
+    fn an_instance_made_again_keeps_its_mask_less_the_retired_views() {
+        let mut set = RetainedSet::new();
+        set.view_bits = true;
+        put(&mut set, 7, 0);
+        set.view_state(7, 2, true);
+        set.view_state(7, 4, true);
+        assert_eq!(mask_of(&set, 7), 1 << 2 | 1 << 4);
+        set.retire_view(4);
+        assert_eq!(set.start_mask(7), 1 << 2);
+        // Without view bits a made-again instance starts in the main view, as before.
+        set.view_bits = false;
+        assert_eq!(set.start_mask(7), 1);
+    }
+
+    #[test]
+    fn a_retire_without_view_bits_changes_no_mask() {
+        let mut set = RetainedSet::new();
+        put(&mut set, 7, 1);
+        set.retire_view(0);
+        set.apply_retires();
+        assert_eq!(mask_of(&set, 7), 1);
+        assert_eq!(set.counts.views_retired, 0);
+    }
+
+    /// A list of the slots `slots`, as `take_view_list` stores it.
+    fn list_of(set: &RetainedSet, slots: &[u32]) -> ViewList {
+        let entries: Vec<(u64, u32, u32, u32)> = slots.iter().map(|&slot| (u64::from(slot), 0, 0, slot)).collect();
+        let ids = slots.iter().map(|&slot| set.slots[slot as usize].as_ref().unwrap().id).collect();
+        ViewList { entries, ids }
+    }
+
+    #[test]
+    fn a_stored_list_keeps_its_entries_after_a_retire_and_a_reuse_of_its_bit() {
+        let mut set = RetainedSet::new();
+        set.view_bits = true;
+        put(&mut set, 7, 1 << 3);
+        put(&mut set, 8, 1 << 3);
+        let list = list_of(&set, &[0, 1]);
+        // After the close: slot 3 retires and a new key takes it, with another set.
+        set.retire_view(3);
+        set.view_state(8, 3, true);
+        assert_eq!((mask_of(&set, 7), mask_of(&set, 8)), (0, 1 << 3));
+        set.order_of_list(&list);
+        assert_eq!(set.order.iter().map(|entry| entry.3).collect::<Vec<_>>(), [0, 1]);
+    }
+
+    #[test]
+    fn a_stored_entry_of_a_slot_now_of_another_instance_or_held_is_left_out() {
+        let mut set = RetainedSet::new();
+        put(&mut set, 7, 1);
+        put(&mut set, 8, 1);
+        put(&mut set, 9, 1);
+        let list = list_of(&set, &[0, 1, 2]);
+        // Slot 0 holds another instance now, slot 1 is free, and the extension holds slot 2.
+        set.slots[0] = Some(slot(70, 1));
+        set.slots[1] = None;
+        set.slots[2].as_mut().unwrap().held = true;
+        set.order_of_list(&list);
+        assert!(set.order.is_empty());
+        assert_eq!(set.counts.view_list_gone, 2);
+    }
+
+    #[test]
+    fn the_mask_of_an_instance_with_no_slot_is_kept_by_its_id() {
+        let mut set = RetainedSet::new();
+        set.view_bits = true;
+        // A state for an id with no slot yet (no geometry), and a re-make that found none.
+        set.view_state(7, 0, true);
+        set.view_state(7, 2, true);
+        assert_eq!(set.start_mask(7), 1 | 1 << 2);
+        // A retirement reaches the kept mask too.
+        set.retire_view(2);
+        assert_eq!(set.start_mask(7), 1);
+        // The slots made then start with it, and the instance's end drops it.
+        let start = set.start_mask(7);
+        put(&mut set, 7, start);
+        assert_eq!(mask_of(&set, 7), 1);
+        set.forget_mask(7);
+        assert_eq!(set.start_mask(7), 0);
+    }
+
+    #[test]
+    fn a_main_view_group_has_no_table() {
+        use crate::view_kind::ViewKind;
+        assert_eq!(table_slot(true, ViewKind::Main, Some(0)), None);
+        assert_eq!(table_slot(true, ViewKind::Picture, Some(4)), Some(4));
+        assert_eq!(table_slot(true, ViewKind::Picture, None), None);
+        assert_eq!(table_slot(false, ViewKind::Picture, Some(4)), None);
+    }
+
+    #[test]
+    fn the_world_of_a_view_begins_after_the_sky() {
+        // The arguments: sky, sky hidden, walk marked, sky seen.
+        // The sky's own draws and a draw before them (the lines of the cell borders) begin nothing.
+        assert!(!view_world_begins(true, false, false, false));
+        assert!(!view_world_begins(false, false, false, false));
+        assert!(!view_world_begins(true, false, false, true));
+        // The first draw after the sky, in a stream without the walk event.
+        assert!(view_world_begins(false, false, false, true));
+        // With the event, the draws begin nothing: the event does.
+        assert!(!view_world_begins(false, false, true, true));
+        // With the sky hidden there is no sky draw: the first draw.
+        assert!(view_world_begins(false, true, true, false));
+        assert!(view_world_begins(false, true, false, false));
+    }
+
+    #[test]
+    fn a_place_of_the_sky_does_not_begin_the_world_of_a_view() {
+        use crate::engine::scene::{CLASS_SKY_DOME, CLASS_SKY_FIRST, CLASS_SKY_LAST};
+        // The sky's instances have places, walked before the world.
+        assert!(!place_begins_world(Some(CLASS_SKY_DOME)));
+        assert!(!place_begins_world(Some(CLASS_SKY_FIRST)));
+        assert!(!place_begins_world(Some(CLASS_SKY_LAST)));
+        // A place of the world, and one of an instance with no record.
+        assert!(place_begins_world(Some(CLASS_SKY_LAST + 1)));
+        assert!(place_begins_world(Some(0)));
+        assert!(!place_begins_world(None));
+    }
+
+    #[test]
+    fn a_place_under_a_table_leaves_a_slot_that_does_not_blend_to_the_table() {
+        use PlacePart::{Draw, Skip, Table};
+        // The arguments: held, without bones, in the stream's order (it blends or tests the
+        // stencil), blends only.
+        assert_eq!(place_part(false, false, false, true), Table);
+        assert_eq!(place_part(false, false, true, true), Draw);
+        // Without a table a place draws every slot.
+        assert_eq!(place_part(false, false, false, false), Draw);
+        // A held slot and a skinned slot without its bones draw in no place.
+        assert_eq!(place_part(true, false, true, true), Skip);
+        assert_eq!(place_part(false, true, false, true), Skip);
+        assert_eq!(place_part(true, false, false, false), Skip);
+    }
+
+    #[test]
+    fn a_stored_entry_of_a_slot_remade_into_another_bucket_is_left_out() {
+        let mut set = RetainedSet::new();
+        put(&mut set, 7, 1);
+        let list = list_of(&set, &[0]);
+        // The same instance takes the same slot again, with another material: another bucket.
+        set.slots[0].as_mut().unwrap().bucket = 3;
+        set.order_of_list(&list);
+        assert!(set.order.is_empty());
+        assert_eq!(set.counts.view_list_gone, 1);
+    }
+
+    #[test]
+    fn the_table_item_of_a_group_is_queued_once_a_frame() {
+        let mut tables = ViewTables::default();
+        assert!(tables.queue(2));
+        assert!(!tables.queue(2));
+        assert!(tables.queue(3));
+        tables.drawn = 1 << 4;
+        tables.frame_start();
+        assert!(tables.queue(2));
+        assert_eq!(tables.drawn, 0);
+    }
+
+    #[test]
+    fn a_state_of_a_view_above_31_is_dropped_and_counted() {
+        let mut set = RetainedSet::new();
+        set.view_bits = true;
+        put(&mut set, 7, 1);
+        set.view_state(7, 32, true);
+        set.view_state(7, u32::MAX, false);
+        assert_eq!(mask_of(&set, 7), 1);
+        assert_eq!((set.counts.view_states_dropped, set.counts.view_states), (2, 0));
+        set.view_state(7, 31, true);
+        set.view_state(7, 0, false);
+        assert_eq!(mask_of(&set, 7), 1 << 31);
     }
 }
 
@@ -2953,7 +3524,7 @@ impl Replayer<'_> {
         scene.clip_plane = view.clip_plane.map_or([0.0; 4], |p| self.retained.plane_of(p));
         self.renderer.write_scene(slot, &scene);
         let planes = view_planes(&absolute, &scene.projection);
-        let retained_view = RetainedView { scene_slot: slot, classes: view.classes, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None, sorted: Sorted::Together, samples: view.samples };
+        let retained_view = RetainedView { scene_slot: slot, bit: 0, classes: view.classes, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None, sorted: Sorted::Together, samples: view.samples };
         draw_retained(pass, self.renderer, self.retained, self.args, &retained_view);
     }
 }

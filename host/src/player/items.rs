@@ -27,6 +27,15 @@ impl Player {
         self.renderer.counts.times[TIME_ITEMS] += clock.elapsed().saturating_sub(inside_after - inside_before);
     }
 
+    /// The world's start: the origin of the instances follows its camera, and the texture
+    /// effects under a turning billboard turn for that camera.
+    pub(crate) fn prepare_world(&mut self, facts: &WorldFacts) {
+        self.retained.rebase(facts.origin, &self.renderer.lights_known);
+        let began = std::time::Instant::now();
+        self.retained.turn_effects(&crate::effect_turn::Camera::of_view(&facts.view, facts.eye()));
+        self.retained.counts.turn_seconds += began.elapsed().as_secs_f64();
+    }
+
     pub(crate) fn run_items_inner(&mut self, items: Vec<Item>) {
         self.plane_ahead = self.parameters.as_ref().and_then(|p| p.class_plane).filter(|(class, _)| items.iter().any(|item| matches!(item, Item::Replace(c, ..) if c == class))).map(|(_, plane)| plane);
         // The origin of the instances follows the camera of the world of the frame.
@@ -34,15 +43,11 @@ impl Player {
             Item::WorldStart(facts) => Some(facts.origin),
             _ => None,
         });
-        if let Some(origin) = world_origin {
-            self.retained.rebase(origin, &self.renderer.lights_known);
-        }
-        // The texture effects under a turning billboard, for the camera of the world.
+        // A split flush did these already when a texture run went ahead of the world's start.
         if let Some(facts) = items.iter().find_map(|item| if let Item::WorldStart(facts) = item { Some(facts) } else { None }) {
-            let location = facts.eye();
-            let began = std::time::Instant::now();
-            self.retained.turn_effects(&crate::effect_turn::Camera::of_view(&facts.view, location));
-            self.retained.counts.turn_seconds += began.elapsed().as_secs_f64();
+            if !std::mem::take(&mut self.world_prepared) {
+                self.prepare_world(facts);
+            }
         }
         let began = std::time::Instant::now();
         let segment = self.renderer.retained_records;
@@ -128,7 +133,7 @@ impl Player {
                 Item::Draw(_) | Item::Screen(_) if world_started => Some("game: draws in the world"),
                 Item::Draw(_) | Item::Screen(_) => Some("game: before the world (sky)"),
                 Item::WalkPlaces(_) => Some(MAIN_VIEW_WALK),
-                Item::ViewPlaces(group, _) | Item::ViewSorted(group) => Some(self.view_group_name(*group)),
+                Item::ViewPlaces(group, _) | Item::ViewSorted(group) | Item::ViewTable(group) => Some(self.view_group_name(*group)),
                 Item::SortedBlends(_) => Some(MAIN_VIEW_SORTED),
                 Item::MainView(_) => Some(MAIN_VIEW_OPAQUE),
                 Item::Replace(..) => Some("a class of draws (extension: water)"),
@@ -173,6 +178,7 @@ impl Player {
                         Item::WalkPlaces(_) => "walk-places",
                         Item::ViewPlaces(..) => "view-places",
                         Item::ViewSorted(_) => "view-sorted",
+                        Item::ViewTable(_) => "view-table",
                         Item::HeldHere(..) => "held",
                         Item::Replace(..) => "replace",
                         Item::Post(_) => "post",
@@ -217,6 +223,7 @@ impl Player {
                     let ids = self.views.take_run(group, run);
                     self.timed(self.view_group_name(group), ids.len() as u64, |player| player.draw_view_run(group, &ids));
                 }
+                Item::ViewTable(group) => self.timed(self.view_group_name(group), 0, |player| player.draw_view_table(group)),
                 Item::ViewSorted(group) => {
                     let ids = self.views.take_sorted(group);
                     self.timed(self.view_group_name(group), ids.len() as u64, |player| player.draw_view_run(group, &ids));

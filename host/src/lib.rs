@@ -239,6 +239,8 @@ impl PendingPass {
 
 /// A draw with its vertices in the record, ready for the pass.
 struct ScreenDraw {
+    /// The handle of the texture it samples.
+    texture: u32,
     pipeline: wgpu::RenderPipeline,
     group: wgpu::BindGroup,
     buffer: wgpu::Buffer,
@@ -267,6 +269,9 @@ enum Item {
     ViewPlaces(usize, usize),
     /// The places of a view of its own in the flush of the engine's queue: the group.
     ViewSorted(usize),
+    /// The table of a view of its own, at the first draw of its scene: the group
+    /// (`Player::draw_view_table`).
+    ViewTable(usize),
     /// The extension draws in place of the draws of this class. The number of world draws
     /// before this item: those after it are not in the picture yet.
     Replace(u32, Box<WorldFacts>, usize),
@@ -314,6 +319,10 @@ struct Retained {
 /// cluster of its pixel (`MGE_XE_LIGHTS=world`, `world_lights_here` in the shader). A lit
 /// draw of the world of the stream and a retained slot with lights have it.
 pub(crate) const WORLD_LIGHTS_BIT: u32 = 32;
+
+/// The lines `view table: ...` of a run: one at the end of each scene of a view of its own with
+/// a table, for the first ones only.
+pub(crate) const VIEW_TABLE_LINES: u32 = 64;
 
 /// Bit 16 of `light_range[3]` for a material with flat shading (NiShadeProperty off): the
 /// shader takes the lit colour and the normal of the first vertex of each triangle, as
@@ -917,6 +926,22 @@ struct Player {
     /// frame: before the call the world draws that blend and write no depth are drawn only
     /// on its far side, and after it (`split`) only on the side of the camera.
     plane_ahead: Option<[f64; 4]>,
+    /// A split flush did the world's start's [`Player::prepare_world`] before a texture run
+    /// that went ahead of it: the run of the held world start does not do it again.
+    world_prepared: bool,
+    /// The scene in progress: its world began (the walk of the world camera's root left the sky
+    /// root, its first draw after the sky, or its first place), and a draw of the sky came in
+    /// it. The table of a view of its own goes at that start, as the main view's world does,
+    /// or the sky draws over it ([`Player::view_table_item`]).
+    view_world_begun: bool,
+    view_sky_seen: bool,
+    /// The scene in progress: why its world began, its draws so far (all of them and those of
+    /// the sky), and its table item's place (the draws before it and the reason), for the
+    /// line of the scene's end (`view table: ...`, the first [`VIEW_TABLE_LINES`]).
+    view_world_why: &'static str,
+    view_scene_draws: [u32; 2],
+    view_table_at: Option<([u32; 2], &'static str)>,
+    view_table_lines: u32,
     split: Option<[f64; 4]>,
     /// The post-processing of this frame is in the items.
     posted: bool,

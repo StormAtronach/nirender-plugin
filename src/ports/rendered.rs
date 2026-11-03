@@ -621,6 +621,16 @@ pub unsafe fn rendered_texture_data_create(texture: usize, renderer: usize) -> u
 /// the call.
 pub unsafe fn rendered_texture_data_dtor(this: usize) {
     crate::shadow::touch(&rendered_texture_data_dtor_port::STATE);
+    // The views into the texture free their slots (`view_slots`, rule 3).
+    let texture: usize = rd(this, RTD::vtbl_sgTexture);
+    if texture != 0 {
+        match crate::main_thread::MainThread::here() {
+            Some(t) => crate::instance_stream::view_target_destroyed(&t, texture),
+            None => {
+                crate::instance_stream::VIEW_TARGETS_OFF_MAIN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
     wr::<usize>(this, RTD::vtbl_vtbl, VTBL_RENDERED_TEXTURE_DATA);
     if rd::<usize>(this, RTD::target) != 0 {
         let renderer: usize = rd(this, RTD::renderer);

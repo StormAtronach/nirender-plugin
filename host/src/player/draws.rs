@@ -151,6 +151,18 @@ impl Player {
         for step in self.plan_now().world_walk(extension, in_back_buffer) {
             self.plan_step(step);
         }
+        // The world of a view of its own begins here too, in a texture as in the back buffer.
+        self.begin_view_world("the walk event");
+        self.view_table_item();
+    }
+
+    /// The world of the scene in progress begins ([`Player::view_world_begun`]); `why` goes into
+    /// its line `view table: ...`.
+    pub(crate) fn begin_view_world(&mut self, why: &'static str) {
+        if !self.view_world_begun {
+            self.view_world_begun = true;
+            self.view_world_why = why;
+        }
     }
 
     /// The end of the flush of the engine's main sorted queue ([`EVENT_QUEUE_FLUSHED`]): the
@@ -234,6 +246,15 @@ impl Player {
         let sky = scene::sky_class(self.stream.object_class);
         let (extension, sky_hidden, walk_marked) = (self.extension.is_some(), self.stream.sky_hidden, self.stream.world_walk);
         let (steps, hold) = self.plan_now().world_draw(extension, in_back_buffer, sky, sky_hidden, walk_marked);
+        // The world of a view of its own, by the main view's rule: the first draw after the
+        // sky, or the first draw with the sky hidden; a stream that marks the walk starts it at
+        // the event (`world_walk`).
+        self.view_scene_draws[0] += 1;
+        self.view_scene_draws[1] += u32::from(sky);
+        if crate::retained::view_world_begins(sky, sky_hidden, walk_marked, self.view_sky_seen) {
+            self.begin_view_world(if sky_hidden { "a draw with the sky hidden" } else { "the first draw after the sky" });
+        }
+        self.view_sky_seen |= sky;
         for step in steps {
             self.plan_step(step);
         }
@@ -425,6 +446,7 @@ impl Player {
             let centre = self.stream.sort_centre(&draw.data.world[0], draw.origin);
             self.wait_for_sorted(centre, crate::Waiting::Draw(draw));
         } else {
+            self.view_table_item();
             self.items.push(Item::Draw(draw));
         }
     }

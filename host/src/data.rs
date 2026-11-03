@@ -64,9 +64,14 @@ pub(crate) const EVENT_WORLD_WALK: u32 = 4;
 /// The engine drew the main sorted queue of the Click: the end of its flush (the plugin's
 /// `queue_flush`; the header bit [`HEADER_QUEUE_FLUSH`](crate::stream_format::HEADER_QUEUE_FLUSH)).
 pub(crate) const EVENT_QUEUE_FLUSHED: u32 = 5;
-/// A view slot retired at the Present (the second word: the slot; the plugin's `view_slots`;
-/// the header bit [`HEADER_SCENE_VIEWS`](crate::stream_format::HEADER_SCENE_VIEWS)).
+/// A view slot is free again (the second word: the slot; the plugin's `view_slots`; the header
+/// bit [`HEADER_SCENE_VIEWS`](crate::stream_format::HEADER_SCENE_VIEWS)). It comes after the
+/// record at which the slot's last items run (a flush's record or `FRAME_END`) and before the
+/// slot's reuse.
 pub(crate) const EVENT_VIEW_RETIRE: u32 = 6;
+/// Every view slot of the plugin is open or used since the last flush: the frame's work so far
+/// runs, as for a read of pixels (the plugin's `view_slots`).
+pub(crate) const EVENT_FLUSH: u32 = 7;
 /// A flag of the scene record: the renderer's target at `BeginPaint` is the back buffer.
 pub(crate) const SCENE_BACK_BUFFER: u32 = 0x8;
 /// A flag of the scene record: the game draws the world in wireframe (its shared wireframe
@@ -397,6 +402,14 @@ pub(crate) struct Counts {
     /// The sizes asked for of those textures, each once: the log names a size the first time.
     pub(crate) render_texture_cut_sizes: Vec<(u32, u32)>,
     pub(crate) pixel_reads: u32,
+    /// The flushes split (`player/split.rs`): the texture runs that went ahead of the
+    /// back buffer's items, those held for their kinds, those held for their textures, and the
+    /// flushes that ran every item because a held item had to come before their operation.
+    pub(crate) flush_splits: u32,
+    pub(crate) flush_runs_ahead: u32,
+    pub(crate) flush_runs_held_kind: u32,
+    pub(crate) flush_runs_held_textures: u32,
+    pub(crate) flush_operation_waits: u32,
     /// The map tiles copied, the tile reads given to the game, and the tiles not copied.
     pub(crate) tile_copies: u32,
     pub(crate) tile_reads: u32,

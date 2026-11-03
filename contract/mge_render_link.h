@@ -241,10 +241,16 @@
 // The engine drew the main sorted queue of the Click: the end of its flush (MWSE's event
 // MWSE_NATIVE_EVENT_ACCUMULATOR_FINISHED). a: 0. b: 0. (nirender src/queue_flush.rs)
 #define MGE_LINK_EVENT_QUEUE_FLUSHED 5u
-// A view slot had no scene for 60 frames and is free again: its bit goes from every
-// instance. a: the slot. b: 0. At Present, before the frame's end. (nirender
-// src/view_slots.rs)
+// A view slot is free again: its bit goes from every instance. a: the slot. b: 0. It comes after
+// the record at which the slot's last items run (a flush's record or FRAME_END) and before the
+// slot's reuse: after FRAME_END (60 frames with no scene, a second slot, a destroyed target),
+// after a flush's record (a second slot, a destroyed target), before the scene of a key that
+// takes the slot back, and in a target's destructor for a slot whose items ran.
+// (nirender src/view_slots.rs)
 #define MGE_LINK_EVENT_VIEW_RETIRE 6u
+// Every view slot is open or used since the last flush: the host runs the frame's work so far,
+// as for a read of pixels. a: 0. b: 0. (nirender src/view_slots.rs)
+#define MGE_LINK_EVENT_FLUSH 7u
 
 // Facts that the host can compare. They are the indexes of `MgeLinkCountersV1::facts`.
 #define MGE_LINK_FACT_LIGHT_RADIUS 0u
