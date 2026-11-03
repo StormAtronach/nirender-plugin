@@ -301,7 +301,20 @@ pub(crate) struct RenderTexture {
     pub(crate) texture: wgpu::Texture,
     pub(crate) view: Rc<wgpu::TextureView>,
     pub(crate) depth: Rc<wgpu::TextureView>,
+    /// The size of the texture: `asked`, each side cut to the device's largest
+    /// ([`crate::picture::target_size`]).
     pub(crate) size: (u32, u32),
+    /// The size that the game asked for. The game's viewports, screen coordinates, pixel
+    /// copies and reads are in it.
+    pub(crate) asked: (u32, u32),
+}
+
+impl RenderTexture {
+    /// The size of a pixel of the game's size in pixels of the texture: 1 on each side when
+    /// the texture has the size that the game asked for.
+    pub(crate) fn scale(&self) -> (f32, f32) {
+        (self.size.0 as f32 / self.asked.0 as f32, self.size.1 as f32 / self.asked.1 as f32)
+    }
 }
 
 #[derive(Default)]
@@ -375,6 +388,11 @@ pub(crate) struct Counts {
     pub(crate) textures: u32,
     pub(crate) texture_updates: u32,
     pub(crate) render_textures: u32,
+    /// The rendered textures made smaller than the game asked: the device has no texture of
+    /// that size ([`crate::picture::target_size`]).
+    pub(crate) render_textures_cut: u32,
+    /// The sizes asked for of those textures, each once: the log names a size the first time.
+    pub(crate) render_texture_cut_sizes: Vec<(u32, u32)>,
     pub(crate) pixel_reads: u32,
     /// The map tiles copied, the tile reads given to the game, and the tiles not copied.
     pub(crate) tile_copies: u32,

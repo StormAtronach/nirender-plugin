@@ -106,6 +106,7 @@ impl Player {
             wants_texture: false,
             pass_target: None,
             target_size: (0, 0),
+            target_scale: (1.0, 1.0),
             viewport: None,
             before: None,
             before_kept: false,
@@ -156,6 +157,7 @@ impl Player {
         let rendered = self.pass_target.and_then(|handle| self.renderer.targets.get(&handle));
         // A texture that the game draws into has one sample; the targets of the frame have
         // `Renderer::samples`, and the pass resolves its colour into the back buffer.
+        let scale = rendered.map_or((1.0, 1.0), RenderTexture::scale);
         let views = match rendered {
             Some(texture) => Some((texture.view.clone(), texture.depth.clone(), texture.size, None, 1)),
             None => self.color.clone().zip(self.depth.clone()).map(|(color, depth)| (color, depth, self.frame_size, self.back_view.clone(), self.renderer.samples)),
@@ -168,6 +170,7 @@ impl Player {
         self.close_pass();
         let (Some((color, depth, size, resolve, samples)), true) = (views, self.encoder.is_some()) else { return };
         self.target_size = size;
+        self.target_scale = scale;
         self.pass_samples = samples;
         self.pending = Some(PendingPass {
             color,
@@ -287,9 +290,13 @@ impl Player {
         self.pass_arrays = None;
     }
 
-    /// Gives the viewport of the stream to the pass, cut to the size of the targets.
+    /// Gives the viewport of the stream to the pass, cut to the size of the targets. The
+    /// stream's viewport is in the size that the game asked for; a texture made smaller takes it
+    /// scaled.
     pub(crate) fn apply_viewport(&mut self) {
         let (Some(pass), Some((rectangle, range))) = (self.pass.as_mut(), self.viewport) else { return };
+        let (sx, sy) = self.target_scale;
+        let rectangle = [rectangle[0] * sx, rectangle[1] * sy, rectangle[2] * sx, rectangle[3] * sy];
         let (width, height) = (self.target_size.0 as f32, self.target_size.1 as f32);
         let (x, y) = (rectangle[0].min(width - 1.0).max(0.0), rectangle[1].min(height - 1.0).max(0.0));
         let (w, h) = (rectangle[2].min(width - x), rectangle[3].min(height - y));
@@ -456,11 +463,15 @@ impl Player {
     }
 
     /// The pixels of a rendered texture, or of the back buffer with the handle 0: the width,
-    /// the height and 4 bytes for each pixel, blue first.
+    /// the height and 4 bytes for each pixel, blue first. A rendered texture gives them at the
+    /// size that the game asked for, also when the texture is smaller ([`target_size`]).
     pub(crate) fn read_pixels(&mut self, handle: u32) -> Option<(u32, u32, Vec<u8>)> {
-        let texture = match handle {
-            0 => self.back_buffer.clone()?,
-            _ => self.renderer.targets.get(&handle)?.texture.clone(),
+        let (texture, asked) = match handle {
+            0 => (self.back_buffer.clone()?, None),
+            _ => {
+                let target = self.renderer.targets.get(&handle)?;
+                (target.texture.clone(), Some(target.asked).filter(|&asked| asked != target.size))
+            }
         };
         if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
             return None;
@@ -492,7 +503,10 @@ impl Player {
                 }
             }
             player.renderer.counts.pixel_reads += 1;
-            Some((width, height, pixels))
+            match asked {
+                Some(asked) => Some((asked.0, asked.1, resample_nearest(&pixels, (width, height), asked))),
+                None => Some((width, height, pixels)),
+            }
         })
     }
 

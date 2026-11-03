@@ -3,6 +3,34 @@
 
 use super::*;
 
+/// The size of a texture that the game draws into: each side the size that the game asked
+/// for, cut to `largest`, the device's largest side of a 2D texture. A larger texture is an
+/// error of the device, and each submission whose commands use it is lost whole, the frame's
+/// other draws with it. The game samples the texture from 0 to 1, so a smaller texture keeps
+/// the picture; each side is cut on its own, which keeps the most pixels.
+pub(crate) fn target_size(asked: (u32, u32), largest: u32) -> (u32, u32) {
+    let largest = largest.max(1);
+    (asked.0.clamp(1, largest), asked.1.clamp(1, largest))
+}
+
+/// `pixels` (4 bytes for each pixel, the first row at the top) of a picture of the size `from`,
+/// as a picture of the size `to`: each pixel of `to` takes the nearest pixel of `from`. For a
+/// texture made smaller than the game asked ([`target_size`]): the game's pixels go in, and the
+/// texture's pixels come back out, each at the other size.
+pub(crate) fn resample_nearest(pixels: &[u8], from: (u32, u32), to: (u32, u32)) -> Vec<u8> {
+    let (from_width, from_height) = (from.0 as usize, from.1 as usize);
+    let (to_width, to_height) = (to.0 as usize, to.1 as usize);
+    let mut out = Vec::with_capacity(to_width * to_height * 4);
+    for y in 0..to_height {
+        let source_row = y * from_height / to_height.max(1);
+        for x in 0..to_width {
+            let source = (source_row * from_width + x * from_width / to_width.max(1)) * 4;
+            out.extend_from_slice(&pixels[source..source + 4]);
+        }
+    }
+    out
+}
+
 pub(crate) fn target_texture(device: &wgpu::Device, width: u32, height: u32, format: wgpu::TextureFormat, usage: wgpu::TextureUsages) -> wgpu::Texture {
     multisampled_texture(device, width, height, format, usage, 1)
 }
@@ -139,4 +167,34 @@ pub(crate) fn write_picture(path: &str, pixels: &[u8], width: u32, height: u32) 
         }
     }
     file.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resample_nearest, target_size};
+
+    #[test]
+    fn a_target_side_over_the_largest_is_cut_on_its_own() {
+        assert_eq!(target_size((16384, 1024), 2048), (2048, 1024));
+        assert_eq!(target_size((4096, 4096), 2048), (2048, 2048));
+        assert_eq!(target_size((512, 512), 2048), (512, 512));
+        assert_eq!(target_size((0, 3), 2048), (1, 3));
+        assert_eq!(target_size((2048, 2049), 2048), (2048, 2048));
+    }
+
+    /// A pixel with its column and row in its bytes.
+    fn grid(width: u32, height: u32) -> Vec<u8> {
+        (0..height).flat_map(|y| (0..width).flat_map(move |x| [x as u8, y as u8, 0, 255])).collect()
+    }
+
+    #[test]
+    fn nearest_resampling_takes_the_nearest_pixel_both_ways() {
+        let big = grid(4, 2);
+        let small = resample_nearest(&big, (4, 2), (2, 1));
+        assert_eq!(small, vec![0, 0, 0, 255, 2, 0, 0, 255]);
+        let back = resample_nearest(&small, (2, 1), (4, 2));
+        assert_eq!(back.len(), big.len());
+        assert_eq!(back.chunks_exact(4).map(|p| p[0]).collect::<Vec<_>>(), vec![0, 0, 2, 2, 0, 0, 2, 2]);
+        assert_eq!(resample_nearest(&big, (4, 2), (4, 2)), big);
+    }
 }

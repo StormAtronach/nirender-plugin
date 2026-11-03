@@ -440,7 +440,7 @@ impl Player {
             }
         }
         let count = vertices.len() / stride;
-        let size = self.size_of_target();
+        let size = self.asked_size_of_target();
         let (width, height) = (size.0 as f32, size.1 as f32);
         // The centre of a pixel is at a whole number in Direct3D 8, and at a half here.
         let vertex = |i: usize| -> [f32; 10] {
@@ -488,6 +488,13 @@ impl Player {
     /// The size of the target that the game draws into.
     pub(crate) fn size_of_target(&self) -> (u32, u32) {
         self.target.and_then(|handle| self.renderer.targets.get(&handle)).map_or(self.frame_size, |texture| texture.size)
+    }
+
+    /// The size that the game asked for of the target that it draws into: the size of its
+    /// screen coordinates. It differs from [`Player::size_of_target`] for a texture made smaller
+    /// ([`target_size`]).
+    pub(crate) fn asked_size_of_target(&self) -> (u32, u32) {
+        self.target.and_then(|handle| self.renderer.targets.get(&handle)).map_or(self.frame_size, |texture| texture.asked)
     }
 
     /// A shape record: the draws of the object from its geometry and material records, one
