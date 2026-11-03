@@ -47,17 +47,20 @@ def build_missing(mge_build):
     return [part for part in BUILD_PARTS if not os.path.exists(os.path.join(mge_build, part))]
 
 
-# The names with which a git hook points git at its own repository. A hook of another repository
-# (the render-link worktree runs these checks) must not make git answer for that repository.
-GIT_HOOK_NAMES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+def git_env():
+    """The environment for a git call about a folder of our choice: without the GIT_ names, with
+    which a git hook points git at its own repository (GIT_DIR, GIT_INDEX_FILE and others). A hook
+    of another repository (the render-link worktree runs these checks) must not make git answer
+    for that repository, and a `git init` with a hook's GIT_DIR writes core.bare = true into the
+    config of the hook's repository."""
+    return {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
 
 
 def checkout_of(folder):
     """The folder of the main checkout of the repository at `folder`: `folder` itself, or the
     checkout that a worktree belongs to. None when `folder` is not in a git repository."""
-    env = {name: value for name, value in os.environ.items() if name not in GIT_HOOK_NAMES}
     run = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=folder,
-                         capture_output=True, text=True, env=env)
+                         capture_output=True, text=True, env=git_env())
     if run.returncode != 0 or not run.stdout.strip():
         return None
     return os.path.dirname(os.path.normpath(run.stdout.strip()))
@@ -137,14 +140,35 @@ def sibling(*parts):
 
 
 def self_test():
-    """The tests of `checkout_of`, `find_local` and `find_sibling` in a temporary folder."""
+    """The tests of `checkout_of`, `find_local` and `find_sibling` in a temporary folder. A commit
+    hook runs this test with the GIT_ names of its own repository: every git call of the test
+    goes without them (`git_env`), and the test fails when core.bare of this repository's main
+    checkout changes."""
+    import contextlib
     import tempfile
 
     def git(*args):
-        # A commit hook runs this test with the names of its own repository.
-        env = {name: value for name, value in os.environ.items() if name not in GIT_HOOK_NAMES}
-        subprocess.run(["git", *args], check=True, env=env)
+        return subprocess.run(["git", *args], check=True, env=git_env(), capture_output=True, text=True).stdout.strip()
 
+    def bare(folder):
+        run = subprocess.run(["git", "-C", folder, "config", "--get", "core.bare"], env=git_env(), capture_output=True, text=True)
+        return run.stdout.strip()
+
+    @contextlib.contextmanager
+    def names(**values):
+        saved = {name: os.environ.get(name) for name in values}
+        os.environ.update(values)
+        try:
+            yield
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    real = main_checkout()
+    real_bare = bare(real) if real else None
     with tempfile.TemporaryDirectory() as root:
         main = os.path.join(root, "repos", "plugin")
         tree = os.path.join(root, "away", "plugin")
@@ -158,17 +182,16 @@ def self_test():
         assert same(checkout_of(tree)) == same(main), checkout_of(tree)
         assert checkout_of(root) is None
         # A hook of another repository sets its own GIT_DIR: the answer stays the tree's.
-        saved = {name: os.environ.get(name) for name in GIT_HOOK_NAMES}
-        os.environ["GIT_DIR"] = os.path.join(other, ".git")
-        os.environ["GIT_WORK_TREE"] = other
-        try:
+        with names(GIT_DIR=os.path.join(other, ".git"), GIT_WORK_TREE=other):
             assert same(checkout_of(tree)) == same(main), checkout_of(tree)
-        finally:
-            for name, value in saved.items():
-                if value is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = value
+        # The names of a commit hook in the worktree: a `git init` of the test makes its own
+        # repository and leaves core.bare of the hook's repository as it was.
+        hook_dir = git("-C", tree, "rev-parse", "--absolute-git-dir")
+        assert bare(main) == "false", bare(main)
+        with names(GIT_DIR=hook_dir, GIT_INDEX_FILE=os.path.join(hook_dir, "index")):
+            git("init", "-q", os.path.join(root, "third"))
+        assert bare(main) == "false", bare(main)
+        assert os.path.isdir(os.path.join(root, "third", ".git"))
         assert find_local(tree, main) == (None, False)
         with open(os.path.join(main, "local.json"), "w", encoding="ascii") as file:
             file.write("{}")
@@ -184,6 +207,8 @@ def self_test():
         assert find_sibling(os.path.join(root, "away"), None, ["docs"]) == os.path.join(root, "away", "docs")
         os.makedirs(os.path.join(root, "away", "docs"))
         assert find_sibling(os.path.join(root, "away"), main, ["docs"]) == os.path.join(root, "away", "docs")
+    if real:
+        assert bare(real) == real_bare, "core.bare of %s changed from %r to %r" % (real, real_bare, bare(real))
     print("common self-test: passed")
 
 # The functions of the renderer subsystem, by their name in the IDA database.
