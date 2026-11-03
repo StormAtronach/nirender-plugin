@@ -32,6 +32,7 @@ use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 use crate::shadow::BeforeFn;
+use crate::view_slots::Click;
 use crate::{ports, win};
 
 // ---- addresses of the renderer functions
@@ -1180,18 +1181,31 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
         shadow_volume: ptr_at(shadow_manager, SM_SHADOW_VOLUME),
         shadow_overlay: ptr_at(shadow_manager, SM_SHADOW_OVERLAY),
     };
+    // The view of the scene (D82, `view_slots`): its camera, its root and its target.
+    let back_buffer = renderer_on_back_buffer();
+    let scene_root = ptr_at(camera, CAM::spScene);
+    let click = Click {
+        kind: roots.scene_kind,
+        camera,
+        root: scene_root,
+        target: (!back_buffer).then_some(roots.render_target as usize),
+        world_camera: world_controller != 0 && camera == rd::<usize>(world_controller, WC_WORLD_CAMERA),
+    };
+    let view = crate::instance_stream::view_open(t, &click);
     let scene = SceneV1 {
         struct_size: size_of::<SceneV1>() as u32,
         kind: roots.scene_kind,
         camera: camera as u32,
-        scene_root: ptr_at(camera, CAM::spScene) as u32,
+        scene_root: scene_root as u32,
         render_target: roots.render_target,
         flags: if origin.is_some() { SCENE_HAS_CAMERA_ORIGIN } else { 0 }
             | if in_interior() { SCENE_INTERIOR } else { 0 }
             | if sky_hidden(roots.sky_root) { SCENE_SKY_HIDDEN } else { 0 }
-            | if renderer_on_back_buffer() { SCENE_BACK_BUFFER } else { 0 }
+            | if back_buffer { SCENE_BACK_BUFFER } else { 0 }
             | if game_wireframe() { SCENE_WIREFRAME } else { 0 },
         camera_origin: origin.unwrap_or_default(),
+        view,
+        reserved: 0,
     };
     (host.scene_begin)(&scene);
     crate::capture::scene_begin(&scene);
@@ -1245,6 +1259,9 @@ unsafe fn swap_buffers(_args: &[usize]) {
     // A `before` function of a port: the main thread (`shadow::run_before`).
     let t = &MainThread::claim();
     crate::camera_space::frame_end(t);
+    // A swap closes the views into the device's target; the frame ends at Present.
+    let target = (!renderer_on_back_buffer()).then(|| state(t).roots.render_target as usize);
+    crate::instance_stream::view_swap(t, target);
     if let Some(host) = host() {
         (host.frame_event)(EVENT_SWAP, 0, 0);
         crate::capture::frame_event(EVENT_SWAP, 0, 0);

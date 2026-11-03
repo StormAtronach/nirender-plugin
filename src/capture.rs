@@ -37,7 +37,7 @@ use crate::sync::{DeviceLock, LockCell};
 use crate::mem::rd;
 // The layout of the HEADER record and of the shared memories: their one home.
 use crate::stream_format::{
-    HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET, HEADER_SCENE_WIREFRAME,
+    HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET, HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME,
     HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WORLD_WALK, MESSAGES_CAPACITY, MESSAGES_MEMORY, READ_EVENT, RECORDS_EVENT, TILES_MEMORY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_READ, MESSAGES_WRITTEN, REPLY_CAPACITY,
     REPLY_HEAD, REPLY_HEIGHT, REPLY_REQUEST, REPLY_WIDTH, RING_CAPACITY, RING_CLOSED, RING_GAME_WAITING, RING_HEAD, RING_MAGIC, RING_READ,
     RING_SHADOW_REACH, RING_TAKES, RING_WAITING, RING_WRITTEN, TILE_BYTES, TILE_HEAD, TILE_HEIGHT, TILE_SLOTS, TILE_TICKET, TILE_WIDTH,
@@ -60,6 +60,7 @@ fn header_abilities() -> u32 {
         | HEADER_SCENE_TARGET
         | HEADER_WALK_PLACES
         | HEADER_VIEW_PLACES
+        | HEADER_SCENE_VIEWS
         | HEADER_SCENE_WIREFRAME
         | HEADER_ENVMAP_KNOWN
         | if crate::world_walk::installed() { HEADER_WORLD_WALK } else { 0 }
@@ -760,6 +761,10 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
     let lock = crate::sync::device_lock();
     if !recording() {
         return None;
+    }
+    // The helper runs the frame's work so far before it answers: a flush of the views.
+    if let Some(t) = MainThread::here() {
+        crate::instance_stream::view_flush(&t);
     }
     let (mut width, mut height) = ask_pixels(&lock, texture)?;
     let size = width as usize * height as usize * 4;
@@ -2184,6 +2189,12 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
         }
     }
     if recording() {
+        // The helper runs the frame's work so far before a copy of pixels: a flush of the views.
+        if index == CALL_COPY_PIXELS {
+            if let Some(t) = MainThread::here() {
+                crate::instance_stream::view_flush(&t);
+            }
+        }
         let mut head = vec![index, result, handle, args.len() as u32];
         head.extend_from_slice(&named);
         // A copy from an image surface: the pixels are those that the game wrote, for
@@ -2621,6 +2632,10 @@ unsafe fn frame_end(lock: &DeviceLock) {
             // The frame ends on the main thread, where the ports present; the proof says so.
             if let Some(t) = MainThread::here() {
                 crate::instance_stream::frame_tick(&t);
+                // The view slots that retired at this Present, before the frame's end.
+                for slot in crate::instance_stream::take_retired_views(&t) {
+                    write(tag::FRAME_EVENT, &[words(&[crate::link::EVENT_VIEW_RETIRE, slot as u32, 0])]);
+                }
             }
             // The times of the frame, for the age of the picture in the debug overlay: the
             // start of the frame of the game ([`FRAME_START`]) and its end, in ticks of the

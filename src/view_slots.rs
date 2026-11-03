@@ -19,9 +19,6 @@
 //! view of the scene whose click draws the list (`NiClusterAccumulator::FinishAccumulating`
 //! 0x6CF0E0, called inside `NiCamera::Click` at 0x6CC895), and they come in that scene.
 
-// Stage 1 adds the table first; the next commit of the stage calls it from the scene start.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use crate::link::{SCENE_FIRST_PERSON, SCENE_SHADOW_CASTERS, SCENE_SHADOW_VOLUME, SCENE_SORTED_ALPHA, SCENE_SPLASH, SCENE_UI};
 use crate::ptr_hash::HashMap;
 

@@ -130,6 +130,9 @@ pub const EVENT_SWAP: u32 = 3;
 pub const EVENT_WORLD_WALK: u32 = 4;
 /// The engine drew the main sorted queue of the Click (`queue_flush`): the end of its flush.
 pub const EVENT_QUEUE_FLUSHED: u32 = 5;
+/// A view slot had no scene for 60 frames and is free again (`view_slots`): its bit goes from
+/// every instance. a: the slot. At Present, before the frame's end.
+pub const EVENT_VIEW_RETIRE: u32 = 6;
 
 pub const FACT_LIGHT_RADIUS: u32 = 0;
 pub const FACT_SUN_LIGHT: u32 = 1;
@@ -215,6 +218,11 @@ pub struct SceneV1 {
     pub render_target: u32,
     pub flags: u32,
     pub camera_origin: [f64; 3],
+    /// The view slot of the scene plus 1 (`view_slots`), 0 for a scene that is not a view.
+    /// Only the low byte is used. A packet with a `struct_size` of 48 has no view.
+    pub view: u32,
+    /// 0: the struct's tail to its 8-byte alignment, written as zeros.
+    pub reserved: u32,
 }
 
 #[repr(C)]
@@ -362,7 +370,9 @@ pub struct HostV1 {
 // The sizes of the header. They are for the 32-bit target only.
 #[cfg(target_pointer_width = "32")]
 const _: () = {
-    assert!(size_of::<SceneV1>() == 48);
+    assert!(size_of::<SceneV1>() == 56);
+    // A reader of an older packet (48 bytes) has no view: the field starts at its end.
+    assert!(core::mem::offset_of!(SceneV1, view) == 48);
     assert!(size_of::<LightV1>() == 16);
     assert!(size_of::<DrawV1>() == 48);
     assert!(size_of::<StateLightV1>() == 108);
