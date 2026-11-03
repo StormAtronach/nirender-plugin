@@ -52,6 +52,8 @@ return function(nirender, spec)
         repinning = true
         timer.delayOneFrame(function()
             repinning = false
+            -- The step weathers can release the pin between the change and this frame.
+            if not pinned then return end
             repins = repins + 1
             say("weather re-pin %d: %s to %s, back to %d", repins, source, weatherName(to), pinned)
             switchWeather(pinned)

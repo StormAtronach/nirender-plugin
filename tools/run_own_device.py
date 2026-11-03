@@ -266,7 +266,8 @@ def weather_summary(pinned, lines):
     `weather re-pin` lines that the mod logs each time it undid a change of the game (owndevice.lua);
     or the game's, with the names that the mod's weather lines show, in the order they first appear."""
     if pinned is not None:
-        return "pinned %d, held (%d re-pins)" % (pinned, sum(1 for line in lines if line.startswith("weather re-pin")))
+        released = ", released at weathers" if any(line.startswith("weather pin released") for line in lines) else ""
+        return "pinned %d, held (%d re-pins)%s" % (pinned, sum(1 for line in lines if line.startswith("weather re-pin")), released)
     names = []
     for line in lines:
         if not line.startswith("weather"):
@@ -858,6 +859,9 @@ def self_test_weather():
     repins = ['weather event: changed immediately to 6 "Ashstorm"', 'weather re-pin 1: immediate change to 6 "Ashstorm", back to 0',
               'weather re-pin 2: transition to 2 "Foggy", back to 0', 'rate: 1.0 weather re-pin 3']
     assert weather_summary(0, repins) == "pinned 0, held (2 re-pins)", weather_summary(0, repins)
+    # The step weathers releases the pin: the summary says so.
+    released = repins + ["weather pin released for the step weathers"]
+    assert weather_summary(0, released) == "pinned 0, held (2 re-pins), released at weathers", weather_summary(0, released)
     # The game's weather: the names in order of first appearance, from every kind of line.
     lines = [
         'weather start: current 3 "Overcast"',
