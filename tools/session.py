@@ -251,6 +251,9 @@ class Run:
                 deployment.use_mod(name, files)
             for name in disable:
                 deployment.disable_mod(name)
+            problem = ring_problem_of_instance()
+            if problem:
+                raise SystemExit(problem)
             done = harness.run_game(self.progress, timeout, tag, deployment, self.started, foreground=foreground, facts=facts)
         finally:
             # run_game also restores. This restore is for a failure before run_game gets to
@@ -283,6 +286,51 @@ class Run:
         if not os.path.isfile(path):
             return ["no fresh mgeXE.log: MGE XE did not run, or its log is in another place"]
         return mge_log_problems(open(path, encoding="utf-8", errors="replace").read())
+
+
+# The ring mark of the stream (`RING_MAGIC` in src/stream_format.rs, "2RNG" in memory): the
+# plugin writes it at the head of the ring and the helper asserts it. A plugin and a helper with
+# different marks crash the helper at the start (host/src/live.rs, "not a ring of the plugin").
+RING_MARK = re.compile(rb"[0-9]RNG")
+
+
+def ring_marks(path):
+    """The ring marks in the bytes of a plugin or a helper program: one in each build so far."""
+    with open(path, "rb") as fh:
+        return set(RING_MARK.findall(fh.read()))
+
+
+def ring_problem(plugin, helper):
+    """Why `plugin` and `helper` cannot share a ring, or None. Paths may be None (no plugin or no
+    helper in the run). A binary with no readable mark is not refused: the mark may have a new
+    form."""
+    if not plugin or not helper:
+        return None
+    plugin_marks, helper_marks = ring_marks(plugin), ring_marks(helper)
+    if not plugin_marks or not helper_marks or plugin_marks & helper_marks:
+        return None
+    return ("the plugin %s has the ring mark %s and the helper %s has %s: the helper would crash at the start. "
+            "Use a helper built with the plugin (--mge-build of the same build, or switch on the mod with the matching numidium.exe)"
+            % (plugin, b", ".join(sorted(plugin_marks)).decode(), helper, b", ".join(sorted(helper_marks)).decode()))
+
+
+def winning_root_file(name, root, modlist, game_dir):
+    """The path of the program file `name` in the game folder at the start (Root Builder): the
+    overwrite's Root, then the enabled mods' Root by priority, then the game folder. None if
+    none has it."""
+    places = [os.path.join(root, "overwrite", "Root", name)]
+    places += [os.path.join(root, "mods", line[1:], "Root", name) for line in modlist if line.startswith("+")]
+    places.append(os.path.join(game_dir, name))
+    return next((path for path in places if os.path.isfile(path)), None)
+
+
+def ring_problem_of_instance():
+    """The ring check of the instance as the run starts it: the plugin and the helper that win in
+    the mod list as it is now."""
+    modlist = harness.read_modlist()[0]
+    plugin = harness.winning_file(harness.PLUGIN_FILE, harness.MO2_ROOT, modlist, harness.GAME_DIR)
+    helper = winning_root_file("numidium.exe", harness.MO2_ROOT, modlist, harness.GAME_DIR)
+    return ring_problem(plugin and plugin[1], helper)
 
 
 # The line of MGE XE (d3d8/cpp/main.cpp) when the wgpu renderer draws: MGE XE then runs as a

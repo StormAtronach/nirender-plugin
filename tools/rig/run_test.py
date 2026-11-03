@@ -43,7 +43,16 @@ def main():
     ap.add_argument("--fault", type=int, default=0,
                     help="put a fault into the Rust code (1: a device call, 2: a memory write); the run passes when the tests find it")
     ap.add_argument("--no-buffers", action="store_true", help="do not record the contents of locked buffers")
+    ap.add_argument("--mge-build", help="a run build folder with d3d8.dll and numidium.exe: they go into the game "
+                    "folder for this run (mod Harness - MGE XE), so that the helper has the ring mark of the plugin")
     args = ap.parse_args()
+    mods = []
+    if args.mge_build:
+        files = {"Root/" + name: os.path.join(args.mge_build, name) for name in ("d3d8.dll", "numidium.exe")}
+        missing = [path for path in files.values() if not os.path.isfile(path)]
+        if missing:
+            raise SystemExit("--mge-build: no %s" % ", ".join(missing))
+        mods.append((session.harness.RUN_MOD_PREFIX + "MGE XE", files))
 
     session.prepare(build=not args.no_build, features=("rig",))
     run = session.Run(args.label)
@@ -68,7 +77,7 @@ def main():
     # A tour has 60 objects at most in a cell of the test level.
     place = max(args.shadow, 60 * args.tour_seconds if args.tour else 0)
     timeout = args.timeout or int((20 if args.extras else 0) + 90 + (1 + len(cells)) * (place + 12) + args.live)
-    done = run.launch(spec, timeout, TAG)
+    done = run.launch(spec, timeout, TAG, mods=mods)
 
     failures, notes = [], []
     if not done:
