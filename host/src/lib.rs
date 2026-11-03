@@ -269,6 +269,9 @@ enum Item {
     ViewPlaces(usize, usize),
     /// The places of a view of its own in the flush of the engine's queue: the group.
     ViewSorted(usize),
+    /// The table of a view of its own, at the first draw of its scene: the group
+    /// (`Player::draw_view_table`).
+    ViewTable(usize),
     /// The extension draws in place of the draws of this class. The number of world draws
     /// before this item: those after it are not in the picture yet.
     Replace(u32, Box<WorldFacts>, usize),

@@ -206,6 +206,15 @@ impl Player {
                 for step in steps {
                     self.plan_step(step);
                 }
+                // A view into a texture closes here (its EndPaint): its table takes its list now. A
+                // scene with no draw gets its table item here.
+                if let Some(group) = self.views.open() {
+                    self.view_table_item();
+                    let facts = self.views.group(group).and_then(|g| g.facts);
+                    if let (Some(bit), Some(facts), Some(_)) = (self.table_bit(group), facts, self.target) {
+                        self.retained.close_view(group, bit, view_planes(&facts.view, &facts.projection));
+                    }
+                }
                 if let Some(group) = self.views.scene_end().filter(|_| drawing) {
                     self.items.push(Item::ViewSorted(group));
                 }
@@ -514,6 +523,7 @@ impl Player {
             ],
         });
         renderer.counts.times[TIME_BUFFERS] += clock.elapsed();
+        self.view_table_item();
         self.items.push(Item::Screen(ScreenDraw { texture, pipeline, group, buffer, vertices: (list.len() / 10) as u32 }));
     }
 
@@ -869,11 +879,27 @@ impl Player {
         }
     }
 
+    /// The view of the open scene of a view of its own, at its first draw or place.
+    fn note_view_facts(&mut self) {
+        let (view, projection, origin, target_size) = (self.stream.view, self.stream.projection, self.stream.origin, self.size_of_target());
+        self.views.note_facts(|| engine::views::ViewFacts { view, projection, origin, target_size });
+    }
+
+    /// A draw comes in the open scene of a view of its own whose table draws: the table's item
+    /// goes before it, once for the scene (the main view draws its table at its first click).
+    pub(crate) fn view_table_item(&mut self) {
+        let Some(group) = self.views.open().filter(|&group| self.drawing() && self.table_bit(group).is_some()) else { return };
+        self.note_view_facts();
+        if self.retained.view_tables.queue(group) {
+            self.items.push(Item::ViewTable(group));
+        }
+    }
+
     /// A place of a retained shape in a scene with a view of its own ([`engine::views`]): the
     /// view of the scene at its first place, then the place in its run.
     pub(crate) fn view_place(&mut self, id: u32) {
-        let (view, projection, origin, target_size) = (self.stream.view, self.stream.projection, self.stream.origin, self.size_of_target());
-        self.views.note_facts(|| engine::views::ViewFacts { view, projection, origin, target_size });
+        self.note_view_facts();
+        self.view_table_item();
         let open = self.views.open();
         let adjacent = matches!(self.items.last(), Some(&Item::ViewPlaces(group, _)) if Some(group) == open);
         let known = self.retained.centre_of(id).is_some();

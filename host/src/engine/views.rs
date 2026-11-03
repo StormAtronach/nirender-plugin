@@ -42,7 +42,6 @@ pub(crate) struct Group {
     /// (`Player::view_group_name`).
     pub(crate) name: core::cell::Cell<Option<&'static str>>,
     /// The plugin's view slot of the group's scene (`scene_view`): see [`Group::view_slot`].
-    #[cfg_attr(not(test), expect(dead_code, reason = "the views of D82 stage 2 (Hob) read it"))]
     view_slot: Option<u8>,
     /// The runs of places: the ids with no other item between them.
     runs: Vec<Vec<u32>>,
@@ -56,7 +55,6 @@ impl Group {
     /// [`HEADER_SCENE_VIEWS`](crate::stream_format::HEADER_SCENE_VIEWS). A group is one scene,
     /// so it never has two slots; a view into the back buffer with several scenes in a frame
     /// has a group for each, all with its slot.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the views of D82 stage 2 (Hob) read it"))]
     pub(crate) fn view_slot(&self) -> Option<u32> {
         self.view_slot.map(u32::from)
     }

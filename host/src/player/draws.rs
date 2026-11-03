@@ -425,6 +425,7 @@ impl Player {
             let centre = self.stream.sort_centre(&draw.data.world[0], draw.origin);
             self.wait_for_sorted(centre, crate::Waiting::Draw(draw));
         } else {
+            self.view_table_item();
             self.items.push(Item::Draw(draw));
         }
     }
