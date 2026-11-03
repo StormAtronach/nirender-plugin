@@ -781,8 +781,22 @@ def self_test_weather():
     assert weather_note(None, []) == "weather: the game's: none logged\n"
 
 
+def self_test_mge_log_problems():
+    """The log check of the rig tools: the wgpu renderer installs no engine hooks and passes; a
+    Direct3D 9 start with none, or with camera-relative rendering off only, fails."""
+    problems = session.mge_log_problems
+    assert problems("MGE-XE\n>> Using the wgpu renderer: no Direct3D device\nMWSE.dll injected.\n") == []
+    assert problems("-- Indexed skinning engine hooks installed\n-- Camera-relative rendering: hooks installed (camera yes).\n") == []
+    assert problems("-- Indexed skinning engine hooks installed\n") == []
+    none = "MGE XE installed none of its engine hooks"
+    assert problems("MGE-XE\nMWSE.dll injected.\n") == [none]
+    assert problems("-- Camera-relative rendering off (render.camera_relative); no engine hooks installed.\n") == [none]
+    assert problems(">> Using the wgpu renderer: no Direct3D device\nx failed to load/compile\n") == ["MGE XE could not compile 1 shaders"]
+
+
 def self_test():
     """The tests of the argument handling: no game, no build."""
+    self_test_mge_log_problems()
     self_test_weather()
     self_test_checks()
     self_test_check_command()
