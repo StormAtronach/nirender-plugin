@@ -226,7 +226,7 @@ pub(crate) fn plan(facts: &[ItemFacts], start: State, touch: &Touch) -> Split {
 }
 
 impl Player {
-    /// Runs the queued items that the split lets go now ([`plan`]), and gives back those that
+    /// Runs the queued items that the split lets go now ([`plan()`]), and gives back those that
     /// stay queued, with the target and the viewport they had in the stream.
     pub(crate) fn run_items_split(&mut self, touch: &Touch) -> Vec<Item> {
         let items = std::mem::take(&mut self.items);
