@@ -726,6 +726,7 @@ pub unsafe fn frame_tick(mt: &MainThread) {
     }
     apply_changes(mt);
     crate::effect_chain::frame_tick(mt);
+    FRAME_DISPLAYS.get(mt).frame_end();
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     t.frame = t.frame.wrapping_add(1);
@@ -1841,6 +1842,56 @@ const ENGINE_PATH_SCENES: [(u32, &str); 4] = [
 static ENGINE_PATH_DISPLAYS: MainCell<[u64; 5]> = MainCell::new([0; 5]);
 /// The places written in the scenes of [`Route::Places`].
 static VIEW_PLACES: MainCell<u64> = MainCell::new(0);
+/// The displays of retained shapes in each frame, by route (D82 stage 0).
+static FRAME_DISPLAYS: MainCell<FrameDisplays> = MainCell::new(FrameDisplays::new());
+
+/// The displays of retained shapes that reach the skip, by the route of their scene: the main
+/// view, the views of their own, the engine's path. The frame in progress, and over the run
+/// the sum, the worst frame and the frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FrameDisplays {
+    frame: [u64; 3],
+    sum: [u64; 3],
+    worst: [u64; 3],
+    frames: u64,
+}
+
+impl FrameDisplays {
+    const NAMES: [&'static str; 3] = ["main view", "views of their own", "the engine's path"];
+
+    const fn new() -> FrameDisplays {
+        FrameDisplays { frame: [0; 3], sum: [0; 3], worst: [0; 3], frames: 0 }
+    }
+
+    fn count(&mut self, route: Route) {
+        let index = match route {
+            Route::Main => 0,
+            Route::Places => 1,
+            Route::Engine(_) => 2,
+        };
+        self.frame[index] += 1;
+    }
+
+    /// The end of a frame: its counts go into the sums.
+    fn frame_end(&mut self) {
+        for i in 0..3 {
+            self.sum[i] += self.frame[i];
+            self.worst[i] = self.worst[i].max(self.frame[i]);
+        }
+        self.frame = [0; 3];
+        self.frames += 1;
+    }
+
+    fn line(&self) -> String {
+        let frames = self.frames.max(1) as f64;
+        let parts: Vec<String> = Self::NAMES
+            .iter()
+            .enumerate()
+            .map(|(i, name)| format!("{name} {:.1} (worst {})", self.sum[i] as f64 / frames, self.worst[i]))
+            .collect();
+        format!("retained displays for each of {} frames: {}", self.frames, parts.join(", "))
+    }
+}
 
 /// Where the engine's displays of retained shapes go in a scene.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1881,10 +1932,11 @@ pub fn engine_path_report(mt: &MainThread) -> String {
     let names = ENGINE_PATH_SCENES.iter().map(|&(_, name)| name).chain(["a target the helper lacks"]);
     let parts: Vec<String> = names.zip(counts).map(|(name, count)| format!("{name} {count}")).collect();
     format!(
-        "{} displays of retained shapes on the engine's path outside the table's scenes ({}); {} places in views of their own",
+        "{} displays of retained shapes on the engine's path outside the table's scenes ({}); {} places in views of their own; {}",
         counts.iter().sum::<u64>(),
         parts.join(", "),
-        *VIEW_PLACES.get(mt)
+        *VIEW_PLACES.get(mt),
+        FRAME_DISPLAYS.get(mt).line()
     )
 }
 
@@ -1901,6 +1953,7 @@ unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> boo
         if !t.skip || !capture::recording() {
             return false;
         }
+        FRAME_DISPLAYS.get(mt).count(t.scene_route);
         // A scene of [`ENGINE_PATH_SCENES`] (the local map's tiles, the character preview, the
         // race menu's head, the engine's water reflection), or a scene into a target that the
         // helper does not have: the engine draws the shape on the record path (the draw is not
@@ -2357,6 +2410,30 @@ pub unsafe fn report(mt: &MainThread) -> String {
 mod tests {
     use super::*;
     use crate::material_stream::EFFECT_SIGNATURE_WORDS;
+
+    /// The displays of a frame count by the route of their scene, and the worst frame of a
+    /// route is its own: a frame with many displays in one route does not raise another's.
+    #[test]
+    fn frame_displays_count_each_route_and_its_worst_frame() {
+        let mut displays = FrameDisplays::new();
+        for _ in 0..3 {
+            displays.count(Route::Main);
+        }
+        displays.count(Route::Places);
+        displays.frame_end();
+        displays.count(Route::Main);
+        displays.count(Route::Engine(4));
+        displays.count(Route::Engine(0));
+        displays.frame_end();
+        assert_eq!(displays.sum, [4, 1, 2]);
+        assert_eq!(displays.worst, [3, 1, 2]);
+        assert_eq!(displays.frames, 2);
+        assert_eq!(displays.frame, [0; 3]);
+        assert_eq!(
+            displays.line(),
+            "retained displays for each of 2 frames: main view 2.0 (worst 3), views of their own 0.5 (worst 1), the engine's path 1.0 (worst 2)"
+        );
+    }
 
     /// The route of a scene: the back buffer keeps the main view, except for a scene of another
     /// camera or root; a rendered texture of the helper gives the scene a view of its own; the

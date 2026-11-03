@@ -97,6 +97,7 @@ mod uv_animation;
 mod effect_turn;
 mod morph;
 pub mod stamps;
+mod view_times;
 use retained::{effect_entry_buffer, light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet, SceneData, EFFECT_ENTRIES_AT_FIRST, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_BONES_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
 
 /// The wgpu of this crate, for a program that draws with it through [`Extension`].

@@ -4,6 +4,13 @@
 use crate::*;
 use crate::stamps::{Stamp, StampKind, Stamps};
 
+/// The view groups of the main view that draw the table. Each name is that of the group's GPU span
+/// and of its CPU time (`view_times`): both cover the same items. The sorted blends' items also
+/// draw the engine's blends that the sorted list took in (`merged_blends`).
+const MAIN_VIEW_OPAQUE: &str = "the table's opaque slots";
+const MAIN_VIEW_WALK: &str = "table: blends in the engine's walk";
+const MAIN_VIEW_SORTED: &str = "sorted blends (the engine's and the table's)";
+
 impl Player {
     /// Does the items of the frame that are not done yet. See [`Item`].
     pub(crate) fn run_items(&mut self) {
@@ -120,9 +127,9 @@ impl Player {
                 Item::Draw(_) | Item::Screen(_) if world_ended => Some("game: after the world (first person)"),
                 Item::Draw(_) | Item::Screen(_) if world_started => Some("game: draws in the world"),
                 Item::Draw(_) | Item::Screen(_) => Some("game: before the world (sky)"),
-                Item::WalkPlaces(_) => Some("table: blends in the engine's walk"),
-                Item::ViewPlaces(..) | Item::ViewSorted(_) => Some("table: views of their own"),
-                Item::SortedBlends(_) => Some("sorted blends (the engine's and the table's)"),
+                Item::WalkPlaces(_) => Some(MAIN_VIEW_WALK),
+                Item::ViewPlaces(group, _) | Item::ViewSorted(group) => Some(self.view_group_name(*group)),
+                Item::SortedBlends(_) => Some(MAIN_VIEW_SORTED),
                 Item::Replace(..) => Some("a class of draws (extension: water)"),
                 Item::HeldHere(..) => Some("a held draw in place (extension)"),
                 Item::Target(_) | Item::Clear(..) | Item::Viewport(_) => group.as_ref().map(|(name, _)| *name),
@@ -199,15 +206,17 @@ impl Player {
                 }
                 Item::WorldStart(facts) => self.start_world(&facts),
                 Item::WorldEnd(facts) => self.end_world(&facts),
-                Item::SortedBlends(generation) => self.draw_retained_sorted(generation),
-                Item::WalkPlaces(run) => self.draw_walk_run(run),
+                Item::SortedBlends(generation) => {
+                    self.timed(MAIN_VIEW_SORTED, 0, |player| player.draw_retained_sorted(generation));
+                }
+                Item::WalkPlaces(run) => self.timed(MAIN_VIEW_WALK, 0, |player| player.draw_walk_run(run)),
                 Item::ViewPlaces(group, run) => {
                     let ids = self.views.take_run(group, run);
-                    self.draw_view_run(group, &ids);
+                    self.timed(self.view_group_name(group), ids.len() as u64, |player| player.draw_view_run(group, &ids));
                 }
                 Item::ViewSorted(group) => {
                     let ids = self.views.take_sorted(group);
-                    self.draw_view_run(group, &ids);
+                    self.timed(self.view_group_name(group), ids.len() as u64, |player| player.draw_view_run(group, &ids));
                 }
                 Item::HeldHere(held, facts) => self.give_held_here(core::slice::from_ref(&*held), &facts),
                 Item::Replace(class, facts, drawn) => self.replace_class(class, &facts, drawn),
@@ -479,9 +488,33 @@ impl Player {
             let clear = (!depth::one_buffer()).then(|| depth::clear(1.0));
             self.open_pass(crate::gpu::PassReason::WorldStart, None, clear, None);
         }
-        let part = self.part_begin("the table's opaque slots");
-        self.draw_retained_main(facts);
+        let part = self.part_begin(MAIN_VIEW_OPAQUE);
+        self.timed(MAIN_VIEW_OPAQUE, 0, |player| player.draw_retained_main(facts));
         self.part_end(part);
+    }
+
+    /// Does `draw`, the item of one view group, and adds its CPU time to the group's
+    /// (`view_times`). `places`: the places that the item draws.
+    fn timed(&mut self, name: &'static str, places: u64, draw: impl FnOnce(&mut Self)) {
+        let clock = ticks::Clock::now();
+        draw(self);
+        self.renderer.counts.view_times.add(name, clock.elapsed(), places);
+    }
+
+    /// The name of a view of its own of the frame, for its GPU span and its CPU time: its order
+    /// among the frame's views of their own, the size of its target and its camera. Two views
+    /// with the same order, size and camera in different frames share a name. The name is made
+    /// once for each view, when its facts are known.
+    pub(crate) fn view_group_name(&self, group: usize) -> &'static str {
+        let Some(g) = self.views.group(group) else { return stamps::name(&format!("table: view of its own {}", group + 1)) };
+        if let Some(name) = g.name.get() {
+            return name;
+        }
+        let camera = if g.world_camera { "the world camera" } else { "another camera" };
+        let Some(facts) = g.facts else { return stamps::name(&format!("table: view of its own {} ({camera})", group + 1)) };
+        let name = stamps::name(&format!("table: view of its own {} ({}x{}, {camera})", group + 1, facts.target_size.0, facts.target_size.1));
+        g.name.set(Some(name));
+        name
     }
 
     /// Puts what a late sorted run wrote into the copy of the world depth: the depth after
