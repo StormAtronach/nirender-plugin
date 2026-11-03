@@ -998,23 +998,24 @@ impl RetainedSet {
     }
 }
 
-/// The planes of a view from its combined matrix (the layout of Direct3D, a row vector
-/// times the matrix): left, right, bottom, top, near, far, each `(n, d)` with `n` of
-/// length 1 and the inside where `n . p + d >= 0`.
-pub fn frustum_planes(m: &[f32; 16]) -> [[f32; 4]; 6] {
+/// The planes of a view in the space of the world (the layout of Direct3D, a row vector
+/// times `view * projection`): left, right, bottom, top, near, far, each `(n, d)` with `n`
+/// of length 1 and the inside where `n . p + d >= 0`. The product and the planes are in 64
+/// bits, and that is the fix: the far plane of a perspective is the difference of two columns
+/// that differ by about near / far, and in 32 bits that difference was lost to the rounding of
+/// the world's coordinates in the product far from the origin of the world (a far plane of
+/// 7168 between 7038 and 7299 at Narsis). What stays is the rounding of the 32-bit
+/// projection's own near / far term: a few units, the same everywhere (7170.75 for 7168).
+pub fn view_planes(view: &[f32; 16], projection: &[f32; 16]) -> [[f32; 4]; 6] {
+    let m = crate::replay::multiply64(&view.map(f64::from), &projection.map(f64::from));
     let col = |c: usize| [m[c], m[4 + c], m[8 + c], m[12 + c]];
     let (c0, c1, c2, c3) = (col(0), col(1), col(2), col(3));
-    let add = |a: [f32; 4], b: [f32; 4], sign: f32| [a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2], a[3] + sign * b[3]];
+    let add = |a: [f64; 4], b: [f64; 4], sign: f64| [a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2], a[3] + sign * b[3]];
     let raw = [add(c3, c0, 1.0), add(c3, c0, -1.0), add(c3, c1, 1.0), add(c3, c1, -1.0), c2, add(c3, c2, -1.0)];
     raw.map(|p| {
-        let length = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-20);
-        [p[0] / length, p[1] / length, p[2] / length, p[3] / length]
+        let length = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-300);
+        [(p[0] / length) as f32, (p[1] / length) as f32, (p[2] / length) as f32, (p[3] / length) as f32]
     })
-}
-
-/// `a * b` for two matrices with the layout of Direct3D.
-pub fn multiply32(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
-    core::array::from_fn(|i| (0..4).map(|k| a[i / 4 * 4 + k] * b[k * 4 + i % 4]).sum())
 }
 
 fn in_view(bound: &[f32; 4], planes: &[[f32; 4]; 6]) -> bool {
@@ -2110,7 +2111,7 @@ impl Player {
     /// Engine-rules R10, R20 (the skill wgpu-renderer-dev).
     pub(super) fn draw_retained_main(&mut self, facts: &WorldFacts) {
         // The near plane of the world's view, for the depth of the sort of the blends.
-        self.world_near = Some(frustum_planes(&multiply32(&facts.view, &facts.projection))[4]);
+        self.world_near = Some(view_planes(&facts.view, &facts.projection)[4]);
         if self.retained.by_id.is_empty() || !self.retained_on {
             return;
         }
@@ -2154,7 +2155,7 @@ impl Player {
         }
         // The cull is in the space of the world: the bounds of the slots are the engine's.
         self.retained.main_view = facts.view;
-        let planes = frustum_planes(&multiply32(&facts.view, &facts.projection));
+        let planes = view_planes(&facts.view, &facts.projection);
         let held = self.retained_hold(facts, &planes);
         self.begin_pass();
         let Some(pass) = self.pass.as_mut() else { return };
@@ -2507,7 +2508,7 @@ mod order_tests {
     #[test]
     fn the_identity_view_is_the_unit_box_in_front_of_the_near_plane() {
         // The planes of the identity: x and y from -1 to 1, z from 0 to 1.
-        let planes = frustum_planes(&IDENTITY);
+        let planes = view_planes(&IDENTITY, &IDENTITY);
         assert!(in_view(&[0.0, 0.0, 0.5, 0.1], &planes));
         assert!(!in_view(&[3.0, 0.0, 0.5, 0.1], &planes));
         assert!(!in_view(&[0.0, 0.0, -0.5, 0.1], &planes));
@@ -2516,7 +2517,7 @@ mod order_tests {
 
     #[test]
     fn a_bound_that_crosses_a_plane_is_in_view() {
-        let planes = frustum_planes(&IDENTITY);
+        let planes = view_planes(&IDENTITY, &IDENTITY);
         assert!(in_view(&[1.05, 0.0, 0.5, 0.1], &planes));
         assert!(in_view(&[0.0, 0.0, -0.05, 0.1], &planes));
         assert!(!in_view(&[1.2, 0.0, 0.5, 0.1], &planes));
@@ -2525,10 +2526,72 @@ mod order_tests {
     #[test]
     fn the_planes_have_unit_normals() {
         let projection = [1.5, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.001, 1.0, 0.0, 0.0, -1.001, 0.0];
-        for plane in frustum_planes(&projection) {
+        for plane in view_planes(&IDENTITY, &projection) {
             let length = (plane[0] * plane[0] + plane[1] * plane[1] + plane[2] * plane[2]).sqrt();
             assert!((length - 1.0).abs() < 1e-5, "{plane:?}");
         }
+    }
+
+    /// The planes as the helper made them before `view_planes`: the product and the planes in
+    /// 32 bits. For the test that must tell the two apart.
+    fn planes_of_32_bit_product(view: &[f32; 16], projection: &[f32; 16]) -> [[f32; 4]; 6] {
+        let m: [f32; 16] = core::array::from_fn(|i| (0..4).map(|k| view[i / 4 * 4 + k] * projection[k * 4 + i % 4]).sum());
+        let col = |c: usize| [m[c], m[4 + c], m[8 + c], m[12 + c]];
+        let (c0, c1, c2, c3) = (col(0), col(1), col(2), col(3));
+        let add = |a: [f32; 4], b: [f32; 4], sign: f32| [a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2], a[3] + sign * b[3]];
+        let raw = [add(c3, c0, 1.0), add(c3, c0, -1.0), add(c3, c1, 1.0), add(c3, c1, -1.0), c2, add(c3, c2, -1.0)];
+        raw.map(|p| {
+            let length = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-20);
+            [p[0] / length, p[1] / length, p[2] / length, p[3] / length]
+        })
+    }
+
+    /// The distance of the eye to the far plane of a camera at `eye` turned `yaw` round the up
+    /// axis (z up in the world), with the engine's near 1 and far 7168 in a 32-bit projection,
+    /// by the planes that `planes_of` makes.
+    fn far_distance(eye: [f64; 3], yaw: f64, planes_of: fn(&[f32; 16], &[f32; 16]) -> [[f32; 4]; 6]) -> f64 {
+        let (near, far) = (1.0f64, 7168.0f64);
+        let q = far / (far - near);
+        let projection = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, q as f32, 1.0, 0.0, 0.0, (-q * near) as f32, 0.0];
+        // Right, up and forward as the columns of the rotation.
+        let (forward, up) = ([yaw.sin(), yaw.cos(), 0.0], [0.0, 0.0, 1.0]);
+        let right = [up[1] * forward[2] - up[2] * forward[1], up[2] * forward[0] - up[0] * forward[2], up[0] * forward[1] - up[1] * forward[0]];
+        let mut view = [0.0f32; 16];
+        for row in 0..3 {
+            view[row * 4] = right[row] as f32;
+            view[row * 4 + 1] = up[row] as f32;
+            view[row * 4 + 2] = forward[row] as f32;
+        }
+        for column in 0..3 {
+            view[12 + column] = -(0..3).map(|k| eye[k] * view[k * 4 + column] as f64).sum::<f64>() as f32;
+        }
+        view[15] = 1.0;
+        let plane = planes_of(&view, &projection)[5];
+        (0..3).map(|k| plane[k] as f64 * eye[k]).sum::<f64>() + plane[3] as f64
+    }
+
+    /// The greatest difference over 24 turns between the far plane at Narsis and at the origin
+    /// of the world, by the planes that `planes_of` makes.
+    fn far_drift_at_narsis(planes_of: fn(&[f32; 16], &[f32; 16]) -> [[f32; 4]; 6]) -> f64 {
+        (0..24)
+            .map(|step| {
+                let yaw = step as f64 * 15f64.to_radians();
+                let at_origin = far_distance([0.0, 0.0, 600.0], yaw, planes_of);
+                assert!((at_origin - 7168.0).abs() < 5.0, "turn {step}: the far plane is {at_origin} from the eye at the origin");
+                (far_distance([57717.0, -416069.0, 1322.0], yaw, planes_of) - at_origin).abs()
+            })
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn the_far_plane_stays_at_its_distance_far_from_the_origin() {
+        // At Narsis the far plane is where it is at the origin of the world, at every turn.
+        // Both are a few units from 7168: the 32-bit projection's near / far term has that
+        // rounding. The 32-bit product moved it by tens of units there (7038 to 7299).
+        let drift = far_drift_at_narsis(view_planes);
+        assert!(drift < 0.5, "view_planes: the far plane at Narsis is {drift} from the one at the origin");
+        let old = far_drift_at_narsis(planes_of_32_bit_product);
+        assert!(old > 10.0, "the 32-bit product was expected to lose the far plane at Narsis: {old}");
     }
 
     #[test]
@@ -2673,7 +2736,7 @@ impl Replayer<'_> {
         scene.pixel = [1.0 / view.target_size.0.max(1) as f32, -1.0 / view.target_size.1.max(1) as f32, 0.0, 0.0];
         scene.clip_plane = view.clip_plane.map_or([0.0; 4], |p| self.retained.plane_of(p));
         self.renderer.write_scene(slot, &scene);
-        let planes = frustum_planes(&multiply32(&absolute, &scene.projection));
+        let planes = view_planes(&absolute, &scene.projection);
         let retained_view = RetainedView { scene_slot: slot, classes: view.classes, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None, sorted: Sorted::Together, samples: view.samples };
         draw_retained(pass, self.renderer, self.retained, self.args, &retained_view);
     }

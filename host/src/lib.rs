@@ -85,6 +85,8 @@ mod engine;
 mod player;
 use engine::{plan, scene};
 mod retained;
+/// The cull planes of a view, relative to its camera (for the views of an extension too).
+pub use retained::view_planes;
 mod request;
 mod stage_groups;
 use stage_groups::{StageGroups, StageKey};
@@ -124,6 +126,11 @@ struct WorldFacts {
     frame: u64,
 }
 
+/// The position of the camera: the exact origin of the scene, else the one of `view`.
+fn camera_place(origin: Option<[f64; 3]>, view: &[f32; 16]) -> [f64; 3] {
+    origin.unwrap_or_else(|| eye_of_view(view))
+}
+
 /// The position of the camera of a view matrix of Direct3D: minus its translation times its
 /// transposed rotation. Only for a stream without the camera's origin.
 fn eye_of_view(view: &[f32; 16]) -> [f64; 3] {
@@ -132,6 +139,11 @@ fn eye_of_view(view: &[f32; 16]) -> [f64; 3] {
 }
 
 impl WorldFacts {
+    /// The position of the camera ([`camera_place`]).
+    fn eye(&self) -> [f64; 3] {
+        camera_place(self.origin, &self.view)
+    }
+
     fn view<'a>(&self, device: &'a wgpu::Device, queue: &'a wgpu::Queue, commands: &'a FrameCommands, target_format: wgpu::TextureFormat) -> SceneView<'a> {
         SceneView {
             device,
@@ -144,7 +156,7 @@ impl WorldFacts {
             samples: self.samples,
             view: self.view,
             projection: self.projection,
-            eye: self.origin.unwrap_or_else(|| eye_of_view(&self.view)),
+            eye: self.eye(),
             interior: self.interior,
             wireframe: self.wireframe,
             fog_on: self.fog_on,

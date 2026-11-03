@@ -32,7 +32,7 @@ impl Player {
         }
         // The texture effects under a turning billboard, for the camera of the world.
         if let Some(facts) = items.iter().find_map(|item| if let Item::WorldStart(facts) = item { Some(facts) } else { None }) {
-            let location = facts.origin.unwrap_or_else(|| eye_of_view(&facts.view));
+            let location = facts.eye();
             let began = std::time::Instant::now();
             self.retained.turn_effects(&crate::effect_turn::Camera::of_view(&facts.view, location));
             self.retained.counts.turn_seconds += began.elapsed().as_secs_f64();

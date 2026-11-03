@@ -844,7 +844,7 @@ impl Player {
         let mut effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, 12 + (e * EFFECT_STAGE_WORDS + i) * 4))));
         // An effect that moves in the play takes its chain's value, as in the table.
         if let (Some(stages), Some(material)) = (effects.as_mut(), self.renderer.materials.get(&retained.material)) {
-            let location = self.stream.origin.unwrap_or_else(|| eye_of_view(&self.stream.view));
+            let location = crate::camera_place(self.stream.origin, &self.stream.view);
             self.retained.chain_stages(material, &self.stream.view, location, stages);
         }
         self.stream.shape_fog = has_fog.then(|| core::array::from_fn(|i| word(data, fog_at + i * 4)));
