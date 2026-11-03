@@ -282,12 +282,25 @@ class Run:
         path = self.path("mgeXE.log")
         if not os.path.isfile(path):
             return ["no fresh mgeXE.log: MGE XE did not run, or its log is in another place"]
-        text = open(path, encoding="utf-8", errors="replace").read()
-        problems = []
-        if "hooks installed" not in text:
-            problems.append("MGE XE installed none of its engine hooks")
-        failed = text.count("failed to load/compile")
-        if failed:
-            problems.append("MGE XE could not compile %d shaders" % failed)
-        problems += [line.strip()[:160] for line in text.splitlines() if "Another mod" in line]
-        return problems
+        return mge_log_problems(open(path, encoding="utf-8", errors="replace").read())
+
+
+# The line of MGE XE (d3d8/cpp/main.cpp) when the wgpu renderer draws: MGE XE then runs as a
+# proxy only, with no Direct3D device and none of its engine hooks.
+WGPU_LINE = ">> Using the wgpu renderer"
+
+
+def mge_log_problems(text):
+    """What the text of an mgeXE.log says went wrong. An empty list is good.
+
+    On Direct3D 9, MGE XE must install engine hooks. "no engine hooks installed" (camera-relative
+    rendering off) does not count as one. On the wgpu renderer it installs none by design."""
+    problems = []
+    hooks = [line for line in text.splitlines() if "hooks installed" in line and "no engine hooks installed" not in line]
+    if not hooks and WGPU_LINE not in text:
+        problems.append("MGE XE installed none of its engine hooks")
+    failed = text.count("failed to load/compile")
+    if failed:
+        problems.append("MGE XE could not compile %d shaders" % failed)
+    problems += [line.strip()[:160] for line in text.splitlines() if "Another mod" in line]
+    return problems
