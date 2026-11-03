@@ -175,6 +175,38 @@ def argument_problems(args, exists=os.path.exists):
     return problems
 
 
+TIMING_STEPS = ("rate", "walk")
+WEATHER_IN_LINE = re.compile(r'(?:current|next|from|to) (\d+) "([^"]*)"')
+
+
+def weather_warning(args):
+    """The one line that warns about a run that times something and leaves the weather to the
+    game: a storm moves the frame rate (the owner, 2026-11-03). None for any other run. Not a
+    refusal. No --steps means all the steps, the timing steps among them."""
+    if args.weather is not None:
+        return None
+    steps = [name for name in re.split(r"[,\s]+", args.steps or "") if name]
+    if steps and not any(name in TIMING_STEPS for name in steps):
+        return None
+    return "warning: the run has timing steps and the weather is the game's, which can change in the run and move the frame rate: --weather 0 pins it to clear"
+
+
+def weather_summary(pinned, lines):
+    """What the result summary says of the weather: `pinned N`, or the game's with the names that
+    the mod's weather lines (owndevice.lua) show, in the order they first appear."""
+    if pinned is not None:
+        return "pinned %d" % pinned
+    names = []
+    for line in lines:
+        if not line.startswith("weather"):
+            continue
+        for index, name in WEATHER_IN_LINE.findall(line):
+            entry = "%s (%s)" % (name, index)
+            if entry not in names:
+                names.append(entry)
+    return "the game's: " + (", ".join(names) if names else "none logged")
+
+
 def build_commits(mge_build):
     """The line of the record of a run that names the commits of its build, from WHAT.txt of the build
     folder. A folder that does not say them is named as such: no commit is guessed."""
@@ -699,8 +731,39 @@ def self_test_check_command():
         assert code == 0, text
 
 
+def self_test_weather():
+    """The weather line of the summary, and the warning of a timing run that leaves the weather to the game."""
+    def namespace(**changes):
+        values = dict(weather=None, steps=None)
+        values.update(changes)
+        return argparse.Namespace(**values)
+
+    assert weather_summary(0, []) == "pinned 0"
+    # The game's weather: the names in order of first appearance, from every kind of line.
+    lines = [
+        'weather start: current 3 "Overcast"',
+        'weather rate: current 3 "Overcast"; next 6 "Rain" transition 0.42',
+        'weather event: transition started from 3 "Overcast" to 6 "Rain"',
+        'weather event: changed immediately to 9 "Blizzard"',
+        'rate: 100.0 frames in a second at "Balmora" 3 "not a weather line"',
+    ]
+    assert weather_summary(None, lines) == "the game's: Overcast (3), Rain (6), Blizzard (9)", weather_summary(None, lines)
+    assert weather_summary(None, ["step exterior: true"]) == "the game's: none logged"
+    assert weather_summary(None, ["weather start: not read: x"]) == "the game's: none logged"
+
+    # The warning: a run that times and leaves the weather to the game; the steps named decide.
+    assert weather_warning(namespace(weather=0)) is None
+    assert weather_warning(namespace(weather=0, steps="rate")) is None
+    assert "--weather 0" in weather_warning(namespace())
+    assert "--weather 0" in weather_warning(namespace(steps="exterior,rate,capture"))
+    assert "--weather 0" in weather_warning(namespace(steps="walk"))
+    assert weather_warning(namespace(steps="exterior,capture")) is None
+    assert weather_warning(namespace(steps="shaders")) is None
+
+
 def self_test():
     """The tests of the argument handling: no game, no build."""
+    self_test_weather()
     self_test_checks()
     self_test_check_command()
     self_test_setup()
@@ -883,6 +946,8 @@ def main():
         if problem:
             raise SystemExit("run_own_device: " + problem)
         print("run_own_device: the arguments are good; nothing started (--check)")
+        if weather_warning(args):
+            print("run_own_device: " + weather_warning(args))
         return 0
     if args.engine_reference:
         args.reference = True
@@ -902,6 +967,8 @@ def main():
         print("plugin DLL: none, a reference run without the plugin (--reference-plugin keeps it)", flush=True)
     else:
         print("plugin DLL: %s (%s)" % (session.DLL, source), flush=True)
+    if weather_warning(args):
+        print("run_own_device: " + weather_warning(args), flush=True)
     extra_files = [entry.split("=", 1) for entry in args.add_file]
     if args.mwse_dll:
         extra_files.append((args.mwse_dll, "Root/MWSE.dll"))
@@ -1031,9 +1098,11 @@ def main():
         done = run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)])
 
     print()
-    for line in run.progress_lines(TAG):
+    progress = run.progress_lines(TAG)
+    for line in progress:
         if line.startswith(("own device", "step", "after", "steps done", "ERROR", "save loaded", "rate", "zoom")):
             print("game: " + line[:200])
+    print("weather: " + weather_summary(args.weather, progress))
     if os.path.isfile(run.path("host.txt")):
         print("\nhost:")
         print("  " + open(run.path("host.txt"), errors="replace").read().strip().replace("\n", "\n  ")[-3000:])

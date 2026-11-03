@@ -9,6 +9,35 @@ return function(nirender, spec)
     local scenario = require("nirender.scenario")(nirender, spec, "owndevice")
     local say, after = scenario.say, scenario.after
 
+    -- The weather in the notes of a run: the game changes it by itself, and a storm moves the
+    -- frame rate. Each line names the weather as `<index> "<name>"`; tools/run_own_device.py
+    -- reads the names from these lines for its summary.
+    local function weatherName(weather)
+        if not weather then return "none" end
+        return string.format('%d "%s"', weather.index, weather.name)
+    end
+
+    -- The current weather, and the next one with the transition while a change runs.
+    local function noteWeather(where)
+        local ok, problem = pcall(function()
+            local controller = tes3.worldController.weatherController
+            local text = "current " .. weatherName(controller.currentWeather)
+            if controller.nextWeather then
+                text = text .. string.format("; next %s transition %.2f", weatherName(controller.nextWeather), controller.transitionScalar)
+            end
+            say("weather %s: %s", where, text)
+        end)
+        if not ok then say("weather %s: not read: %s", where, tostring(problem)) end
+    end
+
+    -- A change in the middle of a run.
+    event.register(tes3.event.weatherTransitionStarted, function(e)
+        say("weather event: transition started from %s to %s", weatherName(e.from), weatherName(e.to))
+    end)
+    event.register(tes3.event.weatherChangedImmediate, function(e)
+        say("weather event: changed immediately to %s", weatherName(e.to))
+    end)
+
     -- The engine's own renderer (`--engine-reference`): MGE XE has `runtime.disabled`, so the game has
     -- the system's Direct3D 8 and MGE XE gives no Lua API. These stand in for what this scenario, the
     -- batches and the cards ask of it. The picture is the engine's draw of the world camera into a
@@ -324,6 +353,7 @@ return function(nirender, spec)
                 if os.clock() - from >= 10 then
                     event.unregister("enterFrame", count)
                     say("rate: %.1f frames in a second at '%s'", frames / (os.clock() - from), tes3.player.cell.editorName)
+                    noteWeather("rate")
                 end
             end
             event.register("enterFrame", count)
@@ -351,6 +381,7 @@ return function(nirender, spec)
                         if os.clock() - from >= 4 then
                             event.unregister("enterFrame", count)
                             say("rate: %.1f frames in a second at '%s' weather %d pass %d", frames / (os.clock() - from), tes3.player.cell.editorName, index, at <= 10 and 1 or 2)
+                            noteWeather("weathers")
                             at = at + 1
                             measure()
                         end
@@ -654,6 +685,7 @@ return function(nirender, spec)
 
     local function step(index)
         local this = steps[index]
+        if index == 1 then noteWeather("start") end
         if not this then
             say("steps done: %s", nirender.captureStatus())
             -- The end of the stream is the end of the picture. The host program then says
