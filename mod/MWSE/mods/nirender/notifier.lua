@@ -12,8 +12,8 @@
 
     This file wraps the write hooks (`__newindex`) and some methods (`__index`) of the sol
     metatables of MWSE's NI types and reports the changed object's address to the plugin
-    (`nirender.changed`); at the start of the next scene the plugin checks again the retained
-    shapes that are such an object or hold it in their property state. The metatables are found on the
+    (`nirender.changed`); at its next display, a retained shape that is such an object or
+    holds it in its property state is checked again. The metatables are found on the
     objects of the scene at each game load and on a few new objects; a type pushed in a form
     not seen here (sol has one metatable for each form of a type) is not wrapped, and its
     changes keep the 64th-frame delay.

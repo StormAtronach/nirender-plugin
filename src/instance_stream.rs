@@ -202,9 +202,11 @@ struct Instance {
     kind: u32,
     /// The game skins the shape in software, as its last display read the flag.
     software: bool,
-    /// A copy of the shape's property pointers at its last display. `apply_changes` reads
-    /// only this copy, never engine memory: the cell worker can free a shape at any time.
+    /// A copy of the shape's property pointers at its last display.
     properties: [usize; PROPERTY_SLOTS],
+    /// The count of Lua's change notes at the last check of the notes for this shape
+    /// ([`check_notes`]).
+    checked: u64,
     /// The frame in which the engine's main sorted queue took the shape (`queue_blend`), or
     /// [`u32::MAX`].
     queued: u32,
@@ -434,7 +436,7 @@ impl Instance {
     /// An instance of a shape at its first draw: no record of it went yet.
     #[allow(clippy::too_many_arguments)]
     fn new(id: u32, class: u32, geometry: u32, material: u32, frame: u32, generation: u32, skinned: bool, live: bool, points: bool) -> Instance {
-        Instance { id, class, geometry, material, rotation: [0; 12], software: false, stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
+        Instance { id, class, geometry, material, rotation: [0; 12], software: false, stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, drawn: frame, visible: true, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], checked: 0, effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
     }
 }
 
@@ -566,8 +568,6 @@ pub unsafe fn install_census() {
 pub unsafe fn scene_begin(mt: &MainThread, kind: u32, camera: usize, route: Route) {
     // The shapes destroyed on another thread leave the tables before any walk of the scene.
     crate::worker_events::drain();
-    // The objects that Lua changed before this scene: its displays check them again.
-    apply_changes(mt);
     tables(mt).world_camera = if kind == SCENE_WORLD { camera } else { 0 };
     tables(mt).scene_kind = kind;
     tables(mt).scene_route = route;
@@ -721,12 +721,12 @@ pub unsafe fn begin_draw(mt: &MainThread) {
 pub unsafe fn frame_tick(mt: &MainThread) {
     crate::worker_events::drain();
     // The change notes that Lua made on another thread (MWSE fires some events on the cell
-    // worker): the main thread applies them here.
+    // worker): the main thread notes them here.
     let queued = OFF_THREAD_CHANGES.lock().map(|mut q| core::mem::take(&mut *q)).unwrap_or_default();
     for address in queued {
         note_change(mt, address);
     }
-    apply_changes(mt);
+    change_frame_end(mt);
     crate::effect_chain::frame_tick(mt);
     FRAME_DISPLAYS.get(mt).frame_end();
     let mut tables_open = tables(mt);
@@ -915,7 +915,10 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     t.next_id = t.next_id.wrapping_add(1).max(1);
     let generation = t.generation;
     let frame = t.frame;
-    t.instances.insert(shape, Instance::new(id, class, geometry, material, frame, generation, skinned, live, points));
+    let mut instance = Instance::new(id, class, geometry, material, frame, generation, skinned, live, points);
+    // The classification reads the shape as it is now: the notes before it are done.
+    instance.checked = change_count(mt);
+    t.instances.insert(shape, instance);
     t.pending = Some((shape, id));
 }
 
@@ -1609,12 +1612,89 @@ pub enum Recheck {
 static RECHECKS: MainCell<[u64; 6]> = MainCell::new([0; 6]);
 
 /// The objects a Lua mod changed (`nirender.changed`, from
-/// `mod/MWSE/mods/nirender/notifier.lua`), and the counts of the notes received, of the
-/// scans of the table and of the shapes hit.
-static CHANGED: MainCell<Option<HashSet<usize>>> = MainCell::new(None);
-static CHANGE_NOTES: MainCell<[u64; 3]> = MainCell::new([0; 3]);
-/// The processor ticks of the scans of the table: all of them, and the longest one.
-static CHANGE_TICKS: MainCell<[i64; 2]> = MainCell::new([0; 2]);
+/// `mod/MWSE/mods/nirender/notifier.lua`): [`ChangeNotes`].
+static CHANGES: MainCell<Option<ChangeNotes>> = MainCell::new(None);
+/// The counts of the display checks of the notes and of the shapes they hit.
+static CHANGE_NOTES: MainCell<[u64; 2]> = MainCell::new([0; 2]);
+/// The processor ticks of the display checks: all of them, this frame's, and the worst
+/// frame's.
+static CHANGE_TICKS: MainCell<[i64; 3]> = MainCell::new([0; 3]);
+/// The changed objects that [`ChangeNotes`] keeps; one more clears them all.
+const CHANGED_CAP: usize = 4096;
+
+/// The objects that Lua changed, each with its stamp: the count of notes at its last note.
+/// A retained shape keeps the count at its last check ([`Instance::checked`]). At its next
+/// display it looks up itself and its properties ([`ChangeNotes::hits`]). No scan of the
+/// table and no index of the properties' holders: the check runs only at the displays.
+#[derive(Default)]
+struct ChangeNotes {
+    /// The notes received. The stamp of the last note.
+    count: u64,
+    /// The changed objects and their stamps, at most [`CHANGED_CAP`].
+    changed: HashMap<usize, u64>,
+    /// The stamp of the note that cleared `changed`: a shape checked before it checks again.
+    cleared: u64,
+    /// The number of clears.
+    clears: u64,
+}
+
+impl ChangeNotes {
+    fn note(&mut self, address: usize) {
+        self.count += 1;
+        if self.changed.len() >= CHANGED_CAP && !self.changed.contains_key(&address) {
+            self.changed.clear();
+            self.cleared = self.count;
+            self.clears += 1;
+        }
+        self.changed.insert(address, self.count);
+    }
+
+    /// A shape checked at stamp `checked` must be checked again: a note after that stamp
+    /// named the shape or one of its properties, or cleared the changed objects. A freed
+    /// property's address used again only gives a recheck too many.
+    fn hits(&self, checked: u64, shape: usize, properties: &[usize; PROPERTY_SLOTS]) -> bool {
+        let after = |address: usize| address != 0 && self.changed.get(&address).is_some_and(|&stamp| stamp > checked);
+        self.cleared > checked || after(shape) || properties.iter().any(|&property| after(property))
+    }
+}
+
+/// The count of notes so far: the stamp of a new instance, which a note before it does not
+/// hit.
+unsafe fn change_count(mt: &MainThread) -> u64 {
+    CHANGES.get(mt).as_ref().map_or(0, |notes| notes.count)
+}
+
+/// At a display of a retained shape: if a note came since its last check, a note of the
+/// shape or of one of its `properties` marks it for a recheck at this display. In a frame
+/// without notes, one compare.
+unsafe fn check_notes(mt: &MainThread, instance: &mut Instance, shape: usize, properties: &[usize; PROPERTY_SLOTS]) {
+    let changes_open = CHANGES.get(mt);
+    let Some(notes) = changes_open.as_ref() else { return };
+    if instance.checked >= notes.count {
+        return;
+    }
+    let start = capture::ticks();
+    let hit = notes.hits(instance.checked, shape, properties);
+    instance.checked = notes.count;
+    let counts = &mut *CHANGE_NOTES.get(mt);
+    counts[0] += 1;
+    if hit && !instance.recheck {
+        instance.recheck = true;
+        (*RECHECKS.get(mt))[Recheck::Notified as usize] += 1;
+        counts[1] += 1;
+    }
+    let ticks = &mut *CHANGE_TICKS.get(mt);
+    let pass = capture::ticks() - start;
+    ticks[0] += pass;
+    ticks[1] += pass;
+}
+
+/// The end of a frame for the cost of the display checks: the worst frame.
+unsafe fn change_frame_end(mt: &MainThread) {
+    let ticks = &mut *CHANGE_TICKS.get(mt);
+    ticks[2] = ticks[2].max(ticks[1]);
+    ticks[1] = 0;
+}
 /// The change notes made on another thread, for the main thread's next `frame_tick`.
 static OFF_THREAD_CHANGES: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
@@ -1634,40 +1714,7 @@ pub unsafe fn note_change(mt: &MainThread, address: usize) {
     if address == 0 {
         return;
     }
-    (*CHANGED.get(mt)).get_or_insert_with(HashSet::default).insert(address);
-    (*CHANGE_NOTES.get(mt))[0] += 1;
-}
-
-/// At the start of each scene and at the end of the frame: each retained shape that is a
-/// changed object, or whose property state holds one, is checked again at its next display.
-/// A change that Lua makes before a scene so reaches that scene's displays, also between two
-/// scenes of one frame. One pass over the table, only when notes wait.
-unsafe fn apply_changes(mt: &MainThread) {
-    let mut changed_open = CHANGED.get(mt);
-    let Some(changed) = changed_open.as_mut() else { return };
-    if changed.is_empty() {
-        return;
-    }
-    let start = capture::ticks();
-    let notes = &mut *CHANGE_NOTES.get(mt);
-    notes[1] += 1;
-    let mut tables_open = tables(mt);
-    let t = &mut *tables_open;
-    for (&shape, instance) in t.instances.iter_mut() {
-        // Only the table's own copy of the properties: the cell worker can have freed the
-        // shape since the last drain of its events.
-        let hit = changed.contains(&shape) || instance.properties.iter().any(|&property| property != 0 && changed.contains(&property));
-        if hit && !instance.recheck {
-            instance.recheck = true;
-            (*RECHECKS.get(mt))[Recheck::Notified as usize] += 1;
-            notes[2] += 1;
-        }
-    }
-    changed.clear();
-    let ticks = &mut *CHANGE_TICKS.get(mt);
-    let pass = capture::ticks() - start;
-    ticks[0] += pass;
-    ticks[1] = ticks[1].max(pass);
+    (*CHANGES.get(mt)).get_or_insert_with(ChangeNotes::default).note(address);
 }
 
 /// The materials of these handles named a device texture that was freed
@@ -2002,7 +2049,13 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         let mut tables_open = tables(mt);
         let t = &mut *tables_open;
         let (frame, generation) = (t.frame, t.generation);
-        // A new property or effect state since the classification: classify again.
+        let properties = if property_state != 0 { core::array::from_fn(|i| rd(property_state, PS::propAlpha + i * 4)) } else { [0; PROPERTY_SLOTS] };
+        // Lua changed the shape or one of its properties since its last check.
+        if let Some(instance) = t.instances.get_mut(&shape) {
+            check_notes(mt, instance, shape, &properties);
+        }
+        // A new property or effect state since the classification, or a Lua change: classify
+        // again.
         if let Some((skinned, was_live)) = t.instances.get_mut(&shape).filter(|i| i.recheck).map(|i| {
             i.recheck = false;
             (i.skinned, i.live)
@@ -2030,8 +2083,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         if !instance.filled || renderer == 0 {
             return false;
         }
-        // The copy of the properties for `apply_changes` (the shape is alive here).
-        instance.properties = if property_state != 0 { core::array::from_fn(|i| rd(property_state, PS::propAlpha + i * 4)) } else { [0; PROPERTY_SLOTS] };
+        instance.properties = properties;
         instance.sorted_blend = instance.properties[0] != 0 && {
             let flags = rd::<u16>(instance.properties[0], PROPERTY_FLAGS);
             flags & ALPHA_BLEND != 0 && flags & ALPHA_NO_SORTER == 0
@@ -2352,6 +2404,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
     // Copies of the counts: each table opens once here.
     let (rechecks, change_notes, queue_counts, walk_places) = (*RECHECKS.get(mt), *CHANGE_NOTES.get(mt), *QUEUE_COUNTS.get(mt), *WALK_PLACES.get(mt));
     let change_ms = (*CHANGE_TICKS.get(mt)).map(|ticks| ticks as f64 * 1000.0 / capture::ticks_per_second() as f64);
+    let (notes, clears) = CHANGES.get(mt).as_ref().map_or((0, 0), |notes| (notes.count, notes.clears));
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     let reasons = ["controller", "node kind", "property controller", "at the record", "depth function", "parent chain too long"];
@@ -2387,8 +2440,8 @@ pub unsafe fn report(mt: &MainThread) -> String {
         t.states
     ) + "\n"
         + &format!(
-            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {} ({:.3} ms, the longest {:.3} ms), shapes hit {}; texture effects watched {}, materials noted again for a changed effect {}, for a freed texture {}; the note of every 64th frame found changed: {}\n",
-            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], change_notes[0], change_notes[1], change_ms[0], change_ms[1], change_notes[2], t.effects.len(), t.effect_notes, t.texture_notes,
+            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, display checks {} ({:.3} ms, the worst frame {:.3} ms), shapes hit {}, clears of the changed objects {}; texture effects watched {}, materials noted again for a changed effect {}, for a freed texture {}; the note of every 64th frame found changed: {}\n",
+            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], notes, change_notes[0], change_ms[0], change_ms[1].max(change_ms[2]), change_notes[1], clears, t.effects.len(), t.effect_notes, t.texture_notes,
             crate::material_stream::GROUP_NAMES.iter().zip(t.periodic_changes).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
         )
         + &format!(
@@ -2506,40 +2559,106 @@ mod tests {
         }
     }
 
-    /// Notes that Lua made before the scenes of a frame: one scan of the table at the first
-    /// scene, none at the others or at the end of the frame. A note between two scenes (a mod's
-    /// view that changes a property between its renders) reaches the next scene: one more scan.
+    /// A note before a display marks the shape at that display, once. A display with no new
+    /// note does no lookup. A note between two displays (a mod's view that changes a property
+    /// between its renders) reaches the next display.
     #[test]
-    fn notes_before_the_scenes_of_a_frame_give_one_scan() {
-        use crate::link::SCENE_UI;
+    fn a_display_checks_each_new_note_once() {
         let _turn = crate::main_thread::TestTurn::take();
         unsafe {
             let before = crate::shadow::main_thread_for_test();
             let mt = MainThread::claim();
             let shape = 0x7600_0000;
-            let property = 0x7600_1000;
+            let mut properties = [0; PROPERTY_SLOTS];
+            properties[0] = 0x7600_1000;
             let mut instance = Instance::new(76, 0, 1, 2, 0, 0, false, false, false);
-            instance.properties[0] = property;
-            tables(&mt).instances.insert(shape, instance);
-            let scans = (*CHANGE_NOTES.get(&mt))[1];
+            instance.checked = change_count(&mt);
+            let checks = (*CHANGE_NOTES.get(&mt))[0];
 
-            note_change(&mt, property);
-            scene_begin(&mt, SCENE_OTHER, 0, Route::Places);
-            assert!(tables(&mt).instances[&shape].recheck, "the scene after the note did not mark the shape");
-            scene_begin(&mt, SCENE_UI, 0, Route::Main);
-            apply_changes(&mt);
-            assert_eq!((*CHANGE_NOTES.get(&mt))[1], scans + 1);
-
-            tables(&mt).instances.get_mut(&shape).unwrap().recheck = false;
-            note_change(&mt, property);
-            scene_begin(&mt, SCENE_OTHER, 0, Route::Places);
-            assert!(tables(&mt).instances[&shape].recheck);
-            assert_eq!((*CHANGE_NOTES.get(&mt))[1], scans + 2);
-
-            tables(&mt).instances.remove(&shape);
-            tables(&mt).scene_route = Route::Main;
+            note_change(&mt, properties[0]);
+            check_notes(&mt, &mut instance, shape, &properties);
+            assert!(instance.recheck, "the display after the note did not mark the shape");
+            assert_eq!(instance.checked, change_count(&mt));
+            // The next display, with no new note: no check.
+            instance.recheck = false;
+            check_notes(&mt, &mut instance, shape, &properties);
+            assert!(!instance.recheck);
+            assert_eq!((*CHANGE_NOTES.get(&mt))[0], checks + 1);
+            // A note of another object: a check, no mark.
+            note_change(&mt, 0x7600_2000);
+            check_notes(&mt, &mut instance, shape, &properties);
+            assert!(!instance.recheck);
+            // A note of the shape itself between two displays.
+            note_change(&mt, shape);
+            check_notes(&mt, &mut instance, shape, &properties);
+            assert!(instance.recheck);
+            assert_eq!((*CHANGE_NOTES.get(&mt))[0], checks + 3);
+            change_frame_end(&mt);
+            assert_eq!((*CHANGE_TICKS.get(&mt))[1], 0);
             crate::shadow::restore_main_thread(before);
         }
+    }
+
+    /// The display check marks the same shapes as a full scan of the table at the note, for
+    /// the shapes displayed after the note. A shape not displayed in the note's frame is marked
+    /// at its display in a later frame. A new instance is not marked by an older note of its
+    /// address. A clear of the changed objects marks every shape checked before it.
+    #[test]
+    fn the_display_check_marks_the_same_shapes_as_a_full_scan() {
+        let slots = |properties: &[usize]| {
+            let mut copy = [0; PROPERTY_SLOTS];
+            copy[..properties.len()].copy_from_slice(properties);
+            copy
+        };
+        // 10 and 11 share property 100; 12 holds 101 in two slots; 13 holds 102.
+        let shapes = [(10, slots(&[100, 0, 103])), (11, slots(&[100])), (12, slots(&[101, 101])), (13, slots(&[102]))];
+        let set = |addresses: &[usize]| addresses.iter().copied().collect::<HashSet<usize>>();
+        let by_scan = |changed: &HashSet<usize>| shapes.iter().filter(|(shape, properties)| changed.contains(shape) || properties.iter().any(|p| *p != 0 && changed.contains(p))).map(|(shape, _)| *shape).collect::<HashSet<usize>>();
+        let all_notes = [set(&[100]), set(&[101]), set(&[13]), set(&[103, 102]), set(&[999]), set(&[100, 101, 102, 103, 10, 11, 12, 13, 999])];
+        for changed in &all_notes {
+            let mut notes = ChangeNotes::default();
+            notes.note(5000);
+            // Every shape is checked after the first note, then the notes of the case come.
+            let checked = notes.count;
+            for &address in changed {
+                notes.note(address);
+            }
+            let by_display = shapes.iter().filter(|(shape, properties)| notes.hits(checked, *shape, properties)).map(|(shape, _)| *shape).collect::<HashSet<usize>>();
+            assert_eq!(by_display, by_scan(changed), "notes {changed:?}");
+            // Checked after the notes: no shape is hit again.
+            assert!(shapes.iter().all(|(shape, properties)| !notes.hits(notes.count, *shape, properties)));
+        }
+        assert_eq!(by_scan(&set(&[100])), set(&[10, 11]));
+
+        // Frame 1: a note of 100; only shape 12 displays. Frame 2: a note of 101; 10 displays.
+        let mut notes = ChangeNotes::default();
+        notes.note(100);
+        let (properties_10, properties_12) = (&shapes[0].1, &shapes[2].1);
+        assert!(!notes.hits(0, 12, properties_12));
+        let checked_12 = notes.count;
+        notes.note(101);
+        assert!(notes.hits(0, 10, properties_10), "a shape not displayed in the note's frame missed it");
+        assert!(notes.hits(checked_12, 12, properties_12));
+
+        // A new instance at an address that a note named before it.
+        let made = notes.count;
+        assert!(!notes.hits(made, 100, &slots(&[])));
+        assert!(!notes.hits(made, 77, &slots(&[101])));
+
+        // The cap: one changed object more clears them all; every shape checked before rechecks.
+        let mut notes = ChangeNotes::default();
+        for address in 0..CHANGED_CAP {
+            notes.note(0x1_0000 + address);
+        }
+        let checked = notes.count;
+        assert_eq!(notes.clears, 0);
+        notes.note(0x9_0000);
+        assert_eq!((notes.clears, notes.changed.len()), (1, 1));
+        assert!(notes.hits(checked, 10, properties_10), "a clear did not mark a shape checked before it");
+        assert!(!notes.hits(notes.count, 10, properties_10));
+        // A note again of an object already kept clears nothing.
+        notes.note(0x9_0000);
+        assert_eq!(notes.clears, 1);
     }
 
     /// A shape that the engine does not display after a reset (a culled weapon, a shape out of
