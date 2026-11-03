@@ -36,6 +36,11 @@ Stages (capture, baseline and only by default, in this order):
            turn, at each place.
 
 --disable-mod NAME switches a mod of the profile off for the runs (an A/B of a mod).
+
+--weather N pins the weather of the runs and holds it (the runner's --weather): 0, clear, by
+default, so that a capture or a rate is made in a known weather. Each capture, rate and tour
+stage prints the run's weather line and fails when it does not show the pin held. --weather any
+leaves the game's weather, not pinned, and the line names it.
 """
 import argparse
 import contextlib
@@ -85,6 +90,44 @@ def newest(label, since=None):
 
 GPU_TIME = {}
 RUNNER_ARGS = []
+# The weather that the runs pin and hold (the runner's --weather), or None for --weather any.
+WEATHER = {"pin": 0}
+
+
+def weather_pin(text):
+    """The weather of --weather and a problem text: (0 to 9, None), (None, None) for `any`, or
+    (None, the problem)."""
+    if text == "any":
+        return None, None
+    if text.isdigit() and 0 <= int(text) <= 9:
+        return int(text), None
+    return None, "--weather %s: 0 to 9, or any" % text
+
+
+def run_weather_line(folder):
+    """The first line of the run's weather-of-the-run.txt (the runner's summary), or ""."""
+    try:
+        with open(os.path.join(folder, "weather-of-the-run.txt"), errors="replace") as f:
+            return f.readline().strip()
+    except OSError:
+        return ""
+
+
+def weather_held(line, pin):
+    """Whether the runner's weather line shows the pin of the runs held: `weather: pinned N, held
+    (...)`. With no pin (--weather any) any line does; the summary names it."""
+    if pin is None:
+        return True
+    return line.startswith("weather: pinned %d, held" % pin)
+
+
+def check_weather(folder):
+    """The weather of a run in the summary; a run whose weather was not pinned and held fails,
+    unless --weather any: a capture or a rate in the game's weather is no reference."""
+    line = run_weather_line(folder)
+    pin = WEATHER["pin"]
+    text = (line or "no weather-of-the-run.txt") + ("" if pin is not None else " (--weather any)")
+    return check(weather_held(line, pin), text)
 # The start of a run folder's name.
 RUN_TIME = "%Y%m%d-%H%M%S"
 
@@ -164,7 +207,8 @@ def stage_capture(place, mge_build):
     folder = game("v-capture-" + place, PLACES[place] + ["--steps", "exterior,capture"], mge_build)
     if not folder or not os.path.isfile(os.path.join(folder, "exterior.nircap")):
         return check(False, "no capture from the run")
-    ok = check_counts(folder)
+    ok = check_weather(folder)
+    ok &= check_counts(folder)
     capture = os.path.join(folder, "exterior.nircap")
     a = os.path.join(folder, "replay.png")
     code, out = run_code([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--mge-build", mge_build], {})
@@ -253,6 +297,23 @@ def self_test():
             assert newest("v-test") == new and newest("v-test", "99991231-000000") is None
     finally:
         REPO, run_code = real_repo, real_run_code
+    # The weather: pinned clear by default, `any` for the game's; a run whose weather line does not
+    # show the pin held fails, so a capture in the game's weather is not taken as a reference.
+    assert weather_pin("0") == (0, None) and weather_pin("9") == (9, None) and weather_pin("any") == (None, None)
+    assert weather_pin("10")[1] and weather_pin("clear")[1] and weather_pin("-1")[1]
+    assert weather_held("weather: pinned 0, held (0 re-pins)", 0)
+    assert not weather_held("weather: pinned 2, held (0 re-pins)", 0)
+    assert not weather_held("weather: the game's: Ashstorm (6), Cloudy (1)", 0)
+    assert not weather_held("", 0)
+    assert weather_held("weather: the game's: Ashstorm (6)", None)
+    with tempfile.TemporaryDirectory() as run:
+        assert run_weather_line(run) == ""
+        with open(os.path.join(run, "weather-of-the-run.txt"), "w") as f:
+            f.write("weather: pinned 0, held (0 re-pins)\nweather start: current 6 \"Ashstorm\"\n")
+        assert run_weather_line(run) == "weather: pinned 0, held (0 re-pins)"
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            assert check_weather(run)
+        assert "ok   weather: pinned 0, held" in printed.getvalue()
     # The folders of the baseline stage. With --now, it writes nothing in the baseline folder.
     base, other = os.path.join("x", "base"), os.path.join("x", "other")
     assert picture_folders(base, True, None) == (os.path.join(base, "accepted"), os.path.join(base, "tour", "accepted"))
@@ -358,6 +419,8 @@ def stage_only(place, mge_build):
     folder = game("v-only-" + place, PLACES[place] + ["--steps", "exterior,rate"], mge_build)
     if not folder:
         return check(False, "no run")
+    if not check_weather(folder):
+        return False
     log = open(os.path.join(folder, "MWSE.log"), errors="replace").read()
     rate = re.search(r"rate: ([\d.]+) frames", log)
     lines = [l for l in log.splitlines() if "[nirender.owndevice] after " in l]
@@ -452,7 +515,8 @@ def stage_tour(mge_build):
     if not folder or len([f for f in os.listdir(folder) if f.endswith(".nircap")]) != 3:
         return check(False, "no three captures from the run")
     print("       " + folder, flush=True)
-    ok = check_counts(folder)
+    ok = check_weather(folder)
+    ok &= check_counts(folder)
     code, out = run_code([PY, os.path.join(HERE, "validate_tour.py"), folder, "--jobs", "4", "--mge-build", mge_build], {})
     if not ran((code, out), "validate_tour.py"):
         return False
@@ -473,7 +537,7 @@ def main():
     ap.add_argument("--now", default=None, help="the folder of the baseline stage's pictures, outside the baseline folder; without it, a run folder of its own in results")
     ap.add_argument("--gpu-time", action="store_true", help="the helper writes GPU time stamps in the only stage")
     ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off for the runs")
-    ap.add_argument("--weather", type=int, default=None, help="the weather of the runs, 0 clear to 9 blizzard (the game's without this)")
+    ap.add_argument("--weather", default="0", help="the weather of the runs, pinned and held: 0 clear (the default) to 9 blizzard; any: the game's, not pinned")
     ap.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no game, no replay")
     args = ap.parse_args()
     if args.self_test:
@@ -488,8 +552,14 @@ def main():
         print("the pictures of this gate: %s" % args.now, flush=True)
     if args.disable_mod:
         RUNNER_ARGS.extend(["--disable-mod", args.disable_mod])
-    if args.weather is not None:
-        RUNNER_ARGS.extend(["--weather", str(args.weather)])
+    weather, problem = weather_pin(args.weather)
+    if problem:
+        print("  FAIL " + problem, flush=True)
+        return 1
+    WEATHER["pin"] = weather
+    if weather is not None:
+        RUNNER_ARGS.extend(["--weather", str(weather)])
+    print("weather of the runs: %s" % ("pinned %d and held" % weather if weather is not None else "the game's, not pinned (--weather any)"), flush=True)
     if args.gpu_time:
         GPU_TIME["MGE_XE_GPU_TIME"] = "1"
     places = args.places.split(",")
