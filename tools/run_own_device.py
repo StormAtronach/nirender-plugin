@@ -262,10 +262,11 @@ def full_dump_note(args):
 
 
 def weather_summary(pinned, lines):
-    """What the result summary says of the weather: `pinned N`, or the game's with the names that
-    the mod's weather lines (owndevice.lua) show, in the order they first appear."""
+    """What the result summary says of the weather: `pinned N, held (k re-pins)`, where k counts the
+    `weather re-pin` lines that the mod logs each time it undid a change of the game (owndevice.lua);
+    or the game's, with the names that the mod's weather lines show, in the order they first appear."""
     if pinned is not None:
-        return "pinned %d" % pinned
+        return "pinned %d, held (%d re-pins)" % (pinned, sum(1 for line in lines if line.startswith("weather re-pin")))
     names = []
     for line in lines:
         if not line.startswith("weather"):
@@ -852,7 +853,11 @@ def self_test_weather():
         values.update(changes)
         return argparse.Namespace(**values)
 
-    assert weather_summary(0, []) == "pinned 0"
+    # A pinned weather: the re-pin lines of the mod are counted, and no other line.
+    assert weather_summary(0, []) == "pinned 0, held (0 re-pins)"
+    repins = ['weather event: changed immediately to 6 "Ashstorm"', 'weather re-pin 1: immediate change to 6 "Ashstorm", back to 0',
+              'weather re-pin 2: transition to 2 "Foggy", back to 0', 'rate: 1.0 weather re-pin 3']
+    assert weather_summary(0, repins) == "pinned 0, held (2 re-pins)", weather_summary(0, repins)
     # The game's weather: the names in order of first appearance, from every kind of line.
     lines = [
         'weather start: current 3 "Overcast"',
@@ -883,7 +888,8 @@ def self_test_weather():
     note = weather_note(None, lines)
     assert note.splitlines()[0] == "weather: the game's: Overcast (3), Rain (6), Blizzard (9)", note
     assert note.splitlines()[1:] == lines[:4], note
-    assert weather_note(0, lines).splitlines()[0] == "weather: pinned 0"
+    assert weather_note(0, lines).splitlines()[0] == "weather: pinned 0, held (0 re-pins)"
+    assert weather_note(0, repins).splitlines()[0] == "weather: pinned 0, held (2 re-pins)"
     assert weather_note(None, []) == "weather: the game's: none logged\n"
 
 
