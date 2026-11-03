@@ -49,6 +49,7 @@ def use_instance(instance, game_dir=None, profile="Default"):
     harness.GAME_DIR = game_dir or harness.GAME_DIR
     harness.MWSE_LOGS = (os.path.join(instance, "overwrite", "Root", "MWSE.log"), os.path.join(harness.GAME_DIR, "MWSE.log"))
     harness.WARNINGS = (os.path.join(instance, "overwrite", "Root", "Warnings.txt"), os.path.join(harness.GAME_DIR, "Warnings.txt"))
+    harness.MINIDUMPS = (os.path.join(instance, "overwrite", "Root", "MWSE_MiniDump.dmp"), os.path.join(harness.GAME_DIR, "MWSE_MiniDump.dmp"))
     harness.ROOT_BUILDER_DATA = os.path.join(instance, "plugins", "data", "RootBuilder")
     MGE_LOGS = (os.path.join(harness.GAME_DIR, "mgeXE.log"), os.path.join(instance, "overwrite", "Root", "mgeXE.log"))
 
