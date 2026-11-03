@@ -566,6 +566,8 @@ pub unsafe fn install_census() {
 pub unsafe fn scene_begin(mt: &MainThread, kind: u32, camera: usize, route: Route) {
     // The shapes destroyed on another thread leave the tables before any walk of the scene.
     crate::worker_events::drain();
+    // The objects that Lua changed before this scene: its displays check them again.
+    apply_changes(mt);
     tables(mt).world_camera = if kind == SCENE_WORLD { camera } else { 0 };
     tables(mt).scene_kind = kind;
     tables(mt).scene_route = route;
@@ -1611,6 +1613,8 @@ static RECHECKS: MainCell<[u64; 6]> = MainCell::new([0; 6]);
 /// scans of the table and of the shapes hit.
 static CHANGED: MainCell<Option<HashSet<usize>>> = MainCell::new(None);
 static CHANGE_NOTES: MainCell<[u64; 3]> = MainCell::new([0; 3]);
+/// The processor ticks of the scans of the table: all of them, and the longest one.
+static CHANGE_TICKS: MainCell<[i64; 2]> = MainCell::new([0; 2]);
 /// The change notes made on another thread, for the main thread's next `frame_tick`.
 static OFF_THREAD_CHANGES: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
@@ -1634,15 +1638,17 @@ pub unsafe fn note_change(mt: &MainThread, address: usize) {
     (*CHANGE_NOTES.get(mt))[0] += 1;
 }
 
-/// Once a frame: each retained shape that is a changed object, or whose property state holds
-/// one, is checked again at its next display. One pass over the table, only in a frame
-/// with changes.
+/// At the start of each scene and at the end of the frame: each retained shape that is a
+/// changed object, or whose property state holds one, is checked again at its next display.
+/// A change that Lua makes before a scene so reaches that scene's displays, also between two
+/// scenes of one frame. One pass over the table, only when notes wait.
 unsafe fn apply_changes(mt: &MainThread) {
     let mut changed_open = CHANGED.get(mt);
     let Some(changed) = changed_open.as_mut() else { return };
     if changed.is_empty() {
         return;
     }
+    let start = capture::ticks();
     let notes = &mut *CHANGE_NOTES.get(mt);
     notes[1] += 1;
     let mut tables_open = tables(mt);
@@ -1658,6 +1664,10 @@ unsafe fn apply_changes(mt: &MainThread) {
         }
     }
     changed.clear();
+    let ticks = &mut *CHANGE_TICKS.get(mt);
+    let pass = capture::ticks() - start;
+    ticks[0] += pass;
+    ticks[1] = ticks[1].max(pass);
 }
 
 /// The materials of these handles named a device texture that was freed
@@ -2341,6 +2351,7 @@ unsafe fn scene_sun(mt: &MainThread, t: &mut Tables) -> Option<[u32; 26]> {
 pub unsafe fn report(mt: &MainThread) -> String {
     // Copies of the counts: each table opens once here.
     let (rechecks, change_notes, queue_counts, walk_places) = (*RECHECKS.get(mt), *CHANGE_NOTES.get(mt), *QUEUE_COUNTS.get(mt), *WALK_PLACES.get(mt));
+    let change_ms = (*CHANGE_TICKS.get(mt)).map(|ticks| ticks as f64 * 1000.0 / capture::ticks_per_second() as f64);
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     let reasons = ["controller", "node kind", "property controller", "at the record", "depth function", "parent chain too long"];
@@ -2376,8 +2387,8 @@ pub unsafe fn report(mt: &MainThread) -> String {
         t.states
     ) + "\n"
         + &format!(
-            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {}, shapes hit {}; texture effects watched {}, materials noted again for a changed effect {}, for a freed texture {}; the note of every 64th frame found changed: {}\n",
-            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], change_notes[0], change_notes[1], change_notes[2], t.effects.len(), t.effect_notes, t.texture_notes,
+            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, scans {} ({:.3} ms, the longest {:.3} ms), shapes hit {}; texture effects watched {}, materials noted again for a changed effect {}, for a freed texture {}; the note of every 64th frame found changed: {}\n",
+            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], change_notes[0], change_notes[1], change_ms[0], change_ms[1], change_notes[2], t.effects.len(), t.effect_notes, t.texture_notes,
             crate::material_stream::GROUP_NAMES.iter().zip(t.periodic_changes).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
         )
         + &format!(
@@ -2491,6 +2502,42 @@ mod tests {
             assert!(!retired.contains(&0), "the main view retired");
             assert!(view_report(&mt).starts_with("views: "));
             capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// Notes that Lua made before the scenes of a frame: one scan of the table at the first
+    /// scene, none at the others or at the end of the frame. A note between two scenes (a mod's
+    /// view that changes a property between its renders) reaches the next scene: one more scan.
+    #[test]
+    fn notes_before_the_scenes_of_a_frame_give_one_scan() {
+        use crate::link::SCENE_UI;
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            let shape = 0x7600_0000;
+            let property = 0x7600_1000;
+            let mut instance = Instance::new(76, 0, 1, 2, 0, 0, false, false, false);
+            instance.properties[0] = property;
+            tables(&mt).instances.insert(shape, instance);
+            let scans = (*CHANGE_NOTES.get(&mt))[1];
+
+            note_change(&mt, property);
+            scene_begin(&mt, SCENE_OTHER, 0, Route::Places);
+            assert!(tables(&mt).instances[&shape].recheck, "the scene after the note did not mark the shape");
+            scene_begin(&mt, SCENE_UI, 0, Route::Main);
+            apply_changes(&mt);
+            assert_eq!((*CHANGE_NOTES.get(&mt))[1], scans + 1);
+
+            tables(&mt).instances.get_mut(&shape).unwrap().recheck = false;
+            note_change(&mt, property);
+            scene_begin(&mt, SCENE_OTHER, 0, Route::Places);
+            assert!(tables(&mt).instances[&shape].recheck);
+            assert_eq!((*CHANGE_NOTES.get(&mt))[1], scans + 2);
+
+            tables(&mt).instances.remove(&shape);
+            tables(&mt).scene_route = Route::Main;
             crate::shadow::restore_main_thread(before);
         }
     }
