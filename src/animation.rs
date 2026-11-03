@@ -217,7 +217,8 @@ const RTTI_LOD_NODE: usize = 0x7DE270;
 
 /// What keeps the engine's walk from the node, by the rules of `NiAVObject::CullShow` 0x6EB480,
 /// `NiNode::Display` 0x6C9190 and `NiSwitchNode::Display` 0x6D8320 (`effect_chain` has the same
-/// rules for a billboard). The planes are not walked: a parent's bound holds its child's. [`None`]
+/// rules for a billboard). The planes are not walked: a parent's bound holds its child's [I: not
+/// read in the engine's update of the bounds]. [`None`]
 /// when nothing does, and when the chain is too long to read.
 unsafe fn withheld(camera: &Camera, node: usize) -> Option<Withheld> {
     if rd::<u16>(node, AV::flags) & APP_CULLED != 0 {
@@ -252,13 +253,18 @@ unsafe fn barred_by(camera: &Camera, parent: usize, child: usize) -> Option<With
 
 /// The child that a switch displays, or 0. A level of detail selects it at its display
 /// (`NiLODNode::Display` 0x7412B0) from the camera: here from the same values, as the index
-/// that it keeps is old when its display did not run. Another switch keeps its index.
+/// that it keeps is old when its display did not run. Another switch keeps its index; that of
+/// `NiFltAnimationNode`, which `NiFltAnimationNode::Display` 0x6D90B0 sets from the time, is old
+/// in the same way, and it is read as it is.
 unsafe fn selected_child(camera: &Camera, switch: usize) -> usize {
     let count = rd::<u32>(switch, NODE::kChildren_endIndex) as usize;
     let index = if crate::ports::ni::is_kind_of(switch, RTTI_LOD_NODE) {
+        let levels: usize = rd(switch, LOD::lodData);
+        if levels == 0 {
+            return 0;
+        }
         let centre: [f32; 3] = rd(switch, LOD::worldCentre);
         let d: [f32; 3] = core::array::from_fn(|i| centre[i] - camera.position[i]);
-        let levels: usize = rd(switch, LOD::lodData);
         let distance_squared = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * (camera.lod_adjust * camera.lod_adjust);
         lod_index(count, distance_squared, |level| {
             let at = levels + level * LEVEL::SIZE;
