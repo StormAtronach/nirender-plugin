@@ -1204,6 +1204,29 @@ fn table_slot(view_bits: bool, kind: crate::view_kind::ViewKind, view_slot: Opti
     view_slot.filter(|_| view_bits && kind != crate::view_kind::ViewKind::Main)
 }
 
+/// What a place of a view of its own does with one slot of its instance
+/// ([`RetainedSet::view_entries`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PlacePart {
+    /// The extension holds the slot, or it is skinned and has no bones yet.
+    Skip,
+    /// The slot does not blend, and the view's table draws it.
+    Table,
+    Draw,
+}
+
+/// The part of one slot in a place: `blends_only` when the view's table draws the slots that
+/// do not blend.
+fn place_part(held: bool, without_bones: bool, blends: bool, blends_only: bool) -> PlacePart {
+    if held || without_bones {
+        PlacePart::Skip
+    } else if blends_only && !blends {
+        PlacePart::Table
+    } else {
+        PlacePart::Draw
+    }
+}
+
 impl ViewTables {
     pub fn frame_start(&mut self) {
         self.lists.clear();
@@ -1762,14 +1785,14 @@ impl RetainedSet {
         let mut left_to_table = false;
         for &slot in self.by_id.get(&id).map(Vec::as_slice).unwrap_or(&[]) {
             let Some(s) = self.slots[slot as usize].as_ref() else { continue };
-            if s.held || (s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES) {
-                continue;
+            let without_bones = s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES;
+            // Only a place under a table asks for the bucket.
+            let blends = blends_only && self.buckets[s.bucket as usize].key.blend[0] != 0;
+            match place_part(s.held, without_bones, blends, blends_only) {
+                PlacePart::Skip => {}
+                PlacePart::Table => left_to_table = true,
+                PlacePart::Draw => entries.push((0, s.bucket, 0, slot)),
             }
-            if blends_only && self.buckets[s.bucket as usize].key.blend[0] == 0 {
-                left_to_table = true;
-                continue;
-            }
-            entries.push((0, s.bucket, 0, slot));
         }
         left_to_table
     }
@@ -3020,6 +3043,20 @@ mod view_bit_tests {
         assert_eq!(table_slot(true, ViewKind::Picture, Some(4)), Some(4));
         assert_eq!(table_slot(true, ViewKind::Picture, None), None);
         assert_eq!(table_slot(false, ViewKind::Picture, Some(4)), None);
+    }
+
+    #[test]
+    fn a_place_under_a_table_leaves_a_slot_that_does_not_blend_to_the_table() {
+        use PlacePart::{Draw, Skip, Table};
+        // The arguments: held, without bones, blends, blends only.
+        assert_eq!(place_part(false, false, false, true), Table);
+        assert_eq!(place_part(false, false, true, true), Draw);
+        // Without a table a place draws every slot.
+        assert_eq!(place_part(false, false, false, false), Draw);
+        // A held slot and a skinned slot without its bones draw in no place.
+        assert_eq!(place_part(true, false, true, true), Skip);
+        assert_eq!(place_part(false, true, false, true), Skip);
+        assert_eq!(place_part(true, false, false, false), Skip);
     }
 
     #[test]
