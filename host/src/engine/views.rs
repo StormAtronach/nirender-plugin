@@ -54,6 +54,54 @@ pub(crate) enum Place {
     New(usize, usize),
 }
 
+/// The number of the plugin's view slots (D82, the plugin's `view_slots`).
+pub(crate) const VIEW_SLOTS: usize = 32;
+/// The offset of the view field in a scene record (the plugin's `SceneV1::view`).
+const SCENE_VIEW_AT: usize = 48;
+/// The size of a scene record with the view field (the plugin's `SceneV1`, design section
+/// 3.4c): a shorter record, such as the 48 bytes of an older plugin, has no view.
+const SCENE_WITH_VIEW: usize = 56;
+
+/// The view slot of a scene record: the field holds the slot plus 1, 0 for a scene that is not
+/// a view. `None` for a record without the field, for 0, or for a slot past the table.
+pub(crate) fn scene_view(data: &[u8]) -> Option<u8> {
+    if data.len() < SCENE_WITH_VIEW {
+        return None;
+    }
+    let view = crate::data::word(data, SCENE_VIEW_AT) & 0xFF;
+    (view != 0 && view as usize <= VIEW_SLOTS).then(|| (view - 1) as u8)
+}
+
+/// The key of a view slot, as its last scene record gave it: the camera, and for a view into a
+/// texture the root and the target (0 for the back buffer). D82 stage 1 keeps it; the views
+/// of stage 2 draw from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ViewSlot {
+    camera: u32,
+    root: u32,
+    target: u32,
+}
+
+impl ViewSlot {
+    /// The plugin keeps a key's slot until it retires: another key in the slot without a
+    /// retirement is a fault of the stream. A view into the back buffer has many roots.
+    fn same_key(&self, other: &ViewSlot) -> bool {
+        self.camera == other.camera && self.target == other.target && (self.target == 0 || self.root == other.root)
+    }
+}
+
+/// The counts of the view slots.
+#[derive(Debug, Default, Clone, Copy)]
+struct SlotCounts {
+    scenes: u64,
+    view_scenes: u64,
+    /// Scenes whose slot held another key with no retirement between.
+    rekeyed: u64,
+    retired: u64,
+    /// Retirements of a slot that no scene named.
+    retired_unknown: u64,
+}
+
 /// The views of a frame.
 #[derive(Debug, Default)]
 pub(crate) struct Views {
@@ -62,9 +110,47 @@ pub(crate) struct Views {
     groups: Vec<Group>,
     /// The group of the scene in progress.
     open: Option<usize>,
+    /// The head of the stream says that the scene records carry the view slot
+    /// (`HEADER_SCENE_VIEWS`).
+    pub(crate) slots_on: bool,
+    /// The view slots of D82, for the whole run: a retirement frees one.
+    slots: [Option<ViewSlot>; VIEW_SLOTS],
+    slot_counts: SlotCounts,
 }
 
 impl Views {
+    /// A scene record of a stream with view slots: the scene's slot keeps its key.
+    pub(crate) fn note_scene(&mut self, view: Option<u8>, camera: u32, root: u32, target: u32) {
+        self.slot_counts.scenes += 1;
+        let Some(view) = view else { return };
+        self.slot_counts.view_scenes += 1;
+        let key = ViewSlot { camera, root, target };
+        let slot = &mut self.slots[view as usize];
+        if slot.is_some_and(|old| !old.same_key(&key)) {
+            self.slot_counts.rekeyed += 1;
+        }
+        *slot = Some(key);
+    }
+
+    /// The frame event `EVENT_VIEW_RETIRE`: the slot is free.
+    pub(crate) fn retire(&mut self, slot: u32) {
+        match self.slots.get_mut(slot as usize).and_then(Option::take) {
+            Some(_) => self.slot_counts.retired += 1,
+            None => self.slot_counts.retired_unknown += 1,
+        }
+    }
+
+    /// The report line of the view slots.
+    pub(crate) fn slots_line(&self) -> String {
+        let c = &self.slot_counts;
+        let known = self.slots.iter().flatten().count();
+        let textures = self.slots.iter().flatten().filter(|slot| slot.target != 0).count();
+        format!(
+            "view slots: {} scenes, {} of them of a view; {known} slots known now ({textures} into a texture); {} scenes found another key in their slot; {} slots retired, {} retirements of a slot not known",
+            c.scenes, c.view_scenes, c.rekeyed, c.retired, c.retired_unknown
+        )
+    }
+
     /// The start of a frame: no group.
     pub(crate) fn frame_start(&mut self) {
         self.groups.clear();
@@ -276,5 +362,31 @@ mod tests {
         assert_eq!(take_slot(&mut used, 3), Some(2));
         assert_eq!(take_slot(&mut used, 3), None);
         assert_eq!(used, 3);
+    }
+
+    /// A view slot keeps its key across frames until its retirement. Another key in a slot
+    /// with no retirement is counted; a texture view with a new root is another key, the back
+    /// buffer's view is not.
+    #[test]
+    fn a_view_slot_keeps_its_key_until_it_retires() {
+        let mut views = Views::default();
+        views.note_scene(Some(0), 10, 100, 0);
+        views.note_scene(Some(3), 20, 200, 7);
+        views.note_scene(None, 30, 300, 0);
+        views.frame_start();
+        assert_eq!(views.slots[3], Some(ViewSlot { camera: 20, root: 200, target: 7 }));
+        views.note_scene(Some(0), 10, 101, 0);
+        assert_eq!(views.slot_counts.rekeyed, 0);
+        views.note_scene(Some(3), 20, 201, 7);
+        assert_eq!(views.slot_counts.rekeyed, 1);
+        views.retire(3);
+        views.retire(3);
+        views.retire(99);
+        assert_eq!(views.slots[3], None);
+        assert_eq!((views.slot_counts.retired, views.slot_counts.retired_unknown), (1, 2));
+        views.note_scene(Some(3), 40, 400, 9);
+        assert_eq!(views.slot_counts.rekeyed, 1);
+        assert_eq!((views.slot_counts.scenes, views.slot_counts.view_scenes), (6, 5));
+        assert!(views.slots_line().starts_with("view slots: 6 scenes, 5 of them of a view; 2 slots known now (1 into a texture)"));
     }
 }
