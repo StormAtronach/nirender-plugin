@@ -1287,6 +1287,7 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     crate::material_stream::reset(t);
     crate::effect_chain::reset(t);
     crate::light_stream::reset(t);
+    crate::view_options::reset();
     crate::instance_stream::reset(t, "a capture file starts");
     if let Some(mut s) = state(&lock) {
         s.tee_only = false;
