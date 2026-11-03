@@ -1756,18 +1756,22 @@ impl RetainedSet {
     /// for a view of its own), in the order of its slots: the slots the extension holds, and a
     /// skinned slot without its bones, are left out.
     /// With `blends_only`, the view's table draws the slots that do not blend ([`Sorted::Opaque`]),
-    /// and its places draw only those that blend.
-    fn view_entries(&self, id: u32, blends_only: bool, entries: &mut Vec<(u64, u32, u32, u32)>) {
+    /// and its places draw only those that blend. True when a slot was left out for the table:
+    /// the place is drawn then, by the table.
+    fn view_entries(&self, id: u32, blends_only: bool, entries: &mut Vec<(u64, u32, u32, u32)>) -> bool {
+        let mut left_to_table = false;
         for &slot in self.by_id.get(&id).map(Vec::as_slice).unwrap_or(&[]) {
             let Some(s) = self.slots[slot as usize].as_ref() else { continue };
             if s.held || (s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES) {
                 continue;
             }
             if blends_only && self.buckets[s.bucket as usize].key.blend[0] == 0 {
+                left_to_table = true;
                 continue;
             }
             entries.push((0, s.bucket, 0, slot));
         }
+        left_to_table
     }
 
     /// The draws of a view in the order they go to the GPU, into `order`:
@@ -2647,19 +2651,20 @@ impl Player {
             return;
         }
         let blends_only = self.table_bit(group).is_some();
-        let Some(slot) = self.view_slot(group) else { return };
         let mut entries = Vec::new();
         for id in ids {
             let before = entries.len();
-            self.retained.view_entries(*id, blends_only, &mut entries);
+            let left_to_table = self.retained.view_entries(*id, blends_only, &mut entries);
             self.renderer.counts.view_places += 1;
-            if entries.len() == before {
+            if entries.len() == before && !left_to_table {
                 self.renderer.counts.view_places_empty += 1;
             }
         }
+        // A run with nothing to draw takes no scene slot, as an empty table.
         if entries.is_empty() {
             return;
         }
+        let Some(slot) = self.view_slot(group) else { return };
         let view = RetainedView {
             scene_slot: slot,
             bit: 0,
