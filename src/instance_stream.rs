@@ -175,10 +175,14 @@ struct Instance {
     lights: Vec<u32>,
     ambient: u32,
     /// The views that show the instance in the helper (bit v for view slot v, `view_slots`),
-    /// and its key in the views' visible lists ([`ViewLists`]): [`NO_KEY`] until its first
-    /// display.
+    /// and its key in the visible lists of the views other than view 0 ([`ViewLists`]):
+    /// [`NO_KEY`] until its first display in one of them.
     visible: u32,
     list_key: u32,
+    /// The count of view 0's closes at its last display in view 0
+    /// ([`ViewLists::main_closes`]): view 0 displayed it since its last close when the two are
+    /// equal. 0 before its first display there.
+    main_shown: u32,
     /// Its `INSTANCE` record goes again for the start of a capture file (`reset`): the state
     /// records of its views follow the record (`restate`).
     restate: bool,
@@ -389,13 +393,18 @@ const PLACE_INDEX: u32 = 0x7FFF_FFFF;
 /// entries (the shape and the instance's key): one holds the entries that the view's scenes
 /// displayed since its last close, the other the entries that they did not display yet. A
 /// display moves its entry into the first list; a close visits only the second, and then the
-/// first list becomes the second. So a view that closes in every frame (view 0) visits only
-/// the instances that it did not display in that frame.
+/// first list becomes the second.
+///
+/// View 0 closes in every frame and has no lists: a display in it marks the instance with the
+/// count of its closes ([`Instance::main_shown`]), and its close sweeps the instances in the
+/// order of the table ([`close_main_view`]).
 ///
 /// An instance has one key for all views, from its first display to its end ([`forget`] and
 /// [`Tables::reject_pending`] give it back). For each view, the place of each key tells the
 /// list (bit 31) and the index of its entry.
 struct ViewLists {
+    /// The closes of view 0 since the start, from 1; 0 is never a count.
+    main_closes: u32,
     /// For each view: its two lists.
     entries: Vec<[Vec<(usize, u32)>; 2]>,
     /// For each view: the list (0 or 1) of the entries displayed since the last close.
@@ -409,6 +418,7 @@ struct ViewLists {
 impl ViewLists {
     fn new() -> ViewLists {
         ViewLists {
+            main_closes: 1,
             entries: (0..VIEW_SLOTS).map(|_| [Vec::new(), Vec::new()]).collect(),
             shown: vec![0; VIEW_SLOTS],
             places: vec![Vec::new(); VIEW_SLOTS],
@@ -580,7 +590,7 @@ impl Instance {
     /// An instance of a shape at its first draw: no record of it went yet.
     #[allow(clippy::too_many_arguments)]
     fn new(id: u32, class: u32, geometry: u32, material: u32, generation: u32, skinned: bool, live: bool, points: bool) -> Instance {
-        Instance { id, class, geometry, material, rotation: [0; 12], software: false, stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, visible: 0, list_key: NO_KEY, restate: false, under_billboard: false, views_frame: 0, frame_views: 0, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], checked: 0, effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
+        Instance { id, class, geometry, material, rotation: [0; 12], software: false, stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, visible: 0, list_key: NO_KEY, main_shown: 0, restate: false, under_billboard: false, views_frame: 0, frame_views: 0, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], checked: 0, effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
     }
 }
 
@@ -760,13 +770,38 @@ pub unsafe fn scene_end(mt: &MainThread) {
     }
 }
 
-/// Views close (`view_slots`, design 3.1): in each, a shape of its visible list that its scenes
-/// did not display and that is inside the culling planes of its camera is hidden in it
+/// Views close (`view_slots`, design 3.1): in each, a shape that its scenes did not display
+/// since its last close and that is inside the culling planes of its camera is hidden in it
 /// (`INSTANCE_STATE` with the view). After a root change the plane test is skipped: every
-/// shape not displayed is hidden. The close visits only the entries that the view's scenes did
-/// not display since its last close (`ViewLists`). Engine-rules R14, R16 (the skill
-/// wgpu-renderer-dev). After the first `display_cost` call the closes are timed.
+/// shape not displayed is hidden. View 0's close sweeps the instances in the order of the
+/// table; another view's close visits only the entries of its list that its scenes did not
+/// display (`ViewLists`, design 3.1a). Engine-rules R14, R16 (the skill wgpu-renderer-dev).
+/// After the first `display_cost` call the closes are timed.
 pub fn close_views(mt: &MainThread, closed: impl IntoIterator<Item = Closed>) {
+    // SAFETY: the close passes the bounds of the table's instances and copies of the camera's
+    // planes, which `NiBound::WhichSide` reads.
+    unsafe { close_views_with(mt, closed, engine_side) };
+}
+
+/// The side of the plane on which the bound is (`NiBound::WhichSide`): 2 is outside.
+///
+/// # Safety
+///
+/// `bound` is the address of an `NiBound` (the centre, then the radius).
+unsafe fn engine_side(bound: usize, plane: &[f32; 4]) -> u32 {
+    thiscall1(WHICH_SIDE, bound, plane.as_ptr() as u32)
+}
+
+/// The side of a plane for a bound: [`engine_side`], or a stand-in in a test.
+type WhichSide = unsafe fn(usize, &[f32; 4]) -> u32;
+
+/// [`close_views`] with the plane test `side`.
+///
+/// # Safety
+///
+/// `side` is safe to call for the bound of each instance of the table and the planes of the
+/// closed views.
+unsafe fn close_views_with(mt: &MainThread, closed: impl IntoIterator<Item = Closed>, side: WhichSide) {
     use core::sync::atomic::Ordering::Relaxed;
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
@@ -774,32 +809,75 @@ pub fn close_views(mt: &MainThread, closed: impl IntoIterator<Item = Closed>) {
     let timed = COST_ON.load(Relaxed);
     let start = if timed { capture::ticks() } else { 0 };
     for (slot, root_changed) in closed {
-        // SAFETY: the bounds are the instances' own, and the planes copies of the camera's.
-        unsafe { close_view(t, slot, root_changed, hide) };
+        let planes = core::mem::take(&mut t.view_planes[slot as usize]);
+        let close = Close { slot, root_changed, hide, planes: &planes, side };
+        let (visits, hides) = if slot == crate::view_slots::MAIN_VIEW { close_main_view(t, &close) } else { close_view(t, &close) };
+        t.view_planes[slot as usize] = planes;
+        t.states += hides[0] + hides[1];
+        CLOSE_HIDES[0].fetch_add(hides[0], Relaxed);
+        CLOSE_HIDES[1].fetch_add(hides[1], Relaxed);
+        CLOSE_VISITS.fetch_add(visits, Relaxed);
     }
     if timed {
         CLOSE_TICKS.fetch_add(capture::ticks() - start, Relaxed);
     }
 }
 
-/// The close of one view. Each entry that the view's scenes did not display since the last
-/// close stays or leaves ([`Instance::stays_at_close`]); an entry whose instance ended without
-/// giving its key back leaves too. Then the displayed entries become the entries that wait for
-/// the next close.
+/// The close of one view: the view, a root change since its last close, whether the close
+/// hides (mode gpu and a capture running), the planes of its camera, and the plane test.
+struct Close<'a> {
+    slot: u8,
+    root_changed: bool,
+    hide: bool,
+    planes: &'a [[f32; 4]],
+    side: WhichSide,
+}
+
+/// The close of view 0, in every frame: a sweep of the instances in the order of the table, as
+/// the close at the end of stage 1's world scene. Each instance that is visible in view 0 and
+/// that view 0 did not display since its last close stays or is hidden
+/// ([`Instance::stays_at_close`]). Then the count of the closes grows, so that every mark of a
+/// display is old. Without `hide` the close keeps every instance and visits none. Returns the
+/// instances visited and the hides (by the plane test, after a root change).
 ///
 /// # Safety
 ///
-/// The bounds of the listed instances and the view's planes are readable by `WHICH_SIDE`.
-unsafe fn close_view(t: &mut Tables, slot: u8, root_changed: bool, hide: bool) {
-    let view = slot as usize;
+/// `close.side` is safe to call for the bound of each instance of the table.
+unsafe fn close_main_view(t: &mut Tables, close: &Close) -> (u64, [u64; 2]) {
+    let stamp = t.lists.main_closes;
+    t.lists.main_closes = stamp.wrapping_add(1).max(1);
+    let mut hides = [0u64; 2];
+    let mut visits = 0u64;
+    if close.hide {
+        let bit = 1u32 << close.slot;
+        for instance in t.instances.values_mut() {
+            if instance.visible & bit == 0 || instance.main_shown == stamp {
+                continue;
+            }
+            visits += 1;
+            instance.stays_at_close(close, &mut t.undisplayed_left, &mut hides);
+        }
+    }
+    (visits, hides)
+}
+
+/// The close of a view other than view 0. Each entry that the view's scenes did not display
+/// since the last close stays or leaves ([`Instance::stays_at_close`]); an entry whose instance
+/// ended without giving its key back leaves too. Then the displayed entries become the entries
+/// that wait for the next close. Returns the entries visited and the hides.
+///
+/// # Safety
+///
+/// `close.side` is safe to call for the bounds of the listed instances.
+unsafe fn close_view(t: &mut Tables, close: &Close) -> (u64, [u64; 2]) {
+    let (slot, view) = (close.slot, close.slot as usize);
     let shown = t.lists.shown[view] as usize;
     let waiting_list = shown ^ 1;
     let mut waiting = core::mem::take(&mut t.lists.entries[view][waiting_list]);
-    let planes = core::mem::take(&mut t.view_planes[view]);
     let mut hides = [0u64; 2];
     for &(shape, key) in &waiting {
         let stays = match t.instances.get_mut(&shape).filter(|instance| instance.list_key == key) {
-            Some(instance) => instance.stays_at_close(slot, root_changed, hide, &planes, &mut t.undisplayed_left, &mut hides),
+            Some(instance) => instance.stays_at_close(close, &mut t.undisplayed_left, &mut hides),
             None => false,
         };
         if stays {
@@ -808,70 +886,71 @@ unsafe fn close_view(t: &mut Tables, slot: u8, root_changed: bool, hide: bool) {
             t.lists.set_place(slot, key, NOT_LISTED);
         }
     }
-    t.states += hides[0] + hides[1];
-    CLOSE_HIDES[0].fetch_add(hides[0], core::sync::atomic::Ordering::Relaxed);
-    CLOSE_HIDES[1].fetch_add(hides[1], core::sync::atomic::Ordering::Relaxed);
-    CLOSE_VISITS.fetch_add(waiting.len() as u64, core::sync::atomic::Ordering::Relaxed);
+    let visits = waiting.len() as u64;
     waiting.clear();
     t.lists.entries[view][waiting_list] = waiting;
     t.lists.shown[view] = waiting_list as u8;
-    t.view_planes[view] = planes;
+    (visits, hides)
 }
 
 impl Instance {
-    /// At the close of the view `slot`, for an instance that the view's scenes did not display
-    /// since its last close: true when it stays in the view's list, visible; false when it
-    /// leaves the list. It leaves when it is not visible in the view, and when the close
-    /// hides it (`hide`, with its values from a draw): after a root change, or when it is
-    /// inside every plane. A hide sends its state record and counts in `hides` (by
-    /// `root_changed`). An instance outside a plane stays; in view 0 it counts in
-    /// `undisplayed_left` by that plane, unless it is a sorted blend.
+    /// At the close of a view, for an instance that the view's scenes did not display since its
+    /// last close: true when it stays visible in the view (and in its list); false when it is
+    /// not visible in the view, or when the close hides it (`hide`, with its values from a
+    /// draw): after a root change, or when it is inside every plane. A hide sends its state
+    /// record and counts in `hides` (by the root change). An instance outside a plane stays; in
+    /// view 0 it counts in `undisplayed_left` by that plane, unless it is a sorted blend.
     ///
     /// # Safety
     ///
-    /// The bound of the instance and the planes are readable by `WHICH_SIDE`.
-    unsafe fn stays_at_close(&mut self, slot: u8, root_changed: bool, hide: bool, planes: &[[f32; 4]], undisplayed_left: &mut [u64; 7], hides: &mut [u64; 2]) -> bool {
-        let bit = 1u32 << slot;
+    /// `close.side` is safe to call for the bound of the instance.
+    unsafe fn stays_at_close(&mut self, close: &Close, undisplayed_left: &mut [u64; 7], hides: &mut [u64; 2]) -> bool {
+        let bit = 1u32 << close.slot;
         if self.visible & bit == 0 {
             return false;
         }
-        if !hide || !self.filled {
+        if !close.hide || !self.filled {
             return true;
         }
-        if !root_changed {
+        if !close.root_changed {
             let bound = if self.skinned { self.posed_bound.as_ptr() } else { self.bound.as_ptr() } as usize;
-            let outside = rejecting_plane(planes.iter().map(|plane| thiscall1(WHICH_SIDE, bound, plane.as_ptr() as u32)));
+            let outside = rejecting_plane(close.planes.iter().map(|plane| (close.side)(bound, plane)));
             // Out of the camera's view the instance stays visible and the helper's view
             // culls it with its own frustum. A sorted blend the engine did not display has
             // no place in the frame, and the helper's main view does not draw it (risk 34);
             // for a while the other shapes left so in view 0 are counted by the plane that
             // puts them out.
             if let Some(plane) = outside {
-                if slot == crate::view_slots::MAIN_VIEW && !self.sorted_blend {
+                if close.slot == crate::view_slots::MAIN_VIEW && !self.sorted_blend {
                     undisplayed_left[plane.min(PLANE_NAMES.len() - 1)] += 1;
                 }
                 return true;
             }
         }
         self.visible &= !bit;
-        capture::instance_state(self.id, false, slot);
-        hides[root_changed as usize] += 1;
+        capture::instance_state(self.id, false, close.slot);
+        hides[close.root_changed as usize] += 1;
         false
     }
 }
 
 /// The hides of the views' closes: by the plane test, and after a root change.
 static CLOSE_HIDES: [core::sync::atomic::AtomicU64; 2] = [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
-/// The entries that the views' closes visited, and the time of the closes after the first
-/// `display_cost` call (`display_cost` reads and resets both).
+/// The instances and list entries that the views' closes visited, and the time of the closes
+/// after the first `display_cost` call (`display_cost` reads and resets both).
 static CLOSE_VISITS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static CLOSE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 
 /// A view slot retires: no instance shows in it any more. The helper clears bit v at the
-/// retirement (`EVENT_VIEW_RETIRE`).
+/// retirement (`EVENT_VIEW_RETIRE`). View 0 has no lists: its bit clears in every instance.
 fn forget_view(t: &mut Tables, slot: u8) {
     let bit = 1u32 << slot;
     let view = slot as usize;
+    if slot == crate::view_slots::MAIN_VIEW {
+        for instance in t.instances.values_mut() {
+            instance.visible &= !bit;
+        }
+    }
     for list in &mut t.lists.entries[view] {
         for (shape, key) in list.drain(..) {
             if let Some(instance) = t.instances.get_mut(&shape).filter(|instance| instance.list_key == key) {
@@ -938,7 +1017,8 @@ unsafe fn under_billboard(shape: usize) -> bool {
 }
 
 /// A display of the instance in the scene's view `view` in the frame `frame`: bit v with its
-/// state record when the bit was clear, and the shape in v's list of the entries displayed
+/// state record when the bit was clear; in view 0 the count of its closes
+/// ([`Instance::main_shown`]), in another view the shape in v's list of the entries displayed
 /// since its last close ([`ViewLists::show`]). An instance under a billboard notes the views of
 /// the frame.
 unsafe fn show_in_view(instance: &mut Instance, shape: usize, view: u8, frame: u32, lists: &mut ViewLists, states: &mut u64) {
@@ -959,6 +1039,10 @@ unsafe fn show_in_view(instance: &mut Instance, shape: usize, view: u8, frame: u
         instance.visible |= bit;
         capture::instance_state(instance.id, true, view);
         *states += 1;
+    }
+    if view == crate::view_slots::MAIN_VIEW {
+        instance.main_shown = lists.main_closes;
+        return;
     }
     if instance.list_key == NO_KEY {
         instance.list_key = lists.take_key();
@@ -3184,9 +3268,18 @@ mod tests {
         t.lists.entries[view as usize][waiting].iter().map(|&(shape, _)| shape).collect()
     }
 
+    /// The shapes that view 0's next close visits: visible in view 0, and not displayed in it
+    /// since its last close.
+    fn main_waiting(mt: &MainThread) -> Vec<usize> {
+        let t = tables(mt);
+        let stamp = t.lists.main_closes;
+        t.instances.iter().filter(|(_, instance)| instance.visible & 1 != 0 && instance.main_shown != stamp).map(|(&shape, _)| shape).collect()
+    }
+
     /// View 0 closes in every frame: a shape displayed in frame n and not in frame n + 1 stays
     /// visible at the close of n and is hidden at the close of n + 1. Each close visits only
-    /// the entries that waited, and a displayed shape does not wait.
+    /// the visible shapes that view 0 did not display since its last close, and view 0 lists
+    /// nothing.
     #[test]
     fn a_shape_displayed_in_one_frame_and_not_in_the_next_is_hidden_at_the_next_close() {
         use core::sync::atomic::Ordering::Relaxed;
@@ -3214,10 +3307,9 @@ mod tests {
                 show_in_view(instance, shape, main, t.frame, &mut t.lists, &mut t.states);
             };
             let mask = |shape: usize| tables(&mt).instances[&shape].visible;
-            // A close of view 0; returns the entries that it visited, which are the entries
-            // that waited.
+            // A close of view 0: it visits the shapes that waited.
             let close = || {
-                let waited = waiting_shapes(&mt, main).len() as u64;
+                let waited = main_waiting(&mt).len() as u64;
                 let start = CLOSE_VISITS.load(Relaxed);
                 close_views(&mt, [(main, false)]);
                 let visits = CLOSE_VISITS.load(Relaxed) - start;
@@ -3227,27 +3319,125 @@ mod tests {
             show(a);
             show(b);
             show(a);
-            assert!(!waiting_shapes(&mt, main).iter().any(|&shape| shape == a || shape == b));
+            assert!(!main_waiting(&mt).iter().any(|&shape| shape == a || shape == b));
+            assert!(listed_shapes(&mt, main).is_empty());
             close();
             assert_eq!((mask(a), mask(b)), (1, 1));
             // Frame n + 1 displays only a: b waits and goes at the close.
             show(a);
-            let waiting = waiting_shapes(&mt, main);
+            let waiting = main_waiting(&mt);
             assert!(!waiting.contains(&a) && waiting.contains(&b), "{waiting:?}");
             close();
             assert_eq!((mask(a), mask(b)), (1, 0));
-            assert!(!listed_shapes(&mt, main).contains(&b));
+            assert!(!main_waiting(&mt).contains(&b));
             // Frame n + 2 displays nothing: a goes.
-            assert!(waiting_shapes(&mt, main).contains(&a));
+            assert!(main_waiting(&mt).contains(&a));
             close();
             assert_eq!(mask(a), 0);
-            assert!(!listed_shapes(&mt, main).contains(&a));
+            assert!(listed_shapes(&mt, main).is_empty());
             {
                 let mut tables_open = tables(&mt);
                 let t = &mut *tables_open;
                 for shape in [a, b] {
                     let instance = t.instances.remove(&shape).expect("a test instance");
                     t.lists.give_back(instance.list_key);
+                }
+                t.mode = mode;
+            }
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// A stand-in for `NiBound::WhichSide` in the tests: outside (2) when the x of the bound's
+    /// centre is above the plane's constant, else 1.
+    unsafe fn test_side(bound: usize, plane: &[f32; 4]) -> u32 {
+        if *(bound as *const f32) > plane[3] {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// View 0's sweep gives the result of another view's list close (design 3.1a): the same
+    /// instances, displayed in both views in the same frames, with the same planes, stay visible
+    /// or go in both. A shape displayed stays; one not displayed and inside the planes goes; one
+    /// outside stays; one without values from a draw stays; a sorted blend outside stays; one
+    /// never displayed stays hidden. After a root change each one not displayed goes, except the
+    /// one without values. Only view 0 counts the shape outside, and not the sorted blend.
+    #[test]
+    fn view_0s_sweep_and_a_views_list_close_give_the_same_result() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let (main, other) = (crate::view_slots::MAIN_VIEW, 6u8);
+            let shapes = [0x7928_0000usize, 0x7928_1000, 0x7928_2000, 0x7928_3000, 0x7928_4000, 0x7928_5000];
+            let [shown, inside, outside, unfilled, blend, never] = shapes;
+            let mode = {
+                let mut tables_open = tables(&mt);
+                let t = &mut *tables_open;
+                assert!(t.lists.listed(other).is_empty(), "view {other} lists entries of another test");
+                for (&shape, id) in shapes.iter().zip(61..) {
+                    let mut instance = Instance::new(id, 0, 1, 2, 0, false, false, false);
+                    instance.filled = shape != unfilled;
+                    instance.sorted_blend = shape == blend;
+                    instance.bound[0] = if shape == outside || shape == blend { 20.0 } else { 0.0 };
+                    t.instances.insert(shape, instance);
+                }
+                for view in [main, other] {
+                    t.view_planes[view as usize] = vec![[0.0, 0.0, 0.0, 10.0]];
+                }
+                t.mode.replace(Mode::Gpu)
+            };
+            let show = |shape: usize| {
+                let mut tables_open = tables(&mt);
+                let t = &mut *tables_open;
+                for view in [main, other] {
+                    let instance = t.instances.get_mut(&shape).expect("a test instance");
+                    show_in_view(instance, shape, view, t.frame, &mut t.lists, &mut t.states);
+                }
+            };
+            let close = |root_changed: bool| close_views_with(&mt, [(main, root_changed), (other, root_changed)], test_side);
+            // The shape's bits in view 0 and in the other view.
+            let bits = |shape: usize| {
+                let visible = tables(&mt).instances[&shape].visible;
+                (visible & 1 != 0, visible & (1 << other) != 0)
+            };
+            let left = || tables(&mt).undisplayed_left[0];
+            // Frame n displays all but `never`.
+            for shape in [shown, inside, outside, unfilled, blend] {
+                show(shape);
+            }
+            close(false);
+            for shape in [shown, inside, outside, unfilled, blend] {
+                assert_eq!(bits(shape), (true, true), "{shape:#x}");
+            }
+            // Frame n + 1 displays only `shown`.
+            show(shown);
+            let start = left();
+            close(false);
+            for (shape, visible) in [(shown, true), (inside, false), (outside, true), (unfilled, true), (blend, true), (never, false)] {
+                assert_eq!(bits(shape), (visible, visible), "{shape:#x}");
+            }
+            assert_eq!(left() - start, 1);
+            // Frame n + 2 displays only `shown`, after a root change.
+            show(shown);
+            close(true);
+            for (shape, visible) in [(shown, true), (inside, false), (outside, false), (unfilled, true), (blend, false), (never, false)] {
+                assert_eq!(bits(shape), (visible, visible), "{shape:#x}");
+            }
+            {
+                let mut tables_open = tables(&mt);
+                let t = &mut *tables_open;
+                for shape in shapes {
+                    let instance = t.instances.remove(&shape).expect("a test instance");
+                    t.lists.give_back(instance.list_key);
+                }
+                assert!(t.lists.listed(other).is_empty());
+                for view in [main, other] {
+                    t.view_planes[view as usize].clear();
                 }
                 t.mode = mode;
             }
