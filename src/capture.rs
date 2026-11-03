@@ -762,10 +762,6 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
     if !recording() {
         return None;
     }
-    // The helper runs the frame's work so far before it answers: a flush of the views.
-    if let Some(t) = MainThread::here() {
-        crate::instance_stream::view_flush(&t);
-    }
     let asked = ask_pixels(&lock, texture);
     // The slots that the flush freed retire after the read's record.
     if let Some(t) = MainThread::here() {
@@ -803,6 +799,12 @@ unsafe fn ask_pixels(lock: &DeviceLock, texture: u32) -> Option<(u32, u32)> {
     if HELPER_SILENT.load(Ordering::Relaxed) && (state(lock)?.reply.as_ref()?.base as *const u32).read_volatile() == request - 1 {
         HELPER_SILENT.store(false, Ordering::Relaxed);
         crate::log!("stream: the host program answers the pixel reads again");
+    }
+    // The helper runs the frame's work so far before it answers: a flush of the views. No
+    // return comes between the flush and the record, so the table flushes only when the
+    // helper does.
+    if let Some(t) = MainThread::here() {
+        crate::instance_stream::view_flush(&t);
     }
     write(tag::READ_PIXELS, &[words(&[request, stream_handle(texture), generation])]);
     // The write can end the stream.
@@ -873,17 +875,18 @@ pub unsafe fn copy_tile(target: u32, texture: u32) -> Option<u32> {
     if !recording() {
         return None;
     }
-    // The helper runs the frame's work so far before the copy (`flush` in the helper's tiles):
-    // a flush of the views, as for a read of pixels.
-    if let Some(t) = MainThread::here() {
-        crate::instance_stream::view_flush(&t);
-    }
     let ticket = {
         let mut s = state(&lock)?;
         let tiles = s.tiles.as_mut()?;
         tiles.tickets = tiles.tickets.wrapping_add(1).max(1);
         tiles.tickets
     };
+    // The helper runs the frame's work so far before the copy (`flush` in the helper's tiles):
+    // a flush of the views, as for a read of pixels. No return comes between the flush and
+    // the record, so the table flushes only when the helper does.
+    if let Some(t) = MainThread::here() {
+        crate::instance_stream::view_flush(&t);
+    }
     write(tag::COPY_TILE, &[words(&[ticket, stream_handle(target), stream_handle(texture)])]);
     // The slots that the flush freed retire after the copy's record.
     if let Some(t) = MainThread::here() {
@@ -2575,6 +2578,18 @@ unsafe fn host_gone(lock: &DeviceLock) {
 }
 
 /// The game showed a frame.
+/// The records of a frame's end, in stream order: `FRAME_END`, then the retirements of the
+/// view slots that this Present freed. The helper runs the frame's items at `FRAME_END`, so a
+/// slot's retirement comes after the record at which its last items run (D82 design, 3.1
+/// rule 1), and before the next frame's first scene.
+fn frame_end_records(start: i64, end: i64, retired: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    let mut records = vec![(tag::FRAME_END, [start.to_le_bytes(), end.to_le_bytes()].concat())];
+    for &slot in retired {
+        records.push((tag::FRAME_EVENT, words(&[crate::link::EVENT_VIEW_RETIRE, slot as u32, 0]).to_vec()));
+    }
+    records
+}
+
 unsafe fn frame_end(lock: &DeviceLock) {
     loading_tick();
     // Before the stop: a helper that refused the stream at its HEADER stops reading, the ring
@@ -2650,13 +2665,13 @@ unsafe fn frame_end(lock: &DeviceLock) {
         Phase::Record(left) => {
             overlay_tick(&lock);
             // The frame ends on the main thread, where the ports present; the proof says so.
-            if let Some(t) = MainThread::here() {
-                crate::instance_stream::frame_tick(&t);
-                // The view slots that retired at this Present, before the frame's end.
-                for slot in crate::instance_stream::take_retired_views(&t) {
-                    write(tag::FRAME_EVENT, &[words(&[crate::link::EVENT_VIEW_RETIRE, slot as u32, 0])]);
+            let retired = match MainThread::here() {
+                Some(t) => {
+                    crate::instance_stream::frame_tick(&t);
+                    crate::instance_stream::take_retired_views(&t)
                 }
-            }
+                None => Vec::new(),
+            };
             // The times of the frame, for the age of the picture in the debug overlay: the
             // start of the frame of the game ([`FRAME_START`]) and its end, in ticks of the
             // performance counter. The host program has the same counter.
@@ -2665,7 +2680,9 @@ unsafe fn frame_end(lock: &DeviceLock) {
                 0 => end,
                 start => start,
             };
-            write(tag::FRAME_END, &[&start.to_le_bytes(), &end.to_le_bytes()]);
+            for (tag, record) in frame_end_records(start, end, &retired) {
+                write(tag, &[&record]);
+            }
             FRAME_START.store(ticks(), Ordering::Relaxed);
             let last = {
                 let Some(mut s) = state(&lock) else { return };
@@ -2776,10 +2793,24 @@ mod capture_file_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{picture_head, tag, FileTextures, CALL_COPY_PIXELS, CALL_CREATE_TEXTURE, CALL_RENDER_TARGET, CALL_TEXTURE_LEVEL};
+    use super::{frame_end_records, picture_head, tag, FileTextures, CALL_COPY_PIXELS, CALL_CREATE_TEXTURE, CALL_RENDER_TARGET, CALL_TEXTURE_LEVEL};
 
     fn bytes(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    /// The retirements of a Present follow `FRAME_END`: the helper runs the frame's items at
+    /// `FRAME_END`, so a second slot of the frame keeps its bits until its items ran (D82
+    /// design, 3.1 rule 1).
+    #[test]
+    fn the_retirements_of_a_present_follow_the_frame_end() {
+        use crate::link::EVENT_VIEW_RETIRE;
+        let records = frame_end_records(5, 9, &[3, 7]);
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0], (tag::FRAME_END, [5i64.to_le_bytes(), 9i64.to_le_bytes()].concat()));
+        assert_eq!(records[1], (tag::FRAME_EVENT, bytes(&[EVENT_VIEW_RETIRE, 3, 0])));
+        assert_eq!(records[2], (tag::FRAME_EVENT, bytes(&[EVENT_VIEW_RETIRE, 7, 0])));
+        assert_eq!(frame_end_records(5, 9, &[]).len(), 1);
     }
 
     /// The helper reads a copy's pixels after its arguments (`CALL_COPY_PIXELS`, feed.rs): the

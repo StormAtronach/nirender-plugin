@@ -624,8 +624,11 @@ pub unsafe fn rendered_texture_data_dtor(this: usize) {
     // The views into the texture free their slots (`view_slots`, rule 3).
     let texture: usize = rd(this, RTD::vtbl_sgTexture);
     if texture != 0 {
-        if let Some(t) = crate::main_thread::MainThread::here() {
-            crate::instance_stream::view_target_destroyed(&t, texture);
+        match crate::main_thread::MainThread::here() {
+            Some(t) => crate::instance_stream::view_target_destroyed(&t, texture),
+            None => {
+                crate::instance_stream::VIEW_TARGETS_OFF_MAIN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
         }
     }
     wr::<usize>(this, RTD::vtbl_vtbl, VTBL_RENDERED_TEXTURE_DATA);

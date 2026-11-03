@@ -748,7 +748,7 @@ pub unsafe fn frame_tick(mt: &MainThread) {
 }
 
 /// The view slots of D82 ([`ViewTable`]), and the slots that retired and whose retirement is
-/// not written yet: at Present `capture::frame_end` writes them, and after a flush's record the
+/// not written yet: at Present `capture::frame_end` writes them after `FRAME_END`, and after a flush's record the
 /// flush's caller does ([`write_flush_retirements`]).
 static VIEWS: MainCell<Option<ViewTable>> = MainCell::new(None);
 static RETIRED_VIEWS: MainCell<Vec<u8>> = MainCell::new(Vec::new());
@@ -850,11 +850,17 @@ pub fn write_flush_retirements(mt: &MainThread) {
 }
 
 /// The renderer data of the rendered texture `target` is destroyed (rule 3 of the slot
-/// pressure): the slots of the views into it retire at once, before a new texture can take
-/// the same address.
+/// pressure): the views into it lose their keys, before a new texture can take the same
+/// address. A slot whose items ran retires at once; the others retire after the next flush
+/// record or `FRAME_END` ([`ViewTable::target_gone`]). Without a recording stream the
+/// retirements wait for the next point that writes them.
 pub fn view_target_destroyed(mt: &MainThread, target: usize) {
     let retired = VIEWS.get(mt).as_mut().map(|views| views.target_gone(target)).unwrap_or_default();
-    if retired.is_empty() || !capture::recording() {
+    if retired.is_empty() {
+        return;
+    }
+    if !capture::recording() {
+        RETIRED_VIEWS.get(mt).extend(retired);
         return;
     }
     let _lock = crate::sync::device_lock();
@@ -863,6 +869,10 @@ pub fn view_target_destroyed(mt: &MainThread, target: usize) {
         unsafe { capture::frame_event(crate::link::EVENT_VIEW_RETIRE, slot as u32, 0) };
     }
 }
+
+/// The destructors of a rendered texture's renderer data off the main thread: their views keep
+/// their slots until the 60-frame rule frees them.
+pub static VIEW_TARGETS_OFF_MAIN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// Present, the end of the frame (`frame_tick`): the views close and the second and idle slots
 /// retire.
@@ -883,7 +893,7 @@ fn view_report(mt: &MainThread) -> String {
         return "views: no scene yet".to_owned();
     };
     format!(
-        "views: {} of {VIEW_SLOTS} slots in use, {} slots retired, {} root changes; {} second slots (at most {} in one flush), {} slots taken back, {} flushes forced, {} slots of a destroyed target",
+        "views: {} of {VIEW_SLOTS} slots in use, {} slots retired, {} root changes; {} second slots (at most {} in one flush), {} slots taken back, {} flushes forced, {} slots of a destroyed target ({} destructors off the main thread)",
         views.in_use(),
         views.retired,
         views.root_changes,
@@ -891,7 +901,8 @@ fn view_report(mt: &MainThread) -> String {
         views.most_second_in_flush,
         views.taken_back,
         views.forced_flushes,
-        views.targets_gone
+        views.targets_gone,
+        VIEW_TARGETS_OFF_MAIN.load(core::sync::atomic::Ordering::Relaxed)
     )
 }
 
@@ -2652,6 +2663,28 @@ mod tests {
 
     /// The take lines: the first 64, then each power of 2; a texture key used again before a
     /// flush is named as a second slot.
+    #[test]
+    fn a_read_or_a_copy_that_writes_no_record_does_not_flush_the_views() {
+        // With no stream (the test's recording has no state) neither writes its record, so the
+        // helper does not flush: the table must not either (D82 design, 3.1 rule 1a).
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let picture = Click { kind: SCENE_OTHER, camera: 0x7910_0000, root: 0x7910_1000, target: Some(0x7910_4000), world_camera: false };
+            assert!(view_open(&mt, &picture) > 0);
+            let flushes = VIEWS.get(&mt).as_ref().map(ViewTable::flushes);
+            assert_eq!(capture::copy_tile(0x7910_4000, 0x7910_5000), None);
+            assert!(capture::read_pixels(0x7910_4000).is_none());
+            assert_eq!(VIEWS.get(&mt).as_ref().map(ViewTable::flushes), flushes);
+            view_swap(&mt, Some(0x7910_4000));
+            take_retired_views(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
     #[test]
     fn the_view_take_lines_name_a_second_slot_and_keep_their_rate() {
         assert!((1..=64).all(view_line_due));

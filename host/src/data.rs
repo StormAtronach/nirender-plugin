@@ -65,8 +65,9 @@ pub(crate) const EVENT_WORLD_WALK: u32 = 4;
 /// `queue_flush`; the header bit [`HEADER_QUEUE_FLUSH`](crate::stream_format::HEADER_QUEUE_FLUSH)).
 pub(crate) const EVENT_QUEUE_FLUSHED: u32 = 5;
 /// A view slot is free again (the second word: the slot; the plugin's `view_slots`; the header
-/// bit [`HEADER_SCENE_VIEWS`](crate::stream_format::HEADER_SCENE_VIEWS)). At any point in the
-/// stream, before the slot's reuse.
+/// bit [`HEADER_SCENE_VIEWS`](crate::stream_format::HEADER_SCENE_VIEWS)). It comes after the
+/// record at which the slot's last items run (a flush's record or `FRAME_END`) and before the
+/// slot's reuse.
 pub(crate) const EVENT_VIEW_RETIRE: u32 = 6;
 /// Every view slot of the plugin is open or used since the last flush: the frame's work so far
 /// runs, as for a read of pixels (the plugin's `view_slots`).

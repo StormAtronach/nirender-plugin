@@ -118,11 +118,14 @@ struct Slot {
     last_roots: Vec<usize>,
     /// A scene opened it and nothing closed it yet.
     open: bool,
+    /// Its target was destroyed while its items had not run: it has no key, and it goes at
+    /// the next flush or at the frame's end (rule 3).
+    dead: bool,
 }
 
 impl Slot {
     fn new(key: ViewKey, frame: u32, flush: u32) -> Slot {
-        Slot { key, last_frame: frame, last_flush: flush, closed_order: 0, roots: Vec::new(), last_roots: Vec::new(), open: false }
+        Slot { key, last_frame: frame, last_flush: flush, closed_order: 0, roots: Vec::new(), last_roots: Vec::new(), open: false, dead: false }
     }
 
     /// A second slot: its key's own slot was used in the same flush (rule 2).
@@ -267,17 +270,24 @@ impl ViewTable {
         end
     }
 
-    /// The renderer data of a rendered texture is destroyed (rule 3): the slots of the views
-    /// into `target` are free, so that a new texture at the same address takes a new slot.
-    /// Gives the freed slots, for their retirements.
+    /// The renderer data of a rendered texture is destroyed (rule 3): the views into `target`
+    /// lose their keys, so that a new texture at the same address takes a new slot. A slot
+    /// whose items ran (not open, not used since the last flush) is free at once; another one
+    /// stays busy until the next flush or the frame's end, after the record at which its items
+    /// run. Gives the slots free at once, for their retirements.
     pub fn target_gone(&mut self, target: usize) -> Vec<u8> {
         let mut retired = Vec::new();
         for (index, entry) in self.slots.iter_mut().enumerate() {
-            if entry.as_ref().is_some_and(|slot| matches!(slot.key, ViewKey::Texture { target: into, .. } if into == target)) {
-                let slot = entry.take().expect("a slot of the target");
-                self.by_key.remove(&slot.key);
+            let Some(slot) = entry.as_mut().filter(|slot| !slot.dead && matches!(slot.key, ViewKey::Texture { target: into, .. } if into == target)) else {
+                continue;
+            };
+            self.by_key.remove(&slot.key);
+            self.targets_gone += 1;
+            if slot.open || slot.last_flush == self.flushes {
+                slot.dead = true;
+            } else {
+                *entry = None;
                 self.retired += 1;
-                self.targets_gone += 1;
                 retired.push(index as u8);
             }
         }
@@ -285,15 +295,24 @@ impl ViewTable {
         retired
     }
 
+    /// Frees the short-lived slots after their items ran: the second slots (rule 2) and the
+    /// slots of a destroyed target (rule 3).
     fn free_second_slots(&mut self, retired: &mut Vec<u8>) {
         for (index, entry) in self.slots.iter_mut().enumerate() {
-            if entry.as_ref().is_some_and(|slot| !slot.open && slot.second()) {
-                let slot = entry.take().expect("a second slot");
-                self.by_key.remove(&slot.key);
+            if entry.as_ref().is_some_and(|slot| !slot.open && (slot.second() || slot.dead)) {
+                let slot = entry.take().expect("a short-lived slot");
+                if !slot.dead {
+                    self.by_key.remove(&slot.key);
+                }
                 self.retired += 1;
                 retired.push(index as u8);
             }
         }
+    }
+
+    /// The flushes and Presents so far.
+    pub fn flushes(&self) -> u32 {
+        self.flushes
     }
 
     fn next_flush(&mut self) {
@@ -335,7 +354,7 @@ impl ViewTable {
                 let changed = slot.close(self.closes);
                 self.root_changes += changed as u64;
                 end.closed.push((index as u8, changed));
-            } else if index != MAIN_VIEW as usize && !slot.second() && self.frame.wrapping_sub(slot.last_frame) >= RETIRE_FRAMES {
+            } else if index != MAIN_VIEW as usize && !slot.second() && !slot.dead && self.frame.wrapping_sub(slot.last_frame) >= RETIRE_FRAMES {
                 self.by_key.remove(&slot.key);
                 *entry = None;
                 self.retired += 1;
@@ -589,10 +608,12 @@ mod tests {
         assert_eq!(views.in_use(), VIEW_SLOTS);
     }
 
-    /// Rule 3: the destructor of a target frees the slots of the views into it, its first and
-    /// its second slot, and no other. A new texture at the same address takes a new slot.
+    /// Rule 3: the destructor of a target takes the keys of the views into it, its first and
+    /// its second slot, and no other. A slot whose items did not run yet stays busy until the
+    /// next flush, so that its retirement comes after the flush's record; a new texture at
+    /// the same address takes another slot. A slot whose items ran is free at once.
     #[test]
-    fn a_destroyed_target_frees_its_slots() {
+    fn a_destroyed_target_frees_its_slots_after_their_items_ran() {
         let mut views = ViewTable::default();
         views.open(&world(SCENE_WORLD, WORLD_ROOT));
         assert_eq!(slot_of(views.open(&texture(0x7000, WORLD_ROOT, 0x9000))), Some(1));
@@ -601,9 +622,20 @@ mod tests {
         views.swap(Some(0x9000));
         assert_eq!(slot_of(views.open(&texture(0x7000, WORLD_ROOT, 0x9100))), Some(3));
         views.swap(Some(0x9100));
-        assert_eq!(views.target_gone(0x9000), vec![1, 2]);
-        assert_eq!((views.targets_gone, views.retired, views.in_use()), (2, 2, 2));
+        // Both slots of 0x9000 were used in this flush: no retirement yet.
         assert_eq!(views.target_gone(0x9000), vec![]);
-        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x9000)), opened(1, true));
+        assert_eq!((views.targets_gone, views.retired, views.in_use()), (2, 0, 4));
+        assert_eq!(views.target_gone(0x9000), vec![]);
+        assert_eq!(views.targets_gone, 2);
+        // A new texture at the same address: a new key and a new slot.
+        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x9000)), opened(4, true));
+        views.swap(Some(0x9000));
+        // The flush runs the items; then the two dead slots go, and the second slots too.
+        let end = views.flush(false);
+        assert_eq!(end.retired, vec![1, 2]);
+        assert_eq!(views.key(4), Some(ViewKey::Texture { camera: 0x7000, root: WORLD_ROOT, target: 0x9000, again: 0 }));
+        // 0x9100's slot was last used before this flush: free at once.
+        assert_eq!(views.target_gone(0x9100), vec![3]);
+        assert_eq!((views.targets_gone, views.retired), (3, 3));
     }
 }
