@@ -128,10 +128,12 @@ def stage_archive_lua(archive, dist):
     return sorted(shipped), sorted(missing)
 
 
-def prepare(build=True, features=(), extra_files=(), archive=None):
+def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True):
     """Builds the plugin, runs the offline tests and installs the mod into the testing instance.
 
     `features` are cargo features of the build: ("rig",) for a run of the comparison rig.
+    With `plugin` False the mod gets the Lua files only, no akulakhan.dll: a reference run
+    without the plugin (`plugin_mods` names the mods of the instance to switch off too).
     `extra_files` are (source, path in the mod) pairs that go into the run's mod for this run
     only: test files, or another MWSE.dll as `Root/MWSE.dll`. The run's mod wins over the mods
     of the instance; the next install takes them out. `archive` is an extracted release archive:
@@ -151,13 +153,14 @@ def prepare(build=True, features=(), extra_files=(), archive=None):
     if os.path.isdir(DIST):
         shutil.rmtree(DIST)
     shutil.copytree(os.path.join(REPO, "mod"), DIST)
-    os.makedirs(os.path.join(DIST, "MWSE", "lib"), exist_ok=True)
-    shutil.copy2(DLL, os.path.join(DIST, "MWSE", "lib", "akulakhan.dll"))
+    if plugin:
+        os.makedirs(os.path.join(DIST, "MWSE", "lib"), exist_ok=True)
+        shutil.copy2(DLL, os.path.join(DIST, "MWSE", "lib", "akulakhan.dll"))
     if archive:
         shipped, missing = stage_archive_lua(archive, DIST)
         print("archive Lua: %s; loaded by it and not in the archive (the run lacks them, as a player's game): %s" % (", ".join(shipped), ", ".join(missing) or "none"), flush=True)
     pdb = os.path.splitext(DLL)[0] + ".pdb"
-    if os.path.isfile(pdb):
+    if plugin and os.path.isfile(pdb):
         shutil.copy2(pdb, os.path.join(DIST, "MWSE", "lib", "akulakhan.pdb"))
     for source, target in extra_files:
         if not os.path.isfile(source):
@@ -175,6 +178,14 @@ def prepare(build=True, features=(), extra_files=(), archive=None):
     # The mod stays off between runs: it would take the place of the release in a game by hand.
     for change in harness.install_mod(enable=False):
         print("  %s: %s" % (MOD_NAME, change))
+
+
+def plugin_mods(modlist, root=None):
+    """The enabled mods of a mod list, other than the run's own mod, that hold akulakhan.dll: a
+    run without the plugin switches them off. `root` is the Mod Organizer instance."""
+    root = root or harness.MO2_ROOT
+    names = [line[1:] for line in modlist if line.startswith("+") and line[1:] != MOD_NAME]
+    return [name for name in names if os.path.isfile(os.path.join(root, "mods", name, harness.PLUGIN_FILE))]
 
 
 class Run:
