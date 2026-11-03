@@ -2373,7 +2373,7 @@ impl Player {
         if ids.is_empty() || !self.retained_on {
             return;
         }
-        let Some((slot, facts)) = self.view_slot(group) else { return };
+        let Some(slot) = self.view_slot(group) else { return };
         let mut entries = Vec::new();
         for id in ids {
             let before = entries.len();
@@ -2390,7 +2390,8 @@ impl Player {
             scene_slot: slot,
             classes: !0,
             planes: [[0.0; 4]; 6],
-            flip_cull: engine::views::mirrored(&facts.view),
+            // The cull of each shape is its own (`material::derive`), in every view.
+            flip_cull: false,
             force_depth_test: false,
             target: self.pass_target,
             sorted: Sorted::Only,
@@ -2401,14 +2402,13 @@ impl Player {
         self.retained.kept_sorted = kept;
     }
 
-    /// The scene slot of a group's view, written at its first draw, and the group's view.
-    /// [`None`] when the group has no view yet or all slots are taken (counted, and the first
-    /// time in the log).
-    fn view_slot(&mut self, group: usize) -> Option<(u32, engine::views::ViewFacts)> {
+    /// The scene slot of a group's view, written at its first draw. [`None`] when the group has
+    /// no view yet or all slots are taken (counted, and the first time in the log).
+    fn view_slot(&mut self, group: usize) -> Option<u32> {
         let g = self.views.group(group)?;
         let facts = g.facts?;
         if let Some(slot) = g.slot {
-            return Some((slot, facts));
+            return Some(slot);
         }
         if g.dropped {
             return None;
@@ -2446,7 +2446,7 @@ impl Player {
         self.renderer.write_scene(slot, &scene);
         self.views.group_mut(group)?.slot = Some(slot);
         self.renderer.counts.views += 1;
-        Some((slot, facts))
+        Some(slot)
     }
 }
 
