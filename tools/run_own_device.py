@@ -23,6 +23,7 @@ run ran (`harness.write_setup`).
 """
 import argparse
 import ctypes
+import json
 import math
 import os
 import re
@@ -281,6 +282,11 @@ def weather_note(pinned, lines):
     logged them (the start, each rate line, each change)."""
     kept = [line for line in lines if line.startswith("weather")]
     return "".join(line + "\n" for line in ["weather: " + weather_summary(pinned, lines)] + kept)
+
+
+def launch_run(run, spec, args, mods):
+    """Starts the run (`session.Run.launch`) with the options of the command line."""
+    return run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)], full_dump=args.full_dump)
 
 
 def build_commits(mge_build):
@@ -823,6 +829,9 @@ def self_test_check_command():
         open(os.path.join(game, "Saves", "a.ess"), "wb").close()
         code, text = check()
         assert code == 0 and "nothing started" in text, text
+        assert "--full-dump" not in text, text
+        code, text = check("--full-dump")
+        assert code == 0 and "--full-dump: a crash of the run writes a dump of about " + FULL_DUMP_SIZE in text, text
         code, text = check("--weather", "10")
         assert code != 0 and "--weather" in text, text
         code, text = check("--reference")
@@ -990,6 +999,51 @@ def self_test_full_dump():
     assert session.mwse_run_settings(True, False) == {}
     assert full_dump_note(argparse.Namespace(full_dump=False)) is None
     assert FULL_DUMP_SIZE in full_dump_note(argparse.Namespace(full_dump=True))
+
+    # stage_mwse_config writes the copy with the settings over the source's values into the run
+    # mod, and the source does not change.
+    class Deployment:
+        def __init__(self):
+            self.created = []
+
+        def create(self, path):
+            self.created.append(path)
+
+    saved = (session.harness.SPEC_DIR, session.harness.MO2_ROOT, session.mwse_config_source)
+    with tempfile.TemporaryDirectory() as folder:
+        source = os.path.join(folder, "mod", "MWSE.json")
+        os.makedirs(os.path.dirname(source))
+        with open(source, "w", encoding="utf-8") as file:
+            json.dump({"LogWarningsWithLuaStack": True, "RunInBackground": False}, file)
+        with open(source, "rb") as file:
+            before = file.read()
+        session.harness.MO2_ROOT = os.path.join(folder, "instance")
+        session.mwse_config_source = lambda: source
+        try:
+            for foreground, expected in ((False, {"RunInBackground": True, "CreateFullMinidumps": True}), (True, {"RunInBackground": False, "CreateFullMinidumps": True})):
+                session.harness.SPEC_DIR = os.path.join(folder, "run-%s" % foreground)
+                deployment = Deployment()
+                session.stage_mwse_config(deployment, session.mwse_run_settings(foreground, True))
+                staged = os.path.join(session.harness.SPEC_DIR, "MWSE.json")
+                assert deployment.created == [staged], deployment.created
+                with open(staged, encoding="utf-8") as file:
+                    values = json.load(file)
+                assert values == dict({"LogWarningsWithLuaStack": True}, **expected), values
+            with open(source, "rb") as file:
+                assert file.read() == before, "the source MWSE.json changed"
+        finally:
+            (session.harness.SPEC_DIR, session.harness.MO2_ROOT, session.mwse_config_source) = saved
+
+    # main's call of launch passes --full-dump.
+    class FakeRun:
+        def launch(self, *arguments, **options):
+            self.options = options
+            return True
+
+    for full_dump in (False, True):
+        run = FakeRun()
+        launch_run(run, {}, argparse.Namespace(budget=10, disable_mod=[], mge_build=None, full_dump=full_dump), [])
+        assert run.options["full_dump"] is full_dump, run.options
 
 
 def self_test():
@@ -1308,7 +1362,7 @@ def main():
         for name in os.listdir(bridge):
             files["MWSE/mods/mwseMCP/" + name] = os.path.join(bridge, name)
     with PluginWatch(path=run.path("plugin-watch.txt")) as watch:
-        done = run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)], full_dump=args.full_dump)
+        done = launch_run(run, spec, args, mods)
 
     print()
     progress = run.progress_lines(TAG)
