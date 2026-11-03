@@ -108,6 +108,8 @@ struct SlotCounts {
     retired: u64,
     /// Retirements of a slot that no scene named.
     retired_unknown: u64,
+    /// Flushes that the plugin forced because every slot was open or used since the last flush.
+    forced_flushes: u64,
 }
 
 /// The views of a frame.
@@ -164,14 +166,19 @@ impl Views {
         }
     }
 
+    /// The frame event `EVENT_FLUSH`: the plugin had no free slot.
+    pub(crate) fn note_forced_flush(&mut self) {
+        self.slot_counts.forced_flushes += 1;
+    }
+
     /// The report line of the view slots.
     pub(crate) fn slots_line(&self) -> String {
         let c = &self.slot_counts;
         let known = self.slots.iter().flatten().count();
         let textures = self.slots.iter().flatten().filter(|slot| slot.target != 0).count();
         format!(
-            "view slots: {} scenes, {} of them of a view; {known} slots known now ({textures} into a texture); {} scenes found another key in their slot, {} a new world camera in the main slot; {} slots retired, {} retirements of a slot not known",
-            c.scenes, c.view_scenes, c.rekeyed, c.main_cameras, c.retired, c.retired_unknown
+            "view slots: {} scenes, {} of them of a view; {known} slots known now ({textures} into a texture); {} scenes found another key in their slot, {} a new world camera in the main slot; {} slots retired, {} retirements of a slot not known; {} flushes forced",
+            c.scenes, c.view_scenes, c.rekeyed, c.main_cameras, c.retired, c.retired_unknown, c.forced_flushes
         )
     }
 

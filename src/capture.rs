@@ -766,7 +766,12 @@ pub unsafe fn read_pixels(texture: u32) -> Option<(u32, u32, &'static [u8])> {
     if let Some(t) = MainThread::here() {
         crate::instance_stream::view_flush(&t);
     }
-    let (mut width, mut height) = ask_pixels(&lock, texture)?;
+    let asked = ask_pixels(&lock, texture);
+    // The slots that the flush freed retire after the read's record.
+    if let Some(t) = MainThread::here() {
+        crate::instance_stream::write_flush_retirements(&t);
+    }
+    let (mut width, mut height) = asked?;
     let size = width as usize * height as usize * 4;
     if size > state(&lock)?.reply.as_ref()?.capacity {
         // The host has the target, and its pixels need a larger memory.
@@ -880,6 +885,10 @@ pub unsafe fn copy_tile(target: u32, texture: u32) -> Option<u32> {
         tiles.tickets
     };
     write(tag::COPY_TILE, &[words(&[ticket, stream_handle(target), stream_handle(texture)])]);
+    // The slots that the flush freed retire after the copy's record.
+    if let Some(t) = MainThread::here() {
+        crate::instance_stream::write_flush_retirements(&t);
+    }
     Some(ticket)
 }
 
@@ -2214,6 +2223,12 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
         } else {
             let data: &[u8] = if index == CALL_VIEWPORT && !args.is_empty() { bytes_at(args[0], 24) } else { &[] };
             write(tag::CALL, &[words(&head), data]);
+        }
+        // The slots that the flush freed retire after the copy's record.
+        if index == CALL_COPY_PIXELS {
+            if let Some(t) = MainThread::here() {
+                crate::instance_stream::write_flush_retirements(&t);
+            }
         }
     }
     if index == CALL_PRESENT {

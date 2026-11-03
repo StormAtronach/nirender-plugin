@@ -64,9 +64,13 @@ pub(crate) const EVENT_WORLD_WALK: u32 = 4;
 /// The engine drew the main sorted queue of the Click: the end of its flush (the plugin's
 /// `queue_flush`; the header bit [`HEADER_QUEUE_FLUSH`](crate::stream_format::HEADER_QUEUE_FLUSH)).
 pub(crate) const EVENT_QUEUE_FLUSHED: u32 = 5;
-/// A view slot retired at the Present (the second word: the slot; the plugin's `view_slots`;
-/// the header bit [`HEADER_SCENE_VIEWS`](crate::stream_format::HEADER_SCENE_VIEWS)).
+/// A view slot is free again (the second word: the slot; the plugin's `view_slots`; the header
+/// bit [`HEADER_SCENE_VIEWS`](crate::stream_format::HEADER_SCENE_VIEWS)). At any point in the
+/// stream, before the slot's reuse.
 pub(crate) const EVENT_VIEW_RETIRE: u32 = 6;
+/// Every view slot of the plugin is open or used since the last flush: the frame's work so far
+/// runs, as for a read of pixels (the plugin's `view_slots`).
+pub(crate) const EVENT_FLUSH: u32 = 7;
 /// A flag of the scene record: the renderer's target at `BeginPaint` is the back buffer.
 pub(crate) const SCENE_BACK_BUFFER: u32 = 0x8;
 /// A flag of the scene record: the game draws the world in wireframe (its shared wireframe

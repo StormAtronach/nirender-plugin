@@ -53,7 +53,7 @@ use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDy
 use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, CLASS_WEATHER_PARTICLES, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_OTHER, SCENE_RACE_MENU_HEAD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
 use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
-use crate::view_slots::{Click, ViewKey, ViewTable, VIEW_SLOTS};
+use crate::view_slots::{Click, Opening, ViewKey, ViewTable, VIEW_SLOTS};
 use crate::mem::{rd, wr};
 
 const CONTROLLERS: usize = NiAVObject::controllers;
@@ -747,14 +747,16 @@ pub unsafe fn frame_tick(mt: &MainThread) {
     view_present(mt);
 }
 
-/// The view slots of D82 ([`ViewTable`]), and the slots that retired at the last Present, for
-/// the frame events `link::EVENT_VIEW_RETIRE` (`capture::frame_end` writes them).
+/// The view slots of D82 ([`ViewTable`]), and the slots that retired and whose retirement is
+/// not written yet: at Present `capture::frame_end` writes them, and after a flush's record the
+/// flush's caller does ([`write_flush_retirements`]).
 static VIEWS: MainCell<Option<ViewTable>> = MainCell::new(None);
 static RETIRED_VIEWS: MainCell<Vec<u8>> = MainCell::new(Vec::new());
-/// The slots taken and the scenes refused so far, for the rate of their log lines.
+/// The slots taken so far, for the rate of their log lines.
 static VIEW_TAKES: MainCell<u64> = MainCell::new(0);
 
-/// The take or refusal number `n` (from 1) gets a log line: the first 64, then each power of 2.
+/// The take or forced flush number `n` (from 1) gets a log line: the first 64, then each power
+/// of 2.
 fn view_line_due(n: u64) -> bool {
     n <= 64 || n.is_power_of_two()
 }
@@ -771,40 +773,51 @@ fn key_words(key: ViewKey) -> String {
 }
 
 /// A scene starts: its view slot plus 1, for `SceneV1::view`, or 0 for a scene that is not a
-/// view or that found no free slot (one log line at the first refusal). 0 while the stream does
-/// not record: the slots retire only at a Present of the recording (`view_present`). A take of a
-/// slot and a refusal each give a log line with the key, at the rate of `view_line_due`.
+/// view. 0 while the stream does not record: the slots retire only at a Present of the
+/// recording (`view_present`). No scene is refused (design 3.1, the slot pressure):
+/// - a slot taken back has its retirement written here, before the scene's record;
+/// - a full table forces a flush: the open views into a texture close, the helper flushes at
+///   `EVENT_FLUSH`, the second slots' retirements follow it, and the scene opens again.
+///
+/// A take of a slot and a forced flush each give a log line, at the rate of `view_line_due`.
 pub fn view_open(mt: &MainThread, click: &Click) -> u32 {
     if !capture::recording() {
         return 0;
     }
     let mut views_open = VIEWS.get(mt);
     let views = views_open.get_or_insert_with(ViewTable::default);
-    let refused = views.refused;
-    let opened = views.open(click);
-    if refused == 0 && views.refused == 1 {
-        crate::log!("views: all {VIEW_SLOTS} view slots are taken; a new view gets none (the count is in the report)");
+    let mut opening = views.open(click);
+    if opening == Opening::Full {
+        let end = views.flush(true);
+        if view_line_due(views.forced_flushes) {
+            crate::log!("views: forced flush {} at frame {}: every slot is open or used since the last flush; {} views into a texture close", views.forced_flushes, views.frame(), end.closed.len());
+        }
+        let _lock = crate::sync::device_lock();
+        // SAFETY: the stream records (checked above) and the device lock is held, so the
+        // events go into the ring in the order of this thread's records.
+        unsafe {
+            capture::frame_event(crate::link::EVENT_FLUSH, 0, 0);
+            for slot in end.retired {
+                capture::frame_event(crate::link::EVENT_VIEW_RETIRE, slot as u32, 0);
+            }
+        }
+        opening = views.open(click);
     }
-    if views.refused > refused && view_line_due(views.refused) {
-        crate::log!(
-            "views: refusal {} at frame {}: scene kind {}, camera 0x{:x}, root 0x{:x}, target {}; {} slots in use",
-            views.refused,
-            views.frame(),
-            click.kind,
-            click.camera,
-            click.root,
-            click.target.map_or_else(|| "the back buffer".to_string(), |target| format!("0x{target:x}")),
-            views.in_use()
-        );
+    let Opening::Opened(opened) = opening else { return 0 };
+    if opened.taken_back {
+        let _lock = crate::sync::device_lock();
+        // SAFETY: as at the forced flush above.
+        unsafe { capture::frame_event(crate::link::EVENT_VIEW_RETIRE, opened.slot as u32, 0) };
     }
-    if let Some(taken) = opened.filter(|opened| opened.new) {
+    if opened.new {
         let mut takes = VIEW_TAKES.get(mt);
         *takes += 1;
-        if let Some(key) = views.key(taken.slot).filter(|_| view_line_due(*takes)) {
-            crate::log!("views: take {} at frame {}: slot {}, scene kind {}, {}; {} slots in use", *takes, views.frame(), taken.slot, click.kind, key_words(key), views.in_use());
+        if let Some(key) = views.key(opened.slot).filter(|_| view_line_due(*takes)) {
+            let back = if opened.taken_back { " (taken back)" } else { "" };
+            crate::log!("views: take {} at frame {}: slot {}{back}, scene kind {}, {}; {} slots in use", *takes, views.frame(), opened.slot, click.kind, key_words(key), views.in_use());
         }
     }
-    opened.map_or(0, |opened| opened.slot as u32 + 1)
+    opened.slot as u32 + 1
 }
 
 /// The renderer's SwapBuffers, with the device's target (`None` for the back buffer): the open
@@ -815,20 +828,35 @@ pub fn view_swap(mt: &MainThread, target: Option<usize>) {
     }
 }
 
-/// A readback ran the frame's work so far: a texture key used again gets its first slot.
+/// A readback or a tile's copy runs the frame's work so far: the open views into a texture
+/// close, and the second slots go. Their retirements wait for [`write_flush_retirements`]
+/// after the flush's own record, so that the helper runs their views first.
 pub fn view_flush(mt: &MainThread) {
     if let Some(views) = VIEWS.get(mt).as_mut() {
-        views.flush();
+        let end = views.flush(false);
+        RETIRED_VIEWS.get(mt).extend(end.retired);
     }
 }
 
-/// Present, the end of the frame (`frame_tick`): the views close and the idle slots retire.
+/// After the record of a flush (`READ_PIXELS`, `COPY_TILE`, a copy of pixels): the retirements
+/// of the slots that the flush freed.
+pub fn write_flush_retirements(mt: &MainThread) {
+    let _lock = crate::sync::device_lock();
+    for slot in take_retired_views(mt) {
+        // SAFETY: only a flush of a recording stream queues retirements (`view_flush`), and
+        // the device lock is held.
+        unsafe { capture::frame_event(crate::link::EVENT_VIEW_RETIRE, slot as u32, 0) };
+    }
+}
+
+/// Present, the end of the frame (`frame_tick`): the views close and the second and idle slots
+/// retire.
 fn view_present(mt: &MainThread) {
     let retired = VIEWS.get(mt).as_mut().map(|views| views.present().retired).unwrap_or_default();
     RETIRED_VIEWS.get(mt).extend(retired);
 }
 
-/// The slots that retired at Present since the last call.
+/// The slots that retired and whose retirement is not written yet.
 pub fn take_retired_views(mt: &MainThread) -> Vec<u8> {
     core::mem::take(&mut *RETIRED_VIEWS.get(mt))
 }
@@ -839,7 +867,16 @@ fn view_report(mt: &MainThread) -> String {
     let Some(views) = views_open.as_ref() else {
         return "views: no scene yet".to_owned();
     };
-    format!("views: {} of {VIEW_SLOTS} slots in use, {} scenes refused, {} slots retired, {} root changes", views.in_use(), views.refused, views.retired, views.root_changes)
+    format!(
+        "views: {} of {VIEW_SLOTS} slots in use, {} slots retired, {} root changes; {} second slots (at most {} in one flush), {} slots taken back, {} flushes forced",
+        views.in_use(),
+        views.retired,
+        views.root_changes,
+        views.second_slots,
+        views.most_second_in_flush,
+        views.taken_back,
+        views.forced_flushes
+    )
 }
 
 /// The shape is deleted (the destructor of `NiGeometry`): its instance goes, with a record

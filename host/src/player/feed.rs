@@ -212,6 +212,10 @@ impl Player {
                 if word(data, 0) == EVENT_VIEW_RETIRE && self.views.slots_on {
                     self.views.retire(word(data, 4));
                 }
+                if word(data, 0) == EVENT_FLUSH && self.views.slots_on {
+                    self.views.note_forced_flush();
+                    self.flush(|_| ());
+                }
             }
             // The kind and the class of the object of the shape records that follow.
             tag::OBJECT if data.len() >= 12 => {

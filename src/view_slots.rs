@@ -3,9 +3,16 @@
 //! view, and each view has a slot. The key of a view into the back buffer is its camera: all
 //! the clicks of that camera into the back buffer in one frame are scenes of one view, and each
 //! of their roots is part of its content. The key of a view into a texture is its camera, its
-//! root and its target. The same texture key again before a flush gets another slot. Slot
+//! root and its target. The same texture key again before a flush gets a second slot, which
+//! goes at the next flush or at the frame's end. Slot
 //! [`MAIN_VIEW`] is the world camera into the back buffer. A slot with no scene for
 //! [`RETIRE_FRAMES`] frames goes; the caller sends its retirement to the helper.
+//!
+//! The slot pressure (design 3.1): no scene is refused. A key with no slot takes a free one,
+//! else takes back the slot that closed longest ago (never the main view's, an open one or one
+//! used since the last flush), else the table is full and the caller forces a flush. A flush
+//! closes the open views into a texture first; a view into the back buffer stays open until the
+//! swap (design section 6).
 //!
 //! A swap closes views; it does not end the frame. The frame ends at the device's Present,
 //! where the plugin writes `FRAME_END` and the retained table's frame advances: there the slots
@@ -62,6 +69,21 @@ pub struct Opened {
     pub slot: u8,
     /// The slot was given to the key at this scene.
     pub new: bool,
+    /// The slot was taken back from the key that closed longest ago (design 3.1, the slot
+    /// pressure, rule 4): the caller writes its retirement before the scene's record, so the
+    /// new key never gets the old key's shapes.
+    pub taken_back: bool,
+}
+
+/// What a scene's start found in the table.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Opening {
+    /// The scene is not a view (`is_view`).
+    NotView,
+    Opened(Opened),
+    /// Every slot but the main view's is open or used since the last flush (rule 5): the
+    /// caller flushes ([`ViewTable::flush`] and the helper's flush) and opens again.
+    Full,
 }
 
 /// A view that closed: its slot, and a root change. A view into the back buffer changes its
@@ -69,12 +91,14 @@ pub struct Opened {
 /// a view into a texture never does (its root is in its key).
 pub type Closed = (u8, bool);
 
-/// What the device's Present ended.
+/// What a flush or the device's Present ended.
 #[derive(Default, PartialEq, Eq, Debug)]
 pub struct FrameEnd {
-    /// The views that no swap closed in the frame.
+    /// The views that closed: at a flush, the open views into a texture; at Present, the views
+    /// that no swap closed.
     pub closed: Vec<Closed>,
-    /// The slots that had no scene for [`RETIRE_FRAMES`] frames.
+    /// The slots that went: the second slots (rule 2), and at Present the slots that had no
+    /// scene for [`RETIRE_FRAMES`] frames.
     pub retired: Vec<u8>,
 }
 
@@ -82,6 +106,11 @@ struct Slot {
     key: ViewKey,
     /// The frame of its last scene.
     last_frame: u32,
+    /// The flush (the count of [`ViewTable::flush`] and Present) of its last scene.
+    last_flush: u32,
+    /// The order of its last close among all closes, for the take-back of the slot that
+    /// closed longest ago.
+    closed_order: u64,
     /// The roots of its scenes since its last close, and at that close.
     roots: Vec<usize>,
     last_roots: Vec<usize>,
@@ -90,13 +119,23 @@ struct Slot {
 }
 
 impl Slot {
-    fn new(key: ViewKey, frame: u32) -> Slot {
-        Slot { key, last_frame: frame, roots: Vec::new(), last_roots: Vec::new(), open: false }
+    fn new(key: ViewKey, frame: u32, flush: u32) -> Slot {
+        Slot { key, last_frame: frame, last_flush: flush, closed_order: 0, roots: Vec::new(), last_roots: Vec::new(), open: false }
+    }
+
+    /// A second slot: its key's own slot was used in the same flush (rule 2).
+    fn second(&self) -> bool {
+        matches!(self.key, ViewKey::Texture { again, .. } if again > 0)
+    }
+
+    fn targets_texture(&self) -> bool {
+        matches!(self.key, ViewKey::Texture { .. })
     }
 
     /// Closes the view. Returns its root change.
-    fn close(&mut self) -> bool {
+    fn close(&mut self, order: u64) -> bool {
         self.open = false;
+        self.closed_order = order;
         let mut roots = core::mem::take(&mut self.roots);
         roots.sort_unstable();
         let changed = !self.last_roots.is_empty() && roots != self.last_roots;
@@ -114,47 +153,81 @@ pub struct ViewTable {
     since_flush: HashMap<(usize, usize, usize), u32>,
     /// The frames ended at Present.
     frame: u32,
-    /// The scenes that found no free slot.
-    pub refused: u64,
+    /// The flushes and Presents so far.
+    flushes: u32,
+    /// The closes so far.
+    closes: u64,
     pub retired: u64,
     pub root_changes: u64,
+    /// The counters of the slot pressure (rule 6): the second slots taken, the most of them in
+    /// one flush, the slots taken back, and the flushes forced.
+    pub second_slots: u64,
+    pub most_second_in_flush: u32,
+    second_in_flush: u32,
+    pub taken_back: u64,
+    pub forced_flushes: u64,
 }
 
 impl ViewTable {
-    /// The slot of a scene, or `None`: not a view, or all slots taken (counted in `refused`).
-    pub fn open(&mut self, click: &Click) -> Option<Opened> {
+    /// The slot of a scene. A key that has no slot takes a free one, else takes back the slot
+    /// that closed longest ago, never the main view's, an open one or one used since the last
+    /// flush. With none of those: [`Opening::Full`].
+    pub fn open(&mut self, click: &Click) -> Opening {
         if !is_view(click.kind) {
-            return None;
+            return Opening::NotView;
         }
         let key = match click.target {
             None => ViewKey::Screen { camera: click.camera },
             Some(target) => {
                 let scenes = self.since_flush.entry((click.camera, click.root, target)).or_insert(0);
-                let again = *scenes;
-                *scenes += 1;
-                ViewKey::Texture { camera: click.camera, root: click.root, target, again }
+                ViewKey::Texture { camera: click.camera, root: click.root, target, again: *scenes }
             }
         };
-        let (slot, new) = if click.world_camera && click.target.is_none() {
-            self.take_main(key)
+        let (slot, new, taken_back) = if click.world_camera && click.target.is_none() {
+            let (slot, new) = self.take_main(key);
+            (slot, new, false)
         } else if let Some(&slot) = self.by_key.get(&key) {
-            (slot, false)
+            (slot, false, false)
+        } else if let Some(free) = (1..VIEW_SLOTS).find(|&i| self.slots[i].is_none()) {
+            (free as u8, true, false)
+        } else if let Some(back) = self.oldest_closed() {
+            let old = self.slots[back as usize].take().expect("a slot to take back");
+            self.by_key.remove(&old.key);
+            self.taken_back += 1;
+            (back, true, true)
         } else {
-            let Some(free) = (1..VIEW_SLOTS).find(|&i| self.slots[i].is_none()) else {
-                self.refused += 1;
-                return None;
-            };
-            self.slots[free] = Some(Slot::new(key, self.frame));
-            self.by_key.insert(key, free as u8);
-            (free as u8, true)
+            return Opening::Full;
         };
+        if let Some(target) = click.target {
+            *self.since_flush.entry((click.camera, click.root, target)).or_insert(0) += 1;
+        }
+        if new && slot != MAIN_VIEW {
+            self.slots[slot as usize] = Some(Slot::new(key, self.frame, self.flushes));
+            self.by_key.insert(key, slot);
+            if matches!(key, ViewKey::Texture { again, .. } if again > 0) {
+                self.second_slots += 1;
+                self.second_in_flush += 1;
+                self.most_second_in_flush = self.most_second_in_flush.max(self.second_in_flush);
+            }
+        }
         let entry = self.slots[slot as usize].as_mut().expect("an open slot");
         entry.last_frame = self.frame;
+        entry.last_flush = self.flushes;
         entry.open = true;
         if click.target.is_none() && !entry.roots.contains(&click.root) {
             entry.roots.push(click.root);
         }
-        Some(Opened { slot, new })
+        Opening::Opened(Opened { slot, new, taken_back })
+    }
+
+    /// The slot that closed longest ago and that the take-back may use: not the main view's,
+    /// not open, not used since the last flush.
+    fn oldest_closed(&self) -> Option<u8> {
+        (1..VIEW_SLOTS)
+            .filter_map(|i| self.slots[i].as_ref().map(|slot| (i, slot)))
+            .filter(|(_, slot)| !slot.open && slot.last_flush != self.flushes)
+            .min_by_key(|(_, slot)| slot.closed_order)
+            .map(|(i, _)| i as u8)
     }
 
     /// Slot [`MAIN_VIEW`] for the world camera's key. Another world camera takes the slot over.
@@ -165,15 +238,46 @@ impl ViewTable {
             if let Some(old) = main.take() {
                 self.by_key.remove(&old.key);
             }
-            *main = Some(Slot::new(key, self.frame));
+            *main = Some(Slot::new(key, self.frame, self.flushes));
             self.by_key.insert(key, MAIN_VIEW);
         }
         (MAIN_VIEW, new)
     }
 
-    /// A readback ran the frame's work so far: a texture key used again gets its first slot.
-    pub fn flush(&mut self) {
+    /// A readback, a tile's copy or a forced flush ran the frame's work so far (`forced`: rule
+    /// 5). The open views into a texture close first (section 6: a view into the back buffer
+    /// stays open until the swap), then the second slots go (rule 2), and a texture key used
+    /// again gets its first slot.
+    pub fn flush(&mut self, forced: bool) -> FrameEnd {
+        let mut end = FrameEnd::default();
+        for (index, entry) in self.slots.iter_mut().enumerate() {
+            let Some(slot) = entry.as_mut().filter(|slot| slot.open && slot.targets_texture()) else { continue };
+            self.closes += 1;
+            let changed = slot.close(self.closes);
+            self.root_changes += changed as u64;
+            end.closed.push((index as u8, changed));
+        }
+        self.free_second_slots(&mut end.retired);
+        self.forced_flushes += forced as u64;
+        self.next_flush();
+        end
+    }
+
+    fn free_second_slots(&mut self, retired: &mut Vec<u8>) {
+        for (index, entry) in self.slots.iter_mut().enumerate() {
+            if entry.as_ref().is_some_and(|slot| !slot.open && slot.second()) {
+                let slot = entry.take().expect("a second slot");
+                self.by_key.remove(&slot.key);
+                self.retired += 1;
+                retired.push(index as u8);
+            }
+        }
+    }
+
+    fn next_flush(&mut self) {
         self.since_flush.clear();
+        self.second_in_flush = 0;
+        self.flushes = self.flushes.wrapping_add(1);
     }
 
     /// The renderer's SwapBuffers, with the device's target. The back buffer (`None`) closes
@@ -188,7 +292,8 @@ impl ViewTable {
                 ViewKey::Texture { target, .. } => Some(target),
             };
             if slot.open && into == target {
-                let changed = slot.close();
+                self.closes += 1;
+                let changed = slot.close(self.closes);
                 self.root_changes += changed as u64;
                 closed.push((index as u8, changed));
             }
@@ -197,24 +302,27 @@ impl ViewTable {
     }
 
     /// The device's Present, where the frame ends: the views that no swap closed close, the
-    /// slots without a scene for [`RETIRE_FRAMES`] frames go, and the flush counts clear. Slot
-    /// [`MAIN_VIEW`] stays.
+    /// second slots go, the slots without a scene for [`RETIRE_FRAMES`] frames go, and the
+    /// flush counts clear. Slot [`MAIN_VIEW`] stays.
     pub fn present(&mut self) -> FrameEnd {
         let mut end = FrameEnd::default();
         for (index, entry) in self.slots.iter_mut().enumerate() {
             let Some(slot) = entry else { continue };
             if slot.open {
-                let changed = slot.close();
+                self.closes += 1;
+                let changed = slot.close(self.closes);
                 self.root_changes += changed as u64;
                 end.closed.push((index as u8, changed));
-            } else if index != MAIN_VIEW as usize && self.frame.wrapping_sub(slot.last_frame) >= RETIRE_FRAMES {
+            } else if index != MAIN_VIEW as usize && !slot.second() && self.frame.wrapping_sub(slot.last_frame) >= RETIRE_FRAMES {
                 self.by_key.remove(&slot.key);
                 *entry = None;
                 self.retired += 1;
                 end.retired.push(index as u8);
             }
         }
-        self.since_flush.clear();
+        self.free_second_slots(&mut end.retired);
+        end.retired.sort_unstable();
+        self.next_flush();
         self.frame = self.frame.wrapping_add(1);
         end
     }
@@ -252,6 +360,19 @@ mod tests {
         Click { kind: SCENE_OTHER, camera, root, target: Some(target), world_camera: false }
     }
 
+    /// A slot opened, `new` or not, with no take-back.
+    fn opened(slot: u8, new: bool) -> Opening {
+        Opening::Opened(Opened { slot, new, taken_back: false })
+    }
+
+    /// The slot of an opening.
+    fn slot_of(opening: Opening) -> Option<u8> {
+        match opening {
+            Opening::Opened(opened) => Some(opened.slot),
+            _ => None,
+        }
+    }
+
     /// A normal frame: the world click, a shadow click, the water click, the swap, Present.
     fn normal_frame(views: &mut ViewTable) -> Vec<Closed> {
         views.open(&world(SCENE_WORLD, WORLD_ROOT));
@@ -269,14 +390,14 @@ mod tests {
         let mut views = ViewTable::default();
         let shadow = Click { kind: SCENE_SHADOW_CASTERS, camera: 0x5000, root: 0x5100, target: None, world_camera: false };
         for frame in 0..3 {
-            assert_eq!(views.open(&world(SCENE_WORLD, WORLD_ROOT)), Some(Opened { slot: MAIN_VIEW, new: frame == 0 }));
-            assert_eq!(views.open(&shadow), None);
-            assert_eq!(views.open(&world(SCENE_WATER, WATER_ROOT)), Some(Opened { slot: MAIN_VIEW, new: false }));
+            assert_eq!(views.open(&world(SCENE_WORLD, WORLD_ROOT)), opened(MAIN_VIEW, frame == 0));
+            assert_eq!(views.open(&shadow), Opening::NotView);
+            assert_eq!(views.open(&world(SCENE_WATER, WATER_ROOT)), opened(MAIN_VIEW, false));
             assert_eq!(views.swap(None), vec![(MAIN_VIEW, false)], "frame {frame}");
             assert_eq!(views.present(), FrameEnd::default());
         }
         // The NPC's node in place of the world root and the water plane.
-        assert_eq!(views.open(&world(SCENE_OTHER, 0x4000)), Some(Opened { slot: MAIN_VIEW, new: false }));
+        assert_eq!(views.open(&world(SCENE_OTHER, 0x4000)), opened(MAIN_VIEW, false));
         assert_eq!(views.swap(None), vec![(MAIN_VIEW, true)]);
         views.present();
         views.open(&world(SCENE_OTHER, 0x4000));
@@ -328,8 +449,8 @@ mod tests {
         views.open(&world(SCENE_WORLD, WORLD_ROOT));
         let test = texture(WORLD_CAMERA, WORLD_ROOT, 0x9000);
         let other = texture(0x7000, WORLD_ROOT, 0xA000);
-        assert_eq!(views.open(&test).map(|o| o.slot), Some(1));
-        assert_eq!(views.open(&other).map(|o| o.slot), Some(2));
+        assert_eq!(slot_of(views.open(&test)), Some(1));
+        assert_eq!(slot_of(views.open(&other)), Some(2));
         assert_eq!(views.swap(Some(0x9000)), vec![(1, false)]);
         assert_eq!(views.swap(Some(0x9000)), vec![]);
         assert_eq!(views.frame(), 0, "a texture swap advanced the frame");
@@ -347,30 +468,57 @@ mod tests {
         let mut views = ViewTable::default();
         views.open(&world(SCENE_WORLD, WORLD_ROOT));
         let test = texture(WORLD_CAMERA, WORLD_ROOT, 0x9000);
-        assert_eq!(views.open(&test), Some(Opened { slot: 1, new: true }));
-        views.flush();
-        assert_eq!(views.open(&test), Some(Opened { slot: 1, new: false }));
+        assert_eq!(views.open(&test), opened(1, true));
+        views.flush(false);
+        assert_eq!(views.open(&test), opened(1, false));
         // The same camera and target with another root is another view.
-        assert_eq!(views.open(&texture(WORLD_CAMERA, 0x4000, 0x9000)), Some(Opened { slot: 2, new: true }));
+        assert_eq!(views.open(&texture(WORLD_CAMERA, 0x4000, 0x9000)), opened(2, true));
         views.present();
-        assert_eq!(views.open(&test), Some(Opened { slot: 1, new: false }));
+        assert_eq!(views.open(&test), opened(1, false));
         let screen = Click { kind: SCENE_OTHER, camera: 0x6000, root: WORLD_ROOT, target: None, world_camera: false };
-        assert_eq!(views.open(&screen), Some(Opened { slot: 3, new: true }));
+        assert_eq!(views.open(&screen), opened(3, true));
         assert_eq!(views.swap(None), vec![(3, false)]);
     }
 
-    /// The same texture key twice before a flush: the second scene gets a second slot, and
-    /// each keeps its slot in the next frame.
+    /// The same texture key twice before a flush: the second scene gets a second slot, which
+    /// goes at the frame's end (rule 2). The next frame takes it again and counts it again.
     #[test]
-    fn a_texture_key_twice_before_a_flush_gets_a_second_slot() {
+    fn a_second_slot_goes_at_the_frames_end() {
         let mut views = ViewTable::default();
         let mirror = texture(0x7000, WORLD_ROOT, 0x9000);
         for frame in 0..2 {
-            assert_eq!(views.open(&mirror), Some(Opened { slot: 1, new: frame == 0 }));
-            assert_eq!(views.open(&mirror), Some(Opened { slot: 2, new: frame == 0 }));
-            views.present();
+            assert_eq!(views.open(&mirror), opened(1, frame == 0));
+            assert_eq!(views.open(&mirror), opened(2, true));
+            assert_eq!(views.present(), FrameEnd { closed: vec![(1, false), (2, false)], retired: vec![2] });
         }
-        assert_eq!(views.in_use(), 2);
+        assert_eq!(views.in_use(), 1);
+        assert_eq!((views.second_slots, views.most_second_in_flush), (2, 1));
+    }
+
+    /// A flush (a readback, a tile's copy) closes the open views into a texture first, and
+    /// not view 0 or another camera's view into the back buffer (section 6). Then the second
+    /// slots go, and the key's next scene uses its first slot: the map's tiles, each with a
+    /// copy, never take a second slot.
+    #[test]
+    fn a_flush_closes_the_texture_views_and_frees_the_second_slots() {
+        let mut views = ViewTable::default();
+        views.open(&world(SCENE_WORLD, WORLD_ROOT));
+        let screen = Click { kind: SCENE_OTHER, camera: 0x6000, root: WORLD_ROOT, target: None, world_camera: false };
+        views.open(&screen);
+        let map = texture(0x8000, WORLD_ROOT, 0x9000);
+        let map_water = texture(0x8000, WATER_ROOT, 0x9000);
+        assert_eq!(views.open(&map), opened(2, true));
+        assert_eq!(views.open(&map_water), opened(3, true));
+        assert_eq!(views.open(&map), opened(4, true));
+        assert_eq!(views.flush(false), FrameEnd { closed: vec![(2, false), (3, false), (4, false)], retired: vec![4] });
+        for _ in 0..6 {
+            assert_eq!(views.open(&map), opened(2, false));
+            assert_eq!(views.open(&map_water), opened(3, false));
+            assert_eq!(views.flush(false).retired, Vec::<u8>::new());
+        }
+        assert_eq!(views.second_slots, 1);
+        // View 0 and the other camera's view are still open: the swap closes them.
+        assert_eq!(views.swap(None), vec![(MAIN_VIEW, false), (1, false)]);
     }
 
     /// A slot with no scene for 60 frames goes, once; the key gets a slot again at its next
@@ -388,32 +536,34 @@ mod tests {
         assert_eq!(views.present().retired, vec![1]);
         assert_eq!((views.in_use(), views.retired), (1, 1));
         assert!(views.present().retired.is_empty());
-        assert_eq!(views.open(&save), Some(Opened { slot: 1, new: true }));
+        assert_eq!(views.open(&save), opened(1, true));
     }
 
-    /// 32 slots: a key with all of them taken gets none and is counted; a retirement makes
-    /// room.
+    /// 32 slots taken: a new key takes back the slot that closed longest ago (rule 4), never
+    /// the main view's, an open one or one used since the last flush. With every slot open or
+    /// used since the last flush the table is full (rule 5), and a forced flush makes room.
     #[test]
-    fn all_slots_taken_refuse_a_new_key_and_count_it() {
+    fn a_full_table_takes_back_the_oldest_closed_slot_and_then_forces_a_flush() {
         let mut views = ViewTable::default();
         views.open(&world(SCENE_WORLD, WORLD_ROOT));
         for i in 1..VIEW_SLOTS {
-            assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x10_0000 + i)).map(|o| o.slot), Some(i as u8));
+            assert_eq!(slot_of(views.open(&texture(0x7000, WORLD_ROOT, 0x10_0000 + i))), Some(i as u8));
         }
         assert_eq!(views.in_use(), VIEW_SLOTS);
-        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0000)), None);
-        assert_eq!(views.refused, 1);
-        // A second scene of a key before a flush needs a slot of its own: refused too.
-        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x10_0001)), None);
-        assert_eq!(views.refused, 2);
-        // After a flush the key gets its slot.
-        views.flush();
-        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x10_0001)).map(|o| o.slot), Some(1));
-        for _ in 0..=RETIRE_FRAMES {
-            views.present();
-        }
-        assert_eq!(views.in_use(), 1, "only the main view stays");
-        assert_eq!(views.retired, VIEW_SLOTS as u64 - 1);
-        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0000)).map(|o| o.slot), Some(1));
+        // Every slot is open or used since the last flush.
+        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0000)), Opening::Full);
+        // The swap of slot 5's target closes it, but it is still used in this flush.
+        views.swap(Some(0x10_0005));
+        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0000)), Opening::Full);
+        // The forced flush closes the texture views in slot order; slot 5 closed first.
+        let end = views.flush(true);
+        assert_eq!((end.closed.len(), end.retired), (VIEW_SLOTS - 2, vec![]));
+        assert_eq!(views.forced_flushes, 1);
+        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0000)), Opening::Opened(Opened { slot: 5, new: true, taken_back: true }));
+        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0001)), Opening::Opened(Opened { slot: 1, new: true, taken_back: true }));
+        assert_eq!(views.taken_back, 2);
+        // The old key of slot 5 starts again in another slot at its next scene.
+        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x10_0005)), Opening::Opened(Opened { slot: 2, new: true, taken_back: true }));
+        assert_eq!(views.in_use(), VIEW_SLOTS);
     }
 }
