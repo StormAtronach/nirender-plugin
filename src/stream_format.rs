@@ -113,6 +113,9 @@ pub const HEADER_VIEW_PLACES: u32 = 256;
 /// record of 56 bytes), and a slot that retires comes as the frame event
 /// `link::EVENT_VIEW_RETIRE` (`view_slots`).
 pub const HEADER_SCENE_VIEWS: u32 = 512;
+/// The number of view slots (`view_slots`): one bit of a `u32` mask for each. The view field
+/// of a scene record holds a slot plus 1, so its values are 0 to `VIEW_SLOTS`.
+pub const VIEW_SLOTS: usize = 32;
 
 // The shared memories of a stream. The plugin makes each one, named after the ring; the
 // helper opens it. The words of the ring head are in the table at the head of this file.

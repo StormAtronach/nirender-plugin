@@ -4,7 +4,7 @@
 use crate::*;
 use crate::stream_format::{
     HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET,
-    HEADER_SCENE_WIREFRAME, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
+    HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
 /// The generation of the reply memory that a `READ_PIXELS` record names: 0 in a record of a
@@ -81,6 +81,7 @@ impl Player {
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
                 self.retained.walk.on = abilities & HEADER_WALK_PLACES != 0;
                 self.views.on = abilities & HEADER_VIEW_PLACES != 0;
+                self.views.slots_on = abilities & HEADER_SCENE_VIEWS != 0;
                 self.stream.scene_wireframe = abilities & HEADER_SCENE_WIREFRAME != 0;
                 self.stream.envmap_lit = (abilities & HEADER_ENVMAP_KNOWN != 0).then_some(abilities & HEADER_ENVMAP_LIT != 0);
             }
@@ -171,6 +172,9 @@ impl Player {
                     self.scene_target(word(data, 20) & SCENE_BACK_BUFFER != 0);
                 }
                 let kind = word(data, 4);
+                if self.views.slots_on {
+                    self.views.note_scene_record(data);
+                }
                 self.views.scene_begin(kind, self.target.is_some());
                 for step in self.plan_now().scene_begin(kind) {
                     self.plan_step(step);
@@ -198,6 +202,9 @@ impl Player {
                 }
                 if word(data, 0) == EVENT_QUEUE_FLUSHED && self.stream.queue_flush {
                     self.queue_flushed();
+                }
+                if word(data, 0) == EVENT_VIEW_RETIRE && self.views.slots_on {
+                    self.views.retire(word(data, 4));
                 }
             }
             // The kind and the class of the object of the shape records that follow.

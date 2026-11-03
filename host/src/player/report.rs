@@ -88,6 +88,9 @@ impl Player {
             c.views, c.view_places, c.view_places_empty, c.view_unknown, c.views_dropped, c.view_shade_late
         );
         self.print_view_times();
+        if self.views.slots_on {
+            println!("{}", self.views.slots_line());
+        }
         println!(
             "scene targets: {} scenes named their target, {} of them another target than the SetRenderTarget calls gave; {} draws of a world view with an orthographic projection",
             c.scene_targets, c.scene_target_changed, c.orthographic_world_draws
