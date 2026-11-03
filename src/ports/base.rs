@@ -3,6 +3,7 @@
 //! the deleting destructors and jump stubs of the classes that the other modules port.
 
 use core::arch::asm;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::main_thread::{MainCell, MainThread};
 use crate::d3d;
@@ -1171,8 +1172,30 @@ pub unsafe fn material_manager_initialize(this: usize) {
     wr::<u8>(this, MM::changed, 1);
 }
 
+#[cfg(not(test))]
 unsafe fn default_material() -> usize {
     rd(DEFAULT_MATERIAL, 0)
+}
+
+/// The default material of a test: the address of its fields, or 0 for a game that has released it.
+#[cfg(test)]
+thread_local! {
+    static TEST_DEFAULT_MATERIAL: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+unsafe fn default_material() -> usize {
+    let _ = DEFAULT_MATERIAL;
+    TEST_DEFAULT_MATERIAL.with(|cell| cell.get())
+}
+
+/// How many times a material manager ended with no default material (see
+/// [`clear_default_material_entry`]).
+static NO_DEFAULT_MATERIAL: AtomicU32 = AtomicU32::new(0);
+
+/// The managers that ended after the engine's exit handlers released the default material.
+pub fn no_default_material_count() -> u32 {
+    NO_DEFAULT_MATERIAL.load(Ordering::Relaxed)
 }
 
 /// The memory that the manager writes outside itself when it starts or ends. It is the buckets
@@ -1196,6 +1219,30 @@ unsafe fn material_manager_initialize_regions(set: &mut Regions, this: usize) {
     material_manager_shared_regions(set, this);
 }
 
+/// Frees the entry of the default material and clears the pointer to it, as the end of
+/// `NiDX8MaterialManager::dtor` does. The engine's code writes through the global with no test.
+/// At the exit of the process the engine's exit handler (0x6DB070) has released the material and
+/// set the global to 0 before MWSE closes its Lua state; a camera that Lua holds can then be the
+/// last owner of the renderer, and the renderer ends here. The write is skipped then and counted
+/// ([`no_default_material_count`]); the first time it is logged.
+unsafe fn clear_default_material_entry() {
+    let mut default = default_material();
+    if default != 0 {
+        let entry: usize = rd(default, MP::rendererData);
+        if entry != 0 {
+            eng::operator_delete(entry);
+            default = default_material();
+        }
+    }
+    if default == 0 {
+        if NO_DEFAULT_MATERIAL.fetch_add(1, Ordering::Relaxed) == 0 {
+            crate::log!("material manager: the default material is already released (the engine's exit handlers ran); its entry is not cleared");
+        }
+        return;
+    }
+    wr::<usize>(default, MP::rendererData, 0);
+}
+
 /// 0x6C2450 `NiDX8MaterialManager::dtor`
 ///
 /// # Safety
@@ -1216,15 +1263,7 @@ pub unsafe fn material_manager_dtor(this: usize) {
         eng::operator_delete(entry);
     }
 
-    let mut default = default_material();
-    if default != 0 {
-        let entry: usize = rd(default, MP::rendererData);
-        if entry != 0 {
-            eng::operator_delete(entry);
-            default = default_material();
-        }
-    }
-    wr::<usize>(default, MP::rendererData, 0);
+    clear_default_material_entry();
 
     wr(map, HM::vtbl, VTBL_MATERIAL_MAP);
     map_remove_all(map);
@@ -2507,5 +2546,25 @@ mod tests {
             assert_eq!(rd::<u16>(this, RSP::flags + 2), 0xFFFF);
             assert_eq!(rd::<usize>(this, RSP::renderData), 0);
         }
+    }
+
+    /// At the exit of the process the engine's exit handler has released the default material and
+    /// set the global to 0. The end of the material manager skips the write then and counts it;
+    /// with a default material it clears the entry as before.
+    #[test]
+    fn the_material_manager_ends_with_no_default_material() {
+        let before = no_default_material_count();
+        TEST_DEFAULT_MATERIAL.with(|cell| cell.set(0));
+        unsafe { clear_default_material_entry() };
+        unsafe { clear_default_material_entry() };
+        assert_eq!(no_default_material_count(), before + 2);
+
+        let mut material = vec![0u8; MP::SIZE];
+        let default = material.as_mut_ptr() as usize;
+        unsafe { wr::<usize>(default, MP::rendererData, 0x1234) };
+        TEST_DEFAULT_MATERIAL.with(|cell| cell.set(default));
+        unsafe { clear_default_material_entry() };
+        assert_eq!(unsafe { rd::<usize>(default, MP::rendererData) }, 0);
+        assert_eq!(no_default_material_count(), before + 2);
     }
 }
