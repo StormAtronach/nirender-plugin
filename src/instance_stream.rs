@@ -765,14 +765,20 @@ pub unsafe fn scene_end(mt: &MainThread) {
 /// (`INSTANCE_STATE` with the view). After a root change the plane test is skipped: every
 /// shape not displayed is hidden. The close visits only the entries that the view's scenes did
 /// not display since its last close (`ViewLists`). Engine-rules R14, R16 (the skill
-/// wgpu-renderer-dev).
+/// wgpu-renderer-dev). After the first `display_cost` call the closes are timed.
 pub fn close_views(mt: &MainThread, closed: impl IntoIterator<Item = Closed>) {
+    use core::sync::atomic::Ordering::Relaxed;
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     let hide = t.mode() == Mode::Gpu && capture::recording();
+    let timed = COST_ON.load(Relaxed);
+    let start = if timed { capture::ticks() } else { 0 };
     for (slot, root_changed) in closed {
         // SAFETY: the bounds are the instances' own, and the planes copies of the camera's.
         unsafe { close_view(t, slot, root_changed, hide) };
+    }
+    if timed {
+        CLOSE_TICKS.fetch_add(capture::ticks() - start, Relaxed);
     }
 }
 
@@ -856,8 +862,10 @@ impl Instance {
 
 /// The hides of the views' closes: by the plane test, and after a root change.
 static CLOSE_HIDES: [core::sync::atomic::AtomicU64; 2] = [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
-/// The entries that the views' closes visited.
+/// The entries that the views' closes visited, and the time of the closes after the first
+/// `display_cost` call (`display_cost` reads and resets both).
 static CLOSE_VISITS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static CLOSE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 
 /// A view slot retires: no instance shows in it any more. The helper clears bit v at the
 /// retirement (`EVENT_VIEW_RETIRE`).
@@ -2306,13 +2314,30 @@ pub fn set_note_every(on: bool) -> bool {
     before
 }
 
-/// The skipped displays since the last call, the notes among them, and their time in
-/// milliseconds; the counters reset.
-pub fn display_cost() -> (u64, u64, f64) {
+/// The cost of the skipped displays and of the views' closes since the last call
+/// ([`display_cost`]); the counters reset.
+pub struct DisplayCost {
+    pub displays: u64,
+    pub notes: u64,
+    pub display_ms: f64,
+    /// The time of the views' closes ([`close_views`]) and the list entries that they visited.
+    pub close_ms: f64,
+    pub close_visits: u64,
+}
+
+/// The skipped displays since the last call, the notes among them, and their time; the time
+/// of the views' closes and the entries that they visited. The counters reset.
+pub fn display_cost() -> DisplayCost {
     use core::sync::atomic::Ordering::Relaxed;
     COST_ON.store(true, Relaxed);
-    let ticks = COST_TICKS.swap(0, Relaxed);
-    (COST_CALLS.swap(0, Relaxed), COST_NOTES.swap(0, Relaxed), ticks as f64 * 1000.0 / capture::ticks_per_second() as f64)
+    let ms = |ticks: i64| ticks as f64 * 1000.0 / capture::ticks_per_second() as f64;
+    DisplayCost {
+        displays: COST_CALLS.swap(0, Relaxed),
+        notes: COST_NOTES.swap(0, Relaxed),
+        display_ms: ms(COST_TICKS.swap(0, Relaxed)),
+        close_ms: ms(CLOSE_TICKS.swap(0, Relaxed)),
+        close_visits: CLOSE_VISITS.swap(0, Relaxed),
+    }
 }
 
 /// The cost of the display hook is timed only after the first `display_cost` call: the

@@ -508,10 +508,11 @@ unsafe extern "C" fn note_every(l: LuaState) -> i32 {
 }
 
 /// `nirender.displayCost()`: the skipped displays since the last call, the notes among
-/// them and their time in ms, as text; the counters reset.
+/// them and their time in ms, then the time of the views' closes in ms and the list entries
+/// that they visited, as text; the counters reset.
 unsafe extern "C" fn display_cost(l: LuaState) -> i32 {
-    let (calls, notes, ms) = crate::instance_stream::display_cost();
-    push_str(l, &format!("{calls} {notes} {ms:.3}"));
+    let cost = crate::instance_stream::display_cost();
+    push_str(l, &format!("{} {} {:.3} {:.3} {}", cost.displays, cost.notes, cost.display_ms, cost.close_ms, cost.close_visits));
     1
 }
 
