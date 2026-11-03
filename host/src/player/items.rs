@@ -466,6 +466,9 @@ impl Player {
         self.parameters = Some(parameters);
         self.takes = self.parameters.as_ref().map_or(0, |p| p.watched & (1 << scene::CLASS_WATER_PLANE));
         self.shadow_reach = self.parameters.as_ref().map_or(0.0, |p| p.shadow_reach);
+        if let Some(max) = self.parameters.as_ref().and_then(|p| p.full_tier_max) {
+            self.views.tier.set_max(max);
+        }
         self.renderer.counts.times[TIME_EXT_FRAME] += clock.elapsed();
         self.extension = Some(extension);
     }

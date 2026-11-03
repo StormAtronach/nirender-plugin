@@ -12,6 +12,7 @@
 //! The shade of the table ([`shade_choice`]) is made once in a frame, only from the world
 //! camera's view; a view of another camera takes the latest one.
 
+use super::full_tier::FullTier;
 use super::scene;
 use crate::stream_format::VIEW_SLOTS;
 use crate::{Additions, ViewKind};
@@ -144,6 +145,8 @@ pub(crate) struct Views {
     slot_counts: SlotCounts,
     /// The user interface scene of the frame began: a view after it has no additions.
     ui_seen: bool,
+    /// The places of the full tier and the parts that the mods asked for the view slots.
+    pub(crate) tier: FullTier,
 }
 
 impl Views {
@@ -177,6 +180,7 @@ impl Views {
 
     /// The frame event `EVENT_VIEW_RETIRE`: the slot is free.
     pub(crate) fn retire(&mut self, slot: u32) {
+        self.tier.retire(slot);
         match self.slots.get_mut(slot as usize).and_then(Option::take) {
             Some(_) => self.slot_counts.retired += 1,
             None => self.slot_counts.retired_unknown += 1,
@@ -204,6 +208,7 @@ impl Views {
         self.groups.clear();
         self.open = None;
         self.ui_seen = false;
+        self.tier.frame_start();
     }
 
     /// The camera of a scene is the world camera: the scene is one of the world camera's
@@ -228,7 +233,10 @@ impl Views {
             return false;
         }
         let view = ViewKind::classify(in_target, camera_is_world);
-        self.groups.push(Group { world_camera: kind == scene::SCENE_WORLD, kind: view, additions: view.additions(self.ui_seen), view_slot, ..Group::default() });
+        // The full tier is for the views of a mod: the main view has every part already.
+        let granted = view_slot.filter(|_| view != ViewKind::Main).map_or(0, |slot| self.tier.scene(slot));
+        let additions = view.additions(self.ui_seen).with(Additions::from_option_parts(granted));
+        self.groups.push(Group { world_camera: kind == scene::SCENE_WORLD, kind: view, additions, view_slot, ..Group::default() });
         self.open = Some(self.groups.len() - 1);
         true
     }
@@ -477,6 +485,30 @@ mod tests {
         // Without the flag, word 4 is the target.
         views.note_scene_record(&record(10, 101, 0x5000, 0));
         assert_eq!(views.slots[0], Some(ViewSlot { camera: 10, root: 101, target: 0x5000 }));
+    }
+
+    /// A mod's options (`mge.camera.setViewOptions`) add parts to the view of its slot, within the
+    /// places of the full tier. The view over the number and the main view get none.
+    #[test]
+    fn a_view_with_options_gets_the_parts_of_the_full_tier() {
+        let mut views = on();
+        views.tier.options(3, 0b11);
+        views.tier.options(4, 0b1);
+        views.tier.options(0, 0b1);
+        views.note_scene(Some(3), 20, 200, 7);
+        assert!(views.scene_begin(SCENE_WORLD, true, true));
+        let picture = views.group(0).unwrap();
+        assert!(picture.additions.contains(Additions::LAND.with(Additions::STATICS)) && !picture.additions.contains(Additions::GRASS));
+        views.note_scene(Some(4), 21, 200, 8);
+        assert!(views.scene_begin(SCENE_WORLD, true, true));
+        assert_eq!(views.group(1).unwrap().additions, Additions::NONE);
+        views.note_scene(Some(0), 10, 100, 0);
+        assert!(views.scene_begin(SCENE_OTHER, false, true));
+        assert_eq!(views.group(2).unwrap().additions, Additions::ALL);
+        // A scene with no slot (a stream without them) takes no place.
+        assert!(views.scene_begin(SCENE_WORLD, true, true));
+        assert_eq!(views.group(3).unwrap().additions, Additions::NONE);
+        assert_eq!((views.tier.counts.granted, views.tier.counts.refused), (1, 1));
     }
 
     /// The kind of a view comes from the camera and the target: the world camera on a mod's root
