@@ -16,6 +16,10 @@ impl Player {
             retained_values: None,
             fog_off_color: 0,
             table_shaded: None,
+            shade_frame: None,
+            shade_last: None,
+            views: engine::views::Views::default(),
+            target_plan: plan::Plan::default(),
             stream: Stream {
                 view: [0.0; 16],
                 projection: [0.0; 16],
@@ -322,6 +326,13 @@ impl Player {
         self.renderer.indirect_written = 0;
         self.parameters = None;
         self.plan.frame_start();
+        self.target_plan.frame_start();
+        self.views.frame_start();
+        // The shade of the last frame, for a view of another camera before any view of the
+        // world camera in this one.
+        if let Some(shade) = self.shade_frame.take() {
+            self.shade_last = Some(shade);
+        }
         self.held_draws.clear();
         self.taken.clear();
         // No flush of the frame came to its place: nothing drew it.

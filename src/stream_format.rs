@@ -104,6 +104,11 @@ pub const HEADER_ENVMAP_KNOWN: u32 = 64;
 /// A bit of the same word: the game's environment map stages take the lit colour (the
 /// Morrowind Code Patch's hook, `texture_pipeline::envmap_lit` of the plugin).
 pub const HEADER_ENVMAP_LIT: u32 = 128;
+/// A bit of the same word: in a scene into a rendered texture, and in a scene of the back
+/// buffer of `link::SCENE_OTHER`, every retained shape the engine displays has its place as
+/// `INSTANCE_WALK` (or `INSTANCE_QUEUED`), and the helper draws the scene's shapes there in a
+/// view of the scene's own (`instance_stream::Route::Places`).
+pub const HEADER_VIEW_PLACES: u32 = 256;
 
 // The shared memories of a stream. The plugin makes each one, named after the ring; the
 // helper opens it. The words of the ring head are in the table at the head of this file.

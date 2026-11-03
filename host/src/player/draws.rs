@@ -97,7 +97,7 @@ impl Player {
                 draw.stencil_reference,
                 draw.world as u8,
                 draw.class,
-                self.plan.scene_kind,
+                if self.target.is_some() { self.target_plan.scene_kind } else { self.plan.scene_kind },
                 draw.key.blend,
                 draw.key.depth,
                 draw.texture_handles,
@@ -147,18 +147,31 @@ impl Player {
     /// The end of the sky's walk in the world camera's Click ([`EVENT_WORLD_WALK`]): the world
     /// of the frame starts here, from the engine's walk, not from a draw.
     pub(crate) fn world_walk(&mut self) {
-        let in_back_buffer = self.stream.back_buffer && self.target.is_none();
-        for step in self.plan.world_walk(self.extension.is_some(), in_back_buffer) {
+        let (extension, in_back_buffer) = (self.extension.is_some(), self.stream.back_buffer && self.target.is_none());
+        for step in self.plan_now().world_walk(extension, in_back_buffer) {
             self.plan_step(step);
         }
     }
 
     /// The end of the flush of the engine's main sorted queue ([`EVENT_QUEUE_FLUSHED`]): the
-    /// sorted blends of the frame go here.
+    /// sorted blends of the frame go here, and those of a view of its own in its scene.
     pub(crate) fn queue_flushed(&mut self) {
         let in_back_buffer = self.stream.back_buffer && self.target.is_none();
-        for step in self.plan.queue_flushed(in_back_buffer) {
+        for step in self.plan_now().queue_flushed(in_back_buffer) {
             self.plan_step(step);
+        }
+        if let Some(group) = self.views.queue_flushed().filter(|_| self.drawing()) {
+            self.items.push(Item::ViewSorted(group));
+        }
+    }
+
+    /// The plan state of the scene in progress: the target group's while the game draws into a
+    /// rendered texture, else the frame's.
+    pub(crate) fn plan_now(&mut self) -> &mut plan::Plan {
+        if self.target.is_some() {
+            &mut self.target_plan
+        } else {
+            &mut self.plan
         }
     }
 
@@ -173,8 +186,11 @@ impl Player {
         }
         if back_buffer {
             self.stream.back_buffer = true;
-            if self.target.take().is_some() && self.drawing() {
-                self.items.push(Item::Target(None));
+            if self.target.take().is_some() {
+                self.target_plan.frame_start();
+                if self.drawing() {
+                    self.items.push(Item::Target(None));
+                }
             }
         } else if self.target.is_none() {
             self.stream.back_buffer = false;
@@ -216,7 +232,8 @@ impl Player {
         // a plain interior cell, or ToggleSky) there is no sky draw: the world starts at
         // the first draw.
         let sky = scene::sky_class(self.stream.object_class);
-        let (steps, hold) = self.plan.world_draw(self.extension.is_some(), in_back_buffer, sky, self.stream.sky_hidden, self.stream.world_walk);
+        let (extension, sky_hidden, walk_marked) = (self.extension.is_some(), self.stream.sky_hidden, self.stream.world_walk);
+        let (steps, hold) = self.plan_now().world_draw(extension, in_back_buffer, sky, sky_hidden, walk_marked);
         for step in steps {
             self.plan_step(step);
         }

@@ -251,6 +251,10 @@ enum Item {
     /// A run of places of the table's blends in the engine's walk ([`engine::walk`]): the
     /// number of the run in the frame.
     WalkPlaces(usize),
+    /// A run of places in a view of its own ([`engine::views`]): the group and the run.
+    ViewPlaces(usize, usize),
+    /// The places of a view of its own in the flush of the engine's queue: the group.
+    ViewSorted(usize),
     /// The extension draws in place of the draws of this class. The number of world draws
     /// before this item: those after it are not in the picture yet.
     Replace(u32, Box<WorldFacts>, usize),
@@ -769,6 +773,17 @@ struct Player {
     /// what the shade gives the scene: made before the clusters of the lights of the world
     /// (`MGE_XE_LIGHTS=world`), then taken by `draw_retained_main`.
     table_shaded: Option<(Vec<LightData>, Option<TableShade>)>,
+    /// The shade of the table as it was made in this frame (once, from the world camera's
+    /// view), and the one of the last frame that had one: what the views of their own take
+    /// ([`engine::views::shade_choice`]).
+    shade_frame: Option<Option<TableShade>>,
+    shade_last: Option<Option<TableShade>>,
+    /// The views of the table of their own in this frame ([`engine::views`]).
+    views: engine::views::Views,
+    /// The plan state of the scenes into a rendered texture: they leave the main plan of the
+    /// frame alone (a clear of a mirror's depth after the world). It starts again at each
+    /// return to the back buffer.
+    target_plan: plan::Plan,
     /// The frame in progress: its commands, its pass, and its two targets.
     encoder: Option<wgpu::CommandEncoder>,
     pass: Option<wgpu::RenderPass<'static>>,

@@ -1195,7 +1195,8 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     };
     (host.scene_begin)(&scene);
     crate::capture::scene_begin(&scene);
-    crate::instance_stream::scene_begin(t, roots.scene_kind, camera);
+    let route = crate::instance_stream::route_of(scene.kind, scene.flags & SCENE_BACK_BUFFER != 0, crate::own_host::target_is_known());
+    crate::instance_stream::scene_begin(t, roots.scene_kind, camera, route);
     // MGE XE's frame logic takes the same packet (the contract's `MGE_StreamSceneBegin`).
     let function = STREAM_SCENE_BEGIN.load(Ordering::Relaxed);
     if function != 0 {
@@ -1910,6 +1911,38 @@ mod present_tests {
             assert!(!take_present_due());
         }
         assert!(take_present_due());
+    }
+}
+
+#[cfg(test)]
+mod scene_kind_tests {
+    use super::*;
+    use crate::mem::wr;
+
+    /// The kind of a scene comes from the camera first: the map's camera with the world's root
+    /// is the local map, not a world scene; the world camera is the world with the world's root
+    /// and another scene with another root (a mod's subject).
+    #[test]
+    fn the_camera_names_the_kind_before_the_root() {
+        let largest = [WC_WORLD_ROOT, WC_WORLD_CAMERA, WC_ARM_CAMERA, WC_MENU_CAMERA, WC_PREVIEW_CAMERA, WC_MAP_CAMERA, WC_SHADOW_CAMERA, WC_SPLASH_CAMERA].into_iter().max().unwrap();
+        let controller = vec![0u8; largest + 4];
+        let camera = vec![0u8; CAM::spScene + 4];
+        let world_camera = vec![0u8; CAM::spScene + 4];
+        let root = vec![0u8; 4];
+        let other_root = vec![0u8; 4];
+        let at = |v: &Vec<u8>| v.as_ptr() as usize;
+        // SAFETY: each write is inside its buffer, and the buffers live for the test.
+        unsafe {
+            wr::<usize>(at(&controller), WC_WORLD_ROOT, at(&root));
+            wr::<usize>(at(&controller), WC_WORLD_CAMERA, at(&world_camera));
+            wr::<usize>(at(&controller), WC_MAP_CAMERA, at(&camera));
+            wr::<usize>(at(&camera), CAM::spScene, at(&root));
+            wr::<usize>(at(&world_camera), CAM::spScene, at(&root));
+            assert_eq!(scene_kind(at(&camera), at(&controller), 0), SCENE_LOCAL_MAP);
+            assert_eq!(scene_kind(at(&world_camera), at(&controller), 0), SCENE_WORLD);
+            wr::<usize>(at(&world_camera), CAM::spScene, at(&other_root));
+            assert_eq!(scene_kind(at(&world_camera), at(&controller), 0), SCENE_OTHER);
+        }
     }
 }
 

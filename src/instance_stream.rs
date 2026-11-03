@@ -50,7 +50,7 @@ use crate::capture;
 use crate::engine::{thiscall1, vcall0};
 use crate::gen::layouts::{InterfaceNiTimeController, NiAVObject, NiGeometry, NiProperty, NiPropertyState, NiRTTI};
 use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L, NiPropertyState as PS, NiTimeController as TC, NiZBufferProperty as ZP};
-use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, CLASS_WEATHER_PARTICLES, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_RACE_MENU_HEAD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
+use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, CLASS_WEATHER_PARTICLES, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_OTHER, SCENE_RACE_MENU_HEAD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
 use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::{rd, wr};
@@ -271,6 +271,8 @@ struct Tables {
     world_camera: usize,
     /// The kind of the scene in progress (`SCENE_*` of `link.rs`), for `skipped_display`.
     scene_kind: u32,
+    /// Where the engine's displays of retained shapes go in the scene in progress.
+    scene_route: Route,
     states: u64,
     light_records: u64,
     /// The displays the engine skipped, and the device values of the lights of the frame
@@ -386,7 +388,8 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         pending: None,
         mode: None,
         world_camera: 0,
-        scene_kind: crate::link::SCENE_OTHER,
+        scene_kind: SCENE_OTHER,
+        scene_route: Route::Main,
         states: 0,
         light_records: 0,
         skipped: 0,
@@ -559,11 +562,12 @@ pub unsafe fn install_census() {
 
 /// A scene of the game begins: the camera of the world scene is kept for the check at its
 /// end.
-pub unsafe fn scene_begin(mt: &MainThread, kind: u32, camera: usize) {
+pub unsafe fn scene_begin(mt: &MainThread, kind: u32, camera: usize, route: Route) {
     // The shapes destroyed on another thread leave the tables before any walk of the scene.
     crate::worker_events::drain();
     tables(mt).world_camera = if kind == SCENE_WORLD { camera } else { 0 };
     tables(mt).scene_kind = kind;
+    tables(mt).scene_route = route;
     if kind == SCENE_WORLD && camera != 0 {
         crate::animation::note_camera(mt, camera);
     }
@@ -1691,6 +1695,11 @@ pub unsafe fn may_queue(mt: &MainThread) -> bool {
     t.mode == Some(Mode::Gpu) && t.skip && capture::recording() && matches!(t.scene_kind, SCENE_WORLD | SCENE_SORTED_ALPHA | SCENE_WATER)
 }
 
+/// True in a scene of [`Route::Places`].
+pub fn places_route(mt: &MainThread) -> bool {
+    tables(mt).scene_route == Route::Places
+}
+
 /// Notes that the engine's main sorted queue took the shape in this frame.
 pub unsafe fn note_queued(mt: &MainThread, shape: usize) {
     let mut tables_open = tables(mt);
@@ -1727,12 +1736,18 @@ static WALK_PLACES: MainCell<u64> = MainCell::new(0);
 /// property blends: the engine draws such a shape at its display when the main queue does
 /// not take it (the no-sorter bit, no accumulator), so the helper draws it at this place, in
 /// the walk's order. The caller calls it only for a shape the queue did not take. An opaque
-/// shape gets no place.
+/// shape gets no place, except in a scene of [`Route::Places`]: there every displayed shape
+/// gets one, and the helper draws the scene's shapes only at their places.
 /// Engine-rules R2 (the skill wgpu-renderer-dev).
 pub unsafe fn walk_place(mt: &MainThread, shape: usize) {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     let Some(instance) = t.instances.get(&shape) else { return };
+    if t.scene_route == Route::Places {
+        capture::instance_walk(instance.id);
+        *VIEW_PLACES.get(mt) += 1;
+        return;
+    }
     let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
     let alpha: usize = if property_state != 0 { rd(property_state, PS::propAlpha) } else { 0 };
     if alpha == 0 || rd::<u16>(alpha, PROPERTY_FLAGS) & 1 == 0 {
@@ -1758,6 +1773,66 @@ pub unsafe fn skipped_display(mt: &MainThread, shape: usize, kind: u32) -> bool 
     result
 }
 
+/// The scenes in which the engine displays a retained shape on its own path (the record path),
+/// because the helper draws no table there, with their names for the report.
+const ENGINE_PATH_SCENES: [(u32, &str); 4] = [
+    (SCENE_LOCAL_MAP, "local map"),
+    (SCENE_CHARACTER_PREVIEW, "character preview"),
+    (SCENE_RACE_MENU_HEAD, "race menu head"),
+    (SCENE_WATER_REFLECTION, "water reflection"),
+];
+/// The displays of retained shapes on the engine's path, by the scenes of [`ENGINE_PATH_SCENES`],
+/// then those into a target that the helper does not have.
+static ENGINE_PATH_DISPLAYS: MainCell<[u64; 5]> = MainCell::new([0; 5]);
+/// The places written in the scenes of [`Route::Places`].
+static VIEW_PLACES: MainCell<u64> = MainCell::new(0);
+
+/// Where the engine's displays of retained shapes go in a scene.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Route {
+    /// The table's main view draws them: a scene into the back buffer.
+    Main,
+    /// The helper draws each one at its place in a view of the scene's own: every display
+    /// writes its place (`INSTANCE_WALK`), or its place in the flush of the queue. A scene
+    /// into a rendered texture of the helper (a save's picture, a mod's mirror), or a scene of
+    /// another camera, or of the world camera on another root, into the back buffer.
+    Places,
+    /// The engine draws them: the scene of [`ENGINE_PATH_SCENES`] at this index, or with
+    /// the index 4 a target that the helper does not have.
+    Engine(usize),
+}
+
+/// The route of a scene of this kind. `back_buffer`: the game draws into the back buffer;
+/// `known_target`: the helper has the target of the game (the back buffer, or a rendered
+/// texture of the plugin's device).
+pub fn route_of(kind: u32, back_buffer: bool, known_target: bool) -> Route {
+    if let Some(index) = ENGINE_PATH_SCENES.iter().position(|&(scene, _)| scene == kind) {
+        return Route::Engine(index);
+    }
+    if back_buffer && kind != SCENE_OTHER {
+        return Route::Main;
+    }
+    if !known_target {
+        return Route::Engine(ENGINE_PATH_SCENES.len());
+    }
+    Route::Places
+}
+
+/// The displays of retained shapes on the engine's path outside the table's scenes, and the
+/// places in the views of their own, for the `shapes:` line: the work that the table does not
+/// take yet, and the work of those views.
+pub fn engine_path_report(mt: &MainThread) -> String {
+    let counts = *ENGINE_PATH_DISPLAYS.get(mt);
+    let names = ENGINE_PATH_SCENES.iter().map(|&(_, name)| name).chain(["a target the helper lacks"]);
+    let parts: Vec<String> = names.zip(counts).map(|(name, count)| format!("{name} {count}")).collect();
+    format!(
+        "{} displays of retained shapes on the engine's path outside the table's scenes ({}); {} places in views of their own",
+        counts.iter().sum::<u64>(),
+        parts.join(", "),
+        *VIEW_PLACES.get(mt)
+    )
+}
+
 unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> bool {
     {
         let mut tables_open = tables(mt);
@@ -1771,13 +1846,14 @@ unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> boo
         if !t.skip || !capture::recording() {
             return false;
         }
-        // A scene that draws into a target of the game: the local map's tiles, the character
-        // preview, the race menu's head, the engine's water reflection. The helper draws its
-        // table only in the scenes of the world camera, so here the engine draws the shape on
-        // the record path (the draw is not a plain world shape there, `link_client`). The mark
-        // stays: the shape is still retained in the world scenes. Without this a map tile drawn
-        // at a walking cross lost its landscape (records entry 55).
-        if matches!(t.scene_kind, SCENE_RACE_MENU_HEAD | SCENE_CHARACTER_PREVIEW | SCENE_LOCAL_MAP | SCENE_WATER_REFLECTION) {
+        // A scene of [`ENGINE_PATH_SCENES`] (the local map's tiles, the character preview, the
+        // race menu's head, the engine's water reflection), or a scene into a target that the
+        // helper does not have: the engine draws the shape on the record path (the draw is not
+        // a plain world shape there, `link_client`). The mark stays: the shape is still
+        // retained in the world scenes. Without this a map tile drawn at a walking cross lost
+        // its landscape (records entry 55). The displays are counted ([`engine_path_report`]).
+        if let Route::Engine(index) = t.scene_route {
+            ENGINE_PATH_DISPLAYS.get(mt)[index] += 1;
             return false;
         }
         if let Some(instance) = t.instances.get_mut(&shape) {
@@ -2225,6 +2301,28 @@ pub unsafe fn report(mt: &MainThread) -> String {
 mod tests {
     use super::*;
     use crate::material_stream::EFFECT_SIGNATURE_WORDS;
+
+    /// The route of a scene: the back buffer keeps the main view, except for a scene of another
+    /// camera or root; a rendered texture of the helper gives the scene a view of its own; the
+    /// engine's own scenes and a target the helper lacks stay on the engine's path.
+    #[test]
+    fn a_scene_takes_its_route_from_its_kind_and_its_target() {
+        use crate::link::{SCENE_FIRST_PERSON, SCENE_UI};
+        // The save's picture: the world camera into a rendered texture of the helper.
+        assert_eq!(route_of(SCENE_WORLD, false, true), Route::Places);
+        assert_eq!(route_of(SCENE_FIRST_PERSON, false, true), Route::Places);
+        assert_eq!(route_of(SCENE_WORLD, true, true), Route::Main);
+        assert_eq!(route_of(SCENE_UI, true, true), Route::Main);
+        // A mod's camera: into its texture, or into the back buffer (another root).
+        assert_eq!(route_of(SCENE_OTHER, false, true), Route::Places);
+        assert_eq!(route_of(SCENE_OTHER, true, true), Route::Places);
+        // A target the helper lacks: the engine draws.
+        assert_eq!(route_of(SCENE_WORLD, false, false), Route::Engine(ENGINE_PATH_SCENES.len()));
+        // The engine's own scenes keep their path, into any target.
+        assert_eq!(route_of(SCENE_LOCAL_MAP, false, true), Route::Engine(0));
+        assert_eq!(route_of(SCENE_WATER_REFLECTION, false, true), Route::Engine(3));
+        assert_eq!(route_of(SCENE_CHARACTER_PREVIEW, true, true), Route::Engine(1));
+    }
 
     /// A shape that the engine does not display after a reset (a culled weapon, a shape out of
     /// the view) and that is then destroyed: the helper holds its instance, so the delete must

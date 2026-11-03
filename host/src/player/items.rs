@@ -87,8 +87,9 @@ impl Player {
         self.table_shaded = None;
         let world = match world_start.filter(|_| self.renderer.clusters.world) {
             Some(facts) => {
-                let shaded = self.shade_table_main(facts);
+                let shaded = self.shade_table_main(&facts.view);
                 self.renderer.upload_retained_lights(&shaded.0);
+                self.shade_frame = Some(shaded.1);
                 self.table_shaded = Some(shaded);
                 Some((self.retained.world_light_slots(), self.retained.set_to_scene(facts.origin), facts.origin))
             }
@@ -120,6 +121,7 @@ impl Player {
                 Item::Draw(_) | Item::Screen(_) if world_started => Some("game: draws in the world"),
                 Item::Draw(_) | Item::Screen(_) => Some("game: before the world (sky)"),
                 Item::WalkPlaces(_) => Some("table: blends in the engine's walk"),
+                Item::ViewPlaces(..) | Item::ViewSorted(_) => Some("table: views of their own"),
                 Item::SortedBlends(_) => Some("sorted blends (the engine's and the table's)"),
                 Item::Replace(..) => Some("a class of draws (extension: water)"),
                 Item::HeldHere(..) => Some("a held draw in place (extension)"),
@@ -160,6 +162,8 @@ impl Player {
                         Item::WorldEnd(_) => "world-end",
                         Item::SortedBlends(_) => "sorted-blends",
                         Item::WalkPlaces(_) => "walk-places",
+                        Item::ViewPlaces(..) => "view-places",
+                        Item::ViewSorted(_) => "view-sorted",
                         Item::HeldHere(..) => "held",
                         Item::Replace(..) => "replace",
                         Item::Post(_) => "post",
@@ -197,6 +201,14 @@ impl Player {
                 Item::WorldEnd(facts) => self.end_world(&facts),
                 Item::SortedBlends(generation) => self.draw_retained_sorted(generation),
                 Item::WalkPlaces(run) => self.draw_walk_run(run),
+                Item::ViewPlaces(group, run) => {
+                    let ids = self.views.take_run(group, run);
+                    self.draw_view_run(group, &ids);
+                }
+                Item::ViewSorted(group) => {
+                    let ids = self.views.take_sorted(group);
+                    self.draw_view_run(group, &ids);
+                }
                 Item::HeldHere(held, facts) => self.give_held_here(core::slice::from_ref(&*held), &facts),
                 Item::Replace(class, facts, drawn) => self.replace_class(class, &facts, drawn),
                 Item::Post(facts) => self.post_process(&facts),
