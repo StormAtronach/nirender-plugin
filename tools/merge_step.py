@@ -35,7 +35,8 @@ reference and not an acceptance. The first line names it. A pass against a named
 writes nothing in it: its pictures go to <plugin>/target/merge-step-now, which each gate of this tool clears first, under the
 build slot, so that a stale picture cannot compare.
 
-All stages run, also after a failure. Exit code 1 on any failure. The output of each stage is in
+All stages run, also after a failure. Exit code 1 on any failure. The output of each stage, the PASS, FAIL or NOT RUN line of
+each stage and the closing "N of N stages passed" line are in
 E:\\nirender-keep\\merge-step\\merge-step-<commit>.log, where the data rule on build output does not reach. It pushes nothing.
 
 The gate needs what a diff cannot give:
@@ -163,12 +164,19 @@ def stage_env(environ):
     return env
 
 
+def verdict(log, text):
+    """One line of the round's verdict: on the console, and in the log, so that a kept log shows it."""
+    say(text)
+    log.write("== %s\n" % text)
+    log.flush()
+
+
 def run_stage(name, folder, command, log):
     began = time.time()
     log.write("\n== %s: %s in %s\n" % (name, " ".join(command), folder))
     log.flush()
     code = subprocess.run(command, cwd=folder, env=stage_env(os.environ), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
-    say("%s %s (%d s)%s" % ("PASS" if code == 0 else "FAIL", name, time.time() - began, "" if code == 0 else ": exit code %d" % code))
+    verdict(log, "%s %s (%d s)%s" % ("PASS" if code == 0 else "FAIL", name, time.time() - began, "" if code == 0 else ": exit code %d" % code))
     return code == 0
 
 
@@ -194,7 +202,7 @@ def run_stages(stages, log, note_stage=lambda: None):
     results = {}
     for name, folder, command in stages:
         if name == "replay gate" and not results.get("build for the gate", True):
-            say("NOT RUN %s: its build failed" % name)
+            verdict(log, "NOT RUN %s: its build failed" % name)
             results[name] = False
             continue
         if name == "replay gate":
@@ -202,6 +210,10 @@ def run_stages(stages, log, note_stage=lambda: None):
         note_stage()
         results[name] = run_stage(name, folder, command, log)
     return list(results.values())
+
+
+def summary_line(results, log_path):
+    return "%d of %d stages passed; the output is in %s" % (sum(results), len(results), log_path)
 
 
 def moves_the_ref(baseline):
@@ -346,7 +358,11 @@ def self_test():
             assert run_stage("good", root, [sys.executable, "-c", "print('out')"], log)
             assert not run_stage("bad", root, [sys.executable, "-c", "raise SystemExit(4)"], log)
         with open(os.path.join(root, "log.txt"), encoding="utf-8") as log:
-            assert "out" in log.read()
+            text = log.read()
+        assert "out" in text
+        # The verdict of each stage is in the log too, so that a kept log shows it.
+        assert "== PASS good (" in text and "== FAIL bad (" in text and ": exit code 4" in text, text
+        assert summary_line([True, False, True], "x.log") == "2 of 3 stages passed; the output is in x.log"
 
         # The gate does not run on a failed build, and a failure stops no other stage.
         good, bad = [sys.executable, "-c", "pass"], [sys.executable, "-c", "raise SystemExit(4)"]
@@ -356,7 +372,8 @@ def self_test():
         with open(os.path.join(root, "log2.txt"), "w", encoding="utf-8") as log:
             assert run_stages([("a", root, bad), ("build for the gate", root, bad), gate_stage], log) == [False, False, False]
         with open(os.path.join(root, "log2.txt"), encoding="utf-8") as log:
-            assert "== replay gate" not in log.read()
+            text = log.read()
+        assert "== replay gate:" not in text and "== NOT RUN replay gate: its build failed" in text, text
         # A stale picture cannot compare: the gate clears its folder and the tour's.
         for stale in (os.path.join(now, "old.png"), os.path.join(now, "tour", "old.png")):
             open(stale, "w", encoding="ascii").close()
@@ -455,9 +472,12 @@ def main():
         log_path = log_path_of(commit)
         with open(log_path, "w", encoding="utf-8", errors="replace") as log:
             results = run_stages(stages, log, lambda: slots.note_active("build", time.time()))
+            # In the log before it closes: the last line of a kept log is the round's verdict. The console gets it after the slot's line.
+            summary = summary_line(results, log_path)
+            log.write("\n== %s\n" % summary)
     finally:
         say(slots.release("build").text.splitlines()[0])
-    say("%d of %d stages passed; the output is in %s" % (sum(results), len(results), log_path))
+    say(summary)
     if not all(results):
         return 1
     if moves_the_ref(baseline):
