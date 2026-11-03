@@ -38,8 +38,10 @@ Stages (capture, baseline and only by default, in this order):
 --disable-mod NAME switches a mod of the profile off for the runs (an A/B of a mod).
 
 --weather N pins the weather of the runs and holds it (the runner's --weather): 0, clear, by
-default, so that a capture or a rate is made in a known weather. Each capture, rate and tour
-stage prints the run's weather line and fails when it does not show the pin held. --weather any
+default, so that a capture or a rate is made in a known weather. Each capture and rate stage
+prints the run's weather line and fails when it does not show the pin held: "held" only when
+the mod read the pinned weather back after its switch (run_own_device.py, weather_summary). The
+tour step pins no weather, and the tour stage names its weather as not pinned. --weather any
 leaves the game's weather, not pinned, and the line names it.
 """
 import argparse
@@ -306,6 +308,8 @@ def self_test():
     assert not weather_held("weather: the game's: Ashstorm (6), Cloudy (1)", 0)
     assert not weather_held("", 0)
     assert weather_held("weather: the game's: Ashstorm (6)", None)
+    # The planted fault: the runner's line when the mod did not read the pin back.
+    assert not weather_held("weather: pinned 0, NOT applied (0 re-pins)", 0)
     with tempfile.TemporaryDirectory() as run:
         assert run_weather_line(run) == ""
         with open(os.path.join(run, "weather-of-the-run.txt"), "w") as f:
@@ -515,8 +519,10 @@ def stage_tour(mge_build):
     if not folder or len([f for f in os.listdir(folder) if f.endswith(".nircap")]) != 3:
         return check(False, "no three captures from the run")
     print("       " + folder, flush=True)
-    ok = check_weather(folder)
-    ok &= check_counts(folder)
+    # The tour step pins no weather (owndevice.lua, the step tour): its line says NOT applied, and
+    # the gate names it as not pinned, not as held.
+    print("       weather: not pinned: the tour step pins none (the run's line: %s)" % (run_weather_line(folder) or "none"), flush=True)
+    ok = check_counts(folder)
     code, out = run_code([PY, os.path.join(HERE, "validate_tour.py"), folder, "--jobs", "4", "--mge-build", mge_build], {})
     if not ran((code, out), "validate_tour.py"):
         return False
