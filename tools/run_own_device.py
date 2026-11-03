@@ -1262,6 +1262,60 @@ def self_test_enable():
             clean.restore()
             assert content(swapped) == b"original" and not os.path.exists(os.path.join(profile, "swap-backups.txt"))
             harness.Deployment()
+
+            # The line of a backup is written before the copy: a kill between the two leaves a line for a
+            # backup that is not there, and no start is refused for it; a kill after the copy leaves both.
+            real_copy = harness.shutil.copy2
+            seen = []
+
+            def killed_copy(src, dest, *a, **k):
+                seen.append(open(os.path.join(profile, "swap-backups.txt"), encoding="utf-8").read())
+                raise KeyboardInterrupt("the runner is killed here")
+
+            harness.shutil.copy2 = killed_copy
+            try:
+                harness.Deployment().swap(replacement, swapped, "test")
+            except KeyboardInterrupt:
+                pass
+            finally:
+                harness.shutil.copy2 = real_copy
+            assert seen == [swapped + ".perfbak\n"], seen
+            assert harness.stale_backups() == [], harness.stale_backups()
+            os.remove(os.path.join(profile, "swap-backups.txt"))
+
+            # A file that use_repo_motte makes is named in the record too: a killed run leaves it, every
+            # start refuses over it, and restore_stale removes it.
+            repo, motte = os.path.join(root, "motte-repo"), os.path.join(root, "motte-mod")
+            os.makedirs(os.path.join(repo, "sub"))
+            with open(os.path.join(repo, "sub", "new.lua"), "wb") as fh:
+                fh.write(b"new")
+            saved_motte = (harness.MOTTE_REPO, harness.MOTTE_MOD)
+            harness.MOTTE_REPO, harness.MOTTE_MOD = repo, motte
+            try:
+                harness.Deployment().use_repo_motte()
+            finally:
+                harness.MOTTE_REPO, harness.MOTTE_MOD = saved_motte
+            made = os.path.join(motte, "sub", "new.lua")
+            assert os.path.exists(made) and harness.stale_backups() == [made], harness.stale_backups()
+            try:
+                harness.Deployment()
+            except SystemExit as refusal:
+                assert "new.lua" in str(refusal) and "--restore-stale" in str(refusal), refusal
+            else:
+                raise AssertionError("a start was not refused over a file of a killed run")
+            assert harness.restore_stale() == [made] and not os.path.exists(made)
+            assert not os.path.exists(os.path.join(profile, "swap-backups.txt"))
+            # A run that restores itself removes its made files and leaves no record.
+            harness.MOTTE_REPO, harness.MOTTE_MOD = repo, motte
+            try:
+                clean = harness.Deployment()
+                clean.use_repo_motte()
+                assert os.path.exists(made)
+                clean.restore()
+            finally:
+                harness.MOTTE_REPO, harness.MOTTE_MOD = saved_motte
+            assert not os.path.exists(made) and not os.path.exists(os.path.join(profile, "swap-backups.txt"))
+            harness.Deployment()
         finally:
             harness.PROFILE, harness.MO2_ROOT = saved
             harness.processes = saved_processes
