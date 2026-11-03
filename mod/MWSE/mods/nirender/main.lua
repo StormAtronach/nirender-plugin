@@ -15,6 +15,18 @@
 
 local nirender = include("akulakhan")
 if not nirender then
+    -- A reference run without the plugin (`noPlugin` in the run spec): the scenario runs with
+    -- the stand-in table, and the game runs no code of the plugin.
+    local ok, spec = pcall(mwse.loadConfig, "nirender_test")
+    if ok and spec and spec.noPlugin then
+        local standIn = require("nirender.noplugin")
+        package.loaded["nirender"] = standIn
+        mwse.log("[nirender] no plugin: akulakhan.dll is not loaded, as the run spec asks; the scenario runs with the stand-in table")
+        event.register("initialized", function()
+            require("nirender." .. spec.scenario)(standIn, spec)
+        end)
+        return
+    end
     mwse.log("[nirender] akulakhan.dll not loaded. If you use a mod manager, check that it did not leave .dll files out.")
     return
 end
@@ -26,6 +38,10 @@ local spec = nil
 do
     local ok, result = pcall(mwse.loadConfig, "nirender_test")
     if ok then spec = result end
+end
+-- The runner fails a run without the plugin on this line (tools/run_own_device.py).
+if spec and spec.noPlugin then
+    mwse.log("[nirender] ERROR: akulakhan.dll is loaded in a run whose spec asks for no plugin")
 end
 
 -- A test run in the background (`background` in the run spec). The runner stages MWSE.json

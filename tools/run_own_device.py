@@ -22,11 +22,14 @@ plugin about its device. The first lines of progress.log, `[runner]`, and setup.
 run ran (`harness.write_setup`).
 """
 import argparse
+import ctypes
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import threading
+from ctypes import wintypes
 
 # The modules of this folder, also under `python -I` (checks.py runs the self-test so).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -142,6 +145,192 @@ def build_commits(mge_build):
     if not found:
         return "commits: %s does not say them" % mge_build
     return "commits: nirender %s, render-link %s, from %s" % (found.group(1), found.group(2), what)
+
+
+class ModuleEntry(ctypes.Structure):
+    """MODULEENTRY32W of the Tool Help functions."""
+
+    _fields_ = [("size", wintypes.DWORD), ("module_id", wintypes.DWORD), ("process_id", wintypes.DWORD), ("global_usage", wintypes.DWORD),
+                ("process_usage", wintypes.DWORD), ("base", ctypes.c_void_p), ("base_size", wintypes.DWORD), ("handle", wintypes.HMODULE),
+                ("name", ctypes.c_wchar * 256), ("path", ctypes.c_wchar * 260)]
+
+
+def modules_of(pid):
+    """The file names of the modules that the process `pid` has loaded, in lower case, the 32-bit
+    modules of a 32-bit process too; None when Windows does not give them (the process is gone)."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    # TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32. The call can fail with ERROR_BAD_LENGTH while
+    # the process loads a module: then again.
+    for _ in range(5):
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x18, pid)
+        if snapshot not in (None, wintypes.HANDLE(-1).value):
+            break
+        if ctypes.get_last_error() != 24:
+            return None
+    else:
+        return None
+    try:
+        entry = ModuleEntry()
+        entry.size = ctypes.sizeof(ModuleEntry)
+        names = []
+        more = kernel32.Module32FirstW(wintypes.HANDLE(snapshot), ctypes.byref(entry))
+        while more:
+            names.append(entry.name.lower())
+            more = kernel32.Module32NextW(wintypes.HANDLE(snapshot), ctypes.byref(entry))
+        return names
+    finally:
+        kernel32.CloseHandle(wintypes.HANDLE(snapshot))
+
+
+class ProcessEntry(ctypes.Structure):
+    """PROCESSENTRY32W of the Tool Help functions."""
+
+    _fields_ = [("size", wintypes.DWORD), ("usage", wintypes.DWORD), ("process_id", wintypes.DWORD), ("heap_id", ctypes.c_size_t),
+                ("module_id", wintypes.DWORD), ("threads", wintypes.DWORD), ("parent_id", wintypes.DWORD), ("priority", wintypes.LONG),
+                ("flags", wintypes.DWORD), ("name", ctypes.c_wchar * 260)]
+
+
+def pids_of(image):
+    """The ids of the processes with this image name. One snapshot of Tool Help, no program
+    started: the watch must not disturb the run that it looks at."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)
+    if snapshot in (None, wintypes.HANDLE(-1).value):
+        return []
+    try:
+        entry = ProcessEntry()
+        entry.size = ctypes.sizeof(ProcessEntry)
+        found = []
+        more = kernel32.Process32FirstW(wintypes.HANDLE(snapshot), ctypes.byref(entry))
+        while more:
+            if entry.name.lower() == image.lower():
+                found.append(entry.process_id)
+            more = kernel32.Process32NextW(wintypes.HANDLE(snapshot), ctypes.byref(entry))
+        return found
+    finally:
+        kernel32.CloseHandle(wintypes.HANDLE(snapshot))
+
+
+class PluginWatch:
+    """Looks at the modules of every Morrowind.exe every few seconds while a run goes: the proof,
+    from Windows, of whether the game loaded akulakhan.dll. `seen` gets each process that had it;
+    `checks` counts the looks that Windows answered."""
+
+    def __init__(self, seconds=5.0):
+        self.seconds = seconds
+        self.seen = set()
+        self.checks = 0
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self.watch, daemon=True)
+
+    def watch(self):
+        while not self.stop.is_set():
+            for pid in pids_of("Morrowind.exe"):
+                names = modules_of(pid)
+                if names is None:
+                    continue
+                self.checks += 1
+                if "akulakhan.dll" in names:
+                    self.seen.add(pid)
+            self.stop.wait(self.seconds)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop.set()
+        self.thread.join()
+
+
+def plugin_evidence(run_dir, watch_seen, watch_checks):
+    """What a run says about the plugin it loaded: the lines to print, and True when any proof
+    shows that the game had akulakhan.dll. The proofs: the record of the run (the copy of the DLL
+    that the game got), the modules of the game (`PluginWatch`), the lines of main.lua in MWSE.log,
+    and the plugin's own lines."""
+    lines, loaded = [], False
+    try:
+        with open(os.path.join(run_dir, "progress.log"), encoding="utf-8", errors="replace") as progress:
+            setup = [line.split("] ", 1)[1].strip() for line in progress if line.startswith("[runner] akulakhan.dll")]
+    except OSError:
+        setup = []
+    lines.append("the record of the run: %s" % (setup[0] if setup else "no line about akulakhan.dll"))
+    loaded |= bool(setup) and setup[0] != "akulakhan.dll absent"
+    if watch_checks:
+        lines.append("the modules of the game, %d looks: akulakhan.dll %s" % (watch_checks, "LOADED" if watch_seen else "not loaded"))
+    else:
+        lines.append("the modules of the game: no look succeeded")
+    loaded |= bool(watch_seen)
+    try:
+        with open(os.path.join(run_dir, "MWSE.log"), encoding="utf-8", errors="replace") as log:
+            mwse = [line.strip() for line in log if line.startswith("[nirender] ")]
+    except OSError:
+        mwse = []
+    stand_in = any(line.startswith("[nirender] no plugin:") for line in mwse)
+    with_dll = [line for line in mwse if line.startswith(("[nirender] version", "[nirender] ERROR: akulakhan.dll is loaded"))]
+    lines.append("MWSE.log: %s" % ("the stand-in table" if stand_in else with_dll[0][:120] if with_dll else "no line of main.lua"))
+    loaded |= bool(with_dll)
+    plugin = session.common.plugin_lines(run_dir)
+    lines.append("the plugin's own lines: %d" % len(plugin))
+    loaded |= bool(plugin)
+    return lines, loaded
+
+
+def self_test_plugin_evidence():
+    """The proofs of the plugin of a run, with fake run folders; the module list of this process."""
+    names = modules_of(os.getpid())
+    assert names and "kernel32.dll" in names, names
+    assert os.getpid() in pids_of(os.path.basename(sys.executable)), pids_of(os.path.basename(sys.executable))
+    # A 32-bit process, as the game: its 32-bit modules are in the list (kernel32.dll of
+    # SysWOW64; the 64-bit list of such a process has ntdll.dll and the wow64 DLLs only).
+    ping = subprocess.Popen([os.path.join(os.environ["SystemRoot"], "SysWOW64", "PING.EXE"), "-n", "4", "127.0.0.1"], stdout=subprocess.DEVNULL)
+    try:
+        for _ in range(40):
+            names = modules_of(ping.pid) or []
+            if "kernel32.dll" in names:
+                break
+            threading.Event().wait(0.05)
+        assert "kernel32.dll" in names and "ping.exe" in names, names
+    finally:
+        ping.kill()
+        ping.wait()
+    with tempfile.TemporaryDirectory() as folder:
+        def write(name, text):
+            with open(os.path.join(folder, name), "w", encoding="utf-8") as file:
+                file.write(text)
+
+        write("progress.log", "[runner] instance x\n[runner] akulakhan.dll absent\n")
+        write("MWSE.log", "[nirender] no plugin: akulakhan.dll is not loaded\n")
+        lines, loaded = plugin_evidence(folder, set(), 4)
+        assert not loaded, lines
+        assert "the record of the run: akulakhan.dll absent" in lines and "MWSE.log: the stand-in table" in lines, lines
+        # Each proof alone fails the run.
+        assert plugin_evidence(folder, {42}, 4)[1]
+        write("mgeXE.log", "nirender: install: 313 ports installed\n")
+        assert plugin_evidence(folder, set(), 4)[1]
+        os.remove(os.path.join(folder, "mgeXE.log"))
+        write("MWSE.log", "[nirender] ERROR: akulakhan.dll is loaded in a run whose spec asks for no plugin\n")
+        assert plugin_evidence(folder, set(), 4)[1]
+        write("MWSE.log", "[nirender] version 0.3.4, 313 ports\n")
+        assert plugin_evidence(folder, set(), 4)[1]
+        write("MWSE.log", "")
+        write("progress.log", "[runner] akulakhan.dll 900150983cd24fb0d6963f7d28e17f72 (mod nirender)\n")
+        lines, loaded = plugin_evidence(folder, set(), 0)
+        assert loaded and "the modules of the game: no look succeeded" in lines, lines
+
+    # The mods of the instance that hold the plugin, without the run's own mod.
+    harness = session.harness
+    with tempfile.TemporaryDirectory() as root:
+        for name in ("Rel", "Off", session.MOD_NAME):
+            os.makedirs(os.path.join(root, "mods", name, "MWSE", "lib"))
+            open(os.path.join(root, "mods", name, harness.PLUGIN_FILE), "w").close()
+        os.makedirs(os.path.join(root, "mods", "Plain"))
+        found = session.plugin_mods(["# list", "+" + session.MOD_NAME, "+Plain", "+Rel", "-Off"], root)
+        assert found == ["Rel"], found
 
 
 def self_test_setup():
@@ -355,6 +544,7 @@ def self_test():
     self_test_pngs_from_tgas()
     self_test_archive_lua()
     self_test_archive_arguments()
+    self_test_plugin_evidence()
     build = os.path.join("target", "akulakhan.dll")
     assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/a.dll", "--plugin-dll")
     assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
@@ -440,6 +630,11 @@ def main():
     ap.add_argument("--engine-reference", action="store_true", help="run the same scenario on the engine's own renderer: `runtime.disabled` in "
                     "the run's mgeXE.toml, so the game has the system's Direct3D 8 and no MGE XE draws. The pictures are eng-<step>.png: the world with no interface, at 2048 x 1024. "
                     "MGE XE still applies its early patches, and MWSE and the Code Patch their own: not the game of 2002")
+    ap.add_argument("--reference-plugin", action="store_true", help="with --reference or --engine-reference: keep akulakhan.dll in the run, its ports "
+                    "installed in mode off and its recorder on the device, as every reference run before 2026-11-03. Without this a reference "
+                    "run has no plugin: the run's mod has no DLL, the mods of the instance with one are off, the scenario runs with "
+                    "nirender/noplugin.lua, and the run fails when the game loaded the DLL. Only to repeat an old reference run as it was, "
+                    "or to test the plugin's install on Direct3D 9")
     ap.add_argument("--instance", help="the folder of another Mod Organizer instance to run in, and not the testing instance")
     ap.add_argument("--game-dir", help="with --instance: the game folder of that instance")
     ap.add_argument("--profile", default="Default", help="with --instance: its profile")
@@ -511,6 +706,10 @@ def main():
     if args.engine_reference:
         args.reference = True
         args.set.append("[runtime] disabled = true")
+    if args.reference_plugin and not args.reference:
+        raise SystemExit("--reference-plugin is for a run with --reference or --engine-reference")
+    # A reference run has no code of the plugin in the game, unless --reference-plugin.
+    no_plugin = args.reference and not args.reference_plugin
     # The game is started from this process: its variables go into the game's environment.
     apply_env(os.environ, args.env)
     if args.log:
@@ -520,7 +719,10 @@ def main():
         sys.stdout = Tee(sys.stdout, log)
         sys.stderr = Tee(sys.stderr, log)
     session.DLL, source = plugin_dll_of(args.plugin_dll, os.environ, session.DLL)
-    print("plugin DLL: %s (%s)" % (session.DLL, source), flush=True)
+    if no_plugin:
+        print("plugin DLL: none, a reference run without the plugin (--reference-plugin keeps it)", flush=True)
+    else:
+        print("plugin DLL: %s (%s)" % (session.DLL, source), flush=True)
     extra_files = [entry.split("=", 1) for entry in args.add_file]
     if any(len(pair) != 2 for pair in extra_files):
         raise SystemExit("--add-file takes SOURCE=PATH")
@@ -536,7 +738,14 @@ def main():
         cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
         for folder in (HOST_DIR, D3D8_DIR):
             subprocess.run([cargo, "build", "--release", "--quiet"], cwd=folder, check=True)
-    session.prepare(build=not args.no_build, extra_files=extra_files, archive=args.archive)
+    session.prepare(build=not args.no_build, extra_files=extra_files, archive=args.archive, plugin=not no_plugin)
+    if no_plugin:
+        if os.path.isfile(os.path.join(session.harness.MO2_ROOT, "overwrite", session.harness.PLUGIN_FILE)):
+            raise SystemExit("run_own_device: the overwrite folder of the instance has %s: a run without the plugin cannot keep it out" % session.harness.PLUGIN_FILE)
+        for name in session.plugin_mods(session.harness.read_modlist()[0]):
+            if name not in args.disable_mod:
+                args.disable_mod.append(name)
+                print("  mod of the instance with akulakhan.dll, off for the run: %s" % name, flush=True)
     run = session.Run(args.label)
     # Without a save (--save ""), the scenario starts a new game: the films of the game play.
     spec = run.spec("owndevice", save=args.save or None, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
@@ -546,7 +755,7 @@ def main():
                     tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, tourDual=args.tour_dual or None, tourExtra=args.tour_extra or None, captureMenu=args.capture_menu, settleSeconds=args.settle, portTimes=args.port_times or None,
                     overlay=args.overlay or None, earlyPicture=run.path("early.png").replace("\\", "/") if args.early_picture else None,
                     afterLoadPictures=args.after_load_pictures or None, keepFade=args.keep_fade or None, keepAI=args.keep_ai or None,
-                    engineReference=args.engine_reference or None)
+                    engineReference=args.engine_reference or None, noPlugin=no_plugin or None)
     # The plugin starts the host program. It reads these from the environment of the game.
     if not args.mge_build:
         os.environ["NIRENDER_HOST_EXE"] = HOST
@@ -640,7 +849,8 @@ def main():
         files = next(files for name, files in mods if name == CONFIG_MOD)
         for name in os.listdir(bridge):
             files["MWSE/mods/mwseMCP/" + name] = os.path.join(bridge, name)
-    done = run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)])
+    with PluginWatch() as watch:
+        done = run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)])
 
     print()
     for line in run.progress_lines(TAG):
@@ -662,12 +872,23 @@ def main():
             print("plugin: " + line.strip()[:240])
     if args.engine_reference:
         pngs_from_tgas(run.dir)
+    # Which plugin the game loaded, from each proof. A run without the plugin that loaded it
+    # is not a reference: it fails.
+    evidence, loaded = plugin_evidence(run.dir, watch.seen, watch.checks)
+    print("\nplugin of the run (%s):" % ("none asked" if no_plugin else "akulakhan.dll asked"))
+    for line in evidence:
+        print("  " + line)
+    failed = no_plugin and loaded
+    if failed:
+        print("ERROR: the game loaded akulakhan.dll in a reference run without the plugin: the run is no reference")
     print("pictures in " + run.dir)
     # The size of the run and of every run kept (the owner, 2026-10-18: the results folder
     # had grown to hundreds of GB unnoticed). The runner deletes nothing; the line says when
     # it is time to.
     print("size: this run %s; all runs in %s %s" % (folder_size(run.dir), os.path.dirname(run.dir), folder_size(os.path.dirname(run.dir))))
     print_disk_limits()
+    if failed:
+        return 2
     return 0 if done else 1
 
 
