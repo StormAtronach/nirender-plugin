@@ -1186,6 +1186,15 @@ def self_test_enable():
             else:
                 raise AssertionError("a second run took the ini while the first one's backup was there")
             game_pids.clear()
+            # The testing instance's Mod Organizer can write modlist.txt over a restore.
+            harness.processes = lambda name: [(5151, os.path.join(root, "ModOrganizer.exe"))] if name == "ModOrganizer.exe" else []
+            try:
+                harness.restore_stale()
+            except SystemExit as refusal:
+                assert "Mod Organizer" in str(refusal), refusal
+            else:
+                raise AssertionError("restore_stale ran under the instance's Mod Organizer")
+            harness.processes = lambda name: [(pid, "Morrowind.exe") for pid in game_pids]
             deployment.restore()
             assert content(ini) == crlf and content(modlist) == modlist_text, "the files are not as they were after restore"
             assert not os.path.exists(ini + ".perfbak") and not os.path.exists(modlist + ".perfbak")
@@ -1210,6 +1219,35 @@ def self_test_enable():
             assert [os.path.basename(path) for path in restored] == ["Morrowind.ini", "modlist.txt"], restored
             assert content(ini) == crlf and content(modlist) == modlist_text
             assert harness.stale_backups() == [] and harness.restore_stale() == []
+            harness.Deployment()
+
+            # The backup of swap() lies beside the file it saves, outside the profile: a killed run
+            # leaves it, and the record in the profile lets every start see it and restore_stale put it back.
+            swapped = os.path.join(root, "game", "Morrowind.exe")
+            replacement = os.path.join(root, "other.exe")
+            os.makedirs(os.path.dirname(swapped), exist_ok=True)
+            with open(swapped, "wb") as fh:
+                fh.write(b"original")
+            with open(replacement, "wb") as fh:
+                fh.write(b"replaced")
+            killed = harness.Deployment()
+            killed.swap(replacement, swapped, "test")
+            assert content(swapped) == b"replaced" and content(swapped + ".perfbak") == b"original"
+            assert harness.stale_backups() == [swapped + ".perfbak"], harness.stale_backups()
+            try:
+                harness.Deployment()
+            except SystemExit as refusal:
+                assert "Morrowind.exe.perfbak" in str(refusal), refusal
+            else:
+                raise AssertionError("a start was not refused over the backup of swap()")
+            assert harness.restore_stale() == [swapped]
+            assert content(swapped) == b"original" and not os.path.exists(swapped + ".perfbak")
+            assert not os.path.exists(os.path.join(profile, "swap-backups.txt"))
+            # A run that restores itself leaves no record.
+            clean = harness.Deployment()
+            clean.swap(replacement, swapped, "test")
+            clean.restore()
+            assert content(swapped) == b"original" and not os.path.exists(os.path.join(profile, "swap-backups.txt"))
             harness.Deployment()
         finally:
             harness.PROFILE, harness.MO2_ROOT = saved
