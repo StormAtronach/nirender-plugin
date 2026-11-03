@@ -16,7 +16,8 @@ use core::mem::size_of;
 use crate::engine::{self, MAX_SIMULTANEOUS_TEXTURES, MAX_TEXTURE_BLEND_STAGES};
 use crate::gen::layouts::{
     NiAlphaProperty as AP, NiDX8ConfigurableTexturePipeline as CTP, NiDX8RenderState as RS, NiDX8TexturePass as TP,
-    NiDX8TexturePass__1 as SUB, NiDX8TextureStage as ST, NiDynamicEffectState as DES, NiPropertyState as PS, NiTexture,
+    NiDX8TexturePass__1 as SUB, NiDX8TextureStage as ST, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DES_LIST,
+    NiPropertyState as PS, NiTexture,
     NiTexturingProperty as NTP, NiTexturingProperty_BumpMap as BUMP, NiTexturingProperty_Map as MAP,
 };
 use crate::mem::{rd, x87_pass};
@@ -42,6 +43,7 @@ const EFFECT_ENABLED: usize = crate::gen::layouts::NiTextureEffect::enabled;
 const EFFECT_TEXTURE: usize = crate::gen::layouts::NiTextureEffect::sourceTexture;
 const EFFECT_FILTER_MODE: usize = crate::gen::layouts::NiTextureEffect::filterMode;
 const EFFECT_CLAMP_MODE: usize = crate::gen::layouts::NiTextureEffect::clampMode;
+const EFFECT_PLANE_ENABLE: usize = crate::gen::layouts::NiTextureEffect::bPlaneEnable;
 
 /// The address of every `call rel32` of the function, in the order of the code. The port
 /// calls the target that is in memory at each address.
@@ -1357,9 +1359,10 @@ impl Model {
         }
     }
 
-    /// `NiDX8TexturePass::setTexturePipeline` for an effect state with no projected light and
-    /// no projected shadow. The model does not write the texture matrix that the coordinate
-    /// callback calculates. The matrix is inside the pass, and nothing in the body reads it.
+    /// `NiDX8TexturePass::configureStageFromTextureProp` 0x6B5A20, a stage of
+    /// `setTexturePipeline` for an effect. The model does not write the texture matrix that the
+    /// coordinate callback calculates. The matrix is inside the pass, and nothing in the body
+    /// reads it.
     unsafe fn configure_effect_stage(&mut self, this: usize, effect: usize, stage: usize) -> u8 {
         if rd::<u32>(this, TP::field_6E0) >= 8 || rd::<u8>(effect, EFFECT_ENABLED) == 0 {
             return 0;
@@ -1459,10 +1462,25 @@ impl Env for Model {
         if effect_state == 0 {
             return;
         }
-        if rd::<usize>(effect_state, DES::projLights) != 0 || rd::<usize>(effect_state, DES::projShadows) != 0 {
-            // The model does not have projected lights and projected shadows.
-            self.skip = true;
-            return;
+        // The projected lights, then the projected shadows: each one with no clip plane goes
+        // into the next stage of its bank. The model does not have the ones with a clip plane
+        // (`setupProjectedTextureMatrix`, the bank at `field_CE0`).
+        let projected = [(DES::projLights, TP::field_CD8, TP::field_6F8), (DES::projShadows, TP::field_2A48, TP::field_2468)];
+        for (list, count, bank) in projected {
+            let mut node: usize = rd(effect_state, list);
+            while node != 0 {
+                let effect: usize = rd(node, DES_LIST::effect);
+                node = rd(node, DES_LIST::next);
+                if rd::<u8>(effect, EFFECT_PLANE_ENABLE) != 0 {
+                    self.skip = true;
+                    return;
+                }
+                let index: u32 = rd(this, count);
+                let stage = this + bank + index as usize * STAGE;
+                if self.configure_effect_stage(this, effect, stage) != 0 {
+                    self.wr(this, count, index + 1);
+                }
+            }
         }
         let environment_map: usize = rd(effect_state, DES::environmentMap);
         if environment_map != 0 {
@@ -1736,8 +1754,8 @@ unsafe fn plan(
 /// - the call deletes an object: a texture or an alpha property that loses its last
 ///   reference;
 /// - the call makes a device texture: an effect texture with no device data;
-/// - the effect state has projected lights or projected shadows and is not the effect state
-///   of the previous call;
+/// - the effect state has a projected light or a projected shadow with a clip plane and is
+///   not the effect state of the previous call;
 /// - the sub-pass array is not in a state that the game leaves it in.
 ///
 /// A new sub-pass or a longer array calls `set.allocates()`.
@@ -2094,6 +2112,84 @@ mod tests {
             assert!(!model.skip && !model.allocates);
             assert_eq!(rd::<[usize; 2]>(subpass, SUB::field_14), [base_stage, this + TP::field_2A4C]);
             assert_eq!(rd::<u32>(this, TP::field_C), 0);
+        }
+    }
+
+    /// An effect state whose list `list` holds one texture effect, with its texture and its
+    /// list node. `plane`: the effect has a clip plane.
+    struct Effect {
+        state: Box<[u32; 7]>,
+        node: Box<[usize; 2]>,
+        effect: Box<[u32; 0x148 / 4]>,
+    }
+
+    impl Effect {
+        fn new(world: &mut World, list: usize, plane: bool) -> (Effect, usize) {
+            let texture = world.texture();
+            let mut effect = Effect { state: Box::new([0; 7]), node: Box::new([0; 2]), effect: Box::new([0; 0x148 / 4]) };
+            unsafe {
+                // A texture with its device data: no device texture to make.
+                wr::<u32>(texture, NiTexture::rendererData, 1);
+                let addr = effect.effect.as_mut_ptr() as usize;
+                wr::<u8>(addr, EFFECT_ENABLED, 1);
+                wr(addr, EFFECT_TEXTURE, texture);
+                wr::<u32>(addr, EFFECT_FILTER_MODE, 2);
+                wr::<u32>(addr, EFFECT_CLAMP_MODE, 3);
+                wr::<u8>(addr, EFFECT_PLANE_ENABLE, plane as u8);
+                effect.node[1] = addr;
+                wr(effect.state.as_mut_ptr() as usize, list, effect.node.as_ptr() as usize);
+            }
+            (effect, texture)
+        }
+        fn state(&self) -> usize {
+            self.state.as_ptr() as usize
+        }
+    }
+
+    #[test]
+    fn a_projected_light_takes_the_next_stage_of_its_bank() {
+        let mut world = World::new(1);
+        let (effect, texture) = Effect::new(&mut world, DES::projLights, false);
+        let this = world.this();
+        unsafe {
+            let mut model = Model::new(8, 8, false);
+            model.set_texture_pipeline(0, this, effect.state());
+            assert!(!model.skip);
+            assert_eq!(rd::<u32>(this, TP::field_CD8), 1);
+            assert_eq!(rd::<u32>(this, TP::field_6E0), 1);
+            let stage = this + TP::field_6F8;
+            assert_eq!(rd::<usize>(stage, ST::ptrTexture), texture);
+            assert_eq!(rd::<usize>(stage, ST::texturePropMap), effect.node[1]);
+            assert_eq!(rd::<u32>(stage, ST::sourceTexcoordIndex), 1);
+            assert_eq!(rd::<u32>(this, TP::field_2A48), 0);
+        }
+    }
+
+    #[test]
+    fn a_projected_shadow_takes_the_next_stage_of_its_bank() {
+        let mut world = World::new(1);
+        let (effect, texture) = Effect::new(&mut world, DES::projShadows, false);
+        let this = world.this();
+        unsafe {
+            let mut model = Model::new(8, 8, false);
+            model.set_texture_pipeline(0, this, effect.state());
+            assert!(!model.skip);
+            assert_eq!(rd::<u32>(this, TP::field_2A48), 1);
+            assert_eq!(rd::<usize>(this + TP::field_2468, ST::ptrTexture), texture);
+            assert_eq!(rd::<u32>(this, TP::field_CD8), 0);
+        }
+    }
+
+    #[test]
+    fn a_projected_light_with_a_clip_plane_is_a_skip() {
+        let mut world = World::new(1);
+        let (effect, _) = Effect::new(&mut world, DES::projLights, true);
+        let this = world.this();
+        unsafe {
+            let mut model = Model::new(8, 8, false);
+            model.set_texture_pipeline(0, this, effect.state());
+            assert!(model.skip);
+            assert_eq!(rd::<u32>(this, TP::field_CD8), 0);
         }
     }
 }
