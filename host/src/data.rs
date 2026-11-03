@@ -508,6 +508,10 @@ pub(crate) struct Counts {
     pub(crate) view_unknown: u64,
     pub(crate) views_dropped: u64,
     pub(crate) view_shade_late: u64,
+    /// The views drawn by kind ([`ViewKind`]: main, picture, other screen), and the ones whose
+    /// additions have the shade ([`Additions::SHADE`]).
+    pub(crate) view_kinds: [u64; 3],
+    pub(crate) view_with_shade: u64,
     /// The scenes whose record named the target, and of them the ones where the target that
     /// the `SetRenderTarget` calls gave was another one.
     pub(crate) scene_targets: u64,

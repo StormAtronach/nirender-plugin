@@ -20,6 +20,7 @@ impl Player {
             shade_last: None,
             views: engine::views::Views::default(),
             target_plan: plan::Plan::default(),
+            world_camera_id: 0,
             stream: Stream {
                 view: [0.0; 16],
                 projection: [0.0; 16],

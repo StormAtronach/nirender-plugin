@@ -175,8 +175,14 @@ impl Player {
                 if self.views.slots_on {
                     self.views.note_scene_record(data);
                 }
-                self.views.scene_begin(kind, self.target.is_some());
-                for step in self.plan_now().scene_begin(kind) {
+                let in_target = self.target.is_some();
+                let camera = word(data, 8);
+                if !in_target && scene::world_camera(kind) {
+                    self.world_camera_id = camera;
+                }
+                let camera_is_world = scene::world_camera(kind) || (kind == scene::SCENE_OTHER && camera != 0 && camera == self.world_camera_id);
+                self.views.scene_begin(kind, in_target, camera_is_world);
+                for step in self.plan_now().scene_begin_view(kind, ViewKind::classify(in_target, camera_is_world)) {
                     self.plan_step(step);
                 }
             }
@@ -853,6 +859,12 @@ impl Player {
             engine::views::Place::Outside | engine::views::Place::Joined => {}
             engine::views::Place::Unknown => self.renderer.counts.view_unknown += 1,
             engine::views::Place::New(group, run) => {
+                // A main view with a root of its own (the world camera on a mod's subject)
+                // starts the world of the frame at its first place.
+                let (extension, in_back_buffer) = (self.extension.is_some(), self.stream.back_buffer && self.target.is_none());
+                for step in self.plan_now().view_first_place(extension, in_back_buffer) {
+                    self.plan_step(step);
+                }
                 if self.drawing() {
                     self.items.push(Item::ViewPlaces(group, run));
                 }

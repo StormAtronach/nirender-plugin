@@ -504,8 +504,8 @@ impl Player {
     }
 
     /// The name of a view of its own of the frame, for its GPU span and its CPU time: its order
-    /// among the frame's views of their own, the size of its target and its camera. Two views
-    /// with the same order, size and camera in different frames share a name. The name is made
+    /// among the frame's views of their own, the size of its target, its kind and its camera.
+    /// Two views with the same order, size, kind and camera in different frames share a name. The name is made
     /// once for each view, when its facts are known.
     pub(crate) fn view_group_name(&self, group: usize) -> &'static str {
         let Some(g) = self.views.group(group) else { return stamps::name(&format!("table: view of its own {}", group + 1)) };
@@ -513,8 +513,9 @@ impl Player {
             return name;
         }
         let camera = if g.world_camera { "the world camera" } else { "another camera" };
-        let Some(facts) = g.facts else { return stamps::name(&format!("table: view of its own {} ({camera})", group + 1)) };
-        let name = stamps::name(&format!("table: view of its own {} ({}x{}, {camera})", group + 1, facts.target_size.0, facts.target_size.1));
+        let kind = g.kind.name();
+        let Some(facts) = g.facts else { return stamps::name(&format!("table: view of its own {} ({kind}, {camera})", group + 1)) };
+        let name = stamps::name(&format!("table: view of its own {} ({}x{}, {kind}, {camera})", group + 1, facts.target_size.0, facts.target_size.1));
         g.name.set(Some(name));
         name
     }

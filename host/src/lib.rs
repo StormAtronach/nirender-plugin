@@ -790,6 +790,13 @@ struct Player {
     /// frame alone (a clear of a mirror's depth after the world). It starts again at each
     /// return to the back buffer.
     target_plan: plan::Plan,
+    /// The camera of the last scene of the world camera that drew into the back buffer (the
+    /// camera word of its scene record; 0 before the first). A scene of the plugin's kind
+    /// `SCENE_OTHER` with this camera is a main view with a root of its own: the kind of a view
+    /// comes from its camera and its target ([`ViewKind::classify`]). It stays from frame to
+    /// frame, so a frame that has no world scene of the world root (a mod's subject on the world
+    /// camera) still knows the camera.
+    world_camera_id: u32,
     /// The frame in progress: its commands, its pass, and its two targets.
     encoder: Option<wgpu::CommandEncoder>,
     pass: Option<wgpu::RenderPass<'static>>,
