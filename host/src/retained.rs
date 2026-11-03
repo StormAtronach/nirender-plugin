@@ -138,6 +138,16 @@ struct Bucket {
     slots: Vec<u32>,
 }
 
+impl Bucket {
+    /// A view of its own draws the bucket at its places, in the order of the stream, and not in
+    /// its table: it blends, or it tests the stencil. A stencil mask works only in the order the
+    /// game gives (Joy of Painting's occlusion tester: its masked objects write the stencil, and
+    /// its screen overlay after them draws where they wrote).
+    fn in_stream_order(&self) -> bool {
+        self.key.blend[0] != 0 || self.key.stencil[0] != 0
+    }
+}
+
 /// One pass of one instance: a record and an instance of the segments.
 struct Slot {
     #[allow(dead_code)]
@@ -1231,11 +1241,12 @@ enum PlacePart {
 }
 
 /// The part of one slot in a place: `blends_only` when the view's table draws the slots that
-/// do not blend.
-fn place_part(held: bool, without_bones: bool, blends: bool, blends_only: bool) -> PlacePart {
+/// do not blend; `in_order` when its bucket draws in the stream's order
+/// ([`Bucket::in_stream_order`]: it blends or tests the stencil).
+fn place_part(held: bool, without_bones: bool, in_order: bool, blends_only: bool) -> PlacePart {
     if held || without_bones {
         PlacePart::Skip
-    } else if blends_only && !blends {
+    } else if blends_only && !in_order {
         PlacePart::Table
     } else {
         PlacePart::Draw
@@ -1793,17 +1804,18 @@ impl RetainedSet {
     /// Puts the entries of every slot of an instance into `entries` (a run of [`Sorted::Only`]
     /// for a view of its own), in the order of its slots: the slots the extension holds, and a
     /// skinned slot without its bones, are left out.
-    /// With `blends_only`, the view's table draws the slots that do not blend ([`Sorted::Opaque`]),
-    /// and its places draw only those that blend. True when a slot was left out for the table:
-    /// the place is drawn then, by the table.
+    /// With `blends_only`, the view's table draws the slots that do not blend and test no
+    /// stencil ([`Sorted::Opaque`]), and its places draw those that do, in the stream's order
+    /// ([`Bucket::in_stream_order`]). True when a slot was left out for the table: the place is
+    /// drawn then, by the table.
     fn view_entries(&self, id: u32, blends_only: bool, entries: &mut Vec<(u64, u32, u32, u32)>) -> bool {
         let mut left_to_table = false;
         for &slot in self.by_id.get(&id).map(Vec::as_slice).unwrap_or(&[]) {
             let Some(s) = self.slots[slot as usize].as_ref() else { continue };
             let without_bones = s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES;
             // Only a place under a table asks for the bucket.
-            let blends = blends_only && self.buckets[s.bucket as usize].key.blend[0] != 0;
-            match place_part(s.held, without_bones, blends, blends_only) {
+            let in_order = blends_only && self.buckets[s.bucket as usize].in_stream_order();
+            match place_part(s.held, without_bones, in_order, blends_only) {
                 PlacePart::Skip => {}
                 PlacePart::Table => left_to_table = true,
                 PlacePart::Draw => entries.push((0, s.bucket, 0, slot)),
@@ -1851,7 +1863,9 @@ impl RetainedSet {
                 continue;
             }
             let blends = bucket.key.blend[0] != 0;
-            if blends && opaque_only {
+            // The table of a view of its own leaves the buckets that draw in the stream's order
+            // to the view's places.
+            if opaque_only && bucket.in_stream_order() {
                 continue;
             }
             for &slot in &bucket.slots {
@@ -3092,7 +3106,8 @@ mod view_bit_tests {
     #[test]
     fn a_place_under_a_table_leaves_a_slot_that_does_not_blend_to_the_table() {
         use PlacePart::{Draw, Skip, Table};
-        // The arguments: held, without bones, blends, blends only.
+        // The arguments: held, without bones, in the stream's order (it blends or tests the
+        // stencil), blends only.
         assert_eq!(place_part(false, false, false, true), Table);
         assert_eq!(place_part(false, false, true, true), Draw);
         // Without a table a place draws every slot.
