@@ -24,9 +24,11 @@ mge --mge <repo>. The diff from <tip> to <commit> adds these:
 - a d3d8 build and check_contract.py --mge when the change touches d3d8, mge-config or contract/;
 - the replay gate, tools/validate_retained.py baseline with no game, when the change touches the host's source, the
   helper's renderer, the shaders of the assets (the source of the shaders in a build), or a manifest or a lock of the
-  build. The path decides: a stream or a table change can move a picture too. The gate does not run when its build failed.
+  build. The path decides: a stream or a table change can move a picture too. The gate does not run when its build failed;
+- the build of the dist alone, `cargo xtask dist`, when the change touches the mod's Lua (xtask checks it against the list
+  of the files it ships) or xtask, and not the paths of the gate: the replay cannot see these.
 
-These two stages also need a sibling with no tracked change. The first line gives the hash of the sibling.
+These stages also need a sibling with no tracked change. The first line gives the hash of the sibling.
 
 --baseline names the folder that the gate compares with: the accepted folder without it, or a copy in the same form, as a
 reference and not an acceptance. The first line names it. A pass against a named folder does not move the ref. The gate
@@ -67,6 +69,9 @@ GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.to
               "mge": ("mgeHost64/src/renderer.rs", "mgeHost64/src/renderer/", "assets/Data Files/shaders/", "Cargo.toml", "Cargo.lock",
                       "mgeHost64/Cargo.toml", "mge-config/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml")}
 D3D8_PATHS = {"plugin": ("contract/",), "mge": ("d3d8/", "mge-config/")}
+# What a change must touch for the build of the dist alone: what the dist ships or checks and the replay cannot see (the
+# mod's Lua, which xtask checks against its list of shipped files; xtask itself).
+DIST_PATHS = {"plugin": ("mod/MWSE/mods/nirender/",), "mge": ("xtask/",)}
 # These move a build out of its tree. Cargo then returns 0, and the gate replays the old file of the build folder.
 BUILD_MOVERS = ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "NIRENDER_PLUGIN_DIR")
 
@@ -109,11 +114,13 @@ def stages_for(kind, repo, paths, baseline=BASELINE):
     if touches(paths, GATE_PATHS[kind]):
         stages.append(("build for the gate", mge, ["cargo", "xtask", "dist"]))
         stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", os.path.join(mge, "target", "dist-staging"), "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-now"))))
+    elif touches(paths, DIST_PATHS[kind]):
+        stages.append(("build of the dist", mge, ["cargo", "xtask", "dist"]))
     return stages
 
 
 def needs_clean_sibling(stages):
-    return any(name in ("replay gate", "d3d8 build") for name, _, _ in stages)
+    return any(name in ("replay gate", "d3d8 build", "build of the dist") for name, _, _ in stages)
 
 
 def tree_problem(kind, repo, stages, head, commit, changed, sibling_changed=False):
@@ -265,9 +272,14 @@ def self_test():
         assert names("plugin", plugin, "host/src/retained.rs") == base + ["build for the gate", "replay gate"]
         assert names("plugin", plugin, "host/src_old/x.rs") == base, "a name that only starts the same ran the gate"
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"]
+        # The mod's Lua: xtask dist checks it against its list of shipped files (7b7b72d broke the dist that way).
+        assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua") == base + ["build of the dist"]
+        assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua", "host/src/retained.rs") == base + ["build for the gate", "replay gate"]
+        assert needs_clean_sibling(stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/noplugin.lua"]))
         for path in ("Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "host/.cargo/config.toml"):
             assert names("plugin", plugin, path) == base + ["build for the gate", "replay gate"], path
         mge_base = ["helper tests", "clippy baseline", "checks", "docs"]
+        assert names("mge", mge, "xtask/src/main.rs") == mge_base + ["build of the dist"]
         for path in ("Cargo.toml", "Cargo.lock", "mgeHost64/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"):
             assert names("mge", mge, path) == mge_base + ["build for the gate", "replay gate"], path
         assert names("mge", mge, "mge-config/Cargo.toml") == mge_base + ["d3d8 build", "contract", "build for the gate", "replay gate"]
