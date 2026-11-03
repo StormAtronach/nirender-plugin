@@ -791,12 +791,49 @@ def self_test_mge_log_problems():
     none = "MGE XE installed none of its engine hooks"
     assert problems("MGE-XE\nMWSE.dll injected.\n") == [none]
     assert problems("-- Camera-relative rendering off (render.camera_relative); no engine hooks installed.\n") == [none]
+    late = ">> Using the wgpu renderer: no Direct3D device\n!! wgpu renderer: not in use, no adapter. MGE XE continues with Direct3D 9\n"
+    assert problems(late) == [none]
+    assert problems(late + "-- Indexed skinning engine hooks installed\n") == []
     assert problems(">> Using the wgpu renderer: no Direct3D device\nx failed to load/compile\n") == ["MGE XE could not compile 1 shaders"]
+
+
+def self_test_ring_problem():
+    """A plugin and a helper with different ring marks are refused before the start; the same
+    mark, no mark or no helper are not. The helper is the Root file that wins in the mod list."""
+    with tempfile.TemporaryDirectory() as root:
+        def binary(path, data):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as fh:
+                fh.write(b"\x00\xc7\x00" + data + b"\x89\x68")
+            return path
+        plugin = binary(os.path.join(root, "plugin.dll"), b"2RNG")
+        same = binary(os.path.join(root, "same.exe"), b"\x3d2RNG\x0f\x85 \x002RNG")
+        old = binary(os.path.join(root, "old.exe"), b"\x3d1RNG\x0f\x85 \x001RNG")
+        unmarked = binary(os.path.join(root, "unmarked.exe"), b"RNG")
+        assert session.ring_marks(old) == {b"1RNG"}
+        assert session.ring_problem(plugin, same) is None
+        assert session.ring_problem(plugin, unmarked) is None
+        assert session.ring_problem(plugin, None) is None and session.ring_problem(None, old) is None
+        problem = session.ring_problem(plugin, old)
+        assert problem and "2RNG" in problem and "1RNG" in problem and old in problem, problem
+
+        game = os.path.join(root, "game")
+        binary(os.path.join(game, "numidium.exe"), b"1RNG")
+        binary(os.path.join(root, "mods", "Old", "Root", "numidium.exe"), b"1RNG")
+        binary(os.path.join(root, "mods", "New", "Root", "numidium.exe"), b"2RNG")
+        winner = session.winning_root_file
+        assert winner("numidium.exe", root, ["+New", "+Old"], game) == os.path.join(root, "mods", "New", "Root", "numidium.exe")
+        assert winner("numidium.exe", root, ["-New", "+Old"], game) == os.path.join(root, "mods", "Old", "Root", "numidium.exe")
+        assert winner("numidium.exe", root, ["-New", "-Old"], game) == os.path.join(game, "numidium.exe")
+        binary(os.path.join(root, "overwrite", "Root", "numidium.exe"), b"2RNG")
+        assert winner("numidium.exe", root, ["+Old"], game) == os.path.join(root, "overwrite", "Root", "numidium.exe")
+        assert winner("other.exe", root, ["+Old"], game) is None
 
 
 def self_test():
     """The tests of the argument handling: no game, no build."""
     self_test_mge_log_problems()
+    self_test_ring_problem()
     self_test_weather()
     self_test_checks()
     self_test_check_command()
