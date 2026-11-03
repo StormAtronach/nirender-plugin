@@ -320,6 +320,10 @@ struct Retained {
 /// draw of the world of the stream and a retained slot with lights have it.
 pub(crate) const WORLD_LIGHTS_BIT: u32 = 32;
 
+/// The lines `view table: ...` of a run: one at the end of each scene of a view of its own with
+/// a table, for the first ones only.
+pub(crate) const VIEW_TABLE_LINES: u32 = 64;
+
 /// Bit 16 of `light_range[3]` for a material with flat shading (NiShadeProperty off): the
 /// shader takes the lit colour and the normal of the first vertex of each triangle, as
 /// Direct3D 8 does. The plugin sends the shade of a shape only with
@@ -931,6 +935,13 @@ struct Player {
     /// or the sky draws over it ([`Player::view_table_item`]).
     view_world_begun: bool,
     view_sky_seen: bool,
+    /// The scene in progress: why its world began, its draws so far (all of them and those of
+    /// the sky), and its table item's place (the draws before it and the reason), for the
+    /// line of the scene's end (`view table: ...`, the first [`VIEW_TABLE_LINES`]).
+    view_world_why: &'static str,
+    view_scene_draws: [u32; 2],
+    view_table_at: Option<([u32; 2], &'static str)>,
+    view_table_lines: u32,
     split: Option<[f64; 4]>,
     /// The post-processing of this frame is in the items.
     posted: bool,

@@ -195,6 +195,9 @@ impl Player {
                 self.views.scene_begin(kind, in_target, camera_is_world);
                 self.view_world_begun = false;
                 self.view_sky_seen = false;
+                self.view_world_why = "";
+                self.view_scene_draws = [0; 2];
+                self.view_table_at = None;
                 for step in self.plan_now().scene_begin_view(kind, ViewKind::classify(in_target, camera_is_world)) {
                     self.plan_step(step);
                 }
@@ -211,12 +214,13 @@ impl Player {
                 // A view into a texture closes here (its EndPaint): its table takes its list now. A
                 // scene whose world did not begin gets its table item here.
                 if let Some(group) = self.views.open() {
-                    self.view_world_begun = true;
+                    self.begin_view_world("the scene end");
                     self.view_table_item();
                     let facts = self.views.group(group).and_then(|g| g.facts);
                     if let (Some(bit), Some(facts), Some(_)) = (self.table_bit(group), facts, self.target) {
                         self.retained.close_view(group, bit, view_planes(&facts.view, &facts.projection));
                     }
+                    self.view_table_line(group);
                 }
                 if let Some(group) = self.views.scene_end().filter(|_| drawing) {
                     self.items.push(Item::ViewSorted(group));
@@ -896,7 +900,30 @@ impl Player {
         let Some(group) = self.views.open().filter(|&group| self.view_world_begun && self.drawing() && self.table_bit(group).is_some()) else { return };
         self.note_view_facts();
         if self.retained.view_tables.queue(group) {
+            self.view_table_at = Some((self.view_scene_draws, self.view_world_why));
             self.items.push(Item::ViewTable(group));
+        }
+    }
+
+    /// The end of a scene of a view of its own with a table: where its table item went among the
+    /// scene's draws, for the first [`VIEW_TABLE_LINES`] scenes of the run. A draw that began the
+    /// world counts in the draws before the item, which goes before that draw.
+    fn view_table_line(&mut self, group: usize) {
+        let Some(slot) = self.table_bit(group) else { return };
+        if self.view_table_lines >= VIEW_TABLE_LINES {
+            return;
+        }
+        self.view_table_lines += 1;
+        let frame = self.renderer.counts.frames;
+        let into = self.target.map_or_else(|| String::from("the back buffer"), |handle| format!("texture {handle}"));
+        let [draws, sky] = self.view_scene_draws;
+        let place = match self.view_table_at {
+            Some(([before, sky_before], why)) => format!("after {before} of its draws ({sky_before} of the sky), at {why}"),
+            None => String::from("not queued (the stream does not draw)"),
+        };
+        println!("view table: frame {frame}, group {group}, view slot {slot}, into {into}: {place}; the scene had {draws} draws ({sky} of the sky)");
+        if self.view_table_lines == VIEW_TABLE_LINES {
+            println!("view table: the first {VIEW_TABLE_LINES} scenes are logged; no more lines");
         }
     }
 
@@ -906,7 +933,9 @@ impl Player {
         self.note_view_facts();
         // The engine walks the sky root first, and the sky's instances have places too: a place of
         // an instance that is not of the sky is in the world.
-        self.view_world_begun |= crate::retained::place_begins_world(self.instances.get(&id).map(|r| r.class));
+        if crate::retained::place_begins_world(self.instances.get(&id).map(|r| r.class)) {
+            self.begin_view_world("a place of the world");
+        }
         self.view_table_item();
         let open = self.views.open();
         let adjacent = matches!(self.items.last(), Some(&Item::ViewPlaces(group, _)) if Some(group) == open);
