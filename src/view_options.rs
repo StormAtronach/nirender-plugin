@@ -120,6 +120,23 @@ pub extern "C" fn nirender_view_options(kind: u32, key: usize, parts: u32, clear
     set(kind, key, (clear == 0).then_some(parts)) as u32
 }
 
+/// The call of `d3d8.dll` for `MGEAPIv4::viewOptionsGet`: writes the parts of the key to `parts`
+/// and returns 1, or returns 0 when the key has none (it has none after its object was freed).
+///
+/// # Safety
+///
+/// `parts` is null or points at a `u32` that the caller owns.
+#[no_mangle]
+pub unsafe extern "C" fn nirender_view_options_get(kind: u32, key: usize, parts: *mut u32) -> u32 {
+    match get(kind, key) {
+        Some(found) if !parts.is_null() => {
+            *parts = found;
+            1
+        }
+        _ => 0,
+    }
+}
+
 static RENDERED_TEXTURE_DTOR_CALL: AtomicUsize = AtomicUsize::new(0);
 static CAMERA_DTOR_CALL: AtomicUsize = AtomicUsize::new(0);
 
@@ -181,8 +198,12 @@ mod tests {
         assert_eq!(get(KIND_CAMERA, 0x7100_0000), None);
         assert!(set(KIND_RENDERED_TEXTURE, 0x7100_0000, Some(u32::MAX)));
         assert_eq!(get(KIND_RENDERED_TEXTURE, 0x7100_0000), Some(PARTS_ALL));
+        let mut parts = 0u32;
+        assert_eq!(unsafe { nirender_view_options_get(KIND_RENDERED_TEXTURE, 0x7100_0000, &mut parts) }, 1);
+        assert_eq!(parts, PARTS_ALL);
         forget(KIND_RENDERED_TEXTURE, 0x7100_0000);
         assert_eq!(get(KIND_RENDERED_TEXTURE, 0x7100_0000), None);
+        assert_eq!(unsafe { nirender_view_options_get(KIND_RENDERED_TEXTURE, 0x7100_0000, &mut parts) }, 0);
         assert!(set(KIND_CAMERA, 0x7100_0010, Some(1)));
         assert!(set(KIND_CAMERA, 0x7100_0010, None));
         assert_eq!(get(KIND_CAMERA, 0x7100_0010), None);
