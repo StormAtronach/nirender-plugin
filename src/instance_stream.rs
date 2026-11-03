@@ -1740,6 +1740,17 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
         if skinned {
             send_bones(mt, t, shape, id);
         }
+        // In a scene of `Route::Places` every displayed shape has its place, also at this draw
+        // (the first one, or one after a change), which does not go through `skipped_display`.
+        if t.scene_route == Route::Places {
+            if queued {
+                capture::instance_queued(id);
+                QUEUE_COUNTS.get(mt)[1] += 1;
+            } else {
+                capture::instance_walk(id);
+                *VIEW_PLACES.get(mt) += 1;
+            }
+        }
         return true;
     }
     capture::instance_draw(id, ambient, effects, fog, lights, bones, bone_count, queued);
