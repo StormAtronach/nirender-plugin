@@ -8,7 +8,9 @@ batch files at the repo root take the interpreter from `local.bat`). Each tool a
 (`common.py`, `session.py`) by its own folder; a tool in a subfolder adds `tools/` to its path
 itself. The places of this machine that a tool needs come from `local.json` at the repo root
 (`common.local`; `local.example.json` names the keys), with a default next to this repo or
-under the home folder.
+under the home folder. A worktree without `local.json` reads the main checkout's file, and the
+tool names that file on stderr. The harness's default is next to the main checkout when it is
+not next to the worktree (`common.sibling`).
 
 ## The shared modules
 
