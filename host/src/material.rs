@@ -174,6 +174,12 @@ impl Material {
         let index = if source >= SOURCE_PAST_THE_MAPS { source - SOURCE_PAST_THE_MAPS + 8 } else { source };
         self.maps[index as usize]
     }
+
+    /// The values of a bump stage for the shader: the four of the bump matrix, then the scale and
+    /// the offset of the luminance, which the record has from the bump map.
+    pub fn stage_bump(&self) -> [f32; 6] {
+        [self.bump[2], self.bump[3], self.bump[4], self.bump[5], self.bump[0], self.bump[1]]
+    }
 }
 
 /// The `source` of a stage of the map at `index` of [`Material::maps`].
@@ -881,6 +887,22 @@ mod pass_slot_tests {
     fn the_glow_joins_a_pass_after_the_first_that_starts_with_slot_0() {
         let [base, gloss, glow] = [BASE as u32, GLOSS as u32, GLOW as u32];
         assert_eq!(passes(&material(&[GLOSS, GLOW], true)), [vec![base], vec![ENVIRONMENT, gloss, glow]]);
+    }
+}
+
+#[cfg(test)]
+mod stage_bump_tests {
+    use super::*;
+
+    #[test]
+    fn a_bump_stage_has_the_luminance_of_its_record() {
+        let mut words = [0u32; WORDS];
+        for (k, value) in [0.5f32, 0.25, 1.0, 2.0, 3.0, 4.0].into_iter().enumerate() {
+            words[48 + k] = value.to_bits();
+        }
+        let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let material = Material::parse(&bytes).unwrap();
+        assert_eq!(material.stage_bump(), [1.0, 2.0, 3.0, 4.0, 0.5, 0.25]);
     }
 }
 

@@ -73,7 +73,7 @@ use stream::*;
 pub use cli::{run, run_with};
 
 mod d3d;
-use d3d::{address, attributes, blend_factor, color, compare, decode_dxt, expand_16_bits, expands, filter, known, stencil_operation, texture_format, INPUT_FORMATS};
+use d3d::{address, attributes, blend_factor, color, compare, decode_dxt, expands, filter, gpu_pixels, known, stencil_operation, texture_format, INPUT_FORMATS};
 pub use d3d::{d3d_compare, d3d_stencil_operation};
 mod lights;
 use influences::FVF_INFLUENCES;
@@ -386,7 +386,7 @@ impl Pass {
                 coordinate,
                 transform,
                 // The stage of the bump map has the values of the material.
-                bump: if st.source == 5 { [m.bump[2], m.bump[3], m.bump[4], m.bump[5], m.bump[0], m.bump[1]] } else { [0.5, 0.0, 0.0, 0.5, 1.0, 0.0] },
+                bump: if st.source == 5 { m.stage_bump() } else { [0.5, 0.0, 0.0, 0.5, 1.0, 0.0] },
                 texture: st.texture,
                 sampler,
                 texture_transform,
