@@ -39,14 +39,15 @@ local function mirror(reference, proofFolder)
     -- the group turns for a different camera in the click than in the world's walk (D82 stage 2b). The world camera's own
     -- place and facing come back after the click.
     local function click()
-        -- The texture as the frame before finished it: the read at the first click after the proof comes before this click,
-        -- so a helper that flushes the mirror only at the next click has nothing newer to show. The read can fail.
-        if clicks == PROOF_CLICK + 1 and proofFolder then
+        -- The texture as the frame before finished it: this read comes before the click of the proof frame and after a frame
+        -- with no read, so no read has flushed the mirror's views for it. It shows what the helper made of the frame without
+        -- the flush of a read, and it can fail. The read after the proof click (below) is the check of the flush path.
+        if clicks == PROOF_CLICK and proofFolder then
             local pixels = niPixelData.new(TEXTURE_SIZE, TEXTURE_SIZE)
             local read = texture:readback(pixels)
             local path = proofFolder .. "/level4-mirror-texture-late.tga"
             pixels:exportTGA(path)
-            say("proof at click %d, before the click: readback %s, texture written to %s", clicks, tostring(read), path)
+            say("proof at click %d, before the click (the texture of click %d): readback %s, texture written to %s", clicks, clicks - 1, tostring(read), path)
         end
         local original = camera.scene
         local oldTranslation, oldRotation = camera.translation:copy(), camera.rotation:copy()
