@@ -159,7 +159,10 @@ struct Slot {
     /// triangle list, one for each strip).
     ranges: Vec<(u32, u32)>,
     base_vertex: i32,
-    visible: bool,
+    /// The views that display the instance, one bit for each view slot (bit 0 the main
+    /// view): the plugin's `INSTANCE_STATE` records set and clear them, and a retired view's
+    /// bit goes from every slot ([`RetainedSet::retire_view`]).
+    mask: u32,
     /// The draw blends and the engine would sort it: the table draws it back to front with
     /// the other sorted blends where the engine flushes its queue.
     sorted: bool,
@@ -223,6 +226,13 @@ pub struct RetainedCounts {
     pub entry_writes: u64,
     /// The chains that came.
     pub chain_records: u64,
+    /// The `INSTANCE_STATE` records taken, those of a view other than the main view, those
+    /// dropped because their view is above 31 (a fault of the stream), and the view slots
+    /// retired.
+    pub view_states: u64,
+    pub view_states_other: u64,
+    pub view_states_dropped: u64,
+    pub views_retired: u64,
     pub turn_seconds: f64,
     pub upload_seconds: f64,
 }
@@ -251,12 +261,13 @@ struct EffectEntry {
 #[derive(Clone, Copy, Default)]
 struct CullEntry {
     bound: [f32; 4],
+    /// [`Slot::mask`]: a view draws the slot when its bit is set ([`RetainedView::bit`]).
+    mask: u32,
     state: u8,
 }
 
 /// The bits of [`CullEntry::state`].
 const CULL_LIVE: u8 = 1;
-const CULL_VISIBLE: u8 = 2;
 const CULL_HELD: u8 = 4;
 const CULL_WITHOUT_BONES: u8 = 8;
 
@@ -264,16 +275,13 @@ impl CullEntry {
     fn of(slot: Option<&Slot>) -> CullEntry {
         let Some(s) = slot else { return CullEntry::default() };
         let mut state = CULL_LIVE;
-        if s.visible {
-            state |= CULL_VISIBLE;
-        }
         if s.held {
             state |= CULL_HELD;
         }
         if s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES {
             state |= CULL_WITHOUT_BONES;
         }
-        CullEntry { bound: s.bound, state }
+        CullEntry { bound: s.bound, mask: s.mask, state }
     }
 }
 
@@ -369,6 +377,19 @@ pub struct RetainedSet {
     /// The engine's words of this frame for the live check, and what it found.
     turn_check_words: Vec<crate::effect_turn::EngineWords>,
     pub turn_checks: crate::effect_turn::TurnChecks,
+    /// The plugin keeps one bit for each view (`HEADER_VIEW_BITS`): a new instance then
+    /// starts displayed in no view, and the state records set its bits. Without it the stream
+    /// has the one bit of the main view, and a new instance starts displayed there.
+    pub view_bits: bool,
+    /// The views retired since the last pass over the slots (`EVENT_VIEW_RETIRE`): their bits
+    /// go from every slot in one pass, before the next record that reads or writes the masks
+    /// ([`RetainedSet::apply_retires`]).
+    pending_retire: u32,
+    /// The views that display each instance, with [`RetainedSet::view_bits`]: kept by id, as
+    /// `keys_of` is, so that an instance made again keeps them also when it has no slot for a
+    /// while (no geometry or no material yet), and a state for an id with no slot is kept.
+    /// Dropped at `INSTANCE_DELETE` ([`RetainedSet::forget_mask`]).
+    masks: HashMap<u32, u32>,
     pub counts: RetainedCounts,
 }
 
@@ -385,6 +406,9 @@ impl RetainedSet {
             entries_origin: [0.0; 3],
             turn_check_words: Vec::new(),
             turn_checks: Default::default(),
+            view_bits: false,
+            pending_retire: 0,
+            masks: HashMap::new(),
             slots: Vec::new(),
             cull: Vec::new(),
             ranges_total: 0,
@@ -857,20 +881,82 @@ impl RetainedSet {
         self.by_id.keys().copied()
     }
 
-    /// Whether the first slot of the instance is visible, and its bound.
-    pub fn first_slot_facts(&self, id: u32) -> Option<(bool, [f32; 4])> {
+    /// The views that display the first slot of the instance ([`Slot::mask`]), and its bound.
+    pub fn first_slot_facts(&self, id: u32) -> Option<(u32, [f32; 4])> {
         let &slot = self.by_id.get(&id)?.first()?;
-        self.slots[slot as usize].as_ref().map(|s| (s.visible, s.bound))
+        self.slots[slot as usize].as_ref().map(|s| (s.mask & !self.pending_retire, s.bound))
     }
 
-    pub fn set_visible(&mut self, id: u32, visible: bool) {
+    /// The mask of a new slot of the instance `id`: the mask that its slots had when the
+    /// instance is made again (the plugin sends its states only when they change); else none
+    /// with [`RetainedSet::view_bits`], and the main view's bit without.
+    fn start_mask(&mut self, id: u32) -> u32 {
+        if !self.view_bits {
+            return 1;
+        }
+        self.apply_retires();
+        self.masks.get(&id).copied().unwrap_or(0)
+    }
+
+    /// The instance `id` is gone (`INSTANCE_DELETE`): its views go with it.
+    pub fn forget_mask(&mut self, id: u32) {
+        self.masks.remove(&id);
+    }
+
+    /// The view `view` (0 to 31) displays the instance, or no longer does.
+    pub fn set_visible(&mut self, id: u32, view: u32, visible: bool) {
+        self.apply_retires();
+        let bit = 1u32 << view;
+        let mask = self.masks.entry(id).or_insert(0);
+        *mask = if visible { *mask | bit } else { *mask & !bit };
         if let Some(slots) = self.by_id.get(&id) {
             for &slot in slots {
                 if let Some(s) = self.slots[slot as usize].as_mut() {
-                    s.visible = visible;
+                    s.mask = if visible { s.mask | bit } else { s.mask & !bit };
                 }
                 self.cull[slot as usize] = CullEntry::of(self.slots[slot as usize].as_ref());
             }
+        }
+    }
+
+    /// The view slot `view` (0 to 31) is retired: its bit goes from every slot at the next
+    /// [`RetainedSet::apply_retires`], so that the retires of one flush cost one pass.
+    /// Without [`RetainedSet::view_bits`] the one bit is the main view's, and a retire changes
+    /// no mask.
+    pub fn retire_view(&mut self, view: u32) {
+        let Some(bit) = 1u32.checked_shl(view).filter(|_| self.view_bits) else { return };
+        self.pending_retire |= bit;
+        self.counts.views_retired += 1;
+    }
+
+    /// The record `INSTANCE_STATE`: the view `view` displays the instance `id`, or no longer
+    /// does. A view above 31 is a fault of the stream: the record is dropped and counted.
+    pub fn view_state(&mut self, id: u32, view: u32, visible: bool) {
+        if view > 31 {
+            self.counts.view_states_dropped += 1;
+            return;
+        }
+        self.counts.view_states += 1;
+        if view != 0 {
+            self.counts.view_states_other += 1;
+        }
+        self.set_visible(id, view, visible);
+    }
+
+    /// Clears the bits of the retired views in every slot, in one pass.
+    fn apply_retires(&mut self) {
+        let retired = std::mem::take(&mut self.pending_retire);
+        if retired == 0 {
+            return;
+        }
+        for (slot, s) in self.slots.iter_mut().enumerate() {
+            if let Some(s) = s.as_mut().filter(|s| s.mask & retired != 0) {
+                s.mask &= !retired;
+                self.cull[slot] = CullEntry::of(Some(&*s));
+            }
+        }
+        for mask in self.masks.values_mut() {
+            *mask &= !retired;
         }
     }
 
@@ -1072,6 +1158,8 @@ pub enum Sorted {
 #[derive(Clone, Copy)]
 pub struct RetainedView {
     pub scene_slot: u32,
+    /// The view slot whose bit of [`Slot::mask`] the view draws: 0 for the main view.
+    pub bit: u32,
     /// The classes the view draws, one bit for each.
     pub classes: u32,
     pub planes: [[f32; 4]; 6],
@@ -1633,6 +1721,8 @@ impl RetainedSet {
     ///    order is only for the blends without one (`draw_retained_sorted`).
     /// Engine-rules R3, R4, R20 (the skill wgpu-renderer-dev).
     fn collect_order(&mut self, view: &RetainedView) {
+        self.apply_retires();
+        let bit = 1u32 << view.bit;
         self.order.clear();
         self.sorted_order.clear();
         self.bucket_depth.clear();
@@ -1649,7 +1739,7 @@ impl RetainedSet {
                 if cull.state & CULL_LIVE == 0 {
                     continue;
                 }
-                if cull.state & CULL_VISIBLE == 0 {
+                if cull.mask & bit == 0 {
                     self.counts.hidden += 1;
                     continue;
                 }
@@ -1797,6 +1887,7 @@ impl Player {
     /// Engine-rules R13 (the skill wgpu-renderer-dev).
     pub(super) fn retained_insert(&mut self, id: u32, r: &Retained) {
         let keys = self.retained.keys_of.get(&id).cloned();
+        let mask = self.retained.start_mask(id);
         self.retained_remove_slots(id);
         let Some((fvf, stride, entries, strips, vertex, index, base_vertex, first_index)) =
             self.renderer.geometries.get(&r.geometry).map(|g| (g.fvf, g.stride, g.entries, g.strips.clone(), g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index))
@@ -1988,7 +2079,7 @@ impl Player {
             let bones_first = if r.flags & INSTANCE_SKINNED != 0 { set.bones_first_of(id, bones_needed) } else { NO_BONES };
             let sorted = crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter);
             let in_place = !sorted && derived.blends.first().is_some_and(|b| b[0] != 0);
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, visible: true, sorted, in_place, pinned, bones_first, bones_needed, no_lights: derived.no_lights, claim, held: false, uv_base: None, effect_entries });
+            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, mask, sorted, in_place, pinned, bones_first, bones_needed, no_lights: derived.no_lights, claim, held: false, uv_base: None, effect_entries });
             set.ranges_total += ranges.len();
             set.cull[slot as usize] = CullEntry::of(set.slots[slot as usize].as_ref());
             set.buckets[bucket as usize].slots.push(slot);
@@ -2076,7 +2167,7 @@ impl Player {
             let Some(&first) = slots.first() else { continue };
             let Some(s) = self.retained.slots[first as usize].as_ref() else { continue };
             let Some(claim) = s.claim else { continue };
-            let held = offer && s.visible && in_view(&s.bound, planes) && extension.hold(&claim);
+            let held = offer && s.mask & 1 != 0 && in_view(&s.bound, planes) && extension.hold(&claim);
             if held {
                 let bucket = &self.retained.buckets[s.bucket as usize];
                 let key = bucket.key;
@@ -2175,7 +2266,7 @@ impl Player {
         let held = self.retained_hold(facts, &planes);
         self.begin_pass();
         let Some(pass) = self.pass.as_mut() else { return };
-        let view = RetainedView { scene_slot: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Keep, samples: self.pass_samples };
+        let view = RetainedView { scene_slot: 0, bit: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Keep, samples: self.pass_samples };
         pass.push_debug_group("retained instances");
         draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &view);
         pass.pop_debug_group();
@@ -2399,6 +2490,7 @@ impl Player {
         }
         let view = RetainedView {
             scene_slot: slot,
+            bit: 0,
             classes: !0,
             planes: [[0.0; 4]; 6],
             // The cull of each shape is its own (`material::derive`), in every view.
@@ -2583,6 +2675,141 @@ mod merge_tests {
                 Pick::Engine(3)
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod view_bit_tests {
+    use super::*;
+
+    fn slot(id: u32, mask: u32) -> Slot {
+        Slot {
+            id,
+            geometry: 0,
+            material: 0,
+            class: 0,
+            flags: 0,
+            colours: [0.0; 14],
+            exact: [0.0; 3],
+            world: [0.0; 16],
+            bound: [0.0, 0.0, 0.0, 1.0],
+            bucket: 0,
+            data: bytemuck::Zeroable::zeroed(),
+            ranges: Vec::new(),
+            base_vertex: 0,
+            mask,
+            sorted: false,
+            in_place: false,
+            pinned: [0; STAGES],
+            bones_first: NO_BONES,
+            bones_needed: 0,
+            no_lights: false,
+            claim: None,
+            held: false,
+            uv_base: None,
+            effect_entries: Vec::new(),
+        }
+    }
+
+    /// A slot of the instance `id` with the mask `mask` in the table, as `retained_insert` puts it.
+    fn put(set: &mut RetainedSet, id: u32, mask: u32) {
+        let index = set.slots.len() as u32;
+        set.slots.push(Some(slot(id, mask)));
+        set.cull.push(CullEntry::of(set.slots.last().and_then(Option::as_ref)));
+        set.by_id.entry(id).or_default().push(index);
+    }
+
+    /// The mask of the instance's first slot, and that its cull entry has the same mask.
+    fn mask_of(set: &RetainedSet, id: u32) -> u32 {
+        let slot = set.by_id[&id][0] as usize;
+        let mask = set.slots[slot].as_ref().unwrap().mask;
+        assert_eq!(set.cull[slot].mask, mask, "the cull entry of instance {id} lags its slot");
+        mask
+    }
+
+    #[test]
+    fn two_retires_then_a_state_that_reuses_a_slot_in_the_same_frame() {
+        let mut set = RetainedSet::new();
+        set.view_bits = true;
+        put(&mut set, 7, 1 | 1 << 3 | 1 << 5);
+        put(&mut set, 8, 1 << 3);
+        set.retire_view(3);
+        set.retire_view(5);
+        // The retires wait for one pass, but the facts already leave them out.
+        assert_eq!(set.slots[0].as_ref().unwrap().mask, 1 | 1 << 3 | 1 << 5);
+        assert_eq!(set.first_slot_facts(7).unwrap().0, 1);
+        // Slot 3 is used again: its state comes after its retire in the stream.
+        set.view_state(7, 3, true);
+        assert_eq!(set.pending_retire, 0);
+        assert_eq!(mask_of(&set, 7), 1 | 1 << 3);
+        assert_eq!(mask_of(&set, 8), 0);
+        assert_eq!((set.counts.views_retired, set.counts.view_states, set.counts.view_states_other), (2, 1, 1));
+    }
+
+    #[test]
+    fn a_new_instance_starts_in_no_view_with_view_bits_and_in_the_main_view_without() {
+        let mut set = RetainedSet::new();
+        assert_eq!(set.start_mask(9), 1);
+        set.view_bits = true;
+        assert_eq!(set.start_mask(9), 0);
+    }
+
+    #[test]
+    fn an_instance_made_again_keeps_its_mask_less_the_retired_views() {
+        let mut set = RetainedSet::new();
+        set.view_bits = true;
+        put(&mut set, 7, 0);
+        set.view_state(7, 2, true);
+        set.view_state(7, 4, true);
+        assert_eq!(mask_of(&set, 7), 1 << 2 | 1 << 4);
+        set.retire_view(4);
+        assert_eq!(set.start_mask(7), 1 << 2);
+        // Without view bits a made-again instance starts in the main view, as before.
+        set.view_bits = false;
+        assert_eq!(set.start_mask(7), 1);
+    }
+
+    #[test]
+    fn a_retire_without_view_bits_changes_no_mask() {
+        let mut set = RetainedSet::new();
+        put(&mut set, 7, 1);
+        set.retire_view(0);
+        set.apply_retires();
+        assert_eq!(mask_of(&set, 7), 1);
+        assert_eq!(set.counts.views_retired, 0);
+    }
+
+    #[test]
+    fn the_mask_of_an_instance_with_no_slot_is_kept_by_its_id() {
+        let mut set = RetainedSet::new();
+        set.view_bits = true;
+        // A state for an id with no slot yet (no geometry), and a re-make that found none.
+        set.view_state(7, 0, true);
+        set.view_state(7, 2, true);
+        assert_eq!(set.start_mask(7), 1 | 1 << 2);
+        // A retirement reaches the kept mask too.
+        set.retire_view(2);
+        assert_eq!(set.start_mask(7), 1);
+        // The slots made then start with it, and the instance's end drops it.
+        let start = set.start_mask(7);
+        put(&mut set, 7, start);
+        assert_eq!(mask_of(&set, 7), 1);
+        set.forget_mask(7);
+        assert_eq!(set.start_mask(7), 0);
+    }
+
+    #[test]
+    fn a_state_of_a_view_above_31_is_dropped_and_counted() {
+        let mut set = RetainedSet::new();
+        set.view_bits = true;
+        put(&mut set, 7, 1);
+        set.view_state(7, 32, true);
+        set.view_state(7, u32::MAX, false);
+        assert_eq!(mask_of(&set, 7), 1);
+        assert_eq!((set.counts.view_states_dropped, set.counts.view_states), (2, 0));
+        set.view_state(7, 31, true);
+        set.view_state(7, 0, false);
+        assert_eq!(mask_of(&set, 7), 1 << 31);
     }
 }
 
@@ -2953,7 +3180,7 @@ impl Replayer<'_> {
         scene.clip_plane = view.clip_plane.map_or([0.0; 4], |p| self.retained.plane_of(p));
         self.renderer.write_scene(slot, &scene);
         let planes = view_planes(&absolute, &scene.projection);
-        let retained_view = RetainedView { scene_slot: slot, classes: view.classes, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None, sorted: Sorted::Together, samples: view.samples };
+        let retained_view = RetainedView { scene_slot: slot, bit: 0, classes: view.classes, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None, sorted: Sorted::Together, samples: view.samples };
         draw_retained(pass, self.renderer, self.retained, self.args, &retained_view);
     }
 }

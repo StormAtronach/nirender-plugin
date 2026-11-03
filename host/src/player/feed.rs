@@ -4,12 +4,22 @@
 use crate::*;
 use crate::stream_format::{
     HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET,
-    HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
+    HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_BITS, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
 /// The generation of the reply memory that a `READ_PIXELS` record names: 0 in a record of a
 /// plugin before the third word.
 pub(crate) fn reply_generation(data: &[u8]) -> u32 {
+    if data.len() >= 12 {
+        word(data, 8)
+    } else {
+        0
+    }
+}
+
+/// The view slot that an `INSTANCE_STATE` record names: 0 (the main view) in a record of a
+/// plugin before the third word.
+fn instance_state_view(data: &[u8]) -> u32 {
     if data.len() >= 12 {
         word(data, 8)
     } else {
@@ -82,6 +92,7 @@ impl Player {
                 self.retained.walk.on = abilities & HEADER_WALK_PLACES != 0;
                 self.views.on = abilities & HEADER_VIEW_PLACES != 0;
                 self.views.slots_on = abilities & HEADER_SCENE_VIEWS != 0;
+                self.retained.view_bits = abilities & HEADER_VIEW_BITS != 0;
                 self.stream.scene_wireframe = abilities & HEADER_SCENE_WIREFRAME != 0;
                 self.stream.envmap_lit = (abilities & HEADER_ENVMAP_KNOWN != 0).then_some(abilities & HEADER_ENVMAP_LIT != 0);
             }
@@ -211,6 +222,7 @@ impl Player {
                 }
                 if word(data, 0) == EVENT_VIEW_RETIRE && self.views.slots_on {
                     self.views.retire(word(data, 4));
+                    self.retained.retire_view(word(data, 4));
                 }
                 if word(data, 0) == EVENT_FLUSH && self.views.slots_on {
                     self.views.note_forced_flush();
@@ -243,7 +255,7 @@ impl Player {
                     self.retained.set_lights(id, &keys, ambient, &self.renderer.lights_known);
                 }
             }
-            tag::INSTANCE_STATE if data.len() >= 8 => self.retained.set_visible(word(data, 0), word(data, 4) != 0),
+            tag::INSTANCE_STATE if data.len() >= 8 => self.retained.view_state(word(data, 0), instance_state_view(data), word(data, 4) != 0),
             tag::INSTANCE_BONES if data.len() >= 24 => {
                 let bound = core::array::from_fn(|i| float(data, 8 + i * 4));
                 self.retained.set_bones(word(data, 0), word(data, 4), bound, &data[24..]);
@@ -283,6 +295,7 @@ impl Player {
             tag::INSTANCE_DELETE if data.len() >= 4 => {
                 self.instance_take(word(data, 0));
                 self.retained_remove(word(data, 0));
+                self.retained.forget_mask(word(data, 0));
             }
             tag::INSTANCE_CENSUS if data.len() >= 4 => self.instance_census(data),
             tag::LIGHT if data.len() >= 108 => {
@@ -671,13 +684,16 @@ impl Player {
             }
             self.instance_take(id);
             self.retained_remove(id);
+            // It lost its delete: its views go as at a delete.
+            self.retained.forget_mask(id);
         }
     }
 
     fn log_orphan(&self, id: u32) {
         let now = self.renderer.counts.frames;
         let (first, last, name) = self.instance_made.get(&id).map_or((now, now, ""), |made| (made.first_frame, made.last_frame, &made.name[..]));
-        let (visible, bound) = self.retained.first_slot_facts(id).unwrap_or((false, [0.0; 4]));
+        let (mask, bound) = self.retained.first_slot_facts(id).unwrap_or((0, [0.0; 4]));
+        let visible = mask & 1 != 0;
         match self.instances.get(&id) {
             Some(r) => println!(
                 "instance census: orphan {id} '{name}': class {}, flags {:#x}, geometry {:#x}, material {:#x}, at {:.1} {:.1} {:.1}, bound {bound:?}, visible {visible}, records from frame {first} to {last}, now {now}; removed",
@@ -1149,7 +1165,15 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
-    use super::{orphans_of, scene_record};
+    use super::{instance_state_view, orphans_of, scene_record};
+
+    #[test]
+    fn an_8_byte_instance_state_is_of_the_main_view() {
+        let words = |values: &[u32]| values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        assert_eq!(instance_state_view(&words(&[7, 1])), 0);
+        assert_eq!(instance_state_view(&words(&[7, 1, 5])), 5);
+        assert_eq!(instance_state_view(&words(&[7, 0, 40])), 40);
+    }
 
     /// A made-up record: the ambient light, the flags, then each group of words.
     fn record(flags: u32, words: &[u32], sun: bool) -> Vec<u8> {

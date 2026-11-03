@@ -107,6 +107,11 @@ impl Player {
             "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} hidden, {} skipped waiting for their bones, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
             r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.hidden, r.without_bones, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
         );
+        println!(
+            "view bits: {}; {} instance states, {} of them of a view other than the main view, {} dropped for a view above 31; {} view slots retired",
+            if self.retained.view_bits { "on" } else { "off (one bit, of the main view)" },
+            r.view_states, r.view_states_other, r.view_states_dropped, r.views_retired
+        );
         println!("instance census: {} lists of the plugin, {} instances held here that a list lacked", c.instance_censuses, c.instance_orphans);
         let (entries, entry_stages) = self.retained.effect_entry_counts();
         let (turning, controlled) = self.retained.effect_chain_counts();
