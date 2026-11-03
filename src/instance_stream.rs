@@ -1039,6 +1039,10 @@ pub fn view_open(mt: &MainThread, click: &Click) -> u32 {
             crate::log!("views: take {} at frame {}: slot {}{back}, scene kind {}, {}; {} slots in use", *takes, views.frame(), opened.slot, click.kind, key_words(key), views.in_use());
         }
     }
+    if let Some(parts) = crate::view_options::scene(opened.slot, click) {
+        // SAFETY: the caller is the scene start on the main thread; it writes the scene's own record next.
+        unsafe { capture::frame_event(crate::link::EVENT_VIEW_OPTIONS, opened.slot as u32, parts) };
+    }
     opened.slot as u32 + 1
 }
 

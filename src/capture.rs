@@ -2676,6 +2676,10 @@ unsafe fn frame_end(lock: &DeviceLock) {
                 }
                 None => Vec::new(),
             };
+            // The options of a retired view end with it (`view_options`).
+            for &slot in &retired {
+                crate::view_options::retire(slot);
+            }
             // The times of the frame, for the age of the picture in the debug overlay: the
             // start of the frame of the game ([`FRAME_START`]) and its end, in ticks of the
             // performance counter. The host program has the same counter.

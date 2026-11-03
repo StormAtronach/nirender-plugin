@@ -1748,6 +1748,7 @@ pub unsafe fn connect() -> Result<String, String> {
     crate::map_fog::install();
     crate::world_walk::install();
     crate::queue_flush::install();
+    crate::view_options::install();
     crate::world_lights::install();
     crate::pacing::install();
     crate::instance_stream::install_census();

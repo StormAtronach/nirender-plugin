@@ -140,6 +140,9 @@ pub const EVENT_VIEW_RETIRE: u32 = 6;
 /// Every view slot is open or used since the last flush (`view_slots`): the helper runs the
 /// frame's work so far, as for a read of pixels. a: 0.
 pub const EVENT_FLUSH: u32 = 7;
+/// The mod's options of a view changed (`view_options`), as a scene of the view in slot a opens.
+/// b: the parts, a bit set (`MGEApi.h`, `ViewPart`). A retired slot has none.
+pub const EVENT_VIEW_OPTIONS: u32 = 8;
 
 pub const FACT_LIGHT_RADIUS: u32 = 0;
 pub const FACT_SUN_LIGHT: u32 = 1;
