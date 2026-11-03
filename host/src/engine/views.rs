@@ -33,6 +33,9 @@ pub(crate) struct Group {
     /// The scene slot of the view once it is written; `dropped` when all slots were taken.
     pub(crate) slot: Option<u32>,
     pub(crate) dropped: bool,
+    /// The name of the view's GPU span and CPU time, made once its facts are known
+    /// (`Player::view_group_name`).
+    pub(crate) name: core::cell::Cell<Option<&'static str>>,
     /// The runs of places: the ids with no other item between them.
     runs: Vec<Vec<u32>>,
     /// The places in the flush of the engine's queue, in their order of arrival.

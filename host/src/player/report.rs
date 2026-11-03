@@ -245,19 +245,25 @@ impl Player {
 
     /// The CPU time of each view group (`view_times`): for each frame that had the group, and
     /// in its worst frame. The GPU time of a group is its span of the same name (`gpu by part`,
-    /// with `MGE_XE_GPU_TIME=1`).
+    /// with `MGE_XE_GPU_TIME=1`): both cover the same items.
     fn print_view_times(&self) {
         let c = &self.renderer.counts;
         let totals = c.view_times.totals();
-        println!("view groups (CPU): {} groups in {} frames", totals.len(), c.frames);
+        println!(
+            "view groups (CPU): {} groups in {} frames; the GPU time of each is the span of the same name; N of \"view of its own N\" is the view's order in its frame, so views of one order, size and camera share a name",
+            totals.len(),
+            c.frames
+        );
         let ms = |time: u64| ticks::duration(time).as_secs_f64() * 1000.0;
         for total in totals {
             let frames = total.frames.max(1);
             println!(
-                "  {:7.3} ms for each of {} frames, {:7.3} ms in the worst, {:.1} places for each frame  {}",
+                "  {:7.3} ms for each of {} frames from frame {}, {:7.3} ms in the worst (frame {}), {:.1} places for each frame  {}",
                 ms(total.ticks) / frames as f64,
                 total.frames,
+                total.first_frame,
                 ms(total.worst),
+                total.worst_frame,
                 total.places as f64 / frames as f64,
                 total.name
             );
