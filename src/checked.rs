@@ -39,6 +39,21 @@ impl<T> Checked<T> {
         self.opened_at.set(Some(here));
         Open { value: unsafe { NonNull::new_unchecked(self.value.get()) }, opened_at: &self.opened_at, table: PhantomData }
     }
+
+    /// Opens the table when no other open is live; [`None`] while one is, with no panic: for a
+    /// caller that the engine can reach in the middle of another open (a destructor).
+    ///
+    /// # Safety
+    ///
+    /// As for [`Checked::open`].
+    #[track_caller]
+    #[inline(always)]
+    pub unsafe fn try_open(&self) -> Option<Open<'_, T>> {
+        if self.opened_at.get().is_some() {
+            return None;
+        }
+        Some(unsafe { self.open() })
+    }
 }
 
 /// An open table, or a part of it ([`Open::map`]). The table closes when the guard ends.

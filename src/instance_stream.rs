@@ -287,10 +287,11 @@ struct Tables {
     /// when the scene is a view, else 0.
     scene_view: u8,
     scene_camera: usize,
-    /// For each view slot: the shapes that its scenes showed (a shape whose bit went clear
-    /// leaves at the view's close), and the culling planes of its camera at the end of its
-    /// last scene (`NiPlane`: the normal, then the constant).
-    view_lists: Vec<Vec<usize>>,
+    /// For each view slot: the shapes that its scenes showed, with their ids (a shape whose
+    /// bit went clear leaves at the view's close, and so does an entry whose shape is now
+    /// another instance: a new shape at a freed address), and the culling planes of its camera
+    /// at the end of its last scene (`NiPlane`: the normal, then the constant).
+    view_lists: Vec<Vec<(usize, u32)>>,
     view_planes: Vec<Vec<[f32; 4]>>,
     states: u64,
     light_records: u64,
@@ -393,6 +394,12 @@ pub fn state_part(mt: &MainThread) -> (crate::state_summary::Part, Option<Mode>,
     let records: u64 = (*RECORD_COUNTS.get(mt))[RC_FIRST..=RC_MOVED_COLOURS].iter().sum();
     part.note = format!("sent {sent}, visible {visible}, records sent {records}");
     (part, t.mode, t.generation)
+}
+
+/// [`tables`] when no open of them is live; [`None`] while one is. Before the first open the
+/// table does not exist, and gives [`None`] too: it has no marks to clear then.
+fn tables_try(mt: &MainThread) -> Option<Open<'_, Tables>> {
+    TABLES.try_get(mt).and_then(|tables| tables.filter_map(Option::as_mut))
 }
 
 /// The table, for a holder of the proof of the main thread; made at the first open.
@@ -656,8 +663,8 @@ unsafe fn close_view(t: &mut Tables, slot: u8, root_changed: bool, hide: bool) {
     let mut list = core::mem::take(&mut t.view_lists[slot as usize]);
     let planes = core::mem::take(&mut t.view_planes[slot as usize]);
     let mut hides = [0u64; 2];
-    list.retain(|shape| {
-        let Some(instance) = t.instances.get_mut(shape) else { return false };
+    list.retain(|(shape, id)| {
+        let Some(instance) = t.instances.get_mut(shape).filter(|instance| instance.id == *id) else { return false };
         if instance.visible & bit == 0 {
             instance.listed &= !bit;
             instance.displayed &= !bit;
@@ -705,14 +712,33 @@ static CLOSE_HIDES: [core::sync::atomic::AtomicU64; 2] = [core::sync::atomic::At
 /// retirement (`EVENT_VIEW_RETIRE`).
 fn forget_view(t: &mut Tables, slot: u8) {
     let bit = 1u32 << slot;
-    for shape in t.view_lists[slot as usize].drain(..) {
-        if let Some(instance) = t.instances.get_mut(&shape) {
+    for (shape, id) in t.view_lists[slot as usize].drain(..) {
+        if let Some(instance) = t.instances.get_mut(&shape).filter(|instance| instance.id == id) {
             instance.visible &= !bit;
             instance.displayed &= !bit;
             instance.listed &= !bit;
         }
     }
     t.view_planes[slot as usize].clear();
+}
+
+/// The work of a destructor of a rendered texture that found a table open
+/// (`view_target_destroyed`): the targets whose slots wait for their keys to go, and the slots
+/// whose marks wait for their clear. `view_open` does it before it takes a slot.
+static PENDING_TARGETS: MainCell<Vec<usize>> = MainCell::new(Vec::new());
+static PENDING_FORGETS: MainCell<Vec<u8>> = MainCell::new(Vec::new());
+/// The destructors whose work waited so.
+pub static VIEW_TARGETS_WAITED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The work that the destructors left (`PENDING_TARGETS`, `PENDING_FORGETS`), before a slot is
+/// taken: the targets first, then the marks of the freed slots.
+fn do_pending_destructors(mt: &MainThread) {
+    let targets = core::mem::take(&mut *PENDING_TARGETS.get(mt));
+    for target in targets {
+        view_target_destroyed(mt, target);
+    }
+    let slots = core::mem::take(&mut *PENDING_FORGETS.get(mt));
+    forget_views(mt, &slots);
 }
 
 /// [`forget_view`] for each retired slot.
@@ -733,7 +759,7 @@ fn views_of(mask: u32) -> impl Iterator<Item = u8> {
 
 /// A display of the instance in the scene's view `view`: the mark "displayed in v", bit v with
 /// its state record when the bit was clear, and the shape in v's visible list.
-unsafe fn show_in_view(instance: &mut Instance, shape: usize, view: u8, lists: &mut [Vec<usize>], states: &mut u64) {
+unsafe fn show_in_view(instance: &mut Instance, shape: usize, view: u8, lists: &mut [Vec<(usize, u32)>], states: &mut u64) {
     let bit = 1u32 << view;
     instance.displayed |= bit;
     if instance.visible & bit == 0 {
@@ -743,7 +769,7 @@ unsafe fn show_in_view(instance: &mut Instance, shape: usize, view: u8, lists: &
     }
     if instance.listed & bit == 0 {
         instance.listed |= bit;
-        lists[view as usize].push(shape);
+        lists[view as usize].push((shape, instance.id));
     }
 }
 
@@ -936,6 +962,7 @@ pub fn view_open(mt: &MainThread, click: &Click) -> u32 {
     if !capture::recording() {
         return 0;
     }
+    do_pending_destructors(mt);
     write_flush_retirements(mt);
     let mut views_open = VIEWS.get(mt);
     let views = views_open.get_or_insert_with(ViewTable::default);
@@ -1015,14 +1042,31 @@ pub fn write_flush_retirements(mt: &MainThread) {
 /// record or `FRAME_END` ([`ViewTable::target_gone`]). Without a recording stream the
 /// retirements wait for the next point that writes them.
 ///
-/// \[I\] No table of this module is open when the engine destroys a rendered texture: the
-/// module calls no engine function that frees one while it holds its tables.
+/// The engine can destroy a rendered texture while this module holds a table: then the work
+/// waits for the next `view_open` (`PENDING_TARGETS`, `PENDING_FORGETS`), before any slot is
+/// taken, and `VIEW_TARGETS_WAITED` counts it. The retirements need no table, and go as below.
 pub fn view_target_destroyed(mt: &MainThread, target: usize) {
-    let retired = VIEWS.get(mt).as_mut().map(|views| views.target_gone(target)).unwrap_or_default();
+    let Some(mut views_open) = VIEWS.try_get(mt) else {
+        PENDING_TARGETS.get(mt).push(target);
+        VIEW_TARGETS_WAITED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        return;
+    };
+    let retired = views_open.as_mut().map(|views| views.target_gone(target)).unwrap_or_default();
+    drop(views_open);
     if retired.is_empty() {
         return;
     }
-    forget_views(mt, &retired);
+    match tables_try(mt) {
+        Some(mut tables_open) => {
+            for &slot in &retired {
+                forget_view(&mut tables_open, slot);
+            }
+        }
+        None => {
+            PENDING_FORGETS.get(mt).extend_from_slice(&retired);
+            VIEW_TARGETS_WAITED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
     if !capture::recording() {
         RETIRED_VIEWS.get(mt).extend(retired);
         return;
@@ -1059,7 +1103,7 @@ fn view_report(mt: &MainThread) -> String {
         return "views: no scene yet".to_owned();
     };
     format!(
-        "views: {} of {VIEW_SLOTS} slots in use, {} slots retired, {} root changes; {} second slots (at most {} in one flush), {} slots taken back, {} flushes forced, {} slots of a destroyed target ({} destructors off the main thread); hides at the closes: {} by the planes, {} after a root change",
+        "views: {} of {VIEW_SLOTS} slots in use, {} slots retired, {} root changes; {} second slots (at most {} in one flush), {} slots taken back, {} flushes forced, {} slots of a destroyed target ({} destructors off the main thread, {} waited for an open table); hides at the closes: {} by the planes, {} after a root change",
         views.in_use(),
         views.retired,
         views.root_changes,
@@ -1069,6 +1113,7 @@ fn view_report(mt: &MainThread) -> String {
         views.forced_flushes,
         views.targets_gone,
         VIEW_TARGETS_OFF_MAIN.load(core::sync::atomic::Ordering::Relaxed),
+        VIEW_TARGETS_WAITED.load(core::sync::atomic::Ordering::Relaxed),
         CLOSE_HIDES[0].load(core::sync::atomic::Ordering::Relaxed),
         CLOSE_HIDES[1].load(core::sync::atomic::Ordering::Relaxed)
     )
@@ -2860,7 +2905,7 @@ mod tests {
             show(a, 1);
             close_views(&mt, [(1, false)]);
             assert_eq!((mask(a), mask(b)), (0b10, 0));
-            assert_eq!(tables(&mt).view_lists[1], vec![a]);
+            assert_eq!(tables(&mt).view_lists[1], vec![(a, 91)]);
             // A display in a scene that is not a view: view 0 only.
             show(b, 0);
             assert_eq!(mask(b), 0b1);
@@ -2870,11 +2915,88 @@ mod tests {
             {
                 let mut tables_open = tables(&mt);
                 let t = &mut *tables_open;
-                t.view_lists[0].retain(|&shape| shape != b);
+                t.view_lists[0].retain(|&(shape, _)| shape != b);
                 t.instances.remove(&a);
                 t.instances.remove(&b);
                 t.mode = mode;
             }
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// A shape destroyed, and a new one at the same address displayed in the same view before
+    /// the close: the old entry of the view's list is stale, and the new shape stays visible.
+    #[test]
+    fn a_new_shape_at_a_freed_address_stays_visible_at_the_close() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let a = 0x7930_0000usize;
+            let insert = |id: u32| {
+                let mut instance = Instance::new(id, 0, 1, 2, 0, false, false, false);
+                instance.filled = true;
+                tables(&mt).instances.insert(a, instance);
+            };
+            let show = || {
+                let mut tables_open = tables(&mt);
+                let t = &mut *tables_open;
+                let instance = t.instances.get_mut(&a).expect("a test instance");
+                show_in_view(instance, a, 1, &mut t.view_lists, &mut t.states);
+            };
+            let mode = tables(&mt).mode.replace(Mode::Gpu);
+            insert(94);
+            show();
+            assert!(forget(&mt, a));
+            insert(95);
+            show();
+            close_views(&mt, [(1, false)]);
+            assert_eq!(tables(&mt).instances[&a].visible, 0b10);
+            assert_eq!(tables(&mt).view_lists[1], vec![(a, 95)]);
+            forget_views(&mt, &[1]);
+            tables(&mt).instances.remove(&a);
+            tables(&mt).mode = mode;
+            assert_eq!(capture::test_record_deletes(false), [94]);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// The destructor of a rendered texture while the tables are open: no panic; the clear of
+    /// its slot's marks waits for the next scene's start.
+    #[test]
+    fn a_target_destroyed_while_the_tables_are_open_waits_for_the_next_scene() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let picture = Click { kind: SCENE_OTHER, camera: 0x7940_0000, root: 0x7940_1000, target: Some(0x7940_4000), world_camera: false };
+            let slot = (view_open(&mt, &picture) - 1) as u8;
+            // The view closes and its items run: its slot is free at the destructor.
+            view_swap(&mt, Some(0x7940_4000));
+            view_flush(&mt);
+            take_retired_views(&mt);
+            let a = 0x7940_8000usize;
+            {
+                let mut tables_open = tables(&mt);
+                let t = &mut *tables_open;
+                let mut instance = Instance::new(96, 0, 1, 2, 0, false, false, false);
+                instance.filled = true;
+                t.instances.insert(a, instance);
+                let instance = t.instances.get_mut(&a).expect("a test instance");
+                show_in_view(instance, a, slot, &mut t.view_lists, &mut t.states);
+            }
+            {
+                let _held = tables(&mt);
+                view_target_destroyed(&mt, 0x7940_4000);
+            }
+            assert_eq!(tables(&mt).instances[&a].visible, 1 << slot);
+            do_pending_destructors(&mt);
+            assert_eq!(tables(&mt).instances[&a].visible, 0);
+            tables(&mt).instances.remove(&a);
+            take_retired_views(&mt);
             capture::test_record_deletes(false);
             crate::shadow::restore_main_thread(before);
         }
