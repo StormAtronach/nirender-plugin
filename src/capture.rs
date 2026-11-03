@@ -1457,6 +1457,8 @@ pub unsafe fn resize(width: u32, height: u32, window: u32) {
 }
 
 unsafe fn begin(lock: &DeviceLock, out: Sink, warmup: u32, frames: u32) {
+    // The options of the views go again to a stream or a file that starts now.
+    crate::view_options::reset();
     *STATE.get(lock) = Some(State {
         phase: Phase::Warmup(warmup.max(1)),
         frames,

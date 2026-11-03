@@ -110,6 +110,18 @@ pub fn scene(slot: u8, click: &Click) -> Option<u32> {
     })
 }
 
+/// A view takes the slot (a new key, after any retirement): the helper has no parts for it,
+/// whatever the plugin sent before. Stage 2 writes the retirement in several places, so the
+/// take is the one place that resets the slot.
+pub fn taken(slot: u8) {
+    retire(slot);
+}
+
+/// A stream or a capture starts: the helper has no parts for any slot.
+pub fn reset() {
+    with_store(|store| store.sent = [0; VIEW_SLOTS]);
+}
+
 /// The slot retired: the helper drops its parts with the slot.
 pub fn retire(slot: u8) {
     with_store(|store| {
@@ -240,5 +252,22 @@ mod tests {
         // The parts of a texture view are those of the texture, not of its camera.
         set(KIND_CAMERA, 0x7200_0400, Some(0b100));
         assert_eq!(scene(23, &click(Some(0x7200_0500), 0x7200_0400, false)), None);
+    }
+
+    /// A new view in a slot that retired (by any of the retirements of stage 2, which only the
+    /// take sees) gets the same parts again: one mod gives every mirror the same options. A start
+    /// of a stream or a capture forgets what was sent to the helper.
+    #[test]
+    fn a_new_take_and_a_new_stream_send_the_parts_again() {
+        set(KIND_RENDERED_TEXTURE, 0x7300_0000, Some(0b11));
+        let texture = click(Some(0x7300_0000), 0x7300_0100, false);
+        assert_eq!(scene(24, &texture), Some(0b11));
+        assert_eq!(scene(24, &texture), None);
+        // The slot retired elsewhere, and another view takes it with the same parts.
+        taken(24);
+        assert_eq!(scene(24, &texture), Some(0b11));
+        assert_eq!(scene(24, &texture), None);
+        reset();
+        assert_eq!(scene(24, &texture), Some(0b11));
     }
 }
