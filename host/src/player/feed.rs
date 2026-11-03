@@ -17,6 +17,34 @@ pub(crate) fn reply_generation(data: &[u8]) -> u32 {
     }
 }
 
+/// The values of a `RETAINED_SCENE` record.
+#[derive(Debug, PartialEq)]
+struct SceneRecord {
+    ambient: u32,
+    fog: Option<[u32; 4]>,
+    fog_off_color: Option<u32>,
+    sun: Option<[u8; 104]>,
+}
+
+/// Reads a `RETAINED_SCENE` record of at least 8 bytes: the ambient light, the flags, and what
+/// the flags say follows. Flag 32: the fog, 4 words. Flag 128, with the fog off: the colour of the
+/// fog property, one word in the place of the fog. Flag 64: the sun of the frame after those, the
+/// 26 words of the weather's sky light as the engine gives them to the device.
+fn scene_record(data: &[u8]) -> SceneRecord {
+    let flags = word(data, 4);
+    let fog = (flags & 32 != 0 && data.len() >= 24).then(|| core::array::from_fn(|i| word(data, 8 + i * 4)));
+    let fog_off_color = (fog.is_none() && flags & 128 != 0 && data.len() >= 12).then(|| word(data, 8));
+    let at = if fog.is_some() {
+        24
+    } else if fog_off_color.is_some() {
+        12
+    } else {
+        8
+    };
+    let sun = (flags & 64 != 0 && data.len() >= at + 104).then(|| data[at..at + 104].try_into().unwrap());
+    SceneRecord { ambient: word(data, 0), fog, fog_off_color, sun }
+}
+
 /// The lines of orphans in the log of a session; the report counts them all.
 const MOST_ORPHAN_LINES: u32 = 256;
 
@@ -197,17 +225,10 @@ impl Player {
                 self.retained.set_bones(word(data, 0), word(data, 4), bound, &data[24..]);
             }
             tag::RETAINED_SCENE if data.len() >= 8 => {
-                let flags = word(data, 4);
-                let fog = (flags & 32 != 0 && data.len() >= 24).then(|| core::array::from_fn(|i| word(data, 8 + i * 4)));
-                self.retained_values = Some((word(data, 0), fog));
-                // Flag 128, with the fog off: the colour of the fog property, one word in the
-                // place of the fog.
-                let off_color = (fog.is_none() && flags & 128 != 0 && data.len() >= 12).then(|| word(data, 8));
-                self.fog_off_color = off_color.unwrap_or(0);
-                // Flag 64: the sun of the frame, the 26 words of the weather's sky light as
-                // the engine gives them to the device, after the fog.
-                let at = if fog.is_some() { 24 } else if off_color.is_some() { 12 } else { 8 };
-                self.retained_sun = (flags & 64 != 0 && data.len() >= at + 104).then(|| data[at..at + 104].try_into().unwrap());
+                let scene = scene_record(data);
+                self.retained_values = Some((scene.ambient, scene.fog));
+                self.fog_off_color = scene.fog_off_color.unwrap_or(0);
+                self.retained_sun = scene.sun;
             }
             tag::INSTANCE_DRAW if data.len() >= 12 => {
                 if self.retained_on {
@@ -1049,7 +1070,56 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
-    use super::orphans_of;
+    use super::{orphans_of, scene_record};
+
+    /// A made-up record: the ambient light, the flags, then each group of words.
+    fn record(flags: u32, words: &[u32], sun: bool) -> Vec<u8> {
+        let mut data = Vec::new();
+        for word in [&[9, flags][..], words] {
+            for value in word {
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        if sun {
+            data.extend((0..104).map(|i| i as u8));
+        }
+        data
+    }
+
+    fn sun() -> [u8; 104] {
+        core::array::from_fn(|i| i as u8)
+    }
+
+    #[test]
+    fn the_colour_of_a_fog_that_is_off_comes_before_the_sun() {
+        let scene = scene_record(&record(128 | 64, &[7], true));
+        assert_eq!(scene.ambient, 9);
+        assert_eq!((scene.fog, scene.fog_off_color), (None, Some(7)));
+        assert_eq!(scene.sun, Some(sun()));
+    }
+
+    #[test]
+    fn the_sun_follows_a_fog_that_is_on() {
+        let scene = scene_record(&record(32 | 64, &[1, 2, 3, 4], true));
+        assert_eq!((scene.fog, scene.fog_off_color), (Some([1, 2, 3, 4]), None));
+        assert_eq!(scene.sun, Some(sun()));
+    }
+
+    #[test]
+    fn a_record_of_an_older_plugin_has_no_colour() {
+        let scene = scene_record(&record(64, &[], true));
+        assert_eq!((scene.fog, scene.fog_off_color), (None, None));
+        assert_eq!(scene.sun, Some(sun()));
+    }
+
+    #[test]
+    fn a_short_record_gives_no_values() {
+        let mut short = record(128 | 64, &[7], true);
+        short.pop();
+        let scene = scene_record(&short);
+        assert_eq!((scene.fog_off_color, scene.sun), (Some(7), None));
+        assert_eq!(scene_record(&record(128, &[], false)).fog_off_color, None);
+    }
 
     #[test]
     fn a_census_names_an_orphan_and_never_a_listed_instance() {
