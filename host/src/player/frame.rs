@@ -97,6 +97,8 @@ impl Player {
             shadow_reach: 0.0,
             plane_ahead: None,
             world_prepared: false,
+            view_world_begun: false,
+            view_sky_seen: false,
             split: None,
             posted: false,
             world_matrices: None,

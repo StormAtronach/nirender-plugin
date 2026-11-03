@@ -151,6 +151,9 @@ impl Player {
         for step in self.plan_now().world_walk(extension, in_back_buffer) {
             self.plan_step(step);
         }
+        // The world of a view of its own begins here too, in a texture as in the back buffer.
+        self.view_world_begun = true;
+        self.view_table_item();
     }
 
     /// The end of the flush of the engine's main sorted queue ([`EVENT_QUEUE_FLUSHED`]): the
@@ -234,6 +237,11 @@ impl Player {
         let sky = scene::sky_class(self.stream.object_class);
         let (extension, sky_hidden, walk_marked) = (self.extension.is_some(), self.stream.sky_hidden, self.stream.world_walk);
         let (steps, hold) = self.plan_now().world_draw(extension, in_back_buffer, sky, sky_hidden, walk_marked);
+        // The world of a view of its own, by the main view's rule: the first draw after the
+        // sky, or the first draw with the sky hidden; a stream that marks the walk starts it at
+        // the event (`world_walk`).
+        self.view_world_begun |= crate::retained::view_world_begins(sky, sky_hidden, walk_marked, self.view_sky_seen);
+        self.view_sky_seen |= sky;
         for step in steps {
             self.plan_step(step);
         }

@@ -193,6 +193,8 @@ impl Player {
                 }
                 let camera_is_world = self.views.camera_is_world(kind, camera, self.world_camera_id);
                 self.views.scene_begin(kind, in_target, camera_is_world);
+                self.view_world_begun = false;
+                self.view_sky_seen = false;
                 for step in self.plan_now().scene_begin_view(kind, ViewKind::classify(in_target, camera_is_world)) {
                     self.plan_step(step);
                 }
@@ -207,8 +209,9 @@ impl Player {
                     self.plan_step(step);
                 }
                 // A view into a texture closes here (its EndPaint): its table takes its list now. A
-                // scene with no draw gets its table item here.
+                // scene whose world did not begin gets its table item here.
                 if let Some(group) = self.views.open() {
+                    self.view_world_begun = true;
                     self.view_table_item();
                     let facts = self.views.group(group).and_then(|g| g.facts);
                     if let (Some(bit), Some(facts), Some(_)) = (self.table_bit(group), facts, self.target) {
@@ -887,8 +890,10 @@ impl Player {
 
     /// A draw comes in the open scene of a view of its own whose table draws: the table's item
     /// goes before it, once for the scene (the main view draws its table at its first click).
+    /// Only after the world of the scene began ([`Player::view_world_begun`]): the sky of a
+    /// view of the world camera draws first, and it would cover the table.
     pub(crate) fn view_table_item(&mut self) {
-        let Some(group) = self.views.open().filter(|&group| self.drawing() && self.table_bit(group).is_some()) else { return };
+        let Some(group) = self.views.open().filter(|&group| self.view_world_begun && self.drawing() && self.table_bit(group).is_some()) else { return };
         self.note_view_facts();
         if self.retained.view_tables.queue(group) {
             self.items.push(Item::ViewTable(group));
@@ -899,6 +904,8 @@ impl Player {
     /// view of the scene at its first place, then the place in its run.
     pub(crate) fn view_place(&mut self, id: u32) {
         self.note_view_facts();
+        // The engine walks the sky root first: a place of a retained shape is in the world.
+        self.view_world_begun = true;
         self.view_table_item();
         let open = self.views.open();
         let adjacent = matches!(self.items.last(), Some(&Item::ViewPlaces(group, _)) if Some(group) == open);

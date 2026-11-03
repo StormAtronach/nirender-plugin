@@ -1204,6 +1204,14 @@ fn table_slot(view_bits: bool, kind: crate::view_kind::ViewKind, view_slot: Opti
     view_slot.filter(|_| view_bits && kind != crate::view_kind::ViewKind::Main)
 }
 
+/// A draw begins the world of a view of its own ([`Player::view_table_item`]), by the main
+/// view's rule (`plan::world_draw`): a draw that is not the sky, after a draw of the sky or with
+/// the sky hidden. A stream that marks the walk (`walk_marked`) begins it at the event, except
+/// with the sky hidden.
+pub(crate) fn view_world_begins(sky: bool, sky_hidden: bool, walk_marked: bool, sky_seen: bool) -> bool {
+    !sky && (sky_hidden || (!walk_marked && sky_seen))
+}
+
 /// What a place of a view of its own does with one slot of its instance
 /// ([`RetainedSet::view_entries`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -3043,6 +3051,22 @@ mod view_bit_tests {
         assert_eq!(table_slot(true, ViewKind::Picture, Some(4)), Some(4));
         assert_eq!(table_slot(true, ViewKind::Picture, None), None);
         assert_eq!(table_slot(false, ViewKind::Picture, Some(4)), None);
+    }
+
+    #[test]
+    fn the_world_of_a_view_begins_after_the_sky() {
+        // The arguments: sky, sky hidden, walk marked, sky seen.
+        // The sky's own draws and a draw before them (the lines of the cell borders) begin nothing.
+        assert!(!view_world_begins(true, false, false, false));
+        assert!(!view_world_begins(false, false, false, false));
+        assert!(!view_world_begins(true, false, false, true));
+        // The first draw after the sky, in a stream without the walk event.
+        assert!(view_world_begins(false, false, false, true));
+        // With the event, the draws begin nothing: the event does.
+        assert!(!view_world_begins(false, false, true, true));
+        // With the sky hidden there is no sky draw: the first draw.
+        assert!(view_world_begins(false, true, true, false));
+        assert!(view_world_begins(false, true, false, false));
     }
 
     #[test]

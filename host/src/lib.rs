@@ -925,6 +925,12 @@ struct Player {
     /// A split flush did the world's start's [`Player::prepare_world`] before a texture run
     /// that went ahead of it: the run of the held world start does not do it again.
     world_prepared: bool,
+    /// The scene in progress: its world began (the walk of the world camera's root left the sky
+    /// root, its first draw after the sky, or its first place), and a draw of the sky came in
+    /// it. The table of a view of its own goes at that start, as the main view's world does,
+    /// or the sky draws over it ([`Player::view_table_item`]).
+    view_world_begun: bool,
+    view_sky_seen: bool,
     split: Option<[f64; 4]>,
     /// The post-processing of this frame is in the items.
     posted: bool,
