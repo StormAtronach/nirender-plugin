@@ -296,14 +296,15 @@ pub unsafe fn ambient(renderer: usize) -> u32 {
 pub unsafe fn report(t: &MainThread) -> String {
     let without = *WITHOUT.get(t);
     format!(
-        "shapes: {} records, {} of them without their projected lights or shadows; draws without a record: {} with no geometry, {} with no material, {} skinned with no palette, {} skinned in software; {} draws of an empty geometry",
+        "shapes: {} records, {} of them without their projected lights or shadows; draws without a record: {} with no geometry, {} with no material, {} skinned with no palette, {} skinned in software; {} draws of an empty geometry; {}",
         *RECORDS.get(t),
         *PROJECTED.get(t),
         without[0],
         without[1],
         *WITHOUT_PALETTE.get(t),
         *SOFTWARE_SKINNED.get(t),
-        without[2]
+        without[2],
+        crate::instance_stream::engine_path_report(t)
     )
 }
 

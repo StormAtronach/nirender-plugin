@@ -1758,6 +1758,25 @@ pub unsafe fn skipped_display(mt: &MainThread, shape: usize, kind: u32) -> bool 
     result
 }
 
+/// The scenes in which the engine displays a retained shape on its own path (the record path),
+/// because the helper draws no table there, with their names for the report.
+const ENGINE_PATH_SCENES: [(u32, &str); 4] = [
+    (SCENE_LOCAL_MAP, "local map"),
+    (SCENE_CHARACTER_PREVIEW, "character preview"),
+    (SCENE_RACE_MENU_HEAD, "race menu head"),
+    (SCENE_WATER_REFLECTION, "water reflection"),
+];
+/// The displays of retained shapes on the engine's path, by the scenes of [`ENGINE_PATH_SCENES`].
+static ENGINE_PATH_DISPLAYS: MainCell<[u64; 4]> = MainCell::new([0; 4]);
+
+/// The displays of retained shapes on the engine's path outside the table's scenes, for the
+/// `shapes:` line: the work that the table does not take yet.
+pub fn engine_path_report(mt: &MainThread) -> String {
+    let counts = *ENGINE_PATH_DISPLAYS.get(mt);
+    let parts: Vec<String> = ENGINE_PATH_SCENES.iter().zip(counts).map(|((_, name), count)| format!("{name} {count}")).collect();
+    format!("{} displays of retained shapes on the engine's path outside the table's scenes ({})", counts.iter().sum::<u64>(), parts.join(", "))
+}
+
 unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> bool {
     {
         let mut tables_open = tables(mt);
@@ -1776,8 +1795,10 @@ unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> boo
         // table only in the scenes of the world camera, so here the engine draws the shape on
         // the record path (the draw is not a plain world shape there, `link_client`). The mark
         // stays: the shape is still retained in the world scenes. Without this a map tile drawn
-        // at a walking cross lost its landscape (records entry 55).
-        if matches!(t.scene_kind, SCENE_RACE_MENU_HEAD | SCENE_CHARACTER_PREVIEW | SCENE_LOCAL_MAP | SCENE_WATER_REFLECTION) {
+        // at a walking cross lost its landscape (records entry 55). The displays are counted
+        // ([`engine_path_report`]).
+        if let Some(index) = ENGINE_PATH_SCENES.iter().position(|&(scene, _)| scene == t.scene_kind) {
+            ENGINE_PATH_DISPLAYS.get(mt)[index] += 1;
             return false;
         }
         if let Some(instance) = t.instances.get_mut(&shape) {
