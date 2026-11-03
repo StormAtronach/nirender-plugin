@@ -12,7 +12,9 @@
 //! else takes back the slot that closed longest ago (never the main view's, an open one or one
 //! used since the last flush), else the table is full and the caller forces a flush. A flush
 //! closes the open views into a texture first; a view into the back buffer stays open until the
-//! swap (design section 6).
+//! swap (design section 6). The destructor of a texture's renderer data frees the slots of
+//! the views into that texture ([`ViewTable::target_gone`]), so that a new texture at the same
+//! address does not take an old slot.
 //!
 //! A swap closes views; it does not end the frame. The frame ends at the device's Present,
 //! where the plugin writes `FRAME_END` and the retained table's frame advances: there the slots
@@ -166,6 +168,8 @@ pub struct ViewTable {
     second_in_flush: u32,
     pub taken_back: u64,
     pub forced_flushes: u64,
+    /// The slots freed because their target was destroyed (rule 3).
+    pub targets_gone: u64,
 }
 
 impl ViewTable {
@@ -261,6 +265,24 @@ impl ViewTable {
         self.forced_flushes += forced as u64;
         self.next_flush();
         end
+    }
+
+    /// The renderer data of a rendered texture is destroyed (rule 3): the slots of the views
+    /// into `target` are free, so that a new texture at the same address takes a new slot.
+    /// Gives the freed slots, for their retirements.
+    pub fn target_gone(&mut self, target: usize) -> Vec<u8> {
+        let mut retired = Vec::new();
+        for (index, entry) in self.slots.iter_mut().enumerate() {
+            if entry.as_ref().is_some_and(|slot| matches!(slot.key, ViewKey::Texture { target: into, .. } if into == target)) {
+                let slot = entry.take().expect("a slot of the target");
+                self.by_key.remove(&slot.key);
+                self.retired += 1;
+                self.targets_gone += 1;
+                retired.push(index as u8);
+            }
+        }
+        self.since_flush.retain(|&(_, _, into), _| into != target);
+        retired
     }
 
     fn free_second_slots(&mut self, retired: &mut Vec<u8>) {
@@ -565,5 +587,23 @@ mod tests {
         // The old key of slot 5 starts again in another slot at its next scene.
         assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x10_0005)), Opening::Opened(Opened { slot: 2, new: true, taken_back: true }));
         assert_eq!(views.in_use(), VIEW_SLOTS);
+    }
+
+    /// Rule 3: the destructor of a target frees the slots of the views into it, its first and
+    /// its second slot, and no other. A new texture at the same address takes a new slot.
+    #[test]
+    fn a_destroyed_target_frees_its_slots() {
+        let mut views = ViewTable::default();
+        views.open(&world(SCENE_WORLD, WORLD_ROOT));
+        assert_eq!(slot_of(views.open(&texture(0x7000, WORLD_ROOT, 0x9000))), Some(1));
+        views.swap(Some(0x9000));
+        assert_eq!(slot_of(views.open(&texture(0x7000, WORLD_ROOT, 0x9000))), Some(2));
+        views.swap(Some(0x9000));
+        assert_eq!(slot_of(views.open(&texture(0x7000, WORLD_ROOT, 0x9100))), Some(3));
+        views.swap(Some(0x9100));
+        assert_eq!(views.target_gone(0x9000), vec![1, 2]);
+        assert_eq!((views.targets_gone, views.retired, views.in_use()), (2, 2, 2));
+        assert_eq!(views.target_gone(0x9000), vec![]);
+        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x9000)), opened(1, true));
     }
 }

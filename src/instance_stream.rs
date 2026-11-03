@@ -849,6 +849,21 @@ pub fn write_flush_retirements(mt: &MainThread) {
     }
 }
 
+/// The renderer data of the rendered texture `target` is destroyed (rule 3 of the slot
+/// pressure): the slots of the views into it retire at once, before a new texture can take
+/// the same address.
+pub fn view_target_destroyed(mt: &MainThread, target: usize) {
+    let retired = VIEWS.get(mt).as_mut().map(|views| views.target_gone(target)).unwrap_or_default();
+    if retired.is_empty() || !capture::recording() {
+        return;
+    }
+    let _lock = crate::sync::device_lock();
+    for slot in retired {
+        // SAFETY: the stream records (checked above) and the device lock is held.
+        unsafe { capture::frame_event(crate::link::EVENT_VIEW_RETIRE, slot as u32, 0) };
+    }
+}
+
 /// Present, the end of the frame (`frame_tick`): the views close and the second and idle slots
 /// retire.
 fn view_present(mt: &MainThread) {
@@ -868,14 +883,15 @@ fn view_report(mt: &MainThread) -> String {
         return "views: no scene yet".to_owned();
     };
     format!(
-        "views: {} of {VIEW_SLOTS} slots in use, {} slots retired, {} root changes; {} second slots (at most {} in one flush), {} slots taken back, {} flushes forced",
+        "views: {} of {VIEW_SLOTS} slots in use, {} slots retired, {} root changes; {} second slots (at most {} in one flush), {} slots taken back, {} flushes forced, {} slots of a destroyed target",
         views.in_use(),
         views.retired,
         views.root_changes,
         views.second_slots,
         views.most_second_in_flush,
         views.taken_back,
-        views.forced_flushes
+        views.forced_flushes,
+        views.targets_gone
     )
 }
 
