@@ -58,7 +58,7 @@ a cylinder), a lit material, a base texture of the level, and the property under
     ctrl_above_b<m> the controller on the node above the billboard, which moves the shape too
     ctrl_between the controller on the node between two billboards, the shape under the second
     ctrl_under_b1 the controller on the effect, the shape under the billboard with it
-    level4_mirror a pane and, 260 units west of it, a group `subject` of a red box, a green
+    level4_mirror a pane and, 300 units west of it, a group `subject` of a red box, a green
                  cylinder and a yellow box (`make_level4`); at its stop the mock clicks the
                  world camera into a rendered texture of the group, with the yellow box hidden
                  around the click, and sets the texture on the pane
@@ -357,12 +357,17 @@ LEVEL4_PANE = "pane"
 LEVEL4_YELLOW = "yellow box"
 LEVEL4_BYSTANDER = "bystander"
 LEVEL4_BLUE = [0.0, 0.2, 1.0]
+# The tour's camera looks above the origin of an exhibit: at the first live tour (2026-11-03) a pane of 200 units at the
+# origin was cut by the lower edge of the picture, and a group 260 units to the side was at the left edge of the view
+# (half the view is about 310 units wide at the stop). The group and the pane stand 150 units to each side and 110 up.
+LEVEL4_SPACING = 150.0
+LEVEL4_LIFT = 110.0
 
 
 def make_level4(name, pane):
     """Level 4 of the NIF tests, the exhibits of a mod that draws the world through a camera. A
     group `subject` of a red box, a green cylinder and a yellow box (the shape `yellow box`),
-    side by side; with `pane` the group stands 260 units west of a pane at the origin, which the
+    side by side; with `pane` the group stands 300 units west of a pane (both 110 units up), which the
     mock sets a rendered texture on (a niRenderedTexture of the subject, with the yellow box
     hidden around the click); without it the group stands at the origin (the subject that the
     mock isolates, as Joy of Painting's Isolate Subject does) with a blue box `bystander` above it,
@@ -401,7 +406,7 @@ def make_level4(name, pane):
         shape.update({"type": "NiTriShape", "data": data, "skin": -1, "properties": [shade, group_texturing], "translation": [0.0, 0.0, 130.0]})
         blocks[0]["children"].append(add(shape))
     if pane:
-        blocks[subject]["translation"] = [-260.0, 0.0, 0.0]
+        blocks[subject]["translation"] = [-LEVEL4_SPACING, 0.0, LEVEL4_LIFT]
         geometry = quad(200.0, 200.0)
         check_winding("level4 pane", geometry)
         data = add(tri_shape_data(geometry))
@@ -409,7 +414,7 @@ def make_level4(name, pane):
         pane_texturing = add(texturing(len(blocks) + 1))
         add(source_texture(BASE_TEXTURE))
         shape = av_object(LEVEL4_PANE, 0)
-        shape.update({"type": "NiTriShape", "data": data, "skin": -1, "properties": [shade, pane_texturing]})
+        shape.update({"type": "NiTriShape", "data": data, "skin": -1, "properties": [shade, pane_texturing], "translation": [LEVEL4_SPACING, 0.0, LEVEL4_LIFT]})
         blocks[0]["children"].append(add(shape))
     return write_file(name, blocks)
 
