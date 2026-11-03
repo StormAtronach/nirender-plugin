@@ -73,4 +73,5 @@ return {
     { id = "@nif_x_ctrl_above_b2", mesh = "@_nifx\\ctrl_above_b2.nif" },
     { id = "@nif_x_ctrl_between", mesh = "@_nifx\\ctrl_between.nif" },
     { id = "@nif_x_ctrl_under_b1", mesh = "@_nifx\\ctrl_under_b1.nif" },
+    { id = "@nif_x_level4_mirror", mesh = "@_nifx\\level4_mirror.nif" },
 }

@@ -499,6 +499,8 @@ return function(nirender, spec)
                         if own then nirender.captureEnd() end
                         after(0.5, function() cell(index + 1) end)
                     end, function(stop, ref, go)
+                        -- The cases of level 4 (mirror_mock.lua) are on for their own stop and off before the tour goes on.
+                        go = require("nirender.mirror_mock").wrap(ref, go, spec.dir)
                         -- The animations of the object at one moment, the same in each run.
                         local held = holdAnimation(ref.sceneNode)
                         after(0.5, function()

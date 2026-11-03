@@ -87,7 +87,7 @@ default is next to the main checkout when it is not next to the worktree (`commo
 | --- | --- |
 | `nif40.py` | A reader and writer of NetImmerse 4.0.0.2 files for the blocks the test assets need. |
 | `make_rain_nif.py` | Placeable rain for a view out of an interior, frame rate independent: a NIF for each size of box and the streak texture. |
-| `make_test_nifs.py` | The test NIFs of the flag support: one file for each flag value the engine supports and the content does not use; two boxes with a BC7 texture, plain and sRGB; and a texture effect under a turning billboard, for each pair of modes. |
+| `make_test_nifs.py` | The test NIFs of the flag support: one file for each flag value the engine supports and the content does not use; two boxes with a BC7 texture, plain and sRGB; a texture effect under a turning billboard, for each pair of modes; and the two files of level 4 (a mirror pane and a subject group; the subject alone, written but not in the list), whose cases `mod/MWSE/mods/nirender/mirror_mock.lua` turns on at their tour stops. |
 | `effect_turn_vectors.lua` | In a running game: the engine's own billboard and projection functions on made objects, written as the test vectors of `host/src/effect_turn.rs`. |
 | `effect_turn_walk.lua` | In a running game with `NIRENDER_EFFECT_TURN_CHECK=1`: places the `turn_` exhibits and flies the camera around them, for the helper's comparison with the engine's words. |
 | `bc7.py` | A small encoder and decoder of BC7 mode 6, for the BC7 textures of `make_test_nifs.py` (no other BC7 tool is installed); `--self-test` tests the round trip. |
