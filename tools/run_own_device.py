@@ -156,7 +156,8 @@ def walk_budget_problem(args, read=read_text, environment=os.environ):
     (2026-11-03, a 60-minute walk under the default 200 s). The walk's minutes are those of
     `--env NIRENDER_WALK_MINUTES`, else of the runner's environment, else the batch's default.
     None when the budget covers the walk and `WALK_START_SECONDS`, or when the batch does not
-    read the variable itself (a batch that loads a walk batch from another file is not seen)."""
+    read the variable itself. Not seen: a batch that loads a walk batch from another file, and
+    a default on a later line than the `os.getenv` call."""
     if not args.shader_batch:
         return None
     text = read(args.shader_batch)
