@@ -182,11 +182,12 @@ WEATHER_IN_LINE = re.compile(r'(?:current|next|from|to) (\d+) "([^"]*)"')
 def weather_warning(args):
     """The one line that warns about a run that times something and leaves the weather to the
     game: a storm moves the frame rate (the owner, 2026-11-03). None for any other run. Not a
-    refusal. No --steps means all the steps, the timing steps among them."""
+    refusal. No --steps means all the steps, the timing steps among them. A shader-batch
+    run (a --shader-batch, or the step shaders) is a timing run too: its A/B compares frame times."""
     if args.weather is not None:
         return None
     steps = [name for name in re.split(r"[,\s]+", args.steps or "") if name]
-    if steps and not any(name in TIMING_STEPS for name in steps):
+    if steps and not args.shader_batch and not any(name in TIMING_STEPS + ("shaders",) for name in steps):
         return None
     return "warning: the run has timing steps and the weather is the game's, which can change in the run and move the frame rate: --weather 0 pins it to clear"
 
@@ -205,6 +206,13 @@ def weather_summary(pinned, lines):
             if entry not in names:
                 names.append(entry)
     return "the game's: " + (", ".join(names) if names else "none logged")
+
+
+def weather_note(pinned, lines):
+    """The text of weather-of-the-run.txt: the summary line, then the mod's weather lines as the game
+    logged them (the start, each rate line, each change)."""
+    kept = [line for line in lines if line.startswith("weather")]
+    return "".join(line + "\n" for line in ["weather: " + weather_summary(pinned, lines)] + kept)
 
 
 def build_commits(mge_build):
@@ -734,7 +742,7 @@ def self_test_check_command():
 def self_test_weather():
     """The weather line of the summary, and the warning of a timing run that leaves the weather to the game."""
     def namespace(**changes):
-        values = dict(weather=None, steps=None)
+        values = dict(weather=None, steps=None, shader_batch=None)
         values.update(changes)
         return argparse.Namespace(**values)
 
@@ -758,7 +766,19 @@ def self_test_weather():
     assert "--weather 0" in weather_warning(namespace(steps="exterior,rate,capture"))
     assert "--weather 0" in weather_warning(namespace(steps="walk"))
     assert weather_warning(namespace(steps="exterior,capture")) is None
-    assert weather_warning(namespace(steps="shaders")) is None
+    # A shader-batch A/B compares frame times: it warns too, with --shader-batch or with the step shaders.
+    assert "--weather 0" in weather_warning(namespace(steps="shaders"))
+    assert "--weather 0" in weather_warning(namespace(steps="exterior,shaders"))
+    assert "--weather 0" in weather_warning(namespace(steps="exterior", shader_batch="E:/batch.lua"))
+    assert weather_warning(namespace(steps="exterior,shaders", weather=0)) is None
+    assert weather_warning(namespace(steps="exterior,shaders", shader_batch="E:/batch.lua", weather=0)) is None
+
+    # The note of the run folder: the summary line, then the weather lines and no others.
+    note = weather_note(None, lines)
+    assert note.splitlines()[0] == "weather: the game's: Overcast (3), Rain (6), Blizzard (9)", note
+    assert note.splitlines()[1:] == lines[:4], note
+    assert weather_note(0, lines).splitlines()[0] == "weather: pinned 0"
+    assert weather_note(None, []) == "weather: the game's: none logged\n"
 
 
 def self_test():
@@ -1103,6 +1123,8 @@ def main():
         if line.startswith(("own device", "step", "after", "steps done", "ERROR", "save loaded", "rate", "zoom")):
             print("game: " + line[:200])
     print("weather: " + weather_summary(args.weather, progress))
+    with open(run.path("weather-of-the-run.txt"), "w", encoding="utf-8") as note:
+        note.write(weather_note(args.weather, progress))
     if os.path.isfile(run.path("host.txt")):
         print("\nhost:")
         print("  " + open(run.path("host.txt"), errors="replace").read().strip().replace("\n", "\n  ")[-3000:])
