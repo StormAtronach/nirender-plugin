@@ -778,13 +778,23 @@ impl RetainedSet {
 
     /// The view of a scene for the instances: the view of the game, with its translation
     /// made for the origin of the set. `camera` is the exact position of the camera (the
-    /// origin of the scene), or [`None`] for a scene that is not relative.
+    /// origin of the scene), or [`None`] for a scene that has no origin: its view is in the
+    /// space of the world, and a relative set needs `view * T(origin)` (the stored position of
+    /// an instance is its world position less the origin of the set).
     pub fn scene_view(&self, view: &[f32; 16], camera: Option<[f64; 3]>) -> [f32; 16] {
-        let Some(camera) = camera.filter(|_| self.relative) else { return *view };
-        let d = [self.origin[0] - camera[0], self.origin[1] - camera[1], self.origin[2] - camera[2]];
+        if !self.relative {
+            return *view;
+        }
+        let o = self.origin;
         let mut out = *view;
         for c in 0..3 {
-            out[12 + c] = (d[0] * view[c] as f64 + d[1] * view[4 + c] as f64 + d[2] * view[8 + c] as f64) as f32;
+            out[12 + c] = match camera {
+                Some(camera) => {
+                    let d = [o[0] - camera[0], o[1] - camera[1], o[2] - camera[2]];
+                    d[0] * view[c] as f64 + d[1] * view[4 + c] as f64 + d[2] * view[8 + c] as f64
+                }
+                None => view[12 + c] as f64 + o[0] * view[c] as f64 + o[1] * view[4 + c] as f64 + o[2] * view[8 + c] as f64,
+            } as f32;
         }
         out
     }
@@ -2789,6 +2799,99 @@ mod order_tests {
     fn an_instance_that_is_not_relative_takes_the_stored_translation() {
         assert_eq!(retained(0).exact_translation(), [100.0, 200.0, 300.0]);
         assert_eq!(&retained(0).world_at(&[0.0, 0.0, 0.0])[12..15], &[100.0, 200.0, 300.0]);
+    }
+
+    /// A view of Direct3D with the identity rotation: the camera at `eye` looks along +z.
+    fn view_at(eye: [f32; 3]) -> [f32; 16] {
+        let mut view = IDENTITY;
+        for i in 0..3 {
+            view[12 + i] = -eye[i];
+        }
+        view
+    }
+
+    /// A perspective projection of Direct3D, near 1, far 7168, a right angle both ways.
+    fn projection_of_a_square_view() -> [f32; 16] {
+        let (near, far) = (1.0f32, 7168.0f32);
+        let mut projection = [0.0f32; 16];
+        projection[0] = 1.0;
+        projection[5] = 1.0;
+        projection[10] = far / (far - near);
+        projection[11] = 1.0;
+        projection[14] = -near * far / (far - near);
+        projection
+    }
+
+    /// A relative set at the origin of a room at height 15 126 (MirrorTest), the camera of a
+    /// view with no origin 500 units from a static in front of it.
+    fn set_with_a_static_in_front_of(eye: [f32; 3]) -> (RetainedSet, [f32; 4]) {
+        let mut set = RetainedSet::new();
+        set.relative = true;
+        set.origin = [5097.25, 4257.5, 15126.5];
+        let world = [eye[0], eye[1], eye[2] + 500.0];
+        let stored = [(world[0] as f64 - set.origin[0]) as f32, (world[1] as f64 - set.origin[1]) as f32, (world[2] as f64 - set.origin[2]) as f32, 10.0];
+        (set, stored)
+    }
+
+    #[test]
+    fn a_view_with_no_origin_sees_a_static_of_a_relative_set() {
+        let eye = [3878.0, 3797.0, 15266.0];
+        let (set, stored) = set_with_a_static_in_front_of(eye);
+        let view = view_at(eye);
+        let projection = projection_of_a_square_view();
+
+        // The null test: the view of the game as it is, which was drawn before, has the static
+        // far outside the frustum.
+        assert!(!in_view(&stored, &view_planes(&view, &projection)), "the unchanged view must show the fault");
+
+        let scene = set.scene_view(&view, None);
+        assert!(in_view(&stored, &view_planes(&scene, &projection)));
+        // View space of the static: 500 in front of the camera.
+        let z = stored[0] as f64 * scene[2] as f64 + stored[1] as f64 * scene[6] as f64 + stored[2] as f64 * scene[10] as f64 + scene[14] as f64;
+        assert!((z - 500.0).abs() < 0.01, "view-space z {z}");
+    }
+
+    #[test]
+    fn a_view_with_no_origin_takes_the_rotation_of_a_view_that_is_turned() {
+        // Turned a quarter about the up axis: x' = z, z' = -x of the world.
+        let mut view = IDENTITY;
+        view[0] = 0.0;
+        view[2] = -1.0;
+        view[8] = 1.0;
+        view[10] = 0.0;
+        let eye = [100.0f64, 200.0, 300.0];
+        for c in 0..3 {
+            view[12 + c] = -(eye[0] * view[c] as f64 + eye[1] * view[4 + c] as f64 + eye[2] * view[8 + c] as f64) as f32;
+        }
+        let mut set = RetainedSet::new();
+        set.relative = true;
+        set.origin = [1000.0, 2000.0, 3000.0];
+        let scene = set.scene_view(&view, None);
+        // The set point (0, 0, 0) is the world point `origin`: view space = V * origin.
+        let expected = [0, 1, 2].map(|c| {
+            let o = set.origin;
+            o[0] * view[c] as f64 + o[1] * view[4 + c] as f64 + o[2] * view[8 + c] as f64 + view[12 + c] as f64
+        });
+        for c in 0..3 {
+            assert!((scene[12 + c] as f64 - expected[c]).abs() < 1e-3, "axis {c}: {} against {}", scene[12 + c], expected[c]);
+        }
+        assert_eq!(&scene[..12], &view[..12]);
+    }
+
+    #[test]
+    fn a_scene_with_the_camera_origin_and_a_set_that_is_not_relative_keep_their_views() {
+        let eye = [3878.0, 3797.0, 15266.0];
+        let (mut set, _) = set_with_a_static_in_front_of(eye);
+        let view = view_at(eye);
+
+        // The camera form: the translation is the origin of the set less the camera.
+        let scene = set.scene_view(&view, Some([3878.0, 3797.0, 15266.0]));
+        assert_eq!(&scene[12..15], &[(5097.25 - 3878.0) as f32, (4257.5 - 3797.0) as f32, (15126.5 - 15266.0) as f32]);
+
+        // A set that is not relative takes the view of the game as it is, with a camera or not.
+        set.relative = false;
+        assert_eq!(set.scene_view(&view, None), view);
+        assert_eq!(set.scene_view(&view, Some([1.0, 2.0, 3.0])), view);
     }
 
     #[test]
