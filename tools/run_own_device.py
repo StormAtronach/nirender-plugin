@@ -791,6 +791,9 @@ def self_test_mge_log_problems():
     none = "MGE XE installed none of its engine hooks"
     assert problems("MGE-XE\nMWSE.dll injected.\n") == [none]
     assert problems("-- Camera-relative rendering off (render.camera_relative); no engine hooks installed.\n") == [none]
+    late = ">> Using the wgpu renderer: no Direct3D device\n!! wgpu renderer: not in use, no adapter. MGE XE continues with Direct3D 9\n"
+    assert problems(late) == [none]
+    assert problems(late + "-- Indexed skinning engine hooks installed\n") == []
     assert problems(">> Using the wgpu renderer: no Direct3D device\nx failed to load/compile\n") == ["MGE XE could not compile 1 shaders"]
 
 

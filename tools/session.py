@@ -336,16 +336,21 @@ def ring_problem_of_instance():
 # The line of MGE XE (d3d8/cpp/main.cpp) when the wgpu renderer draws: MGE XE then runs as a
 # proxy only, with no Direct3D device and none of its engine hooks.
 WGPU_LINE = ">> Using the wgpu renderer"
+# The line of a late fall-back to Direct3D 9 (d3d8/cpp/main.cpp, at FakeDirect3DCreate): MGE XE
+# then needs its engine hooks again.
+WGPU_FALLBACK_LINE = "wgpu renderer: not in use"
 
 
 def mge_log_problems(text):
     """What the text of an mgeXE.log says went wrong. An empty list is good.
 
     On Direct3D 9, MGE XE must install engine hooks. "no engine hooks installed" (camera-relative
-    rendering off) does not count as one. On the wgpu renderer it installs none by design."""
+    rendering off) does not count as one. On the wgpu renderer it installs none by design; after a
+    late fall-back to Direct3D 9 it must install them again."""
     problems = []
     hooks = [line for line in text.splitlines() if "hooks installed" in line and "no engine hooks installed" not in line]
-    if not hooks and WGPU_LINE not in text:
+    wgpu = WGPU_LINE in text and WGPU_FALLBACK_LINE not in text
+    if not hooks and not wgpu:
         problems.append("MGE XE installed none of its engine hooks")
     failed = text.count("failed to load/compile")
     if failed:
