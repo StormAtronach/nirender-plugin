@@ -1042,6 +1042,16 @@ pub fn view_open(mt: &MainThread, click: &Click) -> u32 {
     opened.slot as u32 + 1
 }
 
+/// The view field of a scene on its route: 0 for a scene on the engine's path, which the table
+/// does not serve (its displays set no marks, `skipped_display`) and which takes no slot; else
+/// [`view_open`].
+pub fn view_of_scene(mt: &MainThread, click: &Click, route: Route) -> u32 {
+    if matches!(route, Route::Engine(_)) {
+        return 0;
+    }
+    view_open(mt, click)
+}
+
 /// The renderer's SwapBuffers, with the device's target (`None` for the back buffer): the open
 /// views into it close, with their hides.
 pub fn view_swap(mt: &MainThread, target: Option<usize>) {
@@ -3139,6 +3149,32 @@ mod tests {
             show_in_view(&mut plain, 0x20, 1, 6, &mut lists, &mut states);
             show_in_view(&mut plain, 0x20, 0, 6, &mut lists, &mut states);
             assert_eq!(count(), start + 2);
+        }
+    }
+
+    /// A scene on the engine's path takes no slot: the local map's tile, the character preview
+    /// and the water reflection come with view 0, and the slots in use do not change. A scene
+    /// that the table serves takes one.
+    #[test]
+    fn a_scene_on_the_engine_path_takes_no_slot() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let in_use = || VIEWS.get(&mt).as_ref().map_or(0, ViewTable::in_use);
+            let start = in_use();
+            for kind in [SCENE_LOCAL_MAP, SCENE_CHARACTER_PREVIEW, SCENE_WATER_REFLECTION] {
+                let click = Click { kind, camera: 0x7970_0000, root: 0x7970_1000, target: Some(0x7970_4000), world_camera: false };
+                assert_eq!(view_of_scene(&mt, &click, route_of(kind, false, true)), 0);
+            }
+            assert_eq!(in_use(), start);
+            let picture = Click { kind: SCENE_OTHER, camera: 0x7970_0000, root: 0x7970_1000, target: Some(0x7970_4000), world_camera: false };
+            assert!(view_of_scene(&mt, &picture, route_of(SCENE_OTHER, false, true)) > 0);
+            view_swap(&mt, Some(0x7970_4000));
+            take_retired_views(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
         }
     }
 
