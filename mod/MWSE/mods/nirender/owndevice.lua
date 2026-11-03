@@ -42,9 +42,12 @@ return function(nirender, spec)
         pcall(function() weather:switchImmediate(index) weather:updateVisuals() end)
     end
 
+    -- The pin logs the weather that the game has after the switch, read back: the runner writes
+    -- "held" only with that line, and "NOT applied" without it or with another weather.
     local function pinWeather(index)
         pinned = index
         switchWeather(index)
+        say("weather pinned %d: now %s", index, weatherName(tes3.worldController.weatherController.currentWeather))
     end
 
     local function holdWeather(source, to)

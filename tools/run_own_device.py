@@ -262,12 +262,17 @@ def full_dump_note(args):
 
 
 def weather_summary(pinned, lines):
-    """What the result summary says of the weather: `pinned N, held (k re-pins)`, where k counts the
+    """What the result summary says of the weather: `pinned N, held (k re-pins)` when the mod read the
+    pinned weather back after its switch (`weather pinned N: now N ...`), `pinned N, NOT applied (k
+    re-pins)` without that line; k counts the
     `weather re-pin` lines that the mod logs each time it undid a change of the game (owndevice.lua);
     or the game's, with the names that the mod's weather lines show, in the order they first appear."""
     if pinned is not None:
         released = ", released at weathers" if any(line.startswith("weather pin released") for line in lines) else ""
-        return "pinned %d, held (%d re-pins)%s" % (pinned, sum(1 for line in lines if line.startswith("weather re-pin")), released)
+        # Held only when the mod read the pinned weather back after its switch ("weather pinned N:
+        # now N ..."): the argument alone proves nothing of the game.
+        applied = any(line.startswith('weather pinned %d: now %d "' % (pinned, pinned)) for line in lines)
+        return "pinned %d, %s (%d re-pins)%s" % (pinned, "held" if applied else "NOT applied", sum(1 for line in lines if line.startswith("weather re-pin")), released)
     names = []
     for line in lines:
         if not line.startswith("weather"):
@@ -854,9 +859,16 @@ def self_test_weather():
         values.update(changes)
         return argparse.Namespace(**values)
 
-    # A pinned weather: the re-pin lines of the mod are counted, and no other line.
-    assert weather_summary(0, []) == "pinned 0, held (0 re-pins)"
-    repins = ['weather event: changed immediately to 6 "Ashstorm"', 'weather re-pin 1: immediate change to 6 "Ashstorm", back to 0',
+    # A pinned weather: held only with the mod's read-back line of that weather. The planted faults:
+    # no read-back (the tour step, or a switch that failed in its pcall), and a read-back of another
+    # weather; both are NOT applied, whatever the argument said.
+    assert weather_summary(0, []) == "pinned 0, NOT applied (0 re-pins)"
+    assert weather_summary(0, ['weather start: current 6 "Ashstorm"']) == "pinned 0, NOT applied (0 re-pins)"
+    assert weather_summary(0, ['weather pinned 0: now 6 "Ashstorm"']) == "pinned 0, NOT applied (0 re-pins)"
+    assert weather_summary(1, ['weather pinned 1: now 10 "x"']) == "pinned 1, NOT applied (0 re-pins)"
+    applied = ['weather pinned 0: now 0 "Clear"']
+    assert weather_summary(0, applied) == "pinned 0, held (0 re-pins)"
+    repins = applied + ['weather event: changed immediately to 6 "Ashstorm"', 'weather re-pin 1: immediate change to 6 "Ashstorm", back to 0',
               'weather re-pin 2: transition to 2 "Foggy", back to 0', 'rate: 1.0 weather re-pin 3']
     assert weather_summary(0, repins) == "pinned 0, held (2 re-pins)", weather_summary(0, repins)
     # The step weathers releases the pin: the summary says so.
@@ -892,7 +904,8 @@ def self_test_weather():
     note = weather_note(None, lines)
     assert note.splitlines()[0] == "weather: the game's: Overcast (3), Rain (6), Blizzard (9)", note
     assert note.splitlines()[1:] == lines[:4], note
-    assert weather_note(0, lines).splitlines()[0] == "weather: pinned 0, held (0 re-pins)"
+    assert weather_note(0, lines).splitlines()[0] == "weather: pinned 0, NOT applied (0 re-pins)"
+    assert weather_note(0, applied + lines).splitlines()[0] == "weather: pinned 0, held (0 re-pins)"
     assert weather_note(0, repins).splitlines()[0] == "weather: pinned 0, held (2 re-pins)"
     assert weather_note(None, []) == "weather: the game's: none logged\n"
 
