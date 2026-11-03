@@ -240,8 +240,8 @@ pub enum ReadingCall<'a> {
     Class(u32),
     /// [`Extension::draw_held`] with these shapes.
     Held(&'a [HeldDraw]),
-    /// [`Extension::draw_held_in_place`] with this shape.
-    HeldInPlace(&'a HeldDraw),
+    /// [`Extension::draw_held_in_place`] with these shapes.
+    HeldInPlace(&'a [HeldDraw]),
     /// [`Extension::post`].
     Post,
 }
@@ -670,10 +670,25 @@ pub trait Extension {
         false
     }
 
+    /// True when the extension draws this held shape at its place in the engine's sorted queue,
+    /// in `draw_held_in_place`, and not in `draw_held`: a shape that blends draws among the
+    /// engine's blends, far to near, as the game draws it. The renderer asks only for a shape
+    /// that the engine queued in this frame, so true means that it draws at that place, after
+    /// the classes of draws of the frame: an extension that needs to know of the shape before
+    /// them notes it here. A shape that the engine did not queue draws as in `draw_held`. A
+    /// shape that `held_in_place` named is drawn in its place: when the flush of the queue
+    /// draws it, that place is in the queue too.
+    fn held_sorted(&mut self, _held: &HeldDraw) -> bool {
+        false
+    }
+
     /// The renderer calls this for each held shape that `held_in_place` named, at the place of
     /// the shape in the order of the game: after the draws of the game before it, before
-    /// those after it. The pass, `scene.picture` (a copy of the picture there),
-    /// `scene.depth` and `scene.lights` are as for `draw_held`.
+    /// those after it. For an instance that `held_sorted` named, the place is that of the
+    /// instance in the engine's sorted queue. Shapes that follow each other in the queue, with no
+    /// other draw between them, come in one call: `scene.picture` does not have them. The pass,
+    /// `scene.picture` (a copy of the picture there), `scene.depth` and `scene.lights` are as for
+    /// `draw_held`.
     fn draw_held_in_place(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _held: &[HeldDraw], _replay: &mut dyn Replay) {}
 
     /// True when the extension wants its call `draw_held` in this frame without a held shape,

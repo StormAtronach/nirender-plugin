@@ -404,19 +404,17 @@ impl Player {
             // engine's draws by depth (`draw_retained_sorted`). A blend that the engine draws
             // during the walk (no sorter, a sort adjust node in the modes off and sub-sort)
             // stays in place. An older capture has no mark: there a blend of the material
-            // waits. The centre of its bound is the key; a record without one (an older
-            // capture) gives the translation of the draw.
-            let centre = match self.stream.shape_bound {
-                Some(b) => [b[0], b[1], b[2]],
-                None => {
-                    let (w, o) = (&draw.data.world[0], draw.origin.unwrap_or([0.0; 3]));
-                    [(w[12] as f64 + o[0]) as f32, (w[13] as f64 + o[1]) as f32, (w[14] as f64 + o[2]) as f32]
-                }
-            };
-            let sequence = self.frame_sorted.len() as u32;
-            self.frame_sorted.push((centre, sequence, crate::Waiting::Draw(draw), self.plan.defer()));
+            // waits.
+            let centre = self.stream.sort_centre(&draw.data.world[0], draw.origin);
+            self.wait_for_sorted(centre, crate::Waiting::Draw(draw));
         } else {
             self.items.push(Item::Draw(draw));
         }
+    }
+
+    /// Puts an entry in the queue of the sorted blends, after those that came before it.
+    pub(crate) fn wait_for_sorted(&mut self, centre: [f32; 3], waiting: crate::Waiting) {
+        let sequence = self.frame_sorted.len() as u32;
+        self.frame_sorted.push((centre, sequence, waiting, self.plan.defer()));
     }
 }

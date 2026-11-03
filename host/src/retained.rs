@@ -2031,7 +2031,7 @@ impl Player {
     /// offered (`hold_shape`): a held instance is drawn by the extension, and no view of the
     /// table draws its slots in the frame ([`Slot::held`]). Returns the held draws, made from
     /// the instance's first slot as `hold_shape` makes them from the first pass.
-    fn retained_hold(&mut self, facts: &WorldFacts, planes: &[[f32; 4]; 6]) -> Vec<HeldDraw> {
+    fn retained_hold(&mut self, facts: &WorldFacts, planes: &[[f32; 4]; 6]) -> Vec<(HeldDraw, u32, bool)> {
         let mut out = Vec::new();
         if self.retained.claimed.is_empty() {
             return out;
@@ -2057,7 +2057,7 @@ impl Player {
                     let mut data = s.data;
                     data.view = view;
                     data.projection = crate::depth::gpu_projection(&facts.projection);
-                    out.push(HeldDraw {
+                    let draw = HeldDraw {
                         facts: claim,
                         vertices: bucket.vertices.clone(),
                         base_vertex: s.base_vertex,
@@ -2072,7 +2072,8 @@ impl Player {
                         depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
                         cull: derived.cull,
                         stencil: derived.stencil,
-                    });
+                    };
+                    out.push((draw, id, s.sorted));
                     self.renderer.counts.held += 1;
                 }
             }
@@ -2164,11 +2165,23 @@ impl Player {
         self.forget_bound();
         // The held instances go where the stream's held shapes go: in place (after the
         // table's draws, its place in the frame [I: the engine's walk would place each one
-        // among the game's draws]) or with the others at the end of the world scene.
-        for h in held {
-            if self.extension.as_ref().is_some_and(|extension| extension.held_in_place(&h)) {
-                self.give_held_here(h, facts);
+        // among the game's draws]), at its place in the engine's sorted queue when it blends,
+        // the engine queued it and the extension asks for that ([`Extension::held_sorted`]),
+        // or with the others at the end of the world scene. The items run after the records
+        // of the frame, so its places are known here; after a flush in the middle of the frame
+        // (a read-back) they may not be, and the instance draws at the end of the world scene.
+        for (h, id, sorted) in held {
+            let in_place = self.extension.as_ref().is_some_and(|extension| extension.held_in_place(&h));
+            let queued = sorted && self.frame_sorted.iter().any(|entry| matches!(entry.2, crate::Waiting::Table(place) if place == id));
+            // A shape in place that the engine queued has its place in the queue: a blended mask
+            // whose stencil it tests goes before it there.
+            let in_queue = queued && self.extension.as_mut().is_some_and(|extension| extension.held_sorted(&h));
+            if in_queue || (queued && in_place) {
+                self.held_sorted_wait.push((id, h, *facts));
+            } else if in_place {
+                self.give_held_here(core::slice::from_ref(&h), facts);
             } else {
+                self.renderer.counts.held_sorted_fallback += sorted as u64;
                 self.taken.push(h);
             }
         }
@@ -2246,28 +2259,55 @@ impl Player {
         let deferred_keys: Vec<u64> = deferred.iter().map(|entry| entry.0).collect();
         // The places of the table that follow each other draw as one run.
         let mut run: Vec<(u64, u32, u32, u32)> = Vec::new();
+        // The held shapes that follow each other in the queue, with no other draw between them,
+        // go in one call. They draw from one copy of the picture, so that no surface shows another
+        // through its refraction (`flushWaterVolumes` of the Direct3D 9 path).
+        let mut surfaces: Vec<HeldDraw> = Vec::new();
+        let mut surfaces_facts: Option<WorldFacts> = None;
         for pick in merge_picks(&kept_keys, &deferred_keys) {
             match pick {
                 Pick::Table(start, end) => {
                     self.draw_sorted_run(view, core::mem::take(&mut run));
+                    self.give_held_run(&mut surfaces, surfaces_facts);
                     self.draw_sorted_run(view, kept[start..end].to_vec());
                 }
                 Pick::Engine(j) => match &deferred[j].1 {
                     crate::Waiting::Draw(draw) => {
                         self.draw_sorted_run(view, core::mem::take(&mut run));
+                        self.give_held_run(&mut surfaces, surfaces_facts);
                         let draw = draw.clone();
                         self.issue(&draw);
                     }
+                    crate::Waiting::Held(held, facts) => {
+                        self.draw_sorted_run(view, core::mem::take(&mut run));
+                        surfaces.push((**held).clone());
+                        surfaces_facts = Some(**facts);
+                    }
                     &crate::Waiting::Table(id) => {
                         self.renderer.counts.queued_places += 1;
-                        if self.retained.placed_entries(id, &mut run) != 0 {
-                            self.renderer.counts.queued_not_sorted += 1;
+                        // A held instance of a blended slot draws here, at its place in the
+                        // engine's queue, with the run before it drawn first.
+                        if let Some(at) = self.held_sorted_wait.iter().position(|waiting| waiting.0 == id) {
+                            let (_, held, facts) = self.held_sorted_wait.remove(at);
+                            self.draw_sorted_run(view, core::mem::take(&mut run));
+                            surfaces.push(held);
+                            surfaces_facts = Some(facts);
+                        } else {
+                            let mut placed = Vec::new();
+                            if self.retained.placed_entries(id, &mut placed) != 0 {
+                                self.renderer.counts.queued_not_sorted += 1;
+                            }
+                            if !placed.is_empty() {
+                                self.give_held_run(&mut surfaces, surfaces_facts);
+                                run.append(&mut placed);
+                            }
                         }
                     }
                 },
             }
         }
         self.draw_sorted_run(view, run);
+        self.give_held_run(&mut surfaces, surfaces_facts);
         self.retained.kept_sorted = all_kept;
         if late {
             self.merge_late_depth();
@@ -2276,6 +2316,15 @@ impl Player {
 }
 
 impl Player {
+    /// Gives the extension the held shapes that wait in `surfaces`, in one call, and empties
+    /// the list. Nothing without shapes.
+    fn give_held_run(&mut self, surfaces: &mut Vec<HeldDraw>, facts: Option<WorldFacts>) {
+        if let (false, Some(facts)) = (surfaces.is_empty(), facts) {
+            self.give_held_here(surfaces, &facts);
+            surfaces.clear();
+        }
+    }
+
     /// Draws a run of the table's sorted entries into the pass ([`Sorted::Only`]), with the
     /// view of the main pass. Nothing without entries or without that view.
     fn draw_sorted_run(&mut self, view: Option<RetainedView>, entries: Vec<(u64, u32, u32, u32)>) {

@@ -78,6 +78,7 @@ impl Player {
             world_draws: Vec::new(),
             held_draws: Vec::new(),
             taken: Vec::new(),
+            held_sorted_wait: Vec::new(),
             frame_lights: Vec::new(),
             frame_bones: Vec::new(),
             frame_instances: Vec::new(),
@@ -323,6 +324,10 @@ impl Player {
         self.plan.frame_start();
         self.held_draws.clear();
         self.taken.clear();
+        // No flush of the frame came to its place: nothing drew it.
+        self.renderer.counts.held_sorted_lost += self.held_sorted_wait.len() as u64;
+        self.renderer.counts.held_sorted_lost += self.frame_sorted.iter().filter(|entry| matches!(entry.2, crate::Waiting::Held(..))).count() as u64;
+        self.held_sorted_wait.clear();
         self.frame_sorted.clear();
         self.retained.walk.frame_start();
         self.world_near = None;
