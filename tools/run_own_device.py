@@ -650,11 +650,59 @@ def self_test_checks():
         assert os.path.isfile(os.path.join(dist, "MWSE", "mods", "nirender", "main.lua"))
         session.stage_mod(dist, dll, plugin=True)
         assert os.path.isfile(os.path.join(lib, "akulakhan.dll")) and os.path.isfile(os.path.join(lib, "akulakhan.pdb"))
+        # A repository whose mod folder has the DLL: the mod of a run without the plugin is refused.
+        repo = os.path.join(folder, "repo")
+        os.makedirs(os.path.join(repo, "mod", "MWSE", "lib"))
+        open(os.path.join(repo, "mod", "MWSE", "lib", "akulakhan.dll"), "wb").close()
+        saved, session.REPO = session.REPO, repo
+        try:
+            session.stage_mod(os.path.join(folder, "dist-repo"), dll, plugin=False)
+        except SystemExit as refusal:
+            assert "akulakhan.dll" in str(refusal), refusal
+        else:
+            raise AssertionError("a mod without the plugin was staged with akulakhan.dll")
+        finally:
+            session.REPO = saved
+
+
+def self_test_check_command():
+    """`--check` through main, in a process of its own, against an instance made for the test:
+    a fault of the arguments, a missing save and the plugin in the overwrite folder each refuse
+    the command, and a good command passes. The checks have their own tests above; this test
+    covers their calls in main."""
+    with tempfile.TemporaryDirectory() as instance:
+        game = os.path.join(instance, "game")
+        os.makedirs(os.path.join(game, "Saves"))
+        os.makedirs(os.path.join(instance, "profiles", "Default"))
+
+        def check(*extra):
+            command = [sys.executable, "-I", os.path.abspath(__file__), "--check", "--instance", instance, "--game-dir", game,
+                       "--save", "a.ess", *extra]
+            result = subprocess.run(command, capture_output=True, text=True)
+            return result.returncode, result.stdout + result.stderr
+
+        code, text = check()
+        assert code != 0 and "a.ess is not in" in text, text
+        open(os.path.join(game, "Saves", "a.ess"), "wb").close()
+        code, text = check()
+        assert code == 0 and "nothing started" in text, text
+        code, text = check("--weather", "10")
+        assert code != 0 and "--weather" in text, text
+        code, text = check("--reference")
+        assert code == 0, text
+        plugin = os.path.join(instance, "overwrite", session.harness.PLUGIN_FILE)
+        os.makedirs(os.path.dirname(plugin))
+        open(plugin, "wb").close()
+        code, text = check("--reference")
+        assert code != 0 and "overwrite folder" in text, text
+        code, text = check("--reference", "--reference-plugin")
+        assert code == 0, text
 
 
 def self_test():
     """The tests of the argument handling: no game, no build."""
     self_test_checks()
+    self_test_check_command()
     self_test_setup()
     self_test_save_problem()
     self_test_pngs_from_tgas()
