@@ -307,7 +307,10 @@ impl Player {
                 if self.parameters.is_none() {
                     self.ask_frame();
                 }
-                let facts = self.world_facts(true);
+                let mut facts = self.world_facts(true);
+                // Only a stream that writes the places of the view groups draws the shapes of such
+                // a scene there.
+                facts.own_root = self.plan_now().main_other_root() && self.views.on;
                 self.items.push(Item::WorldStart(Box::new(facts)));
             }
             plan::Step::ReleaseHeld => self.items.append(&mut self.held_draws),
@@ -429,6 +432,7 @@ impl Player {
             ambient: self.world_ambient,
             // The extension's calls are the main view's: the steps of the plan run in it only.
             view_key: ViewKey::MAIN,
+            own_root: false,
         }
     }
 
@@ -490,9 +494,11 @@ impl Player {
             let clear = (!depth::one_buffer()).then(|| depth::clear(1.0));
             self.open_pass(crate::gpu::PassReason::WorldStart, None, clear, None);
         }
-        let part = self.part_begin(MAIN_VIEW_OPAQUE);
-        self.timed(MAIN_VIEW_OPAQUE, 0, |player| player.draw_retained_main(facts));
-        self.part_end(part);
+        if !facts.own_root {
+            let part = self.part_begin(MAIN_VIEW_OPAQUE);
+            self.timed(MAIN_VIEW_OPAQUE, 0, |player| player.draw_retained_main(facts));
+            self.part_end(part);
+        }
     }
 
     /// Does `draw`, the item of one view group, and adds its CPU time to the group's

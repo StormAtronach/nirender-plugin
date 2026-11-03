@@ -129,6 +129,10 @@ struct WorldFacts {
     frame: u64,
     /// The view of the call ([`SceneView::view_key`]).
     view_key: ViewKey,
+    /// The main view has a root of its own (a mod's subject on the world camera): the shapes of
+    /// its scene draw in its view group, and the table's main view draws none at the start of
+    /// the world. See [`plan::Plan::main_other_root`].
+    own_root: bool,
 }
 
 /// The position of the camera: the exact origin of the scene, else the one of `view`.
