@@ -251,6 +251,11 @@
 // Every view slot is open or used since the last flush: the host runs the frame's work so far,
 // as for a read of pixels. a: 0. b: 0. (nirender src/view_slots.rs)
 #define MGE_LINK_EVENT_FLUSH 7u
+// The mod's options of a view changed (mge.camera.setViewOptions), as a scene of the view in the
+// slot opens. a: the slot. b: the parts, a bit set of MGE_VIEW_PART_* (MGEApi.h ViewPart): 1 land,
+// 2 statics, 4 grass, 8 water, 16 shaders, 32 glows. Written at the change only; a retired slot
+// has none. (nirender src/view_options.rs)
+#define MGE_LINK_EVENT_VIEW_OPTIONS 8u
 
 // Facts that the host can compare. They are the indexes of `MgeLinkCountersV1::facts`.
 #define MGE_LINK_FACT_LIGHT_RADIUS 0u

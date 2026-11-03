@@ -205,6 +205,10 @@ pub struct FrameParameters {
     /// the plugin animates what the map reaches, so that a shadow moves while its caster
     /// is out of view.
     pub shadow_reach: f32,
+    /// The number of views of a frame that get the parts a mod asks for (the player's
+    /// `views.full_tier_max`, 0 to 4): see `engine::full_tier`. [`None`] keeps the number the
+    /// player has (1 at the start).
+    pub full_tier_max: Option<usize>,
 }
 
 /// The lights of the world of a frame, for an extension that lights what it draws as the

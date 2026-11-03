@@ -1287,6 +1287,7 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     crate::material_stream::reset(t);
     crate::effect_chain::reset(t);
     crate::light_stream::reset(t);
+    crate::view_options::reset();
     crate::instance_stream::reset(t, "a capture file starts");
     if let Some(mut s) = state(&lock) {
         s.tee_only = false;
@@ -1457,6 +1458,8 @@ pub unsafe fn resize(width: u32, height: u32, window: u32) {
 }
 
 unsafe fn begin(lock: &DeviceLock, out: Sink, warmup: u32, frames: u32) {
+    // The options of the views go again to a stream or a file that starts now.
+    crate::view_options::reset();
     *STATE.get(lock) = Some(State {
         phase: Phase::Warmup(warmup.max(1)),
         frames,
@@ -2676,6 +2679,10 @@ unsafe fn frame_end(lock: &DeviceLock) {
                 }
                 None => Vec::new(),
             };
+            // The options of a retired view end with it (`view_options`).
+            for &slot in &retired {
+                crate::view_options::retire(slot);
+            }
             // The times of the frame, for the age of the picture in the debug overlay: the
             // start of the frame of the game ([`FRAME_START`]) and its end, in ticks of the
             // performance counter. The host program has the same counter.

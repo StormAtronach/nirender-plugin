@@ -72,6 +72,10 @@ pub(crate) const EVENT_VIEW_RETIRE: u32 = 6;
 /// Every view slot of the plugin is open or used since the last flush: the frame's work so far
 /// runs, as for a read of pixels (the plugin's `view_slots`).
 pub(crate) const EVENT_FLUSH: u32 = 7;
+/// The mod's options of a view changed (the plugin's `view_options`; the second word: the slot;
+/// the third: the parts, a bit set of `MGEApi.h` `ViewPart`; with the header bit
+/// [`HEADER_SCENE_VIEWS`](crate::stream_format::HEADER_SCENE_VIEWS)).
+pub(crate) const EVENT_VIEW_OPTIONS: u32 = 8;
 /// A flag of the scene record: the renderer's target at `BeginPaint` is the back buffer.
 pub(crate) const SCENE_BACK_BUFFER: u32 = 0x8;
 /// A flag of the scene record: the game draws the world in wireframe (its shared wireframe

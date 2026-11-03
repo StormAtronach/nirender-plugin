@@ -90,6 +90,30 @@ impl Additions {
     /// Every part: a main view, each by its switch.
     pub const ALL: Additions = Additions((1 << 11) - 1);
 
+    /// The additions that a mod asks for a view (`mge.camera.setViewOptions`): the bits of
+    /// `MGEApi.h` `ViewPart`, as the plugin's event `EVENT_VIEW_OPTIONS` carries them. Bits
+    /// beyond the six are ignored. `shaders` is the post chain of the view
+    /// ([`Additions::POST_COVER`]); `distantWater` is the water of MGE XE and its reflection.
+    pub const fn from_option_parts(parts: u32) -> Additions {
+        const MAP: [(u32, Additions); 6] = [
+            (1 << 0, Additions::LAND),
+            (1 << 1, Additions::STATICS),
+            (1 << 2, Additions::GRASS),
+            (1 << 3, Additions::WATER.with(Additions::REFLECTION)),
+            (1 << 4, Additions::POST_COVER),
+            (1 << 5, Additions::GLOWS),
+        ];
+        let mut set = Additions::NONE;
+        let mut at = 0;
+        while at < MAP.len() {
+            if parts & MAP[at].0 != 0 {
+                set = set.with(MAP[at].1);
+            }
+            at += 1;
+        }
+        set
+    }
+
     /// The set with the parts of both.
     pub const fn with(self, other: Additions) -> Additions {
         Additions(self.0 | other.0)

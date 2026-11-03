@@ -2,6 +2,7 @@
 //! The facts behind each rule are in the skill wgpu-renderer-dev, engine-rules.
 
 pub(crate) mod alpha;
+pub(crate) mod full_tier;
 pub(crate) mod plan;
 pub(crate) mod scene;
 pub(crate) mod views;

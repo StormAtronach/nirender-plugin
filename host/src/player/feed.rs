@@ -245,6 +245,9 @@ impl Player {
                     // The plugin reads and writes no texture at a forced flush.
                     self.flush_split(Some(super::split::Touch::default()), |_| ());
                 }
+                if word(data, 0) == EVENT_VIEW_OPTIONS && self.views.slots_on {
+                    self.views.tier.options(word(data, 4), word(data, 8));
+                }
             }
             // The kind and the class of the object of the shape records that follow.
             tag::OBJECT if data.len() >= 12 => {
