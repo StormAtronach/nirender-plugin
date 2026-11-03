@@ -57,6 +57,8 @@ mod tag;
 pub mod stream_format;
 mod extension;
 pub use extension::*;
+mod view_kind;
+pub use view_kind::{Additions, ViewKey, ViewKind};
 
 /// The build id of this crate: its name, its version and its commit (`build.rs` puts the
 /// commit into BUILD_COMMIT), for the first line of the log and the message of a refused
@@ -125,6 +127,8 @@ struct WorldFacts {
     depth_format: wgpu::TextureFormat,
     /// The number of the frame ([`SceneView::frame`]).
     frame: u64,
+    /// The view of the call ([`SceneView::view_key`]).
+    view_key: ViewKey,
 }
 
 /// The position of the camera: the exact origin of the scene, else the one of `view`.
@@ -154,6 +158,7 @@ impl WorldFacts {
             depth_format: self.depth_format,
             target_size: self.target_size,
             frame: self.frame,
+            view_key: self.view_key,
             samples: self.samples,
             view: self.view,
             projection: self.projection,

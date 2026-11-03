@@ -427,6 +427,8 @@ impl Player {
             fog_end: f32::from_bits(fog[2]),
             sun: self.world_sun,
             ambient: self.world_ambient,
+            // The extension's calls are the main view's: the steps of the plan run in it only.
+            view_key: ViewKey::MAIN,
         }
     }
 
