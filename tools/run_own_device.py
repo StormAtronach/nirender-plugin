@@ -1148,27 +1148,72 @@ def self_test_enable():
         ini = os.path.join(profile, "Morrowind.ini")
         with open(ini, "wb") as fh:
             fh.write(crlf)
+        modlist = os.path.join(profile, "modlist.txt")
+        modlist_text = b"# This file was automatically generated\r\n+A\r\n-Mirror test\r\n"
+        with open(modlist, "wb") as fh:
+            fh.write(modlist_text)
+
+        def content(path):
+            with open(path, "rb") as fh:
+                return fh.read()
+
+        saved_processes = harness.processes
+        game_pids = []
+        harness.processes = lambda name: [(pid, "Morrowind.exe") for pid in game_pids]
         harness.PROFILE, harness.MO2_ROOT = profile, root
         try:
             deployment = harness.Deployment()
+            deployment.enable_mod("Mirror test")
             deployment.enable_plugin("mirrorTest.esp")
-            with open(ini, "rb") as fh:
-                assert b"GameFile2=mirrorTest.esp\r\n" in fh.read()
+            assert b"GameFile2=mirrorTest.esp\r\n" in content(ini)
+            assert content(modlist) != modlist_text and content(modlist + ".perfbak") == modlist_text
+            assert content(ini + ".perfbak") == crlf
+            # While the game of this run goes, the backups are its own: not stale, no restore from outside,
+            # and a second run is refused by the file's backup.
+            game_pids.append(4242)
+            assert harness.stale_backups() == []
+            harness.refuse_stale_backups()
+            try:
+                harness.restore_stale()
+            except SystemExit as refusal:
+                assert "Morrowind.exe runs" in str(refusal), refusal
+            else:
+                raise AssertionError("restore_stale ran under a running game")
             try:
                 harness.Deployment().enable_plugin("other.esp")
             except SystemExit as refusal:
                 assert "stale backup" in str(refusal), refusal
             else:
                 raise AssertionError("a second run took the ini while the first one's backup was there")
+            game_pids.clear()
             deployment.restore()
-            with open(ini, "rb") as fh:
-                assert fh.read() == crlf, "the Morrowind.ini is not as it was after restore"
-            assert not os.path.exists(ini + ".perfbak")
+            assert content(ini) == crlf and content(modlist) == modlist_text, "the files are not as they were after restore"
+            assert not os.path.exists(ini + ".perfbak") and not os.path.exists(modlist + ".perfbak")
             # A plugin that the file names already changes nothing and leaves no backup.
             harness.Deployment().enable_plugin("Tribunal.esm")
             assert not os.path.exists(ini + ".perfbak")
+
+            # A runner killed hard runs no restore. Every start refuses and names the files and the command;
+            # restore_stale puts both back and the start goes.
+            killed = harness.Deployment()
+            killed.enable_mod("Mirror test")
+            killed.enable_plugin("mirrorTest.esp")
+            assert [os.path.basename(path) for path in harness.stale_backups()] == ["Morrowind.ini.perfbak", "modlist.txt.perfbak"]
+            for start in (harness.Deployment, harness.refuse_stale_backups):
+                try:
+                    start()
+                except SystemExit as refusal:
+                    assert "Morrowind.ini.perfbak" in str(refusal) and "modlist.txt.perfbak" in str(refusal) and "--restore-stale" in str(refusal), refusal
+                else:
+                    raise AssertionError("a start was not refused over the stale backups")
+            restored = harness.restore_stale()
+            assert [os.path.basename(path) for path in restored] == ["Morrowind.ini", "modlist.txt"], restored
+            assert content(ini) == crlf and content(modlist) == modlist_text
+            assert harness.stale_backups() == [] and harness.restore_stale() == []
+            harness.Deployment()
         finally:
             harness.PROFILE, harness.MO2_ROOT = saved
+            harness.processes = saved_processes
 
         # The faults and the notes of --check.
         def namespace(**changes):
@@ -1461,6 +1506,7 @@ def main():
         problem = save_problem(args.save, saves_folder(session.harness.PROFILE, session.harness.GAME_DIR))
         if not problem and (args.reference or args.engine_reference) and not args.reference_plugin:
             problem = overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
+        session.harness.refuse_stale_backups()
         enable_faults, enable_notes = enable_problems(args, session.harness.MO2_ROOT, session.harness.GAME_DIR, read_profile_ini())
         if not problem and enable_faults:
             problem = "the command has faults; nothing started:\n  " + "\n  ".join(enable_faults)
@@ -1503,6 +1549,7 @@ def main():
     problem = save_problem(args.save, saves_folder(session.harness.PROFILE, session.harness.GAME_DIR))
     if problem:
         raise SystemExit("run_own_device: " + problem)
+    session.harness.refuse_stale_backups()
     enable_faults, enable_notes = enable_problems(args, session.harness.MO2_ROOT, session.harness.GAME_DIR, read_profile_ini())
     if enable_faults:
         raise SystemExit("run_own_device: the command has faults; nothing started:\n  " + "\n  ".join(enable_faults))
