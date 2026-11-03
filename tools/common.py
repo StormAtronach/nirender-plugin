@@ -167,6 +167,10 @@ def self_test():
                 else:
                     os.environ[name] = value
 
+    # A fault of git_env must reach only the temp repositories: the hook's names leave this
+    # process, and only names() sets GIT_ names again, on purpose.
+    for name in [name for name in os.environ if name.startswith("GIT_")]:
+        del os.environ[name]
     real = main_checkout()
     real_bare = bare(real) if real else None
     with tempfile.TemporaryDirectory() as root:
