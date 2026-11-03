@@ -196,12 +196,14 @@ pub(crate) fn take_slot(used: &mut u32, capacity: usize) -> Option<u32> {
     Some(*used - 1)
 }
 
-/// The view turns the winding of its triangles: its rotation has a negative determinant (a
-/// mirror's reflection). The rows of a view of the stream are the first three of `view`.
+/// The view turns the winding of its triangles (a mirror's reflection). The engine's view of
+/// a camera takes the right, up and direction axes of the world into the x, y and z of the
+/// view, so its rotation has the determinant -1; a reflection makes it +1. The rows of a view
+/// of the stream are the first three of `view`.
 pub(crate) fn mirrored(view: &[f32; 16]) -> bool {
     let (a, b, c) = (&view[0..3], &view[4..7], &view[8..11]);
     let determinant = a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
-    determinant < 0.0
+    determinant > 0.0
 }
 
 #[cfg(test)]
@@ -285,13 +287,16 @@ mod tests {
 
     #[test]
     fn a_reflection_turns_the_winding() {
+        // The engine's view of a camera that looks north: right x, up z, direction y
+        // (`NiDX8Renderer::SetCameraData`, the plugin's test of its view matrix).
         let mut view = [0.0f32; 16];
         view[0] = 1.0;
-        view[5] = 1.0;
-        view[10] = 1.0;
+        view[6] = 1.0;
+        view[9] = 1.0;
         view[15] = 1.0;
         assert!(!mirrored(&view));
-        view[10] = -1.0;
+        // A mirror's reflection of it: the direction turned.
+        view[9] = -1.0;
         assert!(mirrored(&view));
     }
 }
