@@ -261,6 +261,54 @@ def full_dump_note(args):
     return "--full-dump: a crash of the run writes a dump of about %s into the run folder" % FULL_DUMP_SIZE
 
 
+def enable_problems(args, root, game_dir, ini_bytes, exists=os.path.exists):
+    """The faults of --enable-mod and --enable-plugin against the instance, and the lines that
+    `--check` prints for them: (problems, notes). `root` is the instance, `game_dir` the game's
+    folder, `ini_bytes` the profile's Morrowind.ini (None when it cannot be read). A mod must be a
+    folder under the instance's mods and not be a mod of the runners or one that --disable-mod
+    switches off; a plugin must be a file of such a mod (at its top) or of the game's Data Files, and
+    the profile's Morrowind.ini must be there to take its line."""
+    problems, notes, folders = [], [], []
+    for name in args.enable_mod:
+        folder = os.path.join(root, "mods", name)
+        if name.startswith(session.harness.RUN_MOD_PREFIX):
+            problems.append("--enable-mod %s: a mod of the runners is switched on by the runner itself" % name)
+        elif name in args.disable_mod:
+            problems.append("--enable-mod %s: the same mod is in --disable-mod" % name)
+        elif not exists(folder):
+            problems.append("--enable-mod: no mod folder %s" % folder)
+        else:
+            folders.append(folder)
+            notes.append("--enable-mod: %s is on for the run, first in the mod list, and back after" % name)
+    for plugin in args.enable_plugin:
+        if not plugin.lower().endswith((".esp", ".esm")) or os.path.basename(plugin) != plugin:
+            problems.append("--enable-plugin takes the name of an .esp or .esm file, not %r" % plugin)
+            continue
+        places = [os.path.join(folder, plugin) for folder in folders] + [os.path.join(game_dir, "Data Files", plugin)]
+        if not any(exists(place) for place in places):
+            problems.append("--enable-plugin: %s is in no mod of --enable-mod and not in the game's Data Files" % plugin)
+        elif ini_bytes is None:
+            problems.append("--enable-plugin: the profile has no Morrowind.ini to take a line for %s" % plugin)
+        else:
+            try:
+                number, changed = session.harness.game_file_plan(ini_bytes, plugin)
+            except SystemExit as refusal:
+                problems.append("--enable-plugin: %s" % refusal)
+                continue
+            notes.append("--enable-plugin: %s is already active as GameFile%d" % (plugin, number) if changed is None else
+                         "--enable-plugin: %s becomes GameFile%d in the profile's Morrowind.ini for the run, and the file is as it was after" % (plugin, number))
+    return problems, notes
+
+
+def read_profile_ini():
+    """The bytes of the profile's Morrowind.ini, or None when it cannot be read."""
+    try:
+        with open(os.path.join(session.harness.PROFILE, "Morrowind.ini"), "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
 def weather_summary(pinned, lines):
     """What the result summary says of the weather: `pinned N, held (k re-pins)` when the mod read the
     pinned weather back after its switch (`weather pinned N: now N ...`), `pinned N, NOT applied (k
@@ -293,7 +341,8 @@ def weather_note(pinned, lines):
 
 def launch_run(run, spec, args, mods):
     """Starts the run (`session.Run.launch`) with the options of the command line."""
-    return run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)], full_dump=args.full_dump)
+    return run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)], full_dump=args.full_dump,
+                      enable=args.enable_mod, plugins=args.enable_plugin)
 
 
 def build_commits(mge_build):
@@ -850,6 +899,16 @@ def self_test_check_command():
         assert code != 0 and "overwrite folder" in text, text
         code, text = check("--reference", "--reference-plugin")
         assert code == 0, text
+        code, text = check("--reference", "--reference-plugin", "--enable-mod", "Some mod")
+        assert code != 0 and "no mod folder" in text, text
+        os.makedirs(os.path.join(instance, "mods", "Some mod"))
+        open(os.path.join(instance, "mods", "Some mod", "some.esp"), "wb").close()
+        code, text = check("--reference", "--reference-plugin", "--enable-mod", "Some mod", "--enable-plugin", "some.esp")
+        assert code != 0 and "the profile has no Morrowind.ini" in text, text
+        with open(os.path.join(instance, "profiles", "Default", "Morrowind.ini"), "wb") as fh:
+            fh.write(b"[Game Files]\r\nGameFile0=Morrowind.esm\r\n")
+        code, text = check("--reference", "--reference-plugin", "--enable-mod", "Some mod", "--enable-plugin", "some.esp")
+        assert code == 0 and "some.esp becomes GameFile1" in text and "Some mod is on for the run" in text, text
 
 
 def self_test_weather():
@@ -1065,8 +1124,217 @@ def self_test_full_dump():
 
     for full_dump in (False, True):
         run = FakeRun()
-        launch_run(run, {}, argparse.Namespace(budget=10, disable_mod=[], mge_build=None, full_dump=full_dump), [])
+        launch_run(run, {}, argparse.Namespace(budget=10, disable_mod=[], mge_build=None, full_dump=full_dump, enable_mod=[], enable_plugin=[]), [])
         assert run.options["full_dump"] is full_dump, run.options
+    run = FakeRun()
+    launch_run(run, {}, argparse.Namespace(budget=10, disable_mod=[], mge_build=None, full_dump=False, enable_mod=["Mirror test"], enable_plugin=["mirrorTest.esp"]), [])
+    assert run.options["enable"] == ["Mirror test"] and run.options["plugins"] == ["mirrorTest.esp"], run.options
+
+
+def self_test_enable():
+    """--enable-mod and --enable-plugin: the line that game_file_plan adds, the faults, the file as it
+    was after restore() (a stopped or crashed run takes the same path), and a launch that fails
+    before the start."""
+    harness = session.harness
+    crlf = b"[Game Files]\r\nGameFile0=Morrowind.esm\r\nGameFile1=Tribunal.esm\r\n[Other]\r\nx=1\r\n"
+    number, changed = harness.game_file_plan(crlf, "mirrorTest.esp")
+    assert number == 2 and changed == b"[Game Files]\r\nGameFile0=Morrowind.esm\r\nGameFile1=Tribunal.esm\r\nGameFile2=mirrorTest.esp\r\n[Other]\r\nx=1\r\n", changed
+    assert harness.game_file_plan(crlf, "TRIBUNAL.ESM") == (1, None)
+    lf = b"GameFile3=a.esp\nGameFile10 = b.esp \n[Other]\n"
+    number, changed = harness.game_file_plan(lf, "c.esp")
+    assert number == 11 and changed == b"GameFile3=a.esp\nGameFile10 = b.esp \nGameFile11=c.esp\n[Other]\n", changed
+    # The last GameFile line is the last line of the file, with and without an ending.
+    assert harness.game_file_plan(b"GameFile0=a.esm", "b.esp") == (1, b"GameFile0=a.esm\nGameFile1=b.esp")
+    assert harness.game_file_plan(b"GameFile0=a.esm\r\n", "b.esp")[1] == b"GameFile0=a.esm\r\nGameFile1=b.esp\r\n"
+    for ini in (b"", b"[Other]\r\nx=1\r\n"):
+        try:
+            harness.game_file_plan(ini, "b.esp")
+        except SystemExit as refusal:
+            assert "no GameFile line" in str(refusal), refusal
+        else:
+            raise AssertionError("an ini with no GameFile line was taken")
+
+    saved = (harness.PROFILE, harness.MO2_ROOT)
+    with tempfile.TemporaryDirectory() as root:
+        profile = os.path.join(root, "profiles", "Default")
+        os.makedirs(profile)
+        ini = os.path.join(profile, "Morrowind.ini")
+        with open(ini, "wb") as fh:
+            fh.write(crlf)
+        modlist = os.path.join(profile, "modlist.txt")
+        modlist_text = b"# This file was automatically generated\r\n+A\r\n-Mirror test\r\n"
+        with open(modlist, "wb") as fh:
+            fh.write(modlist_text)
+
+        def content(path):
+            with open(path, "rb") as fh:
+                return fh.read()
+
+        saved_processes = harness.processes
+        game_pids = []
+        harness.processes = lambda name: [(pid, "Morrowind.exe") for pid in game_pids]
+        harness.PROFILE, harness.MO2_ROOT = profile, root
+        try:
+            deployment = harness.Deployment()
+            deployment.enable_mod("Mirror test")
+            deployment.enable_plugin("mirrorTest.esp")
+            assert b"GameFile2=mirrorTest.esp\r\n" in content(ini)
+            assert content(modlist) != modlist_text and content(modlist + ".perfbak") == modlist_text
+            assert content(ini + ".perfbak") == crlf
+            # While the game of this run goes, the backups are its own: not stale, no restore from outside,
+            # and a second run is refused by the file's backup.
+            game_pids.append(4242)
+            assert harness.stale_backups() == []
+            harness.refuse_stale_backups()
+            try:
+                harness.restore_stale()
+            except SystemExit as refusal:
+                assert "Morrowind.exe runs" in str(refusal), refusal
+            else:
+                raise AssertionError("restore_stale ran under a running game")
+            try:
+                harness.Deployment().enable_plugin("other.esp")
+            except SystemExit as refusal:
+                assert "stale backup" in str(refusal), refusal
+            else:
+                raise AssertionError("a second run took the ini while the first one's backup was there")
+            game_pids.clear()
+            # The testing instance's Mod Organizer can write modlist.txt over a restore.
+            harness.processes = lambda name: [(5151, os.path.join(root, "ModOrganizer.exe"))] if name == "ModOrganizer.exe" else []
+            try:
+                harness.restore_stale()
+            except SystemExit as refusal:
+                assert "Mod Organizer" in str(refusal), refusal
+            else:
+                raise AssertionError("restore_stale ran under the instance's Mod Organizer")
+            harness.processes = lambda name: [(pid, "Morrowind.exe") for pid in game_pids]
+            deployment.restore()
+            assert content(ini) == crlf and content(modlist) == modlist_text, "the files are not as they were after restore"
+            assert not os.path.exists(ini + ".perfbak") and not os.path.exists(modlist + ".perfbak")
+            # A plugin that the file names already changes nothing and leaves no backup.
+            harness.Deployment().enable_plugin("Tribunal.esm")
+            assert not os.path.exists(ini + ".perfbak")
+
+            # A runner killed hard runs no restore. Every start refuses and names the files and the command;
+            # restore_stale puts both back and the start goes.
+            killed = harness.Deployment()
+            killed.enable_mod("Mirror test")
+            killed.enable_plugin("mirrorTest.esp")
+            assert [os.path.basename(path) for path in harness.stale_backups()] == ["Morrowind.ini.perfbak", "modlist.txt.perfbak"]
+            for start in (harness.Deployment, harness.refuse_stale_backups):
+                try:
+                    start()
+                except SystemExit as refusal:
+                    assert "Morrowind.ini.perfbak" in str(refusal) and "modlist.txt.perfbak" in str(refusal) and "--restore-stale" in str(refusal), refusal
+                else:
+                    raise AssertionError("a start was not refused over the stale backups")
+            restored = harness.restore_stale()
+            assert [os.path.basename(path) for path in restored] == ["Morrowind.ini", "modlist.txt"], restored
+            assert content(ini) == crlf and content(modlist) == modlist_text
+            assert harness.stale_backups() == [] and harness.restore_stale() == []
+            harness.Deployment()
+
+            # The backup of swap() lies beside the file it saves, outside the profile: a killed run
+            # leaves it, and the record in the profile lets every start see it and restore_stale put it back.
+            swapped = os.path.join(root, "game", "Morrowind.exe")
+            replacement = os.path.join(root, "other.exe")
+            os.makedirs(os.path.dirname(swapped), exist_ok=True)
+            with open(swapped, "wb") as fh:
+                fh.write(b"original")
+            with open(replacement, "wb") as fh:
+                fh.write(b"replaced")
+            killed = harness.Deployment()
+            killed.swap(replacement, swapped, "test")
+            assert content(swapped) == b"replaced" and content(swapped + ".perfbak") == b"original"
+            assert harness.stale_backups() == [swapped + ".perfbak"], harness.stale_backups()
+            try:
+                harness.Deployment()
+            except SystemExit as refusal:
+                assert "Morrowind.exe.perfbak" in str(refusal), refusal
+            else:
+                raise AssertionError("a start was not refused over the backup of swap()")
+            assert harness.restore_stale() == [swapped]
+            assert content(swapped) == b"original" and not os.path.exists(swapped + ".perfbak")
+            assert not os.path.exists(os.path.join(profile, "swap-backups.txt"))
+            # A run that restores itself leaves no record.
+            clean = harness.Deployment()
+            clean.swap(replacement, swapped, "test")
+            clean.restore()
+            assert content(swapped) == b"original" and not os.path.exists(os.path.join(profile, "swap-backups.txt"))
+            harness.Deployment()
+        finally:
+            harness.PROFILE, harness.MO2_ROOT = saved
+            harness.processes = saved_processes
+
+        # The faults and the notes of --check.
+        def namespace(**changes):
+            values = dict(enable_mod=[], enable_plugin=[], disable_mod=[])
+            values.update(changes)
+            return argparse.Namespace(**values)
+
+        game = os.path.join(root, "game")
+        os.makedirs(os.path.join(game, "Data Files"))
+        os.makedirs(os.path.join(root, "mods", "Mirror test"))
+        open(os.path.join(root, "mods", "Mirror test", "mirrorTest.esp"), "wb").close()
+        problems, notes = enable_problems(namespace(), root, game, crlf)
+        assert problems == [] and notes == [], (problems, notes)
+        problems, notes = enable_problems(namespace(enable_mod=["Mirror test"], enable_plugin=["mirrorTest.esp"]), root, game, crlf)
+        assert problems == [] and len(notes) == 2 and "first in the mod list" in notes[0] and "GameFile2" in notes[1], (problems, notes)
+        problems, notes = enable_problems(namespace(enable_plugin=["Tribunal.esm"]), root, game, crlf)
+        assert len(problems) == 1 and "in no mod of --enable-mod" in problems[0], problems
+        open(os.path.join(game, "Data Files", "Tribunal.esm"), "wb").close()
+        problems, notes = enable_problems(namespace(enable_plugin=["Tribunal.esm"]), root, game, crlf)
+        assert problems == [] and "already active as GameFile1" in notes[0], (problems, notes)
+        for bad in (namespace(enable_mod=["No such mod"]), namespace(enable_mod=["Harness - nirender"]),
+                    namespace(enable_mod=["Mirror test"], disable_mod=["Mirror test"]), namespace(enable_plugin=["x.txt"]),
+                    namespace(enable_plugin=["sub/mirrorTest.esp"]), namespace(enable_plugin=["missing.esp"])):
+            problems, _ = enable_problems(bad, root, game, crlf)
+            assert problems, bad
+        problems, _ = enable_problems(namespace(enable_mod=["Mirror test"], enable_plugin=["mirrorTest.esp"]), root, game, None)
+        assert len(problems) == 1 and "no Morrowind.ini" in problems[0], problems
+        problems, _ = enable_problems(namespace(enable_mod=["Mirror test"], enable_plugin=["mirrorTest.esp"]), root, game, b"[Other]\r\n")
+        assert len(problems) == 1 and "no GameFile line" in problems[0], problems
+
+    # Run.launch switches the mod and the plugin on, in this order after the mods to disable, and restores
+    # when the start is refused.
+    calls = []
+
+    class Deployment:
+        def write_spec(self, *a):
+            pass
+
+        def enable_mod(self, name):
+            calls.append("mod " + name)
+
+        def use_mod(self, *a):
+            pass
+
+        def disable_mod(self, name):
+            calls.append("off " + name)
+
+        def enable_plugin(self, plugin):
+            calls.append("plugin " + plugin)
+
+        def restore(self):
+            calls.append("restore")
+
+    saved = (harness.Deployment, harness.run_game, session.ring_problem_of_instance, session.RESULTS, session.stage_mwse_config)
+    with tempfile.TemporaryDirectory() as results:
+        harness.Deployment = Deployment
+        harness.run_game = lambda *a, **k: calls.append("run_game")
+        session.ring_problem_of_instance = lambda: "the rings differ"
+        session.stage_mwse_config = lambda deployment, settings: None
+        session.RESULTS = results
+        try:
+            try:
+                session.Run("enable-test").launch({}, 10, "[t] ", disable=["Old"], enable=["Mirror test"], plugins=["mirrorTest.esp"])
+            except SystemExit as stop:
+                assert "the rings differ" in str(stop), stop
+            else:
+                raise AssertionError("Run.launch started with a ring problem")
+            assert calls == ["mod " + session.MOD_NAME, "off Old", "mod Mirror test", "plugin mirrorTest.esp", "restore"], calls
+        finally:
+            (harness.Deployment, harness.run_game, session.ring_problem_of_instance, session.RESULTS, session.stage_mwse_config) = saved
 
 
 def self_test_use_instance():
@@ -1101,6 +1369,7 @@ def self_test():
     self_test_weather()
     self_test_checks()
     self_test_check_command()
+    self_test_enable()
     self_test_setup()
     self_test_save_problem()
     self_test_pngs_from_tgas()
@@ -1210,6 +1479,12 @@ def main():
     ap.add_argument("--hour", type=float, default=None, help="the hour of the day in the exterior (12 without this)")
     ap.add_argument("--weather", type=int, default=None, help="the weather in the exterior, 0 clear to 9 blizzard (the game's without this)")
     ap.add_argument("--disable-mod", action="append", default=[], help="a mod of the profile switched off in its modlist.txt for the run, and back after; again for more mods")
+    ap.add_argument("--enable-mod", action="append", default=[], metavar="NAME",
+                    help="a mod of the instance (a folder under its mods) switched on, first in the mod list, for the run, and back after; "
+                    "again for more mods. It brings the files of the mod, not its plugins: see --enable-plugin")
+    ap.add_argument("--enable-plugin", action="append", default=[], metavar="FILE.esp",
+                    help="a plugin made active for the run: one GameFile line more in the profile's Morrowind.ini, and the file as it was after; "
+                    "again for more plugins. The file must be in a mod of --enable-mod or in the game's Data Files")
     ap.add_argument("--find-water", action="store_true", help="after the cell loads, put the player under the water at the "
                     "nearest spot where the land is deep enough (a test of the view from under the water)")
     ap.add_argument("--find-dry", action="store_true", help="after the interior cell loads, put the player on the nearest floor above "
@@ -1282,9 +1557,15 @@ def main():
         problem = save_problem(args.save, saves_folder(session.harness.PROFILE, session.harness.GAME_DIR))
         if not problem and (args.reference or args.engine_reference) and not args.reference_plugin:
             problem = overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
+        session.harness.refuse_stale_backups()
+        enable_faults, enable_notes = enable_problems(args, session.harness.MO2_ROOT, session.harness.GAME_DIR, read_profile_ini())
+        if not problem and enable_faults:
+            problem = "the command has faults; nothing started:\n  " + "\n  ".join(enable_faults)
         if problem:
             raise SystemExit("run_own_device: " + problem)
         print("run_own_device: the arguments are good; nothing started (--check)")
+        for note in enable_notes:
+            print("run_own_device: " + note)
         if weather_warning(args):
             print("run_own_device: " + weather_warning(args))
         if full_dump_note(args):
@@ -1319,6 +1600,12 @@ def main():
     problem = save_problem(args.save, saves_folder(session.harness.PROFILE, session.harness.GAME_DIR))
     if problem:
         raise SystemExit("run_own_device: " + problem)
+    session.harness.refuse_stale_backups()
+    enable_faults, enable_notes = enable_problems(args, session.harness.MO2_ROOT, session.harness.GAME_DIR, read_profile_ini())
+    if enable_faults:
+        raise SystemExit("run_own_device: the command has faults; nothing started:\n  " + "\n  ".join(enable_faults))
+    for note in enable_notes:
+        print("run_own_device: " + note, flush=True)
     if not args.no_build:
         cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
         for folder in (HOST_DIR, D3D8_DIR):
