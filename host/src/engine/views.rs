@@ -41,10 +41,25 @@ pub(crate) struct Group {
     /// The name of the view's GPU span and CPU time, made once its facts are known
     /// (`Player::view_group_name`).
     pub(crate) name: core::cell::Cell<Option<&'static str>>,
+    /// The plugin's view slot of the group's scene (`scene_view`): see [`Group::view_slot`].
+    #[cfg_attr(not(test), expect(dead_code, reason = "the views of D82 stage 2 (Hob) read it"))]
+    view_slot: Option<u8>,
     /// The runs of places: the ids with no other item between them.
     runs: Vec<Vec<u32>>,
     /// The places in the flush of the engine's queue, in their order of arrival.
     sorted: Vec<u32>,
+}
+
+impl Group {
+    /// The plugin's view slot of the group's scene (the view field of its `SCENE_BEGIN` less
+    /// 1), 0 to 31. `None` for a scene without the field: an older plugin, or a stream without
+    /// [`HEADER_SCENE_VIEWS`](crate::stream_format::HEADER_SCENE_VIEWS). A group is one scene,
+    /// so it never has two slots; a view into the back buffer with several scenes in a frame
+    /// has a group for each, all with its slot.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the views of D82 stage 2 (Hob) read it"))]
+    pub(crate) fn view_slot(&self) -> Option<u32> {
+        self.view_slot.map(u32::from)
+    }
 }
 
 /// What a place did.
@@ -120,6 +135,9 @@ pub(crate) struct Views {
     groups: Vec<Group>,
     /// The group of the scene in progress.
     open: Option<usize>,
+    /// The view slot of the scene record just read (`note_scene_record`), for the group of
+    /// the scene's start.
+    scene_slot: Option<u8>,
     /// The head of the stream says that the scene records carry the view slot
     /// (`HEADER_SCENE_VIEWS`).
     pub(crate) slots_on: bool,
@@ -143,6 +161,7 @@ impl Views {
 
     /// A scene of a stream with view slots: the scene's slot keeps its key.
     fn note_scene(&mut self, view: Option<u8>, camera: u32, root: u32, target: u32) {
+        self.scene_slot = view;
         self.slot_counts.scenes += 1;
         let Some(view) = view else { return };
         self.slot_counts.view_scenes += 1;
@@ -203,6 +222,7 @@ impl Views {
     /// a view of its own.
     pub(crate) fn scene_begin(&mut self, kind: u32, in_target: bool, camera_is_world: bool) -> bool {
         self.open = None;
+        let view_slot = self.scene_slot.take();
         if kind == scene::SCENE_UI {
             self.ui_seen = true;
         }
@@ -210,7 +230,7 @@ impl Views {
             return false;
         }
         let view = ViewKind::classify(in_target, camera_is_world);
-        self.groups.push(Group { world_camera: kind == scene::SCENE_WORLD, kind: view, additions: view.additions(self.ui_seen), ..Group::default() });
+        self.groups.push(Group { world_camera: kind == scene::SCENE_WORLD, kind: view, additions: view.additions(self.ui_seen), view_slot, ..Group::default() });
         self.open = Some(self.groups.len() - 1);
         true
     }
@@ -485,5 +505,25 @@ mod tests {
         views.frame_start();
         assert!(views.scene_begin(SCENE_OTHER, false, false));
         assert!(views.group(0).unwrap().additions.contains(Additions::POST_COVER));
+    }
+
+    /// A group keeps the view slot of its scene record; a scene with no record of a view
+    /// (an older plugin) gives none, and a slot does not pass to the next scene.
+    #[test]
+    fn a_group_keeps_the_view_slot_of_its_scene() {
+        let record = |view: u32| {
+            let mut data = vec![0u8; 56];
+            for (at, value) in [(8, 10), (12, 100), (16, 0x4000), (48, view)] {
+                data[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            data
+        };
+        let mut views = on();
+        views.note_scene_record(&record(4));
+        assert!(views.scene_begin(SCENE_OTHER, true, false));
+        assert_eq!(views.group(0).and_then(Group::view_slot), Some(3));
+        views.scene_end();
+        assert!(views.scene_begin(SCENE_OTHER, true, false));
+        assert_eq!(views.group(1).and_then(Group::view_slot), None);
     }
 }
