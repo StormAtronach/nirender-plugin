@@ -900,12 +900,46 @@ impl Player {
     /// Only after the world of the scene began ([`Player::view_world_begun`]): the sky of a
     /// view of the world camera draws first, and it would cover the table.
     pub(crate) fn view_table_item(&mut self) {
-        let Some(group) = self.views.open().filter(|&group| self.view_world_begun && self.drawing() && self.table_bit(group).is_some()) else { return };
+        let Some(group) = self.views.open().filter(|_| self.view_world_begun && self.drawing()) else { return };
+        self.view_tier_item(group);
+        if self.table_bit(group).is_none() {
+            return;
+        }
         self.note_view_facts();
         if self.retained.view_tables.queue(group) {
             self.view_table_at = Some((self.view_scene_draws, self.view_world_why));
             self.items.push(Item::ViewTable(group));
         }
+    }
+
+    /// The world of the open scene of a view of its own begins, and the view has parts of the
+    /// full tier that the extension draws ([`Additions::TIER_DRAWN`]): the item with the view's facts
+    /// goes before the scene's first draw of the world, once for the scene (D82 section 3.4f).
+    /// The main view gets its parts from [`Item::WorldStart`], not from here.
+    fn view_tier_item(&mut self, group: usize) {
+        let Some(open) = self.views.group(group) else { return };
+        let parts = view_kind::tier_parts(open.kind, open.additions);
+        if parts.is_empty() || open.tier_begun {
+            return;
+        }
+        let key = ViewKey::of_view(open.view_slot(), open.kind);
+        if let Some(open) = self.views.group_mut(group) {
+            open.tier_begun = true;
+        }
+        if self.extension.is_none() {
+            self.renderer.counts.tier_unserved += 1;
+            return;
+        }
+        let mut facts = self.world_facts(true);
+        facts.view_key = key;
+        facts.samples = self.target_samples();
+        self.items.push(Item::TierStart(Box::new(facts), parts));
+    }
+
+    /// The samples for each pixel of the pass that the scene in progress draws into: a rendered
+    /// texture has one, the back buffer the frame's count ([`Renderer::samples`]).
+    pub(crate) fn target_samples(&self) -> u32 {
+        view_kind::pass_samples(self.target.is_some(), self.renderer.samples)
     }
 
     /// The end of a scene of a view of its own with a table: where its table item went among the

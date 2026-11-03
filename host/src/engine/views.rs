@@ -39,6 +39,9 @@ pub(crate) struct Group {
     /// The scene slot of the view once it is written; `dropped` when all slots were taken.
     pub(crate) slot: Option<u32>,
     pub(crate) dropped: bool,
+    /// The call for the parts of the full tier of the view was queued in this scene
+    /// ([`Additions::TIER_DRAWN`]).
+    pub(crate) tier_begun: bool,
     /// The name of the view's GPU span and CPU time, made once its facts are known
     /// (`Player::view_group_name`).
     pub(crate) name: core::cell::Cell<Option<&'static str>>,

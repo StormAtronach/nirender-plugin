@@ -245,11 +245,15 @@ pub(crate) const TIME_NAMES: [&str; TIME_COUNT] = [
     "copy into the window and present",
     "clusters of the lights",
     "buffers made for a frame (geometry records, particles, films)",
+    "extension: the parts of a view of its own",
 ];
 
-pub(crate) const TIME_COUNT: usize = 17;
+pub(crate) const TIME_COUNT: usize = 18;
 
 pub(crate) const TIME_BUFFERS: usize = 16;
+
+/// The extension's parts in the views of its own (`Extension::view_before_world`).
+pub(crate) const TIME_EXT_TIER: usize = 17;
 
 pub(crate) const TIME_CLUSTERS: usize = 15;
 
@@ -529,6 +533,13 @@ pub(crate) struct Counts {
     /// additions have the shade ([`Additions::SHADE`]).
     pub(crate) view_kinds: [u64; 3],
     pub(crate) view_with_shade: u64,
+    /// The scenes of a view of its own that got the call of [`Extension::view_before_world`],
+    /// the ones where the extension answered that it drew (it asked for the depth to clear), and
+    /// the ones with parts of the full tier that the call could not serve (no extension, no
+    /// device pass).
+    pub(crate) tier_views: u64,
+    pub(crate) tier_drew: u64,
+    pub(crate) tier_unserved: u64,
     /// The world scenes that came after a main view with a root of its own had started the
     /// world of the frame.
     pub(crate) world_after_main_view: u64,

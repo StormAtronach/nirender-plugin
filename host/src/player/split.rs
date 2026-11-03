@@ -306,7 +306,9 @@ impl Player {
             Item::WorldEnd(_) | Item::Replace(..) | Item::MainView(_) => fixed(replayed()),
             // These get no replay (extension.rs:707): they read the frame's targets and the
             // extension's own textures.
-            Item::Post(_) | Item::FirstPersonDepth(_) => fixed(Reads::default()),
+            // The parts of the full tier read the extension's own textures, and the replay is not
+            // passed to them in a way that reads the frame's targets.
+            Item::Post(_) | Item::FirstPersonDepth(_) | Item::TierStart(..) => fixed(Reads::default()),
         }
     }
 }

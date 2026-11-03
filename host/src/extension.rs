@@ -621,6 +621,19 @@ pub trait Extension {
     /// the draws of the game.
     fn before_world(&mut self, scene: &SceneView, pass: &mut wgpu::RenderPass<'static>, replay: &mut dyn Replay) -> bool;
 
+    /// The renderer calls this one time in a scene of a view of its own that has parts of the
+    /// full tier (`parts`, a subset of the parts that the renderer offers: the distant land and
+    /// the distant statics, D82 section 3.4f), after the sky of that scene and before its first
+    /// draw of the world. `scene` is the view's own: its matrices, eye, target size, fog and
+    /// sun, and [`SceneView::view_key`] with the slot and the kind of the view. The pass draws
+    /// into the target of the view with the sample count in `scene.samples` (1 in a rendered
+    /// texture). The frame's data that [`Extension::before_world`] made are reused; this call
+    /// does not redo the work of the frame. Returns true when the depth target must be cleared
+    /// after the call, as [`Extension::before_world`] does. The default draws nothing.
+    fn view_before_world(&mut self, _scene: &SceneView, _parts: Additions, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) -> bool {
+        false
+    }
+
     /// The renderer calls this one time in a frame, at the end of the world scene of the
     /// game: its draws without a sort are in the picture and in the depth target, and the
     /// draws with a sort, the first-person view and the user interface are not. The pass and
