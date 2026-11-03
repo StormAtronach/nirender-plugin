@@ -1159,6 +1159,14 @@ pub fn target_is_back_buffer() -> bool {
     target == 0 || target == BACK_BUFFER.load(Ordering::Relaxed)
 }
 
+/// True when the helper has the target the game draws into now: the back buffer, or level 0
+/// of a rendered texture of this host (the helper makes each such texture at its creation).
+pub fn target_is_known() -> bool {
+    // SAFETY: CURRENT_TARGET is 0 or a surface of this host that the host keeps a reference
+    // to while it is the target (`SetRenderTarget` takes it, the next one releases it).
+    target_is_back_buffer() || unsafe { texture_of(CURRENT_TARGET.load(Ordering::Relaxed)) } != 0
+}
+
 /// The table of this host, for a link without MGE XE.
 pub fn table() -> &'static HostV1 {
     &TABLE

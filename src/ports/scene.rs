@@ -134,7 +134,8 @@ unsafe fn shape_display_start(this: usize, camera: usize) -> Option<usize> {
 /// engine sorts it with its own blends. A blend that the queue does not take (the no-sorter
 /// bit, no accumulator) draws at its display in the engine: its place in the walk goes into
 /// the stream (`INSTANCE_WALK`). A shape under another accumulator keeps the helper's own
-/// order.
+/// order; in a scene with a view of its own (`instance_stream::Route::Places`) it draws at its
+/// display, as the helper has no order of that accumulator.
 unsafe fn retained_display(t: &MainThread, this: usize, camera: usize, kind: u32) -> bool {
     let flush = crate::ports::base::in_main_flush(t);
     if flush && crate::instance_stream::queued_now(t, this) {
@@ -165,6 +166,8 @@ unsafe fn retained_display(t: &MainThread, this: usize, camera: usize, kind: u32
         } else {
             crate::instance_stream::walk_place(t, this);
         }
+    } else if crate::instance_stream::places_route(t) {
+        crate::instance_stream::walk_place(t, this);
     }
     true
 }
