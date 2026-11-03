@@ -239,6 +239,8 @@ impl PendingPass {
 
 /// A draw with its vertices in the record, ready for the pass.
 struct ScreenDraw {
+    /// The handle of the texture it samples.
+    texture: u32,
     pipeline: wgpu::RenderPipeline,
     group: wgpu::BindGroup,
     buffer: wgpu::Buffer,
@@ -917,6 +919,9 @@ struct Player {
     /// frame: before the call the world draws that blend and write no depth are drawn only
     /// on its far side, and after it (`split`) only on the side of the camera.
     plane_ahead: Option<[f64; 4]>,
+    /// A split flush did the world's start's [`Player::prepare_world`] before a texture run
+    /// that went ahead of it: the run of the held world start does not do it again.
+    world_prepared: bool,
     split: Option<[f64; 4]>,
     /// The post-processing of this frame is in the items.
     posted: bool,

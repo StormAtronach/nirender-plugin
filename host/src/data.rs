@@ -402,6 +402,14 @@ pub(crate) struct Counts {
     /// The sizes asked for of those textures, each once: the log names a size the first time.
     pub(crate) render_texture_cut_sizes: Vec<(u32, u32)>,
     pub(crate) pixel_reads: u32,
+    /// The flushes split (`player/split.rs`): the texture runs that went ahead of the
+    /// back buffer's items, those held for their kinds, those held for their textures, and the
+    /// flushes that ran every item because a held item had to come before their operation.
+    pub(crate) flush_splits: u32,
+    pub(crate) flush_runs_ahead: u32,
+    pub(crate) flush_runs_held_kind: u32,
+    pub(crate) flush_runs_held_textures: u32,
+    pub(crate) flush_operation_waits: u32,
     /// The map tiles copied, the tile reads given to the game, and the tiles not copied.
     pub(crate) tile_copies: u32,
     pub(crate) tile_reads: u32,

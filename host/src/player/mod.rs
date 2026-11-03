@@ -6,6 +6,7 @@ mod feed;
 mod frame;
 mod items;
 mod report;
+mod split;
 mod tiles;
 
 pub(crate) use tiles::TileRead;

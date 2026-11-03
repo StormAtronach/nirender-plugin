@@ -27,6 +27,15 @@ impl Player {
         self.renderer.counts.times[TIME_ITEMS] += clock.elapsed().saturating_sub(inside_after - inside_before);
     }
 
+    /// The world's start: the origin of the instances follows its camera, and the texture
+    /// effects under a turning billboard turn for that camera.
+    pub(crate) fn prepare_world(&mut self, facts: &WorldFacts) {
+        self.retained.rebase(facts.origin, &self.renderer.lights_known);
+        let began = std::time::Instant::now();
+        self.retained.turn_effects(&crate::effect_turn::Camera::of_view(&facts.view, facts.eye()));
+        self.retained.counts.turn_seconds += began.elapsed().as_secs_f64();
+    }
+
     pub(crate) fn run_items_inner(&mut self, items: Vec<Item>) {
         self.plane_ahead = self.parameters.as_ref().and_then(|p| p.class_plane).filter(|(class, _)| items.iter().any(|item| matches!(item, Item::Replace(c, ..) if c == class))).map(|(_, plane)| plane);
         // The origin of the instances follows the camera of the world of the frame.
@@ -34,15 +43,11 @@ impl Player {
             Item::WorldStart(facts) => Some(facts.origin),
             _ => None,
         });
-        if let Some(origin) = world_origin {
-            self.retained.rebase(origin, &self.renderer.lights_known);
-        }
-        // The texture effects under a turning billboard, for the camera of the world.
+        // A split flush did these already when a texture run went ahead of the world's start.
         if let Some(facts) = items.iter().find_map(|item| if let Item::WorldStart(facts) = item { Some(facts) } else { None }) {
-            let location = facts.eye();
-            let began = std::time::Instant::now();
-            self.retained.turn_effects(&crate::effect_turn::Camera::of_view(&facts.view, location));
-            self.retained.counts.turn_seconds += began.elapsed().as_secs_f64();
+            if !std::mem::take(&mut self.world_prepared) {
+                self.prepare_world(facts);
+            }
         }
         let began = std::time::Instant::now();
         let segment = self.renderer.retained_records;

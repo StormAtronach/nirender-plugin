@@ -226,7 +226,8 @@ impl Player {
                 }
                 if word(data, 0) == EVENT_FLUSH && self.views.slots_on {
                     self.views.note_forced_flush();
-                    self.flush(|_| ());
+                    // The plugin reads and writes no texture at a forced flush.
+                    self.flush_split(Some(super::split::Touch::default()), |_| ());
                 }
             }
             // The kind and the class of the object of the shape records that follow.
@@ -389,7 +390,8 @@ impl Player {
                         if let (Some(texture), true) = (texture, pixels.len() >= 20) {
                             // The draws into the texture come first: a write of a texture is
                             // done before the commands that are not sent yet.
-                            self.flush(|player| player.renderer.target_pixels(texture, word(pixels, 0), word(pixels, 4), &pixels[20..]));
+                            let touch = super::split::Touch { reads: Vec::new(), writes: vec![texture] };
+                            self.flush_split(Some(touch), |player| player.renderer.target_pixels(texture, word(pixels, 0), word(pixels, 4), &pixels[20..]));
                         }
                     }
                     CALL_CLEAR if self.drawing() && self.stream.back_buffer => {
@@ -512,7 +514,7 @@ impl Player {
             ],
         });
         renderer.counts.times[TIME_BUFFERS] += clock.elapsed();
-        self.items.push(Item::Screen(ScreenDraw { pipeline, group, buffer, vertices: (list.len() / 10) as u32 }));
+        self.items.push(Item::Screen(ScreenDraw { texture, pipeline, group, buffer, vertices: (list.len() / 10) as u32 }));
     }
 
     /// The size of the target that the game draws into.

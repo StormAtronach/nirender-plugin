@@ -207,6 +207,10 @@ impl Player {
             "rendered textures made {} ({} of them smaller than the game asked: the device's largest side), draws into them {}, copies of pixels into them {}, pixel reads {}",
             c.render_textures, c.render_textures_cut, c.target_draws, c.target_copies, c.pixel_reads
         );
+        println!(
+            "flushes split {}: texture runs ahead of the back buffer's items {}, held for their kinds {}, held for their textures {}; flushes that ran every item for their operation {}",
+            c.flush_splits, c.flush_runs_ahead, c.flush_runs_held_kind, c.flush_runs_held_textures, c.flush_operation_waits
+        );
         println!("map tiles copied {}, tile reads given to the game {}, tiles not copied {}", c.tile_copies, c.tile_reads, c.tiles_lost);
         println!("draws in screen coordinates {}, not drawn {}", c.screen_draws, c.screen_draws_lost);
         println!("copies of a draw without room in the records of the frame {}", c.no_record);

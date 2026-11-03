@@ -87,7 +87,8 @@ impl Player {
         let pipeline = self.tile_pipeline(format);
         let read = ticket != 0 && self.tile_out.is_some();
         // The copy goes after the draws of the tile, which are in the commands of the frame.
-        let made = self.flush(|player| {
+        let touch = super::split::Touch { reads: vec![target], writes: vec![texture] };
+        let made = self.flush_split(Some(touch), |player| {
             let device = player.renderer.device.clone();
             let tile = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("map tile"),

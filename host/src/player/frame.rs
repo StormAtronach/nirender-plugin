@@ -96,6 +96,7 @@ impl Player {
             takes: 0,
             shadow_reach: 0.0,
             plane_ahead: None,
+            world_prepared: false,
             split: None,
             posted: false,
             world_matrices: None,
@@ -314,6 +315,7 @@ impl Player {
         self.frame_size = (color.width(), color.height());
         self.items.clear();
         self.world_draws.clear();
+        self.world_prepared = false;
         self.frame_lights.clear();
         self.renderer.extension_lights.clear();
         self.frame_bones.clear();
@@ -423,8 +425,17 @@ impl Player {
     }
 
     /// Sends the commands of the frame up to now to the GPU. The frame goes on after `between`.
-    pub(crate) fn flush<T>(&mut self, between: impl FnOnce(&mut Player) -> T) -> T {
-        self.run_items();
+    /// With `touch` and the plugin's bits for each view, the items of the back buffer stay
+    /// queued, and the runs into textures go ahead where they may ([`super::split`]). `touch`
+    /// names the rendered textures that `between` reads and writes; without it every item runs.
+    pub(crate) fn flush_split<T>(&mut self, touch: Option<super::split::Touch>, between: impl FnOnce(&mut Player) -> T) -> T {
+        let held = match touch.filter(|_| self.retained.view_bits && self.drawing()) {
+            Some(touch) => self.run_items_split(&touch),
+            None => {
+                self.run_items();
+                Vec::new()
+            }
+        };
         let in_frame = self.drawing();
         self.close_pass();
         if let Some(encoder) = self.encoder.take() {
@@ -439,6 +450,10 @@ impl Player {
         if in_frame {
             self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
             self.open_pass(crate::gpu::PassReason::Flush, None, None, None);
+        }
+        if !held.is_empty() {
+            let after = std::mem::replace(&mut self.items, held);
+            self.items.extend(after);
         }
         result
     }
@@ -479,7 +494,10 @@ impl Player {
         }
         let (width, height) = (texture.width(), texture.height());
         let blue_first = matches!(texture.format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
-        self.flush(|player| {
+        // A read of the back buffer runs every item; a read of a rendered texture can leave the
+        // back buffer's items queued.
+        let touch = (handle != 0).then(|| super::split::Touch { reads: vec![handle], writes: Vec::new() });
+        self.flush_split(touch, |player| {
             let device = player.renderer.device.clone();
             let mut encoder = device.create_command_encoder(&Default::default());
             let (buffer, row) = copy_picture(&device, &mut encoder, &texture, width, height);

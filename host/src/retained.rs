@@ -919,6 +919,11 @@ impl RetainedSet {
         }
     }
 
+    /// The texture handles that the slots pinned, a handle once for each use.
+    pub fn pinned_textures(&self) -> impl Iterator<Item = u32> + '_ {
+        self.slots.iter().flatten().flat_map(|s| s.pinned).filter(|&handle| handle != 0)
+    }
+
     /// The view slot `view` (0 to 31) is retired: its bit goes from every slot at the next
     /// [`RetainedSet::apply_retires`], so that the retires of one flush cost one pass.
     /// Without [`RetainedSet::view_bits`] the one bit is the main view's, and a retire changes
