@@ -67,8 +67,10 @@
 /// 0x80000000 in its flags word and the id of its chain in the first word of its matrix
 /// (2026-11-02). A helper of format 3 would draw such a stage with the id as a matrix word. 5: the
 /// decal count of a material record is the whole count, and the maps past the 8 follow its words
-/// (2026-11-02). A helper of format 4 would draw only two decals.
-pub const STREAM_FORMAT: u32 = 5;
+/// (2026-11-02). A helper of format 4 would draw only two decals. 6: an `INSTANCE_STATE` record
+/// of 12 bytes names its view slot ([`HEADER_VIEW_BITS`], 2026-11-03). A helper of format 5
+/// would read it as view 0 and hide a mirror's shape in the main view.
+pub const STREAM_FORMAT: u32 = 6;
 
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
 /// game, the abilities of the stream, the stream format, then the build id of the plugin as

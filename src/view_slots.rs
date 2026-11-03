@@ -16,7 +16,8 @@
 //! the views into that texture ([`ViewTable::target_gone`]), so that a new texture at the same
 //! address does not take an old slot.
 //!
-//! A swap closes views; it does not end the frame. The frame ends at the device's Present,
+//! A view into a texture is one scene and closes at the scene's end ([`ViewTable::scene_end`]);
+//! a view into the back buffer closes at the swap. A swap closes views; it does not end the frame. The frame ends at the device's Present,
 //! where the plugin writes `FRAME_END` and the retained table's frame advances: there the slots
 //! retire and the flush counts clear ([`ViewTable::present`]). JoP's visibility test swaps
 //! with a texture as the target in the middle of a frame (section 7a).
@@ -321,6 +322,20 @@ impl ViewTable {
         self.flushes = self.flushes.wrapping_add(1);
     }
 
+    /// The end of a scene of `slot` (`EndPaint`): a view into a texture is one scene, so it
+    /// closes here, before the scene's `SCENE_END` (design 3.1). A view into the back buffer
+    /// stays open until the swap.
+    pub fn scene_end(&mut self, slot: u8) -> Option<Closed> {
+        let entry = self.slots.get_mut(slot as usize)?.as_mut()?;
+        if !entry.open || !entry.targets_texture() {
+            return None;
+        }
+        self.closes += 1;
+        let changed = entry.close(self.closes);
+        self.root_changes += changed as u64;
+        Some((slot, changed))
+    }
+
     /// The renderer's SwapBuffers, with the device's target. The back buffer (`None`) closes
     /// the open views into the back buffer; a texture closes the open views into it. Neither
     /// ends the frame: [`ViewTable::present`] does.
@@ -606,6 +621,20 @@ mod tests {
         // The old key of slot 5 starts again in another slot at its next scene.
         assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x10_0005)), Opening::Opened(Opened { slot: 2, new: true, taken_back: true }));
         assert_eq!(views.in_use(), VIEW_SLOTS);
+    }
+
+    /// A view into a texture closes at the end of its scene; a view into the back buffer stays
+    /// open until the swap, and a slot that is not open gives no close.
+    #[test]
+    fn a_texture_view_closes_at_its_scene_end() {
+        let mut views = ViewTable::default();
+        assert_eq!(slot_of(views.open(&world(SCENE_WORLD, WORLD_ROOT))), Some(MAIN_VIEW));
+        assert_eq!(views.scene_end(MAIN_VIEW), None);
+        assert_eq!(slot_of(views.open(&texture(0x7000, WORLD_ROOT, 0x9000))), Some(1));
+        assert_eq!(views.scene_end(1), Some((1, false)));
+        assert_eq!(views.scene_end(1), None);
+        assert_eq!(views.scene_end(9), None);
+        assert_eq!(views.swap(None), vec![(MAIN_VIEW, false)]);
     }
 
     /// Rule 3: the destructor of a target takes the keys of the views into it, its first and

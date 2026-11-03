@@ -1210,7 +1210,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     (host.scene_begin)(&scene);
     crate::capture::scene_begin(&scene);
     let route = crate::instance_stream::route_of(scene.kind, scene.flags & SCENE_BACK_BUFFER != 0, crate::own_host::target_is_known());
-    crate::instance_stream::scene_begin(t, roots.scene_kind, camera, route);
+    crate::instance_stream::scene_begin(t, roots.scene_kind, camera, route, view);
     // MGE XE's frame logic takes the same packet (the contract's `MGE_StreamSceneBegin`).
     let function = STREAM_SCENE_BEGIN.load(Ordering::Relaxed);
     if function != 0 {

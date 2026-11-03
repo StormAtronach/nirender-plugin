@@ -37,7 +37,7 @@ use crate::sync::{DeviceLock, LockCell};
 use crate::mem::rd;
 // The layout of the HEADER record and of the shared memories: their one home.
 use crate::stream_format::{
-    HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET, HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME,
+    HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET, HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_BITS,
     HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WORLD_WALK, MESSAGES_CAPACITY, MESSAGES_MEMORY, READ_EVENT, RECORDS_EVENT, TILES_MEMORY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_READ, MESSAGES_WRITTEN, REPLY_CAPACITY,
     REPLY_HEAD, REPLY_HEIGHT, REPLY_REQUEST, REPLY_WIDTH, RING_CAPACITY, RING_CLOSED, RING_GAME_WAITING, RING_HEAD, RING_MAGIC, RING_READ,
     RING_SHADOW_REACH, RING_TAKES, RING_WAITING, RING_WRITTEN, TILE_BYTES, TILE_HEAD, TILE_HEIGHT, TILE_SLOTS, TILE_TICKET, TILE_WIDTH,
@@ -61,6 +61,7 @@ fn header_abilities() -> u32 {
         | HEADER_WALK_PLACES
         | HEADER_VIEW_PLACES
         | HEADER_SCENE_VIEWS
+        | HEADER_VIEW_BITS
         | HEADER_SCENE_WIREFRAME
         | HEADER_ENVMAP_KNOWN
         | if crate::world_walk::installed() { HEADER_WORLD_WALK } else { 0 }
@@ -178,8 +179,10 @@ pub mod tag {
     /// ambient lights of the state; a spell's effect carries a white one of its own). Sent
     /// when the lights or the ambient of the instance change.
     pub const INSTANCE_LIGHTS: u32 = 26;
-    /// The visibility of such an instance: id, 1 when the engine draws it, 0 when it does
-    /// not although it is in the view of the camera.
+    /// The visibility of such an instance in a view: id, 1 when the engine draws it in the
+    /// view, 0 when it does not although it is in the view of the view's camera; then the
+    /// view slot (`view_slots`), only for views 1 to 31. A record of 8 bytes is view 0
+    /// (`stream_format::HEADER_VIEW_BITS`).
     pub const INSTANCE_STATE: u32 = 27;
     /// The values of the frame for the draws of the instances the helper draws from its
     /// table: the ambient light (`D3DRS_AMBIENT`), flags (32: the fog follows), the fog of
@@ -2068,9 +2071,10 @@ pub unsafe fn instance_bones(id: u32, count: u32, bound: &[f32; 4], bones: &[u8]
 }
 
 /// The visibility of an instance. See [`tag::INSTANCE_STATE`].
-pub unsafe fn instance_state(id: u32, visible: bool) {
+pub unsafe fn instance_state(id: u32, visible: bool, view: u8) {
     let _lock = crate::sync::device_lock();
-    write(tag::INSTANCE_STATE, &[words(&[id, visible as u32])]);
+    let record = [id, visible as u32, view as u32];
+    write(tag::INSTANCE_STATE, &[words(if view == 0 { &record[..2] } else { &record })]);
 }
 
 /// The flag of a `RETAINED_SCENE` record that carries the sun: the 26 words of the weather's
