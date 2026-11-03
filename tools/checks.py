@@ -61,6 +61,8 @@ CHECKS = {
     # The tests of the pure parts of the release tool (the untracked-file stop, the tag name,
     # the notes' Tested block).
     "release": (PLUGIN / "tools" / "release.py", PLUGIN, ["--self-test"]),
+    # The local.json and the siblings of a worktree (common.find_local, find_sibling, checkout_of).
+    "local places": (PLUGIN / "tools" / "common.py", PLUGIN, ["--self-test"]),
     # The argument handling of the runner (--plugin-dll, --log).
     "runner": (PLUGIN / "tools" / "run_own_device.py", PLUGIN, ["--self-test"]),
     "the close of a game": (PLUGIN / "tools" / "play.py", PLUGIN, ["--self-test"]),
@@ -77,7 +79,7 @@ CHECKS = {
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "runner", "the close of a game", "the play set", "the merge step", "clippy arguments", "gate", "clean worktrees", "clean results", "hooks", "fuzz"],
+    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "clippy arguments", "gate", "clean worktrees", "clean results", "hooks", "fuzz"],
     "mge": ["mge readme", "mge handshake", "mge contract", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))

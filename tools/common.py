@@ -47,32 +47,65 @@ def build_missing(mge_build):
     return [part for part in BUILD_PARTS if not os.path.exists(os.path.join(mge_build, part))]
 
 
-@functools.lru_cache(maxsize=None)
-def main_checkout():
-    """The folder of the main checkout of this repository: `REPO` itself, or the checkout that
-    a worktree belongs to. None when git cannot tell."""
-    run = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=REPO,
-                         capture_output=True, text=True)
+# The names with which a git hook points git at its own repository. A hook of another repository
+# (the render-link worktree runs these checks) must not make git answer for that repository.
+GIT_HOOK_NAMES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+
+
+def checkout_of(folder):
+    """The folder of the main checkout of the repository at `folder`: `folder` itself, or the
+    checkout that a worktree belongs to. None when `folder` is not in a git repository."""
+    env = {name: value for name, value in os.environ.items() if name not in GIT_HOOK_NAMES}
+    run = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=folder,
+                         capture_output=True, text=True, env=env)
     if run.returncode != 0 or not run.stdout.strip():
         return None
     return os.path.dirname(os.path.normpath(run.stdout.strip()))
 
 
 @functools.lru_cache(maxsize=None)
-def local_file():
-    """The `local.json` that `local` reads: the one at the repo root, else the one of the main
-    checkout (the file is not tracked, so a new worktree has none). None when neither has one.
-    The main checkout's file is named once on stderr, so that the output shows where the places
-    came from."""
-    own = os.path.join(REPO, "local.json")
+def main_checkout():
+    """The folder of the main checkout of this repository (`checkout_of(REPO)`)."""
+    return checkout_of(REPO)
+
+
+def find_local(repo, main):
+    """The `local.json` of the tree `repo`, else the one of its main checkout `main`: the path
+    and whether it is the main checkout's. (None, False) when neither has one."""
+    own = os.path.join(repo, "local.json")
     if os.path.isfile(own):
-        return own
-    main = main_checkout()
-    if main and os.path.normcase(main) != os.path.normcase(REPO) and os.path.isfile(os.path.join(main, "local.json")):
-        path = os.path.join(main, "local.json")
-        print("local.json: %s (the main checkout's; this tree has none)" % path, file=sys.stderr)
+        return own, False
+    if main and os.path.normcase(main) != os.path.normcase(repo) and os.path.isfile(os.path.join(main, "local.json")):
+        return os.path.join(main, "local.json"), True
+    return None, False
+
+
+@functools.lru_cache(maxsize=None)
+def local_file():
+    """The `local.json` that `local` reads (`find_local`): the file is not tracked, so a new
+    worktree has none, and then it reads the main checkout's. Every key of that file applies to
+    the worktree. The main checkout's file and its keys are named once on stderr, so that the
+    output shows where the places came from."""
+    path, from_main = find_local(REPO, main_checkout())
+    if from_main:
+        keys = sorted(json.load(open(path, encoding="utf-8")))
+        print("local.json: %s (the main checkout's; this tree has none), keys: %s" % (path, ", ".join(keys) or "none"),
+              file=sys.stderr)
+    return path
+
+
+def local_file_hint():
+    """Where to set a key of `local()` that is missing: the file it reads, else where to make one."""
+    path = local_file()
+    if path:
         return path
-    return None
+    own = os.path.join(REPO, "local.json")
+    main = main_checkout()
+    if main and os.path.normcase(main) != os.path.normcase(REPO):
+        return "a new %s or %s" % (own, os.path.join(main, "local.json"))
+    if main:
+        return "a new " + own
+    return "a new %s (this tree is not in a git repository, so there is no main checkout)" % own
 
 
 def local(key, default):
@@ -87,16 +120,71 @@ def local(key, default):
     return default
 
 
-def sibling(*parts):
-    """The place `parts` next to this repo, else next to the main checkout (a worktree away from
-    the repos folder has no siblings but its own). The place next to this repo when neither
-    exists."""
-    near = os.path.join(SIBLINGS, *parts)
-    main = main_checkout()
+def find_sibling(siblings, main, parts):
+    """The place `parts` in the folder `siblings`, else next to the main checkout `main`. The
+    place in `siblings` when neither exists."""
+    near = os.path.join(siblings, *parts)
     if os.path.exists(near) or not main:
         return near
     far = os.path.join(os.path.dirname(main), *parts)
     return far if os.path.exists(far) else near
+
+
+def sibling(*parts):
+    """The place `parts` next to this repo, else next to the main checkout (`find_sibling`; a
+    worktree away from the repos folder has no siblings but its own)."""
+    return find_sibling(SIBLINGS, main_checkout(), parts)
+
+
+def self_test():
+    """The tests of `checkout_of`, `find_local` and `find_sibling` in a temporary folder."""
+    import tempfile
+
+    def git(*args):
+        # A commit hook runs this test with the names of its own repository.
+        env = {name: value for name, value in os.environ.items() if name not in GIT_HOOK_NAMES}
+        subprocess.run(["git", *args], check=True, env=env)
+
+    with tempfile.TemporaryDirectory() as root:
+        main = os.path.join(root, "repos", "plugin")
+        tree = os.path.join(root, "away", "plugin")
+        other = os.path.join(root, "other")
+        os.makedirs(main)
+        for folder in (main, other):
+            git("init", "-q", folder)
+            git("-C", folder, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "t")
+        git("-C", main, "worktree", "add", "-q", "--detach", tree)
+        same = os.path.normcase
+        assert same(checkout_of(tree)) == same(main), checkout_of(tree)
+        assert checkout_of(root) is None
+        # A hook of another repository sets its own GIT_DIR: the answer stays the tree's.
+        saved = {name: os.environ.get(name) for name in GIT_HOOK_NAMES}
+        os.environ["GIT_DIR"] = os.path.join(other, ".git")
+        os.environ["GIT_WORK_TREE"] = other
+        try:
+            assert same(checkout_of(tree)) == same(main), checkout_of(tree)
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        assert find_local(tree, main) == (None, False)
+        with open(os.path.join(main, "local.json"), "w", encoding="ascii") as file:
+            file.write("{}")
+        assert find_local(tree, main) == (os.path.join(main, "local.json"), True)
+        assert find_local(main, main) == (os.path.join(main, "local.json"), False)
+        with open(os.path.join(tree, "local.json"), "w", encoding="ascii") as file:
+            file.write("{}")
+        assert find_local(tree, main) == (os.path.join(tree, "local.json"), False)
+        assert find_local(tree, None) == (os.path.join(tree, "local.json"), False)
+        os.makedirs(os.path.join(root, "repos", "docs"))
+        assert find_sibling(os.path.join(root, "away"), main, ["docs"]) == os.path.join(root, "repos", "docs")
+        assert find_sibling(os.path.join(root, "away"), main, ["none"]) == os.path.join(root, "away", "none")
+        assert find_sibling(os.path.join(root, "away"), None, ["docs"]) == os.path.join(root, "away", "docs")
+        os.makedirs(os.path.join(root, "away", "docs"))
+        assert find_sibling(os.path.join(root, "away"), main, ["docs"]) == os.path.join(root, "away", "docs")
+    print("common self-test: passed")
 
 # The functions of the renderer subsystem, by their name in the IDA database.
 FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiPropertyState"
@@ -143,3 +231,9 @@ def read_report(path):
         return []
     header = lines[0].split("\t")
     return [dict(zip(header, line.split("\t"))) for line in lines[1:] if line.strip()]
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["--self-test"]:
+        raise SystemExit("usage: common.py --self-test")
+    self_test()
