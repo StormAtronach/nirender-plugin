@@ -53,7 +53,7 @@ use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDy
 use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, CLASS_WEATHER_PARTICLES, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_OTHER, SCENE_RACE_MENU_HEAD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
 use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
-use crate::view_slots::{Click, ViewTable, VIEW_SLOTS};
+use crate::view_slots::{Click, ViewKey, ViewTable, VIEW_SLOTS};
 use crate::mem::{rd, wr};
 
 const CONTROLLERS: usize = NiAVObject::controllers;
@@ -751,10 +751,29 @@ pub unsafe fn frame_tick(mt: &MainThread) {
 /// the frame events `link::EVENT_VIEW_RETIRE` (`capture::frame_end` writes them).
 static VIEWS: MainCell<Option<ViewTable>> = MainCell::new(None);
 static RETIRED_VIEWS: MainCell<Vec<u8>> = MainCell::new(Vec::new());
+/// The slots taken and the scenes refused so far, for the rate of their log lines.
+static VIEW_TAKES: MainCell<u64> = MainCell::new(0);
+
+/// The take or refusal number `n` (from 1) gets a log line: the first 64, then each power of 2.
+fn view_line_due(n: u64) -> bool {
+    n <= 64 || n.is_power_of_two()
+}
+
+/// The words of a view key for a log line: the camera, the root, the target and the scenes of
+/// the same texture key before it since the last flush (more than 0: a second slot for the key).
+fn key_words(key: ViewKey) -> String {
+    match key {
+        ViewKey::Screen { camera } => format!("camera 0x{camera:x} into the back buffer"),
+        ViewKey::Texture { camera, root, target, again } => {
+            format!("camera 0x{camera:x}, root 0x{root:x}, target 0x{target:x}, again {again}{}", if again > 0 { " (a second slot for the key)" } else { "" })
+        }
+    }
+}
 
 /// A scene starts: its view slot plus 1, for `SceneV1::view`, or 0 for a scene that is not a
 /// view or that found no free slot (one log line at the first refusal). 0 while the stream does
-/// not record: the slots retire only at a Present of the recording (`view_present`).
+/// not record: the slots retire only at a Present of the recording (`view_present`). A take of a
+/// slot and a refusal each give a log line with the key, at the rate of `view_line_due`.
 pub fn view_open(mt: &MainThread, click: &Click) -> u32 {
     if !capture::recording() {
         return 0;
@@ -765,6 +784,25 @@ pub fn view_open(mt: &MainThread, click: &Click) -> u32 {
     let opened = views.open(click);
     if refused == 0 && views.refused == 1 {
         crate::log!("views: all {VIEW_SLOTS} view slots are taken; a new view gets none (the count is in the report)");
+    }
+    if views.refused > refused && view_line_due(views.refused) {
+        crate::log!(
+            "views: refusal {} at frame {}: scene kind {}, camera 0x{:x}, root 0x{:x}, target {}; {} slots in use",
+            views.refused,
+            views.frame(),
+            click.kind,
+            click.camera,
+            click.root,
+            click.target.map_or_else(|| "the back buffer".to_string(), |target| format!("0x{target:x}")),
+            views.in_use()
+        );
+    }
+    if let Some(taken) = opened.filter(|opened| opened.new) {
+        let mut takes = VIEW_TAKES.get(mt);
+        *takes += 1;
+        if let Some(key) = views.key(taken.slot).filter(|_| view_line_due(*takes)) {
+            crate::log!("views: take {} at frame {}: slot {}, scene kind {}, {}; {} slots in use", *takes, views.frame(), taken.slot, click.kind, key_words(key), views.in_use());
+        }
     }
     opened.map_or(0, |opened| opened.slot as u32 + 1)
 }
@@ -2557,6 +2595,19 @@ mod tests {
             capture::test_record_deletes(false);
             crate::shadow::restore_main_thread(before);
         }
+    }
+
+    /// The take lines: the first 64, then each power of 2; a texture key used again before a
+    /// flush is named as a second slot.
+    #[test]
+    fn the_view_take_lines_name_a_second_slot_and_keep_their_rate() {
+        assert!((1..=64).all(view_line_due));
+        assert!(!view_line_due(65) && !view_line_due(127) && view_line_due(128) && view_line_due(1024));
+        let again = key_words(ViewKey::Texture { camera: 0x10, root: 0x20, target: 0x30, again: 1 });
+        assert!(again.ends_with("again 1 (a second slot for the key)"), "{again}");
+        let first = key_words(ViewKey::Texture { camera: 0x10, root: 0x20, target: 0x30, again: 0 });
+        assert!(first.ends_with("again 0"), "{first}");
+        assert_eq!(key_words(ViewKey::Screen { camera: 0x10 }), "camera 0x10 into the back buffer");
     }
 
     /// A note before a display marks the shape at that display, once. A display with no new

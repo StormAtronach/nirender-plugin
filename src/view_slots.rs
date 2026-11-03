@@ -219,6 +219,11 @@ impl ViewTable {
         end
     }
 
+    /// The key of a slot in use.
+    pub fn key(&self, slot: u8) -> Option<ViewKey> {
+        self.slots.get(slot as usize)?.as_ref().map(|slot| slot.key)
+    }
+
     /// The frames that Present ended.
     pub fn frame(&self) -> u32 {
         self.frame
