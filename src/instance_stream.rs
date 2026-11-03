@@ -175,11 +175,10 @@ struct Instance {
     lights: Vec<u32>,
     ambient: u32,
     /// The views that show the instance in the helper (bit v for view slot v, `view_slots`),
-    /// the views whose scenes displayed it since their last close, and the views whose
-    /// visible list holds it (`Tables::view_lists`).
+    /// and its key in the views' visible lists ([`ViewLists`]): [`NO_KEY`] until its first
+    /// display.
     visible: u32,
-    displayed: u32,
-    listed: u32,
+    list_key: u32,
     /// Its `INSTANCE` record goes again for the start of a capture file (`reset`): the state
     /// records of its views follow the record (`restate`).
     restate: bool,
@@ -293,11 +292,9 @@ struct Tables {
     /// when the scene is a view, else 0.
     scene_view: u8,
     scene_camera: usize,
-    /// For each view slot: the shapes that its scenes showed, with their ids (a shape whose
-    /// bit went clear leaves at the view's close, and so does an entry whose shape is now
-    /// another instance: a new shape at a freed address), and the culling planes of its camera
+    /// The visible list of each view slot ([`ViewLists`]), and the culling planes of its camera
     /// at the end of its last scene (`NiPlane`: the normal, then the constant).
-    view_lists: Vec<Vec<(usize, u32)>>,
+    lists: ViewLists,
     view_planes: Vec<Vec<[f32; 4]>>,
     states: u64,
     light_records: u64,
@@ -381,6 +378,120 @@ struct Tables {
     skipped_by: [u64; 5],
 }
 
+/// The key of an instance that no view listed yet ([`Instance::list_key`]).
+const NO_KEY: u32 = u32::MAX;
+/// The place of a key that a view does not list ([`ViewLists::places`]).
+const NOT_LISTED: u32 = u32::MAX;
+/// The index bits of a place; bit 31 is the list.
+const PLACE_INDEX: u32 = 0x7FFF_FFFF;
+
+/// The visible lists of the view slots (`view_slots`, design 3.1). Each view has two lists of
+/// entries (the shape and the instance's key): one holds the entries that the view's scenes
+/// displayed since its last close, the other the entries that they did not display yet. A
+/// display moves its entry into the first list; a close visits only the second, and then the
+/// first list becomes the second. So a view that closes in every frame (view 0) visits only
+/// the instances that it did not display in that frame.
+///
+/// An instance has one key for all views, from its first display to its end ([`forget`] and
+/// [`Tables::reject_pending`] give it back). For each view, the place of each key tells the
+/// list (bit 31) and the index of its entry.
+struct ViewLists {
+    /// For each view: its two lists.
+    entries: Vec<[Vec<(usize, u32)>; 2]>,
+    /// For each view: the list (0 or 1) of the entries displayed since the last close.
+    shown: Vec<u8>,
+    /// For each view, by key: the place of the key's entry, or [`NOT_LISTED`].
+    places: Vec<Vec<u32>>,
+    free_keys: Vec<u32>,
+    next_key: u32,
+}
+
+impl ViewLists {
+    fn new() -> ViewLists {
+        ViewLists {
+            entries: (0..VIEW_SLOTS).map(|_| [Vec::new(), Vec::new()]).collect(),
+            shown: vec![0; VIEW_SLOTS],
+            places: vec![Vec::new(); VIEW_SLOTS],
+            free_keys: Vec::new(),
+            next_key: 0,
+        }
+    }
+
+    /// A key for an instance at its first display.
+    fn take_key(&mut self) -> u32 {
+        self.free_keys.pop().unwrap_or_else(|| {
+            let key = self.next_key;
+            self.next_key += 1;
+            key
+        })
+    }
+
+    fn place(&self, view: u8, key: u32) -> u32 {
+        self.places[view as usize].get(key as usize).copied().unwrap_or(NOT_LISTED)
+    }
+
+    fn set_place(&mut self, view: u8, key: u32, place: u32) {
+        let places = &mut self.places[view as usize];
+        if places.len() <= key as usize {
+            places.resize(key as usize + 1, NOT_LISTED);
+        }
+        places[key as usize] = place;
+    }
+
+    /// Appends the entry to the view's list `list`.
+    fn push(&mut self, view: u8, list: usize, shape: usize, key: u32) {
+        let entries = &mut self.entries[view as usize][list];
+        let place = (list as u32) << 31 | entries.len() as u32;
+        entries.push((shape, key));
+        self.set_place(view, key, place);
+    }
+
+    /// Takes the entry of `key` out of its list in the view, if the view lists it. The last
+    /// entry of that list takes its index.
+    fn take_out(&mut self, view: u8, key: u32) {
+        let place = self.place(view, key);
+        if place == NOT_LISTED {
+            return;
+        }
+        let entries = &mut self.entries[view as usize][(place >> 31) as usize];
+        let index = (place & PLACE_INDEX) as usize;
+        entries.swap_remove(index);
+        if let Some(&(_, moved)) = entries.get(index) {
+            self.places[view as usize][moved as usize] = place;
+        }
+        self.places[view as usize][key as usize] = NOT_LISTED;
+    }
+
+    /// A display in the view: the entry is in the list of the displayed entries until the
+    /// view's close.
+    fn show(&mut self, view: u8, shape: usize, key: u32) {
+        let shown = self.shown[view as usize] as usize;
+        let place = self.place(view, key);
+        if place != NOT_LISTED && (place >> 31) as usize == shown {
+            return;
+        }
+        self.take_out(view, key);
+        self.push(view, shown, shape, key);
+    }
+
+    /// The instance of the key ends: its entries leave every list, and the key is free.
+    fn give_back(&mut self, key: u32) {
+        if key == NO_KEY {
+            return;
+        }
+        for view in 0..VIEW_SLOTS as u8 {
+            self.take_out(view, key);
+        }
+        self.free_keys.push(key);
+    }
+
+    /// The entries of the view, in both lists.
+    #[cfg(test)]
+    fn listed(&self, view: u8) -> Vec<(usize, u32)> {
+        self.entries[view as usize].iter().flatten().copied().collect()
+    }
+}
+
 static TABLES: MainCell<Option<Tables>> = MainCell::new(None);
 
 /// The table, for the state summary: the id, `sent`, `visible` and light list of each instance,
@@ -424,7 +535,7 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         scene_route: Route::Main,
         scene_view: 0,
         scene_camera: 0,
-        view_lists: vec![Vec::new(); VIEW_SLOTS],
+        lists: ViewLists::new(),
         view_planes: vec![Vec::new(); VIEW_SLOTS],
         states: 0,
         light_records: 0,
@@ -469,7 +580,7 @@ impl Instance {
     /// An instance of a shape at its first draw: no record of it went yet.
     #[allow(clippy::too_many_arguments)]
     fn new(id: u32, class: u32, geometry: u32, material: u32, generation: u32, skinned: bool, live: bool, points: bool) -> Instance {
-        Instance { id, class, geometry, material, rotation: [0; 12], software: false, stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, visible: 0, displayed: 0, listed: 0, restate: false, under_billboard: false, views_frame: 0, frame_views: 0, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], checked: 0, effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
+        Instance { id, class, geometry, material, rotation: [0; 12], software: false, stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, visible: 0, list_key: NO_KEY, restate: false, under_billboard: false, views_frame: 0, frame_views: 0, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], checked: 0, effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
     }
 }
 
@@ -652,8 +763,9 @@ pub unsafe fn scene_end(mt: &MainThread) {
 /// Views close (`view_slots`, design 3.1): in each, a shape of its visible list that its scenes
 /// did not display and that is inside the culling planes of its camera is hidden in it
 /// (`INSTANCE_STATE` with the view). After a root change the plane test is skipped: every
-/// shape not displayed is hidden. The marks of the view's scenes clear. Engine-rules R14, R16
-/// (the skill wgpu-renderer-dev).
+/// shape not displayed is hidden. The close visits only the entries that the view's scenes did
+/// not display since its last close (`ViewLists`). Engine-rules R14, R16 (the skill
+/// wgpu-renderer-dev).
 pub fn close_views(mt: &MainThread, closed: impl IntoIterator<Item = Closed>) {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
@@ -664,27 +776,64 @@ pub fn close_views(mt: &MainThread, closed: impl IntoIterator<Item = Closed>) {
     }
 }
 
+/// The close of one view. Each entry that the view's scenes did not display since the last
+/// close stays or leaves ([`Instance::stays_at_close`]); an entry whose instance ended without
+/// giving its key back leaves too. Then the displayed entries become the entries that wait for
+/// the next close.
+///
+/// # Safety
+///
+/// The bounds of the listed instances and the view's planes are readable by `WHICH_SIDE`.
 unsafe fn close_view(t: &mut Tables, slot: u8, root_changed: bool, hide: bool) {
-    let bit = 1u32 << slot;
-    let mut list = core::mem::take(&mut t.view_lists[slot as usize]);
-    let planes = core::mem::take(&mut t.view_planes[slot as usize]);
+    let view = slot as usize;
+    let shown = t.lists.shown[view] as usize;
+    let waiting_list = shown ^ 1;
+    let mut waiting = core::mem::take(&mut t.lists.entries[view][waiting_list]);
+    let planes = core::mem::take(&mut t.view_planes[view]);
     let mut hides = [0u64; 2];
-    list.retain(|(shape, id)| {
-        let Some(instance) = t.instances.get_mut(shape).filter(|instance| instance.id == *id) else { return false };
-        if instance.visible & bit == 0 {
-            instance.listed &= !bit;
-            instance.displayed &= !bit;
+    for &(shape, key) in &waiting {
+        let stays = match t.instances.get_mut(&shape).filter(|instance| instance.list_key == key) {
+            Some(instance) => instance.stays_at_close(slot, root_changed, hide, &planes, &mut t.undisplayed_left, &mut hides),
+            None => false,
+        };
+        if stays {
+            t.lists.push(slot, shown, shape, key);
+        } else {
+            t.lists.set_place(slot, key, NOT_LISTED);
+        }
+    }
+    t.states += hides[0] + hides[1];
+    CLOSE_HIDES[0].fetch_add(hides[0], core::sync::atomic::Ordering::Relaxed);
+    CLOSE_HIDES[1].fetch_add(hides[1], core::sync::atomic::Ordering::Relaxed);
+    CLOSE_VISITS.fetch_add(waiting.len() as u64, core::sync::atomic::Ordering::Relaxed);
+    waiting.clear();
+    t.lists.entries[view][waiting_list] = waiting;
+    t.lists.shown[view] = waiting_list as u8;
+    t.view_planes[view] = planes;
+}
+
+impl Instance {
+    /// At the close of the view `slot`, for an instance that the view's scenes did not display
+    /// since its last close: true when it stays in the view's list, visible; false when it
+    /// leaves the list. It leaves when it is not visible in the view, and when the close
+    /// hides it (`hide`, with its values from a draw): after a root change, or when it is
+    /// inside every plane. A hide sends its state record and counts in `hides` (by
+    /// `root_changed`). An instance outside a plane stays; in view 0 it counts in
+    /// `undisplayed_left` by that plane, unless it is a sorted blend.
+    ///
+    /// # Safety
+    ///
+    /// The bound of the instance and the planes are readable by `WHICH_SIDE`.
+    unsafe fn stays_at_close(&mut self, slot: u8, root_changed: bool, hide: bool, planes: &[[f32; 4]], undisplayed_left: &mut [u64; 7], hides: &mut [u64; 2]) -> bool {
+        let bit = 1u32 << slot;
+        if self.visible & bit == 0 {
             return false;
         }
-        if instance.displayed & bit != 0 {
-            instance.displayed &= !bit;
-            return true;
-        }
-        if !hide || !instance.filled {
+        if !hide || !self.filled {
             return true;
         }
         if !root_changed {
-            let bound = if instance.skinned { instance.posed_bound.as_ptr() } else { instance.bound.as_ptr() } as usize;
+            let bound = if self.skinned { self.posed_bound.as_ptr() } else { self.bound.as_ptr() } as usize;
             let outside = rejecting_plane(planes.iter().map(|plane| thiscall1(WHICH_SIDE, bound, plane.as_ptr() as u32)));
             // Out of the camera's view the instance stays visible and the helper's view
             // culls it with its own frustum. A sorted blend the engine did not display has
@@ -692,40 +841,38 @@ unsafe fn close_view(t: &mut Tables, slot: u8, root_changed: bool, hide: bool) {
             // for a while the other shapes left so in view 0 are counted by the plane that
             // puts them out.
             if let Some(plane) = outside {
-                if slot == crate::view_slots::MAIN_VIEW && !instance.sorted_blend {
-                    t.undisplayed_left[plane.min(PLANE_NAMES.len() - 1)] += 1;
+                if slot == crate::view_slots::MAIN_VIEW && !self.sorted_blend {
+                    undisplayed_left[plane.min(PLANE_NAMES.len() - 1)] += 1;
                 }
                 return true;
             }
         }
-        instance.visible &= !bit;
-        instance.listed &= !bit;
-        capture::instance_state(instance.id, false, slot);
+        self.visible &= !bit;
+        capture::instance_state(self.id, false, slot);
         hides[root_changed as usize] += 1;
         false
-    });
-    t.states += hides[0] + hides[1];
-    CLOSE_HIDES[0].fetch_add(hides[0], core::sync::atomic::Ordering::Relaxed);
-    CLOSE_HIDES[1].fetch_add(hides[1], core::sync::atomic::Ordering::Relaxed);
-    t.view_lists[slot as usize] = list;
-    t.view_planes[slot as usize] = planes;
+    }
 }
 
 /// The hides of the views' closes: by the plane test, and after a root change.
 static CLOSE_HIDES: [core::sync::atomic::AtomicU64; 2] = [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
+/// The entries that the views' closes visited.
+static CLOSE_VISITS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// A view slot retires: no instance shows in it any more. The helper clears bit v at the
 /// retirement (`EVENT_VIEW_RETIRE`).
 fn forget_view(t: &mut Tables, slot: u8) {
     let bit = 1u32 << slot;
-    for (shape, id) in t.view_lists[slot as usize].drain(..) {
-        if let Some(instance) = t.instances.get_mut(&shape).filter(|instance| instance.id == id) {
-            instance.visible &= !bit;
-            instance.displayed &= !bit;
-            instance.listed &= !bit;
+    let view = slot as usize;
+    for list in &mut t.lists.entries[view] {
+        for (shape, key) in list.drain(..) {
+            if let Some(instance) = t.instances.get_mut(&shape).filter(|instance| instance.list_key == key) {
+                instance.visible &= !bit;
+            }
         }
     }
-    t.view_planes[slot as usize].clear();
+    t.lists.places[view].clear();
+    t.view_planes[view].clear();
 }
 
 /// The work of a destructor of a rendered texture that found a table open
@@ -782,10 +929,11 @@ unsafe fn under_billboard(shape: usize) -> bool {
     matches!(found, Ok(Some(())))
 }
 
-/// A display of the instance in the scene's view `view` in the frame `frame`: the mark
-/// "displayed in v", bit v with its state record when the bit was clear, and the shape in v's
-/// visible list. An instance under a billboard notes the views of the frame.
-unsafe fn show_in_view(instance: &mut Instance, shape: usize, view: u8, frame: u32, lists: &mut [Vec<(usize, u32)>], states: &mut u64) {
+/// A display of the instance in the scene's view `view` in the frame `frame`: bit v with its
+/// state record when the bit was clear, and the shape in v's list of the entries displayed
+/// since its last close ([`ViewLists::show`]). An instance under a billboard notes the views of
+/// the frame.
+unsafe fn show_in_view(instance: &mut Instance, shape: usize, view: u8, frame: u32, lists: &mut ViewLists, states: &mut u64) {
     let bit = 1u32 << view;
     if instance.under_billboard {
         if instance.views_frame != frame {
@@ -799,16 +947,15 @@ unsafe fn show_in_view(instance: &mut Instance, shape: usize, view: u8, frame: u
             instance.frame_views |= bit;
         }
     }
-    instance.displayed |= bit;
     if instance.visible & bit == 0 {
         instance.visible |= bit;
         capture::instance_state(instance.id, true, view);
         *states += 1;
     }
-    if instance.listed & bit == 0 {
-        instance.listed |= bit;
-        lists[view as usize].push((shape, instance.id));
+    if instance.list_key == NO_KEY {
+        instance.list_key = lists.take_key();
     }
+    lists.show(view, shape, instance.list_key);
 }
 
 /// Hides the instance in every view that shows it, with a state record for each. Returns the
@@ -1181,6 +1328,7 @@ pub unsafe fn forget(mt: &MainThread, shape: usize) -> bool {
     let t = &mut *tables_open;
     t.rejected.remove(&shape);
     if let Some(instance) = t.instances.remove(&shape) {
+        t.lists.give_back(instance.list_key);
         t.note_end(&instance, "destroyed");
         if capture::recording() {
             capture::instance_delete(instance.id);
@@ -1620,6 +1768,7 @@ impl Tables {
         mark(shape, false);
         // The record always goes, as in `forget`.
         if let Some(instance) = self.instances.remove(&shape) {
+            self.lists.give_back(instance.list_key);
             self.note_end(&instance, "rejected");
             if capture::recording() {
                 capture::instance_delete(instance.id);
@@ -1736,7 +1885,7 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
             capture::instance_lights(id, lights, ambient);
             t.light_records += 1;
         }
-        show_in_view(instance, shape, t.scene_view, t.frame, &mut t.view_lists, &mut t.states);
+        show_in_view(instance, shape, t.scene_view, t.frame, &mut t.lists, &mut t.states);
         if skinned {
             send_bones(mt, t, shape, id);
         }
@@ -2666,7 +2815,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         t.light_records += 1;
     }
     t.scratch_keys = keys;
-    show_in_view(instance, shape, t.scene_view, t.frame, &mut t.view_lists, &mut t.states);
+    show_in_view(instance, shape, t.scene_view, t.frame, &mut t.lists, &mut t.states);
     t.skipped += 1;
     true
 }
@@ -2958,7 +3107,7 @@ mod tests {
                 let mut tables_open = tables(&mt);
                 let t = &mut *tables_open;
                 let instance = t.instances.get_mut(&shape).expect("a test instance");
-                show_in_view(instance, shape, view, t.frame, &mut t.view_lists, &mut t.states);
+                show_in_view(instance, shape, view, t.frame, &mut t.lists, &mut t.states);
             };
             let mask = |shape: usize| tables(&mt).instances[&shape].visible;
             show(a, 1);
@@ -2970,19 +3119,20 @@ mod tests {
             show(a, 1);
             close_views(&mt, [(1, false)]);
             assert_eq!((mask(a), mask(b)), (0b10, 0));
-            assert_eq!(tables(&mt).view_lists[1], vec![(a, 91)]);
+            assert_eq!(listed_shapes(&mt, 1), vec![a]);
             // A display in a scene that is not a view: view 0 only.
             show(b, 0);
             assert_eq!(mask(b), 0b1);
             // The retirement of view 1.
             forget_views(&mt, &[1]);
-            assert_eq!((mask(a), tables(&mt).view_lists[1].len()), (0, 0));
+            assert_eq!((mask(a), listed_shapes(&mt, 1)), (0, vec![]));
             {
                 let mut tables_open = tables(&mt);
                 let t = &mut *tables_open;
-                t.view_lists[0].retain(|&(shape, _)| shape != b);
-                t.instances.remove(&a);
-                t.instances.remove(&b);
+                for shape in [a, b] {
+                    let instance = t.instances.remove(&shape).expect("a test instance");
+                    t.lists.give_back(instance.list_key);
+                }
                 t.mode = mode;
             }
             capture::test_record_deletes(false);
@@ -2990,8 +3140,189 @@ mod tests {
         }
     }
 
+    /// The shapes in a view's lists.
+    fn listed_shapes(mt: &MainThread, view: u8) -> Vec<usize> {
+        tables(mt).lists.listed(view).into_iter().map(|(shape, _)| shape).collect()
+    }
+
+    /// The shapes of a view's list of the entries not displayed since its last close.
+    fn waiting_shapes(mt: &MainThread, view: u8) -> Vec<usize> {
+        let t = tables(mt);
+        let waiting = t.lists.shown[view as usize] as usize ^ 1;
+        t.lists.entries[view as usize][waiting].iter().map(|&(shape, _)| shape).collect()
+    }
+
+    /// View 0 closes in every frame: a shape displayed in frame n and not in frame n + 1 stays
+    /// visible at the close of n and is hidden at the close of n + 1. Each close visits only
+    /// the entries that waited, and a displayed shape does not wait.
+    #[test]
+    fn a_shape_displayed_in_one_frame_and_not_in_the_next_is_hidden_at_the_next_close() {
+        use core::sync::atomic::Ordering::Relaxed;
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let main = crate::view_slots::MAIN_VIEW;
+            let (a, b) = (0x7925_0000usize, 0x7925_1000usize);
+            let mode = {
+                let mut tables_open = tables(&mt);
+                let t = &mut *tables_open;
+                for (shape, id) in [(a, 81), (b, 82)] {
+                    let mut instance = Instance::new(id, 0, 1, 2, 0, false, false, false);
+                    instance.filled = true;
+                    t.instances.insert(shape, instance);
+                }
+                t.mode.replace(Mode::Gpu)
+            };
+            let show = |shape: usize| {
+                let mut tables_open = tables(&mt);
+                let t = &mut *tables_open;
+                let instance = t.instances.get_mut(&shape).expect("a test instance");
+                show_in_view(instance, shape, main, t.frame, &mut t.lists, &mut t.states);
+            };
+            let mask = |shape: usize| tables(&mt).instances[&shape].visible;
+            // A close of view 0; returns the entries that it visited, which are the entries
+            // that waited.
+            let close = || {
+                let waited = waiting_shapes(&mt, main).len() as u64;
+                let start = CLOSE_VISITS.load(Relaxed);
+                close_views(&mt, [(main, false)]);
+                let visits = CLOSE_VISITS.load(Relaxed) - start;
+                assert_eq!(visits, waited);
+            };
+            // Frame n displays a and b.
+            show(a);
+            show(b);
+            show(a);
+            assert!(!waiting_shapes(&mt, main).iter().any(|&shape| shape == a || shape == b));
+            close();
+            assert_eq!((mask(a), mask(b)), (1, 1));
+            // Frame n + 1 displays only a: b waits and goes at the close.
+            show(a);
+            let waiting = waiting_shapes(&mt, main);
+            assert!(!waiting.contains(&a) && waiting.contains(&b), "{waiting:?}");
+            close();
+            assert_eq!((mask(a), mask(b)), (1, 0));
+            assert!(!listed_shapes(&mt, main).contains(&b));
+            // Frame n + 2 displays nothing: a goes.
+            assert!(waiting_shapes(&mt, main).contains(&a));
+            close();
+            assert_eq!(mask(a), 0);
+            assert!(!listed_shapes(&mt, main).contains(&a));
+            {
+                let mut tables_open = tables(&mt);
+                let t = &mut *tables_open;
+                for shape in [a, b] {
+                    let instance = t.instances.remove(&shape).expect("a test instance");
+                    t.lists.give_back(instance.list_key);
+                }
+                t.mode = mode;
+            }
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// Every entry of the view's lists is at the place that its key names, and no other key has
+    /// a place.
+    fn assert_places(mt: &MainThread, view: u8) {
+        let t = tables(mt);
+        let lists = &t.lists;
+        let mut count = 0;
+        for (list, entries) in lists.entries[view as usize].iter().enumerate() {
+            for (index, &(_, key)) in entries.iter().enumerate() {
+                assert_eq!(lists.place(view, key), (list as u32) << 31 | index as u32, "key {key}");
+                count += 1;
+            }
+        }
+        assert_eq!(lists.places[view as usize].iter().filter(|&&place| place != NOT_LISTED).count(), count);
+    }
+
+    /// A display or an end takes an entry out of its list, and the list's last entry takes its
+    /// index. In a view with four entries the moved entry is displayed, or its shape ends, right
+    /// after, in the same frame and in the next: each entry keeps the place its key names, and
+    /// the closes keep, hide and drop the right shapes.
+    #[test]
+    fn an_entry_moved_by_a_take_out_keeps_its_place() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let view = 5u8;
+            let shapes = [0x7927_0000usize, 0x7927_1000, 0x7927_2000, 0x7927_3000];
+            let [a, b, c, d] = shapes;
+            let mode = {
+                let mut tables_open = tables(&mt);
+                let t = &mut *tables_open;
+                assert!(t.lists.listed(view).is_empty(), "view {view} lists entries of another test");
+                for (shape, id) in shapes.iter().zip(71..) {
+                    let mut instance = Instance::new(id, 0, 1, 2, 0, false, false, false);
+                    instance.filled = true;
+                    t.instances.insert(*shape, instance);
+                }
+                t.mode.replace(Mode::Gpu)
+            };
+            let show = |shape: usize| {
+                let mut tables_open = tables(&mt);
+                let t = &mut *tables_open;
+                let instance = t.instances.get_mut(&shape).expect("a test instance");
+                show_in_view(instance, shape, view, t.frame, &mut t.lists, &mut t.states);
+                drop(tables_open);
+                assert_places(&mt, view);
+            };
+            let mask = |shape: usize| tables(&mt).instances.get(&shape).map(|instance| instance.visible);
+            let bit = Some(1u32 << view);
+            // Frame n: all four; at the close they wait as a, b, c, d.
+            for shape in shapes {
+                show(shape);
+            }
+            close_views(&mt, [(view, false)]);
+            assert_places(&mt, view);
+            assert_eq!(waiting_shapes(&mt, view), vec![a, b, c, d]);
+            // Frame n + 1: a goes out and d takes its index; then d itself is displayed, and c
+            // takes the index; then b ends.
+            show(a);
+            assert_eq!(waiting_shapes(&mt, view), vec![d, b, c]);
+            show(d);
+            assert_eq!(waiting_shapes(&mt, view), vec![c, b]);
+            assert!(forget(&mt, b));
+            assert_places(&mt, view);
+            assert_eq!(waiting_shapes(&mt, view), vec![c]);
+            close_views(&mt, [(view, false)]);
+            assert_places(&mt, view);
+            assert_eq!((mask(a), mask(b), mask(c), mask(d)), (bit, None, Some(0), bit));
+            assert_eq!(waiting_shapes(&mt, view), vec![a, d]);
+            // Frame n + 2: a goes out and d takes its index; then d ends.
+            show(a);
+            assert_eq!(waiting_shapes(&mt, view), vec![d]);
+            assert!(forget(&mt, d));
+            assert_places(&mt, view);
+            assert!(waiting_shapes(&mt, view).is_empty());
+            close_views(&mt, [(view, false)]);
+            assert_places(&mt, view);
+            assert_eq!((mask(a), mask(d)), (bit, None));
+            assert_eq!(listed_shapes(&mt, view), vec![a]);
+            forget_views(&mt, &[view]);
+            assert_places(&mt, view);
+            {
+                let mut tables_open = tables(&mt);
+                let t = &mut *tables_open;
+                for shape in [a, c] {
+                    let instance = t.instances.remove(&shape).expect("a test instance");
+                    t.lists.give_back(instance.list_key);
+                }
+                t.mode = mode;
+            }
+            assert_eq!(capture::test_record_deletes(false), [72, 74]);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
     /// A shape destroyed, and a new one at the same address displayed in the same view before
-    /// the close: the old entry of the view's list is stale, and the new shape stays visible.
+    /// the close: the old shape's entry leaves the view's list with it, and the new shape stays
+    /// visible.
     #[test]
     fn a_new_shape_at_a_freed_address_stays_visible_at_the_close() {
         let _turn = crate::main_thread::TestTurn::take();
@@ -3009,7 +3340,7 @@ mod tests {
                 let mut tables_open = tables(&mt);
                 let t = &mut *tables_open;
                 let instance = t.instances.get_mut(&a).expect("a test instance");
-                show_in_view(instance, a, 1, t.frame, &mut t.view_lists, &mut t.states);
+                show_in_view(instance, a, 1, t.frame, &mut t.lists, &mut t.states);
             };
             let mode = tables(&mt).mode.replace(Mode::Gpu);
             insert(94);
@@ -3019,7 +3350,8 @@ mod tests {
             show();
             close_views(&mt, [(1, false)]);
             assert_eq!(tables(&mt).instances[&a].visible, 0b10);
-            assert_eq!(tables(&mt).view_lists[1], vec![(a, 95)]);
+            let key = tables(&mt).instances[&a].list_key;
+            assert_eq!(tables(&mt).lists.listed(1), vec![(a, key)]);
             forget_views(&mt, &[1]);
             tables(&mt).instances.remove(&a);
             tables(&mt).mode = mode;
@@ -3042,7 +3374,7 @@ mod tests {
         instance.filled = true;
         t.instances.insert(shape, instance);
         let instance = t.instances.get_mut(&shape).expect("a test instance");
-        show_in_view(instance, shape, slot, t.frame, &mut t.view_lists, &mut t.states);
+        show_in_view(instance, shape, slot, t.frame, &mut t.lists, &mut t.states);
         slot
     }
 
@@ -3118,14 +3450,14 @@ mod tests {
             {
                 let mut tables_open = tables(&mt);
                 let t = &mut *tables_open;
-                t.view_lists[2].push((a, 100));
+                t.lists.push(2, 0, a, 100);
                 let mut instance = Instance::new(101, 0, 1, 2, 0, false, false, false);
                 instance.visible = 0b100;
                 t.instances.insert(a, instance);
             }
             forget_views(&mt, &[2]);
             assert_eq!(tables(&mt).instances[&a].visible, 0b100);
-            assert!(tables(&mt).view_lists[2].is_empty());
+            assert!(listed_shapes(&mt, 2).is_empty());
             tables(&mt).instances.remove(&a);
             crate::shadow::restore_main_thread(before);
         }
@@ -3137,7 +3469,7 @@ mod tests {
     #[test]
     fn an_instance_under_a_billboard_in_two_views_of_a_frame_is_counted_once() {
         use core::sync::atomic::Ordering::Relaxed;
-        let mut lists = vec![Vec::new(); VIEW_SLOTS];
+        let mut lists = ViewLists::new();
         let mut states = 0;
         let mut under = Instance::new(97, 0, 1, 2, 0, false, false, false);
         under.under_billboard = true;
