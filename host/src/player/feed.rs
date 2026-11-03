@@ -200,9 +200,13 @@ impl Player {
                 let flags = word(data, 4);
                 let fog = (flags & 32 != 0 && data.len() >= 24).then(|| core::array::from_fn(|i| word(data, 8 + i * 4)));
                 self.retained_values = Some((word(data, 0), fog));
+                // Flag 128, with the fog off: the colour of the fog property, one word in the
+                // place of the fog.
+                let off_color = (fog.is_none() && flags & 128 != 0 && data.len() >= 12).then(|| word(data, 8));
+                self.fog_off_color = off_color.unwrap_or(0);
                 // Flag 64: the sun of the frame, the 26 words of the weather's sky light as
                 // the engine gives them to the device, after the fog.
-                let at = if fog.is_some() { 24 } else { 8 };
+                let at = if fog.is_some() { 24 } else if off_color.is_some() { 12 } else { 8 };
                 self.retained_sun = (flags & 64 != 0 && data.len() >= at + 104).then(|| data[at..at + 104].try_into().unwrap());
             }
             tag::INSTANCE_DRAW if data.len() >= 12 => {

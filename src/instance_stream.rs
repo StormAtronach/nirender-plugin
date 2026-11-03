@@ -1993,7 +1993,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         t.scene_frame = frame;
         t.scene_values = (ambient, fog);
         let sun = scene_sun(mt, t);
-        capture::retained_scene(ambient, fog, sun.as_ref());
+        capture::retained_scene(ambient, fog, crate::shape_stream::fog_color_of(cell_fog), sun.as_ref());
     } else if t.scene_frame == frame && t.scene_values != (ambient, fog) {
         t.scene_mixed += 1;
     }
@@ -2066,7 +2066,7 @@ pub unsafe fn world_scene(mt: &MainThread, camera_root: usize) {
     t.scene_frame = frame;
     t.scene_values = (ambient, fog);
     let sun = scene_sun(mt, t);
-    capture::retained_scene(ambient, fog, sun.as_ref());
+    capture::retained_scene(ambient, fog, crate::shape_stream::fog_color_of(cell_fog), sun.as_ref());
 }
 
 /// `TES3Game` and its world root (MWSE `TES3Game.h`).

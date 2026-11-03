@@ -181,8 +181,9 @@ pub mod tag {
     pub const INSTANCE_STATE: u32 = 27;
     /// The values of the frame for the draws of the instances the helper draws from its
     /// table: the ambient light (`D3DRS_AMBIENT`), flags (32: the fog follows), the fog of
-    /// a draw (4 words, see `FOG` of the shape record). One in a frame, at the first such
-    /// shape the engine reaches.
+    /// a draw (4 words, see `FOG` of the shape record), or with the fog off the colour of the
+    /// property ([`super::SCENE_FOG_COLOR`]). One in a frame, at the first such shape the engine
+    /// reaches.
     pub const RETAINED_SCENE: u32 = 28;
     /// The bones of a skinned instance the helper draws from its table (mode gpu), in each
     /// frame that the engine displays it: id, the number of bones, the world
@@ -2053,11 +2054,25 @@ pub unsafe fn instance_state(id: u32, visible: bool) {
 /// sky light as the engine gives them to the device (`D3DLIGHT8`), after the fog.
 pub const SCENE_SUN: u32 = 64;
 
-/// The values of the frame for the retained draws. See [`tag::RETAINED_SCENE`].
-pub unsafe fn retained_scene(ambient: u32, fog: Option<[u32; 4]>, sun: Option<&[u32; 26]>) {
+/// The flag of a `RETAINED_SCENE` record with the fog off that carries the colour of the fog
+/// property: one word in the place of the fog. The property keeps its colour while it is off.
+pub const SCENE_FOG_COLOR: u32 = 128;
+
+/// The values of the frame for the retained draws. See [`tag::RETAINED_SCENE`]. `fog_color` is
+/// the colour of the fog property, which the record carries only with the fog off.
+pub unsafe fn retained_scene(ambient: u32, fog: Option<[u32; 4]>, fog_color: Option<u32>, sun: Option<&[u32; 26]>) {
     let _lock = crate::sync::device_lock();
-    let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 } | if sun.is_some() { SCENE_SUN } else { 0 };
-    write(tag::RETAINED_SCENE, &[words(&[ambient, flags]), words(fog.as_ref().map_or(&[], |f| &f[..])), words(sun.map_or(&[], |s| &s[..]))]);
+    let fog_color = if fog.is_none() { fog_color } else { None };
+    let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 } | if fog_color.is_some() { SCENE_FOG_COLOR } else { 0 } | if sun.is_some() { SCENE_SUN } else { 0 };
+    write(
+        tag::RETAINED_SCENE,
+        &[
+            words(&[ambient, flags]),
+            words(fog.as_ref().map_or(&[], |f| &f[..])),
+            words(fog_color.as_slice()),
+            words(sun.map_or(&[], |s| &s[..])),
+        ],
+    );
 }
 
 /// A light record. See [`tag::LIGHT`]. The word after the device values is the radius of the

@@ -748,6 +748,9 @@ struct Player {
     /// light and the fog of the frame for their draws (`RETAINED_SCENE`).
     retained: RetainedSet,
     retained_values: Option<(u32, Option<[u32; 4]>)>,
+    /// The colour of the game's fog property in a scene record with the fog off; 0 from an
+    /// older capture.
+    fog_off_color: u32,
     /// The table's lights as the extension shaded them for the main view of this frame, and
     /// what the shade gives the scene: made before the clusters of the lights of the world
     /// (`MGE_XE_LIGHTS=world`), then taken by `draw_retained_main`.

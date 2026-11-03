@@ -14,6 +14,7 @@ impl Player {
             retained_on: switches().retained,
             retained: RetainedSet::new(),
             retained_values: None,
+            fog_off_color: 0,
             table_shaded: None,
             stream: Stream {
                 view: [0.0; 16],

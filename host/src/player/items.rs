@@ -389,7 +389,7 @@ impl Player {
         // The fill mode: the scene record's flag, from the game's own wireframe property; only
         // in an older capture the last draw's (D3DFILL_WIREFRAME is 2), which a mod's mesh with
         // a wireframe property can give.
-        let (fog_on, fog) = world_fog(self.retained_values, self.stream.fog);
+        let (fog_on, fog) = world_fog(self.retained_values, self.fog_off_color, self.stream.fog);
         WorldFacts {
             target_size: self.size_of_target(),
             frame: self.renderer.counts.frames as u64,
@@ -877,12 +877,12 @@ impl Player {
 
 /// Whether the fog of the world is on, and its words: the colour, the start, the end, the range
 /// flag. The scene record has the game's own fog property, which the plugin reads each frame: a
-/// record without fog means that the property is off. Only without a record (an older capture),
-/// the fog of the last draw with fog.
-fn world_fog(record: Option<(u32, Option<[u32; 4]>)>, last_draw: [u32; 4]) -> (bool, [u32; 4]) {
+/// record without fog means that the property is off, with its colour kept and no distances.
+/// Only without a record (an older capture), the fog of the last draw with fog.
+fn world_fog(record: Option<(u32, Option<[u32; 4]>)>, off_color: u32, last_draw: [u32; 4]) -> (bool, [u32; 4]) {
     match record {
         Some((_, Some(fog))) => (true, fog),
-        Some((_, None)) => (false, [0; 4]),
+        Some((_, None)) => (false, [off_color, 0, 0, 0]),
         None => (true, last_draw),
     }
 }
@@ -936,19 +936,20 @@ mod world_fog_tests {
 
     const LAST_DRAW: [u32; 4] = [1, 2, 3, 0];
     const SCENE: [u32; 4] = [4, 5, 6, 1];
+    const OFF_COLOR: u32 = 7;
 
     #[test]
     fn a_record_with_fog_gives_its_fog() {
-        assert_eq!(world_fog(Some((0, Some(SCENE))), LAST_DRAW), (true, SCENE));
+        assert_eq!(world_fog(Some((0, Some(SCENE))), OFF_COLOR, LAST_DRAW), (true, SCENE));
     }
 
     #[test]
-    fn a_record_with_the_fog_off_keeps_it_off() {
-        assert_eq!(world_fog(Some((0, None)), LAST_DRAW), (false, [0; 4]));
+    fn a_record_with_the_fog_off_keeps_it_off_with_the_colour_of_the_property() {
+        assert_eq!(world_fog(Some((0, None)), OFF_COLOR, LAST_DRAW), (false, [OFF_COLOR, 0, 0, 0]));
     }
 
     #[test]
     fn only_no_record_falls_back_to_the_last_draw() {
-        assert_eq!(world_fog(None, LAST_DRAW), (true, LAST_DRAW));
+        assert_eq!(world_fog(None, OFF_COLOR, LAST_DRAW), (true, LAST_DRAW));
     }
 }

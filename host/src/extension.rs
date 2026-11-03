@@ -81,7 +81,8 @@ pub struct SceneView<'a> {
     /// fill mode of the game's last draw.
     pub wireframe: bool,
     /// The game's own fog property is on, as the plugin's scene record says. A mod can turn it
-    /// off; the fog values below are then 0. In an older capture without the record, true.
+    /// off; `fog_color` then stays the colour of the property, as a mix with the distant land's
+    /// fog needs it, and the distances are 0. In an older capture without the record, true.
     pub fog_on: bool,
     /// The fog of the game: its colour, and the distances of its start and its end.
     pub fog_color: [f32; 4],
