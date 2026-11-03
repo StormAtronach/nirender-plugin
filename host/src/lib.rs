@@ -254,6 +254,8 @@ enum Item {
     Draw(Rc<Draw>),
     Screen(ScreenDraw),
     WorldStart(Box<WorldFacts>),
+    /// The table's main view draws, with no start of the world (see [`plan::Step::MainView`]).
+    MainView(Box<WorldFacts>),
     WorldEnd(Box<WorldFacts>),
     /// The sorted blends of the retained table and the blends of the engine's path that
     /// waited for this item: the generation names the item within the frame.

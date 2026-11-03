@@ -180,7 +180,7 @@ impl Player {
                 if !in_target && scene::world_camera(kind) {
                     self.world_camera_id = camera;
                 }
-                let camera_is_world = scene::world_camera(kind) || (kind == scene::SCENE_OTHER && camera != 0 && camera == self.world_camera_id);
+                let camera_is_world = self.views.camera_is_world(kind, camera, self.world_camera_id);
                 self.views.scene_begin(kind, in_target, camera_is_world);
                 for step in self.plan_now().scene_begin_view(kind, ViewKind::classify(in_target, camera_is_world)) {
                     self.plan_step(step);

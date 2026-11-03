@@ -182,6 +182,15 @@ impl Views {
         self.ui_seen = false;
     }
 
+    /// The camera of a scene is the world camera: the scene is one of the world camera's
+    /// scenes, or a [`scene::SCENE_OTHER`] with the world camera `world_camera`. The second
+    /// case needs the places of the view groups in the stream (`on`): a stream without them
+    /// (a capture from before D82) has no shapes to draw for such a scene, so the plan keeps
+    /// treating it as another screen.
+    pub(crate) fn camera_is_world(&self, kind: u32, camera: u32, world_camera: u32) -> bool {
+        scene::world_camera(kind) || (self.on && kind == scene::SCENE_OTHER && camera != 0 && camera == world_camera)
+    }
+
     /// The start of a scene. `in_target`: the game draws into a rendered texture of the helper;
     /// `camera_is_world`: the camera of the scene is the world camera. True when the scene has
     /// a view of its own.

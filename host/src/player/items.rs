@@ -130,6 +130,7 @@ impl Player {
                 Item::WalkPlaces(_) => Some(MAIN_VIEW_WALK),
                 Item::ViewPlaces(group, _) | Item::ViewSorted(group) => Some(self.view_group_name(*group)),
                 Item::SortedBlends(_) => Some(MAIN_VIEW_SORTED),
+                Item::MainView(_) => Some(MAIN_VIEW_OPAQUE),
                 Item::Replace(..) => Some("a class of draws (extension: water)"),
                 Item::HeldHere(..) => Some("a held draw in place (extension)"),
                 Item::Target(_) | Item::Clear(..) | Item::Viewport(_) => group.as_ref().map(|(name, _)| *name),
@@ -166,6 +167,7 @@ impl Player {
                         Item::Viewport(_) => "viewport",
                         Item::Screen(_) => "screen",
                         Item::WorldStart(_) => "world-start",
+                        Item::MainView(_) => "main-view",
                         Item::WorldEnd(_) => "world-end",
                         Item::SortedBlends(_) => "sorted-blends",
                         Item::WalkPlaces(_) => "walk-places",
@@ -205,6 +207,7 @@ impl Player {
                     self.renderer.counts.screen_draws += 1;
                 }
                 Item::WorldStart(facts) => self.start_world(&facts),
+                Item::MainView(facts) => self.timed(MAIN_VIEW_OPAQUE, 0, |player| player.draw_retained_main(&facts)),
                 Item::WorldEnd(facts) => self.end_world(&facts),
                 Item::SortedBlends(generation) => {
                     self.timed(MAIN_VIEW_SORTED, 0, |player| player.draw_retained_sorted(generation));
@@ -312,6 +315,11 @@ impl Player {
                 // a scene there.
                 facts.own_root = self.plan_now().main_other_root() && self.views.on;
                 self.items.push(Item::WorldStart(Box::new(facts)));
+            }
+            plan::Step::MainView => {
+                let facts = self.world_facts(true);
+                self.renderer.counts.world_after_main_view += 1;
+                self.items.push(Item::MainView(Box::new(facts)));
             }
             plan::Step::ReleaseHeld => self.items.append(&mut self.held_draws),
             plan::Step::SortedBlends(generation) => self.items.push(Item::SortedBlends(generation)),

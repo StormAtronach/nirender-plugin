@@ -12,6 +12,9 @@ use crate::ViewKind;
 pub(crate) enum Step {
     /// The world of the frame starts here: the extension draws before the world.
     StartWorld,
+    /// The table's main view draws here, in a world scene whose world a main view with a
+    /// root of its own began earlier in the frame: the world does not start again.
+    MainView,
     /// The draws held for the start of the world go into the items, in their order: the
     /// extension draws its distant land under them and starts the depth of the world, so a
     /// draw before the start would lose its depth.
@@ -43,6 +46,11 @@ pub(crate) struct Plan {
     pub(crate) view: ViewKind,
     pub(crate) world_begun: bool,
     pub(crate) world_ended: bool,
+    /// The world of the frame began in a main view with a root of its own, not in the world
+    /// scene.
+    world_by_other: bool,
+    /// [`Step::MainView`] was given in this frame.
+    main_view_given: bool,
     /// A draw of a sky class went into the back buffer in the world scene of this frame.
     pub(crate) sky_seen: bool,
     /// The number of sorted-blends items of the frame so far: the generation of the next.
@@ -89,6 +97,12 @@ impl Plan {
         if kind == scene::SCENE_UI {
             steps.push(Step::Post);
         }
+        // The world scene after a main view with a root of its own: the world began there and
+        // did not wait for this scene's shapes, so the table's main view draws now.
+        if kind == scene::SCENE_WORLD && view == ViewKind::Main && self.world_by_other && !self.main_view_given {
+            self.main_view_given = true;
+            steps.push(Step::MainView);
+        }
         steps
     }
 
@@ -128,6 +142,7 @@ impl Plan {
         // the end of the scene, so that the extension draws its distant land under the sky.
         if extension && world_scene && !self.world_begun {
             self.world_begun = true;
+            self.world_by_other = main_other;
             steps.push(Step::StartWorld);
         }
         if kind == scene::SCENE_WORLD || (main_other && self.world_begun) {
@@ -182,6 +197,7 @@ impl Plan {
     pub(crate) fn view_first_place(&mut self, extension: bool, in_back_buffer: bool) -> Vec<Step> {
         if extension && in_back_buffer && self.main_other_root() && !self.world_begun {
             self.world_begun = true;
+            self.world_by_other = true;
             return vec![Step::StartWorld, Step::ReleaseHeld];
         }
         Vec::new()
@@ -216,6 +232,7 @@ impl Plan {
         // at its first draw.
         if extension && (!walk_marked || main_other) && !self.world_begun && world_scene && !sky && (self.sky_seen || sky_hidden || main_other) {
             self.world_begun = true;
+            self.world_by_other = main_other;
             steps.push(Step::StartWorld);
             steps.push(Step::ReleaseHeld);
         }
@@ -257,6 +274,7 @@ impl Plan {
 mod tests {
     use super::scene::{SCENE_FIRST_PERSON, SCENE_OTHER, SCENE_SORTED_ALPHA, SCENE_UI, SCENE_WATER, SCENE_WORLD};
     use super::{Plan, Step};
+    use crate::engine::views::Views;
     use crate::ViewKind;
 
     /// A world scene with the sky first, then the world.
@@ -583,6 +601,47 @@ mod tests {
         let mut plan = Plan::default();
         plan.scene_begin_view(SCENE_OTHER, ViewKind::Main);
         assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::StartWorld, Step::ReleaseHeld, Step::EndWorld]);
+    }
+
+    /// A world scene that comes after a main view with a root of its own: the world began in
+    /// the earlier scene, so the world scene gets the table's main view and no second start.
+    #[test]
+    fn a_world_scene_after_a_main_view_with_a_root_of_its_own_still_draws_the_main_view() {
+        let mut plan = Plan::default();
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main);
+        plan.view_first_place(true, true);
+        plan.scene_end(true, true, true, false, false);
+        assert_eq!(plan.scene_begin(SCENE_WORLD), vec![Step::MainView]);
+        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![], false));
+        plan.scene_end(true, true, true, false, false);
+        // Once in a frame.
+        assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
+        // A world scene that began the world itself needs no such step.
+        plan.frame_start();
+        assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
+        plan.world_draw(true, true, false, true, false);
+        plan.scene_end(true, true, true, false, false);
+        assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
+    }
+
+    /// A stream with no places of the view groups (a capture from before D82) has the camera
+    /// word but nothing to draw for an Isolate Subject frame: its scene stays another screen
+    /// and starts no world.
+    #[test]
+    fn an_old_format_isolate_frame_starts_no_world() {
+        let kind_of = |views: &Views| ViewKind::classify(false, views.camera_is_world(SCENE_OTHER, 7, 7));
+        let old = Views::default();
+        let mut plan = Plan::default();
+        assert_eq!(plan.scene_begin_view(SCENE_OTHER, kind_of(&old)), vec![]);
+        assert!(!plan.main_other_root());
+        assert_eq!(plan.view_first_place(true, true), vec![]);
+        assert_eq!(plan.world_draw(true, true, false, false, true), (vec![], false));
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![]);
+        assert!(!plan.world_begun);
+        // The same frame in a stream with the places is a main view.
+        let mut new = Views::default();
+        new.on = true;
+        assert_eq!(kind_of(&new), ViewKind::Main);
     }
 
     /// The additions of MGE XE are the main view's: another screen, a picture and a frame
