@@ -63,12 +63,24 @@ def mwse_config_source():
     return next((path for path in candidates if os.path.isfile(path)), None)
 
 
-def stage_background_config(deployment):
-    """MWSE's setting RunInBackground on for the run (the owner, 2026-10-20: MWSE has the setting,
-    the mod patches nothing). A copy of the instance's MWSE.json with the key true goes into the
-    run mod, over the instance's copy. MWSE writes the file back at its start, into the same
-    place; restore() removes it. A copy in overwrite would win over the run mod's: the runner
-    stops and says so, the owner moves it."""
+def mwse_run_settings(foreground, full_dump):
+    """The MWSE settings that a run sets in its copy of MWSE.json: RunInBackground for a background
+    run (the owner, 2026-10-20: MWSE has the setting, the mod patches nothing), and
+    CreateFullMinidumps with --full-dump (MWSE's dump at a crash then holds the whole memory, about
+    0.8 GB, so that the objects and the heap of an exit crash can be read). Empty: no copy."""
+    settings = {}
+    if not foreground:
+        settings["RunInBackground"] = True
+    if full_dump:
+        settings["CreateFullMinidumps"] = True
+    return settings
+
+
+def stage_mwse_config(deployment, settings):
+    """A copy of the instance's MWSE.json with `settings` (`mwse_run_settings`) goes into the run
+    mod, over the instance's copy; the instance's own file does not change. MWSE writes the file
+    back at its start, into the same place; restore() removes it. A copy in overwrite would win
+    over the run mod's: the runner stops and says so, the owner moves it."""
     path = os.path.join(harness.SPEC_DIR, "MWSE.json")
     if os.path.exists(path):
         raise SystemExit("refusing to overwrite existing %s: a run is going, or one left it behind" % path)
@@ -76,12 +88,13 @@ def stage_background_config(deployment):
     if source and source.startswith(os.path.join(harness.MO2_ROOT, "overwrite")):
         raise SystemExit("%s is in overwrite and would win over the run's copy: move it into a mod" % source)
     values = json.load(open(source, encoding="utf-8")) if source else {}
-    values["RunInBackground"] = True
+    values.update(settings)
     os.makedirs(harness.SPEC_DIR, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(values, fh, indent=2)
     deployment.create(path)
-    print("  MWSE.json with RunInBackground = true <- %s" % (source or "the defaults (no MWSE.json in the instance)"))
+    named = ", ".join("%s = true" % name for name in settings)
+    print("  MWSE.json with %s <- %s" % (named, source or "the defaults (no MWSE.json in the instance)"))
 
 
 def loaded_lua(text):
@@ -223,16 +236,17 @@ class Run:
         spec.update(values)
         return spec
 
-    def launch(self, spec, timeout, tag, mods=(), disable=(), facts=()):
+    def launch(self, spec, timeout, tag, mods=(), disable=(), facts=(), full_dump=False):
         """Starts the game with `spec` and follows it until the scenario says DONE.
 
         `mods` are the other mods of the run, as (name, {path in the mod: source file}); the
         names start with harness.RUN_MOD_PREFIX. `disable` are mods of the instance that are off
         for the run. The mod list is as it was after the run. `facts` are more lines for the record
-        of what the run ran (`harness.write_setup`).
+        of what the run ran (`harness.write_setup`). `full_dump`: MWSE writes a full-memory dump at a
+        crash (`mwse_run_settings`).
 
         A run is a background run unless NIRENDER_FOREGROUND=1 (the owner, 2026-10-20): the
-        runner stages MWSE.json with RunInBackground = true (stage_background_config) and does
+        runner stages MWSE.json with RunInBackground = true (stage_mwse_config) and does
         not bring the game window forward. A run with real clicks or OBS window capture needs
         the foreground.
 
@@ -244,8 +258,9 @@ class Run:
         print("launching (budget %ds, results in %s)" % (timeout, self.dir), flush=True)
         try:
             deployment.write_spec(SPEC_NAME, spec)
-            if not foreground:
-                stage_background_config(deployment)
+            settings = mwse_run_settings(foreground, full_dump)
+            if settings:
+                stage_mwse_config(deployment, settings)
             deployment.enable_mod(MOD_NAME)
             for name, files in mods:
                 deployment.use_mod(name, files)
