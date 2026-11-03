@@ -14,6 +14,7 @@ local mock = {}
 
 local TEXTURE_SIZE = 256
 local PROOF_CLICK = 30
+local MIRROR_YAW = math.rad(45)
 
 local function say(format, ...)
     mwse.log("[nirender.mirror_mock] " .. format, ...)
@@ -32,8 +33,19 @@ local function mirror(reference, proofFolder)
     local world = camera.scene
     local clicks = 0
 
+    -- The mirror camera: the world camera turned MIRROR_YAW round the group (a place and a facing), so that the billboard in
+    -- the group turns for a different camera in the click than in the world's walk (D82 stage 2b). The world camera's own
+    -- place and facing come back after the click.
     local function click()
         local original = camera.scene
+        local oldTranslation, oldRotation = camera.translation:copy(), camera.rotation:copy()
+        local centre = subject.worldTransform.translation
+        local turn = tes3matrix33.new()
+        turn:toRotationZ(MIRROR_YAW)
+        camera.translation = centre + turn * (oldTranslation - centre)
+        camera.rotation = turn * oldRotation
+        camera:update()
+        local mirrorAt = camera.worldTransform.translation:copy()
         yellow.appCulled = true
         subject:update()
         camera.scene = subject
@@ -44,6 +56,9 @@ local function mirror(reference, proofFolder)
         camera.renderer:setRenderTarget(nil)
         local sceneWasSubject = camera.scene == subject
         camera.scene = original
+        camera.translation = oldTranslation
+        camera.rotation = oldRotation
+        camera:update()
         yellow.appCulled = false
         subject:update()
         -- The proof of the click, after the restore so that a fault in it leaves the world camera as it was: the
@@ -54,6 +69,9 @@ local function mirror(reference, proofFolder)
             local path = proofFolder .. "/level4-mirror-texture.tga"
             pixels:exportTGA(path)
             say("proof at click %d: readback %s, texture written to %s; camera scene was the subject: %s", clicks, tostring(read), path, tostring(sceneWasSubject))
+            local worldAt = camera.worldTransform.translation
+            say("proof at click %d: the mirror camera stood at %s, %.0f units from the world camera at %s; the group is at %s", clicks, tostring(mirrorAt),
+                mirrorAt:distance(worldAt), tostring(worldAt), tostring(subject.worldTransform.translation))
         end
         clicks = clicks + 1
     end
