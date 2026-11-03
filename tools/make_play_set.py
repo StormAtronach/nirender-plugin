@@ -455,10 +455,17 @@ def smoke_live(tree, folder, plugin_dll, notes):
     return run
 
 
+def gate_now(tree, folder, when):
+    """The set's own folder of the gate's pictures, a run folder of the tree: another gate at the
+    same time (a merge step's, another set's) writes elsewhere, never in the baseline folder."""
+    return os.path.join(tree, "results", time.strftime("%Y%m%d-%H%M%S", when) + "-gate-" + os.path.basename(folder))
+
+
 def smoke_gate(tree, folder):
     """The replays against the accepted pictures, with no game. Its exit code is honest since 849c9b3."""
     say("smoke: the gate")
-    done = subprocess.run([sys.executable, "-I", "tools/validate_retained.py", "baseline", "--mge-build", folder, "--baseline", BASELINE],
+    now = gate_now(tree, folder, time.localtime())
+    done = subprocess.run([sys.executable, "-I", "tools/validate_retained.py", "baseline", "--mge-build", folder, "--baseline", BASELINE, "--now", now],
                           cwd=tree, capture_output=True, text=True, errors="replace")
     keep = os.path.join(KEPT_RUNS % datetime.date.today().isoformat(), "gate-%s.txt" % os.path.basename(folder))
     os.makedirs(os.path.dirname(keep), exist_ok=True)
@@ -562,6 +569,11 @@ def current_set_commits(owner_local_bat):
 # --- the tests of the pure parts ------------------------------------------------------------
 
 def self_test():
+    # Two sets' gates at the same second write into two folders, outside the baseline folder.
+    when = time.localtime()
+    first, second = gate_now("tree", "E:/sets/f202", when), gate_now("tree", "E:/sets/f203", when)
+    assert first != second and first.endswith("-gate-f202") and os.path.dirname(first) == os.path.join("tree", "results"), (first, second)
+    assert not os.path.normcase(os.path.abspath(first)).startswith(os.path.normcase(os.path.abspath(BASELINE)) + os.sep)
     # A refusal for lack of room ends each wait with a code. A wait for another holder goes on.
     class Slots:
         DONE, REFUSED, QUEUED = 0, 1, 3

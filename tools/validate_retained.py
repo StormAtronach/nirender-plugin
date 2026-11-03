@@ -256,8 +256,13 @@ def self_test():
     # The folders of the baseline stage. With --now, it writes nothing in the baseline folder.
     base, other = os.path.join("x", "base"), os.path.join("x", "other")
     assert picture_folders(base, True, None) == (os.path.join(base, "accepted"), os.path.join(base, "tour", "accepted"))
-    assert picture_folders(base, False, None) == (os.path.join(base, "now"), os.path.join(base, "tour", "now"))
     assert picture_folders(base, False, other) == (other, os.path.join(other, "tour"))
+    # Two gates at once with no --now: two folders of their own, outside the baseline folder.
+    when = time.localtime()
+    results = os.path.join("x", "results")
+    first, second = own_now(results, when, 4100), own_now(results, when, 4200)
+    assert first != second and os.path.dirname(first) == results, (first, second)
+    assert now_problem(os.path.join(results, "baseline-records"), False, first) is None, first
     assert now_problem(base, False, None) is None and now_problem(base, True, None) is None and now_problem(base, False, other) is None
     assert now_problem(base, False, os.path.join("x", "base2")) is None, "a name that only starts the same is outside"
     assert "--accept" in now_problem(base, True, other)
@@ -267,12 +272,19 @@ def self_test():
 
 
 def picture_folders(baseline, accept, now):
-    """Where the baseline stage writes: the folder of the pictures, and the folder of the tour's."""
+    """Where the baseline stage writes: the folder of the pictures, and the folder of the tour's.
+    A compare writes into `now`: [`own_now`] when the call names none."""
     if accept:
         return os.path.join(baseline, "accepted"), os.path.join(baseline, "tour", "accepted")
-    if now:
-        return now, os.path.join(now, "tour")
-    return os.path.join(baseline, "now"), os.path.join(baseline, "tour", "now")
+    assert now, "a compare writes into a folder of its own"
+    return now, os.path.join(now, "tour")
+
+
+def own_now(results, when, pid):
+    """The folder of a gate's pictures when the call names none: a run folder of its own in
+    `results`, by the time and the process, so that two gates at once never write the same
+    files (the play set's gate failed with WinError 32 on the shared `now` folder)."""
+    return os.path.join(results, time.strftime(RUN_TIME, when) + "-gate-%d" % pid)
 
 
 def now_problem(baseline, accept, now):
@@ -458,7 +470,7 @@ def main():
     ap.add_argument("--places", default="seyda,narsis")
     ap.add_argument("--baseline", default=os.path.join(REPO, "results", "baseline-records"), help="the folder of the baseline stage")
     ap.add_argument("--accept", action="store_true", help="the baseline stage writes the accepted pictures and compares nothing")
-    ap.add_argument("--now", default=None, help="the folder of the baseline stage's pictures, outside the baseline folder; without it, `now` in the baseline folder")
+    ap.add_argument("--now", default=None, help="the folder of the baseline stage's pictures, outside the baseline folder; without it, a run folder of its own in results")
     ap.add_argument("--gpu-time", action="store_true", help="the helper writes GPU time stamps in the only stage")
     ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off for the runs")
     ap.add_argument("--weather", type=int, default=None, help="the weather of the runs, 0 clear to 9 blizzard (the game's without this)")
@@ -471,6 +483,9 @@ def main():
     if problem:
         print("  FAIL " + problem, flush=True)
         return 1
+    if "baseline" in args.stages and not args.accept and not args.now:
+        args.now = own_now(os.path.join(REPO, "results"), time.localtime(), os.getpid())
+        print("the pictures of this gate: %s" % args.now, flush=True)
     if args.disable_mod:
         RUNNER_ARGS.extend(["--disable-mod", args.disable_mod])
     if args.weather is not None:
