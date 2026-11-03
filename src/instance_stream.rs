@@ -1797,7 +1797,7 @@ pub enum Route {
     /// into a rendered texture of the helper (a save's picture, a mod's mirror), or a scene of
     /// another camera, or of the world camera on another root, into the back buffer.
     Places,
-    /// The engine draws them: the scene of [`ENGINE_PATH_SCENES`] at this index, or with
+    /// The engine draws them: the scene of `ENGINE_PATH_SCENES` at this index, or with
     /// the index 4 a target that the helper does not have.
     Engine(usize),
 }
