@@ -58,6 +58,13 @@ a cylinder), a lit material, a base texture of the level, and the property under
     ctrl_above_b<m> the controller on the node above the billboard, which moves the shape too
     ctrl_between the controller on the node between two billboards, the shape under the second
     ctrl_under_b1 the controller on the effect, the shape under the billboard with it
+    level4_mirror a pane and, 260 units west of it, a group `subject` of a red box, a green
+                 cylinder and a yellow box (`make_level4`); at its stop the mock clicks the
+                 world camera into a rendered texture of the group, with the yellow box hidden
+                 around the click, and sets the texture on the pane
+    level4_isolate the same group alone; at its stop the mock does what Joy of Painting's
+                 Isolate Subject does: the camera's scene is the group, MGE XE's distant land,
+                 statics and water are off, and the water of the game is hidden
 
 The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
 write of the level's own files. The texture effect is attached as the level's exhibits do:
@@ -324,6 +331,76 @@ def make_tree(name, kind, children, fields=None, flags=8):
         mid["children"].append(len(blocks))
         blocks.append(shape)
         blocks.append(tri_shape_data(geometry))
+    return write_file(name, blocks)
+
+
+def quad(width, height):
+    """One face of `box`, the one that looks south (normal -y), `width` across and `height` high,
+    the texture over it from the top left."""
+    w, h = width / 2.0, height / 2.0
+    vertices = [[-w, 0.0, -h], [w, 0.0, -h], [w, 0.0, h], [-w, 0.0, h]]
+    return vertices, [[0.0, -1.0, 0.0]] * 4, [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]], [[0, 1, 2], [0, 2, 3]]
+
+
+def coloured_material(colour, emissive):
+    """A lit colour with a share of itself as the glow, so that it shows in the level's dim light.
+    With the colour black and the glow white the shape shows its texture as it is."""
+    b = material()
+    b.update({"ambient": list(colour), "diffuse": list(colour), "emissive": list(emissive)})
+    return b
+
+
+# The names that `mod/MWSE/mods/nirender/mirror_mock.lua` looks for in the files of level 4.
+LEVEL4_SUBJECT = "subject"
+LEVEL4_PANE = "pane"
+LEVEL4_YELLOW = "yellow box"
+
+
+def make_level4(name, pane):
+    """Level 4 of the NIF tests, the exhibits of a mod that draws the world through a camera. A
+    group `subject` of a red box, a green cylinder and a yellow box (the shape `yellow box`),
+    side by side; with `pane` the group stands 260 units west of a pane at the origin, which the
+    mock sets a rendered texture on (a niRenderedTexture of the subject, with the yellow box
+    hidden around the click); without it the group stands at the origin (the subject that the
+    mock isolates, as Joy of Painting's Isolate Subject does). The blocks: 0 root, then the
+    texture of the group (a property and a source) and the shapes, then the pane with a texture
+    of its own."""
+    blocks = [node("@_nifx " + name)]
+
+    def add(block):
+        blocks.append(block)
+        return len(blocks) - 1
+
+    subject = add(node(LEVEL4_SUBJECT))
+    group_texturing = add(texturing(len(blocks) + 1))
+    add(source_texture(BASE_TEXTURE))
+    b = box(60.0)
+    c = cylinder(30.0, 60.0)
+    check_winding("level4 box", b)
+    check_winding("level4 cylinder", c)
+    members = [
+        ("red box", b, [-90.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+        ("green cylinder", c, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        (LEVEL4_YELLOW, b, [90.0, 0.0, 0.0], [1.0, 0.9, 0.0]),
+    ]
+    for member, geometry, translation, colour in members:
+        data = add(tri_shape_data(geometry))
+        shade = add(coloured_material(colour, [0.35 * k for k in colour]))
+        shape = av_object(member, 0)
+        shape.update({"type": "NiTriShape", "data": data, "skin": -1, "properties": [shade, group_texturing], "translation": list(translation)})
+        blocks[subject]["children"].append(add(shape))
+    blocks[0]["children"].append(subject)
+    if pane:
+        blocks[subject]["translation"] = [-260.0, 0.0, 0.0]
+        geometry = quad(200.0, 200.0)
+        check_winding("level4 pane", geometry)
+        data = add(tri_shape_data(geometry))
+        shade = add(coloured_material([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]))
+        pane_texturing = add(texturing(len(blocks) + 1))
+        add(source_texture(BASE_TEXTURE))
+        shape = av_object(LEVEL4_PANE, 0)
+        shape.update({"type": "NiTriShape", "data": data, "skin": -1, "properties": [shade, pane_texturing]})
+        blocks[0]["children"].append(add(shape))
     return write_file(name, blocks)
 
 
@@ -644,6 +721,10 @@ def main():
         files.append((name, make_turn(name, b, modes, parallel, controller="above")))
     files.append(("ctrl_between", make_turn("ctrl_between", b, [1, 2], parallel, shape_under=True, controller="between")))
     files.append(("ctrl_under_b1", make_turn("ctrl_under_b1", b, [1], parallel, shape_under=True, controller="effect")))
+    # Level 4: the exhibits of a mod that draws the world through a camera. The cases run in the
+    # tour step, at the stop of the entry (`mirror_mock.lua`).
+    files.append(("level4_mirror", make_level4("level4_mirror", pane=True)))
+    files.append(("level4_isolate", make_level4("level4_isolate", pane=False)))
     lines = ["-- The test NIFs of the flag support, made by tools/make_test_nifs.py (do not edit).",
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",
              "return {"]
