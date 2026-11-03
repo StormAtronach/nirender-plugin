@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from ctypes import wintypes
 
 # The modules of this folder, also under `python -I` (checks.py runs the self-test so).
@@ -131,6 +132,49 @@ def archive_arguments(args):
         args.mwse_dll = mwse
 
 
+def argument_problems(args, exists=os.path.exists):
+    """Every fault of the arguments that shows before the run starts anything: the form of
+    each value, and the files and folders that the run reads. One line for each fault; none
+    for a good command. `--check` runs only this (and the check of the save), so that a
+    caller can refuse a bad command before it takes the game slot."""
+    problems = []
+    if args.reference_plugin and not (args.reference or args.engine_reference):
+        problems.append("--reference-plugin is for a run with --reference or --engine-reference")
+    if args.position is not None:
+        parts = args.position.split(",")
+        try:
+            numbers = [float(part) for part in parts]
+        except ValueError:
+            numbers = []
+        if len(parts) != 3 or len(numbers) != 3:
+            problems.append("--position takes x,y,z, three numbers: not %r (a negative x needs --position=-1,2,3)" % args.position)
+    if args.hour is not None and not 0 <= args.hour < 24:
+        problems.append("--hour takes a number from 0 to 24, not %s" % args.hour)
+    if args.weather is not None and not 0 <= args.weather <= 9:
+        problems.append("--weather takes a number from 0 to 9, not %s" % args.weather)
+    try:
+        env_of(args.env)
+    except SystemExit as refusal:
+        problems.append(str(refusal))
+    for entry in args.add_file:
+        source, equals, path = entry.partition("=")
+        if not equals or not source or not path:
+            problems.append("--add-file takes SOURCE=PATH, not %r" % entry)
+        elif not exists(source):
+            problems.append("--add-file: no file %s" % source)
+    for option, path in (("--plugin-dll", args.plugin_dll), ("--shader-batch", args.shader_batch), ("--lua-file", args.lua_file),
+                         ("--mwse-dll", args.mwse_dll), ("--exe", args.exe), ("--log", args.log and os.path.dirname(os.path.abspath(args.log)))):
+        if path and not exists(path):
+            problems.append("%s: no %s" % (option, path))
+    if args.mge_build:
+        for name in ("d3d8.dll", "numidium.exe"):
+            if not exists(os.path.join(args.mge_build, name)):
+                problems.append("--mge-build: no %s in %s" % (name, args.mge_build))
+    if args.instance and not exists(args.instance):
+        problems.append("--instance: no folder %s" % args.instance)
+    return problems
+
+
 def build_commits(mge_build):
     """The line of the record of a run that names the commits of its build, from WHAT.txt of the build
     folder. A folder that does not say them is named as such: no commit is guessed."""
@@ -218,24 +262,31 @@ def pids_of(image):
 class PluginWatch:
     """Looks at the modules of every Morrowind.exe every few seconds while a run goes: the proof,
     from Windows, of whether the game loaded akulakhan.dll. `seen` gets each process that had it;
-    `checks` counts the looks that Windows answered."""
+    `checks` counts the looks that Windows answered. With `path`, each look gets a line in that
+    file (the run folder keeps the proof)."""
 
-    def __init__(self, seconds=5.0):
+    def __init__(self, seconds=5.0, path=None, image="Morrowind.exe"):
         self.seconds = seconds
         self.seen = set()
         self.checks = 0
+        self.path = path
+        self.image = image
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.watch, daemon=True)
 
     def watch(self):
         while not self.stop.is_set():
-            for pid in pids_of("Morrowind.exe"):
+            for pid in pids_of(self.image):
                 names = modules_of(pid)
                 if names is None:
                     continue
                 self.checks += 1
-                if "akulakhan.dll" in names:
+                found = "akulakhan.dll" in names
+                if found:
                     self.seen.add(pid)
+                if self.path:
+                    with open(self.path, "a", encoding="utf-8") as log:
+                        log.write("%s %s %d: %d modules, akulakhan.dll %s\n" % (time.strftime("%H:%M:%S"), self.image, pid, len(names), "LOADED" if found else "not loaded"))
             self.stop.wait(self.seconds)
 
     def __enter__(self):
@@ -295,6 +346,15 @@ def self_test_plugin_evidence():
                 break
             threading.Event().wait(0.05)
         assert "kernel32.dll" in names and "ping.exe" in names, names
+        # The watch looks at that process, logs each look, and finds no plugin in it.
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "plugin-watch.txt")
+            with PluginWatch(seconds=0.1, path=path, image="PING.EXE") as watch:
+                threading.Event().wait(0.5)
+            assert watch.checks >= 2 and not watch.seen, (watch.checks, watch.seen)
+            with open(path, encoding="utf-8") as log:
+                lines = log.read().splitlines()
+            assert len(lines) == watch.checks and "akulakhan.dll not loaded" in lines[0], lines
     finally:
         ping.kill()
         ping.wait()
@@ -537,8 +597,64 @@ def self_test_archive_arguments():
         raise AssertionError("--archive with --plugin-dll was taken")
 
 
+def self_test_checks():
+    """The checks that refuse a command before anything starts, the staging of a run without the
+    plugin, and the exit code of a run that loaded the plugin when it should not have."""
+    def namespace(**changes):
+        values = dict(reference_plugin=False, reference=False, engine_reference=False, position=None, hour=None, weather=None,
+                      env=[], add_file=[], plugin_dll=None, shader_batch=None, lua_file=None, mwse_dll=None, exe=None, log=None,
+                      mge_build=None, instance=None)
+        values.update(changes)
+        return argparse.Namespace(**values)
+
+    present = {os.path.join("E:/b", "d3d8.dll"), os.path.join("E:/b", "numidium.exe"), "E:/batch.lua", "E:/a.dll"}
+    exists = present.__contains__
+    good = namespace(position="-57717,-416069,1198", hour=21.58, weather=0, mge_build="E:/b", shader_batch="E:/batch.lua",
+                     plugin_dll="E:/a.dll", env=["NIRENDER_WALK_MINUTES=8"], reference=True, reference_plugin=True)
+    assert argument_problems(good, exists) == [], argument_problems(good, exists)
+    bad = [
+        namespace(reference_plugin=True),
+        namespace(position="57717,-416069"),
+        namespace(position="x,1,2"),
+        namespace(hour=24.0),
+        namespace(weather=10),
+        namespace(env=["NOVALUE"]),
+        namespace(add_file=["E:/a.dll"]),
+        namespace(add_file=["E:/none.dll=Root/x.dll"]),
+        namespace(shader_batch="E:/none.lua"),
+        namespace(mge_build="E:/c"),
+    ]
+    for args in bad:
+        assert argument_problems(args, exists), args
+    assert len(argument_problems(namespace(mge_build="E:/c", weather=10), exists)) == 3
+
+    assert run_exit_code(True, True, True) == 2
+    assert run_exit_code(True, True, False) == 2
+    assert run_exit_code(False, True, True) == 0
+    assert run_exit_code(True, False, False) == 1
+
+    with tempfile.TemporaryDirectory() as root:
+        assert overwrite_problem(root, "MWSE/lib/akulakhan.dll") is None
+        os.makedirs(os.path.join(root, "overwrite", "MWSE", "lib"))
+        open(os.path.join(root, "overwrite", "MWSE", "lib", "akulakhan.dll"), "wb").close()
+        assert overwrite_problem(root, "MWSE/lib/akulakhan.dll")
+
+    with tempfile.TemporaryDirectory() as folder:
+        dll = os.path.join(folder, "akulakhan.dll")
+        open(dll, "wb").close()
+        open(os.path.join(folder, "akulakhan.pdb"), "wb").close()
+        dist = os.path.join(folder, "dist")
+        lib = os.path.join(dist, "MWSE", "lib")
+        session.stage_mod(dist, dll, plugin=False)
+        assert not os.path.exists(os.path.join(lib, "akulakhan.dll")) and not os.path.exists(os.path.join(lib, "akulakhan.pdb"))
+        assert os.path.isfile(os.path.join(dist, "MWSE", "mods", "nirender", "main.lua"))
+        session.stage_mod(dist, dll, plugin=True)
+        assert os.path.isfile(os.path.join(lib, "akulakhan.dll")) and os.path.isfile(os.path.join(lib, "akulakhan.pdb"))
+
+
 def self_test():
     """The tests of the argument handling: no game, no build."""
+    self_test_checks()
     self_test_setup()
     self_test_save_problem()
     self_test_pngs_from_tgas()
@@ -617,6 +733,8 @@ def main():
     ap.add_argument("--plugin-dll", help="the plugin DLL of the run (else the variable NIRENDER_PLUGIN_DLL, else the release build of this repository)")
     ap.add_argument("--log", help="a file that gets the runner's output, written to the console too; no shell redirect needed")
     ap.add_argument("--self-test", action="store_true", help="the tests of the argument handling: no game, no build")
+    ap.add_argument("--check", action="store_true", help="check the command and stop: the form of each value, the files it "
+                    "names and the save; nothing starts. Run it before you take the game slot: exit code 0 for a good command")
     ap.add_argument("--save", default="quiksave.ess", help="the save to load; \"\" starts a new game instead (the films of the game play)")
     ap.add_argument("--interior", default="Balmora, Guild of Mages")
     ap.add_argument("--exterior", default="Balmora")
@@ -639,7 +757,8 @@ def main():
     ap.add_argument("--game-dir", help="with --instance: the game folder of that instance")
     ap.add_argument("--profile", default="Default", help="with --instance: its profile")
     ap.add_argument("--position", help="x,y,z in the exterior cell: the player goes there after the cell loads (the "
-                    "coordinates of the console)")
+                    "coordinates of the console). A value that starts with a minus needs the form with =, "
+                    "--position=-57717,-416069,1198: without it the value reads as an option")
     ap.add_argument("--hour", type=float, default=None, help="the hour of the day in the exterior (12 without this)")
     ap.add_argument("--weather", type=int, default=None, help="the weather in the exterior, 0 clear to 9 blizzard (the game's without this)")
     ap.add_argument("--disable-mod", action="append", default=[], help="a mod of the profile switched off in its modlist.txt for the run, and back after; again for more mods")
@@ -647,7 +766,8 @@ def main():
                     "nearest spot where the land is deep enough (a test of the view from under the water)")
     ap.add_argument("--find-dry", action="store_true", help="after the interior cell loads, put the player on the nearest floor above "
                     "the water level of the cell, looking back at the entry (a test of the water of an interior)")
-    ap.add_argument("--yaw", type=float, default=None, help="the heading of the player in degrees, 0 north, with --position")
+    ap.add_argument("--yaw", type=float, default=None, help="the heading of the player in degrees, 0 north; "
+                    "a negative heading as --yaw=-129 is the safe form")
     ap.add_argument("--lua-file", help="a file of Lua that the game runs a little after the player arrives at the interior and at the "
                     "exterior: for a state that a mod makes from Lua (the variables of a post shader)")
     ap.add_argument("--shader-batch", help="a file of Lua that gives a list of sets of post shaders, { name = \"lens\", { \"Lens Effects\", "
@@ -703,11 +823,22 @@ def main():
     if args.self_test:
         self_test()
         return 0
+    problems = argument_problems(args)
+    if problems:
+        raise SystemExit("run_own_device: the command has faults; nothing started:\n  " + "\n  ".join(problems))
+    if args.check:
+        if args.instance:
+            session.use_instance(args.instance, args.game_dir, args.profile)
+        problem = save_problem(args.save, saves_folder(session.harness.PROFILE, session.harness.GAME_DIR))
+        if not problem and (args.reference or args.engine_reference) and not args.reference_plugin:
+            problem = overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
+        if problem:
+            raise SystemExit("run_own_device: " + problem)
+        print("run_own_device: the arguments are good; nothing started (--check)")
+        return 0
     if args.engine_reference:
         args.reference = True
         args.set.append("[runtime] disabled = true")
-    if args.reference_plugin and not args.reference:
-        raise SystemExit("--reference-plugin is for a run with --reference or --engine-reference")
     # A reference run has no code of the plugin in the game, unless --reference-plugin.
     no_plugin = args.reference and not args.reference_plugin
     # The game is started from this process: its variables go into the game's environment.
@@ -724,8 +855,6 @@ def main():
     else:
         print("plugin DLL: %s (%s)" % (session.DLL, source), flush=True)
     extra_files = [entry.split("=", 1) for entry in args.add_file]
-    if any(len(pair) != 2 for pair in extra_files):
-        raise SystemExit("--add-file takes SOURCE=PATH")
     if args.mwse_dll:
         extra_files.append((args.mwse_dll, "Root/MWSE.dll"))
 
@@ -738,10 +867,11 @@ def main():
         cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
         for folder in (HOST_DIR, D3D8_DIR):
             subprocess.run([cargo, "build", "--release", "--quiet"], cwd=folder, check=True)
+    problem = no_plugin and overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
+    if problem:
+        raise SystemExit("run_own_device: " + problem)
     session.prepare(build=not args.no_build, extra_files=extra_files, archive=args.archive, plugin=not no_plugin)
     if no_plugin:
-        if os.path.isfile(os.path.join(session.harness.MO2_ROOT, "overwrite", session.harness.PLUGIN_FILE)):
-            raise SystemExit("run_own_device: the overwrite folder of the instance has %s: a run without the plugin cannot keep it out" % session.harness.PLUGIN_FILE)
         for name in session.plugin_mods(session.harness.read_modlist()[0]):
             if name not in args.disable_mod:
                 args.disable_mod.append(name)
@@ -849,7 +979,7 @@ def main():
         files = next(files for name, files in mods if name == CONFIG_MOD)
         for name in os.listdir(bridge):
             files["MWSE/mods/mwseMCP/" + name] = os.path.join(bridge, name)
-    with PluginWatch() as watch:
+    with PluginWatch(path=run.path("plugin-watch.txt")) as watch:
         done = run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)])
 
     print()
@@ -878,6 +1008,9 @@ def main():
     print("\nplugin of the run (%s):" % ("none asked" if no_plugin else "akulakhan.dll asked"))
     for line in evidence:
         print("  " + line)
+    with open(run.path("plugin-of-the-run.txt"), "w", encoding="utf-8") as proof:
+        proof.write("plugin of the run (%s):\n" % ("none asked" if no_plugin else "akulakhan.dll asked"))
+        proof.write("".join("  %s\n" % line for line in evidence))
     failed = no_plugin and loaded
     if failed:
         print("ERROR: the game loaded akulakhan.dll in a reference run without the plugin: the run is no reference")
@@ -887,9 +1020,23 @@ def main():
     # it is time to.
     print("size: this run %s; all runs in %s %s" % (folder_size(run.dir), os.path.dirname(run.dir), folder_size(os.path.dirname(run.dir))))
     print_disk_limits()
-    if failed:
+    return run_exit_code(no_plugin, loaded, done)
+
+
+def run_exit_code(no_plugin, loaded, done):
+    """2 for a run without the plugin that loaded it (no reference), else 0 when the steps were
+    done in the budget, 1 when not."""
+    if no_plugin and loaded:
         return 2
     return 0 if done else 1
+
+
+def overwrite_problem(root, plugin_file):
+    """The overwrite folder of the Mod Organizer instance at `root` serves its files over every
+    mod: with the plugin there, a run without the plugin cannot keep it out."""
+    if os.path.isfile(os.path.join(root, "overwrite", plugin_file)):
+        return "the overwrite folder of the instance has %s: a run without the plugin cannot keep it out" % plugin_file
+    return None
 
 
 def print_disk_limits():
