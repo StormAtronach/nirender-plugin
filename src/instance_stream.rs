@@ -751,8 +751,12 @@ static VIEWS: MainCell<Option<ViewTable>> = MainCell::new(None);
 static RETIRED_VIEWS: MainCell<Vec<u8>> = MainCell::new(Vec::new());
 
 /// A scene starts: its view slot plus 1, for `SceneV1::view`, or 0 for a scene that is not a
-/// view or that found no free slot (one log line at the first refusal).
+/// view or that found no free slot (one log line at the first refusal). 0 while the stream does
+/// not record: the slots retire only at a Present of the recording (`view_present`).
 pub fn view_open(mt: &MainThread, click: &Click) -> u32 {
+    if !capture::recording() {
+        return 0;
+    }
     let mut views_open = VIEWS.get(mt);
     let views = views_open.get_or_insert_with(ViewTable::default);
     let refused = views.refused;
@@ -2469,6 +2473,9 @@ mod tests {
             let world = Click { kind: SCENE_WORLD, camera: 0x7900_0000, root: 0x7900_1000, target: None, world_camera: true };
             let shadow = Click { kind: SCENE_SHADOW_CASTERS, camera: 0x7900_2000, root: 0x7900_3000, target: None, world_camera: false };
             let picture = Click { kind: SCENE_OTHER, camera: 0x7900_0000, root: 0x7900_1000, target: Some(0x7900_4000), world_camera: false };
+            // No view before the recording starts: no Present would retire its slot.
+            assert_eq!(view_open(&mt, &picture), 0);
+            capture::test_record_deletes(true);
             assert_eq!(view_open(&mt, &world), 1);
             assert_eq!(view_open(&mt, &shadow), 0);
             let picture_view = view_open(&mt, &picture);
@@ -2483,6 +2490,7 @@ mod tests {
             assert!(retired.contains(&((picture_view - 1) as u8)), "{retired:?}");
             assert!(!retired.contains(&0), "the main view retired");
             assert!(view_report(&mt).starts_with("views: "));
+            capture::test_record_deletes(false);
             crate::shadow::restore_main_thread(before);
         }
     }
