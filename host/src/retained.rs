@@ -1813,9 +1813,6 @@ impl Player {
         self.stream.shape_bones = None;
         self.stream.sky = None;
         self.stream.object_class = r.class;
-        if let Some(source) = derived.sources[2] {
-            self.stream.ambient_source = source;
-        }
         let ranges: Vec<(u32, u32)> = if strips.is_empty() {
             vec![(first_index, entries / 3 * 3)]
         } else {

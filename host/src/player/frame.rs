@@ -30,7 +30,6 @@ impl Player {
                 shape: ShapeFacts { geometry: 0, fvf: 0, stride: 0, world: [0.0; 16], relative: false, material: [0.0; 17], ambient: 0, fill: 3, lights: Vec::new() },
                 shape_fog: None,
                 fog: [0; 4],
-                ambient_source: 0,
                 shape_bones: None,
                 shape_keeps: false,
                 shape_bound: None,

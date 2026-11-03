@@ -908,9 +908,6 @@ impl Player {
         shape.relative = flags & 1 != 0;
         shape.material = material::d3d_material(colours);
         shape.fill = derived.fill;
-        if let Some(source) = derived.sources[2] {
-            self.stream.ambient_source = source;
-        }
         if self.hold_shape(&m, &derived, flags, effects, entries, &strips) {
             self.stream.shape_bones = None;
             return;
