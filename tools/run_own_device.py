@@ -23,6 +23,7 @@ run ran (`harness.write_setup`).
 """
 import argparse
 import ctypes
+import math
 import os
 import re
 import subprocess
@@ -143,7 +144,7 @@ def read_text(path):
 
 # A batch that walks for `NIRENDER_WALK_MINUTES` (the land walks of wgpu-scene-audit), with
 # its default: `tonumber(os.getenv("NIRENDER_WALK_MINUTES") or "") or 60`.
-WALK_MINUTES_DEFAULT = re.compile(r'os\.getenv\("NIRENDER_WALK_MINUTES"\)[^\n]*?\bor\s+(\d+)')
+WALK_MINUTES_DEFAULT = re.compile(r'os\.getenv\(\s*["\']NIRENDER_WALK_MINUTES["\']\s*\)[^\n]*?\bor\s+(\d+)')
 # The seconds of a run before its batch starts and after it ends: the load, the steps before
 # the batch, the close. A 4-minute walk ran 314 s from the start to the end (2026-11-03).
 WALK_START_SECONDS = 120
@@ -170,6 +171,8 @@ def walk_budget_problem(args, read=read_text, environment=os.environ):
     try:
         minutes = float(value) if value is not None else float(default.group(1))
     except ValueError:
+        minutes = None
+    if minutes is None or not math.isfinite(minutes) or minutes < 0:
         return "NIRENDER_WALK_MINUTES takes a number of minutes, not %r" % value
     source = "NIRENDER_WALK_MINUTES" if value is not None else "the batch's default"
     needed = int(minutes * 60) + WALK_START_SECONDS
@@ -734,7 +737,14 @@ def self_test_checks():
     assert walk_problems(env=["NIRENDER_WALK_MINUTES=4"], budget=600) == []
     problems = walk_problems(env=["NIRENDER_WALK_MINUTES=60", "NIRENDER_WALK_MINUTES=4"], budget=359)
     assert len(problems) == 1 and "--budget 360 or more" in problems[0] and "NIRENDER_WALK_MINUTES" in problems[0], problems
-    assert walk_problems(env=["NIRENDER_WALK_MINUTES=four"], budget=600)
+    for bad in ("four", "nan", "inf", "-1"):
+        problems = walk_problems(env=["NIRENDER_WALK_MINUTES=" + bad], budget=600)
+        assert len(problems) == 1 and "takes a number of minutes" in problems[0], (bad, problems)
+    # Another default, in single quotes: 15 minutes need 1020 s.
+    other = {"E:/batch.lua": "local MINUTES = tonumber(os.getenv('NIRENDER_WALK_MINUTES') or '') or 15\n"}.get
+    problems = argument_problems(namespace(shader_batch="E:/batch.lua", budget=1019), exists, other, quiet)
+    assert len(problems) == 1 and "(15 min, the batch's default)" in problems[0] and "--budget 1020 or more" in problems[0], problems
+    assert argument_problems(namespace(shader_batch="E:/batch.lua", budget=1020), exists, other, quiet) == []
     # The runner's environment, when --env does not set it.
     assert walk_budget_problem(namespace(shader_batch="E:/batch.lua", budget=600), read, {"NIRENDER_WALK_MINUTES": "4"}) is None
     assert walk_budget_problem(namespace(shader_batch="E:/batch.lua", budget=600), read, quiet)
