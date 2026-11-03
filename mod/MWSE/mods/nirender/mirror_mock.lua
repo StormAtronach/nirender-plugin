@@ -39,11 +39,18 @@ local function mirror(reference, proofFolder)
     local function click()
         local original = camera.scene
         local oldTranslation, oldRotation = camera.translation:copy(), camera.rotation:copy()
+        -- The camera hangs under a node that carries its place (the local translation is near zero at the stop), so the
+        -- turn is made in world space and written back as a local transform of the parent's space.
         local centre = subject.worldTransform.translation
         local turn = tes3matrix33.new()
         turn:toRotationZ(MIRROR_YAW)
-        camera.translation = centre + turn * (oldTranslation - centre)
-        camera.rotation = turn * oldRotation
+        local world = camera.worldTransform
+        local mirrorTranslation = centre + turn * (world.translation - centre)
+        local mirrorRotation = turn * world.rotation
+        local parent = camera.parent.worldTransform
+        local fromParent = parent.rotation:transpose()
+        camera.translation = (fromParent * (mirrorTranslation - parent.translation)) * (1 / parent.scale)
+        camera.rotation = fromParent * mirrorRotation
         camera:update()
         local mirrorAt = camera.worldTransform.translation:copy()
         yellow.appCulled = true
