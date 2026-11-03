@@ -2,6 +2,9 @@
 //! The values are the contract of the stream (`src/link.rs` of the plugin, `SCENE_*` and
 //! `CLASS_*`); this crate does not depend on the plugin crate, so they are repeated here.
 
+/// A scene of a camera the plugin does not name, or of the world camera on another root
+/// (a mod's subject).
+pub(crate) const SCENE_OTHER: u32 = 0;
 /// The world scene of the game: the sky at its start, then the world (one Click of the
 /// world camera).
 pub(crate) const SCENE_WORLD: u32 = 1;

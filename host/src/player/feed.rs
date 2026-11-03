@@ -4,7 +4,7 @@
 use crate::*;
 use crate::stream_format::{
     HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET,
-    HEADER_SCENE_WIREFRAME, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
+    HEADER_SCENE_WIREFRAME, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
 /// The generation of the reply memory that a `READ_PIXELS` record names: 0 in a record of a
@@ -80,6 +80,7 @@ impl Player {
                 self.stream.scene_target = abilities & HEADER_SCENE_TARGET != 0;
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
                 self.retained.walk.on = abilities & HEADER_WALK_PLACES != 0;
+                self.views.on = abilities & HEADER_VIEW_PLACES != 0;
                 self.stream.scene_wireframe = abilities & HEADER_SCENE_WIREFRAME != 0;
                 self.stream.envmap_lit = (abilities & HEADER_ENVMAP_KNOWN != 0).then_some(abilities & HEADER_ENVMAP_LIT != 0);
             }
@@ -169,7 +170,9 @@ impl Player {
                 if self.stream.scene_target {
                     self.scene_target(word(data, 20) & SCENE_BACK_BUFFER != 0);
                 }
-                for step in self.plan.scene_begin(word(data, 4)) {
+                let kind = word(data, 4);
+                self.views.scene_begin(kind, self.target.is_some());
+                for step in self.plan_now().scene_begin(kind) {
                     self.plan_step(step);
                 }
             }
@@ -177,9 +180,13 @@ impl Player {
                 // Flag 1: the engine's sorted queue stays open after the scene. An older
                 // capture has no word.
                 let queue_open = data.len() >= 4 && word(data, 0) & 1 != 0;
-                let steps = self.plan.scene_end(self.extension.is_some(), self.target.is_none(), self.drawing(), queue_open, self.stream.queue_flush);
+                let (extension, in_back_buffer, drawing, queue_flush) = (self.extension.is_some(), self.target.is_none(), self.drawing(), self.stream.queue_flush);
+                let steps = self.plan_now().scene_end(extension, in_back_buffer, drawing, queue_open, queue_flush);
                 for step in steps {
                     self.plan_step(step);
+                }
+                if let Some(group) = self.views.scene_end().filter(|_| drawing) {
+                    self.items.push(Item::ViewSorted(group));
                 }
             }
             tag::FRAME_EVENT => {
@@ -250,7 +257,9 @@ impl Player {
                 }
             }
             tag::INSTANCE_WALK if data.len() >= 4 => {
-                if self.retained_on && self.retained.walk.on {
+                if self.retained_on && self.views.open().is_some() {
+                    self.view_place(word(data, 0));
+                } else if self.retained_on && self.retained.walk.on {
                     self.walk_place(word(data, 0));
                 }
             }
@@ -328,6 +337,11 @@ impl Player {
                         self.stream.back_buffer = texture.is_some() || !self.wants_texture;
                         if texture != self.target {
                             self.target = texture;
+                            // Back in the back buffer: the next target group has a plan state
+                            // of its own again.
+                            if texture.is_none() {
+                                self.target_plan.frame_start();
+                            }
                             if self.drawing() {
                                 self.items.push(Item::Target(texture));
                             }
@@ -360,7 +374,7 @@ impl Player {
                         let clear_depth = (flags & 2 != 0).then(|| depth::clear(float(arguments, 16)));
                         let clear_stencil = (flags & 4 != 0).then(|| word(arguments, 20));
                         if clear_depth.is_some() {
-                            for step in self.plan.depth_clear() {
+                            for step in self.plan_now().depth_clear() {
                                 if matches!(step, plan::Step::SortedBlends(_)) {
                                     self.renderer.counts.blends_before_clear += 1;
                                 }
@@ -770,6 +784,11 @@ impl Player {
             self.renderer.counts.queued_unknown += 1;
             return;
         };
+        // A scene with a view of its own: its sorted blends draw in their order of arrival at
+        // the flush in that view ([`engine::views`]).
+        if self.views.queued(id) {
+            return;
+        }
         let kind = self.plan.scene_kind;
         let world_camera = kind == engine::scene::SCENE_WORLD || engine::scene::later_world_scene(kind);
         if !world_camera || self.target.is_some() {
@@ -804,6 +823,25 @@ impl Player {
             engine::walk::Place::New(run) => {
                 self.renderer.counts.walk_places += 1;
                 self.items.push(Item::WalkPlaces(run));
+            }
+        }
+    }
+
+    /// A place of a retained shape in a scene with a view of its own ([`engine::views`]): the
+    /// view of the scene at its first place, then the place in its run.
+    pub(crate) fn view_place(&mut self, id: u32) {
+        let (view, projection, origin, target_size) = (self.stream.view, self.stream.projection, self.stream.origin, self.size_of_target());
+        self.views.note_facts(|| engine::views::ViewFacts { view, projection, origin, target_size });
+        let open = self.views.open();
+        let adjacent = matches!(self.items.last(), Some(&Item::ViewPlaces(group, _)) if Some(group) == open);
+        let known = self.retained.centre_of(id).is_some();
+        match self.views.place(id, known, adjacent) {
+            engine::views::Place::Outside | engine::views::Place::Joined => {}
+            engine::views::Place::Unknown => self.renderer.counts.view_unknown += 1,
+            engine::views::Place::New(group, run) => {
+                if self.drawing() {
+                    self.items.push(Item::ViewPlaces(group, run));
+                }
             }
         }
     }

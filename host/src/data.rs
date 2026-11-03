@@ -477,6 +477,16 @@ pub(crate) struct Counts {
     pub(crate) walk_unknown: u64,
     pub(crate) walk_outside: u64,
     pub(crate) walk_late: u64,
+    /// The views of their own (`engine::views`): the views drawn, the places drawn in them,
+    /// the places of an instance with no slot to draw, the places of an instance not known,
+    /// the views not drawn because the scene slots were full, and the views of another camera
+    /// that took the last frame's shade.
+    pub(crate) views: u64,
+    pub(crate) view_places: u64,
+    pub(crate) view_places_empty: u64,
+    pub(crate) view_unknown: u64,
+    pub(crate) views_dropped: u64,
+    pub(crate) view_shade_late: u64,
     /// The scenes whose record named the target, and of them the ones where the target that
     /// the `SetRenderTarget` calls gave was another one.
     pub(crate) scene_targets: u64,

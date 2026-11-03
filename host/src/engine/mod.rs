@@ -4,4 +4,5 @@
 pub(crate) mod alpha;
 pub(crate) mod plan;
 pub(crate) mod scene;
+pub(crate) mod views;
 pub(crate) mod walk;

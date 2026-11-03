@@ -476,6 +476,35 @@ mod tests {
         assert_eq!(plan.queue_flushed(true), vec![]);
     }
 
+    /// A save's picture at the head of a frame: its scenes go to the plan state of the target
+    /// group, which starts no world; the main plan then starts and ends the world of the frame.
+    #[test]
+    fn a_target_group_leaves_the_main_world_its_start() {
+        let (mut main, mut target) = (Plan::default(), Plan::default());
+        assert_eq!(target.scene_begin(SCENE_WORLD), vec![]);
+        assert_eq!(target.world_draw(true, false, false, true, false), (vec![], false));
+        assert_eq!(target.world_walk(true, false), vec![]);
+        assert_eq!(target.queue_flushed(false), vec![]);
+        assert_eq!(target.scene_end(true, false, true, false, true), vec![Step::ReleaseHeld]);
+        assert_eq!(target.scene_begin(SCENE_FIRST_PERSON), vec![]);
+        assert_eq!(target.scene_end(true, false, true, false, true), vec![]);
+        assert!(!target.world_begun && !main.world_begun);
+        assert_eq!(world_scene(&mut main), vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
+    }
+
+    /// A mod's mirror drawn after the world, with the engine's queue still open: a clear of the
+    /// mirror's depth goes to the target group's state, and the main plan's blends and classes
+    /// still come at the first-person scene of the back buffer, not into the mirror.
+    #[test]
+    fn a_depth_clear_of_a_target_after_the_world_leaves_the_main_plan() {
+        let (mut main, mut target) = (Plan::default(), Plan::default());
+        main.scene_begin(SCENE_WORLD);
+        main.world_draw(true, true, false, true, false);
+        assert_eq!(main.scene_end(true, true, true, true, false), vec![Step::ReleaseHeld, Step::EndWorld]);
+        assert_eq!(target.depth_clear(), vec![]);
+        assert_eq!(main.scene_begin(SCENE_FIRST_PERSON), vec![Step::MissingClasses, Step::SortedBlends(0)]);
+    }
+
     #[test]
     fn the_user_interface_scene_asks_for_the_post() {
         let mut plan = Plan::default();

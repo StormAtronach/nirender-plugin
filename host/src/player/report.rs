@@ -84,6 +84,10 @@ impl Player {
             c.walk_places, c.walk_unknown, c.walk_outside, c.walk_late, self.retained.counts.walk_without_place, self.retained.counts.walk_reordered
         );
         println!(
+            "views of their own: {} views drawn (a save's picture, a mod's camera), {} places drawn in them, {} of an instance with no slot to draw, {} of an instance not known; {} views not drawn because the scene slots were full; {} views of another camera with the last frame's shade",
+            c.views, c.view_places, c.view_places_empty, c.view_unknown, c.views_dropped, c.view_shade_late
+        );
+        println!(
             "scene targets: {} scenes named their target, {} of them another target than the SetRenderTarget calls gave; {} draws of a world view with an orthographic projection",
             c.scene_targets, c.scene_target_changed, c.orthographic_world_draws
         );

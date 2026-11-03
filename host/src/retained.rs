@@ -1584,6 +1584,19 @@ impl RetainedSet {
         not_sorted
     }
 
+    /// Puts the entries of every slot of an instance into `entries` (a run of [`Sorted::Only`]
+    /// for a view of its own), in the order of its slots: the slots the extension holds, and a
+    /// skinned slot without its bones, are left out.
+    fn view_entries(&self, id: u32, entries: &mut Vec<(u64, u32, u32, u32)>) {
+        for &slot in self.by_id.get(&id).map(Vec::as_slice).unwrap_or(&[]) {
+            let Some(s) = self.slots[slot as usize].as_ref() else { continue };
+            if s.held || (s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES) {
+                continue;
+            }
+            entries.push((0, s.bucket, 0, slot));
+        }
+    }
+
     /// The draws of a view in the order they go to the GPU, into `order`:
     /// 1. The buckets that do not blend and have no alpha test, front to back by their
     ///    nearest draw in view, and the draws of each front to back: the early depth test
@@ -1993,17 +2006,23 @@ impl Player {
     /// ambient light and the fog from the `RETAINED_SCENE` record of the frame (the plugin
     /// computes them for a retained shape as the engine would), else those of the stream.
     pub(super) fn retained_scene_main(&self, facts: &WorldFacts) -> SceneData {
+        self.retained_scene_of(&facts.view, &facts.projection, facts.origin, facts.target_size)
+    }
+
+    /// The values of a view of the table: those of the world of the frame (see
+    /// `retained_scene_main`) with this view, projection, origin and target size.
+    fn retained_scene_of(&self, view: &[f32; 16], projection: &[f32; 16], origin: Option<[f64; 3]>, target_size: (u32, u32)) -> SceneData {
         let (ambient, fog) = match self.retained_values {
             Some((ambient, fog)) => (color(known(ambient, 0)), fog.unwrap_or([0; 4])),
             None => ([self.world_ambient[0], self.world_ambient[1], self.world_ambient[2], 1.0], self.stream.fog),
         };
         let mut data = SceneData {
-            view: self.retained.scene_view(&facts.view, facts.origin),
-            projection: crate::depth::gpu_projection(&facts.projection),
+            view: self.retained.scene_view(view, origin),
+            projection: crate::depth::gpu_projection(projection),
             fog_color: color(fog[0]),
             fog: [f32::from_bits(fog[1]), f32::from_bits(fog[2]), 1.0, (fog[3] != 0) as u32 as f32],
             scene_ambient: ambient,
-            pixel: [1.0 / facts.target_size.0.max(1) as f32, -1.0 / facts.target_size.1.max(1) as f32, 0.0, 0.0],
+            pixel: [1.0 / target_size.0.max(1) as f32, -1.0 / target_size.1.max(1) as f32, 0.0, 0.0],
             clip_plane: [0.0; 4],
             extension5: [0.0; 4],
             extension7: [0.0; 4],
@@ -2016,8 +2035,8 @@ impl Player {
             world_lights: [0; 4],
             padding: [0; 48],
         };
-        // The fog of the extension for the world, as a draw of the world gets it: this is the
-        // world camera's main view.
+        // The fog of the extension for the world, as a draw of the world gets it: the world
+        // camera's main view, and a view of its own sees the same world.
         if let Some((start, end)) = self.parameters.as_ref().and_then(|p| p.fog_range) {
             data.fog[0] = start;
             data.fog[1] = end;
@@ -2088,16 +2107,16 @@ impl Player {
         out
     }
 
-    /// The table's lights as the extension shades them for the main view of the frame
-    /// ([`Extension::shade_table`]), and the values the shade gives the scene; the lights
+    /// The table's lights as the extension shades them for the world camera's `view` of the
+    /// frame ([`Extension::shade_table`]), and the values the shade gives the scene; the lights
     /// unshaded when the extension does not shade.
-    pub(super) fn shade_table_main(&mut self, facts: &WorldFacts) -> (Vec<LightData>, Option<TableShade>) {
+    pub(super) fn shade_table_main(&mut self, view: &[f32; 16]) -> (Vec<LightData>, Option<TableShade>) {
         let mut lights = self.retained.light_values.clone();
         let mut shade = None;
         if self.parameters.as_ref().is_some_and(|p| p.shade) {
             if let Some(extension) = self.extension.as_mut() {
                 // The kinds of a slot (`slot_kind`) are those of `TABLE_KINDS`.
-                shade = Some(extension.shade_table(&facts.view, &mut lights, &TABLE_KINDS));
+                shade = Some(extension.shade_table(view, &mut lights, &TABLE_KINDS));
             }
         }
         (lights, shade)
@@ -2115,34 +2134,21 @@ impl Player {
             return;
         }
         let mut scene = self.retained_scene_main(facts);
+        // The shade made earlier in the frame (the clusters of the world's lights, or a view
+        // of the world camera into a save's picture) is the one of this view.
         let (lights, shade) = match self.table_shaded.take() {
             Some(shaded) => shaded,
             None => {
-                let shaded = self.shade_table_main(facts);
+                let shaded = self.shade_table_main(&facts.view);
                 self.renderer.upload_retained_lights(&shaded.0);
+                self.shade_frame = Some(shaded.1);
                 shaded
             }
         };
         // The view takes the point lights of the world when the frame binned them.
         scene.world_lights[0] = (self.renderer.clusters.world && self.renderer.clusters.world_built) as u32;
-        {
-            if let Some(shade) = shade {
-                let s = shade.ambient_scale;
-                scene.scene_ambient = [scene.scene_ambient[0] * s[0], scene.scene_ambient[1] * s[1], scene.scene_ambient[2] * s[2], scene.scene_ambient[3]];
-                // Each retained draw's own ambient is multiplied by the factor in the shader.
-                scene.ambient_scale = [s[0], s[1], s[2], 1.0];
-                scene.extension5 = shade.extension5;
-                scene.extension7 = shade.extension7;
-                // The shade puts the fog of a draw on the distance from the camera: the
-                // scene's fog takes it too, or a retained shape off the axis of the view gets
-                // less fog than the same shape on the engine's path.
-                if shade.radial_fog {
-                    scene.fog[3] = 1.0;
-                }
-                for (k, flags) in shade.flags.iter().enumerate() {
-                    scene.counts[k / 4][k % 4] = *flags;
-                }
-            }
+        if let Some(shade) = shade {
+            apply_shade(&mut scene, &shade);
         }
         if crate::dump_wanted() != 0 {
             self.retained.dump_lights(crate::dump_wanted(), &lights);
@@ -2357,6 +2363,109 @@ impl Player {
         let kept = core::mem::take(&mut self.retained.kept_sorted);
         self.draw_sorted_run(self.retained.walk_view, entries);
         self.retained.kept_sorted = kept;
+    }
+
+    /// Draws the places `ids` of a view of its own ([`Item::ViewPlaces`], [`Item::ViewSorted`]):
+    /// every slot of each instance, in the places' order, with the view of the group's scene in
+    /// its own scene slot. The engine displayed each one: no cull. The main view's kept blends
+    /// stay for their item.
+    pub(super) fn draw_view_run(&mut self, group: usize, ids: &[u32]) {
+        if ids.is_empty() || !self.retained_on {
+            return;
+        }
+        let Some((slot, facts)) = self.view_slot(group) else { return };
+        let mut entries = Vec::new();
+        for id in ids {
+            let before = entries.len();
+            self.retained.view_entries(*id, &mut entries);
+            self.renderer.counts.view_places += 1;
+            if entries.len() == before {
+                self.renderer.counts.view_places_empty += 1;
+            }
+        }
+        if entries.is_empty() {
+            return;
+        }
+        let view = RetainedView {
+            scene_slot: slot,
+            classes: !0,
+            planes: [[0.0; 4]; 6],
+            flip_cull: engine::views::mirrored(&facts.view),
+            force_depth_test: false,
+            target: self.pass_target,
+            sorted: Sorted::Only,
+            samples: self.pass_samples,
+        };
+        let kept = core::mem::take(&mut self.retained.kept_sorted);
+        self.draw_sorted_run(Some(view), entries);
+        self.retained.kept_sorted = kept;
+    }
+
+    /// The scene slot of a group's view, written at its first draw, and the group's view.
+    /// [`None`] when the group has no view yet or all slots are taken (counted, and the first
+    /// time in the log).
+    fn view_slot(&mut self, group: usize) -> Option<(u32, engine::views::ViewFacts)> {
+        let g = self.views.group(group)?;
+        let facts = g.facts?;
+        if let Some(slot) = g.slot {
+            return Some((slot, facts));
+        }
+        if g.dropped {
+            return None;
+        }
+        let world_camera = g.world_camera;
+        let Some(slot) = engine::views::take_slot(&mut self.renderer.scene_slots_used, SCENE_SLOTS) else {
+            if self.renderer.counts.views_dropped == 0 {
+                println!("views: all {SCENE_SLOTS} scene slots of the frame are taken: a view of its own is not drawn (frame {})", self.renderer.counts.frames);
+            }
+            self.renderer.counts.views_dropped += 1;
+            self.views.group_mut(group)?.dropped = true;
+            return None;
+        };
+        // The shade is the world camera's, made once in the frame ([`engine::views::shade_choice`]).
+        let shade = match engine::views::shade_choice(world_camera, self.shade_frame.is_some(), self.shade_last.is_some()) {
+            engine::views::ShadeChoice::Make => {
+                let shaded = self.shade_table_main(&facts.view);
+                self.renderer.upload_retained_lights(&shaded.0);
+                self.shade_frame = Some(shaded.1);
+                let shade = shaded.1;
+                self.table_shaded = Some(shaded);
+                shade
+            }
+            engine::views::ShadeChoice::ThisFrame => self.shade_frame.flatten(),
+            engine::views::ShadeChoice::LastFrame => {
+                self.renderer.counts.view_shade_late += 1;
+                self.shade_last.flatten()
+            }
+            engine::views::ShadeChoice::None => None,
+        };
+        let mut scene = self.retained_scene_of(&facts.view, &facts.projection, facts.origin, facts.target_size);
+        if let Some(shade) = shade {
+            apply_shade(&mut scene, &shade);
+        }
+        self.renderer.write_scene(slot, &scene);
+        self.views.group_mut(group)?.slot = Some(slot);
+        self.renderer.counts.views += 1;
+        Some((slot, facts))
+    }
+}
+
+/// The values a shade of the table gives a view's scene ([`Extension::shade_table`]).
+fn apply_shade(scene: &mut SceneData, shade: &TableShade) {
+    let s = shade.ambient_scale;
+    scene.scene_ambient = [scene.scene_ambient[0] * s[0], scene.scene_ambient[1] * s[1], scene.scene_ambient[2] * s[2], scene.scene_ambient[3]];
+    // Each retained draw's own ambient is multiplied by the factor in the shader.
+    scene.ambient_scale = [s[0], s[1], s[2], 1.0];
+    scene.extension5 = shade.extension5;
+    scene.extension7 = shade.extension7;
+    // The shade puts the fog of a draw on the distance from the camera: the scene's fog takes
+    // it too, or a retained shape off the axis of the view gets less fog than the same shape on
+    // the engine's path.
+    if shade.radial_fog {
+        scene.fog[3] = 1.0;
+    }
+    for (k, flags) in shade.flags.iter().enumerate() {
+        scene.counts[k / 4][k % 4] = *flags;
     }
 }
 
