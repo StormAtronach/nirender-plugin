@@ -21,9 +21,8 @@
 
 use crate::link::{SCENE_FIRST_PERSON, SCENE_SHADOW_CASTERS, SCENE_SHADOW_VOLUME, SCENE_SORTED_ALPHA, SCENE_SPLASH, SCENE_UI};
 use crate::ptr_hash::HashMap;
+pub use crate::stream_format::VIEW_SLOTS;
 
-/// The number of view slots: one bit of a `u32` mask for each.
-pub const VIEW_SLOTS: usize = 32;
 /// The slot of the world camera into the back buffer.
 pub const MAIN_VIEW: u8 = 0;
 /// The frames without a scene after which a slot goes.

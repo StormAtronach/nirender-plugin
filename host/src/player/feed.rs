@@ -173,8 +173,7 @@ impl Player {
                 }
                 let kind = word(data, 4);
                 if self.views.slots_on {
-                    // The camera, the root and the target of the scene: words 2, 3 and 4.
-                    self.views.note_scene(engine::views::scene_view(data), word(data, 8), word(data, 12), word(data, 16));
+                    self.views.note_scene_record(data);
                 }
                 self.views.scene_begin(kind, self.target.is_some());
                 for step in self.plan_now().scene_begin(kind) {
