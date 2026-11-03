@@ -51,7 +51,7 @@ LEAST_LABEL = 4
 # What a trim of a run takes: pictures, captures and film. The rest stays to the end of the run.
 HEAVY_FILES = (".png", ".tga", ".bmp", ".jpg", ".jpeg", ".gif", ".nircap", ".mp4", ".mkv", ".avi", ".webm")
 DUMP_FILES = (".dmp", ".mdmp")
-GENERIC_DUMPS = {"mwse_minidump"}
+GENERIC_DUMPS = {"mwse_minidump", "numidium", "morrowind"}
 BUSY_DAYS = 1 / 24
 PICTURE_DAYS = 7
 TEXT_DAYS = 30
@@ -584,6 +584,9 @@ def self_test_common():
     # The name of a mini dump is in the docs, and it keeps no run.
     plain = Evidence("MWSE_MiniDump.dmp holds it; the file Morrowind.exe.111.dmp; the run h14-w2-fine")
     assert not plain.cites_dump("C:\\r\\MWSE_MiniDump.dmp") and plain.cites_dump("C:\\r\\Morrowind.exe.111.dmp")
+    # The same for the names of the two programs, which each text holds.
+    programs = Evidence("numidium.dmp and Morrowind.dmp")
+    assert not programs.cites_dump("C:\\r\\numidium.dmp") and not programs.cites_dump("C:\\r\\Morrowind.dmp")
     # A run counts as cited by a dump inside it, and by nothing else among its files.
     uncited = "20261001-000000-x"
     assert plain.cites_run_with(uncited, [("C:\\r\\a.png", 1, 0.0), ("C:\\r\\Morrowind.exe.111.dmp", 1, 0.0)])
