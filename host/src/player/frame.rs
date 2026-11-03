@@ -328,6 +328,7 @@ impl Player {
         self.plan.frame_start();
         self.target_plan.frame_start();
         self.views.frame_start();
+        self.renderer.counts.view_times.frame_start();
         // The shade of the last frame, for a view of another camera before any view of the
         // world camera in this one.
         if let Some(shade) = self.shade_frame.take() {

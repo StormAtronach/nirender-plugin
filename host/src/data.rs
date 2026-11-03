@@ -521,6 +521,8 @@ pub(crate) struct Counts {
     /// The GPU time of each named span of the frame (`stamps::Stamps`), in nanoseconds, and
     /// how many there were.
     pub(crate) gpu_named: Vec<(&'static str, crate::stamps::StampKind, f64, u64)>,
+    /// The CPU time of each view group (`view_times`).
+    pub(crate) view_times: crate::view_times::ViewTimes,
     pub(crate) screen_draws: u32,
     pub(crate) screen_draws_lost: u32,
     pub(crate) target_copies: u32,
