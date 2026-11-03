@@ -42,17 +42,19 @@ local function mirror(reference, proofFolder)
         camera:click()
         camera:swapBuffers()
         camera.renderer:setRenderTarget(nil)
-        -- The proof of the click: the rendered texture itself, written once as a picture of its own.
+        local sceneWasSubject = camera.scene == subject
+        camera.scene = original
+        yellow.appCulled = false
+        subject:update()
+        -- The proof of the click, after the restore so that a fault in it leaves the world camera as it was: the
+        -- rendered texture itself, written once as a picture of its own.
         if clicks == PROOF_CLICK and proofFolder then
             local pixels = niPixelData.new(TEXTURE_SIZE, TEXTURE_SIZE)
             local read = texture:readback(pixels)
             local path = proofFolder .. "/level4-mirror-texture.tga"
             pixels:exportTGA(path)
-            say("proof at click %d: readback %s, texture written to %s; camera scene is the subject: %s", clicks, tostring(read), path, tostring(camera.scene == subject))
+            say("proof at click %d: readback %s, texture written to %s; camera scene was the subject: %s", clicks, tostring(read), path, tostring(sceneWasSubject))
         end
-        camera.scene = original
-        yellow.appCulled = false
-        subject:update()
         clicks = clicks + 1
     end
     event.register(tes3.event.enterFrame, click)
@@ -60,6 +62,7 @@ local function mirror(reference, proofFolder)
 
     return function()
         event.unregister(tes3.event.enterFrame, click)
+        camera.scene = world
         yellow.appCulled = false
         subject:update()
         say("mirror off: %d clicks, the camera's scene is the world again: %s", clicks, tostring(camera.scene == world))

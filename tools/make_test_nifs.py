@@ -65,12 +65,14 @@ a cylinder), a lit material, a base texture of the level, and the property under
     level4_isolate the same group and, not under it, a blue box `bystander` 130 units above;
                  at its stop the mock does what Joy of Painting's Isolate Subject does: the
                  camera's scene is the group, MGE XE's distant land, statics and water are
-                 off, and the water of the game is hidden. The blue box must not show
+                 off, and the water of the game is hidden. The blue box must not show. The
+                 file is written but not in the list (`UNLISTED`), so the tour does not place it
 
 The files are written with `nif40.py`, whose layouts are proven by a byte-identical read and
 write of the level's own files. The texture effect is attached as the level's exhibits do:
 a child of the node and in its `effects` list.
 """
+import argparse
 import math
 import os
 import sys
@@ -81,6 +83,8 @@ import nif40  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(REPO, "mod", "meshes", "@_nifx")
 LIST = os.path.join(REPO, "mod", "MWSE", "mods", "nirender", "test_nifs.lua")
+# Files that are written but not in the list, so that the tour does not place them (D82: the isolate case of level 4 waits).
+UNLISTED = ("level4_isolate",)
 # A white base: the shading shows on it. 1233.dds (a white triangle on black) is the one
 # texture of the level with a pattern, for the effect; as a base it made the shapes black.
 BASE_TEXTURE = "textures\\@_nif\\blankwhite.dds"
@@ -744,12 +748,16 @@ def main():
              "-- The tour step places each in the first cell of the tour with spec.tourExtra.",
              "return {"]
     for name, path in files:
-        light = ", light = true" if name in ("shade_smooth", "shade_flat", "specular") else ""
-        lines.append('    { id = "@nif_x_%s", mesh = "@_nifx\\\\%s.nif"%s },' % (name, name, light))
         print("wrote", path, os.path.getsize(path), "bytes")
+        if name in UNLISTED:
+            continue
+        light =", light = true" if name in ("shade_smooth", "shade_flat", "specular") else ""
+        lines.append('    { id = "@nif_x_%s", mesh = "@_nifx\\\\%s.nif"%s },' % (name, name, light))
     lines.append("}")
     open(LIST, "w", newline="\n").write("\n".join(lines) + "\n")
     print("wrote", LIST)
 
 
-main()
+if __name__ == "__main__":
+    argparse.ArgumentParser(description=__doc__.split("\n")[0]).parse_args()
+    main()
