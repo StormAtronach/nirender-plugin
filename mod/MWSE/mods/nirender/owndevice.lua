@@ -30,12 +30,44 @@ return function(nirender, spec)
         if not ok then say("weather %s: not read: %s", where, tostring(problem)) end
     end
 
+    -- The weather that the spec asks for (`--weather`), pinned when its step sets it and held after: a
+    -- region border or the weather cycle makes the game change it (Bob's A/B of 2026-11-03: the
+    -- fog changed after a cell crossing), and a change moves a timing run's frame rate and fog.
+    -- A change to another weather is undone one frame later. Each undo is a `weather re-pin`
+    -- line, which the runner counts for its summary.
+    local pinned, repins, repinning = nil, 0, false
+
+    local function switchWeather(index)
+        local weather = tes3.worldController.weatherController
+        pcall(function() weather:switchImmediate(index) weather:updateVisuals() end)
+    end
+
+    local function pinWeather(index)
+        pinned = index
+        switchWeather(index)
+    end
+
+    local function holdWeather(source, to)
+        if not pinned or repinning or (to and to.index == pinned) then return end
+        repinning = true
+        timer.delayOneFrame(function()
+            repinning = false
+            -- The step weathers can release the pin between the change and this frame.
+            if not pinned then return end
+            repins = repins + 1
+            say("weather re-pin %d: %s to %s, back to %d", repins, source, weatherName(to), pinned)
+            switchWeather(pinned)
+        end)
+    end
+
     -- A change in the middle of a run.
     event.register(tes3.event.weatherTransitionStarted, function(e)
         say("weather event: transition started from %s to %s", weatherName(e.from), weatherName(e.to))
+        holdWeather("transition", e.to)
     end)
     event.register(tes3.event.weatherChangedImmediate, function(e)
         say("weather event: changed immediately to %s", weatherName(e.to))
+        holdWeather("immediate change", e.to)
     end)
 
     -- The engine's own renderer (`--engine-reference`): MGE XE has `runtime.disabled`, so the game has
@@ -223,10 +255,7 @@ return function(nirender, spec)
             scenario.goTo(spec.interior)
             runLua()
             if spec.weather then
-                after(2, function()
-                    local weather = tes3.worldController.weatherController
-                    pcall(function() weather:switchImmediate(spec.weather) weather:updateVisuals() end)
-                end)
+                after(2, function() pinWeather(spec.weather) end)
             end
             -- A place in the cell (x,y,z) and a heading, as in the exterior step; or the
             -- heading alone: the player turns after the cell loads.
@@ -285,10 +314,7 @@ return function(nirender, spec)
             -- The weather of the run, when the spec asks for one (the game's otherwise: it
             -- is random, so the pictures of two runs can differ). 0 clear to 9 blizzard.
             if spec.weather then
-                after(2, function()
-                    local weather = tes3.worldController.weatherController
-                    pcall(function() weather:switchImmediate(spec.weather) weather:updateVisuals() end)
-                end)
+                after(2, function() pinWeather(spec.weather) end)
             end
             -- Under the water: the nearest spot around the player where the land is 170 units
             -- or more under the water level, found with rays onto the landscape.
@@ -364,6 +390,9 @@ return function(nirender, spec)
         -- large modlist) shows as a difference between the passes, a weather as a cost in
         -- both.
         { "weathers", 128, function()
+            -- This step sets each weather itself: the held weather of --weather would undo it.
+            if pinned then say("weather pin released for the step weathers") end
+            pinned = nil
             local weather = tes3.worldController.weatherController
             local order = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 }
             local at = 1
@@ -589,6 +618,7 @@ return function(nirender, spec)
         { "walk-end", 3.0, function()
             scenario.eachFrame = nil
             say("walk to '%s'; calls from other threads: %s", tes3.player.cell.editorName, (nirender.threadCensus():gsub("\n", "; ")))
+            noteWeather("walk-end")
         end },
     }
 
