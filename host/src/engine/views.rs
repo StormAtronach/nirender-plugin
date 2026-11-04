@@ -756,6 +756,26 @@ mod tests {
         assert_eq!(views.scene_first, Some(VIEW_SLOTS as u8 - 1));
     }
 
+    /// A camera of a mod in a stream that marks the walk gets no event in its scene (run
+    /// 20261104-112610-d93-B: the mirror's land came after 10 of its world draws). Its record has no
+    /// `SCENE_WALK_DUE`, so the world of its view begins at its first draw after the sky, whatever
+    /// its camera is; a scene with the bit waits for the event.
+    #[test]
+    fn the_world_of_a_view_with_no_walk_event_begins_after_the_sky() {
+        use crate::retained::view_world_begins;
+        let mut views = Views { repeat_walk_on: true, ..Views::default() };
+        views.note_repeat_walk(&record_with_word(0));
+        let walk_marked = views.scene_walk_due();
+        assert!(!walk_marked);
+        assert!(!view_world_begins(true, false, walk_marked, false));
+        assert!(view_world_begins(false, false, walk_marked, true));
+        // A scene whose record says the walk is due, into the back buffer or a texture: the event begins it.
+        views.note_repeat_walk(&record_with_word(SCENE_WALK_DUE));
+        let walk_marked = views.scene_walk_due();
+        assert!(walk_marked);
+        assert!(!view_world_begins(false, false, walk_marked, true));
+    }
+
     /// The same walk in a stream of the format 6 (a 0 in the word) and in one of the format 7
     /// (the bit set) gives the same plan for the world's start: the walk is marked, the event
     /// starts the world and no draw does. A scene of the format 7 whose walk is not due starts

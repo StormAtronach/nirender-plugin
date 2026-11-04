@@ -1222,16 +1222,6 @@ pub(crate) fn view_world_begins(sky: bool, sky_hidden: bool, walk_marked: bool, 
     !sky && (sky_hidden || (!walk_marked && sky_seen))
 }
 
-/// The walk event comes in a scene of a view of its own (`walk_marked` of [`view_world_begins`])
-/// only when the stream marks the walk and the scene is of the world camera with the world
-/// root (`world_scene`, [`crate::engine::scene::SCENE_WORLD`]): the plugin writes the event in
-/// that Click only (`world_walk::walk_due`). A camera of a mod (the clone of a mirror) gets no
-/// event, so its world begins at its first draw after the sky, and the distant land of the
-/// view goes before the view's first draw of the world.
-pub(crate) fn view_walk_marked(stream_marks_walk: bool, world_scene: bool) -> bool {
-    stream_marks_walk && world_scene
-}
-
 /// A draw of the game is a draw of the scene's world that reaches the target before the world
 /// of the scene begins ([`Player::note_early_world_draws`]): not the sky, after a draw of the sky
 /// or with the sky hidden, not held for the world's start (`held`), the world not begun, and not
@@ -3108,23 +3098,6 @@ mod view_bit_tests {
         // With the sky hidden there is no sky draw: the first draw.
         assert!(view_world_begins(false, true, true, false));
         assert!(view_world_begins(false, true, false, false));
-    }
-
-    #[test]
-    fn the_world_of_a_view_with_no_walk_event_begins_after_the_sky() {
-        // A camera of a mod in a stream that marks the walk: no event comes in its scene
-        // (run 20261104-112610-d93-B: the mirror's land came after 10 of its world draws).
-        let walk_marked = view_walk_marked(true, false);
-        assert!(!walk_marked);
-        assert!(!view_world_begins(true, false, walk_marked, false));
-        assert!(view_world_begins(false, false, walk_marked, true));
-        // The world camera's scene, into the back buffer or a texture: the event begins it.
-        let walk_marked = view_walk_marked(true, true);
-        assert!(walk_marked);
-        assert!(!view_world_begins(false, false, walk_marked, true));
-        // A stream without the event: the draw rule in every scene.
-        assert!(!view_walk_marked(false, true));
-        assert!(!view_walk_marked(false, false));
     }
 
     #[test]

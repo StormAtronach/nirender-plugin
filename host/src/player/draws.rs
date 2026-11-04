@@ -283,12 +283,12 @@ impl Player {
         let (steps, hold) = self.plan_now().world_draw(extension, in_back_buffer, sky, sky_hidden, walk_marked);
         // The world of a view of its own, by the main view's rule: the first draw after the
         // sky, or the first draw with the sky hidden; a stream that marks the walk starts it at
-        // the event (`world_walk`), in a scene of the world camera only.
+        // the event (`world_walk`), in a scene whose record says the plugin walks its root. A
+        // scene with no event (the clone of a mirror's camera) begins at its first draw after
+        // the sky.
         self.view_scene_draws[0] += 1;
         self.view_scene_draws[1] += u32::from(sky);
-        let world_scene = self.views.open().and_then(|group| self.views.group(group)).is_none_or(|group| group.world_camera);
-        let view_walk_marked = crate::retained::view_walk_marked(walk_marked, world_scene);
-        if crate::retained::view_world_begins(sky, sky_hidden, view_walk_marked, self.view_sky_seen) {
+        if crate::retained::view_world_begins(sky, sky_hidden, walk_marked, self.view_sky_seen) {
             self.begin_view_world(if sky_hidden { "a draw with the sky hidden" } else { "the first draw after the sky" });
         } else if self.is_early_world_draw(sky, sky_hidden, walk_marked, hold) {
             self.view_early_draws += 1;
