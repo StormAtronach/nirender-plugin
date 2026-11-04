@@ -130,11 +130,11 @@ impl Additions {
     pub const TIER_DRAWN: Additions = Additions::LAND.with(Additions::STATICS).with(Additions::GRASS).with(Additions::GLOWS);
 
     /// The drawn parts that go in the call at the start of the world of the view
-    /// ([`Extension::view_before_world`]): the land, the statics and the glows.
+    /// ([`crate::Extension::view_before_world`]): the land, the statics and the glows.
     pub const TIER_BEFORE: Additions = Additions::LAND.with(Additions::STATICS).with(Additions::GLOWS);
 
     /// The drawn part that goes in the call at the end of the world of the view
-    /// ([`Extension::view_after_world`]): the grass.
+    /// ([`crate::Extension::view_after_world`]): the grass.
     pub const TIER_AFTER: Additions = Additions::GRASS;
 
     /// The parts that are in both sets.
