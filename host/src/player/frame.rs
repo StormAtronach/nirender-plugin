@@ -120,6 +120,7 @@ impl Player {
             before_kept: false,
             picture_copy: None,
             depth_copy: None,
+            post_copies: Vec::new(),
             world_depth: None,
             world_depth_kept: false,
             late_before: None,

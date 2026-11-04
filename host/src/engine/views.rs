@@ -44,6 +44,8 @@ pub(crate) struct Group {
     pub(crate) tier_begun: bool,
     /// The same for the call at the end of the world ([`Additions::TIER_AFTER`]).
     pub(crate) tier_ended: bool,
+    /// The post chain of a picture was queued at the end of the scene ([`Additions::TIER_POST`]).
+    pub(crate) tier_posted: bool,
     /// The name of the view's GPU span and CPU time, made once its facts are known
     /// (`Player::view_group_name`).
     pub(crate) name: core::cell::Cell<Option<&'static str>>,
@@ -65,6 +67,34 @@ impl Group {
     /// has a group for each, all with its slot.
     pub(crate) fn view_slot(&self) -> Option<u32> {
         self.view_slot.map(u32::from)
+    }
+}
+
+/// The points of a scene of a view of its own where the calls at the end of its world can go:
+/// the end of the flush of the engine's sorted queue, and the end of the scene.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TierPoint {
+    Flush,
+    SceneEnd,
+}
+
+/// The calls at the end of a scene that are due at one point, in their order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) struct EndCalls {
+    /// The grass ([`Additions::TIER_AFTER`], [`crate::Extension::view_after_world`]).
+    pub(crate) grass: bool,
+    /// The post chain of a picture ([`Additions::TIER_POST`], [`crate::Extension::view_post`]).
+    pub(crate) post: bool,
+}
+
+/// The calls of the full tier at the end of a scene that are due at `point`, for a view with
+/// `parts`, when the scene made the calls `made` (grass, post) before. The grass goes at the first
+/// point that comes, once; the post chain goes at the scene's end only, once, and after the grass
+/// (the order of the two in the items is the order of this struct).
+pub(crate) fn end_calls_due(parts: Additions, made: (bool, bool), point: TierPoint) -> EndCalls {
+    EndCalls {
+        grass: !parts.intersect(Additions::TIER_AFTER).is_empty() && !made.0,
+        post: point == TierPoint::SceneEnd && !parts.intersect(Additions::TIER_POST).is_empty() && !made.1,
     }
 }
 
@@ -519,6 +549,46 @@ mod tests {
         assert!(views.scene_begin(SCENE_WORLD, true, true));
         assert_eq!(views.group(3).unwrap().additions, Additions::NONE);
         assert_eq!((views.tier.counts.granted, views.tier.counts.refused), (1, 1));
+    }
+
+    /// The option `shaders` gives a picture the post chain as a part of the full tier. A scene
+    /// of another screen has the post cover of its kind, and no call of the picture's post.
+    #[test]
+    fn a_picture_with_shaders_has_the_post_chain() {
+        let mut views = on();
+        views.tier.options(3, 0b10000);
+        views.note_scene(Some(3), 20, 200, 7);
+        assert!(views.scene_begin(SCENE_WORLD, true, true));
+        let picture = views.group(0).unwrap();
+        assert!(picture.additions.contains(Additions::POST_COVER));
+        assert_eq!(crate::view_kind::tier_parts(picture.kind, picture.additions), Additions::TIER_POST);
+        assert!(views.scene_begin(SCENE_OTHER, false, false));
+        let screen = views.group(1).unwrap();
+        assert!(screen.additions.contains(Additions::POST_COVER));
+        assert_eq!(crate::view_kind::tier_parts(screen.kind, screen.additions), Additions::NONE);
+    }
+
+    /// The grass goes at the first point that comes (the flush or the scene's end) and the post
+    /// chain at the scene's end, after the grass, each once. A scene with no flush gets both at
+    /// its end, the grass first.
+    #[test]
+    fn the_calls_at_the_end_of_a_scene_go_once_in_their_order() {
+        let both = Additions::TIER_AFTER.with(Additions::TIER_POST);
+        // A flush, then the scene's end.
+        let flush = end_calls_due(both, (false, false), TierPoint::Flush);
+        assert_eq!(flush, EndCalls { grass: true, post: false });
+        let end = end_calls_due(both, (flush.grass, flush.post), TierPoint::SceneEnd);
+        assert_eq!(end, EndCalls { grass: false, post: true });
+        assert_eq!(end_calls_due(both, (true, true), TierPoint::SceneEnd), EndCalls::default());
+        // No flush: both at the scene's end.
+        assert_eq!(end_calls_due(both, (false, false), TierPoint::SceneEnd), EndCalls { grass: true, post: true });
+        // The post chain alone waits for the scene's end; the grass alone has no post.
+        assert_eq!(end_calls_due(Additions::TIER_POST, (false, false), TierPoint::Flush), EndCalls::default());
+        assert_eq!(end_calls_due(Additions::TIER_POST, (false, false), TierPoint::SceneEnd), EndCalls { grass: false, post: true });
+        assert_eq!(end_calls_due(Additions::TIER_AFTER, (false, false), TierPoint::SceneEnd), EndCalls { grass: true, post: false });
+        // Parts of the start of the world, or no parts, have no call at the end.
+        assert_eq!(end_calls_due(Additions::TIER_BEFORE, (false, false), TierPoint::SceneEnd), EndCalls::default());
+        assert_eq!(end_calls_due(Additions::NONE, (false, false), TierPoint::SceneEnd), EndCalls::default());
     }
 
     /// The kind of a view comes from the camera and the target: the world camera on a mod's root

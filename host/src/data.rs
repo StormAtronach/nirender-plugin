@@ -317,6 +317,9 @@ pub(crate) struct RenderTexture {
     pub(crate) texture: wgpu::Texture,
     pub(crate) view: Rc<wgpu::TextureView>,
     pub(crate) depth: Rc<wgpu::TextureView>,
+    /// The depth texture itself, for the copy that the post chain of a picture reads
+    /// ([`Extension::view_post`]).
+    pub(crate) depth_texture: wgpu::Texture,
     /// The size of the texture: `asked`, each side cut to the device's largest
     /// ([`crate::picture::target_size`]).
     pub(crate) size: (u32, u32),
@@ -543,6 +546,11 @@ pub(crate) struct Counts {
     /// The scenes of a view of its own that got the call at the end of their world
     /// ([`Extension::view_after_world`], the grass).
     pub(crate) tier_ends: u64,
+    /// The scenes of a picture that got the call at their end ([`Extension::view_post`], the post
+    /// chain), and the ones where the picture could not be copied for it (no copy of the colour or
+    /// of the depth that the extension reads).
+    pub(crate) tier_posts: u64,
+    pub(crate) tier_posts_uncopied: u64,
     /// The world scenes that came after a main view with a root of its own had started the
     /// world of the frame.
     pub(crate) world_after_main_view: u64,

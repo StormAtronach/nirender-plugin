@@ -228,7 +228,7 @@ impl Player {
                 }
                 // After the last sorted blends of the scene: the end of its world.
                 if let Some(group) = open_group {
-                    self.view_tier_end_item(group);
+                    self.view_tier_end_items(group, engine::views::TierPoint::SceneEnd);
                 }
             }
             tag::FRAME_EVENT => {
@@ -939,26 +939,35 @@ impl Player {
         self.items.push(Item::TierStart(facts, parts));
     }
 
-    /// The end of the world of the open scene of a view of its own that has the grass
-    /// ([`Additions::TIER_AFTER`]): the item goes after the sorted blends of the flush of the
-    /// scene's sorted queue, or after those of the scene's end, whichever comes first, once for
-    /// the scene. A scene whose world did not begin gets none.
-    pub(crate) fn view_tier_end_item(&mut self, group: usize) {
+    /// The calls at the end of the open scene of a view of its own, at `point`: the grass
+    /// ([`Additions::TIER_AFTER`]) goes after the sorted blends of the flush of the scene's sorted
+    /// queue, or after those of the scene's end, whichever comes first, and the post chain of a
+    /// picture ([`Additions::TIER_POST`]) goes at the scene's end, after the grass. Each goes once
+    /// for the scene ([`engine::views::end_calls_due`]). A scene whose world did not begin gets
+    /// none.
+    pub(crate) fn view_tier_end_items(&mut self, group: usize, point: engine::views::TierPoint) {
         let Some(open) = self.views.group(group) else { return };
-        let parts = view_kind::tier_parts(open.kind, open.additions);
-        if parts.intersect(Additions::TIER_AFTER).is_empty() || open.tier_ended || !self.view_world_begun || !self.drawing() {
+        if !self.view_world_begun || !self.drawing() {
             return;
         }
+        let parts = view_kind::tier_parts(open.kind, open.additions);
+        let due = engine::views::end_calls_due(parts, (open.tier_ended, open.tier_posted), point);
         let key = ViewKey::of_view(open.view_slot(), open.kind, open.place);
         if let Some(open) = self.views.group_mut(group) {
-            open.tier_ended = true;
+            open.tier_ended |= due.grass;
+            open.tier_posted |= due.post;
         }
-        if self.extension.is_none() {
-            self.renderer.counts.tier_unserved += 1;
-            return;
+        for (wanted, item) in [(due.grass, Item::TierEnd as fn(Box<WorldFacts>, Additions) -> Item), (due.post, Item::TierPost)] {
+            if !wanted {
+                continue;
+            }
+            if self.extension.is_none() {
+                self.renderer.counts.tier_unserved += 1;
+                continue;
+            }
+            let facts = self.tier_facts(key);
+            self.items.push(item(facts, parts));
         }
-        let facts = self.tier_facts(key);
-        self.items.push(Item::TierEnd(facts, parts));
     }
 
     /// The facts of the open scene of a view of its own for a call of the extension: the

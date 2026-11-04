@@ -1143,11 +1143,11 @@ impl Renderer {
             }
         }
         let texture = target_texture(&self.device, width, height, self.target_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC);
-        let depth = target_texture(&self.device, width, height, self.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let depth = target_texture(&self.device, width, height, self.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
         let view = Rc::new(texture.create_view(&Default::default()));
         self.set_texture(handle, view.clone());
         self.texture_objects.remove(&handle);
-        self.targets.insert(handle, RenderTexture { texture, view, depth: Rc::new(depth.create_view(&Default::default())), size: (width, height), asked });
+        self.targets.insert(handle, RenderTexture { texture, view, depth: Rc::new(depth.create_view(&Default::default())), depth_texture: depth, size: (width, height), asked });
         self.counts.render_textures += 1;
     }
 

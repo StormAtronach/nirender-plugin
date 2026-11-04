@@ -137,6 +137,11 @@ impl Additions {
     /// ([`crate::Extension::view_after_world`]): the grass.
     pub const TIER_AFTER: Additions = Additions::GRASS;
 
+    /// The part that goes in the call at the end of the scene of a picture
+    /// ([`crate::Extension::view_post`]): the post chain. Only a picture has it; the stage-2 post
+    /// of another screen is the main view's own.
+    pub const TIER_POST: Additions = Additions::POST_COVER;
+
     /// The parts that are in both sets.
     pub const fn intersect(self, other: Additions) -> Additions {
         Additions(self.0 & other.0)
@@ -183,13 +188,13 @@ impl ViewKey {
 }
 
 /// The parts of the full tier that the extension draws in a scene of a view of its own
-/// ([`Additions::TIER_DRAWN`] of its additions). The main view has none: its parts come from
-/// the calls of the frame.
+/// ([`Additions::TIER_DRAWN`] of its additions, and for a picture [`Additions::TIER_POST`]). The
+/// main view has none: its parts come from the calls of the frame.
 pub(crate) fn tier_parts(kind: ViewKind, additions: Additions) -> Additions {
-    if kind == ViewKind::Main {
-        Additions::NONE
-    } else {
-        additions.intersect(Additions::TIER_DRAWN)
+    match kind {
+        ViewKind::Main => Additions::NONE,
+        ViewKind::Picture => additions.intersect(Additions::TIER_DRAWN.with(Additions::TIER_POST)),
+        ViewKind::OtherScreen => additions.intersect(Additions::TIER_DRAWN),
     }
 }
 
@@ -236,21 +241,25 @@ mod tests {
     }
 
     /// A picture with options draws the land, the statics, the grass and the glows in its own
-    /// view; the water and the post chain wait for their slices, and the main view has none from
-    /// this path. The land, the statics and the glows are called at the start of the world, the
-    /// grass at its end.
+    /// view, and has the post chain on its picture; the water waits for its slice, and the main
+    /// view has none from this path. The land, the statics and the glows are called at the start
+    /// of the world, the grass at its end, the post chain at the end of the scene.
     #[test]
-    fn a_view_of_its_own_draws_the_land_the_statics_the_grass_and_the_glows() {
+    fn a_view_of_its_own_draws_the_land_the_statics_the_grass_the_glows_and_the_post() {
         let granted = Additions::from_option_parts(0b111111);
-        assert_eq!(tier_parts(ViewKind::Picture, granted), Additions::LAND.with(Additions::STATICS).with(Additions::GRASS).with(Additions::GLOWS));
+        assert_eq!(tier_parts(ViewKind::Picture, granted), Additions::TIER_DRAWN.with(Additions::TIER_POST));
         assert_eq!(tier_parts(ViewKind::Picture, Additions::from_option_parts(0b100000)), Additions::GLOWS);
-        // The water (bit 3) and the shaders (bit 4) are not drawn in a view of its own yet.
-        assert_eq!(tier_parts(ViewKind::Picture, Additions::from_option_parts(0b11000)), Additions::NONE);
+        assert_eq!(tier_parts(ViewKind::Picture, Additions::from_option_parts(0b10000)), Additions::TIER_POST);
+        // The water (bit 3) is not drawn in a view of its own yet.
+        assert_eq!(tier_parts(ViewKind::Picture, Additions::from_option_parts(0b01000)), Additions::NONE);
         assert_eq!(Additions::TIER_BEFORE.with(Additions::TIER_AFTER), Additions::TIER_DRAWN);
         assert!(Additions::TIER_BEFORE.intersect(Additions::TIER_AFTER).is_empty());
+        assert!(Additions::TIER_DRAWN.intersect(Additions::TIER_POST).is_empty());
         assert_eq!(tier_parts(ViewKind::Picture, Additions::NONE), Additions::NONE);
         assert_eq!(tier_parts(ViewKind::Main, Additions::ALL), Additions::NONE);
         assert_eq!(tier_parts(ViewKind::OtherScreen, Additions::LAND), Additions::LAND);
+        // Another screen has the post cover of its kind, and the picture's post call is not for it.
+        assert_eq!(tier_parts(ViewKind::OtherScreen, ViewKind::OtherScreen.additions(false)), Additions::NONE);
     }
 
     /// The key of a view of its own is not the main view's, and the slots stay apart.

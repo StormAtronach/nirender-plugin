@@ -139,7 +139,7 @@ impl Player {
                 Item::Replace(..) => Some("a class of draws (extension: water)"),
                 Item::HeldHere(..) => Some("a held draw in place (extension)"),
                 Item::Target(_) | Item::Clear(..) | Item::Viewport(_) => group.as_ref().map(|(name, _)| *name),
-                Item::WorldStart(_) | Item::TierStart(..) | Item::TierEnd(..) | Item::WorldEnd(_) | Item::Post(_) | Item::FirstPersonDepth(_) => None,
+                Item::WorldStart(_) | Item::TierStart(..) | Item::TierEnd(..) | Item::TierPost(..) | Item::WorldEnd(_) | Item::Post(_) | Item::FirstPersonDepth(_) => None,
             };
             if group.as_ref().map(|(name, _)| *name) != label {
                 if let Some((_, at)) = group.take() {
@@ -174,6 +174,7 @@ impl Player {
                         Item::WorldStart(_) => "world-start",
                         Item::TierStart(..) => "tier-start",
                         Item::TierEnd(..) => "tier-end",
+                        Item::TierPost(..) => "tier-post",
                         Item::MainView(_) => "main-view",
                         Item::WorldEnd(_) => "world-end",
                         Item::SortedBlends(_) => "sorted-blends",
@@ -217,6 +218,7 @@ impl Player {
                 Item::WorldStart(facts) => self.start_world(&facts),
                 Item::TierStart(facts, parts) => self.start_tier_view(&facts, parts),
                 Item::TierEnd(facts, parts) => self.end_tier_view(&facts, parts),
+                Item::TierPost(facts, parts) => self.post_tier_view(&facts, parts),
                 Item::MainView(facts) => self.timed(MAIN_VIEW_OPAQUE, 0, |player| player.draw_retained_main(&facts)),
                 Item::WorldEnd(facts) => self.end_world(&facts),
                 Item::SortedBlends(generation) => {
@@ -594,6 +596,84 @@ impl Player {
         }
         self.part_end(part);
         self.extension = Some(extension);
+    }
+
+    /// Gives the extension its call at the end of the scene of a picture that has the post chain.
+    /// See [`Extension::view_post`]. The copies that the chain reads are made of the picture's own
+    /// texture and depth, outside of the pass; the chain writes its result into the picture. The
+    /// pass of the picture is open again after the call, for a later scene into the same texture.
+    pub(crate) fn post_tier_view(&mut self, facts: &WorldFacts, parts: Additions) {
+        let Some(mut extension) = self.extension.take() else { return };
+        let reads = extension.reads(ReadingCall::Post);
+        let Some((picture, depth, target)) = self.copy_target_for_post(reads) else {
+            self.renderer.counts.tier_posts_uncopied += 1;
+            self.extension = Some(extension);
+            return;
+        };
+        let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
+        let commands = self.renderer.commands.clone();
+        let mut scene = facts.view(&device, &queue, &commands, format);
+        scene.picture = picture.as_ref();
+        scene.depth = depth.as_ref();
+        let name = stamps::name(&format!("extension: the post chain of place {}", facts.view_key.place.map_or(-1, i32::from)));
+        if let Some(encoder) = self.encoder.as_mut() {
+            let clock = ticks::Clock::now();
+            let at = stamp(&self.renderer.stamps, encoder, StampKind::Part, name);
+            encoder.push_debug_group("extension: post-processing of a picture");
+            extension.view_post(&scene, parts, encoder, &target);
+            encoder.pop_debug_group();
+            stamp_end(&self.renderer.stamps, encoder, at);
+            let elapsed = clock.elapsed();
+            self.renderer.counts.times[TIME_EXT_TIER] += elapsed;
+            self.renderer.counts.view_times.add(name, elapsed, 0);
+            self.renderer.counts.tier_posts += 1;
+        } else {
+            self.renderer.counts.tier_unserved += 1;
+        }
+        self.extension = Some(extension);
+        self.open_pass(crate::gpu::PassReason::AfterExtension, None, None, None);
+    }
+
+    /// Copies the colour and the depth of the rendered texture that the open scene draws into,
+    /// outside of the pass, for what the post chain of a picture reads (`reads`). Returns the
+    /// views of the copies and the picture's own view with one sample, or `None` when the scene
+    /// has no texture or no encoder. The pass stays closed.
+    fn copy_target_for_post(&mut self, reads: Reads) -> Option<(Option<wgpu::TextureView>, Option<wgpu::TextureView>, Rc<wgpu::TextureView>)> {
+        let target = self.renderer.targets.get(&self.pass_target?)?;
+        let (texture, depth_texture, view, size) = (target.texture.clone(), target.depth_texture.clone(), target.view.clone(), target.size);
+        self.close_pass();
+        let at = match self.post_copies.iter().position(|copy| copy.size == size) {
+            Some(at) => at,
+            None => {
+                let device = &self.renderer.device;
+                let picture = target_texture(device, size.0, size.1, texture.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
+                let depth_usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST;
+                let depth = target_texture(device, size.0, size.1, depth_texture.format(), depth_usage);
+                if self.post_copies.len() >= POST_COPIES_KEPT {
+                    self.post_copies.remove(0);
+                }
+                self.post_copies.push(PostCopy { size, picture, depth });
+                self.post_copies.len() - 1
+            }
+        };
+        let copy = &self.post_copies[at];
+        let encoder = self.encoder.as_mut()?;
+        let extent = wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 };
+        let picture = reads.picture.then(|| {
+            let at = stamp(&self.renderer.stamps, encoder, StampKind::Outside, "picture: the post chain of a picture");
+            encoder.copy_texture_to_texture(texture.as_image_copy(), copy.picture.as_image_copy(), extent);
+            stamp_end(&self.renderer.stamps, encoder, at);
+            self.renderer.counts.picture_copies += 1;
+            copy.picture.create_view(&Default::default())
+        });
+        let depth = reads.depth.then(|| {
+            let at = stamp(&self.renderer.stamps, encoder, StampKind::Outside, "depth: the post chain of a picture");
+            encoder.copy_texture_to_texture(depth_texture.as_image_copy(), copy.depth.as_image_copy(), extent);
+            stamp_end(&self.renderer.stamps, encoder, at);
+            self.renderer.counts.depth_copies += 1;
+            copy.depth.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() })
+        });
+        Some((picture, depth, view))
     }
 
     /// Does `draw`, the item of one view group, and adds its CPU time to the group's
