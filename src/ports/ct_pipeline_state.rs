@@ -202,6 +202,8 @@ pub static SITES: &[usize] = &[
 /// instruction.
 trait Env {
     unsafe fn wr<T: Copy>(&mut self, base: usize, off: usize, value: T);
+    /// The inline `inc dword ptr [object+4]` of the game code.
+    unsafe fn add_reference(&mut self, object: usize);
     unsafe fn max_stages(&mut self) -> u32;
     unsafe fn max_textures(&mut self) -> u32;
     /// True when the instruction at 0x6B42AC is a call. MWSE put its correction of the
@@ -253,6 +255,10 @@ impl Env for Live {
     #[inline(always)]
     unsafe fn wr<T: Copy>(&mut self, base: usize, off: usize, value: T) {
         crate::mem::wr(base, off, value)
+    }
+    #[inline(always)]
+    unsafe fn add_reference(&mut self, object: usize) {
+        ni::add_reference(object)
     }
     #[inline(always)]
     unsafe fn max_stages(&mut self) -> u32 {
@@ -605,7 +611,7 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
                         e.release(0x6B4537, current);
                     }
                     e.wr(stage, ST::ptrTexture, texture);
-                    e.wr(texture, REF_COUNT, rd::<u32>(texture, REF_COUNT).wrapping_add(1));
+                    e.add_reference(texture);
                 }
                 e.set_addressing(0x6B4552, pipeline_of(this), clamp, stage);
                 e.set_filter(0x6B455F, pipeline_of(this), filter, stage);
@@ -1189,10 +1195,6 @@ impl Model {
         self.wr(this, TP::substruct_14, subpass);
     }
 
-    unsafe fn add_reference(&mut self, object: usize) {
-        self.wr(object, REF_COUNT, rd::<u32>(object, REF_COUNT).wrapping_add(1));
-    }
-
     /// Subtracts one reference. The game deletes the object when the count becomes 0.
     unsafe fn drop_reference(&mut self, object: usize) {
         let count = rd::<u32>(object, REF_COUNT).wrapping_sub(1);
@@ -1424,6 +1426,11 @@ impl Env for Model {
         core::ptr::copy_nonoverlapping(addr as *const u8, old.as_mut_ptr(), len);
         self.journal.push(Entry { addr, len, old });
         crate::mem::wr(addr, 0, value);
+    }
+
+    /// A plain write through the journal: the roll back puts the old count back.
+    unsafe fn add_reference(&mut self, object: usize) {
+        self.wr(object, REF_COUNT, rd::<u32>(object, REF_COUNT).wrapping_add(1));
     }
 
     unsafe fn max_stages(&mut self) -> u32 {

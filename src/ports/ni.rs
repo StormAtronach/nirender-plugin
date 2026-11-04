@@ -6,7 +6,13 @@
 //! The forms that call a game function (`NiObject::release` at 0x404630, `NiPointer::set` at
 //! 0x471B00 and the others) are in `engine`. Do not use one form in place of the other: a
 //! port does what the game code does at that place.
+//!
+//! A change of a reference count here is one locked instruction, as the stubs of
+//! [`crate::atomic_count`] make the game's own: the main thread and the cell loader thread
+//! change the counts of shared objects (risk 56).
 
+
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::engine::{vcall0, vcall1, NI_REF_OBJECT_COUNT};
 use crate::gen::layouts::{InterfaceNiObject, NiRTTI, NiRefObject};
@@ -53,6 +59,17 @@ pub unsafe fn delete_object(object: usize) {
     vcall1(object, SLOT_DELETING_DTOR, 1);
 }
 
+/// The reference count of `object`, for locked changes.
+///
+/// # Safety
+///
+/// `object` points at a live `NiRefObject`; it is not 0. The count is 4-aligned, as in every
+/// object that the game allocates.
+#[inline(always)]
+unsafe fn count_of<'a>(object: usize) -> &'a AtomicU32 {
+    AtomicU32::from_ptr((object + REF_COUNT) as *mut u32)
+}
+
 /// Adds one reference to `object`. The game code has this inline as `inc dword ptr [object+4]`.
 /// `object` is not 0.
 ///
@@ -61,12 +78,12 @@ pub unsafe fn delete_object(object: usize) {
 /// `object` points at a live `NiRefObject`; it is not 0.
 #[inline(always)]
 pub unsafe fn add_reference(object: usize) {
-    wr(object, REF_COUNT, rd::<u32>(object, REF_COUNT).wrapping_add(1));
+    count_of(object).fetch_add(1, Ordering::Relaxed);
 }
 
-/// The inline release of one reference. It subtracts 1 from the count and writes the count.
-/// When the count is 0 it calls the deleting destructor with the argument 1. `object` is not
-/// 0. This is not a call of `NiObject::release` (0x404630).
+/// The inline release of one reference. It subtracts 1 from the count. When the count is 0 it
+/// calls the deleting destructor with the argument 1. `object` is not 0. This is not a call of
+/// `NiObject::release` (0x404630).
 ///
 /// # Safety
 ///
@@ -74,9 +91,7 @@ pub unsafe fn add_reference(object: usize) {
 /// count reaches 0 the object is freed, and nothing may use it after the call.
 #[inline(always)]
 pub unsafe fn release(object: usize) {
-    let count = rd::<u32>(object, REF_COUNT).wrapping_sub(1);
-    wr(object, REF_COUNT, count);
-    if count == 0 {
+    if count_of(object).fetch_sub(1, Ordering::AcqRel) == 1 {
         delete_object(object);
     }
 }

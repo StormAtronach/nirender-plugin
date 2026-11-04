@@ -1111,7 +1111,7 @@ pub unsafe fn source_data_update(this: usize) {
                 eng::ni_object_release(current);
             }
             wr(this, SD::palette, palette);
-            wr(palette, REF_COUNT, rd::<u32>(palette, REF_COUNT).wrapping_add(1));
+            ni::add_reference(palette);
             palette_changed = true;
         }
     }
@@ -1152,12 +1152,8 @@ pub unsafe fn source_data_update(this: usize) {
     }
     if converted != 0 {
         // A smart pointer takes the data and then releases it.
-        let count = rd::<u32>(converted, REF_COUNT).wrapping_add(1);
-        wr(converted, REF_COUNT, count);
-        wr(converted, REF_COUNT, count.wrapping_sub(1));
-        if count.wrapping_sub(1) == 0 {
-            ni::delete_object(converted);
-        }
+        ni::add_reference(converted);
+        ni::release(converted);
     }
 }
 
@@ -1182,7 +1178,7 @@ pub unsafe fn source_data_set_palette(this: usize, palette: usize) -> u8 {
                 ni::release(current);
             }
             wr(this, SD::palette, palette);
-            wr(palette, REF_COUNT, rd::<u32>(palette, REF_COUNT).wrapping_add(1));
+            ni::add_reference(palette);
             changed = 1;
         }
     }
@@ -1277,15 +1273,11 @@ pub unsafe fn blt_data_create(blt_source: usize, renderer: usize) -> usize {
         blt_data_create_surface(data, converted, pixel_format);
     }
     // A smart pointer holds the converted data, then the source.
-    let count = rd::<u32>(converted, REF_COUNT).wrapping_add(1);
-    wr(converted, REF_COUNT, count);
+    ni::add_reference(converted);
     let mut held = converted;
     if converted != source {
-        wr(converted, REF_COUNT, count.wrapping_sub(1));
-        if count.wrapping_sub(1) == 0 {
-            ni::delete_object(converted);
-        }
-        wr(source, REF_COUNT, rd::<u32>(source, REF_COUNT).wrapping_add(1));
+        ni::release(converted);
+        ni::add_reference(source);
         held = source;
     }
     let mut slot = blt_source + BLT_RENDERER_DATA;
