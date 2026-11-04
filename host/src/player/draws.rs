@@ -249,7 +249,8 @@ impl Player {
         // a plain interior cell, or ToggleSky) there is no sky draw: the world starts at
         // the first draw.
         let sky = scene::sky_class(self.stream.object_class);
-        let (extension, sky_hidden, walk_marked) = (self.extension.is_some(), self.stream.sky_hidden, self.stream.world_walk);
+        // The stream marks the walk, and the scene's record says that the plugin walks its root.
+        let (extension, sky_hidden, walk_marked) = (self.extension.is_some(), self.stream.sky_hidden, self.stream.world_walk && self.views.scene_walk_due());
         let (steps, hold) = self.plan_now().world_draw(extension, in_back_buffer, sky, sky_hidden, walk_marked);
         // The world of a view of its own, by the main view's rule: the first draw after the
         // sky, or the first draw with the sky hidden; a stream that marks the walk starts it at
