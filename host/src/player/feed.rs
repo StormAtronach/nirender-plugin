@@ -216,6 +216,7 @@ impl Player {
                 if let Some(group) = self.views.open() {
                     self.begin_view_world("the scene end");
                     self.view_table_item();
+                    self.view_tier_end_item(group);
                     let facts = self.views.group(group).and_then(|g| g.facts);
                     if let (Some(bit), Some(facts), Some(_)) = (self.table_bit(group), facts, self.target) {
                         self.retained.close_view(group, bit, view_planes(&facts.view, &facts.projection));
@@ -919,7 +920,7 @@ impl Player {
     fn view_tier_item(&mut self, group: usize) {
         let Some(open) = self.views.group(group) else { return };
         let parts = view_kind::tier_parts(open.kind, open.additions);
-        if parts.is_empty() || open.tier_begun {
+        if parts.intersect(Additions::TIER_BEFORE).is_empty() || open.tier_begun {
             return;
         }
         let key = ViewKey::of_view(open.view_slot(), open.kind);
@@ -930,10 +931,39 @@ impl Player {
             self.renderer.counts.tier_unserved += 1;
             return;
         }
+        let facts = self.tier_facts(key);
+        self.items.push(Item::TierStart(facts, parts));
+    }
+
+    /// The end of the world of the open scene of a view of its own that has the grass
+    /// ([`Additions::TIER_AFTER`]): the item goes at the flush of the scene's sorted queue, or
+    /// at the scene's end, whichever comes first, once for the scene. A scene whose world did
+    /// not begin gets none.
+    pub(crate) fn view_tier_end_item(&mut self, group: usize) {
+        let Some(open) = self.views.group(group) else { return };
+        let parts = view_kind::tier_parts(open.kind, open.additions);
+        if parts.intersect(Additions::TIER_AFTER).is_empty() || open.tier_ended || !self.view_world_begun || !self.drawing() {
+            return;
+        }
+        let key = ViewKey::of_view(open.view_slot(), open.kind);
+        if let Some(open) = self.views.group_mut(group) {
+            open.tier_ended = true;
+        }
+        if self.extension.is_none() {
+            self.renderer.counts.tier_unserved += 1;
+            return;
+        }
+        let facts = self.tier_facts(key);
+        self.items.push(Item::TierEnd(facts, parts));
+    }
+
+    /// The facts of the open scene of a view of its own for a call of the extension: the
+    /// stream's world facts, with the view's key and the samples of its pass.
+    fn tier_facts(&mut self, key: ViewKey) -> Box<WorldFacts> {
         let mut facts = self.world_facts(true);
         facts.view_key = key;
         facts.samples = self.target_samples();
-        self.items.push(Item::TierStart(Box::new(facts), parts));
+        Box::new(facts)
     }
 
     /// The samples for each pixel of the pass that the scene in progress draws into: a rendered

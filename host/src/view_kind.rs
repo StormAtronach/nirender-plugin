@@ -119,15 +119,23 @@ impl Additions {
         Additions(self.0 | other.0)
     }
 
-    /// The parts of the full tier that a view of its own gets drawn today: the distant land
-    /// and the distant statics (stage 3b, slice 1). The other granted parts stay unused until
-    /// their slices come.
+    /// The parts of the full tier that a view of its own gets drawn today: the distant land,
+    /// the distant statics, the grass and the glows (stage 3b, slices 1 and 2). The other
+    /// granted parts stay unused until their slices come.
     ///
-    /// Open item of stage 3b: the shadows. A view of its own gets no shadow in this slice:
+    /// Open item of stage 3b: the shadows. A view of its own gets no shadow in these slices:
     /// the options (`ViewPart` of MGEApi) have no bit for them, and the shaders of the land and
     /// the statics in the view group have no shadow map binding. The shadow overlay is a part
     /// of the main view ([`Additions::SHADOW_CAST`], [`Additions::SHADOW_RECEIVE`]).
-    pub const TIER_DRAWN: Additions = Additions::LAND.with(Additions::STATICS);
+    pub const TIER_DRAWN: Additions = Additions::LAND.with(Additions::STATICS).with(Additions::GRASS).with(Additions::GLOWS);
+
+    /// The drawn parts that go in the call at the start of the world of the view
+    /// ([`crate::Extension::view_before_world`]): the land, the statics and the glows.
+    pub const TIER_BEFORE: Additions = Additions::LAND.with(Additions::STATICS).with(Additions::GLOWS);
+
+    /// The drawn part that goes in the call at the end of the world of the view
+    /// ([`crate::Extension::view_after_world`]): the grass.
+    pub const TIER_AFTER: Additions = Additions::GRASS;
 
     /// The parts that are in both sets.
     pub const fn intersect(self, other: Additions) -> Additions {
@@ -218,13 +226,19 @@ mod tests {
         assert_eq!(ViewKind::Main.additions(true), Additions::ALL);
     }
 
-    /// A picture with options draws the land and the statics in its own view; the other granted
-    /// parts wait for their slices, and the main view has none from this path.
+    /// A picture with options draws the land, the statics, the grass and the glows in its own
+    /// view; the water and the post chain wait for their slices, and the main view has none from
+    /// this path. The land, the statics and the glows are called at the start of the world, the
+    /// grass at its end.
     #[test]
-    fn a_view_of_its_own_draws_the_land_and_the_statics_only() {
+    fn a_view_of_its_own_draws_the_land_the_statics_the_grass_and_the_glows() {
         let granted = Additions::from_option_parts(0b111111);
-        assert_eq!(tier_parts(ViewKind::Picture, granted), Additions::LAND.with(Additions::STATICS));
-        assert_eq!(tier_parts(ViewKind::Picture, Additions::from_option_parts(0b100)), Additions::NONE);
+        assert_eq!(tier_parts(ViewKind::Picture, granted), Additions::LAND.with(Additions::STATICS).with(Additions::GRASS).with(Additions::GLOWS));
+        assert_eq!(tier_parts(ViewKind::Picture, Additions::from_option_parts(0b100000)), Additions::GLOWS);
+        // The water (bit 3) and the shaders (bit 4) are not drawn in a view of its own yet.
+        assert_eq!(tier_parts(ViewKind::Picture, Additions::from_option_parts(0b11000)), Additions::NONE);
+        assert_eq!(Additions::TIER_BEFORE.with(Additions::TIER_AFTER), Additions::TIER_DRAWN);
+        assert!(Additions::TIER_BEFORE.intersect(Additions::TIER_AFTER).is_empty());
         assert_eq!(tier_parts(ViewKind::Picture, Additions::NONE), Additions::NONE);
         assert_eq!(tier_parts(ViewKind::Main, Additions::ALL), Additions::NONE);
         assert_eq!(tier_parts(ViewKind::OtherScreen, Additions::LAND), Additions::LAND);

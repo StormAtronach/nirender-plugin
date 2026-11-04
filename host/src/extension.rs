@@ -634,6 +634,13 @@ pub trait Extension {
         false
     }
 
+    /// The renderer calls this one time in a scene of a view of its own that has the grass in
+    /// its options ([`Additions::TIER_AFTER`]), at the end of the world of that scene: at the
+    /// flush of its sorted queue, or at its end. The scene, the pass and `parts` are as in
+    /// [`Extension::view_before_world`]; the matrices are those of the game's projection in the
+    /// view. The default draws nothing.
+    fn view_after_world(&mut self, _scene: &SceneView, _parts: Additions, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {}
+
     /// The renderer calls this one time in a frame, at the end of the world scene of the
     /// game: its draws without a sort are in the picture and in the depth target, and the
     /// draws with a sort, the first-person view and the user interface are not. The pass and

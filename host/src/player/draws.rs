@@ -172,6 +172,9 @@ impl Player {
         for step in self.plan_now().queue_flushed(in_back_buffer) {
             self.plan_step(step);
         }
+        if let Some(group) = self.views.open() {
+            self.view_tier_end_item(group);
+        }
         if let Some(group) = self.views.queue_flushed().filter(|_| self.drawing()) {
             self.items.push(Item::ViewSorted(group));
         }
