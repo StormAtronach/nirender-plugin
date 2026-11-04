@@ -139,7 +139,7 @@ impl Player {
                 Item::Replace(..) => Some("a class of draws (extension: water)"),
                 Item::HeldHere(..) => Some("a held draw in place (extension)"),
                 Item::Target(_) | Item::Clear(..) | Item::Viewport(_) => group.as_ref().map(|(name, _)| *name),
-                Item::WorldStart(_) | Item::TierStart(..) | Item::WorldEnd(_) | Item::Post(_) | Item::FirstPersonDepth(_) => None,
+                Item::WorldStart(_) | Item::TierStart(..) | Item::TierEnd(..) | Item::WorldEnd(_) | Item::Post(_) | Item::FirstPersonDepth(_) => None,
             };
             if group.as_ref().map(|(name, _)| *name) != label {
                 if let Some((_, at)) = group.take() {
@@ -173,6 +173,7 @@ impl Player {
                         Item::Screen(_) => "screen",
                         Item::WorldStart(_) => "world-start",
                         Item::TierStart(..) => "tier-start",
+                        Item::TierEnd(..) => "tier-end",
                         Item::MainView(_) => "main-view",
                         Item::WorldEnd(_) => "world-end",
                         Item::SortedBlends(_) => "sorted-blends",
@@ -215,6 +216,7 @@ impl Player {
                 }
                 Item::WorldStart(facts) => self.start_world(&facts),
                 Item::TierStart(facts, parts) => self.start_tier_view(&facts, parts),
+                Item::TierEnd(facts, parts) => self.end_tier_view(&facts, parts),
                 Item::MainView(facts) => self.timed(MAIN_VIEW_OPAQUE, 0, |player| player.draw_retained_main(&facts)),
                 Item::WorldEnd(facts) => self.end_world(&facts),
                 Item::SortedBlends(generation) => {
@@ -532,7 +534,7 @@ impl Player {
         let scene = facts.view(&device, &queue, &commands, format);
         // One name for each view: its kind and its slot, so that its GPU span and its CPU time
         // (`view_times`) say whose cost they are.
-        let name = stamps::name(&format!("extension: the full tier in {} view {} (distant land, distant statics)", facts.view_key.kind.name(), facts.view_key.slot));
+        let name = stamps::name(&format!("extension: the full tier at the start of {} view {} (distant land, distant statics, glows)", facts.view_key.kind.name(), facts.view_key.slot));
         let part = self.part_begin(name);
         self.begin_pass();
         let clear_depth = match self.pass.as_mut() {
@@ -562,6 +564,36 @@ impl Player {
             let clear = (!depth::one_buffer()).then(|| depth::clear(1.0));
             self.open_pass(crate::gpu::PassReason::WorldStart, None, clear, None);
         }
+    }
+
+    /// Gives the extension its call at the end of the world of a view of its own that has the
+    /// grass. See [`Extension::view_after_world`]. It draws into the pass of the view's target as
+    /// it is then; the cost has a name of its own for each view, as at the start.
+    pub(crate) fn end_tier_view(&mut self, facts: &WorldFacts, parts: Additions) {
+        let Some(mut extension) = self.extension.take() else { return };
+        let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
+        let commands = self.renderer.commands.clone();
+        let scene = facts.view(&device, &queue, &commands, format);
+        let name = stamps::name(&format!("extension: the full tier at the end of {} view {} (grass)", facts.view_key.kind.name(), facts.view_key.slot));
+        let part = self.part_begin(name);
+        self.begin_pass();
+        if let Some(pass) = self.pass.as_mut() {
+            let world = std::mem::take(&mut self.world_draws);
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
+            let clock = ticks::Clock::now();
+            pass.push_debug_group("extension: after the world of a view of its own");
+            extension.view_after_world(&scene, parts, pass, &mut replayer);
+            pass.pop_debug_group();
+            let elapsed = clock.elapsed();
+            self.renderer.counts.times[TIME_EXT_TIER] += elapsed;
+            self.renderer.counts.view_times.add(name, elapsed, 0);
+            self.world_draws = world;
+            self.renderer.counts.tier_ends += 1;
+        } else {
+            self.renderer.counts.tier_unserved += 1;
+        }
+        self.part_end(part);
+        self.extension = Some(extension);
     }
 
     /// Does `draw`, the item of one view group, and adds its CPU time to the group's

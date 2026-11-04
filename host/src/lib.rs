@@ -259,6 +259,9 @@ enum Item {
     /// The parts of the full tier in a view of its own, at the start of its world: the facts of
     /// the view and the parts to draw ([`Extension::view_before_world`]).
     TierStart(Box<WorldFacts>, Additions),
+    /// The grass of the full tier in a view of its own, at the end of its world
+    /// ([`Extension::view_after_world`]).
+    TierEnd(Box<WorldFacts>, Additions),
     /// The table's main view draws, with no start of the world (see [`plan::Step::MainView`]).
     MainView(Box<WorldFacts>),
     WorldEnd(Box<WorldFacts>),

@@ -540,6 +540,9 @@ pub(crate) struct Counts {
     pub(crate) tier_views: u64,
     pub(crate) tier_drew: u64,
     pub(crate) tier_unserved: u64,
+    /// The scenes of a view of its own that got the call at the end of their world
+    /// ([`Extension::view_after_world`], the grass).
+    pub(crate) tier_ends: u64,
     /// The world scenes that came after a main view with a root of its own had started the
     /// world of the frame.
     pub(crate) world_after_main_view: u64,
