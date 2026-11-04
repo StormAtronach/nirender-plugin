@@ -43,6 +43,11 @@ def main():
     ap.add_argument("--anisotropy", type=int, default=None, help="the anisotropic filter of the textures the game filters (1 without this)")
     ap.add_argument("--marks-every", type=int, default=None, help="a mark after every N frames: the helper's time for each frame by part")
     args = ap.parse_args()
+    # A replay is build work. The slot hook reads only a command line, so a replay that a script or
+    # another tool starts is checked here. A harness from before the check has no such function.
+    check_build_slot = getattr(session.harness, "check_build_slot", None)
+    if check_build_slot:
+        check_build_slot()
     missing = build_missing(args.mge_build)
     if missing:
         sys.stderr.write("replay: the build folder %s has no %s: a replay without them draws another picture\n" % (args.mge_build, ", ".join(missing)))
