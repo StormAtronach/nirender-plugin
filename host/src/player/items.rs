@@ -530,7 +530,10 @@ impl Player {
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let commands = self.renderer.commands.clone();
         let scene = facts.view(&device, &queue, &commands, format);
-        let part = self.part_begin("before the world of a view of its own (extension: terrain, distant statics)");
+        // One name for each view: its kind and its slot, so that its GPU span and its CPU time
+        // (`view_times`) say whose cost they are.
+        let name = stamps::name(&format!("extension: the full tier in {} view {} (distant land, distant statics)", facts.view_key.kind.name(), facts.view_key.slot));
+        let part = self.part_begin(name);
         self.begin_pass();
         let clear_depth = match self.pass.as_mut() {
             Some(pass) => {
@@ -540,7 +543,9 @@ impl Player {
                 pass.push_debug_group("extension: before the world of a view of its own");
                 let clear_depth = extension.view_before_world(&scene, parts, pass, &mut replayer);
                 pass.pop_debug_group();
-                self.renderer.counts.times[TIME_EXT_TIER] += clock.elapsed();
+                let elapsed = clock.elapsed();
+                self.renderer.counts.times[TIME_EXT_TIER] += elapsed;
+                self.renderer.counts.view_times.add(name, elapsed, 0);
                 self.world_draws = world;
                 self.renderer.counts.tier_views += 1;
                 clear_depth
