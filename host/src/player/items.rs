@@ -534,7 +534,7 @@ impl Player {
         let scene = facts.view(&device, &queue, &commands, format);
         // One name for each view: its kind and its slot, so that its GPU span and its CPU time
         // (`view_times`) say whose cost they are.
-        let name = stamps::name(&format!("extension: the full tier at the start of {} view {} (distant land, distant statics, glows)", facts.view_key.kind.name(), facts.view_key.slot));
+        let name = stamps::name(&format!("extension: the full tier at the start of place {} (distant land, distant statics, glows)", facts.view_key.place.map_or(-1, i32::from)));
         let part = self.part_begin(name);
         self.begin_pass();
         let clear_depth = match self.pass.as_mut() {
@@ -574,7 +574,7 @@ impl Player {
         let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
         let commands = self.renderer.commands.clone();
         let scene = facts.view(&device, &queue, &commands, format);
-        let name = stamps::name(&format!("extension: the full tier at the end of {} view {} (grass)", facts.view_key.kind.name(), facts.view_key.slot));
+        let name = stamps::name(&format!("extension: the full tier at the end of place {} (grass)", facts.view_key.place.map_or(-1, i32::from)));
         let part = self.part_begin(name);
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {

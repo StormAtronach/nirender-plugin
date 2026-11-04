@@ -152,24 +152,33 @@ impl Additions {
     }
 }
 
-/// The key of a view: the slot of its scene (0 is the main view's) and its kind. An
-/// extension that draws one view for each key reads it in [`crate::SceneView::view_key`]; it may
-/// ignore it, and today the calls are the main view's.
+/// The key of a view: the slot of its scene (0 is the main view's), its kind, and the place of
+/// the full tier that it holds in the scene. An extension that draws one view for each key reads
+/// it in [`crate::SceneView::view_key`]; it may ignore it, and the calls of the main view's
+/// scenes have the main key.
+///
+/// What a view needs for its own draws (a view group, cull sets) belongs to the place, not to
+/// the slot: a place keeps its number while a view holds it, and a view that takes it over
+/// inherits the number (`engine::full_tier`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ViewKey {
     pub slot: u32,
     pub kind: ViewKind,
+    /// The number of the place of the full tier, 0 to 3; `None` for a view that has none (the
+    /// main view, a view without options or without a place).
+    pub place: Option<u8>,
 }
 
 impl ViewKey {
     /// The main view of a frame.
-    pub const MAIN: ViewKey = ViewKey { slot: 0, kind: ViewKind::Main };
+    pub const MAIN: ViewKey = ViewKey { slot: 0, kind: ViewKind::Main, place: None };
 
-    /// The key of a view of its own from the plugin's view slot of its scene (0 to 31). Slot 0
-    /// is the main view's, so the key counts from 1; a scene without a slot (an older plugin)
-    /// has no options, so it gets no parts and its key is not used.
-    pub fn of_view(view_slot: Option<u32>, kind: ViewKind) -> ViewKey {
-        ViewKey { slot: view_slot.map_or(0, |slot| slot + 1), kind }
+    /// The key of a view of its own from the plugin's view slot of its scene (0 to 31) and its
+    /// place of the full tier. Slot 0 is the main view's, so the key counts from 1; a scene
+    /// without a slot (an older plugin) has no options, so it gets no parts and its key is not
+    /// used.
+    pub fn of_view(view_slot: Option<u32>, kind: ViewKind, place: Option<u8>) -> ViewKey {
+        ViewKey { slot: view_slot.map_or(0, |slot| slot + 1), kind, place }
     }
 }
 
@@ -247,11 +256,12 @@ mod tests {
     /// The key of a view of its own is not the main view's, and the slots stay apart.
     #[test]
     fn a_view_of_its_own_has_a_key_of_its_own() {
-        let first = ViewKey::of_view(Some(0), ViewKind::Picture);
-        assert_eq!(first, ViewKey { slot: 1, kind: ViewKind::Picture });
+        let first = ViewKey::of_view(Some(0), ViewKind::Picture, Some(2));
+        assert_eq!(first, ViewKey { slot: 1, kind: ViewKind::Picture, place: Some(2) });
         assert_ne!(first, ViewKey::MAIN);
-        assert_ne!(ViewKey::of_view(Some(1), ViewKind::Picture), first);
-        assert_ne!(ViewKey::of_view(Some(0), ViewKind::OtherScreen), first);
+        assert_ne!(ViewKey::of_view(Some(1), ViewKind::Picture, Some(2)), first);
+        assert_ne!(ViewKey::of_view(Some(0), ViewKind::OtherScreen, Some(2)), first);
+        assert_ne!(ViewKey::of_view(Some(0), ViewKind::Picture, Some(3)), first);
     }
 
     /// A picture's pass has one sample whatever the frame has; the back buffer keeps the frame's.

@@ -11,8 +11,13 @@
 //! - a view that waits takes the place of a holder that rendered nothing for [`IDLE_FRAMES`]
 //!   frames.
 //!
+//! Each place has a number, 0 to [`MAX_PLACES`] less 1, that it keeps for as long as a view
+//! holds it and that a view taking it over inherits. The extension keys what a view needs for
+//! its own draws (its view group, its cull sets) to the place, so that a mirror that keeps its
+//! place keeps its group.
+//!
 //! The state is plain values with no device: [`FullTier::scene`] answers at each scene of a
-//! view with the parts that the view gets in it.
+//! view with the place and the parts that the view gets in it.
 
 use crate::stream_format::VIEW_SLOTS;
 
@@ -38,37 +43,45 @@ pub(crate) struct TierCounts {
     pub(crate) taken_over: u64,
 }
 
+/// What a view gets in a scene: the number of its place and the parts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Grant {
+    pub(crate) place: u8,
+    pub(crate) parts: u32,
+}
+
+/// The holder of a place: its view slot and the frame of its last scene.
+#[derive(Clone, Copy, Debug)]
+struct Holder {
+    slot: u8,
+    last: u64,
+}
+
 #[derive(Debug)]
 pub(crate) struct FullTier {
     /// `views.full_tier_max`.
     max: usize,
     /// The parts that the mod asked for each slot.
     wanted: [u32; VIEW_SLOTS],
-    /// The frame of the last scene of each slot that holds a place.
-    holder: [Option<u64>; VIEW_SLOTS],
+    /// The holder of each place; only the places below `max` hold.
+    places: [Option<Holder>; MAX_PLACES],
     frame: u64,
     pub(crate) counts: TierCounts,
 }
 
 impl Default for FullTier {
     fn default() -> FullTier {
-        FullTier { max: DEFAULT_PLACES, wanted: [0; VIEW_SLOTS], holder: [None; VIEW_SLOTS], frame: 0, counts: TierCounts::default() }
+        FullTier { max: DEFAULT_PLACES, wanted: [0; VIEW_SLOTS], places: [None; MAX_PLACES], frame: 0, counts: TierCounts::default() }
     }
 }
 
 impl FullTier {
-    /// Sets `views.full_tier_max`; a value past the range is clamped. Of the holders, the ones
-    /// of the lowest slots keep their places up to the new number.
+    /// Sets `views.full_tier_max`; a value past the range is clamped. The places below the new
+    /// number keep their holders and their numbers.
     pub(crate) fn set_max(&mut self, max: usize) {
         self.max = max.min(MAX_PLACES);
-        let mut kept = 0;
-        for holder in &mut self.holder {
-            if holder.is_some() {
-                kept += 1;
-                if kept > self.max {
-                    *holder = None;
-                }
-            }
+        for place in &mut self.places[self.max..] {
+            *place = None;
         }
     }
 
@@ -84,7 +97,7 @@ impl FullTier {
         *wanted = parts;
         if parts == 0 {
             self.counts.cleared += 1;
-            self.holder[slot as usize] = None;
+            self.release(slot);
         } else {
             self.counts.set += 1;
         }
@@ -94,38 +107,48 @@ impl FullTier {
     pub(crate) fn retire(&mut self, slot: u32) {
         if let Some(wanted) = self.wanted.get_mut(slot as usize) {
             *wanted = 0;
-            self.holder[slot as usize] = None;
+            self.release(slot);
+        }
+    }
+
+    /// The slot gives up its place, if it holds one.
+    fn release(&mut self, slot: u32) {
+        for place in &mut self.places {
+            if place.is_some_and(|holder| u32::from(holder.slot) == slot) {
+                *place = None;
+            }
         }
     }
 
     fn holding(&self) -> usize {
-        self.holder.iter().flatten().count()
+        self.places.iter().flatten().count()
     }
 
-    /// A scene of the view in `slot`: the parts that it gets, 0 for a view without options or
-    /// without a place.
-    pub(crate) fn scene(&mut self, slot: u8) -> u32 {
-        let slot = slot as usize;
-        let Some(&wanted) = self.wanted.get(slot) else { return 0 };
+    /// A scene of the view in `slot`: the place and the parts that it gets; `None` for a view
+    /// without options or without a place.
+    pub(crate) fn scene(&mut self, slot: u8) -> Option<Grant> {
+        let wanted = *self.wanted.get(slot as usize)?;
         if wanted == 0 {
-            return 0;
+            return None;
         }
-        if self.holder[slot].is_some() || self.holding() < self.max {
-            self.holder[slot] = Some(self.frame);
-            self.counts.granted += 1;
-            return wanted;
-        }
+        let hold = Holder { slot, last: self.frame };
+        let held = self.places[..self.max].iter().position(|place| place.is_some_and(|holder| holder.slot == slot));
+        let free = || self.places[..self.max].iter().position(Option::is_none);
         // A holder that rendered nothing for [`IDLE_FRAMES`] frames loses its place to this view.
-        let idle = (0..VIEW_SLOTS).find(|&other| self.holder[other].is_some_and(|last| self.frame.saturating_sub(last) > IDLE_FRAMES));
-        if let Some(other) = idle.filter(|_| self.max > 0) {
-            self.holder[other] = None;
-            self.holder[slot] = Some(self.frame);
-            self.counts.taken_over += 1;
-            self.counts.granted += 1;
-            return wanted;
-        }
-        self.counts.refused += 1;
-        0
+        let idle = || self.places[..self.max].iter().position(|place| place.is_some_and(|holder| self.frame.saturating_sub(holder.last) > IDLE_FRAMES));
+        let (place, taken_over) = match (held, free(), idle()) {
+            (Some(place), ..) => (place, false),
+            (None, Some(place), _) => (place, false),
+            (None, None, Some(place)) => (place, true),
+            _ => {
+                self.counts.refused += 1;
+                return None;
+            }
+        };
+        self.places[place] = Some(hold);
+        self.counts.taken_over += u64::from(taken_over);
+        self.counts.granted += 1;
+        Some(Grant { place: place as u8, parts: wanted })
     }
 
     /// The report line of the full tier.
@@ -148,6 +171,11 @@ impl FullTier {
 mod tests {
     use super::*;
 
+    /// The parts of a scene of the view in `slot`; 0 for none.
+    fn parts(tier: &mut FullTier, slot: u8) -> u32 {
+        tier.scene(slot).map_or(0, |grant| grant.parts)
+    }
+
     fn frames(tier: &mut FullTier, count: u64) {
         for _ in 0..count {
             tier.frame_start();
@@ -162,9 +190,9 @@ mod tests {
         tier.frame_start();
         tier.options(3, 0b11);
         tier.options(4, 0b1);
-        assert_eq!(tier.scene(5), 0);
-        assert_eq!(tier.scene(4), 0b1);
-        assert_eq!(tier.scene(3), 0);
+        assert_eq!(parts(&mut tier, 5), 0);
+        assert_eq!(parts(&mut tier, 4), 0b1);
+        assert_eq!(parts(&mut tier, 3), 0);
         assert_eq!((tier.counts.granted, tier.counts.refused), (1, 1));
     }
 
@@ -176,13 +204,13 @@ mod tests {
         tier.options(2, 1);
         for _ in 0..100 {
             tier.frame_start();
-            assert_eq!(tier.scene(1), 1);
-            assert_eq!(tier.scene(2), 0);
+            assert_eq!(parts(&mut tier, 1), 1);
+            assert_eq!(parts(&mut tier, 2), 0);
         }
         for _ in 0..100 {
             tier.frame_start();
-            assert_eq!(tier.scene(2), 0);
-            assert_eq!(tier.scene(1), 1);
+            assert_eq!(parts(&mut tier, 2), 0);
+            assert_eq!(parts(&mut tier, 1), 1);
         }
     }
 
@@ -194,14 +222,14 @@ mod tests {
         tier.frame_start();
         tier.options(1, 1);
         tier.options(2, 2);
-        assert_eq!(tier.scene(1), 1);
+        assert_eq!(parts(&mut tier, 1), 1);
         frames(&mut tier, IDLE_FRAMES);
-        assert_eq!(tier.scene(2), 0);
+        assert_eq!(parts(&mut tier, 2), 0);
         frames(&mut tier, 1);
-        assert_eq!(tier.scene(2), 2);
+        assert_eq!(parts(&mut tier, 2), 2);
         assert_eq!(tier.counts.taken_over, 1);
         // The old holder is a waiting view now.
-        assert_eq!(tier.scene(1), 0);
+        assert_eq!(parts(&mut tier, 1), 0);
     }
 
     /// Clearing the options, or a retirement, frees the place for the next view.
@@ -211,14 +239,14 @@ mod tests {
         tier.frame_start();
         tier.options(1, 1);
         tier.options(2, 1);
-        assert_eq!(tier.scene(1), 1);
+        assert_eq!(parts(&mut tier, 1), 1);
         tier.options(1, 0);
-        assert_eq!(tier.scene(1), 0);
-        assert_eq!(tier.scene(2), 1);
+        assert_eq!(parts(&mut tier, 1), 0);
+        assert_eq!(parts(&mut tier, 2), 1);
         tier.retire(2);
-        assert_eq!(tier.scene(2), 0);
+        assert_eq!(parts(&mut tier, 2), 0);
         tier.options(1, 4);
-        assert_eq!(tier.scene(1), 4);
+        assert_eq!(parts(&mut tier, 1), 4);
         assert_eq!(tier.counts.cleared, 1);
     }
 
@@ -229,20 +257,79 @@ mod tests {
         tier.options(1, 1);
         tier.set_max(0);
         tier.frame_start();
-        assert_eq!(tier.scene(1), 0);
+        assert_eq!(parts(&mut tier, 1), 0);
         assert_eq!(tier.counts.refused, 1);
         tier.set_max(99);
         assert_eq!(tier.max, MAX_PLACES);
         for slot in 1..=5 {
             tier.options(slot, 1);
         }
-        let got: Vec<u32> = (1..=5u8).map(|slot| tier.scene(slot)).collect();
+        let got: Vec<u32> = (1..=5u8).map(|slot| parts(&mut tier, slot)).collect();
         assert_eq!(got, vec![1, 1, 1, 1, 0]);
         tier.set_max(2);
-        assert_eq!(tier.scene(1), 1);
-        assert_eq!(tier.scene(2), 1);
-        assert_eq!(tier.scene(3), 0);
-        assert_eq!(tier.scene(4), 0);
+        assert_eq!(parts(&mut tier, 1), 1);
+        assert_eq!(parts(&mut tier, 2), 1);
+        assert_eq!(parts(&mut tier, 3), 0);
+        assert_eq!(parts(&mut tier, 4), 0);
+        assert!(tier.line().starts_with("full tier: 2 places of at most 2;"));
+    }
+
+    /// Each holder has a place number that it keeps in any order of the scenes, and no two holders
+    /// share a number.
+    #[test]
+    fn a_holder_keeps_its_place_number() {
+        let mut tier = FullTier::default();
+        tier.set_max(3);
+        for slot in [5, 2, 9] {
+            tier.options(slot, 1);
+        }
+        tier.frame_start();
+        let first: Vec<u8> = [5, 2, 9].iter().map(|&slot| tier.scene(slot).unwrap().place).collect();
+        assert_eq!(first, vec![0, 1, 2]);
+        for _ in 0..50 {
+            tier.frame_start();
+            let again: Vec<u8> = [9, 5, 2].iter().map(|&slot| tier.scene(slot).unwrap().place).collect();
+            assert_eq!(again, vec![2, 0, 1]);
+        }
+    }
+
+    /// A view that takes over an idle holder's place gets that place's number, and a view that
+    /// frees a place leaves it free for the next one.
+    #[test]
+    fn a_new_holder_inherits_the_number_of_the_place_it_takes() {
+        let mut tier = FullTier::default();
+        tier.set_max(2);
+        tier.frame_start();
+        tier.options(1, 1);
+        tier.options(2, 1);
+        tier.options(3, 1);
+        assert_eq!(tier.scene(1).map(|g| g.place), Some(0));
+        assert_eq!(tier.scene(2).map(|g| g.place), Some(1));
+        assert_eq!(tier.scene(3), None);
+        // Slot 1 renders no more; slot 2 keeps rendering.
+        for _ in 0..=IDLE_FRAMES {
+            tier.frame_start();
+            tier.scene(2);
+        }
+        assert_eq!(tier.scene(3).map(|g| g.place), Some(0));
+        // The old holder of place 0 waits now; clearing slot 2 frees place 1 for it.
+        tier.options(2, 0);
+        assert_eq!(tier.scene(1).map(|g| g.place), Some(1));
+    }
+
+    /// A lower number takes the places above it back and keeps the numbers below.
+    #[test]
+    fn a_lower_number_keeps_the_numbers_below_it() {
+        let mut tier = FullTier::default();
+        tier.set_max(4);
+        tier.frame_start();
+        for slot in 1..=4u8 {
+            tier.options(u32::from(slot), 1);
+            assert_eq!(tier.scene(slot).map(|g| g.place), Some(slot - 1));
+        }
+        tier.set_max(2);
+        assert_eq!(tier.scene(2).map(|g| g.place), Some(1));
+        assert_eq!(tier.scene(4), None);
         assert!(tier.line().starts_with("full tier: 2 places of at most 2;"));
     }
 
@@ -250,8 +337,8 @@ mod tests {
     #[test]
     fn a_view_without_options_gets_nothing() {
         let mut tier = FullTier::default();
-        assert_eq!(tier.scene(7), 0);
-        assert_eq!(tier.scene(200), 0);
+        assert_eq!(parts(&mut tier, 7), 0);
+        assert_eq!(parts(&mut tier, 200), 0);
         tier.options(200, 1);
         assert_eq!(tier.counts.set, 0);
         assert_eq!((tier.counts.granted, tier.counts.refused), (0, 0));

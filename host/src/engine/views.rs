@@ -49,6 +49,8 @@ pub(crate) struct Group {
     pub(crate) name: core::cell::Cell<Option<&'static str>>,
     /// The plugin's view slot of the group's scene (`scene_view`): see [`Group::view_slot`].
     view_slot: Option<u8>,
+    /// The place of the full tier that the view holds in this scene (`FullTier::scene`).
+    pub(crate) place: Option<u8>,
     /// The runs of places: the ids with no other item between them.
     runs: Vec<Vec<u32>>,
     /// The places in the flush of the engine's queue, in their order of arrival.
@@ -239,9 +241,10 @@ impl Views {
         }
         let view = ViewKind::classify(in_target, camera_is_world);
         // The full tier is for the views of a mod: the main view has every part already.
-        let granted = view_slot.filter(|_| view != ViewKind::Main).map_or(0, |slot| self.tier.scene(slot));
-        let additions = view.additions(self.ui_seen).with(Additions::from_option_parts(granted));
-        self.groups.push(Group { world_camera: kind == scene::SCENE_WORLD, kind: view, additions, view_slot, ..Group::default() });
+        let grant = view_slot.filter(|_| view != ViewKind::Main).and_then(|slot| self.tier.scene(slot));
+        let additions = view.additions(self.ui_seen).with(Additions::from_option_parts(grant.map_or(0, |grant| grant.parts)));
+        let place = grant.map(|grant| grant.place);
+        self.groups.push(Group { world_camera: kind == scene::SCENE_WORLD, kind: view, additions, view_slot, place, ..Group::default() });
         self.open = Some(self.groups.len() - 1);
         true
     }
@@ -504,9 +507,11 @@ mod tests {
         assert!(views.scene_begin(SCENE_WORLD, true, true));
         let picture = views.group(0).unwrap();
         assert!(picture.additions.contains(Additions::LAND.with(Additions::STATICS)) && !picture.additions.contains(Additions::GRASS));
+        assert_eq!(picture.place, Some(0));
         views.note_scene(Some(4), 21, 200, 8);
         assert!(views.scene_begin(SCENE_WORLD, true, true));
         assert_eq!(views.group(1).unwrap().additions, Additions::NONE);
+        assert_eq!(views.group(1).unwrap().place, None);
         views.note_scene(Some(0), 10, 100, 0);
         assert!(views.scene_begin(SCENE_OTHER, false, true));
         assert_eq!(views.group(2).unwrap().additions, Additions::ALL);

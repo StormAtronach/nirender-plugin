@@ -927,7 +927,7 @@ impl Player {
         if parts.intersect(Additions::TIER_BEFORE).is_empty() || open.tier_begun {
             return;
         }
-        let key = ViewKey::of_view(open.view_slot(), open.kind);
+        let key = ViewKey::of_view(open.view_slot(), open.kind, open.place);
         if let Some(open) = self.views.group_mut(group) {
             open.tier_begun = true;
         }
@@ -949,7 +949,7 @@ impl Player {
         if parts.intersect(Additions::TIER_AFTER).is_empty() || open.tier_ended || !self.view_world_begun || !self.drawing() {
             return;
         }
-        let key = ViewKey::of_view(open.view_slot(), open.kind);
+        let key = ViewKey::of_view(open.view_slot(), open.kind, open.place);
         if let Some(open) = self.views.group_mut(group) {
             open.tier_ended = true;
         }
