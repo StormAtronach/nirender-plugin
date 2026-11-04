@@ -379,13 +379,17 @@ def refuse_pdb_in(folder):
 
 
 def inside(path, folder):
-    """True when `path` is `folder` or a path in it."""
-    path, folder = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(folder))
+    """True when `path` is `folder` or a path in it, also through a junction or a link."""
+    path, folder = os.path.normcase(os.path.realpath(path)), os.path.normcase(os.path.realpath(folder))
     return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
 
 
 def codeview(binary):
-    """The GUID, the age and the pdb's file name of the CodeView record (RSDS) of a binary's bytes, or None."""
+    """The GUID, the age and the pdb's file name of the CodeView record (RSDS) of a binary's bytes, or None.
+
+    This is a scan of the bytes for the first "RSDS" with a pdb's name after it, not a walk of the PE debug
+    directory. The 4 binaries of f213 have one RSDS each, and the scan gives the values of a walk of the
+    directory (the Reviewer, 2026-11-04)."""
     at = binary.find(b"RSDS")
     while at >= 0:
         end = binary.find(b"\0", at + 24)
@@ -399,7 +403,7 @@ def codeview(binary):
 
 def keep_pdbs(name, folder, trees, plugin_commit, mge_commit, keep=PDB_KEEP, sets=SETS):
     """Copies the pdb of each binary of the set to keep/name. A pdb is kept only when it holds the GUID of its
-    binary's CodeView record, which is the test of a debugger. Writes the folder's WHAT.txt and returns its
+    binary's CodeView record with its age, which is the test of a debugger. Writes the folder's WHAT.txt and returns its
     lines. A pdb that is absent or of another build is not kept, and its line says why."""
     if inside(keep, sets):
         raise SystemExit("the folder of the pdbs %s is in the sets %s: no pdb may go into a set" % (keep, sets))
@@ -418,8 +422,9 @@ def keep_pdbs(name, folder, trees, plugin_commit, mge_commit, keep=PDB_KEEP, set
                 lines.append("%s: not kept: %s has no CodeView record of it" % (pdb_name, shown))
                 continue
             guid, age, _ = record
+            # The PDB info stream holds the age and then the GUID: the two that a debugger matches.
             with open(pdb_file, "rb") as file:
-                if guid not in file.read():
+                if struct.pack("<I", age) + guid not in file.read():
                     lines.append("%s: not kept: the pdb in the tree is of another build than %s" % (pdb_name, shown))
                     continue
             shutil.copy2(pdb_file, os.path.join(out, pdb_name))
@@ -811,8 +816,15 @@ def self_test():
                 file.write(binaries[binary_path])
             os.makedirs(os.path.dirname(os.path.join(trees[tree], pdb_path)), exist_ok=True)
             with open(os.path.join(trees[tree], pdb_path), "wb") as file:
-                file.write(b"Microsoft C/C++ MSF 7.00\r\n" + b"\0" * 40 + pdb_guids[os.path.basename(pdb_path)] + b"\0" * 8)
+                file.write(b"Microsoft C/C++ MSF 7.00\r\n" + b"\0" * 40 + struct.pack("<I", 1) + pdb_guids[os.path.basename(pdb_path)] + b"\0" * 8)
         lines = keep_pdbs("f9", folder, trees, "abc", "def", keep=keep, sets=sets)
+        # The GUID with another age is another build.
+        with open(os.path.join(folder, "d3d8.dll"), "wb") as file:
+            file.write(record("d3d8.pdb", guids["d3d8"], 2))
+        assert any(line.startswith("d3d8.pdb: not kept: the pdb in the tree is of another build")
+                   for line in keep_pdbs("f8", folder, trees, "abc", "def", keep=keep, sets=sets))
+        with open(os.path.join(folder, "d3d8.dll"), "wb") as file:
+            file.write(binaries["d3d8.dll"])
         assert sorted(os.listdir(os.path.join(keep, "f9"))) == ["WHAT.txt", "akulakhan.pdb", "d3d8.pdb"], os.listdir(os.path.join(keep, "f9"))
         assert any(line.startswith("d3d8.pdb: d3d8.dll md5 %s, GUID %s, age 1" % (md5_of(os.path.join(folder, "d3d8.dll")), guids["d3d8"].hex())) for line in lines), lines
         assert any(line.startswith("dinput8.pdb: not kept: the pdb in the tree is of another build") for line in lines), lines
