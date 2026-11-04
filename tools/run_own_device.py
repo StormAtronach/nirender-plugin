@@ -279,7 +279,7 @@ def enable_problems(args, root, game_dir, ini_bytes, exists=os.path.exists):
             problems.append("--enable-mod: no mod folder %s" % folder)
         else:
             folders.append(folder)
-            notes.append("--enable-mod: %s is on for the run, first in the mod list, and back after" % name)
+            notes.append("--enable-mod: %s is on for the run, first in the mod list after the runner's mods, and back after" % name)
     for plugin in args.enable_plugin:
         if not plugin.lower().endswith((".esp", ".esm")) or os.path.basename(plugin) != plugin:
             problems.append("--enable-plugin takes the name of an .esp or .esm file, not %r" % plugin)
@@ -1354,7 +1354,9 @@ def self_test_enable():
         assert len(problems) == 1 and "no GameFile line" in problems[0], problems
 
     # Run.launch switches the mod and the plugin on, in this order after the mods to disable, and restores
-    # when the start is refused.
+    # when the start is refused. Each enable puts its mod at the top of the list, so the runner's own
+    # mods come after the --enable-mod mods and end above them: a file of --add-file or --mwse-dll wins
+    # over the same file in such a mod (D93: a run copy of a mod's main.lua lost to the mod's own).
     calls = []
 
     class Deployment:
@@ -1364,8 +1366,8 @@ def self_test_enable():
         def enable_mod(self, name):
             calls.append("mod " + name)
 
-        def use_mod(self, *a):
-            pass
+        def use_mod(self, name, files):
+            calls.append("mod " + name)
 
         def disable_mod(self, name):
             calls.append("off " + name)
@@ -1385,12 +1387,14 @@ def self_test_enable():
         session.RESULTS = results
         try:
             try:
-                session.Run("enable-test").launch({}, 10, "[t] ", disable=["Old"], enable=["Mirror test"], plugins=["mirrorTest.esp"])
+                session.Run("enable-test").launch({}, 10, "[t] ", mods=[("Harness - MGE XE", {})], disable=["Old"],
+                                                  enable=["Mirror test", "Other mod"], plugins=["mirrorTest.esp"])
             except SystemExit as stop:
                 assert "the rings differ" in str(stop), stop
             else:
                 raise AssertionError("Run.launch started with a ring problem")
-            assert calls == ["mod " + session.MOD_NAME, "off Old", "mod Mirror test", "plugin mirrorTest.esp", "restore"], calls
+            assert calls == ["off Old", "mod Mirror test", "mod Other mod", "mod " + session.MOD_NAME, "mod Harness - MGE XE",
+                             "plugin mirrorTest.esp", "restore"], calls
         finally:
             (harness.Deployment, harness.run_game, session.ring_problem_of_instance, session.RESULTS, session.stage_mwse_config) = saved
 
@@ -1538,8 +1542,9 @@ def main():
     ap.add_argument("--weather", type=int, default=None, help="the weather in the exterior, 0 clear to 9 blizzard (the game's without this)")
     ap.add_argument("--disable-mod", action="append", default=[], help="a mod of the profile switched off in its modlist.txt for the run, and back after; again for more mods")
     ap.add_argument("--enable-mod", action="append", default=[], metavar="NAME",
-                    help="a mod of the instance (a folder under its mods) switched on, first in the mod list, for the run, and back after; "
-                    "again for more mods. It brings the files of the mod, not its plugins: see --enable-plugin")
+                    help="a mod of the instance (a folder under its mods) switched on, first in the mod list after the runner's mods, for the "
+                    "run, and back after; again for more mods. The files of the runner's mods (--add-file, --mwse-dll) win over it. It "
+                    "brings the files of the mod, not its plugins: see --enable-plugin")
     ap.add_argument("--enable-plugin", action="append", default=[], metavar="FILE.esp",
                     help="a plugin made active for the run: one GameFile line more in the profile's Morrowind.ini, and the file as it was after; "
                     "again for more plugins. The file must be in a mod of --enable-mod or in the game's Data Files")

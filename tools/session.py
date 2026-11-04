@@ -242,8 +242,8 @@ class Run:
 
         `mods` are the other mods of the run, as (name, {path in the mod: source file}); the
         names start with harness.RUN_MOD_PREFIX. `disable` are mods of the instance that are off
-        for the run. `enable` are mods of the instance that are on for the run (first in the mod
-        list), `plugins` plugins that are active for the run (`harness.Deployment.enable_plugin`).
+        for the run. `enable` are mods of the instance that are on for the run, first in the mod
+        list after the runner's own mods (theirs win), `plugins` plugins that are active for the run (`harness.Deployment.enable_plugin`).
         The mod list and the Morrowind.ini are as they were after the run. `facts` are more lines for the record
         of what the run ran (`harness.write_setup`). `full_dump`: MWSE writes a full-memory dump at a
         crash (`mwse_run_settings`).
@@ -264,13 +264,15 @@ class Run:
             settings = mwse_run_settings(foreground, full_dump)
             if settings:
                 stage_mwse_config(deployment, settings)
+            for name in disable:
+                deployment.disable_mod(name)
+            # Each enable puts its mod at the top of the list. The mods of the instance go first, so
+            # the runner's own mods end above them: the files of --add-file and --mwse-dll win.
+            for name in enable:
+                deployment.enable_mod(name)
             deployment.enable_mod(MOD_NAME)
             for name, files in mods:
                 deployment.use_mod(name, files)
-            for name in disable:
-                deployment.disable_mod(name)
-            for name in enable:
-                deployment.enable_mod(name)
             for plugin in plugins:
                 deployment.enable_plugin(plugin)
             problem = ring_problem_of_instance()
