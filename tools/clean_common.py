@@ -308,13 +308,14 @@ def git(tree, *args):
 
 
 def worktrees_of(repository):
-    """The worktrees of a repository: dicts with `path`, `branch`, `head`, `locked`."""
+    """The worktrees of a repository: dicts with `path`, `branch`, `head`, `locked` and `lock_reason`
+    (the words of `git worktree lock --reason`, empty when none were given)."""
     trees = []
     current = None
     for line in git(repository, "worktree", "list", "--porcelain").stdout.splitlines():
         if line.startswith("worktree "):
             # Git lists its main worktree first.
-            current = {"path": os.path.abspath(line[9:]), "main": not trees, "branch": None, "head": "", "locked": False, "prunable": False}
+            current = {"path": os.path.abspath(line[9:]), "main": not trees, "branch": None, "head": "", "locked": False, "lock_reason": "", "prunable": False}
             trees.append(current)
         elif line.startswith("HEAD "):
             current["head"] = line[5:]
@@ -322,6 +323,7 @@ def worktrees_of(repository):
             current["branch"] = line[7:].removeprefix("refs/heads/")
         elif line.startswith("locked"):
             current["locked"] = True
+            current["lock_reason"] = line[6:].strip()
         elif line.startswith("prunable"):
             current["prunable"] = True
     return trees
