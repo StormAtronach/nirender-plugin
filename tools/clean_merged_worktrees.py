@@ -174,6 +174,10 @@ RECORDS_FILES = os.path.join(DOCS, "Numidium Project", "notes", "takeover", "*re
 LEFTOVERS = re.compile(r"(.*/)?(nirender\.log(\.\d+)?)/?")
 # The file of a checkout's machine paths. Git ignores it. A tree's own is no work when it is the main checkout's.
 LOCAL_JSON = "local.json"
+# The words that the records use for a cleanup of worktrees ("It removed the merged and idle worktrees",
+# "may go, merged and uncited", "the worktree C:/tmp/x is gone", "left for the owner to clean"). Bare
+# "clean" and "remove" are no cleanup words: "a clean worktree" is a build check.
+CLEANUP_SENTENCE = re.compile(r"\b(removed|may go|(is|are) gone|left for the owner to (clean|remove)|git worktree remove)\b")
 # Folders that name a checkout, and no task: the lock reason takes the folder above.
 GENERIC_FOLDERS = {"nirender-plugin", "mge-xe-g7", "mge-xe-g7-render-link", "render-link", "g7"}
 
@@ -203,10 +207,28 @@ def path_forms(path):
     return forms
 
 
+def sentence_around(text, start, stop):
+    """The sentence of `text` that holds text[start:stop]: from the previous ". " or line break to the
+    next one. A colon or a semicolon does not end it."""
+    before = max(text.rfind(". ", 0, start) + 1, text.rfind("\n", 0, start) + 1)
+    ends = [end for end in (text.find(". ", stop), text.find("\n", stop)) if end != -1]
+    return text[before:min(ends) if ends else len(text)]
+
+
 def cites_path(records, path):
-    """True when the records name a tree by its path, in any of the spellings of `path_forms`, in any case."""
+    """True when the records cite a tree by its path, in any of the spellings of `path_forms`, in any case.
+    A path in a cleanup sentence does not count (CLEANUP_SENTENCE): it says that the tree went or may go,
+    not that the records rely on it. A path into the tree's results folder counts in any sentence: it
+    names a run."""
     text = records.text.lower()
-    return any(form in text for form in path_forms(path))
+    for form in path_forms(path):
+        start = text.find(form)
+        while start != -1:
+            stop = start + len(form)
+            if text.startswith(("/results/", "\\results\\"), stop) or not CLEANUP_SENTENCE.search(sentence_around(text, start, stop)):
+                return True
+            start = text.find(form, start + 1)
+    return False
 
 
 def local_json_state(tree_path, repository, ignored):
@@ -1096,6 +1118,27 @@ def self_test():
             assert cites_path(Evidence("the run in " + spelling + " shows"), tree_path), spelling
         for other in ("/d/tmp/p15/nirender-plugin", "/c/tmp/p16/nirender-plugin", "/tmp/p15/nirender-plugin", "nothing"):
             assert not cites_path(Evidence("the run in " + other), tree_path), other
+        # A path that the records name only in a cleanup sentence is no citation. The sentences are the records' own.
+        for cleanup in (
+            "It removed the merged and idle worktrees, the old play set `C:/tmp/p15/nirender-plugin`, and more.",
+            "Cleanup: removed `C:/tmp/p15/nirender-plugin`, `C:/tmp/other`.",
+            "The worktree `C:/tmp/p15/nirender-plugin` is gone and its branch was merged.",
+            "Left for the owner to clean: the worktree C:/tmp/p15/nirender-plugin (`git worktree remove` deletes a folder).",
+            "Left for the owner to remove: /c/tmp/p15/nirender-plugin.",
+            "MAY GO, merged and uncited: cullrel, C:\\tmp\\p15\\nirender-plugin.",
+            "Earlier text.\nremoved C:/tmp/p15/nirender-plugin\nLater text.",
+        ):
+            assert not cites_path(Evidence(cleanup), tree_path), cleanup
+        for cited_text in (
+            "The walk in C:/tmp/p15/nirender-plugin shows 3 draws. Nothing was removed.",
+            "A clean worktree C:/tmp/p15/nirender-plugin was built for the check.",
+            "removed C:/tmp/p15/nirender-plugin. Later the run C:/tmp/p15/nirender-plugin/results/x showed it.",
+            "It removed the old trees.\nThe run in C:/tmp/p15/nirender-plugin/results/x shows it.",
+            "removed C:/tmp/p15/nirender-plugin. The log is in /c/tmp/p15/nirender-plugin/results. The check ran.",
+        ):
+            assert cites_path(Evidence(cited_text), tree_path), cited_text
+        assert cites_path(Evidence("may go: ryker-w7 (runs `C:/tmp/p15/nirender-plugin/results/20261103-200212-x` and more);"), tree_path)
+        assert not cites_path(Evidence("removed build output (the largest `C:/tmp/p15/nirender-plugin/target` 3.9 GB)"), tree_path)
         assert "no records file" in load_records(os.path.join(temp, "none", "*records*.md")).problems[0]
         # A lock takes a tree off the list and puts it on the list of the locked, with its reason.
         assert git(repository, "worktree", "lock", "--reason", "Ryker: a task of D98", dirty).returncode == 0
