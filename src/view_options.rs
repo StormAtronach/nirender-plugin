@@ -3,7 +3,8 @@
 //! MWSE's call reaches `d3d8.dll` (`MGEAPIv4::viewOptionsSet`), which calls
 //! [`nirender_view_options`]. The plugin keeps the parts by the address of the key's object: a
 //! `NiRenderedTexture` for a view into that texture, a `NiCamera` for that camera into the back
-//! buffer. The options last until changed, cleared, or until the object is freed: the
+//! buffer, and a `NiCamera` for the default of every texture that camera draws into (D93,
+//! `intoTextures`). The options last until changed, cleared, or until the object is freed: the
 //! destructors of both classes drop them ([`install`]). They do not end with the view's slot.
 //!
 //! The helper learns the parts of a view from the frame event `link::EVENT_VIEW_OPTIONS`: the
@@ -21,6 +22,9 @@ use crate::view_slots::{Click, MAIN_VIEW, VIEW_SLOTS};
 pub const KIND_RENDERED_TEXTURE: u32 = 1;
 /// The key is a `NiCamera` other than the world camera.
 pub const KIND_CAMERA: u32 = 2;
+/// The key is a `NiCamera` other than the world camera: the default of every `NiRenderedTexture`
+/// that it draws into, for a texture with no options of its own.
+pub const KIND_CAMERA_TEXTURES: u32 = 3;
 /// The bits of the parts that the API knows (`MGEApi.h`, `ViewPart`).
 pub const PARTS_ALL: u32 = (1 << 6) - 1;
 
@@ -49,7 +53,7 @@ fn with_store<T>(use_store: impl FnOnce(&mut Store) -> T) -> T {
 /// Sets the parts of a view, or clears them (`parts` is [`None`]). False for a key that the
 /// plugin refuses: no object, or an unknown kind.
 pub fn set(kind: u32, key: usize, parts: Option<u32>) -> bool {
-    if key == 0 || !matches!(kind, KIND_RENDERED_TEXTURE | KIND_CAMERA) {
+    if key == 0 || !matches!(kind, KIND_RENDERED_TEXTURE | KIND_CAMERA | KIND_CAMERA_TEXTURES) {
         return false;
     }
     with_store(|store| match parts {
@@ -84,14 +88,20 @@ fn own_parts(click: &Click) -> Option<u32> {
     }
 }
 
+/// The default of the view's camera for the textures it draws into. A view into the back buffer
+/// has none.
+fn camera_texture_parts(click: &Click) -> Option<u32> {
+    click.target.and_then(|_| get(KIND_CAMERA_TEXTURES, click.camera))
+}
+
 /// The parts for the view of a scene. The lookup goes from the most specific key to none: the
-/// view's own key ([`own_parts`]), then none. A default for every texture that a camera draws
-/// into would go between the two (owner card D93, not built).
+/// view's own key ([`own_parts`]), then the default of its camera for a view into a texture
+/// ([`camera_texture_parts`]), then none. A texture's own options replace the default whole.
 fn parts_of(click: &Click) -> u32 {
     if click.world_camera && click.target.is_none() {
         return 0;
     }
-    own_parts(click).unwrap_or(0)
+    own_parts(click).or_else(|| camera_texture_parts(click)).unwrap_or(0)
 }
 
 /// A scene of the view in `slot` opens. Returns the parts to write as `EVENT_VIEW_OPTIONS` when
@@ -163,8 +173,14 @@ unsafe extern "C" fn rendered_texture_dtor(this: usize) {
     crate::engine::thiscall0(RENDERED_TEXTURE_DTOR_CALL.load(Ordering::Relaxed), this);
 }
 
+/// A camera is freed: its options for the back buffer and its default for its textures go.
+fn forget_camera(camera: usize) {
+    forget(KIND_CAMERA, camera);
+    forget(KIND_CAMERA_TEXTURES, camera);
+}
+
 unsafe extern "C" fn camera_dtor(this: usize) {
-    forget(KIND_CAMERA, this);
+    forget_camera(this);
     crate::engine::thiscall0(CAMERA_DTOR_CALL.load(Ordering::Relaxed), this);
 }
 
@@ -249,9 +265,61 @@ mod tests {
         assert_eq!(scene(MAIN_VIEW, &screen), None);
         set(KIND_CAMERA, 0x7200_0300, Some(1));
         assert_eq!(scene(22, &click(None, 0x7200_0300, true)), None);
-        // The parts of a texture view are those of the texture, not of its camera.
+        // A camera's options for the back buffer do not reach the textures it draws into.
         set(KIND_CAMERA, 0x7200_0400, Some(0b100));
         assert_eq!(scene(23, &click(Some(0x7200_0500), 0x7200_0400, false)), None);
+    }
+
+    /// A view into a texture takes the texture's own options, then its camera's default for its
+    /// textures, then none. The texture's own options replace the default whole, also when they
+    /// are empty. The default does not reach the camera's view into the back buffer.
+    #[test]
+    fn a_texture_view_takes_its_own_options_then_its_cameras_default() {
+        let camera = 0x7400_0000;
+        let texture = click(Some(0x7400_0100), camera, false);
+        let other = click(Some(0x7400_0200), camera, false);
+        assert!(set(KIND_CAMERA_TEXTURES, camera, Some(0b1001)));
+        assert_eq!(get(KIND_CAMERA_TEXTURES, camera), Some(0b1001));
+        assert_eq!(get(KIND_CAMERA, camera), None);
+        assert_eq!(parts_of(&texture), 0b1001);
+        assert_eq!(parts_of(&other), 0b1001);
+        assert_eq!(parts_of(&click(None, camera, false)), 0);
+        // Own options, also the empty ones, replace the default whole.
+        set(KIND_RENDERED_TEXTURE, 0x7400_0100, Some(0b10));
+        assert_eq!(parts_of(&texture), 0b10);
+        set(KIND_RENDERED_TEXTURE, 0x7400_0100, Some(0));
+        assert_eq!(parts_of(&texture), 0);
+        assert_eq!(parts_of(&other), 0b1001);
+        set(KIND_RENDERED_TEXTURE, 0x7400_0100, None);
+        assert_eq!(parts_of(&texture), 0b1001);
+        // The camera holds both keys, each with its own meaning.
+        set(KIND_CAMERA, camera, Some(0b100));
+        assert_eq!(parts_of(&click(None, camera, false)), 0b100);
+        assert_eq!(parts_of(&texture), 0b1001);
+        // A scene writes the default at the change, and the cleared default as none.
+        assert_eq!(scene(25, &texture), Some(0b1001));
+        assert_eq!(scene(25, &texture), None);
+        set(KIND_CAMERA_TEXTURES, camera, None);
+        assert_eq!(scene(25, &texture), Some(0));
+        set(KIND_CAMERA, camera, None);
+    }
+
+    /// The destructor of a camera drops both of its keys; another camera keeps its default.
+    #[test]
+    fn a_freed_camera_loses_its_default_for_its_textures() {
+        let camera = 0x7500_0000;
+        let kept = 0x7500_0010;
+        set(KIND_CAMERA, camera, Some(0b1));
+        set(KIND_CAMERA_TEXTURES, camera, Some(0b11));
+        set(KIND_CAMERA_TEXTURES, kept, Some(0b110));
+        // What the destructor's detour does before the engine's destructor.
+        forget_camera(camera);
+        assert_eq!(get(KIND_CAMERA, camera), None);
+        assert_eq!(get(KIND_CAMERA_TEXTURES, camera), None);
+        assert_eq!(parts_of(&click(Some(0x7500_0100), camera, false)), 0);
+        assert_eq!(get(KIND_CAMERA_TEXTURES, kept), Some(0b110));
+        assert_eq!(parts_of(&click(Some(0x7500_0100), kept, false)), 0b110);
+        set(KIND_CAMERA_TEXTURES, kept, None);
     }
 
     /// A new view in a slot that retired (by any of the retirements of stage 2, which only the
