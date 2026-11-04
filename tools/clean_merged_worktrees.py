@@ -193,11 +193,20 @@ def load_records(pattern=RECORDS_FILES):
     return Evidence("\n".join(parts), problems)
 
 
-def cites_path(records, path):
-    """True when the records name a tree by its path, with slashes or with backslashes, in any case."""
-    text = records.text.lower()
+def path_forms(path):
+    """The spellings of a path in the records, lower case: with slashes (C:/tmp/x), with backslashes
+    (C:\\tmp\\x) and as Git Bash writes it (/c/tmp/x)."""
     forward = os.path.abspath(path).replace("\\", "/").lower()
-    return forward in text or forward.replace("/", "\\") in text
+    forms = [forward, forward.replace("/", "\\")]
+    if len(forward) > 2 and forward[1] == ":" and forward[2] == "/":
+        forms.append("/" + forward[0] + forward[2:])
+    return forms
+
+
+def cites_path(records, path):
+    """True when the records name a tree by its path, in any of the spellings of `path_forms`, in any case."""
+    text = records.text.lower()
+    return any(form in text for form in path_forms(path))
 
 
 def local_json_state(tree_path, repository, ignored):
@@ -1080,6 +1089,13 @@ def self_test():
         open(os.path.join(records_folder, "other.md"), "w").write("not read")
         loaded = load_records(os.path.join(records_folder, "*records*.md"))
         assert loaded.problems == [] and cites_path(loaded, dirty.upper()) and loaded.cites_run("20261104-010101-x") and "not read" not in loaded.text
+        # The spellings of a path: slashes, backslashes and the Git Bash form /c/...; another drive or folder is no match.
+        tree_path = "C:\\tmp\\p15\\nirender-plugin"
+        assert path_forms(tree_path) == ["c:/tmp/p15/nirender-plugin", "c:\\tmp\\p15\\nirender-plugin", "/c/tmp/p15/nirender-plugin"]
+        for spelling in ("C:/tmp/p15/nirender-plugin/results", "C:\\tmp\\p15\\nirender-plugin\\results", "/c/tmp/p15/nirender-plugin/results", "/C/TMP/P15/nirender-plugin"):
+            assert cites_path(Evidence("the run in " + spelling + " shows"), tree_path), spelling
+        for other in ("/d/tmp/p15/nirender-plugin", "/c/tmp/p16/nirender-plugin", "/tmp/p15/nirender-plugin", "nothing"):
+            assert not cites_path(Evidence("the run in " + other), tree_path), other
         assert "no records file" in load_records(os.path.join(temp, "none", "*records*.md")).problems[0]
         # A lock takes a tree off the list and puts it on the list of the locked, with its reason.
         assert git(repository, "worktree", "lock", "--reason", "Ryker: a task of D98", dirty).returncode == 0
