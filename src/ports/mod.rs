@@ -326,6 +326,12 @@ static FOLLOWED: &[Followed] = &[
     // `material::update_to_device` reads the bytes.
     Followed::Patch { at: 0x6C2686, bytes: &[0x15] },
     Followed::Patch { at: 0x6C2696, bytes: &[0xFF, 0x92, 0xA8, 0x00, 0x00, 0x00, 0xC2, 0x04, 0x00] },
+    // `NiDX8MaterialManager::dtor`: the patch of MWSE for a default material that is null (the
+    // engine's exit handlers released it). A `call` and 25 `nop` in place of 30 bytes of code,
+    // and 3 `nop` in place of the write `mov [eax+18h], ebp`. `base::clear_default_material_entry`
+    // does the same: it skips the write when the default material is null.
+    Followed::CallOfPatch { at: 0x6C2578, head: &[0xE8], tail: &[0x90; 25] },
+    Followed::Patch { at: 0x6C259B, bytes: &[0x90, 0x90, 0x90] },
     // `NiDX8TextureData::FindMatchingPixelFormat`: four displacements that the Morrowind Code
     // Patch changes (MCP-039). `textures` reads them.
     Followed::Operand { at: 0x6B70A8, len: 1 },

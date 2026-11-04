@@ -358,6 +358,59 @@ mod tests {
         }
     }
 
+    /// `NiDX8MaterialManager::dtor` as MWSE patches it (D101): a call and 25 nops at 0x6C2578, and 3
+    /// nops at 0x6C259B.
+    fn material_manager_dtor_patched() -> (&'static crate::gen::funcs::Func, Vec<u8>) {
+        let func = containing(0x6C2578);
+        assert_eq!(func.name, "NiDX8MaterialManager::dtor");
+        let mut live = census::expected(func).to_vec();
+        let (call, write) = (0x6C2578 - func.ea, 0x6C259B - func.ea);
+        live[call..call + 5].copy_from_slice(&[0xE8, 1, 2, 3, 4]);
+        live[call + 5..call + 30].fill(0x90);
+        live[write..write + 3].fill(0x90);
+        (func, live)
+    }
+
+    /// True when the census follows each run of changed bytes of `live` (all in `func`).
+    fn followed_in(func: &crate::gen::funcs::Func, live: &[u8]) -> bool {
+        let runs = census::runs(live, census::expected(func));
+        assert!(!runs.is_empty(), "{}: the bytes are those of the database", func.name);
+        runs.iter().all(|&(offset, len)| follows_change(func, live, offset, len, |addr| live[addr - func.ea]))
+    }
+
+    #[test]
+    fn the_patch_of_mwse_for_a_null_default_material_is_followed() {
+        let (func, live) = material_manager_dtor_patched();
+        let (call, write) = (0x6C2578 - func.ea, 0x6C259B - func.ea);
+        assert_eq!(census::runs(&live, census::expected(func)), vec![(call, 30), (write, 3)], "the two runs of the patch");
+        assert!(followed_in(func, &live));
+        // The call alone (the write as in the database) is followed too.
+        let mut call_only = live.clone();
+        call_only[write..write + 3].copy_from_slice(&census::expected(func)[write..write + 3]);
+        assert!(followed_in(func, &call_only));
+    }
+
+    #[test]
+    fn a_change_of_the_material_manager_dtor_that_is_not_the_patch_still_locks() {
+        let (func, live) = material_manager_dtor_patched();
+        let call = 0x6C2578 - func.ea;
+        let write = 0x6C259B - func.ea;
+        // A jump in place of the call, a changed nop, a write that is only partly removed.
+        for (name, at, byte) in [("jmp for call", call, 0xE9u8), ("tail", call + 17, 0xCC), ("end of tail", call + 29, 0xCC), ("write", write + 2, 0x18), ("write 1", write, 0x89)] {
+            let mut changed = live.clone();
+            changed[at] = byte;
+            assert!(!followed_in(func, &changed), "{name}: not followed");
+        }
+        // A change elsewhere in the function, which no entry names.
+        let mut other = census::expected(func).to_vec();
+        other[0x6C2460 - func.ea] ^= 0xFF;
+        assert!(!followed_in(func, &other), "a change that no entry names");
+        // The nops of the patch without the call: not followed.
+        let mut no_call = live.clone();
+        no_call[call..call + 5].copy_from_slice(&census::expected(func)[call..call + 5]);
+        assert!(!followed_in(func, &no_call), "nops with no call");
+    }
+
     /// A place of this machine from `local.json` at the repo root (not tracked;
     /// `local.example.json` names the keys): the string value of `key`, or None. The test
     /// below reads `mcpatch_root`, where the testing instance keeps the `mcpatch` folder of the
