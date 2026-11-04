@@ -32,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 from ctypes import wintypes
 
 # The modules of this folder, also under `python -I` (checks.py runs the self-test so).
@@ -148,14 +149,41 @@ def run_settings(args):
     return list(args.set) + (["[runtime] disabled = true"] if args.engine_reference else [])
 
 
+# The header of a table in a toml: `[name]`, with spaces inside, indented, or followed by a
+# comment. A name starts with a letter, an underscore or a quote, so that a line of a
+# multi-line array, `[1, 2]`, is not a header.
+TABLE_HEADER = re.compile(r'^\s*\[\s*([A-Za-z_"\'][A-Za-z0-9_.\-"\' ]*?)\s*\]\s*(?:#.*)?$')
+ARRAY_HEADER = re.compile(r'^\s*\[\[[^\[\]]+\]\]\s*(?:#.*)?$')
+
+
+def table_at(lines, name):
+    """The index of the header line of the table `name`, or None."""
+    for at, line in enumerate(lines):
+        header = TABLE_HEADER.match(line)
+        if header and header.group(1) == name:
+            return at
+    return None
+
+
+def toml_error(text):
+    """Why a text is not a toml, as one line, or None when it is."""
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError as fault:
+        return str(fault)
+    return None
+
+
 def run_toml_lines(text, settings, source, wgpu=None):
     """The lines of the run's mgeXE.toml, made from the text of the instance's file `source`: no
     frame limit, the --set lines, and the switch for the wgpu renderer (True or False; None
     leaves the switch out). A --set line with a section that the file lacks adds that section
-    at the end of the lines. The start and `--check` both call this, so that `--check` fails where
-    the start would. A fault is a SystemExit, as in env_of."""
+    at the end of the lines. A header with a comment or spaces, `[views] # x`, is the section
+    `views`. The lines must be a toml when the text is one (a second table of one name is not).
+    The start and `--check` both call this, so that `--check` fails where the start would. A fault
+    is a SystemExit, as in env_of."""
     lines = [line for line in text.splitlines() if not line.strip().startswith("renderer_wgpu")]
-    if "[runtime]" not in lines:
+    if table_at(lines, "runtime") is None:
         raise SystemExit("no section [runtime] in %s" % source)
     lines = ['vsync = "immediate"' if line.strip().startswith("vsync") else line for line in lines]
     for setting in settings:
@@ -164,19 +192,20 @@ def run_toml_lines(text, settings, source, wgpu=None):
             if "]" not in setting:
                 raise SystemExit("--set %r: a section is written [section] key = value" % setting)
             section, setting = setting[1:].split("]", 1)
-            setting = setting.strip()
+            section, setting = section.strip(), setting.strip()
         if "=" not in setting:
             raise SystemExit("--set takes key = value, not %r" % setting)
         key = setting.split("=")[0].strip()
         if section is not None:
             # In its section only: a key such as `enabled` is in several sections.
-            if "[%s]" % section not in lines:
+            header = table_at(lines, section)
+            if header is None:
                 while lines and not lines[-1].strip():
                     lines.pop()
                 lines += ["", "[%s]" % section, setting]
                 continue
-            start = lines.index("[%s]" % section) + 1
-            end = next((i for i in range(start, len(lines)) if lines[i].startswith("[")), len(lines))
+            start = header + 1
+            end = next((i for i in range(start, len(lines)) if TABLE_HEADER.match(lines[i]) or ARRAY_HEADER.match(lines[i])), len(lines))
             at = next((i for i in range(start, end) if lines[i].split("=")[0].strip() == key), None)
             if at is not None:
                 lines[at] = setting
@@ -194,7 +223,12 @@ def run_toml_lines(text, settings, source, wgpu=None):
     # The switch is written for each mode: the default of MGE XE is on, and a reference run is
     # MGE XE on Direct3D 9.
     if wgpu is not None:
-        lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = %s" % ("true" if wgpu else "false"))
+        lines.insert(table_at(lines, "runtime") + 1, "renderer_wgpu = %s" % ("true" if wgpu else "false"))
+    # A fault of the edit, not of the file: the instance's own file is a toml, and the lines are not.
+    if toml_error(text) is None:
+        fault = toml_error("".join(line + "\n" for line in lines))
+        if fault:
+            raise SystemExit("--set makes %s a file that is not a toml: %s" % (source, fault))
     return lines
 
 
@@ -942,7 +976,7 @@ def self_test_checks():
             session.REPO = saved
 
 
-TEST_TOML = '[runtime]\nrenderer_wgpu = true\nvsync = "default"\n\n[distant_land]\nenabled = true\nfar = 5\n\n[statics]\nenabled = false\n'
+TEST_TOML = '[runtime]\nrenderer_wgpu = true\nvsync = "default"\n\n[distant_land]\nenabled = true\nfar = 5\n\n[statics] # the statics\nenabled = false\n'
 
 
 def self_test_run_toml():
@@ -954,7 +988,7 @@ def self_test_run_toml():
     assert 'vsync = "immediate"' in base and "renderer_wgpu = true" not in base, base
     # A key in its section is replaced, in that section only (`enabled` is in two sections).
     changed = lines_of(["[statics] enabled = true"])
-    assert changed[changed.index("[statics]") + 1] == "enabled = true", changed
+    assert changed[changed.index("[statics] # the statics") + 1] == "enabled = true", changed
     assert changed[changed.index("[distant_land]") + 1] == "enabled = true" and changed.count("enabled = true") == 2, changed
     # A key that the section lacks goes at the end of the section, before the blank line of the next one.
     added = lines_of(["[distant_land] near = 1"])
@@ -973,6 +1007,25 @@ def self_test_run_toml():
     assert lines_of([], True)[:2] == ["[runtime]", "renderer_wgpu = true"], lines_of([], True)
     assert lines_of([], False)[:2] == ["[runtime]", "renderer_wgpu = false"]
     assert lines_of([], None)[:2] == ["[runtime]", 'vsync = "immediate"']
+    # A header with a comment or spaces is the section: no second table of the name. This is the
+    # whole file of the run, and it must be a toml.
+    for header in ("[statics] # x", "[statics]# x", "  [ statics ]  ", "[statics]"):
+        text = TEST_TOML.replace("[statics] # the statics", header)
+        edited = lines_of(["[statics] enabled = true", "[statics] near = 2"], text=text)
+        assert sum(1 for line in edited if line.strip().startswith("[") and "statics" in line) == 1, (header, edited)
+        assert tomllib.loads("\n".join(edited))["statics"] == {"enabled": True, "near": 2}, (header, edited)
+    # A line of an array is no header: the key goes after the array, and the file is a toml.
+    arrays = TEST_TOML + 'values = [\n  [1, 2]\n]\n'
+    edited = lines_of(["[statics] near = 3"], text=arrays)
+    assert edited[-1] == "near = 3" and tomllib.loads("\n".join(edited))["statics"]["near"] == 3, edited
+    # An edit that makes the file invalid is a fault of the edit; a file that was not a toml is not refused for it.
+    try:
+        lines_of(["[distant_land] far = ["])
+    except SystemExit as refusal:
+        assert "is not a toml" in str(refusal) and "test.toml" in str(refusal), refusal
+    else:
+        raise AssertionError("an edit that makes the file invalid was taken")
+    assert lines_of([], text=TEST_TOML + "garbage ((\n")
     # The faults.
     for settings, words in ((["no_such_key = 1"], "give its section, [section] no_such_key = 1"),
                             (["views.full_tier_max = 4"], "give its section, [views] full_tier_max = 4"),
@@ -1039,6 +1092,10 @@ def self_test_check_command():
         assert code == 0, text
         code, text = check("--set", "views.full_tier_max = 4")
         assert code != 0 and "no line with the key views.full_tier_max" in text and "[views] full_tier_max = 4" in text, text
+        code, text = check("--set", "[statics] enabled = true")
+        assert code == 0, text
+        code, text = check("--set", "[distant_land] far = [")
+        assert code != 0 and "is not a toml" in text, text
         code, text = check("--set", "no_such_key = 1")
         assert code != 0 and "no line with the key no_such_key" in text and "[section] no_such_key = 1" in text, text
         code, text = check("--reference")
