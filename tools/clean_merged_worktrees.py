@@ -174,6 +174,10 @@ RECORDS_FILES = os.path.join(DOCS, "Numidium Project", "notes", "takeover", "*re
 LEFTOVERS = re.compile(r"(.*/)?(nirender\.log(\.\d+)?)/?")
 # The file of a checkout's machine paths. Git ignores it. A tree's own is no work when it is the main checkout's.
 LOCAL_JSON = "local.json"
+# The words that the records use for a cleanup of worktrees ("It removed the merged and idle worktrees",
+# "may go, merged and uncited", "the worktree C:/tmp/x is gone", "left for the owner to clean"). Bare
+# "clean" and "remove" are no cleanup words: "a clean worktree" is a build check.
+CLEANUP_SENTENCE = re.compile(r"\b(removed|may go|(is|are) gone|left for the owner to (clean|remove)|git worktree remove)\b")
 # Folders that name a checkout, and no task: the lock reason takes the folder above.
 GENERIC_FOLDERS = {"nirender-plugin", "mge-xe-g7", "mge-xe-g7-render-link", "render-link", "g7"}
 
@@ -193,11 +197,38 @@ def load_records(pattern=RECORDS_FILES):
     return Evidence("\n".join(parts), problems)
 
 
-def cites_path(records, path):
-    """True when the records name a tree by its path, with slashes or with backslashes, in any case."""
-    text = records.text.lower()
+def path_forms(path):
+    """The spellings of a path in the records, lower case: with slashes (C:/tmp/x), with backslashes
+    (C:\\tmp\\x) and as Git Bash writes it (/c/tmp/x)."""
     forward = os.path.abspath(path).replace("\\", "/").lower()
-    return forward in text or forward.replace("/", "\\") in text
+    forms = [forward, forward.replace("/", "\\")]
+    if len(forward) > 2 and forward[1] == ":" and forward[2] == "/":
+        forms.append("/" + forward[0] + forward[2:])
+    return forms
+
+
+def sentence_around(text, start, stop):
+    """The sentence of `text` that holds text[start:stop]: from the previous ". " or line break to the
+    next one. A colon or a semicolon does not end it."""
+    before = max(text.rfind(". ", 0, start) + 1, text.rfind("\n", 0, start) + 1)
+    ends = [end for end in (text.find(". ", stop), text.find("\n", stop)) if end != -1]
+    return text[before:min(ends) if ends else len(text)]
+
+
+def cites_path(records, path):
+    """True when the records cite a tree by its path, in any of the spellings of `path_forms`, in any case.
+    A path in a cleanup sentence does not count (CLEANUP_SENTENCE): it says that the tree went or may go,
+    not that the records rely on it. A path into the tree's results folder counts in any sentence: it
+    names a run."""
+    text = records.text.lower()
+    for form in path_forms(path):
+        start = text.find(form)
+        while start != -1:
+            stop = start + len(form)
+            if text.startswith(("/results/", "\\results\\"), stop) or not CLEANUP_SENTENCE.search(sentence_around(text, start, stop)):
+                return True
+            start = text.find(form, start + 1)
+    return False
 
 
 def local_json_state(tree_path, repository, ignored):
@@ -251,9 +282,18 @@ def risk_reasons(tree):
         reasons.append("ignored files that no build makes: " + ", ".join(tree["risky_ignored"][:3]))
     if tree["cites_path"]:
         reasons.append("the records cite its path")
-    if tree["cited_runs"]:
+    if tree["cited_runs"] and not tree.get("goes"):
         reasons.append("%d run folders that the records cite: %s" % (len(tree["cited_runs"]), ", ".join(tree["cited_runs"][:3])))
     return reasons
+
+
+def go_line(row):
+    """The line of a tree under MAY GO. A tree whose runs the records cite goes anyway: --apply copies
+    the cited runs to the keep folder first, so the line says so in place of a risk."""
+    line = "%9s  %s  [%s] %s; %d links; results: %s; idle %.0f h" % (gigabytes(row["size"]), row["path"], row["branch"] or "detached", row["reason"], len(row["links"]), "%d entries to keep" % row["result_runs"] if row["results"] else "none", min(row["idle_hours"], 9999))
+    if row["cited_runs"]:
+        line += "; %d cited runs, copied by --apply" % len(row["cited_runs"])
+    return "  " + line
 
 
 def print_risks(rows):
@@ -651,7 +691,7 @@ def main():
     go, stay = [], []
     for row, job in zip(rows, jobs):
         ok, reason = decide(row)
-        row["reason"], row["repository"] = reason, job[2]
+        row["reason"], row["repository"], row["goes"] = reason, job[2], ok
         (go if ok else stay).append(row)
     print("%d processes, the current folder of %d could not be read" % (len(running), unread_processes))
     if games:
@@ -661,7 +701,7 @@ def main():
     print_risks(go + stay)
     print("\nMAY GO (%d, %s):" % (len(go), gigabytes(sum(row["size"] for row in go))))
     for row in sorted(go, key=lambda r: -r["size"]):
-        print("  %9s  %s  [%s] %s; %d links; results: %s; idle %.0f h" % (gigabytes(row["size"]), row["path"], row["branch"] or "detached", row["reason"], len(row["links"]), "%d entries to keep" % row["result_runs"] if row["results"] else "none", min(row["idle_hours"], 9999)))
+        print(go_line(row))
         for link in row["links"]:
             print("             link: %s -> %s" % (link, os.path.realpath(link)))
     print("\nSTAYS (%d, %s):" % (len(stay), gigabytes(sum(row["size"] for row in stay))))
@@ -798,6 +838,13 @@ def self_test():
         reasons = risk_reasons({**quiet, **change})
         assert len(reasons) == 1 and word in reasons[0], (change, reasons)
     assert len(risk_reasons({**quiet, "unique_commits": 1, "uncommitted": ["a"], "cited_runs": ["r"], "cites_path": True})) == 4
+    # A tree that goes copies its cited runs with --apply: no risk, a note on its MAY GO line.
+    cited = {**quiet, "cited_runs": ["20261104-010101-x", "r2"]}
+    assert risk_reasons({**cited, "goes": True}) == [] and len(risk_reasons({**cited, "goes": False})) == 1
+    assert len(risk_reasons({**cited, "goes": True, "cites_path": True})) == 1
+    line = go_line({"size": 1 << 30, "path": "C:\\tmp\\x", "branch": "b", "reason": "merged", "links": [], "result_runs": 0, "results": False, "idle_hours": 3.0, "cited_runs": cited["cited_runs"]})
+    assert line.endswith("; 2 cited runs, copied by --apply") and "[b] merged; 0 links; results: none" in line, line
+    assert "cited runs" not in go_line({"size": 0, "path": "C:\\tmp\\x", "branch": None, "reason": "merged", "links": [], "result_runs": 0, "results": False, "idle_hours": 3.0, "cited_runs": []})
     for change in ({"locked": True}, {"main": True}, {"path": os.path.join(REPOS_ROOT, "MGE-XE-G7-train")}, {"path": "E:\\nirender-keep\\x"}):
         assert risk_reasons({**quiet, "unique_commits": 5, "uncommitted": ["a"], **change}) == [], change
     assert uncommitted_beyond_output(["?? new.txt", " M a.py", "?? results/", "!! target/", "R  old.rs -> new.rs", '?? "a b.txt"', "?? tools/__pycache__/", "?? host/target/", "?? nirender.log.1", "?? sub/local.json"]) == ["new.txt", "a.py", "new.rs", "a b.txt", "sub/local.json"]
@@ -1055,6 +1102,7 @@ def self_test():
         row = facts(dirty, "dirty", records)
         assert row["cited_runs"] == ["20261104-010101-x"] and row["cites_path"], (row["cited_runs"], row["cites_path"])
         assert any("the records cite its path" in reason for reason in risk_reasons(row)) and any("1 run folders that the records cite" in reason for reason in risk_reasons(row))
+        assert not any("run folders" in reason for reason in risk_reasons({**row, "goes": True})) and any("run folders" in reason for reason in risk_reasons({**row, "goes": False}))
         assert facts(dirty, "dirty", Evidence("nothing"))["cited_runs"] == []
         # The records files: read as one text, and a missing file is a problem, not a silence.
         records_folder = os.path.join(temp, "records")
@@ -1063,6 +1111,34 @@ def self_test():
         open(os.path.join(records_folder, "other.md"), "w").write("not read")
         loaded = load_records(os.path.join(records_folder, "*records*.md"))
         assert loaded.problems == [] and cites_path(loaded, dirty.upper()) and loaded.cites_run("20261104-010101-x") and "not read" not in loaded.text
+        # The spellings of a path: slashes, backslashes and the Git Bash form /c/...; another drive or folder is no match.
+        tree_path = "C:\\tmp\\p15\\nirender-plugin"
+        assert path_forms(tree_path) == ["c:/tmp/p15/nirender-plugin", "c:\\tmp\\p15\\nirender-plugin", "/c/tmp/p15/nirender-plugin"]
+        for spelling in ("C:/tmp/p15/nirender-plugin/results", "C:\\tmp\\p15\\nirender-plugin\\results", "/c/tmp/p15/nirender-plugin/results", "/C/TMP/P15/nirender-plugin"):
+            assert cites_path(Evidence("the run in " + spelling + " shows"), tree_path), spelling
+        for other in ("/d/tmp/p15/nirender-plugin", "/c/tmp/p16/nirender-plugin", "/tmp/p15/nirender-plugin", "nothing"):
+            assert not cites_path(Evidence("the run in " + other), tree_path), other
+        # A path that the records name only in a cleanup sentence is no citation. The sentences are the records' own.
+        for cleanup in (
+            "It removed the merged and idle worktrees, the old play set `C:/tmp/p15/nirender-plugin`, and more.",
+            "Cleanup: removed `C:/tmp/p15/nirender-plugin`, `C:/tmp/other`.",
+            "The worktree `C:/tmp/p15/nirender-plugin` is gone and its branch was merged.",
+            "Left for the owner to clean: the worktree C:/tmp/p15/nirender-plugin (`git worktree remove` deletes a folder).",
+            "Left for the owner to remove: /c/tmp/p15/nirender-plugin.",
+            "MAY GO, merged and uncited: cullrel, C:\\tmp\\p15\\nirender-plugin.",
+            "Earlier text.\nremoved C:/tmp/p15/nirender-plugin\nLater text.",
+        ):
+            assert not cites_path(Evidence(cleanup), tree_path), cleanup
+        for cited_text in (
+            "The walk in C:/tmp/p15/nirender-plugin shows 3 draws. Nothing was removed.",
+            "A clean worktree C:/tmp/p15/nirender-plugin was built for the check.",
+            "removed C:/tmp/p15/nirender-plugin. Later the run C:/tmp/p15/nirender-plugin/results/x showed it.",
+            "It removed the old trees.\nThe run in C:/tmp/p15/nirender-plugin/results/x shows it.",
+            "removed C:/tmp/p15/nirender-plugin. The log is in /c/tmp/p15/nirender-plugin/results. The check ran.",
+        ):
+            assert cites_path(Evidence(cited_text), tree_path), cited_text
+        assert cites_path(Evidence("may go: ryker-w7 (runs `C:/tmp/p15/nirender-plugin/results/20261103-200212-x` and more);"), tree_path)
+        assert not cites_path(Evidence("removed build output (the largest `C:/tmp/p15/nirender-plugin/target` 3.9 GB)"), tree_path)
         assert "no records file" in load_records(os.path.join(temp, "none", "*records*.md")).problems[0]
         # A lock takes a tree off the list and puts it on the list of the locked, with its reason.
         assert git(repository, "worktree", "lock", "--reason", "Ryker: a task of D98", dirty).returncode == 0
