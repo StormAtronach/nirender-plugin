@@ -61,9 +61,11 @@ pub struct SceneView<'a> {
     /// The number of the frame, as the renderer counts it (the number in its log lines, "a
     /// buffer grew at frame N"): for an extension's log line of an event.
     pub frame: u64,
-    /// The view of the call: the slot of its scene and its kind ([`ViewKind`]). Today every call
-    /// is the main view's (the key [`ViewKey::MAIN`]); an extension that draws a view of its own
-    /// reads the key, and one that does not ignores it.
+    /// The view of the call: the slot of its scene, its kind ([`ViewKind`]) and the place of the
+    /// full tier that it holds ([`ViewKey::place`]). The calls of the main view's scenes have the
+    /// key [`ViewKey::MAIN`]; an extension that draws a view of its own reads the key (what the
+    /// view needs for its own draws is keyed to the place, which a mirror keeps while it holds
+    /// it), and one that does not ignores it.
     pub view_key: ViewKey,
     /// The samples for each pixel of the targets of the frame ([`Extension::samples`], cut to
     /// what the adapter has): a pipeline that draws into the pass of the game takes
@@ -625,7 +627,7 @@ pub trait Extension {
     /// full tier (`parts`, a subset of the parts that the renderer offers: the distant land and
     /// the distant statics, D82 section 3.4f), after the sky of that scene and before its first
     /// draw of the world. `scene` is the view's own: its matrices, eye, target size, fog and
-    /// sun, and [`SceneView::view_key`] with the slot and the kind of the view. The pass draws
+    /// sun, and [`SceneView::view_key`] with the slot, the kind and the place of the view. The pass draws
     /// into the target of the view with the sample count in `scene.samples` (1 in a rendered
     /// texture). The frame's data that [`Extension::before_world`] made are reused; this call
     /// does not redo the work of the frame. Returns true when the depth target must be cleared
