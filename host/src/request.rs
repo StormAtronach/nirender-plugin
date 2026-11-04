@@ -403,15 +403,20 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     if switches().one_depth && !depth::one_buffer() {
         println!("depth: MGE_XE_ONE_DEPTH needs the reversed float depth; the land keeps its own depth");
     }
-    let mut samples = samples.clamp(1, 8).next_power_of_two();
-    while samples > 1 {
+    // The samples. The adapter's flags for a format hold only on a device that has
+    // TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES (the request asks for it below when the adapter
+    // has it); any other device takes the counts that the WebGPU spec guarantees.
+    let adapter_formats = features.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
+    let asked = samples;
+    let samples = choose_samples(asked, |count| {
+        if !adapter_formats {
+            return GUARANTEED_SAMPLES.contains(&count);
+        }
         let color = adapter.get_texture_format_features(target_format).flags;
         let depth = adapter.get_texture_format_features(depth_format).flags;
-        if color.sample_count_supported(samples) && color.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE) && depth.sample_count_supported(samples) {
-            break;
-        }
-        samples /= 2;
-    }
+        color.sample_count_supported(count) && color.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE) && depth.sample_count_supported(count)
+    });
+    println!("samples: asked {asked}, using {samples}{}", samples_reason(asked, samples, adapter_formats));
 
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("nirender"),
@@ -424,7 +429,8 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
                     | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
                     | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES
                     | wgpu::Features::INDIRECT_FIRST_INSTANCE
-                    | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT))
+                    | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
+                    | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES))
             | if float_depth { wgpu::Features::DEPTH32FLOAT_STENCIL8 } else { wgpu::Features::empty() },
         // The largest texture that the adapter takes, up to 16384: an atlas of the distant
         // land of MGE XE has that size. One buffer for the geometry of many meshes of an
@@ -447,6 +453,38 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
 
     Ok(Request { info, surface, device, queue, target_format, surface_usages, present_modes, depth_format, samples, array_cap, sampler_cap, tier, features, limits })
 }
+
+/// The counts of samples that the WebGPU spec guarantees for the formats of the frame. A
+/// device without TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES refuses any other count.
+const GUARANTEED_SAMPLES: [u32; 2] = [1, 4];
+
+/// The largest count of samples up to `asked` that `supported` accepts: `asked` is cut to 1 to
+/// 8 and up to a power of two, then halved until `supported` says yes. 1 always stands.
+fn choose_samples(asked: u32, supported: impl Fn(u32) -> bool) -> u32 {
+    let mut samples = asked.clamp(1, 8).next_power_of_two();
+    while samples > 1 && !supported(samples) {
+        samples /= 2;
+    }
+    samples
+}
+
+/// The words that go after the chosen count in the log line: why it is lower than the count
+/// that was asked for, or nothing when it is the count asked for.
+fn samples_reason(asked: u32, chosen: u32, adapter_formats: bool) -> String {
+    let wanted = asked.clamp(1, 8).next_power_of_two();
+    if chosen == asked {
+        String::new()
+    } else if chosen == wanted {
+        format!(" (asked counts are cut to a power of two from 1 to {MOST_SAMPLES})")
+    } else if adapter_formats {
+        format!(" ({wanted} is not in the adapter's flags for the colour and depth formats)")
+    } else {
+        format!(" ({wanted} is not guaranteed: the device has no adapter-specific format features, so only 1 and 4 stand)")
+    }
+}
+
+/// The most samples for each pixel that the renderer takes.
+const MOST_SAMPLES: u32 = 8;
 
 /// The lacks that the refusal names: the first [`LACKS_NAMED`], then their count. The probe's
 /// lines and the box of d3d8.dll have a limit of length; all the lacks go into a line of their
@@ -528,6 +566,27 @@ pub(crate) fn refuse_live(refusals: &[Refusal]) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_samples_are_the_largest_count_that_stands() {
+        let all = |_: u32| true;
+        let guaranteed = |count: u32| GUARANTEED_SAMPLES.contains(&count);
+        // An adapter that has every count: the asked count, cut to a power of two from 1 to 8.
+        assert_eq!([0, 1, 2, 3, 4, 8, 16].map(|asked| choose_samples(asked, all)), [1, 1, 2, 4, 4, 8, 8]);
+        // A device held to the guaranteed counts (no adapter-specific format features): 8 and 2 step down.
+        assert_eq!([1, 2, 4, 8, 16].map(|asked| choose_samples(asked, guaranteed)), [1, 1, 4, 4, 4]);
+        // No count above 1 stands: 1 stands whatever is asked.
+        assert_eq!(choose_samples(8, |_| false), 1);
+    }
+
+    #[test]
+    fn the_reason_of_a_lower_count_names_its_cause() {
+        assert_eq!(samples_reason(8, 8, true), "");
+        assert_eq!(samples_reason(1, 1, false), "");
+        assert!(samples_reason(8, 4, false).contains("not guaranteed"));
+        assert!(samples_reason(8, 4, true).contains("adapter's flags"));
+        assert!(samples_reason(3, 4, true).contains("power of two"));
+    }
 
     #[test]
     fn the_backends_are_tried_in_their_order() {
