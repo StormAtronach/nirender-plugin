@@ -91,10 +91,10 @@ impl Player {
             "view kinds: of the views drawn, {} main (the world camera on a root of its own), {} pictures (a texture), {} of another screen; {} of them have the shade in their additions",
             c.view_kinds[ViewKind::Main as usize], c.view_kinds[ViewKind::Picture as usize], c.view_kinds[ViewKind::OtherScreen as usize], c.view_with_shade
         );
-        if c.tier_views != 0 || c.tier_ends != 0 || c.tier_unserved != 0 {
+        if c.tier_views != 0 || c.tier_ends != 0 || c.tier_posts != 0 || c.tier_unserved != 0 {
             println!(
-                "full tier parts in views of their own: {} scenes got the extension's call at the start of their world (distant land, distant statics, glows), {} of them drew; {} got the call at its end (grass); {} calls could not be served (no extension or no pass)",
-                c.tier_views, c.tier_drew, c.tier_ends, c.tier_unserved
+                "full tier parts in views of their own: {} scenes got the extension's call at the start of their world (distant land, distant statics, glows), {} of them drew; {} got the call at its end (grass); {} pictures got the post chain, {} of them without the copies that the chain reads; {} calls could not be served (no extension or no pass)",
+                c.tier_views, c.tier_drew, c.tier_ends, c.tier_posts, c.tier_posts_uncopied, c.tier_unserved
             );
         }
         if c.world_after_main_view != 0 {

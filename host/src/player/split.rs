@@ -307,8 +307,10 @@ impl Player {
             // These get no replay (extension.rs:707): they read the frame's targets and the
             // extension's own textures.
             // The parts of the full tier read the extension's own textures, and the replay is not
-            // passed to them in a way that reads the frame's targets.
-            Item::Post(_) | Item::FirstPersonDepth(_) | Item::TierStart(..) | Item::TierEnd(..) => fixed(Reads::default()),
+            // passed to them in a way that reads the frame's targets. The post chain of a picture
+            // (`TierPost`) copies the colour and the depth of the picture it draws into and reads
+            // no other rendered texture.
+            Item::Post(_) | Item::FirstPersonDepth(_) | Item::TierStart(..) | Item::TierEnd(..) | Item::TierPost(..) => fixed(Reads::default()),
         }
     }
 }

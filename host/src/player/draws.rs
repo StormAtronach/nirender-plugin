@@ -178,7 +178,7 @@ impl Player {
         // The grass of a view of its own goes after the sorted blends of the flush, as the main
         // view's grass goes after its blends.
         if let Some(group) = self.views.open() {
-            self.view_tier_end_item(group);
+            self.view_tier_end_items(group, engine::views::TierPoint::Flush);
         }
     }
 

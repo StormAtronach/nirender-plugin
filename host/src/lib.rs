@@ -247,6 +247,18 @@ struct ScreenDraw {
     vertices: u32,
 }
 
+/// The copies of the colour and the depth of a picture of one size, for the post chain of a
+/// picture ([`Extension::view_post`]). A copy is written and read inside one frame's commands,
+/// in their order, so pictures of one size share the pair.
+struct PostCopy {
+    size: (u32, u32),
+    picture: wgpu::Texture,
+    depth: wgpu::Texture,
+}
+
+/// The pairs of copies that the player keeps: the full tier has at most four places.
+const POST_COPIES_KEPT: usize = 4;
+
 /// What a frame has, in its order. `feed` collects the items and `run_items` does them.
 enum Item {
     /// The game draws into this rendered texture, or into the back buffer.
@@ -262,6 +274,9 @@ enum Item {
     /// The grass of the full tier in a view of its own, at the end of its world
     /// ([`Extension::view_after_world`]).
     TierEnd(Box<WorldFacts>, Additions),
+    /// The post chain of a picture with the option `shaders`, at the end of its scene, after
+    /// [`Item::TierEnd`] ([`Extension::view_post`]).
+    TierPost(Box<WorldFacts>, Additions),
     /// The table's main view draws, with no start of the world (see [`plan::Step::MainView`]).
     MainView(Box<WorldFacts>),
     WorldEnd(Box<WorldFacts>),
@@ -977,6 +992,9 @@ struct Player {
     /// The picture and the depth of the frame before a call of [`Extension::draw_class`].
     picture_copy: Option<wgpu::Texture>,
     depth_copy: Option<wgpu::Texture>,
+    /// The copies of the colour and the depth of a rendered texture that the post chain of a
+    /// picture reads ([`Extension::view_post`]): one pair for each size of picture.
+    post_copies: Vec<PostCopy>,
     /// The depth of the game at the end of its world scene, for [`Extension::post`]: the game
     /// clears its depth before its later scenes. The projection of the world at that time,
     /// and true when a draw of the first-person scene went into the back buffer in this

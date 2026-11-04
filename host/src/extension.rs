@@ -643,6 +643,16 @@ pub trait Extension {
     /// view. The default draws nothing.
     fn view_after_world(&mut self, _scene: &SceneView, _parts: Additions, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {}
 
+    /// The renderer calls this one time in a scene of a picture that has the post chain in its
+    /// options ([`Additions::TIER_POST`]), at the end of the scene, after
+    /// [`Extension::view_after_world`]. No pass is open. `scene.picture` is a copy of the
+    /// picture of the scene and `scene.depth` a copy of its depth (what [`Extension::reads`]
+    /// with [`ReadingCall::Post`] asks for); `target` is the picture itself, with one sample, and
+    /// the call writes its result there. The scene, `parts` and the key are as in
+    /// [`Extension::view_before_world`]. The call reads and writes nothing of the main view's
+    /// picture or post state. The default draws nothing.
+    fn view_post(&mut self, _scene: &SceneView, _parts: Additions, _encoder: &mut wgpu::CommandEncoder, _target: &wgpu::TextureView) {}
+
     /// The renderer calls this one time in a frame, at the end of the world scene of the
     /// game: its draws without a sort are in the picture and in the depth target, and the
     /// draws with a sort, the first-person view and the user interface are not. The pass and
