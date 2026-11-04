@@ -213,10 +213,10 @@ impl Player {
                 }
                 // A view into a texture closes here (its EndPaint): its table takes its list now. A
                 // scene whose world did not begin gets its table item here.
-                if let Some(group) = self.views.open() {
+                let open_group = self.views.open();
+                if let Some(group) = open_group {
                     self.begin_view_world("the scene end");
                     self.view_table_item();
-                    self.view_tier_end_item(group);
                     let facts = self.views.group(group).and_then(|g| g.facts);
                     if let (Some(bit), Some(facts), Some(_)) = (self.table_bit(group), facts, self.target) {
                         self.retained.close_view(group, bit, view_planes(&facts.view, &facts.projection));
@@ -225,6 +225,10 @@ impl Player {
                 }
                 if let Some(group) = self.views.scene_end().filter(|_| drawing) {
                     self.items.push(Item::ViewSorted(group));
+                }
+                // After the last sorted blends of the scene: the end of its world.
+                if let Some(group) = open_group {
+                    self.view_tier_end_item(group);
                 }
             }
             tag::FRAME_EVENT => {
@@ -936,9 +940,9 @@ impl Player {
     }
 
     /// The end of the world of the open scene of a view of its own that has the grass
-    /// ([`Additions::TIER_AFTER`]): the item goes at the flush of the scene's sorted queue, or
-    /// at the scene's end, whichever comes first, once for the scene. A scene whose world did
-    /// not begin gets none.
+    /// ([`Additions::TIER_AFTER`]): the item goes after the sorted blends of the flush of the
+    /// scene's sorted queue, or after those of the scene's end, whichever comes first, once for
+    /// the scene. A scene whose world did not begin gets none.
     pub(crate) fn view_tier_end_item(&mut self, group: usize) {
         let Some(open) = self.views.group(group) else { return };
         let parts = view_kind::tier_parts(open.kind, open.additions);
