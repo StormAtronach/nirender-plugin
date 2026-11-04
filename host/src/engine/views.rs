@@ -122,6 +122,9 @@ const SCENE_WITH_VIEW: usize = 56;
 /// The offset of the word of a scene record with the first slot of a repeat and the walk bit
 /// (the plugin's `SceneV1::repeat_walk`, stream format 7).
 const SCENE_REPEAT_WALK_AT: usize = 52;
+/// The bits of that word that hold the first slot of a repeat plus 1 (the plugin's
+/// `link::SCENE_REPEAT_MASK`).
+const SCENE_REPEAT_MASK: u32 = 0xFF;
 /// The bit of that word that says the plugin walks the scene's root, so that the event
 /// `EVENT_WORLD_WALK` follows (the plugin's `link::SCENE_WALK_DUE`).
 const SCENE_WALK_DUE: u32 = 0x100;
@@ -192,6 +195,9 @@ pub(crate) struct Views {
     /// not walk its root, so no `EVENT_WORLD_WALK` follows. False for a scene record without
     /// the word, and before the first scene.
     scene_without_walk: bool,
+    /// The slot of the first scene of the key of the scene in progress, when the scene repeats
+    /// its key in the same flush (the low byte of the word less 1), for the scene's group.
+    scene_first: Option<u8>,
     /// The view slots of D82, for the whole run: a retirement frees one.
     slots: [Option<ViewSlot>; VIEW_SLOTS],
     slot_counts: SlotCounts,
@@ -215,10 +221,12 @@ impl Views {
 
     /// The word of a scene record with the repeat and the walk (`repeat_walk_on`). Every scene
     /// record goes here, also one of a stream without view slots: a record without the word
-    /// has a walk that is due.
+    /// has a walk that is due and no repeat.
     pub(crate) fn note_repeat_walk(&mut self, data: &[u8]) {
         let word = (self.repeat_walk_on && data.len() >= SCENE_WITH_VIEW).then(|| crate::data::word(data, SCENE_REPEAT_WALK_AT));
         self.scene_without_walk = word.is_some_and(|word| word & SCENE_WALK_DUE == 0);
+        // A first slot past the table is a fault of the stream: no repeat.
+        self.scene_first = word.map(|word| word & SCENE_REPEAT_MASK).filter(|&first| first != 0 && first as usize <= VIEW_SLOTS).map(|first| (first - 1) as u8);
     }
 
     /// The engine's walk of the scene in progress marks its world with an event: the stream
@@ -293,6 +301,7 @@ impl Views {
     pub(crate) fn scene_begin(&mut self, kind: u32, in_target: bool, camera_is_world: bool) -> bool {
         self.open = None;
         let view_slot = self.scene_slot.take();
+        let first_slot = self.scene_first.take();
         if kind == scene::SCENE_UI {
             self.ui_seen = true;
         }
@@ -301,7 +310,11 @@ impl Views {
         }
         let view = ViewKind::classify(in_target, camera_is_world);
         // The full tier is for the views of a mod: the main view has every part already.
-        let grant = view_slot.filter(|_| view != ViewKind::Main).and_then(|slot| self.tier.scene(slot));
+        // A scene that repeats its key in the flush has the place of the key's first slot.
+        let grant = view_slot.filter(|_| view != ViewKind::Main).and_then(|slot| match first_slot {
+            Some(first) => self.tier.scene_of_repeat(first),
+            None => self.tier.scene(slot),
+        });
         let additions = view.additions(self.ui_seen).with(Additions::from_option_parts(grant.map_or(0, |grant| grant.parts)));
         let place = grant.map(|grant| grant.place);
         self.groups.push(Group { world_camera: kind == scene::SCENE_WORLD, kind: view, additions, view_slot, place, ..Group::default() });
@@ -702,6 +715,45 @@ mod tests {
         views.repeat_walk_on = true;
         views.note_scene_record(&record_with_word(0));
         assert!(!views.scene_walk_due());
+    }
+
+    /// A scene whose record names a first slot gets the place and the parts of that slot, not
+    /// a place of its own: a mirror that renders twice in a frame holds one place. The first
+    /// slot is read from the word only from the stream format 7, and a slot past the table is
+    /// no repeat.
+    #[test]
+    fn a_repeat_takes_the_place_of_its_first_slot() {
+        let mut views = on();
+        views.repeat_walk_on = true;
+        views.tier.set_max(2);
+        views.tier.options(3, 0b11);
+        views.tier.options(7, 0b11);
+        // The first scene of the key, in slot 3: it takes place 0.
+        views.note_scene(Some(3), 20, 200, 7);
+        views.note_repeat_walk(&record_with_word(0));
+        assert!(views.scene_begin(SCENE_WORLD, true, true));
+        assert_eq!(views.group(0).unwrap().place, Some(0));
+        // Its repeat, in the second slot 7 with options of its own, names the first slot 3
+        // (plus 1): the same place, not the free place 1 that slot 7 would take.
+        views.note_scene(Some(7), 20, 200, 7);
+        views.note_repeat_walk(&record_with_word(3 + 1));
+        assert!(views.scene_begin(SCENE_WORLD, true, true));
+        assert_eq!(views.group(1).unwrap().place, Some(0));
+        assert_eq!(views.tier.counts.repeats, 1);
+        // A scene that is no repeat: slot 7 takes the free place.
+        views.note_scene(Some(7), 20, 200, 7);
+        views.note_repeat_walk(&record_with_word(0));
+        assert!(views.scene_begin(SCENE_WORLD, true, true));
+        assert_eq!(views.group(2).unwrap().place, Some(1));
+        // A stream of the format 6 reads the word as nothing, and so does a first slot past the table.
+        views.repeat_walk_on = false;
+        views.note_repeat_walk(&record_with_word(4));
+        assert_eq!(views.scene_first, None);
+        views.repeat_walk_on = true;
+        views.note_repeat_walk(&record_with_word(VIEW_SLOTS as u32 + 1));
+        assert_eq!(views.scene_first, None);
+        views.note_repeat_walk(&record_with_word(VIEW_SLOTS as u32));
+        assert_eq!(views.scene_first, Some(VIEW_SLOTS as u8 - 1));
     }
 
     /// The same walk in a stream of the format 6 (a 0 in the word) and in one of the format 7
