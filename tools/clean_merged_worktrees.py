@@ -42,7 +42,9 @@ All of these must hold before a worktree goes:
 - Its branch is merged into the target of its repository, `--name` names it, or it is an old play set.
   In each case a ref must hold its commit: a removal must not leave a commit on no ref.
 - `git status` works and shows no change and no untracked file, and each ignored file is a build output or
-  in `results`: `git worktree remove` deletes ignored files without a word.
+  in `results`: `git worktree remove` deletes ignored files without a word. One more is allowed: the
+  ignored `local.json` at the root, when it is byte for byte the main checkout's. One that differs stays a
+  reason to keep the tree (it may hold the paths of a session's own), and the list of trees at risk says so.
 - No process uses it: a command line or a program path in it, or a current folder in it. This is
   looked at again just before the removal. It does not see a session that has a worktree in mind
   and no command running there: a standing worktree needs `.keep-worktree` or a line in
@@ -169,7 +171,9 @@ def decide(tree):
 RECORDS_FILES = os.path.join(DOCS, "Numidium Project", "notes", "takeover", "*records*.md")
 # What a checkout or a run leaves in a tree and no one writes: the machine-local paths (git ignores them) and the
 # plugin's log files. They are no work that a lock would save.
-LEFTOVERS = re.compile(r"(.*/)?(local\.json|nirender\.log(\.\d+)?)/?")
+LEFTOVERS = re.compile(r"(.*/)?(nirender\.log(\.\d+)?)/?")
+# The file of a checkout's machine paths. Git ignores it. A tree's own is no work when it is the main checkout's.
+LOCAL_JSON = "local.json"
 # Folders that name a checkout, and no task: the lock reason takes the folder above.
 GENERIC_FOLDERS = {"nirender-plugin", "mge-xe-g7", "mge-xe-g7-render-link", "render-link", "g7"}
 
@@ -196,6 +200,19 @@ def cites_path(records, path):
     return forward in text or forward.replace("/", "\\") in text
 
 
+def local_json_state(tree_path, repository, ignored):
+    """The ignored local.json at the root of a tree against the main checkout's: "none" (git does not list
+    one as ignored), "same" (byte for byte) or "differs" (also when the main checkout has none or either
+    cannot be read: the file may hold the session's own paths)."""
+    if LOCAL_JSON not in ignored:
+        return "none"
+    try:
+        with open(os.path.join(tree_path, LOCAL_JSON), "rb") as own, open(os.path.join(repository, LOCAL_JSON), "rb") as main:
+            return "same" if own.read() == main.read() else "differs"
+    except OSError:
+        return "differs"
+
+
 def uncommitted_beyond_output(status_lines):
     """The paths of a `git status --porcelain` list that are changed or untracked, a build's output
     left out (an untracked `results/` is no loss that a lock would save), and the leftovers of a
@@ -215,7 +232,7 @@ def risk_reasons(tree):
     not at risk. A removal, by this tool or by hand, would lose these. A locked tree, a main or
     standing checkout and a tree under E:\\nirender-keep are never listed. `tree` is the facts
     of `facts_of`: `unique_commits` (None when git could not tell), `target`, `uncommitted`,
-    `risky_ignored`, `cites_path` and `cited_runs`."""
+    `risky_ignored`, `local_json_differs`, `cites_path` and `cited_runs`."""
     path = tree["path"]
     if tree["locked"] or tree["main"] or any(same_path(path, os.path.join(REPOS_ROOT, name)) for name in SHARED_CHECKOUTS) or same_or_under(path, KEEP_ROOT):
         return []
@@ -228,6 +245,8 @@ def risk_reasons(tree):
         reasons.append("%d commits on no ref of %s, no remote and no tag" % (tree["unique_commits"], tree["target"]))
     if tree["uncommitted"]:
         reasons.append("%d uncommitted or untracked files: %s" % (len(tree["uncommitted"]), ", ".join(tree["uncommitted"][:3])))
+    if tree["local_json_differs"]:
+        reasons.append("local.json differs from the main checkout's")
     if tree["risky_ignored"]:
         reasons.append("ignored files that no build makes: " + ", ".join(tree["risky_ignored"][:3]))
     if tree["cites_path"]:
@@ -505,6 +524,9 @@ def facts_of(tree, target, repository, running, dependents, named, idle_limit, n
     status_run = git(path, "status", "--porcelain", "--ignored")
     status = status_run.stdout.splitlines()
     ignored = [row[3:] for row in status if row.startswith("!! ")]
+    # The root local.json holds a checkout's machine paths: it goes with the tree when it is the main checkout's.
+    local_json = local_json_state(path, repository, ignored)
+    kept_ignored = [name for name in ignored if not (name == LOCAL_JSON and local_json == "same")]
     refs = git(repository, "for-each-ref", "--contains", head, "--format=%(refname)")
     # The commits that the tree alone holds: no ref of the main branch, no remote and no tag has them.
     unique = git(path, "rev-list", "--count", "HEAD", "--not", target, "--remotes", "--tags")
@@ -515,7 +537,8 @@ def facts_of(tree, target, repository, running, dependents, named, idle_limit, n
         "target": target,
         "unique_commits": int(unique.stdout) if unique.returncode == 0 and unique.stdout.strip().isdigit() else None,
         "uncommitted": uncommitted_beyond_output(status),
-        "risky_ignored": [name for name in ignored if not BUILD_OUTPUTS.fullmatch(name) and not LEFTOVERS.fullmatch(name)],
+        "risky_ignored": [name for name in kept_ignored if not BUILD_OUTPUTS.fullmatch(name) and not LEFTOVERS.fullmatch(name) and name != LOCAL_JSON],
+        "local_json_differs": local_json == "differs",
         "cites_path": records is not None and cites_path(records, path),
         "cited_runs": [name for name in runs if records is not None and records.cites_run(name)],
         "merged": merged,
@@ -524,7 +547,7 @@ def facts_of(tree, target, repository, running, dependents, named, idle_limit, n
         "status_error": status_run.stderr.strip() or "code %d" % status_run.returncode if status_run.returncode != 0 else "",
         "on_a_ref": refs.returncode == 0 and bool(refs.stdout.strip()),
         "changes": len(status) - len(ignored),
-        "other_ignored": [name for name in ignored if not BUILD_OUTPUTS.fullmatch(name)],
+        "other_ignored": [name for name in kept_ignored if not BUILD_OUTPUTS.fullmatch(name)],
         "marker": os.path.exists(os.path.join(path, KEEP_MARKER)),
         "used_by": users_of(path, running),
         "depended_by": dependents_of(path, old_set, dependents),
@@ -760,13 +783,14 @@ def self_test():
     assert dependents_of(plugin, True, {**names_it, stranger: {plugin + "\\host"}}) == ["MGE-XE-G7-x"]
     assert BUILD_OUTPUTS.fullmatch("dist/") and not BUILD_OUTPUTS.fullmatch("tools/dist/")
     # The trees at risk, from the facts of a tree: each cause alone, a lock or a standing checkout ends the list.
-    quiet = {**base, "target": "master", "unique_commits": 0, "uncommitted": [], "risky_ignored": [], "cites_path": False, "cited_runs": []}
+    quiet = {**base, "target": "master", "unique_commits": 0, "uncommitted": [], "risky_ignored": [], "local_json_differs": False, "cites_path": False, "cited_runs": []}
     assert risk_reasons(quiet) == []
     for change, word in [
         ({"unique_commits": 2}, "2 commits on no ref of master, no remote and no tag"),
         ({"unique_commits": None}, "could not say"),
         ({"uncommitted": ["a.py", "b.py"]}, "2 uncommitted or untracked files: a.py, b.py"),
         ({"risky_ignored": ["captures/"]}, "ignored files that no build makes: captures/"),
+        ({"local_json_differs": True}, "local.json differs from the main checkout's"),
         ({"cites_path": True}, "the records cite its path"),
         ({"cited_runs": ["20261104-010101-x"]}, "1 run folders that the records cite: 20261104-010101-x"),
         ({"status_error": "not a git repository"}, "git status failed"),
@@ -776,8 +800,8 @@ def self_test():
     assert len(risk_reasons({**quiet, "unique_commits": 1, "uncommitted": ["a"], "cited_runs": ["r"], "cites_path": True})) == 4
     for change in ({"locked": True}, {"main": True}, {"path": os.path.join(REPOS_ROOT, "MGE-XE-G7-train")}, {"path": "E:\\nirender-keep\\x"}):
         assert risk_reasons({**quiet, "unique_commits": 5, "uncommitted": ["a"], **change}) == [], change
-    assert uncommitted_beyond_output(["?? new.txt", " M a.py", "?? results/", "!! target/", "R  old.rs -> new.rs", '?? "a b.txt"', "?? tools/__pycache__/", "?? host/target/", "?? nirender.log.1", "?? sub/local.json"]) == ["new.txt", "a.py", "new.rs", "a b.txt"]
-    assert LEFTOVERS.fullmatch("local.json") and LEFTOVERS.fullmatch("nirender.log") and LEFTOVERS.fullmatch("nirender.log.12")
+    assert uncommitted_beyond_output(["?? new.txt", " M a.py", "?? results/", "!! target/", "R  old.rs -> new.rs", '?? "a b.txt"', "?? tools/__pycache__/", "?? host/target/", "?? nirender.log.1", "?? sub/local.json"]) == ["new.txt", "a.py", "new.rs", "a b.txt", "sub/local.json"]
+    assert LEFTOVERS.fullmatch("nirender.log") and LEFTOVERS.fullmatch("nirender.log.12") and not LEFTOVERS.fullmatch("local.json")
     assert not LEFTOVERS.fullmatch("nirender.log.old") and not LEFTOVERS.fullmatch("notes.json")
     assert 'worktree lock --reason "nirender-plugin-bc7: work' in lock_command({"branch": None, "path": "C:\\repos\\nirender-plugin-bc7"}, "C:\\repos\\r")
     assert lock_command({"branch": None, "path": "C:\\tmp\\shadowv\\nirender-plugin"}, "C:\\repos\\r") == 'git -C "C:\\repos\\r" worktree lock --reason "shadowv: work not kept elsewhere" "C:\\tmp\\shadowv\\nirender-plugin"'
@@ -942,7 +966,7 @@ def self_test():
         repository = os.path.join(temp, "repository")
         commit = ("-c", "user.name=test", "-c", "user.email=test@test", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "x")
         assert git(temp, "init", "-q", "-b", "master", repository).returncode == 0
-        open(os.path.join(repository, ".gitignore"), "w").write("target/\n")
+        open(os.path.join(repository, ".gitignore"), "w").write("target/\nlocal.json\n")
         git(repository, "add", ".gitignore")
         assert git(repository, *commit).returncode == 0
 
@@ -1056,6 +1080,32 @@ def self_test():
         assert "LOCKED (1), skipped by the tool" in text and "Ryker: a task of D98" in text and text.index("TREES AT RISK") < text.index("LOCKED (1)"), text
         # The tool skips a locked tree as before.
         assert decide({**base, **{"locked": True}}) == (False, "git holds it locked")
+
+        # The ignored local.json at the root: the main checkout's own, byte for byte, goes with the tree;
+        # another one keeps the tree and shows in the list of the trees at risk.
+        open(os.path.join(repository, LOCAL_JSON), "w").write('{"paths": "main"}')
+        same = worktree("same_paths")
+        open(os.path.join(same, LOCAL_JSON), "w").write('{"paths": "main"}')
+        row = facts(same, "same_paths")
+        assert row["other_ignored"] == [] and row["local_json_differs"] is False and decide(row) == (True, "merged"), (row["other_ignored"], decide(row))
+        assert risk_reasons(row) == []
+        other = worktree("own_paths")
+        open(os.path.join(other, LOCAL_JSON), "w").write('{"paths": "mine"}')
+        row = facts(other, "own_paths")
+        assert row["other_ignored"] == [LOCAL_JSON] and row["local_json_differs"] is True, row["other_ignored"]
+        assert not decide(row)[0] and "local.json" in decide(row)[1], decide(row)
+        assert risk_reasons(row) == ["local.json differs from the main checkout's"], risk_reasons(row)
+        # A main checkout with no local.json: the tree's differs.
+        os.remove(os.path.join(repository, LOCAL_JSON))
+        row = facts(same, "same_paths")
+        assert row["local_json_differs"] is True and not decide(row)[0]
+        # A local.json below the root is another ignored file, and keeps the tree.
+        open(os.path.join(repository, LOCAL_JSON), "w").write('{"paths": "main"}')
+        os.makedirs(os.path.join(same, "sub"))
+        open(os.path.join(same, "sub", LOCAL_JSON), "w").write('{"paths": "main"}')
+        row = facts(same, "same_paths")
+        assert row["other_ignored"] == ["sub/"] and not decide(row)[0], row["other_ignored"]
+        assert risk_reasons(row) == ["ignored files that no build makes: sub/"], risk_reasons(row)
     print("clean_merged_worktrees self-test: ok")
     return 0
 
