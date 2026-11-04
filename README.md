@@ -41,6 +41,15 @@ helper build. Build the plugin before `cargo xtask build` of that repo.
   of the main thread opens only for a proof that the caller is on it
   (`src/main_thread.rs`): the dispatch of a port gives the proof to a port declared with
   `rust_main`, and the Lua gate and the frame hook claim it.
+- The views (D82): each render of the engine that the table serves (a `NiCamera::Click`) is
+  a scene of a view, and each view has a slot (`src/view_slots.rs`); the helper keeps its
+  side in `host/src/engine/views.rs`. A mod asks for the parts of MGE XE in a view that it
+  draws itself with `mge.camera.setViewOptions` (`src/view_options.rs`); with
+  `intoTextures` the options are the camera's default for each texture it draws into (D93).
+- The count writes: the plugin locks the reference count writes of the engine's objects on
+  the property paths, and the Rust ports change counts atomically (`src/atomic_count.rs`,
+  risk 56). The plugin's log names them: `atomic count: N of N sites locked (...)`; when the
+  bytes of a site are not the game's, all sites are refused and the line says so.
 - The comparison rig (the cargo feature `rig`, not in a player's build): a port can also
   run in the mode shadow, which runs the Rust and the engine function both and compares
   them call by call (`src/shadow.rs`), and the frame comparison compares the device calls
