@@ -32,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 from ctypes import wintypes
 
 # The modules of this folder, also under `python -I` (checks.py runs the self-test so).
@@ -141,6 +142,34 @@ def read_text(path):
             return f.read()
     except (OSError, UnicodeDecodeError):
         return None
+
+
+def run_settings(args):
+    """The --set lines of the run: the lines of the command, and the line that --engine-reference adds."""
+    return list(args.set) + (["[runtime] disabled = true"] if args.engine_reference else [])
+
+
+def config_problem(args, root):
+    """The fault of the run's mgeXE.toml that the start would stop on, as one line, or None:
+    the same edit as the start, on the text in memory (the file of the instance is not
+    written)."""
+    source = os.path.join(root, "mods", args.config_mod, "Root", "mgeXE.toml")
+    text = read_text(source)
+    if text is None:
+        return "no readable mgeXE.toml at %s (--config-mod %s)" % (source, args.config_mod)
+    try:
+        session.run_toml_lines(text, run_settings(args), source, wgpu_switch(args))
+    except SystemExit as refusal:
+        return str(refusal)
+    return None
+
+
+def wgpu_switch(args):
+    """The value of renderer_wgpu that the run writes: False for a reference run (or an engine
+    reference), True for a run with an MGE XE build, else None."""
+    if args.reference or args.engine_reference:
+        return False
+    return True if args.mge_build else None
 
 
 # A batch that walks for `NIRENDER_WALK_MINUTES` (the land walks of wgpu-scene-audit), with
@@ -864,6 +893,85 @@ def self_test_checks():
             session.REPO = saved
 
 
+TEST_TOML = '[runtime]\nrenderer_wgpu = true\nvsync = "default"\n\n[distant_land]\nenabled = true\nfar = 5\n\n[statics] # the statics\nenabled = false\n'
+
+
+def self_test_run_toml():
+    """The lines of the run's mgeXE.toml: the --set forms, a section that the file lacks, and the faults."""
+    def lines_of(settings, wgpu=None, text=TEST_TOML):
+        return session.run_toml_lines(text, settings, "test.toml", wgpu)
+
+    base = lines_of([])
+    assert 'vsync = "immediate"' in base and "renderer_wgpu = true" not in base, base
+    # A key in its section is replaced, in that section only (`enabled` is in two sections).
+    changed = lines_of(["[statics] enabled = true"])
+    assert changed[changed.index("[statics] # the statics") + 1] == "enabled = true", changed
+    assert changed[changed.index("[distant_land]") + 1] == "enabled = true" and changed.count("enabled = true") == 2, changed
+    # A key that the section lacks goes at the end of the section, before the blank line of the next one.
+    added = lines_of(["[distant_land] near = 1"])
+    assert added[added.index("far = 5") + 1] == "near = 1" and added[added.index("near = 1") + 1] == "", added
+    # A section that the file lacks is made at the end, once, for the keys of one section.
+    made = lines_of(["[views] full_tier_max = 4", "[views] other = 2"])
+    assert made[-4:] == ["", "[views]", "full_tier_max = 4", "other = 2"], made
+    assert made[:len(base)] == base, made
+    no_end = lines_of(["[views] full_tier_max = 4"], text=TEST_TOML.rstrip("\n") + "\n\n\n")
+    assert no_end[-4:] == ["enabled = false", "", "[views]", "full_tier_max = 4"], no_end
+    # A key with no section is replaced where it is.
+    kept = lines_of(['vsync = "default"'])
+    assert 'vsync = "default"' in kept and 'vsync = "immediate"' not in kept, kept
+    assert "far = 9" in lines_of(["far = 9"]) and "far = 5" not in lines_of(["far = 9"])
+    # The switch goes first in [runtime], as the value of the mode.
+    assert lines_of([], True)[:2] == ["[runtime]", "renderer_wgpu = true"], lines_of([], True)
+    assert lines_of([], False)[:2] == ["[runtime]", "renderer_wgpu = false"]
+    assert lines_of([], None)[:2] == ["[runtime]", 'vsync = "immediate"']
+    # A header with a comment or spaces is the section: no second table of the name. This is the
+    # whole file of the run, and it must be a toml.
+    for header in ("[statics] # x", "[statics]# x", "  [ statics ]  ", "[statics]"):
+        text = TEST_TOML.replace("[statics] # the statics", header)
+        edited = lines_of(["[statics] enabled = true", "[statics] near = 2"], text=text)
+        assert sum(1 for line in edited if line.strip().startswith("[") and "statics" in line) == 1, (header, edited)
+        assert tomllib.loads("\n".join(edited))["statics"] == {"enabled": True, "near": 2}, (header, edited)
+    # A line of an array is no header: the key goes after the array, and the file is a toml.
+    arrays = TEST_TOML + 'values = [\n  [1, 2]\n]\n'
+    edited = lines_of(["[statics] near = 3"], text=arrays)
+    assert edited[-1] == "near = 3" and tomllib.loads("\n".join(edited))["statics"]["near"] == 3, edited
+    # An edit that makes the file invalid is a fault of the edit; a file that was not a toml is not refused for it.
+    try:
+        lines_of(["[distant_land] far = ["])
+    except SystemExit as refusal:
+        assert "is not a toml" in str(refusal) and "test.toml" in str(refusal), refusal
+    else:
+        raise AssertionError("an edit that makes the file invalid was taken")
+    assert lines_of([], text=TEST_TOML + "garbage ((\n")
+    # The faults.
+    for settings, words in ((["no_such_key = 1"], "give its section, [section] no_such_key = 1"),
+                            (["views.full_tier_max = 4"], "give its section, [views] full_tier_max = 4"),
+                            (["x = 1.5"], "give its section, [section] x = 1.5"),
+                            (["[views full_tier_max = 4"], "a section is written"),
+                            (["[views]"], "--set takes key = value"),
+                            (["just_a_word"], "--set takes key = value")):
+        try:
+            lines_of(settings)
+        except SystemExit as refusal:
+            assert words in str(refusal), (settings, refusal)
+        else:
+            raise AssertionError("--set %s was taken" % settings)
+    try:
+        lines_of([], text="[distant_land]\nenabled = true\n")
+    except SystemExit as refusal:
+        assert "no section [runtime] in test.toml" in str(refusal), refusal
+    else:
+        raise AssertionError("a toml with no [runtime] was taken")
+    # --engine-reference adds its line, and the reference switch is off for it.
+    args = argparse.Namespace(set=["a = 1"], engine_reference=True, reference=False, mge_build=None)
+    assert run_settings(args) == ["a = 1", "[runtime] disabled = true"] and args.set == ["a = 1"]
+    assert wgpu_switch(args) is False
+    args = argparse.Namespace(set=[], engine_reference=False, reference=False, mge_build="E:/b")
+    assert run_settings(args) == [] and wgpu_switch(args) is True
+    args.mge_build = None
+    assert wgpu_switch(args) is None
+
+
 def self_test_check_command():
     """`--check` through main, in a process of its own, against an instance made for the test:
     a fault of the arguments, a missing save and the plugin in the overwrite folder each refuse
@@ -873,6 +981,11 @@ def self_test_check_command():
         game = os.path.join(instance, "game")
         os.makedirs(os.path.join(game, "Saves"))
         os.makedirs(os.path.join(instance, "profiles", "Default"))
+        # The mgeXE.toml of the instance's configuration mod: it has no [views] section.
+        config = os.path.join(instance, "mods", "Configuration", "Root")
+        os.makedirs(config)
+        with open(os.path.join(config, "mgeXE.toml"), "w", encoding="utf-8") as fh:
+            fh.write(TEST_TOML)
 
         def check(*extra):
             command = [sys.executable, "-I", os.path.abspath(__file__), "--check", "--instance", instance, "--game-dir", game,
@@ -890,6 +1003,18 @@ def self_test_check_command():
         assert code == 0 and "--full-dump: a crash of the run writes a dump of about " + FULL_DUMP_SIZE in text, text
         code, text = check("--weather", "10")
         assert code != 0 and "--weather" in text, text
+        # --set against the toml of the instance: a section that it lacks is made, and a key with no
+        # section that it lacks is a fault, as in the start.
+        code, text = check("--set", "[views] full_tier_max = 4")
+        assert code == 0, text
+        code, text = check("--set", "views.full_tier_max = 4")
+        assert code != 0 and "no line with the key views.full_tier_max" in text and "[views] full_tier_max = 4" in text, text
+        code, text = check("--set", "[statics] enabled = true")
+        assert code == 0, text
+        code, text = check("--set", "[distant_land] far = [")
+        assert code != 0 and "is not a toml" in text, text
+        code, text = check("--set", "no_such_key = 1")
+        assert code != 0 and "no line with the key no_such_key" in text and "[section] no_such_key = 1" in text, text
         code, text = check("--reference")
         assert code == 0, text
         plugin = os.path.join(instance, "overwrite", session.harness.PLUGIN_FILE)
@@ -1430,6 +1555,7 @@ def self_test():
     self_test_ring_problem()
     self_test_weather()
     self_test_checks()
+    self_test_run_toml()
     self_test_check_command()
     self_test_enable()
     self_test_setup()
@@ -1560,7 +1686,9 @@ def main():
                     "variable = value } }: the step `shaders` takes one picture for each set (sh-<name>), with one start of the game")
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for the run, key = value: the line with "
                     "that key is replaced (for example \"expanded_light_limit = true\"); with a section first, "
-                    "\"[distant_land] key = value\", a key the file does not have goes at the end of that section")
+                    "\"[distant_land] key = value\", a key the file does not have goes at the end of that section, and a "
+                    "section the file does not have is added at the end of the run's copy (the instance's file is not changed); "
+                    "--check tests each line against the file")
     ap.add_argument("--tour-cells", help="the cells of a test level for the step tour, with semicolons (the NIF test level: "
                     "\"@nifTest_1;@nifTest_2;@nifTest_3\")")
     ap.add_argument("--tour", default="@nif_", help="the start of the ids of the objects of the tour")
@@ -1624,6 +1752,8 @@ def main():
         enable_faults, enable_notes = enable_problems(args, session.harness.MO2_ROOT, session.harness.GAME_DIR, read_profile_ini())
         if not problem and enable_faults:
             problem = "the command has faults; nothing started:\n  " + "\n  ".join(enable_faults)
+        if not problem:
+            problem = config_problem(args, session.harness.MO2_ROOT)
         if problem:
             raise SystemExit("run_own_device: " + problem)
         print("run_own_device: the arguments are good; nothing started (--check)")
@@ -1636,7 +1766,6 @@ def main():
         return 0
     if args.engine_reference:
         args.reference = True
-        args.set.append("[runtime] disabled = true")
     # A reference run has no code of the plugin in the game, unless --reference-plugin.
     no_plugin = args.reference and not args.reference_plugin
     # The game is started from this process: its variables go into the game's environment.
@@ -1708,37 +1837,7 @@ def main():
     # modes compare; with the switch for the wgpu renderer when the run is with it.
     toml = os.path.join(session.harness.MO2_ROOT, "mods", args.config_mod, "Root", "mgeXE.toml")
     text = open(toml, encoding="utf-8").read()
-    assert "[runtime]" in text, toml
-    lines = [line for line in text.splitlines() if not line.strip().startswith("renderer_wgpu")]
-    lines = ['vsync = "immediate"' if line.strip().startswith("vsync") else line for line in lines]
-    for setting in args.set:
-        section = None
-        if setting.startswith("["):
-            section, setting = setting[1:].split("]", 1)
-            setting = setting.strip()
-        key = setting.split("=")[0].strip()
-        if section is not None:
-            # In its section only: a key such as `enabled` is in several sections.
-            assert "[%s]" % section in lines, "no section [%s] in %s" % (section, toml)
-            start = lines.index("[%s]" % section) + 1
-            end = next((i for i in range(start, len(lines)) if lines[i].startswith("[")), len(lines))
-            at = next((i for i in range(start, end) if lines[i].split("=")[0].strip() == key), None)
-            if at is not None:
-                lines[at] = setting
-            else:
-                while end > start and not lines[end - 1].strip():
-                    end -= 1
-                lines.insert(end, setting)
-        elif any(line.split("=")[0].strip() == key for line in lines):
-            lines = [setting if line.split("=")[0].strip() == key else line for line in lines]
-        else:
-            raise SystemExit("no line with the key %s in %s: give its section, [section] %s" % (key, toml, setting))
-    # The switch is written for each mode: the default of MGE XE is on, and a reference run is
-    # MGE XE on Direct3D 9.
-    if args.reference:
-        lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = false")
-    elif args.mge_build:
-        lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = true")
+    lines = session.run_toml_lines(text, run_settings(args), toml, wgpu_switch(args))
     switched = run.path("mgeXE.toml")
     open(switched, "w", encoding="utf-8").write("".join(line + chr(10) for line in lines))
     # The files of the run are in mods of the harness, on for the run over the mods of the

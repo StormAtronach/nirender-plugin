@@ -137,6 +137,13 @@ def self_test():
     harness.MWSE_LOGS = 7
     report_close(None, time.time())
     harness.MWSE_LOGS = harness_logs
+    # The toml of a game: the vsync of the instance stays, a section that the file lacks is made, and a new key
+    # goes to the end of its section.
+    text = '[runtime]\nrenderer_wgpu = false\nvsync = "default"\n\n[distant_land]\nfar = 5\n\n[statics]\nenabled = false\n'
+    lines = session.run_toml_lines(text, ["[views] full_tier_max = 4", "[distant_land] near = 1"], "test.toml", True, vsync_immediate=False)
+    assert lines[:3] == ["[runtime]", "renderer_wgpu = true", 'vsync = "default"'], lines
+    assert lines[lines.index("far = 5") + 1] == "near = 1", lines
+    assert lines[-3:] == ["", "[views]", "full_tier_max = 4"], lines
     print("play self-test: ok")
 
 
@@ -145,7 +152,7 @@ def main():
     ap.add_argument("--mge-build", default=MGE_BUILD, help="the folder with d3d8.dll and numidium.exe of the build")
     ap.add_argument("--config-mod", default="Configuration", help="the mod of the testing instance with mgeXE.toml")
     ap.add_argument("--reference", action="store_true", help="MGE XE of the instance on Direct3D 9")
-    ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for this game, in its section: \"[section] key = value\"")
+    ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for this game, in its section: \"[section] key = value\"; a section the file lacks is added at the end of this game's copy")
     ap.add_argument("--plugin", action="store_true", help="the plugin build of this repo, over the release of the instance")
     ap.add_argument("--livecoding", help="a Lua file to run as the livecoding.lua of the Livecoding mod (Alt+X)")
     ap.add_argument("--instance", help="the folder of another Mod Organizer instance to play in, and not the testing instance")
@@ -160,23 +167,11 @@ def main():
 
     if args.instance:
         session.use_instance(args.instance, args.game_dir, args.profile)
-    harness.refuse_if_busy()
     toml = os.path.join(harness.MO2_ROOT, "mods", args.config_mod, "Root", "mgeXE.toml")
-    lines = [line for line in open(toml, encoding="utf-8").read().splitlines() if not line.strip().startswith("renderer_wgpu")]
-    assert "[runtime]" in lines, toml
-    for setting in args.set:
-        section, setting = setting[1:].split("]", 1)
-        setting = setting.strip()
-        key = setting.split("=")[0].strip()
-        start = lines.index("[%s]" % section) + 1
-        end = next((i for i in range(start, len(lines)) if lines[i].startswith("[")), len(lines))
-        at = next((i for i in range(start, end) if lines[i].split("=")[0].strip() == key), None)
-        if at is None:
-            lines.insert(start, setting)
-        else:
-            lines[at] = setting
-    # The switch is written for each mode: the default of MGE XE is on.
-    lines.insert(lines.index("[runtime]") + 1, "renderer_wgpu = %s" % ("false" if args.reference else "true"))
+    # The lines of this game's mgeXE.toml, as the runner makes them but with the instance's vsync:
+    # a fault of --set stops here, before the busy check and before anything is staged.
+    lines = session.run_toml_lines(open(toml, encoding="utf-8").read(), args.set, toml, not args.reference, vsync_immediate=False)
+    harness.refuse_if_busy()
     switched = os.path.join(tempfile.mkdtemp(prefix="nirender-play-"), "mgeXE.toml")
     open(switched, "w", encoding="utf-8").write("".join(line + chr(10) for line in lines))
 
