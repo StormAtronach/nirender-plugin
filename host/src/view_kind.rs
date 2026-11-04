@@ -119,6 +119,21 @@ impl Additions {
         Additions(self.0 | other.0)
     }
 
+    /// The parts of the full tier that a view of its own gets drawn today: the distant land
+    /// and the distant statics (stage 3b, slice 1). The other granted parts stay unused until
+    /// their slices come.
+    ///
+    /// Open item of stage 3b: the shadows. A view of its own gets no shadow in this slice:
+    /// the options (`ViewPart` of MGEApi) have no bit for them, and the shaders of the land and
+    /// the statics in the view group have no shadow map binding. The shadow overlay is a part
+    /// of the main view ([`Additions::SHADOW_CAST`], [`Additions::SHADOW_RECEIVE`]).
+    pub const TIER_DRAWN: Additions = Additions::LAND.with(Additions::STATICS);
+
+    /// The parts that are in both sets.
+    pub const fn intersect(self, other: Additions) -> Additions {
+        Additions(self.0 & other.0)
+    }
+
     /// Every part of `other` is in this set.
     pub const fn contains(self, other: Additions) -> bool {
         self.0 & other.0 == other.0
@@ -141,6 +156,34 @@ pub struct ViewKey {
 impl ViewKey {
     /// The main view of a frame.
     pub const MAIN: ViewKey = ViewKey { slot: 0, kind: ViewKind::Main };
+
+    /// The key of a view of its own from the plugin's view slot of its scene (0 to 31). Slot 0
+    /// is the main view's, so the key counts from 1; a scene without a slot (an older plugin)
+    /// has no options, so it gets no parts and its key is not used.
+    pub fn of_view(view_slot: Option<u32>, kind: ViewKind) -> ViewKey {
+        ViewKey { slot: view_slot.map_or(0, |slot| slot + 1), kind }
+    }
+}
+
+/// The parts of the full tier that the extension draws in a scene of a view of its own
+/// ([`Additions::TIER_DRAWN`] of its additions). The main view has none: its parts come from
+/// the calls of the frame.
+pub(crate) fn tier_parts(kind: ViewKind, additions: Additions) -> Additions {
+    if kind == ViewKind::Main {
+        Additions::NONE
+    } else {
+        additions.intersect(Additions::TIER_DRAWN)
+    }
+}
+
+/// The samples for each pixel of the pass of a scene: a rendered texture has one sample, the
+/// back buffer the count of the frame.
+pub(crate) fn pass_samples(in_texture: bool, frame_samples: u32) -> u32 {
+    if in_texture {
+        1
+    } else {
+        frame_samples
+    }
 }
 
 #[cfg(test)]
@@ -173,6 +216,36 @@ mod tests {
         assert!(ViewKind::Picture.additions(true).is_empty());
         // After the interface scene the kind Main keeps its parts: a frame has one main view.
         assert_eq!(ViewKind::Main.additions(true), Additions::ALL);
+    }
+
+    /// A picture with options draws the land and the statics in its own view; the other granted
+    /// parts wait for their slices, and the main view has none from this path.
+    #[test]
+    fn a_view_of_its_own_draws_the_land_and_the_statics_only() {
+        let granted = Additions::from_option_parts(0b111111);
+        assert_eq!(tier_parts(ViewKind::Picture, granted), Additions::LAND.with(Additions::STATICS));
+        assert_eq!(tier_parts(ViewKind::Picture, Additions::from_option_parts(0b100)), Additions::NONE);
+        assert_eq!(tier_parts(ViewKind::Picture, Additions::NONE), Additions::NONE);
+        assert_eq!(tier_parts(ViewKind::Main, Additions::ALL), Additions::NONE);
+        assert_eq!(tier_parts(ViewKind::OtherScreen, Additions::LAND), Additions::LAND);
+    }
+
+    /// The key of a view of its own is not the main view's, and the slots stay apart.
+    #[test]
+    fn a_view_of_its_own_has_a_key_of_its_own() {
+        let first = ViewKey::of_view(Some(0), ViewKind::Picture);
+        assert_eq!(first, ViewKey { slot: 1, kind: ViewKind::Picture });
+        assert_ne!(first, ViewKey::MAIN);
+        assert_ne!(ViewKey::of_view(Some(1), ViewKind::Picture), first);
+        assert_ne!(ViewKey::of_view(Some(0), ViewKind::OtherScreen), first);
+    }
+
+    /// A picture's pass has one sample whatever the frame has; the back buffer keeps the frame's.
+    #[test]
+    fn a_texture_pass_has_one_sample() {
+        assert_eq!(pass_samples(true, 4), 1);
+        assert_eq!(pass_samples(false, 4), 4);
+        assert_eq!(pass_samples(false, 1), 1);
     }
 
     #[test]

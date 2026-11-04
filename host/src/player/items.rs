@@ -139,7 +139,7 @@ impl Player {
                 Item::Replace(..) => Some("a class of draws (extension: water)"),
                 Item::HeldHere(..) => Some("a held draw in place (extension)"),
                 Item::Target(_) | Item::Clear(..) | Item::Viewport(_) => group.as_ref().map(|(name, _)| *name),
-                Item::WorldStart(_) | Item::WorldEnd(_) | Item::Post(_) | Item::FirstPersonDepth(_) => None,
+                Item::WorldStart(_) | Item::TierStart(..) | Item::WorldEnd(_) | Item::Post(_) | Item::FirstPersonDepth(_) => None,
             };
             if group.as_ref().map(|(name, _)| *name) != label {
                 if let Some((_, at)) = group.take() {
@@ -172,6 +172,7 @@ impl Player {
                         Item::Viewport(_) => "viewport",
                         Item::Screen(_) => "screen",
                         Item::WorldStart(_) => "world-start",
+                        Item::TierStart(..) => "tier-start",
                         Item::MainView(_) => "main-view",
                         Item::WorldEnd(_) => "world-end",
                         Item::SortedBlends(_) => "sorted-blends",
@@ -213,6 +214,7 @@ impl Player {
                     self.renderer.counts.screen_draws += 1;
                 }
                 Item::WorldStart(facts) => self.start_world(&facts),
+                Item::TierStart(facts, parts) => self.start_tier_view(&facts, parts),
                 Item::MainView(facts) => self.timed(MAIN_VIEW_OPAQUE, 0, |player| player.draw_retained_main(&facts)),
                 Item::WorldEnd(facts) => self.end_world(&facts),
                 Item::SortedBlends(generation) => {
@@ -516,6 +518,49 @@ impl Player {
             let part = self.part_begin(MAIN_VIEW_OPAQUE);
             self.timed(MAIN_VIEW_OPAQUE, 0, |player| player.draw_retained_main(facts));
             self.part_end(part);
+        }
+    }
+
+    /// Gives the extension its call at the start of the world of a view of its own, with the
+    /// parts of the full tier that the view has. See [`Extension::view_before_world`]. The pass
+    /// is the one of the view's target; the depth is cleared after the call when the extension
+    /// drew, as at the start of the main view's world.
+    pub(crate) fn start_tier_view(&mut self, facts: &WorldFacts, parts: Additions) {
+        let Some(mut extension) = self.extension.take() else { return };
+        let (device, queue, format) = (self.renderer.device.clone(), self.renderer.queue.clone(), self.renderer.target_format);
+        let commands = self.renderer.commands.clone();
+        let scene = facts.view(&device, &queue, &commands, format);
+        // One name for each view: its kind and its slot, so that its GPU span and its CPU time
+        // (`view_times`) say whose cost they are.
+        let name = stamps::name(&format!("extension: the full tier in {} view {} (distant land, distant statics)", facts.view_key.kind.name(), facts.view_key.slot));
+        let part = self.part_begin(name);
+        self.begin_pass();
+        let clear_depth = match self.pass.as_mut() {
+            Some(pass) => {
+                let world = std::mem::take(&mut self.world_draws);
+                let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
+                let clock = ticks::Clock::now();
+                pass.push_debug_group("extension: before the world of a view of its own");
+                let clear_depth = extension.view_before_world(&scene, parts, pass, &mut replayer);
+                pass.pop_debug_group();
+                let elapsed = clock.elapsed();
+                self.renderer.counts.times[TIME_EXT_TIER] += elapsed;
+                self.renderer.counts.view_times.add(name, elapsed, 0);
+                self.world_draws = world;
+                self.renderer.counts.tier_views += 1;
+                clear_depth
+            }
+            None => {
+                self.renderer.counts.tier_unserved += 1;
+                false
+            }
+        };
+        self.part_end(part);
+        self.extension = Some(extension);
+        if clear_depth {
+            self.renderer.counts.tier_drew += 1;
+            let clear = (!depth::one_buffer()).then(|| depth::clear(1.0));
+            self.open_pass(crate::gpu::PassReason::WorldStart, None, clear, None);
         }
     }
 

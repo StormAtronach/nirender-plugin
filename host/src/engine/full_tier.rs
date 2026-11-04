@@ -132,7 +132,7 @@ impl FullTier {
     pub(crate) fn line(&self) -> String {
         let c = &self.counts;
         format!(
-            "full tier: {} places of at most {}; {} option events set parts, {} cleared them; {} scenes of a view got their parts, {} got none; {} places passed to a waiting view",
+            "full tier: {} places of at most {}; {} option events set parts, {} cleared them; {} scenes of a view got their parts, {} were refused by the bound (views.full_tier_max); {} places passed to a waiting view",
             self.holding(),
             self.max,
             c.set,
