@@ -55,6 +55,9 @@ fn follows_change(func: &crate::gen::funcs::Func, live: &[u8], offset: usize, le
 pub unsafe fn census(hooked: bool) -> usize {
     let mut changed: Vec<usize> = Vec::new();
     for change in &census::changes() {
+        if crate::atomic_count::covers(change.func.ea + change.offset, change.len) {
+            continue;
+        }
         let port = ports::all().find(|p| p.addr == change.func.ea);
         if hooked && change.offset < 16 && port.map_or(false, |p| p.installed()) {
             continue;
@@ -184,6 +187,7 @@ pub unsafe fn install() -> Result<String, String> {
     // The shapes the engine destroys on another thread.
     crate::worker_events::install();
     crate::freed_fill::install();
+    crate::atomic_count::install();
 
     let mut failed = 0;
     // A port left uninstalled to measure its own cost (`NIRENDER_SKIP_PORT=<name>`). Only a

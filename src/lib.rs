@@ -49,6 +49,7 @@ pub mod main_thread;
 pub mod census;
 pub mod d3d;
 pub mod freed_fill;
+pub mod atomic_count;
 pub mod worker_events;
 pub mod world_lights;
 pub mod device;

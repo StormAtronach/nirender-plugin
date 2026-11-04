@@ -19,7 +19,12 @@ pub fn find(ea: usize) -> Option<&'static Func> {
     FUNCS.binary_search_by_key(&ea, |f| f.ea).ok().map(|i| &FUNCS[i])
 }
 
-unsafe fn arena_alloc(bytes: &[u8]) -> Option<usize> {
+/// Copies `bytes` into executable memory of the plugin's arena; returns their address.
+///
+/// # Safety
+///
+/// One thread at a time calls it (the install).
+pub(crate) unsafe fn arena_alloc(bytes: &[u8]) -> Option<usize> {
     let mut base = ARENA.load(Ordering::Relaxed);
     if base == 0 {
         base = win::VirtualAlloc(core::ptr::null_mut(), ARENA_SIZE, win::MEM_COMMIT_RESERVE, win::PAGE_EXECUTE_READWRITE) as usize;
