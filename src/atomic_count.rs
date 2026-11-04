@@ -1,4 +1,5 @@
-//! The count writes of `NiRefObject` on the property paths are locked writes (risk 56).
+//! Locked count writes of `NiRefObject` (risk 56): the increments and the `NiPointer` releases
+//! that the ledger saw on the property paths, and `NiObject::release`.
 //!
 //! The main thread and the cell loader thread (`game_threadLoadCells`) both run
 //! `NiPropertyState::reset`, `NiPropertyState::ctor_copy`, `NiPointer::set`, `NiPointer::dtor`
@@ -6,7 +7,8 @@
 //! `inc` or `dec`, and the two threads write the count of a shared property in the same
 //! microseconds. A lost change makes the count lower than the number of holders: the property
 //! is freed while holders remain, and their releases at exit damage the heap. This module puts
-//! a `lock` on each of these writes.
+//! a `lock` on each of these writes. `NiObject::release` (0x404630) is the same release as
+//! `NiPointer::dtor`, and `NiPropertyState::reset` calls it for 7 of its slots.
 //!
 //! Each site is 5 bytes of one of two forms, and the 5 bytes become a jump to a stub:
 //! - `jz +3; inc dword [r+4]` (74 03 FF modrm 04): the stub is
@@ -27,7 +29,7 @@ struct Site {
     slot: &'static str,
 }
 
-const SITES: [Site; 18] = [
+const SITES: [Site; 19] = [
     Site { at: 0x6FE39F, function: "NiPropertyState::reset", slot: "default alpha" },
     Site { at: 0x6FE3BF, function: "NiPropertyState::reset", slot: "default fog" },
     Site { at: 0x6FE3DF, function: "NiPropertyState::reset", slot: "default material" },
@@ -41,6 +43,7 @@ const SITES: [Site; 18] = [
     Site { at: 0x471B25, function: "NiPointer::set", slot: "the new object" },
     Site { at: 0x471B12, function: "NiPointer::set", slot: "the old object (release)" },
     Site { at: 0x40A886, function: "NiPointer::dtor", slot: "the object (release)" },
+    Site { at: 0x404630, function: "NiObject::release", slot: "the object (release)" },
     Site { at: 0x6EB230, function: "NiAVObject::PushLocalProperties", slot: "the parent state" },
     Site { at: 0x6EB333, function: "NiAVObject::PushLocalProperties", slot: "the new state" },
     Site { at: 0x6C8D82, function: "NiNode::UpdateProperties", slot: "the state" },
@@ -118,7 +121,7 @@ pub unsafe fn install() {
         locked += 1;
     }
     INSTALLED.store(locked > 0, Ordering::Relaxed);
-    crate::log!("atomic count: {locked} of {} sites locked (NiPropertyState, NiPointer and the property updates)", SITES.len());
+    crate::log!("atomic count: {locked} of {} sites locked (NiPropertyState, NiPointer, NiObject::release and the property updates)", SITES.len());
 }
 
 /// True when the run of `len` bytes at `ea` is inside one of the sites' 5 bytes, once they are
@@ -149,6 +152,15 @@ mod tests {
         assert_eq!(code[10], 0xE9);
         let back = (0x2000 + 15usize).wrapping_add(u32::from_le_bytes(code[11..15].try_into().unwrap()) as usize);
         assert_eq!(back, 0x40A88B);
+    }
+
+    #[test]
+    fn the_stub_of_object_release_keeps_both_ways_of_its_jnz() {
+        let code = stub_code(0x404630, &[0xFF, 0x49, 0x04, 0x75, 0x0A], 0x3000).unwrap();
+        let taken = (0x3000 + 10usize).wrapping_add(u32::from_le_bytes(code[6..10].try_into().unwrap()) as usize);
+        assert_eq!(taken, 0x40463F);
+        let back = (0x3000 + 15usize).wrapping_add(u32::from_le_bytes(code[11..15].try_into().unwrap()) as usize);
+        assert_eq!(back, 0x404635);
     }
 
     #[test]
