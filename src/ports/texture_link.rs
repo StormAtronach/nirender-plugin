@@ -292,7 +292,7 @@ pub unsafe fn read_for_file(texture: usize, data: usize, write: impl FnOnce(&Tex
     if pixel_data == 0 {
         return Err(FileLacks::NotRead);
     }
-    wr(pixel_data, REF_COUNT, rd::<u32>(pixel_data, REF_COUNT).wrapping_add(1));
+    ni::add_reference(pixel_data);
     let mut held = pixel_data;
 
     let renderer: usize = rd(data, SD::renderer);
@@ -303,7 +303,7 @@ pub unsafe fn read_for_file(texture: usize, data: usize, write: impl FnOnce(&Tex
         format = rd(renderer, R::defaultTextureFormats);
         ni::release(held);
         held = pixel_data;
-        wr(pixel_data, REF_COUNT, rd::<u32>(pixel_data, REF_COUNT).wrapping_add(1));
+        ni::add_reference(pixel_data);
     }
     // Only pixels read here may be the converter's destination.
     let destination = if filename != 0 && pixel_data != rd::<usize>(renderer, R::defaultTexturePixelData) { pixel_data } else { 0 };
@@ -386,7 +386,7 @@ pub unsafe fn create(t: &MainThread, texture: usize, renderer: usize) -> usize {
     // The pixel data that this function holds a reference to.
     let mut held = pixel_data;
     if pixel_data != 0 {
-        wr(pixel_data, REF_COUNT, rd::<u32>(pixel_data, REF_COUNT).wrapping_add(1));
+        ni::add_reference(pixel_data);
     }
     let mut format = fitting_format(this, pixel_data, prefs, renderer);
     if format == 0 {
@@ -398,7 +398,7 @@ pub unsafe fn create(t: &MainThread, texture: usize, renderer: usize) -> usize {
             }
             held = pixel_data;
             if pixel_data != 0 {
-                wr(pixel_data, REF_COUNT, rd::<u32>(pixel_data, REF_COUNT).wrapping_add(1));
+                ni::add_reference(pixel_data);
             }
         }
         format = rd(renderer, R::defaultTextureFormats);
@@ -437,7 +437,7 @@ pub unsafe fn create(t: &MainThread, texture: usize, renderer: usize) -> usize {
                     ni::release(current);
                 }
                 wr(this, SD::palette, palette);
-                wr(palette, REF_COUNT, rd::<u32>(palette, REF_COUNT).wrapping_add(1));
+                ni::add_reference(palette);
             }
         }
         wr(this, SD::formattedSize, size);

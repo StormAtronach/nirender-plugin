@@ -916,7 +916,7 @@ pub unsafe fn source_cube_map_data_create(texture: usize, renderer: usize) -> us
             }
             sources[face] = pixel_data;
             if pixel_data != 0 {
-                wr(pixel_data, NiRefObject::refCount, rd::<u32>(pixel_data, NiRefObject::refCount).wrapping_add(1));
+                ni::add_reference(pixel_data);
             }
         }
         let source = sources[face];
@@ -1146,13 +1146,8 @@ pub unsafe fn source_cube_map_data_update(this: usize) {
         }
         if converted != 0 {
             // A local NiPointer: one reference more, then one less.
-            let count = rd::<u32>(converted, NiRefObject::refCount).wrapping_add(1);
-            wr(converted, NiRefObject::refCount, count);
-            let count = count.wrapping_sub(1);
-            wr(converted, NiRefObject::refCount, count);
-            if count == 0 {
-                ni::delete_object(converted);
-            }
+            ni::add_reference(converted);
+            ni::release(converted);
         }
     }
 }

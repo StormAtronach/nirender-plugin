@@ -1216,7 +1216,7 @@ pub unsafe fn compile_vertex_shader(this: usize, shader_function: u32, shader_us
     }
     let mut entry: usize = rd(rd::<usize>(entries, ARRAY_STORAGE), index as usize * 4);
     if entry != 0 {
-        wr(entry, 4, rd::<u32>(entry, 4).wrapping_add(1));
+        ni::add_reference(entry);
     }
     if entry == 0 {
         let block = eng::operator_new(SHADER_ENTRY_SIZE);
@@ -1245,7 +1245,7 @@ pub unsafe fn compile_vertex_shader(this: usize, shader_function: u32, shader_us
             ni::release_if_set(entry);
             entry = block;
             if block != 0 {
-                wr(block, 4, rd::<u32>(block, 4).wrapping_add(1));
+                ni::add_reference(block);
             }
         }
     }
