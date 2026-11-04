@@ -1232,6 +1232,16 @@ pub(crate) fn view_walk_marked(stream_marks_walk: bool, world_scene: bool) -> bo
     stream_marks_walk && world_scene
 }
 
+/// A draw of the game is a draw of the scene's world that reaches the target before the world
+/// of the scene begins ([`Player::note_early_world_draws`]): not the sky, after a draw of the sky
+/// or with the sky hidden, not held for the world's start (`held`), the world not begun, and not
+/// the draw that begins it ([`view_world_begins`]). `world_scene`: the scene is a view of its own
+/// or the world scene of the back buffer; `extension`: the extension draws the parts that the
+/// world's start orders.
+pub(crate) fn world_draw_is_early(extension: bool, world_scene: bool, held: bool, sky: bool, sky_hidden: bool, walk_marked: bool, sky_seen: bool, world_begun: bool) -> bool {
+    extension && world_scene && !held && !world_begun && (sky_seen || sky_hidden) && !sky && !view_world_begins(sky, sky_hidden, walk_marked, sky_seen)
+}
+
 /// A place begins the world of a view of its own when its instance is not of the sky: the
 /// engine walks the sky root first, and the sky's instances have places too. `class` is the
 /// class of the instance's record; a place of an instance with no record begins nothing.
@@ -3115,6 +3125,27 @@ mod view_bit_tests {
         // A stream without the event: the draw rule in every scene.
         assert!(!view_walk_marked(false, true));
         assert!(!view_walk_marked(false, false));
+    }
+
+    #[test]
+    fn a_draw_of_the_world_before_the_walk_event_is_early() {
+        // The arguments: extension, world scene, held, sky, sky hidden, walk marked, sky seen,
+        // world begun.
+        // After the sky in a stream with the walk event, before the event, in the target: early.
+        assert!(world_draw_is_early(true, true, false, false, false, true, true, false));
+        // Held for the world's start (the main view): in no target yet.
+        assert!(!world_draw_is_early(true, true, true, false, false, true, true, false));
+        // The sky itself, a draw before the sky (the cell borders), and a draw after the world began.
+        assert!(!world_draw_is_early(true, true, false, true, false, true, true, false));
+        assert!(!world_draw_is_early(true, true, false, false, false, true, false, false));
+        assert!(!world_draw_is_early(true, true, false, false, false, true, true, true));
+        // A stream without the event: the first draw after the sky begins the world, it is not early.
+        assert!(!world_draw_is_early(true, true, false, false, false, false, true, false));
+        // The sky hidden: the first draw begins the world.
+        assert!(!world_draw_is_early(true, true, false, false, true, true, false, false));
+        // No extension, or a scene that is no world scene of a view or the main view.
+        assert!(!world_draw_is_early(false, true, false, false, false, true, true, false));
+        assert!(!world_draw_is_early(true, false, false, false, false, true, true, false));
     }
 
     #[test]

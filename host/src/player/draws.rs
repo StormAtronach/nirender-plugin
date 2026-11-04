@@ -165,6 +165,35 @@ impl Player {
         }
     }
 
+    /// A draw of the game in the scene in progress is a draw of its world that reaches the target
+    /// before the world of the scene begins ([`crate::retained::world_draw_is_early`]). Only
+    /// in a view of its own or in the world scene of the back buffer, where the full tier or the
+    /// main view's parts start the world.
+    fn is_early_world_draw(&self, sky: bool, sky_hidden: bool, walk_marked: bool, held: bool) -> bool {
+        let world_scene = self.views.open().is_some() || (self.target.is_none() && self.plan.scene_kind == scene::SCENE_WORLD);
+        crate::retained::world_draw_is_early(self.extension.is_some(), world_scene, held, sky, sky_hidden, walk_marked, self.view_sky_seen, self.view_world_begun)
+    }
+
+    /// The scene in progress starts its world for the extension (`at`): the draws of its world
+    /// that reached the target before are counted, and the first cases go to the log. Each is
+    /// a fault of the order: the extension's parts then draw over or under them. The depth
+    /// clear at the tier's start stays.
+    pub(crate) fn note_early_world_draws(&mut self, at: &'static str) {
+        let early = self.view_early_draws;
+        let counts = &mut self.renderer.counts;
+        counts.early_checks += 1;
+        if early == 0 {
+            return;
+        }
+        counts.early_scenes += 1;
+        counts.early_draws += u64::from(early);
+        if counts.early_scenes <= EARLY_DRAW_LINES {
+            let [draws, sky] = self.view_scene_draws;
+            let into = self.target.map_or_else(|| String::from("the back buffer"), |handle| format!("texture {handle}"));
+            println!("early world draws: frame {}, into {into}, at {at}: {early} draws of the world in the target before ({draws} draws in the scene so far, {sky} of the sky)", self.renderer.counts.frames);
+        }
+    }
+
     /// The end of the flush of the engine's main sorted queue ([`EVENT_QUEUE_FLUSHED`]): the
     /// sorted blends of the frame go here, and those of a view of its own in its scene.
     pub(crate) fn queue_flushed(&mut self) {
@@ -261,6 +290,8 @@ impl Player {
         let view_walk_marked = crate::retained::view_walk_marked(walk_marked, world_scene);
         if crate::retained::view_world_begins(sky, sky_hidden, view_walk_marked, self.view_sky_seen) {
             self.begin_view_world(if sky_hidden { "a draw with the sky hidden" } else { "the first draw after the sky" });
+        } else if self.is_early_world_draw(sky, sky_hidden, walk_marked, hold) {
+            self.view_early_draws += 1;
         }
         self.view_sky_seen |= sky;
         for step in steps {

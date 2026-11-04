@@ -97,6 +97,12 @@ impl Player {
                 c.tier_views, c.tier_drew, c.tier_ends, c.tier_posts, c.tier_posts_uncopied, c.tier_unserved
             );
         }
+        if c.early_checks != 0 {
+            println!(
+                "early world draws: {} starts of a world for the extension checked, {} scenes with draws of their world already in the target, {} draws",
+                c.early_checks, c.early_scenes, c.early_draws
+            );
+        }
         if c.world_after_main_view != 0 {
             println!("world scenes after a main view with a root of its own: {} (the table's main view drew in them, the world did not start again)", c.world_after_main_view);
         }

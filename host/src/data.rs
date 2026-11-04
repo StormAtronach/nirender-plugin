@@ -551,6 +551,13 @@ pub(crate) struct Counts {
     /// of the depth that the extension reads).
     pub(crate) tier_posts: u64,
     pub(crate) tier_posts_uncopied: u64,
+    /// The starts of a world for the extension that were checked for draws of the world already
+    /// in the target (a tier start of a view of its own, the main view's world start), the
+    /// scenes where there were some, and their draws ([`Player::note_early_world_draws`]).
+    /// A scene that has some is a fault of the order: the gate wants 0.
+    pub(crate) early_checks: u64,
+    pub(crate) early_scenes: u64,
+    pub(crate) early_draws: u64,
     /// The world scenes that came after a main view with a root of its own had started the
     /// world of the frame.
     pub(crate) world_after_main_view: u64,

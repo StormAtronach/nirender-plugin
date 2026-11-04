@@ -103,6 +103,7 @@ impl Player {
             view_scene_draws: [0; 2],
             view_table_at: None,
             view_table_lines: 0,
+            view_early_draws: 0,
             split: None,
             posted: false,
             world_matrices: None,

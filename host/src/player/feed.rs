@@ -200,6 +200,7 @@ impl Player {
                 self.view_sky_seen = false;
                 self.view_world_why = "";
                 self.view_scene_draws = [0; 2];
+                self.view_early_draws = 0;
                 self.view_table_at = None;
                 for step in self.plan_now().scene_begin_view(kind, ViewKind::classify(in_target, camera_is_world)) {
                     self.plan_step(step);
@@ -938,6 +939,7 @@ impl Player {
             self.renderer.counts.tier_unserved += 1;
             return;
         }
+        self.note_early_world_draws("the tier start");
         let facts = self.tier_facts(key);
         self.items.push(Item::TierStart(facts, parts));
     }
