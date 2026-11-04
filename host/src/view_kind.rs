@@ -122,6 +122,11 @@ impl Additions {
     /// The parts of the full tier that a view of its own gets drawn today: the distant land
     /// and the distant statics (stage 3b, slice 1). The other granted parts stay unused until
     /// their slices come.
+    ///
+    /// Open item of stage 3b: the shadows. A view of its own gets no shadow in this slice:
+    /// the options (`ViewPart` of MGEApi) have no bit for them, and the shaders of the land and
+    /// the statics in the view group have no shadow map binding. The shadow overlay is a part
+    /// of the main view ([`Additions::SHADOW_CAST`], [`Additions::SHADOW_RECEIVE`]).
     pub const TIER_DRAWN: Additions = Additions::LAND.with(Additions::STATICS);
 
     /// The parts that are in both sets.
