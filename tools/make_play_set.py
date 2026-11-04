@@ -8,7 +8,11 @@
 It builds nirender-plugin `master` and render-link `feature/wgpu-renderer` at their local tips, in the
 worktrees of C:/tmp/playset, which keep their cargo targets for the next set. It copies the stage of
 `cargo xtask dist` to a new E:/nirender-keep/mgebuilds/f<N>, with no pdb, and the plugin beside it as
-akulakhan-<commit>.dll. Then it takes the game slot and runs the smoke on the testing instance:
+akulakhan-<commit>.dll. The pdbs of d3d8.dll, dinput8.dll, numidium.exe and akulakhan.dll go from the
+cargo targets to E:/nirender-keep/pdb/f<N>, outside the sets, so that a frame of a dump can be named: each
+pdb only when it holds the GUID of its binary's CodeView record, with a WHAT.txt of the binaries' MD5s. A
+pdb never goes into a set, an install or an archive. Then it takes the game slot and runs the smoke on the
+testing instance:
 
 - live: tools/run_own_device.py with batch-play-smoke.lua: teleports over 5 cell borders, a save, a move to
   another cell, a load, the map, the inventory and the character. The runner must end well, each answer of
@@ -49,6 +53,7 @@ import msvcrt
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -66,6 +71,15 @@ PLUGIN_BRANCH = "master"
 MGE_BRANCH = "feature/wgpu-renderer"
 TREES = "C:/tmp/playset"
 SETS = "E:/nirender-keep/mgebuilds"
+# The pdbs of the sets, one folder for each set. It must not be inside SETS: no pdb is deployed.
+PDB_KEEP = "E:/nirender-keep/pdb"
+# Each binary of a set (its path in the set), the tree that built it, and its pdb in that tree.
+PDBS = (
+    ("d3d8.dll", "mge", os.path.join("target", "i686-pc-windows-msvc", "release-dll", "d3d8.pdb")),
+    ("dinput8.dll", "mge", os.path.join("target", "i686-pc-windows-msvc", "release-dll", "dinput8.pdb")),
+    ("numidium.exe", "mge", os.path.join("target", "x86_64-pc-windows-msvc", "release", "numidium.pdb")),
+    (os.path.join("Data Files", "mwse", "lib", "akulakhan.dll"), "plugin", os.path.join("target", "i686-pc-windows-msvc", "release", "akulakhan.pdb")),
+)
 KEPT_RUNS = "E:/nirender-keep/runs-%s"
 HARNESS = os.path.join(REPOS, "moreFPS", "docs", "scripts", "test-harness-2026-10-03")
 BATCH = os.path.join(REPOS, "moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "batch-play-smoke.lua")
@@ -353,10 +367,71 @@ def copy_stage(stage, plugin_tree, folder, plugin_commit):
     for name in ("d3d8.dll", "numidium.exe"):
         if md5_of(os.path.join(stage, name)) != md5_of(os.path.join(folder, name)):
             raise SystemExit("the copy of %s differs from the stage" % name)
+    refuse_pdb_in(folder)
+    return plugin_dll
+
+
+def refuse_pdb_in(folder):
+    """Stops when the set holds a pdb."""
     pdbs = glob.glob(os.path.join(folder, "**", "*.pdb"), recursive=True)
     if pdbs:
         raise SystemExit("the set holds a pdb: %s" % pdbs[0])
-    return plugin_dll
+
+
+def inside(path, folder):
+    """True when `path` is `folder` or a path in it."""
+    path, folder = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(folder))
+    return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
+
+
+def codeview(binary):
+    """The GUID, the age and the pdb's file name of the CodeView record (RSDS) of a binary's bytes, or None."""
+    at = binary.find(b"RSDS")
+    while at >= 0:
+        end = binary.find(b"\0", at + 24)
+        path = binary[at + 24:end] if end > 0 else b""
+        if path.lower().endswith(b".pdb"):
+            name = path.decode("ascii", "replace").replace("\\", "/").rsplit("/", 1)[-1]
+            return binary[at + 4:at + 20], struct.unpack_from("<I", binary, at + 20)[0], name
+        at = binary.find(b"RSDS", at + 4)
+    return None
+
+
+def keep_pdbs(name, folder, trees, plugin_commit, mge_commit, keep=PDB_KEEP, sets=SETS):
+    """Copies the pdb of each binary of the set to keep/name. A pdb is kept only when it holds the GUID of its
+    binary's CodeView record, which is the test of a debugger. Writes the folder's WHAT.txt and returns its
+    lines. A pdb that is absent or of another build is not kept, and its line says why."""
+    if inside(keep, sets):
+        raise SystemExit("the folder of the pdbs %s is in the sets %s: no pdb may go into a set" % (keep, sets))
+    out = os.path.join(keep, name)
+    os.makedirs(out, exist_ok=True)
+    lines = []
+    for binary_path, tree, pdb_path in PDBS:
+        binary_file = os.path.join(folder, binary_path)
+        pdb_file = os.path.join(trees[tree], pdb_path)
+        pdb_name = os.path.basename(pdb_path)
+        shown = binary_path.replace("\\", "/")
+        try:
+            with open(binary_file, "rb") as file:
+                record = codeview(file.read())
+            if record is None or record[2].lower() != pdb_name.lower():
+                lines.append("%s: not kept: %s has no CodeView record of it" % (pdb_name, shown))
+                continue
+            guid, age, _ = record
+            with open(pdb_file, "rb") as file:
+                if guid not in file.read():
+                    lines.append("%s: not kept: the pdb in the tree is of another build than %s" % (pdb_name, shown))
+                    continue
+            shutil.copy2(pdb_file, os.path.join(out, pdb_name))
+            lines.append("%s: %s md5 %s, GUID %s, age %d" % (pdb_name, shown, md5_of(binary_file), guid.hex(), age))
+        except OSError as error:
+            lines.append("%s: not kept: %s" % (pdb_name, error))
+    head = "%s %s: the pdbs of the play set %s/%s (nirender %s, render-link %s). Never deploy them." % (
+        name, datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), sets, name, plugin_commit, mge_commit)
+    with open(os.path.join(out, "WHAT.txt"), "w", encoding="ascii", errors="backslashreplace") as file:
+        file.write("\n".join([head] + lines) + "\n")
+    refuse_pdb_in(folder)
+    return lines
 
 
 # --- the smoke ------------------------------------------------------------------------------
@@ -711,6 +786,56 @@ def self_test():
         assert os.path.basename(kept) == os.path.basename(run) and os.path.isfile(os.path.join(kept, "a.txt"))
         KEPT_RUNS = kept_before
 
+    # The pdbs: outside the sets, each only when it holds the GUID of its binary's CodeView record.
+    assert not inside(PDB_KEEP, SETS)
+    assert inside(SETS + "/f9", SETS) and inside(SETS, SETS) and not inside(SETS + "x/f9", SETS)
+    guids = {name: bytes([index]) * 16 for index, name in enumerate(("d3d8", "dinput8", "numidium", "akulakhan", "other"), 1)}
+
+    def record(name, guid, age=1):
+        return b"RSDS" + guid + struct.pack("<I", age) + b"C:\\tree\\target\\" + name.encode("ascii") + b"\0"
+
+    assert codeview(b"MZ\0\0RSDS\0\0" + record("d3d8.pdb", guids["d3d8"], 3) + b"tail") == (guids["d3d8"], 3, "d3d8.pdb")
+    assert codeview(b"MZ no record here") is None
+    assert codeview(b"RSDS" + guids["d3d8"] + b"\1\0\0\0" + b"not a path\0") is None
+    with tempfile.TemporaryDirectory() as root:
+        sets, keep = os.path.join(root, "sets"), os.path.join(root, "pdb")
+        folder = os.path.join(sets, "f9")
+        trees = {"mge": os.path.join(root, "mge"), "plugin": os.path.join(root, "plugin")}
+        # d3d8 and akulakhan match; dinput8's pdb is of another build; numidium.exe has no record.
+        binaries = {"d3d8.dll": record("d3d8.pdb", guids["d3d8"]), "dinput8.dll": record("dinput8.pdb", guids["dinput8"]),
+                    "numidium.exe": b"MZ", os.path.join("Data Files", "mwse", "lib", "akulakhan.dll"): record("akulakhan.pdb", guids["akulakhan"])}
+        pdb_guids = {"d3d8.pdb": guids["d3d8"], "dinput8.pdb": guids["other"], "numidium.pdb": guids["numidium"], "akulakhan.pdb": guids["akulakhan"]}
+        for binary_path, tree, pdb_path in PDBS:
+            os.makedirs(os.path.dirname(os.path.join(folder, binary_path)) or folder, exist_ok=True)
+            with open(os.path.join(folder, binary_path), "wb") as file:
+                file.write(binaries[binary_path])
+            os.makedirs(os.path.dirname(os.path.join(trees[tree], pdb_path)), exist_ok=True)
+            with open(os.path.join(trees[tree], pdb_path), "wb") as file:
+                file.write(b"Microsoft C/C++ MSF 7.00\r\n" + b"\0" * 40 + pdb_guids[os.path.basename(pdb_path)] + b"\0" * 8)
+        lines = keep_pdbs("f9", folder, trees, "abc", "def", keep=keep, sets=sets)
+        assert sorted(os.listdir(os.path.join(keep, "f9"))) == ["WHAT.txt", "akulakhan.pdb", "d3d8.pdb"], os.listdir(os.path.join(keep, "f9"))
+        assert any(line.startswith("d3d8.pdb: d3d8.dll md5 %s, GUID %s, age 1" % (md5_of(os.path.join(folder, "d3d8.dll")), guids["d3d8"].hex())) for line in lines), lines
+        assert any(line.startswith("dinput8.pdb: not kept: the pdb in the tree is of another build") for line in lines), lines
+        assert any(line.startswith("numidium.pdb: not kept: numidium.exe has no CodeView record") for line in lines), lines
+        what = read_text(os.path.join(keep, "f9", "WHAT.txt"))
+        assert what.startswith("f9 ") and "nirender abc, render-link def" in what and what.count("\n") == 5, what
+        assert not glob.glob(os.path.join(sets, "**", "*.pdb"), recursive=True), "a pdb went into the set"
+        # A missing pdb is a line, not a stop.
+        os.remove(os.path.join(trees["plugin"], PDBS[3][2]))
+        assert any(line.startswith("akulakhan.pdb: not kept:") for line in keep_pdbs("f10", folder, trees, "abc", "def", keep=keep, sets=sets))
+        # A folder of the pdbs in the sets, and a pdb in the set, stop.
+        for case in ("keep in the sets", "a pdb in the set"):
+            if case == "a pdb in the set":
+                with open(os.path.join(folder, "stray.pdb"), "wb") as file:
+                    file.write(b"x")
+            try:
+                keep_pdbs("f11", folder, trees, "abc", "def", keep=os.path.join(sets, "pdb") if case == "keep in the sets" else keep, sets=sets)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("no stop for %s" % case)
+        assert not os.path.exists(os.path.join(sets, "pdb")), "the refused folder was made"
+
     # The picture rule, with a black and a real picture.
     import picture_diff  # noqa: F401
     from PIL import Image
@@ -733,6 +858,8 @@ def main():
     parser.add_argument("--bats-only", action="store_true", help="the step of the owner's start alone, on the set that local.bat names")
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
     args = parser.parse_args()
+    if inside(PDB_KEEP, SETS):
+        raise SystemExit("PDB_KEEP %s is in SETS %s: no pdb may go into a set" % (PDB_KEEP, SETS))
     if args.self_test:
         self_test()
         return 0
@@ -826,6 +953,11 @@ def main():
             file.write(set_note(name, plugin_commit, mge_commit, "pending"))
         plugin_dll = copy_stage(os.path.join(mge_tree, "target", "dist-staging"), plugin_tree, folder, plugin_commit).replace("\\", "/")
         say("the set: %s" % folder)
+        try:
+            for line in keep_pdbs(name, folder, {"mge": mge_tree, "plugin": plugin_tree}, plugin_commit, mge_commit):
+                say("pdb: %s" % line)
+        except OSError as error:
+            say("pdb: no pdb kept for %s: %s" % (name, error))
         result = run_smoke(plugin_tree, folder, plugin_dll, owner_local_bat, notes)
         passed = True
     except SmokeFailed as failure:
