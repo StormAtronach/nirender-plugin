@@ -59,9 +59,9 @@ import clean_common as common  # noqa: E402
 from clean_common import DUMP_DAYS, KEEP_ROOT, SETS, Evidence, current_set, files_in, games_in, gigabytes, is_heavy, is_link, is_link_entry, kept_set_names, log_line, long_path, processes, project_trees, remove_file, remove_tree, run_age_days, run_treatment, set_number, set_treatment, users_of, walk  # noqa: E402
 
 RUN_PLACES = ["E:\\nirender-results"]
-DUMP_PLACES = ["C:\\tmp\\mwdumps"]
+DUMP_PLACES = ["C:\\tmp\\mwdumps", common.KEPT_DUMPS]
 # The folders of dumps by their kind, which no citation of the name of the place can keep.
-PLAIN_DUMP_ROOTS = {"mwdumps"}
+PLAIN_DUMP_ROOTS = {"mwdumps", os.path.basename(common.KEPT_DUMPS)}
 COMPRESS_DAYS = 1
 SMALL_DUMP = 1 << 20
 FILE_ATTRIBUTE_COMPRESSED = 0x800
@@ -177,8 +177,13 @@ def needs_compressing(size, disk_size, has_attribute):
     return has_attribute or disk_size > 0.9 * size
 
 
-def dump_treatment(age_days, cited, compress):
-    """What happens to a dump now: "remove", "compress" or "stay"."""
+def dump_treatment(age_days, cited, compress, run=None):
+    """What happens to a dump now: "remove", "compress" or "stay". `run`, the treatment of the run whose
+    pointer file names the dump: the dump goes with its run, and stays as long as the run does."""
+    if run is not None:
+        if run == "expired" and not cited:
+            return "remove"
+        cited = True
     if age_days >= DUMP_DAYS and not cited:
         return "remove"
     if compress and age_days >= COMPRESS_DAYS:
@@ -186,7 +191,24 @@ def dump_treatment(age_days, cited, compress):
     return "stay"
 
 
-def plan_dumps(places, evidence, now):
+def dump_owners(plans):
+    """The runs that the pointer files name as the owners of dumps: {the dump's path, case folded: (run, treatment)}."""
+    owners = {}
+    for _, rows in plans:
+        for row in rows:
+            for path, _, _ in row["files"]:
+                if os.path.basename(path).lower() != common.DUMPS_FILE:
+                    continue
+                with open(long_path(path), encoding="utf-8", errors="replace") as pointer:
+                    for line in pointer.read().splitlines():
+                        if line.strip():
+                            owners[os.path.normcase(line.split("\t")[0])] = (row["name"], row["treatment"])
+    return owners
+
+
+def plan_dumps(places, evidence, now, owners=None):
+    """Each dump of the places with its treatment. A dump that a run's pointer file names (`owners`) follows its run."""
+    owners = owners or {}
     rows = []
     for place in places:
         if not os.path.isdir(place) or is_link(place):
@@ -195,11 +217,13 @@ def plan_dumps(places, evidence, now):
             if not path.lower().endswith(common.DUMP_FILES):
                 continue
             parts = os.path.relpath(path, place).split(os.sep)[:-1] + [os.path.basename(place)]
-            cited = evidence.cites_dump(path) or any(part not in PLAIN_DUMP_ROOTS and evidence.cites_word(part) for part in parts)
+            # A folder named after a run counts by the citations of the run, as the run itself does.
+            cited = evidence.cites_dump(path) or any(part not in PLAIN_DUMP_ROOTS and (evidence.cites_word(part) or (run_age_days(part, now) is not None and evidence.cites_run(part))) for part in parts)
+            run, run_treatment_now = owners.get(os.path.normcase(path), (None, None))
             disk_size = on_disk(path)
             attribute = bool(os.stat(long_path(path)).st_file_attributes & FILE_ATTRIBUTE_COMPRESSED)
-            treatment = dump_treatment((now - written) / 86400, cited, needs_compressing(size, disk_size, attribute))
-            rows.append({"path": path, "size": size, "disk": disk_size, "attribute": attribute, "cited": cited, "treatment": treatment})
+            treatment = dump_treatment((now - written) / 86400, cited, needs_compressing(size, disk_size, attribute), run_treatment_now)
+            rows.append({"path": path, "size": size, "disk": disk_size, "attribute": attribute, "cited": cited, "run": run, "treatment": treatment})
     return rows
 
 
@@ -235,7 +259,7 @@ def other_dumps():
     with os.scandir(KEEP_ROOT) as entries:
         found = [entry for entry in entries if not is_link_entry(entry) and entry.is_dir(follow_symlinks=False)]
     for entry in found:
-        if entry.name == "mgebuilds" or entry.name.startswith(("runs-", "full-dumps-")):
+        if entry.path in (SETS, common.KEPT_DUMPS) or entry.name.startswith(("runs-", "full-dumps-")):
             continue
         for path, size, _ in files_in(entry.path):
             if path.lower().endswith(common.DUMP_FILES):
@@ -325,7 +349,8 @@ def print_labels(plans, evidence):
 def print_dumps(rows, others):
     print("\nDUMPS (%d, %s):" % (len(rows), gigabytes(sum(row["size"] for row in rows))))
     for row in sorted(rows, key=lambda r: r["path"]):
-        print("  %-8s %-5s %9s, %9s on disk  %s" % (row["treatment"], "cited" if row["cited"] else "", gigabytes(row["size"]), gigabytes(row["disk"]), row["path"]))
+        owner = "  (the run %s)" % row["run"] if row.get("run") else ""
+        print("  %-8s %-5s %9s, %9s on disk  %s%s" % (row["treatment"], "cited" if row["cited"] else "", gigabytes(row["size"]), gigabytes(row["disk"]), row["path"], owner))
     print("\nDUMPS IN OTHER FOLDERS OF %s, only listed (%d, %s):" % (KEEP_ROOT, len(others), gigabytes(sum(size for size, _ in others))))
     for size, path in others:
         print("  %9s  %s" % (gigabytes(size), path))
@@ -364,7 +389,7 @@ def main():
         return 1
     roots, links = run_roots()
     plans = [(root, plan_root(root, evidence, now)) for root in roots]
-    dumps = plan_dumps(DUMP_PLACES + sorted(glob.glob(os.path.join(KEEP_ROOT, "full-dumps-*"))), evidence, now)
+    dumps = plan_dumps(DUMP_PLACES + sorted(glob.glob(os.path.join(KEEP_ROOT, "full-dumps-*"))), evidence, now, dump_owners(plans))
     current = current_set()
     sets = plan_sets(SETS, evidence, current, running, now)
     print_runs(plans, links, args.list)
@@ -483,6 +508,50 @@ def self_test():
         os.makedirs(plain)
         shutil.copy2(kept, os.path.join(plain, "Morrowind.exe.500.dmp"))
         assert plan_dumps([plain], Evidence("mwdumps"), now)[0]["treatment"] == "remove"
+
+        # The dumps of the runs on E: go with their runs, by the runs' pointer files.
+        assert dump_treatment(40, False, True, "expired") == "remove" and dump_treatment(2, False, True, "expired") == "remove"
+        assert dump_treatment(40, True, False, "expired") == "stay"
+        assert all(dump_treatment(40, False, False, run) == "stay" for run in ("cited", "running", "young", "trim"))
+        assert dump_treatment(40, False, True, "trim") == "compress"
+        runs, kept_dumps = os.path.join(temp, "pointer-runs"), os.path.join(temp, "dumps")
+        # Each run at its own time of day: a short citation counts by the time alone.
+        names = {"expired": stamp(45.01) + "-old", "young": stamp(2.02) + "-new", "cited": stamp(46.03) + "-kept", "trim": stamp(10.04) + "-trim"}
+        targets = {}
+        for kind, name in names.items():
+            os.makedirs(os.path.join(runs, name))
+            os.makedirs(os.path.join(kept_dumps, name))
+            target = os.path.join(kept_dumps, name, "Morrowind.exe.%d.dmp" % (len(targets) + 10))
+            with open(target, "wb") as out:
+                out.write(b"\0" * 10)
+            os.utime(target, (now - 40 * 86400, now - 40 * 86400))
+            with open(os.path.join(runs, name, common.DUMPS_FILE), "w", encoding="utf-8") as out:
+                out.write("%s\t10\tC:\\tmp\\mwdumps (Windows Error Reporting)\n" % target.upper())
+            targets[kind] = target
+        # Two dumps that no pointer names: one in the folder of a cited run that is gone, one of no cited run.
+        orphans = {"cited": stamp(50.05) + "-gone", "uncited": stamp(51.06) + "-lost"}
+        for kind, name in orphans.items():
+            os.makedirs(os.path.join(kept_dumps, name))
+            target = os.path.join(kept_dumps, name, "MWSE_MiniDump.dmp")
+            with open(target, "wb") as out:
+                out.write(b"\0" * 10)
+            os.utime(target, (now - 40 * 86400, now - 40 * 86400))
+            targets["orphan " + kind] = target
+        evidence = Evidence("a record of %s, and the short citation %s" % (names["cited"], orphans["cited"][8:16]))
+        plans = [(runs, plan_root(runs, evidence, now))]
+        assert {row["name"]: row["treatment"] for row in plans[0][1]} == {names[kind]: kind for kind in names}, plans
+        owners = dump_owners(plans)
+        assert set(owners) == {os.path.normcase(targets[kind]) for kind in names}, owners
+        rows = {row["path"]: row for row in plan_dumps([kept_dumps], evidence, now, owners)}
+        treatments = {kind: rows[target]["treatment"] for kind, target in targets.items()}
+        assert treatments == {"expired": "remove", "young": "stay", "cited": "stay", "trim": "stay", "orphan cited": "stay", "orphan uncited": "remove"}, treatments
+        assert rows[targets["young"]]["run"] == names["young"] and rows[targets["orphan uncited"]]["run"] is None
+        # The null: without the pointers the dumps of the young and the trimmed run would go.
+        bare = {row["path"]: row["treatment"] for row in plan_dumps([kept_dumps], evidence, now)}
+        assert bare[targets["young"]] == "remove" and bare[targets["trim"]] == "remove" and bare[targets["cited"]] == "stay", bare
+        # The runs' dumps are no evidence, and no other folder lists them.
+        assert common.KEPT_DUMPS not in common.evidence_folders() and os.path.basename(common.KEPT_DUMPS) in PLAIN_DUMP_ROOTS
+        assert common.KEPT_DUMPS in DUMP_PLACES
 
         # The sets.
         sets = os.path.join(temp, "mgebuilds")

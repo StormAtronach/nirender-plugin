@@ -1081,6 +1081,10 @@ def self_test_full_dump():
     assert session.mwse_run_settings(True, False) == {}
     assert full_dump_note(argparse.Namespace(full_dump=False)) is None
     assert FULL_DUMP_SIZE in full_dump_note(argparse.Namespace(full_dump=True))
+    # The harness keeps a run's WER dumps where the data rule looks for them (D94).
+    import clean_common
+    assert session.harness.RUN_DUMPS == clean_common.KEPT_DUMPS, (session.harness.RUN_DUMPS, clean_common.KEPT_DUMPS)
+    assert session.harness.DUMPS_FILE == clean_common.DUMPS_FILE
 
     # stage_mwse_config writes the copy with the settings over the source's values into the run
     # mod, and the source does not change.
