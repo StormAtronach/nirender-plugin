@@ -149,89 +149,6 @@ def run_settings(args):
     return list(args.set) + (["[runtime] disabled = true"] if args.engine_reference else [])
 
 
-# The header of a table in a toml: `[name]`, with spaces inside, indented, or followed by a
-# comment. A name starts with a letter, an underscore or a quote, so that a line of a
-# multi-line array, `[1, 2]`, is not a header.
-TABLE_HEADER = re.compile(r'^\s*\[\s*([A-Za-z_"\'][A-Za-z0-9_.\-"\' ]*?)\s*\]\s*(?:#.*)?$')
-ARRAY_HEADER = re.compile(r'^\s*\[\[[^\[\]]+\]\]\s*(?:#.*)?$')
-
-
-def table_at(lines, name):
-    """The index of the header line of the table `name`, or None."""
-    for at, line in enumerate(lines):
-        header = TABLE_HEADER.match(line)
-        if header and header.group(1) == name:
-            return at
-    return None
-
-
-def toml_error(text):
-    """Why a text is not a toml, as one line, or None when it is."""
-    try:
-        tomllib.loads(text)
-    except tomllib.TOMLDecodeError as fault:
-        return str(fault)
-    return None
-
-
-def run_toml_lines(text, settings, source, wgpu=None):
-    """The lines of the run's mgeXE.toml, made from the text of the instance's file `source`: no
-    frame limit, the --set lines, and the switch for the wgpu renderer (True or False; None
-    leaves the switch out). A --set line with a section that the file lacks adds that section
-    at the end of the lines. A header with a comment or spaces, `[views] # x`, is the section
-    `views`. The lines must be a toml when the text is one (a second table of one name is not).
-    The start and `--check` both call this, so that `--check` fails where the start would. A fault
-    is a SystemExit, as in env_of."""
-    lines = [line for line in text.splitlines() if not line.strip().startswith("renderer_wgpu")]
-    if table_at(lines, "runtime") is None:
-        raise SystemExit("no section [runtime] in %s" % source)
-    lines = ['vsync = "immediate"' if line.strip().startswith("vsync") else line for line in lines]
-    for setting in settings:
-        section = None
-        if setting.startswith("["):
-            if "]" not in setting:
-                raise SystemExit("--set %r: a section is written [section] key = value" % setting)
-            section, setting = setting[1:].split("]", 1)
-            section, setting = section.strip(), setting.strip()
-        if "=" not in setting:
-            raise SystemExit("--set takes key = value, not %r" % setting)
-        key = setting.split("=")[0].strip()
-        if section is not None:
-            # In its section only: a key such as `enabled` is in several sections.
-            header = table_at(lines, section)
-            if header is None:
-                while lines and not lines[-1].strip():
-                    lines.pop()
-                lines += ["", "[%s]" % section, setting]
-                continue
-            start = header + 1
-            end = next((i for i in range(start, len(lines)) if TABLE_HEADER.match(lines[i]) or ARRAY_HEADER.match(lines[i])), len(lines))
-            at = next((i for i in range(start, end) if lines[i].split("=")[0].strip() == key), None)
-            if at is not None:
-                lines[at] = setting
-            else:
-                while end > start and not lines[end - 1].strip():
-                    end -= 1
-                lines.insert(end, setting)
-        elif any(line.split("=")[0].strip() == key for line in lines):
-            lines = [setting if line.split("=")[0].strip() == key else line for line in lines]
-        else:
-            # A dotted key such as views.full_tier_max names its section before the dot.
-            named_section, dot, named_key = setting.partition(".")
-            example = "[%s] %s" % (named_section, named_key) if dot and "=" not in named_section else "[section] %s" % setting
-            raise SystemExit("no line with the key %s in %s: give its section, %s" % (key, source, example))
-    # The switch is written for each mode: the default of MGE XE is on, and a reference run is
-    # MGE XE on Direct3D 9.
-    if wgpu is not None:
-        lines.insert(table_at(lines, "runtime") + 1, "renderer_wgpu = %s" % ("true" if wgpu else "false"))
-    # A fault of the edit, not of the file: the instance's own file is a toml, and the lines are not.
-    if toml_error(text) is None:
-        fault = toml_error("".join(line + "\n" for line in lines))
-        if fault:
-            raise SystemExit("--set makes %s a file that is not a toml: %s" % (source, fault))
-    return lines
-
-
 def config_problem(args, root):
     """The fault of the run's mgeXE.toml that the start would stop on, as one line, or None:
     the same edit as the start, on the text in memory (the file of the instance is not
@@ -241,7 +158,7 @@ def config_problem(args, root):
     if text is None:
         return "no readable mgeXE.toml at %s (--config-mod %s)" % (source, args.config_mod)
     try:
-        run_toml_lines(text, run_settings(args), source, wgpu_switch(args))
+        session.run_toml_lines(text, run_settings(args), source, wgpu_switch(args))
     except SystemExit as refusal:
         return str(refusal)
     return None
@@ -982,7 +899,7 @@ TEST_TOML = '[runtime]\nrenderer_wgpu = true\nvsync = "default"\n\n[distant_land
 def self_test_run_toml():
     """The lines of the run's mgeXE.toml: the --set forms, a section that the file lacks, and the faults."""
     def lines_of(settings, wgpu=None, text=TEST_TOML):
-        return run_toml_lines(text, settings, "test.toml", wgpu)
+        return session.run_toml_lines(text, settings, "test.toml", wgpu)
 
     base = lines_of([])
     assert 'vsync = "immediate"' in base and "renderer_wgpu = true" not in base, base
@@ -1920,7 +1837,7 @@ def main():
     # modes compare; with the switch for the wgpu renderer when the run is with it.
     toml = os.path.join(session.harness.MO2_ROOT, "mods", args.config_mod, "Root", "mgeXE.toml")
     text = open(toml, encoding="utf-8").read()
-    lines = run_toml_lines(text, run_settings(args), toml, wgpu_switch(args))
+    lines = session.run_toml_lines(text, run_settings(args), toml, wgpu_switch(args))
     switched = run.path("mgeXE.toml")
     open(switched, "w", encoding="utf-8").write("".join(line + chr(10) for line in lines))
     # The files of the run are in mods of the harness, on for the run over the mods of the
