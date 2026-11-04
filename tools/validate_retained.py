@@ -218,10 +218,24 @@ def stage_capture(place, mge_build):
     # Each GPU error prints a line "gpu error N (kind, adapter ...)" (host/src/gpu.rs).
     errors = len(re.findall(r"^gpu error \d+ \(", out, re.M))
     ok &= check(os.path.isfile(a) and errors == 0, "replay of the capture: %s, %d gpu errors" % ("a picture" if os.path.isfile(a) else "no picture", errors))
+    early = early_world_scenes(out)
+    ok &= check(early in (None, 0), "replay of the capture: %s scenes with draws of their world in the target before the extension's parts" % ("no" if early is None else early))
     return ok
 
 
 ADAPTER_FILE = "adapter.txt"
+
+
+EARLY_LINE = re.compile(r"^early world draws: (\d+) starts of a world for the extension checked, (\d+) scenes with draws of their world already in the target, (\d+) draws", re.M)
+
+
+def early_world_scenes(output):
+    """The scenes with draws of their world already in the target when the extension's parts
+    began, from the report line `early world draws: ...` of the helper (`Player::report`); None
+    when the output has no such line (a replay with no start of a world to check). Each is a
+    fault of the order of the draws: the gate wants 0."""
+    match = EARLY_LINE.search(output)
+    return int(match.group(2)) if match else None
 
 
 def adapter_of(output):
@@ -249,6 +263,11 @@ def self_test():
     output = "distant land: on\nadapter: NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)\nframe 1\n"
     assert adapter_of(output) == "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
     assert adapter_of("no such line\n") is None
+    # The count of scenes with early world draws; no line means no start of a world was checked.
+    line = "early world draws: 12 starts of a world for the extension checked, %d scenes with draws of their world already in the target, 7 draws\n"
+    assert early_world_scenes("frame 1\n" + line % 0 + "retained: 3\n") == 0
+    assert early_world_scenes(line % 2) == 2
+    assert early_world_scenes("frame 1\n") is None
     same = "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
     assert adapter_note(same, same) == "adapter: %s, as the accepted pictures" % same
     assert adapter_note(None, same).endswith("(accept again to record it)")
@@ -379,11 +398,14 @@ def stage_baseline(baseline, accept, mge_build, now=None):
     out, tour_out = picture_folders(baseline, accept, now)
     os.makedirs(out, exist_ok=True)
     adapter = None
+    early_captures = []
     for capture in captures:
         code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, capture[:-7] + ".png"), "--frame", "1", "--mge-build", mge_build], env)
         if not ran((code, output), "replay.py", accept):
             return False
         adapter = adapter or adapter_of(output)
+        if early_world_scenes(output):
+            early_captures.append(capture)
     tour = os.path.join(baseline, "tour")
     if os.path.isdir(tour) and not ran(run_code([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env), "validate_tour.py", accept):
         return False
@@ -401,7 +423,7 @@ def stage_baseline(baseline, accept, mge_build, now=None):
     sys.path.insert(0, HERE)
     import picture_diff
 
-    ok = True
+    ok = check(not early_captures, "no replay had draws of its world in the target before the extension's parts" if not early_captures else "replays with draws of their world in the target before the extension's parts: %s" % ", ".join(early_captures))
     for a, b in [(accepted, out)] + ([(os.path.join(tour, "accepted"), tour_out)] if os.path.isdir(tour) else []):
         names = sorted(f for f in os.listdir(a) if f.endswith(".png")) if os.path.isdir(a) else []
         equal = 0
