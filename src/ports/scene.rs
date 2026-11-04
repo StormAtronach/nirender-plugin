@@ -4,11 +4,12 @@
 //! (`instance_stream::skipped_display`). The accumulators themselves stay engine code: the
 //! ports call them. The traversal of the nodes is the engine's own code.
 
-use crate::engine::{thiscall1, thiscall3, thiscall4, vcall0, vcall1, virtual_at};
+use crate::engine::{thiscall1, thiscall3, thiscall4, vcall0, virtual_at};
 use crate::gen::layouts;
 use crate::gen::layouts::{NiAVObject as AV, NiCamera as C, NiGeometry as G, NiGeometryData as GD, NiRenderer as R, NiTimeController as TC};
 use crate::main_thread::MainThread;
 use crate::mem::{rd, wr};
+use crate::ports::ni;
 use crate::shadow::Regions;
 
 /// `global_NiTriShape::countRenderCalls`, `global_NiGeometry::countPrimsRendered` and
@@ -17,7 +18,6 @@ const COUNT_RENDER_CALLS: usize = 0x7DE968;
 const COUNT_PRIMS_RENDERED: usize = 0x7DE96C;
 const COUNT_VERTS_RENDERED: usize = 0x7DE970;
 
-const SLOT_DELETING_DTOR: usize = layouts::InterfaceNiObject::deleting_dtor;
 const SLOT_GET_WORLD_BOUND: usize = layouts::InterfaceNiAVObject::GetWorldBound;
 const SLOT_RENDER_SHAPE: usize = layouts::InterfaceNiRenderer::RenderShape;
 const SLOT_RENDER_TRISTRIPS: usize = layouts::InterfaceNiRenderer::RenderTristrips;
@@ -35,19 +35,6 @@ pub(crate) const ANIM_DISPLAYED: u8 = 8;
 
 const PUSH_STATE: usize = 0x6F3F40;
 const RENDERER_REGISTER_OBJECT: usize = 0x6F5070;
-
-/// Takes one reference from a `NiObject`; at zero the object deletes itself.
-unsafe fn release_ref(object: usize) {
-    let count = rd::<i32>(object, 4) - 1;
-    wr(object, 4, count);
-    if count == 0 {
-        vcall1(object, SLOT_DELETING_DTOR, 1);
-    }
-}
-
-unsafe fn add_ref(object: usize) {
-    wr(object, 4, rd::<i32>(object, 4) + 1);
-}
 
 // ---------------------------------------------------------------------------------------
 // The shapes
@@ -74,21 +61,21 @@ pub unsafe fn push_state_to_renderer(this: usize, renderer: usize) {
         let current = rd::<usize>(renderer, R::currentPropertyState);
         if current != property {
             if current != 0 {
-                release_ref(current);
+                ni::release(current);
             }
             wr(renderer, R::currentPropertyState, property);
-            add_ref(property);
+            ni::add_reference(property);
         }
     }
     let effect = rd::<usize>(this, G::spEffectState);
     let current = rd::<usize>(renderer, R::currentEffectState);
     if current != effect {
         if current != 0 {
-            release_ref(current);
+            ni::release(current);
         }
         wr(renderer, R::currentEffectState, effect);
         if effect != 0 {
-            add_ref(effect);
+            ni::add_reference(effect);
         }
     }
 }

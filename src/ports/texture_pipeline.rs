@@ -23,7 +23,7 @@ use crate::gen::layouts::{
     NiTexture,
 };
 use crate::mem::{rd, wr, x87_pass};
-use crate::ports::ni::{delete_object, pointer_assign, release, REF_COUNT};
+use crate::ports::ni::{add_reference, delete_object, pointer_assign, release, REF_COUNT};
 use crate::ports::render_state;
 use crate::shadow::Regions;
 
@@ -838,7 +838,7 @@ pub unsafe fn select_and_link_pass(
                         }
                         wr(this, CTP_CURRENT_PASS, own_pass);
                         if own_pass != 0 {
-                            wr::<u32>(own_pass, 4, rd::<u32>(own_pass, 4).wrapping_add(1));
+                            add_reference(own_pass);
                         }
                         changed = true;
                     }
@@ -855,7 +855,7 @@ pub unsafe fn select_and_link_pass(
             let combiners: usize = rd(this, CTP::combiners);
             wr(this, CTP_CURRENT_PASS, combiners);
             if combiners != 0 {
-                wr::<u32>(combiners, 4, rd::<u32>(combiners, 4).wrapping_add(1));
+                add_reference(combiners);
             }
             changed = true;
         }
@@ -894,7 +894,7 @@ pub unsafe fn ensure_and_register_streamables(
         let combiners: usize = rd(this, CTP::combiners);
         wr(this, CTP_CURRENT_PASS, combiners);
         if combiners != 0 {
-            wr::<u32>(combiners, 4, rd::<u32>(combiners, 4).wrapping_add(1));
+            add_reference(combiners);
         }
     }
     let pass: usize = rd(this, CTP_CURRENT_PASS);
