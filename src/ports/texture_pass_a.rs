@@ -310,7 +310,7 @@ pub unsafe fn reset_for_new_frame(this: usize) {
     wr::<u32>(base, TS::extraBlendColorArgument, 0);
     wr::<u8>(base, TS::field_90, 1);
     wr::<u32>(base, TS::field_94, 2);
-    wr(base, TS::refCount, rd::<u32>(base, TS::refCount).wrapping_add(1));
+    ni::add_reference(base);
 
     wr::<u32>(this, TP::field_2A4C_field_94, 0);
     wr::<u32>(this, TP::field_2B0C_field_94, 1);
@@ -484,7 +484,7 @@ pub unsafe fn init_renderer(this: usize, renderer: usize) -> u8 {
     let block = engine::operator_new(NiPixelData::SIZE);
     let pixel_data = if block != 0 { engine::pixel_data_ctor_args(block, 2, 1, format, 1) } else { 0 };
     if pixel_data != 0 {
-        wr(pixel_data, REF_COUNT, rd::<u32>(pixel_data, REF_COUNT).wrapping_add(1));
+        ni::add_reference(pixel_data);
     }
     let offsets: usize = rd(pixel_data, NiPixelData::mipmapOffsets);
     let pixels = rd::<usize>(pixel_data, NiPixelData::pixelsAllMips) + rd::<u32>(offsets, 0) as usize;
@@ -518,7 +518,7 @@ pub unsafe fn init_renderer(this: usize, renderer: usize) -> u8 {
         }
         wr(this, TP::texture_CDC, texture);
         if texture != 0 {
-            wr(texture, REF_COUNT, rd::<u32>(texture, REF_COUNT).wrapping_add(1));
+            ni::add_reference(texture);
         }
     }
 
@@ -538,7 +538,7 @@ pub unsafe fn init_renderer(this: usize, renderer: usize) -> u8 {
             let texture: usize = rd(this, TP::texture_CDC);
             wr(stage, TS::ptrTexture, texture);
             if texture != 0 {
-                wr(texture, REF_COUNT, rd::<u32>(texture, REF_COUNT).wrapping_add(1));
+                ni::add_reference(texture);
             }
         }
         wr::<u32>(stage, TS::addressModeU, 3);
