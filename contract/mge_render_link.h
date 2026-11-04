@@ -209,6 +209,14 @@
 // is on (the console command ToggleWireframe). A renderer draws its own parts in lines then.
 #define MGE_LINK_SCENE_WIREFRAME 0x00000010u
 
+// Bits of `repeatWalk` of a scene (stream format 7).
+// The bits that hold the slot of the first scene of the key plus 1, for a scene that repeats
+// its key in the same flush (it has a second slot); 0 for any other scene.
+#define MGE_LINK_SCENE_REPEAT_MASK 0x000000FFu
+// The plugin walks this scene's root with its world walk, so an EVENT_WORLD_WALK follows in
+// the scene. Without the bit, no such event follows.
+#define MGE_LINK_SCENE_WALK_DUE 0x00000100u
+
 // Flags of a texture description.
 // The game can change the pixels of the texture later.
 #define MGE_LINK_TEXTURE_DYNAMIC 0x00000001u
@@ -354,8 +362,9 @@ typedef struct MgeLinkSceneV1 {
     // src/view_slots.rs). Only the low byte is used. A packet with a structSize of 48 has no
     // view.
     uint32_t view;
-    // 0.
-    uint32_t reserved;
+    // MGE_LINK_SCENE_REPEAT_MASK and MGE_LINK_SCENE_WALK_DUE; the other bits are 0. A packet
+    // of the stream format 6 has 0 here, which means no repeat and a walk not known.
+    uint32_t repeatWalk;
 } MgeLinkSceneV1;
 
 typedef struct MgeLinkLightV1 {

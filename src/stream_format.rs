@@ -69,8 +69,16 @@
 /// decal count of a material record is the whole count, and the maps past the 8 follow its words
 /// (2026-11-02). A helper of format 4 would draw only two decals. 6: an `INSTANCE_STATE` record
 /// of 12 bytes names its view slot ([`HEADER_VIEW_BITS`], 2026-11-03). A helper of format 5
-/// would read it as view 0 and hide a mirror's shape in the main view.
-pub const STREAM_FORMAT: u32 = 6;
+/// would read it as view 0 and hide a mirror's shape in the main view. 7: the word at offset 52
+/// of a scene record (56 bytes) holds the first slot of a repeat in its low byte and the bit
+/// `link::SCENE_WALK_DUE` (2026-11-04). A helper of format 6 would read a 0 there as a walk
+/// that it expects, and wait for an event that does not come.
+pub const STREAM_FORMAT: u32 = 7;
+
+/// The first stream format whose scene records (56 bytes, under [`HEADER_SCENE_VIEWS`]) hold
+/// `link::SceneV1::repeat_walk`. A capture of an older format has 0 in that word, which a
+/// reader takes as "no word": a walk that is due, and no repeat.
+pub const FORMAT_SCENE_REPEAT_WALK: u32 = 7;
 
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
 /// game, the abilities of the stream, the stream format, then the build id of the plugin as
@@ -112,8 +120,8 @@ pub const HEADER_ENVMAP_LIT: u32 = 128;
 /// view of the scene's own (`instance_stream::Route::Places`).
 pub const HEADER_VIEW_PLACES: u32 = 256;
 /// A bit of the same word: the scene records carry the view slot (`link::SceneV1::view`, a
-/// record of 56 bytes), and a slot that retires comes as the frame event
-/// `link::EVENT_VIEW_RETIRE` (`view_slots`).
+/// record of 56 bytes) and, since stream format 7, `link::SceneV1::repeat_walk`; a slot that
+/// retires comes as the frame event `link::EVENT_VIEW_RETIRE` (`view_slots`).
 pub const HEADER_SCENE_VIEWS: u32 = 512;
 /// A bit of the same word: the plugin keeps one visibility bit for each view (D82 stage 2,
 /// design 3.4c). An `INSTANCE_STATE` record of 12 bytes names its view slot in its third word;

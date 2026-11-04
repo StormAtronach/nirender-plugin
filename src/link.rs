@@ -231,9 +231,19 @@ pub struct SceneV1 {
     /// The view slot of the scene plus 1 (`view_slots`), 0 for a scene that is not a view.
     /// Only the low byte is used. A packet with a `struct_size` of 48 has no view.
     pub view: u32,
-    /// 0: the struct's tail to its 8-byte alignment, written as zeros.
-    pub reserved: u32,
+    /// What a view scene adds (D82, design 3.4f): the bits in [`SCENE_REPEAT_MASK`] hold the
+    /// slot of the scene's first scene plus 1 when the scene is a repeat of its key in the same
+    /// flush (it then has a second slot), else 0; [`SCENE_WALK_DUE`] says that the plugin walks
+    /// the scene's root with the world walk. The rest is 0. Stream format 7; the stream
+    /// format 6 wrote 0 in the whole word.
+    pub repeat_walk: u32,
 }
+
+/// The bits of `SceneV1::repeat_walk` that hold the first slot of a repeat plus 1.
+pub const SCENE_REPEAT_MASK: u32 = 0xFF;
+/// The bit of `SceneV1::repeat_walk` that says the plugin walks this scene's root with the
+/// world walk (`world_walk::walk_due`), so that an `EVENT_WORLD_WALK` follows in the scene.
+pub const SCENE_WALK_DUE: u32 = 0x100;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -383,6 +393,7 @@ const _: () = {
     assert!(size_of::<SceneV1>() == 56);
     // A reader of an older packet (48 bytes) has no view: the field starts at its end.
     assert!(core::mem::offset_of!(SceneV1, view) == 48);
+    assert!(core::mem::offset_of!(SceneV1, repeat_walk) == 52);
     assert!(size_of::<LightV1>() == 16);
     assert!(size_of::<DrawV1>() == 48);
     assert!(size_of::<StateLightV1>() == 108);
