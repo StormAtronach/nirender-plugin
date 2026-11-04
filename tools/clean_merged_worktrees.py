@@ -10,6 +10,18 @@ of each merge. Without `--apply` it only lists.
                                                             # reads the whole disk, so never in a timing
     python -I tools/clean_merged_worktrees.py --self-test   # the pure parts and a real junction
 
+The list opens with the trees at risk (D98): each worktree that git does not hold locked, is no main or
+standing checkout and is not under E:\\nirender-keep, and has at least one of these:
+
+- commits that no ref of the main branch, no remote and no tag holds (a local branch does not count);
+- changed or untracked files beyond a build's output, or ignored files that no build makes;
+- the records (moreFPS/docs/Numidium Project/notes/takeover/*records*.md) cite the tree's path, or a
+  run folder in its `results`.
+
+Each line gives the reasons and the command that locks the tree. A worker locks the worktree it makes
+(`git worktree lock --reason "<who and why>" <path>`). A locked tree is skipped, as before, and is
+listed after the trees at risk with the words of its lock.
+
 Build output is disposable. In each worktree of the nirender, MGE XE and MWSE repositories, main and
 standing checkouts too, a folder goes with its source left alone when all of these hold:
 
@@ -67,6 +79,9 @@ that a link can be made again when the removal then fails.
 """
 import _winapi
 import argparse
+import contextlib
+import glob
+import io
 import os
 import re
 import shutil
@@ -80,7 +95,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # `python -I` leaves the folder of the script off the path.
 sys.path.insert(0, HERE)
 import clean_common as common  # noqa: E402
-from clean_common import FILE_ATTRIBUTE_REPARSE_POINT, KEEP_ROOT, REPOS_ROOT, REPOSITORIES, SETS, Evidence, current_folder, current_set, files_in, games_in, git, gigabytes, is_heavy, is_link, is_link_entry, kept_set_numbers, log_line, old_play_set, own_line, processes, project_trees, remove_link, remove_tree, run_age_days, run_treatment, same_or_under, same_path, users_of, walk, worktrees_of  # noqa: E402
+from clean_common import DOCS, FILE_ATTRIBUTE_REPARSE_POINT, KEEP_ROOT, REPOS_ROOT, REPOSITORIES, SETS, Evidence, current_folder, current_set, files_in, games_in, git, gigabytes, is_heavy, is_link, is_link_entry, kept_set_numbers, log_line, old_play_set, own_line, processes, project_trees, remove_link, remove_tree, run_age_days, run_treatment, same_or_under, same_path, users_of, walk, worktrees_of  # noqa: E402
 
 # The shared checkouts and the test train's pair stay, whatever their branch has. Git's own main
 # worktree is one too.
@@ -146,6 +161,104 @@ def decide(tree):
     if not tree["merged"]:
         return False, "not merged"
     return True, "merged"
+
+
+# ---- the trees at risk
+
+# The records that cite the runs and the trees of the work (the data rule, D71).
+RECORDS_FILES = os.path.join(DOCS, "Numidium Project", "notes", "takeover", "*records*.md")
+# What a checkout or a run leaves in a tree and no one writes: the machine-local paths (git ignores them) and the
+# plugin's log files. They are no work that a lock would save.
+LEFTOVERS = re.compile(r"(.*/)?(local\.json|nirender\.log(\.\d+)?)/?")
+# Folders that name a checkout, and no task: the lock reason takes the folder above.
+GENERIC_FOLDERS = {"nirender-plugin", "mge-xe-g7", "mge-xe-g7-render-link", "render-link", "g7"}
+
+
+def load_records(pattern=RECORDS_FILES):
+    """The text of the records files as Evidence. Its `problems` say why a citation may be missing."""
+    names = sorted(glob.glob(pattern))
+    parts, problems = [], []
+    for name in names:
+        try:
+            with open(name, encoding="utf-8", errors="replace") as file:
+                parts.append(file.read())
+        except OSError as error:
+            problems.append("a records file cannot be read: %s (%s)" % (name, error))
+    if not names:
+        problems.append("no records file at " + pattern)
+    return Evidence("\n".join(parts), problems)
+
+
+def cites_path(records, path):
+    """True when the records name a tree by its path, with slashes or with backslashes, in any case."""
+    text = records.text.lower()
+    forward = os.path.abspath(path).replace("\\", "/").lower()
+    return forward in text or forward.replace("/", "\\") in text
+
+
+def uncommitted_beyond_output(status_lines):
+    """The paths of a `git status --porcelain` list that are changed or untracked, a build's output
+    left out (an untracked `results/` is no loss that a lock would save), and the leftovers of a
+    checkout (LEFTOVERS). Ignored entries are no part of the list."""
+    found = []
+    for row in status_lines:
+        if row.startswith("!! "):
+            continue
+        path = row[3:].split(" -> ")[-1].strip().strip('"')
+        if not BUILD_OUTPUTS.fullmatch(path) and not LEFTOVERS.fullmatch(path):
+            found.append(path)
+    return found
+
+
+def risk_reasons(tree):
+    """Why a worktree is at risk when it is not locked: the lines of the reasons, empty when it is
+    not at risk. A removal, by this tool or by hand, would lose these. A locked tree, a main or
+    standing checkout and a tree under E:\\nirender-keep are never listed. `tree` is the facts
+    of `facts_of`: `unique_commits` (None when git could not tell), `target`, `uncommitted`,
+    `risky_ignored`, `cites_path` and `cited_runs`."""
+    path = tree["path"]
+    if tree["locked"] or tree["main"] or any(same_path(path, os.path.join(REPOS_ROOT, name)) for name in SHARED_CHECKOUTS) or same_or_under(path, KEEP_ROOT):
+        return []
+    reasons = []
+    if tree["status_error"]:
+        reasons.append("git status failed, so its changes are not known: " + tree["status_error"])
+    if tree["unique_commits"] is None:
+        reasons.append("git could not say whether its commits are on a ref of %s, a remote or a tag" % tree["target"])
+    elif tree["unique_commits"]:
+        reasons.append("%d commits on no ref of %s, no remote and no tag" % (tree["unique_commits"], tree["target"]))
+    if tree["uncommitted"]:
+        reasons.append("%d uncommitted or untracked files: %s" % (len(tree["uncommitted"]), ", ".join(tree["uncommitted"][:3])))
+    if tree["risky_ignored"]:
+        reasons.append("ignored files that no build makes: " + ", ".join(tree["risky_ignored"][:3]))
+    if tree["cites_path"]:
+        reasons.append("the records cite its path")
+    if tree["cited_runs"]:
+        reasons.append("%d run folders that the records cite: %s" % (len(tree["cited_runs"]), ", ".join(tree["cited_runs"][:3])))
+    return reasons
+
+
+def print_risks(rows):
+    """The two lists before the rest: the unlocked trees at risk with the command that locks each, and
+    the locked trees with their reasons. `rows` are the facts of every tree, with `repository`."""
+    risky = [(row, risk_reasons(row)) for row in rows]
+    risky = [(row, reasons) for row, reasons in risky if reasons]
+    print("\nTREES AT RISK, NOT LOCKED (%d). A removal would lose what is named; lock a tree whose work is not kept elsewhere:" % len(risky))
+    for row, reasons in sorted(risky, key=lambda pair: pair[0]["path"]):
+        print("  %s  [%s] %s" % (row["path"], row["branch"] or "detached", "; ".join(reasons)))
+        print("      lock: " + lock_command(row, row["repository"]))
+    locked = sorted((row for row in rows if row["locked"] and not row["main"]), key=lambda row: row["path"])
+    print("\nLOCKED (%d), skipped by the tool:" % len(locked))
+    for row in locked:
+        print("  %s  [%s] %s" % (row["path"], row["branch"] or "detached", row["lock_reason"] or "no reason given"))
+
+
+def lock_command(tree, repository):
+    """The command that locks a worktree, so that this tool and `git worktree remove` leave it."""
+    folder = os.path.basename(tree["path"])
+    if folder.lower() in GENERIC_FOLDERS:
+        folder = os.path.basename(os.path.dirname(tree["path"]))
+    name = tree["branch"] or folder or "detached"
+    return 'git -C "%s" worktree lock --reason "%s: work not kept elsewhere" "%s"' % (repository, name, tree["path"])
 
 
 # ---- build output
@@ -381,8 +494,9 @@ def dependents_of(path, old_set, dependents):
     return sorted(found)
 
 
-def facts_of(tree, target, repository, running, dependents, named, idle_limit, now, kept_sets=frozenset()):
-    """All facts of a worktree for `decide`."""
+def facts_of(tree, target, repository, running, dependents, named, idle_limit, now, kept_sets=frozenset(), records=None):
+    """All facts of a worktree for `decide` and `risk_reasons`. `records` is the Evidence of the
+    records files, or None when the citations are not checked."""
     path = tree["path"]
     old_set = old_play_set(path, kept_sets)
     size, files, newest, links, unread = walk(path)
@@ -392,10 +506,18 @@ def facts_of(tree, target, repository, running, dependents, named, idle_limit, n
     status = status_run.stdout.splitlines()
     ignored = [row[3:] for row in status if row.startswith("!! ")]
     refs = git(repository, "for-each-ref", "--contains", head, "--format=%(refname)")
+    # The commits that the tree alone holds: no ref of the main branch, no remote and no tag has them.
+    unique = git(path, "rev-list", "--count", "HEAD", "--not", target, "--remotes", "--tags")
     results = real_results(path)
+    runs = os.listdir(results) if results else []
     return {
         **tree,
         "target": target,
+        "unique_commits": int(unique.stdout) if unique.returncode == 0 and unique.stdout.strip().isdigit() else None,
+        "uncommitted": uncommitted_beyond_output(status),
+        "risky_ignored": [name for name in ignored if not BUILD_OUTPUTS.fullmatch(name) and not LEFTOVERS.fullmatch(name)],
+        "cites_path": records is not None and cites_path(records, path),
+        "cited_runs": [name for name in runs if records is not None and records.cites_run(name)],
         "merged": merged,
         "named": any(same_path(path, name) for name in named),
         "old_set": old_set,
@@ -413,7 +535,7 @@ def facts_of(tree, target, repository, running, dependents, named, idle_limit, n
         "files": files,
         "links": links,
         "results": results,
-        "result_runs": len(os.listdir(results)) if results else 0,
+        "result_runs": len(runs),
     }
 
 
@@ -500,8 +622,9 @@ def main():
     current = current_set()
     kept_sets = kept_set_numbers(current, os.listdir(SETS) if os.path.isdir(SETS) else [])
     print("local.bat names the set %s; the play sets kept by number: %s" % (current, sorted(kept_sets)))
+    records = load_records()
     with ThreadPoolExecutor(8) as pool:
-        rows = list(pool.map(lambda job: facts_of(job[0], job[1], job[2], running, dependents, named, args.idle_hours, now, kept_sets), jobs))
+        rows = list(pool.map(lambda job: facts_of(job[0], job[1], job[2], running, dependents, named, args.idle_hours, now, kept_sets, records), jobs))
     go, stay = [], []
     for row, job in zip(rows, jobs):
         ok, reason = decide(row)
@@ -510,6 +633,9 @@ def main():
     print("%d processes, the current folder of %d could not be read" % (len(running), unread_processes))
     if games:
         print("a game or a helper runs: " + ", ".join(games))
+    for problem in records.problems:
+        print("THE RECORDS MAY LACK A CITATION: " + problem)
+    print_risks(go + stay)
     print("\nMAY GO (%d, %s):" % (len(go), gigabytes(sum(row["size"] for row in go))))
     for row in sorted(go, key=lambda r: -r["size"]):
         print("  %9s  %s  [%s] %s; %d links; results: %s; idle %.0f h" % (gigabytes(row["size"]), row["path"], row["branch"] or "detached", row["reason"], len(row["links"]), "%d entries to keep" % row["result_runs"] if row["results"] else "none", min(row["idle_hours"], 9999)))
@@ -633,6 +759,28 @@ def self_test():
     assert dependents_of(plugin, True, names_it) == [] and dependents_of(plugin, False, names_it) == ["MGE-XE-G7-render-link"]
     assert dependents_of(plugin, True, {**names_it, stranger: {plugin + "\\host"}}) == ["MGE-XE-G7-x"]
     assert BUILD_OUTPUTS.fullmatch("dist/") and not BUILD_OUTPUTS.fullmatch("tools/dist/")
+    # The trees at risk, from the facts of a tree: each cause alone, a lock or a standing checkout ends the list.
+    quiet = {**base, "target": "master", "unique_commits": 0, "uncommitted": [], "risky_ignored": [], "cites_path": False, "cited_runs": []}
+    assert risk_reasons(quiet) == []
+    for change, word in [
+        ({"unique_commits": 2}, "2 commits on no ref of master, no remote and no tag"),
+        ({"unique_commits": None}, "could not say"),
+        ({"uncommitted": ["a.py", "b.py"]}, "2 uncommitted or untracked files: a.py, b.py"),
+        ({"risky_ignored": ["captures/"]}, "ignored files that no build makes: captures/"),
+        ({"cites_path": True}, "the records cite its path"),
+        ({"cited_runs": ["20261104-010101-x"]}, "1 run folders that the records cite: 20261104-010101-x"),
+        ({"status_error": "not a git repository"}, "git status failed"),
+    ]:
+        reasons = risk_reasons({**quiet, **change})
+        assert len(reasons) == 1 and word in reasons[0], (change, reasons)
+    assert len(risk_reasons({**quiet, "unique_commits": 1, "uncommitted": ["a"], "cited_runs": ["r"], "cites_path": True})) == 4
+    for change in ({"locked": True}, {"main": True}, {"path": os.path.join(REPOS_ROOT, "MGE-XE-G7-train")}, {"path": "E:\\nirender-keep\\x"}):
+        assert risk_reasons({**quiet, "unique_commits": 5, "uncommitted": ["a"], **change}) == [], change
+    assert uncommitted_beyond_output(["?? new.txt", " M a.py", "?? results/", "!! target/", "R  old.rs -> new.rs", '?? "a b.txt"', "?? tools/__pycache__/", "?? host/target/", "?? nirender.log.1", "?? sub/local.json"]) == ["new.txt", "a.py", "new.rs", "a b.txt"]
+    assert LEFTOVERS.fullmatch("local.json") and LEFTOVERS.fullmatch("nirender.log") and LEFTOVERS.fullmatch("nirender.log.12")
+    assert not LEFTOVERS.fullmatch("nirender.log.old") and not LEFTOVERS.fullmatch("notes.json")
+    assert 'worktree lock --reason "nirender-plugin-bc7: work' in lock_command({"branch": None, "path": "C:\\repos\\nirender-plugin-bc7"}, "C:\\repos\\r")
+    assert lock_command({"branch": None, "path": "C:\\tmp\\shadowv\\nirender-plugin"}, "C:\\repos\\r") == 'git -C "C:\\repos\\r" worktree lock --reason "shadowv: work not kept elsewhere" "C:\\tmp\\shadowv\\nirender-plugin"'
     # The decision on an output folder.
     output = {"is_link": False, "ignored": True, "tracked": 0, "strange": [], "unread": 0, "idle_hours": 49.0}
     assert decide_output(output, [])[0]
@@ -805,9 +953,9 @@ def self_test():
                 assert git(path, "checkout", "-q", "--detach").returncode == 0
             return path
 
-        def facts(path, branch):
-            tree = {"path": path, "main": False, "branch": branch, "head": git(path, "rev-parse", "HEAD").stdout.strip(), "locked": False, "prunable": False}
-            return facts_of(tree, "master", repository, [], {}, [], 0.0, time.time())
+        def facts(path, branch, records=None):
+            tree = {"path": path, "main": False, "branch": branch, "head": git(path, "rev-parse", "HEAD").stdout.strip(), "locked": False, "lock_reason": "", "prunable": False}
+            return facts_of(tree, "master", repository, [], {}, [], 0.0, time.time(), frozenset(), records)
 
         # A junction that came after the facts: the removal finds it, and its target stays.
         late = worktree("late")
@@ -852,6 +1000,62 @@ def self_test():
         assert "NOT REMOVED" in text and "the tree stays" in text and "links removed" in text and outside2 in text, text
         assert "links removed" not in failure_text(OSError("x"), [])
         assert os.path.exists(os.path.join(refused, "new.txt"))
+
+        # The trees at risk, from real worktrees. Work that only a local branch of the tree holds:
+        ahead = worktree("ahead")
+        assert git(ahead, *commit).returncode == 0
+        row = facts(ahead, "ahead")
+        assert row["unique_commits"] == 1 and "1 commits on no ref of master" in risk_reasons(row)[0], (row["unique_commits"], risk_reasons(row))
+        # A remote ref or a tag that holds the commit ends the risk, and so does the main branch.
+        head = git(ahead, "rev-parse", "HEAD").stdout.strip()
+        assert git(repository, "update-ref", "refs/remotes/origin/ahead", head).returncode == 0
+        assert facts(ahead, "ahead")["unique_commits"] == 0 and risk_reasons(facts(ahead, "ahead")) == []
+        assert git(repository, "update-ref", "-d", "refs/remotes/origin/ahead").returncode == 0
+        assert facts(ahead, "ahead")["unique_commits"] == 1
+        assert git(repository, "tag", "kept-tag", head).returncode == 0
+        assert facts(ahead, "ahead")["unique_commits"] == 0
+        assert git(repository, "tag", "-d", "kept-tag").returncode == 0
+        assert git(repository, "merge", "-q", "--ff-only", "ahead").returncode == 0
+        assert facts(ahead, "ahead")["unique_commits"] == 0
+        # Uncommitted files, with a build's output left out.
+        dirty = worktree("dirty")
+        assert facts(dirty, "dirty")["uncommitted"] == [] and risk_reasons(facts(dirty, "dirty")) == []
+        os.makedirs(os.path.join(dirty, "results", "20261104-010101-x"))
+        open(os.path.join(dirty, "results", "20261104-010101-x", "a.log"), "w").write("a")
+        assert facts(dirty, "dirty")["uncommitted"] == [] and risk_reasons(facts(dirty, "dirty")) == []
+        open(os.path.join(dirty, "notes.txt"), "w").write("n")
+        row = facts(dirty, "dirty")
+        assert row["uncommitted"] == ["notes.txt"] and "1 uncommitted or untracked files: notes.txt" in risk_reasons(row), risk_reasons(row)
+        # A run folder that the records cite, and a tree that the records name by its path.
+        records = Evidence("a record cites 20261104-010101 and the tree " + dirty.replace("\\", "/").upper())
+        row = facts(dirty, "dirty", records)
+        assert row["cited_runs"] == ["20261104-010101-x"] and row["cites_path"], (row["cited_runs"], row["cites_path"])
+        assert any("the records cite its path" in reason for reason in risk_reasons(row)) and any("1 run folders that the records cite" in reason for reason in risk_reasons(row))
+        assert facts(dirty, "dirty", Evidence("nothing"))["cited_runs"] == []
+        # The records files: read as one text, and a missing file is a problem, not a silence.
+        records_folder = os.path.join(temp, "records")
+        os.makedirs(records_folder)
+        open(os.path.join(records_folder, "plan-forward-records-x.md"), "w").write("entry: " + dirty + "\n20261104-010101-x\n")
+        open(os.path.join(records_folder, "other.md"), "w").write("not read")
+        loaded = load_records(os.path.join(records_folder, "*records*.md"))
+        assert loaded.problems == [] and cites_path(loaded, dirty.upper()) and loaded.cites_run("20261104-010101-x") and "not read" not in loaded.text
+        assert "no records file" in load_records(os.path.join(temp, "none", "*records*.md")).problems[0]
+        # A lock takes a tree off the list and puts it on the list of the locked, with its reason.
+        assert git(repository, "worktree", "lock", "--reason", "Ryker: a task of D98", dirty).returncode == 0
+        locked = next(tree for tree in worktrees_of(repository) if same_path(tree["path"], dirty))
+        assert locked["locked"] and locked["lock_reason"] == "Ryker: a task of D98", locked
+        locked_row = facts_of(locked, "master", repository, [], {}, [], 0.0, time.time(), frozenset(), records)
+        assert risk_reasons(locked_row) == []
+        at_risk = {**facts(ahead, "ahead"), "unique_commits": 3, "repository": repository}
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            print_risks([at_risk, {**locked_row, "repository": repository}])
+        text = text.getvalue()
+        assert "TREES AT RISK, NOT LOCKED (1)" in text and "3 commits on no ref of master" in text, text
+        assert 'lock: git -C "%s" worktree lock --reason "ahead: work not kept elsewhere" "%s"' % (repository, ahead) in text, text
+        assert "LOCKED (1), skipped by the tool" in text and "Ryker: a task of D98" in text and text.index("TREES AT RISK") < text.index("LOCKED (1)"), text
+        # The tool skips a locked tree as before.
+        assert decide({**base, **{"locked": True}}) == (False, "git holds it locked")
     print("clean_merged_worktrees self-test: ok")
     return 0
 
