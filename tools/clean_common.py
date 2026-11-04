@@ -34,6 +34,11 @@ OUTPUT_ONLY_REPOSITORIES = [os.path.join("MWSE", "MWSE")]
 # local.bat of this checkout names the current play set.
 PLUGIN_CHECKOUT = os.path.join(REPOS_ROOT, "nirender-plugin")
 SETS = os.path.join(KEEP_ROOT, "mgebuilds")
+# The WER crash dumps of the runs, one folder for each run under its run folder's name (D94; the
+# harness's RUN_DUMPS). The run folder holds the pointer file DUMPS_FILE: a line for each dump,
+# its path first, then its bytes and its source, with tabs.
+KEPT_DUMPS = os.path.join(KEEP_ROOT, "dumps")
+DUMPS_FILE = "dumps.txt"
 GAME_PROGRAMS = {"morrowind.exe", "numidium.exe", "nirender-host.exe"}
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
@@ -386,12 +391,12 @@ def old_play_set(path, kept):
 
 
 def evidence_folders():
-    """The folders whose text names runs. Not the copies of runs and not the sets: a run's log names its own folder,
-    and that is no citation. A folder that is missing shows in the load."""
+    """The folders whose text names runs. Not the copies of runs, not the sets and not the runs' dumps: a run's log
+    names its own folder, and that is no citation. A folder that is missing shows in the load."""
     folders = [DOCS, MEMORY, CARDS]
     try:
         with os.scandir(KEEP_ROOT) as entries:
-            folders += sorted(entry.path for entry in entries if entry.is_dir(follow_symlinks=False) and not is_link_entry(entry) and not entry.name.startswith("runs-") and entry.path != SETS)
+            folders += sorted(entry.path for entry in entries if entry.is_dir(follow_symlinks=False) and not is_link_entry(entry) and not entry.name.startswith("runs-") and entry.path not in (SETS, KEPT_DUMPS))
     except OSError:
         folders.append(KEEP_ROOT)
     return folders
