@@ -1,6 +1,6 @@
 //! Locked count writes of `NiRefObject` (risk 56): the increments and the `NiPointer` releases
-//! that the ledger saw on the property paths, `NiObject::release`, and the inline releases of
-//! the same functions.
+//! that the ledger saw on the property paths, `NiObject::release`, the inline releases of the
+//! same functions, and the changes of the renderer's current states.
 //!
 //! The main thread and the cell loader thread (`game_threadLoadCells`) both run
 //! `NiPropertyState::reset`, `NiPropertyState::ctor_copy`, `NiPointer::set`, `NiPointer::dtor`
@@ -11,9 +11,16 @@
 //! a `lock` on each of these writes. `NiObject::release` (0x404630) is the same release as
 //! `NiPointer::dtor`, and `NiPropertyState::reset` calls it for 7 of its slots.
 //!
-//! Each site is one of four forms, and its first 5 bytes become a jump to a stub:
+//! `NiGeometry::pushStateToRenderer` (0x6F3F40) and `NiRenderer::BeginBatch` (0x6F5380) make a
+//! shape's states the renderer's current ones, each with the same plain releases and
+//! increments; `NiDX8Renderer::dtor` releases the current property state.
+//!
+//! Each site is one of five forms, and its first 5 bytes become a jump to a stub:
 //! - `jz +3; inc dword [r+4]` (74 03 FF modrm 04), 5 bytes: the stub is
 //!   `jz back; lock inc dword [r+4]; back: jmp site+5`.
+//! - `test r, r; mov [b+d], r; jz +3; inc dword [r+4]`, 10 bytes: the 3 bytes after the `inc`
+//!   are a branch target, so the site starts at the `test`. The stub is the `test` and the
+//!   `mov` as they are, then the first form, with `jmp site+10`.
 //! - `dec dword [ecx+4]; jnz +n` (FF 49 04 75 n), 5 bytes: the stub is
 //!   `lock dec dword [ecx+4]; jnz site+5+n; jmp site+5`.
 //! - The plain inline release `mov eax, [r+4]; dec eax; mov [r+4], eax`, 7 bytes before a
@@ -40,7 +47,7 @@ struct Site {
     slot: &'static str,
 }
 
-const SITES: [Site; 30] = [
+const SITES: [Site; 39] = [
     Site { at: 0x6FE39F, len: 5, function: "NiPropertyState::reset", slot: "default alpha" },
     Site { at: 0x6FE3BF, len: 5, function: "NiPropertyState::reset", slot: "default fog" },
     Site { at: 0x6FE3DF, len: 5, function: "NiPropertyState::reset", slot: "default material" },
@@ -71,6 +78,15 @@ const SITES: [Site; 30] = [
     Site { at: 0x6EB125, len: 5, function: "NiAVObject::UpdateProperties", slot: "the state" },
     Site { at: 0x6EB137, len: 13, function: "NiAVObject::UpdateProperties", slot: "the local state (release)" },
     Site { at: 0x6EB19A, len: 7, function: "NiAVObject::UpdateProperties", slot: "the state (release)" },
+    Site { at: 0x6F3F5E, len: 7, function: "NiGeometry::pushStateToRenderer", slot: "the old current property state (release)" },
+    Site { at: 0x6F3F6D, len: 10, function: "NiGeometry::pushStateToRenderer", slot: "the shape's property state" },
+    Site { at: 0x6F3F88, len: 7, function: "NiGeometry::pushStateToRenderer", slot: "the old current effect state (release)" },
+    Site { at: 0x6F3F97, len: 10, function: "NiGeometry::pushStateToRenderer", slot: "the shape's effect state" },
+    Site { at: 0x6F5393, len: 7, function: "NiRenderer::BeginBatch", slot: "the old current property state (release)" },
+    Site { at: 0x6F53A2, len: 10, function: "NiRenderer::BeginBatch", slot: "the batch's property state" },
+    Site { at: 0x6F53BB, len: 7, function: "NiRenderer::BeginBatch", slot: "the old current effect state (release)" },
+    Site { at: 0x6F53CA, len: 10, function: "NiRenderer::BeginBatch", slot: "the batch's effect state" },
+    Site { at: 0x6A9EEB, len: 7, function: "NiDX8Renderer::dtor", slot: "the current property state (release)" },
 ];
 
 /// The most bytes of a site, and one more for the `jnz` after an inline release.
@@ -92,6 +108,9 @@ const INTERLEAVED_REGS: [u8; 3] = [2, 6, 7];
 
 const EDX: u8 = 2;
 
+/// The registers that hold the state in a store before an increment: esi and edi.
+const STORE_REGS: [u8; 2] = [6, 7];
+
 /// The length of the site at the start of `bytes` and its stub at `stub`, for a site at `at`;
 /// None for bytes of no form.
 fn stub_code(at: usize, bytes: &[u8; READ_LEN], stub: usize) -> Option<(usize, Vec<u8>)> {
@@ -99,6 +118,8 @@ fn stub_code(at: usize, bytes: &[u8; READ_LEN], stub: usize) -> Option<(usize, V
     let len = if let Some(len) = inc_or_dec(at, bytes, stub, &mut code) {
         len
     } else if let Some(len) = plain_release(bytes, &mut code) {
+        len
+    } else if let Some(len) = store_then_inc(bytes, &mut code) {
         len
     } else {
         interleaved_release(bytes, &mut code)?
@@ -138,6 +159,27 @@ fn plain_release(bytes: &[u8; READ_LEN], code: &mut Vec<u8>) -> Option<usize> {
     code.extend_from_slice(&[0xF0, 0x0F, 0xC1, modrm, 0x04]); // lock xadd [r+4], eax
     code.push(0x48); // dec eax
     Some(7)
+}
+
+/// `test r, r; mov [b+d8], r; jz +3; inc dword [r+4]`: 10 bytes. r is esi or edi.
+fn store_then_inc(bytes: &[u8; READ_LEN], code: &mut Vec<u8>) -> Option<usize> {
+    let r = bytes[1] & 7;
+    let store = bytes[3];
+    let form = bytes[0] == 0x85
+        && STORE_REGS.contains(&r)
+        && bytes[1] == 0xC0 | (r << 3) | r
+        && bytes[2] == 0x89
+        && store >> 6 == 1 // mod 01: [b+d8]
+        && (store >> 3) & 7 == r
+        && store & 7 != 4 // no SIB byte
+        && bytes[5..10] == [0x74, 0x03, 0xFF, 0x40 | r, 0x04];
+    if !form {
+        return None;
+    }
+    code.extend_from_slice(&bytes[..5]); // test r, r; mov [b+d8], r
+    code.extend_from_slice(&[0x74, 0x04]); // jz over the lock inc
+    code.extend_from_slice(&[0xF0, 0xFF, 0x40 | r, 0x04]); // lock inc dword [r+4]
+    Some(10)
 }
 
 /// `mov c, [eax+4]; mov ecx, eax; add eax, 4; dec c; (mov edx, c); test edx, edx; mov [eax], c;
@@ -217,7 +259,7 @@ pub unsafe fn install() {
     }
     INSTALLED.store(locked > 0, Ordering::Relaxed);
     crate::log!(
-        "atomic count: {locked} of {} sites locked (NiPropertyState, NiPointer, NiObject::release, the property updates and their inline releases)",
+        "atomic count: {locked} of {} sites locked (NiPropertyState, NiPointer, NiObject::release, the property updates and their inline releases, the current states)",
         SITES.len()
     );
 }
@@ -330,6 +372,35 @@ mod tests {
         assert_eq!(len, 15);
         assert_eq!(&code[2..13], &[0xBF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF0, 0x0F, 0xC1, 0x78, 0x04, 0x4F]);
         assert_eq!(&code[16..18], &[0x8B, 0xD7]);
+    }
+
+    #[test]
+    fn the_stub_of_a_store_then_inc_keeps_the_store_and_locks_the_inc() {
+        // 0x6F3F6D, NiGeometry::pushStateToRenderer: test esi, esi; mov [ebx+0Ch], esi; jz +3; inc dword [esi+4]
+        let site = [0x85, 0xF6, 0x89, 0x73, 0x0C, 0x74, 0x03, 0xFF, 0x46, 0x04];
+        let (len, code) = stub_code(0x6F3F6D, &read(&site), 0x8000).unwrap();
+        assert_eq!(len, 10);
+        assert_eq!(&code[..11], &[0x85, 0xF6, 0x89, 0x73, 0x0C, 0x74, 0x04, 0xF0, 0xFF, 0x46, 0x04]);
+        assert_eq!(code[11], 0xE9);
+        assert_eq!(target(&code, 0x8000, 16), 0x6F3F77);
+    }
+
+    #[test]
+    fn the_store_then_inc_of_begin_batch_uses_edi_and_esi() {
+        // 0x6F53CA, NiRenderer::BeginBatch: test edi, edi; mov [esi+10h], edi; jz +3; inc dword [edi+4]
+        let site = [0x85, 0xFF, 0x89, 0x7E, 0x10, 0x74, 0x03, 0xFF, 0x47, 0x04];
+        let (len, code) = stub_code(0x6F53CA, &read(&site), 0x9000).unwrap();
+        assert_eq!(len, 10);
+        assert_eq!(&code[5..11], &[0x74, 0x04, 0xF0, 0xFF, 0x47, 0x04]);
+        assert_eq!(target(&code, 0x9000, 16), 0x6F53D4);
+    }
+
+    #[test]
+    fn a_store_then_inc_of_another_register_gets_no_stub() {
+        // The test of esi, the increment of edi.
+        assert!(stub_code(0, &read(&[0x85, 0xF6, 0x89, 0x73, 0x0C, 0x74, 0x03, 0xFF, 0x47, 0x04]), 0).is_none());
+        // A store with a SIB byte.
+        assert!(stub_code(0, &read(&[0x85, 0xF6, 0x89, 0x74, 0x0C, 0x74, 0x03, 0xFF, 0x46, 0x04]), 0).is_none());
     }
 
     #[test]
