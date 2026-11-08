@@ -1462,10 +1462,10 @@ impl Renderer {
         let index = self.quad_index_buffer(count as u32);
         let device = self.device.clone();
         let quads = self.particle_quads.get_or_insert_with(|| particle_quads::ParticleQuads::new(&device));
-        let (vertex, base_vertex) = quads.add(&device, particles, sum, difference);
+        let (vertex, place) = quads.add(&device, particles, sum, difference);
         self.counts.shape_particles += 1;
         // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: count as u32 * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex, first_index: 0, unique: None, influence_range: None, bones_needed: 0, uv: None, drawn_in: 0 };
+        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: place.indices, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: place.first_vertex as i32, first_index: 0, unique: None, influence_range: None, bones_needed: 0, uv: None, drawn_in: 0 };
         self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
     }
