@@ -960,8 +960,6 @@ struct Player {
     /// began ([`Player::is_early_world_draw`]).
     view_early_draws: u32,
     split: Option<[f64; 4]>,
-    /// The post-processing of this frame is in the items.
-    posted: bool,
     /// The view and the projection of the last world draw of the frame: the matrices of
     /// the world for a call after the world views, when the stream has those of the user
     /// interface.

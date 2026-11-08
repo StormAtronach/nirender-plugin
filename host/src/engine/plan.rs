@@ -32,6 +32,9 @@ pub(crate) enum Step {
     /// The scenes of the world camera are done (the world and the water scene): the
     /// extension's classes that no draw brought get their call here, once in a frame.
     MissingClasses,
+    /// A read of the back buffer ended the last picture, and this world scene starts another
+    /// before the Present: the player starts its state of a picture (the plan reset itself).
+    NewPicture,
 }
 
 /// The state of the plan within a frame.
@@ -65,6 +68,11 @@ pub(crate) struct Plan {
     queue_open: bool,
     /// [`Step::MissingClasses`] was given in this frame.
     classes_checked: bool,
+    /// The post-processing of this picture is in the items ([`Plan::take_post`]).
+    posted: bool,
+    /// A read of the back buffer ended the picture: the next world scene starts a new one
+    /// ([`Step::NewPicture`]).
+    picture_ended: bool,
 }
 
 impl Plan {
@@ -86,10 +94,16 @@ impl Plan {
     /// first-person or the user interface scene: the engine flushes the queue in its water
     /// scene, so this is for a frame without one. The classes that no draw of the world camera
     /// brought go before them, as the engine draws its water before it flushes the queue.
+    /// A world scene after a read of the back buffer starts a new picture: the game draws again
+    /// after its clear (`renderMainScene` 0x41C535), and the world starts and ends again in it.
     pub(crate) fn scene_begin_view(&mut self, kind: u32, view: ViewKind) -> Vec<Step> {
+        let mut steps = Vec::new();
+        if self.picture_ended && kind == scene::SCENE_WORLD {
+            self.frame_start();
+            steps.push(Step::NewPicture);
+        }
         self.scene_kind = kind;
         self.view = view;
-        let mut steps = Vec::new();
         if self.world_ended && !self.classes_checked && (kind == scene::SCENE_FIRST_PERSON || kind == scene::SCENE_UI) {
             self.classes_checked = true;
             steps.push(Step::MissingClasses);
@@ -108,6 +122,23 @@ impl Plan {
             self.main_view_due = true;
         }
         steps
+    }
+
+    /// A read of the back buffer (a screenshot of the game or of a mod): the picture is done.
+    /// The plan resets at the next world scene, not here: a read between the world and the
+    /// user interface keeps the picture's post-processing and its classes' calls.
+    pub(crate) fn back_buffer_read(&mut self) {
+        self.picture_ended = true;
+    }
+
+    /// The post-processing item goes now: the world began, the frame is drawn, the extension
+    /// wants it (`wanted`), and the picture has none yet.
+    pub(crate) fn take_post(&mut self, drawing: bool, wanted: bool) -> bool {
+        if self.posted || !self.world_begun || !drawing || !wanted {
+            return false;
+        }
+        self.posted = true;
+        true
     }
 
     /// A clear of the depth by the game. After the world, it starts the game's scenes past the
@@ -578,6 +609,78 @@ mod tests {
         assert_eq!(main.scene_end(true, true, true, true, false), vec![Step::ReleaseHeld, Step::EndWorld]);
         assert_eq!(target.depth_clear(), vec![]);
         assert_eq!(main.scene_begin(SCENE_FIRST_PERSON), vec![Step::MissingClasses, Step::SortedBlends(0)]);
+    }
+
+    /// The world scene of a second picture: its sky, its world, its end.
+    fn second_world_scene(plan: &mut Plan) {
+        assert_eq!(plan.scene_begin(SCENE_WORLD), vec![Step::NewPicture]);
+        assert!(!plan.world_begun && !plan.world_ended);
+        assert_eq!(plan.world_draw(true, true, true, false, false), (vec![], false));
+        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
+    }
+
+    /// The screenshot key: `takeScreenshot` reads the back buffer, then `renderNextFrame` draws
+    /// the frame again after its clear (`mainLoop` 0x41B098, 0x41BE56; 0x41C535), in the same
+    /// frame of the helper.
+    #[test]
+    fn a_back_buffer_read_ends_the_picture_and_the_next_world_scene_starts_the_world() {
+        let mut plan = Plan::default();
+        world_scene(&mut plan);
+        assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::MissingClasses, Step::Post]);
+        plan.scene_end(true, true, true, false, false);
+        plan.back_buffer_read();
+        second_world_scene(&mut plan);
+        // One read starts one picture: a later world scene is of the same picture.
+        assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
+    }
+
+    /// The world start is the item that calls the extension's `before_world` (`start_world`,
+    /// the player's items): Ryker's run lost the second picture's sky with it.
+    #[test]
+    fn the_picture_after_a_back_buffer_read_gets_its_world_start_and_its_post() {
+        let mut plan = Plan::default();
+        world_scene(&mut plan);
+        plan.scene_begin(SCENE_UI);
+        assert!(plan.take_post(true, true));
+        assert!(!plan.take_post(true, true), "a second post in one picture");
+        plan.scene_end(true, true, true, false, false);
+        plan.back_buffer_read();
+        second_world_scene(&mut plan);
+        assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::MissingClasses, Step::Post]);
+        assert!(plan.take_post(true, true), "the second picture has no post");
+    }
+
+    /// The reset touches only the picture after the read (Ryker's run 20261108-072733-risk72b):
+    /// the next frame starts from `begin_frame`, and its world starts once.
+    #[test]
+    fn the_frame_after_the_reset_picture_starts_its_world_once() {
+        let mut plan = Plan::default();
+        world_scene(&mut plan);
+        plan.back_buffer_read();
+        second_world_scene(&mut plan);
+        plan.scene_begin(SCENE_UI);
+        // The Present; the next frame's records.
+        plan.frame_start();
+        assert_eq!(world_scene(&mut plan), vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
+        // Its water scene, a later scene of the world camera, starts nothing.
+        assert_eq!(plan.scene_begin(SCENE_WATER), vec![]);
+        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![], false));
+        assert!(!plan.scene_end(true, true, true, false, false).contains(&Step::StartWorld));
+    }
+
+    /// The reset waits for the next world scene: a read before the user interface scene
+    /// keeps the picture's classes' calls and its post.
+    #[test]
+    fn a_read_between_the_world_and_the_ui_keeps_the_pictures_post() {
+        let mut plan = Plan::default();
+        world_scene(&mut plan);
+        plan.back_buffer_read();
+        assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::MissingClasses, Step::Post]);
+        assert!(plan.take_post(true, true));
+        // The next frame's start clears the mark: its world scene starts no second picture.
+        plan.frame_start();
+        assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
     }
 
     #[test]

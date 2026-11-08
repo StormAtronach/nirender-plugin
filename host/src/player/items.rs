@@ -347,6 +347,7 @@ impl Player {
                     self.items.push(Item::FirstPersonDepth(self.stream.projection));
                 }
             }
+            plan::Step::NewPicture => self.picture_start(),
         }
     }
 
@@ -365,12 +366,12 @@ impl Player {
         }
     }
 
-    /// The post-processing item, one time in a frame, after the world began.
+    /// The post-processing item, one time in a picture, after the world began.
     pub(crate) fn post_item(&mut self) {
-        if self.posted || !self.plan.world_begun || !self.drawing() || !self.parameters.as_ref().is_some_and(|p| p.post) {
+        let wanted = self.parameters.as_ref().is_some_and(|p| p.post);
+        if !self.plan.take_post(self.drawing(), wanted) {
             return;
         }
-        self.posted = true;
         let mut facts = self.world_facts(false);
         if let Some((view, projection)) = self.world_matrices {
             facts.view = view;
