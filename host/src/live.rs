@@ -1134,7 +1134,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
     };
     assert_eq!(tag, super::tag::HEADER, "the first record is not the head of the stream");
     // The window of the game owns the boxes of this program, the one of a refused stream too.
-    let game_window = if data.len() >= HEADER_WINDOW_AT + 4 { super::word(&data, HEADER_WINDOW_AT) as isize } else { 0 };
+    let game_window = super::word(&data, HEADER_WINDOW_AT) as isize;
     super::gpu::set_owner_window(game_window);
     // The stream format of the plugin against this build's, before any record is read. A
     // difference ends this program: the plugin reads the exit code and shows no second box.

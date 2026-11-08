@@ -98,8 +98,8 @@ pub mod tag {
     /// The frame is complete.
     pub const FRAME_END: u32 = 10;
     /// The first record: the width and the height of the back buffer, the window of the
-    /// game, and the abilities of the stream (`HEADER_QUEUE_MARKED`; an older capture has
-    /// only the first three words).
+    /// game, and the abilities of the stream (`HEADER_QUEUE_MARKED`), then the stream format
+    /// and the build id (`stream_format::HEADER_BYTES`).
     pub const HEADER: u32 = 11;
     /// The game wrote a level of a texture: handle, level, width and height of the level,
     /// D3D format, size; then the bytes.

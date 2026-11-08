@@ -69,7 +69,7 @@ impl Player {
         match tag {
             tag::HEADER => {
                 self.size = (word(data, HEADER_WIDTH_AT), word(data, HEADER_HEIGHT_AT));
-                let abilities = if data.len() >= HEADER_ABILITIES_AT + 4 { word(data, HEADER_ABILITIES_AT) } else { 0 };
+                let abilities = word(data, HEADER_ABILITIES_AT);
                 self.stream.world_walk = abilities & HEADER_WORLD_WALK != 0;
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
                 self.stream.envmap_lit = abilities & HEADER_ENVMAP_LIT != 0;

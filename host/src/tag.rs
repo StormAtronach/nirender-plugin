@@ -126,7 +126,8 @@ pub fn is_known(tag: u32) -> bool {
 /// or reads with a check of its own on the whole record.
 pub fn least_length(tag: u32) -> usize {
     match tag {
-        HEADER => 8,
+        // The width, the height, the window and the abilities of the stream.
+        HEADER => 16,
         // The handle, the unique id, the width, the height, the levels, the format, then
         // the table of the offsets of the levels (levels + 1 words), the widths and the
         // heights (a word each for each level).
