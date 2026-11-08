@@ -2090,6 +2090,12 @@ fn shown_record(ids: &[u32]) -> Vec<u8> {
 }
 
 /// The main view's list of displays. See [`tag::INSTANCE_SHOWN`].
+///
+/// # Safety
+///
+/// As for every record of a frame: the caller is on the game's main thread, at the place of
+/// the record in the frame (before `FRAME_END`, or before the `READ_PIXELS` record of a read of
+/// the back buffer).
 pub unsafe fn instance_shown(ids: &[u32]) {
     write(tag::INSTANCE_SHOWN, &[&shown_record(ids)]);
 }
@@ -2605,7 +2611,10 @@ unsafe fn host_gone(lock: &DeviceLock) {
 /// view's item runs, and a slot's retirement comes after the record at which its last items run
 /// (D82 design, 3.1 rule 1), and before the next frame's first scene.
 pub(crate) fn frame_end_records(start: i64, end: i64, shown: Option<&[u32]>, retired: &[u8]) -> Vec<(u32, Vec<u8>)> {
-    let mut records: Vec<(u32, Vec<u8>)> = shown.map(|ids| (tag::INSTANCE_SHOWN, shown_record(ids))).into_iter().collect();
+    let mut records = Vec::new();
+    if let Some(ids) = shown {
+        records.push((tag::INSTANCE_SHOWN, shown_record(ids)));
+    }
     records.push((tag::FRAME_END, [start.to_le_bytes(), end.to_le_bytes()].concat()));
     for &slot in retired {
         records.push((tag::FRAME_EVENT, words(&[crate::link::EVENT_VIEW_RETIRE, slot as u32, 0]).to_vec()));
