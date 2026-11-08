@@ -184,8 +184,8 @@ The A/B:
   every display, not every 64th frame (`nirender.noteEvery`).
 - `NIRENDER_SKIP_PORT=<name>`: one port left uninstalled, to measure its cost. Only a port
   whose function is not the renderer's.
-- `NIRENDER_SKY=off` keeps the sky on the engine's records; `NIRENDER_SKY=count` also logs
-  each sky shape once. The default: the sky's instances in the table.
+- `NIRENDER_SKY=count` keeps the sky on the engine's records and logs each sky shape once.
+  The default: the sky's instances in the table.
 - `NIRENDER_WEATHER=on` puts the rain, snow and storm drops (class 9) into the table, drawn at
   the engine's places as the sky is (`nirender.weatherDraws(false)` turns their draws back to
   the engine's records in a session); `NIRENDER_WEATHER=count` logs each drop shape once. The

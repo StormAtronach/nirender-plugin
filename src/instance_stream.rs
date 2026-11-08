@@ -1287,8 +1287,8 @@ unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, skinned
     None
 }
 
-/// The switch of the sky (`NIRENDER_SKY`): 0 not read, 1 off (`off`), 2 the census (`count`),
-/// 3 the sky's instances in the table (the default; milestone 6).
+/// The switch of the sky (`NIRENDER_SKY`): 0 not read, 1 the census (`count`), 2 the sky's
+/// instances in the table (the default; milestone 6).
 static SKY_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 /// The sky shapes the census logged: once each.
 static SKY_SEEN: MainCell<Vec<usize>> = MainCell::new(Vec::new());
@@ -1297,11 +1297,7 @@ fn sky_mode() -> u8 {
     use core::sync::atomic::Ordering::Relaxed;
     match SKY_MODE.load(Relaxed) {
         0 => {
-            let mode = match crate::switches::choice("NIRENDER_SKY", &["off", "count", "on"]) {
-                Some("off") => 1,
-                Some("count") => 2,
-                _ => 3,
-            };
+            let mode = if crate::switches::choice("NIRENDER_SKY", &["count", "on"]) == Some("count") { 1 } else { 2 };
             SKY_MODE.store(mode, Relaxed);
             mode
         }
@@ -1311,13 +1307,13 @@ fn sky_mode() -> u8 {
 
 /// True when the census of the sky is on.
 pub fn sky_census_on() -> bool {
-    sky_mode() == 2
+    sky_mode() == 1
 }
 
 /// True when the table takes the sky's shapes (milestone 6): each draw of a sky shape goes as
 /// an `INSTANCE_DRAW` record in the place of the engine's shape record (`draw`).
 pub fn sky_table_on() -> bool {
-    sky_mode() == 3
+    sky_mode() == 2
 }
 
 /// The draws of the sky instances go as `INSTANCE_DRAW` records (`nirender.skyDraws`; on by
