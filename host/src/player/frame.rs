@@ -99,10 +99,7 @@ impl Player {
             world_prepared: false,
             view_world_begun: false,
             view_sky_seen: false,
-            view_world_why: "",
             view_scene_draws: [0; 2],
-            view_table_at: None,
-            view_table_lines: 0,
             view_early_draws: 0,
             split: None,
             posted: false,
@@ -346,7 +343,7 @@ impl Player {
         self.plan.frame_start();
         self.target_plan.frame_start();
         self.views.frame_start();
-        self.retained.view_tables.frame_start();
+        self.retained.clear_shown();
         self.renderer.counts.view_times.frame_start(self.renderer.counts.frames);
         // The shade of the last frame, for a view of another camera before any view of the
         // world camera in this one.
@@ -434,11 +431,11 @@ impl Player {
     }
 
     /// Sends the commands of the frame up to now to the GPU. The frame goes on after `between`.
-    /// With `touch` and the plugin's bits for each view, the items of the back buffer stay
-    /// queued, and the runs into textures go ahead where they may ([`super::split`]). `touch`
-    /// names the rendered textures that `between` reads and writes; without it every item runs.
+    /// With `touch` in a drawn frame, the items of the back buffer stay queued, and the runs into
+    /// textures go ahead where they may ([`super::split`]). `touch` names the rendered textures
+    /// that `between` reads and writes; without it every item runs.
     pub(crate) fn flush_split<T>(&mut self, touch: Option<super::split::Touch>, between: impl FnOnce(&mut Player) -> T) -> T {
-        let held = match touch.filter(|_| self.retained.view_bits && self.drawing()) {
+        let held = match split_touch(touch, self.drawing()) {
             Some(touch) => self.run_items_split(&touch),
             None => {
                 self.run_items();
@@ -573,4 +570,27 @@ impl Player {
         self.renderer.counts.times[TIME_END] += clock.elapsed();
     }
 
+}
+
+/// The textures of a flush that may leave the back buffer's items queued: a flush that names
+/// what it reads and writes (`touch`) in a drawn frame. The main view's table then waits for
+/// its list, which the plugin sends at the swap or just before a read of the back buffer; a
+/// read of the back buffer names no textures and runs every item.
+fn split_touch(touch: Option<super::split::Touch>, drawing: bool) -> Option<super::split::Touch> {
+    touch.filter(|_| drawing)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_touch;
+    use crate::player::split::Touch;
+
+    #[test]
+    fn the_flush_split_holds_the_back_buffer_items_with_the_list() {
+        let read_of_a_texture = || Some(Touch { reads: vec![5], writes: Vec::new() });
+        assert!(split_touch(read_of_a_texture(), true).is_some());
+        // A read of the back buffer runs every item, and so does a frame that is not drawn.
+        assert!(split_touch(None, true).is_none());
+        assert!(split_touch(read_of_a_texture(), false).is_none());
+    }
 }

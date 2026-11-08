@@ -1,11 +1,12 @@
 //! The split of a flush in the middle of a frame (D82 stage 2). The items of the back buffer stay
-//! queued until the frame's end, because the plugin closes view 0 (its hides) at the swap. A run
+//! queued until the frame's end, because the plugin sends the main view's list at the swap
+//! (`INSTANCE_SHOWN`, form D). A run
 //! into a rendered texture after them goes ahead only when that changes nothing it draws or
 //! samples, and nothing that a held item draws or samples:
 //!
 //! - (i) every item of the run is of a kind that reads no target of the frame: a target, a clear,
 //!   a viewport, a draw, a screen draw, the table's places (`WalkPlaces`, `ViewPlaces`,
-//!   `ViewSorted`) or a view's table (`ViewTable`). The sorted blends can copy the frame's depth (`merge_late_depth`), and any
+//!   `ViewSorted`). The sorted blends can copy the frame's depth (`merge_late_depth`), and any
 //!   other kind, a new one too, stays in order;
 //! - (ii) no held item reads or writes the texture that the run writes, and no held item writes a
 //!   texture that the run reads.
@@ -289,7 +290,7 @@ impl Player {
             Item::Clear(..) => movable(Reads::default()),
             Item::Draw(draw) => movable(Reads::of(draw.texture_handles.iter().copied().filter(known))),
             Item::Screen(screen) => movable(Reads::of(Some(screen.texture).filter(known))),
-            Item::WalkPlaces(_) | Item::ViewPlaces(..) | Item::ViewSorted(_) | Item::ViewTable(_) => movable(table_reads()),
+            Item::WalkPlaces(_) | Item::ViewPlaces(..) | Item::ViewSorted(_) => movable(table_reads()),
             // The sorted blends can copy the frame's depth (`merge_late_depth`).
             Item::SortedBlends(_) => fixed(table_reads()),
             // The extension's items with the replay of the world's draws (extension.rs:614-692);

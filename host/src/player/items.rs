@@ -133,7 +133,7 @@ impl Player {
                 Item::Draw(_) | Item::Screen(_) if world_started => Some("game: draws in the world"),
                 Item::Draw(_) | Item::Screen(_) => Some("game: before the world (sky)"),
                 Item::WalkPlaces(_) => Some(MAIN_VIEW_WALK),
-                Item::ViewPlaces(group, _) | Item::ViewSorted(group) | Item::ViewTable(group) => Some(self.view_group_name(*group)),
+                Item::ViewPlaces(group, _) | Item::ViewSorted(group) => Some(self.view_group_name(*group)),
                 Item::SortedBlends(_) => Some(MAIN_VIEW_SORTED),
                 Item::MainView(_) => Some(MAIN_VIEW_OPAQUE),
                 Item::Replace(..) => Some("a class of draws (extension: water)"),
@@ -181,7 +181,6 @@ impl Player {
                         Item::WalkPlaces(_) => "walk-places",
                         Item::ViewPlaces(..) => "view-places",
                         Item::ViewSorted(_) => "view-sorted",
-                        Item::ViewTable(_) => "view-table",
                         Item::HeldHere(..) => "held",
                         Item::Replace(..) => "replace",
                         Item::Post(_) => "post",
@@ -229,7 +228,6 @@ impl Player {
                     let ids = self.views.take_run(group, run);
                     self.timed(self.view_group_name(group), ids.len() as u64, |player| player.draw_view_run(group, &ids));
                 }
-                Item::ViewTable(group) => self.timed(self.view_group_name(group), 0, |player| player.draw_view_table(group)),
                 Item::ViewSorted(group) => {
                     let ids = self.views.take_sorted(group);
                     self.timed(self.view_group_name(group), ids.len() as u64, |player| player.draw_view_run(group, &ids));

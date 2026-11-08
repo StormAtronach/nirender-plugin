@@ -4,22 +4,12 @@
 use crate::*;
 use crate::stream_format::{
     HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET,
-    HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_BITS, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
+    HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
 /// The generation of the reply memory that a `READ_PIXELS` record names: 0 in a record of a
 /// plugin before the third word.
 pub(crate) fn reply_generation(data: &[u8]) -> u32 {
-    if data.len() >= 12 {
-        word(data, 8)
-    } else {
-        0
-    }
-}
-
-/// The view slot that an `INSTANCE_STATE` record names: 0 (the main view) in a record of a
-/// plugin before the third word.
-fn instance_state_view(data: &[u8]) -> u32 {
     if data.len() >= 12 {
         word(data, 8)
     } else {
@@ -93,7 +83,6 @@ impl Player {
                 self.views.on = abilities & HEADER_VIEW_PLACES != 0;
                 self.views.slots_on = abilities & HEADER_SCENE_VIEWS != 0;
                 self.views.repeat_walk_on = self.views.slots_on && crate::stream_format::header_format(data) >= crate::stream_format::FORMAT_SCENE_REPEAT_WALK;
-                self.retained.view_bits = abilities & HEADER_VIEW_BITS != 0;
                 self.stream.scene_wireframe = abilities & HEADER_SCENE_WIREFRAME != 0;
                 self.stream.envmap_lit = (abilities & HEADER_ENVMAP_KNOWN != 0).then_some(abilities & HEADER_ENVMAP_LIT != 0);
             }
@@ -198,10 +187,8 @@ impl Player {
                 self.views.scene_begin(kind, in_target, camera_is_world);
                 self.view_world_begun = false;
                 self.view_sky_seen = false;
-                self.view_world_why = "";
                 self.view_scene_draws = [0; 2];
                 self.view_early_draws = 0;
-                self.view_table_at = None;
                 for step in self.plan_now().scene_begin_view(kind, ViewKind::classify(in_target, camera_is_world)) {
                     self.plan_step(step);
                 }
@@ -215,17 +202,11 @@ impl Player {
                 for step in steps {
                     self.plan_step(step);
                 }
-                // A view into a texture closes here (its EndPaint): its table takes its list now. A
-                // scene whose world did not begin gets its table item here.
+                // A scene of a view of its own whose world did not begin gets its world's items here.
                 let open_group = self.views.open();
-                if let Some(group) = open_group {
-                    self.begin_view_world("the scene end");
-                    self.view_table_item();
-                    let facts = self.views.group(group).and_then(|g| g.facts);
-                    if let (Some(bit), Some(facts), Some(_)) = (self.table_bit(group), facts, self.target) {
-                        self.retained.close_view(group, bit, view_planes(&facts.view, &facts.projection));
-                    }
-                    self.view_table_line(group);
+                if open_group.is_some() {
+                    self.begin_view_world();
+                    self.view_world_items();
                 }
                 if let Some(group) = self.views.scene_end().filter(|_| drawing) {
                     self.items.push(Item::ViewSorted(group));
@@ -247,7 +228,6 @@ impl Player {
                 }
                 if word(data, 0) == EVENT_VIEW_RETIRE && self.views.slots_on {
                     self.views.retire(word(data, 4));
-                    self.retained.retire_view(word(data, 4));
                 }
                 if word(data, 0) == EVENT_FLUSH && self.views.slots_on {
                     self.views.note_forced_flush();
@@ -284,7 +264,8 @@ impl Player {
                     self.retained.set_lights(id, &keys, ambient, &self.renderer.lights_known);
                 }
             }
-            tag::INSTANCE_STATE if data.len() >= 8 => self.retained.view_state(word(data, 0), instance_state_view(data), word(data, 4) != 0),
+            // `tag::needed` checked that the record holds its count's ids.
+            tag::INSTANCE_SHOWN => self.retained.set_shown((0..word(data, 0) as usize).map(|i| word(data, 4 + i * 4))),
             tag::INSTANCE_BONES if data.len() >= 24 => {
                 let bound = core::array::from_fn(|i| float(data, 8 + i * 4));
                 self.retained.set_bones(word(data, 0), word(data, 4), bound, &data[24..]);
@@ -324,7 +305,6 @@ impl Player {
             tag::INSTANCE_DELETE if data.len() >= 4 => {
                 self.instance_take(word(data, 0));
                 self.retained_remove(word(data, 0));
-                self.retained.forget_mask(word(data, 0));
             }
             tag::INSTANCE_CENSUS if data.len() >= 4 => self.instance_census(data),
             tag::LIGHT if data.len() >= 108 => {
@@ -542,7 +522,7 @@ impl Player {
             ],
         });
         renderer.counts.times[TIME_BUFFERS] += clock.elapsed();
-        self.view_table_item();
+        self.view_world_items();
         self.items.push(Item::Screen(ScreenDraw { texture, pipeline, group, buffer, vertices: (list.len() / 10) as u32 }));
     }
 
@@ -715,16 +695,15 @@ impl Player {
             }
             self.instance_take(id);
             self.retained_remove(id);
-            // It lost its delete: its views go as at a delete.
-            self.retained.forget_mask(id);
         }
     }
 
     fn log_orphan(&self, id: u32) {
         let now = self.renderer.counts.frames;
         let (first, last, name) = self.instance_made.get(&id).map_or((now, now, ""), |made| (made.first_frame, made.last_frame, &made.name[..]));
-        let (mask, bound) = self.retained.first_slot_facts(id).unwrap_or((0, [0.0; 4]));
-        let visible = mask & 1 != 0;
+        let bound = self.retained.first_slot_bound(id).unwrap_or([0.0; 4]);
+        // In the main view's last list.
+        let visible = self.retained.listed(id);
         match self.instances.get(&id) {
             Some(r) => println!(
                 "instance census: orphan {id} '{name}': class {}, flags {:#x}, geometry {:#x}, material {:#x}, at {:.1} {:.1} {:.1}, bound {bound:?}, visible {visible}, records from frame {first} to {last}, now {now}; removed",
@@ -904,21 +883,12 @@ impl Player {
         self.views.note_facts(|| engine::views::ViewFacts { view, projection, origin, target_size });
     }
 
-    /// A draw comes in the open scene of a view of its own whose table draws: the table's item
-    /// goes before it, once for the scene (the main view draws its table at its first click).
-    /// Only after the world of the scene began ([`Player::view_world_begun`]): the sky of a
-    /// view of the world camera draws first, and it would cover the table.
-    pub(crate) fn view_table_item(&mut self) {
+    /// A draw comes in the open scene of a view of its own: the items of its world's start go
+    /// before it, once for the scene. Only after the world of the scene began
+    /// ([`Player::view_world_begun`]): the sky of a view of the world camera draws first.
+    pub(crate) fn view_world_items(&mut self) {
         let Some(group) = self.views.open().filter(|_| self.view_world_begun && self.drawing()) else { return };
         self.view_tier_item(group);
-        if self.table_bit(group).is_none() {
-            return;
-        }
-        self.note_view_facts();
-        if self.retained.view_tables.queue(group) {
-            self.view_table_at = Some((self.view_scene_draws, self.view_world_why));
-            self.items.push(Item::ViewTable(group));
-        }
     }
 
     /// The world of the open scene of a view of its own begins, and the view has parts of the
@@ -990,28 +960,6 @@ impl Player {
         view_kind::pass_samples(self.target.is_some(), self.renderer.samples)
     }
 
-    /// The end of a scene of a view of its own with a table: where its table item went among the
-    /// scene's draws, for the first [`VIEW_TABLE_LINES`] scenes of the run. A draw that began the
-    /// world counts in the draws before the item, which goes before that draw.
-    fn view_table_line(&mut self, group: usize) {
-        let Some(slot) = self.table_bit(group) else { return };
-        if self.view_table_lines >= VIEW_TABLE_LINES {
-            return;
-        }
-        self.view_table_lines += 1;
-        let frame = self.renderer.counts.frames;
-        let into = self.target.map_or_else(|| String::from("the back buffer"), |handle| format!("texture {handle}"));
-        let [draws, sky] = self.view_scene_draws;
-        let place = match self.view_table_at {
-            Some(([before, sky_before], why)) => format!("after {before} of its draws ({sky_before} of the sky), at {why}"),
-            None => String::from("not queued (the stream does not draw)"),
-        };
-        println!("view table: frame {frame}, group {group}, view slot {slot}, into {into}: {place}; the scene had {draws} draws ({sky} of the sky)");
-        if self.view_table_lines == VIEW_TABLE_LINES {
-            println!("view table: the first {VIEW_TABLE_LINES} scenes are logged; no more lines");
-        }
-    }
-
     /// A place of a retained shape in a scene with a view of its own ([`engine::views`]): the
     /// view of the scene at its first place, then the place in its run.
     pub(crate) fn view_place(&mut self, id: u32) {
@@ -1019,9 +967,9 @@ impl Player {
         // The engine walks the sky root first, and the sky's instances have places too: a place of
         // an instance that is not of the sky is in the world.
         if crate::retained::place_begins_world(self.instances.get(&id).map(|r| r.class)) {
-            self.begin_view_world("a place of the world");
+            self.begin_view_world();
         }
-        self.view_table_item();
+        self.view_world_items();
         let open = self.views.open();
         let adjacent = matches!(self.items.last(), Some(&Item::ViewPlaces(group, _)) if Some(group) == open);
         let known = self.retained.centre_of(id).is_some();
@@ -1315,15 +1263,7 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
-    use super::{instance_state_view, orphans_of, scene_record};
-
-    #[test]
-    fn an_8_byte_instance_state_is_of_the_main_view() {
-        let words = |values: &[u32]| values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
-        assert_eq!(instance_state_view(&words(&[7, 1])), 0);
-        assert_eq!(instance_state_view(&words(&[7, 1, 5])), 5);
-        assert_eq!(instance_state_view(&words(&[7, 0, 40])), 40);
-    }
+    use super::{orphans_of, scene_record};
 
     /// A made-up record: the ambient light, the flags, then each group of words.
     fn record(flags: u32, words: &[u32], sun: bool) -> Vec<u8> {

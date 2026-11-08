@@ -98,15 +98,19 @@ pub const EFFECT_TURN_CHECK: u32 = 47;
 /// The plugin forgot the chain of an effect that lit nothing for a while: its id. A later display
 /// sends the chain again.
 pub const EFFECT_CHAIN_GONE: u32 = 48;
+/// The instances that the engine displayed in the main view since the last such record
+/// (form D): a count, then the count's ids, each once.
+pub const INSTANCE_SHOWN: u32 = 49;
 
 /// Every tag of this build, the two retired ones (2 and 7) among them. A new tag goes here
 /// with its constant, read by the player or not: a test asks that each constant is here.
-pub const KNOWN: [u32; 48] = [
+pub const KNOWN: [u32; 49] = [
     TEXTURE, 2, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, 7, COMMAND, CALL, FRAME_END, HEADER, TEXTURE_UPDATE,
     READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW,
     INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED,
     INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE,
     MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS, EFFECT_CHAIN, EFFECT_TURN_CHECK, EFFECT_CHAIN_GONE,
+    INSTANCE_SHOWN,
 ];
 
 /// A tag that this build knows ([`KNOWN`]). A record of another tag comes from a plugin of
@@ -170,6 +174,8 @@ pub fn least_length(tag: u32) -> usize {
         EFFECT_CHAIN => (crate::effect_turn::HEAD_WORDS + crate::effect_turn::MODEL_WORDS) * 4,
         EFFECT_TURN_CHECK => 32 * 4,
         EFFECT_CHAIN_GONE => 4,
+        // The count of the ids.
+        INSTANCE_SHOWN => 4,
         _ => 0,
     }
 }
@@ -211,6 +217,7 @@ pub fn needed(tag: u32, data: &[u8]) -> usize {
         INSTANCE_LIGHTS => sum(&[8, count(4).saturating_mul(4)]),
         INSTANCE_BONES => sum(&[24, count(4).saturating_mul(BONE_BYTES)]),
         EFFECT_CHAIN => sum(&[head, count(8).saturating_mul(crate::effect_turn::LINK_WORDS * 4)]),
+        INSTANCE_SHOWN => sum(&[4, count(0).saturating_mul(4)]),
         // The keys of the lights, the texture effects (flag 16), the fog (flag 32), the bones.
         SHAPE => {
             let flags = word(data, 8);
@@ -304,6 +311,7 @@ pub fn name(tag: u32) -> &'static str {
         EFFECT_CHAIN => "effect chain",
         EFFECT_TURN_CHECK => "effect turn check",
         EFFECT_CHAIN_GONE => "effect chain gone",
+        INSTANCE_SHOWN => "instance shown",
         _ => "unknown",
     }
 }
@@ -313,14 +321,15 @@ mod tests {
     use super::*;
 
     /// Every tag the player reads: all the known tags but the two retired ones (2 and 7).
-    const READ_TAGS: [u32; 46] = [
+    const READ_TAGS: [u32; 47] = [
         HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, COMMAND, CALL, FRAME_END, READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS,
         INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS, EFFECT_CHAIN, EFFECT_TURN_CHECK, EFFECT_CHAIN_GONE,
+        INSTANCE_SHOWN,
     ];
 
     #[test]
     fn the_test_reads_every_known_tag_but_the_retired_ones() {
-        let known: Vec<u32> = (1..=EFFECT_CHAIN_GONE).filter(|&tag| is_known(tag) && tag != 2 && tag != 7).collect();
+        let known: Vec<u32> = (1..=INSTANCE_SHOWN).filter(|&tag| is_known(tag) && tag != 2 && tag != 7).collect();
         let mut read = READ_TAGS.to_vec();
         read.sort();
         assert_eq!(read, known);
@@ -373,6 +382,10 @@ mod tests {
             INSTANCE_BONES => {
                 put(&mut record, 4, 1);
                 record.resize(24 + BONE_BYTES, 0);
+            }
+            INSTANCE_SHOWN => {
+                put(&mut record, 0, 2);
+                record.resize(4 + 2 * 4, 0);
             }
             SHAPE => {
                 put(&mut record, 8, 16 | 32);
@@ -439,9 +452,17 @@ mod tests {
 
     #[test]
     fn every_record_with_a_fixed_head_has_a_least_length() {
-        for tag in [HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE] {
+        for tag in [HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, INSTANCE_STATE, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_SHOWN] {
             assert!(least_length(tag) > 0, "tag {tag} has no least length");
         }
+    }
+
+    #[test]
+    fn instance_shown_has_a_least_length_of_4() {
+        assert_eq!(least_length(INSTANCE_SHOWN), 4);
+        // The count, then its ids: an empty list is the count alone.
+        assert_eq!(needed(INSTANCE_SHOWN, &0u32.to_le_bytes()), 4);
+        assert_eq!(needed(INSTANCE_SHOWN, &3u32.to_le_bytes()), 4 + 3 * 4);
     }
 
     #[test]
@@ -477,7 +498,7 @@ mod tests {
         for tag in constants {
             assert!(is_known(tag), "tag {tag} is a constant but not in KNOWN");
         }
-        assert!(!is_known(0) && !is_known(49));
+        assert!(!is_known(0) && !is_known(INSTANCE_SHOWN + 1));
     }
 
     #[test]
