@@ -508,11 +508,12 @@ unsafe extern "C" fn note_every(l: LuaState) -> i32 {
 }
 
 /// `nirender.displayCost()`: the skipped displays since the last call, the notes among
-/// them and their time in ms, then the time of the views' closes in ms and the list entries
-/// that they visited, as text; the counters reset.
+/// them and their time in ms, as text; the counters reset. Two more words, `0.000 0`, stand
+/// where a build with the views' closes gives their time and their visits, so that the walk
+/// card (`bob-walk-cost.lua`) reads the same five words from both builds of an A/B.
 unsafe extern "C" fn display_cost(l: LuaState) -> i32 {
     let cost = crate::instance_stream::display_cost();
-    push_str(l, &format!("{} {} {:.3} {:.3} {}", cost.displays, cost.notes, cost.display_ms, cost.close_ms, cost.close_visits));
+    push_str(l, &format!("{} {} {:.3} 0.000 0", cost.displays, cost.notes, cost.display_ms));
     1
 }
 
