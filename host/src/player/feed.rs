@@ -3,7 +3,7 @@
 
 use crate::*;
 use crate::stream_format::{
-    HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH,
+    HEADER_ABILITIES_AT, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH,
     HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
@@ -78,7 +78,7 @@ impl Player {
                 self.stream.world_walk = abilities & HEADER_WORLD_WALK != 0;
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
                 self.views.repeat_walk_on = crate::stream_format::header_format(data) >= crate::stream_format::FORMAT_SCENE_REPEAT_WALK;
-                self.stream.envmap_lit = (abilities & HEADER_ENVMAP_KNOWN != 0).then_some(abilities & HEADER_ENVMAP_LIT != 0);
+                self.stream.envmap_lit = abilities & HEADER_ENVMAP_LIT != 0;
             }
             // The game made its renderer again: the live loop makes the back buffer again at
             // the next frame's start; a replay keeps the size of its first record.

@@ -41,7 +41,7 @@ impl Player {
                 shape_queued: false,
                 world_walk: false,
                 queue_flush: false,
-                envmap_lit: None,
+                envmap_lit: false,
                 wireframe: false,
             },
             encoder: None,

@@ -66,10 +66,9 @@ pub(crate) struct Stream {
     /// queue comes as [`EVENT_QUEUE_FLUSHED`] (bit 8 of its fourth word): the sorted blends go
     /// there. Without it (an older capture), the plan places them at the ends of the scenes.
     pub(crate) queue_flush: bool,
-    /// The head of the stream says how the game combines an environment map (bit 64 of its
-    /// fourth word): with the lit colour (bit 128, the Morrowind Code Patch's hook) or not.
-    /// [`None`] for an older capture ([`material::derive`]).
-    pub(crate) envmap_lit: Option<bool>,
+    /// The head of the stream says that the game's environment map stages take the lit colour
+    /// (bit 128 of its fourth word, the Morrowind Code Patch's hook; [`material::derive`]).
+    pub(crate) envmap_lit: bool,
     /// The scene in progress has the flag [`SCENE_WIREFRAME`].
     pub(crate) wireframe: bool,
 }
