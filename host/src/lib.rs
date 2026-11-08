@@ -345,6 +345,10 @@ pub(crate) const WORLD_LIGHTS_BIT: u32 = 32;
 /// a table, for the first ones only.
 pub(crate) const VIEW_TABLE_LINES: u32 = 64;
 
+/// The lines `early world draws: ...` of a run: one for each scene whose world draws reached the
+/// target before its world began, for the first ones only.
+pub(crate) const EARLY_DRAW_LINES: u64 = 16;
+
 /// Bit 16 of `light_range[3]` for a material with flat shading (NiShadeProperty off): the
 /// shader takes the lit colour and the normal of the first vertex of each triangle, as
 /// Direct3D 8 does. The plugin sends the shade of a shape only with
@@ -963,6 +967,9 @@ struct Player {
     view_scene_draws: [u32; 2],
     view_table_at: Option<([u32; 2], &'static str)>,
     view_table_lines: u32,
+    /// The draws of the world of the scene in progress that reached the target before its world
+    /// began ([`Player::is_early_world_draw`]).
+    view_early_draws: u32,
     split: Option<[f64; 4]>,
     /// The post-processing of this frame is in the items.
     posted: bool,

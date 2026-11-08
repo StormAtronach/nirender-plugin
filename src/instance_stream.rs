@@ -1236,8 +1236,14 @@ fn key_words(key: ViewKey) -> String {
 ///
 /// A take of a slot and a forced flush each give a log line, at the rate of `view_line_due`.
 pub fn view_open(mt: &MainThread, click: &Click) -> u32 {
+    view_open_with_first(mt, click).0
+}
+
+/// [`view_open`] and, for a scene that repeats its texture key in the same flush, the slot of
+/// the key's first scene plus 1 (else 0): the low byte of `SceneV1::repeat_walk`.
+pub fn view_open_with_first(mt: &MainThread, click: &Click) -> (u32, u32) {
     if !capture::recording() {
-        return 0;
+        return (0, 0);
     }
     do_pending_destructors(mt);
     write_flush_retirements(mt);
@@ -1263,7 +1269,7 @@ pub fn view_open(mt: &MainThread, click: &Click) -> u32 {
         }
         opening = views.open(click);
     }
-    let Opening::Opened(opened) = opening else { return 0 };
+    let Opening::Opened(opened) = opening else { return (0, 0) };
     if opened.taken_back {
         forget_views(mt, &[opened.slot]);
         let _lock = crate::sync::device_lock();
@@ -1285,17 +1291,17 @@ pub fn view_open(mt: &MainThread, click: &Click) -> u32 {
         // SAFETY: the caller is the scene start on the main thread; it writes the scene's own record next.
         unsafe { capture::frame_event(crate::link::EVENT_VIEW_OPTIONS, opened.slot as u32, parts) };
     }
-    opened.slot as u32 + 1
+    (opened.slot as u32 + 1, opened.first.map_or(0, |first| first as u32 + 1))
 }
 
-/// The view field of a scene on its route: 0 for a scene on the engine's path, which the table
-/// does not serve (its displays set no marks, `skipped_display`) and which takes no slot; else
-/// [`view_open`].
-pub fn view_of_scene(mt: &MainThread, click: &Click, route: Route) -> u32 {
+/// The view field of a scene on its route and the first slot of a repeat ([`view_open_with_first`]):
+/// 0 and 0 for a scene on the engine's path, which the table does not serve (its displays set
+/// no marks, `skipped_display`) and which takes no slot.
+pub fn view_of_scene(mt: &MainThread, click: &Click, route: Route) -> (u32, u32) {
     if matches!(route, Route::Engine(_)) {
-        return 0;
+        return (0, 0);
     }
-    view_open(mt, click)
+    view_open_with_first(mt, click)
 }
 
 /// The renderer's SwapBuffers, with the device's target (`None` for the back buffer): the open
@@ -3731,11 +3737,11 @@ mod tests {
             let start = in_use();
             for kind in [SCENE_LOCAL_MAP, SCENE_CHARACTER_PREVIEW, SCENE_WATER_REFLECTION] {
                 let click = Click { kind, camera: 0x7970_0000, root: 0x7970_1000, target: Some(0x7970_4000), world_camera: false };
-                assert_eq!(view_of_scene(&mt, &click, route_of(kind, false, true)), 0);
+                assert_eq!(view_of_scene(&mt, &click, route_of(kind, false, true)), (0, 0));
             }
             assert_eq!(in_use(), start);
             let picture = Click { kind: SCENE_OTHER, camera: 0x7970_0000, root: 0x7970_1000, target: Some(0x7970_4000), world_camera: false };
-            assert!(view_of_scene(&mt, &picture, route_of(SCENE_OTHER, false, true)) > 0);
+            assert!(view_of_scene(&mt, &picture, route_of(SCENE_OTHER, false, true)).0 > 0);
             view_swap(&mt, Some(0x7970_4000));
             take_retired_views(&mt);
             capture::test_record_deletes(false);

@@ -1222,14 +1222,14 @@ pub(crate) fn view_world_begins(sky: bool, sky_hidden: bool, walk_marked: bool, 
     !sky && (sky_hidden || (!walk_marked && sky_seen))
 }
 
-/// The walk event comes in a scene of a view of its own (`walk_marked` of [`view_world_begins`])
-/// only when the stream marks the walk and the scene is of the world camera with the world
-/// root (`world_scene`, [`crate::engine::scene::SCENE_WORLD`]): the plugin writes the event in
-/// that Click only (`world_walk::walk_due`). A camera of a mod (the clone of a mirror) gets no
-/// event, so its world begins at its first draw after the sky, and the distant land of the
-/// view goes before the view's first draw of the world.
-pub(crate) fn view_walk_marked(stream_marks_walk: bool, world_scene: bool) -> bool {
-    stream_marks_walk && world_scene
+/// A draw of the game is a draw of the scene's world that reaches the target before the world
+/// of the scene begins ([`Player::note_early_world_draws`]): not the sky, after a draw of the sky
+/// or with the sky hidden, not held for the world's start (`held`), the world not begun, and not
+/// the draw that begins it ([`view_world_begins`]). `extension_world`: the scene is a view of
+/// its own or the world scene of the back buffer, and the extension draws the parts that the
+/// world's start orders.
+pub(crate) fn world_draw_is_early(extension_world: bool, held: bool, sky: bool, sky_hidden: bool, walk_marked: bool, sky_seen: bool, world_begun: bool) -> bool {
+    extension_world && !held && !world_begun && (sky_seen || sky_hidden) && !sky && !view_world_begins(sky, sky_hidden, walk_marked, sky_seen)
 }
 
 /// A place begins the world of a view of its own when its instance is not of the sky: the
@@ -3101,20 +3101,23 @@ mod view_bit_tests {
     }
 
     #[test]
-    fn the_world_of_a_view_with_no_walk_event_begins_after_the_sky() {
-        // A camera of a mod in a stream that marks the walk: no event comes in its scene
-        // (run 20261104-112610-d93-B: the mirror's land came after 10 of its world draws).
-        let walk_marked = view_walk_marked(true, false);
-        assert!(!walk_marked);
-        assert!(!view_world_begins(true, false, walk_marked, false));
-        assert!(view_world_begins(false, false, walk_marked, true));
-        // The world camera's scene, into the back buffer or a texture: the event begins it.
-        let walk_marked = view_walk_marked(true, true);
-        assert!(walk_marked);
-        assert!(!view_world_begins(false, false, walk_marked, true));
-        // A stream without the event: the draw rule in every scene.
-        assert!(!view_walk_marked(false, true));
-        assert!(!view_walk_marked(false, false));
+    fn a_draw_of_the_world_before_the_walk_event_is_early() {
+        // The arguments: the extension draws a world scene, held, sky, sky hidden, walk marked,
+        // sky seen, world begun.
+        // After the sky in a stream with the walk event, before the event, in the target: early.
+        assert!(world_draw_is_early(true, false, false, false, true, true, false));
+        // Held for the world's start (the main view): in no target yet.
+        assert!(!world_draw_is_early(true, true, false, false, true, true, false));
+        // The sky itself, a draw before the sky (the cell borders), and a draw after the world began.
+        assert!(!world_draw_is_early(true, false, true, false, true, true, false));
+        assert!(!world_draw_is_early(true, false, false, false, true, false, false));
+        assert!(!world_draw_is_early(true, false, false, false, true, true, true));
+        // A stream without the event: the first draw after the sky begins the world, it is not early.
+        assert!(!world_draw_is_early(true, false, false, false, false, true, false));
+        // The sky hidden: the first draw begins the world.
+        assert!(!world_draw_is_early(true, false, false, true, true, false, false));
+        // No extension, or a scene that is no world scene of a view or the main view.
+        assert!(!world_draw_is_early(false, false, false, false, true, true, false));
     }
 
     #[test]

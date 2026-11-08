@@ -76,6 +76,10 @@ pub struct Opened {
     /// pressure, rule 4): the caller writes its retirement before the scene's record, so the
     /// new key never gets the old key's shapes.
     pub taken_back: bool,
+    /// The scene repeats its texture key in the same flush (it has a second slot): the slot
+    /// that the key's first scene of the flush took (D82, design 3.4f). `None` for any other
+    /// scene.
+    pub first: Option<u8>,
 }
 
 /// What a scene's start found in the table.
@@ -191,6 +195,10 @@ impl ViewTable {
                 ViewKey::Texture { camera: click.camera, root: click.root, target, again: *scenes }
             }
         };
+        let first = match key {
+            ViewKey::Texture { camera, root, target, again } if again > 0 => self.by_key.get(&ViewKey::Texture { camera, root, target, again: 0 }).copied(),
+            _ => None,
+        };
         let (slot, new, taken_back) = if click.world_camera && click.target.is_none() {
             let (slot, new) = self.take_main(key);
             (slot, new, false)
@@ -225,7 +233,7 @@ impl ViewTable {
         if click.target.is_none() && !entry.roots.contains(&click.root) {
             entry.roots.push(click.root);
         }
-        Opening::Opened(Opened { slot, new, taken_back })
+        Opening::Opened(Opened { slot, new, taken_back, first })
     }
 
     /// The slot that closed longest ago and that the take-back may use: not the main view's,
@@ -418,7 +426,12 @@ mod tests {
 
     /// A slot opened, `new` or not, with no take-back.
     fn opened(slot: u8, new: bool) -> Opening {
-        Opening::Opened(Opened { slot, new, taken_back: false })
+        Opening::Opened(Opened { slot, new, taken_back: false, first: None })
+    }
+
+    /// A second slot (new) of a key whose first scene of the flush took the slot `first`.
+    fn opened_again(slot: u8, first: u8) -> Opening {
+        Opening::Opened(Opened { slot, new: true, taken_back: false, first: Some(first) })
     }
 
     /// The slot of an opening.
@@ -544,11 +557,25 @@ mod tests {
         let mirror = texture(0x7000, WORLD_ROOT, 0x9000);
         for frame in 0..2 {
             assert_eq!(views.open(&mirror), opened(1, frame == 0));
-            assert_eq!(views.open(&mirror), opened(2, true));
+            assert_eq!(views.open(&mirror), opened_again(2, 1));
             assert_eq!(views.present(), FrameEnd { closed: vec![(1, false), (2, false)], retired: vec![2] });
         }
         assert_eq!(views.in_use(), 1);
         assert_eq!((views.second_slots, views.most_second_in_flush), (2, 1));
+    }
+
+    /// Every repeat of a key in a flush names the slot of the key's first scene, also the third
+    /// one; the first scene and a key with another root name none (D82, design 3.4f).
+    #[test]
+    fn a_repeat_names_the_first_slot_of_its_key() {
+        let mut views = ViewTable::default();
+        let mirror = texture(0x7000, WORLD_ROOT, 0x9000);
+        assert_eq!(views.open(&mirror), opened(1, true));
+        assert_eq!(views.open(&mirror), opened_again(2, 1));
+        assert_eq!(views.open(&mirror), opened_again(3, 1));
+        assert_eq!(views.open(&texture(0x7000, WATER_ROOT, 0x9000)), opened(4, true));
+        views.flush(false);
+        assert_eq!(views.open(&mirror), opened(1, false));
     }
 
     /// A flush (a readback, a tile's copy) closes the open views into a texture first, and
@@ -565,7 +592,7 @@ mod tests {
         let map_water = texture(0x8000, WATER_ROOT, 0x9000);
         assert_eq!(views.open(&map), opened(2, true));
         assert_eq!(views.open(&map_water), opened(3, true));
-        assert_eq!(views.open(&map), opened(4, true));
+        assert_eq!(views.open(&map), opened_again(4, 2));
         assert_eq!(views.flush(false), FrameEnd { closed: vec![(2, false), (3, false), (4, false)], retired: vec![4] });
         for _ in 0..6 {
             assert_eq!(views.open(&map), opened(2, false));
@@ -615,11 +642,11 @@ mod tests {
         let end = views.flush(true);
         assert_eq!((end.closed.len(), end.retired), (VIEW_SLOTS - 2, vec![]));
         assert_eq!(views.forced_flushes, 1);
-        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0000)), Opening::Opened(Opened { slot: 5, new: true, taken_back: true }));
-        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0001)), Opening::Opened(Opened { slot: 1, new: true, taken_back: true }));
+        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0000)), Opening::Opened(Opened { slot: 5, new: true, taken_back: true, first: None }));
+        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0001)), Opening::Opened(Opened { slot: 1, new: true, taken_back: true, first: None }));
         assert_eq!(views.taken_back, 2);
         // The old key of slot 5 starts again in another slot at its next scene.
-        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x10_0005)), Opening::Opened(Opened { slot: 2, new: true, taken_back: true }));
+        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x10_0005)), Opening::Opened(Opened { slot: 2, new: true, taken_back: true, first: None }));
         assert_eq!(views.in_use(), VIEW_SLOTS);
     }
 

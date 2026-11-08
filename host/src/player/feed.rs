@@ -92,6 +92,7 @@ impl Player {
                 self.retained.walk.on = abilities & HEADER_WALK_PLACES != 0;
                 self.views.on = abilities & HEADER_VIEW_PLACES != 0;
                 self.views.slots_on = abilities & HEADER_SCENE_VIEWS != 0;
+                self.views.repeat_walk_on = self.views.slots_on && crate::stream_format::header_format(data) >= crate::stream_format::FORMAT_SCENE_REPEAT_WALK;
                 self.retained.view_bits = abilities & HEADER_VIEW_BITS != 0;
                 self.stream.scene_wireframe = abilities & HEADER_SCENE_WIREFRAME != 0;
                 self.stream.envmap_lit = (abilities & HEADER_ENVMAP_KNOWN != 0).then_some(abilities & HEADER_ENVMAP_LIT != 0);
@@ -185,6 +186,8 @@ impl Player {
                 let kind = word(data, 4);
                 if self.views.slots_on {
                     self.views.note_scene_record(data);
+                } else {
+                    self.views.note_repeat_walk(data);
                 }
                 let in_target = self.target.is_some();
                 let camera = word(data, 8);
@@ -197,6 +200,7 @@ impl Player {
                 self.view_sky_seen = false;
                 self.view_world_why = "";
                 self.view_scene_draws = [0; 2];
+                self.view_early_draws = 0;
                 self.view_table_at = None;
                 for step in self.plan_now().scene_begin_view(kind, ViewKind::classify(in_target, camera_is_world)) {
                     self.plan_step(step);
@@ -935,6 +939,7 @@ impl Player {
             self.renderer.counts.tier_unserved += 1;
             return;
         }
+        self.note_early_world_draws("the tier start");
         let facts = self.tier_facts(key);
         self.items.push(Item::TierStart(facts, parts));
     }

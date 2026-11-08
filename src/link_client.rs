@@ -1196,7 +1196,8 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     // its displays set no marks (`instance_stream::skipped_display`), and a slot would only
     // add pressure (design 3.1).
     let route = crate::instance_stream::route_of(roots.scene_kind, back_buffer, crate::own_host::target_is_known());
-    let view = crate::instance_stream::view_of_scene(t, &click, route);
+    let (view, first_of_repeat) = crate::instance_stream::view_of_scene(t, &click, route);
+    let walk_due = crate::world_walk::installed() && crate::world_walk::walk_due_for(roots.scene_kind, scene_root);
     let scene = SceneV1 {
         struct_size: size_of::<SceneV1>() as u32,
         kind: roots.scene_kind,
@@ -1210,7 +1211,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
             | if game_wireframe() { SCENE_WIREFRAME } else { 0 },
         camera_origin: origin.unwrap_or_default(),
         view,
-        reserved: 0,
+        repeat_walk: first_of_repeat | if walk_due { SCENE_WALK_DUE } else { 0 },
     };
     (host.scene_begin)(&scene);
     crate::capture::scene_begin(&scene);

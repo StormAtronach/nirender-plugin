@@ -81,9 +81,20 @@ unsafe extern "thiscall" fn click_cull_show(root: usize, camera: usize) {
 
 /// The root of the world scene, a plain `NiNode`, while the stream records.
 unsafe fn walk_due(t: &MainThread, root: usize) -> bool {
+    walk_due_for(crate::link_client::scene_kind_now(t), root)
+}
+
+/// `walk_due` for a scene of the kind `kind`. The scene record asks it at the scene's start
+/// (`SceneV1::repeat_walk`, with [`installed`]): the recording and the root's class do not
+/// change between the scene's start and the engine's walk of its root.
+///
+/// # Safety
+/// `root` is the address of the scene's root node, or 0, and the call runs on the main thread
+/// while the scene is in progress.
+pub unsafe fn walk_due_for(kind: u32, root: usize) -> bool {
     root != 0
         && crate::capture::recording()
-        && crate::link_client::scene_kind_now(t) == crate::link::SCENE_WORLD
+        && kind == crate::link::SCENE_WORLD
         && rd::<usize>(rd::<usize>(root, 0), SLOT_DISPLAY) == NODE_DISPLAY
 }
 
